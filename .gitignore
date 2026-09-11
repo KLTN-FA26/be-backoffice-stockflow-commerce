@@ -1,0 +1,29 @@
+# target/ covers everything under it, including target/spring-modulith-docs/ - git does not
+# descend into an ignored directory, so listing children would be inert.
+target/
+
+# maven-wrapper.properties IS committed (it pins the Maven version). The jar is not - the wrapper
+# is configured as distributionType=only-script, which needs no jar. See the README for generating
+# the mvnw scripts.
+.mvn/wrapper/maven-wrapper.jar
+
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+
+*.log
+.DS_Store
+
+# Real credentials. .env.example is the documented template and IS committed.
+.env
+.env.*
+!.env.example
+
+# LocalFileStorage's directory when the local storage provider is selected.
+.local-storage/
+
+# Generated from the code by ModularityTest on every build; never committed, or it goes stale.
+target/spring-modulith-docs/

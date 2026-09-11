@@ -1,0 +1,322 @@
+# =============================================================================
+# StockFlowCommerce - modular monolith
+#
+# One application, one database, fourteen modules. Everything that was a service registry,
+# a gateway route table or a Kafka topic in the previous architecture is gone; what is left is
+# a datasource, a Flyway path and the settings that make in-process events durable.
+# =============================================================================
+
+spring:
+  application:
+    name: stockflow-monolith
+
+  # ---------------------------------------------------------------------------
+  # ONE datasource. This single block is what replaced fourteen of them.
+  # ---------------------------------------------------------------------------
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:stockflow}
+    username: ${DB_USER:stockflow}
+    password: ${DB_PASSWORD:stockflow}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      # Sized for the machine, not the module count. The old deployment ran 14 pools of 10 and
+      # opened 140 connections to serve a load one pool of 20 handles - which is why Postgres
+      # needed a connection pooler in front of it. Rule of thumb: cores * 2 + effective spindles.
+      maximum-pool-size: ${DB_POOL_MAX:20}
+      minimum-idle: 5
+      connection-timeout: 3000        # fail fast; a request waiting 30s for a connection is dead anyway
+      max-lifetime: 1800000           # 30 min, below any proxy or database idle timeout
+      pool-name: stockflow-pool
+      # MUST stay false while hibernate.connection.provider_disables_autocommit is true below.
+      # With that flag set, Hibernate skips its own setAutoCommit(false) on the assumption the pool
+      # already did it. If the pool has not, every statement commits on its own and @Transactional
+      # rollback becomes a no-op - which would silently destroy the atomicity this whole
+      # architecture is built on, with no error anywhere to point at it.
+      auto-commit: false
+      # Belt and braces with the server-side setting in docker-compose: a statement still running
+      # after 10s is not going to finish usefully and is holding a connection every module shares.
+      connection-init-sql: SET statement_timeout = 10000
+      # Every module shares this pool. That is the monolith's main operational risk: a runaway
+      # report query can starve checkout. Mitigated by statement timeouts below, and revisited in
+      # docs/adr/0005 if reporting ever needs its own read replica.
+
+  jpa:
+    open-in-view: false               # OFF. Leaving it on lets lazy loading happen inside view
+                                      # rendering, which hides N+1 queries and holds a connection
+                                      # for the whole request. Spring warns about it for a reason.
+    hibernate:
+      ddl-auto: validate              # NEVER "update". Flyway owns the schema; Hibernate's job is
+                                      # to complain loudly when the entities and the tables differ.
+    properties:
+      hibernate:
+        jdbc:
+          batch_size: 50
+          time_zone: UTC
+        order_inserts: true
+        order_updates: true
+        # Fails the build the moment a query triggers a lazy collection outside a session, rather
+        # than letting it become a LazyInitializationException in production.
+        enable_lazy_load_no_trans: false
+        query:
+          fail_on_pagination_over_collection_fetch: true
+        connection:
+          # Saves a round trip per transaction: Hibernate does not call setAutoCommit(false) because
+          # the pool hands over connections that already have it off. Paired with
+          # spring.datasource.hikari.auto-commit: false above - the two must agree.
+          provider_disables_autocommit: true
+    show-sql: false                   # use the p6spy/actuator route in dev; never log SQL in prod
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    # Every module's migrations live in one path and run in one ordered sequence, because they
+    # share one database. File names are timestamped (V20260901000200__...) rather than numbered
+    # sequentially: with five people committing migrations in parallel, V3__ collides constantly
+    # and a timestamp never does.
+    baseline-on-migrate: false
+    validate-on-migrate: true
+    default-schema: public
+    schemas: public                   # the module schemas are created by the first migration
+
+  # ---------------------------------------------------------------------------
+  # Modulith event publication registry - the outbox, provided by the framework.
+  # ---------------------------------------------------------------------------
+  modulith:
+    events:
+      jdbc:
+        schema-initialization:
+          # Flyway owns the schema; see V20260901000400. Auto-creation at startup is convenient in
+          # development and wrong in production - the deployed schema would differ from what the
+          # migration history says is there, and nothing would record the difference.
+          #
+          # No `schema:` key here on purpose: that property belongs to the JDBC registry, and this
+          # application uses the JPA one, whose entity maps to an unqualified table name.
+          enabled: false
+      # Replays every publication that never completed. This is the guarantee that a crash between
+      # "order committed" and "confirmation email sent" costs a delay, not a lost email.
+      republish-outstanding-events-on-restart: true
+      completion-mode: UPDATE         # keep completed rows for audit rather than deleting them
+      externalization:
+        enabled: false                # nothing leaves the process today
+
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # The identity module issues and signs the tokens, and this same application validates
+          # them. Kept as a URI rather than an inline key so that moving identity out later is a
+          # configuration change, not a code change.
+          jwk-set-uri: ${JWT_JWK_SET_URI:http://localhost:8080/oauth2/jwks}
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 2s
+    web:
+      pageable:
+        # Pages.of() enforces the same ceiling, but only where an author remembers to call it.
+        # A controller that declares a Pageable parameter directly is resolved by Spring, and
+        # Boot's default max-page-size is 2000 - one request could ask for 2000 rows with their
+        # associations. A limit enforced in some endpoints and not others is the same as no limit,
+        # so it is set here as well, where it applies to every Pageable Spring resolves.
+        max-page-size: 200
+        default-page-size: 20
+
+  task:
+    execution:
+      pool:
+        core-size: 8
+        max-size: 32
+        queue-capacity: 500
+      thread-name-prefix: stockflow-async-
+    scheduling:
+      pool:
+        size: 4                       # the reservation sweeper and the nightly jobs share this
+
+  threads:
+    virtual:
+      enabled: true                   # Java 21 virtual threads: request handling is IO-bound, and
+                                      # this removes the platform-thread ceiling under load
+
+  jackson:
+    default-property-inclusion: non_null
+    serialization:
+      write-dates-as-timestamps: false
+
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful                  # let in-flight orders finish before the process exits
+  error:
+    include-message: never            # exception text can leak internals; GlobalExceptionHandler
+    include-stacktrace: never         # produces the client-safe body instead
+
+# -----------------------------------------------------------------------------
+# Observability. One process, so a trace is a stack rather than a distributed puzzle - which was
+# one of the concrete wins of collapsing the services.
+# -----------------------------------------------------------------------------
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus,applicationmodules
+        # "applicationmodules" is Modulith's: it serves the live module structure and dependencies
+        # as JSON, so the architecture diagram in the report can be regenerated from the running
+        # application rather than drawn by hand and left to rot.
+  endpoint:
+    health:
+      show-details: when-authorized
+      # when-authorized alone means ANY authenticated user - a CUSTOMER - sees every detail,
+      # including the storage bucket and endpoint. Naming the role narrows it to administrators.
+      roles: ECOMMERCE_ADMIN
+      probes:
+        # /actuator/health/liveness and /readiness, which is what Kubernetes probes.
+        enabled: true
+  health:
+    # -------------------------------------------------------------------------
+    # WHICH DEPENDENCY FAILURES SHOULD TAKE AN INSTANCE OUT OF SERVICE
+    #
+    # readiness = "can this instance serve traffic". Postgres: yes, nothing works without it.
+    # Redis, object storage, Elasticsearch: NO. They degrade a feature; taking every instance out
+    # of the load balancer because MinIO is down turns a degraded upload path into a total outage -
+    # the classic way a health check causes the incident it was meant to detect.
+    #
+    # They still appear in /actuator/health, so a dashboard and an alert see them. The difference
+    # is that a human decides what to do rather than the orchestrator deciding for everyone.
+    # -------------------------------------------------------------------------
+    readinessstate:
+      enabled: true
+    livenessstate:
+      enabled: true
+    group:
+      readiness:
+        include: readinessState, db
+        show-details: when-authorized
+      liveness:
+        # Liveness answers "is this JVM wedged". A dependency being down is not a reason to RESTART
+        # the process - the restart cannot fix Redis, and a crash loop makes recovery harder.
+        include: livenessState
+  info:
+    # Populates /actuator/info from build-info.properties (see the spring-boot-maven-plugin
+    # execution). env is deliberately OFF: it would print resolved configuration, which includes
+    # anything that arrived from an environment variable.
+    build:
+      enabled: true
+    java:
+      enabled: true
+    os:
+      enabled: true
+    env:
+      enabled: false
+  metrics:
+    tags:
+      application: stockflow-monolith
+  otlp:
+    tracing:
+      # Boot's OTLP exporter reads THIS property. It does not honour OTEL_EXPORTER_OTLP_ENDPOINT -
+      # that variable is read only by opentelemetry-spring-boot-starter, which is not a dependency
+      # here. Note it is the full endpoint including /v1/traces, not a base URL.
+      endpoint: ${OTLP_TRACING_ENDPOINT:http://localhost:4318/v1/traces}
+  tracing:
+    sampling:
+      probability: ${TRACE_SAMPLING:0.1}
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: alpha
+    tags-sorter: alpha
+    # Groups the generated OpenAPI document by module, so a reader sees inventory's endpoints
+    # together rather than one flat alphabetical list of 500 paths.
+  group-configs:
+    - group: inventory
+      packages-to-scan: com.stockflow.inventory
+    - group: order
+      packages-to-scan: com.stockflow.order
+
+# -----------------------------------------------------------------------------
+# Application settings owned by this system rather than by a framework.
+# -----------------------------------------------------------------------------
+stockflow:
+  api:
+    # Shown in the generated OpenAPI document. Bump on a breaking API change.
+    version: 1.0.0
+
+  # ---------------------------------------------------------------------------
+  # Cache. TTLs are NOT here - they live beside the cache name in CacheNames, so a name and its
+  # expiry cannot drift apart. Only the key namespace is configurable.
+  # ---------------------------------------------------------------------------
+  cache:
+    # Bump this when a cached type changes shape. Every key is prefixed with it, so a deployment
+    # whose DTOs gained a field starts from a clean namespace instead of deserialising yesterday's
+    # objects into the new class.
+    version: v1
+
+  # ---------------------------------------------------------------------------
+  # HTTP idempotency. Applies to any unsafe request carrying an Idempotency-Key header.
+  # ---------------------------------------------------------------------------
+  idempotency:
+    enabled: true
+    purge-cron: "0 15 * * * *"      # hourly, off the hour so it does not collide with other jobs
+
+  # ---------------------------------------------------------------------------
+  # Audit trail (BRD 3.19.3).
+  #
+  # These durations DESTROY DATA when they elapse. Confirm both against the retention policy the
+  # business actually signs before go-live - the defaults are a starting point, not a decision.
+  # ---------------------------------------------------------------------------
+  audit:
+    routine-retention: P180D        # ordinary business actions: six months
+    security-retention: P730D       # logins, grants, exports, deletes: two years
+    purge-cron: "0 30 3 * * *"      # nightly, off-peak
+
+  # ---------------------------------------------------------------------------
+  # Outbound HTTP. Java's HttpClient has NO default read timeout; these are what stop a hung
+  # dependency from consuming every thread in the application. See HttpClientProperties.
+  # ---------------------------------------------------------------------------
+  http:
+    connect-timeout: PT3S
+    read-timeout: PT10S
+
+  # ---------------------------------------------------------------------------
+  # File storage. 's3' talks to MinIO locally and to S3 in a deployment - the same code path.
+  # 'local' writes to the filesystem and is for development only; it cannot work with more than
+  # one instance and its presigned URLs are not real URLs.
+  # ---------------------------------------------------------------------------
+  storage:
+    provider: s3
+    bucket: stockflow
+    endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
+    region: ap-southeast-1
+    # MinIO needs path-style addressing; real S3 uses virtual-host style. Wrong value produces a
+    # DNS failure that looks nothing like a configuration problem.
+    path-style: true
+    # Static keys only for MinIO. Left blank against real S3 so the SDK's default provider chain
+    # picks up the instance role - long-lived keys in a properties file are how credentials leak.
+    access-key: ${MINIO_ACCESS_KEY:stockflow}
+    secret-key: ${MINIO_SECRET_KEY:stockflow123}
+    presigned-url-ttl: PT10M        # a signed URL is a credential with no revocation; keep it short
+
+  web:
+    request-log:
+      enabled: true
+
+  inventory:
+    # How often the sweeper looks for holds that outlived their expiry. ISO-8601 duration.
+    reservation-sweep-interval: PT1M
+  security:
+    # Turns on the resource-server filter chain AND RequiresPermissionAspect. Both are behind the
+    # same switch on purpose: a state where the chain is on but the aspect is off means every
+    # @RequiresPermission is silently unenforced, which is worse than either being off.
+    # Default is ON. Switch it off per profile, never here.
+    enabled: true
+
+logging:
+  level:
+    com.stockflow: ${LOG_LEVEL:INFO}
+    org.springframework.modulith: INFO
+  # No `pattern:` here on purpose. logback-spring.xml defines the appenders directly, so
+  # logging.pattern.console would be read by nothing - and a dead setting that disagrees with the
+  # live one is worse than no setting at all.

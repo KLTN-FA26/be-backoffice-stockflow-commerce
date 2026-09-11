@@ -1,0 +1,45 @@
+# Used by integration tests. Testcontainers supplies the datasource URL at runtime, so nothing
+# here points at a real database - a test run can never touch a developer's local data.
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    # The demo seed is included: the integration tests place real orders and need stock to reserve.
+    # Testcontainers gives each run a fresh database, so seeding it is safe here in a way it would
+    # never be against a shared environment.
+    locations: classpath:db/migration,classpath:db/demo
+    clean-disabled: false
+  modulith:
+    events:
+      republish-outstanding-events-on-restart: false   # deterministic tests
+  # Virtual threads must be OFF here. With them on, Boot replaces the application task executor
+  # with an unbounded SimpleAsyncTaskExecutor and every spring.task.execution.pool.* setting below
+  # is ignored - which would quietly undo the single-threaded async execution the tests rely on.
+  threads:
+    virtual:
+      enabled: false
+  task:
+    execution:
+      pool:
+        core-size: 1     # Async listeners run on one thread so assertions are not racing them.
+        max-size: 1
+
+stockflow:
+  storage:
+    # No MinIO container in tests; the filesystem implementation exercises the same port.
+    provider: local
+    local-directory: ${java.io.tmpdir}/stockflow-test-storage
+  idempotency:
+    # Off by default in tests so a repeated fixture request is not answered from a stored response.
+    # The idempotency tests switch it back on with @TestPropertySource.
+    enabled: false
+  security:
+    # Off: the integration tests exercise the service layer directly, not HTTP, so the filter chain
+    # would add a JWT setup step without testing anything these tests are about.
+    enabled: false
+
+logging:
+  level:
+    com.stockflow: DEBUG
+    org.springframework.transaction: DEBUG

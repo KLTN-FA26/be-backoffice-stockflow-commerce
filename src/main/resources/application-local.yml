@@ -1,0 +1,43 @@
+# Local development. Activate with: --spring.profiles.active=local
+spring:
+  flyway:
+    # Adds the demo seed on top of the production migrations. Deliberately a separate location,
+    # so demo stock can never reach an environment that did not ask for it.
+    locations: classpath:db/migration,classpath:db/demo
+  jpa:
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+  modulith:
+    events:
+      republish-outstanding-events-on-restart: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "*"
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    com.stockflow: DEBUG
+    # Uncomment to see every statement with its bound parameters when chasing an N+1:
+    # org.hibernate.SQL: DEBUG
+    # org.hibernate.orm.jdbc.bind: TRACE
+
+stockflow:
+  storage:
+    # Keep MinIO for local work: it exercises the same S3 code path the deployment uses.
+    # Switch to 'local' only to run without Docker; see LocalFileStorage for what it cannot do.
+    provider: s3
+  security:
+    # Off locally so the endpoints can be exercised with curl and Swagger UI without minting a JWT.
+    # Note what this costs: @RequiresPermission is NOT enforced under this profile, so a permission
+    # mistake will not show up here. Run with the default profile before believing the matrix works.
+    enabled: false
+  inventory:
+    reservation-sweep-interval: PT15S   # faster than production, so expiry is testable by hand

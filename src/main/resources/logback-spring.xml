@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Logging.
+
+  Two shapes, chosen by profile, and the difference is who is reading:
+
+    dev/local  - a human at a terminal. Colour, short logger names, one line per event.
+    everything else - a log pipeline. JSON, one object per event, so correlationId and traceId are
+                      QUERYABLE FIELDS rather than substrings somebody has to regex out of a
+                      message. That difference is the whole reason this file exists: with a plain
+                      pattern, "show me every log line for correlation id 8f3a..." is a full-text
+                      search across gigabytes; with JSON it is a field filter.
+
+  logback-spring.xml, not logback.xml: only the -spring variant gets <springProfile>, because
+  Spring has to initialise before the profile is known.
+-->
+<configuration>
+
+    <!-- Lets Spring Boot's own defaults (level colours, exception formatting) apply. -->
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <springProperty scope="context" name="applicationName" source="spring.application.name"
+                    defaultValue="stockflow"/>
+
+    <!-- ===================================================================
+         Development: readable at a glance.
+         =================================================================== -->
+    <springProfile name="local,dev,test">
+        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <!--
+                  correlationId first, because when something goes wrong it is the first thing you
+                  copy. The :- default keeps the column aligned when there is no request context,
+                  such as on a scheduled job.
+                -->
+                <!--
+                  This is the ONLY console pattern. logging.pattern.console in application.yml is
+                  read by Boot's console-appender.xml, which this file does not include, so setting
+                  it there would be dead configuration that silently disagrees with what is printed.
+                -->
+                <pattern>
+                    %d{HH:mm:ss.SSS} %highlight(%-5level) [%X{correlationId:-.................}] [%X{traceId:-},%X{spanId:-}] %cyan(%logger{32}) - %msg%n
+                </pattern>
+                <charset>UTF-8</charset>
+            </encoder>
+        </appender>
+
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+    </springProfile>
+
+    <!-- ===================================================================
+         Everything else: structured.
+         =================================================================== -->
+    <springProfile name="!local &amp; !dev &amp; !test">
+        <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+            <!--
+              To stdout, not to a file. In a container the orchestrator collects stdout; writing to
+              a file inside the container means the logs die with the pod, and rotation becomes
+              something else to configure and get wrong.
+            -->
+            <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+                <!--
+                  These MDC keys become top-level fields: correlationId from CorrelationIdFilter,
+                  traceId and spanId from Micrometer Tracing. That is what makes one request's lines
+                  joinable across the whole pipeline.
+
+                  NOTE this is an ALLOW-LIST, not a hint. Naming any includeMdcKeyName switches the
+                  encoder from include-everything to include-only-these, so a future MDC.put("orderId")
+                  is silently dropped until it is added here.
+                -->
+                <includeMdcKeyName>correlationId</includeMdcKeyName>
+                <includeMdcKeyName>traceId</includeMdcKeyName>
+                <includeMdcKeyName>spanId</includeMdcKeyName>
+                <customFields>{"application":"${applicationName}"}</customFields>
+                <!--
+                  Stack traces truncated to 40 frames and with framework noise collapsed. An
+                  untruncated Spring trace is ~200 frames, most of it reflection, and it is charged
+                  per gigabyte by every log vendor.
+                -->
+                <throwableConverter class="net.logstash.logback.stacktrace.ShortenedThrowableConverter">
+                    <maxDepthPerThrowable>40</maxDepthPerThrowable>
+                    <maxLength>4096</maxLength>
+                    <shortenedClassNameLength>32</shortenedClassNameLength>
+                    <exclude>^sun\.reflect\..*\.invoke</exclude>
+                    <exclude>^net\.sf\.cglib\.proxy\.MethodProxy\.invoke</exclude>
+                    <exclude>^org\.springframework\.aop\..*</exclude>
+                    <rootCauseFirst>true</rootCauseFirst>
+                </throwableConverter>
+            </encoder>
+        </appender>
+
+        <!--
+          Asynchronous, so a slow or blocked stdout does not stall a request thread.
+
+          The two settings below are a DELIBERATE PAIR and it is easy to get them wrong:
+
+            discardingThreshold 0  - nothing is dropped at any level. The default of 20 drops
+                                     TRACE/DEBUG/INFO once the queue is 80% full, which during an
+                                     incident silently throws away most of the context.
+            neverBlock true        - when the queue is nevertheless full, DROP rather than block.
+
+          Without neverBlock, discardingThreshold 0 means AsyncAppender blocks the calling thread on
+          queue.put() - so the configuration would guarantee precisely the stall it exists to
+          prevent. Losing a few lines under extreme pressure is the lesser harm; the queue is large
+          enough that it only happens if the log pipeline has stopped entirely.
+        -->
+        <appender name="ASYNC_JSON" class="ch.qos.logback.classic.AsyncAppender">
+            <appender-ref ref="JSON"/>
+            <queueSize>2048</queueSize>
+            <discardingThreshold>0</discardingThreshold>
+            <neverBlock>true</neverBlock>
+            <!-- Caller data means a stack walk per event; it is the single most expensive option. -->
+            <includeCallerData>false</includeCallerData>
+        </appender>
+
+        <root level="INFO">
+            <appender-ref ref="ASYNC_JSON"/>
+        </root>
+    </springProfile>
+
+    <!-- Applies to every profile. -->
+    <logger name="com.stockflow" level="${LOG_LEVEL:-INFO}"/>
+    <logger name="org.springframework.modulith" level="INFO"/>
+    <!-- Chatty at INFO and says nothing useful once the schema is stable. -->
+    <logger name="org.hibernate.orm.connections.pooling" level="WARN"/>
+    <logger name="org.flywaydb.core.internal.license" level="WARN"/>
+
+</configuration>

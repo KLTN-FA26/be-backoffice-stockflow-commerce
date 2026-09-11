@@ -1,0 +1,111 @@
+Module,Status,Method,Path,Purpose,Flow,Action
+inventory,Implemented,GET,/api/v1/inventory/stock-items?sku=,Availability per location (FEFO),F-CART,READ (WAREHOUSE)
+inventory,Implemented,GET,/api/v1/inventory/stock-items/atp?sku=,Available-to-promise across locations,F-CART/F-CAT,READ
+inventory,Implemented,POST,/api/v1/inventory/reservations,Hold stock for an order line,F-CART,CREATE
+inventory,Implemented,POST,/api/v1/inventory/reservations/{id}/consumption,Deduct on pick confirmation,F-FUL,UPDATE (WAREHOUSE)
+inventory,Implemented,DELETE,/api/v1/inventory/reservations/{id},Release a hold,F-PAY/X-RESV,DELETE
+inventory,To build,POST,/api/v1/inventory/allocations,Reservation to allocation (FEFO),F-FUL,CREATE (WAREHOUSE)
+inventory,To build,POST,/api/v1/inventory/stock-items/{id}/quarantine-release,QC pass QUARANTINE to AVAILABLE,F-RCP,APPROVE (WAREHOUSE)
+inventory,To build,POST,/api/v1/inventory/stock-items/{id}/block,Block/damage/expire a lot,F-EXP,UPDATE (WAREHOUSE)
+inventory,To build,GET,/api/v1/inventory/stock-movements?sku=&location=,Movement ledger (append-only),all,READ / EXPORT
+inventory,To build,POST,/api/v1/inventory/transfer-orders,Create inter-warehouse transfer,F-TRF,CREATE
+inventory,To build,POST,/api/v1/inventory/transfer-orders/{id}/approval,Approve by value threshold,F-TRF,APPROVE
+inventory,To build,POST,/api/v1/inventory/transfer-orders/{id}/issue,Issue from source (IN_TRANSIT),F-TRF,UPDATE (WAREHOUSE)
+inventory,To build,POST,/api/v1/inventory/transfer-orders/{id}/receipt,Receive at destination (COMPLETED),F-TRF,UPDATE (WAREHOUSE)
+inventory,To build,POST,/api/v1/inventory/cycle-counts,Plan a count,F-CNT,CREATE (WAREHOUSE)
+inventory,To build,PUT,/api/v1/inventory/cycle-counts/{id}/lines,Enter counted quantities,F-CNT,UPDATE (WAREHOUSE)
+inventory,To build,POST,/api/v1/inventory/cycle-counts/{id}/posting,Post after variance review,F-CNT,APPROVE (WAREHOUSE)
+inventory,To build,POST,/api/v1/inventory/stock-adjustments,Adjust on-hand (needs approval),F-CNT/F-TRF,APPROVE (WAREHOUSE)
+order,To build,POST,/api/v1/carts/items,Add item to cart,F-CART,CREATE (OWN)
+order,To build,GET,/api/v1/carts/{sessionId},Read the cart,F-CART,READ (OWN)
+order,To build,PUT,/api/v1/carts/items/{id},Change quantity,F-CART,UPDATE (OWN)
+order,To build,DELETE,/api/v1/carts/items/{id},Remove item,F-CART,DELETE (OWN)
+order,To build,POST,/api/v1/carts/{id}/voucher,Apply a voucher,F-CART,UPDATE (OWN)
+order,Implemented,POST,/api/v1/orders,Place order + reserve stock (one tx),F-CART,CREATE (OWN)
+order,Implemented,GET,/api/v1/orders/{id},Look up one order,all,READ (OWN)
+order,Implemented,POST,/api/v1/orders/{id}/cancellation,Cancel + release reservations,F-CART,UPDATE (OWN)
+order,To build,GET,/api/v1/orders,List/search orders,all,READ (OWN/ALL) / EXPORT
+order,To build,POST,/api/v1/orders/{id}/release,Release to fulfilment,F-FUL,UPDATE (WAREHOUSE)
+order,To build,POST,/api/v1/orders/{id}/hold-resolution,Resolve ON_HOLD (short/mismatch),X-SHORT/X-CHK,APPROVE
+order,To build,POST,/api/v1/rmas,Open a return/exchange,F-RMA,CREATE (OWN)
+order,To build,POST,/api/v1/rmas/{id}/approval,Approve the RMA (BR-RMA-002),F-RMA,APPROVE
+order,To build,GET,/api/v1/rmas/{id},RMA status,F-RMA,READ (OWN)
+product,To build,POST,/api/v1/products,Create product + variants (DRAFT),F-PRD,CREATE
+product,To build,GET,/api/v1/products,List / detail of product master,F-PRD,READ / EXPORT
+product,To build,PUT,/api/v1/products/{id},Edit while DRAFT,F-PRD,UPDATE
+product,To build,POST,/api/v1/products/{id}/submission,Submit for approval,F-PRD,UPDATE
+product,To build,POST,/api/v1/products/{id}/approval,Approve (different user BR-PRD-003),F-PRD,APPROVE
+product,To build,POST,/api/v1/products/{id}/publication,Publish (emits ProductPublished),F-PRD,UPDATE
+catalog,To build,GET,/api/v1/catalog/products,PLP list/filter published,F-CAT,public
+catalog,To build,GET,/api/v1/catalog/products/{slug},PDP + stock band (not exact),F-CAT,public
+catalog,To build,GET,/api/v1/catalog/search?q=,Search (Elasticsearch),F-CAT,public
+procurement,To build,POST,/api/v1/purchase-orders,Create PO (DRAFT),F-PO,CREATE
+procurement,To build,GET,/api/v1/purchase-orders,List / detail,F-PO,READ / EXPORT
+procurement,To build,PUT,/api/v1/purchase-orders/{id},Edit while DRAFT,F-PO,UPDATE
+procurement,To build,POST,/api/v1/purchase-orders/{id}/submission,Submit (PENDING_APPROVAL),F-PO,UPDATE
+procurement,To build,POST,/api/v1/purchase-orders/{id}/approval,Approve (limit >= PO value BR-PO-002),F-PO,APPROVE
+procurement,To build,POST,/api/v1/purchase-orders/{id}/dispatch,Send to supplier (SENT),F-PO,UPDATE
+procurement,To build,POST,/api/v1/purchase-orders/{id}/confirmation,Supplier confirmed (CONFIRMED),F-PO,UPDATE
+procurement,To build,POST,/api/v1/purchase-orders/{id}/revisions,Amend after receipt (BR-PO-004),F-PO,CREATE
+procurement,To build,POST,/api/v1/goods-receipts,Open receipt from PO (DRAFT),F-RCP,CREATE (WAREHOUSE)
+procurement,To build,PUT,/api/v1/goods-receipts/{id}/lines,Enter qty / lot / expiry,F-RCP,UPDATE (WAREHOUSE)
+procurement,To build,POST,/api/v1/goods-receipts/{id}/photos,Upload evidence photos,F-RCP,UPDATE (WAREHOUSE)
+procurement,To build,POST,/api/v1/goods-receipts/{id}/posting,Post (GoodsReceived),F-RCP,APPROVE (WAREHOUSE)
+procurement,To build,GET,/api/v1/qc-tasks,Pending QC queue,F-RCP,READ
+procurement,To build,POST,/api/v1/qc-tasks/{id}/result,Record QC PASS/QUARANTINE/REJECT,F-RCP,APPROVE
+procurement,To build,POST,/api/v1/supplier-invoices,Enter invoice (DRAFT),F-MTC,CREATE
+procurement,To build,POST,/api/v1/supplier-invoices/{id}/matching,Run 3-way match,F-MTC,UPDATE
+procurement,To build,POST,/api/v1/supplier-invoices/{id}/override,Override out-of-tolerance (BR-INV-003),F-MTC,APPROVE
+procurement,To build,POST,/api/v1/supplier-invoices/{id}/payment-approval,Approve for payment,F-MTC,APPROVE
+warehouse,To build,GET,/api/v1/warehouse/locations,Warehouse map / slotting config (CRUD),F-PUT,READ/CREATE/UPDATE (WAREHOUSE)
+warehouse,To build,GET,/api/v1/warehouse/putaway-tasks,Putaway queue,F-PUT,READ (WAREHOUSE)
+warehouse,To build,GET,/api/v1/warehouse/putaway-tasks/{id}/suggestions,Ranked location suggestions + reason,F-PUT,READ (WAREHOUSE)
+warehouse,To build,POST,/api/v1/warehouse/putaway-tasks/{id}/assignment,Assign to a worker,F-PUT,UPDATE (WAREHOUSE)
+warehouse,To build,POST,/api/v1/warehouse/putaway-tasks/{id}/completion,Complete with actual location,F-PUT,UPDATE (WAREHOUSE)
+warehouse,To build,GET,/api/v1/warehouse/replenishment-tasks,Replenishment queue,F-REP,READ (WAREHOUSE)
+warehouse,To build,POST,/api/v1/warehouse/replenishment-tasks/{id}/completion,Complete a replenishment move,F-REP,UPDATE (WAREHOUSE)
+warehouse,To build,PUT,/api/v1/warehouse/replenishment-rules,Min/max thresholds per pick location,F-REP,UPDATE (WAREHOUSE)
+design,To build,POST,/api/v1/designs,Create draft (canvas JSON),F-DSG,CREATE (OWN)
+design,To build,GET,/api/v1/designs/{id},Read draft,F-DSG,READ (OWN)
+design,To build,PUT,/api/v1/designs/{id},Edit while DRAFT,F-DSG,UPDATE (OWN)
+design,To build,POST,/api/v1/designs/{id}/assets,Upload customer image,F-DSG,UPDATE (OWN)
+design,To build,POST,/api/v1/designs/{id}/preflight,Run preflight (DPI/bleed/colour),F-DSG,UPDATE (OWN)
+design,To build,POST,/api/v1/designs/{id}/confirmation,Confirm to immutable snapshot + checksum,F-DSG,CREATE (OWN)
+design,To build,GET,/api/v1/designs/snapshots/{id},Read a locked snapshot,X-CHK,READ
+payment,To build,POST,/api/v1/payments,Initiate a payment,F-PAY,CREATE (OWN)
+payment,To build,GET,/api/v1/payments/{id},Payment status,F-PAY,READ (OWN)
+payment,To build,POST,/api/v1/payments/webhook/{gateway},Signed gateway callback (capture/fail),F-PAY,public (signature)
+payment,To build,POST,/api/v1/payments/{id}/capture,Bank-transfer capture on reconciliation,F-PAY,APPROVE
+payment,To build,POST,/api/v1/refunds,Request a refund,F-REF,CREATE
+payment,To build,POST,/api/v1/refunds/{id}/approval,Approve within limit (BR-PAY-003),F-REF,APPROVE
+payment,To build,POST,/api/v1/settlements/import,Import gateway settlement file,F-REF,CREATE
+payment,To build,POST,/api/v1/cod-remittances,Record carrier COD remittance,F-PAY,CREATE
+fulfillment,To build,GET,/api/v1/fulfillment/pick-lists,Pick queue,F-FUL,READ (WAREHOUSE)
+fulfillment,To build,POST,/api/v1/fulfillment/pick-lists/{id}/completion,Confirm picked (StockDeducted),F-FUL,UPDATE (WAREHOUSE)
+fulfillment,To build,POST,/api/v1/fulfillment/pick-lines/{id}/short,Report a short pick,X-SHORT,UPDATE (WAREHOUSE)
+fulfillment,To build,POST,/api/v1/fulfillment/packages,Pack (after checksum verify),F-FUL,CREATE (WAREHOUSE)
+fulfillment,To build,POST,/api/v1/fulfillment/shipments,Create shipment,F-SHP,CREATE (WAREHOUSE)
+fulfillment,To build,POST,/api/v1/fulfillment/shipments/{id}/label,Request carrier label + AWB,F-SHP,UPDATE (WAREHOUSE)
+fulfillment,To build,POST,/api/v1/fulfillment/shipments/webhook/{carrier},Signed carrier status webhook,F-SHP/F-RTO,public (signature)
+fulfillment,To build,POST,/api/v1/fulfillment/shipments/{id}/pod,Proof of delivery (OrderDelivered),F-SHP,UPDATE (WAREHOUSE)
+fulfillment,To build,POST,/api/v1/fulfillment/return-shipments,Return label for approved RMA,F-RMA,CREATE (WAREHOUSE)
+identity,To build,POST,/api/v1/auth/login,Authenticate issue JWT,-,public
+identity,To build,POST,/api/v1/auth/refresh,Refresh token,-,public
+identity,To build,POST,/api/v1/auth/logout,Revoke refresh token,-,authenticated
+identity,To build,GET,/oauth2/jwks,Public keys for token validation,P-PERM,public
+identity,To build,GET,/api/v1/users,User admin (CRUD),-,READ/CREATE/UPDATE (ALL)
+identity,To build,GET,/api/v1/roles,Role admin (CRUD),-,READ/CREATE/UPDATE
+identity,To build,GET,/api/v1/rbac/matrix,Permission matrix (RoleMatrixView),P-PERM,READ
+identity,To build,POST,/api/v1/rbac/grants,Grant/revoke (resource action) to a role,P-PERM,APPROVE
+reporting,To build,GET,/api/v1/reports/kpi-daily,Warehouse/finance KPIs,P-RPT,READ / EXPORT
+reporting,To build,GET,/api/v1/reports/ap-aging,Accounts-payable aging,F-MTC,READ / EXPORT
+reporting,To build,GET,/api/v1/reports/revenue,Revenue read model,F-REF,READ / EXPORT
+reporting,To build,GET,/api/v1/reports/inventory,Stock KPIs,P-RPT,READ / EXPORT
+chat,To build,WS,/ws/chat,Live conversation (WebSocket),P-CHAT,authenticated
+chat,To build,POST,/api/v1/conversations,Open a conversation,P-CHAT,CREATE (OWN)
+chat,To build,GET,/api/v1/conversations,List / read a conversation,P-CHAT,READ
+chat,To build,POST,/api/v1/conversations/{id}/messages,Send a message (rich),P-CHAT,CREATE
+chat,To build,POST,/api/v1/conversations/{id}/assignment,Route to a sales agent,P-CHAT,UPDATE
+chat,To build,POST,/api/v1/conversations/{id}/resolution,Close (RESOLVED),P-CHAT,UPDATE
+notification,To build,GET,/api/v1/notifications,In-app inbox for current user,P-NOTI,READ (OWN)
+notification,To build,POST,/api/v1/notifications/{id}/resend,Manual resend after failed send,P-NOTI,UPDATE

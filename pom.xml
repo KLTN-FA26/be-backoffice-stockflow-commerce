@@ -1,0 +1,423 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!--
+    StockFlowCommerce - modular monolith.
+
+    ONE artifact, not fourteen. The previous build was a parent POM plus 24 modules: fourteen
+    services, a shared "common" tree and the infrastructure applications. Every shared change meant
+    a version bump and a rebuild of everything downstream, and the reactor took minutes.
+
+    A single module means the compiler sees the whole system at once, so a cross-module rename is
+    checked at compile time rather than discovered at runtime. The module boundaries that the
+    fourteen POMs used to enforce are now enforced by ModularityTest, which is both stricter (it
+    also catches cycles) and faster.
+  -->
+
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>3.5.0</version>
+    <relativePath/>
+  </parent>
+
+  <groupId>com.stockflow</groupId>
+  <artifactId>stockflow-monolith</artifactId>
+  <version>1.0.0-SNAPSHOT</version>
+  <name>StockFlowCommerce</name>
+  <description>Unified Warehouse and E-commerce Platform - modular monolith - FA26SE029</description>
+
+  <properties>
+    <java.version>21</java.version>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+    <!--
+      Spring Modulith 1.4.x is the line that pairs with Boot 3.5. Mixing lines produces a context
+      that starts and then fails in ways that point nowhere near the real cause, so pin it.
+    -->
+    <spring-modulith.version>1.4.1</spring-modulith.version>
+    <springdoc.version>2.8.6</springdoc.version>
+    <mapstruct.version>1.6.3</mapstruct.version>
+    <archunit.version>1.3.0</archunit.version>
+    <jacoco.version>0.8.12</jacoco.version>
+
+    <!--
+      Versions NOT managed by the Spring Boot BOM. Each one is pinned, and each is a version the
+      build will complain loudly about if it is wrong - a failed resolution, not a silent problem.
+      Check them when upgrading Boot.
+    -->
+    <aws-sdk.version>2.31.0</aws-sdk.version>
+    <shedlock.version>5.16.0</shedlock.version>
+    <logstash-encoder.version>8.0</logstash-encoder.version>
+
+    <!--
+      Recorded in build-info.properties and served at /actuator/info. CI overrides them with
+      -Dgit.commit=... An undefined ${env.X} is NOT substituted by Maven - it is left as literal
+      text - so defaulting here is what keeps a local build honest instead of recording the
+      expression itself.
+    -->
+    <git.commit>unknown</git.commit>
+    <git.branch>unknown</git.branch>
+  </properties>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.springframework.modulith</groupId>
+        <artifactId>spring-modulith-bom</artifactId>
+        <version>${spring-modulith.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <!--
+        The AWS SDK ships dozens of artifacts that must share a version. Importing the BOM means
+        adding s3-presigner later needs no version, and cannot drift from the s3 client.
+      -->
+      <dependency>
+        <groupId>software.amazon.awssdk</groupId>
+        <artifactId>bom</artifactId>
+        <version>${aws-sdk.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <dependencies>
+
+    <!-- ==================== web, validation, persistence ==================== -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-validation</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-jpa</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+    <!-- AOP is not optional here: RequiresPermissionAspect is what enforces the permission model. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-aop</artifactId>
+    </dependency>
+
+    <!-- ==================== security ==================== -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-security</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+    </dependency>
+
+    <!-- ==================== supporting infrastructure ==================== -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-redis</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-mail</artifactId>
+    </dependency>
+    <!-- Thymeleaf renders notification templates, not web pages: the frontend is a separate SPA. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-thymeleaf</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-websocket</artifactId>
+    </dependency>
+
+    <!--
+      ==================== Spring Modulith ====================
+      The three dependencies that replaced Kafka, an outbox table and a relay thread.
+
+      starter-jpa      - module verification plus the JPA-backed event publication registry, which
+                         writes the publication row inside the publisher's own transaction.
+      actuator         - exposes /actuator/applicationmodules: the live module graph, so the
+                         architecture documentation can be generated from the running application.
+      observability    - tags traces and metrics with the module that produced them, which is what
+                         makes "which module is holding the connection" answerable.
+    -->
+    <dependency>
+      <groupId>org.springframework.modulith</groupId>
+      <artifactId>spring-modulith-starter-jpa</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.modulith</groupId>
+      <artifactId>spring-modulith-actuator</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.modulith</groupId>
+      <artifactId>spring-modulith-observability</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+
+    <!-- ==================== object storage ==================== -->
+    <!--
+      S3 protocol, used against MinIO locally and S3 in a deployment - the same code path in both,
+      so the storage layer is exercised everywhere rather than only in production.
+      Add s3-presigner here (no version needed, the BOM manages it) to enable presigned download
+      URLs; see S3FileStorage.presignedDownloadUrl.
+    -->
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>s3</artifactId>
+    </dependency>
+
+    <!-- ==================== scheduling safety ==================== -->
+    <!--
+      Stops a @Scheduled job running on every instance. ADR-0005 lists this as the item to do
+      before scaling past one instance; the JdbcTemplate provider is used rather than the Redis one
+      because Redis runs with allkeys-lru and no persistence, so a lock key can be evicted.
+    -->
+    <dependency>
+      <groupId>net.javacrumbs.shedlock</groupId>
+      <artifactId>shedlock-spring</artifactId>
+      <version>${shedlock.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>net.javacrumbs.shedlock</groupId>
+      <artifactId>shedlock-provider-jdbc-template</artifactId>
+      <version>${shedlock.version}</version>
+    </dependency>
+
+    <!-- ==================== outbound resilience ==================== -->
+    <!--
+      @Retryable for outbound calls. Managed by the Boot BOM. A circuit breaker (Resilience4j) is
+      the next step when a dependency can be down rather than merely slow - see RestClientFactory.
+    -->
+    <dependency>
+      <groupId>org.springframework.retry</groupId>
+      <artifactId>spring-retry</artifactId>
+    </dependency>
+
+    <!-- ==================== database ==================== -->
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-core</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-database-postgresql</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+
+    <!-- ==================== observability ==================== -->
+    <!--
+      JSON log output for every profile except local/dev/test - see logback-spring.xml. Without it
+      correlationId and traceId are substrings inside a message rather than queryable fields, and
+      "show me this request's lines" becomes a full-text search across gigabytes.
+    -->
+    <dependency>
+      <groupId>net.logstash.logback</groupId>
+      <artifactId>logstash-logback-encoder</artifactId>
+      <version>${logstash-encoder.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-registry-prometheus</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-tracing-bridge-otel</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-exporter-otlp</artifactId>
+    </dependency>
+
+    <!-- ==================== API documentation ==================== -->
+    <dependency>
+      <groupId>org.springdoc</groupId>
+      <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+      <version>${springdoc.version}</version>
+    </dependency>
+
+    <!-- ==================== mapping ==================== -->
+    <!-- Compile-time generated, so a mapping mistake is a compile error rather than a null field. -->
+    <dependency>
+      <groupId>org.mapstruct</groupId>
+      <artifactId>mapstruct</artifactId>
+      <version>${mapstruct.version}</version>
+    </dependency>
+
+    <!-- Generates the IDE metadata for the stockflow.* keys in application.yml. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-configuration-processor</artifactId>
+      <optional>true</optional>
+    </dependency>
+
+    <!-- ==================== test ==================== -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.security</groupId>
+      <artifactId>spring-security-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- ApplicationModules.verify(), @ApplicationModuleTest, Scenario, PublishedEvents. -->
+    <dependency>
+      <groupId>org.springframework.modulith</groupId>
+      <artifactId>spring-modulith-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- Documenter: C4 diagrams, PlantUML and module canvases, generated from the code. -->
+    <dependency>
+      <groupId>org.springframework.modulith</groupId>
+      <artifactId>spring-modulith-docs</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>com.tngtech.archunit</groupId>
+      <artifactId>archunit-junit5</artifactId>
+      <version>${archunit.version}</version>
+      <scope>test</scope>
+    </dependency>
+
+    <!--
+      A real Postgres for integration tests. H2 would be faster and would also pass while the
+      production migration failed: partial indexes, ON CONFLICT, UPDATE ... RETURNING and
+      SELECT ... FOR UPDATE semantics are all Postgres-specific and all load-bearing here.
+    -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-testcontainers</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>postgresql</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+        <executions>
+          <!--
+            Writes build-info.properties into the jar, which Spring Boot serves at /actuator/info.
+            Without it that endpoint is an empty object, and the question "which build is running on
+            staging right now" has no answer short of shelling into the container - a question that
+            comes up during every incident.
+          -->
+          <execution>
+            <id>build-info</id>
+            <goals>
+              <goal>build-info</goal>
+            </goals>
+            <configuration>
+              <additionalProperties>
+                <!-- Overridden by CI with -Dgit.commit=...; "unknown" locally, which is honest. -->
+                <commit>${git.commit}</commit>
+                <branch>${git.branch}</branch>
+              </additionalProperties>
+            </configuration>
+          </execution>
+        </executions>
+        <configuration>
+          <excludes>
+            <exclude>
+              <groupId>org.springframework.boot</groupId>
+              <artifactId>spring-boot-configuration-processor</artifactId>
+            </exclude>
+          </excludes>
+        </configuration>
+      </plugin>
+
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <configuration>
+          <!--
+            -parameters keeps method parameter names in the bytecode. Spring needs them to bind
+            @PathVariable and @RequestParam without repeating the name in the annotation, and
+            Jackson needs them to deserialise records.
+          -->
+          <parameters>true</parameters>
+          <compilerArgs>
+            <arg>-Xlint:all</arg>
+            <!-- Serial warnings are noise on exception classes that already declare the field. -->
+            <arg>-Xlint:-serial</arg>
+          </compilerArgs>
+          <annotationProcessorPaths>
+            <path>
+              <groupId>org.mapstruct</groupId>
+              <artifactId>mapstruct-processor</artifactId>
+              <version>${mapstruct.version}</version>
+            </path>
+            <path>
+              <groupId>org.springframework.boot</groupId>
+              <artifactId>spring-boot-configuration-processor</artifactId>
+              <version>${project.parent.version}</version>
+            </path>
+          </annotationProcessorPaths>
+        </configuration>
+      </plugin>
+
+      <!--
+        Coverage. Not a target to hit for its own sake - the number that matters is coverage of
+        internal.domain, where the business rules live, and those tests are cheap because the
+        domain has no framework on it.
+      -->
+      <plugin>
+        <groupId>org.jacoco</groupId>
+        <artifactId>jacoco-maven-plugin</artifactId>
+        <version>${jacoco.version}</version>
+        <executions>
+          <execution>
+            <goals>
+              <goal>prepare-agent</goal>
+            </goals>
+          </execution>
+          <execution>
+            <id>report</id>
+            <phase>test</phase>
+            <goals>
+              <goal>report</goal>
+            </goals>
+          </execution>
+        </executions>
+        <configuration>
+          <excludes>
+            <exclude>**/*JpaEntity.class</exclude>
+            <exclude>**/package-info.class</exclude>
+            <exclude>**/StockFlowApplication.class</exclude>
+          </excludes>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

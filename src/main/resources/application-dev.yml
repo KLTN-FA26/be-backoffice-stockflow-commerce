@@ -1,0 +1,108 @@
+# =============================================================================
+# Development / staging SERVER overrides — "prod, but observable".
+#
+# Same security posture and env-driven secrets as prod; the only differences are things that help
+# you debug a running deployment: verbose logging, a wider actuator surface and full trace sampling.
+#
+# Like prod, this file holds NO SECRETS. Every credential comes from an environment variable with no
+# default, so a missing one fails startup loudly instead of silently connecting to localhost. It
+# uses the SAME variable names as prod — see .env.example.
+#
+# Activate with SPRING_PROFILES_ACTIVE=dev.
+#
+# Do NOT deploy the `local` profile to a server: it turns security OFF and loads the demo seed.
+# `dev` exists precisely so a server can be debug-friendly without giving up authentication.
+# =============================================================================
+
+spring:
+  datasource:
+    # No localhost fallback, on purpose: a dev server must connect to the dev database, not to
+    # whatever happens to be on localhost.
+    url: jdbc:postgresql://${DB_HOST}:${DB_PORT:5432}/${DB_NAME}
+    username: ${DB_USER}
+    password: ${DB_PASSWORD}
+    hikari:
+      maximum-pool-size: ${DB_POOL_MAX:15}
+      minimum-idle: 5
+
+  jpa:
+    # Off — use the logging route below instead. show-sql prints statements with no bound parameters
+    # and bypasses the logging framework, so it is the worse of the two ways to see SQL.
+    show-sql: false
+
+  flyway:
+    validate-on-migrate: true
+    baseline-on-migrate: false
+    # Migration only — a dev SERVER carries no demo seed, exactly like prod. Sample data belongs to
+    # the `local` profile, on a laptop.
+    locations: classpath:db/migration
+
+  data:
+    redis:
+      host: ${REDIS_HOST}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      ssl:
+        enabled: ${REDIS_SSL:false}
+
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          jwk-set-uri: ${JWT_JWK_SET_URI}
+
+server:
+  # Behind the same reverse proxy as prod: without this Spring sees the proxy's address and http
+  # scheme, so rate-limit keys and generated links come out wrong.
+  forward-headers-strategy: framework
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # Wider than prod for debugging: `loggers` flips a log level at runtime, `threaddump` catches
+        # a wedged request. Still NOT `env`/`configprops` — those print resolved configuration,
+        # including anything that arrived from an environment variable, even on a dev box.
+        include: health,info,metrics,prometheus,applicationmodules,loggers,threaddump
+  endpoint:
+    health:
+      show-details: always
+  tracing:
+    sampling:
+      # 100% on dev — see every trace. Prod samples 10%.
+      probability: ${TRACE_SAMPLING:1.0}
+
+logging:
+  level:
+    root: INFO
+    com.stockflow: ${LOG_LEVEL:DEBUG}
+    # Statement logging ON for dev, so an N+1 (a burst of identical SELECTs) is visible while chasing
+    # it. This logs the SQL text, not the bound values.
+    org.hibernate.SQL: DEBUG
+    # Bound parameters left OFF even on dev: the values include customer data and, on the identity
+    # path, credentials. Uncomment only for a short, deliberate debugging session:
+    # org.hibernate.orm.jdbc.bind: TRACE
+
+stockflow:
+  security:
+    # ON. A server never runs with security off — that is what the `local` profile is for, and it
+    # must never leave a laptop.
+    enabled: true
+
+  storage:
+    provider: s3
+    bucket: ${S3_BUCKET}
+    # Blank against real S3 so the SDK's default credentials chain picks up the instance role.
+    endpoint: ${S3_ENDPOINT:}
+    region: ${AWS_REGION:ap-southeast-1}
+    path-style: ${S3_PATH_STYLE:false}
+    access-key: ${S3_ACCESS_KEY:}
+    secret-key: ${S3_SECRET_KEY:}
+
+  cache:
+    version: ${CACHE_VERSION:v1}
+
+  audit:
+    routine-retention: ${AUDIT_ROUTINE_RETENTION:P180D}
+    security-retention: ${AUDIT_SECURITY_RETENTION:P730D}

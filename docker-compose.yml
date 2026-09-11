@@ -1,0 +1,182 @@
+# =============================================================================
+# Local development stack.
+#
+# WHAT IS NO LONGER HERE, compared with the microservices compose file:
+#   - Kafka + Zookeeper/KRaft   (~1.5 GB RAM)   -> Modulith's event publication registry
+#   - Eureka service registry   (~400 MB)       -> there is one application to find
+#   - Spring Cloud Config server(~400 MB)       -> one application.yml
+#   - API gateway               (~400 MB)       -> the application serves its own routes
+#   - 13 further Postgres databases              -> one database, one schema per module
+#
+# The old stack needed ~10 GB of RAM before a line of application code ran, which on a 16 GB
+# student laptop left nothing for an IDE. This one runs in about 1.5 GB.
+# =============================================================================
+
+name: stockflow
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: stockflow-postgres
+    environment:
+      POSTGRES_DB: stockflow
+      POSTGRES_USER: stockflow
+      POSTGRES_PASSWORD: stockflow
+      # C collation: deterministic sort order, and noticeably faster text comparisons than a
+      # locale-aware one. Anything user-visible is sorted in the application anyway.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    command:
+      - postgres
+      - -c
+      - max_connections=100
+      - -c
+      - shared_buffers=256MB
+      # Any statement still running after 10s is a bug, and it is holding a connection every
+      # module shares. Fail it rather than let it starve checkout.
+      - -c
+      - statement_timeout=10000
+      # A lock wait this long means a deadlock or a stuck transaction; surface it as an error.
+      - -c
+      - lock_timeout=5000
+      - -c
+      - idle_in_transaction_session_timeout=60000
+      - -c
+      - log_min_duration_statement=500
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stockflow -d stockflow"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: stockflow-redis
+    # Cache and session store only - nothing here is the source of truth, so no persistence and
+    # an eviction policy rather than an out-of-memory error.
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --save ""
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+    container_name: stockflow-elasticsearch
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    container_name: stockflow-minio
+    # S3-compatible object storage for product images and design renders, so the application code
+    # is written against S3 from day one rather than against the local filesystem.
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: stockflow
+      MINIO_ROOT_PASSWORD: stockflow123
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.60
+    container_name: stockflow-jaeger
+    # Still useful in a monolith, though for a different reason: a trace now shows the call stack
+    # across modules and the SQL each one issued, which is how you find the module that is holding
+    # a connection for 400ms.
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"   # UI
+      - "4317:4317"     # OTLP gRPC
+      - "4318:4318"     # OTLP HTTP
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:16686/ > /dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  mailpit:
+    image: axllent/mailpit:v1.20
+    container_name: stockflow-mailpit
+    # Catches every outbound email so the notification module can be exercised end to end without
+    # sending anything to a real address.
+    ports:
+      - "1025:1025"     # SMTP
+      - "8025:8025"     # web UI
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 1025 || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  # ---------------------------------------------------------------------------
+  # The application itself.
+  #
+  # Under the "app" profile, so `docker compose up -d` still starts only the infrastructure - which
+  # is what a developer running the application from their IDE wants. Start it explicitly with:
+  #
+  #     docker compose --profile app up -d --build
+  #
+  # This is the path that proves the Dockerfile works. An image that is only ever built in CI is an
+  # image nobody notices is broken until a release.
+  # ---------------------------------------------------------------------------
+  app:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: stockflow-app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: local
+      # Container names, not localhost: inside the compose network each service resolves by name.
+      # Pointing at localhost here is the single most common reason a containerised app "cannot
+      # reach the database" while the same config works from the IDE.
+      DB_HOST: postgres
+      REDIS_HOST: redis
+      MINIO_ENDPOINT: http://minio:9000
+      OTLP_TRACING_ENDPOINT: http://jaeger:4318/v1/traces
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/actuator/health/readiness"]
+      interval: 15s
+      timeout: 3s
+      # Generous: Flyway runs every migration on first start, and the JVM has to warm up.
+      start_period: 90s
+      retries: 5
+
+volumes:
+  postgres-data:
+  minio-data:

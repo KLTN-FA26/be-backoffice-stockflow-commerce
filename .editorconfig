@@ -1,0 +1,39 @@
+# One formatting convention for five people, enforced by the editor rather than by review comments.
+# Every mainstream IDE reads this file with no plugin.
+#
+# The two that matter for a Java repo, because they are what produce diffs full of whitespace-only
+# lines: indentation and final newline.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.java]
+indent_size = 4
+# 100, not 80 or 120. Long enough for a Spring generic signature, short enough for two files side
+# by side on a laptop. It is a target for NEW code, not a claim about the current state - a couple
+# of hundred existing lines run over, mostly javadoc and long generic types. Reflow them when you
+# touch them; a mass reformat would bury the history of every file it touched.
+max_line_length = 100
+
+[*.{xml,yml,yaml,json}]
+indent_size = 2
+
+[*.sql]
+indent_size = 4
+
+[*.md]
+# Trailing spaces are a line break in Markdown; trimming them silently changes the rendering.
+trim_trailing_whitespace = false
+
+[Makefile]
+indent_style = tab
+
+[*.{sh,bash}]
+indent_size = 2

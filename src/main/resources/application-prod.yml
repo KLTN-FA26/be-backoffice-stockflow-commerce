@@ -1,0 +1,115 @@
+# =============================================================================
+# Production overrides.
+#
+# The rule for this file: it contains NO SECRETS. Every credential comes from an environment
+# variable with no default, so a missing one fails startup loudly instead of silently falling back
+# to the development password. See .env.example for the full list.
+# =============================================================================
+
+spring:
+  datasource:
+    # No defaults on purpose. `${DB_PASSWORD}` with no `:fallback` means the context refuses to
+    # start when it is absent - far better than booting with the local password and failing to
+    # connect in a way that looks like a network problem.
+    url: jdbc:postgresql://${DB_HOST}:${DB_PORT:5432}/${DB_NAME}
+    username: ${DB_USER}
+    password: ${DB_PASSWORD}
+    hikari:
+      maximum-pool-size: ${DB_POOL_MAX:30}
+      minimum-idle: 10
+
+  jpa:
+    show-sql: false
+    properties:
+      hibernate:
+        # Never true in production. Flyway owns the schema; Hibernate's job here is to complain at
+        # startup when the entities and the tables have drifted apart.
+        jdbc:
+          batch_size: 50
+
+  flyway:
+    # Migrations run at startup and must be validated against what is already applied. A checksum
+    # mismatch means somebody edited an applied migration - stop, do not "fix" it by repairing.
+    validate-on-migrate: true
+    baseline-on-migrate: false
+    # Nothing else - the demo seed location is local-only and must never reach a real database.
+    locations: classpath:db/migration
+
+  data:
+    redis:
+      host: ${REDIS_HOST}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      ssl:
+        enabled: ${REDIS_SSL:false}
+
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          jwk-set-uri: ${JWT_JWK_SET_URI}
+
+server:
+  # Behind a reverse proxy that terminates TLS. Without this, Spring sees the proxy's address as the
+  # client address and http as the scheme - so rate limiting keys every request to the proxy, and
+  # generated links come out as http.
+  forward-headers-strategy: framework
+  shutdown: graceful
+  tomcat:
+    # Bounded, so a burst queues rather than exhausting memory creating threads.
+    threads:
+      max: 200
+    max-connections: 8192
+    accept-count: 100
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # Narrower than the default profile. `env` and `configprops` in particular print resolved
+        # configuration, which includes anything that arrived from an environment variable.
+        include: health,info,prometheus,applicationmodules
+  endpoint:
+    health:
+      show-details: when-authorized
+  tracing:
+    sampling:
+      # 10% of traces. Sampling everything at production volume costs more in storage than it is
+      # worth; errors are captured regardless of sampling by the exporter's error policy.
+      probability: ${TRACE_SAMPLING:0.1}
+
+logging:
+  level:
+    root: INFO
+    com.stockflow: ${LOG_LEVEL:INFO}
+    # Never DEBUG in production: it logs every statement, and bound parameters include customer
+    # data and, on the identity path, credentials.
+    org.hibernate.SQL: WARN
+
+stockflow:
+  security:
+    # ON. This is the whole point of the profile - the local profile turns it off for convenience,
+    # and that convenience must never reach a deployment.
+    enabled: true
+
+  storage:
+    provider: s3
+    bucket: ${S3_BUCKET}
+    # Blank against real S3 so the SDK's default credentials chain picks up the instance role.
+    # Long-lived access keys in configuration are how cloud credentials leak.
+    endpoint: ${S3_ENDPOINT:}
+    region: ${AWS_REGION:ap-southeast-1}
+    path-style: ${S3_PATH_STYLE:false}
+    access-key: ${S3_ACCESS_KEY:}
+    secret-key: ${S3_SECRET_KEY:}
+
+  cache:
+    # Bump on any release whose cached types changed shape, so the new instances start from a clean
+    # key namespace instead of deserialising the old objects.
+    version: ${CACHE_VERSION:v1}
+
+  audit:
+    # CONFIRM THESE AGAINST THE SIGNED RETENTION POLICY BEFORE GO-LIVE. The purge job deletes
+    # permanently and there is no undo.
+    routine-retention: ${AUDIT_ROUTINE_RETENTION:P180D}
+    security-retention: ${AUDIT_SECURITY_RETENTION:P730D}
