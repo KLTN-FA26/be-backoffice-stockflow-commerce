@@ -38,7 +38,7 @@ import java.util.List;
  * {@code spring.modulith.events.republish-outstanding-events-on-restart} redelivers it. That is
  * the guarantee the hand-written outbox table used to provide.</p>
  */
-@Component
+@Component("inventoryPaymentEventListener")
 class PaymentEventListener {
 
     private static final Logger log = LoggerFactory.getLogger(PaymentEventListener.class);

@@ -29,7 +29,7 @@ import org.springframework.stereotype.Component;
  * <p>The rule that falls out: <b>call directly when you need the result inside your transaction;
  * publish an event when you are announcing a fact and do not care who reacts.</b></p>
  */
-@Component
+@Component("orderPaymentEventListener")
 class PaymentEventListener {
 
     private static final Logger log = LoggerFactory.getLogger(PaymentEventListener.class);
