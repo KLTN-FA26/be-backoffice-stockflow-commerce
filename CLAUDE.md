@@ -309,3 +309,6 @@ more than the list: in this stack, the dangerous failures are silent.
 - Primary keys are `Identifiers.newId()` (UUIDv7). A random UUID scatters inserts across the index.
 - If a fitness function is genuinely wrong, change it and write down why — in the class javadoc or a
   new ADR. Deleting a rule to make a build pass is the one thing that is not allowed.
+- **Never `git commit` or `git push` without asking the repository owner first.** Editing the working
+  tree is fine; putting changes into history or onto the remote requires an explicit go-ahead. This
+  applies to any automated assistant working in this repo.
