@@ -29,6 +29,7 @@ interface InventoryWebMapper {
 
     List<StockItemResponse> toResponses(List<StockAvailability> availabilities);
 
+    @Mapping(target = "holds", source = "reservations")
     ReservationResponse toResponse(ReserveStockResult result);
 
     /**
