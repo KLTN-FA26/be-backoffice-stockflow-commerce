@@ -1,7 +1,7 @@
 package com.stockflow.common.security;
 
 import com.stockflow.common.persistence.Specs;
-import org.springframework.data.domain.Specification;
+import org.springframework.data.jpa.domain.Specification;
 
 /**
  * Builds the row filter that {@link DataScope} describes.

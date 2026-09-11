@@ -4,7 +4,7 @@ import com.stockflow.common.persistence.BaseEntity;
 import com.stockflow.common.persistence.BaseJpaRepository;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
-import org.springframework.data.domain.Specification;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.data.repository.NoRepositoryBean;
 
 import java.util.List;

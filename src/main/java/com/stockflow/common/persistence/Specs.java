@@ -1,6 +1,6 @@
 package com.stockflow.common.persistence;
 
-import org.springframework.data.domain.Specification;
+import org.springframework.data.jpa.domain.Specification;
 
 import java.util.Collection;
 
