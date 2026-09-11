@@ -50,17 +50,27 @@ message ends with the last line of the project explanation — there is no tooli
 - Conventional-commit prefixes (`feat:`, `fix:`, `refactor:`, `docs:`, `test:`) are fine and
   consistent; pick one style and keep it.
 
-## Committer identity — set it per-repository, not globally
+## Committer identity — each contributor sets their OWN, per-repository
 
-This repo moves between machines (Windows → Mac), so pin the identity **in the repo**, not in a
-global config that does not travel:
+Every commit must be authored by **the real person making it**. Do not hardcode one teammate's name
+for everyone, and **never** set the identity to Claude, Anthropic, or any assistant/vendor.
+
+Each team member runs this **once, in their own clone**, with **their own** name and email
+(the ones on their GitHub account), so their commits are attributed to them:
 
 ```bash
-git config user.name  "Uong Thanh Tu"
-git config user.email "uongthanhtu5@gmail.com"
+git config user.name  "Your Name"          # e.g. the name on your GitHub account
+git config user.email "you@example.com"    # the email on your GitHub account
 ```
 
-(No `--global`. Run these once in the repo after it is initialised.)
+- No `--global` — pin it in the repo so it travels with this checkout and does not leak to other
+  projects on the same machine (useful when a clone moves between machines).
+- If `git config user.name` / `user.email` come back **empty**, that is fine — set them before your
+  first commit rather than letting anything guess. An empty identity blocks the commit with a clear
+  message; a wrong one silently mislabels history.
+- An assistant (Claude Code, etc.) working in this repo commits **as the repo owner / current
+  contributor**, using the identity already configured in the clone — it must never invent an
+  identity or use an Anthropic/Claude name or email.
 
 ## Stronger enforcement than a skill (optional)
 
