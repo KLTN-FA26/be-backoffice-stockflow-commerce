@@ -25,6 +25,8 @@ public enum ErrorCode {
 
     // ---- 404
     NOT_FOUND("Resource not found", 404),
+    ROLE_NOT_FOUND("Role not found", 404),
+    USER_NOT_FOUND("User not found", 404),
 
     // ---- 409: the request is fine, the current state is not
     CONFLICT("Conflicting state", 409),

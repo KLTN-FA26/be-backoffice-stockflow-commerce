@@ -11,7 +11,9 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Role;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -66,7 +68,20 @@ import java.util.Set;
 @Order(20)
 @ConditionalOnProperty(prefix = "stockflow.idempotency", name = "enabled",
         havingValue = "true", matchIfMissing = true)
-public class IdempotencyFilter extends OncePerRequestFilter {
+// ROLE_INFRASTRUCTURE: every direct subpackage of the base package is an implicit Spring Modulith
+// module, including common - so ModuleObservabilityBeanPostProcessor (OTLP tracing spans per
+// module boundary) tries to wrap this bean too. Its own isInfrastructureBean(...) check is the
+// documented way to opt out, and it is load-bearing here, not cosmetic: this class extends
+// OncePerRequestFilter, whose doFilter()/init() are final in GenericFilterBean, so a CGLIB
+// subclass proxy could never override them anyway - the attempt fails at bean creation with
+// Tomcat unable to start ("Cannot subclass final class", once `final` below forces a loud error
+// instead of the silent one) or, without `final`, an Objenesis-instantiated shell whose inherited
+// `logger` field was never set, NPEing on the first request. `final` stays as a second,
+// independent guard: even if this bean were ever pulled into a real advisor's pointcut for a
+// legitimate reason, a final class still cannot be CGLIB-subclassed, so the failure would be loud
+// immediately rather than a silent NPE in production.
+@Role(BeanDefinition.ROLE_INFRASTRUCTURE)
+public final class IdempotencyFilter extends OncePerRequestFilter {
 
     private static final Logger log = LoggerFactory.getLogger(IdempotencyFilter.class);
 
