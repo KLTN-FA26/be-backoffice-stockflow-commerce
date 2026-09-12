@@ -57,7 +57,8 @@ procurement/
     ├── service/         application services, listeners, schedulers. The transaction boundary.
     ├── entity/          JPA entities. The table mapping, and nothing else.
     ├── repository/      Spring Data repositories, port adapters, entity <-> domain mappers.
-    └── controller/      REST controllers and their request/response DTOs.
+    └── controller/      REST controllers, their `<Module>WebMapper`, and:
+        └── dto/         every request/response DTO — nothing else lives here.
 ```
 
 `inventory` is the worked example — every layer is implemented there. Copy its structure.
@@ -163,6 +164,21 @@ A `Command` and its `Result` **must share a stem**, so the pair is visible at a 
 ReserveStockResult reserve(ReserveStockCommand command);   // ✅ obviously a pair
 ReservationResult  reserve(ReserveStockCommand command);   // ❌ two vocabularies, one operation
 ```
+
+A request/response body lives in `internal/controller/dto`, never loose in `internal/controller`
+next to the controller and the `WebMapper` — a module with more than a couple of endpoints turns
+that directory into an unsorted mix of three different kinds of class otherwise. The controller
+imports the DTO type explicitly; there is no package-nesting shortcut, `internal.controller` and
+`internal.controller.dto` are two ordinary Java packages.
+
+A controller handler must **never return or accept an `api`-package type directly** — always map
+it through a `dto` type via the module's `WebMapper`, even when the shapes are identical today.
+Returning `api.RoleSummary` (or any other `api` record) straight from a controller couples the wire
+format to the cross-module contract: a field added for another module's benefit now appears in the
+JSON response, and a field renamed for the HTTP contract breaks the Java callers. The one narrow
+exception is a `common`-package type that is *itself* already documented as being pre-shaped as a
+specific screen's wire format (`common.security.RoleMatrixView` is the current example) — that
+exception must be justified in the type's own javadoc, not asserted case by case in a controller.
 
 ### Rule 3 — one word per concept, across every layer
 

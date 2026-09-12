@@ -1,5 +1,6 @@
 /**
- * REST controllers, request and response DTOs, and the mappers between DTO and application types.
+ * REST controllers and the mappers between DTO and application types. Request and response DTOs
+ * themselves live in the {@code dto} subpackage, not loose in here — see its own package-info.
  *
  * <p>Named {@code controller} for the layer everyone recognises. Its job is narrow: translate HTTP
  * into a call on this module's application service and translate the answer back. No business rule

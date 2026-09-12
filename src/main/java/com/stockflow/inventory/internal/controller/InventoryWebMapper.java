@@ -3,6 +3,8 @@ package com.stockflow.inventory.internal.controller;
 import com.stockflow.inventory.api.ReserveStockResult;
 import com.stockflow.inventory.api.StockAvailability;
 import com.stockflow.inventory.api.StockReservation;
+import com.stockflow.inventory.internal.controller.dto.ReservationResponse;
+import com.stockflow.inventory.internal.controller.dto.StockItemResponse;
 import org.mapstruct.Mapper;
 import org.mapstruct.Mapping;
 import org.mapstruct.ReportingPolicy;

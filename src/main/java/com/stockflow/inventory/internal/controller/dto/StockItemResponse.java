@@ -1,4 +1,4 @@
-package com.stockflow.inventory.internal.controller;
+package com.stockflow.inventory.internal.controller.dto;
 
 import io.swagger.v3.oas.annotations.media.Schema;
 
