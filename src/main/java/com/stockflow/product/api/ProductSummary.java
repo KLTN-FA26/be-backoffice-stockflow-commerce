@@ -1,5 +1,6 @@
 package com.stockflow.product.api;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -34,7 +35,11 @@ public record ProductSummary(
         Instant submittedAt,
         UUID approvedBy,
         Instant approvedAt,
-        String rejectionReason
+        String rejectionReason,
+        BigDecimal weightKg,
+        BigDecimal lengthCm,
+        BigDecimal widthCm,
+        BigDecimal heightCm
 ) {
 
     public ProductSummary {

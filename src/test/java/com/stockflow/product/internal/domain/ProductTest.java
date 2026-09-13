@@ -6,6 +6,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -26,12 +27,14 @@ class ProductTest {
 
     private static Product draftWithCategory() {
         return Product.draft("SOFA-3S-GREY", "Sofa xám", "Grey sofa", CATEGORY,
-                null, null, "StockFlow", TaxClass.STANDARD, false, List.of());
+                null, null, "StockFlow", TaxClass.STANDARD, false, List.of(),
+                null, null, null, null);
     }
 
     private static Product draftWithoutCategory() {
         return Product.draft("SOFA-3S-GREY", "Sofa xám", "Grey sofa", null,
-                null, null, "StockFlow", TaxClass.STANDARD, false, List.of());
+                null, null, "StockFlow", TaxClass.STANDARD, false, List.of(),
+                null, null, null, null);
     }
 
     @Nested
@@ -177,7 +180,7 @@ class ProductTest {
             Product product = draftWithCategory();
 
             product.updateDetails("Sofa mới", "New sofa", CATEGORY, null, null,
-                    "StockFlow", TaxClass.REDUCED, true, List.of());
+                    "StockFlow", TaxClass.REDUCED, true, List.of(), null, null, null, null);
 
             assertThat(product.name()).isEqualTo("Sofa mới");
             assertThat(product.taxClass()).isEqualTo(TaxClass.REDUCED);
@@ -190,7 +193,7 @@ class ProductTest {
             product.submit(SUBMITTER, NOW);
 
             assertThatThrownBy(() -> product.updateDetails("x", "x", CATEGORY, null, null,
-                    "StockFlow", TaxClass.STANDARD, false, List.of()))
+                    "StockFlow", TaxClass.STANDARD, false, List.of(), null, null, null, null))
                     .isInstanceOf(InvalidProductStatusTransitionException.class);
         }
 
@@ -202,8 +205,61 @@ class ProductTest {
             product.approve(APPROVER, NOW);
 
             assertThatThrownBy(() -> product.updateDetails("x", "x", CATEGORY, null, null,
-                    "StockFlow", TaxClass.STANDARD, false, List.of()))
+                    "StockFlow", TaxClass.STANDARD, false, List.of(), null, null, null, null))
                     .isInstanceOf(InvalidProductStatusTransitionException.class);
+        }
+    }
+
+    @Nested
+    @DisplayName("weight/dimensions (SCRUM-74)")
+    class WeightAndDimensions {
+
+        @Test
+        @DisplayName("set on updateDetails and read back")
+        void updateSetsWeightAndDimensions() {
+            Product product = draftWithCategory();
+
+            product.updateDetails("Sofa xám", "Grey sofa", CATEGORY, null, null,
+                    "StockFlow", TaxClass.STANDARD, false, List.of(),
+                    new BigDecimal("25.500"), new BigDecimal("200.00"),
+                    new BigDecimal("90.00"), new BigDecimal("85.00"));
+
+            assertThat(product.weightKg()).isEqualByComparingTo("25.500");
+            assertThat(product.lengthCm()).isEqualByComparingTo("200.00");
+            assertThat(product.widthCm()).isEqualByComparingTo("90.00");
+            assertThat(product.heightCm()).isEqualByComparingTo("85.00");
+        }
+
+        @Test
+        @DisplayName("null weight/dimensions at creation is allowed - not yet known")
+        void nullWeightAndDimensionsAllowedAtCreation() {
+            Product product = draftWithCategory();
+
+            assertThat(product.weightKg()).isNull();
+            assertThat(product.lengthCm()).isNull();
+        }
+
+        @Test
+        @DisplayName("zero or negative weight rejected")
+        void nonPositiveWeightRejected() {
+            assertThatThrownBy(() -> Product.draft("SOFA-3S-GREY", "Sofa xám", "Grey sofa",
+                    CATEGORY, null, null, "StockFlow", TaxClass.STANDARD, false, List.of(),
+                    BigDecimal.ZERO, null, null, null))
+                    .isInstanceOf(IllegalArgumentException.class);
+
+            assertThatThrownBy(() -> Product.draft("SOFA-3S-GREY", "Sofa xám", "Grey sofa",
+                    CATEGORY, null, null, "StockFlow", TaxClass.STANDARD, false, List.of(),
+                    new BigDecimal("-1"), null, null, null))
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+
+        @Test
+        @DisplayName("zero or negative dimension rejected")
+        void nonPositiveDimensionRejected() {
+            assertThatThrownBy(() -> Product.draft("SOFA-3S-GREY", "Sofa xám", "Grey sofa",
+                    CATEGORY, null, null, "StockFlow", TaxClass.STANDARD, false, List.of(),
+                    null, BigDecimal.ZERO, null, null))
+                    .isInstanceOf(IllegalArgumentException.class);
         }
     }
 }

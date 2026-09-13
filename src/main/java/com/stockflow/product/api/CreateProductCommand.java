@@ -1,5 +1,6 @@
 package com.stockflow.product.api;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.UUID;
 
@@ -14,6 +15,10 @@ public record CreateProductCommand(
         String brand,
         TaxClass taxClass,
         boolean customizable,
-        List<String> images
+        List<String> images,
+        BigDecimal weightKg,
+        BigDecimal lengthCm,
+        BigDecimal widthCm,
+        BigDecimal heightCm
 ) {
 }
