@@ -57,6 +57,11 @@ public class UserJpaEntity extends BaseEntity {
         this.lastLoginAt = lastLoginAt;
     }
 
+    /** The only mutation this login flow needs; other fields have no write use case yet. */
+    public void recordLogin(Instant now) {
+        this.lastLoginAt = now;
+    }
+
     public String getUsername() { return username; }
     public String getEmail() { return email; }
     public String getPasswordHash() { return passwordHash; }

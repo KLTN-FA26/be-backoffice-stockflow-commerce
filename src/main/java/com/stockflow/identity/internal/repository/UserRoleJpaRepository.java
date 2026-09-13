@@ -3,6 +3,7 @@ package com.stockflow.identity.internal.repository;
 import com.stockflow.identity.internal.entity.UserRoleJpaEntity;
 import com.stockflow.common.persistence.BaseJpaRepository;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -10,4 +11,6 @@ import java.util.UUID;
 public interface UserRoleJpaRepository extends BaseJpaRepository<UserRoleJpaEntity> {
 
     Optional<UserRoleJpaEntity> findByUserIdAndRoleId(UUID userId, UUID roleId);
+
+    List<UserRoleJpaEntity> findByUserId(UUID userId);
 }

@@ -28,6 +28,10 @@ public enum ErrorCode {
     ROLE_NOT_FOUND("Role not found", 404),
     USER_NOT_FOUND("User not found", 404),
 
+    /** Credentials were correct but the account is LOCKED or DISABLED. Distinct from UNAUTHORIZED,
+     *  which covers "wrong username or password" without revealing the account exists. */
+    ACCOUNT_NOT_ACTIVE("This account cannot sign in right now", 403),
+
     // ---- 409: the request is fine, the current state is not
     CONFLICT("Conflicting state", 409),
     INSUFFICIENT_STOCK("Not enough available stock", 409),
