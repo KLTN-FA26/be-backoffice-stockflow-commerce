@@ -49,10 +49,16 @@ public record PageResponse<T>(
         return of(List.of(), page, size, 0);
     }
 
-    /** Maps every item, keeping the page metadata — for translating an api-layer summary into its
-     *  HTTP wire-format response without re-deriving the totals. */
+    /**
+     * Map the items to a controller's wire type, keeping the same totals/flags.
+     *
+     * <p>For the common case where a service already returns {@code PageResponse<Summary>} and a
+     * controller needs {@code PageResponse<Response>} — mapping each item by hand at every such
+     * endpoint would repeat the same five-argument reconstruction indefinitely.</p>
+     */
     public <R> PageResponse<R> map(Function<? super T, ? extends R> mapper) {
-        List<R> mapped = items.stream().<R>map(mapper).toList();
-        return new PageResponse<R>(mapped, page, size, totalElements, totalPages, hasNext, hasPrevious);
+        return new PageResponse<>(
+                items.stream().<R>map(mapper).toList(),
+                page, size, totalElements, totalPages, hasNext, hasPrevious);
     }
 }

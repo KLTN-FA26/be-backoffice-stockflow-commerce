@@ -29,6 +29,8 @@ public enum ErrorCode {
     USER_NOT_FOUND("User not found", 404),
     SUPPLIER_NOT_FOUND("Supplier not found", 404),
     PURCHASE_ORDER_NOT_FOUND("Purchase order not found", 404),
+    PRODUCT_NOT_FOUND("Product not found", 404),
+    CATEGORY_NOT_FOUND("Category not found", 404),
 
     /** Credentials were correct but the account is LOCKED or DISABLED. Distinct from UNAUTHORIZED,
      *  which covers "wrong username or password" without revealing the account exists. */
@@ -45,6 +47,9 @@ public enum ErrorCode {
     IDEMPOTENT_REQUEST_IN_PROGRESS("An identical request is still being processed", 409),
     /** BR-PO: a new PO cannot be raised against a supplier that is not ACTIVE. */
     SUPPLIER_INACTIVE("This supplier cannot receive new purchase orders", 409),
+    PRODUCT_CODE_ALREADY_EXISTS("A product with this code already exists", 409),
+    INVALID_PRODUCT_STATUS_TRANSITION("This product cannot move to that status right now", 409),
+    SELF_APPROVAL_NOT_ALLOWED("A product cannot be approved by the person who submitted it", 409),
 
     // ---- 413 / 415: payload problems
     PAYLOAD_TOO_LARGE("The uploaded file is too large", 413),
