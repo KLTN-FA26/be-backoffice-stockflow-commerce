@@ -129,4 +129,15 @@ class ProductController {
         return ApiResponse.ok(mapper.toResponse(
                 productService.reject(productId, user.userId(), request.reason())));
     }
+
+    /**
+     * Terminal (WBS 3.1.8.1). See {@code Product.discontinue}'s javadoc for the BR-PRD-005
+     * (open PO / unshipped order line) gap this does not yet enforce.
+     */
+    @PostMapping("/{productId}/discontinuation")
+    @Operation(summary = "Discontinue an approved or published product")
+    @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.APPROVE)
+    public ApiResponse<ProductResponse> discontinue(@PathVariable UUID productId) {
+        return ApiResponse.ok(mapper.toResponse(productService.discontinue(productId)));
+    }
 }

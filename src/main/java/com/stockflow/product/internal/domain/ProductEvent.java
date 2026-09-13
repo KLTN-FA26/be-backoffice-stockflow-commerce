@@ -1,6 +1,7 @@
 package com.stockflow.product.internal.domain;
 
 import com.stockflow.contracts.ProductApproved;
+import com.stockflow.contracts.ProductDiscontinued;
 import com.stockflow.common.domain.DomainEvent;
 
 import java.time.Instant;
@@ -18,6 +19,19 @@ public sealed interface ProductEvent extends DomainEvent {
     record Approved(UUID eventId, Instant occurredAt, ProductApproved payload) implements ProductEvent {
 
         public Approved(ProductApproved payload) {
+            this(UUID.randomUUID(), Instant.now(), payload);
+        }
+
+        @Override
+        public String aggregateId() {
+            return payload.productId().toString();
+        }
+    }
+
+    record Discontinued(UUID eventId, Instant occurredAt, ProductDiscontinued payload)
+            implements ProductEvent {
+
+        public Discontinued(ProductDiscontinued payload) {
             this(UUID.randomUUID(), Instant.now(), payload);
         }
 

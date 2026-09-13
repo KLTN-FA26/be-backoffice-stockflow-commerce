@@ -134,6 +134,16 @@ class ProductServiceImpl implements ProductService {
         return toSummary(saved);
     }
 
+    @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "product", resourceId = "#productId")
+    public ProductSummary discontinue(UUID productId) {
+        Product product = requireProduct(productId);
+        product.discontinue(clock.instant());
+        Product saved = products.save(product);
+        events.publishEventsOf(saved);
+        return toSummary(saved);
+    }
+
     private Product requireProduct(UUID productId) {
         return products.findById(new ProductId(productId))
                 .orElseThrow(() -> new BusinessException(ErrorCode.PRODUCT_NOT_FOUND,

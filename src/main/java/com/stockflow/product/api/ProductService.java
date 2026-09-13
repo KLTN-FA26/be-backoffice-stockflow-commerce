@@ -31,4 +31,8 @@ public interface ProductService {
 
     /** PENDING_APPROVAL → DRAFT. */
     ProductSummary reject(UUID productId, UUID approverId, String reason);
+
+    /** APPROVED/PUBLISHED → DISCONTINUED. Terminal — see {@code Product.discontinue}'s javadoc for
+     *  the BR-PRD-005 gap this does not yet enforce. */
+    ProductSummary discontinue(UUID productId);
 }
