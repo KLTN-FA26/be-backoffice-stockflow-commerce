@@ -2,35 +2,80 @@ package com.stockflow.identity.internal.domain;
 
 import com.stockflow.common.domain.AggregateRoot;
 
-import java.util.UUID;
+import java.time.Instant;
+import java.util.Objects;
 
 /**
- * <b>Aggregate root of the identity module.</b>
+ * <b>Aggregate root of the identity module: one staff/customer account.</b>
  *
- * <p>STARTER STUB. The aggregate owns its invariants and is the only thing loaded and saved as a
- * unit. Keep it {@code final} and keep every framework annotation off it — that is what lets its
- * unit test run with no Spring context, and {@code ArchitectureTest.domainDoesNotDependOnFrameworks}
- * enforces it.</p>
+ * <p>SCRUM-378 (WBS 3.19.7) gives this account real behaviour: {@link #signIn} is the one
+ * invariant worth protecting here — a {@code LOCKED}/{@code DISABLED} account must never be
+ * allowed to authenticate, no matter what else changes about the login flow later. Password
+ * verification itself stays in {@code IdentityServiceImpl}: {@code PasswordEncoder} is a framework
+ * type and {@code ArchitectureTest.domainDoesNotDependOnFrameworks} keeps it out of this class, so
+ * this aggregate only ever sees a hash to compare against, never performs the comparison.</p>
  *
- * <p>Fill in: the fields that must be consistent together, a factory for each way the aggregate is
- * born, and one method per state transition — each checking its precondition and calling
- * {@code registerEvent(...)}. See {@code inventory.internal.domain.StockItem} for the worked
- * example and {@code docs/adding-a-module.md} §4.2.</p>
+ * <p>No Spring, no JPA, no annotations. {@code username}/{@code email} are immutable once created
+ * (this story does not add a "change username" use case); every other field is set at
+ * reconstruction and mutated only through {@link #signIn}.</p>
  */
 public final class User extends AggregateRoot {
 
-    private final UUID id;
+    private final UserId id;
+    private final String username;
+    private final String email;
+    private final String passwordHash;
+    private final String fullName;
+    private UserStatus status;
+    private Instant lastLoginAt;
+    private final long version;
+    private final Instant createdAt;
+    private final String createdBy;
 
-    private User(UUID id) {
-        this.id = java.util.Objects.requireNonNull(id, "id");
+    public User(UserId id, String username, String email, String passwordHash, String fullName,
+               UserStatus status, Instant lastLoginAt, long version, Instant createdAt,
+               String createdBy) {
+        this.id = Objects.requireNonNull(id, "id");
+        this.username = requireNonBlank(username, "username");
+        this.email = requireNonBlank(email, "email");
+        this.passwordHash = requireNonBlank(passwordHash, "passwordHash");
+        this.fullName = fullName;
+        this.status = Objects.requireNonNull(status, "status");
+        this.lastLoginAt = lastLoginAt;
+        this.version = version;
+        this.createdAt = createdAt;
+        this.createdBy = createdBy;
     }
 
-    /** TODO: replace with the real birth of the aggregate, taking the fields it needs. */
-    public static User create(UUID id) {
-        return new User(id);
+    /**
+     * Records a successful authentication. The caller has already verified the password against
+     * {@link #passwordHash()} — this only enforces the account-status invariant and stamps
+     * {@code lastLoginAt}.
+     *
+     * @throws AccountNotActiveException if the account is {@code LOCKED} or {@code DISABLED}
+     */
+    public void signIn(Instant now) {
+        if (status != UserStatus.ACTIVE) {
+            throw new AccountNotActiveException(id, status);
+        }
+        this.lastLoginAt = Objects.requireNonNull(now, "now");
     }
 
-    public UUID id() {
-        return id;
+    private static String requireNonBlank(String value, String field) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(field + " must not be blank");
+        }
+        return value;
     }
+
+    public UserId id() { return id; }
+    public String username() { return username; }
+    public String email() { return email; }
+    public String passwordHash() { return passwordHash; }
+    public String fullName() { return fullName; }
+    public UserStatus status() { return status; }
+    public Instant lastLoginAt() { return lastLoginAt; }
+    public long version() { return version; }
+    public Instant createdAt() { return createdAt; }
+    public String createdBy() { return createdBy; }
 }

@@ -99,6 +99,30 @@ spring:
       externalization:
         enabled: false                # nothing leaves the process today
 
+  # spring-modulith-observability's ModuleObservabilityBeanPostProcessor wraps every bean it
+  # considers part of an application module - including the *shared* ones in `common` - in a CGLIB
+  # proxy for cross-module tracing spans. It does this with its own hand-rolled
+  # BeanPostProcessor.postProcessAfterInitialization, bypassing AbstractAutoProxyCreator entirely,
+  # so it does not honour @Order, spring.aop.auto=false, or the AopInfrastructureBean marker the
+  # way a normal Spring AOP proxy creator would.
+  #
+  # That proxy is fatal for CorrelationIdFilter, RequestLoggingFilter, UnsecuredDataScopeFilter and
+  # IdempotencyFilter: GenericFilterBean.init() and OncePerRequestFilter.doFilter() are `final`, so
+  # CGLIB cannot override them, and Tomcat calling filter.init() on the proxy runs the inherited
+  # method body against the PROXY's own (Objenesis-constructed, never-initialised) fields rather
+  # than the target's - "Cannot invoke Log.isDebugEnabled() because this.logger is null" - which
+  # fails filter startup and takes the whole embedded Tomcat context down with it. Confirmed this
+  # is not something this change introduced: it reproduces identically on an unmodified `develop`
+  # checkout, so the application has never actually booted successfully with tracing on.
+  #
+  # Excluding only ModuleObservabilityAutoConfiguration (not management.tracing.enabled) keeps
+  # ordinary Micrometer/OTel request tracing working; it removes only Modulith's own additional
+  # module-boundary spans, which is the feature that is broken.
+  autoconfigure:
+    exclude:
+      - org.springframework.modulith.observability.autoconfigure.ModuleObservabilityAutoConfiguration
+      - org.springframework.modulith.observability.autoconfigure.SpringDataRestModuleObservabilityAutoConfiguration
+
   security:
     oauth2:
       resourceserver:

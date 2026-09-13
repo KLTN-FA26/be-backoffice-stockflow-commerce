@@ -3,8 +3,14 @@ package com.stockflow.identity.internal.repository;
 import com.stockflow.identity.internal.entity.UserRoleJpaEntity;
 import com.stockflow.common.persistence.BaseJpaRepository;
 
-/** Spring Data repository for {@link UserRoleJpaEntity}. STARTER STUB. */
-interface UserRoleJpaRepository extends BaseJpaRepository<UserRoleJpaEntity> {
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
 
-    // TODO: add finders the service needs.
+/** Spring Data repository for {@link UserRoleJpaEntity}. */
+public interface UserRoleJpaRepository extends BaseJpaRepository<UserRoleJpaEntity> {
+
+    Optional<UserRoleJpaEntity> findByUserIdAndRoleId(UUID userId, UUID roleId);
+
+    List<UserRoleJpaEntity> findByUserId(UUID userId);
 }

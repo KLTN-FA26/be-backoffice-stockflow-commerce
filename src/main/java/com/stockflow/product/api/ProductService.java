@@ -1,23 +1,38 @@
 package com.stockflow.product.api;
 
+import com.stockflow.common.api.PageResponse;
+
+import java.util.Optional;
+import java.util.UUID;
+
 /**
  * THE public API of the product module — the only package other modules may import.
  *
- * <p>STARTER STUB. Replace the empty body with the module's real use cases. Two rules from
- * {@code docs/adding-a-module.md} §1:</p>
- * <ul>
- *   <li>declare only what other modules actually call — the shortest surface that works;</li>
- *   <li>every parameter and return type is a record or enum declared in THIS package, never a
- *       domain object or JPA entity. {@code ArchitectureTest.theApiPackageLeaksNothingInternal}
- *       and {@code theApiPublishesNoEntities} enforce it.</li>
- * </ul>
- *
- * <p>To finish the module: add a migration, then the entity + repository adapter, then a
- * controller — see {@code docs/adding-a-module.md} §4.</p>
+ * <p>Every parameter and return type is a record or enum declared in THIS package, never a
+ * domain object or JPA entity ({@code ArchitectureTest.theApiPackageLeaksNothingInternal} and
+ * {@code theApiPublishesNoEntities} enforce it).</p>
  */
 public interface ProductService {
 
-    // TODO: declare this module's use cases here. Every parameter and return type is a record
-    //       or enum declared in THIS package, never a domain object. See
-    //       inventory.api.InventoryService for the worked example.
+    ProductSummary create(CreateProductCommand command);
+
+    Optional<ProductSummary> findById(UUID productId);
+
+    /** Paginated, filterable list. {@code images} is empty on every row — see {@link ProductSummary}. */
+    PageResponse<ProductSummary> list(ListProductsQuery query);
+
+    ProductSummary update(UpdateProductCommand command);
+
+    /** DRAFT → PENDING_APPROVAL. Requires a category (BR-PRD-001, minimal subset — see SCRUM-57). */
+    ProductSummary submit(UUID productId, UUID submittedBy);
+
+    /** PENDING_APPROVAL → APPROVED. BR-PRD-003: {@code approverId} must not be who submitted it. */
+    ProductSummary approve(UUID productId, UUID approverId);
+
+    /** PENDING_APPROVAL → DRAFT. */
+    ProductSummary reject(UUID productId, UUID approverId, String reason);
+
+    /** APPROVED/PUBLISHED → DISCONTINUED. Terminal — see {@code Product.discontinue}'s javadoc for
+     *  the BR-PRD-005 gap this does not yet enforce. */
+    ProductSummary discontinue(UUID productId);
 }

@@ -7,7 +7,9 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Role;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -42,7 +44,13 @@ import java.util.Set;
 @Order(10)
 @ConditionalOnProperty(prefix = "stockflow.web.request-log", name = "enabled",
         havingValue = "true", matchIfMissing = true)
-public class RequestLoggingFilter extends OncePerRequestFilter {
+// ROLE_INFRASTRUCTURE + final: see IdempotencyFilter's javadoc for the full explanation.
+// Short version: Spring Modulith's ModuleObservabilityBeanPostProcessor treats every subpackage
+// under the base package (including common) as an implicit module and tries to wrap its beans for
+// tracing; ROLE_INFRASTRUCTURE is the documented opt-out. `final` is a second, independent guard —
+// OncePerRequestFilter's final methods can never be correctly proxied by CGLIB regardless.
+@Role(BeanDefinition.ROLE_INFRASTRUCTURE)
+public final class RequestLoggingFilter extends OncePerRequestFilter {
 
     private static final Logger log = LoggerFactory.getLogger(RequestLoggingFilter.class);
 
