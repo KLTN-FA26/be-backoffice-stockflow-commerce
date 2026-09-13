@@ -109,6 +109,10 @@ public class ResourceServerSecurityConfig {
                         // /actuator/shutdown the moment either is exposed. The local profile
                         // already exposes "*".
                         .requestMatchers("/actuator/**").hasAuthority(Roles.ECOMMERCE_ADMIN)
+                        // No token exists yet at either of these: /auth/login is what mints one,
+                        // and /oauth2/jwks is what THIS filter's own JwtDecoder fetches to validate
+                        // it. Both are unauthenticated by necessity, not by oversight.
+                        .requestMatchers("/api/v1/identity/auth/login", "/oauth2/jwks").permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(oauth -> oauth
                         .jwt(jwt -> jwt.jwtAuthenticationConverter(

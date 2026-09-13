@@ -29,4 +29,13 @@ public interface IdentityService {
 
     /** Revoke a role from a user. Idempotent: revoking one not held is a no-op. */
     void revokeRole(UUID userId, String roleCode);
+
+    /**
+     * Verify credentials and issue a signed staff token (SCRUM-378/WBS 3.19.7).
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code UNAUTHORIZED} for an unknown
+     *         username or a wrong password (never revealing which); {@code ACCOUNT_NOT_ACTIVE} if
+     *         the password was correct but the account is {@code LOCKED}/{@code DISABLED}
+     */
+    TokenResponse login(LoginCommand command);
 }
