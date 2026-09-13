@@ -3,6 +3,7 @@ package com.stockflow.product.internal.domain;
 import com.stockflow.product.api.ProductStatus;
 import com.stockflow.product.api.TaxClass;
 import com.stockflow.contracts.ProductApproved;
+import com.stockflow.contracts.ProductDiscontinued;
 import com.stockflow.common.domain.AggregateRoot;
 
 import java.math.BigDecimal;
@@ -16,9 +17,10 @@ import java.util.UUID;
  * <b>Aggregate root of the product module: one product master row.</b>
  *
  * <p>SCRUM-56 (WBS 3.1.1.2) landed the master-data fields; SCRUM-57 (WBS 3.1.1.3) adds the
- * approval workflow on top: {@code submit()}/{@code approve()}/{@code reject()}, following
- * {@link ProductStatus#canTransitionTo}'s table. {@link #updateDetails} now guards on
- * {@code DRAFT} for real — that guard was a dead branch before this story added any other
+ * approval workflow on top: {@code submit()}/{@code approve()}/{@code reject()}. SCRUM-85
+ * (WBS 3.1.8.1) adds {@code discontinue()}, the terminal edge — all following
+ * {@link ProductStatus#canTransitionTo}'s table. {@link #updateDetails} guards on
+ * {@code DRAFT} for real — that guard was a dead branch before SCRUM-57 added any other
  * reachable status.</p>
  *
  * <p>No Spring, no JPA, no annotations — {@code ArchitectureTest.domainDoesNotDependOnFrameworks}
@@ -176,6 +178,23 @@ public final class Product extends AggregateRoot {
         this.rejectionReason = reason;
         this.submittedBy = null;
         this.submittedAt = null;
+    }
+
+    /**
+     * Terminal (WBS 3.1.8.1). Valid from {@code APPROVED} or {@code PUBLISHED} per
+     * {@link ProductStatus#canTransitionTo}.
+     *
+     * <p><b>BR-PRD-005 is not enforced here</b> ("no open PO and no unshipped order line
+     * references it"): checking it needs {@code procurement} (still an empty skeleton — there is
+     * nothing to check against yet) and a cross-module read of {@code order}, which this module
+     * does not depend on today. Enforcing it properly belongs in the application service once
+     * procurement exists, not as a silent no-op invariant here — flagged rather than faked.</p>
+     */
+    public void discontinue(Instant now) {
+        requireCanTransitionTo(ProductStatus.DISCONTINUED);
+        this.status = ProductStatus.DISCONTINUED;
+        registerEvent(new ProductEvent.Discontinued(
+                new ProductDiscontinued(id.value(), Objects.requireNonNull(now, "now"))));
     }
 
     private void requireCanTransitionTo(ProductStatus target) {

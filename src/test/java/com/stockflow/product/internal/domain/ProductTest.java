@@ -262,4 +262,59 @@ class ProductTest {
                     .isInstanceOf(IllegalArgumentException.class);
         }
     }
+
+    @Nested
+    @DisplayName("discontinue (SCRUM-85)")
+    class Discontinue {
+
+        @Test
+        @DisplayName("moves APPROVED to DISCONTINUED and registers the event")
+        void discontinueFromApprovedSucceeds() {
+            Product product = draftWithCategory();
+            product.submit(SUBMITTER, NOW);
+            product.approve(APPROVER, NOW);
+            product.pullDomainEvents(); // drain the Approved event so only Discontinued remains
+
+            product.discontinue(NOW);
+
+            assertThat(product.status()).isEqualTo(ProductStatus.DISCONTINUED);
+            List<?> events = product.pullDomainEvents();
+            assertThat(events).hasSize(1);
+            assertThat(events.get(0)).isInstanceOf(ProductEvent.Discontinued.class);
+            ProductEvent.Discontinued discontinued = (ProductEvent.Discontinued) events.get(0);
+            assertThat(discontinued.payload().productId()).isEqualTo(product.id().value());
+            assertThat(discontinued.payload().discontinuedAt()).isEqualTo(NOW);
+        }
+
+        @Test
+        @DisplayName("DISCONTINUED is terminal - cannot transition anywhere from it")
+        void discontinuedIsTerminal() {
+            Product product = draftWithCategory();
+            product.submit(SUBMITTER, NOW);
+            product.approve(APPROVER, NOW);
+            product.discontinue(NOW);
+
+            assertThatThrownBy(() -> product.discontinue(NOW))
+                    .isInstanceOf(InvalidProductStatusTransitionException.class);
+        }
+
+        @Test
+        @DisplayName("rejected from DRAFT")
+        void discontinueFromDraftRejected() {
+            Product product = draftWithCategory();
+
+            assertThatThrownBy(() -> product.discontinue(NOW))
+                    .isInstanceOf(InvalidProductStatusTransitionException.class);
+        }
+
+        @Test
+        @DisplayName("rejected from PENDING_APPROVAL")
+        void discontinueFromPendingApprovalRejected() {
+            Product product = draftWithCategory();
+            product.submit(SUBMITTER, NOW);
+
+            assertThatThrownBy(() -> product.discontinue(NOW))
+                    .isInstanceOf(InvalidProductStatusTransitionException.class);
+        }
+    }
 }
