@@ -71,7 +71,8 @@ class ProductServiceImpl implements ProductService {
         Product product = Product.draft(command.code(), command.name(), command.nameEn(),
                 command.categoryId(), command.description(), command.descriptionEn(),
                 command.brand(), command.taxClass(), command.customizable(),
-                toImages(command.images()));
+                toImages(command.images()), command.weightKg(), command.lengthCm(),
+                command.widthCm(), command.heightCm());
         return toSummary(products.save(product));
     }
 
@@ -98,7 +99,8 @@ class ProductServiceImpl implements ProductService {
         }
         product.updateDetails(command.name(), command.nameEn(), command.categoryId(),
                 command.description(), command.descriptionEn(), command.brand(),
-                command.taxClass(), command.customizable(), toImages(command.images()));
+                command.taxClass(), command.customizable(), toImages(command.images()),
+                command.weightKg(), command.lengthCm(), command.widthCm(), command.heightCm());
         return toSummary(products.save(product));
     }
 
@@ -169,6 +171,10 @@ class ProductServiceImpl implements ProductService {
                 product.submittedAt(),
                 product.approvedBy(),
                 product.approvedAt(),
-                product.rejectionReason());
+                product.rejectionReason(),
+                product.weightKg(),
+                product.lengthCm(),
+                product.widthCm(),
+                product.heightCm());
     }
 }

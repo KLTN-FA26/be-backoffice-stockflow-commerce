@@ -46,7 +46,11 @@ final class ProductPersistenceMapper {
                 entity.getSubmittedAt(),
                 entity.getApprovedBy(),
                 entity.getApprovedAt(),
-                entity.getRejectionReason());
+                entity.getRejectionReason(),
+                entity.getWeightKg(),
+                entity.getLengthCm(),
+                entity.getWidthCm(),
+                entity.getHeightCm());
     }
 
     private static ProductImage toDomain(ProductImageJpaEntity entity) {
@@ -79,7 +83,11 @@ final class ProductPersistenceMapper {
                 entity.getSubmittedAt(),
                 entity.getApprovedBy(),
                 entity.getApprovedAt(),
-                entity.getRejectionReason());
+                entity.getRejectionReason(),
+                entity.getWeightKg(),
+                entity.getLengthCm(),
+                entity.getWidthCm(),
+                entity.getHeightCm());
     }
 
     /** Fresh row for an aggregate that has never been persisted. */
@@ -100,7 +108,11 @@ final class ProductPersistenceMapper {
                 product.submittedAt(),
                 product.approvedBy(),
                 product.approvedAt(),
-                product.rejectionReason());
+                product.rejectionReason(),
+                product.weightKg(),
+                product.lengthCm(),
+                product.widthCm(),
+                product.heightCm());
         entity.replaceImages(toEntities(product));
         return entity;
     }
@@ -110,7 +122,8 @@ final class ProductPersistenceMapper {
         entity.apply(product.name(), product.nameEn(), product.categoryId(), product.description(),
                 product.descriptionEn(), product.brand(), product.taxClass(), product.customizable(),
                 product.status(), product.submittedBy(), product.submittedAt(), product.approvedBy(),
-                product.approvedAt(), product.rejectionReason());
+                product.approvedAt(), product.rejectionReason(), product.weightKg(),
+                product.lengthCm(), product.widthCm(), product.heightCm());
         entity.replaceImages(toEntities(product));
     }
 

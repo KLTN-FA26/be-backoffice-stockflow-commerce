@@ -5,6 +5,7 @@ import com.stockflow.product.api.TaxClass;
 import com.stockflow.contracts.ProductApproved;
 import com.stockflow.common.domain.AggregateRoot;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -44,6 +45,13 @@ public final class Product extends AggregateRoot {
     private ProductStatus status;
     private final long version;
 
+    /** SCRUM-74 (WBS 3.1.3.1): shipping weight/dimensions, for later rate/carton calculations.
+     *  Nullable — a product can exist before these are known; when set, each must be positive. */
+    private BigDecimal weightKg;
+    private BigDecimal lengthCm;
+    private BigDecimal widthCm;
+    private BigDecimal heightCm;
+
     /** Read-only: who/when created this row. Carried for the API response, never checked by an
      *  invariant — same treatment {@code version} gets, not a protected business rule. */
     private final Instant createdAt;
@@ -60,7 +68,8 @@ public final class Product extends AggregateRoot {
                    boolean customizable, List<ProductImage> images, ProductStatus status,
                    long version, Instant createdAt, String createdBy,
                    UUID submittedBy, Instant submittedAt, UUID approvedBy, Instant approvedAt,
-                   String rejectionReason) {
+                   String rejectionReason, BigDecimal weightKg, BigDecimal lengthCm,
+                   BigDecimal widthCm, BigDecimal heightCm) {
         this.id = Objects.requireNonNull(id, "id");
         this.code = requireNonBlank(code, "code");
         this.name = requireNonBlank(name, "name");
@@ -81,15 +90,21 @@ public final class Product extends AggregateRoot {
         this.approvedBy = approvedBy;
         this.approvedAt = approvedAt;
         this.rejectionReason = rejectionReason;
+        this.weightKg = requirePositive(weightKg, "weightKg");
+        this.lengthCm = requirePositive(lengthCm, "lengthCm");
+        this.widthCm = requirePositive(widthCm, "widthCm");
+        this.heightCm = requirePositive(heightCm, "heightCm");
     }
 
     /** A new product master row, always born {@link ProductStatus#DRAFT}. */
     public static Product draft(String code, String name, String nameEn, UUID categoryId,
                                 String description, String descriptionEn, String brand,
-                                TaxClass taxClass, boolean customizable, List<ProductImage> images) {
+                                TaxClass taxClass, boolean customizable, List<ProductImage> images,
+                                BigDecimal weightKg, BigDecimal lengthCm, BigDecimal widthCm,
+                                BigDecimal heightCm) {
         return new Product(ProductId.newId(), code, name, nameEn, categoryId, description,
                 descriptionEn, brand, taxClass, customizable, images, ProductStatus.DRAFT, 0L,
-                null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, weightKg, lengthCm, widthCm, heightCm);
     }
 
     /**
@@ -103,7 +118,9 @@ public final class Product extends AggregateRoot {
      */
     public void updateDetails(String name, String nameEn, UUID categoryId, String description,
                               String descriptionEn, String brand, TaxClass taxClass,
-                              boolean customizable, List<ProductImage> images) {
+                              boolean customizable, List<ProductImage> images,
+                              BigDecimal weightKg, BigDecimal lengthCm, BigDecimal widthCm,
+                              BigDecimal heightCm) {
         requireStatus(ProductStatus.DRAFT, "edited");
         this.name = requireNonBlank(name, "name");
         this.nameEn = requireNonBlank(nameEn, "nameEn");
@@ -115,6 +132,10 @@ public final class Product extends AggregateRoot {
         this.customizable = customizable;
         this.images.clear();
         this.images.addAll(images == null ? List.of() : images);
+        this.weightKg = requirePositive(weightKg, "weightKg");
+        this.lengthCm = requirePositive(lengthCm, "lengthCm");
+        this.widthCm = requirePositive(widthCm, "widthCm");
+        this.heightCm = requirePositive(heightCm, "heightCm");
     }
 
     /**
@@ -177,6 +198,14 @@ public final class Product extends AggregateRoot {
         return value;
     }
 
+    /** {@code null} means "not yet known" and passes; a supplied value must be positive. */
+    private static BigDecimal requirePositive(BigDecimal value, String field) {
+        if (value != null && value.signum() <= 0) {
+            throw new IllegalArgumentException(field + " must be positive");
+        }
+        return value;
+    }
+
     public ProductId id() { return id; }
     public String code() { return code; }
     public String name() { return name; }
@@ -197,4 +226,8 @@ public final class Product extends AggregateRoot {
     public UUID approvedBy() { return approvedBy; }
     public Instant approvedAt() { return approvedAt; }
     public String rejectionReason() { return rejectionReason; }
+    public BigDecimal weightKg() { return weightKg; }
+    public BigDecimal lengthCm() { return lengthCm; }
+    public BigDecimal widthCm() { return widthCm; }
+    public BigDecimal heightCm() { return heightCm; }
 }

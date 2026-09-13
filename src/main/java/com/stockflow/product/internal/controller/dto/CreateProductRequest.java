@@ -5,7 +5,9 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Positive;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.UUID;
 
@@ -45,6 +47,19 @@ public record CreateProductRequest(
         boolean customizable,
 
         @Schema(description = "Media gallery, in display order")
-        List<String> images
+        List<String> images,
+
+        @Schema(description = "SCRUM-74: shipping weight, once known")
+        @Positive(message = "weightKg must be positive")
+        BigDecimal weightKg,
+
+        @Positive(message = "lengthCm must be positive")
+        BigDecimal lengthCm,
+
+        @Positive(message = "widthCm must be positive")
+        BigDecimal widthCm,
+
+        @Positive(message = "heightCm must be positive")
+        BigDecimal heightCm
 ) {
 }
