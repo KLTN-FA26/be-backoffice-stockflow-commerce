@@ -6,6 +6,8 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.MDC;
+import org.springframework.beans.factory.config.BeanDefinition;
+import org.springframework.context.annotation.Role;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
@@ -45,7 +47,13 @@ import java.util.UUID;
 // to the response the user is looking at. Those two statuses are precisely what those handlers
 // exist to make traceable.
 @Order(Ordered.HIGHEST_PRECEDENCE)
-public class CorrelationIdFilter extends OncePerRequestFilter {
+// ROLE_INFRASTRUCTURE + final: see IdempotencyFilter's javadoc for the full explanation.
+// Short version: Spring Modulith's ModuleObservabilityBeanPostProcessor treats every subpackage
+// under the base package (including common) as an implicit module and tries to wrap its beans for
+// tracing; ROLE_INFRASTRUCTURE is the documented opt-out. `final` is a second, independent guard —
+// OncePerRequestFilter's final methods can never be correctly proxied by CGLIB regardless.
+@Role(BeanDefinition.ROLE_INFRASTRUCTURE)
+public final class CorrelationIdFilter extends OncePerRequestFilter {
 
     public static final String HEADER = "X-Correlation-Id";
     public static final String MDC_KEY = "correlationId";

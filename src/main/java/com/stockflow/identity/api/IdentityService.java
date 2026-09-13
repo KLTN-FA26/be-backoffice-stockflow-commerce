@@ -1,23 +1,32 @@
 package com.stockflow.identity.api;
 
+import com.stockflow.common.security.RoleMatrixView;
+
+import java.util.List;
+import java.util.UUID;
+
 /**
  * THE public API of the identity module — the only package other modules may import.
  *
- * <p>STARTER STUB. Replace the empty body with the module's real use cases. Two rules from
- * {@code docs/adding-a-module.md} §1:</p>
- * <ul>
- *   <li>declare only what other modules actually call — the shortest surface that works;</li>
- *   <li>every parameter and return type is a record or enum declared in THIS package, never a
- *       domain object or JPA entity. {@code ArchitectureTest.theApiPackageLeaksNothingInternal}
- *       and {@code theApiPublishesNoEntities} enforce it.</li>
- * </ul>
- *
- * <p>To finish the module: add a migration, then the entity + repository adapter, then a
- * controller — see {@code docs/adding-a-module.md} §4.</p>
+ * <p>{@link RoleMatrixView} is {@code common.security}, not {@code identity.internal} — reusing it
+ * here is deliberate, not a boundary leak: {@code RoleMatrixAssembler}'s own javadoc anticipates
+ * exactly this caller ("identity-service collects one of these from every service and assembles
+ * the full matrix that the admin screen renders"). {@code ArchitectureTest.theApiPackageLeaksNothingInternal}
+ * only forbids depending on {@code ..internal..}; the platform-wide security vocabulary in
+ * {@code common} is available to every module's {@code api}, same as it is to every module's
+ * {@code internal}.</p>
  */
 public interface IdentityService {
 
-    // TODO: declare this module's use cases here. Every parameter and return type is a record
-    //       or enum declared in THIS package, never a domain object. See
-    //       inventory.api.InventoryService for the worked example.
+    /** The platform's roles, in {@code identity.app_role}. */
+    List<RoleSummary> listRoles();
+
+    /** The permission matrix for one role, for the permission-management screen. */
+    RoleMatrixView roleMatrix(String roleCode);
+
+    /** Assign a role to a user. Idempotent: assigning an already-held role is a no-op. */
+    void assignRole(UUID userId, String roleCode);
+
+    /** Revoke a role from a user. Idempotent: revoking one not held is a no-op. */
+    void revokeRole(UUID userId, String roleCode);
 }
