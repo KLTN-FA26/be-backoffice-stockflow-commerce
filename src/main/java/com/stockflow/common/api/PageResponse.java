@@ -3,6 +3,7 @@ package com.stockflow.common.api;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.util.List;
+import java.util.function.Function;
 
 /**
  * Standard pagination result, so no two modules invent their own field names.
@@ -46,5 +47,12 @@ public record PageResponse<T>(
     /** An empty page, for a filter that matched nothing. */
     public static <T> PageResponse<T> empty(int page, int size) {
         return of(List.of(), page, size, 0);
+    }
+
+    /** Maps every item, keeping the page metadata — for translating an api-layer summary into its
+     *  HTTP wire-format response without re-deriving the totals. */
+    public <R> PageResponse<R> map(Function<? super T, ? extends R> mapper) {
+        List<R> mapped = items.stream().<R>map(mapper).toList();
+        return new PageResponse<R>(mapped, page, size, totalElements, totalPages, hasNext, hasPrevious);
     }
 }

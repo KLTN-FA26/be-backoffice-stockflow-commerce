@@ -27,6 +27,8 @@ public enum ErrorCode {
     NOT_FOUND("Resource not found", 404),
     ROLE_NOT_FOUND("Role not found", 404),
     USER_NOT_FOUND("User not found", 404),
+    SUPPLIER_NOT_FOUND("Supplier not found", 404),
+    PURCHASE_ORDER_NOT_FOUND("Purchase order not found", 404),
 
     /** Credentials were correct but the account is LOCKED or DISABLED. Distinct from UNAUTHORIZED,
      *  which covers "wrong username or password" without revealing the account exists. */
@@ -41,6 +43,8 @@ public enum ErrorCode {
     DUPLICATE_KEY("A record with these values already exists", 409),
     /** The same idempotency key is still being processed. The client should poll, not retry blindly. */
     IDEMPOTENT_REQUEST_IN_PROGRESS("An identical request is still being processed", 409),
+    /** BR-PO: a new PO cannot be raised against a supplier that is not ACTIVE. */
+    SUPPLIER_INACTIVE("This supplier cannot receive new purchase orders", 409),
 
     // ---- 413 / 415: payload problems
     PAYLOAD_TOO_LARGE("The uploaded file is too large", 413),
