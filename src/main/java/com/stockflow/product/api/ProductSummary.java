@@ -11,6 +11,9 @@ import java.util.UUID;
  * {@code updateDetails(...)} on it outside a transaction. {@code images} is empty on a row that
  * came from the paginated list query (see {@code ProductSearchRepository}'s javadoc for why); only
  * a single-product read populates it.</p>
+ *
+ * <p>{@code submittedBy}/{@code submittedAt}/{@code approvedBy}/{@code approvedAt}/
+ * {@code rejectionReason} (SCRUM-57) are null until the corresponding transition has happened.</p>
  */
 public record ProductSummary(
         UUID productId,
@@ -26,7 +29,12 @@ public record ProductSummary(
         List<String> images,
         ProductStatus status,
         Instant createdAt,
-        String createdBy
+        String createdBy,
+        UUID submittedBy,
+        Instant submittedAt,
+        UUID approvedBy,
+        Instant approvedAt,
+        String rejectionReason
 ) {
 
     public ProductSummary {

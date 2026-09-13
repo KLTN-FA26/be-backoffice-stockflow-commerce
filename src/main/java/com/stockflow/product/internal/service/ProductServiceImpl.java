@@ -12,6 +12,8 @@ import com.stockflow.product.internal.domain.ProductRepository;
 import com.stockflow.product.internal.repository.ProductSearchCriteria;
 import com.stockflow.product.internal.repository.ProductSearchRepository;
 import com.stockflow.common.api.PageResponse;
+import com.stockflow.common.audit.Auditable;
+import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
@@ -22,6 +24,7 @@ import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Clock;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -41,10 +44,15 @@ class ProductServiceImpl implements ProductService {
 
     private final ProductRepository products;
     private final ProductSearchRepository search;
+    private final ProductEventPublisher events;
+    private final Clock clock;
 
-    ProductServiceImpl(ProductRepository products, ProductSearchRepository search) {
+    ProductServiceImpl(ProductRepository products, ProductSearchRepository search,
+                       ProductEventPublisher events, Clock clock) {
         this.products = products;
         this.search = search;
+        this.events = events;
+        this.clock = clock;
     }
 
     @Override
@@ -94,6 +102,36 @@ class ProductServiceImpl implements ProductService {
         return toSummary(products.save(product));
     }
 
+    @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "product", resourceId = "#productId")
+    public ProductSummary submit(UUID productId, UUID submittedBy) {
+        Product product = requireProduct(productId);
+        product.submit(submittedBy, clock.instant());
+        Product saved = products.save(product);
+        events.publishEventsOf(saved);
+        return toSummary(saved);
+    }
+
+    @Override
+    @Auditable(action = AuditAction.APPROVE, resourceType = "product", resourceId = "#productId")
+    public ProductSummary approve(UUID productId, UUID approverId) {
+        Product product = requireProduct(productId);
+        product.approve(approverId, clock.instant());
+        Product saved = products.save(product);
+        events.publishEventsOf(saved);
+        return toSummary(saved);
+    }
+
+    @Override
+    @Auditable(action = AuditAction.REJECT, resourceType = "product", resourceId = "#productId")
+    public ProductSummary reject(UUID productId, UUID approverId, String reason) {
+        Product product = requireProduct(productId);
+        product.reject(approverId, reason, clock.instant());
+        Product saved = products.save(product);
+        events.publishEventsOf(saved);
+        return toSummary(saved);
+    }
+
     private Product requireProduct(UUID productId) {
         return products.findById(new ProductId(productId))
                 .orElseThrow(() -> new BusinessException(ErrorCode.PRODUCT_NOT_FOUND,
@@ -126,6 +164,11 @@ class ProductServiceImpl implements ProductService {
                 product.images().stream().map(ProductImage::url).toList(),
                 product.status(),
                 product.createdAt(),
-                product.createdBy());
+                product.createdBy(),
+                product.submittedBy(),
+                product.submittedAt(),
+                product.approvedBy(),
+                product.approvedAt(),
+                product.rejectionReason());
     }
 }

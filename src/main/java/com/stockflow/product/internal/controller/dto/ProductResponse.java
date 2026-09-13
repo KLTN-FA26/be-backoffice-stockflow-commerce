@@ -33,6 +33,17 @@ public record ProductResponse(
         String status,
 
         Instant createdAt,
-        String createdBy
+        String createdBy,
+
+        @Schema(description = "Who submitted this product for approval, if it has been.")
+        UUID submittedBy,
+        Instant submittedAt,
+
+        @Schema(description = "Who approved this product, if it has been.")
+        UUID approvedBy,
+        Instant approvedAt,
+
+        @Schema(description = "Set when the last approval decision was a rejection.")
+        String rejectionReason
 ) {
 }

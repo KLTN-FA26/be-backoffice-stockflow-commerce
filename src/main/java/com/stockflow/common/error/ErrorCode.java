@@ -44,6 +44,8 @@ public enum ErrorCode {
     /** The same idempotency key is still being processed. The client should poll, not retry blindly. */
     IDEMPOTENT_REQUEST_IN_PROGRESS("An identical request is still being processed", 409),
     PRODUCT_CODE_ALREADY_EXISTS("A product with this code already exists", 409),
+    INVALID_PRODUCT_STATUS_TRANSITION("This product cannot move to that status right now", 409),
+    SELF_APPROVAL_NOT_ALLOWED("A product cannot be approved by the person who submitted it", 409),
 
     // ---- 413 / 415: payload problems
     PAYLOAD_TOO_LARGE("The uploaded file is too large", 413),

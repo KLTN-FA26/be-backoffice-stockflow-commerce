@@ -41,7 +41,12 @@ final class ProductPersistenceMapper {
                 entity.getStatus(),
                 entity.getVersion(),
                 entity.getCreatedAt(),
-                entity.getCreatedBy());
+                entity.getCreatedBy(),
+                entity.getSubmittedBy(),
+                entity.getSubmittedAt(),
+                entity.getApprovedBy(),
+                entity.getApprovedAt(),
+                entity.getRejectionReason());
     }
 
     private static ProductImage toDomain(ProductImageJpaEntity entity) {
@@ -51,7 +56,7 @@ final class ProductPersistenceMapper {
     /**
      * For the paginated list query only. Deliberately never touches {@code entity.getImages()} —
      * that collection is lazy and the list query does not fetch-join it (see
-     * {@code ProductSearchRepository}'s javadoc), so reading it here would either throw outside a
+     * {@code ProductSearchRepository}'s javadoc for why), so reading it here would either throw outside a
      * session or issue one extra SELECT per row.
      */
     static ProductSummary toSummaryWithoutImages(ProductJpaEntity entity) {
@@ -69,7 +74,12 @@ final class ProductPersistenceMapper {
                 List.of(),
                 entity.getStatus(),
                 entity.getCreatedAt(),
-                entity.getCreatedBy());
+                entity.getCreatedBy(),
+                entity.getSubmittedBy(),
+                entity.getSubmittedAt(),
+                entity.getApprovedBy(),
+                entity.getApprovedAt(),
+                entity.getRejectionReason());
     }
 
     /** Fresh row for an aggregate that has never been persisted. */
@@ -85,7 +95,12 @@ final class ProductPersistenceMapper {
                 product.brand(),
                 product.taxClass(),
                 product.status(),
-                product.customizable());
+                product.customizable(),
+                product.submittedBy(),
+                product.submittedAt(),
+                product.approvedBy(),
+                product.approvedAt(),
+                product.rejectionReason());
         entity.replaceImages(toEntities(product));
         return entity;
     }
@@ -93,7 +108,9 @@ final class ProductPersistenceMapper {
     /** Copy the aggregate's state onto a row already managed by the persistence context. */
     static void applyToEntity(Product product, ProductJpaEntity entity) {
         entity.apply(product.name(), product.nameEn(), product.categoryId(), product.description(),
-                product.descriptionEn(), product.brand(), product.taxClass(), product.customizable());
+                product.descriptionEn(), product.brand(), product.taxClass(), product.customizable(),
+                product.status(), product.submittedBy(), product.submittedAt(), product.approvedBy(),
+                product.approvedAt(), product.rejectionReason());
         entity.replaceImages(toEntities(product));
     }
 
