@@ -1,15 +1,21 @@
 package com.stockflow.identity.internal.service;
 
 import com.stockflow.identity.api.IdentityService;
+import com.stockflow.identity.api.LoginCommand;
 import com.stockflow.identity.api.RoleSummary;
+import com.stockflow.identity.api.TokenResponse;
+import com.stockflow.identity.internal.domain.User;
+import com.stockflow.identity.internal.domain.UserId;
+import com.stockflow.identity.internal.domain.UserRepository;
 import com.stockflow.identity.internal.entity.RoleJpaEntity;
 import com.stockflow.identity.internal.entity.RolePermissionJpaEntity;
 import com.stockflow.identity.internal.entity.UserRoleJpaEntity;
 import com.stockflow.identity.internal.repository.PermissionJpaRepository;
 import com.stockflow.identity.internal.repository.RoleJpaRepository;
 import com.stockflow.identity.internal.repository.RolePermissionJpaRepository;
-import com.stockflow.identity.internal.repository.UserJpaRepository;
 import com.stockflow.identity.internal.repository.UserRoleJpaRepository;
+import com.stockflow.common.audit.AuditAction;
+import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
@@ -20,10 +26,20 @@ import com.stockflow.common.security.PermissionCode;
 import com.stockflow.common.security.RoleMatrixAssembler;
 import com.stockflow.common.security.RoleMatrixView;
 
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.oauth2.jwt.JwsHeader;
+import org.springframework.security.oauth2.jwt.JwtClaimsSet;
+import org.springframework.security.oauth2.jwt.JwtEncoder;
+import org.springframework.security.oauth2.jwt.JwtEncoderParameters;
+import org.springframework.security.oauth2.jose.jws.SignatureAlgorithm;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Clock;
+import java.time.Instant;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -31,42 +47,50 @@ import java.util.stream.Collectors;
 /**
  * The only implementation of {@link IdentityService}, and the module's transaction boundary.
  *
- * <p>No {@code User} aggregate is loaded here. Assigning or revoking a role is a join-row
- * operation whose only invariant — a user cannot hold the same role twice — is already enforced by
- * {@code uk_user_role} in the database; there is no state machine or cross-field rule that would
- * justify routing it through {@code User.java}'s (still-stub) aggregate. That aggregate is for a
- * later ticket that gives the user account itself real behaviour (activation, lockout, etc).</p>
- *
- * <p><b>Also no repository port here, unlike {@code inventory}'s
- * {@code StockItemRepository}/{@code StockItemRepositoryAdapter} split.</b> That split earns its
- * keep when the domain has behaviour to protect from persistence concerns (FEFO planning,
- * pessimistic locking, entity↔aggregate mapping). Role/permission/user-role data has none of that
- * — it is flat reference data — so the five {@code *JpaRepository} interfaces are {@code public}
- * and injected directly, rather than adding a port/adapter/mapper trio that would map one flat
- * shape onto another for no behavioural gain. If this module later grows real domain logic (a
- * user activation/lockout state machine, say), that is the point to introduce the port for
- * whichever aggregate carries it — not before.</p>
+ * <p>Role/permission assignment stays a join-row operation with no {@code User} aggregate involved
+ * (see the reasoning that used to be the whole point of this javadoc, still true for
+ * {@link #assignRole}/{@link #revokeRole}). {@link #login} (SCRUM-378) is the exception: signing in
+ * has a real invariant to protect — a {@code LOCKED}/{@code DISABLED} account must never
+ * authenticate — so it is the one operation here that goes through {@link UserRepository} and the
+ * {@code User} aggregate instead of a raw JPA repository.</p>
  */
 @Service
 @Transactional
 class IdentityServiceImpl implements IdentityService {
 
+    /** RFC 7519 gives no fixed lifetime; an hour is short enough that a leaked token stops mattering
+     *  quickly and long enough that this sprint's demo does not need a refresh flow. */
+    private static final long TOKEN_TTL_SECONDS = 3600;
+
     private final RoleJpaRepository roles;
     private final PermissionJpaRepository permissions;
     private final RolePermissionJpaRepository rolePermissions;
     private final UserRoleJpaRepository userRoles;
-    private final UserJpaRepository users;
+    private final UserRepository userRepository;
     private final PermissionCatalog catalog;
+    private final PasswordEncoder passwordEncoder;
+    private final JwtEncoder jwtEncoder;
+    private final Clock clock;
+
+    /** Hashed once at startup and matched against for an unknown username, so a login attempt for
+     *  a real account and a made-up one cost the same bcrypt work — the timing side-channel that
+     *  would otherwise let an attacker enumerate valid usernames. */
+    private final String dummyPasswordHash;
 
     IdentityServiceImpl(RoleJpaRepository roles, PermissionJpaRepository permissions,
                         RolePermissionJpaRepository rolePermissions, UserRoleJpaRepository userRoles,
-                        UserJpaRepository users, PermissionCatalog catalog) {
+                        UserRepository userRepository, PermissionCatalog catalog,
+                        PasswordEncoder passwordEncoder, JwtEncoder jwtEncoder, Clock clock) {
         this.roles = roles;
         this.permissions = permissions;
         this.rolePermissions = rolePermissions;
         this.userRoles = userRoles;
-        this.users = users;
+        this.userRepository = userRepository;
         this.catalog = catalog;
+        this.passwordEncoder = passwordEncoder;
+        this.jwtEncoder = jwtEncoder;
+        this.clock = clock;
+        this.dummyPasswordHash = passwordEncoder.encode(Identifiers.newId().toString());
     }
 
     @Override
@@ -112,8 +136,66 @@ class IdentityServiceImpl implements IdentityService {
         userRoles.findByUserIdAndRoleId(userId, role.getId()).ifPresent(userRoles::delete);
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Deliberately never distinguishes "no such username" from "wrong password" in either the
+     * response or the time it takes to answer — see {@link #dummyPasswordHash}. Once the password
+     * is confirmed correct, {@link User#signIn} is what actually enforces the account-status
+     * invariant, and its {@link com.stockflow.identity.internal.domain.AccountNotActiveException}
+     * is allowed to reveal the specific reason: at that point the caller has already proven they
+     * own the account.</p>
+     */
+    @Override
+    @Auditable(action = AuditAction.LOGIN, resourceType = "user", resourceId = "#command.username()")
+    public TokenResponse login(LoginCommand command) {
+        Optional<User> found = userRepository.findByUsername(command.username());
+        String hashToCheck = found.map(User::passwordHash).orElse(dummyPasswordHash);
+        boolean passwordMatches = passwordEncoder.matches(command.password(), hashToCheck);
+        if (found.isEmpty() || !passwordMatches) {
+            throw new BusinessException(ErrorCode.UNAUTHORIZED, "Invalid username or password");
+        }
+
+        User user = found.get();
+        user.signIn(clock.instant());
+        User saved = userRepository.save(user);
+
+        List<RoleJpaEntity> grantedRoles = rolesOf(saved.id());
+        Set<PermissionCode> grantedPermissions = grantedRoles.stream()
+                .flatMap(role -> grantedPermissionsOf(role.getId()).stream())
+                .collect(Collectors.toUnmodifiableSet());
+
+        return new TokenResponse(issueToken(saved, grantedRoles, grantedPermissions),
+                "Bearer", TOKEN_TTL_SECONDS);
+    }
+
+    private String issueToken(User user, List<RoleJpaEntity> grantedRoles,
+                              Set<PermissionCode> grantedPermissions) {
+        Instant now = clock.instant();
+        JwtClaimsSet claims = JwtClaimsSet.builder()
+                .issuedAt(now)
+                .expiresAt(now.plusSeconds(TOKEN_TTL_SECONDS))
+                .subject(user.id().value().toString())
+                .claim("preferred_username", user.username())
+                .claim("roles", grantedRoles.stream().map(RoleJpaEntity::getCode).toList())
+                .claim("permissions", grantedPermissions.stream().map(PermissionCode::toString).toList())
+                // No per-role scope data exists yet (see roleMatrix()'s javadoc, ADR-0004) - ALL is
+                // the same placeholder used there, not a real per-user grant.
+                .claim("scope_level", DataScope.ALL.name())
+                .build();
+        JwsHeader header = JwsHeader.with(SignatureAlgorithm.RS256).build();
+        return jwtEncoder.encode(JwtEncoderParameters.from(header, claims)).getTokenValue();
+    }
+
+    private List<RoleJpaEntity> rolesOf(UserId userId) {
+        List<UUID> roleIds = userRoles.findByUserId(userId.value()).stream()
+                .map(UserRoleJpaEntity::getRoleId)
+                .toList();
+        return roles.findAllById(roleIds);
+    }
+
     private void requireUser(UUID userId) {
-        if (!users.existsById(userId)) {
+        if (!userRepository.existsById(new UserId(userId))) {
             throw new BusinessException(ErrorCode.USER_NOT_FOUND, "No user with id " + userId);
         }
     }
@@ -136,6 +218,6 @@ class IdentityServiceImpl implements IdentityService {
                 .toList();
         return permissions.findAllById(permissionIds).stream()
                 .map(p -> PermissionCode.of(p.getResource(), Action.valueOf(p.getAction())))
-                .collect(Collectors.toUnmodifiableSet());
+                .collect(Collectors.toCollection(LinkedHashSet::new));
     }
 }
