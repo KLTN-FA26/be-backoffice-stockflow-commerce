@@ -11,10 +11,6 @@ import java.util.UUID;
  * <p>Every parameter and return type is a record or enum declared in THIS package, never a
  * domain object or JPA entity ({@code ArchitectureTest.theApiPackageLeaksNothingInternal} and
  * {@code theApiPublishesNoEntities} enforce it).</p>
- *
- * <p><b>Scope note (SCRUM-56/WBS 3.1.1.2):</b> master-data CRUD only. {@code submit}/{@code
- * approve}/{@code reject} land on the stacked SCRUM-57 branch (WBS 3.1.1.3) — every product created
- * through this interface today stays {@link ProductStatus#DRAFT}.</p>
  */
 public interface ProductService {
 
@@ -26,4 +22,17 @@ public interface ProductService {
     PageResponse<ProductSummary> list(ListProductsQuery query);
 
     ProductSummary update(UpdateProductCommand command);
+
+    /** DRAFT → PENDING_APPROVAL. Requires a category (BR-PRD-001, minimal subset — see SCRUM-57). */
+    ProductSummary submit(UUID productId, UUID submittedBy);
+
+    /** PENDING_APPROVAL → APPROVED. BR-PRD-003: {@code approverId} must not be who submitted it. */
+    ProductSummary approve(UUID productId, UUID approverId);
+
+    /** PENDING_APPROVAL → DRAFT. */
+    ProductSummary reject(UUID productId, UUID approverId, String reason);
+
+    /** APPROVED/PUBLISHED → DISCONTINUED. Terminal — see {@code Product.discontinue}'s javadoc for
+     *  the BR-PRD-005 gap this does not yet enforce. */
+    ProductSummary discontinue(UUID productId);
 }

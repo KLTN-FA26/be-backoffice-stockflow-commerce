@@ -3,6 +3,7 @@ package com.stockflow.product.internal.controller.dto;
 import com.stockflow.product.api.TaxClass;
 import io.swagger.v3.oas.annotations.media.Schema;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -33,6 +34,23 @@ public record ProductResponse(
         String status,
 
         Instant createdAt,
-        String createdBy
+        String createdBy,
+
+        @Schema(description = "Who submitted this product for approval, if it has been.")
+        UUID submittedBy,
+        Instant submittedAt,
+
+        @Schema(description = "Who approved this product, if it has been.")
+        UUID approvedBy,
+        Instant approvedAt,
+
+        @Schema(description = "Set when the last approval decision was a rejection.")
+        String rejectionReason,
+
+        @Schema(description = "SCRUM-74: shipping weight/dimensions, null until known.")
+        BigDecimal weightKg,
+        BigDecimal lengthCm,
+        BigDecimal widthCm,
+        BigDecimal heightCm
 ) {
 }

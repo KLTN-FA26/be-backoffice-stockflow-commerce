@@ -5,6 +5,7 @@ import com.stockflow.product.api.ProductService;
 import com.stockflow.product.api.ProductStatus;
 import com.stockflow.product.internal.controller.dto.CreateProductRequest;
 import com.stockflow.product.internal.controller.dto.ProductResponse;
+import com.stockflow.product.internal.controller.dto.RejectProductRequest;
 import com.stockflow.product.internal.controller.dto.UpdateProductRequest;
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.api.PageResponse;
@@ -12,6 +13,8 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.security.Action;
+import com.stockflow.common.security.AuthenticatedUser;
+import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
 import io.swagger.v3.oas.annotations.Operation;
@@ -32,8 +35,8 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * HTTP entry point for the product master (SCRUM-56/WBS 3.1.1.2). The approval workflow endpoints
- * (submit/approve/reject) land on the stacked SCRUM-57 branch.
+ * HTTP entry point for the product master (SCRUM-56/WBS 3.1.1.2) and its approval workflow
+ * (SCRUM-57/WBS 3.1.1.3).
  *
  * <p><b>Handler methods are public.</b> {@code @RequiresPermission} is applied by a Spring AOP
  * proxy, which advises a non-public method only when the generated proxy happens to land in the
@@ -48,7 +51,7 @@ import java.util.UUID;
         label = "Products",
         route = "/admin/products",
         apiPath = "/api/v1/products",
-        actions = {Action.VIEW_PAGE, Action.READ, Action.CREATE, Action.UPDATE})
+        actions = {Action.VIEW_PAGE, Action.READ, Action.CREATE, Action.UPDATE, Action.APPROVE})
 class ProductController {
 
     private final ProductService productService;
@@ -99,5 +102,42 @@ class ProductController {
                                                @Valid @RequestBody UpdateProductRequest request) {
         return ApiResponse.ok(mapper.toResponse(
                 productService.update(mapper.toCommand(productId, request))));
+    }
+
+    @PostMapping("/{productId}/submission")
+    @Operation(summary = "Submit a draft product for approval")
+    @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.UPDATE)
+    public ApiResponse<ProductResponse> submit(@PathVariable UUID productId,
+                                               @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(mapper.toResponse(productService.submit(productId, user.userId())));
+    }
+
+    @PostMapping("/{productId}/approval")
+    @Operation(summary = "Approve a product pending approval")
+    @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.APPROVE)
+    public ApiResponse<ProductResponse> approve(@PathVariable UUID productId,
+                                                @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(mapper.toResponse(productService.approve(productId, user.userId())));
+    }
+
+    @PostMapping("/{productId}/rejection")
+    @Operation(summary = "Reject a product pending approval, sending it back to draft")
+    @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.APPROVE)
+    public ApiResponse<ProductResponse> reject(@PathVariable UUID productId,
+                                               @AuthenticatedUser CurrentUser user,
+                                               @Valid @RequestBody RejectProductRequest request) {
+        return ApiResponse.ok(mapper.toResponse(
+                productService.reject(productId, user.userId(), request.reason())));
+    }
+
+    /**
+     * Terminal (WBS 3.1.8.1). See {@code Product.discontinue}'s javadoc for the BR-PRD-005
+     * (open PO / unshipped order line) gap this does not yet enforce.
+     */
+    @PostMapping("/{productId}/discontinuation")
+    @Operation(summary = "Discontinue an approved or published product")
+    @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.APPROVE)
+    public ApiResponse<ProductResponse> discontinue(@PathVariable UUID productId) {
+        return ApiResponse.ok(mapper.toResponse(productService.discontinue(productId)));
     }
 }

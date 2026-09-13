@@ -13,6 +13,8 @@ import jakarta.persistence.OneToMany;
 import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
 
+import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -63,6 +65,33 @@ public class ProductJpaEntity extends BaseEntity {
     @Column(name = "customizable", nullable = false)
     private boolean customizable;
 
+    @Column(name = "submitted_by")
+    private UUID submittedBy;
+
+    @Column(name = "submitted_at")
+    private Instant submittedAt;
+
+    @Column(name = "approved_by")
+    private UUID approvedBy;
+
+    @Column(name = "approved_at")
+    private Instant approvedAt;
+
+    @Column(name = "rejection_reason", length = 1000)
+    private String rejectionReason;
+
+    @Column(name = "weight_kg", precision = 10, scale = 3)
+    private BigDecimal weightKg;
+
+    @Column(name = "length_cm", precision = 10, scale = 2)
+    private BigDecimal lengthCm;
+
+    @Column(name = "width_cm", precision = 10, scale = 2)
+    private BigDecimal widthCm;
+
+    @Column(name = "height_cm", precision = 10, scale = 2)
+    private BigDecimal heightCm;
+
     /**
      * The media gallery is part of the aggregate, so it is loaded and saved with it —
      * {@code cascade = ALL}, {@code orphanRemoval = true}, and no repository of their own. Mirrors
@@ -78,7 +107,10 @@ public class ProductJpaEntity extends BaseEntity {
 
     public ProductJpaEntity(UUID id, String code, String name, String nameEn, UUID categoryId,
                             String description, String descriptionEn, String brand,
-                            TaxClass taxClass, ProductStatus status, boolean customizable) {
+                            TaxClass taxClass, ProductStatus status, boolean customizable,
+                            UUID submittedBy, Instant submittedAt, UUID approvedBy,
+                            Instant approvedAt, String rejectionReason, BigDecimal weightKg,
+                            BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm) {
         super(id);
         this.code = code;
         this.name = name;
@@ -90,11 +122,23 @@ public class ProductJpaEntity extends BaseEntity {
         this.taxClass = taxClass;
         this.status = status;
         this.customizable = customizable;
+        this.submittedBy = submittedBy;
+        this.submittedAt = submittedAt;
+        this.approvedBy = approvedBy;
+        this.approvedAt = approvedAt;
+        this.rejectionReason = rejectionReason;
+        this.weightKg = weightKg;
+        this.lengthCm = lengthCm;
+        this.widthCm = widthCm;
+        this.heightCm = heightCm;
     }
 
     /** Copies every editable field onto a managed row, so Hibernate's dirty checking writes the UPDATE. */
     public void apply(String name, String nameEn, UUID categoryId, String description,
-                      String descriptionEn, String brand, TaxClass taxClass, boolean customizable) {
+                      String descriptionEn, String brand, TaxClass taxClass, boolean customizable,
+                      ProductStatus status, UUID submittedBy, Instant submittedAt, UUID approvedBy,
+                      Instant approvedAt, String rejectionReason, BigDecimal weightKg,
+                      BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm) {
         this.name = name;
         this.nameEn = nameEn;
         this.categoryId = categoryId;
@@ -103,6 +147,16 @@ public class ProductJpaEntity extends BaseEntity {
         this.brand = brand;
         this.taxClass = taxClass;
         this.customizable = customizable;
+        this.status = status;
+        this.submittedBy = submittedBy;
+        this.submittedAt = submittedAt;
+        this.approvedBy = approvedBy;
+        this.approvedAt = approvedAt;
+        this.rejectionReason = rejectionReason;
+        this.weightKg = weightKg;
+        this.lengthCm = lengthCm;
+        this.widthCm = widthCm;
+        this.heightCm = heightCm;
     }
 
     public void replaceImages(List<ProductImageJpaEntity> replacement) {
@@ -123,5 +177,14 @@ public class ProductJpaEntity extends BaseEntity {
     public TaxClass getTaxClass() { return taxClass; }
     public ProductStatus getStatus() { return status; }
     public boolean isCustomizable() { return customizable; }
+    public UUID getSubmittedBy() { return submittedBy; }
+    public Instant getSubmittedAt() { return submittedAt; }
+    public UUID getApprovedBy() { return approvedBy; }
+    public Instant getApprovedAt() { return approvedAt; }
+    public String getRejectionReason() { return rejectionReason; }
+    public BigDecimal getWeightKg() { return weightKg; }
+    public BigDecimal getLengthCm() { return lengthCm; }
+    public BigDecimal getWidthCm() { return widthCm; }
+    public BigDecimal getHeightCm() { return heightCm; }
     public List<ProductImageJpaEntity> getImages() { return images; }
 }
