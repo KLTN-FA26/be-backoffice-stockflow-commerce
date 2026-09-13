@@ -1,0 +1,38 @@
+package com.stockflow.procurement.internal.controller.dto;
+
+import io.swagger.v3.oas.annotations.media.Schema;
+
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.util.List;
+import java.util.UUID;
+
+@Schema(name = "PurchaseOrder", description = "A purchase order to a supplier")
+public record PurchaseOrderResponse(
+
+        UUID purchaseOrderId,
+
+        @Schema(example = "PO-20260913-000001")
+        String poNumber,
+
+        UUID supplierId,
+
+        @Schema(example = "DRAFT")
+        String status,
+
+        String currency,
+        BigDecimal totalAmount,
+        LocalDate expectedAt,
+
+        @Schema(description = "Empty on a list row - see the docs on PurchaseOrderSearchRepository for why.")
+        List<POLineResponse> lines,
+
+        Instant createdAt,
+        String createdBy,
+
+        @Schema(description = "BR-PO-003: true when another open PO for this supplier, delivery "
+                + "date and at least one overlapping SKU already exists. A warning, not a rejection.")
+        boolean possibleDuplicate
+) {
+}
