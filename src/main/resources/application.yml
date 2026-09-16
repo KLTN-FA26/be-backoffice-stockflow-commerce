@@ -7,6 +7,11 @@
 # =============================================================================
 
 spring:
+  servlet:
+    multipart:
+      # Category policy still enforces 10 MiB product / 50 MiB design limits.
+      max-file-size: 50MB
+      max-request-size: 51MB
   application:
     name: stockflow-monolith
 

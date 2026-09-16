@@ -236,6 +236,10 @@ public final class Product extends AggregateRoot {
     public TaxClass taxClass() { return taxClass; }
     public boolean customizable() { return customizable; }
     public List<ProductImage> images() { return List.copyOf(images); }
+    public void addImage(ProductImage image) {
+        requireStatus(ProductStatus.DRAFT, "edited");
+        images.add(image);
+    }
     public ProductStatus status() { return status; }
     public long version() { return version; }
     public Instant createdAt() { return createdAt; }

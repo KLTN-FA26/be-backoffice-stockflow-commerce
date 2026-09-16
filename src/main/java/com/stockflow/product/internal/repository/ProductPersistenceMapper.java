@@ -54,7 +54,7 @@ final class ProductPersistenceMapper {
     }
 
     private static ProductImage toDomain(ProductImageJpaEntity entity) {
-        return new ProductImage(entity.getId(), entity.getUrl(), entity.getSortOrder());
+        return new ProductImage(entity.getId(), entity.getUrl(), entity.getSortOrder(), entity.storedFile());
     }
 
     /**
@@ -129,7 +129,7 @@ final class ProductPersistenceMapper {
 
     private static List<ProductImageJpaEntity> toEntities(Product product) {
         return product.images().stream()
-                .map(image -> new ProductImageJpaEntity(image.id(), image.url(), image.sortOrder()))
+                .map(image -> new ProductImageJpaEntity(image.id(), image.url(), image.sortOrder(), image.storedFile()))
                 .toList();
     }
 }

@@ -31,6 +31,25 @@ public class DesignDraftJpaEntity extends BaseEntity {
     @Column(name = "status", nullable = false, length = 32)
     private DesignStatus status;
 
+    @Column(name = "owner_user_id")
+    private UUID ownerUserId;
+    @Column(name = "assigned_user_id")
+    private UUID assignedUserId;
+    @Column(name = "current_artifact_id")
+    private UUID currentArtifactId;
+    @Column(name = "preflight_passed", nullable = false)
+    private boolean preflightPassed;
+
+    public UUID getOwnerUserId() { return ownerUserId; }
+    public UUID getAssignedUserId() { return assignedUserId; }
+    public UUID getCurrentArtifactId() { return currentArtifactId; }
+
+    /** Checking the previous file says nothing about this new revision. */
+    public void attachArtifact(UUID artifactId) {
+        currentArtifactId = artifactId;
+        preflightPassed = false;
+    }
+
     protected DesignDraftJpaEntity() {
     }
 
