@@ -2,8 +2,14 @@ package com.stockflow.procurement.internal.controller;
 
 import com.stockflow.procurement.api.ListPurchaseOrdersQuery;
 import com.stockflow.procurement.api.ProcurementService;
+import com.stockflow.procurement.api.SupplierSpendReportQuery;
+import com.stockflow.procurement.internal.controller.dto.CancelPurchaseOrderRequest;
+import com.stockflow.procurement.internal.controller.dto.CloseShortRequest;
 import com.stockflow.procurement.internal.controller.dto.CreatePurchaseOrderRequest;
 import com.stockflow.procurement.internal.controller.dto.PurchaseOrderResponse;
+import com.stockflow.procurement.internal.controller.dto.PurchaseOrderStatusCountResponse;
+import com.stockflow.procurement.internal.controller.dto.ReceiveGoodsRequest;
+import com.stockflow.procurement.internal.controller.dto.SupplierSpendResponse;
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.error.BusinessException;
@@ -15,6 +21,7 @@ import com.stockflow.common.security.RequiresPermission;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -25,6 +32,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
 
@@ -88,5 +96,69 @@ class PurchaseOrderController {
         var query = new ListPurchaseOrdersQuery(
                 page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, supplierId, status, sort);
         return ApiResponse.ok(procurementService.list(query).map(mapper::toResponse));
+    }
+
+    @PostMapping("/{purchaseOrderId}/approval")
+    @Operation(summary = "Approve a draft purchase order")
+    @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.APPROVE)
+    public ApiResponse<PurchaseOrderResponse> approve(@PathVariable UUID purchaseOrderId) {
+        return ApiResponse.ok(mapper.toResponse(procurementService.approve(purchaseOrderId)));
+    }
+
+    @PostMapping("/{purchaseOrderId}/sending")
+    @Operation(summary = "Mark an approved purchase order as sent to the supplier")
+    @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.UPDATE)
+    public ApiResponse<PurchaseOrderResponse> send(@PathVariable UUID purchaseOrderId) {
+        return ApiResponse.ok(mapper.toResponse(procurementService.send(purchaseOrderId)));
+    }
+
+    @PostMapping("/{purchaseOrderId}/cancellation")
+    @Operation(summary = "Cancel a purchase order")
+    @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.UPDATE)
+    public ApiResponse<PurchaseOrderResponse> cancel(@PathVariable UUID purchaseOrderId,
+            @Valid @RequestBody CancelPurchaseOrderRequest request) {
+        return ApiResponse.ok(mapper.toResponse(
+                procurementService.cancel(purchaseOrderId, request.reason())));
+    }
+
+    @PostMapping("/{purchaseOrderId}/receipts")
+    @Operation(summary = "Record goods received against a purchase order")
+    @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.UPDATE)
+    public ApiResponse<PurchaseOrderResponse> receiveGoods(@PathVariable UUID purchaseOrderId,
+            @Valid @RequestBody ReceiveGoodsRequest request) {
+        return ApiResponse.ok(mapper.toResponse(
+                procurementService.receiveGoods(purchaseOrderId, mapper.toCommand(request))));
+    }
+
+    @PostMapping("/{purchaseOrderId}/closure-short")
+    @Operation(summary = "Close a purchase order short, writing off the remaining open quantity")
+    @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.UPDATE)
+    public ApiResponse<PurchaseOrderResponse> closeShort(@PathVariable UUID purchaseOrderId,
+            @Valid @RequestBody CloseShortRequest request) {
+        return ApiResponse.ok(mapper.toResponse(
+                procurementService.closeShort(purchaseOrderId, request.reason())));
+    }
+
+    @GetMapping("/reports/status-dashboard")
+    @Operation(summary = "Count of purchase orders per status")
+    @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.READ)
+    public ApiResponse<List<PurchaseOrderStatusCountResponse>> statusDashboard() {
+        return ApiResponse.ok(procurementService.statusDashboard().stream()
+                .map(mapper::toResponse)
+                .toList());
+    }
+
+    @GetMapping("/reports/supplier-spend")
+    @Operation(summary = "Suppliers ranked by total spend, highest first")
+    @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.READ)
+    public ApiResponse<PageResponse<SupplierSpendResponse>> supplierSpend(
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(required = false) Integer size,
+            @RequestParam(required = false) UUID supplierId,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate expectedAtFrom,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate expectedAtTo) {
+        var query = new SupplierSpendReportQuery(
+                page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, supplierId, expectedAtFrom, expectedAtTo);
+        return ApiResponse.ok(procurementService.supplierSpend(query).map(mapper::toResponse));
     }
 }

@@ -33,6 +33,12 @@ public record PurchaseOrderResponse(
 
         @Schema(description = "BR-PO-003: true when another open PO for this supplier, delivery "
                 + "date and at least one overlapping SKU already exists. A warning, not a rejection.")
-        boolean possibleDuplicate
+        boolean possibleDuplicate,
+
+        @Schema(description = "Set only once the order is CANCELLED.")
+        String cancellationReason,
+
+        @Schema(description = "Set only once the order is CLOSED_SHORT.")
+        String closeShortReason
 ) {
 }

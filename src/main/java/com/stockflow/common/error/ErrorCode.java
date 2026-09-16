@@ -50,6 +50,7 @@ public enum ErrorCode {
     PRODUCT_CODE_ALREADY_EXISTS("A product with this code already exists", 409),
     INVALID_PRODUCT_STATUS_TRANSITION("This product cannot move to that status right now", 409),
     SELF_APPROVAL_NOT_ALLOWED("A product cannot be approved by the person who submitted it", 409),
+    INVALID_PURCHASE_ORDER_TRANSITION("This purchase order cannot move to that status right now", 409),
 
     // ---- 413 / 415: payload problems
     PAYLOAD_TOO_LARGE("The uploaded file is too large", 413),
