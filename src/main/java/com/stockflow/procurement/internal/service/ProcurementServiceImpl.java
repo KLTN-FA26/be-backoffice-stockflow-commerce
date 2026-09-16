@@ -55,8 +55,8 @@ import java.util.stream.Collectors;
 class ProcurementServiceImpl implements ProcurementService {
 
     private static final SortWhitelist SORT =
-            SortWhitelist.of("poNumber", "expectedAt", "createdAt", "status")
-                    .withDefault("createdAt", Sort.Direction.DESC);
+            SortWhitelist.of("poNumber", "expectedAt", "createdAt", "lastModifiedAt", "status")
+                    .withDefault("lastModifiedAt", Sort.Direction.DESC);
 
     private final PurchaseOrderRepository purchaseOrders;
     private final PurchaseOrderSearchRepository search;
@@ -230,6 +230,8 @@ class ProcurementServiceImpl implements ProcurementService {
                 lines,
                 order.createdAt(),
                 order.createdBy(),
+                order.lastModifiedAt(),
+                order.lastModifiedBy(),
                 possibleDuplicate,
                 order.cancellationReason(),
                 order.closeShortReason());

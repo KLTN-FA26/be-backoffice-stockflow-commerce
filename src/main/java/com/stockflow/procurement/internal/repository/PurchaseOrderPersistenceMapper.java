@@ -41,7 +41,9 @@ final class PurchaseOrderPersistenceMapper {
                 entity.getCloseShortReason(),
                 entity.getVersion(),
                 entity.getCreatedAt(),
-                entity.getCreatedBy());
+                entity.getCreatedBy(),
+                entity.getLastModifiedAt(),
+                entity.getLastModifiedBy());
     }
 
     private static PoLine toDomain(POLineJpaEntity entity, Currency currency) {
@@ -63,6 +65,8 @@ final class PurchaseOrderPersistenceMapper {
                 List.of(),
                 entity.getCreatedAt(),
                 entity.getCreatedBy(),
+                entity.getLastModifiedAt(),
+                entity.getLastModifiedBy(),
                 false,
                 entity.getCancellationReason(),
                 entity.getCloseShortReason());

@@ -58,6 +58,8 @@ public final class Product extends AggregateRoot {
      *  invariant — same treatment {@code version} gets, not a protected business rule. */
     private final Instant createdAt;
     private final String createdBy;
+    private final Instant lastModifiedAt;
+    private final String lastModifiedBy;
 
     private UUID submittedBy;
     private Instant submittedAt;
@@ -69,6 +71,7 @@ public final class Product extends AggregateRoot {
                    String description, String descriptionEn, String brand, TaxClass taxClass,
                    boolean customizable, List<ProductImage> images, ProductStatus status,
                    long version, Instant createdAt, String createdBy,
+                   Instant lastModifiedAt, String lastModifiedBy,
                    UUID submittedBy, Instant submittedAt, UUID approvedBy, Instant approvedAt,
                    String rejectionReason, BigDecimal weightKg, BigDecimal lengthCm,
                    BigDecimal widthCm, BigDecimal heightCm) {
@@ -87,6 +90,8 @@ public final class Product extends AggregateRoot {
         this.version = version;
         this.createdAt = createdAt;
         this.createdBy = createdBy;
+        this.lastModifiedAt = lastModifiedAt;
+        this.lastModifiedBy = lastModifiedBy;
         this.submittedBy = submittedBy;
         this.submittedAt = submittedAt;
         this.approvedBy = approvedBy;
@@ -106,7 +111,8 @@ public final class Product extends AggregateRoot {
                                 BigDecimal heightCm) {
         return new Product(ProductId.newId(), code, name, nameEn, categoryId, description,
                 descriptionEn, brand, taxClass, customizable, images, ProductStatus.DRAFT, 0L,
-                null, null, null, null, null, null, null, weightKg, lengthCm, widthCm, heightCm);
+                null, null, null, null, null, null, null, null, null,
+                weightKg, lengthCm, widthCm, heightCm);
     }
 
     /**
@@ -240,6 +246,8 @@ public final class Product extends AggregateRoot {
     public long version() { return version; }
     public Instant createdAt() { return createdAt; }
     public String createdBy() { return createdBy; }
+    public Instant lastModifiedAt() { return lastModifiedAt; }
+    public String lastModifiedBy() { return lastModifiedBy; }
     public UUID submittedBy() { return submittedBy; }
     public Instant submittedAt() { return submittedAt; }
     public UUID approvedBy() { return approvedBy; }

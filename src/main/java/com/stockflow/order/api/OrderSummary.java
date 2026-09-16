@@ -20,7 +20,10 @@ public record OrderSummary(
         OrderStatus status,
         Money total,
         List<LineSummary> lines,
-        Instant placedAt
+        Instant placedAt,
+        String createdBy,
+        Instant lastModifiedAt,
+        String lastModifiedBy
 ) {
 
     /**

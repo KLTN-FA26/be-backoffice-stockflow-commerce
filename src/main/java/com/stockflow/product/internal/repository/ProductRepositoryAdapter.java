@@ -69,7 +69,10 @@ class ProductRepositoryAdapter implements ProductRepository, ProductSearchReposi
         if (existing.isPresent()) {
             ProductJpaEntity managed = existing.get();
             ProductPersistenceMapper.applyToEntity(product, managed);
-            return ProductPersistenceMapper.toDomain(jpa.save(managed));
+            // saveAndFlush, not save: @PreUpdate (which sets lastModifiedAt/lastModifiedBy) only
+            // runs at flush time, so reading the entity back from a plain save() here would return
+            // its stale pre-update audit fields even though the eventual UPDATE is correct.
+            return ProductPersistenceMapper.toDomain(jpa.saveAndFlush(managed));
         }
         return ProductPersistenceMapper.toDomain(
                 jpa.save(ProductPersistenceMapper.toNewEntity(product)));

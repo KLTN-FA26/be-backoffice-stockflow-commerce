@@ -30,6 +30,8 @@ public record PurchaseOrderResponse(
 
         Instant createdAt,
         String createdBy,
+        Instant lastModifiedAt,
+        String lastModifiedBy,
 
         @Schema(description = "BR-PO-003: true when another open PO for this supplier, delivery "
                 + "date and at least one overlapping SKU already exists. A warning, not a rejection.")

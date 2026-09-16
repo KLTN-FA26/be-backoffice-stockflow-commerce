@@ -40,7 +40,8 @@ import java.util.UUID;
 class ProductServiceImpl implements ProductService {
 
     private static final SortWhitelist SORT =
-            SortWhitelist.of("name", "code", "createdAt", "status").withDefault("createdAt", Sort.Direction.DESC);
+            SortWhitelist.of("name", "code", "createdAt", "lastModifiedAt", "status")
+                    .withDefault("lastModifiedAt", Sort.Direction.DESC);
 
     private final ProductRepository products;
     private final ProductSearchRepository search;
@@ -177,6 +178,8 @@ class ProductServiceImpl implements ProductService {
                 product.status(),
                 product.createdAt(),
                 product.createdBy(),
+                product.lastModifiedAt(),
+                product.lastModifiedBy(),
                 product.submittedBy(),
                 product.submittedAt(),
                 product.approvedBy(),

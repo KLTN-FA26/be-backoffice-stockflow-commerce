@@ -42,10 +42,14 @@ public final class Order extends AggregateRoot {
     private OrderStatus status;
     private String cancellationReason;
     private final long version;
+    private final String createdBy;
+    private final Instant lastModifiedAt;
+    private final String lastModifiedBy;
 
     public Order(OrderId id, OrderNumber orderNumber, UUID customerId, UUID requestId,
                  List<OrderLine> lines, OrderStatus status, Instant placedAt,
-                 String cancellationReason, long version) {
+                 String cancellationReason, long version, String createdBy,
+                 Instant lastModifiedAt, String lastModifiedBy) {
         this.id = java.util.Objects.requireNonNull(id, "id");
         this.orderNumber = java.util.Objects.requireNonNull(orderNumber, "orderNumber");
         this.customerId = java.util.Objects.requireNonNull(customerId, "customerId");
@@ -55,6 +59,9 @@ public final class Order extends AggregateRoot {
         this.lines = new ArrayList<>(lines == null ? List.of() : lines);
         this.cancellationReason = cancellationReason;
         this.version = version;
+        this.createdBy = createdBy;
+        this.lastModifiedAt = lastModifiedAt;
+        this.lastModifiedBy = lastModifiedBy;
         if (this.lines.isEmpty()) {
             throw new IllegalArgumentException("An order must have at least one line");
         }
@@ -64,7 +71,7 @@ public final class Order extends AggregateRoot {
     public static Order draft(OrderNumber orderNumber, UUID customerId, UUID requestId,
                               List<OrderLine> lines, Instant now) {
         return new Order(OrderId.newId(), orderNumber, customerId, requestId,
-                lines, OrderStatus.DRAFT, now, null, 0L);
+                lines, OrderStatus.DRAFT, now, null, 0L, null, null, null);
     }
 
     /**
@@ -201,6 +208,9 @@ public final class Order extends AggregateRoot {
     public Instant placedAt() { return placedAt; }
     public String cancellationReason() { return cancellationReason; }
     public long version() { return version; }
+    public String createdBy() { return createdBy; }
+    public Instant lastModifiedAt() { return lastModifiedAt; }
+    public String lastModifiedBy() { return lastModifiedBy; }
 
     public List<OrderLine> lines() {
         return java.util.Collections.unmodifiableList(lines);
