@@ -1,10 +1,12 @@
 package com.stockflow.product.internal.controller;
 
+import com.stockflow.common.audit.AuditEntry;
 import com.stockflow.product.api.CreateProductCommand;
 import com.stockflow.product.api.ProductSummary;
 import com.stockflow.product.api.UpdateProductCommand;
 import com.stockflow.product.internal.controller.dto.CreateProductRequest;
 import com.stockflow.product.internal.controller.dto.ProductResponse;
+import com.stockflow.product.internal.controller.dto.ProductVersionResponse;
 import com.stockflow.product.internal.controller.dto.UpdateProductRequest;
 
 import org.mapstruct.Mapper;
@@ -28,4 +30,8 @@ interface ProductWebMapper {
     /** {@code status} is {@code ProductStatus} on the summary, {@code String} on the wire — MapStruct
      *  generates the {@code .name()} conversion automatically since the field name matches. */
     ProductResponse toResponse(ProductSummary summary);
+
+    /** {@code action}/{@code outcome} are enums on {@link AuditEntry}, strings on the wire — same
+     *  automatic {@code .name()} conversion as {@code toResponse(ProductSummary)} above. */
+    ProductVersionResponse toResponse(AuditEntry entry);
 }

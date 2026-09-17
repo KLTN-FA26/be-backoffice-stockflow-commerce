@@ -5,6 +5,7 @@ import com.stockflow.product.api.ProductService;
 import com.stockflow.product.api.ProductStatus;
 import com.stockflow.product.internal.controller.dto.CreateProductRequest;
 import com.stockflow.product.internal.controller.dto.ProductResponse;
+import com.stockflow.product.internal.controller.dto.ProductVersionResponse;
 import com.stockflow.product.internal.controller.dto.RejectProductRequest;
 import com.stockflow.product.internal.controller.dto.UpdateProductRequest;
 import com.stockflow.common.api.ApiResponse;
@@ -139,5 +140,19 @@ class ProductController {
     @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.APPROVE)
     public ApiResponse<ProductResponse> discontinue(@PathVariable UUID productId) {
         return ApiResponse.ok(mapper.toResponse(productService.discontinue(productId)));
+    }
+
+    /** SCRUM-86 (WBS 3.1.8.2). 404s via {@code ProductService.history} if the product does not
+     *  exist, same as every other single-product endpoint here. */
+    @GetMapping("/{productId}/versions")
+    @Operation(summary = "This product's audit trail, newest first")
+    @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.READ)
+    public ApiResponse<PageResponse<ProductVersionResponse>> versions(
+            @PathVariable UUID productId,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(required = false) Integer size) {
+        return ApiResponse.ok(productService
+                .history(productId, page, size == null ? Pages.DEFAULT_PAGE_SIZE : size)
+                .map(mapper::toResponse));
     }
 }

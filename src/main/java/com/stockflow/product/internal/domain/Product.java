@@ -54,6 +54,26 @@ public final class Product extends AggregateRoot {
     private BigDecimal widthCm;
     private BigDecimal heightCm;
 
+    /** SCRUM-75 (WBS 3.1.3.2): the shipped package, distinct from the product's own physical
+     *  dimensions above — flat-pack furniture ships in a carton smaller than the assembled piece,
+     *  and {@code packageCount} &gt; 1 when one unit ships as several boxes. Nullable/positive,
+     *  same treatment as the fields above. */
+    private BigDecimal packageWeightKg;
+    private BigDecimal packageLengthCm;
+    private BigDecimal packageWidthCm;
+    private BigDecimal packageHeightCm;
+    private Integer packageCount;
+
+    /** SCRUM-76 (WBS 3.1.3.3): carrier-facing shipping restrictions. Flags default false — most
+     *  products carry none of them. {@code shippingRestrictionNote} is free text (same treatment
+     *  as {@code rejectionReason}) rather than a structured region list: nothing in this codebase
+     *  models regions/zones yet, and inventing one here would be scope this ticket never asked
+     *  for. */
+    private boolean hazmat;
+    private boolean oversized;
+    private boolean requiresAdultSignature;
+    private String shippingRestrictionNote;
+
     /** Read-only: who/when created this row. Carried for the API response, never checked by an
      *  invariant — same treatment {@code version} gets, not a protected business rule. */
     private final Instant createdAt;
@@ -74,7 +94,10 @@ public final class Product extends AggregateRoot {
                    Instant lastModifiedAt, String lastModifiedBy,
                    UUID submittedBy, Instant submittedAt, UUID approvedBy, Instant approvedAt,
                    String rejectionReason, BigDecimal weightKg, BigDecimal lengthCm,
-                   BigDecimal widthCm, BigDecimal heightCm) {
+                   BigDecimal widthCm, BigDecimal heightCm, BigDecimal packageWeightKg,
+                   BigDecimal packageLengthCm, BigDecimal packageWidthCm, BigDecimal packageHeightCm,
+                   Integer packageCount, boolean hazmat, boolean oversized,
+                   boolean requiresAdultSignature, String shippingRestrictionNote) {
         this.id = Objects.requireNonNull(id, "id");
         this.code = requireNonBlank(code, "code");
         this.name = requireNonBlank(name, "name");
@@ -101,6 +124,15 @@ public final class Product extends AggregateRoot {
         this.lengthCm = requirePositive(lengthCm, "lengthCm");
         this.widthCm = requirePositive(widthCm, "widthCm");
         this.heightCm = requirePositive(heightCm, "heightCm");
+        this.packageWeightKg = requirePositive(packageWeightKg, "packageWeightKg");
+        this.packageLengthCm = requirePositive(packageLengthCm, "packageLengthCm");
+        this.packageWidthCm = requirePositive(packageWidthCm, "packageWidthCm");
+        this.packageHeightCm = requirePositive(packageHeightCm, "packageHeightCm");
+        this.packageCount = requirePositive(packageCount, "packageCount");
+        this.hazmat = hazmat;
+        this.oversized = oversized;
+        this.requiresAdultSignature = requiresAdultSignature;
+        this.shippingRestrictionNote = shippingRestrictionNote;
     }
 
     /** A new product master row, always born {@link ProductStatus#DRAFT}. */
@@ -108,11 +140,17 @@ public final class Product extends AggregateRoot {
                                 String description, String descriptionEn, String brand,
                                 TaxClass taxClass, boolean customizable, List<ProductImage> images,
                                 BigDecimal weightKg, BigDecimal lengthCm, BigDecimal widthCm,
-                                BigDecimal heightCm) {
+                                BigDecimal heightCm, BigDecimal packageWeightKg,
+                                BigDecimal packageLengthCm, BigDecimal packageWidthCm,
+                                BigDecimal packageHeightCm, Integer packageCount, boolean hazmat,
+                                boolean oversized, boolean requiresAdultSignature,
+                                String shippingRestrictionNote) {
         return new Product(ProductId.newId(), code, name, nameEn, categoryId, description,
                 descriptionEn, brand, taxClass, customizable, images, ProductStatus.DRAFT, 0L,
                 null, null, null, null, null, null, null, null, null,
-                weightKg, lengthCm, widthCm, heightCm);
+                weightKg, lengthCm, widthCm, heightCm, packageWeightKg, packageLengthCm,
+                packageWidthCm, packageHeightCm, packageCount, hazmat, oversized,
+                requiresAdultSignature, shippingRestrictionNote);
     }
 
     /**
@@ -128,7 +166,11 @@ public final class Product extends AggregateRoot {
                               String descriptionEn, String brand, TaxClass taxClass,
                               boolean customizable, List<ProductImage> images,
                               BigDecimal weightKg, BigDecimal lengthCm, BigDecimal widthCm,
-                              BigDecimal heightCm) {
+                              BigDecimal heightCm, BigDecimal packageWeightKg,
+                              BigDecimal packageLengthCm, BigDecimal packageWidthCm,
+                              BigDecimal packageHeightCm, Integer packageCount, boolean hazmat,
+                              boolean oversized, boolean requiresAdultSignature,
+                              String shippingRestrictionNote) {
         requireStatus(ProductStatus.DRAFT, "edited");
         this.name = requireNonBlank(name, "name");
         this.nameEn = requireNonBlank(nameEn, "nameEn");
@@ -144,6 +186,15 @@ public final class Product extends AggregateRoot {
         this.lengthCm = requirePositive(lengthCm, "lengthCm");
         this.widthCm = requirePositive(widthCm, "widthCm");
         this.heightCm = requirePositive(heightCm, "heightCm");
+        this.packageWeightKg = requirePositive(packageWeightKg, "packageWeightKg");
+        this.packageLengthCm = requirePositive(packageLengthCm, "packageLengthCm");
+        this.packageWidthCm = requirePositive(packageWidthCm, "packageWidthCm");
+        this.packageHeightCm = requirePositive(packageHeightCm, "packageHeightCm");
+        this.packageCount = requirePositive(packageCount, "packageCount");
+        this.hazmat = hazmat;
+        this.oversized = oversized;
+        this.requiresAdultSignature = requiresAdultSignature;
+        this.shippingRestrictionNote = shippingRestrictionNote;
     }
 
     /**
@@ -231,6 +282,13 @@ public final class Product extends AggregateRoot {
         return value;
     }
 
+    private static Integer requirePositive(Integer value, String field) {
+        if (value != null && value <= 0) {
+            throw new IllegalArgumentException(field + " must be positive");
+        }
+        return value;
+    }
+
     public ProductId id() { return id; }
     public String code() { return code; }
     public String name() { return name; }
@@ -257,4 +315,13 @@ public final class Product extends AggregateRoot {
     public BigDecimal lengthCm() { return lengthCm; }
     public BigDecimal widthCm() { return widthCm; }
     public BigDecimal heightCm() { return heightCm; }
+    public BigDecimal packageWeightKg() { return packageWeightKg; }
+    public BigDecimal packageLengthCm() { return packageLengthCm; }
+    public BigDecimal packageWidthCm() { return packageWidthCm; }
+    public BigDecimal packageHeightCm() { return packageHeightCm; }
+    public Integer packageCount() { return packageCount; }
+    public boolean hazmat() { return hazmat; }
+    public boolean oversized() { return oversized; }
+    public boolean requiresAdultSignature() { return requiresAdultSignature; }
+    public String shippingRestrictionNote() { return shippingRestrictionNote; }
 }

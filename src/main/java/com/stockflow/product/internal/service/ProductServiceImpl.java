@@ -12,6 +12,8 @@ import com.stockflow.product.internal.domain.ProductRepository;
 import com.stockflow.product.internal.repository.ProductSearchCriteria;
 import com.stockflow.product.internal.repository.ProductSearchRepository;
 import com.stockflow.common.api.PageResponse;
+import com.stockflow.common.audit.AuditEntry;
+import com.stockflow.common.audit.AuditHistory;
 import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.error.BusinessException;
@@ -46,16 +48,21 @@ class ProductServiceImpl implements ProductService {
     private final ProductRepository products;
     private final ProductSearchRepository search;
     private final ProductEventPublisher events;
+    private final AuditHistory auditHistory;
     private final Clock clock;
 
     ProductServiceImpl(ProductRepository products, ProductSearchRepository search,
-                       ProductEventPublisher events, Clock clock) {
+                       ProductEventPublisher events, AuditHistory auditHistory, Clock clock) {
         this.products = products;
         this.search = search;
         this.events = events;
+        this.auditHistory = auditHistory;
         this.clock = clock;
     }
 
+    // No @Auditable here: the id is generated inside Product.draft(), so there is no method
+    // argument to bind resourceId to - same reason createPurchaseOrder/placeOrder are not audited
+    // either. update() below is the first point the id exists as an argument.
     @Override
     public ProductSummary create(CreateProductCommand command) {
         if (command.categoryId() != null && !products.categoryExists(command.categoryId())) {
@@ -73,7 +80,10 @@ class ProductServiceImpl implements ProductService {
                 command.categoryId(), command.description(), command.descriptionEn(),
                 command.brand(), command.taxClass(), command.customizable(),
                 toImages(command.images()), command.weightKg(), command.lengthCm(),
-                command.widthCm(), command.heightCm());
+                command.widthCm(), command.heightCm(), command.packageWeightKg(),
+                command.packageLengthCm(), command.packageWidthCm(), command.packageHeightCm(),
+                command.packageCount(), command.hazmat(), command.oversized(),
+                command.requiresAdultSignature(), command.shippingRestrictionNote());
         return toSummary(products.save(product));
     }
 
@@ -92,6 +102,7 @@ class ProductServiceImpl implements ProductService {
     }
 
     @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "product", resourceId = "#command.productId()")
     public ProductSummary update(UpdateProductCommand command) {
         Product product = requireProduct(command.productId());
         if (command.categoryId() != null && !products.categoryExists(command.categoryId())) {
@@ -101,7 +112,11 @@ class ProductServiceImpl implements ProductService {
         product.updateDetails(command.name(), command.nameEn(), command.categoryId(),
                 command.description(), command.descriptionEn(), command.brand(),
                 command.taxClass(), command.customizable(), toImages(command.images()),
-                command.weightKg(), command.lengthCm(), command.widthCm(), command.heightCm());
+                command.weightKg(), command.lengthCm(), command.widthCm(), command.heightCm(),
+                command.packageWeightKg(), command.packageLengthCm(), command.packageWidthCm(),
+                command.packageHeightCm(), command.packageCount(), command.hazmat(),
+                command.oversized(), command.requiresAdultSignature(),
+                command.shippingRestrictionNote());
         return toSummary(products.save(product));
     }
 
@@ -143,6 +158,13 @@ class ProductServiceImpl implements ProductService {
         Product saved = products.save(product);
         events.publishEventsOf(saved);
         return toSummary(saved);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<AuditEntry> history(UUID productId, int page, int size) {
+        requireProduct(productId);
+        return auditHistory.forResource("product", productId.toString(), page, size);
     }
 
     private Product requireProduct(UUID productId) {
@@ -188,6 +210,15 @@ class ProductServiceImpl implements ProductService {
                 product.weightKg(),
                 product.lengthCm(),
                 product.widthCm(),
-                product.heightCm());
+                product.heightCm(),
+                product.packageWeightKg(),
+                product.packageLengthCm(),
+                product.packageWidthCm(),
+                product.packageHeightCm(),
+                product.packageCount(),
+                product.hazmat(),
+                product.oversized(),
+                product.requiresAdultSignature(),
+                product.shippingRestrictionNote());
     }
 }
