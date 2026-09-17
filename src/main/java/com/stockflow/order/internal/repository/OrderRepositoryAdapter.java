@@ -79,7 +79,10 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
         if (existing.isPresent()) {
             OrderJpaEntity managed = existing.get();
             OrderPersistenceMapper.applyToEntity(order, managed);
-            return OrderPersistenceMapper.toDomain(jpa.save(managed));
+            // saveAndFlush, not save: @PreUpdate (which sets lastModifiedAt/lastModifiedBy) only
+            // runs at flush time, so reading the entity back from a plain save() here would return
+            // its stale pre-update audit fields even though the eventual UPDATE is correct.
+            return OrderPersistenceMapper.toDomain(jpa.saveAndFlush(managed));
         }
         return OrderPersistenceMapper.toDomain(
                 jpa.save(OrderPersistenceMapper.toNewEntity(order)));

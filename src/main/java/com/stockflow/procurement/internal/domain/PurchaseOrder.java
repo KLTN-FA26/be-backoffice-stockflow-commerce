@@ -47,11 +47,14 @@ public final class PurchaseOrder extends AggregateRoot {
     private final long version;
     private final Instant createdAt;
     private final String createdBy;
+    private final Instant lastModifiedAt;
+    private final String lastModifiedBy;
 
     public PurchaseOrder(PurchaseOrderId id, String poNumber, UUID supplierId,
                          PurchaseOrderStatus status, Currency currency, List<PoLine> lines,
                          LocalDate expectedAt, String cancellationReason, String closeShortReason,
-                         long version, Instant createdAt, String createdBy) {
+                         long version, Instant createdAt, String createdBy,
+                         Instant lastModifiedAt, String lastModifiedBy) {
         this.id = Objects.requireNonNull(id, "id");
         this.poNumber = requireNonBlank(poNumber, "poNumber");
         this.supplierId = Objects.requireNonNull(supplierId, "supplierId");
@@ -73,13 +76,16 @@ public final class PurchaseOrder extends AggregateRoot {
         this.version = version;
         this.createdAt = createdAt;
         this.createdBy = createdBy;
+        this.lastModifiedAt = lastModifiedAt;
+        this.lastModifiedBy = lastModifiedBy;
     }
 
     /** A new purchase order, always born {@link PurchaseOrderStatus#DRAFT}. */
     public static PurchaseOrder draft(String poNumber, UUID supplierId, Currency currency,
                                       List<PoLine> lines, LocalDate expectedAt) {
         return new PurchaseOrder(PurchaseOrderId.newId(), poNumber, supplierId,
-                PurchaseOrderStatus.DRAFT, currency, lines, expectedAt, null, null, 0L, null, null);
+                PurchaseOrderStatus.DRAFT, currency, lines, expectedAt, null, null, 0L,
+                null, null, null, null);
     }
 
     public Money totalAmount() {
@@ -174,4 +180,6 @@ public final class PurchaseOrder extends AggregateRoot {
     public long version() { return version; }
     public Instant createdAt() { return createdAt; }
     public String createdBy() { return createdBy; }
+    public Instant lastModifiedAt() { return lastModifiedAt; }
+    public String lastModifiedBy() { return lastModifiedBy; }
 }

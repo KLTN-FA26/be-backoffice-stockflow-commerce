@@ -40,7 +40,10 @@ final class OrderPersistenceMapper {
                 entity.getStatus(),
                 entity.getPlacedAt(),
                 entity.getCancellationReason(),
-                entity.getVersion());
+                entity.getVersion(),
+                entity.getCreatedBy(),
+                entity.getLastModifiedAt(),
+                entity.getLastModifiedBy());
     }
 
     static OrderJpaEntity toNewEntity(Order order) {
@@ -69,7 +72,10 @@ final class OrderPersistenceMapper {
                 entity.getStatus(),
                 new Money(entity.getTotalAmount(), Currency.getInstance(entity.getCurrency())),
                 List.of(),
-                entity.getPlacedAt());
+                entity.getPlacedAt(),
+                entity.getCreatedBy(),
+                entity.getLastModifiedAt(),
+                entity.getLastModifiedBy());
     }
 
     static void applyToEntity(Order order, OrderJpaEntity entity) {

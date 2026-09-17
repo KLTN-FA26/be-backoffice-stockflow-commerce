@@ -35,6 +35,8 @@ public record ProductResponse(
 
         Instant createdAt,
         String createdBy,
+        Instant lastModifiedAt,
+        String lastModifiedBy,
 
         @Schema(description = "Who submitted this product for approval, if it has been.")
         UUID submittedBy,

@@ -19,6 +19,7 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Pages;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -196,7 +197,8 @@ class OrderServiceImpl implements OrderService {
     @Override
     @Transactional(readOnly = true)
     public PageResponse<OrderSummary> myOrders(UUID customerId, int page, int size) {
-        return Pages.toResponse(search.findByCustomerId(customerId, Pages.of(page, size)));
+        var pageable = Pages.of(page, size, Sort.by(Sort.Direction.DESC, "lastModifiedAt"));
+        return Pages.toResponse(search.findByCustomerId(customerId, pageable));
     }
 
     /**
@@ -268,6 +270,9 @@ class OrderServiceImpl implements OrderService {
                                 line.lineTotal(),
                                 line.reservationIds()))
                         .toList(),
-                order.placedAt());
+                order.placedAt(),
+                order.createdBy(),
+                order.lastModifiedAt(),
+                order.lastModifiedBy());
     }
 }

@@ -31,6 +31,8 @@ public record ProductSummary(
         ProductStatus status,
         Instant createdAt,
         String createdBy,
+        Instant lastModifiedAt,
+        String lastModifiedBy,
         UUID submittedBy,
         Instant submittedAt,
         UUID approvedBy,

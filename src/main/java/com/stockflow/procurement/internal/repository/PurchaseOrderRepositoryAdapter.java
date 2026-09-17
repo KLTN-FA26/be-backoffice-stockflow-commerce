@@ -98,7 +98,10 @@ class PurchaseOrderRepositoryAdapter implements PurchaseOrderRepository, Purchas
         if (existing.isPresent()) {
             PurchaseOrderJpaEntity managed = existing.get();
             PurchaseOrderPersistenceMapper.applyToEntity(order, managed);
-            return PurchaseOrderPersistenceMapper.toDomain(jpa.save(managed));
+            // saveAndFlush, not save: @PreUpdate (which sets lastModifiedAt/lastModifiedBy) only
+            // runs at flush time, so reading the entity back from a plain save() here would return
+            // its stale pre-update audit fields even though the eventual UPDATE is correct.
+            return PurchaseOrderPersistenceMapper.toDomain(jpa.saveAndFlush(managed));
         }
         return PurchaseOrderPersistenceMapper.toDomain(
                 jpa.save(PurchaseOrderPersistenceMapper.toNewEntity(order)));

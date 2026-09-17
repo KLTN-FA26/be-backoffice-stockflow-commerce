@@ -97,7 +97,9 @@ class IdentityServiceImpl implements IdentityService {
     @Transactional(readOnly = true)
     public List<RoleSummary> listRoles() {
         return roles.findAllByOrderByCodeAsc().stream()
-                .map(r -> new RoleSummary(r.getCode(), r.getName(), r.getDescription()))
+                .map(r -> new RoleSummary(r.getCode(), r.getName(), r.getDescription(),
+                        r.getCreatedAt(), r.getCreatedBy(),
+                        r.getLastModifiedAt(), r.getLastModifiedBy()))
                 .toList();
     }
 

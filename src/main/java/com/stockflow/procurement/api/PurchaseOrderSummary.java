@@ -29,6 +29,8 @@ public record PurchaseOrderSummary(
         List<POLineSummary> lines,
         Instant createdAt,
         String createdBy,
+        Instant lastModifiedAt,
+        String lastModifiedBy,
         boolean possibleDuplicate,
         String cancellationReason,
         String closeShortReason
