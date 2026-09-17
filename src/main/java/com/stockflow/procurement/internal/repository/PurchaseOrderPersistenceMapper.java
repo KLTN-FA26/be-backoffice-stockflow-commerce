@@ -37,6 +37,8 @@ final class PurchaseOrderPersistenceMapper {
                 currency,
                 lines,
                 entity.getExpectedAt(),
+                entity.getCancellationReason(),
+                entity.getCloseShortReason(),
                 entity.getVersion(),
                 entity.getCreatedAt(),
                 entity.getCreatedBy());
@@ -61,7 +63,9 @@ final class PurchaseOrderPersistenceMapper {
                 List.of(),
                 entity.getCreatedAt(),
                 entity.getCreatedBy(),
-                false);
+                false,
+                entity.getCancellationReason(),
+                entity.getCloseShortReason());
     }
 
     /** Fresh row for an aggregate that has never been persisted. */
@@ -73,15 +77,33 @@ final class PurchaseOrderPersistenceMapper {
                 order.status(),
                 order.currency().getCurrencyCode(),
                 order.totalAmount().amount(),
-                order.expectedAt());
+                order.expectedAt(),
+                order.cancellationReason(),
+                order.closeShortReason());
         entity.replaceLines(toEntities(order));
         return entity;
     }
 
-    /** Copy the aggregate's state onto a row already managed by the persistence context. */
+    /**
+     * Copy the aggregate's state onto a row already managed by the persistence context.
+     *
+     * <p>Deliberately does <b>not</b> call {@link PurchaseOrderJpaEntity#replaceLines} —
+     * {@code toEntities} builds brand-new {@code POLineJpaEntity} instances whose {@code @Version}
+     * defaults to 0, and merging those over rows whose real version has already advanced (e.g.
+     * after the order's first save) fails Hibernate's optimistic lock on every save after the
+     * first. Lines are never added or removed after creation, so updating each managed line's
+     * {@code quantityReceived} in place — the only field {@link PoLine#receive} ever changes — is
+     * both sufficient and keeps each row's own version intact.</p>
+     */
     static void applyToEntity(PurchaseOrder order, PurchaseOrderJpaEntity entity) {
-        entity.apply(order.status(), order.totalAmount().amount());
-        entity.replaceLines(toEntities(order));
+        entity.apply(order.status(), order.totalAmount().amount(),
+                order.cancellationReason(), order.closeShortReason());
+        for (PoLine line : order.lines()) {
+            entity.getLines().stream()
+                    .filter(e -> e.getId().equals(line.id()))
+                    .findFirst()
+                    .ifPresent(e -> e.recordReceipt(line.quantityReceived()));
+        }
     }
 
     private static List<POLineJpaEntity> toEntities(PurchaseOrder order) {

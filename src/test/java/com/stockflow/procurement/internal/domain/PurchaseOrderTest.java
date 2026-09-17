@@ -6,8 +6,10 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -97,6 +99,192 @@ class PurchaseOrderTest {
                     Money.vnd(1000));
 
             assertThat(line.openQuantity()).isEqualTo(6);
+        }
+    }
+
+    @Nested
+    @DisplayName("transitions (SCRUM-116/WBS 3.2.4)")
+    class Transitions {
+
+        private PurchaseOrder draftOrder() {
+            return PurchaseOrder.draft("PO-20261001-000001", SUPPLIER, Money.VND,
+                    List.of(line(10, 100_000)), EXPECTED);
+        }
+
+        @Test
+        @DisplayName("approve: DRAFT -> APPROVED")
+        void approveSucceeds() {
+            PurchaseOrder order = draftOrder();
+
+            order.approve(Instant.now());
+
+            assertThat(order.status()).isEqualTo(PurchaseOrderStatus.APPROVED);
+        }
+
+        @Test
+        @DisplayName("approve rejected outside DRAFT")
+        void approveFromNonDraftRejected() {
+            PurchaseOrder order = draftOrder();
+            order.approve(Instant.now());
+
+            assertThatThrownBy(() -> order.approve(Instant.now()))
+                    .isInstanceOf(InvalidPurchaseOrderTransitionException.class);
+        }
+
+        @Test
+        @DisplayName("send: APPROVED -> SENT")
+        void sendSucceeds() {
+            PurchaseOrder order = draftOrder();
+            order.approve(Instant.now());
+
+            order.send(Instant.now());
+
+            assertThat(order.status()).isEqualTo(PurchaseOrderStatus.SENT);
+        }
+
+        @Test
+        @DisplayName("send rejected from DRAFT")
+        void sendFromDraftRejected() {
+            PurchaseOrder order = draftOrder();
+
+            assertThatThrownBy(() -> order.send(Instant.now()))
+                    .isInstanceOf(InvalidPurchaseOrderTransitionException.class);
+        }
+
+        @Test
+        @DisplayName("cancel from DRAFT records the reason")
+        void cancelFromDraftSucceeds() {
+            PurchaseOrder order = draftOrder();
+
+            order.cancel("supplier discontinued the item", Instant.now());
+
+            assertThat(order.status()).isEqualTo(PurchaseOrderStatus.CANCELLED);
+            assertThat(order.cancellationReason()).isEqualTo("supplier discontinued the item");
+        }
+
+        @Test
+        @DisplayName("cancel refused once anything has been received")
+        void cancelAfterReceiptRejected() {
+            PurchaseOrder order = draftOrder();
+            order.approve(Instant.now());
+            order.send(Instant.now());
+            UUID lineId = order.lines().get(0).id();
+            order.receiveGoods(Map.of(lineId, 1), Instant.now());
+
+            assertThatThrownBy(() -> order.cancel("changed my mind", Instant.now()))
+                    .isInstanceOf(InvalidPurchaseOrderTransitionException.class);
+        }
+
+        @Test
+        @DisplayName("cancel rejected once already CANCELLED")
+        void cancelFromCancelledRejected() {
+            PurchaseOrder order = draftOrder();
+            order.cancel("first reason", Instant.now());
+
+            assertThatThrownBy(() -> order.cancel("second reason", Instant.now()))
+                    .isInstanceOf(InvalidPurchaseOrderTransitionException.class);
+        }
+    }
+
+    @Nested
+    @DisplayName("receiveGoods (SCRUM-116/WBS 3.2.4.1)")
+    class ReceiveGoods {
+
+        private PurchaseOrder sentOrder(int qty) {
+            PurchaseOrder order = PurchaseOrder.draft("PO-20261001-000001", SUPPLIER, Money.VND,
+                    List.of(line(qty, 100_000)), EXPECTED);
+            order.approve(Instant.now());
+            order.send(Instant.now());
+            return order;
+        }
+
+        @Test
+        @DisplayName("partial receipt moves the order to PARTIALLY_RECEIVED")
+        void partialReceiptSucceeds() {
+            PurchaseOrder order = sentOrder(10);
+            UUID lineId = order.lines().get(0).id();
+
+            order.receiveGoods(Map.of(lineId, 4), Instant.now());
+
+            assertThat(order.status()).isEqualTo(PurchaseOrderStatus.PARTIALLY_RECEIVED);
+            assertThat(order.lines().get(0).quantityReceived()).isEqualTo(4);
+            assertThat(order.lines().get(0).openQuantity()).isEqualTo(6);
+        }
+
+        @Test
+        @DisplayName("receiving every open unit closes the order")
+        void fullReceiptClosesOrder() {
+            PurchaseOrder order = sentOrder(10);
+            UUID lineId = order.lines().get(0).id();
+
+            order.receiveGoods(Map.of(lineId, 6), Instant.now());
+            order.receiveGoods(Map.of(lineId, 4), Instant.now());
+
+            assertThat(order.status()).isEqualTo(PurchaseOrderStatus.CLOSED);
+            assertThat(order.lines().get(0).openQuantity()).isZero();
+        }
+
+        @Test
+        @DisplayName("over-receipt rejected")
+        void overReceiptRejected() {
+            PurchaseOrder order = sentOrder(10);
+            UUID lineId = order.lines().get(0).id();
+
+            assertThatThrownBy(() -> order.receiveGoods(Map.of(lineId, 11), Instant.now()))
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+
+        @Test
+        @DisplayName("receiving against an unknown line rejected")
+        void unknownLineRejected() {
+            PurchaseOrder order = sentOrder(10);
+
+            assertThatThrownBy(() -> order.receiveGoods(Map.of(UUID.randomUUID(), 1), Instant.now()))
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+
+        @Test
+        @DisplayName("receiving before the order is SENT rejected")
+        void receiveBeforeSentRejected() {
+            PurchaseOrder order = PurchaseOrder.draft("PO-20261001-000001", SUPPLIER, Money.VND,
+                    List.of(line(10, 100_000)), EXPECTED);
+            UUID lineId = order.lines().get(0).id();
+
+            assertThatThrownBy(() -> order.receiveGoods(Map.of(lineId, 1), Instant.now()))
+                    .isInstanceOf(InvalidPurchaseOrderTransitionException.class);
+        }
+    }
+
+    @Nested
+    @DisplayName("closeShort")
+    class CloseShort {
+
+        @Test
+        @DisplayName("PARTIALLY_RECEIVED -> CLOSED_SHORT records the reason")
+        void closeShortSucceeds() {
+            PurchaseOrder order = PurchaseOrder.draft("PO-20261001-000001", SUPPLIER, Money.VND,
+                    List.of(line(10, 100_000)), EXPECTED);
+            order.approve(Instant.now());
+            order.send(Instant.now());
+            UUID lineId = order.lines().get(0).id();
+            order.receiveGoods(Map.of(lineId, 4), Instant.now());
+
+            order.closeShort("supplier could not fulfil the remainder", Instant.now());
+
+            assertThat(order.status()).isEqualTo(PurchaseOrderStatus.CLOSED_SHORT);
+            assertThat(order.closeShortReason()).isEqualTo("supplier could not fulfil the remainder");
+        }
+
+        @Test
+        @DisplayName("rejected from SENT (nothing received yet)")
+        void closeShortFromSentRejected() {
+            PurchaseOrder order = PurchaseOrder.draft("PO-20261001-000001", SUPPLIER, Money.VND,
+                    List.of(line(10, 100_000)), EXPECTED);
+            order.approve(Instant.now());
+            order.send(Instant.now());
+
+            assertThatThrownBy(() -> order.closeShort("reason", Instant.now()))
+                    .isInstanceOf(InvalidPurchaseOrderTransitionException.class);
         }
     }
 }

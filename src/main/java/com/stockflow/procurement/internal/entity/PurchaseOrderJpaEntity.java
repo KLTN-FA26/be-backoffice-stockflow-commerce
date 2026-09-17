@@ -49,6 +49,12 @@ public class PurchaseOrderJpaEntity extends BaseEntity {
     @Column(name = "expected_at")
     private LocalDate expectedAt;
 
+    @Column(name = "cancellation_reason", length = 1000)
+    private String cancellationReason;
+
+    @Column(name = "close_short_reason", length = 1000)
+    private String closeShortReason;
+
     @OneToMany(mappedBy = "purchaseOrder", cascade = CascadeType.ALL, orphanRemoval = true,
             fetch = FetchType.LAZY)
     @org.hibernate.annotations.BatchSize(size = 50)
@@ -58,7 +64,8 @@ public class PurchaseOrderJpaEntity extends BaseEntity {
     }
 
     public PurchaseOrderJpaEntity(UUID id, String poNumber, UUID supplierId, PurchaseOrderStatus status,
-                                  String currency, BigDecimal totalAmount, LocalDate expectedAt) {
+                                  String currency, BigDecimal totalAmount, LocalDate expectedAt,
+                                  String cancellationReason, String closeShortReason) {
         super(id);
         this.poNumber = poNumber;
         this.supplierId = supplierId;
@@ -66,12 +73,17 @@ public class PurchaseOrderJpaEntity extends BaseEntity {
         this.currency = currency;
         this.totalAmount = totalAmount;
         this.expectedAt = expectedAt;
+        this.cancellationReason = cancellationReason;
+        this.closeShortReason = closeShortReason;
     }
 
     /** Copies every editable field onto a managed row, so Hibernate's dirty checking writes the UPDATE. */
-    public void apply(PurchaseOrderStatus status, BigDecimal totalAmount) {
+    public void apply(PurchaseOrderStatus status, BigDecimal totalAmount, String cancellationReason,
+                      String closeShortReason) {
         this.status = status;
         this.totalAmount = totalAmount;
+        this.cancellationReason = cancellationReason;
+        this.closeShortReason = closeShortReason;
     }
 
     public void replaceLines(List<POLineJpaEntity> replacement) {
@@ -88,5 +100,7 @@ public class PurchaseOrderJpaEntity extends BaseEntity {
     public String getCurrency() { return currency; }
     public BigDecimal getTotalAmount() { return totalAmount; }
     public LocalDate getExpectedAt() { return expectedAt; }
+    public String getCancellationReason() { return cancellationReason; }
+    public String getCloseShortReason() { return closeShortReason; }
     public List<POLineJpaEntity> getLines() { return lines; }
 }

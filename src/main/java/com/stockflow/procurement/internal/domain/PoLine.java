@@ -10,9 +10,9 @@ import java.util.UUID;
  * One line of a {@link PurchaseOrder}. An entity inside the aggregate, no repository of its own —
  * same shape as {@code order.internal.domain.OrderLine}.
  *
- * <p>{@code quantityReceived} is carried (not always zero) because rehydrating an existing PO must
- * reflect receipts already posted, even though nothing in this story (SCRUM-113, creation only)
- * ever sets it above zero — see SCRUM-116 for the transition that does.</p>
+ * <p>{@code quantityReceived} advances only through {@link #receive}, called by
+ * {@link PurchaseOrder#receiveGoods} (SCRUM-116/WBS 3.2.4.1) — never set directly from outside the
+ * aggregate.</p>
  */
 public final class PoLine {
 
@@ -20,7 +20,7 @@ public final class PoLine {
     private final Sku sku;
     private final String description;
     private final int quantityOrdered;
-    private final int quantityReceived;
+    private int quantityReceived;
     private final Money unitPrice;
 
     public PoLine(UUID id, Sku sku, String description, int quantityOrdered, int quantityReceived,
@@ -52,6 +52,26 @@ public final class PoLine {
 
     public int openQuantity() {
         return quantityOrdered - quantityReceived;
+    }
+
+    /**
+     * Package-private: only {@link PurchaseOrder#receiveGoods} may advance this.
+     *
+     * <p>No over-receipt tolerance is modeled (BR-RCP-001 in the full state machine) — a receipt
+     * cannot push {@code quantityReceived} past {@code quantityOrdered}. Flagged as a gap, not
+     * silently clamped, since silently capping would make a warehouse's real over-shipment vanish
+     * from the record instead of surfacing it.</p>
+     */
+    void receive(int quantity) {
+        if (quantity <= 0) {
+            throw new IllegalArgumentException("Received quantity must be positive");
+        }
+        if (quantity > openQuantity()) {
+            throw new IllegalArgumentException(
+                    "Cannot receive %d for line %s: only %d still open".formatted(
+                            quantity, id, openQuantity()));
+        }
+        this.quantityReceived += quantity;
     }
 
     public UUID id() { return id; }

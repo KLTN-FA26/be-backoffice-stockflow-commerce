@@ -5,16 +5,24 @@ import com.stockflow.procurement.api.CreatePurchaseOrderCommand;
 import com.stockflow.procurement.api.ListPurchaseOrdersQuery;
 import com.stockflow.procurement.api.POLineSummary;
 import com.stockflow.procurement.api.ProcurementService;
+import com.stockflow.procurement.api.PurchaseOrderStatusCount;
 import com.stockflow.procurement.api.PurchaseOrderSummary;
+import com.stockflow.procurement.api.ReceiveGoodsCommand;
+import com.stockflow.procurement.api.SupplierSpendReportQuery;
+import com.stockflow.procurement.api.SupplierSpendSummary;
 import com.stockflow.procurement.internal.domain.PoLine;
 import com.stockflow.procurement.internal.domain.PurchaseOrder;
 import com.stockflow.procurement.internal.domain.PurchaseOrderId;
 import com.stockflow.procurement.internal.domain.PurchaseOrderRepository;
 import com.stockflow.procurement.internal.domain.PurchaseOrderStatus;
 import com.stockflow.procurement.internal.domain.SupplierStatus;
+import com.stockflow.procurement.internal.repository.ProcurementReportRepository;
 import com.stockflow.procurement.internal.repository.PurchaseOrderSearchCriteria;
 import com.stockflow.procurement.internal.repository.PurchaseOrderSearchRepository;
+import com.stockflow.procurement.internal.repository.SupplierSpendCriteria;
 import com.stockflow.common.api.PageResponse;
+import com.stockflow.common.audit.AuditAction;
+import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
@@ -31,8 +39,10 @@ import java.time.Clock;
 import java.time.LocalDate;
 import java.util.Currency;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * The only implementation of {@link ProcurementService}, and the module's transaction boundary.
@@ -50,12 +60,14 @@ class ProcurementServiceImpl implements ProcurementService {
 
     private final PurchaseOrderRepository purchaseOrders;
     private final PurchaseOrderSearchRepository search;
+    private final ProcurementReportRepository reports;
     private final Clock clock;
 
     ProcurementServiceImpl(PurchaseOrderRepository purchaseOrders, PurchaseOrderSearchRepository search,
-                           Clock clock) {
+                           ProcurementReportRepository reports, Clock clock) {
         this.purchaseOrders = purchaseOrders;
         this.search = search;
+        this.reports = reports;
         this.clock = clock;
     }
 
@@ -111,6 +123,73 @@ class ProcurementServiceImpl implements ProcurementService {
         return Pages.toResponse(search.search(criteria, pageable));
     }
 
+    @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
+    public PurchaseOrderSummary approve(UUID purchaseOrderId) {
+        PurchaseOrder order = loadForUpdate(purchaseOrderId);
+        order.approve(clock.instant());
+        return toSummary(purchaseOrders.save(order), false);
+    }
+
+    @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
+    public PurchaseOrderSummary send(UUID purchaseOrderId) {
+        PurchaseOrder order = loadForUpdate(purchaseOrderId);
+        order.send(clock.instant());
+        return toSummary(purchaseOrders.save(order), false);
+    }
+
+    @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
+    public PurchaseOrderSummary cancel(UUID purchaseOrderId, String reason) {
+        PurchaseOrder order = loadForUpdate(purchaseOrderId);
+        order.cancel(reason, clock.instant());
+        return toSummary(purchaseOrders.save(order), false);
+    }
+
+    @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
+    public PurchaseOrderSummary receiveGoods(UUID purchaseOrderId, ReceiveGoodsCommand command) {
+        PurchaseOrder order = loadForUpdate(purchaseOrderId);
+        Map<UUID, Integer> receivedByLineId = command.lines().stream()
+                .collect(Collectors.toMap(line -> line.lineId(), line -> line.quantity()));
+        order.receiveGoods(receivedByLineId, clock.instant());
+        return toSummary(purchaseOrders.save(order), false);
+    }
+
+    @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
+    public PurchaseOrderSummary closeShort(UUID purchaseOrderId, String reason) {
+        PurchaseOrder order = loadForUpdate(purchaseOrderId);
+        order.closeShort(reason, clock.instant());
+        return toSummary(purchaseOrders.save(order), false);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<PurchaseOrderStatusCount> statusDashboard() {
+        return reports.statusDashboard();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<SupplierSpendSummary> supplierSpend(SupplierSpendReportQuery query) {
+        if (query.supplierId() != null) {
+            purchaseOrders.supplierStatus(query.supplierId())
+                    .orElseThrow(() -> new BusinessException(ErrorCode.SUPPLIER_NOT_FOUND,
+                            "No supplier with id " + query.supplierId()));
+        }
+        var pageable = Pages.of(query.page(), query.size());
+        var criteria = new SupplierSpendCriteria(query.supplierId(), query.expectedAtFrom(), query.expectedAtTo());
+        return Pages.toResponse(reports.supplierSpend(criteria, pageable));
+    }
+
+    private PurchaseOrder loadForUpdate(UUID purchaseOrderId) {
+        return purchaseOrders.findById(new PurchaseOrderId(purchaseOrderId))
+                .orElseThrow(() -> new BusinessException(ErrorCode.PURCHASE_ORDER_NOT_FOUND,
+                        "No purchase order with id " + purchaseOrderId));
+    }
+
     /**
      * BR-PO-003: "two POs to the same supplier, same SKU, same delivery date are flagged as
      * possible duplicates" — a warning surfaced on the create response, not a rejection.
@@ -151,6 +230,8 @@ class ProcurementServiceImpl implements ProcurementService {
                 lines,
                 order.createdAt(),
                 order.createdBy(),
-                possibleDuplicate);
+                possibleDuplicate,
+                order.cancellationReason(),
+                order.closeShortReason());
     }
 }

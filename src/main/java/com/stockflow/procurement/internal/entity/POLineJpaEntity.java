@@ -59,6 +59,19 @@ public class POLineJpaEntity extends BaseEntity {
         this.purchaseOrder = parent;
     }
 
+    /**
+     * Updates the running total in place on this managed row, rather than the caller replacing
+     * the line wholesale. {@code quantityReceived} is the only field a line's own lifecycle
+     * changes after creation ({@link com.stockflow.procurement.internal.domain.PoLine#receive}) —
+     * rebuilding the whole entity via {@link PurchaseOrderJpaEntity#replaceLines} for it would
+     * discard this row's Hibernate-tracked {@code @Version}, and a freshly-constructed replacement
+     * defaults to version 0, which fails optimistic locking against the row's real, already
+     * incremented version on the very next save.
+     */
+    public void recordReceipt(int quantityReceived) {
+        this.quantityReceived = quantityReceived;
+    }
+
     public UUID getPurchaseOrderId() { return purchaseOrder == null ? null : purchaseOrder.getId(); }
     public String getSku() { return sku; }
     public String getDescription() { return description; }
