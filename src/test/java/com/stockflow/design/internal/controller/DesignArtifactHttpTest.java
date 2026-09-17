@@ -55,7 +55,7 @@ class DesignArtifactHttpTest {
         for (var code : new ErrorCode[]{ErrorCode.PAYLOAD_TOO_LARGE, ErrorCode.UNSUPPORTED_MEDIA_TYPE, ErrorCode.STORAGE_ERROR}) {
             doThrow(code == ErrorCode.STORAGE_ERROR
                     ? new StorageException("private path") : new BusinessException(code))
-                    .when(artifacts).upload(any(), any(), any());
+                    .when(artifacts).upload(any(), any(), any(), any(), any());
             mvc.perform(multipart("/api/v1/designs/{id}/artifacts", UUID.randomUUID())
                     .file(new MockMultipartFile("file", "a.pdf", "application/pdf", "%PDF".getBytes())))
                     .andExpect(status().is(code.httpStatus())).andExpect(jsonPath("$.errorCode").value(code.name()));

@@ -10,7 +10,7 @@ import org.springframework.stereotype.Component;
 class DesignArtifactWebMapper {
     DesignArtifactResponse toResponse(DesignArtifact artifact) {
         var file = artifact.file();
-        return new DesignArtifactResponse(artifact.id(), artifact.designId(), file.originalName(),
+        return new DesignArtifactResponse(artifact.id(), artifact.designId(), artifact.role(), file.originalName(),
                 file.contentType(), file.sizeBytes(), file.storedAt(), artifact.checksum());
     }
 

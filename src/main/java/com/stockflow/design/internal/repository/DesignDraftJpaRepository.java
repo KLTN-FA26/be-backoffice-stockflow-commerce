@@ -10,12 +10,20 @@ import java.util.Optional;
 import java.util.UUID;
 
 /** Spring Data repository for {@link DesignDraftJpaEntity}. STARTER STUB. */
-interface DesignDraftJpaRepository extends BaseJpaRepository<DesignDraftJpaEntity> {
+public interface DesignDraftJpaRepository extends BaseJpaRepository<DesignDraftJpaEntity> {
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select d from DesignDraftJpaEntity d where d.id = :id")
+    Optional<DesignDraftJpaEntity> lockById(@Param("id") UUID id);
+
+    @Query("select d from DesignDraftJpaEntity d where d.ownerUserId = :userId or d.assignedUserId = :userId or d.reviewerUserId = :userId")
+    org.springframework.data.domain.Page<DesignDraftJpaEntity> findForUser(@Param("userId") UUID userId,
+            org.springframework.data.domain.Pageable pageable);
 
     // Single-owner scope cannot express owner OR assigned designer. ALL/WAREHOUSE grants do
     // not bypass this explicit predicate for private customer files.
     @Query("select d from DesignDraftJpaEntity d where d.id = :id and "
-            + "(d.ownerUserId = :userId or d.assignedUserId = :userId)")
+            + "(d.ownerUserId = :userId or d.assignedUserId = :userId or d.reviewerUserId = :userId)")
     Optional<DesignDraftJpaEntity> findAccessible(@Param("id") UUID id, @Param("userId") UUID userId);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)

@@ -30,6 +30,9 @@ public interface IdentityService {
     /** Revoke a role from a user. Idempotent: revoking one not held is a no-op. */
     void revokeRole(UUID userId, String roleCode);
 
+    /** Used by task assignment to reject inactive users and users outside an operational role. */
+    boolean isActiveUserWithAnyRole(UUID userId, String... roleCodes);
+
     /**
      * Verify credentials and issue a signed staff token (SCRUM-378/WBS 3.19.7).
      *

@@ -1,10 +1,14 @@
 package com.stockflow.fulfillment.api;
 
+import com.stockflow.common.security.CurrentUser;
+import java.util.List;
+import java.util.UUID;
+
 /**
  * THE public API of the fulfillment module — the only package other modules may import.
  *
- * <p>STARTER STUB. Replace the empty body with the module's real use cases. Two rules from
- * {@code docs/adding-a-module.md} §1:</p>
+ * <p>The API is task-scoped: callers never receive a design storage key and cannot ask for a file
+ * without naming an order line that belongs to their assigned task. Two module rules apply:</p>
  * <ul>
  *   <li>declare only what other modules actually call — the shortest surface that works;</li>
  *   <li>every parameter and return type is a record or enum declared in THIS package, never a
@@ -16,8 +20,14 @@ package com.stockflow.fulfillment.api;
  * controller — see {@code docs/adding-a-module.md} §4.</p>
  */
 public interface FulfillmentService {
-
-    // TODO: declare this module's use cases here. Every parameter and return type is a record
-    //       or enum declared in THIS package, never a domain object. See
-    //       inventory.api.InventoryService for the worked example.
+    FulfillmentTask createTask(UUID orderId, UUID assignedUserId, CurrentUser actor);
+    List<FulfillmentTask> listTasks(CurrentUser actor);
+    FulfillmentTask assign(UUID taskId, UUID assignedUserId, CurrentUser actor);
+    FulfillmentTask findTask(UUID taskId, CurrentUser actor);
+    FulfillmentTask startPicking(UUID taskId, CurrentUser actor);
+    FulfillmentTask completePicking(UUID taskId, CurrentUser actor);
+    FulfillmentArtifactAccess artifactDownload(UUID taskId, UUID orderLineId, String role,
+                                                CurrentUser actor);
+    FulfillmentTask completePacking(UUID taskId, CurrentUser actor);
+    FulfillmentTask reverifyDesignIntegrity(UUID taskId, String resolutionNote, CurrentUser actor);
 }

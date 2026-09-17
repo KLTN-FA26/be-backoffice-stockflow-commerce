@@ -26,14 +26,16 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.IOException;
 import java.util.List;
 import java.util.UUID;
+import org.springframework.web.bind.annotation.RequestParam;
+import com.stockflow.design.api.DesignArtifactRole;
 
 /**
- * Artifact integration only; draft creation and customer confirmation belong to the studio.
+ * Private artifact revisions. Draft review and confirmation use DesignWorkflowController.
  */
 @RestController
 @RequestMapping("/api/v1/designs/{designId}/artifacts")
 @PermissionResource(code = DesignResources.DESIGNS, group = "Design", label = "Designs", route = "/designs",
-        apiPath = "/api/v1/designs", actions = {Action.VIEW_PAGE, Action.READ, Action.UPDATE})
+        apiPath = "/api/v1/designs", actions = {Action.VIEW_PAGE, Action.READ, Action.UPDATE, Action.APPROVE})
 class DesignController {
     private final DesignArtifactService artifacts;
     private final DesignArtifactWebMapper mapper;
@@ -47,11 +49,13 @@ class DesignController {
     @ResponseStatus(HttpStatus.CREATED)
     @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.UPDATE)
     public ApiResponse<DesignArtifactResponse> upload(@PathVariable UUID designId,
-            @AuthenticatedUser CurrentUser user, @RequestPart("file") MultipartFile file) {
+            @AuthenticatedUser CurrentUser user, @RequestPart("file") MultipartFile file,
+            @RequestParam(defaultValue = "CUSTOMER_PREVIEW") DesignArtifactRole role,
+            @org.springframework.web.bind.annotation.RequestHeader(name = "Idempotency-Key", required = false) String requestKey) {
         try (var content = file.getInputStream()) {
-            return ApiResponse.ok(mapper.toResponse(artifacts.upload(designId,
-                    user == null ? null : user.userId(), new FileUpload(file.getOriginalFilename(),
-                            file.getContentType(), file.getSize(), content))));
+            var upload = new FileUpload(file.getOriginalFilename(), file.getContentType(), file.getSize(), content);
+            UUID actor = user == null ? null : user.userId();
+            return ApiResponse.ok(mapper.toResponse(artifacts.upload(designId, actor, role, upload, requestKey)));
         } catch (IOException ex) {
             throw new StorageException("Could not read the multipart upload", ex);
         }

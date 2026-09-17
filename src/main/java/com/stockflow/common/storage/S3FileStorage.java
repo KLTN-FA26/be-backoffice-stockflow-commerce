@@ -72,14 +72,18 @@ class S3FileStorage implements FileStorage {
             String normalisedType = ContentTypePolicy.normalise(contentType);
             String key = StorageKeys.generate(category, normalisedType, clock.instant());
 
-            s3.putObject(PutObjectRequest.builder()
+            var request = PutObjectRequest.builder()
                             .bucket(properties.bucket())
                             .key(key)
                             .contentType(normalisedType)
                             // Supplying the length lets the SDK stream rather than buffer the whole
                             // object in heap - the difference between a 50 MB upload and an OOM.
-                            .contentLength(sizeBytes)
-                            .build(),
+                            .contentLength(sizeBytes);
+            if (category == FileCategory.PRODUCT_IMAGE) {
+                // Keys are immutable UUID paths. CloudFront may cache them without invalidation.
+                request.cacheControl("public,max-age=31536000,immutable");
+            }
+            s3.putObject(request.build(),
                     RequestBody.fromInputStream(sniffable, sizeBytes));
 
             log.debug("Stored {} ({} bytes) as {}", originalName, sizeBytes, key);

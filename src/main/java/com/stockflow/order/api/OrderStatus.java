@@ -29,6 +29,7 @@ public enum OrderStatus {
 
     /** Handed to fulfilment: picking, packing, and for made-to-order items, production. */
     IN_FULFILMENT,
+    ON_HOLD,
 
     SHIPPED,
     DELIVERED,
@@ -42,14 +43,14 @@ public enum OrderStatus {
     public boolean isTerminal() {
         return switch (this) {
             case COMPLETED, CANCELLED, RETURNED -> true;
-            case DRAFT, PENDING_PAYMENT, PAID, IN_FULFILMENT, SHIPPED, DELIVERED -> false;
+            case DRAFT, PENDING_PAYMENT, PAID, IN_FULFILMENT, ON_HOLD, SHIPPED, DELIVERED -> false;
         };
     }
 
     /** True while the order still holds stock that must be released if it is cancelled. */
     public boolean holdsStock() {
         return switch (this) {
-            case PENDING_PAYMENT, PAID, IN_FULFILMENT -> true;
+            case PENDING_PAYMENT, PAID, IN_FULFILMENT, ON_HOLD -> true;
             case DRAFT, SHIPPED, DELIVERED, COMPLETED, CANCELLED, RETURNED -> false;
         };
     }
@@ -66,8 +67,9 @@ public enum OrderStatus {
         return switch (this) {
             case DRAFT -> target == PENDING_PAYMENT || target == CANCELLED;
             case PENDING_PAYMENT -> target == PAID || target == CANCELLED;
-            case PAID -> target == IN_FULFILMENT || target == CANCELLED;
-            case IN_FULFILMENT -> target == SHIPPED || target == CANCELLED;
+            case PAID -> target == IN_FULFILMENT || target == ON_HOLD || target == CANCELLED;
+            case IN_FULFILMENT -> target == SHIPPED || target == ON_HOLD || target == CANCELLED;
+            case ON_HOLD -> target == IN_FULFILMENT || target == CANCELLED;
             case SHIPPED -> target == DELIVERED;
             case DELIVERED -> target == COMPLETED || target == RETURNED;
             case COMPLETED, CANCELLED, RETURNED -> false;

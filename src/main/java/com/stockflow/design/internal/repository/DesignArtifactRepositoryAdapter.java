@@ -27,24 +27,30 @@ class DesignArtifactRepositoryAdapter implements DesignArtifactRepository {
         if (userId == null) { return Optional.empty(); }
         return (forUpdate ? drafts.lockAccessible(designId, userId) : drafts.findAccessible(designId, userId))
                 .map(row -> new DesignDraft(row.getId(), row.getOwnerUserId(), row.getAssignedUserId(),
-                        row.getStatus(), row.getCurrentArtifactId()));
+                        row.getStatus(), row.getCurrentArtifactId(), row.getReviewerUserId()));
     }
 
     @Override
     public boolean hasSnapshot(UUID designId) { return snapshots.existsByDraftId(designId); }
 
     @Override
+    public void recordEditor(UUID designId, UUID userId) {
+        drafts.findById(designId).orElseThrow().editedBy(userId);
+    }
+
+    @Override
     public void attach(DesignArtifact artifact) {
-        artifacts.save(new DesignArtifactJpaEntity(artifact.id(), artifact.designId(),
-                artifact.file(), artifact.checksum()));
+        var row = new DesignArtifactJpaEntity(artifact.id(), artifact.designId(), artifact.role(), artifact.file(), artifact.checksum());
+        row.setUploadKey(artifact.uploadKey());
+        artifacts.save(row);
         // Already checked and locked by the service in this transaction.
-        drafts.findById(artifact.designId()).orElseThrow().attachArtifact(artifact.id());
+        drafts.findById(artifact.designId()).orElseThrow().attachArtifact(artifact.role(), artifact.id());
     }
 
     @Override
     public List<DesignArtifact> findArtifacts(UUID designId) {
         return artifacts.findByDraftIdOrderByStoredAtDescIdDesc(designId).stream()
-                .map(row -> new DesignArtifact(row.getId(), row.getDraftId(), row.storedFile(), row.getChecksum()))
+                .map(row -> new DesignArtifact(row.getId(), row.getDraftId(), row.getRole(), row.storedFile(), row.getChecksum(), row.getUploadKey()))
                 .toList();
     }
 }

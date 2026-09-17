@@ -136,6 +136,20 @@ class IdentityServiceImpl implements IdentityService {
         userRoles.findByUserIdAndRoleId(userId, role.getId()).ifPresent(userRoles::delete);
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public boolean isActiveUserWithAnyRole(UUID userId, String... roleCodes) {
+        if (userId == null || roleCodes == null || roleCodes.length == 0) {
+            return false;
+        }
+        var user = userRepository.findById(new UserId(userId));
+        if (user.isEmpty() || user.get().status() != com.stockflow.identity.internal.domain.UserStatus.ACTIVE) {
+            return false;
+        }
+        var accepted = java.util.Set.of(roleCodes);
+        return rolesOf(user.get().id()).stream().anyMatch(role -> accepted.contains(role.getCode()));
+    }
+
     /**
      * {@inheritDoc}
      *

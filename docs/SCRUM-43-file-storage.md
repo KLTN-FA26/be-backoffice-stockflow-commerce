@@ -1,5 +1,9 @@
 # SCRUM-43: product images and design artifacts
 
+> Historical baseline from the initial SCRUM-43 commit. Lifecycle, gallery, scanning and retry
+> behavior below are superseded by [SCRUM-53/54 implementation](SCRUM-53-54-implementation.md).
+> Use that document for the current HTTP contract and outstanding release gates.
+
 ## HTTP contract
 
 All paths below are relative to `/api/v1`. Responses use `ApiResponse`. Uploads are

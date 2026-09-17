@@ -7,13 +7,23 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 
 /** One entry in a product's media gallery (WBS 3.1.1.2). */
-public record ProductImage(UUID id, String url, int sortOrder, StoredFile storedFile) {
+public record ProductImage(UUID id, String url, int sortOrder, StoredFile storedFile,
+                           java.util.List<ImageRendition> renditions, String uploadKey, String checksum) {
+
+    public ProductImage(UUID id, String url, int sortOrder, StoredFile storedFile, java.util.List<ImageRendition> renditions) {
+        this(id, url, sortOrder, storedFile, renditions, null, null);
+    }
+
+    public ProductImage(UUID id, String url, int sortOrder, StoredFile storedFile) {
+        this(id, url, sortOrder, storedFile, java.util.List.of());
+    }
 
     public ProductImage(UUID id, String url, int sortOrder) {
         this(id, url, sortOrder, null);
     }
 
     public ProductImage {
+        renditions = java.util.List.copyOf(renditions);
         Objects.requireNonNull(id, "id");
         if (storedFile == null && (url == null || url.isBlank())) {
             throw new IllegalArgumentException("Image url must not be blank");

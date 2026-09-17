@@ -6,9 +6,12 @@ import java.util.UUID;
 
 /** Login ids are explicit: CRM customer ids must never be assumed to be identity user ids. */
 public record DesignDraft(UUID id, UUID ownerUserId, UUID assignedUserId, DesignStatus status,
-                          UUID currentArtifactId) {
+                          UUID currentArtifactId, UUID reviewerUserId) {
+    public DesignDraft(UUID id, UUID ownerUserId, UUID assignedUserId, DesignStatus status, UUID currentArtifactId) {
+        this(id, ownerUserId, assignedUserId, status, currentArtifactId, null);
+    }
     public void requireAccess(UUID userId) {
-        if (userId == null || (!userId.equals(ownerUserId) && !userId.equals(assignedUserId))) {
+        if (userId == null || (!userId.equals(ownerUserId) && !userId.equals(assignedUserId) && !userId.equals(reviewerUserId))) {
             throw new BusinessException(ErrorCode.NOT_FOUND);
         }
     }

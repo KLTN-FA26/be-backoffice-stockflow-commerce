@@ -71,8 +71,10 @@ class MediaPersistenceIntegrationTest {
         em.persist(first);
         draft.attachArtifact(first.getId());
         em.flush();
-        em.createNativeQuery("update design.design_draft set preflight_passed = true where id = :id")
-                .setParameter("id", draftId).executeUpdate();
+        var reviewer = Identifiers.newId();
+        draft.assign(Identifiers.newId(), Identifiers.newId(), reviewer);
+        draft.review(reviewer, true, "Manual inspection completed");
+        em.flush();
         em.refresh(draft);
         var next = new DesignArtifactJpaEntity(Identifiers.newId(), draftId,
                 new StoredFile("design-renders/two.pdf", "two.pdf", "application/pdf", 14, Instant.EPOCH),

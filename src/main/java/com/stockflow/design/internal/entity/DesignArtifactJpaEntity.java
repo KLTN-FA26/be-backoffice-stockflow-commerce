@@ -7,6 +7,9 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Table;
 import java.time.Instant;
 import java.util.UUID;
+import com.stockflow.design.api.DesignArtifactRole;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 
 /** No mutation methods: replacement inserts another revision. */
 @Entity
@@ -26,12 +29,25 @@ public class DesignArtifactJpaEntity extends BaseEntity {
     private Instant storedAt;
     @Column(name = "checksum", nullable = false, updatable = false, length = 64)
     private String checksum;
+    @Enumerated(EnumType.STRING)
+    @Column(name = "artifact_role", nullable = false, updatable = false, length = 40)
+    private DesignArtifactRole role = DesignArtifactRole.CUSTOMER_PREVIEW;
+
+    @Column(name = "upload_key", length = 400, updatable = false)
+    private String uploadKey;
+    public String getUploadKey() { return uploadKey; }
+    public void setUploadKey(String value) { uploadKey = value; }
 
     protected DesignArtifactJpaEntity() { }
 
     public DesignArtifactJpaEntity(UUID id, UUID draftId, StoredFile file, String checksum) {
+        this(id, draftId, DesignArtifactRole.CUSTOMER_PREVIEW, file, checksum);
+    }
+
+    public DesignArtifactJpaEntity(UUID id, UUID draftId, DesignArtifactRole role, StoredFile file, String checksum) {
         super(id);
         this.draftId = draftId;
+        this.role = role;
         this.storageKey = file.key();
         this.originalName = file.originalName();
         this.contentType = file.contentType();
@@ -41,6 +57,7 @@ public class DesignArtifactJpaEntity extends BaseEntity {
     }
 
     public UUID getDraftId() { return draftId; }
+    public DesignArtifactRole getRole() { return role; }
     public String getChecksum() { return checksum; }
     public StoredFile storedFile() {
         return new StoredFile(storageKey, originalName, contentType, sizeBytes, storedAt);

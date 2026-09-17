@@ -140,6 +140,12 @@ public final class Order extends AggregateRoot {
         transitionTo(OrderStatus.IN_FULFILMENT);
     }
 
+    public void putOnHold() {
+        if (status != OrderStatus.ON_HOLD) { transitionTo(OrderStatus.ON_HOLD); }
+    }
+
+    public void resumeFromHold() { transitionTo(OrderStatus.IN_FULFILMENT); }
+
     /**
      * Cancel.
      *

@@ -9,5 +9,6 @@ public interface DesignArtifactRepository {
     Optional<DesignDraft> findDraft(UUID designId, UUID userId, boolean forUpdate);
     boolean hasSnapshot(UUID designId);
     void attach(DesignArtifact artifact);
+    void recordEditor(UUID designId, UUID userId);
     List<DesignArtifact> findArtifacts(UUID designId);
 }

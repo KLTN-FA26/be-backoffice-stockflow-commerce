@@ -25,4 +25,8 @@ public interface OrderService {
 
     /** Cancel an order and release whatever stock it was holding. */
     void cancel(UUID orderId, String reason);
+
+    OrderSummary releaseToFulfillment(UUID orderId);
+    void putOnDesignHold(UUID orderId, String reason);
+    void resolveDesignHold(UUID orderId, UUID resolvedBy, String note);
 }

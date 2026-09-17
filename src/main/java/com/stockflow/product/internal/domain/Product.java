@@ -197,6 +197,18 @@ public final class Product extends AggregateRoot {
                 new ProductDiscontinued(id.value(), Objects.requireNonNull(now, "now"))));
     }
 
+    /** Publication is separate from approval because only an approved gallery is customer-facing. */
+    public void publish() {
+        requireCanTransitionTo(ProductStatus.PUBLISHED);
+        this.status = ProductStatus.PUBLISHED;
+    }
+
+    /** Removes the product from the storefront without discarding its approved master data. */
+    public void unpublish() {
+        requireCanTransitionTo(ProductStatus.APPROVED);
+        this.status = ProductStatus.APPROVED;
+    }
+
     private void requireCanTransitionTo(ProductStatus target) {
         if (!status.canTransitionTo(target)) {
             throw new InvalidProductStatusTransitionException(id, status, target);
@@ -237,7 +249,9 @@ public final class Product extends AggregateRoot {
     public boolean customizable() { return customizable; }
     public List<ProductImage> images() { return List.copyOf(images); }
     public void addImage(ProductImage image) {
-        requireStatus(ProductStatus.DRAFT, "edited");
+        if (status == ProductStatus.DISCONTINUED || status == ProductStatus.PENDING_APPROVAL) {
+            throw new InvalidProductStatusTransitionException(id, "does not accept new media in this state");
+        }
         images.add(image);
     }
     public ProductStatus status() { return status; }

@@ -39,6 +39,10 @@ import java.util.UUID;
 @Transactional
 class ProductServiceImpl implements ProductService {
 
+    @Override
+    @Transactional(readOnly = true)
+    public boolean containsSku(UUID productId, String sku) { return products.containsSku(productId, sku); }
+
     private static final SortWhitelist SORT =
             SortWhitelist.of("name", "code", "createdAt", "status").withDefault("createdAt", Sort.Direction.DESC);
 

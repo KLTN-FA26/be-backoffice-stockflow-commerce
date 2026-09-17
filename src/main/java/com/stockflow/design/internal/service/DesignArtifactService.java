@@ -5,50 +5,82 @@ import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.common.idempotency.IdempotencyKeys;
+import com.stockflow.common.storage.BufferedUpload;
 import com.stockflow.common.storage.DownloadLink;
 import com.stockflow.common.storage.FileCategory;
 import com.stockflow.common.storage.FileTransfers;
 import com.stockflow.common.storage.FileUpload;
+import com.stockflow.common.storage.StorageException;
+import com.stockflow.common.storage.UploadInspection;
 import com.stockflow.design.internal.domain.DesignArtifact;
 import com.stockflow.design.internal.domain.DesignArtifactRepository;
 import com.stockflow.design.internal.domain.DesignDraft;
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 import java.io.BufferedInputStream;
-import java.security.DigestInputStream;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.HexFormat;
+import java.io.IOException;
 import java.util.List;
 import java.util.UUID;
-
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 @Service
 @Transactional
 public class DesignArtifactService {
     private final DesignArtifactRepository designs;
     private final FileTransfers files;
+    private final UploadInspection inspection;
 
-    public DesignArtifactService(DesignArtifactRepository designs, FileTransfers files) {
+    public DesignArtifactService(DesignArtifactRepository designs, FileTransfers files,
+                                 UploadInspection inspection) {
         this.designs = designs;
         this.files = files;
+        this.inspection = inspection;
     }
 
     @Auditable(action = AuditAction.UPDATE, resourceType = "design", resourceId = "#designId")
     public DesignArtifact upload(UUID designId, UUID userId, FileUpload upload) {
+        return upload(designId, userId, upload, null);
+    }
+
+    @Auditable(action = AuditAction.UPDATE, resourceType = "design", resourceId = "#designId")
+    public DesignArtifact upload(UUID designId, UUID userId, FileUpload upload, String requestKey) {
+        return upload(designId, userId, com.stockflow.design.api.DesignArtifactRole.CUSTOMER_PREVIEW, upload, requestKey);
+    }
+
+    @Auditable(action = AuditAction.UPDATE, resourceType = "design", resourceId = "#designId")
+    public DesignArtifact upload(UUID designId, UUID userId, com.stockflow.design.api.DesignArtifactRole role,
+                                 FileUpload upload, String requestKey) {
         var draft = requireDraft(designId, userId, true);
-        draft.requireEditable();
-        if (designs.hasSnapshot(designId)) {
-            throw new BusinessException(ErrorCode.CONFLICT, "A confirmed design requires a new draft");
+        String key = requestKey == null ? null
+                : userId + ":" + role.name() + ":" + IdempotencyKeys.validate(requestKey);
+        try (var buffered = BufferedUpload.read(FileCategory.DESIGN_RENDER, upload)) {
+            if (key != null) {
+                var existing = designs.findArtifacts(designId).stream().filter(a -> key.equals(a.uploadKey())).findFirst();
+                if (existing.isPresent()) {
+                    var artifact = existing.get();
+                    if (artifact.role() != role || !artifact.checksum().equals(buffered.checksum())
+                            || !artifact.file().originalName().equals(upload.originalName())
+                            || !upload.contentType().split(";", 2)[0].trim().equalsIgnoreCase(artifact.file().contentType())) {
+                        throw new BusinessException(ErrorCode.IDEMPOTENCY_KEY_REUSED);
+                    }
+                    return artifact;
+                }
+            }
+            draft.requireEditable();
+            if (designs.hasSnapshot(designId)) {
+                throw new BusinessException(ErrorCode.CONFLICT, "A confirmed design requires a new draft");
+            }
+            try (var content = buffered.open()) { inspection.requireClean(content); }
+            try (var content = new BufferedInputStream(buffered.open())) {
+                var file = files.store(FileCategory.DESIGN_RENDER,
+                        new FileUpload(upload.originalName(), upload.contentType(), upload.sizeBytes(), content));
+                var artifact = new DesignArtifact(Identifiers.newId(), designId, role, file, buffered.checksum(), key);
+                designs.attach(artifact);
+                designs.recordEditor(designId, userId);
+                return artifact;
+            }
+        } catch (IOException ex) {
+            throw new StorageException("Could not read buffered artifact", ex);
         }
-        MessageDigest digest = sha256();
-        // Buffer outside the digest so policy sniffing/reset never hashes the same bytes twice.
-        var content = new BufferedInputStream(new DigestInputStream(upload.content(), digest));
-        var file = files.store(FileCategory.DESIGN_RENDER,
-                new FileUpload(upload.originalName(), upload.contentType(), upload.sizeBytes(), content));
-        var artifact = new DesignArtifact(Identifiers.newId(), designId, file,
-                HexFormat.of().formatHex(digest.digest()));
-        designs.attach(artifact);
-        return artifact;
     }
 
     @Transactional(readOnly = true)
@@ -72,10 +104,4 @@ public class DesignArtifactService {
         return draft;
     }
 
-    private static MessageDigest sha256() {
-        try { return MessageDigest.getInstance("SHA-256"); }
-        catch (NoSuchAlgorithmException impossible) {
-            throw new IllegalStateException("The Java runtime must support SHA-256", impossible);
-        }
-    }
 }

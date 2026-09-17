@@ -2,12 +2,18 @@ package com.stockflow.product.internal.controller;
 
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.security.Action;
+import com.stockflow.common.security.AuthenticatedUser;
+import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.common.storage.FileUpload;
 import com.stockflow.common.storage.StorageException;
 import com.stockflow.product.internal.controller.dto.ImageDownloadResponse;
 import com.stockflow.product.internal.controller.dto.ProductImageResponse;
 import com.stockflow.product.internal.service.ProductImageService;
+import java.io.IOException;
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
 import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -20,11 +26,6 @@ import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
-
-import java.io.IOException;
-import java.util.List;
-import java.util.UUID;
-
 @RestController
 @RequestMapping("/api/v1/products/{productId}/images")
 class ProductImageController {
@@ -40,10 +41,13 @@ class ProductImageController {
     @ResponseStatus(HttpStatus.CREATED)
     @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.UPDATE)
     public ApiResponse<ProductImageResponse> upload(@PathVariable UUID productId,
-                                                    @RequestPart("file") MultipartFile file) {
+            @RequestPart("file") MultipartFile file,
+            @org.springframework.web.bind.annotation.RequestHeader(name = "Idempotency-Key", required = false) String requestKey,
+            @AuthenticatedUser Optional<CurrentUser> user) {
         try (var content = file.getInputStream()) {
-            return ApiResponse.ok(mapper.toResponse(images.upload(productId, new FileUpload(
-                    file.getOriginalFilename(), file.getContentType(), file.getSize(), content))));
+            var upload = new FileUpload(file.getOriginalFilename(), file.getContentType(), file.getSize(), content);
+            return ApiResponse.ok(mapper.toResponse(requestKey == null ? images.upload(productId, upload)
+                    : images.upload(productId, upload, user.map(CurrentUser::userId).orElse(null), requestKey)));
         } catch (IOException ex) {
             throw new StorageException("Could not read the multipart upload", ex);
         }

@@ -328,6 +328,10 @@ stockflow:
     secret-key: ${MINIO_SECRET_KEY:stockflow123}
     presigned-url-ttl: PT10M        # a signed URL is a credential with no revocation; keep it short
 
+  product-media:
+    # Public CloudFront/custom-domain origin. Blank keeps private upload working but public gallery returns 503.
+    cloud-front-base-url: ${PRODUCT_MEDIA_CDN_BASE_URL:}
+
   web:
     request-log:
       enabled: true

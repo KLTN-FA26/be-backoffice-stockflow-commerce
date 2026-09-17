@@ -1,5 +1,7 @@
 package com.stockflow.product.internal.entity;
 
+import com.stockflow.common.storage.StoredFile;
+import com.stockflow.product.internal.domain.ImageRendition;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.FetchType;
@@ -8,11 +10,9 @@ import jakarta.persistence.Index;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
-
-import java.util.UUID;
 import java.time.Instant;
-import com.stockflow.common.storage.StoredFile;
-
+import java.util.List;
+import java.util.UUID;
 /**
  * JPA mapping of one product-media-gallery row. A child of {@code product} — never loaded or
  * saved on its own.
@@ -54,6 +54,22 @@ public class ProductImageJpaEntity {
     private Long sizeBytes;
     @Column(name = "stored_at")
     private Instant storedAt;
+    @Column(name = "upload_key", length = 300)
+    private String uploadKey;
+    @Column(name = "checksum", length = 64)
+    private String checksum;
+    public String getUploadKey() { return uploadKey; }
+    public String getChecksum() { return checksum; }
+    public void setUploadFingerprint(String key, String hash) { uploadKey = key; checksum = hash; }
+
+    @org.hibernate.annotations.JdbcTypeCode(org.hibernate.type.SqlTypes.JSON)
+    @Column(name = "renditions", nullable = false, columnDefinition = "jsonb")
+    private List<ImageRendition> renditions = List.of();
+
+    public List<ImageRendition> getRenditions() { return renditions; }
+    public void setRenditions(List<ImageRendition> value) {
+        renditions = List.copyOf(value);
+    }
 
     protected ProductImageJpaEntity() {
     }
