@@ -1,6 +1,7 @@
 package com.stockflow.product.api;
 
 import com.stockflow.common.api.PageResponse;
+import com.stockflow.common.audit.AuditEntry;
 
 import java.util.Optional;
 import java.util.UUID;
@@ -35,4 +36,11 @@ public interface ProductService {
     /** APPROVED/PUBLISHED → DISCONTINUED. Terminal — see {@code Product.discontinue}'s javadoc for
      *  the BR-PRD-005 gap this does not yet enforce. */
     ProductSummary discontinue(UUID productId);
+
+    /**
+     * SCRUM-86 (WBS 3.1.8.2): this product's audit trail, newest first — every create/update/
+     * submit/approve/reject/discontinue recorded against it. Throws {@code PRODUCT_NOT_FOUND} if
+     * no such product exists, so a bad id gets 404 rather than a confusing empty page.
+     */
+    PageResponse<AuditEntry> history(UUID productId, int page, int size);
 }

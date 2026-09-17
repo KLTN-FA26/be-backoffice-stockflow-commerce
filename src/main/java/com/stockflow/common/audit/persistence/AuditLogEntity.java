@@ -152,4 +152,15 @@ class AuditLogEntity implements Persistable<UUID> {
         }
         return value.substring(0, maxLength);
     }
+
+    UUID getActorId() { return actorId; }
+    String getActorName() { return actorName; }
+    AuditAction getAction() { return action; }
+    String getResourceType() { return resourceType; }
+    String getResourceId() { return resourceId; }
+    AuditEntry.Outcome getOutcome() { return outcome; }
+    String getCorrelationId() { return correlationId; }
+    String getClientAddress() { return clientAddress; }
+    String getDetails() { return details; }
+    Instant getOccurredAt() { return occurredAt; }
 }
