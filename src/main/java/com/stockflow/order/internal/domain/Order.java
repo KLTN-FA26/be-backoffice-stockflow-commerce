@@ -35,6 +35,11 @@ public final class Order extends AggregateRoot {
     private final OrderId id;
     private final OrderNumber orderNumber;
     private final UUID customerId;
+    private final String contactName;
+    private final String contactEmail;
+    private final String contactPhone;
+    private final OrderAddressSnapshot shippingAddress;
+    private final OrderAddressSnapshot billingAddress;
     private final UUID requestId;
     private final List<OrderLine> lines;
     private final Instant placedAt;
@@ -46,9 +51,23 @@ public final class Order extends AggregateRoot {
     public Order(OrderId id, OrderNumber orderNumber, UUID customerId, UUID requestId,
                  List<OrderLine> lines, OrderStatus status, Instant placedAt,
                  String cancellationReason, long version) {
+        this(id, orderNumber, customerId, requestId, lines, status, placedAt,
+                cancellationReason, version, null, null, null, null, null);
+    }
+
+    public Order(OrderId id, OrderNumber orderNumber, UUID customerId, UUID requestId,
+                 List<OrderLine> lines, OrderStatus status, Instant placedAt,
+                 String cancellationReason, long version, String contactName,
+                 String contactEmail, String contactPhone, OrderAddressSnapshot shippingAddress,
+                 OrderAddressSnapshot billingAddress) {
         this.id = java.util.Objects.requireNonNull(id, "id");
         this.orderNumber = java.util.Objects.requireNonNull(orderNumber, "orderNumber");
-        this.customerId = java.util.Objects.requireNonNull(customerId, "customerId");
+        this.customerId = customerId;
+        this.contactName = contactName;
+        this.contactEmail = contactEmail;
+        this.contactPhone = contactPhone;
+        this.shippingAddress = shippingAddress;
+        this.billingAddress = billingAddress;
         this.requestId = java.util.Objects.requireNonNull(requestId, "requestId");
         this.status = java.util.Objects.requireNonNull(status, "status");
         this.placedAt = java.util.Objects.requireNonNull(placedAt, "placedAt");
@@ -58,6 +77,10 @@ public final class Order extends AggregateRoot {
         if (this.lines.isEmpty()) {
             throw new IllegalArgumentException("An order must have at least one line");
         }
+        if (customerId == null && (contactEmail == null || contactEmail.isBlank()
+                || shippingAddress == null || billingAddress == null)) {
+            throw new IllegalArgumentException("Guest orders require contact and address snapshots");
+        }
     }
 
     /** Open a new order in DRAFT. Nothing is reserved yet. */
@@ -65,6 +88,26 @@ public final class Order extends AggregateRoot {
                               List<OrderLine> lines, Instant now) {
         return new Order(OrderId.newId(), orderNumber, customerId, requestId,
                 lines, OrderStatus.DRAFT, now, null, 0L);
+    }
+
+    /** Open an account checkout and freeze the customer's contact/address data for fulfilment. */
+    public static Order customerDraft(OrderNumber orderNumber, UUID customerId, UUID requestId,
+                                      List<OrderLine> lines, Instant now, String contactName,
+                                      String contactEmail, String contactPhone,
+                                      OrderAddressSnapshot shippingAddress,
+                                      OrderAddressSnapshot billingAddress) {
+        return new Order(OrderId.newId(), orderNumber, customerId, requestId, lines,
+                OrderStatus.DRAFT, now, null, 0L, contactName, contactEmail, contactPhone,
+                shippingAddress, billingAddress);
+    }
+
+    public static Order guestDraft(OrderNumber orderNumber, UUID requestId, List<OrderLine> lines,
+                                   Instant now, String contactName, String contactEmail,
+                                   String contactPhone, OrderAddressSnapshot shippingAddress,
+                                   OrderAddressSnapshot billingAddress) {
+        return new Order(OrderId.newId(), orderNumber, null, requestId, lines, OrderStatus.DRAFT,
+                now, null, 0L, contactName, contactEmail, contactPhone, shippingAddress,
+                billingAddress);
     }
 
     /**
@@ -121,6 +164,7 @@ public final class Order extends AggregateRoot {
         registerEvent(new OrderEvent.Placed(new OrderPlaced(
                 id.value(),
                 customerId,
+                contactEmail,
                 orderNumber.value(),
                 lines.stream()
                         .map(line -> new OrderPlaced.OrderLine(
@@ -202,6 +246,11 @@ public final class Order extends AggregateRoot {
     public OrderId id() { return id; }
     public OrderNumber orderNumber() { return orderNumber; }
     public UUID customerId() { return customerId; }
+    public String contactName() { return contactName; }
+    public String contactEmail() { return contactEmail; }
+    public String contactPhone() { return contactPhone; }
+    public OrderAddressSnapshot shippingAddress() { return shippingAddress; }
+    public OrderAddressSnapshot billingAddress() { return billingAddress; }
     public UUID requestId() { return requestId; }
     public OrderStatus status() { return status; }
     public Instant placedAt() { return placedAt; }

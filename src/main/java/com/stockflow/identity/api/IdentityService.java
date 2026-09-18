@@ -41,4 +41,7 @@ public interface IdentityService {
      *         the password was correct but the account is {@code LOCKED}/{@code DISABLED}
      */
     TokenResponse login(LoginCommand command);
+
+    /** Creates an ACTIVE account with the CUSTOMER role and issues its first token atomically. */
+    RegisteredAccount registerCustomer(RegisterAccountCommand command);
 }

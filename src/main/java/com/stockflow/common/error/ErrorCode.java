@@ -31,6 +31,8 @@ public enum ErrorCode {
     PURCHASE_ORDER_NOT_FOUND("Purchase order not found", 404),
     PRODUCT_NOT_FOUND("Product not found", 404),
     CATEGORY_NOT_FOUND("Category not found", 404),
+    CUSTOMER_NOT_FOUND("Customer not found", 404),
+    ADDRESS_NOT_FOUND("Address not found", 404),
 
     /** Credentials were correct but the account is LOCKED or DISABLED. Distinct from UNAUTHORIZED,
      *  which covers "wrong username or password" without revealing the account exists. */
@@ -50,6 +52,7 @@ public enum ErrorCode {
     PRODUCT_CODE_ALREADY_EXISTS("A product with this code already exists", 409),
     INVALID_PRODUCT_STATUS_TRANSITION("This product cannot move to that status right now", 409),
     SELF_APPROVAL_NOT_ALLOWED("A product cannot be approved by the person who submitted it", 409),
+    CUSTOMER_EMAIL_ALREADY_EXISTS("A customer account with this email already exists", 409),
 
     // ---- 413 / 415: payload problems
     PAYLOAD_TOO_LARGE("The uploaded file is too large", 413),

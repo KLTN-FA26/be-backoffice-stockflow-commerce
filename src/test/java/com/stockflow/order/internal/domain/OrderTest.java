@@ -152,4 +152,18 @@ class OrderTest {
         assertThat(OrderStatus.SHIPPED.holdsStock()).isFalse();        // already deducted
         assertThat(OrderStatus.CANCELLED.holdsStock()).isFalse();
     }
+
+    @Test
+    @DisplayName("guest checkout requires and retains immutable two-level address snapshots")
+    void guestCheckoutKeepsAddressSnapshots() {
+        var address = new OrderAddressSnapshot("Minh", "0901234567", "12 Nguyen Hue", null,
+                "26734", "Ben Nghe", "79", "Ho Chi Minh City", "VN", null);
+        Order guest = Order.guestDraft(NUMBER, UUID.randomUUID(), List.of(
+                Order.line(new Sku("TABLE-OAK-160"), 1, Money.vnd(8_000_000), null)),
+                NOW, "Minh", "minh@example.com", "0901234567", address, address);
+
+        assertThat(guest.customerId()).isNull();
+        assertThat(guest.contactEmail()).isEqualTo("minh@example.com");
+        assertThat(guest.shippingAddress()).isEqualTo(address);
+    }
 }
