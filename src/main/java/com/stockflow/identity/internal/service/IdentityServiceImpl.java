@@ -4,6 +4,8 @@ import com.stockflow.identity.api.IdentityService;
 import com.stockflow.identity.api.LoginCommand;
 import com.stockflow.identity.api.RoleSummary;
 import com.stockflow.identity.api.TokenResponse;
+import com.stockflow.identity.api.RegisterAccountCommand;
+import com.stockflow.identity.api.RegisteredAccount;
 import com.stockflow.identity.internal.domain.User;
 import com.stockflow.identity.internal.domain.UserId;
 import com.stockflow.identity.internal.domain.UserRepository;
@@ -43,6 +45,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
+import java.util.Locale;
 
 /**
  * The only implementation of {@link IdentityService}, and the module's transaction boundary.
@@ -136,6 +139,20 @@ class IdentityServiceImpl implements IdentityService {
         userRoles.findByUserIdAndRoleId(userId, role.getId()).ifPresent(userRoles::delete);
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public boolean isActiveUserWithAnyRole(UUID userId, String... roleCodes) {
+        if (userId == null || roleCodes == null || roleCodes.length == 0) {
+            return false;
+        }
+        var user = userRepository.findById(new UserId(userId));
+        if (user.isEmpty() || user.get().status() != com.stockflow.identity.internal.domain.UserStatus.ACTIVE) {
+            return false;
+        }
+        var accepted = java.util.Set.of(roleCodes);
+        return rolesOf(user.get().id()).stream().anyMatch(role -> accepted.contains(role.getCode()));
+    }
+
     /**
      * {@inheritDoc}
      *
@@ -149,7 +166,8 @@ class IdentityServiceImpl implements IdentityService {
     @Override
     @Auditable(action = AuditAction.LOGIN, resourceType = "user", resourceId = "#command.username()")
     public TokenResponse login(LoginCommand command) {
-        Optional<User> found = userRepository.findByUsername(command.username());
+        String loginName = command.username() == null ? "" : command.username().trim();
+        Optional<User> found = userRepository.findByUsername(loginName);
         String hashToCheck = found.map(User::passwordHash).orElse(dummyPasswordHash);
         boolean passwordMatches = passwordEncoder.matches(command.password(), hashToCheck);
         if (found.isEmpty() || !passwordMatches) {
@@ -167,6 +185,31 @@ class IdentityServiceImpl implements IdentityService {
 
         return new TokenResponse(issueToken(saved, grantedRoles, grantedPermissions),
                 "Bearer", TOKEN_TTL_SECONDS);
+    }
+
+    @Override
+    public RegisteredAccount registerCustomer(RegisterAccountCommand command) {
+        String email = command.email().trim().toLowerCase(Locale.ROOT);
+        if (userRepository.findByEmail(email).isPresent()) {
+            throw new BusinessException(ErrorCode.CUSTOMER_EMAIL_ALREADY_EXISTS,
+                    "A customer account with this email already exists");
+        }
+        if (command.password() == null || command.password().length() < 10
+                || !command.password().chars().anyMatch(Character::isUpperCase)
+                || !command.password().chars().anyMatch(Character::isLowerCase)
+                || !command.password().chars().anyMatch(Character::isDigit)) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "Password must be at least 10 characters and contain upper, lower and digit characters");
+        }
+        User saved = userRepository.save(User.register(Identifiers.newId(), email,
+                passwordEncoder.encode(command.password()), command.fullName()));
+        assignRole(saved.id().value(), com.stockflow.common.security.Roles.CUSTOMER);
+        List<RoleJpaEntity> grantedRoles = rolesOf(saved.id());
+        Set<PermissionCode> grantedPermissions = grantedRoles.stream()
+                .flatMap(role -> grantedPermissionsOf(role.getId()).stream())
+                .collect(Collectors.toUnmodifiableSet());
+        return new RegisteredAccount(saved.id().value(), new TokenResponse(
+                issueToken(saved, grantedRoles, grantedPermissions), "Bearer", TOKEN_TTL_SECONDS));
     }
 
     private String issueToken(User user, List<RoleJpaEntity> grantedRoles,

@@ -1,0 +1,20 @@
+# Optional media dependency overlay: docker compose -f docker-compose.yml -f docker-compose.media.yml up -d
+services:
+  clamav:
+    image: clamav/clamav:stable
+    ports:
+      - "127.0.0.1:3310:3310"
+    volumes:
+      - clamav-signatures:/var/lib/clamav
+    healthcheck:
+      test: ["CMD", "clamdcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 180s
+  app:
+    environment:
+      STOCKFLOW_UPLOAD_INSPECTION_HOST: clamav
+      STOCKFLOW_UPLOAD_INSPECTION_PORT: 3310
+volumes:
+  clamav-signatures:

@@ -8,5 +8,6 @@ import java.util.Optional;
 /** Spring Data repository for {@link UserJpaEntity}. */
 public interface UserJpaRepository extends BaseJpaRepository<UserJpaEntity> {
 
-    Optional<UserJpaEntity> findByUsername(String username);
+    Optional<UserJpaEntity> findByUsernameIgnoreCase(String username);
+    Optional<UserJpaEntity> findByEmailIgnoreCase(String email);
 }

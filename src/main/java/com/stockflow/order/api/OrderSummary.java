@@ -20,8 +20,24 @@ public record OrderSummary(
         OrderStatus status,
         Money total,
         List<LineSummary> lines,
-        Instant placedAt
+        Instant placedAt,
+        String contactName,
+        String contactEmail,
+        String contactPhone,
+        AddressSummary shippingAddress,
+        AddressSummary billingAddress
 ) {
+
+    public OrderSummary(UUID orderId, String orderNumber, UUID customerId, OrderStatus status,
+                        Money total, List<LineSummary> lines, Instant placedAt) {
+        this(orderId, orderNumber, customerId, status, total, lines, placedAt,
+                null, null, null, null, null);
+    }
+
+    public record AddressSummary(String recipientName, String phone, String line1, String line2,
+                                 String wardCode, String wardName, String provinceCode,
+                                 String provinceName, String countryCode, String postalCode) {
+    }
 
     /**
      * @param reservationIds every hold inventory gave back for this line — one per lot it was drawn
@@ -33,8 +49,15 @@ public record OrderSummary(
             int quantity,
             Money unitPrice,
             Money lineTotal,
-            List<UUID> reservationIds
+            List<UUID> reservationIds,
+            UUID designSnapshotId,
+            String designChecksum
     ) {
+
+        public LineSummary(UUID lineId, String sku, int quantity, Money unitPrice,
+                           Money lineTotal, List<UUID> reservationIds) {
+            this(lineId, sku, quantity, unitPrice, lineTotal, reservationIds, null, null);
+        }
 
         public LineSummary {
             reservationIds = reservationIds == null ? List.of() : List.copyOf(reservationIds);

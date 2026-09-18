@@ -7,6 +7,11 @@
 # =============================================================================
 
 spring:
+  servlet:
+    multipart:
+      # Category policy still enforces 10 MiB product / 50 MiB design limits.
+      max-file-size: 50MB
+      max-request-size: 51MB
   application:
     name: stockflow-monolith
 
@@ -248,15 +253,19 @@ management:
 springdoc:
   api-docs:
     path: /v3/api-docs
+
   swagger-ui:
     path: /swagger-ui.html
     operations-sorter: alpha
     tags-sorter: alpha
-    # Groups the generated OpenAPI document by module, so a reader sees inventory's endpoints
-    # together rather than one flat alphabetical list of 500 paths.
+
   group-configs:
+    - group: all
+      packages-to-scan: com.stockflow
+
     - group: inventory
       packages-to-scan: com.stockflow.inventory
+
     - group: order
       packages-to-scan: com.stockflow.order
 
@@ -322,6 +331,10 @@ stockflow:
     access-key: ${MINIO_ACCESS_KEY:stockflow}
     secret-key: ${MINIO_SECRET_KEY:stockflow123}
     presigned-url-ttl: PT10M        # a signed URL is a credential with no revocation; keep it short
+
+  product-media:
+    # Public CloudFront/custom-domain origin. Blank keeps private upload working but public gallery returns 503.
+    cloud-front-base-url: ${PRODUCT_MEDIA_CDN_BASE_URL:}
 
   web:
     request-log:

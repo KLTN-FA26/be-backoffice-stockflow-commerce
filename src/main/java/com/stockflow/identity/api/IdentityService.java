@@ -30,6 +30,9 @@ public interface IdentityService {
     /** Revoke a role from a user. Idempotent: revoking one not held is a no-op. */
     void revokeRole(UUID userId, String roleCode);
 
+    /** Used by task assignment to reject inactive users and users outside an operational role. */
+    boolean isActiveUserWithAnyRole(UUID userId, String... roleCodes);
+
     /**
      * Verify credentials and issue a signed staff token (SCRUM-378/WBS 3.19.7).
      *
@@ -38,4 +41,7 @@ public interface IdentityService {
      *         the password was correct but the account is {@code LOCKED}/{@code DISABLED}
      */
     TokenResponse login(LoginCommand command);
+
+    /** Creates an ACTIVE account with the CUSTOMER role and issues its first token atomically. */
+    RegisteredAccount registerCustomer(RegisterAccountCommand command);
 }

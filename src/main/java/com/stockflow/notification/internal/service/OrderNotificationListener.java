@@ -48,7 +48,7 @@ class OrderNotificationListener {
 
     @ApplicationModuleListener
     public void on(OrderPlaced event) {
-        sender.send(event.customerId(), "order.placed",
+        sender.send(event.customerId(), event.contactEmail(), "order.placed",
                 "Order %s received".formatted(event.orderNumber()),
                 "We have received order %s for a total of %s %s."
                         .formatted(event.orderNumber(), event.totalAmount(), event.currency()));

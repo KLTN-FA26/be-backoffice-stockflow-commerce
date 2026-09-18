@@ -39,6 +39,10 @@ import java.util.UUID;
 @Transactional
 class ProductServiceImpl implements ProductService {
 
+    @Override
+    @Transactional(readOnly = true)
+    public boolean containsSku(UUID productId, String sku) { return products.containsSku(productId, sku); }
+
     private static final SortWhitelist SORT =
             SortWhitelist.of("name", "code", "createdAt", "status").withDefault("createdAt", Sort.Direction.DESC);
 
@@ -97,9 +101,16 @@ class ProductServiceImpl implements ProductService {
             throw new BusinessException(ErrorCode.CATEGORY_NOT_FOUND,
                     "No category with id " + command.categoryId());
         }
+        // Legacy URL editing must never discard attachments uploaded through the media endpoint.
+        var images = new java.util.ArrayList<ProductImage>();
+        product.images().stream().filter(image -> image.storedFile() != null).forEach(images::add);
+        int nextOrder = images.stream().mapToInt(ProductImage::sortOrder).max().orElse(-1) + 1;
+        for (var legacy : toImages(command.images())) {
+            images.add(new ProductImage(legacy.id(), legacy.url(), nextOrder++));
+        }
         product.updateDetails(command.name(), command.nameEn(), command.categoryId(),
                 command.description(), command.descriptionEn(), command.brand(),
-                command.taxClass(), command.customizable(), toImages(command.images()),
+                command.taxClass(), command.customizable(), images,
                 command.weightKg(), command.lengthCm(), command.widthCm(), command.heightCm());
         return toSummary(products.save(product));
     }
@@ -173,7 +184,10 @@ class ProductServiceImpl implements ProductService {
                 product.brand(),
                 product.taxClass(),
                 product.customizable(),
-                product.images().stream().map(ProductImage::url).toList(),
+                // Uploaded media is available through the guarded /images endpoints. Signed URLs
+                // must not enter the cross-module contract or persisted/cached product summaries.
+                product.images().stream().filter(image -> image.storedFile() == null)
+                        .map(ProductImage::url).toList(),
                 product.status(),
                 product.createdAt(),
                 product.createdBy(),

@@ -21,8 +21,15 @@ public interface OrderService {
      */
     OrderSummary placeOrder(PlaceOrderCommand command);
 
+    /** Guest checkout with immutable contact/address snapshots and no customer account. */
+    OrderSummary placeGuestOrder(PlaceGuestOrderCommand command);
+
     Optional<OrderSummary> findById(UUID orderId);
 
     /** Cancel an order and release whatever stock it was holding. */
     void cancel(UUID orderId, String reason);
+
+    OrderSummary releaseToFulfillment(UUID orderId);
+    void putOnDesignHold(UUID orderId, String reason);
+    void resolveDesignHold(UUID orderId, UUID resolvedBy, String note);
 }

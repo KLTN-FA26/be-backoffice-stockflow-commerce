@@ -2,9 +2,13 @@ package com.stockflow.design.internal.repository;
 
 import com.stockflow.design.internal.entity.DesignSnapshotJpaEntity;
 import com.stockflow.common.persistence.BaseJpaRepository;
+import java.util.UUID;
 
-/** Spring Data repository for {@link DesignSnapshotJpaEntity}. STARTER STUB. */
-interface DesignSnapshotJpaRepository extends BaseJpaRepository<DesignSnapshotJpaEntity> {
+/** Snapshot evidence. Legacy snapshots are not eligible for new workflow confirmation replay. */
+public interface DesignSnapshotJpaRepository extends BaseJpaRepository<DesignSnapshotJpaEntity> {
 
-    // TODO: add finders the service needs.
+    @org.springframework.data.jpa.repository.Query("select s from DesignSnapshotJpaEntity s where s.draftId = :draftId and s.confirmedBy is not null and s.artifactId is not null")
+    java.util.Optional<DesignSnapshotJpaEntity> findByDraftId(@org.springframework.data.repository.query.Param("draftId") UUID draftId);
+
+    boolean existsByDraftId(UUID draftId);
 }

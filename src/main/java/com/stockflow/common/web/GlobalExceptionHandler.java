@@ -338,7 +338,8 @@ public class GlobalExceptionHandler {
         ErrorCode code = switch (status) {
             case 400 -> ErrorCode.VALIDATION_FAILED;
             case 404 -> ErrorCode.NOT_FOUND;
-            case 405, 406, 415 -> ErrorCode.UNSUPPORTED_PARAMETER;
+            case 405, 406 -> ErrorCode.UNSUPPORTED_PARAMETER;
+            case 415 -> ErrorCode.UNSUPPORTED_MEDIA_TYPE;
             case 413 -> ErrorCode.PAYLOAD_TOO_LARGE;
             case 429 -> ErrorCode.RATE_LIMITED;
             default -> status >= 500 ? ErrorCode.INTERNAL_ERROR : ErrorCode.VALIDATION_FAILED;

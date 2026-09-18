@@ -7,9 +7,13 @@ import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.Action;
+import com.stockflow.common.security.AuthenticatedUser;
+import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
+import com.stockflow.common.security.Role;
+import com.stockflow.customer.api.CustomerService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -45,9 +49,11 @@ import java.util.UUID;
 class OrderController {
 
     private final OrderService orderService;
+    private final CustomerService customerService;
 
-    OrderController(OrderService orderService) {
+    OrderController(OrderService orderService, CustomerService customerService) {
         this.orderService = orderService;
+        this.customerService = customerService;
     }
 
     /**
@@ -63,7 +69,19 @@ class OrderController {
     @Operation(summary = "Place an order: create it and reserve its stock in one transaction")
     @RequiresPermission(resource = OrderResources.ORDERS,
             action = Action.CREATE, scope = DataScope.OWN)
-    public ApiResponse<OrderResponse> place(@Valid @RequestBody PlaceOrderRequest request) {
+    public ApiResponse<OrderResponse> place(@Valid @RequestBody PlaceOrderRequest request,
+                                            @AuthenticatedUser CurrentUser user) {
+        boolean mayPlaceForAnotherCustomer = user.hasAnyRole(
+                Role.SALES_STAFF, Role.ORDER_COORDINATOR, Role.ECOMMERCE_ADMIN);
+        if (!mayPlaceForAnotherCustomer) {
+            UUID ownCustomerId = customerService.findByUserId(user.userId())
+                    .orElseThrow(() -> new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND))
+                    .customerId();
+            if (!ownCustomerId.equals(request.customerId())) {
+                // Hide whether another customer's id exists.
+                throw new BusinessException(ErrorCode.NOT_FOUND);
+            }
+        }
         return ApiResponse.ok(OrderWebMapper.toResponse(
                 orderService.placeOrder(OrderWebMapper.toCommand(request))));
     }
