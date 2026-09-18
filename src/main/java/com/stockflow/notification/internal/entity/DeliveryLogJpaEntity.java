@@ -37,11 +37,20 @@ public class DeliveryLogJpaEntity extends BaseEntity {
     @Column(name = "sent_at")
     private Instant sentAt;
 
+    @Column(name = "external_reference", length = 100)
+    private String externalReference;
+
     protected DeliveryLogJpaEntity() {
     }
 
     public DeliveryLogJpaEntity(UUID id, String templateCode, NotificationChannel channel,
                                 String recipient, DeliveryStatus status, String error, Instant sentAt) {
+        this(id, templateCode, channel, recipient, status, error, sentAt, null);
+    }
+
+    public DeliveryLogJpaEntity(UUID id, String templateCode, NotificationChannel channel,
+                                String recipient, DeliveryStatus status, String error, Instant sentAt,
+                                String externalReference) {
         super(id);
         this.templateCode = templateCode;
         this.channel = channel;
@@ -49,6 +58,7 @@ public class DeliveryLogJpaEntity extends BaseEntity {
         this.status = status;
         this.error = error;
         this.sentAt = sentAt;
+        this.externalReference = externalReference;
     }
 
     public String getTemplateCode() { return templateCode; }
@@ -57,4 +67,5 @@ public class DeliveryLogJpaEntity extends BaseEntity {
     public DeliveryStatus getStatus() { return status; }
     public String getError() { return error; }
     public Instant getSentAt() { return sentAt; }
+    public String getExternalReference() { return externalReference; }
 }

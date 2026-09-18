@@ -44,6 +44,13 @@ public final class PurchaseOrder extends AggregateRoot {
     private final LocalDate expectedAt;
     private String cancellationReason;
     private String closeShortReason;
+    private final int paymentTermDays;
+    private final int leadTimeDays;
+    private Instant sentAt;
+    private SupplierConfirmationStatus supplierConfirmationStatus;
+    private Instant supplierRespondedAt;
+    private String supplierReference;
+    private String supplierResponseNote;
     private final long version;
     private final Instant createdAt;
     private final String createdBy;
@@ -53,6 +60,9 @@ public final class PurchaseOrder extends AggregateRoot {
     public PurchaseOrder(PurchaseOrderId id, String poNumber, UUID supplierId,
                          PurchaseOrderStatus status, Currency currency, List<PoLine> lines,
                          LocalDate expectedAt, String cancellationReason, String closeShortReason,
+                         int paymentTermDays, int leadTimeDays, Instant sentAt,
+                         SupplierConfirmationStatus supplierConfirmationStatus,
+                         Instant supplierRespondedAt, String supplierReference, String supplierResponseNote,
                          long version, Instant createdAt, String createdBy,
                          Instant lastModifiedAt, String lastModifiedBy) {
         this.id = Objects.requireNonNull(id, "id");
@@ -73,6 +83,13 @@ public final class PurchaseOrder extends AggregateRoot {
         this.expectedAt = expectedAt;
         this.cancellationReason = cancellationReason;
         this.closeShortReason = closeShortReason;
+        this.paymentTermDays = paymentTermDays;
+        this.leadTimeDays = leadTimeDays;
+        this.sentAt = sentAt;
+        this.supplierConfirmationStatus = Objects.requireNonNull(supplierConfirmationStatus, "supplierConfirmationStatus");
+        this.supplierRespondedAt = supplierRespondedAt;
+        this.supplierReference = supplierReference;
+        this.supplierResponseNote = supplierResponseNote;
         this.version = version;
         this.createdAt = createdAt;
         this.createdBy = createdBy;
@@ -82,10 +99,19 @@ public final class PurchaseOrder extends AggregateRoot {
 
     /** A new purchase order, always born {@link PurchaseOrderStatus#DRAFT}. */
     public static PurchaseOrder draft(String poNumber, UUID supplierId, Currency currency,
-                                      List<PoLine> lines, LocalDate expectedAt) {
+                                      List<PoLine> lines, LocalDate expectedAt,
+                                      int paymentTermDays, int leadTimeDays) {
         return new PurchaseOrder(PurchaseOrderId.newId(), poNumber, supplierId,
-                PurchaseOrderStatus.DRAFT, currency, lines, expectedAt, null, null, 0L,
+                PurchaseOrderStatus.DRAFT, currency, lines, expectedAt, null, null,
+                paymentTermDays, leadTimeDays, null, SupplierConfirmationStatus.NOT_SENT,
+                null, null, null, 0L,
                 null, null, null, null);
+    }
+
+    /** Compatibility overload for existing callers and tests. */
+    public static PurchaseOrder draft(String poNumber, UUID supplierId, Currency currency,
+                                      List<PoLine> lines, LocalDate expectedAt) {
+        return draft(poNumber, supplierId, currency, lines, expectedAt, 30, 7);
     }
 
     public Money totalAmount() {
@@ -107,6 +133,28 @@ public final class PurchaseOrder extends AggregateRoot {
     public void send(Instant now) {
         requireCanTransitionTo(PurchaseOrderStatus.SENT);
         this.status = PurchaseOrderStatus.SENT;
+        this.sentAt = now;
+        this.supplierConfirmationStatus = SupplierConfirmationStatus.PENDING;
+    }
+
+    public void recordSupplierConfirmation(SupplierConfirmationStatus response, String reference,
+                                           String note, Instant now) {
+        if (status != PurchaseOrderStatus.SENT && status != PurchaseOrderStatus.PARTIALLY_RECEIVED
+                && status != PurchaseOrderStatus.CLOSED && status != PurchaseOrderStatus.CLOSED_SHORT) {
+            throw new InvalidPurchaseOrderTransitionException(id,
+                    "supplier response requires a sent purchase order");
+        }
+        if (response != SupplierConfirmationStatus.CONFIRMED && response != SupplierConfirmationStatus.REJECTED) {
+            throw new IllegalArgumentException("Supplier response must be CONFIRMED or REJECTED");
+        }
+        if (supplierConfirmationStatus == response) return;
+        if (supplierConfirmationStatus != SupplierConfirmationStatus.PENDING) {
+            throw new InvalidPurchaseOrderTransitionException(id, "supplier response is already final");
+        }
+        this.supplierConfirmationStatus = response;
+        this.supplierRespondedAt = now;
+        this.supplierReference = reference;
+        this.supplierResponseNote = note;
     }
 
     /**
@@ -177,6 +225,13 @@ public final class PurchaseOrder extends AggregateRoot {
     public LocalDate expectedAt() { return expectedAt; }
     public String cancellationReason() { return cancellationReason; }
     public String closeShortReason() { return closeShortReason; }
+    public int paymentTermDays() { return paymentTermDays; }
+    public int leadTimeDays() { return leadTimeDays; }
+    public Instant sentAt() { return sentAt; }
+    public SupplierConfirmationStatus supplierConfirmationStatus() { return supplierConfirmationStatus; }
+    public Instant supplierRespondedAt() { return supplierRespondedAt; }
+    public String supplierReference() { return supplierReference; }
+    public String supplierResponseNote() { return supplierResponseNote; }
     public long version() { return version; }
     public Instant createdAt() { return createdAt; }
     public String createdBy() { return createdBy; }

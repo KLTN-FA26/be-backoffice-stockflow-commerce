@@ -41,6 +41,13 @@ public record PurchaseOrderResponse(
         String cancellationReason,
 
         @Schema(description = "Set only once the order is CLOSED_SHORT.")
-        String closeShortReason
+        String closeShortReason,
+        int paymentTermDays,
+        int leadTimeDays,
+        Instant sentAt,
+        String supplierConfirmationStatus,
+        Instant supplierRespondedAt,
+        String supplierReference,
+        String supplierResponseNote
 ) {
 }

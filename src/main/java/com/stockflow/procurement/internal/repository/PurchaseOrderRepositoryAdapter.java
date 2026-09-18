@@ -66,6 +66,11 @@ class PurchaseOrderRepositoryAdapter implements PurchaseOrderRepository, Purchas
     }
 
     @Override
+    public Optional<PurchaseOrder> findByIdForUpdate(PurchaseOrderId id) {
+        return jpa.findWithLinesByIdForUpdate(id.value()).map(PurchaseOrderPersistenceMapper::toDomain);
+    }
+
+    @Override
     public boolean existsById(PurchaseOrderId id) {
         return jpa.existsById(id.value());
     }

@@ -35,6 +35,9 @@ public interface ProcurementService {
     /** SCRUM-116/WBS 3.2.4. APPROVED -&gt; SENT. */
     PurchaseOrderSummary send(UUID purchaseOrderId);
 
+    PurchaseOrderSummary recordSupplierConfirmation(UUID purchaseOrderId,
+                                                     RecordSupplierConfirmationCommand command);
+
     /** SCRUM-116/WBS 3.2.4. DRAFT/APPROVED/SENT -&gt; CANCELLED. Rejected once anything has been
      *  received against the order. */
     PurchaseOrderSummary cancel(UUID purchaseOrderId, String reason);

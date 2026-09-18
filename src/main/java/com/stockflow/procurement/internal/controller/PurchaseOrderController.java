@@ -10,6 +10,8 @@ import com.stockflow.procurement.internal.controller.dto.PurchaseOrderResponse;
 import com.stockflow.procurement.internal.controller.dto.PurchaseOrderStatusCountResponse;
 import com.stockflow.procurement.internal.controller.dto.ReceiveGoodsRequest;
 import com.stockflow.procurement.internal.controller.dto.SupplierSpendResponse;
+import com.stockflow.procurement.internal.controller.dto.SupplierConfirmationRequest;
+import com.stockflow.procurement.api.RecordSupplierConfirmationCommand;
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.error.BusinessException;
@@ -110,6 +112,15 @@ class PurchaseOrderController {
     @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.UPDATE)
     public ApiResponse<PurchaseOrderResponse> send(@PathVariable UUID purchaseOrderId) {
         return ApiResponse.ok(mapper.toResponse(procurementService.send(purchaseOrderId)));
+    }
+
+    @PostMapping("/{purchaseOrderId}/supplier-confirmation")
+    @Operation(summary = "Record a supplier's confirmation or rejection")
+    @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.UPDATE)
+    public ApiResponse<PurchaseOrderResponse> recordSupplierConfirmation(@PathVariable UUID purchaseOrderId,
+            @Valid @RequestBody SupplierConfirmationRequest request) {
+        return ApiResponse.ok(mapper.toResponse(procurementService.recordSupplierConfirmation(purchaseOrderId,
+                new RecordSupplierConfirmationCommand(request.status(), request.supplierReference(), request.note()))));
     }
 
     @PostMapping("/{purchaseOrderId}/cancellation")

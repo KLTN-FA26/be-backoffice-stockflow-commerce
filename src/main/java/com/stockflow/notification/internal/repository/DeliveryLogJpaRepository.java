@@ -4,7 +4,7 @@ import com.stockflow.notification.internal.entity.DeliveryLogJpaEntity;
 import com.stockflow.common.persistence.BaseJpaRepository;
 
 /** Spring Data repository for {@link DeliveryLogJpaEntity}. STARTER STUB. */
-interface DeliveryLogJpaRepository extends BaseJpaRepository<DeliveryLogJpaEntity> {
+public interface DeliveryLogJpaRepository extends BaseJpaRepository<DeliveryLogJpaEntity> {
 
-    // TODO: add finders the service needs.
+    boolean existsByExternalReference(String externalReference);
 }

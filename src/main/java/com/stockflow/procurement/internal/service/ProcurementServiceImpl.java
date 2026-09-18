@@ -8,6 +8,7 @@ import com.stockflow.procurement.api.ProcurementService;
 import com.stockflow.procurement.api.PurchaseOrderStatusCount;
 import com.stockflow.procurement.api.PurchaseOrderSummary;
 import com.stockflow.procurement.api.ReceiveGoodsCommand;
+import com.stockflow.procurement.api.RecordSupplierConfirmationCommand;
 import com.stockflow.procurement.api.SupplierSpendReportQuery;
 import com.stockflow.procurement.api.SupplierSpendSummary;
 import com.stockflow.procurement.internal.domain.PoLine;
@@ -16,10 +17,14 @@ import com.stockflow.procurement.internal.domain.PurchaseOrderId;
 import com.stockflow.procurement.internal.domain.PurchaseOrderRepository;
 import com.stockflow.procurement.internal.domain.PurchaseOrderStatus;
 import com.stockflow.procurement.internal.domain.SupplierStatus;
+import com.stockflow.procurement.internal.domain.SupplierConfirmationStatus;
+import com.stockflow.procurement.internal.domain.SupplierCommunicationChannel;
+import com.stockflow.contracts.PurchaseOrderSent;
 import com.stockflow.procurement.internal.repository.ProcurementReportRepository;
 import com.stockflow.procurement.internal.repository.PurchaseOrderSearchCriteria;
 import com.stockflow.procurement.internal.repository.PurchaseOrderSearchRepository;
 import com.stockflow.procurement.internal.repository.SupplierSpendCriteria;
+import com.stockflow.procurement.internal.repository.SupplierJpaRepository;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
@@ -34,6 +39,7 @@ import com.stockflow.common.persistence.SortWhitelist;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.context.ApplicationEventPublisher;
 
 import java.time.Clock;
 import java.time.LocalDate;
@@ -62,13 +68,18 @@ class ProcurementServiceImpl implements ProcurementService {
     private final PurchaseOrderSearchRepository search;
     private final ProcurementReportRepository reports;
     private final Clock clock;
+    private final SupplierJpaRepository suppliers;
+    private final ApplicationEventPublisher events;
 
     ProcurementServiceImpl(PurchaseOrderRepository purchaseOrders, PurchaseOrderSearchRepository search,
-                           ProcurementReportRepository reports, Clock clock) {
+                           ProcurementReportRepository reports, Clock clock, SupplierJpaRepository suppliers,
+                           ApplicationEventPublisher events) {
         this.purchaseOrders = purchaseOrders;
         this.search = search;
         this.reports = reports;
         this.clock = clock;
+        this.suppliers = suppliers;
+        this.events = events;
     }
 
     /**
@@ -95,8 +106,11 @@ class ProcurementServiceImpl implements ProcurementService {
         LocalDate today = clock.instant().atZone(java.time.ZoneOffset.UTC).toLocalDate();
         String poNumber = purchaseOrders.nextPoNumber(today);
 
-        PurchaseOrder order = PurchaseOrder.draft(
-                poNumber, command.supplierId(), currency, lines, command.expectedAt());
+        var supplier = suppliers.findById(command.supplierId()).orElseThrow(() ->
+                new BusinessException(ErrorCode.SUPPLIER_NOT_FOUND, "No supplier with id " + command.supplierId()));
+        LocalDate expectedAt = command.expectedAt() == null ? today.plusDays(supplier.getLeadTimeDays()) : command.expectedAt();
+        PurchaseOrder order = PurchaseOrder.draft(poNumber, command.supplierId(), currency, lines,
+                expectedAt, supplier.getPaymentTermDays(), supplier.getLeadTimeDays());
 
         boolean possibleDuplicate = isPossibleDuplicate(order);
         PurchaseOrder saved = purchaseOrders.save(order);
@@ -135,7 +149,28 @@ class ProcurementServiceImpl implements ProcurementService {
     @Auditable(action = AuditAction.TRANSITION, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
     public PurchaseOrderSummary send(UUID purchaseOrderId) {
         PurchaseOrder order = loadForUpdate(purchaseOrderId);
+        if (order.status() == PurchaseOrderStatus.SENT) {
+            return toSummary(order, false);
+        }
         order.send(clock.instant());
+        PurchaseOrder saved = purchaseOrders.save(order);
+        var supplier = suppliers.findById(saved.supplierId()).orElseThrow(() ->
+                new BusinessException(ErrorCode.SUPPLIER_NOT_FOUND, "No supplier with id " + saved.supplierId()));
+        String recipient = supplier.getCommunicationChannel() == SupplierCommunicationChannel.EMAIL
+                ? supplier.getEmail() : supplier.getApiEndpoint();
+        events.publishEvent(new PurchaseOrderSent(saved.id().value(), saved.poNumber(), saved.supplierId(),
+                supplier.getCommunicationChannel().name(), recipient, saved.totalAmount().amount(),
+                saved.currency().getCurrencyCode(), saved.expectedAt(), saved.paymentTermDays()));
+        return toSummary(saved, false);
+    }
+
+    @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
+    public PurchaseOrderSummary recordSupplierConfirmation(UUID purchaseOrderId,
+                                                            RecordSupplierConfirmationCommand command) {
+        PurchaseOrder order = loadForUpdate(purchaseOrderId);
+        order.recordSupplierConfirmation(SupplierConfirmationStatus.valueOf(command.status()),
+                command.supplierReference(), command.note(), clock.instant());
         return toSummary(purchaseOrders.save(order), false);
     }
 
@@ -185,7 +220,7 @@ class ProcurementServiceImpl implements ProcurementService {
     }
 
     private PurchaseOrder loadForUpdate(UUID purchaseOrderId) {
-        return purchaseOrders.findById(new PurchaseOrderId(purchaseOrderId))
+        return purchaseOrders.findByIdForUpdate(new PurchaseOrderId(purchaseOrderId))
                 .orElseThrow(() -> new BusinessException(ErrorCode.PURCHASE_ORDER_NOT_FOUND,
                         "No purchase order with id " + purchaseOrderId));
     }
@@ -234,6 +269,8 @@ class ProcurementServiceImpl implements ProcurementService {
                 order.lastModifiedBy(),
                 possibleDuplicate,
                 order.cancellationReason(),
-                order.closeShortReason());
+                order.closeShortReason(), order.paymentTermDays(), order.leadTimeDays(), order.sentAt(),
+                order.supplierConfirmationStatus().name(), order.supplierRespondedAt(),
+                order.supplierReference(), order.supplierResponseNote());
     }
 }

@@ -1,6 +1,7 @@
 package com.stockflow.procurement.internal.entity;
 
 import com.stockflow.procurement.internal.domain.PurchaseOrderStatus;
+import com.stockflow.procurement.internal.domain.SupplierConfirmationStatus;
 import com.stockflow.common.persistence.BaseEntity;
 import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
@@ -14,6 +15,7 @@ import jakarta.persistence.UniqueConstraint;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -55,6 +57,15 @@ public class PurchaseOrderJpaEntity extends BaseEntity {
     @Column(name = "close_short_reason", length = 1000)
     private String closeShortReason;
 
+    @Column(name = "payment_term_days", nullable = false) private int paymentTermDays;
+    @Column(name = "lead_time_days", nullable = false) private int leadTimeDays;
+    @Column(name = "sent_at") private Instant sentAt;
+    @Enumerated(EnumType.STRING) @Column(name = "supplier_confirmation_status", nullable = false, length = 16)
+    private SupplierConfirmationStatus supplierConfirmationStatus;
+    @Column(name = "supplier_responded_at") private Instant supplierRespondedAt;
+    @Column(name = "supplier_reference", length = 100) private String supplierReference;
+    @Column(name = "supplier_response_note", length = 1000) private String supplierResponseNote;
+
     @OneToMany(mappedBy = "purchaseOrder", cascade = CascadeType.ALL, orphanRemoval = true,
             fetch = FetchType.LAZY)
     @org.hibernate.annotations.BatchSize(size = 50)
@@ -65,7 +76,9 @@ public class PurchaseOrderJpaEntity extends BaseEntity {
 
     public PurchaseOrderJpaEntity(UUID id, String poNumber, UUID supplierId, PurchaseOrderStatus status,
                                   String currency, BigDecimal totalAmount, LocalDate expectedAt,
-                                  String cancellationReason, String closeShortReason) {
+                                  String cancellationReason, String closeShortReason, int paymentTermDays,
+                                  int leadTimeDays, Instant sentAt, SupplierConfirmationStatus supplierConfirmationStatus,
+                                  Instant supplierRespondedAt, String supplierReference, String supplierResponseNote) {
         super(id);
         this.poNumber = poNumber;
         this.supplierId = supplierId;
@@ -75,15 +88,28 @@ public class PurchaseOrderJpaEntity extends BaseEntity {
         this.expectedAt = expectedAt;
         this.cancellationReason = cancellationReason;
         this.closeShortReason = closeShortReason;
+        this.paymentTermDays = paymentTermDays;
+        this.leadTimeDays = leadTimeDays;
+        this.sentAt = sentAt;
+        this.supplierConfirmationStatus = supplierConfirmationStatus;
+        this.supplierRespondedAt = supplierRespondedAt;
+        this.supplierReference = supplierReference;
+        this.supplierResponseNote = supplierResponseNote;
     }
 
     /** Copies every editable field onto a managed row, so Hibernate's dirty checking writes the UPDATE. */
     public void apply(PurchaseOrderStatus status, BigDecimal totalAmount, String cancellationReason,
-                      String closeShortReason) {
+                      String closeShortReason, Instant sentAt, SupplierConfirmationStatus confirmationStatus,
+                      Instant respondedAt, String supplierReference, String supplierResponseNote) {
         this.status = status;
         this.totalAmount = totalAmount;
         this.cancellationReason = cancellationReason;
         this.closeShortReason = closeShortReason;
+        this.sentAt = sentAt;
+        this.supplierConfirmationStatus = confirmationStatus;
+        this.supplierRespondedAt = respondedAt;
+        this.supplierReference = supplierReference;
+        this.supplierResponseNote = supplierResponseNote;
     }
 
     public void replaceLines(List<POLineJpaEntity> replacement) {
@@ -102,5 +128,12 @@ public class PurchaseOrderJpaEntity extends BaseEntity {
     public LocalDate getExpectedAt() { return expectedAt; }
     public String getCancellationReason() { return cancellationReason; }
     public String getCloseShortReason() { return closeShortReason; }
+    public int getPaymentTermDays() { return paymentTermDays; }
+    public int getLeadTimeDays() { return leadTimeDays; }
+    public Instant getSentAt() { return sentAt; }
+    public SupplierConfirmationStatus getSupplierConfirmationStatus() { return supplierConfirmationStatus; }
+    public Instant getSupplierRespondedAt() { return supplierRespondedAt; }
+    public String getSupplierReference() { return supplierReference; }
+    public String getSupplierResponseNote() { return supplierResponseNote; }
     public List<POLineJpaEntity> getLines() { return lines; }
 }
