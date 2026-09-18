@@ -83,7 +83,7 @@ services:
       retries: 12
 
   minio:
-    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
     container_name: stockflow-minio
     # S3-compatible object storage for product images and design renders, so the application code
     # is written against S3 from day one rather than against the local filesystem.

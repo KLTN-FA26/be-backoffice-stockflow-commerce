@@ -253,15 +253,19 @@ management:
 springdoc:
   api-docs:
     path: /v3/api-docs
+
   swagger-ui:
     path: /swagger-ui.html
     operations-sorter: alpha
     tags-sorter: alpha
-    # Groups the generated OpenAPI document by module, so a reader sees inventory's endpoints
-    # together rather than one flat alphabetical list of 500 paths.
+
   group-configs:
+    - group: all
+      packages-to-scan: com.stockflow
+
     - group: inventory
       packages-to-scan: com.stockflow.inventory
+
     - group: order
       packages-to-scan: com.stockflow.order
 
