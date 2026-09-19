@@ -36,6 +36,14 @@ public enum ErrorCode {
      *  which covers "wrong username or password" without revealing the account exists. */
     ACCOUNT_NOT_ACTIVE("This account cannot sign in right now", 403),
 
+    /** The current password given when changing it was wrong. Distinct from a weak new password so a
+     *  form can mark the right field, and a 400 rather than a 401 so a client does not read it as
+     *  "your session expired" and sign the user out. */
+    INVALID_CURRENT_PASSWORD("The current password is incorrect", 400),
+
+    /** The new password is the same as the current one. */
+    PASSWORD_UNCHANGED("The new password must differ from the current one", 400),
+
     // ---- 409: the request is fine, the current state is not
     CONFLICT("Conflicting state", 409),
     INSUFFICIENT_STOCK("Not enough available stock", 409),

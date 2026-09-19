@@ -62,6 +62,10 @@ public class UserJpaEntity extends BaseEntity {
         this.lastLoginAt = now;
     }
 
+    public void replacePasswordHash(String newHash) {
+        this.passwordHash = newHash;
+    }
+
     public String getUsername() { return username; }
     public String getEmail() { return email; }
     public String getPasswordHash() { return passwordHash; }
