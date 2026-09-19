@@ -15,7 +15,7 @@ class ClamAvMediaIntegrationTest {
     @Container static final GenericContainer<?> CLAMAV = new GenericContainer<>("clamav/clamav:stable")
             .withExposedPorts(3310).waitingFor(Wait.forSuccessfulCommand("clamdcheck.sh").withStartupTimeout(Duration.ofMinutes(5)));
     @Test void cleanBytesPassRealEngine() {
-        var scanner = new UploadInspection(CLAMAV.getHost(), CLAMAV.getMappedPort(3310));
+        var scanner = new UploadInspection(CLAMAV.getHost(), CLAMAV.getMappedPort(3310), true);
         assertThatCode(() -> scanner.requireClean(new ByteArrayInputStream("StockFlow clean fixture".getBytes(java.nio.charset.StandardCharsets.UTF_8))))
                 .doesNotThrowAnyException();
     }

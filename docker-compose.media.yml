@@ -2,10 +2,20 @@
 services:
   clamav:
     image: clamav/clamav:stable
+    # The stable tag publishes no arm64 build; on Apple Silicon it runs under emulation (slow first start).
+    platform: linux/amd64
     ports:
       - "127.0.0.1:3310:3310"
     volumes:
       - clamav-signatures:/var/lib/clamav
+    environment:
+      # INSTREAM is capped by StreamMaxLength, but a stream over MaxFileSize is silently NOT scanned
+      # and reported OK unless AlertExceedsMax is on. Design renders may be 50 MiB, so the three
+      # limits are raised together and exceeding them is reported as a detection (fail closed).
+      CLAMD_CONF_StreamMaxLength: 52M
+      CLAMD_CONF_MaxFileSize: 52M
+      CLAMD_CONF_MaxScanSize: 104M
+      CLAMD_CONF_AlertExceedsMax: "yes"
     healthcheck:
       test: ["CMD", "clamdcheck.sh"]
       interval: 30s

@@ -2,6 +2,8 @@ package com.stockflow.common.storage;
 
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import java.io.DataOutputStream;
@@ -14,17 +16,31 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 
-/** ClamD INSTREAM integration. Unavailable or inconclusive inspection never means clean. */
+/**
+ * ClamD INSTREAM integration. Unavailable or inconclusive inspection never means clean.
+ *
+ * <p>{@code stockflow.upload-inspection.enabled} defaults to {@code true} and exists so a developer
+ * without the ClamAV container can still upload; only the {@code local} profile turns it off. When
+ * it is off nothing is scanned and a warning is logged at startup.</p>
+ */
 @Component
 public class UploadInspection {
+    private static final Logger log = LoggerFactory.getLogger(UploadInspection.class);
     private final String host;
     private final int port;
+    private final boolean enabled;
     private final Semaphore permits = new Semaphore(2);
     public UploadInspection(@Value("${stockflow.upload-inspection.host:localhost}") String host,
-                            @Value("${stockflow.upload-inspection.port:3310}") int port) {
-        this.host = host; this.port = port;
+                            @Value("${stockflow.upload-inspection.port:3310}") int port,
+                            @Value("${stockflow.upload-inspection.enabled:true}") boolean enabled) {
+        this.host = host; this.port = port; this.enabled = enabled;
+        if (!enabled) {
+            log.warn("Upload virus scanning is DISABLED (stockflow.upload-inspection.enabled=false). "
+                    + "Never run this way outside a developer machine.");
+        }
     }
     public void requireClean(InputStream content) {
+        if (!enabled) { return; }
         if (!permits.tryAcquire()) { throw new BusinessException(ErrorCode.RATE_LIMITED, "File inspection is busy"); }
         try (var socket = new Socket()) {
             socket.connect(new InetSocketAddress(host, port), 3000);
