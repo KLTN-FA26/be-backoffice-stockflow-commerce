@@ -1,3 +1,7 @@
+-- Version note: numbered just above develop's latest (V20260917000100) on purpose. The warehouse (#28),
+-- media (#29) and customer (#30) PRs still open carry higher versions; a lower number here would make
+-- Flyway refuse them, without out-of-order, on any database that already applied this one.
+--
 -- Server-side record of every signed-in session, so a token can be ended before it expires.
 -- Module: identity   Aggregate: none (a child of app_user, written through IdentityService)
 --
