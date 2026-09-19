@@ -54,6 +54,9 @@ final class OrderWebMapper {
                                 line.lineTotal().amount(),
                                 line.reservationIds(), line.designSnapshotId(), line.designChecksum()))
                         .toList(),
-                summary.placedAt());
+                summary.placedAt(),
+                summary.createdBy(),
+                summary.lastModifiedAt(),
+                summary.lastModifiedBy());
     }
 }

@@ -3,6 +3,7 @@ package com.stockflow.order.internal.repository;
 import com.stockflow.order.internal.entity.OrderJpaEntity;
 import com.stockflow.order.internal.entity.OrderLineJpaEntity;
 
+import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderId;
 import com.stockflow.order.internal.domain.OrderLine;
@@ -43,7 +44,10 @@ final class OrderPersistenceMapper {
                 entity.getStatus(),
                 entity.getPlacedAt(),
                 entity.getCancellationReason(),
-                entity.getVersion());
+                entity.getVersion(),
+                entity.getCreatedBy(),
+                entity.getLastModifiedAt(),
+                entity.getLastModifiedBy());
     }
 
     static OrderJpaEntity toNewEntity(Order order) {
@@ -60,6 +64,22 @@ final class OrderPersistenceMapper {
                 order.cancellationReason());
         entity.replaceLines(toLineEntities(order));
         return entity;
+    }
+
+    /** For the paginated order-history query only. Deliberately never touches {@code
+     *  entity.getLines()} — see {@code OrderSearchRepository}'s own javadoc for why. */
+    static OrderSummary toSummaryWithoutLines(OrderJpaEntity entity) {
+        return new OrderSummary(
+                entity.getId(),
+                entity.getOrderNumber(),
+                entity.getCustomerId(),
+                entity.getStatus(),
+                new Money(entity.getTotalAmount(), Currency.getInstance(entity.getCurrency())),
+                List.of(),
+                entity.getPlacedAt(),
+                entity.getCreatedBy(),
+                entity.getLastModifiedAt(),
+                entity.getLastModifiedBy());
     }
 
     static void applyToEntity(Order order, OrderJpaEntity entity) {

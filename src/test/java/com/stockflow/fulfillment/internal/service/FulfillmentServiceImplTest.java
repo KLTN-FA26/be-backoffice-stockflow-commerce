@@ -135,7 +135,7 @@ class FulfillmentServiceImplTest {
         var line = new OrderSummary.LineSummary(UUID.randomUUID(), "CUSTOM-SKU", 1,
                 Money.vnd(100_000), Money.vnd(100_000), List.of(), snapshot, checksum);
         return new OrderSummary(orderId, "SO-TEST", UUID.randomUUID(), OrderStatus.IN_FULFILMENT,
-                Money.vnd(100_000), List.of(line), now.minusSeconds(600));
+                Money.vnd(100_000), List.of(line), now.minusSeconds(600), null, null, null);
     }
 
     private CurrentUser user(UUID id, Role role) {

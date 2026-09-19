@@ -35,6 +35,8 @@ public record ProductResponse(
 
         Instant createdAt,
         String createdBy,
+        Instant lastModifiedAt,
+        String lastModifiedBy,
 
         @Schema(description = "Who submitted this product for approval, if it has been.")
         UUID submittedBy,
@@ -51,6 +53,19 @@ public record ProductResponse(
         BigDecimal weightKg,
         BigDecimal lengthCm,
         BigDecimal widthCm,
-        BigDecimal heightCm
+        BigDecimal heightCm,
+
+        @Schema(description = "SCRUM-75: the shipped package - null until known.")
+        BigDecimal packageWeightKg,
+        BigDecimal packageLengthCm,
+        BigDecimal packageWidthCm,
+        BigDecimal packageHeightCm,
+        Integer packageCount,
+
+        @Schema(description = "SCRUM-76: carrier-facing shipping restrictions.")
+        boolean hazmat,
+        boolean oversized,
+        boolean requiresAdultSignature,
+        String shippingRestrictionNote
 ) {
 }

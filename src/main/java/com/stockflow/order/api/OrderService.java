@@ -1,5 +1,7 @@
 package com.stockflow.order.api;
 
+import com.stockflow.common.api.PageResponse;
+
 import java.util.Optional;
 import java.util.UUID;
 
@@ -29,4 +31,11 @@ public interface OrderService {
     OrderSummary releaseToFulfillment(UUID orderId);
     void putOnDesignHold(UUID orderId, String reason);
     void resolveDesignHold(UUID orderId, UUID resolvedBy, String note);
+
+    /**
+     * SCRUM-245/WBS 3.17.7. One customer's own order history, newest first, paginated. {@code
+     * lines} is empty on every row — see {@code OrderSearchRepository} for why; a single order's
+     * lines are available from {@link #findById}.
+     */
+    PageResponse<OrderSummary> myOrders(UUID customerId, int page, int size);
 }

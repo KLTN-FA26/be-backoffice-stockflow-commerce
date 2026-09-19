@@ -42,6 +42,8 @@ final class ProductPersistenceMapper {
                 entity.getVersion(),
                 entity.getCreatedAt(),
                 entity.getCreatedBy(),
+                entity.getLastModifiedAt(),
+                entity.getLastModifiedBy(),
                 entity.getSubmittedBy(),
                 entity.getSubmittedAt(),
                 entity.getApprovedBy(),
@@ -50,7 +52,16 @@ final class ProductPersistenceMapper {
                 entity.getWeightKg(),
                 entity.getLengthCm(),
                 entity.getWidthCm(),
-                entity.getHeightCm());
+                entity.getHeightCm(),
+                entity.getPackageWeightKg(),
+                entity.getPackageLengthCm(),
+                entity.getPackageWidthCm(),
+                entity.getPackageHeightCm(),
+                entity.getPackageCount(),
+                entity.isHazmat(),
+                entity.isOversized(),
+                entity.isRequiresAdultSignature(),
+                entity.getShippingRestrictionNote());
     }
 
     private static ProductImage toDomain(ProductImageJpaEntity entity) {
@@ -80,6 +91,8 @@ final class ProductPersistenceMapper {
                 entity.getStatus(),
                 entity.getCreatedAt(),
                 entity.getCreatedBy(),
+                entity.getLastModifiedAt(),
+                entity.getLastModifiedBy(),
                 entity.getSubmittedBy(),
                 entity.getSubmittedAt(),
                 entity.getApprovedBy(),
@@ -88,7 +101,16 @@ final class ProductPersistenceMapper {
                 entity.getWeightKg(),
                 entity.getLengthCm(),
                 entity.getWidthCm(),
-                entity.getHeightCm());
+                entity.getHeightCm(),
+                entity.getPackageWeightKg(),
+                entity.getPackageLengthCm(),
+                entity.getPackageWidthCm(),
+                entity.getPackageHeightCm(),
+                entity.getPackageCount(),
+                entity.isHazmat(),
+                entity.isOversized(),
+                entity.isRequiresAdultSignature(),
+                entity.getShippingRestrictionNote());
     }
 
     /** Fresh row for an aggregate that has never been persisted. */
@@ -113,7 +135,16 @@ final class ProductPersistenceMapper {
                 product.weightKg(),
                 product.lengthCm(),
                 product.widthCm(),
-                product.heightCm());
+                product.heightCm(),
+                product.packageWeightKg(),
+                product.packageLengthCm(),
+                product.packageWidthCm(),
+                product.packageHeightCm(),
+                product.packageCount(),
+                product.hazmat(),
+                product.oversized(),
+                product.requiresAdultSignature(),
+                product.shippingRestrictionNote());
         entity.replaceImages(toEntities(product));
         return entity;
     }
@@ -124,7 +155,11 @@ final class ProductPersistenceMapper {
                 product.descriptionEn(), product.brand(), product.taxClass(), product.customizable(),
                 product.status(), product.submittedBy(), product.submittedAt(), product.approvedBy(),
                 product.approvedAt(), product.rejectionReason(), product.weightKg(),
-                product.lengthCm(), product.widthCm(), product.heightCm());
+                product.lengthCm(), product.widthCm(), product.heightCm(),
+                product.packageWeightKg(), product.packageLengthCm(), product.packageWidthCm(),
+                product.packageHeightCm(), product.packageCount(), product.hazmat(),
+                product.oversized(), product.requiresAdultSignature(),
+                product.shippingRestrictionNote());
         entity.replaceImages(toEntities(product));
     }
 
