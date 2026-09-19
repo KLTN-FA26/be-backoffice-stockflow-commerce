@@ -76,14 +76,20 @@ class OrderServiceImpl implements OrderService {
     private final InventoryService inventory;
     private final OrderEventPublisher events;
     private final Clock clock;
+    private final com.stockflow.design.api.DesignService designs;
+    private final com.stockflow.order.internal.repository.OrderHoldJpaRepository holds;
 
     OrderServiceImpl(OrderRepository repository, OrderSearchRepository search,
-                     InventoryService inventory, OrderEventPublisher events, Clock clock) {
+                     InventoryService inventory, OrderEventPublisher events, Clock clock,
+                     com.stockflow.design.api.DesignService designs,
+                     com.stockflow.order.internal.repository.OrderHoldJpaRepository holds) {
         this.repository = repository;
         this.search = search;
         this.inventory = inventory;
         this.events = events;
         this.clock = clock;
+        this.designs = designs;
+        this.holds = holds;
     }
 
     /**
@@ -114,8 +120,12 @@ class OrderServiceImpl implements OrderService {
         List<OrderLine> lines = new ArrayList<>();
         for (int index = 0; index < command.lines().size(); index++) {
             PlaceOrderCommand.Line line = command.lines().get(index);
-            lines.add(Order.line(deterministicLineId(command.requestId(), index),
-                    line.sku(), line.quantity(), line.unitPrice(), line.designSnapshotId()));
+            var orderLine = Order.line(deterministicLineId(command.requestId(), index),
+                    line.sku(), line.quantity(), line.unitPrice(), line.designSnapshotId());
+            if (line.designSnapshotId() != null) {
+                orderLine.recordDesignChecksum(designs.verifySnapshotForSku(line.designSnapshotId(), command.customerId(), line.sku().code()).checksum());
+            }
+            lines.add(orderLine);
         }
 
         Order order = Order.draft(orderNumber, command.customerId(), command.requestId(),
@@ -234,6 +244,38 @@ class OrderServiceImpl implements OrderService {
         events.publishEventsOf(order);
     }
 
+    @Override
+    public OrderSummary releaseToFulfillment(UUID orderId) {
+        var order = repository.findByIdForUpdate(new OrderId(orderId))
+                .orElseThrow(() -> new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.NOT_FOUND));
+        if (order.status() == OrderStatus.IN_FULFILMENT) { return toSummary(order); }
+        order.release();
+        return toSummary(repository.save(order));
+    }
+
+    @Override
+    public void putOnDesignHold(UUID orderId, String reason) {
+        var order = repository.findByIdForUpdate(new OrderId(orderId))
+                .orElseThrow(() -> new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.NOT_FOUND));
+        if (order.status() == OrderStatus.ON_HOLD) { return; }
+        order.putOnHold();
+        repository.save(order);
+        holds.save(new com.stockflow.order.internal.entity.OrderHoldJpaEntity(
+                com.stockflow.common.id.Identifiers.newId(), orderId, reason, clock.instant()));
+    }
+
+    @Override
+    public void resolveDesignHold(UUID orderId, UUID resolvedBy, String note) {
+        var order = repository.findByIdForUpdate(new OrderId(orderId))
+                .orElseThrow(() -> new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.NOT_FOUND));
+        var hold = holds.findFirstByOrderIdAndResolvedAtIsNullOrderByRaisedAtDesc(orderId)
+                .orElseThrow(() -> new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.CONFLICT));
+        order.resumeFromHold();
+        hold.resolve(resolvedBy, note, clock.instant());
+        repository.save(order);
+        holds.save(hold);
+    }
+
     /**
      * Same input, same id, every time.
      *
@@ -268,7 +310,7 @@ class OrderServiceImpl implements OrderService {
                                 line.quantity(),
                                 line.unitPrice(),
                                 line.lineTotal(),
-                                line.reservationIds()))
+                                line.reservationIds(), line.designSnapshotId(), line.designChecksum()))
                         .toList(),
                 order.placedAt(),
                 order.createdBy(),

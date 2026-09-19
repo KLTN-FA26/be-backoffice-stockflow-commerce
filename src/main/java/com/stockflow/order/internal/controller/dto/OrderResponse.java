@@ -50,7 +50,9 @@ public record OrderResponse(
             BigDecimal lineTotal,
 
             @Schema(description = "The stock holds backing this line - one per lot it is drawn from")
-            List<UUID> reservationIds
+            List<UUID> reservationIds,
+            UUID designSnapshotId,
+            String designChecksum
     ) {
     }
 }

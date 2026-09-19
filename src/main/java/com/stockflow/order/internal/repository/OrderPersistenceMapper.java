@@ -22,13 +22,17 @@ final class OrderPersistenceMapper {
 
     static Order toDomain(OrderJpaEntity entity) {
         List<OrderLine> lines = entity.getLines().stream()
-                .map(line -> new OrderLine(
+                .map(line -> {
+                    var mapped = new OrderLine(
                         line.getId(),
                         new Sku(line.getSku()),
                         line.getQuantity(),
                         new Money(line.getUnitPrice(), Currency.getInstance(line.getCurrency())),
                         line.getDesignSnapshotId(),
-                        List.copyOf(line.getReservationIds())))
+                        List.copyOf(line.getReservationIds()));
+                    if (line.getDesignChecksum() != null) { mapped.recordDesignChecksum(line.getDesignChecksum()); }
+                    return mapped;
+                })
                 .toList();
 
         return new Order(
@@ -87,14 +91,18 @@ final class OrderPersistenceMapper {
 
     private static List<OrderLineJpaEntity> toLineEntities(Order order) {
         return order.lines().stream()
-                .map(line -> new OrderLineJpaEntity(
+                .map(line -> {
+                    var mapped = new OrderLineJpaEntity(
                         line.id(),
                         line.sku().code(),
                         line.quantity(),
                         line.unitPrice().amount(),
                         line.unitPrice().currency().getCurrencyCode(),
                         line.designSnapshotId(),
-                        line.reservationIds()))
+                        line.reservationIds());
+                    mapped.setDesignChecksum(line.designChecksum());
+                    return mapped;
+                })
                 .toList();
     }
 }

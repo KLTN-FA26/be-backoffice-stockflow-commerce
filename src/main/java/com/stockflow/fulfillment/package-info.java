@@ -3,7 +3,7 @@
  *
  * <p>WBS 3.7 + 3.8 + 3.9 · database schema {@code fulfillment}</p>
  *
- * <p><b>May depend on:</b> order, inventory, warehouse, design. Plus {@code common} and {@code contracts}, which are
+ * <p><b>May depend on:</b> order, inventory, warehouse, design, identity. Plus {@code common} and {@code contracts}, which are
  * available to every module.</p>
  *
  * <p>The module has two packages and the split is the whole point:</p>
@@ -14,5 +14,5 @@
  *       you reaching in; {@code ModularityTest} will.</li>
  * </ul>
  */
-@org.springframework.modulith.ApplicationModule(allowedDependencies = {"order :: api", "inventory :: api", "warehouse :: api", "design :: api"})
+@org.springframework.modulith.ApplicationModule(allowedDependencies = {"order :: api", "inventory :: api", "warehouse :: api", "design :: api", "identity :: api"})
 package com.stockflow.fulfillment;

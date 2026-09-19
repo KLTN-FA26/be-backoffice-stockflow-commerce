@@ -52,7 +52,7 @@ final class OrderWebMapper {
                                 line.quantity(),
                                 line.unitPrice().amount(),
                                 line.lineTotal().amount(),
-                                line.reservationIds()))
+                                line.reservationIds(), line.designSnapshotId(), line.designChecksum()))
                         .toList(),
                 summary.placedAt(),
                 summary.createdBy(),

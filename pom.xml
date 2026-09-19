@@ -74,7 +74,7 @@
       </dependency>
       <!--
         The AWS SDK ships dozens of artifacts that must share a version. Importing the BOM means
-        adding s3-presigner later needs no version, and cannot drift from the s3 client.
+        the S3 client and its bundled presigner use the same SDK version.
       -->
       <dependency>
         <groupId>software.amazon.awssdk</groupId>
@@ -87,6 +87,17 @@
   </dependencyManagement>
 
   <dependencies>
+
+    <dependency>
+      <groupId>com.twelvemonkeys.imageio</groupId>
+      <artifactId>imageio-webp</artifactId>
+      <version>3.13.1</version>
+    </dependency>
+    <dependency>
+      <groupId>com.drewnoakes</groupId>
+      <artifactId>metadata-extractor</artifactId>
+      <version>2.19.0</version>
+    </dependency>
 
     <!-- ==================== web, validation, persistence ==================== -->
     <dependency>
@@ -170,8 +181,7 @@
     <!--
       S3 protocol, used against MinIO locally and S3 in a deployment - the same code path in both,
       so the storage layer is exercised everywhere rather than only in production.
-      Add s3-presigner here (no version needed, the BOM manages it) to enable presigned download
-      URLs; see S3FileStorage.presignedDownloadUrl.
+      S3Presigner is included in the s3 artifact and shares StorageConfig with the upload client.
     -->
     <dependency>
       <groupId>software.amazon.awssdk</groupId>

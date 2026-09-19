@@ -129,6 +129,10 @@ public class ProductJpaEntity extends BaseEntity {
     @org.hibernate.annotations.BatchSize(size = 50)
     private List<ProductImageJpaEntity> images = new ArrayList<>();
 
+    /** Forces optimistic version checks even when only the inverse child collection changes. */
+    @Column(name = "media_revision", nullable = false)
+    private long mediaRevision;
+
     protected ProductJpaEntity() {
     }
 
@@ -213,11 +217,17 @@ public class ProductJpaEntity extends BaseEntity {
     }
 
     public void replaceImages(List<ProductImageJpaEntity> replacement) {
-        this.images.clear();
+        // Keep already managed children. Recreating the same id after clear() conflicts with
+        // Hibernate's persistence context when a second image is appended to the aggregate.
+        var retained = replacement.stream().map(ProductImageJpaEntity::getId).toList();
+        this.images.removeIf(image -> !retained.contains(image.getId()));
         replacement.forEach(child -> {
-            child.attachTo(this);
-            this.images.add(child);
+            if (this.images.stream().noneMatch(image -> image.getId().equals(child.getId()))) {
+                child.attachTo(this);
+                this.images.add(child);
+            }
         });
+        mediaRevision++;
     }
 
     public String getCode() { return code; }

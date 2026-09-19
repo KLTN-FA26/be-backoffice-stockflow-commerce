@@ -91,6 +91,24 @@ public final class StorageKeys {
         return key;
     }
 
+    /**
+     * Where an approved rendition is served from: the same date/id tail under the public prefix, so
+     * the mapping needs no column and publishing twice lands on the same object.
+     *
+     * <p>A key already under {@code product-images/} is returned as is: renditions stored before
+     * they had a private home are public already.</p>
+     */
+    public static String publishedKeyOf(String renditionKey) {
+        FileCategory category = categoryOf(renditionKey);
+        if (category == FileCategory.PRODUCT_IMAGE) {
+            return renditionKey;
+        }
+        if (category != FileCategory.PRODUCT_RENDITION) {
+            throw new StorageException("Not a product rendition key: " + renditionKey);
+        }
+        return FileCategory.PRODUCT_IMAGE.prefix() + renditionKey.substring(category.prefix().length());
+    }
+
     /** The category a key belongs to, for lifecycle and permission decisions. */
     public static FileCategory categoryOf(String key) {
         String prefix = requireValid(key).substring(0, key.indexOf('/'));

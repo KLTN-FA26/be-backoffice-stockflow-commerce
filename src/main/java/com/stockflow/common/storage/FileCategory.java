@@ -12,8 +12,26 @@ import java.util.Set;
  */
 public enum FileCategory {
 
-    /** Catalogue and product photography. Public-ish: served to the storefront. */
+    /**
+     * Approved display renditions, and nothing else: the CDN serves this whole prefix. Objects get
+     * here only by {@link FileTransfers#publish} when a gallery is approved - never by an upload -
+     * so a draft image is never reachable from the internet.
+     */
     PRODUCT_IMAGE("product-images", 10 * 1024 * 1024,
+            Set.of("image/jpeg", "image/png", "image/webp")),
+
+    /**
+     * Re-encoded display renditions as generated at upload, before anyone has approved them.
+     * Private, like the original; a rendition is copied to {@link #PRODUCT_IMAGE} on approval.
+     */
+    PRODUCT_RENDITION("product-renditions", 10 * 1024 * 1024,
+            Set.of("image/jpeg", "image/png", "image/webp")),
+
+    /**
+     * The photograph exactly as uploaded, EXIF/GPS included. Private: outside the CDN's origin
+     * path and bucket policy, reachable only through a presigned link from the application.
+     */
+    PRODUCT_IMAGE_ORIGINAL("product-originals", 10 * 1024 * 1024,
             Set.of("image/jpeg", "image/png", "image/webp")),
 
     /** Renders produced by the design studio. Larger, because they are print-resolution. */

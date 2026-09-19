@@ -36,8 +36,15 @@ public record OrderSummary(
             int quantity,
             Money unitPrice,
             Money lineTotal,
-            List<UUID> reservationIds
+            List<UUID> reservationIds,
+            UUID designSnapshotId,
+            String designChecksum
     ) {
+
+        public LineSummary(UUID lineId, String sku, int quantity, Money unitPrice,
+                           Money lineTotal, List<UUID> reservationIds) {
+            this(lineId, sku, quantity, unitPrice, lineTotal, reservationIds, null, null);
+        }
 
         public LineSummary {
             reservationIds = reservationIds == null ? List.of() : List.copyOf(reservationIds);
