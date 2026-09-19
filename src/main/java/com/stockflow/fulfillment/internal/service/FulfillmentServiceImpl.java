@@ -25,8 +25,9 @@ import com.stockflow.order.api.OrderSummary;
 import com.stockflow.identity.api.IdentityService;
 import java.time.Clock;
 import java.util.UUID;
-import java.util.List;
-import org.springframework.data.domain.PageRequest;
+import com.stockflow.common.api.PageResponse;
+import com.stockflow.common.persistence.Pages;
+import org.springframework.data.domain.Page;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -78,18 +79,20 @@ class FulfillmentServiceImpl implements FulfillmentService {
 
     @Override
     @Transactional(readOnly = true)
-    public List<FulfillmentTask> listTasks(CurrentUser actor) {
-        java.util.List<PickJpaEntity> selected;
+    public PageResponse<FulfillmentTask> listTasks(CurrentUser actor, int page, int size) {
+        var newestFirst = org.springframework.data.domain.Sort.by(
+                org.springframework.data.domain.Sort.Direction.DESC, "createdAt", "id");
+        Page<PickJpaEntity> selected;
         if (actor.hasAnyRole(Role.WAREHOUSE_MANAGER, Role.ORDER_COORDINATOR)) {
-            selected = picks.findTop100ByOrderByCreatedAtDesc();
+            selected = picks.findAll(Pages.of(page, size, newestFirst));
         } else if (actor.hasRole(Role.QC_STAFF)) {
-            selected = picks.findByPackStatus(PackStatus.ON_HOLD, PageRequest.of(0, 100));
+            selected = picks.findByPackStatus(PackStatus.ON_HOLD, Pages.of(page, size));
         } else if (actor.hasRole(Role.WAREHOUSE_STAFF)) {
-            selected = picks.findTop100ByAssignedUserIdOrderByCreatedAtDesc(actor.userId());
+            selected = picks.findByAssignedUserId(actor.userId(), Pages.of(page, size, newestFirst));
         } else {
             throw new BusinessException(ErrorCode.FORBIDDEN);
         }
-        return selected.stream().map(this::toTask).toList();
+        return Pages.toResponse(selected, this::toTask);
     }
 
     @Override

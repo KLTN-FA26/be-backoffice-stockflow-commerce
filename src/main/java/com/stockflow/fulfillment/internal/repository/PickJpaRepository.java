@@ -7,14 +7,17 @@ import com.stockflow.common.persistence.BaseJpaRepository;
 public interface PickJpaRepository extends BaseJpaRepository<PickJpaEntity> {
 
     java.util.Optional<PickJpaEntity> findByOrderId(java.util.UUID orderId);
-    java.util.List<PickJpaEntity> findTop100ByAssignedUserIdOrderByCreatedAtDesc(java.util.UUID assignedUserId);
-    java.util.List<PickJpaEntity> findTop100ByOrderByCreatedAtDesc();
-    @org.springframework.data.jpa.repository.Query("""
+    org.springframework.data.domain.Page<PickJpaEntity> findByAssignedUserId(
+            java.util.UUID assignedUserId, org.springframework.data.domain.Pageable page);
+    @org.springframework.data.jpa.repository.Query(value = """
             select pick from PickJpaEntity pick, PackJpaEntity pack
             where pack.pickId = pick.id and pack.status = :status
-            order by pick.createdAt desc
+            order by pick.createdAt desc, pick.id desc
+            """, countQuery = """
+            select count(pick) from PickJpaEntity pick, PackJpaEntity pack
+            where pack.pickId = pick.id and pack.status = :status
             """)
-    java.util.List<PickJpaEntity> findByPackStatus(
+    org.springframework.data.domain.Page<PickJpaEntity> findByPackStatus(
             @org.springframework.data.repository.query.Param("status")
             com.stockflow.fulfillment.internal.domain.PackStatus status,
             org.springframework.data.domain.Pageable page);

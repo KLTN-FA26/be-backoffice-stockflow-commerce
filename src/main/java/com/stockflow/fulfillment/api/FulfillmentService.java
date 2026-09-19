@@ -1,7 +1,7 @@
 package com.stockflow.fulfillment.api;
 
+import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.security.CurrentUser;
-import java.util.List;
 import java.util.UUID;
 
 /**
@@ -21,7 +21,8 @@ import java.util.UUID;
  */
 public interface FulfillmentService {
     FulfillmentTask createTask(UUID orderId, UUID assignedUserId, CurrentUser actor);
-    List<FulfillmentTask> listTasks(CurrentUser actor);
+    /** The tasks this actor may see, newest first; the role decides which ones. */
+    PageResponse<FulfillmentTask> listTasks(CurrentUser actor, int page, int size);
     FulfillmentTask assign(UUID taskId, UUID assignedUserId, CurrentUser actor);
     FulfillmentTask findTask(UUID taskId, CurrentUser actor);
     FulfillmentTask startPicking(UUID taskId, CurrentUser actor);
