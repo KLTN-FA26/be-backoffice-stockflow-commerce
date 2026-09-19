@@ -7,9 +7,11 @@ import org.springframework.stereotype.Component;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.core.exception.SdkException;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.CopyObjectRequest;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
+import software.amazon.awssdk.services.s3.model.MetadataDirective;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
@@ -38,6 +40,9 @@ class S3FileStorage implements FileStorage {
 
     /** Enough to identify every signature in {@link ContentTypePolicy}. */
     private static final int SNIFF_BYTES = 12;
+
+    /** Keys are immutable UUID paths, so a CDN may cache them without ever invalidating. */
+    private static final String IMMUTABLE_PUBLIC = "public,max-age=31536000,immutable";
 
     private final S3Client s3;
     private final StorageProperties properties;
@@ -81,7 +86,7 @@ class S3FileStorage implements FileStorage {
                             .contentLength(sizeBytes);
             if (category == FileCategory.PRODUCT_IMAGE) {
                 // Keys are immutable UUID paths. CloudFront may cache them without invalidation.
-                request.cacheControl("public,max-age=31536000,immutable");
+                request.cacheControl(IMMUTABLE_PUBLIC);
             }
             s3.putObject(request.build(),
                     RequestBody.fromInputStream(sniffable, sizeBytes));
@@ -125,6 +130,34 @@ class S3FileStorage implements FileStorage {
                     .build()).url().toExternalForm();
         } catch (SdkException ex) {
             throw new StorageException("Could not sign download URL", ex);
+        }
+    }
+
+    /**
+     * Server-side copy. {@code REPLACE} because the default {@code COPY} directive would carry the
+     * source's headers over, and a published rendition needs the long immutable cache header its
+     * private source deliberately does not have.
+     */
+    @Override
+    public void copy(String sourceKey, String targetKey) {
+        StorageKeys.requireValid(sourceKey);
+        StorageKeys.requireValid(targetKey);
+        try {
+            var source = s3.headObject(HeadObjectRequest.builder()
+                    .bucket(properties.bucket()).key(sourceKey).build());
+            var request = CopyObjectRequest.builder()
+                    .sourceBucket(properties.bucket()).sourceKey(sourceKey)
+                    .destinationBucket(properties.bucket()).destinationKey(targetKey)
+                    .metadataDirective(MetadataDirective.REPLACE)
+                    .contentType(source.contentType());
+            if (StorageKeys.categoryOf(targetKey) == FileCategory.PRODUCT_IMAGE) {
+                request.cacheControl(IMMUTABLE_PUBLIC);
+            }
+            s3.copyObject(request.build());
+        } catch (NoSuchKeyException absent) {
+            throw new StorageException("No stored file with key " + sourceKey, absent);
+        } catch (SdkException ex) {
+            throw new StorageException("Object store could not copy " + sourceKey, ex);
         }
     }
 

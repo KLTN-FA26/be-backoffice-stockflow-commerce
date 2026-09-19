@@ -22,13 +22,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class ProductGalleryServiceTest {
     @Test void editDoesNotChangePublishedGalleryAndApprovalRequiresAnotherActor() {
         var products = mock(ProductJpaRepository.class);
         var galleries = mock(ProductGalleryJpaRepository.class);
-        var service = new ProductGalleryService(products, galleries, mock(FileTransfers.class),
+        var files = mock(FileTransfers.class);
+        var service = new ProductGalleryService(products, galleries, files,
                 mock(VariantGalleryJpaRepository.class), mock(VariantJpaRepository.class),
                 mock(SkuJpaRepository.class), new ProductMediaProperties("https://media.example.com"));
         var id = UUID.randomUUID(); var editor = UUID.randomUUID(); var approver = UUID.randomUUID();
@@ -47,7 +51,10 @@ class ProductGalleryServiceTest {
         assertThat(edited.published().getFirst().imageId()).isEqualTo(first);
         assertThatThrownBy(() -> service.approve(id, editor, edited.revision())).isInstanceOf(BusinessException.class);
         assertThatThrownBy(() -> service.approve(id, approver, 2)).isInstanceOf(BusinessException.class);
+        verifyNoInteractions(files);
         assertThat(service.approve(id, approver, edited.revision()).published().getFirst().imageId()).isEqualTo(second);
+        verify(files).publish("product-renditions/" + second + ".png");
+        verify(files, never()).publish("product-renditions/" + first + ".png");
     }
 
     @Test void publicVariantGalleryOverridesAndOtherwiseInheritsTheApprovedProductGallery() {
@@ -81,7 +88,7 @@ class ProductGalleryServiceTest {
         assertThat(inherited.variantId()).isEqualTo(variantId);
         assertThat(inherited.images().getFirst().imageId()).isEqualTo(productImage);
         assertThat(inherited.images().getFirst().renditions().getFirst().url())
-                .startsWith("https://media.example.com/product-images/");
+                .isEqualTo("https://media.example.com/product-images/" + productImage + ".png");
 
         var override = new VariantGalleryJpaEntity(variantId, productId);
         override.edit(List.of(new GalleryItem(variantImage, "Blue")), UUID.randomUUID());
@@ -93,11 +100,13 @@ class ProductGalleryServiceTest {
 
     private ProductImageJpaEntity image(UUID id) {
         var image = mock(ProductImageJpaEntity.class);
-        var file = new com.stockflow.common.storage.StoredFile("product-images/" + id + ".png", "image.png",
+        var original = new com.stockflow.common.storage.StoredFile("product-originals/" + id + ".png", "image.png",
                 "image/png", 20, java.time.Instant.EPOCH);
+        var display = new com.stockflow.common.storage.StoredFile("product-renditions/" + id + ".png", "display-256.png",
+                "image/png", 10, java.time.Instant.EPOCH);
         when(image.getId()).thenReturn(id);
-        when(image.storedFile()).thenReturn(file);
-        when(image.getRenditions()).thenReturn(List.of(new com.stockflow.product.internal.domain.ImageRendition(256, 256, 256, file)));
+        when(image.storedFile()).thenReturn(original);
+        when(image.getRenditions()).thenReturn(List.of(new com.stockflow.product.internal.domain.ImageRendition(256, 256, 256, display)));
         return image;
     }
 }

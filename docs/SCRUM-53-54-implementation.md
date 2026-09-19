@@ -31,7 +31,14 @@ Flow:
 1. Create the product through the existing product master endpoint.
 2. Upload JPEG/PNG/WebP, at most 10 MiB. Decode with a 40-million-pixel ceiling; normalize EXIF
    orientation and preserve transparency. Scan the original with ClamAV.
-3. Store original plus longest-edge 256/768/1600 renditions (no upscaling). Display files are
+3. Store the original under `product-originals/` and longest-edge 256/768/1600 renditions (no
+   upscaling) under `product-renditions/`; both are private. Approving a gallery copies the renditions
+   of the approved images to `product-images/`, the only prefix the CDN serves, so an image is public
+   only after someone other than its editor approved it. The copy is made inside the approving
+   transaction and removed again if that rolls back; it is never removed afterwards (URLs are
+   immutable and cached for a year).
+   Decode work, the virus scan and the object-store writes run outside any database transaction;
+   two short transactions bracket them (read to fail fast, locked write to attach). Display files are
    PNG for alpha images, JPEG at 85% quality otherwise, without source metadata.
 4. Edit up to 20 distinct managed image IDs; first is cover, caption at most 500 characters.
    Reorder/replace/remove changes the working list, not approved content or stored objects.
@@ -136,6 +143,10 @@ New variables: `STOCKFLOW_UPLOAD_INSPECTION_HOST` (localhost for host-run backen
 ```sh
 docker compose -f docker-compose.yml -f docker-compose.media.yml up -d clamav
 ```
+
+`stockflow.upload-inspection.enabled` defaults to `true` (fail closed); only the `local` profile turns
+it off so a laptop without ClamAV can still upload. The overlay raises clamd's `StreamMaxLength`,
+`MaxFileSize` and `AlertExceedsMax` so a file above a limit is rejected, never silently unscanned.
 
 Wait for healthy status/signature loading. The overlay sets container-run `app` host to `clamav`.
 Spring does not automatically load root `.env`: import it into IDE/shell or use Compose mappings.

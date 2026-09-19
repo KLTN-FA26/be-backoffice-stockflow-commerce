@@ -103,6 +103,20 @@ class LocalFileStorage implements FileStorage {
     }
 
     @Override
+    public void copy(String sourceKey, String targetKey) {
+        Path source = resolve(sourceKey);
+        Path target = resolve(targetKey);
+        try {
+            Files.createDirectories(target.getParent());
+            Files.copy(source, target, StandardCopyOption.REPLACE_EXISTING);
+        } catch (java.nio.file.NoSuchFileException absent) {
+            throw new StorageException("No stored file with key " + sourceKey, absent);
+        } catch (IOException ex) {
+            throw new StorageException("Could not copy " + sourceKey, ex);
+        }
+    }
+
+    @Override
     public boolean exists(String key) {
         return Files.exists(resolve(key));
     }

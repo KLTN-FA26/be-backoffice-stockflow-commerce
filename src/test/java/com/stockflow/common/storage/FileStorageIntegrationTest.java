@@ -84,6 +84,76 @@ class FileStorageIntegrationTest {
     }
 
     @Test
+    void publishCopiesARenditionToTheCdnPrefixAndRollbackTakesItBack() {
+        var storage = new LocalFileStorage(properties(), Clock.systemUTC());
+        var transfers = new FileTransfers(storage, properties(), Clock.systemUTC());
+        var rendition = storage.store(FileCategory.PRODUCT_RENDITION, "d.png", "image/png",
+                PNG.length, new ByteArrayInputStream(PNG));
+        String expected = "product-images/" + rendition.key().substring("product-renditions/".length());
+        for (int outcome : new int[]{TransactionSynchronization.STATUS_ROLLED_BACK,
+                TransactionSynchronization.STATUS_COMMITTED}) {
+            TransactionSynchronizationManager.setActualTransactionActive(true);
+            TransactionSynchronizationManager.initSynchronization();
+            try {
+                assertThat(transfers.publish(rendition.key())).isEqualTo(expected);
+                assertThat(storage.exists(expected)).isTrue();
+                assertThat(storage.exists(rendition.key())).as("the private source stays").isTrue();
+                TransactionSynchronizationManager.getSynchronizations()
+                        .forEach(callback -> callback.afterCompletion(outcome));
+                assertThat(storage.exists(expected)).isEqualTo(outcome == TransactionSynchronization.STATUS_COMMITTED);
+            } finally {
+                TransactionSynchronizationManager.clear();
+            }
+        }
+    }
+
+    @Test
+    void publishNeverDeletesACopyAnEarlierApprovalCreated() {
+        var storage = new LocalFileStorage(properties(), Clock.systemUTC());
+        var transfers = new FileTransfers(storage, properties(), Clock.systemUTC());
+        var rendition = storage.store(FileCategory.PRODUCT_RENDITION, "d.png", "image/png",
+                PNG.length, new ByteArrayInputStream(PNG));
+        String published = StorageKeys.publishedKeyOf(rendition.key());
+        storage.copy(rendition.key(), published);
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            assertThat(transfers.publish(rendition.key())).isEqualTo(published);
+            assertThat(TransactionSynchronizationManager.getSynchronizations()).isEmpty();
+        } finally {
+            TransactionSynchronizationManager.clear();
+        }
+        assertThat(storage.exists(published)).isTrue();
+    }
+
+    @Test
+    void publishOutsideATransactionIsRefused() {
+        var storage = new LocalFileStorage(properties(), Clock.systemUTC());
+        var transfers = new FileTransfers(storage, properties(), Clock.systemUTC());
+        assertThatThrownBy(() -> transfers.publish("product-renditions/2026/09/18/x.png"))
+                .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void copyOfAMissingSourceIsStorageError() {
+        var storage = new LocalFileStorage(properties(), Clock.systemUTC());
+        assertThatThrownBy(() -> storage.copy("product-renditions/2026/09/18/none.png", "product-images/2026/09/18/none.png"))
+                .isInstanceOf(StorageException.class);
+    }
+
+    @Test
+    void publishedKeyMapsOnlyRenditionsAndLeavesLegacyPublicKeysAlone() {
+        assertThat(StorageKeys.publishedKeyOf("product-renditions/2026/09/18/a.jpg"))
+                .isEqualTo("product-images/2026/09/18/a.jpg");
+        assertThat(StorageKeys.publishedKeyOf("product-images/2026/09/18/a.jpg"))
+                .isEqualTo("product-images/2026/09/18/a.jpg");
+        assertThatThrownBy(() -> StorageKeys.publishedKeyOf("product-originals/2026/09/18/a.png"))
+                .isInstanceOf(StorageException.class);
+        assertThatThrownBy(() -> StorageKeys.publishedKeyOf("design-renders/2026/09/18/a.png"))
+                .isInstanceOf(StorageException.class);
+    }
+
+    @Test
     void diskFailureIsStorageError() throws Exception {
         var storage = new LocalFileStorage(properties(), Clock.systemUTC());
         Files.writeString(directory.resolve("product-images"), "Blocks creation of category directory");
