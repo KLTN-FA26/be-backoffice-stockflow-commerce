@@ -34,6 +34,31 @@ class ProductImageProcessorTest {
         var decoded = ImageIO.read(new ByteArrayInputStream(result.renditions().getFirst().bytes()));
         assertThat(decoded.getColorModel().hasAlpha()).isTrue();
     }
+    @Test void largePhotoIsDecodedSubsampledButStillYieldsTheFullSizeRendition() throws Exception {
+        var original = new BufferedImage(3200, 3000, BufferedImage.TYPE_INT_RGB);
+        var bytes = new ByteArrayOutputStream();
+        ImageIO.write(original, "jpg", bytes);
+        var data = bytes.toByteArray();
+        var result = processor.prepare(new FileUpload("big.jpg", "image/jpeg", data.length, new ByteArrayInputStream(data)));
+        assertThat(result.original()).isEqualTo(data);
+        assertThat(result.renditions()).extracting(ProductImageProcessor.Rendered::width).containsExactly(256, 768, 1600);
+        assertThat(result.renditions()).extracting(ProductImageProcessor.Rendered::height).containsExactly(240, 720, 1500);
+    }
+    @Test void subsamplingNeverGoesBelowTheLargestRendition() {
+        assertThat(ProductImageProcessor.subsamplingStep(1200, 600)).isEqualTo(1);
+        assertThat(ProductImageProcessor.subsamplingStep(3200, 3000)).isEqualTo(2);
+        assertThat(ProductImageProcessor.subsamplingStep(5000, 5000)).isEqualTo(2);
+        assertThat(ProductImageProcessor.subsamplingStep(20000, 100)).isEqualTo(1);
+    }
+    @Test void refusesImagesAbove25Megapixels() throws Exception {
+        var huge = new BufferedImage(6000, 5000, BufferedImage.TYPE_BYTE_GRAY);
+        var bytes = new ByteArrayOutputStream();
+        ImageIO.write(huge, "png", bytes);
+        var data = bytes.toByteArray();
+        assertThatThrownBy(() -> processor.prepare(new FileUpload("huge.png", "image/png", data.length, new ByteArrayInputStream(data))))
+                .isInstanceOfSatisfying(BusinessException.class, ex -> assertThat(ex.errorCode())
+                        .isEqualTo(com.stockflow.common.error.ErrorCode.PAYLOAD_TOO_LARGE));
+    }
     @Test void rejectsSignatureOnlyAndMismatchedMediaType() {
         byte[] fake = {(byte) 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a};
         assertThatThrownBy(() -> processor.prepare(new FileUpload("bad.png", "image/png", fake.length, new ByteArrayInputStream(fake))))
