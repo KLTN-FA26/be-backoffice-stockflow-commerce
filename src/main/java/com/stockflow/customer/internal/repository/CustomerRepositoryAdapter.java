@@ -62,11 +62,14 @@ class CustomerRepositoryAdapter implements CustomerRepository, CustomerSearchRep
         CustomerPersistenceMapper.apply(customer, row);
         customers.save(row);
 
+        // Clear first (this also empties the persistence context), then load: the loaded rows must
+        // come from the database as it is after the clear, or an address that stays the default
+        // would look unchanged and never be written back as one.
+        for (AddressType type : AddressType.values()) addresses.clearDefault(customer.id(), type);
+
         var existing = new HashMap<UUID, AddressJpaEntity>();
         addresses.findByCustomerIdOrderByCreatedAtAsc(customer.id())
                 .forEach(address -> existing.put(address.getId(), address));
-
-        for (AddressType type : AddressType.values()) addresses.clearDefault(customer.id(), type);
 
         var retained = new HashSet<UUID>();
         for (var address : customer.addresses()) {
@@ -82,7 +85,7 @@ class CustomerRepositoryAdapter implements CustomerRepository, CustomerSearchRep
         existing.values().stream().filter(rowToDelete -> !retained.contains(rowToDelete.getId()))
                 .forEach(addresses::delete);
         addresses.flush();
-        return withAddresses(row);
+        return withAddresses(customers.findById(customer.id()).orElseThrow());
     }
 
     @Override
