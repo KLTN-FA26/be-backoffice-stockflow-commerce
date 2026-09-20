@@ -30,6 +30,8 @@ logging:
     # org.hibernate.orm.jdbc.bind: TRACE
 
 stockflow:
+  checkout:
+    guest-enabled: true
   upload-inspection:
     # No ClamAV container needed on a laptop. Everywhere else the default (true) applies and a
     # missing scanner fails the upload closed. To scan locally: docker-compose.media.yml.

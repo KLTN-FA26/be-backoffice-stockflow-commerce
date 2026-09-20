@@ -40,7 +40,7 @@ public record PlaceGuestOrderRequest(
     public record Line(
             @NotBlank String sku,
             @Min(1) int quantity,
-            @NotNull @DecimalMin("0.0") BigDecimal unitPrice
+            @NotNull @DecimalMin(value = "0.0", inclusive = false, message = "unitPrice must be greater than zero") BigDecimal unitPrice
     ) {
     }
 }

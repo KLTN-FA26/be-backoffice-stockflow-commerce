@@ -173,15 +173,28 @@ class CustomerServiceImpl implements CustomerService {
             throw new BusinessException(ErrorCode.CONFLICT, "Customer is not allowed to place orders");
         }
         CustomerAddress shipping = shippingAddressId == null
-                ? customer.requireDefault(AddressType.SHIPPING)
-                : customer.requireAddress(shippingAddressId, AddressType.SHIPPING);
+                ? customer.addresses().stream()
+                    .filter(a -> a.type() == AddressType.SHIPPING && a.defaultAddress())
+                    .findFirst()
+                    .orElseThrow(() -> new BusinessException(ErrorCode.SHIPPING_ADDRESS_REQUIRED))
+                : chosenAddress(customer, shippingAddressId, AddressType.SHIPPING);
         CustomerAddress billing = billingAddressId == null
                 ? customer.addresses().stream()
                     .filter(a -> a.type() == AddressType.BILLING && a.defaultAddress())
                     .findFirst().orElse(shipping)
-                : customer.requireAddress(billingAddressId, AddressType.BILLING);
+                : chosenAddress(customer, billingAddressId, AddressType.BILLING);
         return new CheckoutCustomer(customer.id(), customer.fullName(), customer.email(), customer.phone(),
                 toCheckoutAddress(shipping), toCheckoutAddress(billing));
+    }
+
+    /** An address the caller named: 404 if it is not this customer's, 400 if it is the wrong kind. */
+    private static CustomerAddress chosenAddress(Customer customer, UUID addressId, AddressType type) {
+        CustomerAddress address = customer.address(addressId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.ADDRESS_NOT_FOUND));
+        if (address.type() != type) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Address is not a " + type + " address");
+        }
+        return address;
     }
 
     private Customer require(UUID customerId) {

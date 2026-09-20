@@ -61,6 +61,12 @@ public enum ErrorCode {
     INVALID_PRODUCT_STATUS_TRANSITION("This product cannot move to that status right now", 409),
     SELF_APPROVAL_NOT_ALLOWED("A product cannot be approved by the person who submitted it", 409),
     CUSTOMER_EMAIL_ALREADY_EXISTS("A customer account with this email already exists", 409),
+
+    /** Checkout needs somewhere to deliver: no shipping address was chosen and none is the default. */
+    SHIPPING_ADDRESS_REQUIRED("Add a shipping address before placing an order", 409),
+
+    /** Guest checkout is switched off (it is on only where prices can be trusted, see application.yml). */
+    GUEST_CHECKOUT_DISABLED("Guest checkout is not available", 403),
     INVALID_PURCHASE_ORDER_TRANSITION("This purchase order cannot move to that status right now", 409),
 
     // ---- 413 / 415: payload problems

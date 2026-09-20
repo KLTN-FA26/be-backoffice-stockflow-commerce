@@ -343,6 +343,12 @@ stockflow:
   inventory:
     # How often the sweeper looks for holds that outlived their expiry. ISO-8601 duration.
     reservation-sweep-interval: PT1M
+  checkout:
+    # Public checkout without an account. OFF by default: the request carries its own unit price and
+    # nothing checks it against a catalogue price yet, so an open endpoint lets anyone order at any
+    # price and hold real stock. The local profile turns it on for development.
+    guest-enabled: false
+
   security:
     # Turns on the resource-server filter chain AND RequiresPermissionAspect. Both are behind the
     # same switch on purpose: a state where the chain is on but the aspect is off means every
