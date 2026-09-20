@@ -9,6 +9,9 @@ import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.HeadersConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.jwt.JwtValidators;
+import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter;
 import org.springframework.web.cors.CorsConfiguration;
@@ -89,6 +92,22 @@ public class ResourceServerSecurityConfig {
                                 + "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
                                 + "font-src 'self'; frame-ancestors 'none'")))
                 .build();
+    }
+
+    /**
+     * The decoder is declared here, rather than left to Boot's auto-configuration, so a token is
+     * also refused once its session has ended ({@link SessionValidator}). Signature, {@code exp}
+     * and {@code nbf} are still checked first by the default validators.
+     */
+    @Bean
+    public JwtDecoder jwtDecoder(
+            @org.springframework.beans.factory.annotation.Value(
+                    "${spring.security.oauth2.resourceserver.jwt.jwk-set-uri}") String jwkSetUri,
+            ActiveSessionCheck sessions) {
+        NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(jwkSetUri).build();
+        decoder.setJwtValidator(new org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator<>(
+                JwtValidators.createDefault(), new SessionValidator(sessions)));
+        return decoder;
     }
 
     /** Everything else: the API itself, plus the rest of actuator. */

@@ -1,19 +1,27 @@
 package com.stockflow.identity.internal.service;
 
+import com.stockflow.common.api.PageResponse;
+import com.stockflow.common.persistence.Pages;
+import com.stockflow.identity.api.ChangePasswordCommand;
 import com.stockflow.identity.api.IdentityService;
+import com.stockflow.identity.api.SessionSummary;
 import com.stockflow.identity.api.LoginCommand;
 import com.stockflow.identity.api.RoleSummary;
 import com.stockflow.identity.api.TokenResponse;
+import com.stockflow.identity.internal.domain.PasswordPolicy;
+import com.stockflow.identity.internal.domain.SessionEndReason;
 import com.stockflow.identity.internal.domain.User;
 import com.stockflow.identity.internal.domain.UserId;
 import com.stockflow.identity.internal.domain.UserRepository;
 import com.stockflow.identity.internal.entity.RoleJpaEntity;
 import com.stockflow.identity.internal.entity.RolePermissionJpaEntity;
 import com.stockflow.identity.internal.entity.UserRoleJpaEntity;
+import com.stockflow.identity.internal.entity.UserSessionJpaEntity;
 import com.stockflow.identity.internal.repository.PermissionJpaRepository;
 import com.stockflow.identity.internal.repository.RoleJpaRepository;
 import com.stockflow.identity.internal.repository.RolePermissionJpaRepository;
 import com.stockflow.identity.internal.repository.UserRoleJpaRepository;
+import com.stockflow.identity.internal.repository.UserSessionJpaRepository;
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
@@ -25,6 +33,8 @@ import com.stockflow.common.security.PermissionCatalog;
 import com.stockflow.common.security.PermissionCode;
 import com.stockflow.common.security.RoleMatrixAssembler;
 import com.stockflow.common.security.RoleMatrixView;
+import com.stockflow.common.security.SessionValidator;
+import org.springframework.beans.factory.annotation.Value;
 
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.oauth2.jwt.JwsHeader;
@@ -36,6 +46,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -58,9 +69,7 @@ import java.util.stream.Collectors;
 @Transactional
 class IdentityServiceImpl implements IdentityService {
 
-    /** RFC 7519 gives no fixed lifetime; an hour is short enough that a leaked token stops mattering
-     *  quickly and long enough that this sprint's demo does not need a refresh flow. */
-    private static final long TOKEN_TTL_SECONDS = 3600;
+    private static final Duration MAX_TOKEN_TTL = Duration.ofHours(24);
 
     private final RoleJpaRepository roles;
     private final PermissionJpaRepository permissions;
@@ -71,6 +80,15 @@ class IdentityServiceImpl implements IdentityService {
     private final PasswordEncoder passwordEncoder;
     private final JwtEncoder jwtEncoder;
     private final Clock clock;
+    private final UserSessionJpaRepository sessions;
+
+    /**
+     * How long a token, and its session, lives. It was a fixed hour because nothing could end a token
+     * early; now that a session can be revoked (logout, password change, role change) the lifetime
+     * only bounds how long an abandoned or stolen device keeps working, so it can be a working day.
+     * Configured by {@code stockflow.security.token-ttl}.
+     */
+    private final Duration tokenTtl;
 
     /** Hashed once at startup and matched against for an unknown username, so a login attempt for
      *  a real account and a made-up one cost the same bcrypt work — the timing side-channel that
@@ -80,7 +98,14 @@ class IdentityServiceImpl implements IdentityService {
     IdentityServiceImpl(RoleJpaRepository roles, PermissionJpaRepository permissions,
                         RolePermissionJpaRepository rolePermissions, UserRoleJpaRepository userRoles,
                         UserRepository userRepository, PermissionCatalog catalog,
-                        PasswordEncoder passwordEncoder, JwtEncoder jwtEncoder, Clock clock) {
+                        PasswordEncoder passwordEncoder, JwtEncoder jwtEncoder, Clock clock,
+                        UserSessionJpaRepository sessions,
+                        @Value("${stockflow.security.token-ttl:PT8H}") Duration tokenTtl) {
+        if (tokenTtl == null || tokenTtl.isZero() || tokenTtl.isNegative()
+                || tokenTtl.compareTo(MAX_TOKEN_TTL) > 0) {
+            throw new IllegalArgumentException(
+                    "stockflow.security.token-ttl must be positive and at most 24h, got " + tokenTtl);
+        }
         this.roles = roles;
         this.permissions = permissions;
         this.rolePermissions = rolePermissions;
@@ -90,6 +115,8 @@ class IdentityServiceImpl implements IdentityService {
         this.passwordEncoder = passwordEncoder;
         this.jwtEncoder = jwtEncoder;
         this.clock = clock;
+        this.sessions = sessions;
+        this.tokenTtl = tokenTtl;
         this.dummyPasswordHash = passwordEncoder.encode(Identifiers.newId().toString());
     }
 
@@ -129,13 +156,22 @@ class IdentityServiceImpl implements IdentityService {
             return;
         }
         userRoles.save(new UserRoleJpaEntity(Identifiers.newId(), userId, role.getId()));
+        endSessionsAfterRoleChange(userId);
     }
 
     @Override
     public void revokeRole(UUID userId, String roleCode) {
         requireUser(userId);
         RoleJpaEntity role = findRoleByCode(roleCode);
-        userRoles.findByUserIdAndRoleId(userId, role.getId()).ifPresent(userRoles::delete);
+        userRoles.findByUserIdAndRoleId(userId, role.getId()).ifPresent(held -> {
+            userRoles.delete(held);
+            endSessionsAfterRoleChange(userId);
+        });
+    }
+
+    /** A token is a snapshot of the roles and permissions at sign-in, so it must not outlive a change. */
+    private void endSessionsAfterRoleChange(UUID userId) {
+        sessions.revokeLive(userId, null, clock.instant(), SessionEndReason.ROLE_CHANGED);
     }
 
     @Override
@@ -181,16 +217,82 @@ class IdentityServiceImpl implements IdentityService {
                 .flatMap(role -> grantedPermissionsOf(role.getId()).stream())
                 .collect(Collectors.toUnmodifiableSet());
 
-        return new TokenResponse(issueToken(saved, grantedRoles, grantedPermissions),
-                "Bearer", TOKEN_TTL_SECONDS);
+        Instant issuedAt = clock.instant();
+        UserSessionJpaEntity session = sessions.save(new UserSessionJpaEntity(Identifiers.newId(),
+                saved.id().value(), issuedAt, issuedAt.plus(tokenTtl),
+                command.clientAddress(), command.userAgent()));
+        return new TokenResponse(issueToken(saved, grantedRoles, grantedPermissions, session),
+                "Bearer", tokenTtl.toSeconds());
+    }
+
+    @Override
+    @Auditable(action = AuditAction.LOGOUT, resourceType = "session", resourceId = "#sessionId")
+    public void logout(UUID userId, UUID sessionId) {
+        if (sessionId == null) {
+            return;
+        }
+        sessions.findByIdAndUserId(sessionId, userId)
+                .ifPresent(session -> session.revoke(clock.instant(), SessionEndReason.LOGOUT));
+    }
+
+    @Override
+    @Auditable(action = AuditAction.LOGOUT, resourceType = "user", resourceId = "#userId")
+    public int logoutOtherSessions(UUID userId, UUID keepSessionId) {
+        return sessions.revokeLive(userId, keepSessionId, clock.instant(), SessionEndReason.LOGOUT_OTHERS);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<SessionSummary> listSessions(UUID userId, UUID currentSessionId, int page, int size) {
+        return Pages.toResponse(
+                sessions.findByUserIdAndRevokedAtIsNullAndExpiresAtAfterOrderByIssuedAtDesc(
+                        userId, clock.instant(), Pages.of(page, size)),
+                session -> new SessionSummary(session.getId(), session.getIssuedAt(), session.getExpiresAt(),
+                        session.getClientAddress(), session.getUserAgent(),
+                        session.getId().equals(currentSessionId)));
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The current password is checked first and on its own, so a wrong one never reveals whether
+     * the new one would have passed the policy. Failures are audited like any other write: a run of
+     * {@code INVALID_CURRENT_PASSWORD} against one account is what a stolen token being used to take
+     * over the account looks like.</p>
+     */
+    @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "user", resourceId = "#command.userId()")
+    public int changePassword(ChangePasswordCommand command) {
+        User user = userRepository.findById(new UserId(command.userId()))
+                .orElseThrow(() -> new BusinessException(ErrorCode.USER_NOT_FOUND,
+                        "No user with id " + command.userId()));
+        if (user.status() != com.stockflow.identity.internal.domain.UserStatus.ACTIVE) {
+            throw new BusinessException(ErrorCode.ACCOUNT_NOT_ACTIVE);
+        }
+        if (!passwordEncoder.matches(command.currentPassword(), user.passwordHash())) {
+            throw new BusinessException(ErrorCode.INVALID_CURRENT_PASSWORD);
+        }
+        PasswordPolicy.violation(command.newPassword()).ifPresent(reason -> {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, reason);
+        });
+        if (passwordEncoder.matches(command.newPassword(), user.passwordHash())) {
+            throw new BusinessException(ErrorCode.PASSWORD_UNCHANGED);
+        }
+        user.changePasswordHash(passwordEncoder.encode(command.newPassword()));
+        userRepository.save(user);
+        return command.logoutOtherDevices()
+                ? sessions.revokeLive(command.userId(), command.currentSessionId(), clock.instant(),
+                        SessionEndReason.PASSWORD_CHANGED)
+                : 0;
     }
 
     private String issueToken(User user, List<RoleJpaEntity> grantedRoles,
-                              Set<PermissionCode> grantedPermissions) {
-        Instant now = clock.instant();
+                              Set<PermissionCode> grantedPermissions, UserSessionJpaEntity session) {
         JwtClaimsSet claims = JwtClaimsSet.builder()
-                .issuedAt(now)
-                .expiresAt(now.plusSeconds(TOKEN_TTL_SECONDS))
+                .issuedAt(session.getIssuedAt())
+                .expiresAt(session.getExpiresAt())
+                .id(session.getId().toString())
+                .claim(SessionValidator.SESSION_CLAIM, session.getId().toString())
                 .subject(user.id().value().toString())
                 .claim("preferred_username", user.username())
                 .claim("roles", grantedRoles.stream().map(RoleJpaEntity::getCode).toList())
