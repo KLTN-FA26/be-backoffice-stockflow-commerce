@@ -1,5 +1,6 @@
 package com.stockflow.product.internal.controller.dto;
 
+import com.stockflow.product.api.StorageClass;
 import com.stockflow.product.api.TaxClass;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotBlank;
@@ -66,7 +67,7 @@ public record UpdateProductRequest(
 
         boolean hazmat,
 
-        boolean oversized,
+        boolean oversized, StorageClass storageClass,
 
         boolean requiresAdultSignature,
 

@@ -168,9 +168,7 @@ public final class Order extends AggregateRoot {
             throw new IllegalArgumentException("A cancellation must record a reason");
         }
         if (!status.canTransitionTo(OrderStatus.CANCELLED)) {
-            throw new IllegalStateException(
-                    ("Order %s cannot be cancelled from status %s; "
-                     + "raise a return instead").formatted(orderNumber, status));
+            throw new InvalidOrderTransitionException(orderNumber, status, "raise a return instead");
         }
         this.status = OrderStatus.CANCELLED;
         this.cancellationReason = reason;
@@ -188,8 +186,7 @@ public final class Order extends AggregateRoot {
 
     private void transitionTo(OrderStatus target) {
         if (!status.canTransitionTo(target)) {
-            throw new IllegalStateException(
-                    "Order %s cannot move from %s to %s".formatted(orderNumber, status, target));
+            throw new InvalidOrderTransitionException(orderNumber, status, target);
         }
         this.status = target;
     }

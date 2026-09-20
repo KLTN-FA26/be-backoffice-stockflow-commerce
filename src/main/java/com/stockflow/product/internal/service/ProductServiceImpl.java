@@ -86,7 +86,7 @@ class ProductServiceImpl implements ProductService {
                 toImages(command.images()), command.weightKg(), command.lengthCm(),
                 command.widthCm(), command.heightCm(), command.packageWeightKg(),
                 command.packageLengthCm(), command.packageWidthCm(), command.packageHeightCm(),
-                command.packageCount(), command.hazmat(), command.oversized(),
+                command.packageCount(), command.hazmat(), command.oversized(), command.storageClass(),
                 command.requiresAdultSignature(), command.shippingRestrictionNote());
         return toSummary(products.save(product));
     }
@@ -126,7 +126,7 @@ class ProductServiceImpl implements ProductService {
                 command.weightKg(), command.lengthCm(), command.widthCm(), command.heightCm(),
                 command.packageWeightKg(), command.packageLengthCm(), command.packageWidthCm(),
                 command.packageHeightCm(), command.packageCount(), command.hazmat(),
-                command.oversized(), command.requiresAdultSignature(),
+                command.oversized(), command.storageClass(), command.requiresAdultSignature(),
                 command.shippingRestrictionNote());
         return toSummary(products.save(product));
     }
@@ -231,7 +231,7 @@ class ProductServiceImpl implements ProductService {
                 product.packageHeightCm(),
                 product.packageCount(),
                 product.hazmat(),
-                product.oversized(),
+                product.oversized(), product.storageClass(),
                 product.requiresAdultSignature(),
                 product.shippingRestrictionNote());
     }
