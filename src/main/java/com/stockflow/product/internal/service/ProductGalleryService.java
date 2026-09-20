@@ -146,12 +146,18 @@ public class ProductGalleryService {
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         UUID variantId = null;
         List<GalleryItem> selected;
-        if (sku != null && !sku.isBlank()) {
-            var skuRow = skus.findByCode(sku.strip()).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
-            variantId = skuRow.getVariantId();
+        String wanted = sku == null ? "" : sku.strip();
+        var skuRow = wanted.isEmpty() ? java.util.Optional.<com.stockflow.product.internal.entity.SkuJpaEntity>empty()
+                : skus.findByCode(wanted);
+        if (skuRow.isPresent()) {
+            variantId = skuRow.get().getVariantId();
             requireVariant(productId, variantId);
             selected = variantGalleries.findById(variantId).map(value -> value.getPublishedItems())
                     .filter(value -> !value.isEmpty()).orElse(null);
+        } else if (!wanted.isEmpty() && !wanted.equals(product.getCode())) {
+            // The product's own code is the SKU that inventory and order lines use until variants are
+            // managed, so it selects the product gallery; any other unknown SKU is not found.
+            throw new BusinessException(ErrorCode.NOT_FOUND);
         } else {
             selected = null;
         }

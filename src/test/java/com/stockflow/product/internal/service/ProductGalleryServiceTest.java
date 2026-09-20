@@ -98,6 +98,35 @@ class ProductGalleryServiceTest {
                 .isEqualTo(variantImage);
     }
 
+    @Test void theProductsOwnCodeSelectsTheProductGalleryAndAnyOtherUnknownSkuIsNotFound() {
+        var products = mock(ProductJpaRepository.class);
+        var galleries = mock(ProductGalleryJpaRepository.class);
+        var skus = mock(SkuJpaRepository.class);
+        var service = new ProductGalleryService(products, galleries, mock(FileTransfers.class),
+                mock(VariantGalleryJpaRepository.class), mock(VariantJpaRepository.class), skus,
+                new ProductMediaProperties("https://media.example.com"));
+        var productId = UUID.randomUUID();
+        var imageId = UUID.randomUUID();
+        var product = mock(ProductJpaEntity.class);
+        when(product.getStatus()).thenReturn(ProductStatus.PUBLISHED);
+        when(product.getCode()).thenReturn("MUG-1");
+        var imageRow = image(imageId);
+        when(product.getImages()).thenReturn(List.of(imageRow));
+        when(products.findByIdWithImages(productId)).thenReturn(Optional.of(product));
+        when(skus.findByCode(any())).thenReturn(Optional.empty());
+        var gallery = new ProductGalleryJpaEntity(productId);
+        gallery.edit(List.of(new GalleryItem(imageId, "Cover")), UUID.randomUUID());
+        gallery.publish(UUID.randomUUID());
+        when(galleries.findById(productId)).thenReturn(Optional.of(gallery));
+
+        var byCode = service.publicGallery(productId, " MUG-1 ");
+
+        assertThat(byCode.variantId()).isNull();
+        assertThat(byCode.images()).singleElement().satisfies(i -> assertThat(i.imageId()).isEqualTo(imageId));
+        assertThat(service.publicGallery(productId, "  ").images()).hasSize(1);
+        assertThatThrownBy(() -> service.publicGallery(productId, "OTHER-SKU")).isInstanceOf(BusinessException.class);
+    }
+
     private ProductImageJpaEntity image(UUID id) {
         var image = mock(ProductImageJpaEntity.class);
         var original = new com.stockflow.common.storage.StoredFile("product-originals/" + id + ".png", "image.png",
