@@ -122,6 +122,36 @@ class FulfillmentServiceImplTest {
         verify(designs, never()).fulfillmentDownload(any(), any(), any());
     }
 
+    @Test
+    void aCancelledOrderCannotBePickedPackedReverifiedOrDownloaded() {
+        UUID assigned = UUID.randomUUID();
+        var pick = new PickJpaEntity(UUID.randomUUID(), null, UUID.randomUUID(), PickStatus.PENDING);
+        pick.assign(assigned, now.minusSeconds(120));
+        var live = order(pick.getOrderId(), "d".repeat(64));
+        var cancelled = new OrderSummary(live.orderId(), live.orderNumber(), live.customerId(), OrderStatus.CANCELLED,
+                live.total(), live.lines(), live.placedAt(), null, null, null);
+        var pack = new PackJpaEntity(UUID.randomUUID(), pick.getId(), PackStatus.ON_HOLD, null);
+        when(picks.lockById(pick.getId())).thenReturn(Optional.of(pick));
+        when(picks.findById(pick.getId())).thenReturn(Optional.of(pick));
+        when(packs.findByPickId(pick.getId())).thenReturn(Optional.of(pack));
+        when(orders.findById(pick.getOrderId())).thenReturn(Optional.of(cancelled));
+        var worker = user(assigned, Role.WAREHOUSE_STAFF);
+        var qc = user(UUID.randomUUID(), Role.QC_STAFF);
+
+        assertThatThrownBy(() -> service.startPicking(pick.getId(), worker)).isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> service.completePicking(pick.getId(), worker)).isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> service.completePacking(pick.getId(), worker)).isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> service.reverifyDesignIntegrity(pick.getId(), "note", qc))
+                .isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> service.artifactDownload(pick.getId(), live.lines().getFirst().lineId(), "PRINT_READY", qc))
+                .isInstanceOf(BusinessException.class);
+
+        assertThat(pick.getStatus()).isEqualTo(PickStatus.PENDING);
+        verify(designs, never()).fulfillmentDownload(any(), any(), any());
+        verify(orders, never()).putOnDesignHold(any(), any());
+        verify(orders, never()).resolveDesignHold(any(), any(), any());
+    }
+
     private PickJpaEntity pickedTask(UUID assigned) {
         var pick = new PickJpaEntity(UUID.randomUUID(), null, UUID.randomUUID(), PickStatus.PENDING);
         pick.assign(assigned, now.minusSeconds(120));

@@ -113,6 +113,8 @@ class FulfillmentServiceImpl implements FulfillmentService {
     @Override
     public FulfillmentTask startPicking(UUID taskId, CurrentUser actor) {
         var pick = lockPick(taskId);
+        pick.requireAssigned(actor.userId());
+        requireOrderInFulfilment(pick);
         pick.start(actor.userId(), clock.instant());
         return toTask(picks.save(pick));
     }
@@ -120,6 +122,8 @@ class FulfillmentServiceImpl implements FulfillmentService {
     @Override
     public FulfillmentTask completePicking(UUID taskId, CurrentUser actor) {
         var pick = lockPick(taskId);
+        pick.requireAssigned(actor.userId());
+        requireOrderInFulfilment(pick);
         pick.complete(actor.userId(), clock.instant());
         return toTask(picks.save(pick));
     }
@@ -130,7 +134,7 @@ class FulfillmentServiceImpl implements FulfillmentService {
                                                        CurrentUser actor) {
         var pick = requirePick(taskId);
         requireArtifactAccess(pick, actor);
-        var line = requireOrder(pick.getOrderId()).lines().stream()
+        var line = requireOrderInFulfilment(pick).lines().stream()
                 .filter(value -> value.lineId().equals(orderLineId))
                 .findFirst().orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         if (line.designSnapshotId() == null || line.designChecksum() == null) {
@@ -156,12 +160,13 @@ class FulfillmentServiceImpl implements FulfillmentService {
         if (pick.getStatus() != PickStatus.PICKED) {
             throw new BusinessException(ErrorCode.CONFLICT, "Picking must finish before packing");
         }
+        var order = requireOrderInFulfilment(pick);
         var pack = requirePack(pick.getId());
         if (pack.getStatus() == PackStatus.ON_HOLD) {
             throw new BusinessException(ErrorCode.CONFLICT,
                     "A checksum hold requires QC or warehouse-manager reverification");
         }
-        boolean matching = verifyAll(pack, requireOrder(pick.getOrderId()), actor.userId());
+        boolean matching = verifyAll(pack, order, actor.userId());
         if (!matching) {
             pack.hold();
             packs.save(pack);
@@ -181,7 +186,7 @@ class FulfillmentServiceImpl implements FulfillmentService {
         if (pack.getStatus() != PackStatus.ON_HOLD) {
             throw new BusinessException(ErrorCode.CONFLICT, "The package has no design-integrity hold");
         }
-        if (!verifyAll(pack, requireOrder(pick.getOrderId()), actor.userId())) {
+        if (!verifyAll(pack, requireOrderInFulfilment(pick), actor.userId())) {
             return toTask(pick);
         }
         pack.complete(clock.instant());
@@ -243,6 +248,20 @@ class FulfillmentServiceImpl implements FulfillmentService {
 
     private PackJpaEntity requirePack(UUID pickId) {
         return packs.findByPickId(pickId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+    }
+
+    /**
+     * A task is only workable while its order is still in fulfilment (or held by it). Cancelling an
+     * order releases its stock but leaves the pick and pack rows behind, so without this check a
+     * warehouse user could go on picking and packing goods that were already returned to stock.
+     */
+    private OrderSummary requireOrderInFulfilment(PickJpaEntity pick) {
+        var order = requireOrder(pick.getOrderId());
+        if (order.status() != OrderStatus.IN_FULFILMENT && order.status() != OrderStatus.ON_HOLD) {
+            throw new BusinessException(ErrorCode.CONFLICT,
+                    "The order is " + order.status() + "; this fulfillment task is closed");
+        }
+        return order;
     }
 
     private OrderSummary requireOrder(UUID orderId) {
