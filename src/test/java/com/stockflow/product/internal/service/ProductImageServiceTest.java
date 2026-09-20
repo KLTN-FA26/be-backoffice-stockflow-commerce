@@ -46,7 +46,7 @@ class ProductImageServiceTest {
     private Product draft() {
         return Product.draft("CUP", "Cup", "Cup", UUID.randomUUID(), null, null,
                 "StockFlow", TaxClass.STANDARD, true, List.of(), null, null, null, null,
-                null, null, null, null, null, false, false, false, null);
+                null, null, null, null, null, false, false, null, false, null);
     }
 
     private FileUpload upload() {
@@ -101,7 +101,7 @@ class ProductImageServiceTest {
         details.update(new UpdateProductCommand(product.id().value(), "Updated", "Updated",
                 product.categoryId(), null, null, "StockFlow", TaxClass.STANDARD, true,
                 List.of("https://example.com/legacy.png"), null, null, null, null,
-                null, null, null, null, null, false, false, false, null));
+                null, null, null, null, null, false, false, null, false, null));
         assertThat(product.images()).hasSize(2).contains(image);
         assertThat(product.images().stream().map(ProductImage::sortOrder).toList()).containsExactly(0, 1);
         assertThat(product.name()).isEqualTo("Updated");
