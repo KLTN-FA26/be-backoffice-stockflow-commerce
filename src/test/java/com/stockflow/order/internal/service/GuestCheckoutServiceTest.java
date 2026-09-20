@@ -56,7 +56,7 @@ class GuestCheckoutServiceTest {
         when(customers.resolveCheckout(customerId, shippingId, null))
                 .thenReturn(new CheckoutCustomer(customerId, "Minh", "minh@example.com",
                         "0901234567", address, address));
-        var service = new OrderServiceImpl(orders, inventory, events,
+        var service = new OrderServiceImpl(orders, mock(com.stockflow.order.internal.repository.OrderSearchRepository.class), inventory, events,
                 Clock.fixed(now, ZoneOffset.UTC), mock(DesignService.class),
                 mock(OrderHoldJpaRepository.class), customers);
 
@@ -85,7 +85,7 @@ class GuestCheckoutServiceTest {
                 List.of(new com.stockflow.inventory.api.StockReservation(UUID.randomUUID(),
                         UUID.randomUUID(), "A-01", null, 1)), 1, 0, now));
         when(orders.save(any())).thenAnswer(call -> call.getArgument(0));
-        var service = new OrderServiceImpl(orders, inventory, events,
+        var service = new OrderServiceImpl(orders, mock(com.stockflow.order.internal.repository.OrderSearchRepository.class), inventory, events,
                 Clock.fixed(now, ZoneOffset.UTC), mock(DesignService.class),
                 mock(OrderHoldJpaRepository.class), mock(com.stockflow.customer.api.CustomerService.class));
         var address = new PlaceGuestOrderCommand.Address("Minh", "0901234567", "12 Nguyen Hue",
@@ -117,7 +117,7 @@ class GuestCheckoutServiceTest {
                 new com.stockflow.order.internal.domain.OrderAddressSnapshot("Minh", "0901234567",
                         "12 Nguyen Hue", null, "26734", "Ben Nghe", "79", "Ho Chi Minh City", "VN", null));
         when(orders.findByRequestId(requestId)).thenReturn(Optional.of(existing));
-        var service = new OrderServiceImpl(orders, mock(InventoryService.class),
+        var service = new OrderServiceImpl(orders, mock(com.stockflow.order.internal.repository.OrderSearchRepository.class), mock(InventoryService.class),
                 mock(OrderEventPublisher.class), Clock.systemUTC(), mock(DesignService.class),
                 mock(OrderHoldJpaRepository.class), mock(CustomerService.class));
 
