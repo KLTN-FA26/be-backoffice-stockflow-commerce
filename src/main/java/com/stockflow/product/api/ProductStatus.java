@@ -14,13 +14,9 @@ package com.stockflow.product.api;
  *     └─────────reject──────┘                          └───discontinue──────┴───▶ DISCONTINUED
  * </pre>
  *
- * <p><b>Scope note (SCRUM-57/WBS 3.1.1.3, SCRUM-85/WBS 3.1.8.1):</b> {@code submit}/{@code approve}/
- * {@code reject} (SCRUM-57) and {@code discontinue} (SCRUM-85) are the edges this module
- * implements. {@code publish}/{@code unpublish} are not: BR-PRD-004 gates them on having a price
- * and an image, neither of which exists on this aggregate yet — that is WBS 3.1.6, a later story.
- * {@code PUBLISHED} was named {@code ACTIVE} before this change; the rename brings the enum in
- * line with the state-machine doc before any code could depend on the old name (it was never
- * reachable — {@link #canTransitionTo} always answered {@code false} for it).</p>
+ * <p><b>Scope note:</b> publication is separate from master approval. SCRUM-53 requires an approved
+ * managed gallery before the product becomes publicly visible. Selling-price validation remains
+ * owned by the catalog/pricing story because price does not belong to this aggregate.</p>
  */
 public enum ProductStatus {
 
@@ -30,10 +26,10 @@ public enum ProductStatus {
     /** Submitted for approval (BR-PRD-003 applies to the next transition). */
     PENDING_APPROVAL,
 
-    /** Approved. Can be discontinued directly, or (WBS 3.1.6, not yet implemented) published. */
+    /** Approved. Can be discontinued directly or published after the media gate passes. */
     APPROVED,
 
-    /** Published and orderable (WBS 3.1.6). Unreachable today — no method sets it yet. */
+    /** Published and visible through the anonymous product-media projection. */
     PUBLISHED,
 
     /** Terminal. Kept for the order/PO history that references it — nothing leaves this state. */
@@ -47,9 +43,8 @@ public enum ProductStatus {
         return switch (this) {
             case DRAFT -> target == PENDING_APPROVAL;
             case PENDING_APPROVAL -> target == APPROVED || target == DRAFT;
-            // APPROVED -> PUBLISHED and PUBLISHED -> APPROVED (publish/unpublish) are WBS 3.1.6,
-            // not yet implemented - only the discontinuation edge exists so far (SCRUM-85).
-            case APPROVED, PUBLISHED -> target == DISCONTINUED;
+            case APPROVED -> target == PUBLISHED || target == DISCONTINUED;
+            case PUBLISHED -> target == APPROVED || target == DISCONTINUED;
             case DISCONTINUED -> false;
         };
     }

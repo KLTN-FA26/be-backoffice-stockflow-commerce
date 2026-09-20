@@ -28,6 +28,10 @@ public interface OrderService {
     /** Cancel an order and release whatever stock it was holding. */
     void cancel(UUID orderId, String reason);
 
+    OrderSummary releaseToFulfillment(UUID orderId);
+    void putOnDesignHold(UUID orderId, String reason);
+    void resolveDesignHold(UUID orderId, UUID resolvedBy, String note);
+
     /**
      * SCRUM-245/WBS 3.17.7. One customer's own order history, newest first, paginated. {@code
      * lines} is empty on every row — see {@code OrderSearchRepository} for why; a single order's

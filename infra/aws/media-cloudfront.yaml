@@ -1,0 +1,173 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Private StockFlow media bucket with a product-image-only CloudFront distribution.
+
+Parameters:
+  BucketName:
+    Type: String
+    Description: Globally unique S3 bucket name used by stockflow.storage.bucket.
+  MediaDomainName:
+    Type: String
+    Default: ''
+    Description: Optional public hostname such as media.example.com. Leave blank to use CloudFront's hostname.
+  AcmCertificateArn:
+    Type: String
+    Default: ''
+    Description: Optional ACM certificate ARN in us-east-1; required when MediaDomainName is set.
+
+Conditions:
+  HasCustomDomain: !Not [!Equals [!Ref MediaDomainName, '']]
+
+Rules:
+  CustomDomainRequiresCertificate:
+    RuleCondition: !Not [!Equals [!Ref MediaDomainName, '']]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref AcmCertificateArn, '']]
+        AssertDescription: AcmCertificateArn in us-east-1 is required when MediaDomainName is set.
+
+Resources:
+  MediaBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Ref BucketName
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      LifecycleConfiguration:
+        Rules:
+          - Id: AbortIncompleteMultipartUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+          - Id: RetainNoncurrentVersionsForRecovery
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 90
+
+  ProductPathGuard:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub '${AWS::StackName}-product-path-guard'
+      AutoPublish: true
+      FunctionConfig:
+        Comment: Serve only the product-images/ prefix, which holds renditions copied there on gallery approval. Originals (product-originals/) and unapproved renditions (product-renditions/) are never reachable here.
+        Runtime: cloudfront-js-2.0
+      FunctionCode: |
+        function handler(event) {
+          var request = event.request;
+          if (request.uri.indexOf('/product-images/') !== 0) {
+            return {
+              statusCode: 404,
+              statusDescription: 'Not Found',
+              headers: { 'cache-control': { value: 'no-store' } }
+            };
+          }
+          return request;
+        }
+
+  MediaOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub '${AWS::StackName}-s3-oac'
+        Description: SigV4 access from the media distribution to the private S3 bucket.
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  ProductMediaDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        PriceClass: PriceClass_200
+        Comment: StockFlow public approved product images only
+        Aliases: !If [HasCustomDomain, [!Ref MediaDomainName], !Ref AWS::NoValue]
+        ViewerCertificate: !If
+          - HasCustomDomain
+          - AcmCertificateArn: !Ref AcmCertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
+        Origins:
+          - Id: private-media-s3
+            DomainName: !GetAtt MediaBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt MediaOriginAccessControl.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        DefaultCacheBehavior:
+          TargetOriginId: private-media-s3
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD, OPTIONS]
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          ResponseHeadersPolicyId: 60669652-455b-4ae9-85a4-c4c02393f86c
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt ProductPathGuard.FunctionARN
+
+  MediaBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref MediaBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontReadOnly
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub '${MediaBucket.Arn}/product-images/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${ProductMediaDistribution}'
+
+  ApplicationMediaPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Least-privilege media access for the StockFlow backend runtime role.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ListConfiguredBucket
+            Effect: Allow
+            Action: [s3:ListBucket, s3:GetBucketLocation]
+            Resource: !GetAtt MediaBucket.Arn
+          - Sid: ManageStockFlowMediaObjects
+            Effect: Allow
+            Action: [s3:GetObject, s3:PutObject, s3:DeleteObject]
+            Resource: !Sub '${MediaBucket.Arn}/*'
+
+Outputs:
+  BucketName:
+    Value: !Ref MediaBucket
+    Description: Set S3_BUCKET to this value.
+  CloudFrontDistributionId:
+    Value: !Ref ProductMediaDistribution
+  CloudFrontDomainName:
+    Value: !GetAtt ProductMediaDistribution.DomainName
+    Description: Set PRODUCT_MEDIA_CDN_BASE_URL to this HTTPS hostname unless a custom domain is used.
+  ProductMediaBaseUrl:
+    Value: !If
+      - HasCustomDomain
+      - !Sub 'https://${MediaDomainName}'
+      - !Sub 'https://${ProductMediaDistribution.DomainName}'
+  ApplicationMediaPolicyArn:
+    Value: !Ref ApplicationMediaPolicy
+    Description: Attach this managed policy to the backend ECS/EC2/Lambda IAM role.

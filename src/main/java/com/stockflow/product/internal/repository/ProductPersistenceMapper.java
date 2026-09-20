@@ -66,7 +66,8 @@ final class ProductPersistenceMapper {
     }
 
     private static ProductImage toDomain(ProductImageJpaEntity entity) {
-        return new ProductImage(entity.getId(), entity.getUrl(), entity.getSortOrder());
+        return new ProductImage(entity.getId(), entity.getUrl(), entity.getSortOrder(), entity.storedFile(), entity.getRenditions(),
+                entity.getUploadKey(), entity.getChecksum());
     }
 
     /**
@@ -166,7 +167,12 @@ final class ProductPersistenceMapper {
 
     private static List<ProductImageJpaEntity> toEntities(Product product) {
         return product.images().stream()
-                .map(image -> new ProductImageJpaEntity(image.id(), image.url(), image.sortOrder()))
+                .map(image -> {
+                    var row = new ProductImageJpaEntity(image.id(), image.url(), image.sortOrder(), image.storedFile());
+                    row.setRenditions(image.renditions());
+                    row.setUploadFingerprint(image.uploadKey(), image.checksum());
+                    return row;
+                })
                 .toList();
     }
 }

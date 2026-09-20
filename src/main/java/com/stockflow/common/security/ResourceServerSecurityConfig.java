@@ -131,7 +131,8 @@ public class ResourceServerSecurityConfig {
                         // No token exists yet at either of these: /auth/login is what mints one,
                         // and /oauth2/jwks is what THIS filter's own JwtDecoder fetches to validate
                         // it. Both are unauthenticated by necessity, not by oversight.
-                        .requestMatchers("/api/v1/identity/auth/login", "/oauth2/jwks").permitAll()
+                        .requestMatchers("/api/v1/identity/auth/login", "/oauth2/jwks",
+                                "/api/v1/public/products/**").permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(oauth -> oauth
                         .jwt(jwt -> jwt.jwtAuthenticationConverter(
