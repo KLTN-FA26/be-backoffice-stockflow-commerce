@@ -31,6 +31,16 @@ public interface OrderService {
     /** Cancel an order and release whatever stock it was holding. */
     void cancel(UUID orderId, String reason);
 
+    /**
+     * A customer cancelling their own order. {@code customerId} is the customer profile id that
+     * orders are stored under, not the sign-in id, so the ownership check is made here explicitly
+     * rather than through the ambient data scope (which compares against the sign-in id).
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND} if the order is not this
+     *         customer's, so the existence of another customer's order is not revealed
+     */
+    void cancelOwn(UUID orderId, UUID customerId, String reason);
+
     OrderSummary releaseToFulfillment(UUID orderId);
     void putOnDesignHold(UUID orderId, String reason);
     void resolveDesignHold(UUID orderId, UUID resolvedBy, String note);

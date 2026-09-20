@@ -267,7 +267,19 @@ class OrderServiceImpl implements OrderService {
         Order order = repository.findByIdInScope(new OrderId(orderId))
                 .orElseThrow(() -> new BusinessException(
                         ErrorCode.NOT_FOUND, "No order with id " + orderId));
+        cancelLoaded(order, reason);
+    }
 
+    @Override
+    public void cancelOwn(UUID orderId, UUID customerId, String reason) {
+        Order order = repository.findByIdForUpdate(new OrderId(orderId))
+                .filter(found -> customerId != null && customerId.equals(found.customerId()))
+                .orElseThrow(() -> new BusinessException(
+                        ErrorCode.NOT_FOUND, "No order with id " + orderId));
+        cancelLoaded(order, reason);
+    }
+
+    private void cancelLoaded(Order order, String reason) {
         boolean wasHoldingStock = order.status().holdsStock();
         order.cancel(reason);
 
