@@ -60,6 +60,7 @@ final class ProductPersistenceMapper {
                 entity.getPackageCount(),
                 entity.isHazmat(),
                 entity.isOversized(),
+                entity.getStorageClass(),
                 entity.isRequiresAdultSignature(),
                 entity.getShippingRestrictionNote());
     }
@@ -108,6 +109,7 @@ final class ProductPersistenceMapper {
                 entity.getPackageCount(),
                 entity.isHazmat(),
                 entity.isOversized(),
+                entity.getStorageClass(),
                 entity.isRequiresAdultSignature(),
                 entity.getShippingRestrictionNote());
     }
@@ -141,7 +143,7 @@ final class ProductPersistenceMapper {
                 product.packageHeightCm(),
                 product.packageCount(),
                 product.hazmat(),
-                product.oversized(),
+                product.oversized(), product.storageClass(),
                 product.requiresAdultSignature(),
                 product.shippingRestrictionNote());
         entity.replaceImages(toEntities(product));
@@ -157,7 +159,7 @@ final class ProductPersistenceMapper {
                 product.lengthCm(), product.widthCm(), product.heightCm(),
                 product.packageWeightKg(), product.packageLengthCm(), product.packageWidthCm(),
                 product.packageHeightCm(), product.packageCount(), product.hazmat(),
-                product.oversized(), product.requiresAdultSignature(),
+                product.oversized(), product.storageClass(), product.requiresAdultSignature(),
                 product.shippingRestrictionNote());
         entity.replaceImages(toEntities(product));
     }
