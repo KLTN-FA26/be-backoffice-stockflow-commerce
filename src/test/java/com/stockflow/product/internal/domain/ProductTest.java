@@ -28,13 +28,15 @@ class ProductTest {
     private static Product draftWithCategory() {
         return Product.draft("SOFA-3S-GREY", "Sofa xám", "Grey sofa", CATEGORY,
                 null, null, "StockFlow", TaxClass.STANDARD, false, List.of(),
-                null, null, null, null);
+                null, null, null, null, null, null, null, null, null,
+                false, false, false, null);
     }
 
     private static Product draftWithoutCategory() {
         return Product.draft("SOFA-3S-GREY", "Sofa xám", "Grey sofa", null,
                 null, null, "StockFlow", TaxClass.STANDARD, false, List.of(),
-                null, null, null, null);
+                null, null, null, null, null, null, null, null, null,
+                false, false, false, null);
     }
 
     @Nested
@@ -180,7 +182,8 @@ class ProductTest {
             Product product = draftWithCategory();
 
             product.updateDetails("Sofa mới", "New sofa", CATEGORY, null, null,
-                    "StockFlow", TaxClass.REDUCED, true, List.of(), null, null, null, null);
+                    "StockFlow", TaxClass.REDUCED, true, List.of(), null, null, null, null,
+                    null, null, null, null, null, false, false, false, null);
 
             assertThat(product.name()).isEqualTo("Sofa mới");
             assertThat(product.taxClass()).isEqualTo(TaxClass.REDUCED);
@@ -193,7 +196,8 @@ class ProductTest {
             product.submit(SUBMITTER, NOW);
 
             assertThatThrownBy(() -> product.updateDetails("x", "x", CATEGORY, null, null,
-                    "StockFlow", TaxClass.STANDARD, false, List.of(), null, null, null, null))
+                    "StockFlow", TaxClass.STANDARD, false, List.of(), null, null, null, null,
+                    null, null, null, null, null, false, false, false, null))
                     .isInstanceOf(InvalidProductStatusTransitionException.class);
         }
 
@@ -205,7 +209,8 @@ class ProductTest {
             product.approve(APPROVER, NOW);
 
             assertThatThrownBy(() -> product.updateDetails("x", "x", CATEGORY, null, null,
-                    "StockFlow", TaxClass.STANDARD, false, List.of(), null, null, null, null))
+                    "StockFlow", TaxClass.STANDARD, false, List.of(), null, null, null, null,
+                    null, null, null, null, null, false, false, false, null))
                     .isInstanceOf(InvalidProductStatusTransitionException.class);
         }
     }
@@ -222,7 +227,8 @@ class ProductTest {
             product.updateDetails("Sofa xám", "Grey sofa", CATEGORY, null, null,
                     "StockFlow", TaxClass.STANDARD, false, List.of(),
                     new BigDecimal("25.500"), new BigDecimal("200.00"),
-                    new BigDecimal("90.00"), new BigDecimal("85.00"));
+                    new BigDecimal("90.00"), new BigDecimal("85.00"),
+                    null, null, null, null, null, false, false, false, null);
 
             assertThat(product.weightKg()).isEqualByComparingTo("25.500");
             assertThat(product.lengthCm()).isEqualByComparingTo("200.00");
@@ -244,12 +250,14 @@ class ProductTest {
         void nonPositiveWeightRejected() {
             assertThatThrownBy(() -> Product.draft("SOFA-3S-GREY", "Sofa xám", "Grey sofa",
                     CATEGORY, null, null, "StockFlow", TaxClass.STANDARD, false, List.of(),
-                    BigDecimal.ZERO, null, null, null))
+                    BigDecimal.ZERO, null, null, null, null, null, null, null, null,
+                    false, false, false, null))
                     .isInstanceOf(IllegalArgumentException.class);
 
             assertThatThrownBy(() -> Product.draft("SOFA-3S-GREY", "Sofa xám", "Grey sofa",
                     CATEGORY, null, null, "StockFlow", TaxClass.STANDARD, false, List.of(),
-                    new BigDecimal("-1"), null, null, null))
+                    new BigDecimal("-1"), null, null, null, null, null, null, null, null,
+                    false, false, false, null))
                     .isInstanceOf(IllegalArgumentException.class);
         }
 
@@ -258,8 +266,119 @@ class ProductTest {
         void nonPositiveDimensionRejected() {
             assertThatThrownBy(() -> Product.draft("SOFA-3S-GREY", "Sofa xám", "Grey sofa",
                     CATEGORY, null, null, "StockFlow", TaxClass.STANDARD, false, List.of(),
-                    null, BigDecimal.ZERO, null, null))
+                    null, BigDecimal.ZERO, null, null, null, null, null, null, null,
+                    false, false, false, null))
                     .isInstanceOf(IllegalArgumentException.class);
+        }
+    }
+
+    @Nested
+    @DisplayName("packaging specifications (SCRUM-75)")
+    class PackagingSpecifications {
+
+        @Test
+        @DisplayName("set on updateDetails and read back")
+        void updateSetsPackagingFields() {
+            Product product = draftWithCategory();
+
+            product.updateDetails("Sofa xám", "Grey sofa", CATEGORY, null, null,
+                    "StockFlow", TaxClass.STANDARD, false, List.of(), null, null, null, null,
+                    new BigDecimal("28.000"), new BigDecimal("210.00"), new BigDecimal("30.00"),
+                    new BigDecimal("30.00"), 2, false, false, false, null);
+
+            assertThat(product.packageWeightKg()).isEqualByComparingTo("28.000");
+            assertThat(product.packageLengthCm()).isEqualByComparingTo("210.00");
+            assertThat(product.packageWidthCm()).isEqualByComparingTo("30.00");
+            assertThat(product.packageHeightCm()).isEqualByComparingTo("30.00");
+            assertThat(product.packageCount()).isEqualTo(2);
+        }
+
+        @Test
+        @DisplayName("null at creation is allowed - not yet known")
+        void nullPackagingAllowedAtCreation() {
+            Product product = draftWithCategory();
+
+            assertThat(product.packageWeightKg()).isNull();
+            assertThat(product.packageCount()).isNull();
+        }
+
+        @Test
+        @DisplayName("zero or negative package weight rejected")
+        void nonPositivePackageWeightRejected() {
+            assertThatThrownBy(() -> Product.draft("SOFA-3S-GREY", "Sofa xám", "Grey sofa",
+                    CATEGORY, null, null, "StockFlow", TaxClass.STANDARD, false, List.of(),
+                    null, null, null, null, BigDecimal.ZERO, null, null, null, null,
+                    false, false, false, null))
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+
+        @Test
+        @DisplayName("zero or negative package dimension rejected")
+        void nonPositivePackageDimensionRejected() {
+            assertThatThrownBy(() -> Product.draft("SOFA-3S-GREY", "Sofa xám", "Grey sofa",
+                    CATEGORY, null, null, "StockFlow", TaxClass.STANDARD, false, List.of(),
+                    null, null, null, null, null, new BigDecimal("-5"), null, null, null,
+                    false, false, false, null))
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+
+        @Test
+        @DisplayName("zero or negative package count rejected")
+        void nonPositivePackageCountRejected() {
+            assertThatThrownBy(() -> Product.draft("SOFA-3S-GREY", "Sofa xám", "Grey sofa",
+                    CATEGORY, null, null, "StockFlow", TaxClass.STANDARD, false, List.of(),
+                    null, null, null, null, null, null, null, null, 0,
+                    false, false, false, null))
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+    }
+
+    @Nested
+    @DisplayName("shipping rules & restrictions (SCRUM-76)")
+    class ShippingRules {
+
+        @Test
+        @DisplayName("flags default false and note defaults null when never set")
+        void defaultsAreFalseAndNull() {
+            Product product = draftWithCategory();
+
+            assertThat(product.hazmat()).isFalse();
+            assertThat(product.oversized()).isFalse();
+            assertThat(product.requiresAdultSignature()).isFalse();
+            assertThat(product.shippingRestrictionNote()).isNull();
+        }
+
+        @Test
+        @DisplayName("set on updateDetails and read back")
+        void updateSetsShippingRules() {
+            Product product = draftWithCategory();
+
+            product.updateDetails("Sofa xám", "Grey sofa", CATEGORY, null, null,
+                    "StockFlow", TaxClass.STANDARD, false, List.of(), null, null, null, null,
+                    null, null, null, null, null, true, true, true,
+                    "No shipping to islands without ferry access");
+
+            assertThat(product.hazmat()).isTrue();
+            assertThat(product.oversized()).isTrue();
+            assertThat(product.requiresAdultSignature()).isTrue();
+            assertThat(product.shippingRestrictionNote())
+                    .isEqualTo("No shipping to islands without ferry access");
+        }
+
+        @Test
+        @DisplayName("flags can be cleared back to false on a later update")
+        void updateClearsShippingRules() {
+            Product product = draftWithCategory();
+            product.updateDetails("Sofa xám", "Grey sofa", CATEGORY, null, null,
+                    "StockFlow", TaxClass.STANDARD, false, List.of(), null, null, null, null,
+                    null, null, null, null, null, true, true, true, "restricted");
+
+            product.updateDetails("Sofa xám", "Grey sofa", CATEGORY, null, null,
+                    "StockFlow", TaxClass.STANDARD, false, List.of(), null, null, null, null,
+                    null, null, null, null, null, false, false, false, null);
+
+            assertThat(product.hazmat()).isFalse();
+            assertThat(product.shippingRestrictionNote()).isNull();
         }
     }
 

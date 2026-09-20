@@ -19,6 +19,15 @@ public record UpdateProductCommand(
         BigDecimal weightKg,
         BigDecimal lengthCm,
         BigDecimal widthCm,
-        BigDecimal heightCm
+        BigDecimal heightCm,
+        BigDecimal packageWeightKg,
+        BigDecimal packageLengthCm,
+        BigDecimal packageWidthCm,
+        BigDecimal packageHeightCm,
+        Integer packageCount,
+        boolean hazmat,
+        boolean oversized,
+        boolean requiresAdultSignature,
+        String shippingRestrictionNote
 ) {
 }

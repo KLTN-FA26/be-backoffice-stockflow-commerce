@@ -6,6 +6,7 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Positive;
+import jakarta.validation.constraints.Size;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -60,6 +61,34 @@ public record CreateProductRequest(
         BigDecimal widthCm,
 
         @Positive(message = "heightCm must be positive")
-        BigDecimal heightCm
+        BigDecimal heightCm,
+
+        @Schema(description = "SCRUM-75: the shipped package - distinct from the product's own "
+                + "dimensions above, since flat-pack furniture ships smaller than assembled")
+        @Positive(message = "packageWeightKg must be positive")
+        BigDecimal packageWeightKg,
+
+        @Positive(message = "packageLengthCm must be positive")
+        BigDecimal packageLengthCm,
+
+        @Positive(message = "packageWidthCm must be positive")
+        BigDecimal packageWidthCm,
+
+        @Positive(message = "packageHeightCm must be positive")
+        BigDecimal packageHeightCm,
+
+        @Schema(description = "How many separate boxes one unit ships as")
+        @Positive(message = "packageCount must be positive")
+        Integer packageCount,
+
+        @Schema(description = "SCRUM-76: carrier-facing shipping restrictions")
+        boolean hazmat,
+
+        boolean oversized,
+
+        boolean requiresAdultSignature,
+
+        @Size(max = 500, message = "shippingRestrictionNote must be at most 500 characters")
+        String shippingRestrictionNote
 ) {
 }

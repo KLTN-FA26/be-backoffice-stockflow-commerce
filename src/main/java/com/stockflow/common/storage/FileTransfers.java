@@ -45,6 +45,38 @@ public class FileTransfers {
         return file;
     }
 
+    /**
+     * Makes an approved product rendition reachable through the CDN by copying it to its public key,
+     * and returns that key. Must run inside the approving transaction: if the approval rolls back,
+     * a copy this call created is deleted again, so nothing becomes public for an approval that
+     * did not happen. A copy that already existed is never deleted - an earlier approval owns it.
+     */
+    public String publish(String renditionKey) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()
+                || !TransactionSynchronizationManager.isSynchronizationActive()) {
+            throw new IllegalStateException("Publishing requires an active database transaction");
+        }
+        String publicKey = StorageKeys.publishedKeyOf(renditionKey);
+        if (publicKey.equals(renditionKey) || storage.exists(publicKey)) {
+            return publicKey;
+        }
+        storage.copy(renditionKey, publicKey);
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                if (status == STATUS_ROLLED_BACK) {
+                    try {
+                        storage.delete(publicKey);
+                    } catch (RuntimeException cleanupFailure) {
+                        log.error("Published copy of an unapproved image requires cleanup: {}", publicKey,
+                                cleanupFailure);
+                    }
+                }
+            }
+        });
+        return publicKey;
+    }
+
     /** Call only after resolving the attachment through its owning business record. */
     public DownloadLink downloadLink(String key) {
         if (!storage.exists(key)) {

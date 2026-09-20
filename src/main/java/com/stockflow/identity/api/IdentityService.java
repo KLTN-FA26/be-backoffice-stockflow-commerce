@@ -2,6 +2,7 @@ package com.stockflow.identity.api;
 
 import com.stockflow.common.security.RoleMatrixView;
 
+import com.stockflow.common.api.PageResponse;
 import java.util.List;
 import java.util.UUID;
 
@@ -44,4 +45,35 @@ public interface IdentityService {
 
     /** Creates an ACTIVE account with the CUSTOMER role and issues its first token atomically. */
     RegisteredAccount registerCustomer(RegisterAccountCommand command);
+
+    /**
+     * Ends one session, so its token stops working on the very next request. Idempotent, and a
+     * no-op for a session that belongs to someone else or does not exist: a caller can only ever
+     * end their own.
+     *
+     * @param sessionId may be null for a token issued before sessions existed, which cannot be ended
+     */
+    void logout(UUID userId, UUID sessionId);
+
+    /**
+     * Ends every live session of the user except {@code keepSessionId} ("sign out my other
+     * devices").
+     *
+     * @param keepSessionId the session to keep; null ends all of them
+     * @return how many sessions were ended
+     */
+    int logoutOtherSessions(UUID userId, UUID keepSessionId);
+
+    /** The user's live sessions, newest first. */
+    PageResponse<SessionSummary> listSessions(UUID userId, UUID currentSessionId, int page, int size);
+
+    /**
+     * Changes the password after checking the current one.
+     *
+     * @return how many other sessions were ended (0 unless {@code logoutOtherDevices})
+     * @throws com.stockflow.common.error.BusinessException {@code INVALID_CURRENT_PASSWORD} if the
+     *         current password is wrong, {@code PASSWORD_UNCHANGED} if the new one equals it,
+     *         {@code VALIDATION_FAILED} if the new one breaks the password policy
+     */
+    int changePassword(ChangePasswordCommand command);
 }

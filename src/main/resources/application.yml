@@ -349,6 +349,11 @@ stockflow:
     # @RequiresPermission is silently unenforced, which is worse than either being off.
     # Default is ON. Switch it off per profile, never here.
     enabled: true
+    # How long a sign-in lasts (ISO-8601, at most 24h). Each token has a server-side session that
+    # logout, "sign out other devices", a password change and a role change end immediately, so this
+    # only bounds how long an abandoned or stolen device keeps working. Changing it affects tokens
+    # issued from then on; existing ones keep the lifetime they were signed with.
+    token-ttl: PT8H
 
 logging:
   level:

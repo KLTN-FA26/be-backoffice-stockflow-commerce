@@ -20,9 +20,19 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.Semaphore;
 
-/** Decode limits apply before allocating pixels; a bounded gate also limits concurrent decoders. */
+/**
+ * Decode limits apply before allocating pixels; a bounded gate also limits concurrent decoders.
+ *
+ * <p>Peak heap per decode is the decoded raster (4 bytes a pixel) plus the rotated copy, so it is
+ * bounded twice: images above {@link #MAX_PIXELS} are refused, and anything above
+ * {@link #DECODE_PIXEL_BUDGET} is read with source subsampling, never below the largest rendition.
+ * Two decoders at 8 MP is about 130 MB; two at 40 MP with no subsampling was over 600 MB.</p>
+ */
 @Component
 public class ProductImageProcessor {
+    static final long MAX_PIXELS = 25_000_000L;
+    static final double DECODE_PIXEL_BUDGET = 8_000_000d;
+    static final int LARGEST_RENDITION_EDGE = 1600;
     private final Semaphore decoders = new Semaphore(2);
     public record Rendered(int edge, int width, int height, String contentType, byte[] bytes) { }
     public record Prepared(byte[] original, List<Rendered> renditions) { }
@@ -43,10 +53,13 @@ public class ProductImageProcessor {
                 try {
                     reader.setInput(input);
                     int width = reader.getWidth(0), height = reader.getHeight(0);
-                    if (width < 1 || height < 1 || (long) width * height > 40_000_000L) {
-                        throw new BusinessException(ErrorCode.PAYLOAD_TOO_LARGE, "Image exceeds the 40 megapixel decode limit");
+                    if (width < 1 || height < 1 || (long) width * height > MAX_PIXELS) {
+                        throw new BusinessException(ErrorCode.PAYLOAD_TOO_LARGE, "Image exceeds the 25 megapixel decode limit");
                     }
-                    BufferedImage source = orient(reader.read(0), orientation(bytes));
+                    var param = reader.getDefaultReadParam();
+                    int step = subsamplingStep(width, height);
+                    if (step > 1) { param.setSourceSubsampling(step, step, 0, 0); }
+                    BufferedImage source = orient(reader.read(0, param), orientation(bytes));
                     var results = new ArrayList<Rendered>();
                     for (int edge : new int[] {256, 768, 1600}) { results.add(resize(source, edge)); }
                     source.flush();
@@ -56,6 +69,13 @@ public class ProductImageProcessor {
         } catch (IOException ex) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Image is damaged or unreadable");
         } finally { decoders.release(); }
+    }
+
+    /** Smallest step that brings the decode under budget while keeping the largest rendition sharp. */
+    static int subsamplingStep(int width, int height) {
+        int forBudget = (int) Math.ceil(Math.sqrt((double) width * height / DECODE_PIXEL_BUDGET));
+        int keepsSharpness = Math.max(1, Math.max(width, height) / LARGEST_RENDITION_EDGE);
+        return Math.max(1, Math.min(forBudget, keepsSharpness));
     }
 
     private Rendered resize(BufferedImage source, int edge) throws IOException {

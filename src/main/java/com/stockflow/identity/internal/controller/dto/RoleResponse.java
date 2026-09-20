@@ -2,6 +2,8 @@ package com.stockflow.identity.internal.controller.dto;
 
 import io.swagger.v3.oas.annotations.media.Schema;
 
+import java.time.Instant;
+
 /**
  * What the API returns for one role.
  *
@@ -15,6 +17,10 @@ import io.swagger.v3.oas.annotations.media.Schema;
 public record RoleResponse(
         @Schema(example = "ACCOUNTANT") String code,
         String name,
-        String description
+        String description,
+        Instant createdAt,
+        String createdBy,
+        Instant lastModifiedAt,
+        String lastModifiedBy
 ) {
 }

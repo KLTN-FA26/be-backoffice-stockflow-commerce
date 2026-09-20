@@ -92,6 +92,33 @@ public class ProductJpaEntity extends BaseEntity {
     @Column(name = "height_cm", precision = 10, scale = 2)
     private BigDecimal heightCm;
 
+    @Column(name = "package_weight_kg", precision = 10, scale = 3)
+    private BigDecimal packageWeightKg;
+
+    @Column(name = "package_length_cm", precision = 10, scale = 2)
+    private BigDecimal packageLengthCm;
+
+    @Column(name = "package_width_cm", precision = 10, scale = 2)
+    private BigDecimal packageWidthCm;
+
+    @Column(name = "package_height_cm", precision = 10, scale = 2)
+    private BigDecimal packageHeightCm;
+
+    @Column(name = "package_count")
+    private Integer packageCount;
+
+    @Column(name = "hazmat", nullable = false)
+    private boolean hazmat;
+
+    @Column(name = "oversized", nullable = false)
+    private boolean oversized;
+
+    @Column(name = "requires_adult_signature", nullable = false)
+    private boolean requiresAdultSignature;
+
+    @Column(name = "shipping_restriction_note", length = 500)
+    private String shippingRestrictionNote;
+
     /**
      * The media gallery is part of the aggregate, so it is loaded and saved with it —
      * {@code cascade = ALL}, {@code orphanRemoval = true}, and no repository of their own. Mirrors
@@ -114,7 +141,11 @@ public class ProductJpaEntity extends BaseEntity {
                             TaxClass taxClass, ProductStatus status, boolean customizable,
                             UUID submittedBy, Instant submittedAt, UUID approvedBy,
                             Instant approvedAt, String rejectionReason, BigDecimal weightKg,
-                            BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm) {
+                            BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm,
+                            BigDecimal packageWeightKg, BigDecimal packageLengthCm,
+                            BigDecimal packageWidthCm, BigDecimal packageHeightCm,
+                            Integer packageCount, boolean hazmat, boolean oversized,
+                            boolean requiresAdultSignature, String shippingRestrictionNote) {
         super(id);
         this.code = code;
         this.name = name;
@@ -135,6 +166,15 @@ public class ProductJpaEntity extends BaseEntity {
         this.lengthCm = lengthCm;
         this.widthCm = widthCm;
         this.heightCm = heightCm;
+        this.packageWeightKg = packageWeightKg;
+        this.packageLengthCm = packageLengthCm;
+        this.packageWidthCm = packageWidthCm;
+        this.packageHeightCm = packageHeightCm;
+        this.packageCount = packageCount;
+        this.hazmat = hazmat;
+        this.oversized = oversized;
+        this.requiresAdultSignature = requiresAdultSignature;
+        this.shippingRestrictionNote = shippingRestrictionNote;
     }
 
     /** Copies every editable field onto a managed row, so Hibernate's dirty checking writes the UPDATE. */
@@ -142,7 +182,11 @@ public class ProductJpaEntity extends BaseEntity {
                       String descriptionEn, String brand, TaxClass taxClass, boolean customizable,
                       ProductStatus status, UUID submittedBy, Instant submittedAt, UUID approvedBy,
                       Instant approvedAt, String rejectionReason, BigDecimal weightKg,
-                      BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm) {
+                      BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm,
+                      BigDecimal packageWeightKg, BigDecimal packageLengthCm,
+                      BigDecimal packageWidthCm, BigDecimal packageHeightCm, Integer packageCount,
+                      boolean hazmat, boolean oversized, boolean requiresAdultSignature,
+                      String shippingRestrictionNote) {
         this.name = name;
         this.nameEn = nameEn;
         this.categoryId = categoryId;
@@ -161,6 +205,15 @@ public class ProductJpaEntity extends BaseEntity {
         this.lengthCm = lengthCm;
         this.widthCm = widthCm;
         this.heightCm = heightCm;
+        this.packageWeightKg = packageWeightKg;
+        this.packageLengthCm = packageLengthCm;
+        this.packageWidthCm = packageWidthCm;
+        this.packageHeightCm = packageHeightCm;
+        this.packageCount = packageCount;
+        this.hazmat = hazmat;
+        this.oversized = oversized;
+        this.requiresAdultSignature = requiresAdultSignature;
+        this.shippingRestrictionNote = shippingRestrictionNote;
     }
 
     public void replaceImages(List<ProductImageJpaEntity> replacement) {
@@ -196,5 +249,14 @@ public class ProductJpaEntity extends BaseEntity {
     public BigDecimal getLengthCm() { return lengthCm; }
     public BigDecimal getWidthCm() { return widthCm; }
     public BigDecimal getHeightCm() { return heightCm; }
+    public BigDecimal getPackageWeightKg() { return packageWeightKg; }
+    public BigDecimal getPackageLengthCm() { return packageLengthCm; }
+    public BigDecimal getPackageWidthCm() { return packageWidthCm; }
+    public BigDecimal getPackageHeightCm() { return packageHeightCm; }
+    public Integer getPackageCount() { return packageCount; }
+    public boolean isHazmat() { return hazmat; }
+    public boolean isOversized() { return oversized; }
+    public boolean isRequiresAdultSignature() { return requiresAdultSignature; }
+    public String getShippingRestrictionNote() { return shippingRestrictionNote; }
     public List<ProductImageJpaEntity> getImages() { return images; }
 }

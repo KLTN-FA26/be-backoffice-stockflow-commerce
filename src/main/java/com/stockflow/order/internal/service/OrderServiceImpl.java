@@ -16,8 +16,14 @@ import com.stockflow.order.internal.domain.OrderLine;
 import com.stockflow.order.internal.domain.OrderNumber;
 import com.stockflow.order.internal.domain.OrderAddressSnapshot;
 import com.stockflow.order.internal.domain.OrderRepository;
+import com.stockflow.order.internal.repository.OrderSearchRepository;
+import com.stockflow.common.api.PageResponse;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
+import com.stockflow.common.persistence.Pages;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -70,6 +76,7 @@ class OrderServiceImpl implements OrderService {
     private static final Logger log = LoggerFactory.getLogger(OrderServiceImpl.class);
 
     private final OrderRepository repository;
+    private final OrderSearchRepository search;
     private final InventoryService inventory;
     private final OrderEventPublisher events;
     private final Clock clock;
@@ -77,11 +84,13 @@ class OrderServiceImpl implements OrderService {
     private final com.stockflow.order.internal.repository.OrderHoldJpaRepository holds;
     private final CustomerService customers;
 
-    OrderServiceImpl(OrderRepository repository, InventoryService inventory,
-                     OrderEventPublisher events, Clock clock, com.stockflow.design.api.DesignService designs,
+    OrderServiceImpl(OrderRepository repository, OrderSearchRepository search,
+                     InventoryService inventory, OrderEventPublisher events, Clock clock,
+                     com.stockflow.design.api.DesignService designs,
                      com.stockflow.order.internal.repository.OrderHoldJpaRepository holds,
                      CustomerService customers) {
         this.repository = repository;
+        this.search = search;
         this.inventory = inventory;
         this.events = events;
         this.clock = clock;
@@ -246,11 +255,18 @@ class OrderServiceImpl implements OrderService {
      * <p>Symmetrical with {@link #placeOrder}: the status change and every stock release are one
      * transaction. The distributed version needed a compensating command per line plus a
      * reconciliation job for the ones that got lost.</p>
+     *
+     * <p>SCRUM-242/WBS 3.17.4: looks the order up via {@link OrderRepository#findByIdInScope},
+     * not {@code findByIdForUpdate} directly — this is what makes {@code scope = OWN} on the
+     * customer-facing cancellation endpoint an actual restriction rather than a decorative one. The
+     * admin/sales endpoint calls this same method under {@code scope = ALL}, where the lookup
+     * imposes no ownership restriction at all.</p>
      */
     @Override
     public void cancel(UUID orderId, String reason) {
-        Order order = repository.findByIdForUpdate(new OrderId(orderId))
-                .orElseThrow(() -> new IllegalArgumentException("No order with id " + orderId));
+        Order order = repository.findByIdInScope(new OrderId(orderId))
+                .orElseThrow(() -> new BusinessException(
+                        ErrorCode.NOT_FOUND, "No order with id " + orderId));
 
         boolean wasHoldingStock = order.status().holdsStock();
         order.cancel(reason);
@@ -264,6 +280,21 @@ class OrderServiceImpl implements OrderService {
         repository.save(order);
         events.publishEventsOf(order);
         log.info("Cancelled order {} ({})", order.orderNumber(), reason);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>{@code customerId} must come from the controller resolving {@code @AuthenticatedUser},
+     * never from a client-supplied parameter — this method applies no scope check of its own, the
+     * same trust boundary {@link #placeOrder} already relies on for {@code
+     * PlaceOrderCommand.customerId()}.</p>
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<OrderSummary> myOrders(UUID customerId, int page, int size) {
+        var pageable = Pages.of(page, size, Sort.by(Sort.Direction.DESC, "lastModifiedAt"));
+        return Pages.toResponse(search.findByCustomerId(customerId, pageable));
     }
 
     /**
@@ -367,7 +398,8 @@ class OrderServiceImpl implements OrderService {
                                 line.lineTotal(),
                                 line.reservationIds(), line.designSnapshotId(), line.designChecksum()))
                         .toList(),
-                order.placedAt(), order.contactName(), order.contactEmail(), order.contactPhone(),
+                order.placedAt(), order.createdBy(), order.lastModifiedAt(), order.lastModifiedBy(),
+                order.contactName(), order.contactEmail(), order.contactPhone(),
                 toSummary(order.shippingAddress()), toSummary(order.billingAddress()));
     }
 

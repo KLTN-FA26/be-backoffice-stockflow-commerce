@@ -6,6 +6,7 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.storage.DownloadLink;
 import com.stockflow.common.storage.FileTransfers;
+import com.stockflow.common.storage.StorageKeys;
 import com.stockflow.product.api.ProductStatus;
 import com.stockflow.product.internal.domain.GalleryItem;
 import com.stockflow.product.internal.entity.ProductGalleryJpaEntity;
@@ -85,6 +86,7 @@ public class ProductGalleryService {
                 throw new BusinessException(ErrorCode.CONFLICT, "Re-upload legacy stored images to generate display renditions");
             }
         }
+        publishRenditions(product, gallery.getWorkingItems());
         gallery.publish(actor);
         return view(galleries.saveAndFlush(gallery));
     }
@@ -131,6 +133,7 @@ public class ProductGalleryService {
             throw new BusinessException(ErrorCode.CONFLICT, "Approve the product before its variant gallery");
         }
         validateManagedAssets(product, gallery.getWorkingItems());
+        publishRenditions(product, gallery.getWorkingItems());
         gallery.publish(actor);
         return variantView(variantGalleries.saveAndFlush(gallery));
     }
@@ -143,12 +146,18 @@ public class ProductGalleryService {
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         UUID variantId = null;
         List<GalleryItem> selected;
-        if (sku != null && !sku.isBlank()) {
-            var skuRow = skus.findByCode(sku.strip()).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
-            variantId = skuRow.getVariantId();
+        String wanted = sku == null ? "" : sku.strip();
+        var skuRow = wanted.isEmpty() ? java.util.Optional.<com.stockflow.product.internal.entity.SkuJpaEntity>empty()
+                : skus.findByCode(wanted);
+        if (skuRow.isPresent()) {
+            variantId = skuRow.get().getVariantId();
             requireVariant(productId, variantId);
             selected = variantGalleries.findById(variantId).map(value -> value.getPublishedItems())
                     .filter(value -> !value.isEmpty()).orElse(null);
+        } else if (!wanted.isEmpty() && !wanted.equals(product.getCode())) {
+            // The product's own code is the SKU that inventory and order lines use until variants are
+            // managed, so it selects the product gallery; any other unknown SKU is not found.
+            throw new BusinessException(ErrorCode.NOT_FOUND);
         } else {
             selected = null;
         }
@@ -161,11 +170,23 @@ public class ProductGalleryService {
             var image = product.getImages().stream().filter(value -> value.getId().equals(item.imageId())).findFirst()
                     .orElseThrow(() -> new BusinessException(ErrorCode.CONFLICT, "Published gallery references a missing image"));
             var renditions = image.getRenditions().stream().map(value -> new PublicRendition(value.edge(), value.width(),
-                    value.height(), value.file().contentType(), media.publicUrl(value.file().key()))).toList();
+                    value.height(), value.file().contentType(),
+                    media.publicUrl(StorageKeys.publishedKeyOf(value.file().key())))).toList();
             if (renditions.isEmpty()) { throw new BusinessException(ErrorCode.CONFLICT, "Published image has no display rendition"); }
             images.add(new PublicImage(item.imageId(), item.caption(), renditions));
         }
         return new PublicGallery(productId, variantId, List.copyOf(images));
+    }
+
+    /**
+     * Copies the renditions of every image being approved to the CDN-served prefix. Until this runs
+     * an image exists only under a private prefix; approval is what makes it reachable.
+     */
+    private void publishRenditions(ProductJpaEntity product, List<GalleryItem> items) {
+        for (var item : items) {
+            product.getImages().stream().filter(image -> image.getId().equals(item.imageId())).findFirst()
+                    .ifPresent(image -> image.getRenditions().forEach(rendition -> files.publish(rendition.file().key())));
+        }
     }
 
     private ProductJpaEntity lock(UUID id, UUID actor) {

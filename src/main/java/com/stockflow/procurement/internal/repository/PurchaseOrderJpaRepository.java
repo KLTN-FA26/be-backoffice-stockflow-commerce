@@ -4,6 +4,7 @@ import com.stockflow.procurement.internal.entity.PurchaseOrderJpaEntity;
 import com.stockflow.procurement.internal.domain.PurchaseOrderStatus;
 import com.stockflow.common.persistence.BaseJpaRepository;
 import org.springframework.data.jpa.repository.EntityGraph;
+import org.springframework.data.jpa.repository.Query;
 
 import java.time.LocalDate;
 import java.util.List;
@@ -20,4 +21,12 @@ interface PurchaseOrderJpaRepository extends BaseJpaRepository<PurchaseOrderJpaE
 
     List<PurchaseOrderJpaEntity> findBySupplierIdAndExpectedAtAndStatusNotIn(
             UUID supplierId, LocalDate expectedAt, List<PurchaseOrderStatus> excludedStatuses);
+
+    /** SCRUM-119/WBS 3.2.7 status dashboard. One row per status that has at least one purchase
+     *  order — the adapter fills in the missing (zero-count) statuses itself. */
+    @Query("select po.status, count(po) from PurchaseOrderJpaEntity po group by po.status")
+    List<Object[]> countByStatus();
+
+    // Supplier spend (SCRUM-119) is NOT a query method here — see PurchaseOrderRepositoryAdapter's
+    // own javadoc on why it is built with the Criteria API instead of a static @Query string.
 }

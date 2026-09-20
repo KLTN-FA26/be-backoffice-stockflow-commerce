@@ -19,6 +19,19 @@ class UploadInspectionTest {
         run("stream: TestSignature FOUND\0", true);
         run("INSTREAM size limit exceeded. ERROR\0", true);
     }
+    @Test void anUnreachableScannerFailsClosedWhenEnabled() throws Exception {
+        int closedPort;
+        try (var probe = new ServerSocket(0)) { closedPort = probe.getLocalPort(); }
+        var scanner = new UploadInspection("localhost", closedPort, true);
+        assertThatThrownBy(() -> scanner.requireClean(new ByteArrayInputStream("x".getBytes(StandardCharsets.UTF_8))))
+                .isInstanceOf(StorageException.class);
+    }
+    @Test void aDisabledScannerNeverOpensAConnection() throws Exception {
+        int closedPort;
+        try (var probe = new ServerSocket(0)) { closedPort = probe.getLocalPort(); }
+        var scanner = new UploadInspection("localhost", closedPort, false);
+        scanner.requireClean(new ByteArrayInputStream("x".getBytes(StandardCharsets.UTF_8)));
+    }
     private void run(String response, boolean failure) throws Exception {
         try (var server = new ServerSocket(0)) {
             var peer = CompletableFuture.runAsync(() -> {
@@ -31,7 +44,7 @@ class UploadInspectionTest {
                     socket.getOutputStream().write(response.getBytes(StandardCharsets.UTF_8));
                 } catch (java.io.IOException ex) { throw new RuntimeException(ex); }
             });
-            var scanner = new UploadInspection("localhost", server.getLocalPort());
+            var scanner = new UploadInspection("localhost", server.getLocalPort(), true);
             if (failure) {
                 assertThatThrownBy(() -> scanner.requireClean(new ByteArrayInputStream("sample".getBytes(StandardCharsets.UTF_8))))
                         .isInstanceOf(BusinessException.class);

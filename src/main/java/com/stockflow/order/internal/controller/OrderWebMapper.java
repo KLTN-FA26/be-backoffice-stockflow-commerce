@@ -67,7 +67,8 @@ final class OrderWebMapper {
                                 line.lineTotal().amount(),
                                 line.reservationIds(), line.designSnapshotId(), line.designChecksum()))
                         .toList(),
-                summary.placedAt(), summary.contactName(), summary.contactEmail(), summary.contactPhone(),
+                summary.placedAt(), summary.createdBy(), summary.lastModifiedAt(), summary.lastModifiedBy(),
+                summary.contactName(), summary.contactEmail(), summary.contactPhone(),
                 toResponse(summary.shippingAddress()), toResponse(summary.billingAddress()));
     }
 

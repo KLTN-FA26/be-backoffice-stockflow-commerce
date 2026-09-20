@@ -5,6 +5,7 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
+import jakarta.validation.constraints.Size;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -46,6 +47,30 @@ public record UpdateProductRequest(
         BigDecimal widthCm,
 
         @Positive(message = "heightCm must be positive")
-        BigDecimal heightCm
+        BigDecimal heightCm,
+
+        @Positive(message = "packageWeightKg must be positive")
+        BigDecimal packageWeightKg,
+
+        @Positive(message = "packageLengthCm must be positive")
+        BigDecimal packageLengthCm,
+
+        @Positive(message = "packageWidthCm must be positive")
+        BigDecimal packageWidthCm,
+
+        @Positive(message = "packageHeightCm must be positive")
+        BigDecimal packageHeightCm,
+
+        @Positive(message = "packageCount must be positive")
+        Integer packageCount,
+
+        boolean hazmat,
+
+        boolean oversized,
+
+        boolean requiresAdultSignature,
+
+        @Size(max = 500, message = "shippingRestrictionNote must be at most 500 characters")
+        String shippingRestrictionNote
 ) {
 }

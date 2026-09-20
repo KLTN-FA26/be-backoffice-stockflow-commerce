@@ -1,6 +1,7 @@
 package com.stockflow.product.internal.controller;
 
 import com.stockflow.common.api.ApiResponse;
+import com.stockflow.product.internal.controller.dto.PublicGalleryResponse;
 import com.stockflow.product.internal.service.ProductGalleryService;
 import org.springframework.http.CacheControl;
 import org.springframework.http.ResponseEntity;
@@ -18,12 +19,16 @@ import java.util.UUID;
 @RequestMapping("/api/v1/public/products")
 class PublicProductMediaController {
     private final ProductGalleryService galleries;
-    PublicProductMediaController(ProductGalleryService galleries) { this.galleries = galleries; }
+    private final ProductGalleryWebMapper mapper;
+    PublicProductMediaController(ProductGalleryService galleries, ProductGalleryWebMapper mapper) {
+        this.galleries = galleries;
+        this.mapper = mapper;
+    }
 
     @GetMapping("/{productId}/gallery")
-    public ResponseEntity<ApiResponse<ProductGalleryService.PublicGallery>> gallery(@PathVariable UUID productId,
+    public ResponseEntity<ApiResponse<PublicGalleryResponse>> gallery(@PathVariable UUID productId,
             @RequestParam(required = false) String sku) {
         return ResponseEntity.ok().cacheControl(CacheControl.maxAge(Duration.ofMinutes(5)).cachePublic())
-                .body(ApiResponse.ok(galleries.publicGallery(productId, sku)));
+                .body(ApiResponse.ok(mapper.toResponse(galleries.publicGallery(productId, sku))));
     }
 }

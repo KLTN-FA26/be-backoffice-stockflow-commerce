@@ -32,7 +32,13 @@ public record OrderResponse(
         String currency,
 
         List<Line> lines,
+
+        @Schema(description = "When the order was placed - this order's created-timestamp equivalent")
         Instant placedAt,
+
+        String createdBy,
+        Instant lastModifiedAt,
+        String lastModifiedBy,
         String contactName,
         String contactEmail,
         String contactPhone,

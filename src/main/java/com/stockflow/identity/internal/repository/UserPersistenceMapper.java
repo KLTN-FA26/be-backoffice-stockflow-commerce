@@ -37,5 +37,6 @@ final class UserPersistenceMapper {
     /** Copies the aggregate's mutable state onto a row already managed by the persistence context. */
     static void applyToEntity(User user, UserJpaEntity entity) {
         entity.recordLogin(user.lastLoginAt());
+        entity.replacePasswordHash(user.passwordHash());
     }
 }

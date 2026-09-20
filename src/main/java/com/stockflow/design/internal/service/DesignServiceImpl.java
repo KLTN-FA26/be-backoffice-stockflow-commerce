@@ -120,7 +120,12 @@ class DesignServiceImpl implements DesignService {
     private String digest(String key) {
         try (var stream = storage.download(key)) {
             var digest = MessageDigest.getInstance("SHA-256");
-            inspection.requireClean(new java.security.DigestInputStream(stream, digest));
+            var hashing = new java.security.DigestInputStream(stream, digest);
+            inspection.requireClean(hashing);
+            // The scanner reads the whole stream when it is on, but not when it is switched off (the
+            // local profile), and a hash of the bytes not yet read is the hash of nothing: every
+            // integrity check would then "differ". Reading what is left makes the hash correct either way.
+            hashing.transferTo(java.io.OutputStream.nullOutputStream());
             return HexFormat.of().formatHex(digest.digest());
         } catch (IOException ex) {
             throw new StorageException("Could not verify the confirmed artifact", ex);

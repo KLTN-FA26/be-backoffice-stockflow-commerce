@@ -22,5 +22,23 @@ package com.stockflow.procurement.internal.domain;
  * </pre>
  */
 public enum PurchaseOrderStatus {
-    DRAFT, APPROVED, SENT, PARTIALLY_RECEIVED, CLOSED, CLOSED_SHORT, CANCELLED
+    DRAFT, APPROVED, SENT, PARTIALLY_RECEIVED, CLOSED, CLOSED_SHORT, CANCELLED;
+
+    /**
+     * The single-edge transitions (SCRUM-116/WBS 3.2.4.3): {@code approve}, {@code send},
+     * {@code cancel}, {@code closeShort}. Deliberately excludes receiving goods —
+     * {@code SENT}/{@code PARTIALLY_RECEIVED} both accept another receipt and the target
+     * ({@code PARTIALLY_RECEIVED} or {@code CLOSED}) depends on whether open quantity reaches
+     * zero, which is not a fixed edge this table can express — see
+     * {@code PurchaseOrder#receiveGoods}'s own guard instead.
+     */
+    public boolean canTransitionTo(PurchaseOrderStatus target) {
+        return switch (this) {
+            case DRAFT -> target == APPROVED || target == CANCELLED;
+            case APPROVED -> target == SENT || target == CANCELLED;
+            case SENT -> target == CANCELLED;
+            case PARTIALLY_RECEIVED -> target == CLOSED_SHORT;
+            case CLOSED, CLOSED_SHORT, CANCELLED -> false;
+        };
+    }
 }

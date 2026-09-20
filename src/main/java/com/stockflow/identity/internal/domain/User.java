@@ -25,7 +25,7 @@ public final class User extends AggregateRoot {
     private final UserId id;
     private final String username;
     private final String email;
-    private final String passwordHash;
+    private String passwordHash;
     private final String fullName;
     private UserStatus status;
     private Instant lastLoginAt;
@@ -66,6 +66,11 @@ public final class User extends AggregateRoot {
             throw new AccountNotActiveException(id, status);
         }
         this.lastLoginAt = Objects.requireNonNull(now, "now");
+    }
+
+    /** Replaces the credential. Takes an already-hashed value: this class never sees a raw password. */
+    public void changePasswordHash(String newHash) {
+        this.passwordHash = requireNonBlank(newHash, "passwordHash");
     }
 
     private static String requireNonBlank(String value, String field) {

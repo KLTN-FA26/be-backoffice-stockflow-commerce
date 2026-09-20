@@ -59,4 +59,16 @@ class UserTest {
         assertThat(user.email()).isEqualTo("customer@example.com");
         assertThat(user.status()).isEqualTo(UserStatus.ACTIVE);
     }
+
+    @Test
+    @DisplayName("changing the password replaces the stored hash and refuses a blank one")
+    void changePasswordHash() {
+        User user = userWith(UserStatus.ACTIVE);
+
+        user.changePasswordHash("{bcrypt}new");
+
+        assertThat(user.passwordHash()).isEqualTo("{bcrypt}new");
+        assertThatThrownBy(() -> user.changePasswordHash(" ")).isInstanceOf(IllegalArgumentException.class);
+        assertThat(user.passwordHash()).isEqualTo("{bcrypt}new");
+    }
 }

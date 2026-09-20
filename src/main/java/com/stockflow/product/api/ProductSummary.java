@@ -31,6 +31,8 @@ public record ProductSummary(
         ProductStatus status,
         Instant createdAt,
         String createdBy,
+        Instant lastModifiedAt,
+        String lastModifiedBy,
         UUID submittedBy,
         Instant submittedAt,
         UUID approvedBy,
@@ -39,7 +41,16 @@ public record ProductSummary(
         BigDecimal weightKg,
         BigDecimal lengthCm,
         BigDecimal widthCm,
-        BigDecimal heightCm
+        BigDecimal heightCm,
+        BigDecimal packageWeightKg,
+        BigDecimal packageLengthCm,
+        BigDecimal packageWidthCm,
+        BigDecimal packageHeightCm,
+        Integer packageCount,
+        boolean hazmat,
+        boolean oversized,
+        boolean requiresAdultSignature,
+        String shippingRestrictionNote
 ) {
 
     public ProductSummary {

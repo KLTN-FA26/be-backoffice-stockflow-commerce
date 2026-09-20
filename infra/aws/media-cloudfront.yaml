@@ -62,7 +62,7 @@ Resources:
       Name: !Sub '${AWS::StackName}-product-path-guard'
       AutoPublish: true
       FunctionConfig:
-        Comment: Deny every object except immutable product-image renditions.
+        Comment: Serve only the product-images/ prefix, which holds renditions copied there on gallery approval. Originals (product-originals/) and unapproved renditions (product-renditions/) are never reachable here.
         Runtime: cloudfront-js-2.0
       FunctionCode: |
         function handler(event) {
