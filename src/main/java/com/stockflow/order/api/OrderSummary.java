@@ -23,8 +23,24 @@ public record OrderSummary(
         Instant placedAt,
         String createdBy,
         Instant lastModifiedAt,
-        String lastModifiedBy
+        String lastModifiedBy,
+        String contactName,
+        String contactEmail,
+        String contactPhone,
+        AddressSummary shippingAddress,
+        AddressSummary billingAddress
 ) {
+
+    public OrderSummary(UUID orderId, String orderNumber, UUID customerId, OrderStatus status,
+                        Money total, List<LineSummary> lines, Instant placedAt) {
+        this(orderId, orderNumber, customerId, status, total, lines, placedAt,
+                null, null, null, null, null, null, null, null);
+    }
+
+    public record AddressSummary(String recipientName, String phone, String line1, String line2,
+                                 String wardCode, String wardName, String provinceCode,
+                                 String provinceName, String countryCode, String postalCode) {
+    }
 
     /**
      * @param reservationIds every hold inventory gave back for this line — one per lot it was drawn

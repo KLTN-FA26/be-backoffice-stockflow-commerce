@@ -1,7 +1,7 @@
 package com.stockflow.customer.internal.entity;
 
-import com.stockflow.customer.internal.domain.AddressType;
 import com.stockflow.common.persistence.BaseEntity;
+import com.stockflow.customer.internal.domain.AddressType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -10,29 +10,22 @@ import jakarta.persistence.Table;
 
 import java.util.UUID;
 
-/**
- * JPA mapping of a customer address row (table {@code customer.address}). Not the domain model.
- *
- * <p>STARTER ENTITY. A Vietnamese postal address (ward / district / city / province), plus the
- * recipient it is addressed to. {@code customerId} is a same-schema reference to
- * {@code customer.customer}.</p>
- */
+/** JPA row for a two-level Vietnamese shipping or billing address. */
 @Entity
 @Table(name = "address", schema = "customer")
 public class AddressJpaEntity extends BaseEntity {
 
-    /** Same-schema reference to {@code customer.customer}. */
-    @Column(name = "customer_id", nullable = false)
+    @Column(name = "customer_id", nullable = false, updatable = false)
     private UUID customerId;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "type", nullable = false, length = 32)
     private AddressType type;
 
-    @Column(name = "recipient_name", length = 200)
+    @Column(name = "recipient_name", nullable = false, length = 200)
     private String recipientName;
 
-    @Column(name = "phone", length = 32)
+    @Column(name = "phone", nullable = false, length = 32)
     private String phone;
 
     @Column(name = "line1", nullable = false, length = 255)
@@ -41,49 +34,56 @@ public class AddressJpaEntity extends BaseEntity {
     @Column(name = "line2", length = 255)
     private String line2;
 
-    @Column(name = "ward", length = 120)
-    private String ward;
+    @Column(name = "ward_code", nullable = false, length = 20)
+    private String wardCode;
 
-    @Column(name = "district", length = 120)
-    private String district;
+    @Column(name = "ward", nullable = false, length = 120)
+    private String wardName;
 
-    @Column(name = "city", nullable = false, length = 120)
-    private String city;
+    @Column(name = "province_code", nullable = false, length = 20)
+    private String provinceCode;
 
-    @Column(name = "province", length = 120)
-    private String province;
+    @Column(name = "province", nullable = false, length = 120)
+    private String provinceName;
 
     @Column(name = "country", nullable = false, length = 2)
-    private String country;
+    private String countryCode;
 
     @Column(name = "postal_code", length = 20)
     private String postalCode;
 
     @Column(name = "is_default", nullable = false)
-    private boolean isDefault;
+    private boolean defaultAddress;
 
-    /** Required by JPA. Application code uses the id-taking constructor. */
     protected AddressJpaEntity() {
     }
 
     public AddressJpaEntity(UUID id, UUID customerId, AddressType type, String recipientName,
-                            String phone, String line1, String line2, String ward, String district,
-                            String city, String province, String country, String postalCode,
-                            boolean isDefault) {
+                            String phone, String line1, String line2, String wardCode,
+                            String wardName, String provinceCode, String provinceName,
+                            String countryCode, String postalCode, boolean defaultAddress) {
         super(id);
         this.customerId = customerId;
+        apply(type, recipientName, phone, line1, line2, wardCode, wardName, provinceCode,
+                provinceName, countryCode, postalCode, defaultAddress);
+    }
+
+    public void apply(AddressType type, String recipientName, String phone, String line1,
+                      String line2, String wardCode, String wardName, String provinceCode,
+                      String provinceName, String countryCode, String postalCode,
+                      boolean defaultAddress) {
         this.type = type;
         this.recipientName = recipientName;
         this.phone = phone;
         this.line1 = line1;
         this.line2 = line2;
-        this.ward = ward;
-        this.district = district;
-        this.city = city;
-        this.province = province;
-        this.country = country;
+        this.wardCode = wardCode;
+        this.wardName = wardName;
+        this.provinceCode = provinceCode;
+        this.provinceName = provinceName;
+        this.countryCode = countryCode;
         this.postalCode = postalCode;
-        this.isDefault = isDefault;
+        this.defaultAddress = defaultAddress;
     }
 
     public UUID getCustomerId() { return customerId; }
@@ -92,11 +92,11 @@ public class AddressJpaEntity extends BaseEntity {
     public String getPhone() { return phone; }
     public String getLine1() { return line1; }
     public String getLine2() { return line2; }
-    public String getWard() { return ward; }
-    public String getDistrict() { return district; }
-    public String getCity() { return city; }
-    public String getProvince() { return province; }
-    public String getCountry() { return country; }
+    public String getWardCode() { return wardCode; }
+    public String getWardName() { return wardName; }
+    public String getProvinceCode() { return provinceCode; }
+    public String getProvinceName() { return provinceName; }
+    public String getCountryCode() { return countryCode; }
     public String getPostalCode() { return postalCode; }
-    public boolean isDefault() { return isDefault; }
+    public boolean isDefaultAddress() { return defaultAddress; }
 }

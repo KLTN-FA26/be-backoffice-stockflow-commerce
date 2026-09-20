@@ -253,15 +253,19 @@ management:
 springdoc:
   api-docs:
     path: /v3/api-docs
+
   swagger-ui:
     path: /swagger-ui.html
     operations-sorter: alpha
     tags-sorter: alpha
-    # Groups the generated OpenAPI document by module, so a reader sees inventory's endpoints
-    # together rather than one flat alphabetical list of 500 paths.
+
   group-configs:
+    - group: all
+      packages-to-scan: com.stockflow
+
     - group: inventory
       packages-to-scan: com.stockflow.inventory
+
     - group: order
       packages-to-scan: com.stockflow.order
 
@@ -339,6 +343,12 @@ stockflow:
   inventory:
     # How often the sweeper looks for holds that outlived their expiry. ISO-8601 duration.
     reservation-sweep-interval: PT1M
+  checkout:
+    # Public checkout without an account. OFF by default: the request carries its own unit price and
+    # nothing checks it against a catalogue price yet, so an open endpoint lets anyone order at any
+    # price and hold real stock. The local profile turns it on for development.
+    guest-enabled: false
+
   security:
     # Turns on the resource-server filter chain AND RequiresPermissionAspect. Both are behind the
     # same switch on purpose: a state where the chain is on but the aspect is off means every

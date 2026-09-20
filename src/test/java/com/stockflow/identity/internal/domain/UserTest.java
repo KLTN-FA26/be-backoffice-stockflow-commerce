@@ -4,6 +4,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -48,6 +49,15 @@ class UserTest {
 
         assertThatThrownBy(() -> user.signIn(NOW)).isInstanceOf(AccountNotActiveException.class);
         assertThat(user.lastLoginAt()).isNull();
+    }
+
+    @Test
+    void customerRegistrationNormalisesEmailAsTheLoginName() {
+        User user = User.register(UUID.randomUUID(), " Customer@Example.COM ", "hash", "Customer");
+
+        assertThat(user.username()).isEqualTo("customer@example.com");
+        assertThat(user.email()).isEqualTo("customer@example.com");
+        assertThat(user.status()).isEqualTo(UserStatus.ACTIVE);
     }
 
     @Test

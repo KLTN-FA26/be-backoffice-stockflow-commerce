@@ -43,6 +43,9 @@ public interface IdentityService {
      */
     TokenResponse login(LoginCommand command);
 
+    /** Creates an ACTIVE account with the CUSTOMER role and issues its first token atomically. */
+    RegisteredAccount registerCustomer(RegisterAccountCommand command);
+
     /**
      * Ends one session, so its token stops working on the very next request. Idempotent, and a
      * no-op for a session that belongs to someone else or does not exist: a caller can only ever

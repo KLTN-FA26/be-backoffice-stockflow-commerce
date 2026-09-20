@@ -29,6 +29,11 @@ final class UserPersistenceMapper {
                 entity.getCreatedBy());
     }
 
+    static UserJpaEntity toNewEntity(User user) {
+        return new UserJpaEntity(user.id().value(), user.username(), user.email(), user.passwordHash(),
+                user.fullName(), user.status(), user.lastLoginAt());
+    }
+
     /** Copies the aggregate's mutable state onto a row already managed by the persistence context. */
     static void applyToEntity(User user, UserJpaEntity entity) {
         entity.recordLogin(user.lastLoginAt());

@@ -129,7 +129,7 @@ class FulfillmentServiceImplTest {
         pick.assign(assigned, now.minusSeconds(120));
         var live = order(pick.getOrderId(), "d".repeat(64));
         var cancelled = new OrderSummary(live.orderId(), live.orderNumber(), live.customerId(), OrderStatus.CANCELLED,
-                live.total(), live.lines(), live.placedAt(), null, null, null);
+                live.total(), live.lines(), live.placedAt(), null, null, null, null, null, null, null, null);
         var pack = new PackJpaEntity(UUID.randomUUID(), pick.getId(), PackStatus.ON_HOLD, null);
         when(picks.lockById(pick.getId())).thenReturn(Optional.of(pick));
         when(picks.findById(pick.getId())).thenReturn(Optional.of(pick));
@@ -165,7 +165,7 @@ class FulfillmentServiceImplTest {
         var line = new OrderSummary.LineSummary(UUID.randomUUID(), "CUSTOM-SKU", 1,
                 Money.vnd(100_000), Money.vnd(100_000), List.of(), snapshot, checksum);
         return new OrderSummary(orderId, "SO-TEST", UUID.randomUUID(), OrderStatus.IN_FULFILMENT,
-                Money.vnd(100_000), List.of(line), now.minusSeconds(600), null, null, null);
+                Money.vnd(100_000), List.of(line), now.minusSeconds(600), null, null, null, null, null, null, null, null);
     }
 
     private CurrentUser user(UUID id, Role role) {

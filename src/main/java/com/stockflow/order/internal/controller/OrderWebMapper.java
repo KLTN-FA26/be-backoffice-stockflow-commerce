@@ -2,8 +2,10 @@ package com.stockflow.order.internal.controller;
 
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.api.PlaceOrderCommand;
+import com.stockflow.order.api.PlaceGuestOrderCommand;
 import com.stockflow.order.internal.controller.dto.OrderResponse;
 import com.stockflow.order.internal.controller.dto.PlaceOrderRequest;
+import com.stockflow.order.internal.controller.dto.PlaceGuestOrderRequest;
 import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
 
@@ -34,7 +36,18 @@ final class OrderWebMapper {
                         new Money(line.unitPrice(), ORDER_CURRENCY),
                         line.designSnapshotId()))
                 .toList();
-        return new PlaceOrderCommand(request.requestId(), request.customerId(), lines);
+        return new PlaceOrderCommand(request.requestId(), request.customerId(),
+                request.shippingAddressId(), request.billingAddressId(), true, lines);
+    }
+
+    static PlaceGuestOrderCommand toCommand(PlaceGuestOrderRequest request) {
+        var shipping = toCommand(request.shippingAddress());
+        var billing = request.billingSameAsShipping() || request.billingAddress() == null
+                ? shipping : toCommand(request.billingAddress());
+        return new PlaceGuestOrderCommand(request.requestId(), request.email(), shipping, billing,
+                request.lines().stream().map(line -> new PlaceGuestOrderCommand.Line(
+                        new Sku(line.sku()), line.quantity(), new Money(line.unitPrice(), ORDER_CURRENCY)))
+                        .toList());
     }
 
     static OrderResponse toResponse(OrderSummary summary) {
@@ -54,9 +67,21 @@ final class OrderWebMapper {
                                 line.lineTotal().amount(),
                                 line.reservationIds(), line.designSnapshotId(), line.designChecksum()))
                         .toList(),
-                summary.placedAt(),
-                summary.createdBy(),
-                summary.lastModifiedAt(),
-                summary.lastModifiedBy());
+                summary.placedAt(), summary.createdBy(), summary.lastModifiedAt(), summary.lastModifiedBy(),
+                summary.contactName(), summary.contactEmail(), summary.contactPhone(),
+                toResponse(summary.shippingAddress()), toResponse(summary.billingAddress()));
+    }
+
+    private static PlaceGuestOrderCommand.Address toCommand(PlaceGuestOrderRequest.Address address) {
+        return new PlaceGuestOrderCommand.Address(address.recipientName(), address.phone(),
+                address.line1(), address.line2(), address.wardCode(), address.wardName(),
+                address.provinceCode(), address.provinceName(), address.countryCode(), address.postalCode());
+    }
+
+    private static OrderResponse.Address toResponse(OrderSummary.AddressSummary address) {
+        if (address == null) return null;
+        return new OrderResponse.Address(address.recipientName(), address.phone(), address.line1(),
+                address.line2(), address.wardCode(), address.wardName(), address.provinceCode(),
+                address.provinceName(), address.countryCode(), address.postalCode());
     }
 }

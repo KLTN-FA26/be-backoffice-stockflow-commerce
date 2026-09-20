@@ -24,7 +24,7 @@ import java.util.UUID;
                 @UniqueConstraint(name = "uk_app_user_email", columnNames = "email")})
 public class UserJpaEntity extends BaseEntity {
 
-    @Column(name = "username", nullable = false, length = 100)
+    @Column(name = "username", nullable = false, length = 320)
     private String username;
 
     @Column(name = "email", nullable = false, length = 320)

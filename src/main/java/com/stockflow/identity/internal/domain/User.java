@@ -4,6 +4,7 @@ import com.stockflow.common.domain.AggregateRoot;
 
 import java.time.Instant;
 import java.util.Objects;
+import java.util.UUID;
 
 /**
  * <b>Aggregate root of the identity module: one staff/customer account.</b>
@@ -45,6 +46,12 @@ public final class User extends AggregateRoot {
         this.version = version;
         this.createdAt = createdAt;
         this.createdBy = createdBy;
+    }
+
+    public static User register(UUID id, String email, String passwordHash, String fullName) {
+        String normalisedEmail = requireNonBlank(email, "email").trim().toLowerCase(java.util.Locale.ROOT);
+        return new User(new UserId(id), normalisedEmail, normalisedEmail, passwordHash, fullName,
+                UserStatus.ACTIVE, null, 0L, null, null);
     }
 
     /**

@@ -8,6 +8,8 @@ import com.stockflow.identity.api.SessionSummary;
 import com.stockflow.identity.api.LoginCommand;
 import com.stockflow.identity.api.RoleSummary;
 import com.stockflow.identity.api.TokenResponse;
+import com.stockflow.identity.api.RegisterAccountCommand;
+import com.stockflow.identity.api.RegisteredAccount;
 import com.stockflow.identity.internal.domain.PasswordPolicy;
 import com.stockflow.identity.internal.domain.SessionEndReason;
 import com.stockflow.identity.internal.domain.User;
@@ -54,6 +56,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
+import java.util.Locale;
 
 /**
  * The only implementation of {@link IdentityService}, and the module's transaction boundary.
@@ -201,7 +204,8 @@ class IdentityServiceImpl implements IdentityService {
     @Override
     @Auditable(action = AuditAction.LOGIN, resourceType = "user", resourceId = "#command.username()")
     public TokenResponse login(LoginCommand command) {
-        Optional<User> found = userRepository.findByUsername(command.username());
+        String loginName = command.username() == null ? "" : command.username().trim();
+        Optional<User> found = userRepository.findByUsername(loginName);
         String hashToCheck = found.map(User::passwordHash).orElse(dummyPasswordHash);
         boolean passwordMatches = passwordEncoder.matches(command.password(), hashToCheck);
         if (found.isEmpty() || !passwordMatches) {
@@ -217,11 +221,21 @@ class IdentityServiceImpl implements IdentityService {
                 .flatMap(role -> grantedPermissionsOf(role.getId()).stream())
                 .collect(Collectors.toUnmodifiableSet());
 
+        return startSession(saved, grantedRoles, grantedPermissions,
+                command.clientAddress(), command.userAgent());
+    }
+
+    /**
+     * The one place a token is issued. It creates the session the token points at, so no code path
+     * can hand out a token that revocation cannot reach.
+     */
+    private TokenResponse startSession(User user, List<RoleJpaEntity> grantedRoles,
+                                       Set<PermissionCode> grantedPermissions,
+                                       String clientAddress, String userAgent) {
         Instant issuedAt = clock.instant();
         UserSessionJpaEntity session = sessions.save(new UserSessionJpaEntity(Identifiers.newId(),
-                saved.id().value(), issuedAt, issuedAt.plus(tokenTtl),
-                command.clientAddress(), command.userAgent()));
-        return new TokenResponse(issueToken(saved, grantedRoles, grantedPermissions, session),
+                user.id().value(), issuedAt, issuedAt.plus(tokenTtl), clientAddress, userAgent));
+        return new TokenResponse(issueToken(user, grantedRoles, grantedPermissions, session),
                 "Bearer", tokenTtl.toSeconds());
     }
 
@@ -284,6 +298,31 @@ class IdentityServiceImpl implements IdentityService {
                 ? sessions.revokeLive(command.userId(), command.currentSessionId(), clock.instant(),
                         SessionEndReason.PASSWORD_CHANGED)
                 : 0;
+    }
+
+    @Override
+    public RegisteredAccount registerCustomer(RegisterAccountCommand command) {
+        String email = command.email().trim().toLowerCase(Locale.ROOT);
+        if (userRepository.findByEmail(email).isPresent()) {
+            throw new BusinessException(ErrorCode.CUSTOMER_EMAIL_ALREADY_EXISTS,
+                    "A customer account with this email already exists");
+        }
+        PasswordPolicy.violation(command.password()).ifPresent(reason -> {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, reason);
+        });
+        User saved = userRepository.save(User.register(Identifiers.newId(), email,
+                passwordEncoder.encode(command.password()), command.fullName()));
+        // Granted directly, not through assignRole: a brand-new account has no session to end, and
+        // assignRole's "roles changed, sign the user out" would only clear the persistence context
+        // in the middle of the registration.
+        RoleJpaEntity customerRole = findRoleByCode(com.stockflow.common.security.Roles.CUSTOMER);
+        userRoles.save(new UserRoleJpaEntity(Identifiers.newId(), saved.id().value(), customerRole.getId()));
+        List<RoleJpaEntity> grantedRoles = rolesOf(saved.id());
+        Set<PermissionCode> grantedPermissions = grantedRoles.stream()
+                .flatMap(role -> grantedPermissionsOf(role.getId()).stream())
+                .collect(Collectors.toUnmodifiableSet());
+        return new RegisteredAccount(saved.id().value(),
+                startSession(saved, grantedRoles, grantedPermissions, null, null));
     }
 
     private String issueToken(User user, List<RoleJpaEntity> grantedRoles,
