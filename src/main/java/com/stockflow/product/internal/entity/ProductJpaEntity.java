@@ -1,5 +1,6 @@
 package com.stockflow.product.internal.entity;
 
+import com.stockflow.product.api.StorageClass;
 import com.stockflow.product.api.ProductStatus;
 import com.stockflow.product.api.TaxClass;
 import com.stockflow.common.persistence.BaseEntity;
@@ -113,6 +114,10 @@ public class ProductJpaEntity extends BaseEntity {
     @Column(name = "oversized", nullable = false)
     private boolean oversized;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "storage_class", nullable = false, length = 16)
+    private StorageClass storageClass;
+
     @Column(name = "requires_adult_signature", nullable = false)
     private boolean requiresAdultSignature;
 
@@ -144,7 +149,7 @@ public class ProductJpaEntity extends BaseEntity {
                             BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm,
                             BigDecimal packageWeightKg, BigDecimal packageLengthCm,
                             BigDecimal packageWidthCm, BigDecimal packageHeightCm,
-                            Integer packageCount, boolean hazmat, boolean oversized,
+                            Integer packageCount, boolean hazmat, boolean oversized, StorageClass storageClass,
                             boolean requiresAdultSignature, String shippingRestrictionNote) {
         super(id);
         this.code = code;
@@ -173,6 +178,7 @@ public class ProductJpaEntity extends BaseEntity {
         this.packageCount = packageCount;
         this.hazmat = hazmat;
         this.oversized = oversized;
+        this.storageClass = java.util.Objects.requireNonNullElse(storageClass, StorageClass.NORMAL);
         this.requiresAdultSignature = requiresAdultSignature;
         this.shippingRestrictionNote = shippingRestrictionNote;
     }
@@ -185,7 +191,7 @@ public class ProductJpaEntity extends BaseEntity {
                       BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm,
                       BigDecimal packageWeightKg, BigDecimal packageLengthCm,
                       BigDecimal packageWidthCm, BigDecimal packageHeightCm, Integer packageCount,
-                      boolean hazmat, boolean oversized, boolean requiresAdultSignature,
+                      boolean hazmat, boolean oversized, StorageClass storageClass, boolean requiresAdultSignature,
                       String shippingRestrictionNote) {
         this.name = name;
         this.nameEn = nameEn;
@@ -212,6 +218,7 @@ public class ProductJpaEntity extends BaseEntity {
         this.packageCount = packageCount;
         this.hazmat = hazmat;
         this.oversized = oversized;
+        this.storageClass = java.util.Objects.requireNonNullElse(storageClass, StorageClass.NORMAL);
         this.requiresAdultSignature = requiresAdultSignature;
         this.shippingRestrictionNote = shippingRestrictionNote;
     }
@@ -256,6 +263,7 @@ public class ProductJpaEntity extends BaseEntity {
     public Integer getPackageCount() { return packageCount; }
     public boolean isHazmat() { return hazmat; }
     public boolean isOversized() { return oversized; }
+    public StorageClass getStorageClass() { return storageClass; }
     public boolean isRequiresAdultSignature() { return requiresAdultSignature; }
     public String getShippingRestrictionNote() { return shippingRestrictionNote; }
     public List<ProductImageJpaEntity> getImages() { return images; }

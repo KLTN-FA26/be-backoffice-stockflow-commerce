@@ -44,7 +44,7 @@ class MediaPersistenceIntegrationTest {
         var product = new ProductJpaEntity(id, "MEDIA-TEST", "Cup", "Cup", null, null, null,
                 "StockFlow", TaxClass.STANDARD, ProductStatus.DRAFT, true,
                 null, null, null, null, null, null, null, null, null,
-                null, null, null, null, null, false, false, false, null);
+                null, null, null, null, null, false, false, null, false, null);
         var file = new StoredFile("product-images/test.png", "test.png", "image/png", 12, Instant.EPOCH);
         var imageId = Identifiers.newId();
         product.replaceImages(List.of(new ProductImageJpaEntity(imageId, null, 0, file)));

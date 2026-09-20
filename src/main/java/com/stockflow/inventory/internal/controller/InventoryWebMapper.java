@@ -2,6 +2,8 @@ package com.stockflow.inventory.internal.controller;
 
 import com.stockflow.inventory.api.ReserveStockResult;
 import com.stockflow.inventory.api.StockAvailability;
+import com.stockflow.inventory.api.StockLevel;
+import com.stockflow.inventory.internal.controller.dto.StockLevelResponse;
 import com.stockflow.inventory.api.StockReservation;
 import com.stockflow.inventory.internal.controller.dto.ReservationResponse;
 import com.stockflow.inventory.internal.controller.dto.StockItemResponse;
@@ -30,6 +32,10 @@ interface InventoryWebMapper {
     StockItemResponse toResponse(StockAvailability availability);
 
     List<StockItemResponse> toResponses(List<StockAvailability> availabilities);
+
+    StockLevelResponse toResponse(StockLevel level);
+
+    List<StockLevelResponse> toLevelResponses(List<StockLevel> levels);
 
     @Mapping(target = "holds", source = "reservations")
     ReservationResponse toResponse(ReserveStockResult result);

@@ -3,6 +3,7 @@ package com.stockflow.order.internal.domain;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
+import com.stockflow.common.error.ErrorCode;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -115,6 +116,40 @@ class OrderTest {
 
         // BR-031: from SHIPPED the goods are with the carrier and the process is a return.
         assertThat(OrderStatus.SHIPPED.canTransitionTo(OrderStatus.CANCELLED)).isFalse();
+    }
+
+    @Test
+    @DisplayName("a refused cancellation is a 409 CONFLICT carrying the status, not a 400")
+    void cancellingFromANonCancellableStatusIsAConflict() {
+        Order order = submittedOrder();
+        order.cancel("customer changed their mind");
+
+        assertThatThrownBy(() -> order.cancel("again"))
+                .isInstanceOf(InvalidOrderTransitionException.class)
+                .hasMessageContaining("cannot be cancelled from status CANCELLED")
+                .extracting(e -> ((InvalidOrderTransitionException) e).errorCode())
+                .isEqualTo(ErrorCode.CONFLICT);
+    }
+
+    @Test
+    @DisplayName("paying a cancelled order is a conflict too, and changes nothing")
+    void payingACancelledOrderIsAConflict() {
+        Order order = submittedOrder();
+        order.cancel("changed mind");
+
+        assertThatThrownBy(order::markPaid).isInstanceOf(InvalidOrderTransitionException.class);
+        assertThat(order.status()).isEqualTo(OrderStatus.CANCELLED);
+    }
+
+    @Test
+    @DisplayName("cancelling twice is a conflict and keeps the first reason")
+    void cancellingTwiceIsAConflict() {
+        Order order = submittedOrder();
+        order.cancel("first reason");
+
+        assertThatThrownBy(() -> order.cancel("second reason"))
+                .isInstanceOf(InvalidOrderTransitionException.class);
+        assertThat(order.cancellationReason()).isEqualTo("first reason");
     }
 
     @Test
