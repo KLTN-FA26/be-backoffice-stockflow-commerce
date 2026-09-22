@@ -30,7 +30,11 @@ public class PutawayTaskJpaEntity extends BaseEntity {
     @Column(name = "quantity", nullable = false)
     private int quantity;
 
-    /** Same-schema reference to {@code warehouse.location}. */
+    /**
+     * A bin or a storage area, so no single foreign key fits and the column has none (dropped with
+     * the flat {@code location} table in V20260918000100). What it points at is settled in
+     * SCRUM-92.
+     */
     @Column(name = "target_location_id")
     private UUID targetLocationId;
 
