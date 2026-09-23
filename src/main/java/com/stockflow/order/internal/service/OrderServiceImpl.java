@@ -3,14 +3,18 @@ package com.stockflow.order.internal.service;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.ReserveStockResult;
 import com.stockflow.inventory.api.ReserveStockCommand;
+import com.stockflow.customer.api.CheckoutCustomer;
+import com.stockflow.customer.api.CustomerService;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.api.PlaceOrderCommand;
+import com.stockflow.order.api.PlaceGuestOrderCommand;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderId;
 import com.stockflow.order.internal.domain.OrderLine;
 import com.stockflow.order.internal.domain.OrderNumber;
+import com.stockflow.order.internal.domain.OrderAddressSnapshot;
 import com.stockflow.order.internal.domain.OrderRepository;
 import com.stockflow.order.internal.repository.OrderSearchRepository;
 import com.stockflow.common.api.PageResponse;
@@ -76,14 +80,23 @@ class OrderServiceImpl implements OrderService {
     private final InventoryService inventory;
     private final OrderEventPublisher events;
     private final Clock clock;
+    private final com.stockflow.design.api.DesignService designs;
+    private final com.stockflow.order.internal.repository.OrderHoldJpaRepository holds;
+    private final CustomerService customers;
 
     OrderServiceImpl(OrderRepository repository, OrderSearchRepository search,
-                     InventoryService inventory, OrderEventPublisher events, Clock clock) {
+                     InventoryService inventory, OrderEventPublisher events, Clock clock,
+                     com.stockflow.design.api.DesignService designs,
+                     com.stockflow.order.internal.repository.OrderHoldJpaRepository holds,
+                     CustomerService customers) {
         this.repository = repository;
         this.search = search;
         this.inventory = inventory;
         this.events = events;
         this.clock = clock;
+        this.designs = designs;
+        this.holds = holds;
+        this.customers = customers;
     }
 
     /**
@@ -99,6 +112,10 @@ class OrderServiceImpl implements OrderService {
         // check is cheap compared to discovering the duplicate after the customer has paid twice.
         Optional<Order> alreadyPlaced = repository.findByRequestId(command.requestId());
         if (alreadyPlaced.isPresent()) {
+            if (!command.customerId().equals(alreadyPlaced.get().customerId())) {
+                throw new com.stockflow.common.error.BusinessException(
+                        com.stockflow.common.error.ErrorCode.IDEMPOTENCY_KEY_REUSED);
+            }
             log.info("Request {} already produced order {}",
                     command.requestId(), alreadyPlaced.get().orderNumber());
             return toSummary(alreadyPlaced.get());
@@ -114,12 +131,25 @@ class OrderServiceImpl implements OrderService {
         List<OrderLine> lines = new ArrayList<>();
         for (int index = 0; index < command.lines().size(); index++) {
             PlaceOrderCommand.Line line = command.lines().get(index);
-            lines.add(Order.line(deterministicLineId(command.requestId(), index),
-                    line.sku(), line.quantity(), line.unitPrice(), line.designSnapshotId()));
+            var orderLine = Order.line(deterministicLineId(command.requestId(), index),
+                    line.sku(), line.quantity(), line.unitPrice(), line.designSnapshotId());
+            if (line.designSnapshotId() != null) {
+                orderLine.recordDesignChecksum(designs.verifySnapshotForSku(line.designSnapshotId(), command.customerId(), line.sku().code()).checksum());
+            }
+            lines.add(orderLine);
         }
 
-        Order order = Order.draft(orderNumber, command.customerId(), command.requestId(),
-                lines, clock.instant());
+        Order order;
+        if (command.snapshotCustomer()) {
+            CheckoutCustomer checkout = customers.resolveCheckout(command.customerId(),
+                    command.shippingAddressId(), command.billingAddressId());
+            order = Order.customerDraft(orderNumber, command.customerId(), command.requestId(),
+                    lines, clock.instant(), checkout.fullName(), checkout.email(), checkout.phone(),
+                    toSnapshot(checkout.shippingAddress()), toSnapshot(checkout.billingAddress()));
+        } else {
+            order = Order.draft(orderNumber, command.customerId(), command.requestId(),
+                    lines, clock.instant());
+        }
 
         // Direct in-process call across the module boundary, through inventory's published port.
         // It joins this transaction. If reserve() throws InsufficientStockException on line 3,
@@ -148,6 +178,72 @@ class OrderServiceImpl implements OrderService {
     }
 
     @Override
+    public OrderSummary placeGuestOrder(PlaceGuestOrderCommand command) {
+        String email = command.email().trim().toLowerCase(java.util.Locale.ROOT);
+        // Construct snapshots before the replay lookup as well: a reused request id must not make
+        // malformed address data appear valid merely because an earlier checkout succeeded.
+        var shipping = toSnapshot(command.shippingAddress());
+        var billing = toSnapshot(command.billingAddress());
+        Optional<Order> alreadyPlaced = repository.findByRequestId(command.requestId());
+        if (alreadyPlaced.isPresent()) {
+            if (!sameGuestCheckout(alreadyPlaced.get(), email, shipping, billing, command.lines())) {
+                throw new com.stockflow.common.error.BusinessException(
+                        com.stockflow.common.error.ErrorCode.IDEMPOTENCY_KEY_REUSED);
+            }
+            return toSummary(alreadyPlaced.get());
+        }
+
+        LocalDate today = LocalDate.ofInstant(clock.instant(), ZoneOffset.UTC);
+        OrderNumber orderNumber = repository.nextOrderNumber(today);
+        List<OrderLine> lines = new ArrayList<>();
+        for (int index = 0; index < command.lines().size(); index++) {
+            PlaceGuestOrderCommand.Line line = command.lines().get(index);
+            lines.add(Order.line(deterministicLineId(command.requestId(), index), line.sku(),
+                    line.quantity(), line.unitPrice(), null));
+        }
+        Order order = Order.guestDraft(orderNumber, command.requestId(), lines, clock.instant(),
+                shipping.recipientName(), email,
+                shipping.phone(), shipping, billing);
+        reserve(order, command.requestId());
+        order.submit();
+        Order saved = repository.save(order);
+        events.publishEventsOf(order);
+        return toSummary(saved);
+    }
+
+    /**
+     * A body {@code requestId} is an idempotency key, not an order lookup key. Returning an old
+     * order for a changed basket or address would make a customer believe the changed checkout was
+     * accepted while fulfilment receives the earlier one. The HTTP idempotency filter protects
+     * normal callers too; this comparison is the durable, service-level backstop for retries that
+     * reach this use case directly.
+     */
+    private static boolean sameGuestCheckout(Order order, String email,
+                                             OrderAddressSnapshot shipping,
+                                             OrderAddressSnapshot billing,
+                                             List<PlaceGuestOrderCommand.Line> requestedLines) {
+        if (order.customerId() != null
+                || !email.equals(order.contactEmail())
+                || !shipping.equals(order.shippingAddress())
+                || !billing.equals(order.billingAddress())
+                || order.lines().size() != requestedLines.size()) {
+            return false;
+        }
+        for (int index = 0; index < requestedLines.size(); index++) {
+            PlaceGuestOrderCommand.Line requested = requestedLines.get(index);
+            OrderLine stored = order.lines().get(index);
+            if (!requested.sku().equals(stored.sku())
+                    || requested.quantity() != stored.quantity()
+                    || !requested.unitPrice().equals(stored.unitPrice())
+                    || stored.designSnapshotId() != null
+                    || stored.designChecksum() != null) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public Optional<OrderSummary> findById(UUID orderId) {
         return repository.findById(new OrderId(orderId)).map(this::toSummary);
@@ -171,7 +267,19 @@ class OrderServiceImpl implements OrderService {
         Order order = repository.findByIdInScope(new OrderId(orderId))
                 .orElseThrow(() -> new BusinessException(
                         ErrorCode.NOT_FOUND, "No order with id " + orderId));
+        cancelLoaded(order, reason);
+    }
 
+    @Override
+    public void cancelOwn(UUID orderId, UUID customerId, String reason) {
+        Order order = repository.findByIdForUpdate(new OrderId(orderId))
+                .filter(found -> customerId != null && customerId.equals(found.customerId()))
+                .orElseThrow(() -> new BusinessException(
+                        ErrorCode.NOT_FOUND, "No order with id " + orderId));
+        cancelLoaded(order, reason);
+    }
+
+    private void cancelLoaded(Order order, String reason) {
         boolean wasHoldingStock = order.status().holdsStock();
         order.cancel(reason);
 
@@ -234,6 +342,38 @@ class OrderServiceImpl implements OrderService {
         events.publishEventsOf(order);
     }
 
+    @Override
+    public OrderSummary releaseToFulfillment(UUID orderId) {
+        var order = repository.findByIdForUpdate(new OrderId(orderId))
+                .orElseThrow(() -> new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.NOT_FOUND));
+        if (order.status() == OrderStatus.IN_FULFILMENT) { return toSummary(order); }
+        order.release();
+        return toSummary(repository.save(order));
+    }
+
+    @Override
+    public void putOnDesignHold(UUID orderId, String reason) {
+        var order = repository.findByIdForUpdate(new OrderId(orderId))
+                .orElseThrow(() -> new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.NOT_FOUND));
+        if (order.status() == OrderStatus.ON_HOLD) { return; }
+        order.putOnHold();
+        repository.save(order);
+        holds.save(new com.stockflow.order.internal.entity.OrderHoldJpaEntity(
+                com.stockflow.common.id.Identifiers.newId(), orderId, reason, clock.instant()));
+    }
+
+    @Override
+    public void resolveDesignHold(UUID orderId, UUID resolvedBy, String note) {
+        var order = repository.findByIdForUpdate(new OrderId(orderId))
+                .orElseThrow(() -> new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.NOT_FOUND));
+        var hold = holds.findFirstByOrderIdAndResolvedAtIsNullOrderByRaisedAtDesc(orderId)
+                .orElseThrow(() -> new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.CONFLICT));
+        order.resumeFromHold();
+        hold.resolve(resolvedBy, note, clock.instant());
+        repository.save(order);
+        holds.save(hold);
+    }
+
     /**
      * Same input, same id, every time.
      *
@@ -268,11 +408,39 @@ class OrderServiceImpl implements OrderService {
                                 line.quantity(),
                                 line.unitPrice(),
                                 line.lineTotal(),
-                                line.reservationIds()))
+                                line.reservationIds(), line.designSnapshotId(), line.designChecksum()))
                         .toList(),
-                order.placedAt(),
-                order.createdBy(),
-                order.lastModifiedAt(),
-                order.lastModifiedBy());
+                order.placedAt(), order.createdBy(), order.lastModifiedAt(), order.lastModifiedBy(),
+                order.contactName(), order.contactEmail(), order.contactPhone(),
+                toSummary(order.shippingAddress()), toSummary(order.billingAddress()));
+    }
+
+    private void reserve(Order order, UUID requestId) {
+        for (OrderLine line : order.lines()) {
+            ReserveStockResult reservation = inventory.reserve(new ReserveStockCommand(
+                    deterministicRequestId(requestId, line.id()), line.sku(), line.quantity(),
+                    order.id().value()));
+            order.attachReservations(line.id(), reservation.reservationIds());
+        }
+    }
+
+    private static OrderAddressSnapshot toSnapshot(PlaceGuestOrderCommand.Address address) {
+        return new OrderAddressSnapshot(address.recipientName(), address.phone(), address.line1(),
+                address.line2(), address.wardCode(), address.wardName(), address.provinceCode(),
+                address.provinceName(), address.countryCode(), address.postalCode());
+    }
+
+    private static OrderAddressSnapshot toSnapshot(CheckoutCustomer.CheckoutAddress address) {
+        return new OrderAddressSnapshot(address.recipientName(), address.phone(), address.line1(),
+                address.line2(), address.wardCode(), address.wardName(), address.provinceCode(),
+                address.provinceName(), address.countryCode(), address.postalCode());
+    }
+
+    private static OrderSummary.AddressSummary toSummary(OrderAddressSnapshot address) {
+        if (address == null) return null;
+        return new OrderSummary.AddressSummary(address.recipientName(), address.phone(),
+                address.line1(), address.line2(), address.wardCode(), address.wardName(),
+                address.provinceCode(), address.provinceName(), address.countryCode(),
+                address.postalCode());
     }
 }

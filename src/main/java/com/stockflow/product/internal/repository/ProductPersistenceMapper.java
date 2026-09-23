@@ -60,12 +60,14 @@ final class ProductPersistenceMapper {
                 entity.getPackageCount(),
                 entity.isHazmat(),
                 entity.isOversized(),
+                entity.getStorageClass(),
                 entity.isRequiresAdultSignature(),
                 entity.getShippingRestrictionNote());
     }
 
     private static ProductImage toDomain(ProductImageJpaEntity entity) {
-        return new ProductImage(entity.getId(), entity.getUrl(), entity.getSortOrder());
+        return new ProductImage(entity.getId(), entity.getUrl(), entity.getSortOrder(), entity.storedFile(), entity.getRenditions(),
+                entity.getUploadKey(), entity.getChecksum());
     }
 
     /**
@@ -108,6 +110,7 @@ final class ProductPersistenceMapper {
                 entity.getPackageCount(),
                 entity.isHazmat(),
                 entity.isOversized(),
+                entity.getStorageClass(),
                 entity.isRequiresAdultSignature(),
                 entity.getShippingRestrictionNote());
     }
@@ -141,7 +144,7 @@ final class ProductPersistenceMapper {
                 product.packageHeightCm(),
                 product.packageCount(),
                 product.hazmat(),
-                product.oversized(),
+                product.oversized(), product.storageClass(),
                 product.requiresAdultSignature(),
                 product.shippingRestrictionNote());
         entity.replaceImages(toEntities(product));
@@ -157,14 +160,19 @@ final class ProductPersistenceMapper {
                 product.lengthCm(), product.widthCm(), product.heightCm(),
                 product.packageWeightKg(), product.packageLengthCm(), product.packageWidthCm(),
                 product.packageHeightCm(), product.packageCount(), product.hazmat(),
-                product.oversized(), product.requiresAdultSignature(),
+                product.oversized(), product.storageClass(), product.requiresAdultSignature(),
                 product.shippingRestrictionNote());
         entity.replaceImages(toEntities(product));
     }
 
     private static List<ProductImageJpaEntity> toEntities(Product product) {
         return product.images().stream()
-                .map(image -> new ProductImageJpaEntity(image.id(), image.url(), image.sortOrder()))
+                .map(image -> {
+                    var row = new ProductImageJpaEntity(image.id(), image.url(), image.sortOrder(), image.storedFile());
+                    row.setRenditions(image.renditions());
+                    row.setUploadFingerprint(image.uploadKey(), image.checksum());
+                    return row;
+                })
                 .toList();
     }
 }

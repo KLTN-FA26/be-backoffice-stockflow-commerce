@@ -9,6 +9,9 @@ import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.HeadersConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.jwt.JwtValidators;
+import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter;
 import org.springframework.web.cors.CorsConfiguration;
@@ -91,6 +94,22 @@ public class ResourceServerSecurityConfig {
                 .build();
     }
 
+    /**
+     * The decoder is declared here, rather than left to Boot's auto-configuration, so a token is
+     * also refused once its session has ended ({@link SessionValidator}). Signature, {@code exp}
+     * and {@code nbf} are still checked first by the default validators.
+     */
+    @Bean
+    public JwtDecoder jwtDecoder(
+            @org.springframework.beans.factory.annotation.Value(
+                    "${spring.security.oauth2.resourceserver.jwt.jwk-set-uri}") String jwkSetUri,
+            ActiveSessionCheck sessions) {
+        NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(jwkSetUri).build();
+        decoder.setJwtValidator(new org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator<>(
+                JwtValidators.createDefault(), new SessionValidator(sessions)));
+        return decoder;
+    }
+
     /** Everything else: the API itself, plus the rest of actuator. */
     @Bean
     @Order(2)
@@ -112,7 +131,9 @@ public class ResourceServerSecurityConfig {
                         // No token exists yet at either of these: /auth/login is what mints one,
                         // and /oauth2/jwks is what THIS filter's own JwtDecoder fetches to validate
                         // it. Both are unauthenticated by necessity, not by oversight.
-                        .requestMatchers("/api/v1/identity/auth/login", "/oauth2/jwks").permitAll()
+                        .requestMatchers("/api/v1/identity/auth/login", "/api/v1/customers/registrations",
+                                "/api/v1/orders/guest-checkout", "/oauth2/jwks",
+                                "/api/v1/public/products/**").permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(oauth -> oauth
                         .jwt(jwt -> jwt.jwtAuthenticationConverter(

@@ -1,26 +1,112 @@
 package com.stockflow.customer.internal.controller;
 
+import com.stockflow.common.api.ApiResponse;
+import com.stockflow.common.api.PageResponse;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
+import com.stockflow.common.persistence.Pages;
+import com.stockflow.common.security.Action;
+import com.stockflow.common.security.AuthenticatedUser;
+import com.stockflow.common.security.CurrentUser;
+import com.stockflow.common.security.PermissionResource;
+import com.stockflow.common.security.RequiresPermission;
+import com.stockflow.common.security.Role;
+import com.stockflow.customer.api.CustomerService;
+import com.stockflow.customer.api.ListCustomersQuery;
+import com.stockflow.customer.api.UpdateCustomerCommand;
+import com.stockflow.customer.internal.controller.dto.ChangeCustomerStatusRequest;
+import com.stockflow.customer.internal.controller.dto.CustomerResponse;
+import com.stockflow.customer.internal.controller.dto.UpdateCustomerRequest;
+import jakarta.validation.Valid;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-/**
- * REST controller for the customer module. STARTER STUB — no endpoints yet.
- *
- * <p>When you add a handler, follow {@code docs/adding-a-module.md} §4.5:</p>
- * <ul>
- *   <li>declare a {@code @PermissionResource} on this class and guard every handler with a
- *       {@code @RequiresPermission} naming the resource, action and scope — an unguarded endpoint
- *       has no authorisation at all, and {@code PermissionCatalogValidator} fails startup if a
- *       guard names a resource no {@code @PermissionResource} declares;</li>
- *   <li>every handler method must be {@code public}, or the permission proxy is skipped silently;</li>
- *   <li>return {@code ApiResponse<...>} / {@code Pages.toResponse(...)}, never a JPA entity;</li>
- *   <li>inject {@code CustomerService} through the constructor and map DTO ⇄ api types with a
- *       {@code CustomerWebMapper} (see {@code inventory.internal.controller}).</li>
- * </ul>
- */
+import java.util.UUID;
+
 @RestController
 @RequestMapping("/api/v1/customers")
+@PermissionResource(code = CustomerResources.CUSTOMERS, group = "Customer", label = "Customers",
+        route = "/admin/customers", apiPath = "/api/v1/customers",
+        actions = {Action.VIEW_PAGE, Action.READ, Action.UPDATE, Action.APPROVE})
 class CustomerController {
 
-    // TODO: inject CustomerService via the constructor and add guarded endpoints (see class javadoc).
+    private final CustomerService customers;
+
+    CustomerController(CustomerService customers) {
+        this.customers = customers;
+    }
+
+    @GetMapping("/me")
+    @RequiresPermission(resource = CustomerResources.CUSTOMERS, action = Action.READ)
+    public ApiResponse<CustomerResponse> me(@AuthenticatedUser CurrentUser user) {
+        return customers.findByUserId(user.userId()).map(CustomerWebMapper::toResponse)
+                .map(ApiResponse::ok)
+                .orElseThrow(() -> new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND));
+    }
+
+    @PutMapping("/me")
+    @RequiresPermission(resource = CustomerResources.CUSTOMERS, action = Action.UPDATE)
+    public ApiResponse<CustomerResponse> updateMe(@AuthenticatedUser CurrentUser user,
+                                                  @Valid @RequestBody UpdateCustomerRequest request) {
+        var current = customers.findByUserId(user.userId())
+                .orElseThrow(() -> new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND));
+        return ApiResponse.ok(CustomerWebMapper.toResponse(customers.update(new UpdateCustomerCommand(
+                current.customerId(), user.userId(), false, request.fullName(), request.phone(),
+                request.version()))));
+    }
+
+    @GetMapping
+    @RequiresPermission(resource = CustomerResources.CUSTOMERS, action = Action.READ)
+    public ApiResponse<PageResponse<CustomerResponse>> list(
+            @AuthenticatedUser CurrentUser user,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(required = false) Integer size,
+            @RequestParam(name = "q", required = false) String search,
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false) String sort) {
+        requireStaff(user);
+        var query = new ListCustomersQuery(page, size == null ? Pages.DEFAULT_PAGE_SIZE : size,
+                search, status, sort);
+        return ApiResponse.ok(customers.list(query).map(CustomerWebMapper::toResponse));
+    }
+
+    @GetMapping("/{customerId}")
+    @RequiresPermission(resource = CustomerResources.CUSTOMERS, action = Action.READ)
+    public ApiResponse<CustomerResponse> findOne(@PathVariable UUID customerId,
+                                                 @AuthenticatedUser CurrentUser user) {
+        requireStaff(user);
+        return customers.findById(customerId).map(CustomerWebMapper::toResponse).map(ApiResponse::ok)
+                .orElseThrow(() -> new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND));
+    }
+
+    @PutMapping("/{customerId}")
+    @RequiresPermission(resource = CustomerResources.CUSTOMERS, action = Action.UPDATE)
+    public ApiResponse<CustomerResponse> update(@PathVariable UUID customerId,
+                                                @AuthenticatedUser CurrentUser user,
+                                                @Valid @RequestBody UpdateCustomerRequest request) {
+        requireStaff(user);
+        return ApiResponse.ok(CustomerWebMapper.toResponse(customers.update(new UpdateCustomerCommand(
+                customerId, user.userId(), true, request.fullName(), request.phone(), request.version()))));
+    }
+
+    @PostMapping("/{customerId}/status")
+    @RequiresPermission(resource = CustomerResources.CUSTOMERS, action = Action.APPROVE)
+    public ApiResponse<CustomerResponse> changeStatus(@PathVariable UUID customerId,
+                                                      @AuthenticatedUser CurrentUser user,
+                                                      @Valid @RequestBody ChangeCustomerStatusRequest request) {
+        if (!user.hasRole(Role.ECOMMERCE_ADMIN)) throw new BusinessException(ErrorCode.FORBIDDEN);
+        return ApiResponse.ok(CustomerWebMapper.toResponse(customers.changeStatus(customerId, request.status())));
+    }
+
+    private static void requireStaff(CurrentUser user) {
+        if (!user.hasAnyRole(Role.ECOMMERCE_ADMIN, Role.SALES_STAFF)) {
+            throw new BusinessException(ErrorCode.FORBIDDEN);
+        }
+    }
 }

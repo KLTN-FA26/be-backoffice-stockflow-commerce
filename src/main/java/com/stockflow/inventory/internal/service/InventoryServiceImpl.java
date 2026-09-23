@@ -4,7 +4,9 @@ import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.ReserveStockResult;
 import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.api.StockAvailability;
+import com.stockflow.inventory.api.StockLevel;
 import com.stockflow.inventory.api.StockReservation;
+import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.Quantity;
 import com.stockflow.inventory.internal.domain.ReleaseReason;
 import com.stockflow.inventory.internal.domain.Reservation;
@@ -13,6 +15,8 @@ import com.stockflow.inventory.internal.domain.StockAllocator;
 import com.stockflow.inventory.internal.domain.StockItem;
 import com.stockflow.inventory.internal.domain.StockItemId;
 import com.stockflow.inventory.internal.domain.StockItemRepository;
+import com.stockflow.inventory.internal.domain.StockLevelLine;
+import com.stockflow.inventory.internal.domain.StockStatus;
 import com.stockflow.common.domain.Sku;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -25,7 +29,9 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.TreeMap;
 import java.util.UUID;
 
 /**
@@ -70,6 +76,16 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
 
     @Override
     @Transactional(readOnly = true)
+    public int availableToPromise(Sku sku, String warehouseCode) {
+        String wanted = new LocationId(warehouseCode).code();
+        return levelsOf(sku).stream()
+                .filter(level -> level.warehouseCode().equals(wanted))
+                .mapToInt(StockLevel::atp)
+                .sum();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public List<StockAvailability> availabilityOf(Sku sku) {
         // Earliest expiry first, matching the order the allocator would draw from, so what a
         // warehouse user sees on screen is the order the system will actually pick in.
@@ -79,6 +95,32 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
                                 Comparator.nullsLast(Comparator.naturalOrder()))
                         .thenComparing(item -> item.location().code()))
                 .map(this::toAvailability)
+                .toList();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<StockLevel> levelsOf(Sku sku) {
+        record Totals(int onHand, int available, int reserved) {
+            static Totals of(StockLevelLine line) {
+                int sellable = line.status() == StockStatus.AVAILABLE ? line.onHand() : 0;
+                return new Totals(line.onHand(), sellable, line.reserved());
+            }
+
+            Totals plus(Totals other) {
+                return new Totals(onHand + other.onHand, available + other.available,
+                        reserved + other.reserved);
+            }
+        }
+        Map<String, Totals> byWarehouse = new TreeMap<>();
+        for (StockLevelLine line : repository.findLevelLinesBySku(sku)) {
+            byWarehouse.merge(line.location().warehouseCode(), Totals.of(line), Totals::plus);
+        }
+        return byWarehouse.entrySet().stream()
+                .map(entry -> new StockLevel(sku.code(), entry.getKey(),
+                        entry.getValue().onHand(), entry.getValue().available(),
+                        entry.getValue().reserved(), 0,
+                        entry.getValue().available() - entry.getValue().reserved()))
                 .toList();
     }
 

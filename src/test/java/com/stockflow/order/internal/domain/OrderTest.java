@@ -3,6 +3,7 @@ package com.stockflow.order.internal.domain;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
+import com.stockflow.common.error.ErrorCode;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -118,6 +119,40 @@ class OrderTest {
     }
 
     @Test
+    @DisplayName("a refused cancellation is a 409 CONFLICT carrying the status, not a 400")
+    void cancellingFromANonCancellableStatusIsAConflict() {
+        Order order = submittedOrder();
+        order.cancel("customer changed their mind");
+
+        assertThatThrownBy(() -> order.cancel("again"))
+                .isInstanceOf(InvalidOrderTransitionException.class)
+                .hasMessageContaining("cannot be cancelled from status CANCELLED")
+                .extracting(e -> ((InvalidOrderTransitionException) e).errorCode())
+                .isEqualTo(ErrorCode.CONFLICT);
+    }
+
+    @Test
+    @DisplayName("paying a cancelled order is a conflict too, and changes nothing")
+    void payingACancelledOrderIsAConflict() {
+        Order order = submittedOrder();
+        order.cancel("changed mind");
+
+        assertThatThrownBy(order::markPaid).isInstanceOf(InvalidOrderTransitionException.class);
+        assertThat(order.status()).isEqualTo(OrderStatus.CANCELLED);
+    }
+
+    @Test
+    @DisplayName("cancelling twice is a conflict and keeps the first reason")
+    void cancellingTwiceIsAConflict() {
+        Order order = submittedOrder();
+        order.cancel("first reason");
+
+        assertThatThrownBy(() -> order.cancel("second reason"))
+                .isInstanceOf(InvalidOrderTransitionException.class);
+        assertThat(order.cancellationReason()).isEqualTo("first reason");
+    }
+
+    @Test
     @DisplayName("cancelling without a reason is refused, not written as null")
     void cancellationRequiresAReason() {
         Order order = submittedOrder();
@@ -151,5 +186,19 @@ class OrderTest {
         assertThat(OrderStatus.PAID.holdsStock()).isTrue();
         assertThat(OrderStatus.SHIPPED.holdsStock()).isFalse();        // already deducted
         assertThat(OrderStatus.CANCELLED.holdsStock()).isFalse();
+    }
+
+    @Test
+    @DisplayName("guest checkout requires and retains immutable two-level address snapshots")
+    void guestCheckoutKeepsAddressSnapshots() {
+        var address = new OrderAddressSnapshot("Minh", "0901234567", "12 Nguyen Hue", null,
+                "26734", "Ben Nghe", "79", "Ho Chi Minh City", "VN", null);
+        Order guest = Order.guestDraft(NUMBER, UUID.randomUUID(), List.of(
+                Order.line(new Sku("TABLE-OAK-160"), 1, Money.vnd(8_000_000), null)),
+                NOW, "Minh", "minh@example.com", "0901234567", address, address);
+
+        assertThat(guest.customerId()).isNull();
+        assertThat(guest.contactEmail()).isEqualTo("minh@example.com");
+        assertThat(guest.shippingAddress()).isEqualTo(address);
     }
 }

@@ -38,8 +38,18 @@ public record OrderResponse(
 
         String createdBy,
         Instant lastModifiedAt,
-        String lastModifiedBy
+        String lastModifiedBy,
+        String contactName,
+        String contactEmail,
+        String contactPhone,
+        Address shippingAddress,
+        Address billingAddress
 ) {
+
+    public record Address(String recipientName, String phone, String line1, String line2,
+                          String wardCode, String wardName, String provinceCode,
+                          String provinceName, String countryCode, String postalCode) {
+    }
 
     @Schema(name = "OrderLine")
     public record Line(
@@ -50,7 +60,9 @@ public record OrderResponse(
             BigDecimal lineTotal,
 
             @Schema(description = "The stock holds backing this line - one per lot it is drawn from")
-            List<UUID> reservationIds
+            List<UUID> reservationIds,
+            UUID designSnapshotId,
+            String designChecksum
     ) {
     }
 }

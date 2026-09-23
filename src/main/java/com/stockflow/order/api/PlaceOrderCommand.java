@@ -13,7 +13,19 @@ import java.util.UUID;
  * valid. The caller cannot hand the service a command with zero lines and discover the problem
  * three layers down.</p>
  */
-public record PlaceOrderCommand(UUID requestId, UUID customerId, List<Line> lines) {
+public record PlaceOrderCommand(
+        UUID requestId,
+        UUID customerId,
+        UUID shippingAddressId,
+        UUID billingAddressId,
+        boolean snapshotCustomer,
+        List<Line> lines
+) {
+
+    /** Compatibility constructor for trusted internal callers and existing integrations. */
+    public PlaceOrderCommand(UUID requestId, UUID customerId, List<Line> lines) {
+        this(requestId, customerId, null, null, false, lines);
+    }
 
     public PlaceOrderCommand {
         if (requestId == null) throw new IllegalArgumentException("requestId is required");

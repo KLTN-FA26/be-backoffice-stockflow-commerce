@@ -25,6 +25,10 @@ import java.util.UUID;
         uniqueConstraints = @UniqueConstraint(name = "uk_customer_email", columnNames = "email"))
 public class CustomerJpaEntity extends BaseEntity {
 
+    /** Logical cross-schema reference to identity.app_user; deliberately no database FK. */
+    @Column(name = "user_id", unique = true)
+    private UUID userId;
+
     @Column(name = "full_name", nullable = false, length = 200)
     private String fullName;
 
@@ -46,9 +50,10 @@ public class CustomerJpaEntity extends BaseEntity {
     protected CustomerJpaEntity() {
     }
 
-    public CustomerJpaEntity(UUID id, String fullName, String email, String phone,
+    public CustomerJpaEntity(UUID id, UUID userId, String fullName, String email, String phone,
                              UUID segmentId, CustomerStatus status) {
         super(id);
+        this.userId = userId;
         this.fullName = fullName;
         this.email = email;
         this.phone = phone;
@@ -56,6 +61,13 @@ public class CustomerJpaEntity extends BaseEntity {
         this.status = status;
     }
 
+    public void apply(String fullName, String phone, CustomerStatus status) {
+        this.fullName = fullName;
+        this.phone = phone;
+        this.status = status;
+    }
+
+    public UUID getUserId() { return userId; }
     public String getFullName() { return fullName; }
     public String getEmail() { return email; }
     public String getPhone() { return phone; }

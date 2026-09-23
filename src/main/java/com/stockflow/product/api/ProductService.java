@@ -15,6 +15,9 @@ import java.util.UUID;
  */
 public interface ProductService {
 
+    /** Prevents attaching a valid design for a different product to an order SKU. */
+    boolean containsSku(UUID productId, String sku);
+
     ProductSummary create(CreateProductCommand command);
 
     Optional<ProductSummary> findById(UUID productId);

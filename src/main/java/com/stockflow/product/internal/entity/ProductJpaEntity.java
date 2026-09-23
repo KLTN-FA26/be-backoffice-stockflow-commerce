@@ -1,5 +1,6 @@
 package com.stockflow.product.internal.entity;
 
+import com.stockflow.product.api.StorageClass;
 import com.stockflow.product.api.ProductStatus;
 import com.stockflow.product.api.TaxClass;
 import com.stockflow.common.persistence.BaseEntity;
@@ -113,6 +114,10 @@ public class ProductJpaEntity extends BaseEntity {
     @Column(name = "oversized", nullable = false)
     private boolean oversized;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "storage_class", nullable = false, length = 16)
+    private StorageClass storageClass;
+
     @Column(name = "requires_adult_signature", nullable = false)
     private boolean requiresAdultSignature;
 
@@ -129,6 +134,10 @@ public class ProductJpaEntity extends BaseEntity {
     @org.hibernate.annotations.BatchSize(size = 50)
     private List<ProductImageJpaEntity> images = new ArrayList<>();
 
+    /** Forces optimistic version checks even when only the inverse child collection changes. */
+    @Column(name = "media_revision", nullable = false)
+    private long mediaRevision;
+
     protected ProductJpaEntity() {
     }
 
@@ -140,7 +149,7 @@ public class ProductJpaEntity extends BaseEntity {
                             BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm,
                             BigDecimal packageWeightKg, BigDecimal packageLengthCm,
                             BigDecimal packageWidthCm, BigDecimal packageHeightCm,
-                            Integer packageCount, boolean hazmat, boolean oversized,
+                            Integer packageCount, boolean hazmat, boolean oversized, StorageClass storageClass,
                             boolean requiresAdultSignature, String shippingRestrictionNote) {
         super(id);
         this.code = code;
@@ -169,6 +178,7 @@ public class ProductJpaEntity extends BaseEntity {
         this.packageCount = packageCount;
         this.hazmat = hazmat;
         this.oversized = oversized;
+        this.storageClass = java.util.Objects.requireNonNullElse(storageClass, StorageClass.NORMAL);
         this.requiresAdultSignature = requiresAdultSignature;
         this.shippingRestrictionNote = shippingRestrictionNote;
     }
@@ -181,7 +191,7 @@ public class ProductJpaEntity extends BaseEntity {
                       BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm,
                       BigDecimal packageWeightKg, BigDecimal packageLengthCm,
                       BigDecimal packageWidthCm, BigDecimal packageHeightCm, Integer packageCount,
-                      boolean hazmat, boolean oversized, boolean requiresAdultSignature,
+                      boolean hazmat, boolean oversized, StorageClass storageClass, boolean requiresAdultSignature,
                       String shippingRestrictionNote) {
         this.name = name;
         this.nameEn = nameEn;
@@ -208,16 +218,23 @@ public class ProductJpaEntity extends BaseEntity {
         this.packageCount = packageCount;
         this.hazmat = hazmat;
         this.oversized = oversized;
+        this.storageClass = java.util.Objects.requireNonNullElse(storageClass, StorageClass.NORMAL);
         this.requiresAdultSignature = requiresAdultSignature;
         this.shippingRestrictionNote = shippingRestrictionNote;
     }
 
     public void replaceImages(List<ProductImageJpaEntity> replacement) {
-        this.images.clear();
+        // Keep already managed children. Recreating the same id after clear() conflicts with
+        // Hibernate's persistence context when a second image is appended to the aggregate.
+        var retained = replacement.stream().map(ProductImageJpaEntity::getId).toList();
+        this.images.removeIf(image -> !retained.contains(image.getId()));
         replacement.forEach(child -> {
-            child.attachTo(this);
-            this.images.add(child);
+            if (this.images.stream().noneMatch(image -> image.getId().equals(child.getId()))) {
+                child.attachTo(this);
+                this.images.add(child);
+            }
         });
+        mediaRevision++;
     }
 
     public String getCode() { return code; }
@@ -246,6 +263,7 @@ public class ProductJpaEntity extends BaseEntity {
     public Integer getPackageCount() { return packageCount; }
     public boolean isHazmat() { return hazmat; }
     public boolean isOversized() { return oversized; }
+    public StorageClass getStorageClass() { return storageClass; }
     public boolean isRequiresAdultSignature() { return requiresAdultSignature; }
     public String getShippingRestrictionNote() { return shippingRestrictionNote; }
     public List<ProductImageJpaEntity> getImages() { return images; }

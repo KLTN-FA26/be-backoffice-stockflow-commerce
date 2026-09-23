@@ -23,10 +23,27 @@ public interface OrderService {
      */
     OrderSummary placeOrder(PlaceOrderCommand command);
 
+    /** Guest checkout with immutable contact/address snapshots and no customer account. */
+    OrderSummary placeGuestOrder(PlaceGuestOrderCommand command);
+
     Optional<OrderSummary> findById(UUID orderId);
 
     /** Cancel an order and release whatever stock it was holding. */
     void cancel(UUID orderId, String reason);
+
+    /**
+     * A customer cancelling their own order. {@code customerId} is the customer profile id that
+     * orders are stored under, not the sign-in id, so the ownership check is made here explicitly
+     * rather than through the ambient data scope (which compares against the sign-in id).
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND} if the order is not this
+     *         customer's, so the existence of another customer's order is not revealed
+     */
+    void cancelOwn(UUID orderId, UUID customerId, String reason);
+
+    OrderSummary releaseToFulfillment(UUID orderId);
+    void putOnDesignHold(UUID orderId, String reason);
+    void resolveDesignHold(UUID orderId, UUID resolvedBy, String note);
 
     /**
      * SCRUM-245/WBS 3.17.7. One customer's own order history, newest first, paginated. {@code
