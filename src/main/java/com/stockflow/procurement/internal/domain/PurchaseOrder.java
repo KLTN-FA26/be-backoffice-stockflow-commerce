@@ -147,7 +147,19 @@ public final class PurchaseOrder extends AggregateRoot {
         if (response != SupplierConfirmationStatus.CONFIRMED && response != SupplierConfirmationStatus.REJECTED) {
             throw new IllegalArgumentException("Supplier response must be CONFIRMED or REJECTED");
         }
-        if (supplierConfirmationStatus == response) return;
+        reference = reference == null || reference.isBlank() ? null : reference.trim();
+        note = note == null || note.isBlank() ? null : note.trim();
+        if (response == SupplierConfirmationStatus.REJECTED && note == null) {
+            throw new IllegalArgumentException("A supplier rejection requires a reason");
+        }
+        if (response == SupplierConfirmationStatus.REJECTED && status != PurchaseOrderStatus.SENT) {
+            throw new InvalidPurchaseOrderTransitionException(id, "Cannot reject a purchase order after receipt");
+        }
+        if (supplierConfirmationStatus == response) {
+            if (java.util.Objects.equals(supplierReference, reference)
+                    && java.util.Objects.equals(supplierResponseNote, note)) return;
+            throw new InvalidPurchaseOrderTransitionException(id, "A recorded supplier response cannot be overwritten");
+        }
         if (supplierConfirmationStatus != SupplierConfirmationStatus.PENDING) {
             throw new InvalidPurchaseOrderTransitionException(id, "supplier response is already final");
         }
@@ -182,6 +194,12 @@ public final class PurchaseOrder extends AggregateRoot {
      *                         map is untouched
      */
     public void receiveGoods(Map<UUID, Integer> receivedByLineId, Instant now) {
+        if (supplierConfirmationStatus == SupplierConfirmationStatus.REJECTED) {
+            throw new InvalidPurchaseOrderTransitionException(id, "Cannot receive a rejected purchase order; cancel it and create a replacement");
+        }
+        if (receivedByLineId == null || receivedByLineId.isEmpty()) {
+            throw new IllegalArgumentException("At least one received line is required");
+        }
         if (status != PurchaseOrderStatus.SENT && status != PurchaseOrderStatus.PARTIALLY_RECEIVED) {
             throw new InvalidPurchaseOrderTransitionException(id,
                     "cannot receive goods while %s (must be SENT or PARTIALLY_RECEIVED)".formatted(status));

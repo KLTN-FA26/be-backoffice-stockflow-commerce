@@ -24,7 +24,7 @@ public class DeliveryLogJpaEntity extends BaseEntity {
     @Column(name = "channel", nullable = false, length = 16)
     private NotificationChannel channel;
 
-    @Column(name = "recipient", nullable = false, length = 320)
+    @Column(name = "recipient", nullable = false, length = 500)
     private String recipient;
 
     @Enumerated(EnumType.STRING)
@@ -39,6 +39,9 @@ public class DeliveryLogJpaEntity extends BaseEntity {
 
     @Column(name = "external_reference", length = 100)
     private String externalReference;
+
+    @Column(name = "operation_reference", length = 100)
+    private String operationReference;
 
     protected DeliveryLogJpaEntity() {
     }
@@ -59,6 +62,7 @@ public class DeliveryLogJpaEntity extends BaseEntity {
         this.error = error;
         this.sentAt = sentAt;
         this.externalReference = externalReference;
+        this.operationReference = externalReference;
     }
 
     public String getTemplateCode() { return templateCode; }
@@ -68,4 +72,5 @@ public class DeliveryLogJpaEntity extends BaseEntity {
     public String getError() { return error; }
     public Instant getSentAt() { return sentAt; }
     public String getExternalReference() { return externalReference; }
+    public void correlate(String reference) { this.operationReference = reference; }
 }

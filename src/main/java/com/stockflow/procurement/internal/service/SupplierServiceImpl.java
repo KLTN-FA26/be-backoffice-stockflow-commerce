@@ -44,7 +44,10 @@ class SupplierServiceImpl implements SupplierService {
         this.clock = clock;
     }
 
-    @Override public SupplierSummary create(SaveSupplierCommand c) {
+    @Override
+    @com.stockflow.common.audit.Auditable(action = com.stockflow.common.audit.AuditAction.CREATE, resourceType = "supplier")
+    public SupplierSummary create(SaveSupplierCommand c) {
+        validate(c);
         String code = normalizeCode(c.code());
         checkUnique(null, code, clean(c.taxCode()));
         var entity = new SupplierJpaEntity(Identifiers.newId(), code, c.name().trim(), clean(c.email()),
@@ -54,7 +57,8 @@ class SupplierServiceImpl implements SupplierService {
     }
 
     @Override public SupplierSummary update(UUID id, SaveSupplierCommand c) {
-        SupplierJpaEntity entity = load(id);
+        validate(c);
+        SupplierJpaEntity entity = loadForUpdate(id);
         String code = normalizeCode(c.code());
         if (!entity.getCode().equalsIgnoreCase(code)) {
             throw new BusinessException(ErrorCode.CONFLICT, "Supplier code is immutable");
@@ -73,7 +77,7 @@ class SupplierServiceImpl implements SupplierService {
     }
 
     @Override public void deactivate(UUID id) {
-        SupplierJpaEntity entity = load(id);
+        SupplierJpaEntity entity = loadForUpdate(id);
         if (entity.getStatus() == SupplierStatus.INACTIVE) return;
         ensureNoOpenOrders(id);
         entity.deactivate();
@@ -106,11 +110,13 @@ class SupplierServiceImpl implements SupplierService {
         long inspected = p.getAcceptedQuantity() + p.getRejectedQuantity();
         return new SupplierPerformanceSummary(id, p.getTotalPurchaseOrders(), p.getFulfilledPurchaseOrders(),
                 p.getOnTimeOrders(), p.getLateOrders(), percent(p.getOnTimeOrders(), rated),
-                p.getAverageLeadTimeDays().setScale(2, RoundingMode.HALF_UP), p.getAcceptedQuantity(),
+                p.getAverageLeadTimeDays() == null ? null : p.getAverageLeadTimeDays().setScale(2, RoundingMode.HALF_UP), p.getAcceptedQuantity(),
                 p.getRejectedQuantity(), percent(p.getAcceptedQuantity(), inspected), clock.instant());
     }
 
     private SupplierJpaEntity load(UUID id) { return suppliers.findById(id).orElseThrow(() ->
+            new BusinessException(ErrorCode.SUPPLIER_NOT_FOUND, "No supplier with id " + id)); }
+    private SupplierJpaEntity loadForUpdate(UUID id) { return suppliers.findByIdForUpdate(id).orElseThrow(() ->
             new BusinessException(ErrorCode.SUPPLIER_NOT_FOUND, "No supplier with id " + id)); }
     private void checkUnique(UUID id, String code, String tax) {
         boolean duplicateCode = id == null ? suppliers.existsByCodeIgnoreCase(code) : suppliers.existsByCodeIgnoreCaseAndIdNot(code, id);
@@ -128,8 +134,10 @@ class SupplierServiceImpl implements SupplierService {
             return suppliers.saveAndFlush(entity);
         } catch (DataIntegrityViolationException race) {
             String detail = String.valueOf(race.getMostSpecificCause().getMessage()).toLowerCase(Locale.ROOT);
-            ErrorCode code = detail.contains("tax") ? ErrorCode.SUPPLIER_TAX_CODE_ALREADY_EXISTS
-                    : ErrorCode.SUPPLIER_CODE_ALREADY_EXISTS;
+            ErrorCode code;
+            if (detail.contains("uk_supplier_tax_code")) code = ErrorCode.SUPPLIER_TAX_CODE_ALREADY_EXISTS;
+            else if (detail.contains("uk_supplier_code")) code = ErrorCode.SUPPLIER_CODE_ALREADY_EXISTS;
+            else throw race;
             throw new BusinessException(code, code.defaultMessage(), race);
         }
     }
@@ -141,9 +149,13 @@ class SupplierServiceImpl implements SupplierService {
             throw new IllegalArgumentException("an HTTPS apiEndpoint is required for API communication");
         return result;
     }
+    private static void validate(SaveSupplierCommand c) {
+        new com.stockflow.procurement.internal.domain.SupplierProfile(c.code(), c.name(), c.email(), c.phone(),
+                c.taxCode(), c.paymentTermDays(), c.leadTimeDays(), c.communicationChannel(), c.apiEndpoint());
+    }
     private static String normalizeCode(String v) { return v.trim().toUpperCase(Locale.ROOT); }
     private static String clean(String v) { return v == null || v.isBlank() ? null : v.trim(); }
-    private static BigDecimal percent(long numerator, long denominator) { return denominator == 0 ? BigDecimal.ZERO
+    private static BigDecimal percent(long numerator, long denominator) { return denominator == 0 ? null
             : BigDecimal.valueOf(numerator).multiply(BigDecimal.valueOf(100)).divide(BigDecimal.valueOf(denominator), 2, RoundingMode.HALF_UP); }
     private static SupplierSummary summary(SupplierJpaEntity e) { return new SupplierSummary(e.getId(), e.getCode(), e.getName(),
             e.getContactName(), e.getEmail(), e.getPhone(), e.getTaxCode(), e.getStatus().name(), e.getPaymentTermDays(),

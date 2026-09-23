@@ -67,7 +67,10 @@ class PurchaseOrderRepositoryAdapter implements PurchaseOrderRepository, Purchas
 
     @Override
     public Optional<PurchaseOrder> findByIdForUpdate(PurchaseOrderId id) {
-        return jpa.findWithLinesByIdForUpdate(id.value()).map(PurchaseOrderPersistenceMapper::toDomain);
+        return jpa.findWithLinesByIdForUpdate(id.value()).map(entity -> {
+            entityManager.refresh(entity, jakarta.persistence.LockModeType.PESSIMISTIC_WRITE);
+            return PurchaseOrderPersistenceMapper.toDomain(entity);
+        });
     }
 
     @Override

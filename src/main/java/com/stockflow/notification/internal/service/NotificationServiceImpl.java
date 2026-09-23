@@ -6,20 +6,26 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * The only implementation of {@link NotificationService}.
- *
- * <p>STARTER STUB, and optional — see {@link NotificationService}. The real work today is done by
- * {@code OrderNotificationListener} (reacting to events after commit) and {@code NotificationSender}
- * (the outbound channel); both stay as they are. Keep this class only if a synchronous api is
- * needed, and delete it together with the interface otherwise.</p>
- *
- * <p>If kept: package-private class, public interface; constructor injection only
- * ({@code ArchitectureTest.noFieldInjection}); advised methods {@code public} ({@code verify.py}
- * #14).</p>
+ * Exposes delivery evidence without permitting callers to bypass the durable event workflow.
  */
 @Service
 @Transactional
 class NotificationServiceImpl implements NotificationService {
 
-    // TODO: keep only if a synchronous trigger is needed; otherwise delete with NotificationService.
+    private final com.stockflow.notification.internal.repository.DeliveryLogJpaRepository logs;
+
+    NotificationServiceImpl(com.stockflow.notification.internal.repository.DeliveryLogJpaRepository logs) {
+        this.logs = logs;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public com.stockflow.common.api.PageResponse<com.stockflow.notification.api.DeliveryAttemptSummary> purchaseOrderDeliveries(
+            java.util.UUID purchaseOrderId, int page, int size) {
+        var pageable = com.stockflow.common.persistence.Pages.of(page, size,
+                org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Direction.DESC, "createdAt", "id"));
+        return com.stockflow.common.persistence.Pages.toResponse(logs.findByOperationReference("purchase-order:" + purchaseOrderId, pageable)
+                .map(log -> new com.stockflow.notification.api.DeliveryAttemptSummary(log.getId(), log.getChannel().name(),
+                        log.getStatus().name(), log.getCreatedAt(), log.getSentAt(), log.getError())));
+    }
 }

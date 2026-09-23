@@ -23,6 +23,9 @@ spring:
     properties:
       mail.smtp.auth: ${MAIL_SMTP_AUTH:false}
       mail.smtp.starttls.enable: ${MAIL_SMTP_STARTTLS:false}
+      mail.smtp.connectiontimeout: 5000
+      mail.smtp.timeout: 10000
+      mail.smtp.writetimeout: 10000
 
   # ---------------------------------------------------------------------------
   # ONE datasource. This single block is what replaced fourteen of them.
@@ -284,8 +287,6 @@ springdoc:
 # Application settings owned by this system rather than by a framework.
 # -----------------------------------------------------------------------------
 stockflow:
-  notification:
-    mail-from: ${MAIL_FROM:noreply@stockflow.local}
   api:
     # Shown in the generated OpenAPI document. Bump on a breaking API change.
     version: 1.0.0
@@ -325,6 +326,12 @@ stockflow:
   http:
     connect-timeout: PT3S
     read-timeout: PT10S
+
+  notification:
+    # Exact HTTPS hosts owned by trusted suppliers; blank disables API delivery (email still works).
+    supplier-api-allowed-hosts: ${SUPPLIER_API_ALLOWED_HOSTS:}
+    mail-from: ${MAIL_FROM:noreply@stockflow.local}
+    po-retry-interval: PT5M
 
   # ---------------------------------------------------------------------------
   # File storage. 's3' talks to MinIO locally and to S3 in a deployment - the same code path.

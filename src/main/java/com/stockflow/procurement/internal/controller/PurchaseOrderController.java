@@ -108,7 +108,8 @@ class PurchaseOrderController {
     }
 
     @PostMapping("/{purchaseOrderId}/sending")
-    @Operation(summary = "Mark an approved purchase order as sent to the supplier")
+    @Operation(summary = "Queue an approved PO for supplier delivery",
+            description = "Use the same Idempotency-Key on retries. A new request for an already SENT PO returns 409. Delivery is asynchronous; SENT does not mean supplier acceptance.")
     @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.UPDATE)
     public ApiResponse<PurchaseOrderResponse> send(@PathVariable UUID purchaseOrderId) {
         return ApiResponse.ok(mapper.toResponse(procurementService.send(purchaseOrderId)));

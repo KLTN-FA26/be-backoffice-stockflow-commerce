@@ -92,9 +92,10 @@ class ProcurementServiceImpl implements ProcurementService {
      */
     @Override
     public PurchaseOrderSummary createPurchaseOrder(CreatePurchaseOrderCommand command) {
-        SupplierStatus supplierStatus = purchaseOrders.supplierStatus(command.supplierId())
+        var supplier = suppliers.findByIdForUpdate(command.supplierId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.SUPPLIER_NOT_FOUND,
                         "No supplier with id " + command.supplierId()));
+        SupplierStatus supplierStatus = supplier.getStatus();
         if (supplierStatus != SupplierStatus.ACTIVE) {
             throw new BusinessException(ErrorCode.SUPPLIER_INACTIVE,
                     "Supplier " + command.supplierId() + " is " + supplierStatus);
@@ -103,11 +104,10 @@ class ProcurementServiceImpl implements ProcurementService {
         Currency currency = Currency.getInstance(command.currency());
         List<PoLine> lines = toLines(command.lines(), currency);
 
-        LocalDate today = clock.instant().atZone(java.time.ZoneOffset.UTC).toLocalDate();
+        // Purchasing calendar dates must use the same Vietnam zone as supplier delivery KPIs.
+        LocalDate today = clock.instant().atZone(java.time.ZoneId.of("Asia/Ho_Chi_Minh")).toLocalDate();
         String poNumber = purchaseOrders.nextPoNumber(today);
 
-        var supplier = suppliers.findById(command.supplierId()).orElseThrow(() ->
-                new BusinessException(ErrorCode.SUPPLIER_NOT_FOUND, "No supplier with id " + command.supplierId()));
         LocalDate expectedAt = command.expectedAt() == null ? today.plusDays(supplier.getLeadTimeDays()) : command.expectedAt();
         PurchaseOrder order = PurchaseOrder.draft(poNumber, command.supplierId(), currency, lines,
                 expectedAt, supplier.getPaymentTermDays(), supplier.getLeadTimeDays());
@@ -149,18 +149,20 @@ class ProcurementServiceImpl implements ProcurementService {
     @Auditable(action = AuditAction.TRANSITION, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
     public PurchaseOrderSummary send(UUID purchaseOrderId) {
         PurchaseOrder order = loadForUpdate(purchaseOrderId);
-        if (order.status() == PurchaseOrderStatus.SENT) {
-            return toSummary(order, false);
-        }
         order.send(clock.instant());
         PurchaseOrder saved = purchaseOrders.save(order);
         var supplier = suppliers.findById(saved.supplierId()).orElseThrow(() ->
                 new BusinessException(ErrorCode.SUPPLIER_NOT_FOUND, "No supplier with id " + saved.supplierId()));
         String recipient = supplier.getCommunicationChannel() == SupplierCommunicationChannel.EMAIL
                 ? supplier.getEmail() : supplier.getApiEndpoint();
+        if (supplier.getStatus() != SupplierStatus.ACTIVE || recipient == null || recipient.isBlank()) {
+            throw new BusinessException(ErrorCode.CONFLICT, "An active supplier with a delivery contact is required");
+        }
         events.publishEvent(new PurchaseOrderSent(saved.id().value(), saved.poNumber(), saved.supplierId(),
                 supplier.getCommunicationChannel().name(), recipient, saved.totalAmount().amount(),
-                saved.currency().getCurrencyCode(), saved.expectedAt(), saved.paymentTermDays()));
+                saved.currency().getCurrencyCode(), saved.expectedAt(), saved.paymentTermDays(),
+                saved.lines().stream().map(line -> new PurchaseOrderSent.Line(line.sku().code(),
+                        line.description(), line.quantityOrdered(), line.unitPrice().amount())).toList()));
         return toSummary(saved, false);
     }
 

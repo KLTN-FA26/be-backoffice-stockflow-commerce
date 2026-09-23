@@ -24,7 +24,6 @@ interface PurchaseOrderJpaRepository extends BaseJpaRepository<PurchaseOrderJpaE
     Optional<PurchaseOrderJpaEntity> findWithLinesById(UUID id);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
-    @EntityGraph(attributePaths = "lines")
     @Query("select po from PurchaseOrderJpaEntity po where po.id = :id")
     Optional<PurchaseOrderJpaEntity> findWithLinesByIdForUpdate(UUID id);
 

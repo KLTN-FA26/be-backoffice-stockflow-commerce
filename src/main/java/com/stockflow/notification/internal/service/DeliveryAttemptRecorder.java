@@ -9,7 +9,6 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
-import java.util.UUID;
 
 @Component
 class DeliveryAttemptRecorder {
@@ -22,10 +21,13 @@ class DeliveryAttemptRecorder {
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public void failed(String recipient, NotificationChannel channel, RuntimeException failure) {
-        String message = failure.getMessage() == null ? failure.getClass().getSimpleName() : failure.getMessage();
-        logs.save(new DeliveryLogJpaEntity(UUID.randomUUID(), "purchase-order.sent", channel,
-                recipient, DeliveryStatus.FAILED, message.substring(0, Math.min(1000, message.length())),
-                clock.instant()));
+    public void failed(String recipient, NotificationChannel channel, RuntimeException failure, String reference) {
+        String message = reference + ": " + failure.getClass().getSimpleName();
+        var attempt = new DeliveryLogJpaEntity(com.stockflow.common.id.Identifiers.newId(), "purchase-order.sent", channel,
+                recipient, DeliveryStatus.FAILED, message, null);
+        attempt.correlate(reference);
+        logs.saveAndFlush(attempt);
+        org.slf4j.LoggerFactory.getLogger(DeliveryAttemptRecorder.class)
+                .error("Supplier notification failed: {} ({})", reference, failure.getClass().getSimpleName());
     }
 }

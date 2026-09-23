@@ -32,7 +32,7 @@ public interface ProcurementService {
     /** SCRUM-116/WBS 3.2.4. DRAFT -&gt; APPROVED. */
     PurchaseOrderSummary approve(UUID purchaseOrderId);
 
-    /** SCRUM-116/WBS 3.2.4. APPROVED -&gt; SENT. */
+    /** SCRUM-115. APPROVED -&gt; SENT. HTTP retries replay through the shared Idempotency-Key filter. */
     PurchaseOrderSummary send(UUID purchaseOrderId);
 
     PurchaseOrderSummary recordSupplierConfirmation(UUID purchaseOrderId,
