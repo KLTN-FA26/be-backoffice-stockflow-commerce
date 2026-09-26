@@ -4,7 +4,7 @@ import com.stockflow.procurement.internal.entity.SupplierJpaEntity;
 import com.stockflow.common.persistence.BaseJpaRepository;
 
 /** Supplier writes and PO creation share this lock to serialize deactivation against new orders. */
-public interface SupplierJpaRepository extends BaseJpaRepository<SupplierJpaEntity> {
+interface SupplierJpaRepository extends BaseJpaRepository<SupplierJpaEntity> {
     @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
     @org.springframework.data.jpa.repository.Query("select s from SupplierJpaEntity s where s.id = :id")
     java.util.Optional<SupplierJpaEntity> findByIdForUpdate(java.util.UUID id);
@@ -38,9 +38,9 @@ public interface SupplierJpaRepository extends BaseJpaRepository<SupplierJpaEnti
             SELECT COUNT(po.id) totalPurchaseOrders,
                    COUNT(po.id) FILTER (WHERE po.status = 'CLOSED') fulfilledPurchaseOrders,
                    COUNT(po.id) FILTER (WHERE po.status = 'CLOSED' AND po.expected_at IS NOT NULL
-                       AND (COALESCE(po.receipt_completed_at, r.received_at) AT TIME ZONE 'Asia/Ho_Chi_Minh')::date <= po.expected_at) onTimeOrders,
+                       AND (COALESCE(po.receipt_completed_at, r.received_at) AT TIME ZONE :businessZone)::date <= po.expected_at) onTimeOrders,
                    COUNT(po.id) FILTER (WHERE po.status = 'CLOSED' AND po.expected_at IS NOT NULL
-                       AND (COALESCE(po.receipt_completed_at, r.received_at) AT TIME ZONE 'Asia/Ho_Chi_Minh')::date > po.expected_at) lateOrders,
+                       AND (COALESCE(po.receipt_completed_at, r.received_at) AT TIME ZONE :businessZone)::date > po.expected_at) lateOrders,
                    AVG(EXTRACT(EPOCH FROM (COALESCE(po.receipt_completed_at, r.received_at) - po.sent_at)) / 86400.0)
                        FILTER (WHERE po.status = 'CLOSED' AND po.sent_at IS NOT NULL
                            AND COALESCE(po.receipt_completed_at, r.received_at) >= po.sent_at) averageLeadTimeDays,
@@ -49,5 +49,5 @@ public interface SupplierJpaRepository extends BaseJpaRepository<SupplierJpaEnti
             LEFT JOIN receipts r ON r.id = po.id
             WHERE po.supplier_id = :supplierId
             """, nativeQuery = true)
-    SupplierPerformanceProjection performance(java.util.UUID supplierId);
+    SupplierPerformanceProjection performance(java.util.UUID supplierId, String businessZone);
 }

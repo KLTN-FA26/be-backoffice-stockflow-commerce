@@ -1,5 +1,9 @@
 package com.stockflow.procurement.internal.controller;
 
+import com.stockflow.notification.api.NotificationService;
+import com.stockflow.procurement.api.PurchaseOrderSummary;
+import java.util.Map;
+
 import com.stockflow.procurement.api.ListPurchaseOrdersQuery;
 import com.stockflow.procurement.api.ProcurementService;
 import com.stockflow.procurement.api.SupplierSpendReportQuery;
@@ -12,6 +16,10 @@ import com.stockflow.procurement.internal.controller.dto.ReceiveGoodsRequest;
 import com.stockflow.procurement.internal.controller.dto.SupplierSpendResponse;
 import com.stockflow.procurement.internal.controller.dto.SupplierConfirmationRequest;
 import com.stockflow.procurement.api.RecordSupplierConfirmationCommand;
+import com.stockflow.procurement.api.SendPurchaseOrderCommand;
+import com.stockflow.procurement.api.RecoverPurchaseOrderDeliveryCommand;
+import com.stockflow.procurement.internal.controller.dto.SendPurchaseOrderRequest;
+import com.stockflow.procurement.internal.controller.dto.RecoverPurchaseOrderDeliveryRequest;
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.error.BusinessException;
@@ -59,10 +67,13 @@ class PurchaseOrderController {
 
     private final ProcurementService procurementService;
     private final PurchaseOrderWebMapper mapper;
+    private final NotificationService notifications;
 
-    PurchaseOrderController(ProcurementService procurementService, PurchaseOrderWebMapper mapper) {
+    PurchaseOrderController(ProcurementService procurementService, PurchaseOrderWebMapper mapper,
+            NotificationService notifications) {
         this.procurementService = procurementService;
         this.mapper = mapper;
+        this.notifications = notifications;
     }
 
     @PostMapping
@@ -71,7 +82,7 @@ class PurchaseOrderController {
     @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.CREATE)
     public ApiResponse<PurchaseOrderResponse> create(
             @Valid @RequestBody CreatePurchaseOrderRequest request) {
-        return ApiResponse.ok(mapper.toResponse(
+        return ApiResponse.ok(toResponse(
                 procurementService.createPurchaseOrder(mapper.toCommand(request))));
     }
 
@@ -80,7 +91,7 @@ class PurchaseOrderController {
     @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.READ)
     public ApiResponse<PurchaseOrderResponse> findOne(@PathVariable UUID purchaseOrderId) {
         return procurementService.findById(purchaseOrderId)
-                .map(mapper::toResponse)
+                .map(this::toResponse)
                 .map(ApiResponse::ok)
                 .orElseThrow(() -> new BusinessException(ErrorCode.PURCHASE_ORDER_NOT_FOUND,
                         "No purchase order with id " + purchaseOrderId));
@@ -97,22 +108,38 @@ class PurchaseOrderController {
             @RequestParam(required = false) String sort) {
         var query = new ListPurchaseOrdersQuery(
                 page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, supplierId, status, sort);
-        return ApiResponse.ok(procurementService.list(query).map(mapper::toResponse));
+        var result = procurementService.list(query);
+        var statuses = notifications.purchaseOrderDeliveryStatuses(result.items().stream()
+                .map(PurchaseOrderSummary::purchaseOrderId).toList());
+        return ApiResponse.ok(result.map(po -> mapper.toResponse(po, deliveryStatus(po, statuses))));
     }
 
     @PostMapping("/{purchaseOrderId}/approval")
     @Operation(summary = "Approve a draft purchase order")
     @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.APPROVE)
     public ApiResponse<PurchaseOrderResponse> approve(@PathVariable UUID purchaseOrderId) {
-        return ApiResponse.ok(mapper.toResponse(procurementService.approve(purchaseOrderId)));
+        return ApiResponse.ok(toResponse(procurementService.approve(purchaseOrderId)));
     }
 
     @PostMapping("/{purchaseOrderId}/sending")
     @Operation(summary = "Queue an approved PO for supplier delivery",
             description = "Use the same Idempotency-Key on retries. A new request for an already SENT PO returns 409. Delivery is asynchronous; SENT does not mean supplier acceptance.")
     @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.UPDATE)
-    public ApiResponse<PurchaseOrderResponse> send(@PathVariable UUID purchaseOrderId) {
-        return ApiResponse.ok(mapper.toResponse(procurementService.send(purchaseOrderId)));
+    public ApiResponse<PurchaseOrderResponse> send(@PathVariable UUID purchaseOrderId,
+            @Valid @RequestBody(required = false) SendPurchaseOrderRequest request) {
+        var command = request == null ? new SendPurchaseOrderCommand(null, null)
+                : new SendPurchaseOrderCommand(request.expectedAt(), request.reason());
+        return ApiResponse.ok(toResponse(procurementService.send(purchaseOrderId, command)));
+    }
+
+    @PostMapping("/{purchaseOrderId}/delivery-recovery")
+    @Operation(summary = "Recover a terminal failed delivery after reconciliation; never reset PO state",
+            description = "Requires APPROVE permission, a reason and reconciled=true. Reuse Idempotency-Key for HTTP retries. Original overdue dates require acknowledgePastDue=true.")
+    @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.APPROVE)
+    public ApiResponse<PurchaseOrderResponse> recoverDelivery(@PathVariable UUID purchaseOrderId,
+            @Valid @RequestBody RecoverPurchaseOrderDeliveryRequest request) {
+        return ApiResponse.ok(toResponse(procurementService.recoverDelivery(purchaseOrderId,
+                new RecoverPurchaseOrderDeliveryCommand(request.reason(), request.reconciled(), request.acknowledgePastDue()))));
     }
 
     @PostMapping("/{purchaseOrderId}/supplier-confirmation")
@@ -120,7 +147,7 @@ class PurchaseOrderController {
     @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.UPDATE)
     public ApiResponse<PurchaseOrderResponse> recordSupplierConfirmation(@PathVariable UUID purchaseOrderId,
             @Valid @RequestBody SupplierConfirmationRequest request) {
-        return ApiResponse.ok(mapper.toResponse(procurementService.recordSupplierConfirmation(purchaseOrderId,
+        return ApiResponse.ok(toResponse(procurementService.recordSupplierConfirmation(purchaseOrderId,
                 new RecordSupplierConfirmationCommand(request.status(), request.supplierReference(), request.note()))));
     }
 
@@ -129,7 +156,7 @@ class PurchaseOrderController {
     @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.UPDATE)
     public ApiResponse<PurchaseOrderResponse> cancel(@PathVariable UUID purchaseOrderId,
             @Valid @RequestBody CancelPurchaseOrderRequest request) {
-        return ApiResponse.ok(mapper.toResponse(
+        return ApiResponse.ok(toResponse(
                 procurementService.cancel(purchaseOrderId, request.reason())));
     }
 
@@ -138,7 +165,7 @@ class PurchaseOrderController {
     @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.UPDATE)
     public ApiResponse<PurchaseOrderResponse> receiveGoods(@PathVariable UUID purchaseOrderId,
             @Valid @RequestBody ReceiveGoodsRequest request) {
-        return ApiResponse.ok(mapper.toResponse(
+        return ApiResponse.ok(toResponse(
                 procurementService.receiveGoods(purchaseOrderId, mapper.toCommand(request))));
     }
 
@@ -147,8 +174,19 @@ class PurchaseOrderController {
     @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.UPDATE)
     public ApiResponse<PurchaseOrderResponse> closeShort(@PathVariable UUID purchaseOrderId,
             @Valid @RequestBody CloseShortRequest request) {
-        return ApiResponse.ok(mapper.toResponse(
+        return ApiResponse.ok(toResponse(
                 procurementService.closeShort(purchaseOrderId, request.reason())));
+    }
+
+    private PurchaseOrderResponse toResponse(PurchaseOrderSummary po) {
+        var statuses = notifications.purchaseOrderDeliveryStatuses(List.of(po.purchaseOrderId()));
+        return mapper.toResponse(po, deliveryStatus(po, statuses));
+    }
+
+    private static String deliveryStatus(PurchaseOrderSummary po,
+            Map<UUID, String> statuses) {
+        return statuses.getOrDefault(po.purchaseOrderId(), "NOT_SENT".equals(po.supplierConfirmationStatus())
+                ? "NOT_SENT" : po.sentAt() == null ? "UNKNOWN" : "QUEUED");
     }
 
     @GetMapping("/reports/status-dashboard")

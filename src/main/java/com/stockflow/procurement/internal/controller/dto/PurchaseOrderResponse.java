@@ -48,6 +48,8 @@ public record PurchaseOrderResponse(
         String supplierConfirmationStatus,
         Instant supplierRespondedAt,
         String supplierReference,
-        String supplierResponseNote
+        String supplierResponseNote,
+        @Schema(description = "NOT_SENT, QUEUED, UNKNOWN (legacy), RETRYING, FAILED (terminal), or DELIVERED (transport accepted, not supplier confirmation)")
+        String deliveryStatus
 ) {
 }

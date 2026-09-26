@@ -36,8 +36,210 @@ class SupplierProcurementIntegrationTest {
     @Autowired com.stockflow.notification.api.NotificationService notifications;
     @Autowired org.springframework.modulith.events.IncompleteEventPublications publications;
     @Autowired com.stockflow.notification.internal.repository.PoRetryCursorRepository retryCursor;
+    @Autowired PurchaseOrderNotificationRetry retryJob;
+    @Autowired com.stockflow.common.events.PendingPublicationReader pendingReader;
     @MockitoBean NotificationSender sender;
     @Autowired org.springframework.test.web.servlet.MockMvc mvc;
+
+    private PurchaseOrderSummary failedOrder(boolean terminal) {
+        var po = order(supplier().supplierId());
+        RuntimeException failure = terminal ? new IllegalArgumentException("invalid destination")
+                : new org.springframework.mail.MailSendException("offline");
+        doThrow(failure).when(sender).sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId())));
+        orders.approve(po.purchaseOrderId());
+        orders.send(po.purchaseOrderId());
+        await().atMost(java.time.Duration.ofSeconds(10)).untilAsserted(() ->
+                assertThat(notifications.purchaseOrderDeliveryStatuses(List.of(po.purchaseOrderId())))
+                        .containsEntry(po.purchaseOrderId(), terminal ? "FAILED" : "RETRYING"));
+        return orders.findById(po.purchaseOrderId()).orElseThrow();
+    }
+
+    @Test void cancelledOrderCannotBeDispatchedByAnOldPublication() {
+        var po = failedOrder(false);
+        orders.cancel(po.purchaseOrderId(), "No longer needed");
+        doNothing().when(sender).sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId())));
+        publications.resubmitIncompletePublications(p -> p.getEvent() instanceof PurchaseOrderSent e && e.purchaseOrderId().equals(po.purchaseOrderId()));
+        await().atMost(java.time.Duration.ofSeconds(10)).untilAsserted(() ->
+                assertThat(jdbc.queryForObject("select count(*) from event_publication where completion_date is null and serialized_event like ?",
+                        Long.class, "%" + po.purchaseOrderId() + "%")).isZero());
+        verify(sender, times(1)).sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId())));
+        assertThat(notifications.purchaseOrderDeliveryStatuses(List.of(po.purchaseOrderId()))).containsEntry(po.purchaseOrderId(), "SUPPRESSED");
+        expectCode(() -> orders.recoverDelivery(po.purchaseOrderId(), new RecoverPurchaseOrderDeliveryCommand("checked", true, false)),
+                ErrorCode.INVALID_PURCHASE_ORDER_TRANSITION);
+    }
+
+    @Test void recordedSupplierResponseSuppressesOutstandingRetries() {
+        var po = failedOrder(false);
+        orders.recordSupplierConfirmation(po.purchaseOrderId(), new RecordSupplierConfirmationCommand("REJECTED", "PHONE", "Cannot supply"));
+        publications.resubmitIncompletePublications(p -> p.getEvent() instanceof PurchaseOrderSent e && e.purchaseOrderId().equals(po.purchaseOrderId()));
+        await().atMost(java.time.Duration.ofSeconds(10)).untilAsserted(() ->
+                assertThat(jdbc.queryForObject("select count(*) from event_publication where completion_date is null and serialized_event like ?",
+                        Long.class, "%" + po.purchaseOrderId() + "%")).isZero());
+        verify(sender, times(1)).sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId())));
+    }
+
+    @Test void recoveryIsReconciledSingleFlightAndPreservesHistory() throws Exception {
+        var po = failedOrder(true);
+        expectCode(() -> orders.recoverDelivery(po.purchaseOrderId(), new RecoverPurchaseOrderDeliveryCommand("checked", false, false)), ErrorCode.CONFLICT);
+        doNothing().when(sender).sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId())));
+        var start = new CountDownLatch(1);
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            java.util.concurrent.Callable<Boolean> recover = () -> {
+                start.await();
+                try {
+                    orders.recoverDelivery(po.purchaseOrderId(), new RecoverPurchaseOrderDeliveryCommand("Provider restored and checked", true, false));
+                    return true;
+                } catch (BusinessException conflict) {
+                    assertThat(conflict.errorCode()).isEqualTo(ErrorCode.CONFLICT);
+                    return false;
+                }
+            };
+            var a = pool.submit(recover); var b = pool.submit(recover); start.countDown();
+            assertThat(List.of(a.get(10, TimeUnit.SECONDS), b.get(10, TimeUnit.SECONDS))).containsExactlyInAnyOrder(true, false);
+        }
+        await().atMost(java.time.Duration.ofSeconds(10)).untilAsserted(() ->
+                assertThat(notifications.purchaseOrderDeliveryStatuses(List.of(po.purchaseOrderId()))).containsEntry(po.purchaseOrderId(), "DELIVERED"));
+        verify(sender, times(2)).sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId())));
+        var stored = orders.findById(po.purchaseOrderId()).orElseThrow();
+        assertThat(stored.sentAt()).isEqualTo(po.sentAt());
+        assertThat(stored.expectedAt()).isEqualTo(po.expectedAt());
+        assertThat(stored.supplierConfirmationStatus()).isEqualTo("PENDING");
+        assertThat(notifications.purchaseOrderDeliveries(po.purchaseOrderId(), 0, 20).items())
+                .extracting(com.stockflow.notification.api.DeliveryAttemptSummary::generation).containsExactly(1, 0);
+        assertThat(orders.deliveryDecisions(po.purchaseOrderId(), 0, 20).items())
+                .extracting(PurchaseOrderDeliveryDecision::generation).containsExactly(1, 0);
+        assertThat(orders.deliveryDecisions(po.purchaseOrderId(), 0, 20).items().getFirst().reason()).isEqualTo("Provider restored and checked");
+        expectCode(() -> orders.recoverDelivery(po.purchaseOrderId(), new RecoverPurchaseOrderDeliveryCommand("again", true, false)), ErrorCode.CONFLICT);
+    }
+
+    @Test void recoveryHttpReplayAndDecisionReadUseExistingApiContract() throws Exception {
+        var po = failedOrder(true);
+        doNothing().when(sender).sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId())));
+        String key = UUID.randomUUID().toString();
+        String path = "/api/v1/purchase-orders/" + po.purchaseOrderId() + "/delivery-recovery";
+        for (int attempt = 0; attempt < 2; attempt++) {
+            mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post(path)
+                    .header("Idempotency-Key", key).contentType("application/json")
+                    .content("{\"reason\":\"Provider checked\",\"reconciled\":true}"))
+                    .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk());
+        }
+        await().atMost(java.time.Duration.ofSeconds(10)).untilAsserted(() ->
+                assertThat(notifications.purchaseOrderDeliveryStatuses(List.of(po.purchaseOrderId()))).containsEntry(po.purchaseOrderId(), "DELIVERED"));
+        verify(sender, times(2)).sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId())));
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(
+                "/api/v1/purchase-orders/" + po.purchaseOrderId() + "/delivery-decisions"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.totalElements").value(2))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.items[0].reason").value("Provider checked"));
+    }
+
+    @Test void cancellationWaitsForAlreadyStartedDeliveryAndCannotUndoIt() throws Exception {
+        var po = order(supplier().supplierId());
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        doAnswer(call -> {
+            entered.countDown();
+            if (!release.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("test transport timed out");
+            return null;
+        }).when(sender).sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId())));
+        orders.approve(po.purchaseOrderId()); orders.send(po.purchaseOrderId());
+        assertThat(entered.await(10, TimeUnit.SECONDS)).isTrue();
+        try (var pool = Executors.newSingleThreadExecutor()) {
+            var cancel = pool.submit(() -> orders.cancel(po.purchaseOrderId(), "Cancel after dispatch started"));
+            try {
+                assertThatThrownBy(() -> cancel.get(200, TimeUnit.MILLISECONDS)).isInstanceOf(java.util.concurrent.TimeoutException.class);
+            } finally { release.countDown(); }
+            assertThat(cancel.get(10, TimeUnit.SECONDS).status()).isEqualTo("CANCELLED");
+        } finally { release.countDown(); }
+        assertThat(notifications.purchaseOrderDeliveryStatuses(List.of(po.purchaseOrderId()))).containsEntry(po.purchaseOrderId(), "DELIVERED");
+        verify(sender, times(1)).sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId())));
+    }
+
+    @Test void overdueInitialSendRequiresExplicitDateAndReasonAndRecordsBoth() {
+        var yesterday = com.stockflow.common.domain.BusinessCalendar.date(java.time.Instant.now()).minusDays(1);
+        var po = orders.createPurchaseOrder(new CreatePurchaseOrderCommand(supplier().supplierId(), "VND", yesterday,
+                List.of(new CreatePOLineCommand("CHAIR-01", "Chair", 1, BigDecimal.TEN))));
+        orders.approve(po.purchaseOrderId());
+        expectCode(() -> orders.send(po.purchaseOrderId()), ErrorCode.CONFLICT);
+        assertThat(orders.findById(po.purchaseOrderId()).orElseThrow().status()).isEqualTo("APPROVED");
+        var tomorrow = yesterday.plusDays(2);
+        assertThatThrownBy(() -> orders.send(po.purchaseOrderId(), new SendPurchaseOrderCommand(tomorrow, " ")))
+                .isInstanceOf(IllegalArgumentException.class);
+        var sent = orders.send(po.purchaseOrderId(), new SendPurchaseOrderCommand(tomorrow, "Supplier agreed revised date before dispatch"));
+        assertThat(sent.expectedAt()).isEqualTo(tomorrow);
+        var decision = orders.deliveryDecisions(po.purchaseOrderId(), 0, 20).items().getFirst();
+        assertThat(decision.previousExpectedAt()).isEqualTo(yesterday);
+        assertThat(decision.expectedAt()).isEqualTo(tomorrow);
+        assertThat(decision.actor()).isNotBlank();
+        await().atMost(java.time.Duration.ofSeconds(10)).untilAsserted(() ->
+                verify(sender).sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId()) && e.expectedAt().equals(tomorrow))));
+    }
+
+    @Test void invalidStatusAndConditionalFieldsAreClientErrors() throws Exception {
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/v1/suppliers").param("status", "FOO"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isBadRequest());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/v1/suppliers")
+                .contentType("application/json").content("""
+                        {"code":"BAD-CONTACT","name":"Supplier","status":"ACTIVE","communicationChannel":"EMAIL"}
+                        """))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isBadRequest())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.fieldErrors[0].field").value("email"));
+    }
+
+    @Test void createDefaultsButPutCannotSilentlyResetTerms() throws Exception {
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/v1/suppliers")
+                .contentType("application/json").content("""
+                        {"code":"CREATE-DEFAULTS","name":"Supplier","status":"ACTIVE","communicationChannel":"EMAIL","email":"supplier@example.com"}
+                        """))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isCreated())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.paymentTermDays").value(30))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.leadTimeDays").value(7));
+        var s = supplier();
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/v1/suppliers/" + s.supplierId())
+                .contentType("application/json").content("""
+                        {"code":"%s","name":"Supplier","status":"ACTIVE","communicationChannel":"EMAIL","email":"supplier@example.com"}
+                        """.formatted(s.code())))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isBadRequest());
+        assertThat(suppliers.findById(s.supplierId()).orElseThrow().paymentTermDays()).isEqualTo(45);
+    }
+
+    @Test void literalSearchAndApiPreflight() {
+        supplier();
+        assertThat(suppliers.list(0, 20, "%", null, null).totalElements()).isZero();
+        assertThat(suppliers.list(0, 20, "_", null, null).totalElements()).isZero();
+        assertThatThrownBy(() -> suppliers.create(new SaveSupplierCommand("API-DENIED", "Supplier", null,
+                null, null, null, "ACTIVE", 30, 7, "API", "https://unapproved.example.com/po")))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test void permanentDeliveryFailureStopsAndIsVisibleOnPoDetail() throws Exception {
+        var po = order(supplier().supplierId());
+        doThrow(new IllegalArgumentException("invalid destination configuration"))
+                .when(sender).sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId())));
+        orders.approve(po.purchaseOrderId()); orders.send(po.purchaseOrderId());
+        await().atMost(java.time.Duration.ofSeconds(15)).untilAsserted(() ->
+                assertThat(notifications.purchaseOrderDeliveryStatuses(List.of(po.purchaseOrderId())))
+                        .containsEntry(po.purchaseOrderId(), "FAILED"));
+        publications.resubmitIncompletePublications(p -> p.getEvent() instanceof PurchaseOrderSent e && e.purchaseOrderId().equals(po.purchaseOrderId()));
+        verify(sender, times(1)).sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId())));
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/v1/purchase-orders/" + po.purchaseOrderId()))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.deliveryStatus").value("FAILED"));
+    }
+
+    @Test void transientDeliveryFailureStopsAfterFiveAttempts() {
+        var po = order(supplier().supplierId());
+        doThrow(new IllegalStateException("mail offline")).when(sender)
+                .sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId())));
+        orders.approve(po.purchaseOrderId()); orders.send(po.purchaseOrderId());
+        for (int i = 1; i <= 5; i++) {
+            int count = i;
+            await().atMost(java.time.Duration.ofSeconds(15)).untilAsserted(() ->
+                    assertThat(notifications.purchaseOrderDeliveries(po.purchaseOrderId(), 0, 20).totalElements()).isEqualTo(count));
+            if (i < 5) publications.resubmitIncompletePublications(p -> p.getEvent() instanceof PurchaseOrderSent e && e.purchaseOrderId().equals(po.purchaseOrderId()));
+        }
+        assertThat(notifications.purchaseOrderDeliveryStatuses(List.of(po.purchaseOrderId()))).containsEntry(po.purchaseOrderId(), "FAILED");
+    }
 
     @Test void retryCursorMigrationSupportsDurablePositionUpdates() {
         UUID previous = retryCursor.load();
@@ -122,7 +324,7 @@ class SupplierProcurementIntegrationTest {
         assertThat(orders.findById(po.purchaseOrderId()).orElseThrow().supplierConfirmationStatus()).isEqualTo("PENDING");
     }
 
-    @Test void failedDeliveryDoesNotRollbackSentAndLeavesDurableRetryEvidence() {
+    @Test void failedDeliveryDoesNotRollbackSentAndLeavesDurableRetryEvidence() throws Exception {
         var po = order(supplier().supplierId());
         doThrow(new org.springframework.mail.MailSendException("offline"))
                 .when(sender).sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId())));
@@ -141,12 +343,55 @@ class SupplierProcurementIntegrationTest {
                     assertThat(attempt.sentAt()).isNull();
                 });
         doNothing().when(sender).sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId())));
-        publications.resubmitIncompletePublications(p -> p.getEvent() instanceof PurchaseOrderSent event
-                && event.purchaseOrderId().equals(po.purchaseOrderId()));
+        transactions.executeWithoutResult(tx -> {
+            jdbc.update("update event_publication set publication_date=now()-interval '10 minutes' where serialized_event like ?",
+                    "%" + po.purchaseOrderId() + "%");
+            // The startup sweep owns a 30-second minimum lease. Advance only the test DB lease,
+            // otherwise a direct call is correctly skipped by ShedLock rather than testing retry.
+            jdbc.update("update platform.shedlock set lock_until=timestamp '2000-01-01 00:00:00' where name='notification.retryPurchaseOrders'");
+        });
+        var targetMethod = PurchaseOrderNotificationListener.class.getMethod("on", PurchaseOrderSent.class);
+        var targetId = new org.springframework.transaction.event.TransactionalApplicationListenerMethodAdapter(
+                null, PurchaseOrderNotificationListener.class, targetMethod).getListenerId();
+        assertThat(pendingReader.page(PurchaseOrderSent.class.getName(), targetId,
+                java.time.Instant.now().minusSeconds(300), null, 50))
+                .as("retry candidates; registry rows: %s", jdbc.queryForList("select listener_id,event_type,publication_date from event_publication where completion_date is null"))
+                .anyMatch(p -> p.serializedEvent().contains(po.purchaseOrderId().toString()));
+        retryJob.retry();
+        assertThat(retryCursor.load()).as("retry cursor; lock: %s", jdbc.queryForList("select * from platform.shedlock where name='notification.retryPurchaseOrders'"))
+                .isNotNull();
         await().atMost(java.time.Duration.ofSeconds(10)).untilAsserted(() ->
                 assertThat(notifications.purchaseOrderDeliveries(po.purchaseOrderId(), 0, 20).items())
                         .extracting(com.stockflow.notification.api.DeliveryAttemptSummary::status)
                         .containsExactly("SENT", "FAILED"));
+        await().atMost(java.time.Duration.ofSeconds(10)).untilAsserted(() ->
+                assertThat(jdbc.queryForObject("select count(*) from event_publication where completion_date is null and serialized_event like ?",
+                        Long.class, "%" + po.purchaseOrderId() + "%")).isZero());
+    }
+
+    @Test void boundedReaderFiltersAndPaginatesWithoutLoadingOtherEvents() {
+        transactions.executeWithoutResult(tx -> {
+            for (int i = 1; i <= 120; i++) jdbc.update("""
+                    insert into event_publication(id,listener_id,event_type,serialized_event,publication_date)
+                    values (?, 'test-listener', 'test-event', '{}', now()-interval '10 minutes')
+                    """, new UUID(2, i));
+            var first = pendingReader.page("test-event", "test-listener", java.time.Instant.now().minusSeconds(300), null, 50);
+            var second = pendingReader.page("test-event", "test-listener", java.time.Instant.now().minusSeconds(300), first.getLast().id(), 50);
+            var third = pendingReader.page("test-event", "test-listener", java.time.Instant.now().minusSeconds(300), second.getLast().id(), 50);
+            assertThat(first).hasSize(50);
+            assertThat(second).hasSize(50).doesNotContainAnyElementsOf(first);
+            assertThat(third).hasSize(20);
+            assertThat(pendingReader.page("test-event", "another-listener", java.time.Instant.now(), null, 50)).isEmpty();
+            tx.setRollbackOnly();
+        });
+    }
+
+    @Test void deliveryHistoryLivesUnderProcurement() throws Exception {
+        var po = order(supplier().supplierId());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/v1/purchase-orders/" + po.purchaseOrderId() + "/deliveries"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/v1/purchase-orders/" + UUID.randomUUID() + "/deliveries"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isNotFound());
     }
 
     @Test void rolledBackSendDoesNotNotifySupplier() {

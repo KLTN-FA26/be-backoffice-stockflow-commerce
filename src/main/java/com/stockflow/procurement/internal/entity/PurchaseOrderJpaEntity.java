@@ -60,6 +60,7 @@ public class PurchaseOrderJpaEntity extends BaseEntity {
     @Column(name = "payment_term_days", nullable = false) private int paymentTermDays;
     @Column(name = "lead_time_days", nullable = false) private int leadTimeDays;
     @Column(name = "sent_at") private Instant sentAt;
+    @Column(name = "receipt_completed_at") private Instant receiptCompletedAt;
     @Enumerated(EnumType.STRING) @Column(name = "supplier_confirmation_status", nullable = false, length = 16)
     private SupplierConfirmationStatus supplierConfirmationStatus;
     @Column(name = "supplier_responded_at") private Instant supplierRespondedAt;
@@ -126,11 +127,14 @@ public class PurchaseOrderJpaEntity extends BaseEntity {
     public String getCurrency() { return currency; }
     public BigDecimal getTotalAmount() { return totalAmount; }
     public LocalDate getExpectedAt() { return expectedAt; }
+    public void confirmExpectedAt(LocalDate expectedAt) { this.expectedAt = expectedAt; }
     public String getCancellationReason() { return cancellationReason; }
     public String getCloseShortReason() { return closeShortReason; }
     public int getPaymentTermDays() { return paymentTermDays; }
     public int getLeadTimeDays() { return leadTimeDays; }
     public Instant getSentAt() { return sentAt; }
+    public Instant getReceiptCompletedAt() { return receiptCompletedAt; }
+    public void recordCompletion(Instant completedAt) { this.receiptCompletedAt = completedAt; }
     public SupplierConfirmationStatus getSupplierConfirmationStatus() { return supplierConfirmationStatus; }
     public Instant getSupplierRespondedAt() { return supplierRespondedAt; }
     public String getSupplierReference() { return supplierReference; }

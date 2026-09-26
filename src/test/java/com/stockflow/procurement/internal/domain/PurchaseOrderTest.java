@@ -24,6 +24,33 @@ class PurchaseOrderTest {
     private static final UUID SUPPLIER = UUID.randomUUID();
     private static final LocalDate EXPECTED = LocalDate.parse("2026-10-01");
 
+    @Test void recoveryRequiresPendingSentAndExplicitOverdueAcknowledgement() {
+        var order = PurchaseOrder.draft("PO-RECOVERY", SUPPLIER, Money.VND, List.of(line(1, 100)), EXPECTED);
+        assertThatThrownBy(() -> order.requireDeliveryRecovery(EXPECTED, "checked", true, true))
+                .isInstanceOf(InvalidPurchaseOrderTransitionException.class);
+        order.approve(Instant.now()); order.send(Instant.now());
+        assertThatThrownBy(() -> order.requireDeliveryRecovery(EXPECTED.plusDays(1), "checked", true, false))
+                .isInstanceOf(com.stockflow.common.error.BusinessException.class);
+        order.requireDeliveryRecovery(EXPECTED.plusDays(1), "checked with supplier", true, true);
+        assertThat(order.expectedAt()).isEqualTo(EXPECTED);
+        order.recordSupplierConfirmation(SupplierConfirmationStatus.CONFIRMED, "ACK", null, Instant.now());
+        assertThatThrownBy(() -> order.requireDeliveryRecovery(EXPECTED, "checked", true, true))
+                .isInstanceOf(InvalidPurchaseOrderTransitionException.class);
+    }
+
+    @Test void receiptCompletionUsesProvidedClockAndSurvivesSupplierResponse() {
+        var item = line(2, 100);
+        var order = PurchaseOrder.draft("PO-CLOCK", SUPPLIER, Money.VND, List.of(item), EXPECTED);
+        var clock = java.time.Clock.fixed(Instant.parse("2026-09-25T02:00:00Z"), java.time.ZoneOffset.UTC);
+        order.approve(clock.instant()); order.send(clock.instant());
+        order.receiveGoods(Map.of(item.id(), 1), clock.instant());
+        assertThat(order.receiptCompletedAt()).isNull();
+        order.receiveGoods(Map.of(item.id(), 1), clock.instant());
+        assertThat(order.receiptCompletedAt()).isEqualTo(clock.instant());
+        order.recordSupplierConfirmation(SupplierConfirmationStatus.CONFIRMED, "ACK", null, clock.instant().plusSeconds(3600));
+        assertThat(order.receiptCompletedAt()).isEqualTo(clock.instant());
+    }
+
     private static PoLine line(int qty, long unitPrice) {
         return new PoLine(UUID.randomUUID(), new Sku("SOFA-3S-GREY"), "Grey sofa", qty, 0,
                 Money.vnd(unitPrice));

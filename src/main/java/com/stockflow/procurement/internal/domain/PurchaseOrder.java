@@ -1,5 +1,10 @@
 package com.stockflow.procurement.internal.domain;
 
+import com.stockflow.common.domain.CommercialTerms;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
+import java.util.Objects;
+
 import com.stockflow.common.domain.AggregateRoot;
 import com.stockflow.common.domain.Money;
 
@@ -8,7 +13,7 @@ import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
+
 import java.util.UUID;
 import java.util.Currency;
 
@@ -41,12 +46,13 @@ public final class PurchaseOrder extends AggregateRoot {
     private PurchaseOrderStatus status;
     private final Currency currency;
     private final List<PoLine> lines;
-    private final LocalDate expectedAt;
+    private LocalDate expectedAt;
     private String cancellationReason;
     private String closeShortReason;
     private final int paymentTermDays;
     private final int leadTimeDays;
     private Instant sentAt;
+    private Instant receiptCompletedAt;
     private SupplierConfirmationStatus supplierConfirmationStatus;
     private Instant supplierRespondedAt;
     private String supplierReference;
@@ -63,7 +69,7 @@ public final class PurchaseOrder extends AggregateRoot {
                          int paymentTermDays, int leadTimeDays, Instant sentAt,
                          SupplierConfirmationStatus supplierConfirmationStatus,
                          Instant supplierRespondedAt, String supplierReference, String supplierResponseNote,
-                         long version, Instant createdAt, String createdBy,
+                         Instant receiptCompletedAt, long version, Instant createdAt, String createdBy,
                          Instant lastModifiedAt, String lastModifiedBy) {
         this.id = Objects.requireNonNull(id, "id");
         this.poNumber = requireNonBlank(poNumber, "poNumber");
@@ -86,6 +92,7 @@ public final class PurchaseOrder extends AggregateRoot {
         this.paymentTermDays = paymentTermDays;
         this.leadTimeDays = leadTimeDays;
         this.sentAt = sentAt;
+        this.receiptCompletedAt = receiptCompletedAt;
         this.supplierConfirmationStatus = Objects.requireNonNull(supplierConfirmationStatus, "supplierConfirmationStatus");
         this.supplierRespondedAt = supplierRespondedAt;
         this.supplierReference = supplierReference;
@@ -104,14 +111,15 @@ public final class PurchaseOrder extends AggregateRoot {
         return new PurchaseOrder(PurchaseOrderId.newId(), poNumber, supplierId,
                 PurchaseOrderStatus.DRAFT, currency, lines, expectedAt, null, null,
                 paymentTermDays, leadTimeDays, null, SupplierConfirmationStatus.NOT_SENT,
-                null, null, null, 0L,
+                null, null, null, null, 0L,
                 null, null, null, null);
     }
 
     /** Compatibility overload for existing callers and tests. */
     public static PurchaseOrder draft(String poNumber, UUID supplierId, Currency currency,
                                       List<PoLine> lines, LocalDate expectedAt) {
-        return draft(poNumber, supplierId, currency, lines, expectedAt, 30, 7);
+        return draft(poNumber, supplierId, currency, lines, expectedAt,
+                CommercialTerms.PAYMENT_DAYS, CommercialTerms.LEAD_DAYS);
     }
 
     public Money totalAmount() {
@@ -130,6 +138,33 @@ public final class PurchaseOrder extends AggregateRoot {
     }
 
     /** APPROVED -&gt; SENT. */
+    public void confirmDeliveryDate(LocalDate today, LocalDate replacement, String reason) {
+        requireCanTransitionTo(PurchaseOrderStatus.SENT);
+        LocalDate candidate = replacement == null ? expectedAt : replacement;
+        if (candidate == null || candidate.isBefore(today)) {
+            throw new BusinessException(ErrorCode.CONFLICT,
+                    "Confirm a delivery date on or after today's Vietnam date before sending");
+        }
+        if (replacement != null && !replacement.equals(expectedAt)) requireRecoveryReason(reason);
+        expectedAt = candidate;
+    }
+
+    public void requireDeliveryRecovery(LocalDate today, String reason, boolean reconciled, boolean acknowledgePastDue) {
+        if (status != PurchaseOrderStatus.SENT || supplierConfirmationStatus != SupplierConfirmationStatus.PENDING)
+            throw new InvalidPurchaseOrderTransitionException(id, "Delivery recovery requires SENT with a pending supplier response");
+        requireRecoveryReason(reason);
+        if (!reconciled) throw new BusinessException(ErrorCode.CONFLICT,
+                "Reconcile the previous delivery outcome before retrying");
+        if ((expectedAt == null || expectedAt.isBefore(today)) && !acknowledgePastDue)
+            throw new BusinessException(ErrorCode.CONFLICT,
+                    "Explicitly acknowledge the original overdue or unknown delivery date; recovery cannot amend a sent PO");
+    }
+
+    private static void requireRecoveryReason(String reason) {
+        if (reason == null || reason.isBlank() || reason.length() > 1000)
+            throw new IllegalArgumentException("A reason of 1..1000 characters is required");
+    }
+
     public void send(Instant now) {
         requireCanTransitionTo(PurchaseOrderStatus.SENT);
         this.status = PurchaseOrderStatus.SENT;
@@ -156,8 +191,8 @@ public final class PurchaseOrder extends AggregateRoot {
             throw new InvalidPurchaseOrderTransitionException(id, "Cannot reject a purchase order after receipt");
         }
         if (supplierConfirmationStatus == response) {
-            if (java.util.Objects.equals(supplierReference, reference)
-                    && java.util.Objects.equals(supplierResponseNote, note)) return;
+            if (Objects.equals(supplierReference, reference)
+                    && Objects.equals(supplierResponseNote, note)) return;
             throw new InvalidPurchaseOrderTransitionException(id, "A recorded supplier response cannot be overwritten");
         }
         if (supplierConfirmationStatus != SupplierConfirmationStatus.PENDING) {
@@ -211,6 +246,7 @@ public final class PurchaseOrder extends AggregateRoot {
             line.receive(entry.getValue());
         }
         boolean fullyReceived = lines.stream().allMatch(line -> line.openQuantity() == 0);
+        if (fullyReceived && receiptCompletedAt == null) receiptCompletedAt = Objects.requireNonNull(now, "receipt time");
         this.status = fullyReceived ? PurchaseOrderStatus.CLOSED : PurchaseOrderStatus.PARTIALLY_RECEIVED;
     }
 
@@ -246,6 +282,7 @@ public final class PurchaseOrder extends AggregateRoot {
     public int paymentTermDays() { return paymentTermDays; }
     public int leadTimeDays() { return leadTimeDays; }
     public Instant sentAt() { return sentAt; }
+    public Instant receiptCompletedAt() { return receiptCompletedAt; }
     public SupplierConfirmationStatus supplierConfirmationStatus() { return supplierConfirmationStatus; }
     public Instant supplierRespondedAt() { return supplierRespondedAt; }
     public String supplierReference() { return supplierReference; }

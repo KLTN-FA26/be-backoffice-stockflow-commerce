@@ -1,10 +1,18 @@
 package com.stockflow.notification.api;
 
+import com.stockflow.common.api.PageResponse;
+import java.util.Collection;
+import java.util.Map;
+import java.util.UUID;
+
 /**
- * Read-only delivery visibility; outbound work remains owned by after-commit event listeners.
+ * Delivery visibility and transactional dispatch control; only after-commit listeners perform transport.
  */
 public interface NotificationService {
+    int prepareSupplierDelivery(UUID purchaseOrderId, boolean recovery);
+    void suppressSupplierDelivery(UUID purchaseOrderId);
+    void validateSupplierDelivery(String channel, String recipient);
+    Map<UUID, String> purchaseOrderDeliveryStatuses(Collection<UUID> ids);
 
-    com.stockflow.common.api.PageResponse<DeliveryAttemptSummary> purchaseOrderDeliveries(
-            java.util.UUID purchaseOrderId, int page, int size);
+    PageResponse<DeliveryAttemptSummary> purchaseOrderDeliveries(UUID purchaseOrderId, int page, int size);
 }

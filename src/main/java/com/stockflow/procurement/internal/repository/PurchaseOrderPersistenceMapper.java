@@ -42,7 +42,7 @@ final class PurchaseOrderPersistenceMapper {
                 entity.getPaymentTermDays(), entity.getLeadTimeDays(), entity.getSentAt(),
                 entity.getSupplierConfirmationStatus(), entity.getSupplierRespondedAt(),
                 entity.getSupplierReference(), entity.getSupplierResponseNote(),
-                entity.getVersion(),
+                entity.getReceiptCompletedAt(), entity.getVersion(),
                 entity.getCreatedAt(),
                 entity.getCreatedBy(),
                 entity.getLastModifiedAt(),
@@ -92,6 +92,7 @@ final class PurchaseOrderPersistenceMapper {
                 order.supplierConfirmationStatus(), order.supplierRespondedAt(), order.supplierReference(),
                 order.supplierResponseNote());
         entity.replaceLines(toEntities(order));
+        entity.recordCompletion(order.receiptCompletedAt());
         return entity;
     }
 
@@ -107,6 +108,8 @@ final class PurchaseOrderPersistenceMapper {
      * both sufficient and keeps each row's own version intact.</p>
      */
     static void applyToEntity(PurchaseOrder order, PurchaseOrderJpaEntity entity) {
+        entity.confirmExpectedAt(order.expectedAt());
+        entity.recordCompletion(order.receiptCompletedAt());
         entity.apply(order.status(), order.totalAmount().amount(),
                 order.cancellationReason(), order.closeShortReason(), order.sentAt(),
                 order.supplierConfirmationStatus(), order.supplierRespondedAt(),

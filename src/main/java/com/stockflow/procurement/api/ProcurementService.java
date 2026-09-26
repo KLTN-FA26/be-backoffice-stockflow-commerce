@@ -34,6 +34,9 @@ public interface ProcurementService {
 
     /** SCRUM-115. APPROVED -&gt; SENT. HTTP retries replay through the shared Idempotency-Key filter. */
     PurchaseOrderSummary send(UUID purchaseOrderId);
+    PurchaseOrderSummary send(UUID purchaseOrderId, SendPurchaseOrderCommand command);
+    PurchaseOrderSummary recoverDelivery(UUID purchaseOrderId, RecoverPurchaseOrderDeliveryCommand command);
+    PageResponse<PurchaseOrderDeliveryDecision> deliveryDecisions(UUID purchaseOrderId, int page, int size);
 
     PurchaseOrderSummary recordSupplierConfirmation(UUID purchaseOrderId,
                                                      RecordSupplierConfirmationCommand command);

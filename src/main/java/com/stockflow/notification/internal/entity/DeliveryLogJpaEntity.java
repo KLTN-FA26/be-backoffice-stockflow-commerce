@@ -42,6 +42,10 @@ public class DeliveryLogJpaEntity extends BaseEntity {
 
     @Column(name = "operation_reference", length = 100)
     private String operationReference;
+    @Column(name = "terminal", nullable = false)
+    private boolean terminal;
+    @Column(name = "delivery_generation", nullable = false)
+    private int deliveryGeneration;
 
     protected DeliveryLogJpaEntity() {
     }
@@ -72,5 +76,8 @@ public class DeliveryLogJpaEntity extends BaseEntity {
     public String getError() { return error; }
     public Instant getSentAt() { return sentAt; }
     public String getExternalReference() { return externalReference; }
+    public int getDeliveryGeneration() { return deliveryGeneration; }
     public void correlate(String reference) { this.operationReference = reference; }
+    public void stopRetrying() { this.terminal = true; }
+    public void recordGeneration(int generation) { this.deliveryGeneration = generation; }
 }

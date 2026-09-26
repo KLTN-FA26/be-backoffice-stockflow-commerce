@@ -8,6 +8,15 @@ ALTER TABLE procurement.supplier
     ADD CONSTRAINT ck_supplier_lead_time_days CHECK (lead_time_days BETWEEN 0 AND 365),
     ADD CONSTRAINT ck_supplier_communication_channel CHECK (communication_channel IN ('EMAIL', 'API'));
 
+-- Fail with an actionable diagnostic before attempting unique-index construction. Never merge supplier histories automatically.
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM procurement.supplier GROUP BY lower(code) HAVING count(*) > 1) THEN
+        RAISE EXCEPTION 'Duplicate supplier codes: run supplier-upgrade-preflight.sql and reconcile with the data owner';
+    END IF;
+    IF EXISTS (SELECT 1 FROM procurement.supplier WHERE tax_code IS NOT NULL GROUP BY tax_code HAVING count(*) > 1) THEN
+        RAISE EXCEPTION 'Duplicate supplier tax codes: run supplier-upgrade-preflight.sql and reconcile with the data owner';
+    END IF;
+END $$;
 CREATE UNIQUE INDEX uk_supplier_code_ci ON procurement.supplier (lower(code));
 CREATE UNIQUE INDEX uk_supplier_tax_code ON procurement.supplier (tax_code) WHERE tax_code IS NOT NULL;
 
@@ -40,4 +49,4 @@ INSERT INTO identity.role_permission (id, role_id, permission_id, version, creat
 SELECT gen_random_uuid(), role.id, permission.id, 0, NOW(), 'flyway'
 FROM identity.app_role role
 JOIN identity.permission permission ON permission.resource = 'procurement-suppliers'
-WHERE role.code = 'PROCUREMENT_STAFF';
+WHERE role.code = 'PROCUREMENT_STAFF' AND permission.action <> 'DELETE';

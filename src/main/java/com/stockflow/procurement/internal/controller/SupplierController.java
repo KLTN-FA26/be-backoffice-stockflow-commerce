@@ -1,5 +1,8 @@
 package com.stockflow.procurement.internal.controller;
 
+import com.stockflow.common.domain.CommercialTerms;
+import org.springframework.validation.annotation.Validated;
+
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.error.BusinessException;
@@ -44,7 +47,8 @@ class SupplierController {
     @Operation(summary = "Update supplier contacts, status and commercial defaults")
     @RequiresPermission(resource = "procurement-suppliers", action = Action.UPDATE)
     public ApiResponse<SupplierResponse> update(@PathVariable UUID supplierId,
-                                                 @Valid @RequestBody SaveSupplierRequest request) {
+            @Validated(SaveSupplierRequest.Update.class)
+            @RequestBody SaveSupplierRequest request) {
         return ApiResponse.ok(response(service.update(supplierId, command(request))));
     }
 
@@ -82,7 +86,9 @@ class SupplierController {
     }
 
     private static SaveSupplierCommand command(SaveSupplierRequest r) { return new SaveSupplierCommand(r.code(), r.name(),
-            r.contactName(), r.email(), r.phone(), r.taxCode(), r.status(), r.paymentTermDays(), r.leadTimeDays(),
+            r.contactName(), r.email(), r.phone(), r.taxCode(), r.status(),
+            r.paymentTermDays() == null ? CommercialTerms.PAYMENT_DAYS : r.paymentTermDays(),
+            r.leadTimeDays() == null ? CommercialTerms.LEAD_DAYS : r.leadTimeDays(),
             r.communicationChannel(), r.apiEndpoint()); }
     private static SupplierResponse response(SupplierSummary s) { return new SupplierResponse(s.supplierId(), s.code(), s.name(),
             s.contactName(), s.email(), s.phone(), s.taxCode(), s.status(), s.paymentTermDays(), s.leadTimeDays(),
