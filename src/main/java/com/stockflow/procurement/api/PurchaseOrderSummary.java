@@ -33,7 +33,14 @@ public record PurchaseOrderSummary(
         String lastModifiedBy,
         boolean possibleDuplicate,
         String cancellationReason,
-        String closeShortReason
+        String closeShortReason,
+        int paymentTermDays,
+        int leadTimeDays,
+        Instant sentAt,
+        String supplierConfirmationStatus,
+        Instant supplierRespondedAt,
+        String supplierReference,
+        String supplierResponseNote
 ) {
 
     public PurchaseOrderSummary {

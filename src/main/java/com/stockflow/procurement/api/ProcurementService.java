@@ -32,8 +32,14 @@ public interface ProcurementService {
     /** SCRUM-116/WBS 3.2.4. DRAFT -&gt; APPROVED. */
     PurchaseOrderSummary approve(UUID purchaseOrderId);
 
-    /** SCRUM-116/WBS 3.2.4. APPROVED -&gt; SENT. */
+    /** SCRUM-115. APPROVED -&gt; SENT. HTTP retries replay through the shared Idempotency-Key filter. */
     PurchaseOrderSummary send(UUID purchaseOrderId);
+    PurchaseOrderSummary send(UUID purchaseOrderId, SendPurchaseOrderCommand command);
+    PurchaseOrderSummary recoverDelivery(UUID purchaseOrderId, RecoverPurchaseOrderDeliveryCommand command);
+    PageResponse<PurchaseOrderDeliveryDecision> deliveryDecisions(UUID purchaseOrderId, int page, int size);
+
+    PurchaseOrderSummary recordSupplierConfirmation(UUID purchaseOrderId,
+                                                     RecordSupplierConfirmationCommand command);
 
     /** SCRUM-116/WBS 3.2.4. DRAFT/APPROVED/SENT -&gt; CANCELLED. Rejected once anything has been
      *  received against the order. */

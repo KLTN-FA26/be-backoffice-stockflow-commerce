@@ -157,8 +157,16 @@ renditions use CloudFront; `infra/aws/media-cloudfront.yaml` provisions a privat
 OAC, product-prefix-only read policy, cache/CORS policies and an application IAM managed policy.
 Local storage supports backend reads but download-url returns 503 rather than exposing `file:` URIs.
 
-The MinIO test uses official Quay because Docker Hub pull failed on this host. The pinned image
-is a test fixture, not a new production recommendation. References:
+Compose and the MinIO integration test use the same digest-pinned Coollabs community build on
+GHCR, retaining `RELEASE.2025-04-22T22-12-26Z`. The original Docker Hub and Quay images could no
+longer be pulled on 2026-09-26; a locally cached image had hidden this failure. This is a third-party
+build of MinIO source for local development and tests, not an official MinIO image or a production
+recommendation. Production continues to use AWS S3. Do not substitute `latest` or skip the test.
+When updating the image, update both references, verify a registry pull (not only a cache hit),
+then run `mvn -Dtest=MinioMediaIntegrationTest test`. No registry credentials are required for
+the public GHCR image. Existing local volumes are not recreated by this configuration change.
+References:
+[Community build source](https://github.com/coollabsio/minio),
 [MinIO namespace](https://github.com/minio/minio/blob/master/docs/docker/README.md),
 [ClamAV Docker](https://docs.clamav.net/manual/Installing/Docker.html),
 [ClamD protocol](https://docs.clamav.net/manual/Usage/ClamdProtocol.html).

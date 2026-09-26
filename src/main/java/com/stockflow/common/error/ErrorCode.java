@@ -57,6 +57,10 @@ public enum ErrorCode {
     IDEMPOTENT_REQUEST_IN_PROGRESS("An identical request is still being processed", 409),
     /** BR-PO: a new PO cannot be raised against a supplier that is not ACTIVE. */
     SUPPLIER_INACTIVE("This supplier cannot receive new purchase orders", 409),
+    SUPPLIER_HAS_OPEN_PURCHASE_ORDERS("Supplier has open purchase orders", 409),
+    SUPPLIER_CODE_ALREADY_EXISTS("A supplier with this code already exists", 409),
+    SUPPLIER_TAX_CODE_ALREADY_EXISTS("A supplier with this tax code already exists", 409),
+    INVALID_SUPPLIER_CONFIRMATION("This supplier confirmation cannot be recorded", 409),
     PRODUCT_CODE_ALREADY_EXISTS("A product with this code already exists", 409),
     INVALID_PRODUCT_STATUS_TRANSITION("This product cannot move to that status right now", 409),
     SELF_APPROVAL_NOT_ALLOWED("A product cannot be approved by the person who submitted it", 409),

@@ -1,5 +1,10 @@
 package com.stockflow.procurement.internal.domain;
 
+import com.stockflow.common.domain.CommercialTerms;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
+import java.util.Objects;
+
 import com.stockflow.common.domain.AggregateRoot;
 import com.stockflow.common.domain.Money;
 
@@ -8,7 +13,7 @@ import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
+
 import java.util.UUID;
 import java.util.Currency;
 
@@ -41,9 +46,17 @@ public final class PurchaseOrder extends AggregateRoot {
     private PurchaseOrderStatus status;
     private final Currency currency;
     private final List<PoLine> lines;
-    private final LocalDate expectedAt;
+    private LocalDate expectedAt;
     private String cancellationReason;
     private String closeShortReason;
+    private final int paymentTermDays;
+    private final int leadTimeDays;
+    private Instant sentAt;
+    private Instant receiptCompletedAt;
+    private SupplierConfirmationStatus supplierConfirmationStatus;
+    private Instant supplierRespondedAt;
+    private String supplierReference;
+    private String supplierResponseNote;
     private final long version;
     private final Instant createdAt;
     private final String createdBy;
@@ -53,7 +66,10 @@ public final class PurchaseOrder extends AggregateRoot {
     public PurchaseOrder(PurchaseOrderId id, String poNumber, UUID supplierId,
                          PurchaseOrderStatus status, Currency currency, List<PoLine> lines,
                          LocalDate expectedAt, String cancellationReason, String closeShortReason,
-                         long version, Instant createdAt, String createdBy,
+                         int paymentTermDays, int leadTimeDays, Instant sentAt,
+                         SupplierConfirmationStatus supplierConfirmationStatus,
+                         Instant supplierRespondedAt, String supplierReference, String supplierResponseNote,
+                         Instant receiptCompletedAt, long version, Instant createdAt, String createdBy,
                          Instant lastModifiedAt, String lastModifiedBy) {
         this.id = Objects.requireNonNull(id, "id");
         this.poNumber = requireNonBlank(poNumber, "poNumber");
@@ -73,6 +89,14 @@ public final class PurchaseOrder extends AggregateRoot {
         this.expectedAt = expectedAt;
         this.cancellationReason = cancellationReason;
         this.closeShortReason = closeShortReason;
+        this.paymentTermDays = paymentTermDays;
+        this.leadTimeDays = leadTimeDays;
+        this.sentAt = sentAt;
+        this.receiptCompletedAt = receiptCompletedAt;
+        this.supplierConfirmationStatus = Objects.requireNonNull(supplierConfirmationStatus, "supplierConfirmationStatus");
+        this.supplierRespondedAt = supplierRespondedAt;
+        this.supplierReference = supplierReference;
+        this.supplierResponseNote = supplierResponseNote;
         this.version = version;
         this.createdAt = createdAt;
         this.createdBy = createdBy;
@@ -82,10 +106,20 @@ public final class PurchaseOrder extends AggregateRoot {
 
     /** A new purchase order, always born {@link PurchaseOrderStatus#DRAFT}. */
     public static PurchaseOrder draft(String poNumber, UUID supplierId, Currency currency,
-                                      List<PoLine> lines, LocalDate expectedAt) {
+                                      List<PoLine> lines, LocalDate expectedAt,
+                                      int paymentTermDays, int leadTimeDays) {
         return new PurchaseOrder(PurchaseOrderId.newId(), poNumber, supplierId,
-                PurchaseOrderStatus.DRAFT, currency, lines, expectedAt, null, null, 0L,
+                PurchaseOrderStatus.DRAFT, currency, lines, expectedAt, null, null,
+                paymentTermDays, leadTimeDays, null, SupplierConfirmationStatus.NOT_SENT,
+                null, null, null, null, 0L,
                 null, null, null, null);
+    }
+
+    /** Compatibility overload for existing callers and tests. */
+    public static PurchaseOrder draft(String poNumber, UUID supplierId, Currency currency,
+                                      List<PoLine> lines, LocalDate expectedAt) {
+        return draft(poNumber, supplierId, currency, lines, expectedAt,
+                CommercialTerms.PAYMENT_DAYS, CommercialTerms.LEAD_DAYS);
     }
 
     public Money totalAmount() {
@@ -104,9 +138,70 @@ public final class PurchaseOrder extends AggregateRoot {
     }
 
     /** APPROVED -&gt; SENT. */
+    public void confirmDeliveryDate(LocalDate today, LocalDate replacement, String reason) {
+        requireCanTransitionTo(PurchaseOrderStatus.SENT);
+        LocalDate candidate = replacement == null ? expectedAt : replacement;
+        if (candidate == null || candidate.isBefore(today)) {
+            throw new BusinessException(ErrorCode.CONFLICT,
+                    "Confirm a delivery date on or after today's Vietnam date before sending");
+        }
+        if (replacement != null && !replacement.equals(expectedAt)) requireRecoveryReason(reason);
+        expectedAt = candidate;
+    }
+
+    public void requireDeliveryRecovery(LocalDate today, String reason, boolean reconciled, boolean acknowledgePastDue) {
+        if (status != PurchaseOrderStatus.SENT || supplierConfirmationStatus != SupplierConfirmationStatus.PENDING)
+            throw new InvalidPurchaseOrderTransitionException(id, "Delivery recovery requires SENT with a pending supplier response");
+        requireRecoveryReason(reason);
+        if (!reconciled) throw new BusinessException(ErrorCode.CONFLICT,
+                "Reconcile the previous delivery outcome before retrying");
+        if ((expectedAt == null || expectedAt.isBefore(today)) && !acknowledgePastDue)
+            throw new BusinessException(ErrorCode.CONFLICT,
+                    "Explicitly acknowledge the original overdue or unknown delivery date; recovery cannot amend a sent PO");
+    }
+
+    private static void requireRecoveryReason(String reason) {
+        if (reason == null || reason.isBlank() || reason.length() > 1000)
+            throw new IllegalArgumentException("A reason of 1..1000 characters is required");
+    }
+
     public void send(Instant now) {
         requireCanTransitionTo(PurchaseOrderStatus.SENT);
         this.status = PurchaseOrderStatus.SENT;
+        this.sentAt = now;
+        this.supplierConfirmationStatus = SupplierConfirmationStatus.PENDING;
+    }
+
+    public void recordSupplierConfirmation(SupplierConfirmationStatus response, String reference,
+                                           String note, Instant now) {
+        if (status != PurchaseOrderStatus.SENT && status != PurchaseOrderStatus.PARTIALLY_RECEIVED
+                && status != PurchaseOrderStatus.CLOSED && status != PurchaseOrderStatus.CLOSED_SHORT) {
+            throw new InvalidPurchaseOrderTransitionException(id,
+                    "supplier response requires a sent purchase order");
+        }
+        if (response != SupplierConfirmationStatus.CONFIRMED && response != SupplierConfirmationStatus.REJECTED) {
+            throw new IllegalArgumentException("Supplier response must be CONFIRMED or REJECTED");
+        }
+        reference = reference == null || reference.isBlank() ? null : reference.trim();
+        note = note == null || note.isBlank() ? null : note.trim();
+        if (response == SupplierConfirmationStatus.REJECTED && note == null) {
+            throw new IllegalArgumentException("A supplier rejection requires a reason");
+        }
+        if (response == SupplierConfirmationStatus.REJECTED && status != PurchaseOrderStatus.SENT) {
+            throw new InvalidPurchaseOrderTransitionException(id, "Cannot reject a purchase order after receipt");
+        }
+        if (supplierConfirmationStatus == response) {
+            if (Objects.equals(supplierReference, reference)
+                    && Objects.equals(supplierResponseNote, note)) return;
+            throw new InvalidPurchaseOrderTransitionException(id, "A recorded supplier response cannot be overwritten");
+        }
+        if (supplierConfirmationStatus != SupplierConfirmationStatus.PENDING) {
+            throw new InvalidPurchaseOrderTransitionException(id, "supplier response is already final");
+        }
+        this.supplierConfirmationStatus = response;
+        this.supplierRespondedAt = now;
+        this.supplierReference = reference;
+        this.supplierResponseNote = note;
     }
 
     /**
@@ -134,6 +229,12 @@ public final class PurchaseOrder extends AggregateRoot {
      *                         map is untouched
      */
     public void receiveGoods(Map<UUID, Integer> receivedByLineId, Instant now) {
+        if (supplierConfirmationStatus == SupplierConfirmationStatus.REJECTED) {
+            throw new InvalidPurchaseOrderTransitionException(id, "Cannot receive a rejected purchase order; cancel it and create a replacement");
+        }
+        if (receivedByLineId == null || receivedByLineId.isEmpty()) {
+            throw new IllegalArgumentException("At least one received line is required");
+        }
         if (status != PurchaseOrderStatus.SENT && status != PurchaseOrderStatus.PARTIALLY_RECEIVED) {
             throw new InvalidPurchaseOrderTransitionException(id,
                     "cannot receive goods while %s (must be SENT or PARTIALLY_RECEIVED)".formatted(status));
@@ -145,6 +246,7 @@ public final class PurchaseOrder extends AggregateRoot {
             line.receive(entry.getValue());
         }
         boolean fullyReceived = lines.stream().allMatch(line -> line.openQuantity() == 0);
+        if (fullyReceived && receiptCompletedAt == null) receiptCompletedAt = Objects.requireNonNull(now, "receipt time");
         this.status = fullyReceived ? PurchaseOrderStatus.CLOSED : PurchaseOrderStatus.PARTIALLY_RECEIVED;
     }
 
@@ -177,6 +279,14 @@ public final class PurchaseOrder extends AggregateRoot {
     public LocalDate expectedAt() { return expectedAt; }
     public String cancellationReason() { return cancellationReason; }
     public String closeShortReason() { return closeShortReason; }
+    public int paymentTermDays() { return paymentTermDays; }
+    public int leadTimeDays() { return leadTimeDays; }
+    public Instant sentAt() { return sentAt; }
+    public Instant receiptCompletedAt() { return receiptCompletedAt; }
+    public SupplierConfirmationStatus supplierConfirmationStatus() { return supplierConfirmationStatus; }
+    public Instant supplierRespondedAt() { return supplierRespondedAt; }
+    public String supplierReference() { return supplierReference; }
+    public String supplierResponseNote() { return supplierResponseNote; }
     public long version() { return version; }
     public Instant createdAt() { return createdAt; }
     public String createdBy() { return createdBy; }

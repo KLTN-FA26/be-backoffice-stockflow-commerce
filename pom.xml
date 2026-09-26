@@ -166,6 +166,11 @@
       <groupId>org.springframework.modulith</groupId>
       <artifactId>spring-modulith-starter-jpa</artifactId>
     </dependency>
+    <!-- Read the existing publication registry for fair, bounded PO retry selection. -->
+    <dependency>
+      <groupId>org.springframework.modulith</groupId>
+      <artifactId>spring-modulith-events-core</artifactId>
+    </dependency>
     <dependency>
       <groupId>org.springframework.modulith</groupId>
       <artifactId>spring-modulith-actuator</artifactId>

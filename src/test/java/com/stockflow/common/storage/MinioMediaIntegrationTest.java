@@ -22,7 +22,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 @Testcontainers(disabledWithoutDocker = true)
 class MinioMediaIntegrationTest {
-    @Container static final GenericContainer<?> MINIO = new GenericContainer<>("quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z")
+    // Keep aligned with docker-compose.yml; the original upstream image is no longer pullable.
+    @Container static final GenericContainer<?> MINIO = new GenericContainer<>(
+            "ghcr.io/coollabsio/minio:RELEASE.2025-04-22T22-12-26Z@sha256:a4938f37f1be1841b8e7b627ad0207b265345fd0d063e42d7410c78af0e63e68")
             .withEnv("MINIO_ROOT_USER", "stockflow-test").withEnv("MINIO_ROOT_PASSWORD", "stockflow-test-secret")
             .withCommand("server /data").withExposedPorts(9000)
             .waitingFor(Wait.forHttp("/minio/health/ready").forPort(9000));
