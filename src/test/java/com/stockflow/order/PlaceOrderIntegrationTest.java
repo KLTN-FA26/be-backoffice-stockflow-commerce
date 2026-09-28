@@ -10,6 +10,7 @@ import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.security.DataScope;
+import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.RecordedEvents;
@@ -48,7 +49,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @Import({PostgresContainer.class, RecordedEvents.class})
 class PlaceOrderIntegrationTest {
 
-    /** From the demo seed: 25 units at HCM-A-01-02-B plus 8 at HCM-A-02-01-A. */
+    /** From the demo seed: 25 units at HCM-A01-2-B plus 8 at HCM-A02-1-A. */
     private static final Sku SOFA = new Sku("SOFA-3S-GREY");
 
     @Autowired OrderService orders;
@@ -57,7 +58,7 @@ class PlaceOrderIntegrationTest {
     @Autowired RecordedEvents.Recorder events;
 
     private static PlaceOrderCommand order(int quantity) {
-        return new PlaceOrderCommand(UUID.randomUUID(), UUID.randomUUID(), List.of(
+        return new PlaceOrderCommand(UUID.randomUUID(), DemoData.CUSTOMER_ID, List.of(
                 new PlaceOrderCommand.Line(SOFA, quantity, Money.vnd(12_000_000), null)));
     }
 

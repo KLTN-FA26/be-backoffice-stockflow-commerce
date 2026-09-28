@@ -6,6 +6,7 @@ import com.stockflow.common.security.CurrentUserProvider;
 import com.stockflow.customer.internal.domain.AddressType;
 import com.stockflow.customer.internal.domain.Customer;
 import com.stockflow.customer.internal.domain.CustomerAddress;
+import com.stockflow.support.ReferenceRows;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -62,7 +63,7 @@ class CustomerAddressPersistenceIntegrationTest {
     @Test
     void theFirstAddressOfEachTypeIsStoredAsTheDefault() {
         var id = Identifiers.newId();
-        var customer = Customer.register(id, Identifiers.newId(), "An", "an@example.com", null);
+        var customer = Customer.register(id, ReferenceRows.user(em), "An", "an@example.com", null);
         customer.addAddress(address(AddressType.SHIPPING, "one"));
         customer.addAddress(address(AddressType.SHIPPING, "two"));
         customer.addAddress(address(AddressType.BILLING, "bill"));
@@ -77,7 +78,7 @@ class CustomerAddressPersistenceIntegrationTest {
     @Test
     void movingTheDefaultIsStoredAndLeavesTheOtherTypeAlone() {
         var id = Identifiers.newId();
-        var customer = Customer.register(id, Identifiers.newId(), "An", "an2@example.com", null);
+        var customer = Customer.register(id, ReferenceRows.user(em), "An", "an2@example.com", null);
         customer.addAddress(address(AddressType.SHIPPING, "one"));
         var two = customer.addAddress(address(AddressType.SHIPPING, "two"));
         customer.addAddress(address(AddressType.BILLING, "bill"));
@@ -102,7 +103,7 @@ class CustomerAddressPersistenceIntegrationTest {
     @Test
     void savingAnUnrelatedChangeKeepsEveryDefault() {
         var id = Identifiers.newId();
-        var customer = Customer.register(id, Identifiers.newId(), "An", "an3@example.com", null);
+        var customer = Customer.register(id, ReferenceRows.user(em), "An", "an3@example.com", null);
         customer.addAddress(address(AddressType.SHIPPING, "one"));
         customer.addAddress(address(AddressType.BILLING, "bill"));
         adapter.save(customer);
