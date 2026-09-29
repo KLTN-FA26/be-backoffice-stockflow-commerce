@@ -22,9 +22,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 @Testcontainers(disabledWithoutDocker = true)
 class MinioMediaIntegrationTest {
-    // Keep aligned with docker-compose.yml; the original upstream image is no longer pullable.
-    @Container static final GenericContainer<?> MINIO = new GenericContainer<>(
-            "ghcr.io/coollabsio/minio:RELEASE.2025-04-22T22-12-26Z@sha256:a4938f37f1be1841b8e7b627ad0207b265345fd0d063e42d7410c78af0e63e68")
+    // MinIO stopped publishing community images in 2026: quay.io/minio/minio and minio/minio now refuse
+    // anonymous pulls, which failed CI with "unauthorized" while cached local copies hid it. pgsty/minio
+    // is the community-maintained build of the same server, drop-in (same binary, same S3 API).
+    @Container static final GenericContainer<?> MINIO = new GenericContainer<>("pgsty/minio:RELEASE.2026-08-04T00-00-00Z")
             .withEnv("MINIO_ROOT_USER", "stockflow-test").withEnv("MINIO_ROOT_PASSWORD", "stockflow-test-secret")
             .withCommand("server /data").withExposedPorts(9000)
             .waitingFor(Wait.forHttp("/minio/health/ready").forPort(9000));

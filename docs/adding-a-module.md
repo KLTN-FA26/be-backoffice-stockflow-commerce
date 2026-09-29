@@ -255,8 +255,8 @@ CREATE TABLE procurement.purchase_order
 );
 ```
 
-Three rules from ADR-0005: your module writes only its own schema, no foreign key crosses a schema,
-no JOIN crosses a schema.
+Three rules from ADR-0005/ADR-0007: your module writes only its own schema, a reference to another
+module's row is a real single-column foreign key (`ON DELETE RESTRICT`), no JOIN crosses a schema.
 
 State every invariant **twice** — once in the aggregate, once as a `CHECK`. The domain gives the
 good error message; the constraint is what a bad migration or a manual `UPDATE` cannot talk its way
@@ -394,7 +394,7 @@ class and the boundary — read it before changing the rule.
 - [ ] `package-info.java` with the shortest `allowedDependencies` that works, each entry `"<module> :: api"`
 - [ ] `api/package-info.java` carries `@NamedInterface("api")`, and the module base package holds only `package-info.java`
 - [ ] Names follow `## 2. Naming` — role suffix where there is a role, plain nouns for values, `Command`/`Result` sharing a stem, one word per concept
-- [ ] Migration: timestamped, own schema, no cross-schema FK, invariants as `CHECK`
+- [ ] Migration: timestamped, own schema, cross-schema references as FK (ADR-0007), invariants as `CHECK`
 - [ ] Aggregate is `final`, has no framework annotation, protects its invariants
 - [ ] Entity extends `BaseEntity`; enums are `EnumType.STRING`
 - [ ] `ScopedEntity` + `ScopedJpaRepository` if rows belong to someone
