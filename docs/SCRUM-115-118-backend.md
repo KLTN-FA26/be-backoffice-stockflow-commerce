@@ -63,9 +63,9 @@ The existing NotificationSender owns transport. The existing Spring Modulith eve
 
 ## Database upgrade
 
-PR-local migrations are now ordered `V20260925000100`, `V20260925000200`, `V20260925000300`, above develop's `V20260919001700`. Run `mvn clean` before building to remove old resource filenames. Do not enable Flyway out-of-order globally to hide this problem.
+PR-local migrations are now ordered `V20260930000100`, `V20260930000200`, `V20260930000300`, above develop's `V20260928006000` (renamed again from `V20260925*`/`V20260926000100` when develop gained the full-schema migrations). Run `mvn clean` before building to remove old resource filenames. Do not enable Flyway out-of-order globally to hide this problem.
 
-`V20260926000100` follows these migrations and adds dispatch control, append-only decision history and sent-date protection. It preserves unknown legacy send evidence rather than presenting historical orders without a queued event as QUEUED.
+`V20260930000400` follows these migrations and adds dispatch control, append-only decision history and sent-date protection. It preserves unknown legacy send evidence rather than presenting historical orders without a queued event as QUEUED.
 
 The upgrade preserves historical sent/received POs as PENDING without fabricating sent_at; a migration-only legacy marker permits recording responses when historical send time is unknown. Their delivery state remains UNKNOWN without delivery evidence.
 

@@ -43,10 +43,13 @@ CREATE UNIQUE INDEX uk_delivery_log_external_reference
 INSERT INTO identity.permission (id, code, resource, action, description, version, created_at, created_by)
 SELECT gen_random_uuid(), 'procurement-suppliers:' || action, 'procurement-suppliers', action,
        'Manage supplier master data', 0, NOW(), 'flyway'
-FROM unnest(ARRAY['VIEW_PAGE','READ','CREATE','UPDATE','DELETE']) AS actions(action);
+FROM unnest(ARRAY['VIEW_PAGE','READ','CREATE','UPDATE','DELETE']) AS actions(action)
+-- develop's V20260928006000 already seeds procurement-suppliers; keep whichever row exists.
+ON CONFLICT (code) DO NOTHING;
 
 INSERT INTO identity.role_permission (id, role_id, permission_id, version, created_at, created_by)
 SELECT gen_random_uuid(), role.id, permission.id, 0, NOW(), 'flyway'
 FROM identity.app_role role
 JOIN identity.permission permission ON permission.resource = 'procurement-suppliers'
-WHERE role.code = 'PROCUREMENT_STAFF' AND permission.action <> 'DELETE';
+WHERE role.code = 'PROCUREMENT_STAFF' AND permission.action <> 'DELETE'
+ON CONFLICT (role_id, permission_id) DO NOTHING;

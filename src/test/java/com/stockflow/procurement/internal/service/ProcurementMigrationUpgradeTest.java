@@ -12,7 +12,7 @@ class ProcurementMigrationUpgradeTest {
         try (var postgres = new PostgreSQLContainer<>("postgres:16-alpine")) {
             postgres.start();
             Flyway.configure().dataSource(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword())
-                    .target("20260919001700").load().migrate();
+                    .target("20260928006000").load().migrate();
             try (var connection = DriverManager.getConnection(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
                  var sql = connection.createStatement()) {
                 sql.executeUpdate("""

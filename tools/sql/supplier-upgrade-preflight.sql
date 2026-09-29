@@ -2,7 +2,7 @@
 SELECT current_database(), current_user;
 SELECT version, description, script, checksum, success FROM public.flyway_schema_history
 WHERE version IN ('20260918000100','20260923000100','20260923000200',
-                  '20260925000100','20260925000200','20260925000300') ORDER BY installed_rank;
+                  '20260925000100','20260925000200','20260925000300','20260926000100') ORDER BY installed_rank;
 SELECT lower(code) AS duplicate_code, count(*) FROM procurement.supplier
 GROUP BY lower(code) HAVING count(*) > 1;
 SELECT tax_code, count(*) FROM procurement.supplier WHERE tax_code IS NOT NULL
