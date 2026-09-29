@@ -26,6 +26,12 @@ public interface InventoryService {
      */
     int availableToPromise(Sku sku);
 
+    /** Batch availability; missing keys mean zero. Never authorizes a checkout without reserve(). */
+    default java.util.Map<String, Long> availableQuantities(java.util.Set<String> skus) {
+        return skus.stream().collect(java.util.stream.Collectors.toMap(
+                code -> code, code -> (long) availableToPromise(new Sku(code))));
+    }
+
     /**
      * ATP for one SKU inside one warehouse (SCRUM-157: the storefront may promise per warehouse
      * or system-wide, open question C3). Zero for a warehouse holding none of it.
@@ -53,6 +59,9 @@ public interface InventoryService {
      * @throws com.stockflow.common.error.BusinessException when ATP is below the requested quantity
      */
     ReserveStockResult reserve(ReserveStockCommand command);
+    /** Acquire policy locks and all stock rows in global order before reserving any basket line.
+     * Must join the same transaction as every subsequent reserve call. */
+    void prepareReservation(java.util.Set<Sku> skus);
 
     /** Release a reservation — order cancelled, payment failed, or the hold expired. */
     void release(UUID reservationId, String reason);

@@ -43,7 +43,8 @@ public record PlaceOrderCommand(
      *                         customer approved, so a later edit to the design cannot change what
      *                         was ordered
      */
-    public record Line(Sku sku, int quantity, Money unitPrice, UUID designSnapshotId) {
+    public record Line(Sku sku, int quantity, Money unitPrice, UUID designSnapshotId, UUID quoteId) {
+        public Line(Sku sku,int quantity,Money unitPrice,UUID designSnapshotId){this(sku,quantity,unitPrice,designSnapshotId,null);}
 
         public Line {
             if (sku == null) throw new IllegalArgumentException("sku is required");
@@ -52,6 +53,7 @@ public record PlaceOrderCommand(
             if (unitPrice.isNegative()) {
                 throw new IllegalArgumentException("unitPrice must not be negative");
             }
+            if(quoteId!=null && designSnapshotId==null)throw new IllegalArgumentException("A quote requires its design snapshot");
         }
     }
 }

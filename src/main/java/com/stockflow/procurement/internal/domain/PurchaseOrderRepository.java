@@ -27,4 +27,6 @@ public interface PurchaseOrderRepository extends AggregateRepository<PurchaseOrd
      * object's formatting concerns and this keeps the query simple.
      */
     List<PurchaseOrder> findOpenBySupplierAndExpectedAt(UUID supplierId, LocalDate expectedAt);
+
+    Optional<PurchaseOrder> findByIdForUpdate(PurchaseOrderId id);
 }

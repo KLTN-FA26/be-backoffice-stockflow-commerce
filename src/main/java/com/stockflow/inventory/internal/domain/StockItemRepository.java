@@ -56,6 +56,14 @@ public interface StockItemRepository {
     /** Sellable stock for one SKU across all locations. Used by the query side, never before a lock. */
     List<StockItem> findAvailableBySku(Sku sku);
 
+    /** Aggregated query port: no reservation history is needed for storefront availability. */
+    default java.util.Map<String, Long> availableQuantities(java.util.Set<String> skus, java.time.LocalDate today) {
+        return skus.stream().collect(java.util.stream.Collectors.toMap(code -> code,
+                code -> findAvailableBySku(new Sku(code)).stream()
+                        .filter(item -> item.expiryDate() == null || !item.expiryDate().isBefore(today))
+                        .mapToLong(item -> item.available().value()).sum()));
+    }
+
     /** Per (location, status) subtotals of one SKU, all statuses included; feeds Inventory Level. */
     List<StockLevelLine> findLevelLinesBySku(Sku sku);
 

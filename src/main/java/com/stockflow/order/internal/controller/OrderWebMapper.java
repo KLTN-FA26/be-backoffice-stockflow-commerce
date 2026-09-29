@@ -33,8 +33,8 @@ final class OrderWebMapper {
                 .map(line -> new PlaceOrderCommand.Line(
                         new Sku(line.sku()),
                         line.quantity(),
-                        new Money(line.unitPrice(), ORDER_CURRENCY),
-                        line.designSnapshotId()))
+                        wholeVnd(line.unitPrice()),
+                        line.designSnapshotId(),line.quoteId()))
                 .toList();
         return new PlaceOrderCommand(request.requestId(), request.customerId(),
                 request.shippingAddressId(), request.billingAddressId(), true, lines);
@@ -46,8 +46,14 @@ final class OrderWebMapper {
                 ? shipping : toCommand(request.billingAddress());
         return new PlaceGuestOrderCommand(request.requestId(), request.email(), shipping, billing,
                 request.lines().stream().map(line -> new PlaceGuestOrderCommand.Line(
-                        new Sku(line.sku()), line.quantity(), new Money(line.unitPrice(), ORDER_CURRENCY)))
+                        new Sku(line.sku()), line.quantity(), wholeVnd(line.unitPrice())))
                         .toList());
+    }
+
+    private static Money wholeVnd(java.math.BigDecimal amount) {
+        if (amount == null || amount.stripTrailingZeros().scale() > 0)
+            throw new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.VALIDATION_FAILED);
+        return new Money(amount, ORDER_CURRENCY);
     }
 
     static OrderResponse toResponse(OrderSummary summary) {

@@ -39,7 +39,10 @@ final class PurchaseOrderPersistenceMapper {
                 entity.getExpectedAt(),
                 entity.getCancellationReason(),
                 entity.getCloseShortReason(),
-                entity.getVersion(),
+                entity.getPaymentTermDays(), entity.getLeadTimeDays(), entity.getSentAt(),
+                entity.getSupplierConfirmationStatus(), entity.getSupplierRespondedAt(),
+                entity.getSupplierReference(), entity.getSupplierResponseNote(),
+                entity.getReceiptCompletedAt(), entity.getVersion(),
                 entity.getCreatedAt(),
                 entity.getCreatedBy(),
                 entity.getLastModifiedAt(),
@@ -69,7 +72,9 @@ final class PurchaseOrderPersistenceMapper {
                 entity.getLastModifiedBy(),
                 false,
                 entity.getCancellationReason(),
-                entity.getCloseShortReason());
+                entity.getCloseShortReason(), entity.getPaymentTermDays(), entity.getLeadTimeDays(),
+                entity.getSentAt(), entity.getSupplierConfirmationStatus().name(), entity.getSupplierRespondedAt(),
+                entity.getSupplierReference(), entity.getSupplierResponseNote());
     }
 
     /** Fresh row for an aggregate that has never been persisted. */
@@ -83,8 +88,11 @@ final class PurchaseOrderPersistenceMapper {
                 order.totalAmount().amount(),
                 order.expectedAt(),
                 order.cancellationReason(),
-                order.closeShortReason());
+                order.closeShortReason(), order.paymentTermDays(), order.leadTimeDays(), order.sentAt(),
+                order.supplierConfirmationStatus(), order.supplierRespondedAt(), order.supplierReference(),
+                order.supplierResponseNote());
         entity.replaceLines(toEntities(order));
+        entity.recordCompletion(order.receiptCompletedAt());
         return entity;
     }
 
@@ -100,8 +108,12 @@ final class PurchaseOrderPersistenceMapper {
      * both sufficient and keeps each row's own version intact.</p>
      */
     static void applyToEntity(PurchaseOrder order, PurchaseOrderJpaEntity entity) {
+        entity.confirmExpectedAt(order.expectedAt());
+        entity.recordCompletion(order.receiptCompletedAt());
         entity.apply(order.status(), order.totalAmount().amount(),
-                order.cancellationReason(), order.closeShortReason());
+                order.cancellationReason(), order.closeShortReason(), order.sentAt(),
+                order.supplierConfirmationStatus(), order.supplierRespondedAt(),
+                order.supplierReference(), order.supplierResponseNote());
         for (PoLine line : order.lines()) {
             entity.getLines().stream()
                     .filter(e -> e.getId().equals(line.id()))

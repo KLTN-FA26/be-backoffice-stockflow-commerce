@@ -22,11 +22,9 @@ class GuestCheckoutController {
     private final boolean enabled;
 
     /**
-     * Off unless {@code stockflow.checkout.guest-enabled} says otherwise. The request names its own unit
-     * price and there is no catalogue price to check it against yet, so a public endpoint would let
-     * anyone order any SKU at any price and reserve real stock for it. It is switched on where that
-     * is acceptable (the local profile), and should be switched on elsewhere only once the price is
-     * taken from the server.
+     * Off unless {@code stockflow.checkout.guest-enabled} says otherwise. Checkout now resolves
+     * published server prices; the submitted amount is only the customer's expected price.
+     * Keep the rollout switch until deployment roles, published data and checkout UAT are verified.
      */
     GuestCheckoutController(OrderService orders,
                             @org.springframework.beans.factory.annotation.Value("${stockflow.checkout.guest-enabled:false}") boolean enabled) {

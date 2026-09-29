@@ -3,7 +3,7 @@
  *
  * <p>WBS 3.1 · database schema {@code product}</p>
  *
- * <p><b>May depend on:</b> none — this module calls no other business module. Plus {@code common} and {@code contracts}, which are
+ * <p><b>May depend on:</b> inventory, to validate and synchronously apply SKU control settings. Plus {@code common} and {@code contracts}, which are
  * available to every module.</p>
  *
  * <p>The module has two packages and the split is the whole point:</p>
@@ -14,5 +14,5 @@
  *       you reaching in; {@code ModularityTest} will.</li>
  * </ul>
  */
-@org.springframework.modulith.ApplicationModule(allowedDependencies = {})
+@org.springframework.modulith.ApplicationModule(allowedDependencies = {"inventory :: api"})
 package com.stockflow.product;

@@ -23,11 +23,25 @@ import static org.mockito.Mockito.when;
  */
 class InventoryLevelTest {
 
+    @Test void oneBusinessDateIsUsedEvenWhenClockCrossesMidnight() {
+        var clock = mock(Clock.class);
+        when(clock.instant()).thenReturn(java.time.Instant.parse("2026-09-28T16:59:59Z"),
+                java.time.Instant.parse("2026-09-28T17:00:00Z"));
+        when(repository.findLevelLinesBySku(SKU)).thenReturn(List.of(
+                new StockLevelLine(new LocationId("HN-A"), StockStatus.AVAILABLE, 10, 0, java.time.LocalDate.of(2026,9,28)),
+                new StockLevelLine(new LocationId("HN-B"), StockStatus.AVAILABLE, 10, 0, java.time.LocalDate.of(2026,9,28))));
+        var tested = new InventoryServiceImpl(repository, mock(InventoryEventPublisher.class), clock,
+                mock(com.stockflow.inventory.api.InventoryControlService.class),mock(com.stockflow.inventory.internal.repository.InventoryPolicyRepository.class));
+        assertThat(tested.levelsOf(SKU).getFirst().atp()).isEqualTo(20);
+        org.mockito.Mockito.verify(clock, org.mockito.Mockito.times(1)).instant();
+    }
+
     private static final Sku SKU = new Sku("SOFA-3S-GREY");
 
     private final StockItemRepository repository = mock(StockItemRepository.class);
     private final InventoryServiceImpl service =
-            new InventoryServiceImpl(repository, mock(InventoryEventPublisher.class), Clock.systemUTC());
+            new InventoryServiceImpl(repository, mock(InventoryEventPublisher.class), Clock.systemUTC(),
+                    mock(com.stockflow.inventory.api.InventoryControlService.class),mock(com.stockflow.inventory.internal.repository.InventoryPolicyRepository.class));
 
     private static StockLevelLine line(String location, StockStatus status, int onHand, int reserved) {
         return new StockLevelLine(new LocationId(location), status, onHand, reserved);

@@ -34,6 +34,12 @@ import static org.mockito.Mockito.when;
 
 class GuestCheckoutServiceTest {
 
+    private static com.stockflow.catalog.api.CatalogService catalog() {
+        var catalog = mock(com.stockflow.catalog.api.CatalogService.class);
+        when(catalog.checkoutPrices(any())).thenReturn(java.util.Map.of("TABLE-OAK", Money.vnd(100)));
+        return catalog;
+    }
+
     @Test
     void accountCheckoutResolvesSavedAddressesAndFreezesThemOnTheOrder() {
         OrderRepository orders = mock(OrderRepository.class);
@@ -58,7 +64,7 @@ class GuestCheckoutServiceTest {
                         "0901234567", address, address));
         var service = new OrderServiceImpl(orders, mock(com.stockflow.order.internal.repository.OrderSearchRepository.class), inventory, events,
                 Clock.fixed(now, ZoneOffset.UTC), mock(DesignService.class),
-                mock(OrderHoldJpaRepository.class), customers);
+                mock(OrderHoldJpaRepository.class), customers, catalog(),mock(com.stockflow.order.internal.repository.CheckoutRequestRepository.class),mock(DesignQuoteService.class));
 
         var result = service.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), customerId,
                 shippingId, null, true,
@@ -87,7 +93,7 @@ class GuestCheckoutServiceTest {
         when(orders.save(any())).thenAnswer(call -> call.getArgument(0));
         var service = new OrderServiceImpl(orders, mock(com.stockflow.order.internal.repository.OrderSearchRepository.class), inventory, events,
                 Clock.fixed(now, ZoneOffset.UTC), mock(DesignService.class),
-                mock(OrderHoldJpaRepository.class), mock(com.stockflow.customer.api.CustomerService.class));
+                mock(OrderHoldJpaRepository.class), mock(com.stockflow.customer.api.CustomerService.class), catalog(),mock(com.stockflow.order.internal.repository.CheckoutRequestRepository.class),mock(DesignQuoteService.class));
         var address = new PlaceGuestOrderCommand.Address("Minh", "0901234567", "12 Nguyen Hue",
                 null, "26734", "Ben Nghe", "79", "Ho Chi Minh City", "VN", null);
 
@@ -119,7 +125,7 @@ class GuestCheckoutServiceTest {
         when(orders.findByRequestId(requestId)).thenReturn(Optional.of(existing));
         var service = new OrderServiceImpl(orders, mock(com.stockflow.order.internal.repository.OrderSearchRepository.class), mock(InventoryService.class),
                 mock(OrderEventPublisher.class), Clock.systemUTC(), mock(DesignService.class),
-                mock(OrderHoldJpaRepository.class), mock(CustomerService.class));
+                mock(OrderHoldJpaRepository.class), mock(CustomerService.class), catalog(),mock(com.stockflow.order.internal.repository.CheckoutRequestRepository.class),mock(DesignQuoteService.class));
 
         assertThatThrownBy(() -> service.placeGuestOrder(new PlaceGuestOrderCommand(requestId,
                 "minh@example.com", address, address,

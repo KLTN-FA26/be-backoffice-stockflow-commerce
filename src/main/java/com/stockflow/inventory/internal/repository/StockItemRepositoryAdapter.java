@@ -71,7 +71,10 @@ class StockItemRepositoryAdapter implements StockItemRepository {
      * correctly serialised and still reserve against pre-lock numbers, which is the oversell the
      * lock was taken to prevent.</p>
      *
-     * <p>{@code refresh(entity, PESSIMISTIC_WRITE)} re-reads the row and its cascaded collection
+     * <p>A scalar SELECT FOR UPDATE first locks the row before loading any entity version.
+     * Hibernate's follow-on locking of a fetched collection can otherwise read an old version,
+     * wait for a concurrent checkout, then reject that version instead of refreshing current stock.
+     * {@code refresh(entity, PESSIMISTIC_WRITE)} then re-reads the row and its cascaded collection
      * under the lock and overwrites the cached state, so the aggregate handed back reflects what
      * every earlier transaction committed. The load-then-refresh pair also keeps the lock and the
      * fetch join apart, which not every database supports combining.</p>
@@ -87,6 +90,10 @@ class StockItemRepositoryAdapter implements StockItemRepository {
      */
     @Override
     public Optional<StockItem> findByIdForUpdate(StockItemId id) {
+        if (entityManager.createNativeQuery("select id from inventory.stock_item where id = :id for update")
+                .setParameter("id", id.value()).getResultList().isEmpty()) {
+            return Optional.empty();
+        }
         return jpa.findByIdWithReservations(id.value())
                 .map(entity -> {
                     entityManager.refresh(entity, LockModeType.PESSIMISTIC_WRITE, LOCK_TIMEOUT);
@@ -114,6 +121,13 @@ class StockItemRepositoryAdapter implements StockItemRepository {
         return jpa.findAvailableBySku(sku.code()).stream()
                 .map(StockItemPersistenceMapper::toDomain)
                 .toList();
+    }
+
+    @Override
+    public java.util.Map<String, Long> availableQuantities(java.util.Set<String> skus, java.time.LocalDate today) {
+        if (skus.isEmpty()) return java.util.Map.of();
+        return jpa.availableTotals(skus, today).stream().collect(java.util.stream.Collectors.toMap(
+                StockItemJpaRepository.AvailableTotal::getSku, StockItemJpaRepository.AvailableTotal::getQuantity));
     }
 
     @Override

@@ -42,6 +42,8 @@ public interface ProductJpaRepository extends BaseJpaRepository<ProductJpaEntity
     Optional<ProductJpaEntity> findByIdWithImages(@Param("id") UUID id);
 
     boolean existsByCode(String code);
+    @Query("select p.id from ProductJpaEntity p where p.id in :ids and p.status=com.stockflow.product.api.ProductStatus.PUBLISHED")
+    java.util.List<UUID> publishedIds(@Param("ids") java.util.Set<UUID> ids);
 
     Optional<ProductJpaEntity> findByCode(String code);
 }

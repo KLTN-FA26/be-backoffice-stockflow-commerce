@@ -14,6 +14,11 @@ public enum ErrorCode {
 
     // ---- 400: the request itself is wrong; retrying it unchanged will not help
     VALIDATION_FAILED("Invalid request data", 400),
+    INVENTORY_POLICY_INVALID("Invalid SKU inventory policy", 400),
+    INVENTORY_POLICY_STOCK_CONFLICT("Existing stock is incompatible with this policy", 409),
+    CATALOG_SLUG_EXISTS("This storefront URL is already reserved", 409),
+    CATALOG_NOT_READY("Product is not ready for storefront publication", 409),
+    CATALOG_PRICE_AMBIGUOUS("More than one selling price has the same priority", 409),
     MALFORMED_REQUEST("The request body could not be read", 400),
     UNSUPPORTED_PARAMETER("Unsupported parameter value", 400),
 
@@ -48,6 +53,16 @@ public enum ErrorCode {
 
     // ---- 409: the request is fine, the current state is not
     CONFLICT("Conflicting state", 409),
+    CHECKOUT_PRICE_CHANGED("The selling price changed; review the basket and confirm again", 409),
+    COUNT_SELF_APPROVAL("The counter cannot approve their own variance",409),
+    COUNT_POLICY_CONFLICT("Reconcile the active count and SKU tracking policy before proceeding",409),
+    DESIGN_QUOTE_REQUIRED("An accepted design quote matching this order line is required",409),
+    DESIGN_QUOTE_EXPIRED("The design quote has expired",409),
+    DESIGN_QUOTE_CONFLICT("The quote version or state no longer allows this action",409),
+    COUNT_RESERVED_CONFLICT("Release or reallocate affected order holds before posting this shortage",409),
+    COUNT_ALREADY_ACTIVE("Stock is already included in an active count",409),
+    COUNT_INCOMPLETE("Every stock line must be counted",409),
+    COUNT_STOCK_CHANGED("Stock changed during counting; a new count is required",409),
     INSUFFICIENT_STOCK("Not enough available stock", 409),
     OPTIMISTIC_LOCK("The record changed meanwhile, please retry", 409),
     /** Two writers reached the same row; the loser waited for the lock and gave up. Retryable. */
@@ -57,6 +72,10 @@ public enum ErrorCode {
     IDEMPOTENT_REQUEST_IN_PROGRESS("An identical request is still being processed", 409),
     /** BR-PO: a new PO cannot be raised against a supplier that is not ACTIVE. */
     SUPPLIER_INACTIVE("This supplier cannot receive new purchase orders", 409),
+    SUPPLIER_HAS_OPEN_PURCHASE_ORDERS("Supplier has open purchase orders", 409),
+    SUPPLIER_CODE_ALREADY_EXISTS("A supplier with this code already exists", 409),
+    SUPPLIER_TAX_CODE_ALREADY_EXISTS("A supplier with this tax code already exists", 409),
+    INVALID_SUPPLIER_CONFIRMATION("This supplier confirmation cannot be recorded", 409),
     PRODUCT_CODE_ALREADY_EXISTS("A product with this code already exists", 409),
     INVALID_PRODUCT_STATUS_TRANSITION("This product cannot move to that status right now", 409),
     SELF_APPROVAL_NOT_ALLOWED("A product cannot be approved by the person who submitted it", 409),
@@ -65,7 +84,7 @@ public enum ErrorCode {
     /** Checkout needs somewhere to deliver: no shipping address was chosen and none is the default. */
     SHIPPING_ADDRESS_REQUIRED("Add a shipping address before placing an order", 409),
 
-    /** Guest checkout is switched off (it is on only where prices can be trusted, see application.yml). */
+    /** Deployment rollout gate for guest checkout; see application.yml. */
     GUEST_CHECKOUT_DISABLED("Guest checkout is not available", 403),
     INVALID_PURCHASE_ORDER_TRANSITION("This purchase order cannot move to that status right now", 409),
 
