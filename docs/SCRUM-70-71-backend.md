@@ -159,8 +159,10 @@ they do not modify or bypass product-master approval.
 ## Deployment / legacy preflight
 
 Only new migrations are added:
-`V20260927000100__sku_inventory_control.sql`, `V20260927000200__catalog_publication.sql`, and
-`V20260929000100` through `V20260929000400` (counts, approved corrections, alerts and permissions).
+`V20260930001000__sku_inventory_control.sql`, `V20260930001100__catalog_publication.sql`, and
+`V20260930001200` through `V20260930001600` (counts, approved corrections, alerts, permissions and
+checkout quotes). Renumbered on 29/9 from `V20260927*`/`V20260929*` so they run after develop's
+`V20260928006000` and after the supplier/PO migrations `V20260930000100..000400` this branch stacks on.
 No applied migration was edited; no local production/developer database was migrated by the tests.
 
 Before enabling FIFO for legacy stock:

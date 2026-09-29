@@ -12,7 +12,7 @@ class ProcurementMigrationUpgradeTest {
         try (var postgres = new PostgreSQLContainer<>("postgres:16-alpine")) {
             postgres.start();
             Flyway.configure().dataSource(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword())
-                    .target("20260919001700").load().migrate();
+                    .target("20260928006000").load().migrate();
             try (var connection = DriverManager.getConnection(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
                  var sql = connection.createStatement()) {
                 sql.executeUpdate("""
@@ -28,7 +28,7 @@ class ProcurementMigrationUpgradeTest {
                 // Later stories may append migrations; require our four, not a permanently fixed total.
                 var pending = upgrade.info().pending();
                 assertThat(pending).extracting(m -> m.getVersion().toString())
-                        .contains("20260925000100", "20260925000200", "20260925000300", "20260926000100");
+                        .contains("20260930000100", "20260930000200", "20260930000300", "20260930000400");
                 assertThat(upgrade.migrate().migrationsExecuted).isEqualTo(pending.length);
                 upgrade.validate();
                 try (var controls = sql.executeQuery("select count(*) from notification.po_delivery_control where purchase_order_id='00000000-0000-0000-0000-000000000002'")) {
