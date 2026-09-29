@@ -11,6 +11,8 @@ import com.stockflow.design.internal.repository.DesignArtifactJpaRepository;
 import com.stockflow.design.internal.repository.DesignDraftJpaRepository;
 import com.stockflow.product.api.ProductService;
 import com.stockflow.product.api.ProductSummary;
+import com.stockflow.support.ReferenceRows;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
@@ -51,7 +53,15 @@ class DesignWorkflowIntegrationTest {
     @MockitoBean com.stockflow.common.storage.UploadInspection inspection;
     @MockitoBean com.stockflow.common.storage.FileTransfers files;
     @MockitoBean com.stockflow.identity.api.IdentityService identities;
-    private final UUID owner = Identifiers.newId(), editor = Identifiers.newId(), reviewer = Identifiers.newId();
+    /** Real rows: the draft's customer and every actor are foreign keys since ADR-0007. */
+    private UUID owner, editor, reviewer, customer;
+
+    @BeforeEach void referencedRows() {
+        owner = ReferenceRows.user(entityManager);
+        editor = ReferenceRows.user(entityManager);
+        reviewer = ReferenceRows.user(entityManager);
+        customer = ReferenceRows.customer(entityManager);
+    }
 
     private DesignWorkflowService.DraftView draftWithArtifact() throws Exception {
         when(identities.isActiveUserWithAnyRole(any(), any(String[].class))).thenReturn(true);
@@ -61,7 +71,7 @@ class DesignWorkflowIntegrationTest {
         }).when(inspection).requireClean(any());
         when(clock.instant()).thenReturn(Instant.parse("2026-09-17T00:00:00Z"));
         when(products.findById(any())).thenReturn(Optional.of(mock(ProductSummary.class)));
-        var draft = workflow.create(Identifiers.newId(), Identifiers.newId(), owner, editor, reviewer,
+        var draft = workflow.create(customer, Identifiers.newId(), owner, editor, reviewer,
                 "Custom cabinet", "Width 1800 mm, white", editor);
         byte[] bytes = "confirmed bytes".getBytes(java.nio.charset.StandardCharsets.UTF_8);
         var checksum = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes));

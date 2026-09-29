@@ -83,7 +83,9 @@ services:
       retries: 12
 
   minio:
-    image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
+    # Community-maintained build of MinIO: the official quay.io/minio and minio/minio images no longer
+    # allow anonymous pulls (2026). Same server, same S3 API, same `mc` for the healthcheck below.
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
     container_name: stockflow-minio
     # S3-compatible object storage for product images and design renders, so the application code
     # is written against S3 from day one rather than against the local filesystem.

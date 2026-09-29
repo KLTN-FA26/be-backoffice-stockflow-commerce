@@ -11,6 +11,7 @@ import com.stockflow.product.api.ProductStatus;
 import com.stockflow.product.api.TaxClass;
 import com.stockflow.product.internal.entity.ProductImageJpaEntity;
 import com.stockflow.product.internal.entity.ProductJpaEntity;
+import com.stockflow.support.ReferenceRows;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -64,7 +65,8 @@ class MediaPersistenceIntegrationTest {
 
     @Test void designReplacementKeepsPreviousRevisionAndInvalidatesPreflight() {
         var draftId = Identifiers.newId();
-        var draft = new DesignDraftJpaEntity(draftId, Identifiers.newId(), Identifiers.newId(),
+        // The customer and the people are foreign keys since ADR-0007; the product is not yet (C1).
+        var draft = new DesignDraftJpaEntity(draftId, ReferenceRows.customer(em), Identifiers.newId(),
                 "Cup design", null, DesignStatus.DRAFT);
         em.persist(draft);
         var file = new StoredFile("design-renders/one.pdf", "one.pdf", "application/pdf", 12, Instant.EPOCH);
@@ -72,8 +74,8 @@ class MediaPersistenceIntegrationTest {
         em.persist(first);
         draft.attachArtifact(first.getId());
         em.flush();
-        var reviewer = Identifiers.newId();
-        draft.assign(Identifiers.newId(), Identifiers.newId(), reviewer);
+        var reviewer = ReferenceRows.user(em);
+        draft.assign(ReferenceRows.user(em), ReferenceRows.user(em), reviewer);
         draft.review(reviewer, true, "Manual inspection completed");
         em.flush();
         em.refresh(draft);

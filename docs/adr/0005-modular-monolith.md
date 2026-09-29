@@ -56,7 +56,9 @@ Spring Modulith 1.4 — not one big package.**
    the design decays one convenient import at a time.
 3. **One database, one schema per module.** No foreign key and no JOIN crosses a schema; a
    cross-module reference is a plain UUID column. Referential integrity across modules is the
-   application's job.
+   application's job. *(The foreign-key half of this rule is superseded by
+   [ADR-0007](0007-cross-schema-foreign-keys.md), 2026-09-28: cross-module references are now real
+   foreign keys. No JOIN across schemas still holds.)*
 4. **Cross-module calls are direct Java calls through the published interface** when the caller
    needs the result inside its transaction, and **events** when a module is announcing a fact and
    does not care who reacts. `OrderServiceImpl.placeOrder` calls `InventoryService.reserve`;
@@ -116,7 +118,7 @@ enforced rather than merely documented. To extract a module — say inventory gr
 scaling:
 
 1. Its public interface (`InventoryService`) already exists and is already the only way in.
-2. Its schema already has no incoming foreign keys.
+2. Its incoming foreign keys (ADR-0007) are dropped first - one migration, listed from `pg_constraint`.
 3. The direct call becomes an HTTP or gRPC client behind the same interface; the caller does not
    change.
 4. The saga that this ADR deleted comes back **for that one flow only**, because the atomicity
