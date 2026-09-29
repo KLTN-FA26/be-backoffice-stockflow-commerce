@@ -57,6 +57,29 @@ public final class StockItem extends AggregateRoot {
     private final LocationId location;
     private final String lotNumber;
     private final LocalDate expiryDate;
+    private Instant receivedAt;
+    private String serialNumber;
+
+    public Instant receivedAt() { return receivedAt; }
+    public String serialNumber() { return serialNumber; }
+
+    public StockItem(StockItemId id, Sku sku, LocationId location, String lotNumber,
+                     LocalDate expiryDate, Quantity onHand, StockStatus status,
+                     List<Reservation> reservations, long version, Instant receivedAt, String serialNumber) {
+        this(id, sku, location, lotNumber, expiryDate, onHand, status, reservations, version);
+        this.receivedAt = receivedAt;
+        this.serialNumber = serialNumber;
+        if (serialNumber != null && (serialNumber.isBlank() || onHand.value() > 1))
+            throw new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.INVENTORY_POLICY_INVALID);
+    }
+
+    /** Receipt integration must pass the real receipt time; never infer it from persistence auditing. */
+    public static StockItem receive(Sku sku, LocationId location, String lotNumber,
+                                    LocalDate expiryDate, Quantity quantity, Instant receivedAt, String serialNumber) {
+        java.util.Objects.requireNonNull(receivedAt, "receivedAt");
+        return new StockItem(StockItemId.newId(), sku, location, lotNumber, expiryDate,
+                quantity, StockStatus.QUARANTINE, List.of(), 0L, receivedAt, serialNumber);
+    }
 
     private Quantity onHand;
     private StockStatus status;
@@ -196,6 +219,9 @@ public final class StockItem extends AggregateRoot {
         if (alreadyServed.isPresent()) {
             return alreadyServed.get();
         }
+        if (expiryDate != null && expiryDate.isBefore(com.stockflow.common.domain.BusinessCalendar.date(now))) {
+            throw new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT);
+        }
         if (!status.isReservable()) {
             throw new IllegalStateException(
                     "Stock in status %s cannot be reserved for order %s".formatted(status, orderId));
@@ -253,6 +279,10 @@ public final class StockItem extends AggregateRoot {
      * it.</p>
      */
     public void consumeReservation(ReservationId reservationId, Instant now) {
+        if (!status.isReservable() || expiryDate != null
+                && expiryDate.isBefore(com.stockflow.common.domain.BusinessCalendar.date(now))) {
+            throw new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT);
+        }
         Reservation reservation = findReservation(reservationId).orElseThrow(() ->
                 new IllegalArgumentException(
                         "Reservation %s does not belong to stock item %s".formatted(reservationId, id)));
@@ -290,6 +320,8 @@ public final class StockItem extends AggregateRoot {
      * in a broken state — not even one rehydrated from a row a bad migration corrupted.
      */
     private void checkInvariants() {
+        if (serialNumber != null && (serialNumber.isBlank() || onHand.value() > 1))
+            throw new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.INVENTORY_POLICY_INVALID);
         Quantity reserved = reserved();
         if (reserved.value() > onHand.value()) {
             throw new IllegalStateException(

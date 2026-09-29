@@ -19,7 +19,7 @@ import java.time.LocalDate;
 /**
  * Delivers one notification.
  *
- * <p>Purchase orders use real SMTP/HTTPS transport. Other notification templates retain their
+ * <p>Purchase orders use real SMTP/HTTPS transport; inventory alerts use SMTP. Other templates retain their
  * existing logging behavior. Transport stays separate from durable event handling.</p>
  */
 @Component
@@ -71,6 +71,10 @@ class NotificationSender {
     }
 
     private static final Logger log = LoggerFactory.getLogger(NotificationSender.class);
+    void sendInventoryAlert(String recipient,String subject,String body) {
+        var message=new SimpleMailMessage();message.setFrom(mailFrom);message.setTo(recipient);
+        message.setSubject(subject);message.setText(body);mail.send(message);
+    }
 
     /** Internal recovery generations must not change the supplier's idempotent PO payload. */
     private record SupplierPurchaseOrderMessage(UUID purchaseOrderId, String poNumber, UUID supplierId,

@@ -133,7 +133,7 @@ public class ResourceServerSecurityConfig {
                         // it. Both are unauthenticated by necessity, not by oversight.
                         .requestMatchers("/api/v1/identity/auth/login", "/api/v1/customers/registrations",
                                 "/api/v1/orders/guest-checkout", "/oauth2/jwks",
-                                "/api/v1/public/products/**").permitAll()
+                                "/api/v1/public/products/**", "/api/v1/public/catalog/products/**").permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(oauth -> oauth
                         .jwt(jwt -> jwt.jwtAuthenticationConverter(

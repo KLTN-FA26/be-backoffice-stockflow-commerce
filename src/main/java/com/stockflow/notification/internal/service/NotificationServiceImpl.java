@@ -29,13 +29,21 @@ class NotificationServiceImpl implements NotificationService {
     private final DeliveryLogJpaRepository logs;
     private final SupplierEndpointPolicy policy;
     private final PoDeliveryControlRepository controls;
+    private final com.stockflow.notification.internal.repository.InventoryAlertDeliveryRepository alertQueue;
+    private final java.time.Clock clock;
 
     NotificationServiceImpl(DeliveryLogJpaRepository logs, PoDeliveryControlRepository controls,
-            @Value("${stockflow.notification.supplier-api-allowed-hosts:}") String hosts) {
+            @Value("${stockflow.notification.supplier-api-allowed-hosts:}") String hosts,
+            com.stockflow.notification.internal.repository.InventoryAlertDeliveryRepository alertQueue,java.time.Clock clock) {
         this.logs = logs;
         this.controls = controls;
         this.policy = new SupplierEndpointPolicy(hosts);
+        this.alertQueue=alertQueue;this.clock=clock;
     }
+    public void queueInventoryAlert(com.stockflow.notification.api.InventoryAlertMessage message){alertQueue.enqueue(message);}
+    @Transactional(readOnly=true)
+    public java.util.List<com.stockflow.notification.api.AlertDeliverySummary> inventoryAlertDeliveries(UUID id){return alertQueue.list(id);}
+    public void retryInventoryAlert(UUID id){alertQueue.retry(id,clock.instant());}
 
     @Override
     public void validateSupplierDelivery(String channel, String recipient) { policy.validate(channel, recipient); }

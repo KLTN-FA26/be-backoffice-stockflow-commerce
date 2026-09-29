@@ -14,6 +14,15 @@ import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 class NotificationSenderTest {
+    @Test void inventoryAlertUsesExistingSmtpTransport() {
+        var mail=mock(JavaMailSender.class);
+        var sender=new NotificationSender(mail,mock(RestClientFactory.class),"warehouse@example.test","");
+        sender.sendInventoryAlert("planner@example.test","Stock alert","SKU CHAIR: usable on-hand 2, threshold 5");
+        var message=ArgumentCaptor.forClass(SimpleMailMessage.class);verify(mail).send(message.capture());
+        assertThat(message.getValue().getFrom()).isEqualTo("warehouse@example.test");
+        assertThat(message.getValue().getTo()).containsExactly("planner@example.test");
+        assertThat(message.getValue().getText()).contains("CHAIR","threshold 5");
+    }
     private PurchaseOrderSent event(String channel, String recipient) {
         return new PurchaseOrderSent(UUID.randomUUID(), "PO-1", UUID.randomUUID(), channel, recipient,
                 BigDecimal.valueOf(200), "VND", LocalDate.of(2026, 10, 1), 30,

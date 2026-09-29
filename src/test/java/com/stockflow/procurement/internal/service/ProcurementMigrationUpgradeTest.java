@@ -25,7 +25,11 @@ class ProcurementMigrationUpgradeTest {
                         '00000000-0000-0000-0000-000000000001','SENT',now())
                         """);
                 var upgrade = Flyway.configure().dataSource(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword()).load();
-                assertThat(upgrade.migrate().migrationsExecuted).isEqualTo(4);
+                // Later stories may append migrations; require our four, not a permanently fixed total.
+                var pending = upgrade.info().pending();
+                assertThat(pending).extracting(m -> m.getVersion().toString())
+                        .contains("20260925000100", "20260925000200", "20260925000300", "20260926000100");
+                assertThat(upgrade.migrate().migrationsExecuted).isEqualTo(pending.length);
                 upgrade.validate();
                 try (var controls = sql.executeQuery("select count(*) from notification.po_delivery_control where purchase_order_id='00000000-0000-0000-0000-000000000002'")) {
                     controls.next(); assertThat(controls.getInt(1)).isZero();

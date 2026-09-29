@@ -32,6 +32,9 @@ public class ProductPublicationService {
         if (product.status() == ProductStatus.PUBLISHED) {
             return;
         }
+        if (product.categoryId() == null || !products.categoryExists(product.categoryId())) {
+            throw new BusinessException(ErrorCode.CATALOG_NOT_READY);
+        }
         var gallery = galleries.findById(productId)
                 .filter(value -> !value.getPublishedItems().isEmpty())
                 .orElseThrow(() -> new BusinessException(ErrorCode.CONFLICT,

@@ -59,19 +59,36 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
     private final StockItemRepository repository;
     private final InventoryEventPublisher events;
     private final Clock clock;
+    private final com.stockflow.inventory.api.InventoryControlService controls;
+    private final com.stockflow.inventory.internal.repository.InventoryPolicyRepository policies;
 
-    InventoryServiceImpl(StockItemRepository repository, InventoryEventPublisher events, Clock clock) {
+    InventoryServiceImpl(StockItemRepository repository, InventoryEventPublisher events, Clock clock,
+                         com.stockflow.inventory.api.InventoryControlService controls,
+                         com.stockflow.inventory.internal.repository.InventoryPolicyRepository policies) {
         this.repository = repository;
         this.events = events;
         this.clock = clock;
+        this.controls = controls;
+        this.policies = policies;
+    }
+    @Override
+    @Transactional(propagation=Propagation.MANDATORY)
+    public void prepareReservation(java.util.Set<Sku> skus) {
+        policies.lockReservationStock(skus.stream().map(Sku::code).collect(java.util.stream.Collectors.toSet()));
     }
 
     @Override
     @Transactional(readOnly = true)
     public int availableToPromise(Sku sku) {
-        return repository.findAvailableBySku(sku).stream()
-                .mapToInt(item -> item.available().value())
-                .sum();
+        return Math.toIntExact(availableQuantities(java.util.Set.of(sku.code())).getOrDefault(sku.code(), 0L));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Map<String, Long> availableQuantities(java.util.Set<String> skus) {
+        var normalized = skus.stream().map(code -> new Sku(code).code()).collect(java.util.stream.Collectors.toSet());
+        if (normalized.isEmpty()) return Map.of();
+        return repository.availableQuantities(normalized, com.stockflow.common.domain.BusinessCalendar.date(clock.instant()));
     }
 
     @Override
@@ -87,13 +104,13 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
     @Override
     @Transactional(readOnly = true)
     public List<StockAvailability> availabilityOf(Sku sku) {
-        // Earliest expiry first, matching the order the allocator would draw from, so what a
-        // warehouse user sees on screen is the order the system will actually pick in.
+        var today = com.stockflow.common.domain.BusinessCalendar.date(clock.instant());
+        // Use the configured picking order and one business date for the entire result.
         return repository.findAvailableBySku(sku).stream()
-                .sorted(Comparator.<StockItem, java.time.LocalDate>comparing(
-                                StockItem::expiryDate,
-                                Comparator.nullsLast(Comparator.naturalOrder()))
-                        .thenComparing(item -> item.location().code()))
+                .filter(item -> notExpired(item, today))
+                .sorted(Comparator.comparing(item -> new StockAllocator.Candidate(item.id(), item.location(),
+                                item.lotNumber(), item.expiryDate(), item.status(), item.available(), item.receivedAt()),
+                        StockAllocator.comparator(controls.policy(sku).removalStrategy())))
                 .map(this::toAvailability)
                 .toList();
     }
@@ -101,26 +118,30 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
     @Override
     @Transactional(readOnly = true)
     public List<StockLevel> levelsOf(Sku sku) {
-        record Totals(int onHand, int available, int reserved) {
-            static Totals of(StockLevelLine line) {
-                int sellable = line.status() == StockStatus.AVAILABLE ? line.onHand() : 0;
-                return new Totals(line.onHand(), sellable, line.reserved());
+        record Totals(int onHand, int available, int reserved, int atp) {
+            static Totals of(StockLevelLine line, java.time.LocalDate today) {
+                boolean usable = line.status() == StockStatus.AVAILABLE
+                        && (line.expiryDate() == null || !line.expiryDate().isBefore(today));
+                int sellable = usable ? line.onHand() : 0;
+                return new Totals(line.onHand(), sellable, line.reserved(), usable ? line.onHand()-line.reserved() : 0);
             }
 
             Totals plus(Totals other) {
                 return new Totals(onHand + other.onHand, available + other.available,
-                        reserved + other.reserved);
+                        reserved + other.reserved, atp + other.atp);
             }
         }
         Map<String, Totals> byWarehouse = new TreeMap<>();
+        var today = com.stockflow.common.domain.BusinessCalendar.date(clock.instant());
         for (StockLevelLine line : repository.findLevelLinesBySku(sku)) {
-            byWarehouse.merge(line.location().warehouseCode(), Totals.of(line), Totals::plus);
+            byWarehouse.merge(line.location().warehouseCode(),
+                    Totals.of(line, today), Totals::plus);
         }
         return byWarehouse.entrySet().stream()
                 .map(entry -> new StockLevel(sku.code(), entry.getKey(),
                         entry.getValue().onHand(), entry.getValue().available(),
                         entry.getValue().reserved(), 0,
-                        entry.getValue().available() - entry.getValue().reserved()))
+                        entry.getValue().atp()))
                 .toList();
     }
 
@@ -164,7 +185,8 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
         //    because it returns immediately when it finds any - it never reaches step 3.)
         List<StockAllocator.Candidate> candidates = repository.findAvailabilityBySku(command.sku());
         List<StockAllocator.AllocationLine> plan = StockAllocator.plan(
-                command.sku().code(), candidates, Quantity.of(command.quantity()));
+                command.sku().code(), candidates, Quantity.of(command.quantity()),
+                controls.policy(command.sku()).removalStrategy(), com.stockflow.common.domain.BusinessCalendar.date(now));
 
         // 2. ORDER THE LOCKS. Two checkouts touching the same two stock items in opposite orders
         //    deadlock; sorting by id gives every transaction the same acquisition order.
@@ -330,5 +352,9 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
                 item.reserved().value(),
                 0,
                 item.available().value());
+    }
+
+    private static boolean notExpired(StockItem item, java.time.LocalDate today) {
+        return item.expiryDate() == null || !item.expiryDate().isBefore(today);
     }
 }
