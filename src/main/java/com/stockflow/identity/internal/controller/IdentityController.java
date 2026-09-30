@@ -3,6 +3,8 @@ package com.stockflow.identity.internal.controller;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.identity.internal.controller.dto.AssignRoleRequest;
 import com.stockflow.identity.internal.controller.dto.RoleResponse;
+import com.stockflow.identity.internal.controller.dto.UpdateRolePermissionsRequest;
+import com.stockflow.identity.api.UpdateRolePermissionsCommand;
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.PermissionResource;
@@ -15,6 +17,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -76,6 +79,22 @@ class IdentityController {
     @RequiresPermission(resource = IdentityResources.RBAC, action = Action.READ)
     public ApiResponse<RoleMatrixView> permissionsOf(@PathVariable String roleCode) {
         return ApiResponse.ok(identityService.roleMatrix(roleCode));
+    }
+
+    /**
+     * Replace everything a role grants — the save button of the permission-management screen.
+     *
+     * <p>Guarded on {@code identity-rbac:APPROVE}, not a plain UPDATE: deciding who may do what is
+     * the most sensitive action in the system, and APPROVE is one of the actions "select all" never
+     * hands out. Holders of the role see the change on their next request (ADR-0008).</p>
+     */
+    @PutMapping("/roles/{roleCode}/permissions")
+    @Operation(summary = "Replace the permissions a role grants; send the version you loaded")
+    @RequiresPermission(resource = IdentityResources.RBAC, action = Action.APPROVE)
+    public ApiResponse<RoleMatrixView> updatePermissions(@PathVariable String roleCode,
+                                                         @Valid @RequestBody UpdateRolePermissionsRequest request) {
+        return ApiResponse.ok(identityService.updateRolePermissions(
+                new UpdateRolePermissionsCommand(roleCode, request.version(), request.permissions())));
     }
 
     /**

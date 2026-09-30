@@ -10,6 +10,7 @@ import com.stockflow.identity.api.RoleSummary;
 import com.stockflow.identity.api.TokenResponse;
 import com.stockflow.identity.api.RegisterAccountCommand;
 import com.stockflow.identity.api.RegisteredAccount;
+import com.stockflow.identity.api.UpdateRolePermissionsCommand;
 import com.stockflow.identity.internal.domain.PasswordPolicy;
 import com.stockflow.identity.internal.domain.SessionEndReason;
 import com.stockflow.identity.internal.domain.User;
@@ -37,6 +38,7 @@ import com.stockflow.common.security.RoleMatrixAssembler;
 import com.stockflow.common.security.RoleMatrixView;
 import com.stockflow.common.security.SessionValidator;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.AuditorAware;
 
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.oauth2.jwt.JwsHeader;
@@ -46,14 +48,20 @@ import org.springframework.security.oauth2.jwt.JwtEncoderParameters;
 import org.springframework.security.oauth2.jose.jws.SignatureAlgorithm;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.UUID;
 import java.util.stream.Collectors;
 import java.util.Locale;
@@ -74,6 +82,12 @@ class IdentityServiceImpl implements IdentityService {
 
     private static final Duration MAX_TOKEN_TTL = Duration.ofHours(24);
 
+    /** The right to edit the matrix itself. Some role must always keep it. */
+    private static final PermissionCode MANAGE_PERMISSIONS = PermissionCode.of("identity-rbac", Action.APPROVE);
+
+    /** Key of the advisory lock every matrix edit takes; any constant unique to this purpose. */
+    private static final long MATRIX_EDIT_LOCK = 0x5ecb_acL;
+
     private final RoleJpaRepository roles;
     private final PermissionJpaRepository permissions;
     private final RolePermissionJpaRepository rolePermissions;
@@ -84,6 +98,8 @@ class IdentityServiceImpl implements IdentityService {
     private final JwtEncoder jwtEncoder;
     private final Clock clock;
     private final UserSessionJpaRepository sessions;
+    private final RoleAuthorizationCache authorizationCache;
+    private final AuditorAware<String> auditor;
 
     /**
      * How long a token, and its session, lives. It was a fixed hour because nothing could end a token
@@ -102,7 +118,8 @@ class IdentityServiceImpl implements IdentityService {
                         RolePermissionJpaRepository rolePermissions, UserRoleJpaRepository userRoles,
                         UserRepository userRepository, PermissionCatalog catalog,
                         PasswordEncoder passwordEncoder, JwtEncoder jwtEncoder, Clock clock,
-                        UserSessionJpaRepository sessions,
+                        UserSessionJpaRepository sessions, RoleAuthorizationCache authorizationCache,
+                        AuditorAware<String> auditor,
                         @Value("${stockflow.security.token-ttl:PT8H}") Duration tokenTtl) {
         if (tokenTtl == null || tokenTtl.isZero() || tokenTtl.isNegative()
                 || tokenTtl.compareTo(MAX_TOKEN_TTL) > 0) {
@@ -119,6 +136,8 @@ class IdentityServiceImpl implements IdentityService {
         this.jwtEncoder = jwtEncoder;
         this.clock = clock;
         this.sessions = sessions;
+        this.authorizationCache = authorizationCache;
+        this.auditor = auditor;
         this.tokenTtl = tokenTtl;
         this.dummyPasswordHash = passwordEncoder.encode(Identifiers.newId().toString());
     }
@@ -139,16 +158,170 @@ class IdentityServiceImpl implements IdentityService {
      * <p>{@code dataScope} is passed as {@link DataScope#ALL} for every role: {@code app_role} has
      * no scope column yet (ADR-0004 records the row-visibility filter as the largest unimplemented
      * part of the permission model), so this is a placeholder for the matrix screen to render, not
-     * a real grant. {@code systemRole} is {@code true} for all ten seeded roles — none of them is
-     * yet editable through this API.</p>
+     * a real grant. {@code systemRole} is {@code true} for all ten seeded roles: they cannot be
+     * renamed or deleted, but their grants are editable through
+     * {@link #updateRolePermissions} — all except {@code CUSTOMER}'s, see {@link #isEditable}.</p>
      */
     @Override
     @Transactional(readOnly = true)
     public RoleMatrixView roleMatrix(String roleCode) {
         RoleJpaEntity role = findRoleByCode(roleCode);
-        Set<PermissionCode> granted = grantedPermissionsOf(role.getId());
-        return RoleMatrixAssembler.assemble(
-                role.getCode(), role.getName(), true, DataScope.ALL, catalog, granted);
+        return matrixOf(role, role.getVersion(), grantedPermissionsOf(role.getId()));
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <h2>Order of operations</h2>
+     *
+     * <ol>
+     *   <li>Every code is checked against the catalog and the {@code permission} table before
+     *       anything is written, so a typo never half-applies.</li>
+     *   <li>All matrix edits take one transaction-scoped advisory lock. Without it two
+     *       administrators each removing the RBAC right from a different role would both see the
+     *       other role still holding it, and both commit — leaving nobody able to undo either.</li>
+     *   <li>The role's version is advanced with a compare-and-set; zero rows means someone saved
+     *       after this editor loaded, and the request is refused rather than overwriting them.</li>
+     *   <li>Only the difference is written, and the cache pointer moves after commit.</li>
+     * </ol>
+     *
+     * <h2>"Replace" means replace what the screen shows</h2>
+     *
+     * <p>The seed grants permissions for resources no {@code @PermissionResource} declares yet —
+     * modules not built. The matrix cannot show them and this method refuses them as input, so an
+     * editor can never send them back. Replacing literally everything therefore deleted them on the
+     * first save of an unchanged matrix (SALES_STAFF: 49 grants in, 20 out). Only grants the catalog
+     * declares are replaced; the rest are left exactly as they are.</p>
+     */
+    @Override
+    @Auditable(action = AuditAction.GRANT, resourceType = "role", resourceId = "#command.roleCode()")
+    public RoleMatrixView updateRolePermissions(UpdateRolePermissionsCommand command) {
+        RoleJpaEntity role = findRoleByCode(command.roleCode());
+        if (!isEditable(role)) {
+            throw new BusinessException(ErrorCode.ROLE_NOT_EDITABLE,
+                    "The permissions of role " + role.getCode() + " are managed by migrations");
+        }
+        Map<PermissionCode, UUID> requested = resolvePermissionIds(command.permissions());
+
+        rolePermissions.lockMatrixEdits(MATRIX_EDIT_LOCK);
+        if (roles.advanceVersion(role.getId(), command.expectedVersion(), clock.instant(), actor()) == 0) {
+            throw new BusinessException(ErrorCode.ROLE_PERMISSIONS_CHANGED,
+                    "Role %s is no longer at version %d".formatted(role.getCode(), command.expectedVersion()));
+        }
+
+        List<RolePermissionJpaEntity> held = rolePermissions.findByRoleId(role.getId());
+        Set<UUID> wanted = new HashSet<>(requested.values());
+        refuseLockout(role, held, wanted);
+
+        Set<UUID> onScreen = declaredPermissionIds(held);
+        List<RolePermissionJpaEntity> removed = held.stream()
+                .filter(row -> onScreen.contains(row.getPermissionId()))
+                .filter(row -> !wanted.contains(row.getPermissionId()))
+                .toList();
+        Set<UUID> kept = held.stream().map(RolePermissionJpaEntity::getPermissionId)
+                .collect(Collectors.toSet());
+        List<RolePermissionJpaEntity> added = wanted.stream()
+                .filter(permissionId -> !kept.contains(permissionId))
+                .map(permissionId -> new RolePermissionJpaEntity(Identifiers.newId(), role.getId(), permissionId))
+                .toList();
+        rolePermissions.deleteAll(removed);
+        rolePermissions.saveAll(added);
+
+        long newVersion = command.expectedVersion() + 1;
+        afterCommit(() -> authorizationCache.publishVersion(role.getCode(), newVersion));
+        return matrixOf(role, newVersion, requested.keySet());
+    }
+
+    /**
+     * CUSTOMER is excluded: its grants are the storefront's self-service surface, and one wrong tick
+     * would hand every shopper a back-office permission. They stay in migrations, reviewed like code.
+     */
+    private static boolean isEditable(RoleJpaEntity role) {
+        return !com.stockflow.common.security.Roles.CUSTOMER.equals(role.getCode());
+    }
+
+    /** Parses and checks every code up front: declared by a {@code @PermissionResource}, and seeded. */
+    private Map<PermissionCode, UUID> resolvePermissionIds(List<String> rawCodes) {
+        Set<String> unknown = new TreeSet<>();
+        Set<PermissionCode> codes = new LinkedHashSet<>();
+        for (String raw : rawCodes) {
+            try {
+                PermissionCode code = PermissionCode.parse(raw);
+                if (catalog.isDeclared(code)) {
+                    codes.add(code);
+                } else {
+                    unknown.add(raw);
+                }
+            } catch (IllegalArgumentException malformed) {
+                unknown.add(String.valueOf(raw));
+            }
+        }
+        Map<String, UUID> seeded = permissions.findByCodeIn(codes.stream().map(PermissionCode::toString).toList())
+                .stream()
+                .collect(Collectors.toMap(p -> p.getCode(), p -> p.getId()));
+        Map<PermissionCode, UUID> ids = new LinkedHashMap<>();
+        for (PermissionCode code : codes) {
+            UUID id = seeded.get(code.toString());
+            if (id == null) {
+                // Declared in code but never inserted into identity.permission: a missing migration,
+                // not something an administrator can fix by retrying.
+                unknown.add(code.toString());
+            } else {
+                ids.put(code, id);
+            }
+        }
+        if (!unknown.isEmpty()) {
+            throw new BusinessException(ErrorCode.UNKNOWN_PERMISSION, "Unknown permissions: " + unknown);
+        }
+        return ids;
+    }
+
+    /** Of the grants held, the ones the catalog declares — the only ones the matrix shows and edits. */
+    private Set<UUID> declaredPermissionIds(List<RolePermissionJpaEntity> held) {
+        List<UUID> ids = held.stream().map(RolePermissionJpaEntity::getPermissionId).toList();
+        Set<UUID> declared = new HashSet<>();
+        for (var permission : permissions.findAllById(ids)) {
+            try {
+                if (catalog.isDeclared(PermissionCode.parse(permission.getCode()))) {
+                    declared.add(permission.getId());
+                }
+            } catch (IllegalArgumentException notAPermissionCode) {
+                // Not editable here either: keep it.
+            }
+        }
+        return declared;
+    }
+
+    /** Refuses a change that would leave no role able to manage permissions. */
+    private void refuseLockout(RoleJpaEntity role, List<RolePermissionJpaEntity> held, Set<UUID> wanted) {
+        permissions.findByCodeIn(List.of(MANAGE_PERMISSIONS.toString())).stream().findFirst()
+                .ifPresent(manage -> {
+                    boolean holdsNow = held.stream().anyMatch(row -> row.getPermissionId().equals(manage.getId()));
+                    boolean keeps = wanted.contains(manage.getId());
+                    if (holdsNow && !keeps
+                            && !rolePermissions.existsByPermissionIdAndRoleIdNot(manage.getId(), role.getId())) {
+                        throw new BusinessException(ErrorCode.RBAC_LOCKOUT, "Role " + role.getCode()
+                                + " is the last one holding " + MANAGE_PERMISSIONS);
+                    }
+                });
+    }
+
+    private RoleMatrixView matrixOf(RoleJpaEntity role, long version, Set<PermissionCode> granted) {
+        return RoleMatrixAssembler.assemble(role.getCode(), role.getName(), true, isEditable(role),
+                version, DataScope.ALL, catalog, granted);
+    }
+
+    private String actor() {
+        return auditor.getCurrentAuditor().orElse("system");
+    }
+
+    private static void afterCommit(Runnable action) {
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                action.run();
+            }
+        });
     }
 
     @Override
@@ -172,7 +345,8 @@ class IdentityServiceImpl implements IdentityService {
         });
     }
 
-    /** A token is a snapshot of the roles and permissions at sign-in, so it must not outlive a change. */
+    /** A token names the roles held at sign-in, so it must not outlive a change to them. Permission
+     *  changes need no such step: they are resolved per request (ADR-0008). */
     private void endSessionsAfterRoleChange(UUID userId) {
         sessions.revokeLive(userId, null, clock.instant(), SessionEndReason.ROLE_CHANGED);
     }
@@ -216,13 +390,7 @@ class IdentityServiceImpl implements IdentityService {
         user.signIn(clock.instant());
         User saved = userRepository.save(user);
 
-        List<RoleJpaEntity> grantedRoles = rolesOf(saved.id());
-        Set<PermissionCode> grantedPermissions = grantedRoles.stream()
-                .flatMap(role -> grantedPermissionsOf(role.getId()).stream())
-                .collect(Collectors.toUnmodifiableSet());
-
-        return startSession(saved, grantedRoles, grantedPermissions,
-                command.clientAddress(), command.userAgent());
+        return startSession(saved, rolesOf(saved.id()), command.clientAddress(), command.userAgent());
     }
 
     /**
@@ -230,12 +398,11 @@ class IdentityServiceImpl implements IdentityService {
      * can hand out a token that revocation cannot reach.
      */
     private TokenResponse startSession(User user, List<RoleJpaEntity> grantedRoles,
-                                       Set<PermissionCode> grantedPermissions,
                                        String clientAddress, String userAgent) {
         Instant issuedAt = clock.instant();
         UserSessionJpaEntity session = sessions.save(new UserSessionJpaEntity(Identifiers.newId(),
                 user.id().value(), issuedAt, issuedAt.plus(tokenTtl), clientAddress, userAgent));
-        return new TokenResponse(issueToken(user, grantedRoles, grantedPermissions, session),
+        return new TokenResponse(issueToken(user, grantedRoles, session),
                 "Bearer", tokenTtl.toSeconds());
     }
 
@@ -317,16 +484,18 @@ class IdentityServiceImpl implements IdentityService {
         // in the middle of the registration.
         RoleJpaEntity customerRole = findRoleByCode(com.stockflow.common.security.Roles.CUSTOMER);
         userRoles.save(new UserRoleJpaEntity(Identifiers.newId(), saved.id().value(), customerRole.getId()));
-        List<RoleJpaEntity> grantedRoles = rolesOf(saved.id());
-        Set<PermissionCode> grantedPermissions = grantedRoles.stream()
-                .flatMap(role -> grantedPermissionsOf(role.getId()).stream())
-                .collect(Collectors.toUnmodifiableSet());
-        return new RegisteredAccount(saved.id().value(),
-                startSession(saved, grantedRoles, grantedPermissions, null, null));
+        return new RegisteredAccount(saved.id().value(), startSession(saved, rolesOf(saved.id()), null, null));
     }
 
-    private String issueToken(User user, List<RoleJpaEntity> grantedRoles,
-                              Set<PermissionCode> grantedPermissions, UserSessionJpaEntity session) {
+    /**
+     * Authentication and roles only. Permissions and the data scope are resolved on the server on
+     * every request (ADR-0008): carrying them made the token 4 KB — more than a browser can send
+     * next to a cookie of the same token — and froze them for the token's whole life.
+     *
+     * <p>{@code roles} stays because it is small and cannot go stale: a role change ends every
+     * session of the user ({@link #endSessionsAfterRoleChange}), so no token outlives it.</p>
+     */
+    private String issueToken(User user, List<RoleJpaEntity> grantedRoles, UserSessionJpaEntity session) {
         JwtClaimsSet claims = JwtClaimsSet.builder()
                 .issuedAt(session.getIssuedAt())
                 .expiresAt(session.getExpiresAt())
@@ -335,10 +504,6 @@ class IdentityServiceImpl implements IdentityService {
                 .subject(user.id().value().toString())
                 .claim("preferred_username", user.username())
                 .claim("roles", grantedRoles.stream().map(RoleJpaEntity::getCode).toList())
-                .claim("permissions", grantedPermissions.stream().map(PermissionCode::toString).toList())
-                // No per-role scope data exists yet (see roleMatrix()'s javadoc, ADR-0004) - ALL is
-                // the same placeholder used there, not a real per-user grant.
-                .claim("scope_level", DataScope.ALL.name())
                 .build();
         JwsHeader header = JwsHeader.with(SignatureAlgorithm.RS256).build();
         return jwtEncoder.encode(JwtEncoderParameters.from(header, claims)).getTokenValue();
