@@ -49,13 +49,17 @@ working, so `stockflow.security.token-ttl` defaults to **8 hours** (a working da
 - **Every authenticated request costs one primary-key read** of `user_session`, uncached on purpose (a
   cache would delay exactly what the user asked for). About 0.1 ms; the guard loads the row by id and
   judges revocation and expiry in Java so the planner cannot pick another index.
-- **The database is now on the authentication path.** If it is unreachable the validator throws and the
-  request fails (a 5xx, not an accepted token): revocation fails closed.
+- **The database is now on the authentication path.** If it is unreachable the request is refused:
+  revocation fails closed. Since ADR-0008 it is refused as a **503 `AUTHORIZATION_UNAVAILABLE`**;
+  before, the exception escaped the chain and the `/error` dispatch answered an anonymous 401, which
+  made the frontend sign users out during a database blip.
 - **Tokens without a `sid` are accepted until they expire.** That is what keeps everyone signed in when
   this ships. It is also a loophole: any code path that issues a token without creating a session
   escapes revocation. `issueToken` therefore takes the session as an argument, so a new caller (for
   example customer registration, SCRUM-46) fails to compile until it creates one.
 - **Rows are purged a day after expiry** by `SessionPurgeJob` (ShedLock, hourly).
-- The `permissions` claim is still a snapshot for the life of the session. Role changes now end the
-  user's sessions; editing what a role grants (no API yet) and locking or disabling an account (no API
-  yet) must call `revokeLive` when those endpoints are written.
+- Role changes end the user's sessions, because the token names the roles. Editing what a role
+  grants does **not**: permissions left the token and are resolved per request
+  ([ADR-0008](0008-authorization-resolved-server-side.md)), so a tick reaches the next request without
+  anyone signing in again. Locking or disabling an account (no API yet) must still call `revokeLive`
+  when that endpoint is written.
