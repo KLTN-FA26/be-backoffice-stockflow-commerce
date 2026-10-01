@@ -70,7 +70,10 @@ services:
       retries: 3
 
   app:
-    image: ${APP_IMAGE:?APP_IMAGE is required}:${IMAGE_TAG:-develop}
+    # IMAGE_TAG is written into .env by scripts/deploy.sh, so a plain `docker compose up -d` (after
+    # editing .env, say) recreates the application from the image that is actually deployed. No
+    # default: a fallback tag would silently run a different build, or one the server cannot pull.
+    image: ${APP_IMAGE:?APP_IMAGE is required}:${IMAGE_TAG:?IMAGE_TAG is unset - run scripts/deploy.sh <tag> once}
     <<: [*restart, *logging]
     depends_on:
       postgres:

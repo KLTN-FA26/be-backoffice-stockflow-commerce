@@ -223,7 +223,7 @@ jobs:
         run: >-
           rsync -az --delete
           --exclude='.env' --exclude='certs/' --exclude='auth/' --exclude='backups/'
-          --exclude='.deployed-tag' --exclude='.nginx-config-hash'
+          --exclude='.nginx-config-hash'
           deploy/ "vps:$DEPLOY_PATH/"
 
       # The token is piped over stdin, so it never appears in a process list on the server, and it

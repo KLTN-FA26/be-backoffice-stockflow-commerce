@@ -198,8 +198,16 @@ docker compose ps
 docker stats --no-stream                   # memory per container against its limit
 docker compose logs -f --tail=200 app
 bash scripts/deploy.sh sha-1a2b3c4         # roll back / forward to any pushed tag
-cat .deployed-tag                          # what is running
+bash scripts/deploy.sh                     # re-apply the running tag, e.g. after editing .env
+grep ^IMAGE_TAG= .env                      # what is running
 ```
+
+`deploy.sh` records the running tag as `IMAGE_TAG` in `.env`, so a plain `docker compose up -d`
+also uses the deployed image. It pulls only a tag that is not already on the server - CI logs the
+server in to GHCR for its own run only - so rolling back to a recent tag or re-applying `.env`
+works without a registry login. It keeps the running and the previous image and removes older
+ones, refuses to start while another deploy holds its lock, and fails (red CI) when the nginx
+configuration does not pass `nginx -t`, even though the application itself was updated.
 
 **What a deploy restarts:** only `app` (new image). Postgres, Redis and MinIO keep running and
 keep their data; `minio-init` re-runs for a few seconds and changes nothing; nginx restarts only

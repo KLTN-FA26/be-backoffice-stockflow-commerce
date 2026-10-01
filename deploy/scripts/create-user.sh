@@ -10,8 +10,10 @@
 # can obtain a token on a server where security is on. Locally nobody notices, because the local
 # profile switches security off.
 #
-# Role codes: WAREHOUSE_STAFF WAREHOUSE_MANAGER INVENTORY_PLANNER QC_STAFF CUSTOMER SALES_STAFF
-#             ORDER_COORDINATOR ECOMMERCE_ADMIN PROCUREMENT_STAFF ACCOUNTANT
+# Role codes come from identity.app_role; a wrong one is refused with the list of valid codes.
+#
+# Resetting a password ends that user's live sessions, as a password change in the application
+# does - otherwise a token taken from a compromised account would outlive the reset by hours.
 #
 # The password is read from the terminal, never from the command line (which would leave it in
 # shell history and the process list), hashed with bcrypt in the {bcrypt} format the application's
@@ -31,9 +33,17 @@ email=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')
 shift 2
 roles=$(IFS=,; echo "$*")
 
-# Checked here so a typo fails with a clear message and a non-zero exit, before anything is asked
-# or written. The SQL below checks again against identity.app_role, the actual source of truth.
-known="WAREHOUSE_STAFF WAREHOUSE_MANAGER INVENTORY_PLANNER QC_STAFF CUSTOMER SALES_STAFF ORDER_COORDINATOR ECOMMERCE_ADMIN PROCUREMENT_STAFF ACCOUNTANT"
+# Credentials for psql come from the postgres container's own environment.
+psql() {
+  docker compose exec -T postgres sh -c \
+    'psql -v ON_ERROR_STOP=1 -q -U "$POSTGRES_USER" -d "$POSTGRES_DB" "$@"' sh "$@"
+}
+
+# Checked before the password is asked, so a typo costs nothing, and against the database rather
+# than a copy here: a role added by a later migration is valid the moment it exists.
+# </dev/null: `docker compose exec` forwards stdin, and would otherwise swallow the password that
+# is about to be read from it.
+known=$(psql -tA -c "SELECT string_agg(code, ' ' ORDER BY code) FROM identity.app_role" </dev/null)
 for role in "$@"; do
   case " $known " in
     *" $role "*) ;;
@@ -53,10 +63,7 @@ read -r -s -p "Again: " again; echo
 hash=$(printf '%s' "$password" | htpasswd -n -i -B -C 10 x | cut -d: -f2 | sed 's/^\$2y\$/$2a$/')
 unset password again
 
-# Credentials for psql come from the postgres container's own environment.
-docker compose exec -T postgres sh -c 'psql -v ON_ERROR_STOP=1 -q -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
-    -v username="$1" -v email="$2" -v hash="$3" -v roles="$4"' sh \
-    "$username" "$email" "{bcrypt}$hash" "$roles" <<'SQL'
+psql -v username="$username" -v email="$email" -v hash="{bcrypt}$hash" -v roles="$roles" <<'SQL'
 BEGIN;
 
 -- Every requested role must exist; a typo would otherwise create an account that can do nothing.
@@ -88,6 +95,14 @@ FROM identity.app_user u
 JOIN identity.app_role r ON r.code = ANY (string_to_array(:'roles', ','))
 WHERE u.username = :'username'
 ON CONFLICT (user_id, role_id) DO NOTHING;
+
+-- The same effect as a password change in the application (SessionEndReason.PASSWORD_CHANGED).
+-- A new account has no sessions, so this only ever touches a reset.
+UPDATE identity.user_session s
+SET revoked_at = now(), revoked_reason = 'PASSWORD_CHANGED',
+    version = s.version + 1, last_modified_at = now(), last_modified_by = 'create-user.sh'
+FROM identity.app_user u
+WHERE s.user_id = u.id AND u.username = :'username' AND s.revoked_at IS NULL;
 
 COMMIT;
 

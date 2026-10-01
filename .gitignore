@@ -25,7 +25,6 @@ target/
 deploy/certs/
 deploy/auth/
 deploy/backups/
-deploy/.deployed-tag
 deploy/.nginx-config-hash
 
 # LocalFileStorage's directory when the local storage provider is selected.

@@ -19,6 +19,16 @@ ranges=$(
     curl -fsS --max-time 10 https://www.cloudflare.com/ips-v6; echo; } | sed '/^\s*$/d'
 )
 
+# Every line becomes an nginx directive, so every line must be a CIDR. `curl -f` only rejects HTTP
+# errors: a captive portal or a challenge page answers 200 with HTML, and writing that out would
+# leave an nginx config that cannot start.
+cidr='^([0-9]{1,3}(\.[0-9]{1,3}){3}|[0-9a-fA-F:]+:[0-9a-fA-F:]*)/[0-9]{1,3}$'
+if printf '%s\n' "$ranges" | grep -Evq "$cidr"; then
+  echo "Cloudflare answered with something that is not a list of CIDR ranges - keeping the current lists:" >&2
+  printf '%s\n' "$ranges" | grep -Ev "$cidr" | head -3 >&2
+  exit 1
+fi
+
 # Refuse to write an empty or truncated list: that would lock every visitor out.
 count=$(printf '%s\n' "$ranges" | wc -l)
 if [ "$count" -lt 10 ]; then
@@ -30,10 +40,13 @@ fi
 # them on every run.
 header="# GENERATED from https://www.cloudflare.com/ips by scripts/refresh-cloudflare-ips.sh. Do not edit by hand."
 
+# Written beside the targets and renamed into place, so nginx never reads a half-written file.
 { echo "$header"; printf '%s\n' "$ranges" | sed 's/.*/set_real_ip_from &;/'; } \
-  > "$SNIPPETS/cloudflare-realip.conf"
+  > "$SNIPPETS/.cloudflare-realip.conf.new"
 { echo "$header"; printf '%s\n' "$ranges" | sed 's/.*/& 1;/'; } \
-  > "$SNIPPETS/cloudflare-geo.conf"
+  > "$SNIPPETS/.cloudflare-geo.conf.new"
+mv "$SNIPPETS/.cloudflare-realip.conf.new" "$SNIPPETS/cloudflare-realip.conf"
+mv "$SNIPPETS/.cloudflare-geo.conf.new" "$SNIPPETS/cloudflare-geo.conf"
 
 echo "Wrote $count Cloudflare ranges."
 
