@@ -71,6 +71,27 @@ class CorsConfigTest {
     }
 
     @Test
+    void refusesAWildcardOverAPublicSuffix() {
+        // One mistyped label away from the intended pattern, and every site under the suffix
+        // could call the API with credentials.
+        for (String pattern : List.of("https://*.com", "https://*.vn", "https://*.io.vn",
+                "https://*.com.vn", "https://*.id.vn", "http://*.co.uk:*")) {
+            assertThatThrownBy(() -> new CorsProperties(List.of(pattern)))
+                    .as(pattern)
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("public suffix");
+        }
+    }
+
+    @Test
+    void acceptsAWildcardUnderARegistrableDomain() {
+        var properties = new CorsProperties(List.of("https://*.stockflow.vn",
+                "https://*.hoaiphuong.io.vn", "https://*.example.com:8443", "http://localhost:*"));
+
+        assertThat(properties.allowedOriginPatterns()).hasSize(4);
+    }
+
+    @Test
     void refusesAPatternThatCanNeverMatchAnOrigin() {
         // An Origin header is always scheme://host[:port] - no scheme or a path matches nothing,
         // and the browser's only report of that is a CORS error on every call.

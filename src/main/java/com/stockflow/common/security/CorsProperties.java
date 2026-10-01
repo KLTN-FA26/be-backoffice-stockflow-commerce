@@ -4,6 +4,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 
 import java.util.List;
+import java.util.Set;
 
 /**
  * The browser origins allowed to call the API, bound from {@code stockflow.security.cors.*}.
@@ -24,6 +25,11 @@ import java.util.List;
  * <ul>
  *   <li><b>A wildcard host</b> ({@code *}, {@code https://*}). Credentials are allowed, so this would
  *       let any website make authenticated calls with a visitor's credentials.</li>
+ *   <li><b>A wildcard over a public suffix</b> ({@code https://*.com}, {@code https://*.io.vn}): the
+ *       same exposure, limited only to everyone who registered a name under that suffix - and the
+ *       likeliest slip, since {@code *.io.vn} is one dropped label away from {@code *.mysite.io.vn}.
+ *       Checked against a single label plus {@link #SHARED_SUFFIXES}, not the full Public Suffix
+ *       List: it catches the mistakes plausible for this project, not every possible one.</li>
  *   <li><b>A pattern that cannot match an Origin header</b>, which is always
  *       {@code scheme://host[:port]}: no scheme, a trailing slash or a path matches nothing.</li>
  * </ul>
@@ -34,6 +40,15 @@ import java.util.List;
 public record CorsProperties(
         @DefaultValue({"http://localhost:*", "https://*.stockflow.vn"}) List<String> allowedOriginPatterns
 ) {
+
+    /**
+     * Second-level suffixes anyone can register under: Vietnam's (where this is deployed) and the
+     * few common elsewhere. A wildcard directly over one of these admits strangers' sites.
+     */
+    private static final Set<String> SHARED_SUFFIXES = Set.of(
+            "com.vn", "net.vn", "org.vn", "edu.vn", "gov.vn", "int.vn", "ac.vn", "biz.vn",
+            "info.vn", "name.vn", "pro.vn", "health.vn", "id.vn", "io.vn",
+            "co.uk", "org.uk", "com.au", "co.jp", "com.cn", "com.sg", "co.kr");
 
     public CorsProperties {
         List<String> patterns = allowedOriginPatterns == null ? List.of()
@@ -58,6 +73,14 @@ public record CorsProperties(
         }
         if (host.isEmpty() || host.startsWith("*:") || host.equals("*")) {
             throw invalid(pattern, "a wildcard host would admit every website");
+        }
+        if (host.startsWith("*.")) {
+            int port = host.lastIndexOf(':');
+            String suffix = (port < 0 ? host.substring(2) : host.substring(2, port)).toLowerCase();
+            if (!suffix.contains(".") || SHARED_SUFFIXES.contains(suffix)) {
+                throw invalid(pattern, "'*." + suffix + "' is a wildcard over a public suffix, which "
+                        + "would admit every site registered under it");
+            }
         }
     }
 
