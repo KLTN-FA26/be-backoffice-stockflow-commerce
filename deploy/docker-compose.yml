@@ -103,6 +103,12 @@ services:
       S3_PATH_STYLE: "true"
       AWS_REGION: ${AWS_REGION:-ap-southeast-1}
       PRODUCT_MEDIA_CDN_BASE_URL: https://media.${DOMAIN}
+      # Optional demo data (db/demo) - see .env.example for why it is off. Switching it either way
+      # needs a database reset: Flyway refuses to start when migrations appear (or vanish) out of
+      # order, and the demo versions interleave with the real ones.
+      SPRING_FLYWAY_LOCATIONS: ${FLYWAY_LOCATIONS:-classpath:db/migration}
+      # Off by default for the reason in application.yml: the request carries its own unit price.
+      STOCKFLOW_CHECKOUT_GUEST_ENABLED: ${GUEST_CHECKOUT_ENABLED:-false}
       STOCKFLOW_UPLOAD_INSPECTION_ENABLED: "false"
       STOCKFLOW_SECURITY_CORS_ALLOWED_ORIGIN_PATTERNS: ${CORS_ALLOWED_ORIGIN_PATTERNS:-http://localhost:*}
       OTLP_TRACING_ENDPOINT: http://jaeger:4318/v1/traces

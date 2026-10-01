@@ -53,6 +53,11 @@ browser ── Cloudflare Free (DNS, CDN, WAF, TLS "Full (strict)")
 Not here, on purpose: **ClamAV** (~1.2 GB; upload scanning is off and the application logs a
 warning saying so) and **Elasticsearch** (unused by the code).
 
+Requests run on **virtual threads** (`spring.threads.virtual.enabled` in `application.yml`, so the
+dev profile inherits it): there is no 200-thread Tomcat pool to size, and a request blocked on
+Postgres or MinIO costs a few KB rather than a platform thread's stack. The database pool
+(`DB_POOL_MAX`) is therefore what bounds concurrent database work.
+
 Mail: the application is pointed at Mailpit, but nothing sends mail yet - `NotificationSender`
 only logs. Until it does, read notifications with `docker compose logs app | grep NOTIFY`.
 
@@ -151,6 +156,26 @@ change is needed.
 The first start is the slow one - Flyway applies every migration while the JVM warms up on two
 cores. `deploy.sh` waits up to 300 s.
 
+4. **Create the first accounts.** The database starts with no user who can sign in (security is on
+   here, unlike the local profile), so nobody can obtain a token until you do this:
+   ```bash
+   bash scripts/create-user.sh admin admin@<domain> ECOMMERCE_ADMIN
+   bash scripts/create-user.sh kho1  kho1@<domain>  WAREHOUSE_STAFF
+   ```
+   It asks for the password (12+ characters). Running it again for an existing username resets the
+   password and adds the roles given. Role codes are listed at the top of the script.
+
+### How the frontend signs in
+
+```
+POST https://api.<domain>/api/v1/identity/auth/login
+{"username": "admin", "password": "..."}
+-> {"success": true, "data": {"accessToken": "eyJ...", "tokenType": "Bearer", "expiresInSeconds": 28800}}
+```
+
+Send `Authorization: Bearer <accessToken>` on every call. In Swagger UI: **Authorize**, paste the
+token. A token lasts 8 hours - and ends at the next deploy, which signs everyone out.
+
 Check:
 
 ```bash
@@ -180,6 +205,17 @@ cat .deployed-tag                          # what is running
 keep their data; `minio-init` re-runs for a few seconds and changes nothing; nginx restarts only
 when a file under `nginx/` changed. Every deploy has one to two minutes of downtime and **signs
 every user out** (see the limits below) - tell the frontend team, or deploy less often.
+
+**Reset the database** - wipes every row; needed to switch the demo data on or off, or to start
+clean. MinIO files, Redis and the other containers are untouched.
+
+```bash
+docker compose stop app
+docker compose rm -sf postgres
+docker volume rm stockflow_postgres-data
+bash scripts/deploy.sh                     # recreates Postgres and re-runs every migration
+# then create the accounts again (scripts/create-user.sh)
+```
 
 **Database access** - no published port. On the server:
 `docker compose exec postgres psql -U stockflow stockflow`. For a GUI client (DBeaver, DataGrip),
