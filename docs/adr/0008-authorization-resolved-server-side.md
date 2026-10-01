@@ -93,12 +93,17 @@ All under `/api/v1/identity`, all wrapped in `ApiResponse`.
 | `GET /roles/{roleCode}/permissions` | `identity-rbac:READ` | The matrix, now with `version` and `editable` |
 | `PUT /roles/{roleCode}/permissions` | `identity-rbac:APPROVE` | Replace the role's grants |
 | `GET /me/permissions` | signed in | The caller's `roles`, `permissions` (sorted `resource:ACTION`) and `dataScope` |
+| `GET /me` | signed in | The caller's `userId`, `username`, `email`, `fullName`, `status`, `roles`, `lastLoginAt` - the login response carries only a token |
 
 `PUT` body - the complete set, not a diff, plus the version the editor loaded:
 
 ```json
 { "version": 7, "permissions": ["procurement-purchase-orders:READ", "procurement-purchase-orders:APPROVE"] }
 ```
+
+With security switched off (`local`, `test`) no token is read and every endpoint is open, so
+`GET /me/permissions` answers with every declared permission instead of a 401 that would make the
+frontend hide every screen. `GET /me` still needs a signed-in user.
 
 It answers the saved matrix (with the new `version`), or:
 

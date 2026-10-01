@@ -11,6 +11,7 @@ import com.stockflow.identity.api.TokenResponse;
 import com.stockflow.identity.api.RegisterAccountCommand;
 import com.stockflow.identity.api.RegisteredAccount;
 import com.stockflow.identity.api.UpdateRolePermissionsCommand;
+import com.stockflow.identity.api.UserProfile;
 import com.stockflow.identity.internal.domain.PasswordPolicy;
 import com.stockflow.identity.internal.domain.SessionEndReason;
 import com.stockflow.identity.internal.domain.User;
@@ -349,6 +350,15 @@ class IdentityServiceImpl implements IdentityService {
      *  changes need no such step: they are resolved per request (ADR-0008). */
     private void endSessionsAfterRoleChange(UUID userId) {
         sessions.revokeLive(userId, null, clock.instant(), SessionEndReason.ROLE_CHANGED);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public UserProfile profile(UUID userId) {
+        User user = userRepository.findById(new UserId(userId))
+                .orElseThrow(() -> new BusinessException(ErrorCode.USER_NOT_FOUND, "No user with id " + userId));
+        return new UserProfile(user.id().value(), user.username(), user.email(), user.fullName(),
+                user.status().name(), user.lastLoginAt());
     }
 
     @Override
