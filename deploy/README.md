@@ -208,9 +208,11 @@ the uploaded files matter.
 - **Every deploy signs every user out and has downtime.** `JwtKeysConfig` generates a new signing
   key at startup, so tokens do not survive a restart. Fix that first (load the key from a mounted
   secret) before attempting zero-downtime deploys - which a 4 GB machine could not run anyway.
-- **CORS allows only `https://*.stockflow.vn` and `http://localhost:*`**
-  (`ResourceServerSecurityConfig`). A frontend running on localhost works; a deployed frontend on
-  any other domain is blocked by the browser until that list includes it.
+- **CORS**: only the origins in `CORS_ALLOWED_ORIGIN_PATTERNS` (`.env`) may call the API from a
+  browser. `http://localhost:*` lets the frontend team run their dev server against this backend;
+  add the host a deployed frontend is served from (`https://*.<domain>` covers every subdomain) and
+  run `bash scripts/deploy.sh` to apply it. A bare `*`, a missing scheme or a trailing slash stops
+  the application at startup with the reason in `docker compose logs app`.
 - The application's own uploads go out to Cloudflare and back (`S3_ENDPOINT` must be the public
   host for presigned links to work, and the presigner and client share it).
 - One machine: if the VPS is lost, so is everything not in an off-site backup.

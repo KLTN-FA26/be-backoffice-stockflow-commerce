@@ -104,6 +104,7 @@ services:
       AWS_REGION: ${AWS_REGION:-ap-southeast-1}
       PRODUCT_MEDIA_CDN_BASE_URL: https://media.${DOMAIN}
       STOCKFLOW_UPLOAD_INSPECTION_ENABLED: "false"
+      STOCKFLOW_SECURITY_CORS_ALLOWED_ORIGIN_PATTERNS: ${CORS_ALLOWED_ORIGIN_PATTERNS:-http://localhost:*}
       OTLP_TRACING_ENDPOINT: http://jaeger:4318/v1/traces
       # Spring Boot's mail starter is on the classpath; these create its JavaMailSender. Mailpit
       # accepts anything on 1025 without authentication or TLS.
