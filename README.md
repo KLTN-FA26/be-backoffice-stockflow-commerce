@@ -147,7 +147,7 @@ the short version:
 |---|---|
 | `id` | `Identifiers.newId()` — time-ordered UUIDv7, so inserts append instead of scattering the index |
 | `persistence` | `BaseEntity`, `SoftDeletableEntity`, `MoneyEmbeddable`, `SkuConverter`, `BaseJpaRepository`, `Specs`, `Pages`, `SortWhitelist` |
-| `security` | permission matrix **and** row-level `DataScope` — `ScopedEntity` + `ScopedJpaRepository` |
+| `security` | permission matrix **and** row-level `DataScope` — `ScopedEntity` + `ScopedJpaRepository`; permissions resolved per request, not read from the token (ADR-0008) |
 | `cache` | Redis, per-cache TTLs in `CacheNames`, `TransactionalCacheEvictor`, survives a Redis outage |
 | `idempotency` | any request carrying `Idempotency-Key` becomes safe to retry |
 | `ratelimit` | `@RateLimit` on an endpoint, Redis token bucket |
