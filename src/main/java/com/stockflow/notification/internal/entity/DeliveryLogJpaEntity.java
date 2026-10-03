@@ -24,7 +24,7 @@ public class DeliveryLogJpaEntity extends BaseEntity {
     @Column(name = "channel", nullable = false, length = 16)
     private NotificationChannel channel;
 
-    @Column(name = "recipient", nullable = false, length = 320)
+    @Column(name = "recipient", nullable = false, length = 500)
     private String recipient;
 
     @Enumerated(EnumType.STRING)
@@ -37,11 +37,27 @@ public class DeliveryLogJpaEntity extends BaseEntity {
     @Column(name = "sent_at")
     private Instant sentAt;
 
+    @Column(name = "external_reference", length = 100)
+    private String externalReference;
+
+    @Column(name = "operation_reference", length = 100)
+    private String operationReference;
+    @Column(name = "terminal", nullable = false)
+    private boolean terminal;
+    @Column(name = "delivery_generation", nullable = false)
+    private int deliveryGeneration;
+
     protected DeliveryLogJpaEntity() {
     }
 
     public DeliveryLogJpaEntity(UUID id, String templateCode, NotificationChannel channel,
                                 String recipient, DeliveryStatus status, String error, Instant sentAt) {
+        this(id, templateCode, channel, recipient, status, error, sentAt, null);
+    }
+
+    public DeliveryLogJpaEntity(UUID id, String templateCode, NotificationChannel channel,
+                                String recipient, DeliveryStatus status, String error, Instant sentAt,
+                                String externalReference) {
         super(id);
         this.templateCode = templateCode;
         this.channel = channel;
@@ -49,6 +65,8 @@ public class DeliveryLogJpaEntity extends BaseEntity {
         this.status = status;
         this.error = error;
         this.sentAt = sentAt;
+        this.externalReference = externalReference;
+        this.operationReference = externalReference;
     }
 
     public String getTemplateCode() { return templateCode; }
@@ -57,4 +75,9 @@ public class DeliveryLogJpaEntity extends BaseEntity {
     public DeliveryStatus getStatus() { return status; }
     public String getError() { return error; }
     public Instant getSentAt() { return sentAt; }
+    public String getExternalReference() { return externalReference; }
+    public int getDeliveryGeneration() { return deliveryGeneration; }
+    public void correlate(String reference) { this.operationReference = reference; }
+    public void stopRetrying() { this.terminal = true; }
+    public void recordGeneration(int generation) { this.deliveryGeneration = generation; }
 }

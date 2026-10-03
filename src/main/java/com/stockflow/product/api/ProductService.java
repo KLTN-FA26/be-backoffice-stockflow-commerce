@@ -18,6 +18,9 @@ public interface ProductService {
     /** Prevents attaching a valid design for a different product to an order SKU. */
     boolean containsSku(UUID productId, String sku);
 
+    /** Procurement fallback for an omitted line description; never exposes persistence objects. */
+    Optional<String> nameForSku(String sku);
+
     ProductSummary create(CreateProductCommand command);
 
     Optional<ProductSummary> findById(UUID productId);

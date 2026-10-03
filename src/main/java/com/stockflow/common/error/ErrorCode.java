@@ -11,6 +11,13 @@ package com.stockflow.common.error;
  * actually depend on: whether to show a form error, retry, or give up.</p>
  */
 public enum ErrorCode {
+    PO_DELIVERY_DATE_REQUIRED("A delivery date is required before sending", 400),
+    PO_REASON_REQUIRED("A reason of 1..1000 characters is required", 400),
+    PO_SUPPLIER_RESPONSE_INVALID("Supplier response must be CONFIRMED or REJECTED", 400),
+    PO_COMMUNICATION_NOT_CONFIGURED("Buyer contact and receiving address must be configured before sending", 409),
+    PO_LINE_DESCRIPTION_REQUIRED("A product description is required for each purchase order line", 400),
+    SUPPLIER_DELIVERY_CONTACT_INVALID("Supplier delivery contact is invalid or not allowed", 400),
+    SUPPLIER_PROFILE_INVALID("Invalid supplier profile or commercial terms", 400),
 
     // ---- 400: the request itself is wrong; retrying it unchanged will not help
     VALIDATION_FAILED("Invalid request data", 400),
@@ -57,6 +64,10 @@ public enum ErrorCode {
     IDEMPOTENT_REQUEST_IN_PROGRESS("An identical request is still being processed", 409),
     /** BR-PO: a new PO cannot be raised against a supplier that is not ACTIVE. */
     SUPPLIER_INACTIVE("This supplier cannot receive new purchase orders", 409),
+    SUPPLIER_HAS_OPEN_PURCHASE_ORDERS("Supplier has open purchase orders", 409),
+    SUPPLIER_CODE_ALREADY_EXISTS("A supplier with this code already exists", 409),
+    SUPPLIER_TAX_CODE_ALREADY_EXISTS("A supplier with this tax code already exists", 409),
+    INVALID_SUPPLIER_CONFIRMATION("This supplier confirmation cannot be recorded", 409),
     PRODUCT_CODE_ALREADY_EXISTS("A product with this code already exists", 409),
     INVALID_PRODUCT_STATUS_TRANSITION("This product cannot move to that status right now", 409),
     SELF_APPROVAL_NOT_ALLOWED("A product cannot be approved by the person who submitted it", 409),

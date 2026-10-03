@@ -23,6 +23,11 @@ public interface ProductJpaRepository extends BaseJpaRepository<ProductJpaEntity
             + "where s.variantId = v.id and v.productId = p.id and s.code = :sku))")
     boolean containsSku(@Param("productId") UUID productId, @Param("sku") String sku);
 
+    @Query("select p.name from ProductJpaEntity p where upper(p.code) = upper(:sku) "
+            + "or exists (select 1 from SkuJpaEntity s, VariantJpaEntity v "
+            + "where s.variantId = v.id and v.productId = p.id and upper(s.code) = upper(:sku))")
+    java.util.List<String> namesForSku(@Param("sku") String sku);
+
     @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
     @Query("select p from ProductJpaEntity p where p.id = :id")
     Optional<ProductJpaEntity> lockById(@Param("id") UUID id);

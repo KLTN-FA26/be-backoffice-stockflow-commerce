@@ -36,7 +36,9 @@ interface PurchaseOrderWebMapper {
 
     ReceiveGoodsLineCommand toCommand(ReceiveGoodsLineRequest request);
 
-    PurchaseOrderResponse toResponse(PurchaseOrderSummary summary);
+    @Mapping(target = "deliveryStatus", source = "deliveryStatus")
+    PurchaseOrderResponse toResponse(PurchaseOrderSummary summary, String deliveryStatus,
+            String cancellationDeliveryStatus, java.util.List<String> warnings);
 
     @Mapping(target = "openQuantity", expression = "java(summary.openQuantity())")
     POLineResponse toResponse(POLineSummary summary);
