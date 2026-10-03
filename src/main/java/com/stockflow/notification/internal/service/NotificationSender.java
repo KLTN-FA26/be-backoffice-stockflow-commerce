@@ -42,28 +42,36 @@ class NotificationSender {
     /** Uses the existing notification transport boundary; event retries retain the same PO payload. */
     void sendPurchaseOrder(PurchaseOrderSent event) {
         policy.validate(event.channel(), event.recipient());
-        if (event.lines().isEmpty()) {
+        if (!event.cancellation() && event.lines().isEmpty()) {
             throw new IllegalArgumentException("Purchase order notification has no line snapshot; manual reconciliation required");
         }
         if ("EMAIL".equals(event.channel())) {
             var message = new SimpleMailMessage();
             message.setFrom(mailFrom);
             message.setTo(event.recipient());
-            message.setSubject("Purchase order " + event.poNumber());
-            String lines = event.lines().stream().map(line -> "%s | %s | quantity=%d | unitPrice=%s %s"
+            var messages = java.util.ResourceBundle.getBundle("i18n.messages", java.util.Locale.forLanguageTag("vi"));
+            message.setSubject(messages.getString(event.cancellation() ? "po.mail.cancel.subject" : "po.mail.subject").formatted(event.poNumber()));
+            String lines = event.lines().stream().map(line -> messages.getString("po.mail.line")
                     .formatted(line.sku(), line.description() == null ? "" : line.description(),
                             line.quantity(), line.unitPrice(), event.currency()))
                     .collect(java.util.stream.Collectors.joining("\n"));
-            message.setText("PO %s\nExpected delivery: %s\nPayment term: %d days\n%s\nTotal: %s %s\nPlease reply with confirmation or rejection and your reference."
-                    .formatted(event.poNumber(), event.expectedAt(), event.paymentTermDays(), lines,
-                            event.totalAmount(), event.currency()));
+            var buyer = event.buyer();
+            String identity = buyer == null ? messages.getString("po.mail.legacy")
+                    : messages.getString("po.mail.buyer").formatted(buyer.companyName(), buyer.companyAddress(),
+                            buyer.contactName(), buyer.phone(), buyer.email(), buyer.receivingAddress());
+            if (buyer != null) message.setReplyTo(buyer.email());
+            message.setText(event.cancellation()
+                    ? messages.getString("po.mail.cancel.body").formatted(event.poNumber(), identity, event.cancellationReason())
+                    : messages.getString("po.mail.body").formatted(event.poNumber(), identity, event.expectedAt(),
+                            event.paymentTermDays(), lines, event.totalAmount(), event.currency()));
             mail.send(message);
         } else if ("API".equals(event.channel())) {
             var response = clients.forService("supplier-po-api", event.recipient()).build().post()
-                    .header("Idempotency-Key", "purchase-order:" + event.purchaseOrderId())
+                    .header("Idempotency-Key", event.operationReference())
                     .body(new SupplierPurchaseOrderMessage(event.purchaseOrderId(), event.poNumber(), event.supplierId(),
                             event.channel(), event.recipient(), event.totalAmount(), event.currency(), event.expectedAt(),
-                            event.paymentTermDays(), event.lines())).retrieve().toBodilessEntity();
+                            event.paymentTermDays(), event.lines(), event.buyer(), event.cancellation() ? "CANCELLATION" : "PURCHASE_ORDER",
+                            event.cancellationReason())).retrieve().toBodilessEntity();
             if (!response.getStatusCode().is2xxSuccessful()) {
                 throw new IllegalStateException("Supplier API did not acknowledge the purchase order");
             }
@@ -75,7 +83,8 @@ class NotificationSender {
     /** Internal recovery generations must not change the supplier's idempotent PO payload. */
     private record SupplierPurchaseOrderMessage(UUID purchaseOrderId, String poNumber, UUID supplierId,
             String channel, String recipient, BigDecimal totalAmount, String currency,
-            LocalDate expectedAt, int paymentTermDays, List<PurchaseOrderSent.Line> lines) {}
+            LocalDate expectedAt, int paymentTermDays, List<PurchaseOrderSent.Line> lines,
+            PurchaseOrderSent.Buyer buyer, String type, String cancellationReason) {}
 
     void send(UUID recipientId, String templateCode, String subject, String body) {
         send(recipientId, null, templateCode, subject, body);

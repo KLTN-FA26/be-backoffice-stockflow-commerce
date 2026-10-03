@@ -50,6 +50,10 @@ public record PurchaseOrderResponse(
         String supplierReference,
         String supplierResponseNote,
         @Schema(description = "NOT_SENT, QUEUED, UNKNOWN (legacy), RETRYING, FAILED (terminal), or DELIVERED (transport accepted, not supplier confirmation)")
-        String deliveryStatus
+        String deliveryStatus,
+        @Schema(description = "Cancellation notice only: NOT_REQUIRED, UNKNOWN (legacy), QUEUED, RETRYING, FAILED, DELIVERED")
+        String cancellationDeliveryStatus,
+        @Schema(description = "Non-blocking business warnings, e.g. DELIVERY_DATE_IN_PAST (BR-06)")
+        List<String> warnings
 ) {
 }

@@ -34,8 +34,8 @@ class PurchaseOrderNotificationListener {
     @ApplicationModuleListener
     public void on(PurchaseOrderSent event) {
         var control = controls.lock(event.purchaseOrderId());
-        if (control.suppressed() || control.generation() != event.deliveryGeneration()) return;
-        String reference = "purchase-order:" + event.purchaseOrderId();
+        if (!event.cancellation() && (control.suppressed() || control.generation() != event.deliveryGeneration())) return;
+        String reference = event.operationReference();
         if (!logs.tryLockDelivery(reference)) {
             throw new IllegalStateException("Purchase order delivery is already in progress");
         }
@@ -44,7 +44,7 @@ class PurchaseOrderNotificationListener {
         NotificationChannel channel = NotificationChannel.valueOf(event.channel());
         try {
             sender.sendPurchaseOrder(event);
-            var success = new DeliveryLogJpaEntity(Identifiers.newId(), "purchase-order.sent", channel,
+            var success = new DeliveryLogJpaEntity(Identifiers.newId(), event.templateCode(), channel,
                     event.recipient(), DeliveryStatus.SENT, null, clock.instant(), reference);
             success.recordGeneration(event.deliveryGeneration());
             logs.saveAndFlush(success);

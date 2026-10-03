@@ -18,11 +18,33 @@ public class PoDeliveryDecisionRepository {
     private final JdbcTemplate jdbc;
     private final Clock clock;
     private final CurrentUserProvider users;
+    private final com.fasterxml.jackson.databind.ObjectMapper json;
 
-    public PoDeliveryDecisionRepository(JdbcTemplate jdbc, Clock clock, CurrentUserProvider users) {
+    public PoDeliveryDecisionRepository(JdbcTemplate jdbc, Clock clock, CurrentUserProvider users,
+            com.fasterxml.jackson.databind.ObjectMapper json) {
         this.jdbc = jdbc;
         this.clock = clock;
         this.users = users;
+        this.json = json;
+    }
+
+    public void snapshot(com.stockflow.contracts.PurchaseOrderSent event) {
+        try {
+            jdbc.update("update procurement.po_delivery_decision set payload_snapshot=? where purchase_order_id=? and generation=?",
+                    json.writeValueAsString(event), event.purchaseOrderId(), event.deliveryGeneration());
+        } catch (com.fasterxml.jackson.core.JsonProcessingException failure) {
+            throw new IllegalStateException("Cannot persist PO communication snapshot", failure);
+        }
+    }
+
+    public java.util.Optional<com.stockflow.contracts.PurchaseOrderSent> latestSnapshot(UUID id) {
+        return jdbc.query("select payload_snapshot from procurement.po_delivery_decision where purchase_order_id=? and payload_snapshot is not null order by generation desc limit 1",
+                (row, index) -> {
+                    try { return json.readValue(row.getString(1), com.stockflow.contracts.PurchaseOrderSent.class); }
+                    catch (com.fasterxml.jackson.core.JsonProcessingException failure) {
+                        throw new IllegalStateException("Cannot read PO communication snapshot", failure);
+                    }
+                }, id).stream().findFirst();
     }
 
     public void record(UUID id, int generation, LocalDate previousDate, LocalDate date, String reason,

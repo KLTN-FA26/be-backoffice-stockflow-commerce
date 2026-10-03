@@ -30,6 +30,22 @@ public interface DeliveryLogJpaRepository extends BaseJpaRepository<DeliveryLogJ
             where 'purchase-order:' || c.purchase_order_id in (:references)
             """, nativeQuery = true)
     java.util.List<LatestStatus> latestStatuses(java.util.Collection<String> references);
+
+    @org.springframework.data.jpa.repository.Query(value = """
+            select 'purchase-order:' || c.purchase_order_id || ':cancellation' as reference,
+                coalesce(l.status, 'QUEUED') as status, coalesce(l.terminal,false) as terminal
+            from notification.po_delivery_control c
+            left join lateral (
+                select status,terminal from notification.delivery_log
+                where operation_reference='purchase-order:' || c.purchase_order_id || ':cancellation'
+                order by case when status='SENT' then 0 else 1 end, created_at desc,id desc limit 1
+            ) l on true
+            where c.cancellation_requested and 'purchase-order:' || c.purchase_order_id || ':cancellation' in (:references)
+            """, nativeQuery = true)
+    java.util.List<LatestStatus> cancellationStatuses(java.util.Collection<String> references);
+
+    org.springframework.data.domain.Page<DeliveryLogJpaEntity> findByOperationReferenceIn(
+            java.util.Collection<String> references, org.springframework.data.domain.Pageable pageable);
     /** Transaction-scoped serialization also covers the first attempt, before a log row exists. */
     @org.springframework.data.jpa.repository.Query(value = "select pg_try_advisory_xact_lock(hashtextextended(:reference, 0))", nativeQuery = true)
     boolean tryLockDelivery(String reference);

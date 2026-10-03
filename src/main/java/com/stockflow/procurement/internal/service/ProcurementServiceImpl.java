@@ -79,10 +79,13 @@ class ProcurementServiceImpl implements ProcurementService {
     private final ApplicationEventPublisher events;
     private final NotificationService notifications;
     private final PoDeliveryDecisionRepository deliveryDecisions;
+    private final PoCommunicationProfile communication;
+    private final com.stockflow.product.api.ProductService products;
 
     ProcurementServiceImpl(PurchaseOrderRepository purchaseOrders, PurchaseOrderSearchRepository search,
                            ProcurementReportRepository reports, Clock clock, SupplierRepository suppliers,
-                           ApplicationEventPublisher events, NotificationService notifications, PoDeliveryDecisionRepository deliveryDecisions) {
+                           ApplicationEventPublisher events, NotificationService notifications, PoDeliveryDecisionRepository deliveryDecisions,
+                           PoCommunicationProfile communication, com.stockflow.product.api.ProductService products) {
         this.purchaseOrders = purchaseOrders;
         this.search = search;
         this.reports = reports;
@@ -91,6 +94,8 @@ class ProcurementServiceImpl implements ProcurementService {
         this.events = events;
         this.notifications = notifications;
         this.deliveryDecisions = deliveryDecisions;
+        this.communication = communication;
+        this.products = products;
     }
 
     /**
@@ -205,11 +210,24 @@ class ProcurementServiceImpl implements ProcurementService {
         int generation = notifications.prepareSupplierDelivery(saved.id().value(), recovery);
         deliveryDecisions.record(saved.id().value(), generation, previousDate, saved.expectedAt(), reason,
                 reconciled, acknowledgePastDue, supplier.communicationChannel().name(), recipient);
-        events.publishEvent(new PurchaseOrderSent(saved.id().value(), saved.poNumber(), saved.supplierId(),
+        var previous = deliveryDecisions.latestSnapshot(saved.id().value());
+        var buyer = previous.map(PurchaseOrderSent::buyer).orElseGet(communication::requireBuyer);
+        var lines = previous.map(PurchaseOrderSent::lines).orElseGet(() -> saved.lines().stream()
+                .map(line -> new PurchaseOrderSent.Line(line.sku().code(), description(line),
+                        line.quantityOrdered(), line.unitPrice().amount())).toList());
+        var event = new PurchaseOrderSent(saved.id().value(), saved.poNumber(), saved.supplierId(),
                 supplier.communicationChannel().name(), recipient, saved.totalAmount().amount(),
                 saved.currency().getCurrencyCode(), saved.expectedAt(), saved.paymentTermDays(),
-                saved.lines().stream().map(line -> new PurchaseOrderSent.Line(line.sku().code(),
-                        line.description(), line.quantityOrdered(), line.unitPrice().amount())).toList(), generation));
+                lines, generation, buyer, false, null);
+        deliveryDecisions.snapshot(event);
+        events.publishEvent(event);
+    }
+
+    private String description(PoLine line) {
+        if (line.description() != null && !line.description().isBlank()) return line.description().trim();
+        return products.nameForSku(line.sku().code()).filter(name -> !name.isBlank())
+                .orElseThrow(() -> new BusinessException(ErrorCode.PO_LINE_DESCRIPTION_REQUIRED,
+                        "Missing product description for SKU " + line.sku().code()));
     }
 
     @Override
@@ -217,7 +235,12 @@ class ProcurementServiceImpl implements ProcurementService {
     public PurchaseOrderSummary recordSupplierConfirmation(UUID purchaseOrderId,
                                                             RecordSupplierConfirmationCommand command) {
         PurchaseOrder order = loadForUpdate(purchaseOrderId);
-        order.recordSupplierConfirmation(SupplierConfirmationStatus.valueOf(command.status()),
+        SupplierConfirmationStatus response;
+        try { response = SupplierConfirmationStatus.valueOf(command.status()); }
+        catch (IllegalArgumentException | NullPointerException invalid) {
+            throw new BusinessException(ErrorCode.PO_SUPPLIER_RESPONSE_INVALID);
+        }
+        order.recordSupplierConfirmation(response,
                 command.supplierReference(), command.note(), clock.instant());
         notifications.suppressSupplierDelivery(purchaseOrderId);
         return toSummary(purchaseOrders.save(order), false);
@@ -227,9 +250,25 @@ class ProcurementServiceImpl implements ProcurementService {
     @Auditable(action = AuditAction.TRANSITION, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
     public PurchaseOrderSummary cancel(UUID purchaseOrderId, String reason) {
         PurchaseOrder order = loadForUpdate(purchaseOrderId);
+        boolean wasSent = order.status() == PurchaseOrderStatus.SENT;
         order.cancel(reason, clock.instant());
         notifications.suppressSupplierDelivery(purchaseOrderId);
-        return toSummary(purchaseOrders.save(order), false);
+        PurchaseOrder saved = purchaseOrders.save(order);
+        if (wasSent) {
+            notifications.prepareSupplierCancellation(purchaseOrderId);
+            var previous = deliveryDecisions.latestSnapshot(purchaseOrderId);
+            var supplier = suppliers.findById(order.supplierId()).orElseThrow(() ->
+                    new BusinessException(ErrorCode.SUPPLIER_NOT_FOUND)).details();
+            String channel = previous.map(PurchaseOrderSent::channel).orElse(supplier.communicationChannel().name());
+            String recipient = previous.map(PurchaseOrderSent::recipient).orElse(
+                    supplier.communicationChannel() == SupplierCommunicationChannel.EMAIL ? supplier.email() : supplier.apiEndpoint());
+            // Cancellation must reach the original destination even if the supplier master has changed.
+            events.publishEvent(new PurchaseOrderSent(purchaseOrderId, order.poNumber(), order.supplierId(),
+                    channel, recipient, order.totalAmount().amount(), order.currency().getCurrencyCode(),
+                    order.expectedAt(), order.paymentTermDays(), previous.map(PurchaseOrderSent::lines).orElse(List.of()),
+                    0, previous.map(PurchaseOrderSent::buyer).orElse(null), true, reason));
+        }
+        return toSummary(saved, false);
     }
 
     @Override

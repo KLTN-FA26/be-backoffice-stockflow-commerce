@@ -11,6 +11,13 @@ package com.stockflow.common.error;
  * actually depend on: whether to show a form error, retry, or give up.</p>
  */
 public enum ErrorCode {
+    PO_DELIVERY_DATE_REQUIRED("A delivery date is required before sending", 400),
+    PO_REASON_REQUIRED("A reason of 1..1000 characters is required", 400),
+    PO_SUPPLIER_RESPONSE_INVALID("Supplier response must be CONFIRMED or REJECTED", 400),
+    PO_COMMUNICATION_NOT_CONFIGURED("Buyer contact and receiving address must be configured before sending", 409),
+    PO_LINE_DESCRIPTION_REQUIRED("A product description is required for each purchase order line", 400),
+    SUPPLIER_DELIVERY_CONTACT_INVALID("Supplier delivery contact is invalid or not allowed", 400),
+    SUPPLIER_PROFILE_INVALID("Invalid supplier profile or commercial terms", 400),
 
     // ---- 400: the request itself is wrong; retrying it unchanged will not help
     VALIDATION_FAILED("Invalid request data", 400),

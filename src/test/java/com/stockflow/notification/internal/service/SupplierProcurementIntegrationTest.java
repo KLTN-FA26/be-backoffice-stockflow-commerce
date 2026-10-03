@@ -27,7 +27,10 @@ import static org.awaitility.Awaitility.await;
 @IntegrationTest
 @Import(PostgresContainer.class)
 @org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc
-@org.springframework.test.context.TestPropertySource(properties = "stockflow.idempotency.enabled=true")
+@org.springframework.test.context.TestPropertySource(properties = {"stockflow.idempotency.enabled=true",
+    "PO_BUYER_COMPANY_NAME=Buyer test", "PO_BUYER_COMPANY_ADDRESS=Company test address",
+    "PO_BUYER_CONTACT_NAME=Buyer contact", "PO_BUYER_PHONE=0901234567",
+    "PO_BUYER_EMAIL=buyer@example.com", "PO_RECEIVING_ADDRESS=Test warehouse"})
 class SupplierProcurementIntegrationTest {
     @Autowired SupplierService suppliers;
     @Autowired ProcurementService orders;
@@ -40,6 +43,7 @@ class SupplierProcurementIntegrationTest {
     @Autowired com.stockflow.common.events.PendingPublicationReader pendingReader;
     @MockitoBean NotificationSender sender;
     @Autowired org.springframework.test.web.servlet.MockMvc mvc;
+    @Autowired com.stockflow.product.api.ProductService products;
 
     private PurchaseOrderSummary failedOrder(boolean terminal) {
         var po = order(supplier().supplierId());
@@ -54,6 +58,68 @@ class SupplierProcurementIntegrationTest {
         return orders.findById(po.purchaseOrderId()).orElseThrow();
     }
 
+    @Test void cancellationFailureDoesNotUndoCancellationAndRetryUsesOriginalRecipient() {
+        var supplier = supplier();
+        var po = order(supplier.supplierId());
+        orders.approve(po.purchaseOrderId()); orders.send(po.purchaseOrderId());
+        await().atMost(java.time.Duration.ofSeconds(10)).untilAsserted(() ->
+                assertThat(notifications.purchaseOrderDeliveryStatuses(List.of(po.purchaseOrderId())))
+                        .containsEntry(po.purchaseOrderId(), "DELIVERED"));
+        transactions.executeWithoutResult(tx -> jdbc.update("update procurement.supplier set email='changed@example.com' where id=?", supplier.supplierId()));
+        doThrow(new org.springframework.mail.MailSendException("offline")).when(sender)
+                .sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId()) && e.cancellation()));
+        assertThat(orders.cancel(po.purchaseOrderId(), "Customer cancelled").status()).isEqualTo("CANCELLED");
+        await().atMost(java.time.Duration.ofSeconds(10)).untilAsserted(() ->
+                assertThat(notifications.purchaseOrderCancellationStatuses(List.of(po.purchaseOrderId())))
+                        .containsEntry(po.purchaseOrderId(), "RETRYING"));
+        assertThat(orders.findById(po.purchaseOrderId()).orElseThrow().status()).isEqualTo("CANCELLED");
+        doNothing().when(sender).sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId()) && e.cancellation()));
+        publications.resubmitIncompletePublications(p -> p.getEvent() instanceof PurchaseOrderSent e
+                && e.purchaseOrderId().equals(po.purchaseOrderId()) && e.cancellation());
+        await().atMost(java.time.Duration.ofSeconds(10)).untilAsserted(() ->
+                assertThat(notifications.purchaseOrderCancellationStatuses(List.of(po.purchaseOrderId())))
+                        .containsEntry(po.purchaseOrderId(), "DELIVERED"));
+        verify(sender, times(2)).sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId())
+                && e.cancellation() && e.recipient().equals(supplier.email())));
+        assertThat(notifications.purchaseOrderDeliveries(po.purchaseOrderId(), 0, 20).items())
+                .extracting(com.stockflow.notification.api.DeliveryAttemptSummary::templateCode)
+                .contains("purchase-order.sent", "purchase-order.cancelled");
+        expectCode(() -> orders.cancel(po.purchaseOrderId(), "Duplicate cancellation"), ErrorCode.INVALID_PURCHASE_ORDER_TRANSITION);
+    }
+
+    @Test void unsentCancellationDoesNotNotifySupplier() {
+        var po = order(supplier().supplierId());
+        orders.cancel(po.purchaseOrderId(), "Draft withdrawn");
+        assertThat(notifications.purchaseOrderCancellationStatuses(List.of(po.purchaseOrderId()))).isEmpty();
+        verify(sender, never()).sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId())));
+    }
+
+    @Test void missingDescriptionComesFromProductMasterAndRecoveryKeepsSnapshot() {
+        var productId = UUID.randomUUID();
+        String sku = "PO-" + UUID.randomUUID().toString().substring(0, 8);
+        transactions.executeWithoutResult(tx -> jdbc.update("insert into product.product(id,code,name,status,created_at) values (?,?,?,'DRAFT',now())",
+                productId, sku, "Original product name"));
+        assertThat(products.nameForSku(sku.toUpperCase(java.util.Locale.ROOT))).contains("Original product name");
+        var po = orders.createPurchaseOrder(new CreatePurchaseOrderCommand(supplier().supplierId(), "VND", null,
+                List.of(new CreatePOLineCommand(sku, null, 1, BigDecimal.TEN))));
+        doThrow(new IllegalArgumentException("terminal transport error")).when(sender)
+                .sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId())));
+        orders.approve(po.purchaseOrderId()); orders.send(po.purchaseOrderId());
+        await().atMost(java.time.Duration.ofSeconds(10)).untilAsserted(() ->
+                assertThat(notifications.purchaseOrderDeliveryStatuses(List.of(po.purchaseOrderId())))
+                        .containsEntry(po.purchaseOrderId(), "FAILED"));
+        transactions.executeWithoutResult(tx -> jdbc.update("update product.product set name='Changed product name' where id=?", productId));
+        assertThat(products.nameForSku(sku.toUpperCase(java.util.Locale.ROOT))).contains("Changed product name");
+        doNothing().when(sender).sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId())));
+        orders.recoverDelivery(po.purchaseOrderId(), new RecoverPurchaseOrderDeliveryCommand("Provider reconciled", true, false));
+        await().atMost(java.time.Duration.ofSeconds(10)).untilAsserted(() ->
+                assertThat(notifications.purchaseOrderDeliveryStatuses(List.of(po.purchaseOrderId())))
+                        .containsEntry(po.purchaseOrderId(), "DELIVERED"));
+        verify(sender, times(2)).sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId())
+                && e.lines().getFirst().description().equals("Original product name")
+                && e.buyer().receivingAddress().equals("Test warehouse")));
+    }
+
     @Test void cancelledOrderCannotBeDispatchedByAnOldPublication() {
         var po = failedOrder(false);
         orders.cancel(po.purchaseOrderId(), "No longer needed");
@@ -62,8 +128,9 @@ class SupplierProcurementIntegrationTest {
         await().atMost(java.time.Duration.ofSeconds(10)).untilAsserted(() ->
                 assertThat(jdbc.queryForObject("select count(*) from event_publication where completion_date is null and serialized_event like ?",
                         Long.class, "%" + po.purchaseOrderId() + "%")).isZero());
-        verify(sender, times(1)).sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId())));
+        verify(sender, times(1)).sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId()) && !e.cancellation()));
         assertThat(notifications.purchaseOrderDeliveryStatuses(List.of(po.purchaseOrderId()))).containsEntry(po.purchaseOrderId(), "SUPPRESSED");
+        assertThat(notifications.purchaseOrderCancellationStatuses(List.of(po.purchaseOrderId()))).containsEntry(po.purchaseOrderId(), "DELIVERED");
         expectCode(() -> orders.recoverDelivery(po.purchaseOrderId(), new RecoverPurchaseOrderDeliveryCommand("checked", true, false)),
                 ErrorCode.INVALID_PURCHASE_ORDER_TRANSITION);
     }
@@ -152,27 +219,31 @@ class SupplierProcurementIntegrationTest {
             assertThat(cancel.get(10, TimeUnit.SECONDS).status()).isEqualTo("CANCELLED");
         } finally { release.countDown(); }
         assertThat(notifications.purchaseOrderDeliveryStatuses(List.of(po.purchaseOrderId()))).containsEntry(po.purchaseOrderId(), "DELIVERED");
-        verify(sender, times(1)).sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId())));
+        await().atMost(java.time.Duration.ofSeconds(10)).untilAsserted(() ->
+                assertThat(notifications.purchaseOrderCancellationStatuses(List.of(po.purchaseOrderId()))).containsEntry(po.purchaseOrderId(), "DELIVERED"));
+        verify(sender, times(1)).sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId()) && !e.cancellation()));
+        verify(sender, times(1)).sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId()) && e.cancellation()));
     }
 
-    @Test void overdueInitialSendRequiresExplicitDateAndReasonAndRecordsBoth() {
+    @Test void overdueInitialSendIsAllowedWithWarningWithoutInventingNewDeliveryDate() throws Exception {
         var yesterday = com.stockflow.common.domain.BusinessCalendar.date(java.time.Instant.now()).minusDays(1);
         var po = orders.createPurchaseOrder(new CreatePurchaseOrderCommand(supplier().supplierId(), "VND", yesterday,
                 List.of(new CreatePOLineCommand("CHAIR-01", "Chair", 1, BigDecimal.TEN))));
         orders.approve(po.purchaseOrderId());
-        expectCode(() -> orders.send(po.purchaseOrderId()), ErrorCode.CONFLICT);
-        assertThat(orders.findById(po.purchaseOrderId()).orElseThrow().status()).isEqualTo("APPROVED");
         var tomorrow = yesterday.plusDays(2);
-        assertThatThrownBy(() -> orders.send(po.purchaseOrderId(), new SendPurchaseOrderCommand(tomorrow, " ")))
-                .isInstanceOf(IllegalArgumentException.class);
-        var sent = orders.send(po.purchaseOrderId(), new SendPurchaseOrderCommand(tomorrow, "Supplier agreed revised date before dispatch"));
-        assertThat(sent.expectedAt()).isEqualTo(tomorrow);
+        expectCode(() -> orders.send(po.purchaseOrderId(), new SendPurchaseOrderCommand(tomorrow, " ")), ErrorCode.PO_REASON_REQUIRED);
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post(
+                "/api/v1/purchase-orders/" + po.purchaseOrderId() + "/sending").header("Idempotency-Key", UUID.randomUUID().toString()))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.status").value("SENT"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.warnings[0]").value("DELIVERY_DATE_IN_PAST"));
+        assertThat(orders.findById(po.purchaseOrderId()).orElseThrow().expectedAt()).isEqualTo(yesterday);
         var decision = orders.deliveryDecisions(po.purchaseOrderId(), 0, 20).items().getFirst();
         assertThat(decision.previousExpectedAt()).isEqualTo(yesterday);
-        assertThat(decision.expectedAt()).isEqualTo(tomorrow);
+        assertThat(decision.expectedAt()).isEqualTo(yesterday);
         assertThat(decision.actor()).isNotBlank();
         await().atMost(java.time.Duration.ofSeconds(10)).untilAsserted(() ->
-                verify(sender).sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId()) && e.expectedAt().equals(tomorrow))));
+                verify(sender).sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId()) && e.expectedAt().equals(yesterday))));
     }
 
     @Test void invalidStatusAndConditionalFieldsAreClientErrors() throws Exception {
@@ -209,7 +280,8 @@ class SupplierProcurementIntegrationTest {
         assertThat(suppliers.list(0, 20, "_", null, null).totalElements()).isZero();
         assertThatThrownBy(() -> suppliers.create(new SaveSupplierCommand("API-DENIED", "Supplier", null,
                 null, null, null, "ACTIVE", 30, 7, "API", "https://unapproved.example.com/po")))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.SUPPLIER_DELIVERY_CONTACT_INVALID);
     }
 
     @Test void permanentDeliveryFailureStopsAndIsVisibleOnPoDetail() throws Exception {

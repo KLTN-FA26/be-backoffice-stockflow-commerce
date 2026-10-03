@@ -26,4 +26,9 @@ public class PoDeliveryControlRepository {
     public void advance(UUID id, int generation) {
         jdbc.update("update notification.po_delivery_control set generation=? where purchase_order_id=?", generation, id);
     }
+
+    public void requestCancellation(UUID id) {
+        lock(id);
+        jdbc.update("update notification.po_delivery_control set cancellation_requested=true where purchase_order_id=?", id);
+    }
 }

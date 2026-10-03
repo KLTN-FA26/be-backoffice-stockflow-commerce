@@ -11,8 +11,10 @@ import java.util.UUID;
 public interface NotificationService {
     int prepareSupplierDelivery(UUID purchaseOrderId, boolean recovery);
     void suppressSupplierDelivery(UUID purchaseOrderId);
+    void prepareSupplierCancellation(UUID purchaseOrderId);
     void validateSupplierDelivery(String channel, String recipient);
     Map<UUID, String> purchaseOrderDeliveryStatuses(Collection<UUID> ids);
+    Map<UUID, String> purchaseOrderCancellationStatuses(Collection<UUID> ids);
 
     PageResponse<DeliveryAttemptSummary> purchaseOrderDeliveries(UUID purchaseOrderId, int page, int size);
 }

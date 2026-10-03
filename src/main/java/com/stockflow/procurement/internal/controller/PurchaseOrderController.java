@@ -68,12 +68,14 @@ class PurchaseOrderController {
     private final ProcurementService procurementService;
     private final PurchaseOrderWebMapper mapper;
     private final NotificationService notifications;
+    private final java.time.Clock clock;
 
     PurchaseOrderController(ProcurementService procurementService, PurchaseOrderWebMapper mapper,
-            NotificationService notifications) {
+            NotificationService notifications, java.time.Clock clock) {
         this.procurementService = procurementService;
         this.mapper = mapper;
         this.notifications = notifications;
+        this.clock = clock;
     }
 
     @PostMapping
@@ -111,7 +113,9 @@ class PurchaseOrderController {
         var result = procurementService.list(query);
         var statuses = notifications.purchaseOrderDeliveryStatuses(result.items().stream()
                 .map(PurchaseOrderSummary::purchaseOrderId).toList());
-        return ApiResponse.ok(result.map(po -> mapper.toResponse(po, deliveryStatus(po, statuses))));
+        var cancellations = notifications.purchaseOrderCancellationStatuses(result.items().stream()
+                .map(PurchaseOrderSummary::purchaseOrderId).toList());
+        return ApiResponse.ok(result.map(po -> response(po, statuses, cancellations)));
     }
 
     @PostMapping("/{purchaseOrderId}/approval")
@@ -180,7 +184,17 @@ class PurchaseOrderController {
 
     private PurchaseOrderResponse toResponse(PurchaseOrderSummary po) {
         var statuses = notifications.purchaseOrderDeliveryStatuses(List.of(po.purchaseOrderId()));
-        return mapper.toResponse(po, deliveryStatus(po, statuses));
+        return response(po, statuses, notifications.purchaseOrderCancellationStatuses(List.of(po.purchaseOrderId())));
+    }
+
+    private PurchaseOrderResponse response(PurchaseOrderSummary po, Map<UUID, String> statuses, Map<UUID, String> cancellations) {
+        var today = com.stockflow.common.domain.BusinessCalendar.date(clock.instant());
+        var warnings = po.expectedAt() != null && po.expectedAt().isBefore(today)
+                && !List.of("CANCELLED", "CLOSED", "CLOSED_SHORT").contains(po.status())
+                ? List.of("DELIVERY_DATE_IN_PAST") : List.<String>of();
+        String cancellation = cancellations.getOrDefault(po.purchaseOrderId(),
+                "CANCELLED".equals(po.status()) && !"NOT_SENT".equals(po.supplierConfirmationStatus()) ? "UNKNOWN" : "NOT_REQUIRED");
+        return mapper.toResponse(po, deliveryStatus(po, statuses), cancellation, warnings);
     }
 
     private static String deliveryStatus(PurchaseOrderSummary po,

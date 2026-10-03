@@ -17,6 +17,7 @@ public interface ProductRepository extends AggregateRepository<Product, ProductI
 
     Optional<Product> findForUpdate(ProductId id);
     boolean containsSku(UUID productId, String sku);
+    Optional<String> nameForSku(String sku);
 
     Optional<Product> findByCode(String code);
 

@@ -43,6 +43,6 @@ class PurchaseOrderDeliveryController {
             @RequestParam(defaultValue = "0") int page, @RequestParam(defaultValue = "20") int size) {
         procurement.findById(purchaseOrderId).orElseThrow(() -> new BusinessException(ErrorCode.PURCHASE_ORDER_NOT_FOUND));
         return ApiResponse.ok(notifications.purchaseOrderDeliveries(purchaseOrderId, page, size)
-                .map(s -> new DeliveryAttemptResponse(s.id(), s.channel(), s.status(), s.attemptedAt(), s.sentAt(), s.failure(), s.generation(), s.recipient())));
+                .map(s -> new DeliveryAttemptResponse(s.id(), s.channel(), s.status(), s.attemptedAt(), s.sentAt(), s.failure(), s.generation(), s.recipient(), s.templateCode())));
     }
 }

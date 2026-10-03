@@ -38,7 +38,12 @@ class NotificationServiceImpl implements NotificationService {
     }
 
     @Override
-    public void validateSupplierDelivery(String channel, String recipient) { policy.validate(channel, recipient); }
+    public void validateSupplierDelivery(String channel, String recipient) {
+        try { policy.validate(channel, recipient); }
+        catch (IllegalArgumentException invalid) {
+            throw new BusinessException(ErrorCode.SUPPLIER_DELIVERY_CONTACT_INVALID);
+        }
+    }
 
     @Override
     public int prepareSupplierDelivery(UUID id, boolean recovery) {
@@ -56,6 +61,9 @@ class NotificationServiceImpl implements NotificationService {
 
     @Override
     public void suppressSupplierDelivery(UUID id) { controls.suppress(id); }
+
+    @Override
+    public void prepareSupplierCancellation(UUID id) { controls.requestCancellation(id); }
 
     @Override
     @Transactional(readOnly = true)
@@ -76,11 +84,25 @@ class NotificationServiceImpl implements NotificationService {
 
     @Override
     @Transactional(readOnly = true)
+    public Map<UUID, String> purchaseOrderCancellationStatuses(Collection<UUID> ids) {
+        if (ids.isEmpty()) return Map.of();
+        var result = new HashMap<UUID, String>();
+        for (var row : logs.cancellationStatuses(ids.stream().map(id -> "purchase-order:" + id + ":cancellation").toList())) {
+            var id = UUID.fromString(row.getReference().substring("purchase-order:".length(), row.getReference().lastIndexOf(':')));
+            result.put(id, "SENT".equals(row.getStatus()) ? "DELIVERED" : "QUEUED".equals(row.getStatus())
+                    ? "QUEUED" : row.getTerminal() ? "FAILED" : "RETRYING");
+        }
+        return result;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public PageResponse<DeliveryAttemptSummary> purchaseOrderDeliveries(UUID purchaseOrderId, int page, int size) {
         var pageable = Pages.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt", "id"));
-        return Pages.toResponse(logs.findByOperationReference("purchase-order:" + purchaseOrderId, pageable)
+        return Pages.toResponse(logs.findByOperationReferenceIn(java.util.List.of("purchase-order:" + purchaseOrderId,
+                        "purchase-order:" + purchaseOrderId + ":cancellation"), pageable)
                 .map(log -> new DeliveryAttemptSummary(log.getId(), log.getChannel().name(),
                         log.getStatus().name(), log.getCreatedAt(), log.getSentAt(), log.getError(),
-                        log.getDeliveryGeneration(), log.getRecipient())));
+                        log.getDeliveryGeneration(), log.getRecipient(), log.getTemplateCode())));
     }
 }

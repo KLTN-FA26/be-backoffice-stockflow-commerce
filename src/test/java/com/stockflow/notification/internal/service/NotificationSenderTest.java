@@ -17,7 +17,9 @@ class NotificationSenderTest {
     private PurchaseOrderSent event(String channel, String recipient) {
         return new PurchaseOrderSent(UUID.randomUUID(), "PO-1", UUID.randomUUID(), channel, recipient,
                 BigDecimal.valueOf(200), "VND", LocalDate.of(2026, 10, 1), 30,
-                List.of(new PurchaseOrderSent.Line("CHAIR-1", "Chair", 2, BigDecimal.valueOf(100))));
+                List.of(new PurchaseOrderSent.Line("CHAIR-1", "Chair", 2, BigDecimal.valueOf(100))), 0,
+                new PurchaseOrderSent.Buyer("Buyer Company", "Company Address", "Purchasing Contact",
+                        "0901234567", "buyer@example.com", "Receiving Warehouse"), false, null);
     }
     @Test void emailIncludesActualOrderLinesAndCommercialTerms() {
         var mail = mock(JavaMailSender.class);
@@ -25,7 +27,23 @@ class NotificationSenderTest {
         sender.sendPurchaseOrder(event("EMAIL", "supplier@example.com"));
         var message = ArgumentCaptor.forClass(SimpleMailMessage.class);
         verify(mail).send(message.capture());
-        assertThat(message.getValue().getText()).contains("CHAIR-1", "quantity=2", "100 VND", "30 days", "200 VND");
+        assertThat(message.getValue().getText()).contains("CHAIR-1", "Số lượng: 2", "100 VND", "30 ngày", "200 VND");
+        assertThat(message.getValue().getText()).contains("Buyer Company", "Company Address", "Purchasing Contact",
+                "0901234567", "buyer@example.com", "Receiving Warehouse", "Chair");
+        assertThat(message.getValue().getReplyTo()).isEqualTo("buyer@example.com");
+    }
+
+    @Test void cancellationEmailIsExplicitAndWorksForLegacyOrdersWithoutLines() {
+        var mail = mock(JavaMailSender.class);
+        var sender = new NotificationSender(mail, mock(RestClientFactory.class), "buyer@example.com", "");
+        var original = event("EMAIL", "supplier@example.com");
+        sender.sendPurchaseOrder(new PurchaseOrderSent(original.purchaseOrderId(), original.poNumber(), original.supplierId(),
+                original.channel(), original.recipient(), original.totalAmount(), original.currency(), original.expectedAt(),
+                original.paymentTermDays(), List.of(), 0, original.buyer(), true, "Customer cancelled"));
+        var message = ArgumentCaptor.forClass(SimpleMailMessage.class);
+        verify(mail).send(message.capture());
+        assertThat(message.getValue().getSubject()).contains("huỷ", "PO-1");
+        assertThat(message.getValue().getText()).contains("Customer cancelled", "dừng giao hàng", "Buyer Company");
     }
     @Test void unapprovedHostCannotReceiveOrderData() {
         var clients = mock(RestClientFactory.class);

@@ -16,17 +16,40 @@ class ProcurementMigrationUpgradeTest {
             try (var connection = DriverManager.getConnection(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
                  var sql = connection.createStatement()) {
                 sql.executeUpdate("""
-                        insert into procurement.supplier(id,code,name,email,status,created_at)
-                        values ('00000000-0000-0000-0000-000000000001','LEGACY','Legacy','old@example.com','ACTIVE',now())
+                        insert into procurement.supplier(id,code,name,email,status,tax_code,created_at)
+                        values ('00000000-0000-0000-0000-000000000001','LEGACY','Legacy','old@example.com','ACTIVE','TAX-001',now())
                         """);
                 sql.executeUpdate("""
                         insert into procurement.purchase_order(id,po_number,supplier_id,status,created_at)
                         values ('00000000-0000-0000-0000-000000000002','PO-LEGACY',
                         '00000000-0000-0000-0000-000000000001','SENT',now())
                         """);
+                long adminVersion;
+                long staffVersion;
+                try (var versions = sql.executeQuery("select version from identity.app_role where code='ECOMMERCE_ADMIN'")) {
+                    versions.next(); adminVersion = versions.getLong(1);
+                }
+                try (var versions = sql.executeQuery("select version from identity.app_role where code='PROCUREMENT_STAFF'")) {
+                    versions.next(); staffVersion = versions.getLong(1);
+                }
                 var upgrade = Flyway.configure().dataSource(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword()).load();
                 assertThat(upgrade.migrate().migrationsExecuted).isEqualTo(4);
                 upgrade.validate();
+                try (var tax = sql.executeQuery("select tax_code,legacy_tax_code from procurement.supplier where code='LEGACY'")) {
+                    tax.next(); assertThat(tax.getString(1)).isNull(); assertThat(tax.getString(2)).isEqualTo("TAX-001");
+                }
+                assertThat(sql.executeUpdate("update procurement.supplier set name='Editable legacy supplier' where code='LEGACY'")).isEqualTo(1);
+                try (var versions = sql.executeQuery("select code,version from identity.app_role where code in ('ECOMMERCE_ADMIN','PROCUREMENT_STAFF')")) {
+                    while (versions.next()) assertThat(versions.getLong(2)).isEqualTo(
+                            (versions.getString(1).equals("ECOMMERCE_ADMIN") ? adminVersion : staffVersion) + 1);
+                }
+                try (var permission = sql.executeQuery("""
+                        select count(*) from identity.role_permission rp
+                        join identity.app_role r on r.id=rp.role_id join identity.permission p on p.id=rp.permission_id
+                        where r.code='ECOMMERCE_ADMIN' and p.code='procurement-suppliers:DELETE'
+                        """)) {
+                    permission.next(); assertThat(permission.getInt(1)).isEqualTo(1);
+                }
                 try (var controls = sql.executeQuery("select count(*) from notification.po_delivery_control where purchase_order_id='00000000-0000-0000-0000-000000000002'")) {
                     controls.next(); assertThat(controls.getInt(1)).isZero();
                 }
