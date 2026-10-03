@@ -4,6 +4,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
+import org.springframework.security.config.ObjectPostProcessor;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
@@ -12,7 +13,9 @@ import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
+import org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.AuthenticationEntryPointFailureHandler;
 import org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
@@ -110,10 +113,18 @@ public class ResourceServerSecurityConfig {
         return decoder;
     }
 
+    /** Roles from the token, permissions from the server-side lookup (ADR-0008). */
+    @Bean
+    public StockflowJwtAuthenticationConverter stockflowJwtAuthenticationConverter(
+            RoleAuthorizationLookup lookup) {
+        return new StockflowJwtAuthenticationConverter(lookup);
+    }
+
     /** Everything else: the API itself, plus the rest of actuator. */
     @Bean
     @Order(2)
-    public SecurityFilterChain apiFilterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain apiFilterChain(HttpSecurity http,
+                                              StockflowJwtAuthenticationConverter converter) throws Exception {
         return http
                 // Stateless JWT: there is no session cookie for an attacker to ride, so CSRF
                 // protection buys nothing and only breaks the API clients.
@@ -136,14 +147,37 @@ public class ResourceServerSecurityConfig {
                                 "/api/v1/public/products/**").permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(oauth -> oauth
-                        .jwt(jwt -> jwt.jwtAuthenticationConverter(
-                                new StockflowJwtAuthenticationConverter()))
+                        .jwt(jwt -> jwt.jwtAuthenticationConverter(converter))
                         .authenticationEntryPoint(authenticationEntryPoint)
-                        .accessDeniedHandler(accessDeniedHandler))
+                        .accessDeniedHandler(accessDeniedHandler)
+                        .withObjectPostProcessor(reportUnavailableAsServiceError()))
                 .exceptionHandling(handling -> handling
                         .authenticationEntryPoint(authenticationEntryPoint)
                         .accessDeniedHandler(accessDeniedHandler))
                 .build();
+    }
+
+    /**
+     * Routes an {@code AuthenticationServiceException} — "could not check", not "not valid" — to the
+     * entry point, which answers it with a 503 envelope.
+     *
+     * <p>Spring Security 6 rethrows that exception type from the bearer-token filter by default. It
+     * then escapes the chain as a servlet exception and the container renders its own 500 page,
+     * outside the platform's envelope and without a correlation id. The permission lookup
+     * (ADR-0008), the session check and the key-set fetch all fail this way when a backing store is
+     * down.</p>
+     */
+    private ObjectPostProcessor<BearerTokenAuthenticationFilter> reportUnavailableAsServiceError() {
+        return new ObjectPostProcessor<>() {
+            @Override
+            public <O extends BearerTokenAuthenticationFilter> O postProcess(O filter) {
+                AuthenticationEntryPointFailureHandler failureHandler =
+                        new AuthenticationEntryPointFailureHandler(authenticationEntryPoint);
+                failureHandler.setRethrowAuthenticationServiceException(false);
+                filter.setAuthenticationFailureHandler(failureHandler);
+                return filter;
+            }
+        };
     }
 
     /**

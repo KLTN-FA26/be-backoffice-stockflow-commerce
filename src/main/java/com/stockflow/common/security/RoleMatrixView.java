@@ -8,11 +8,18 @@ import java.util.List;
  * <p>Shaped after the screen itself rather than after the tables: tabs, then resource cards, then
  * action chips, with the counters precomputed. Sending the raw join and letting the frontend group
  * and count means every client re-implements the same logic and they drift.</p>
+ *
+ * @param version  the role's optimistic-lock version. The editor sends it back with a change, and a
+ *                 save against a version someone else has already moved past is refused rather than
+ *                 silently overwriting their edit (ADR-0008).
+ * @param editable false for a role whose grants are managed by migrations, not by this screen
  */
 public record RoleMatrixView(
         String roleCode,
         String roleLabel,
         boolean systemRole,
+        boolean editable,
+        long version,
         DataScope dataScope,
         int grantedCount,
         int totalCount,
