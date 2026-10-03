@@ -1,0 +1,301 @@
+# =============================================================================
+# Shared DEV SERVER on one small VPS (2 vCPU / 4 GB): the backend the frontend team builds against.
+#
+# Lives at /opt/stockflow/docker-compose.yml on the server (CI rsyncs this directory there) and is
+# driven by scripts/deploy.sh - not by hand, so the image tag that is running is always recorded.
+#
+# Runs the application with the `dev` profile (application-dev.yml): security ON, full trace
+# sampling, SQL statement logging, admin-only loggers/threaddump. NOT a production setup - see
+# "Before this becomes production" in README.md for what changes.
+#
+# Differences from the development compose file at the repository root, all deliberate:
+#   - ONLY nginx publishes ports. Docker writes its own iptables rules ahead of ufw, so a published
+#     Postgres port is reachable from the internet with the firewall "on". Nothing here may gain a
+#     `ports:` entry; reach a service with `docker compose exec` or an SSH tunnel instead.
+#   - Every service has a memory limit, and they add up to ~3.4 GB. Without limits the JVM sizes its
+#     heap from the HOST's 4 GB and the kernel's OOM killer picks a victim - usually Postgres.
+#   - No ClamAV (~1.2 GB, a third of the machine). Upload scanning is switched OFF instead, which
+#     the application logs as a warning at startup. Acceptable while only the team uploads files.
+#   - No Elasticsearch: no Java code uses it.
+#   - Mailpit instead of a real SMTP server: every email the application sends is caught and shown
+#     at mail.<domain>, and nothing can reach a real inbox. NotificationSender only logs today
+#     (`docker compose logs app | grep NOTIFY`); the mail settings are in place for when it sends.
+#   - The application runs a pre-built image from GHCR; this file never builds.
+# =============================================================================
+
+name: stockflow
+
+x-restart: &restart
+  restart: unless-stopped
+
+x-logging: &logging
+  # The json-file driver keeps every line forever by default. The dev profile logs every SQL
+  # statement, so without rotation the disk fills in days, not weeks.
+  logging:
+    driver: json-file
+    options:
+      max-size: "20m"
+      max-file: "5"
+
+services:
+
+  nginx:
+    image: nginx:1.27-alpine
+    <<: [*restart, *logging]
+    depends_on:
+      app:
+        condition: service_started
+      minio:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # Substituted into templates/*.template at container start by the official image's
+      # entrypoint. Only variables that are actually set are replaced, so nginx's own $host,
+      # $remote_addr etc. pass through untouched.
+      DOMAIN: ${DOMAIN:?DOMAIN is required}
+      S3_BUCKET: ${S3_BUCKET:?S3_BUCKET is required}
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/snippets:/etc/nginx/snippets:ro
+      - ./nginx/templates:/etc/nginx/templates:ro
+      - ./certs:/etc/nginx/certs:ro
+      - ./auth:/etc/nginx/auth:ro
+    mem_limit: 64m
+    healthcheck:
+      test: ["CMD-SHELL", "nginx -t -q || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  app:
+    # IMAGE_TAG is written into .env by scripts/deploy.sh, so a plain `docker compose up -d` (after
+    # editing .env, say) recreates the application from the image that is actually deployed. No
+    # default: a fallback tag would silently run a different build, or one the server cannot pull.
+    image: ${APP_IMAGE:?APP_IMAGE is required}:${IMAGE_TAG:?IMAGE_TAG is unset - run scripts/deploy.sh <tag> once}
+    <<: [*restart, *logging]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    # Listed one by one rather than `env_file: .env`, which would also hand the application the
+    # MinIO root password it has no use for.
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      # Container names: inside the compose network each service resolves by name.
+      DB_HOST: postgres
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_POOL_MAX: ${DB_POOL_MAX:-10}
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      # The application validates its own tokens against the keys it publishes itself.
+      JWT_JWK_SET_URI: http://localhost:8080/oauth2/jwks
+      S3_BUCKET: ${S3_BUCKET}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      # The PUBLIC hostname, not http://minio:9000. StorageConfig builds the presigner from this
+      # same endpoint, so an internal name here produces download links no browser can open. The
+      # cost is that the application's own uploads leave the VPS and come back through Cloudflare.
+      S3_ENDPOINT: https://s3.${DOMAIN}
+      S3_PATH_STYLE: "true"
+      AWS_REGION: ${AWS_REGION:-ap-southeast-1}
+      PRODUCT_MEDIA_CDN_BASE_URL: https://media.${DOMAIN}
+      # Optional demo data (db/demo) - see .env.example for why it is off. Switching it either way
+      # needs a database reset: Flyway refuses to start when migrations appear (or vanish) out of
+      # order, and the demo versions interleave with the real ones.
+      SPRING_FLYWAY_LOCATIONS: ${FLYWAY_LOCATIONS:-classpath:db/migration}
+      # Off by default for the reason in application.yml: the request carries its own unit price.
+      STOCKFLOW_CHECKOUT_GUEST_ENABLED: ${GUEST_CHECKOUT_ENABLED:-false}
+      STOCKFLOW_UPLOAD_INSPECTION_ENABLED: "false"
+      STOCKFLOW_SECURITY_CORS_ALLOWED_ORIGIN_PATTERNS: ${CORS_ALLOWED_ORIGIN_PATTERNS:-http://localhost:*}
+      OTLP_TRACING_ENDPOINT: http://jaeger:4318/v1/traces
+      # Spring Boot's mail starter is on the classpath; these create its JavaMailSender. Mailpit
+      # accepts anything on 1025 without authentication or TLS.
+      SPRING_MAIL_HOST: mailpit
+      SPRING_MAIL_PORT: "1025"
+      TRACE_SAMPLING: ${TRACE_SAMPLING:-1.0}
+      CACHE_VERSION: ${CACHE_VERSION:-v1}
+      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
+      AUDIT_ROUTINE_RETENTION: ${AUDIT_ROUTINE_RETENTION:-P180D}
+      AUDIT_SECURITY_RETENTION: ${AUDIT_SECURITY_RETENTION:-P730D}
+      # Replaces the Dockerfile's JAVA_OPTS, so its flags are repeated. The heap is held to 60% of
+      # the limit rather than the image's 75%: at 1.4 GB the remaining 25% is too little for
+      # metaspace (Hibernate, Modulith and the AWS SDK load a lot of classes), the code cache and
+      # thread stacks, and the container would be OOM-killed with the heap itself only half full.
+      JAVA_OPTS: >-
+        -XX:MaxRAMPercentage=60.0
+        -XX:MaxMetaspaceSize=256m
+        -XX:ReservedCodeCacheSize=128m
+        -XX:+ExitOnOutOfMemoryError
+        -Djava.security.egd=file:/dev/./urandom
+        -Duser.timezone=UTC
+    mem_limit: 1400m
+    # Graceful shutdown needs time to finish in-flight requests before Docker sends SIGKILL.
+    stop_grace_period: 40s
+    # Overrides the Dockerfile's 60 s start period. On 2 vCPUs the first start - JVM warm-up plus
+    # every Flyway migration - takes well over a minute, and an instance marked unhealthy during it
+    # makes deploy.sh roll back a release that was merely slow.
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/actuator/health/readiness"]
+      interval: 10s
+      timeout: 3s
+      start_period: 240s
+      retries: 3
+
+  postgres:
+    image: postgres:16-alpine
+    <<: [*restart, *logging]
+    environment:
+      POSTGRES_DB: ${DB_NAME:?DB_NAME is required}
+      POSTGRES_USER: ${DB_USER:?DB_USER is required}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    # Same guard rails as development (see the root docker-compose.yml for the reasoning), with
+    # memory sized to the 768 MB limit: shared_buffers at a third, work_mem small because a dev
+    # server has a handful of connections, not a reporting workload.
+    command:
+      - postgres
+      - -c
+      - max_connections=40
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - effective_cache_size=512MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - statement_timeout=10000
+      - -c
+      - lock_timeout=5000
+      - -c
+      - idle_in_transaction_session_timeout=60000
+      - -c
+      - log_min_duration_statement=500
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    # shared_buffers lives in /dev/shm; Docker's default 64 MB would make Postgres fail to start.
+    shm_size: 320m
+    mem_limit: 768m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    <<: [*restart, *logging]
+    # Cache, rate limiting and ad-hoc locks - never the source of truth, so no persistence and LRU
+    # eviction. A password even on the internal network: one compromised container should not be
+    # able to read or poison every cache entry.
+    command: >-
+      redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru --save ""
+      --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    mem_limit: 192m
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
+    <<: [*restart, *logging]
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+    volumes:
+      - minio-data:/data
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # One-shot: creates the bucket, makes ONLY product-images/ anonymously readable (what
+  # media.<domain> serves), and creates the application's own credentials scoped to this bucket so
+  # it never holds the root key. Idempotent, runs on every `up`.
+  minio-init:
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      S3_BUCKET: ${S3_BUCKET}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?S3_ACCESS_KEY is required}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?S3_SECRET_KEY is required}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null
+        mc mb --ignore-existing "local/$$S3_BUCKET"
+        mc anonymous set download "local/$$S3_BUCKET/product-images"
+        cat > /tmp/app-policy.json <<EOF
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            { "Effect": "Allow", "Action": ["s3:ListBucket", "s3:GetBucketLocation"],
+              "Resource": ["arn:aws:s3:::$$S3_BUCKET"] },
+            { "Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject",
+                                            "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts"],
+              "Resource": ["arn:aws:s3:::$$S3_BUCKET/*"] }
+          ]
+        }
+        EOF
+        mc admin policy create local stockflow-app /tmp/app-policy.json
+        mc admin user add local "$$S3_ACCESS_KEY" "$$S3_SECRET_KEY"
+        mc admin policy attach local stockflow-app --user "$$S3_ACCESS_KEY" || true
+        echo "minio-init: bucket $$S3_BUCKET ready"
+
+  # Traces from the dev profile's 100% sampling. In-memory storage, capped, so it cannot grow past
+  # its limit; traces are lost on restart, which is fine for "why was that request slow just now".
+  # The UI is served at jaeger.<domain> behind basic auth (it has no authentication of its own).
+  jaeger:
+    image: jaegertracing/all-in-one:1.60
+    <<: [*restart, *logging]
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+      MEMORY_MAX_TRACES: "5000"
+    mem_limit: 384m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:14269/ > /dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # Catches every outbound email. The UI is served at mail.<domain> behind basic auth: caught
+  # mail includes password-reset links and verification codes, so it is as sensitive as a login.
+  # Stored on a volume and capped, so the inbox survives a restart and cannot fill the disk.
+  mailpit:
+    image: axllent/mailpit:v1.20
+    <<: [*restart, *logging]
+    environment:
+      MP_DATABASE: /data/mailpit.db
+      MP_MAX_MESSAGES: "1000"
+    volumes:
+      - mailpit-data:/data
+    mem_limit: 64m
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 1025 || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  postgres-data:
+  minio-data:
+  mailpit-data:

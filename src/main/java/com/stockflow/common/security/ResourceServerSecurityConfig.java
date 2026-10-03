@@ -1,5 +1,6 @@
 package com.stockflow.common.security;
 
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -17,11 +18,7 @@ import org.springframework.security.oauth2.server.resource.web.authentication.Be
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.AuthenticationEntryPointFailureHandler;
 import org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter;
-import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
-import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
-
-import java.util.List;
 
 /**
  * Resource-server configuration. The application validates the JWT issued by the identity module.
@@ -120,16 +117,17 @@ public class ResourceServerSecurityConfig {
         return new StockflowJwtAuthenticationConverter(lookup);
     }
 
-    /** Everything else: the API itself, plus the rest of actuator. */
+    /** Everything else: the API itself, plus the rest of actuator. CORS policy: {@link CorsConfig}. */
     @Bean
     @Order(2)
     public SecurityFilterChain apiFilterChain(HttpSecurity http,
-                                              StockflowJwtAuthenticationConverter converter) throws Exception {
+            @Qualifier(CorsConfig.SOURCE) CorsConfigurationSource cors,
+            StockflowJwtAuthenticationConverter converter) throws Exception {
         return http
                 // Stateless JWT: there is no session cookie for an attacker to ride, so CSRF
                 // protection buys nothing and only breaks the API clients.
                 .csrf(csrf -> csrf.disable())
-                .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+                .cors(c -> c.configurationSource(cors))
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .headers(this::applyApiSecurityHeaders)
                 .authorizeHttpRequests(auth -> auth
@@ -212,25 +210,5 @@ public class ResourceServerSecurityConfig {
                         .maxAgeInSeconds(31_536_000))       // one year, the value browsers expect
                 .referrerPolicy(referrer -> referrer.policy(
                         ReferrerPolicyHeaderWriter.ReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN));
-    }
-
-    @Bean
-    public CorsConfigurationSource corsConfigurationSource() {
-        CorsConfiguration config = new CorsConfiguration();
-        // Storefront and admin origins only - never "*" together with credentials.
-        config.setAllowedOriginPatterns(List.of("http://localhost:*", "https://*.stockflow.vn"));
-        config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
-        config.setAllowedHeaders(List.of("Authorization", "Content-Type", "Idempotency-Key",
-                "X-Correlation-Id", "Accept-Language"));
-        // Without exposing these, browser JavaScript cannot read them - so a client could not show
-        // the correlation id on an error page, nor back off correctly on a 429.
-        config.setExposedHeaders(List.of("X-Correlation-Id", "X-RateLimit-Limit",
-                "X-RateLimit-Remaining", "Retry-After", "Idempotency-Replayed"));
-        config.setAllowCredentials(true);
-        config.setMaxAge(3600L);
-
-        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
-        source.registerCorsConfiguration("/**", config);
-        return source;
     }
 }
