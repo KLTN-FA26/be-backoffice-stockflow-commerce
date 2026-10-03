@@ -7,6 +7,7 @@ import java.time.Instant;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -57,5 +58,16 @@ class SessionValidatorTest {
     void acceptsATokenIssuedBeforeSessionsExistedWithoutAsking() {
         assertThat(validator.validate(token(null)).hasErrors()).isFalse();
         verifyNoInteractions(sessions);
+    }
+
+    @Test
+    void anUnreadableSessionStoreIsAServiceErrorNotAnEndedSession() {
+        UUID sid = UUID.randomUUID();
+        when(sessions.isActive(sid)).thenThrow(new org.springframework.dao.DataAccessResourceFailureException("down"));
+
+        // A plain JwtException (not BadJwtException) becomes AuthenticationServiceException -> 503.
+        // Returning a failure result instead would be a 401, and the frontend would sign the user out.
+        assertThatThrownBy(() -> validator.validate(token(sid.toString())))
+                .isExactlyInstanceOf(org.springframework.security.oauth2.jwt.JwtException.class);
     }
 }

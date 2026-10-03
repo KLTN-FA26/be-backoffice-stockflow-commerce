@@ -24,6 +24,7 @@ Mỗi người **chỉ viết code** (entity, repository, service, controller). 
 6. **Ghi `inventory.stock_movement` ở mọi chỗ làm thay đổi tồn** (nhận, cất, lấy, chuyển, điều chỉnh, hoàn).
 7. **Số chứng từ mới** (phiếu nhận, lệnh chuyển, điều chỉnh, kiểm kê, RMA…) lấy từ `platform.document_sequence`, không tạo bảng đếm riêng.
 8. **Khai báo `@PermissionResource` đúng tên đã seed** (plan §8). Tên sai là quyền không gán được cho vai trò nào.
+9. **Mọi thay đổi `identity.role_permission` phải tăng `identity.app_role.version` trong cùng transaction** (ADR-0008). Quyền được cache theo vai trò + version: sửa quyền mà không tăng version thì người giữ vai trò vẫn dùng quyền cũ tới 1 giờ. Service đã làm việc này; migration nào đổi quyền seed thì thêm `UPDATE identity.app_role SET version = version + 1 WHERE code IN (...)`.
 
 ## 2. Luồng làm việc
 

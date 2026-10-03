@@ -149,16 +149,18 @@ class PurchaseOrderController {
     }
 
     @GetMapping("/reports/supplier-spend")
-    @Operation(summary = "Suppliers ranked by total spend, highest first")
+    @Operation(summary = "Spend per supplier and currency, highest first within each currency")
     @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.READ)
     public ApiResponse<PageResponse<SupplierSpendResponse>> supplierSpend(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size,
             @RequestParam(required = false) UUID supplierId,
+            @RequestParam(required = false) String currency,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate expectedAtFrom,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate expectedAtTo) {
         var query = new SupplierSpendReportQuery(
-                page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, supplierId, expectedAtFrom, expectedAtTo);
+                page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, supplierId, currency, expectedAtFrom,
+                expectedAtTo);
         return ApiResponse.ok(procurementService.supplierSpend(query).map(mapper::toResponse));
     }
 }
