@@ -159,6 +159,8 @@ services:
     # Same guard rails as development (see the root docker-compose.yml for the reasoning), with
     # memory sized to the 768 MB limit: shared_buffers at a third, work_mem small because a dev
     # server has a handful of connections, not a reporting workload.
+    ports:
+      - "127.0.0.1:5432:5432"
     command:
       - postgres
       - -c
