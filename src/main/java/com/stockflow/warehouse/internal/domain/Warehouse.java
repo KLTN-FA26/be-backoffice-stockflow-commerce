@@ -111,6 +111,15 @@ public final class Warehouse extends AggregateRoot {
         this.mapHeight = newHeight;
     }
 
+    /** BR-06: a shelf or area must lie inside the map frame; flush with its edge is inside. */
+    public void requireOnMap(Footprint footprint) {
+        if (!footprint.fitsWithin(mapWidth, mapHeight)) {
+            throw new BusinessException(ErrorCode.LAYOUT_OUT_OF_BOUNDS,
+                    "This would stick out of the %s x %s map of %s".formatted(
+                            mapWidth.toPlainString(), mapHeight.toPlainString(), prefix));
+        }
+    }
+
     public void activate() {
         this.status = WarehouseStatus.ACTIVE;
     }

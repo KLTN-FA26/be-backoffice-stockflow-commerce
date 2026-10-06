@@ -2,6 +2,7 @@ package com.stockflow.warehouse.internal.domain;
 
 import com.stockflow.common.domain.AggregateRepository;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -20,4 +21,7 @@ public interface WarehouseRepository extends AggregateRepository<Warehouse, UUID
 
     /** How far the layout of the warehouse reaches; see {@link MapExtent}. */
     MapExtent findOccupiedExtent(UUID warehouseId);
+
+    /** Every shelf and area of the warehouse still on the layout; see {@link Placement}. */
+    List<Placement> findPlacements(UUID warehouseId);
 }

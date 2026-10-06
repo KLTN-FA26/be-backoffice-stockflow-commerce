@@ -38,6 +38,9 @@ public enum ErrorCode {
     WAREHOUSE_NOT_FOUND("Warehouse not found", 404),
     /** Also the answer for a zone of another warehouse: a zone id is only meaningful in its own. */
     ZONE_NOT_FOUND("Zone not found", 404),
+    SHELF_NOT_FOUND("Shelf not found", 404),
+    SHELF_LEVEL_NOT_FOUND("Shelf level not found", 404),
+    BIN_NOT_FOUND("Bin not found", 404),
 
     /** Credentials were correct but the account is LOCKED or DISABLED. Distinct from UNAUTHORIZED,
      *  which covers "wrong username or password" without revealing the account exists. */
@@ -78,6 +81,13 @@ public enum ErrorCode {
     ZONE_NAME_ALREADY_EXISTS("This warehouse already has a zone with this name", 409),
     /** BR-06: something would end up outside the warehouse map. */
     LAYOUT_OUT_OF_BOUNDS("This would leave part of the layout outside the warehouse map", 409),
+    SHELF_CODE_ALREADY_EXISTS("This warehouse already has a shelf with this code", 409),
+    SHELF_LEVEL_ALREADY_EXISTS("This shelf already has a level with this number", 409),
+    BIN_CODE_ALREADY_EXISTS("This shelf level already has a bin with this code", 409),
+    /** BR-07: two shelves, areas or bins would cover the same floor. Touching edges is fine. */
+    LAYOUT_OVERLAP("This would overlap something already on the map", 409),
+    /** BR-08: a shelf with pickable bins needs at least one side a picker can reach them from. */
+    PICK_FACE_REQUIRED("A shelf with pickable bins needs at least one pick face", 409),
     /** A shelf is loaded and locked as one aggregate, so it is bounded: 20 levels, 200 bins a level. */
     SHELF_CAPACITY_EXCEEDED("This shelf cannot hold that many levels or bins", 409),
 

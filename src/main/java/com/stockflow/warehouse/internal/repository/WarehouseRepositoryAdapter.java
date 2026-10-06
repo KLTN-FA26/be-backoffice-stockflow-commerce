@@ -3,7 +3,9 @@ package com.stockflow.warehouse.internal.repository;
 import com.stockflow.common.error.ConflictException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Specs;
+import com.stockflow.warehouse.internal.domain.Footprint;
 import com.stockflow.warehouse.internal.domain.MapExtent;
+import com.stockflow.warehouse.internal.domain.Placement;
 import com.stockflow.warehouse.internal.domain.Warehouse;
 import com.stockflow.warehouse.internal.domain.WarehouseRepository;
 import com.stockflow.warehouse.internal.domain.WarehouseStatus;
@@ -16,6 +18,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Repository;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -67,6 +70,14 @@ class WarehouseRepositoryAdapter implements WarehouseRepository, WarehouseSearch
     public MapExtent findOccupiedExtent(UUID warehouseId) {
         WarehouseJpaRepository.ExtentRow row = jpa.findOccupiedExtent(warehouseId);
         return row == null ? MapExtent.EMPTY : new MapExtent(row.getRightEdge(), row.getBottomEdge());
+    }
+
+    @Override
+    public List<Placement> findPlacements(UUID warehouseId) {
+        return jpa.findPlacements(warehouseId).stream()
+                .map(row -> new Placement(row.getId(), Placement.Kind.valueOf(row.getKind()), row.getCode(),
+                        new Footprint(row.getX(), row.getY(), row.getWidth(), row.getLength(), row.getRotation())))
+                .toList();
     }
 
     /**
