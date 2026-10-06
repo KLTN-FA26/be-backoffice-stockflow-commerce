@@ -4,7 +4,7 @@ import java.util.Arrays;
 import java.util.Optional;
 
 /**
- * The ten roles from the BRD (section 6.1), as a real type.
+ * The roles from the BRD (section 6.1), plus {@link #SYSTEM_ADMIN}, as a real type.
  *
  * <p>Use this enum everywhere in ordinary code: it cannot be misspelled, it can be switched over
  * exhaustively, and adding a role makes the compiler point at every place that must be updated.</p>
@@ -24,7 +24,9 @@ public enum Role {
     ORDER_COORDINATOR(Roles.ORDER_COORDINATOR, "Release orders to the warehouse and handle holds"),
     ECOMMERCE_ADMIN(Roles.ECOMMERCE_ADMIN, "Catalog, pricing, promotions, design templates"),
     PROCUREMENT_STAFF(Roles.PROCUREMENT_STAFF, "Purchase orders and supplier coordination"),
-    ACCOUNTANT(Roles.ACCOUNTANT, "Supplier invoices, three-way matching, reconciliation");
+    ACCOUNTANT(Roles.ACCOUNTANT, "Supplier invoices, three-way matching, reconciliation"),
+    /** Holds every permission, and its grants cannot be edited at runtime (V20260929000200). */
+    SYSTEM_ADMIN(Roles.SYSTEM_ADMIN, "Every permission: users, roles, permissions and all modules");
 
     private final String authority;
     private final String description;

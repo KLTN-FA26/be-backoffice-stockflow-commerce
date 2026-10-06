@@ -16,6 +16,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Import;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -50,6 +52,9 @@ class RolePermissionEditingIntegrationTest {
 
     @Autowired
     private org.springframework.jdbc.core.JdbcTemplate jdbc;
+
+    @Autowired
+    private PlatformTransactionManager transactionManager;
 
     private List<String> original;
 
@@ -165,19 +170,60 @@ class RolePermissionEditingIntegrationTest {
                         ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.ROLE_NOT_EDITABLE));
     }
 
+    private static final String MANAGE_RBAC = "identity-rbac:APPROVE";
+
+    private static List<String> without(List<String> codes, String removed) {
+        return codes.stream().filter(code -> !code.equals(removed)).toList();
+    }
+
+    /** SYSTEM_ADMIN always holds the right, so another role is free to give it up. */
+    @Test
+    void anotherRoleMayGiveUpManagingPermissionsWhileSystemAdminHoldsIt() {
+        RoleMatrixView admin = identity.roleMatrix("ECOMMERCE_ADMIN");
+        List<String> before = granted(admin);
+        try {
+            RoleMatrixView saved = identity.updateRolePermissions(new UpdateRolePermissionsCommand(
+                    "ECOMMERCE_ADMIN", admin.version(), without(before, MANAGE_RBAC)));
+
+            assertThat(granted(saved)).doesNotContain(MANAGE_RBAC);
+        } finally {
+            RoleMatrixView now = identity.roleMatrix("ECOMMERCE_ADMIN");
+            identity.updateRolePermissions(new UpdateRolePermissionsCommand("ECOMMERCE_ADMIN", now.version(), before));
+        }
+    }
+
+    /**
+     * The guard itself, with SYSTEM_ADMIN's grant taken away for the duration: SYSTEM_ADMIN is not
+     * editable through the service, so this is the only way left to make ECOMMERCE_ADMIN the last
+     * holder, and the guard still has to hold if a migration ever leaves it that way.
+     */
     @Test
     void theLastRoleAbleToManagePermissionsCannotGiveThatUp() {
-        RoleMatrixView admin = identity.roleMatrix("ECOMMERCE_ADMIN");
-        List<String> withoutRbac = granted(admin).stream()
-                .filter(code -> !code.equals("identity-rbac:APPROVE"))
-                .toList();
+        String systemAdminGrant = """
+                FROM identity.role_permission rp
+                USING identity.app_role r, identity.permission p
+                WHERE rp.role_id = r.id AND rp.permission_id = p.id
+                  AND r.code = 'SYSTEM_ADMIN' AND p.code = ?""";
+        // Hikari runs with auto-commit off: a bare JdbcTemplate write is rolled back on release.
+        TransactionTemplate tx = new TransactionTemplate(transactionManager);
+        tx.executeWithoutResult(status -> jdbc.update("DELETE " + systemAdminGrant, MANAGE_RBAC));
+        try {
+            RoleMatrixView admin = identity.roleMatrix("ECOMMERCE_ADMIN");
 
-        assertThatThrownBy(() -> identity.updateRolePermissions(
-                new UpdateRolePermissionsCommand("ECOMMERCE_ADMIN", admin.version(), withoutRbac)))
-                .isInstanceOfSatisfying(BusinessException.class,
-                        ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.RBAC_LOCKOUT));
-        // Refused inside the transaction, so the version bump rolled back with it.
-        assertThat(identity.roleMatrix("ECOMMERCE_ADMIN").version()).isEqualTo(admin.version());
+            assertThatThrownBy(() -> identity.updateRolePermissions(new UpdateRolePermissionsCommand(
+                    "ECOMMERCE_ADMIN", admin.version(), without(granted(admin), MANAGE_RBAC))))
+                    .isInstanceOfSatisfying(BusinessException.class,
+                            ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.RBAC_LOCKOUT));
+            // Refused inside the transaction, so the version bump rolled back with it.
+            assertThat(identity.roleMatrix("ECOMMERCE_ADMIN").version()).isEqualTo(admin.version());
+        } finally {
+            tx.executeWithoutResult(status -> jdbc.update("""
+                    INSERT INTO identity.role_permission (id, role_id, permission_id, version, created_at, created_by)
+                    SELECT gen_random_uuid(), r.id, p.id, 0, NOW(), 'test'
+                    FROM identity.app_role r, identity.permission p
+                    WHERE r.code = 'SYSTEM_ADMIN' AND p.code = ?
+                    ON CONFLICT (role_id, permission_id) DO NOTHING""", MANAGE_RBAC));
+        }
     }
 
     @Test
