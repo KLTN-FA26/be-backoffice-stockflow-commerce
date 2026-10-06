@@ -1,10 +1,8 @@
 package com.stockflow.warehouse.internal.domain;
 
 import com.stockflow.common.error.BusinessException;
-import com.stockflow.common.error.ErrorCode;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.util.Set;
 
 /**
@@ -26,16 +24,13 @@ import java.util.Set;
  */
 public record Footprint(BigDecimal x, BigDecimal y, BigDecimal width, BigDecimal length, int rotation) {
 
-    private static final int SCALE = 3;
-    /** {@code NUMERIC(10,3)}: seven digits before the point. */
-    private static final BigDecimal COLUMN_LIMIT = new BigDecimal("10000000");
     private static final Set<Integer> QUARTER_TURNS = Set.of(0, 90, 180, 270);
 
     public Footprint {
-        x = measure("x", x);
-        y = measure("y", y);
-        width = measure("width", width);
-        length = measure("length", length);
+        x = DomainChecks.measure("x", x);
+        y = DomainChecks.measure("y", y);
+        width = DomainChecks.measure("width", width);
+        length = DomainChecks.measure("length", length);
         if (x.signum() < 0 || y.signum() < 0) {
             throw invalid("A footprint cannot start at a negative position");
         }
@@ -92,23 +87,7 @@ public record Footprint(BigDecimal x, BigDecimal y, BigDecimal width, BigDecimal
         return y.add(effectiveLength());
     }
 
-    private static BigDecimal measure(String name, BigDecimal value) {
-        if (value == null) {
-            throw invalid("A footprint needs " + name);
-        }
-        BigDecimal scaled;
-        try {
-            scaled = value.setScale(SCALE, RoundingMode.UNNECESSARY);
-        } catch (ArithmeticException finerThanAMillimetre) {
-            throw invalid("%s has more than %d decimals: %s".formatted(name, SCALE, value.toPlainString()));
-        }
-        if (scaled.abs().compareTo(COLUMN_LIMIT) >= 0) {
-            throw invalid("%s is too large: %s".formatted(name, value.toPlainString()));
-        }
-        return scaled;
-    }
-
     private static BusinessException invalid(String message) {
-        return new BusinessException(ErrorCode.VALIDATION_FAILED, message);
+        return DomainChecks.invalid(message);
     }
 }

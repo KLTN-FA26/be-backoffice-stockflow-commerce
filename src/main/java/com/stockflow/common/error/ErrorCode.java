@@ -35,6 +35,9 @@ public enum ErrorCode {
     CATEGORY_NOT_FOUND("Category not found", 404),
     CUSTOMER_NOT_FOUND("Customer not found", 404),
     ADDRESS_NOT_FOUND("Address not found", 404),
+    WAREHOUSE_NOT_FOUND("Warehouse not found", 404),
+    /** Also the answer for a zone of another warehouse: a zone id is only meaningful in its own. */
+    ZONE_NOT_FOUND("Zone not found", 404),
 
     /** Credentials were correct but the account is LOCKED or DISABLED. Distinct from UNAUTHORIZED,
      *  which covers "wrong username or password" without revealing the account exists. */
@@ -70,6 +73,11 @@ public enum ErrorCode {
     /** Guest checkout is switched off (it is on only where prices can be trusted, see application.yml). */
     GUEST_CHECKOUT_DISABLED("Guest checkout is not available", 403),
     INVALID_PURCHASE_ORDER_TRANSITION("This purchase order cannot move to that status right now", 409),
+    /** The prefix starts every location code of the warehouse, so it is unique system-wide. */
+    WAREHOUSE_PREFIX_ALREADY_EXISTS("A warehouse with this prefix already exists", 409),
+    ZONE_NAME_ALREADY_EXISTS("This warehouse already has a zone with this name", 409),
+    /** BR-06: something would end up outside the warehouse map. */
+    LAYOUT_OUT_OF_BOUNDS("This would leave part of the layout outside the warehouse map", 409),
     /** A shelf is loaded and locked as one aggregate, so it is bounded: 20 levels, 200 bins a level. */
     SHELF_CAPACITY_EXCEEDED("This shelf cannot hold that many levels or bins", 409),
 
