@@ -2,6 +2,7 @@ package com.stockflow.warehouse.internal.controller;
 
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.warehouse.internal.domain.BinNamingScheme;
 import com.stockflow.warehouse.internal.domain.BinType;
 import com.stockflow.warehouse.internal.domain.Footprint;
 import com.stockflow.warehouse.internal.domain.LocationStatus;
@@ -113,5 +114,54 @@ class ShelfControllerHttpTest {
         assertThat(sent.getValue().levelId()).isEqualTo(LEVEL);
         assertThat(sent.getValue().settings().capacityUnits()).isEqualTo(40);
         assertThat(sent.getValue().settings().pickable()).isTrue();
+    }
+
+    @Test
+    void generatingBinsDefaultsToSequentialAndAnswersOneFlatListAcrossLevels() throws Exception {
+        UUID second = UUID.fromString("0190a000-0000-7000-8000-000000000004");
+        Footprint cell = new Footprint(BigDecimal.ZERO, BigDecimal.ZERO, new BigDecimal("5"), new BigDecimal("1.2"), 0);
+        when(shelves.generateBins(any())).thenReturn(List.of(
+                level(LEVEL, 1, bin("01", "HCM-A01-1-01", cell)),
+                level(second, 2, bin("01", "HCM-A01-2-01", cell))));
+
+        mvc.perform(post("/api/v1/shelves/{s}/bin-generation", SHELF).contentType("application/json").content("""
+                        {"levelIds":["%s","%s"],"rowCount":1,"columnCount":2,
+                         "defaults":{"type":"PALLET","capacityUnits":40,"pickable":true,"putawayTarget":true}}
+                        """.formatted(LEVEL, second)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.length()").value(2))
+                .andExpect(jsonPath("$.data[1].levelId").value(second.toString()))
+                .andExpect(jsonPath("$.data[1].locationCode").value("HCM-A01-2-01"))
+                .andExpect(jsonPath("$.data[1].footprint.width").value(5));
+
+        ArgumentCaptor<ShelfCommands.GenerateBins> sent = ArgumentCaptor.forClass(ShelfCommands.GenerateBins.class);
+        verify(shelves).generateBins(sent.capture());
+        assertThat(sent.getValue().shelfId()).isEqualTo(SHELF);
+        assertThat(sent.getValue().levelIds()).containsExactly(LEVEL, second);
+        assertThat(sent.getValue().scheme()).isEqualTo(BinNamingScheme.SEQUENTIAL);
+        assertThat(sent.getValue().defaults().type()).isEqualTo(BinType.PALLET);
+        assertThat(sent.getValue().defaults().settings().capacityUnits()).isEqualTo(40);
+    }
+
+    @Test
+    void generatingBinsWithoutLevelsOrWithZeroColumnsIsRejectedBeforeTheService() throws Exception {
+        mvc.perform(post("/api/v1/shelves/{s}/bin-generation", SHELF).contentType("application/json").content("""
+                        {"levelIds":[],"rowCount":1,"columnCount":2,"defaults":{"type":"PALLET"}}
+                        """))
+                .andExpect(status().isBadRequest());
+        mvc.perform(post("/api/v1/shelves/{s}/bin-generation", SHELF).contentType("application/json").content("""
+                        {"levelIds":["%s"],"rowCount":1,"columnCount":0,"defaults":{"type":"PALLET"}}
+                        """.formatted(LEVEL)))
+                .andExpect(status().isBadRequest());
+        verifyNoInteractions(shelves);
+    }
+
+    private static ShelfSummary.Level level(UUID id, int index, ShelfSummary.BinEntry bin) {
+        return new ShelfSummary.Level(id, index, null, null, null, List.of(bin));
+    }
+
+    private static ShelfSummary.BinEntry bin(String code, String locationCode, Footprint footprint) {
+        return new ShelfSummary.BinEntry(UUID.randomUUID(), code, null, footprint, BinType.PALLET, null,
+                UUID.randomUUID(), locationCode, StorageClass.NORMAL, 40, null, true, true, LocationStatus.ACTIVE);
     }
 }

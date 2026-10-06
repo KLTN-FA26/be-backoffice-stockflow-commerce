@@ -24,6 +24,11 @@ public record ShelfResponse(UUID id, UUID warehouseId, UUID zoneId, String code,
                         BigDecimal maxWeight, List<Bin> bins) {
     }
 
+    /** A bin just generated (BR-14), flat with its level: the response is one list across levels. */
+    public record GeneratedBin(UUID id, UUID levelId, String code, UUID locationId, String locationCode,
+                               Footprint footprint) {
+    }
+
     /** @param storageClass the class in force - the override, or the shelf's default */
     public record Bin(UUID id, String code, String description, Footprint footprint, BinType type,
                       StorageClass storageClassOverride, UUID locationId, String locationCode,

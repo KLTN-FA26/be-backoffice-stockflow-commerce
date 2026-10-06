@@ -1,5 +1,6 @@
 package com.stockflow.warehouse.internal.controller.dto;
 
+import com.stockflow.warehouse.internal.domain.BinNamingScheme;
 import com.stockflow.warehouse.internal.domain.BinType;
 import com.stockflow.warehouse.internal.domain.LocationStatus;
 import com.stockflow.warehouse.internal.domain.StorageClass;
@@ -8,6 +9,7 @@ import jakarta.validation.constraints.Digits;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Positive;
@@ -15,6 +17,7 @@ import jakarta.validation.constraints.PositiveOrZero;
 import jakarta.validation.constraints.Size;
 
 import java.math.BigDecimal;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -91,6 +94,38 @@ public final class ShelfRequests {
     public record UpdateBin(
             @Size(max = 1000) String description,
             @NotNull @Valid FootprintRequest footprint,
+            @NotNull BinType type,
+            StorageClass storageClassOverride,
+            @Positive Integer capacityUnits,
+            @Positive @Digits(integer = 7, fraction = 3) BigDecimal maxWeight,
+            boolean pickable,
+            boolean putawayTarget
+    ) {
+    }
+
+    /**
+     * BR-14. No upper bound on the counts here: a grid over
+     * {@value com.stockflow.warehouse.internal.domain.BinGrid#MAX_BINS_PER_LEVEL} bins is the domain's
+     * {@code 409 SHELF_CAPACITY_EXCEEDED}, the same answer as adding one bin too many by hand.
+     *
+     * @param namingScheme {@code null} = {@code SEQUENTIAL}
+     */
+    public record GenerateBins(
+            @NotEmpty @Size(max = 20) List<@NotNull UUID> levelIds,
+            @Min(1) int rowCount,
+            @Min(1) int columnCount,
+            BinNamingScheme namingScheme,
+            @NotNull @Valid BinDefaults defaults
+    ) {
+    }
+
+    /**
+     * What every generated bin starts with: {@code type} and the override go on the bin, the rest on
+     * its storage location.
+     *
+     * @param storageClassOverride {@code null} = the shelf's default class applies
+     */
+    public record BinDefaults(
             @NotNull BinType type,
             StorageClass storageClassOverride,
             @Positive Integer capacityUnits,

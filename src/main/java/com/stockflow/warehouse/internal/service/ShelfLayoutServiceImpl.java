@@ -16,6 +16,8 @@ import com.stockflow.warehouse.internal.domain.ZoneRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -131,6 +133,24 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
         Shelf shelf = require(shelfId);
         shelf.changeBinStatus(levelId, binId, status);
         return ShelfSummary.BinEntry.of(shelves.save(shelf).level(levelId).bin(binId));
+    }
+
+    /**
+     * Up to {@value com.stockflow.warehouse.internal.domain.BinGrid#MAX_BINS_PER_LEVEL} bins and as many
+     * locations a level, inserted in one flush: {@code hibernate.jdbc.batch_size} and
+     * {@code order_inserts} send them in batches, locations ahead of bins.
+     */
+    @Override
+    public List<ShelfSummary.Level> generateBins(ShelfCommands.GenerateBins command) {
+        Warehouse warehouse = lockWarehouseOf(command.shelfId());
+        Shelf shelf = require(command.shelfId());
+        shelf.generateBins(command.levelIds(), command.rows(), command.columns(), command.scheme(),
+                command.defaults(), warehouse.prefix(), Identifiers::newId);
+        Set<UUID> filled = Set.copyOf(command.levelIds());
+        return shelves.save(shelf).levels().stream()
+                .filter(level -> filled.contains(level.id()))
+                .map(ShelfSummary.Level::of)
+                .toList();
     }
 
     /** BR-06 against the frame, BR-07 against every shelf and area on the layout but this one. */

@@ -1,12 +1,15 @@
 package com.stockflow.warehouse.internal.service;
 
+import com.stockflow.warehouse.internal.domain.BinDefaults;
 import com.stockflow.warehouse.internal.domain.BinDetails;
+import com.stockflow.warehouse.internal.domain.BinNamingScheme;
 import com.stockflow.warehouse.internal.domain.Footprint;
 import com.stockflow.warehouse.internal.domain.LevelMeasures;
 import com.stockflow.warehouse.internal.domain.LocationSettings;
 import com.stockflow.warehouse.internal.domain.PickFaces;
 import com.stockflow.warehouse.internal.domain.StorageClass;
 
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -43,5 +46,10 @@ public final class ShelfCommands {
 
     /** No code: it is part of the bin's location code. */
     public record UpdateBin(UUID shelfId, UUID levelId, UUID binId, BinDetails details, LocationSettings settings) {
+    }
+
+    /** BR-14. {@code rows} and {@code columns} only shape the grid; neither is stored. */
+    public record GenerateBins(UUID shelfId, List<UUID> levelIds, int rows, int columns, BinNamingScheme scheme,
+                               BinDefaults defaults) {
     }
 }

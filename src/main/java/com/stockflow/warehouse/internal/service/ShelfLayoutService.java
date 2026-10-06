@@ -2,6 +2,7 @@ package com.stockflow.warehouse.internal.service;
 
 import com.stockflow.warehouse.internal.domain.LocationStatus;
 
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -37,4 +38,11 @@ public interface ShelfLayoutService {
     ShelfSummary.BinEntry updateBin(ShelfCommands.UpdateBin command);
 
     ShelfSummary.BinEntry changeBinStatus(UUID shelfId, UUID levelId, UUID binId, LocationStatus status);
+
+    /**
+     * Fills empty levels with a grid of equal bins (BR-14) - all the chosen levels or none.
+     *
+     * @return the levels filled, in level order, each holding exactly the bins just generated
+     */
+    List<ShelfSummary.Level> generateBins(ShelfCommands.GenerateBins command);
 }
