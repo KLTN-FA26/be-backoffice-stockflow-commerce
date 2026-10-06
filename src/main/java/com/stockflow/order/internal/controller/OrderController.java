@@ -17,6 +17,8 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
+import com.stockflow.common.security.Role;
+import com.stockflow.customer.api.CustomerService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -52,9 +54,11 @@ import java.util.UUID;
 class OrderController {
 
     private final OrderService orderService;
+    private final CustomerService customerService;
 
-    OrderController(OrderService orderService) {
+    OrderController(OrderService orderService, CustomerService customerService) {
         this.orderService = orderService;
+        this.customerService = customerService;
     }
 
     /**
@@ -70,7 +74,17 @@ class OrderController {
     @Operation(summary = "Place an order: create it and reserve its stock in one transaction")
     @RequiresPermission(resource = OrderResources.ORDERS,
             action = Action.CREATE, scope = DataScope.OWN)
-    public ApiResponse<OrderResponse> place(@Valid @RequestBody PlaceOrderRequest request) {
+    public ApiResponse<OrderResponse> place(@Valid @RequestBody PlaceOrderRequest request,
+                                            @AuthenticatedUser CurrentUser user) {
+        boolean mayPlaceForAnotherCustomer = user.hasAnyRole(
+                Role.SALES_STAFF, Role.ORDER_COORDINATOR, Role.ECOMMERCE_ADMIN);
+        if (!mayPlaceForAnotherCustomer) {
+            UUID ownCustomerId = requiredOwnCustomerId(user);
+            if (!ownCustomerId.equals(request.customerId())) {
+                // Hide whether another customer's id exists.
+                throw new BusinessException(ErrorCode.NOT_FOUND);
+            }
+        }
         return ApiResponse.ok(OrderWebMapper.toResponse(
                 orderService.placeOrder(OrderWebMapper.toCommand(request))));
     }
@@ -79,8 +93,13 @@ class OrderController {
     @Operation(summary = "Look up one order")
     @RequiresPermission(resource = OrderResources.ORDERS,
             action = Action.READ, scope = DataScope.OWN)
-    public ApiResponse<OrderResponse> findOne(@PathVariable UUID orderId) {
+    public ApiResponse<OrderResponse> findOne(@PathVariable UUID orderId,
+                                              @AuthenticatedUser CurrentUser user) {
+        UUID ownCustomerId = ownCustomerIdOrNull(user);
         return orderService.findById(orderId)
+                // A customer sees only their own orders. The order carries the shipping address and
+                // phone of whoever placed it, so answering 200 to anyone would leak both.
+                .filter(order -> ownCustomerId == null || ownCustomerId.equals(order.customerId()))
                 .map(OrderWebMapper::toResponse)
                 .map(ApiResponse::ok)
                 .orElseThrow(() -> new BusinessException(
@@ -106,8 +125,15 @@ class OrderController {
             action = Action.UPDATE, scope = DataScope.OWN)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "order", resourceId = "#orderId")
     public ApiResponse<Void> cancel(@PathVariable UUID orderId,
-                             @RequestParam(value = "reason", required = false) String reason) {
-        orderService.cancel(orderId, reason == null ? "CUSTOMER_REQUEST" : reason);
+                             @RequestParam(value = "reason", required = false) String reason,
+                             @AuthenticatedUser CurrentUser user) {
+        String why = reason == null ? "CUSTOMER_REQUEST" : reason;
+        UUID ownCustomerId = ownCustomerIdOrNull(user);
+        if (ownCustomerId == null) {
+            orderService.cancel(orderId, why);
+        } else {
+            orderService.cancelOwn(orderId, ownCustomerId, why);
+        }
         return ApiResponse.ok(null);
     }
 
@@ -150,7 +176,27 @@ class OrderController {
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size) {
         return ApiResponse.ok(orderService
-                .myOrders(user.userId(), page, size == null ? Pages.DEFAULT_PAGE_SIZE : size)
+                .myOrders(requiredOwnCustomerId(user), page, size == null ? Pages.DEFAULT_PAGE_SIZE : size)
                 .map(OrderWebMapper::toResponse));
+    }
+
+    /**
+     * Orders are stored under the customer profile id, but the token identifies the sign-in account,
+     * so "my orders" has to go through the profile: comparing an order's customer with the sign-in id
+     * never matches once a customer has a profile of their own.
+     *
+     * @return null for staff, who may see and cancel any order
+     */
+    private UUID ownCustomerIdOrNull(CurrentUser user) {
+        if (user.hasAnyRole(Role.SALES_STAFF, Role.ORDER_COORDINATOR, Role.ECOMMERCE_ADMIN)) {
+            return null;
+        }
+        return requiredOwnCustomerId(user);
+    }
+
+    private UUID requiredOwnCustomerId(CurrentUser user) {
+        return customerService.findByUserId(user.userId())
+                .orElseThrow(() -> new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND))
+                .customerId();
     }
 }

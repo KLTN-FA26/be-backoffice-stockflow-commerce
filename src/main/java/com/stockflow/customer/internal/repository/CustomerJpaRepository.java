@@ -2,6 +2,13 @@ package com.stockflow.customer.internal.repository;
 
 import com.stockflow.customer.internal.entity.CustomerJpaEntity;
 import com.stockflow.common.persistence.BaseJpaRepository;
+import jakarta.persistence.LockModeType;
+import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+
+import java.util.Optional;
+import java.util.UUID;
 
 /**
  * Spring Data repository for {@link CustomerJpaEntity}.
@@ -12,6 +19,10 @@ import com.stockflow.common.persistence.BaseJpaRepository;
  * {@code CustomerService}, never through this repository.</p>
  */
 interface CustomerJpaRepository extends BaseJpaRepository<CustomerJpaEntity> {
+    Optional<CustomerJpaEntity> findByUserId(UUID userId);
+    Optional<CustomerJpaEntity> findByEmailIgnoreCase(String email);
 
-    // TODO: add finders the service needs, e.g. findByEmail, findBySegmentId.
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select c from CustomerJpaEntity c where c.id = :id")
+    Optional<CustomerJpaEntity> lockById(@Param("id") UUID id);
 }

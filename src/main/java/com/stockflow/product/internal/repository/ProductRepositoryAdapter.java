@@ -37,6 +37,14 @@ class ProductRepositoryAdapter implements ProductRepository, ProductSearchReposi
     }
 
     @Override
+    public Optional<Product> findForUpdate(ProductId id) {
+        return jpa.lockById(id.value()).map(ProductPersistenceMapper::toDomain);
+    }
+
+    @Override
+    public boolean containsSku(UUID productId, String sku) { return jpa.containsSku(productId, sku); }
+
+    @Override
     public Optional<Product> findByCode(String code) {
         return jpa.findByCode(code).map(ProductPersistenceMapper::toDomain);
     }

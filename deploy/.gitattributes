@@ -1,0 +1,4 @@
+# Everything here runs on Linux. A CRLF line ending in a shell script fails with
+# "$'\r': command not found", and in an nginx file it corrupts the directive - so LF always,
+# whatever the editor or core.autocrlf of whoever touched it last.
+* text=auto eol=lf

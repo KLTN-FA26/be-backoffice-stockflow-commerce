@@ -68,16 +68,18 @@ idempotency, rate limiting, auditing, storage, locking, validation, i18n, the AP
 exception handler. **Do not rebuild any of it inside a module.** `README.md` has the table of what
 is there; `docs/adding-a-module.md` §3 has the "use this, not that" list.
 
-Migrations: 5 Flyway files + 1 demo seed, 10 tables. Nine are split across `inventory` (2),
-`ordering` (4) and `platform` (3). The tenth, `event_publication`, is deliberately unqualified in
-`public` — Spring Modulith owns it and `V20260901000400` explains why it gets no schema.
+Migrations: the full target schema is on `develop` (107 tables, 213 foreign keys after the pending
+contract steps; `docs/business-design/db-design/schema.dbml` is generated from it). Old and new product,
+procurement and warehouse tables coexist until each module's code moves; `event_publication` stays
+unqualified in `public` because Spring Modulith owns it (`V20260901000400` explains why).
 
 ---
 
 ## 3. Architecture in one screen
 
 Modular monolith on Spring Boot 3.5 / Spring Modulith 1.4 / Java 21 / PostgreSQL 16.
-One database, **one schema per module**, no cross-schema foreign key, no cross-schema JOIN.
+One database, **one schema per module**, cross-schema references are real foreign keys (ADR-0007,
+replacing ADR-0005's plain UUIDs), no cross-schema JOIN.
 
 ```
 com.stockflow.inventory/
@@ -259,6 +261,15 @@ more than the list: in this stack, the dangerous failures are silent.
   escapes `@RestControllerAdvice` entirely; `AuditAspect` calls it around a business operation it
   must not fail. A JWT whose `sub` is not a UUID, or whose `scope_level` is unrecognised, is an
   ordinary token shape, not a reason to break the response.
+- **Permissions and scope are not in the token** (ADR-0008). They are resolved per request from
+  Redis (`RoleAuthorizationCache`, keyed by role + `app_role.version`) and carried on
+  `StockflowAuthenticationToken`. Never read a `permissions` or `scope_level` claim — a token issued
+  before the change still has them, and they are stale by design.
+- **Any write to `identity.role_permission` must advance `app_role.version` in the same
+  transaction** — the service does it with `advanceVersion`; a migration that changes seeded grants
+  must `UPDATE identity.app_role SET version = version + 1` for those roles, or holders keep the old
+  grants for up to an hour. Never `DEL` authorisation keys to "invalidate": moving the version is the
+  invalidation, and a delete reopens the race the version exists to close.
 
 **Persistence**
 - `BaseEntity.equals`/`hashCode` are final, so they read through `getId()`, never the `id` field —
@@ -294,6 +305,8 @@ more than the list: in this stack, the dangerous failures are silent.
 | `docs/business-design/04c-all-flows.md` | all 25 business flows (18 `F-*`, 3 `X-*`, 4 `P-*`) |
 | `docs/business-design/05-business-rules.md` | the 50 rules, each with its enforcement point |
 | `docs/business-design/06-open-questions.md` | what is deliberately undecided |
+| `docs/business-design/db-design/` | the migration plan (expand now, contracts in `db/pending`), and `schema.dbml` generated from the migrated database by `tools/db/gen_dbml.py` |
+| `tools/db/` | `orphan_check.sql`, the adversarial schema checks `qa/run.sh`, the DBML generator |
 | `inventory/**` | the worked example. Every layer is implemented. |
 | `tools/verify.py` | the fast static pass; its module docstring lists all 15 checks |
 | `.claude/skills/java-design-principles/` | SOLID/DRY/KISS/reuse-first, with a live example in the tree for each — the judgment the fitness functions cannot check |
@@ -309,6 +322,15 @@ more than the list: in this stack, the dangerous failures are silent.
 - Primary keys are `Identifiers.newId()` (UUIDv7). A random UUID scatters inserts across the index.
 - If a fitness function is genuinely wrong, change it and write down why — in the class javadoc or a
   new ADR. Deleting a rule to make a build pass is the one thing that is not allowed.
+- **Database schema is owned by one person (Tú).** Do not add files to `db/migration`; the full
+  schema is already there. Read `docs/business-design/db-design/README.md` (rules + flow) and the
+  plan's §8 (which tables are whose) before writing an entity. Contract steps in `db/pending` are
+  activated by the owner only, when the module's code has moved to the new tables.
+- A migration's version must be newer than the newest one on `develop` when it merges: Flyway does
+  not run out of order. A branch carrying older-numbered migrations renames them before merging.
+- Cross-module references are foreign keys (ADR-0007). Validate a reference in the service first
+  (404/409 with a real error code); tests use `support/DemoData` or `support/ReferenceRows`, never an
+  invented id for another module's row.
 - **Never `git commit` or `git push` without asking the repository owner first.** Editing the working
   tree is fine; putting changes into history or onto the remote requires an explicit go-ahead. This
   applies to any automated assistant working in this repo.

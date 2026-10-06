@@ -5,13 +5,17 @@ import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import software.amazon.awssdk.core.sync.RequestBody;
+import software.amazon.awssdk.core.exception.SdkException;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.CopyObjectRequest;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
+import software.amazon.awssdk.services.s3.model.MetadataDirective;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
-import software.amazon.awssdk.services.s3.model.S3Exception;
+import software.amazon.awssdk.services.s3.presigner.S3Presigner;
+import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
 
 import java.io.BufferedInputStream;
 import java.io.IOException;
@@ -37,14 +41,19 @@ class S3FileStorage implements FileStorage {
     /** Enough to identify every signature in {@link ContentTypePolicy}. */
     private static final int SNIFF_BYTES = 12;
 
+    /** Keys are immutable UUID paths, so a CDN may cache them without ever invalidating. */
+    private static final String IMMUTABLE_PUBLIC = "public,max-age=31536000,immutable";
+
     private final S3Client s3;
     private final StorageProperties properties;
     private final Clock clock;
+    private final S3Presigner presigner;
 
-    S3FileStorage(S3Client s3, StorageProperties properties, Clock clock) {
+    S3FileStorage(S3Client s3, StorageProperties properties, Clock clock, S3Presigner presigner) {
         this.s3 = s3;
         this.properties = properties;
         this.clock = clock;
+        this.presigner = presigner;
     }
 
     @Override
@@ -68,14 +77,18 @@ class S3FileStorage implements FileStorage {
             String normalisedType = ContentTypePolicy.normalise(contentType);
             String key = StorageKeys.generate(category, normalisedType, clock.instant());
 
-            s3.putObject(PutObjectRequest.builder()
+            var request = PutObjectRequest.builder()
                             .bucket(properties.bucket())
                             .key(key)
                             .contentType(normalisedType)
                             // Supplying the length lets the SDK stream rather than buffer the whole
                             // object in heap - the difference between a 50 MB upload and an OOM.
-                            .contentLength(sizeBytes)
-                            .build(),
+                            .contentLength(sizeBytes);
+            if (category == FileCategory.PRODUCT_IMAGE) {
+                // Keys are immutable UUID paths. CloudFront may cache them without invalidation.
+                request.cacheControl(IMMUTABLE_PUBLIC);
+            }
+            s3.putObject(request.build(),
                     RequestBody.fromInputStream(sniffable, sizeBytes));
 
             log.debug("Stored {} ({} bytes) as {}", originalName, sizeBytes, key);
@@ -83,7 +96,7 @@ class S3FileStorage implements FileStorage {
 
         } catch (IOException ex) {
             throw new StorageException("Could not read the upload stream", ex);
-        } catch (S3Exception ex) {
+        } catch (SdkException ex) {
             throw new StorageException("Object store rejected the upload", ex);
         }
     }
@@ -97,27 +110,55 @@ class S3FileStorage implements FileStorage {
                     .build());
         } catch (NoSuchKeyException ex) {
             throw new StorageException("No stored file with key " + key, ex);
-        } catch (S3Exception ex) {
+        } catch (SdkException ex) {
             throw new StorageException("Object store could not serve " + key, ex);
         }
     }
 
-    /**
-     * {@inheritDoc}
-     *
-     * <p>Presigning needs {@code S3Presigner}, which is a separate client from {@link S3Client}.
-     * Wiring it is a small piece of configuration and is deliberately left as the one unimplemented
-     * method rather than faked: returning a plain unsigned URL here would produce a link that works
-     * against a public bucket and fails against a correctly private one — a difference nobody
-     * discovers until the bucket is locked down.</p>
-     */
+    /** Credentials and addressing match the upload client; the bucket remains private. */
     @Override
     public String presignedDownloadUrl(String key, Duration validFor) {
-        throw new UnsupportedOperationException(
-                "Presigned URLs need an S3Presigner bean. Add software.amazon.awssdk:s3-presigner, "
-                + "build a presigner alongside the S3Client in StorageConfig, and call "
-                + "presigner.presignGetObject(...). Until then, serve downloads via the "
-                + "download(String) stream from a controller that checks authorisation.");
+        if (validFor == null || validFor.isNegative() || validFor.isZero()
+                || validFor.compareTo(Duration.ofHours(1)) > 0) {
+            throw new IllegalArgumentException("Download URL duration must be positive and at most one hour");
+        }
+        try {
+            return presigner.presignGetObject(GetObjectPresignRequest.builder()
+                    .signatureDuration(validFor)
+                    .getObjectRequest(GetObjectRequest.builder().bucket(properties.bucket())
+                            .key(StorageKeys.requireValid(key)).build())
+                    .build()).url().toExternalForm();
+        } catch (SdkException ex) {
+            throw new StorageException("Could not sign download URL", ex);
+        }
+    }
+
+    /**
+     * Server-side copy. {@code REPLACE} because the default {@code COPY} directive would carry the
+     * source's headers over, and a published rendition needs the long immutable cache header its
+     * private source deliberately does not have.
+     */
+    @Override
+    public void copy(String sourceKey, String targetKey) {
+        StorageKeys.requireValid(sourceKey);
+        StorageKeys.requireValid(targetKey);
+        try {
+            var source = s3.headObject(HeadObjectRequest.builder()
+                    .bucket(properties.bucket()).key(sourceKey).build());
+            var request = CopyObjectRequest.builder()
+                    .sourceBucket(properties.bucket()).sourceKey(sourceKey)
+                    .destinationBucket(properties.bucket()).destinationKey(targetKey)
+                    .metadataDirective(MetadataDirective.REPLACE)
+                    .contentType(source.contentType());
+            if (StorageKeys.categoryOf(targetKey) == FileCategory.PRODUCT_IMAGE) {
+                request.cacheControl(IMMUTABLE_PUBLIC);
+            }
+            s3.copyObject(request.build());
+        } catch (NoSuchKeyException absent) {
+            throw new StorageException("No stored file with key " + sourceKey, absent);
+        } catch (SdkException ex) {
+            throw new StorageException("Object store could not copy " + sourceKey, ex);
+        }
     }
 
     @Override
@@ -129,7 +170,7 @@ class S3FileStorage implements FileStorage {
                     .build());
         } catch (NoSuchKeyException alreadyGone) {
             // Idempotent by contract - nothing to do.
-        } catch (S3Exception ex) {
+        } catch (SdkException ex) {
             throw new StorageException("Object store could not delete " + key, ex);
         }
     }
@@ -144,7 +185,7 @@ class S3FileStorage implements FileStorage {
             return true;
         } catch (NoSuchKeyException absent) {
             return false;
-        } catch (S3Exception ex) {
+        } catch (SdkException ex) {
             throw new StorageException("Object store could not be reached for " + key, ex);
         }
     }

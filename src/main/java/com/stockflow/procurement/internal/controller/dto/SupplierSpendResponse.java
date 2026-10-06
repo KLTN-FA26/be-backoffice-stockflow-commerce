@@ -11,7 +11,11 @@ public record SupplierSpendResponse(
         String supplierCode,
         String supplierName,
 
-        @Schema(description = "Sum of totalAmount over orders that are not DRAFT and not CANCELLED.")
+        @Schema(description = "ISO 4217 code. One row per supplier and currency: amounts in different "
+                + "currencies are never added together.", example = "VND")
+        String currency,
+
+        @Schema(description = "Sum of totalAmount, in currency, over orders that are not DRAFT and not CANCELLED.")
         BigDecimal totalSpend,
 
         long purchaseOrderCount

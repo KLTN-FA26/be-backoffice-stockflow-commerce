@@ -3,7 +3,7 @@
  *
  * <p>WBS 3.12 · database schema {@code design}</p>
  *
- * <p><b>May depend on:</b> product. Plus {@code common} and {@code contracts}, which are
+ * <p><b>May depend on:</b> product and identity. Plus {@code common} and {@code contracts}, which are
  * available to every module.</p>
  *
  * <p>The module has two packages and the split is the whole point:</p>
@@ -14,5 +14,5 @@
  *       you reaching in; {@code ModularityTest} will.</li>
  * </ul>
  */
-@org.springframework.modulith.ApplicationModule(allowedDependencies = {"product :: api"})
+@org.springframework.modulith.ApplicationModule(allowedDependencies = {"product :: api", "identity :: api"})
 package com.stockflow.design;

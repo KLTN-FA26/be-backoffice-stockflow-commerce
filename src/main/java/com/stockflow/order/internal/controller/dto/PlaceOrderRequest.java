@@ -29,6 +29,12 @@ public record PlaceOrderRequest(
         @NotNull(message = "customerId is required")
         UUID customerId,
 
+        @Schema(description = "Saved SHIPPING address; omit to use the customer's default")
+        UUID shippingAddressId,
+
+        @Schema(description = "Saved BILLING address; omit to use its default, then shipping")
+        UUID billingAddressId,
+
         @NotEmpty(message = "An order needs at least one line")
         List<@Valid Line> lines
 ) {

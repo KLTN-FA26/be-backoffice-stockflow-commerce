@@ -29,6 +29,18 @@ public final class OrderLine {
     private final int quantity;
     private final Money unitPrice;
     private final UUID designSnapshotId;
+    private String designChecksum;
+
+    public String designChecksum() { return designChecksum; }
+    public void recordDesignChecksum(String checksum) {
+        if (designSnapshotId == null || checksum == null || !checksum.matches("[0-9a-f]{64}")) {
+            throw new IllegalArgumentException("A confirmed design requires a SHA-256 checksum");
+        }
+        if (designChecksum != null && !designChecksum.equals(checksum)) {
+            throw new IllegalStateException("An order's confirmed design checksum cannot change");
+        }
+        designChecksum = checksum;
+    }
 
     private final List<UUID> reservationIds;
 

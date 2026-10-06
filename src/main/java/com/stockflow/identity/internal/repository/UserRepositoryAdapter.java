@@ -4,9 +4,6 @@ import com.stockflow.identity.internal.domain.User;
 import com.stockflow.identity.internal.domain.UserId;
 import com.stockflow.identity.internal.domain.UserRepository;
 import com.stockflow.identity.internal.entity.UserJpaEntity;
-import com.stockflow.common.error.BusinessException;
-import com.stockflow.common.error.ErrorCode;
-
 import org.springframework.stereotype.Repository;
 
 import java.util.Optional;
@@ -29,7 +26,12 @@ class UserRepositoryAdapter implements UserRepository {
 
     @Override
     public Optional<User> findByUsername(String username) {
-        return users.findByUsername(username).map(UserPersistenceMapper::toDomain);
+        return users.findByUsernameIgnoreCase(username).map(UserPersistenceMapper::toDomain);
+    }
+
+    @Override
+    public Optional<User> findByEmail(String email) {
+        return users.findByEmailIgnoreCase(email).map(UserPersistenceMapper::toDomain);
     }
 
     @Override
@@ -40,8 +42,7 @@ class UserRepositoryAdapter implements UserRepository {
     @Override
     public User save(User user) {
         UserJpaEntity entity = users.findById(user.id().value())
-                .orElseThrow(() -> new BusinessException(ErrorCode.USER_NOT_FOUND,
-                        "No user with id " + user.id()));
+                .orElseGet(() -> UserPersistenceMapper.toNewEntity(user));
         UserPersistenceMapper.applyToEntity(user, entity);
         return UserPersistenceMapper.toDomain(users.save(entity));
     }

@@ -6,6 +6,7 @@ import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.StockAllocator;
 import com.stockflow.inventory.internal.domain.ReservationId;
 import com.stockflow.inventory.internal.domain.StockItem;
+import com.stockflow.inventory.internal.domain.StockLevelLine;
 import com.stockflow.inventory.internal.domain.StockItemId;
 import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.common.domain.Sku;
@@ -112,6 +113,13 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     public List<StockItem> findAvailableBySku(Sku sku) {
         return jpa.findAvailableBySku(sku.code()).stream()
                 .map(StockItemPersistenceMapper::toDomain)
+                .toList();
+    }
+
+    @Override
+    public List<StockLevelLine> findLevelLinesBySku(Sku sku) {
+        return jpa.findLevelRowsBySku(sku.code()).stream()
+                .map(StockLevelRow::toLine)
                 .toList();
     }
 

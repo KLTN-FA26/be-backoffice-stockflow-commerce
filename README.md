@@ -147,7 +147,7 @@ the short version:
 |---|---|
 | `id` | `Identifiers.newId()` — time-ordered UUIDv7, so inserts append instead of scattering the index |
 | `persistence` | `BaseEntity`, `SoftDeletableEntity`, `MoneyEmbeddable`, `SkuConverter`, `BaseJpaRepository`, `Specs`, `Pages`, `SortWhitelist` |
-| `security` | permission matrix **and** row-level `DataScope` — `ScopedEntity` + `ScopedJpaRepository` |
+| `security` | permission matrix **and** row-level `DataScope` — `ScopedEntity` + `ScopedJpaRepository`; permissions resolved per request, not read from the token (ADR-0008) |
 | `cache` | Redis, per-cache TTLs in `CacheNames`, `TransactionalCacheEvictor`, survives a Redis outage |
 | `idempotency` | any request carrying `Idempotency-Key` becomes safe to retry |
 | `ratelimit` | `@RateLimit` on an endpoint, Redis token bucket |
@@ -306,14 +306,16 @@ why the report's architecture diagrams come from there rather than from a drawin
 ## Database conventions
 
 One database, `stockflow`; one schema per module. Three rules, and the reasoning is in
-[ADR-0005](docs/adr/0005-modular-monolith.md):
+[ADR-0005](docs/adr/0005-modular-monolith.md) and [ADR-0007](docs/adr/0007-cross-schema-foreign-keys.md):
 
-1. A module reads and writes **only its own schema**.
-2. **No foreign key crosses a schema.** Cross-module references are plain UUID columns.
+1. A module writes **only its own schema**.
+2. **A reference to another module's row is a real foreign key** (ADR-0007, replacing ADR-0005's
+   "plain UUID columns"): single-column, `ON DELETE RESTRICT`, deferred where the referencing row is
+   written first. The database refuses a dangling order id; the code still validates first.
 3. **No JOIN crosses a schema.** Need another module's data? Call its service.
 
-Rule 2 gives up database-level referential integrity across modules and buys the ability to extract
-a module later without untangling a web of constraints.
+Rule 2 gives up the option of extracting a module without first dropping its incoming keys, and
+buys referential integrity the database enforces on every code path.
 
 Migrations are timestamped, `V20260901000200__inventory_stock.sql`, not `V2__`. With five people
 committing in parallel, sequential numbers collide constantly.

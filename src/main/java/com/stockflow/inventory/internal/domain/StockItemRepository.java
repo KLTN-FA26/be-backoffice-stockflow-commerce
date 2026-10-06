@@ -56,6 +56,9 @@ public interface StockItemRepository {
     /** Sellable stock for one SKU across all locations. Used by the query side, never before a lock. */
     List<StockItem> findAvailableBySku(Sku sku);
 
+    /** Per (location, status) subtotals of one SKU, all statuses included; feeds Inventory Level. */
+    List<StockLevelLine> findLevelLinesBySku(Sku sku);
+
     List<StockItem> findBySkuAndLocation(Sku sku, LocationId location);
 
     /** Every stock item holding at least one reservation that expired before {@code cutoff}. */

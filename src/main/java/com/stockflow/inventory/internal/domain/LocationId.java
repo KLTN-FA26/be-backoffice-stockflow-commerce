@@ -18,6 +18,16 @@ public record LocationId(String code) {
         code = code.trim().toUpperCase();
     }
 
+    /**
+     * The warehouse this location belongs to: the segment before the first hyphen ({@code HN} in
+     * {@code HN-A01-2-03} or {@code HN-RCV01}). The prefix is part of the immutable code (BR-13),
+     * which is what makes deriving the warehouse from it safe without asking {@code warehouse}.
+     */
+    public String warehouseCode() {
+        int dash = code.indexOf('-');
+        return dash > 0 ? code.substring(0, dash) : code;
+    }
+
     @Override
     public String toString() {
         return code;

@@ -39,4 +39,14 @@ public class PackJpaEntity extends BaseEntity {
     public UUID getPickId() { return pickId; }
     public PackStatus getStatus() { return status; }
     public Instant getPackedAt() { return packedAt; }
+    public void begin() {
+        if (status == PackStatus.PENDING) { status = PackStatus.PACKING; }
+    }
+    public void hold() { status = PackStatus.ON_HOLD; packedAt = null; }
+    public void complete(Instant now) {
+        if (status != PackStatus.PENDING && status != PackStatus.PACKING && status != PackStatus.ON_HOLD) {
+            throw new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.CONFLICT);
+        }
+        status = PackStatus.PACKED; packedAt = now;
+    }
 }

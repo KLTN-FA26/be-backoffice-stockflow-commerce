@@ -1,5 +1,7 @@
 package com.stockflow.product.internal.entity;
 
+import com.stockflow.common.storage.StoredFile;
+import com.stockflow.product.internal.domain.ImageRendition;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.FetchType;
@@ -8,9 +10,9 @@ import jakarta.persistence.Index;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
-
+import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
-
 /**
  * JPA mapping of one product-media-gallery row. A child of {@code product} — never loaded or
  * saved on its own.
@@ -36,11 +38,38 @@ public class ProductImageJpaEntity {
             foreignKey = @jakarta.persistence.ForeignKey(name = "fk_product_image_product"))
     private ProductJpaEntity product;
 
-    @Column(name = "url", nullable = false, length = 500)
+    @Column(name = "url", length = 500)
     private String url;
 
     @Column(name = "sort_order", nullable = false)
     private int sortOrder;
+
+    @Column(name = "storage_key", length = 500)
+    private String storageKey;
+    @Column(name = "original_name", length = 255)
+    private String originalName;
+    @Column(name = "content_type", length = 100)
+    private String contentType;
+    @Column(name = "size_bytes")
+    private Long sizeBytes;
+    @Column(name = "stored_at")
+    private Instant storedAt;
+    @Column(name = "upload_key", length = 300)
+    private String uploadKey;
+    @Column(name = "checksum", length = 64)
+    private String checksum;
+    public String getUploadKey() { return uploadKey; }
+    public String getChecksum() { return checksum; }
+    public void setUploadFingerprint(String key, String hash) { uploadKey = key; checksum = hash; }
+
+    @org.hibernate.annotations.JdbcTypeCode(org.hibernate.type.SqlTypes.JSON)
+    @Column(name = "renditions", nullable = false, columnDefinition = "jsonb")
+    private List<ImageRendition> renditions = List.of();
+
+    public List<ImageRendition> getRenditions() { return renditions; }
+    public void setRenditions(List<ImageRendition> value) {
+        renditions = List.copyOf(value);
+    }
 
     protected ProductImageJpaEntity() {
     }
@@ -49,6 +78,22 @@ public class ProductImageJpaEntity {
         this.id = id;
         this.url = url;
         this.sortOrder = sortOrder;
+    }
+
+    public ProductImageJpaEntity(UUID id, String url, int sortOrder, StoredFile file) {
+        this(id, url, sortOrder);
+        if (file != null) {
+            storageKey = file.key();
+            originalName = file.originalName();
+            contentType = file.contentType();
+            sizeBytes = file.sizeBytes();
+            storedAt = file.storedAt();
+        }
+    }
+
+    public StoredFile storedFile() {
+        return storageKey == null ? null
+                : new StoredFile(storageKey, originalName, contentType, sizeBytes, storedAt);
     }
 
     public void attachTo(ProductJpaEntity parent) {

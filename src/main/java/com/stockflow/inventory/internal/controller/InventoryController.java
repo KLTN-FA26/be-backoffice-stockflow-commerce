@@ -7,6 +7,7 @@ import com.stockflow.inventory.internal.service.StockConsumption;
 import com.stockflow.inventory.internal.controller.dto.ReservationResponse;
 import com.stockflow.inventory.internal.controller.dto.ReserveStockRequest;
 import com.stockflow.inventory.internal.controller.dto.StockItemResponse;
+import com.stockflow.inventory.internal.controller.dto.StockLevelResponse;
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.security.Action;
@@ -81,11 +82,21 @@ class InventoryController {
         return ApiResponse.ok(mapper.toResponses(inventoryService.availabilityOf(new Sku(sku))));
     }
 
-    @GetMapping("/stock-items/atp")
-    @Operation(summary = "Available to promise for one SKU across every location")
+    @GetMapping("/stock-levels")
+    @Operation(summary = "Inventory Level of one SKU per warehouse: on hand, available, reserved, ATP")
     @RequiresPermission(resource = InventoryResources.STOCK_ITEMS, action = Action.READ)
-    public ApiResponse<Integer> availableToPromise(@RequestParam("sku") String sku) {
-        return ApiResponse.ok(inventoryService.availableToPromise(new Sku(sku)));
+    public ApiResponse<List<StockLevelResponse>> stockLevels(@RequestParam("sku") String sku) {
+        return ApiResponse.ok(mapper.toLevelResponses(inventoryService.levelsOf(new Sku(sku))));
+    }
+
+    @GetMapping("/stock-items/atp")
+    @Operation(summary = "Available to promise for one SKU, system-wide or for one warehouse")
+    @RequiresPermission(resource = InventoryResources.STOCK_ITEMS, action = Action.READ)
+    public ApiResponse<Integer> availableToPromise(@RequestParam("sku") String sku,
+                                                   @RequestParam(value = "warehouse", required = false) String warehouse) {
+        return ApiResponse.ok(warehouse == null || warehouse.isBlank()
+                ? inventoryService.availableToPromise(new Sku(sku))
+                : inventoryService.availableToPromise(new Sku(sku), warehouse));
     }
 
     /**

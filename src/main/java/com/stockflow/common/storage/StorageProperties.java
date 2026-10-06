@@ -32,12 +32,13 @@ public record StorageProperties(
         if (bucket == null || bucket.isBlank()) {
             throw new IllegalArgumentException("stockflow.storage.bucket must be set");
         }
-        if (presignedUrlTtl.compareTo(Duration.ofHours(1)) > 0) {
+        if (presignedUrlTtl == null || presignedUrlTtl.isZero() || presignedUrlTtl.isNegative()
+                || presignedUrlTtl.compareTo(Duration.ofHours(1)) > 0) {
             // A long-lived signed URL is a credential with no revocation. An hour is already
             // generous; anything more should be a deliberate, reviewed decision, not a default
             // somebody raised to make a test pass.
             throw new IllegalArgumentException(
-                    "stockflow.storage.presigned-url-ttl must not exceed one hour, got "
+                    "stockflow.storage.presigned-url-ttl must be positive and at most one hour, got "
                             + presignedUrlTtl);
         }
     }

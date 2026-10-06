@@ -1,9 +1,7 @@
 package com.stockflow.identity.internal.controller;
 
-import com.stockflow.identity.api.LoginCommand;
 import com.stockflow.identity.api.TokenResponse;
 import com.stockflow.identity.internal.controller.dto.AuthTokenResponse;
-import com.stockflow.identity.internal.controller.dto.LoginRequest;
 
 import org.mapstruct.Mapper;
 import org.mapstruct.ReportingPolicy;
@@ -12,7 +10,6 @@ import org.mapstruct.ReportingPolicy;
 @Mapper(componentModel = "spring", unmappedTargetPolicy = ReportingPolicy.ERROR)
 interface AuthWebMapper {
 
-    LoginCommand toCommand(LoginRequest request);
 
     AuthTokenResponse toResponse(TokenResponse token);
 }

@@ -77,6 +77,16 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
             """)
     List<AvailabilityRow> findAvailabilityBySku(@Param("sku") String sku);
 
+    /** Subtotals for the warehouse roll-up; every status, because on-hand counts them all. */
+    @Query("""
+            select new com.stockflow.inventory.internal.repository.StockLevelRow(
+                s.locationCode, s.status, sum(s.onHand), sum(s.reserved))
+            from StockItemJpaEntity s
+            where s.sku = :sku
+            group by s.locationCode, s.status
+            """)
+    List<StockLevelRow> findLevelRowsBySku(@Param("sku") String sku);
+
     @Query("""
             select distinct s from StockItemJpaEntity s
             left join fetch s.reservations

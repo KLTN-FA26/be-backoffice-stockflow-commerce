@@ -1,5 +1,6 @@
 package com.stockflow.product.internal.domain;
 
+import com.stockflow.product.api.StorageClass;
 import com.stockflow.product.api.ProductStatus;
 import com.stockflow.product.api.TaxClass;
 import com.stockflow.contracts.ProductApproved;
@@ -71,6 +72,7 @@ public final class Product extends AggregateRoot {
      *  for. */
     private boolean hazmat;
     private boolean oversized;
+    private StorageClass storageClass;
     private boolean requiresAdultSignature;
     private String shippingRestrictionNote;
 
@@ -96,7 +98,7 @@ public final class Product extends AggregateRoot {
                    String rejectionReason, BigDecimal weightKg, BigDecimal lengthCm,
                    BigDecimal widthCm, BigDecimal heightCm, BigDecimal packageWeightKg,
                    BigDecimal packageLengthCm, BigDecimal packageWidthCm, BigDecimal packageHeightCm,
-                   Integer packageCount, boolean hazmat, boolean oversized,
+                   Integer packageCount, boolean hazmat, boolean oversized, StorageClass storageClass,
                    boolean requiresAdultSignature, String shippingRestrictionNote) {
         this.id = Objects.requireNonNull(id, "id");
         this.code = requireNonBlank(code, "code");
@@ -131,6 +133,7 @@ public final class Product extends AggregateRoot {
         this.packageCount = requirePositive(packageCount, "packageCount");
         this.hazmat = hazmat;
         this.oversized = oversized;
+        this.storageClass = java.util.Objects.requireNonNullElse(storageClass, StorageClass.NORMAL);
         this.requiresAdultSignature = requiresAdultSignature;
         this.shippingRestrictionNote = shippingRestrictionNote;
     }
@@ -143,13 +146,13 @@ public final class Product extends AggregateRoot {
                                 BigDecimal heightCm, BigDecimal packageWeightKg,
                                 BigDecimal packageLengthCm, BigDecimal packageWidthCm,
                                 BigDecimal packageHeightCm, Integer packageCount, boolean hazmat,
-                                boolean oversized, boolean requiresAdultSignature,
+                                boolean oversized, StorageClass storageClass, boolean requiresAdultSignature,
                                 String shippingRestrictionNote) {
         return new Product(ProductId.newId(), code, name, nameEn, categoryId, description,
                 descriptionEn, brand, taxClass, customizable, images, ProductStatus.DRAFT, 0L,
                 null, null, null, null, null, null, null, null, null,
                 weightKg, lengthCm, widthCm, heightCm, packageWeightKg, packageLengthCm,
-                packageWidthCm, packageHeightCm, packageCount, hazmat, oversized,
+                packageWidthCm, packageHeightCm, packageCount, hazmat, oversized, storageClass,
                 requiresAdultSignature, shippingRestrictionNote);
     }
 
@@ -169,7 +172,7 @@ public final class Product extends AggregateRoot {
                               BigDecimal heightCm, BigDecimal packageWeightKg,
                               BigDecimal packageLengthCm, BigDecimal packageWidthCm,
                               BigDecimal packageHeightCm, Integer packageCount, boolean hazmat,
-                              boolean oversized, boolean requiresAdultSignature,
+                              boolean oversized, StorageClass storageClass, boolean requiresAdultSignature,
                               String shippingRestrictionNote) {
         requireStatus(ProductStatus.DRAFT, "edited");
         this.name = requireNonBlank(name, "name");
@@ -193,6 +196,7 @@ public final class Product extends AggregateRoot {
         this.packageCount = requirePositive(packageCount, "packageCount");
         this.hazmat = hazmat;
         this.oversized = oversized;
+        this.storageClass = java.util.Objects.requireNonNullElse(storageClass, StorageClass.NORMAL);
         this.requiresAdultSignature = requiresAdultSignature;
         this.shippingRestrictionNote = shippingRestrictionNote;
     }
@@ -254,6 +258,18 @@ public final class Product extends AggregateRoot {
                 new ProductDiscontinued(id.value(), Objects.requireNonNull(now, "now"))));
     }
 
+    /** Publication is separate from approval because only an approved gallery is customer-facing. */
+    public void publish() {
+        requireCanTransitionTo(ProductStatus.PUBLISHED);
+        this.status = ProductStatus.PUBLISHED;
+    }
+
+    /** Removes the product from the storefront without discarding its approved master data. */
+    public void unpublish() {
+        requireCanTransitionTo(ProductStatus.APPROVED);
+        this.status = ProductStatus.APPROVED;
+    }
+
     private void requireCanTransitionTo(ProductStatus target) {
         if (!status.canTransitionTo(target)) {
             throw new InvalidProductStatusTransitionException(id, status, target);
@@ -300,6 +316,12 @@ public final class Product extends AggregateRoot {
     public TaxClass taxClass() { return taxClass; }
     public boolean customizable() { return customizable; }
     public List<ProductImage> images() { return List.copyOf(images); }
+    public void addImage(ProductImage image) {
+        if (status == ProductStatus.DISCONTINUED || status == ProductStatus.PENDING_APPROVAL) {
+            throw new InvalidProductStatusTransitionException(id, "does not accept new media in this state");
+        }
+        images.add(image);
+    }
     public ProductStatus status() { return status; }
     public long version() { return version; }
     public Instant createdAt() { return createdAt; }
@@ -322,6 +344,7 @@ public final class Product extends AggregateRoot {
     public Integer packageCount() { return packageCount; }
     public boolean hazmat() { return hazmat; }
     public boolean oversized() { return oversized; }
+    public StorageClass storageClass() { return storageClass; }
     public boolean requiresAdultSignature() { return requiresAdultSignature; }
     public String shippingRestrictionNote() { return shippingRestrictionNote; }
 }

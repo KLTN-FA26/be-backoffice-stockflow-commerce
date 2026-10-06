@@ -20,7 +20,12 @@ class NotificationSender {
     private static final Logger log = LoggerFactory.getLogger(NotificationSender.class);
 
     void send(UUID recipientId, String templateCode, String subject, String body) {
+        send(recipientId, null, templateCode, subject, body);
+    }
+
+    void send(UUID recipientId, String recipientEmail, String templateCode, String subject, String body) {
         log.info("NOTIFY recipient={} template={} subject='{}' body='{}'",
-                recipientId, templateCode, subject, body);
+                recipientId == null ? "guest-email-present=" + (recipientEmail != null) : recipientId,
+                templateCode, subject, body);
     }
 }

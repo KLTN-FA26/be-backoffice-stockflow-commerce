@@ -4,6 +4,7 @@ import com.stockflow.common.domain.AggregateRoot;
 
 import java.time.Instant;
 import java.util.Objects;
+import java.util.UUID;
 
 /**
  * <b>Aggregate root of the identity module: one staff/customer account.</b>
@@ -24,7 +25,7 @@ public final class User extends AggregateRoot {
     private final UserId id;
     private final String username;
     private final String email;
-    private final String passwordHash;
+    private String passwordHash;
     private final String fullName;
     private UserStatus status;
     private Instant lastLoginAt;
@@ -47,6 +48,12 @@ public final class User extends AggregateRoot {
         this.createdBy = createdBy;
     }
 
+    public static User register(UUID id, String email, String passwordHash, String fullName) {
+        String normalisedEmail = requireNonBlank(email, "email").trim().toLowerCase(java.util.Locale.ROOT);
+        return new User(new UserId(id), normalisedEmail, normalisedEmail, passwordHash, fullName,
+                UserStatus.ACTIVE, null, 0L, null, null);
+    }
+
     /**
      * Records a successful authentication. The caller has already verified the password against
      * {@link #passwordHash()} — this only enforces the account-status invariant and stamps
@@ -59,6 +66,11 @@ public final class User extends AggregateRoot {
             throw new AccountNotActiveException(id, status);
         }
         this.lastLoginAt = Objects.requireNonNull(now, "now");
+    }
+
+    /** Replaces the credential. Takes an already-hashed value: this class never sees a raw password. */
+    public void changePasswordHash(String newHash) {
+        this.passwordHash = requireNonBlank(newHash, "passwordHash");
     }
 
     private static String requireNonBlank(String value, String field) {

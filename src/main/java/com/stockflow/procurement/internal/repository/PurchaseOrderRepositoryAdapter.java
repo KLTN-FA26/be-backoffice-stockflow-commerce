@@ -148,21 +148,26 @@ class PurchaseOrderRepositoryAdapter implements PurchaseOrderRepository, Purchas
 
         CriteriaQuery<SupplierSpendRow> query = cb.createQuery(SupplierSpendRow.class);
         Root<PurchaseOrderJpaEntity> root = query.from(PurchaseOrderJpaEntity.class);
-        query.select(cb.construct(SupplierSpendRow.class,
-                        root.get("supplierId"), cb.sum(root.get("totalAmount")), cb.count(root)))
+        query.select(cb.construct(SupplierSpendRow.class, root.get("supplierId"), root.get("currency"),
+                        cb.sum(root.get("totalAmount")), cb.count(root)))
                 .where(spendPredicates(cb, root, criteria).toArray(new Predicate[0]))
-                .groupBy(root.get("supplierId"))
-                .orderBy(cb.desc(cb.sum(root.get("totalAmount"))));
+                .groupBy(root.get("supplierId"), root.get("currency"))
+                // Currency first: ranking 64,000,000 VND above 602.50 USD compares nothing.
+                .orderBy(cb.asc(root.get("currency")), cb.desc(cb.sum(root.get("totalAmount"))),
+                        cb.asc(root.get("supplierId")));
         List<SupplierSpendRow> content = entityManager.createQuery(query)
                 .setFirstResult((int) pageable.getOffset())
                 .setMaxResults(pageable.getPageSize())
                 .getResultList();
 
-        CriteriaQuery<Long> countQuery = cb.createQuery(Long.class);
-        Root<PurchaseOrderJpaEntity> countRoot = countQuery.from(PurchaseOrderJpaEntity.class);
-        countQuery.select(cb.countDistinct(countRoot.get("supplierId")))
-                .where(spendPredicates(cb, countRoot, criteria).toArray(new Predicate[0]));
-        long total = entityManager.createQuery(countQuery).getSingleResult();
+        // The total is the number of (supplier, currency) groups. The Criteria API cannot count
+        // distinct pairs, so the group keys are listed and counted: a few rows per supplier at most.
+        CriteriaQuery<Object[]> keyQuery = cb.createQuery(Object[].class);
+        Root<PurchaseOrderJpaEntity> keyRoot = keyQuery.from(PurchaseOrderJpaEntity.class);
+        keyQuery.multiselect(keyRoot.get("supplierId"), keyRoot.get("currency"))
+                .where(spendPredicates(cb, keyRoot, criteria).toArray(new Predicate[0]))
+                .groupBy(keyRoot.get("supplierId"), keyRoot.get("currency"));
+        long total = entityManager.createQuery(keyQuery).getResultList().size();
 
         Map<UUID, SupplierJpaEntity> suppliersById = suppliers
                 .findAllById(content.stream().map(SupplierSpendRow::supplierId).toList())
@@ -172,7 +177,7 @@ class PurchaseOrderRepositoryAdapter implements PurchaseOrderRepository, Purchas
                 .map(row -> {
                     SupplierJpaEntity supplier = suppliersById.get(row.supplierId());
                     return new SupplierSpendSummary(row.supplierId(), supplier.getCode(), supplier.getName(),
-                            row.totalSpend(), row.orderCount());
+                            row.currency(), row.totalSpend(), row.orderCount());
                 })
                 .toList();
         return new PageImpl<>(summaries, pageable, total);
@@ -184,6 +189,9 @@ class PurchaseOrderRepositoryAdapter implements PurchaseOrderRepository, Purchas
         predicates.add(cb.not(root.get("status").in(NON_SPEND_STATUSES)));
         if (criteria.supplierId() != null) {
             predicates.add(cb.equal(root.get("supplierId"), criteria.supplierId()));
+        }
+        if (criteria.currency() != null) {
+            predicates.add(cb.equal(root.get("currency"), criteria.currency()));
         }
         if (criteria.expectedAtFrom() != null) {
             predicates.add(cb.greaterThanOrEqualTo(root.get("expectedAt"), criteria.expectedAtFrom()));

@@ -13,6 +13,7 @@ import java.util.UUID;
 public record OrderPlaced(
         UUID orderId,
         UUID customerId,
+        String contactEmail,
         String orderNumber,
         List<OrderLine> lines,
         BigDecimal totalAmount,

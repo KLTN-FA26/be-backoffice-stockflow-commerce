@@ -24,7 +24,7 @@ import java.util.UUID;
                 @UniqueConstraint(name = "uk_app_user_email", columnNames = "email")})
 public class UserJpaEntity extends BaseEntity {
 
-    @Column(name = "username", nullable = false, length = 100)
+    @Column(name = "username", nullable = false, length = 320)
     private String username;
 
     @Column(name = "email", nullable = false, length = 320)
@@ -60,6 +60,10 @@ public class UserJpaEntity extends BaseEntity {
     /** The only mutation this login flow needs; other fields have no write use case yet. */
     public void recordLogin(Instant now) {
         this.lastLoginAt = now;
+    }
+
+    public void replacePasswordHash(String newHash) {
+        this.passwordHash = newHash;
     }
 
     public String getUsername() { return username; }

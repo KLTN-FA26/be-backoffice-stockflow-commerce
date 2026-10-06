@@ -20,13 +20,27 @@ import java.util.UUID;
 public interface InventoryService {
 
     /**
-     * Available to promise for one SKU, summed over every location holding sellable stock.
-     * {@code ATP = on_hand − reserved − allocated}, counting only stock in condition GOOD.
+     * Available to promise for one SKU, summed over every location holding sellable stock:
+     * {@code ATP = available − reserved}. Allocated units are not subtracted a second time,
+     * because stock leaves the {@code available} bucket the moment it is allocated.
      */
     int availableToPromise(Sku sku);
 
+    /**
+     * ATP for one SKU inside one warehouse (SCRUM-157: the storefront may promise per warehouse
+     * or system-wide, open question C3). Zero for a warehouse holding none of it.
+     */
+    int availableToPromise(Sku sku, String warehouseCode);
+
     /** Per-location breakdown, earliest expiry first (FEFO). Used by fulfilment when allocating. */
     List<StockAvailability> availabilityOf(Sku sku);
+
+    /**
+     * Inventory Level per warehouse for one SKU, ordered by warehouse code.
+     *
+     * <p>Bounded by the number of warehouses, so it is returned as a plain list rather than a page.</p>
+     */
+    List<StockLevel> levelsOf(Sku sku);
 
     /**
      * Reserve stock for an order line.

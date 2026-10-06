@@ -1,6 +1,7 @@
 package com.stockflow.product.internal.domain;
 
 import com.stockflow.product.api.ProductStatus;
+import com.stockflow.product.api.StorageClass;
 import com.stockflow.product.api.TaxClass;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -29,14 +30,14 @@ class ProductTest {
         return Product.draft("SOFA-3S-GREY", "Sofa xám", "Grey sofa", CATEGORY,
                 null, null, "StockFlow", TaxClass.STANDARD, false, List.of(),
                 null, null, null, null, null, null, null, null, null,
-                false, false, false, null);
+                false, false, null, false, null);
     }
 
     private static Product draftWithoutCategory() {
         return Product.draft("SOFA-3S-GREY", "Sofa xám", "Grey sofa", null,
                 null, null, "StockFlow", TaxClass.STANDARD, false, List.of(),
                 null, null, null, null, null, null, null, null, null,
-                false, false, false, null);
+                false, false, null, false, null);
     }
 
     @Nested
@@ -183,7 +184,7 @@ class ProductTest {
 
             product.updateDetails("Sofa mới", "New sofa", CATEGORY, null, null,
                     "StockFlow", TaxClass.REDUCED, true, List.of(), null, null, null, null,
-                    null, null, null, null, null, false, false, false, null);
+                    null, null, null, null, null, false, false, null, false, null);
 
             assertThat(product.name()).isEqualTo("Sofa mới");
             assertThat(product.taxClass()).isEqualTo(TaxClass.REDUCED);
@@ -197,7 +198,7 @@ class ProductTest {
 
             assertThatThrownBy(() -> product.updateDetails("x", "x", CATEGORY, null, null,
                     "StockFlow", TaxClass.STANDARD, false, List.of(), null, null, null, null,
-                    null, null, null, null, null, false, false, false, null))
+                    null, null, null, null, null, false, false, null, false, null))
                     .isInstanceOf(InvalidProductStatusTransitionException.class);
         }
 
@@ -210,7 +211,7 @@ class ProductTest {
 
             assertThatThrownBy(() -> product.updateDetails("x", "x", CATEGORY, null, null,
                     "StockFlow", TaxClass.STANDARD, false, List.of(), null, null, null, null,
-                    null, null, null, null, null, false, false, false, null))
+                    null, null, null, null, null, false, false, null, false, null))
                     .isInstanceOf(InvalidProductStatusTransitionException.class);
         }
     }
@@ -218,6 +219,19 @@ class ProductTest {
     @Nested
     @DisplayName("weight/dimensions (SCRUM-74)")
     class WeightAndDimensions {
+
+        @Test
+        @DisplayName("storage class defaults to NORMAL when omitted and is kept when given")
+        void storageClassDefaultsToNormal() {
+            Product product = draftWithCategory();
+            assertThat(product.storageClass()).isEqualTo(StorageClass.NORMAL);
+
+            product.updateDetails("Sofa xám", "Grey sofa", CATEGORY, null, null,
+                    "StockFlow", TaxClass.STANDARD, false, List.of(), null, null, null, null,
+                    null, null, null, null, null, false, true, StorageClass.OVERSIZE, false, null);
+
+            assertThat(product.storageClass()).isEqualTo(StorageClass.OVERSIZE);
+        }
 
         @Test
         @DisplayName("set on updateDetails and read back")
@@ -228,7 +242,7 @@ class ProductTest {
                     "StockFlow", TaxClass.STANDARD, false, List.of(),
                     new BigDecimal("25.500"), new BigDecimal("200.00"),
                     new BigDecimal("90.00"), new BigDecimal("85.00"),
-                    null, null, null, null, null, false, false, false, null);
+                    null, null, null, null, null, false, false, null, false, null);
 
             assertThat(product.weightKg()).isEqualByComparingTo("25.500");
             assertThat(product.lengthCm()).isEqualByComparingTo("200.00");
@@ -251,13 +265,13 @@ class ProductTest {
             assertThatThrownBy(() -> Product.draft("SOFA-3S-GREY", "Sofa xám", "Grey sofa",
                     CATEGORY, null, null, "StockFlow", TaxClass.STANDARD, false, List.of(),
                     BigDecimal.ZERO, null, null, null, null, null, null, null, null,
-                    false, false, false, null))
+                    false, false, null, false, null))
                     .isInstanceOf(IllegalArgumentException.class);
 
             assertThatThrownBy(() -> Product.draft("SOFA-3S-GREY", "Sofa xám", "Grey sofa",
                     CATEGORY, null, null, "StockFlow", TaxClass.STANDARD, false, List.of(),
                     new BigDecimal("-1"), null, null, null, null, null, null, null, null,
-                    false, false, false, null))
+                    false, false, null, false, null))
                     .isInstanceOf(IllegalArgumentException.class);
         }
 
@@ -267,7 +281,7 @@ class ProductTest {
             assertThatThrownBy(() -> Product.draft("SOFA-3S-GREY", "Sofa xám", "Grey sofa",
                     CATEGORY, null, null, "StockFlow", TaxClass.STANDARD, false, List.of(),
                     null, BigDecimal.ZERO, null, null, null, null, null, null, null,
-                    false, false, false, null))
+                    false, false, null, false, null))
                     .isInstanceOf(IllegalArgumentException.class);
         }
     }
@@ -284,7 +298,7 @@ class ProductTest {
             product.updateDetails("Sofa xám", "Grey sofa", CATEGORY, null, null,
                     "StockFlow", TaxClass.STANDARD, false, List.of(), null, null, null, null,
                     new BigDecimal("28.000"), new BigDecimal("210.00"), new BigDecimal("30.00"),
-                    new BigDecimal("30.00"), 2, false, false, false, null);
+                    new BigDecimal("30.00"), 2, false, false, null, false, null);
 
             assertThat(product.packageWeightKg()).isEqualByComparingTo("28.000");
             assertThat(product.packageLengthCm()).isEqualByComparingTo("210.00");
@@ -308,7 +322,7 @@ class ProductTest {
             assertThatThrownBy(() -> Product.draft("SOFA-3S-GREY", "Sofa xám", "Grey sofa",
                     CATEGORY, null, null, "StockFlow", TaxClass.STANDARD, false, List.of(),
                     null, null, null, null, BigDecimal.ZERO, null, null, null, null,
-                    false, false, false, null))
+                    false, false, null, false, null))
                     .isInstanceOf(IllegalArgumentException.class);
         }
 
@@ -318,7 +332,7 @@ class ProductTest {
             assertThatThrownBy(() -> Product.draft("SOFA-3S-GREY", "Sofa xám", "Grey sofa",
                     CATEGORY, null, null, "StockFlow", TaxClass.STANDARD, false, List.of(),
                     null, null, null, null, null, new BigDecimal("-5"), null, null, null,
-                    false, false, false, null))
+                    false, false, null, false, null))
                     .isInstanceOf(IllegalArgumentException.class);
         }
 
@@ -328,7 +342,7 @@ class ProductTest {
             assertThatThrownBy(() -> Product.draft("SOFA-3S-GREY", "Sofa xám", "Grey sofa",
                     CATEGORY, null, null, "StockFlow", TaxClass.STANDARD, false, List.of(),
                     null, null, null, null, null, null, null, null, 0,
-                    false, false, false, null))
+                    false, false, null, false, null))
                     .isInstanceOf(IllegalArgumentException.class);
         }
     }
@@ -355,7 +369,7 @@ class ProductTest {
 
             product.updateDetails("Sofa xám", "Grey sofa", CATEGORY, null, null,
                     "StockFlow", TaxClass.STANDARD, false, List.of(), null, null, null, null,
-                    null, null, null, null, null, true, true, true,
+                    null, null, null, null, null, true, true, null, true,
                     "No shipping to islands without ferry access");
 
             assertThat(product.hazmat()).isTrue();
@@ -371,11 +385,11 @@ class ProductTest {
             Product product = draftWithCategory();
             product.updateDetails("Sofa xám", "Grey sofa", CATEGORY, null, null,
                     "StockFlow", TaxClass.STANDARD, false, List.of(), null, null, null, null,
-                    null, null, null, null, null, true, true, true, "restricted");
+                    null, null, null, null, null, true, true, null, true, "restricted");
 
             product.updateDetails("Sofa xám", "Grey sofa", CATEGORY, null, null,
                     "StockFlow", TaxClass.STANDARD, false, List.of(), null, null, null, null,
-                    null, null, null, null, null, false, false, false, null);
+                    null, null, null, null, null, false, false, null, false, null);
 
             assertThat(product.hazmat()).isFalse();
             assertThat(product.shippingRestrictionNote()).isNull();

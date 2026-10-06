@@ -1,21 +1,24 @@
 package com.stockflow.common.security;
 
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
+import org.springframework.security.config.ObjectPostProcessor;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.HeadersConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.jwt.JwtValidators;
+import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
+import org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.AuthenticationEntryPointFailureHandler;
 import org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter;
-import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
-import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
-
-import java.util.List;
 
 /**
  * Resource-server configuration. The application validates the JWT issued by the identity module.
@@ -91,15 +94,40 @@ public class ResourceServerSecurityConfig {
                 .build();
     }
 
-    /** Everything else: the API itself, plus the rest of actuator. */
+    /**
+     * The decoder is declared here, rather than left to Boot's auto-configuration, so a token is
+     * also refused once its session has ended ({@link SessionValidator}). Signature, {@code exp}
+     * and {@code nbf} are still checked first by the default validators.
+     */
+    @Bean
+    public JwtDecoder jwtDecoder(
+            @org.springframework.beans.factory.annotation.Value(
+                    "${spring.security.oauth2.resourceserver.jwt.jwk-set-uri}") String jwkSetUri,
+            ActiveSessionCheck sessions) {
+        NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(jwkSetUri).build();
+        decoder.setJwtValidator(new org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator<>(
+                JwtValidators.createDefault(), new SessionValidator(sessions)));
+        return decoder;
+    }
+
+    /** Roles from the token, permissions from the server-side lookup (ADR-0008). */
+    @Bean
+    public StockflowJwtAuthenticationConverter stockflowJwtAuthenticationConverter(
+            RoleAuthorizationLookup lookup) {
+        return new StockflowJwtAuthenticationConverter(lookup);
+    }
+
+    /** Everything else: the API itself, plus the rest of actuator. CORS policy: {@link CorsConfig}. */
     @Bean
     @Order(2)
-    public SecurityFilterChain apiFilterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain apiFilterChain(HttpSecurity http,
+            @Qualifier(CorsConfig.SOURCE) CorsConfigurationSource cors,
+            StockflowJwtAuthenticationConverter converter) throws Exception {
         return http
                 // Stateless JWT: there is no session cookie for an attacker to ride, so CSRF
                 // protection buys nothing and only breaks the API clients.
                 .csrf(csrf -> csrf.disable())
-                .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+                .cors(c -> c.configurationSource(cors))
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .headers(this::applyApiSecurityHeaders)
                 .authorizeHttpRequests(auth -> auth
@@ -112,17 +140,42 @@ public class ResourceServerSecurityConfig {
                         // No token exists yet at either of these: /auth/login is what mints one,
                         // and /oauth2/jwks is what THIS filter's own JwtDecoder fetches to validate
                         // it. Both are unauthenticated by necessity, not by oversight.
-                        .requestMatchers("/api/v1/identity/auth/login", "/oauth2/jwks").permitAll()
+                        .requestMatchers("/api/v1/identity/auth/login", "/api/v1/customers/registrations",
+                                "/api/v1/orders/guest-checkout", "/oauth2/jwks",
+                                "/api/v1/public/products/**").permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(oauth -> oauth
-                        .jwt(jwt -> jwt.jwtAuthenticationConverter(
-                                new StockflowJwtAuthenticationConverter()))
+                        .jwt(jwt -> jwt.jwtAuthenticationConverter(converter))
                         .authenticationEntryPoint(authenticationEntryPoint)
-                        .accessDeniedHandler(accessDeniedHandler))
+                        .accessDeniedHandler(accessDeniedHandler)
+                        .withObjectPostProcessor(reportUnavailableAsServiceError()))
                 .exceptionHandling(handling -> handling
                         .authenticationEntryPoint(authenticationEntryPoint)
                         .accessDeniedHandler(accessDeniedHandler))
                 .build();
+    }
+
+    /**
+     * Routes an {@code AuthenticationServiceException} — "could not check", not "not valid" — to the
+     * entry point, which answers it with a 503 envelope.
+     *
+     * <p>Spring Security 6 rethrows that exception type from the bearer-token filter by default. It
+     * then escapes the chain as a servlet exception and the container renders its own 500 page,
+     * outside the platform's envelope and without a correlation id. The permission lookup
+     * (ADR-0008), the session check and the key-set fetch all fail this way when a backing store is
+     * down.</p>
+     */
+    private ObjectPostProcessor<BearerTokenAuthenticationFilter> reportUnavailableAsServiceError() {
+        return new ObjectPostProcessor<>() {
+            @Override
+            public <O extends BearerTokenAuthenticationFilter> O postProcess(O filter) {
+                AuthenticationEntryPointFailureHandler failureHandler =
+                        new AuthenticationEntryPointFailureHandler(authenticationEntryPoint);
+                failureHandler.setRethrowAuthenticationServiceException(false);
+                filter.setAuthenticationFailureHandler(failureHandler);
+                return filter;
+            }
+        };
     }
 
     /**
@@ -157,25 +210,5 @@ public class ResourceServerSecurityConfig {
                         .maxAgeInSeconds(31_536_000))       // one year, the value browsers expect
                 .referrerPolicy(referrer -> referrer.policy(
                         ReferrerPolicyHeaderWriter.ReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN));
-    }
-
-    @Bean
-    public CorsConfigurationSource corsConfigurationSource() {
-        CorsConfiguration config = new CorsConfiguration();
-        // Storefront and admin origins only - never "*" together with credentials.
-        config.setAllowedOriginPatterns(List.of("http://localhost:*", "https://*.stockflow.vn"));
-        config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
-        config.setAllowedHeaders(List.of("Authorization", "Content-Type", "Idempotency-Key",
-                "X-Correlation-Id", "Accept-Language"));
-        // Without exposing these, browser JavaScript cannot read them - so a client could not show
-        // the correlation id on an error page, nor back off correctly on a 429.
-        config.setExposedHeaders(List.of("X-Correlation-Id", "X-RateLimit-Limit",
-                "X-RateLimit-Remaining", "Retry-After", "Idempotency-Replayed"));
-        config.setAllowCredentials(true);
-        config.setMaxAge(3600L);
-
-        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
-        source.registerCorsConfiguration("/**", config);
-        return source;
     }
 }

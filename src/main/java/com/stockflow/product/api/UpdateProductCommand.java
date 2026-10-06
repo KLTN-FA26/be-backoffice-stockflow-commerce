@@ -26,7 +26,7 @@ public record UpdateProductCommand(
         BigDecimal packageHeightCm,
         Integer packageCount,
         boolean hazmat,
-        boolean oversized,
+        boolean oversized, StorageClass storageClass,
         boolean requiresAdultSignature,
         String shippingRestrictionNote
 ) {

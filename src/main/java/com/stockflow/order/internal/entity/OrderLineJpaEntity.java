@@ -59,6 +59,11 @@ public class OrderLineJpaEntity {
     @Column(name = "design_snapshot_id")
     private UUID designSnapshotId;
 
+    @Column(name = "design_checksum", length = 64)
+    private String designChecksum;
+    public String getDesignChecksum() { return designChecksum; }
+    public void setDesignChecksum(String value) { designChecksum = value; }
+
     @ElementCollection(fetch = jakarta.persistence.FetchType.EAGER)
     @CollectionTable(
             name = "order_line_reservation",

@@ -15,6 +15,9 @@ import java.util.UUID;
  */
 public interface ProductRepository extends AggregateRepository<Product, ProductId> {
 
+    Optional<Product> findForUpdate(ProductId id);
+    boolean containsSku(UUID productId, String sku);
+
     Optional<Product> findByCode(String code);
 
     boolean existsByCode(String code);
