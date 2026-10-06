@@ -6,8 +6,9 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Administration of the warehouse map: warehouses and zones now, shelves, areas and boundaries as
- * #22-#24 add them.
+ * Administration of the warehouse map: warehouses and zones. Shelves, areas and boundaries have
+ * interfaces of their own ({@link ShelfLayoutService}, {@link AreaLayoutService},
+ * {@link BoundaryLayoutService}), one per controller.
  *
  * <p>Internal on purpose (issue #18 D6): only this module's controllers call it. What other modules
  * need from the warehouse - looking up a storage location - goes on {@code warehouse.api.WarehouseService}

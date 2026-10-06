@@ -1,0 +1,18 @@
+package com.stockflow.warehouse.internal.controller.dto;
+
+import com.stockflow.warehouse.internal.domain.AreaType;
+import com.stockflow.warehouse.internal.domain.LocationStatus;
+import com.stockflow.warehouse.internal.domain.StorageClass;
+
+import java.math.BigDecimal;
+import java.util.UUID;
+
+/**
+ * An area with its storage location flattened in. Every location field - {@code locationId} through
+ * {@code putawayTarget} - is {@code null} for a {@code NON_STORAGE} area, which has no location.
+ */
+public record AreaResponse(UUID id, UUID warehouseId, String code, AreaType type, String name,
+                           FootprintResponse footprint, boolean obstacle, LocationStatus status, long version,
+                           UUID locationId, String locationCode, StorageClass storageClass, Integer capacityUnits,
+                           BigDecimal maxWeight, Boolean pickable, Boolean putawayTarget) {
+}

@@ -1,6 +1,7 @@
 package com.stockflow.warehouse.internal.controller;
 
 import com.stockflow.warehouse.internal.controller.dto.FootprintRequest;
+import com.stockflow.warehouse.internal.controller.dto.FootprintResponse;
 import com.stockflow.warehouse.internal.controller.dto.ShelfRequests;
 import com.stockflow.warehouse.internal.controller.dto.ShelfResponse;
 import com.stockflow.warehouse.internal.domain.BinDefaults;
@@ -40,7 +41,7 @@ interface ShelfWebMapper {
 
     ShelfResponse.Bin toResponse(ShelfSummary.BinEntry bin);
 
-    ShelfResponse.Footprint toResponse(Footprint footprint);
+    FootprintResponse toResponse(Footprint footprint);
 
     /** The filled levels, flattened to one list of bins, each tagged with its level. */
     default List<ShelfResponse.GeneratedBin> toGeneratedBins(List<ShelfSummary.Level> levels) {

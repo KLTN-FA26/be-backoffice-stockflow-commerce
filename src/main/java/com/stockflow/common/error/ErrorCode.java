@@ -41,6 +41,8 @@ public enum ErrorCode {
     SHELF_NOT_FOUND("Shelf not found", 404),
     SHELF_LEVEL_NOT_FOUND("Shelf level not found", 404),
     BIN_NOT_FOUND("Bin not found", 404),
+    AREA_NOT_FOUND("Area not found", 404),
+    BOUNDARY_NOT_FOUND("Boundary not found", 404),
 
     /** Credentials were correct but the account is LOCKED or DISABLED. Distinct from UNAUTHORIZED,
      *  which covers "wrong username or password" without revealing the account exists. */
@@ -84,6 +86,9 @@ public enum ErrorCode {
     SHELF_CODE_ALREADY_EXISTS("This warehouse already has a shelf with this code", 409),
     SHELF_LEVEL_ALREADY_EXISTS("This shelf already has a level with this number", 409),
     BIN_CODE_ALREADY_EXISTS("This shelf level already has a bin with this code", 409),
+    AREA_CODE_ALREADY_EXISTS("This warehouse already has an area with this code", 409),
+    /** Issue #18 D10: a storage area keeps its storage location for good, so it never becomes NON_STORAGE. */
+    AREA_TYPE_CHANGE_NOT_ALLOWED("An area that holds stock cannot become a non-storage area", 409),
     /** BR-07: two shelves, areas or bins would cover the same floor. Touching edges is fine. */
     LAYOUT_OVERLAP("This would overlap something already on the map", 409),
     /** BR-08: a shelf with pickable bins needs at least one side a picker can reach them from. */

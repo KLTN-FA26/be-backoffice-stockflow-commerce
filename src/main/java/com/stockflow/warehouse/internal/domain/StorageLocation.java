@@ -25,7 +25,7 @@ public final class StorageLocation {
     private LocationSettings settings;
     private LocationStatus status;
 
-    /** Rehydration from storage. New locations come from {@link #forBin}. */
+    /** Rehydration from storage. New locations come from {@link #forBin} or {@link #forArea}. */
     public StorageLocation(UUID id, UUID warehouseId, StorageLocationKind kind, String locationCode,
                            StorageClass storageClass, LocationSettings settings, LocationStatus status) {
         this.id = Objects.requireNonNull(id, "id");
@@ -41,6 +41,17 @@ public final class StorageLocation {
                                   LocationSettings settings) {
         return new StorageLocation(id, warehouseId, StorageLocationKind.BIN, code.value(), storageClass,
                 settings, LocationStatus.ACTIVE);
+    }
+
+    /**
+     * @param status the area's status, which the location always shares (issue #18 D8) - not
+     *               necessarily {@code ACTIVE}: a {@code NON_STORAGE} area that becomes a storage area
+     *               gets its location in whatever status it is in
+     */
+    static StorageLocation forArea(UUID id, UUID warehouseId, LocationCode code, StorageClass storageClass,
+                                   LocationSettings settings, LocationStatus status) {
+        return new StorageLocation(id, warehouseId, StorageLocationKind.AREA, code.value(), storageClass,
+                settings, status);
     }
 
     void apply(StorageClass storageClass, LocationSettings settings) {

@@ -1,11 +1,14 @@
 package com.stockflow.warehouse.internal.repository;
 
+import com.stockflow.warehouse.internal.domain.Boundary;
+import com.stockflow.warehouse.internal.domain.Segment;
 import com.stockflow.warehouse.internal.domain.Warehouse;
 import com.stockflow.warehouse.internal.domain.Zone;
+import com.stockflow.warehouse.internal.entity.BoundaryJpaEntity;
 import com.stockflow.warehouse.internal.entity.WarehouseJpaEntity;
 import com.stockflow.warehouse.internal.entity.ZoneJpaEntity;
 
-/** Entity to aggregate and back, for warehouses and zones. */
+/** Entity to aggregate and back, for the flat aggregates of the map: warehouses, zones, boundaries. */
 final class WarehousePersistenceMapper {
 
     private WarehousePersistenceMapper() {
@@ -39,5 +42,23 @@ final class WarehousePersistenceMapper {
 
     static void apply(Zone zone, ZoneJpaEntity entity) {
         entity.apply(zone.name(), zone.color());
+    }
+
+    static Boundary toDomain(BoundaryJpaEntity entity) {
+        return new Boundary(entity.getId(), entity.getWarehouseId(), entity.getType(),
+                new Segment(entity.getStartX(), entity.getStartY(), entity.getEndX(), entity.getEndY()),
+                entity.isPassable(), entity.getOperationalStatus(), entity.getVersion());
+    }
+
+    static BoundaryJpaEntity toNewEntity(Boundary boundary) {
+        Segment s = boundary.segment();
+        return new BoundaryJpaEntity(boundary.id(), boundary.warehouseId(), boundary.type(), s.startX(), s.startY(),
+                s.endX(), s.endY(), boundary.passable(), boundary.operationalStatus());
+    }
+
+    static void apply(Boundary boundary, BoundaryJpaEntity entity) {
+        Segment s = boundary.segment();
+        entity.apply(boundary.type(), s.startX(), s.startY(), s.endX(), s.endY(), boundary.passable(),
+                boundary.operationalStatus());
     }
 }
