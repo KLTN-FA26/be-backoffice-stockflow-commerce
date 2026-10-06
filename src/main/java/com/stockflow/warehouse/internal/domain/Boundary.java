@@ -58,15 +58,23 @@ public final class Boundary extends AggregateRoot {
      */
     public void update(BoundaryType type, Segment segment, boolean passable, DoorStatus operationalStatus,
                        long expectedVersion) {
-        if (expectedVersion != version) {
-            throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK,
-                    "Boundary %s changed meanwhile (version %d, edit based on %d)".formatted(id, version, expectedVersion));
-        }
+        requireVersion(expectedVersion);
         requireShape(type, segment, passable, operationalStatus);
         this.type = type;
         this.segment = segment;
         this.passable = passable;
         this.operationalStatus = operationalStatus;
+    }
+
+    /**
+     * Refuses an action based on an older read. Also asked before a delete: deleting is final, so a
+     * stale view must not remove a wall someone has just redrawn as a door.
+     */
+    public void requireVersion(long expectedVersion) {
+        if (expectedVersion != version) {
+            throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK,
+                    "Boundary %s changed meanwhile (version %d, action based on %d)".formatted(id, version, expectedVersion));
+        }
     }
 
     private static void requireShape(BoundaryType type, Segment segment, boolean passable,

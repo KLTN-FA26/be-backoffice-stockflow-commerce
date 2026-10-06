@@ -13,6 +13,9 @@ public interface BoundaryLayoutService {
 
     BoundarySummary updateBoundary(BoundaryCommands.UpdateBoundary command);
 
-    /** A hard delete (issue #18 D11). */
-    void deleteBoundary(UUID boundaryId);
+    /**
+     * A hard delete (issue #18 D11), of the version the caller saw: there is no undo, so an older
+     * read is refused rather than deleting whatever the boundary has since become.
+     */
+    void deleteBoundary(UUID boundaryId, long expectedVersion);
 }

@@ -85,4 +85,13 @@ class BoundaryTest {
         assertThat(errorOf(() -> boundary.update(BoundaryType.WALL, NORTH, false, null, 1)))
                 .isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
     }
+
+    @Test
+    @DisplayName("a delete asks for the current version too: only the version that was read may be removed")
+    void requiresTheCurrentVersion() {
+        Boundary boundary = new Boundary(ID, WAREHOUSE, BoundaryType.WALL, NORTH, false, null, 4);
+
+        boundary.requireVersion(4);
+        assertThat(errorOf(() -> boundary.requireVersion(3))).isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
+    }
 }

@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -55,11 +56,15 @@ class BoundaryController {
                 boundaries.updateBoundary(mapper.toCommand(boundaryId, request))));
     }
 
-    /** A hard delete (issue #18 D11): a boundary has no status and nothing points at it. */
+    /**
+     * A hard delete (issue #18 D11): a boundary has no status and nothing points at it. Carries the
+     * {@code version} of the last read, like an update - a delete cannot be undone, so one based on
+     * a stale view answers {@code 409 OPTIMISTIC_LOCK} instead.
+     */
     @DeleteMapping("/boundaries/{boundaryId}")
     @RequiresPermission(resource = WarehouseResources.LOCATIONS, action = Action.DELETE)
-    public ApiResponse<Void> delete(@PathVariable UUID boundaryId) {
-        boundaries.deleteBoundary(boundaryId);
+    public ApiResponse<Void> delete(@PathVariable UUID boundaryId, @RequestParam long version) {
+        boundaries.deleteBoundary(boundaryId, version);
         return ApiResponse.ok();
     }
 }

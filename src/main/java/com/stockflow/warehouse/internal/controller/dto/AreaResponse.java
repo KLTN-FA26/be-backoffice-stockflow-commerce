@@ -9,7 +9,8 @@ import java.util.UUID;
 
 /**
  * An area with its storage location flattened in. Every location field - {@code locationId} through
- * {@code putawayTarget} - is {@code null} for a {@code NON_STORAGE} area, which has no location.
+ * {@code putawayTarget} - is {@code null} for a {@code NON_STORAGE} area, which has no location, and
+ * so is left out of the JSON altogether ({@code spring.jackson.default-property-inclusion: non_null}).
  */
 public record AreaResponse(UUID id, UUID warehouseId, String code, AreaType type, String name,
                            FootprintResponse footprint, boolean obstacle, LocationStatus status, long version,

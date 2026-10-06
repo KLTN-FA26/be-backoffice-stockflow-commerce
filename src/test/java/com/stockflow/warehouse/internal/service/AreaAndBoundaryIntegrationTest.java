@@ -21,10 +21,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.util.UUID;
@@ -35,8 +32,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Areas and boundaries through the application services, on Postgres with the demo seed: warehouse
  * {@code HCM} (map 60 x 40), shelves A01 (5-15 x 5-6.2), A02 and B01, areas RCV01 (40-55 x 2-10),
  * QC01, PACK01, DSP01 holding stock and OFFICE (2-12 x 30-38, {@code NON_STORAGE}), a north wall and
- * an east door. Every test rolls back but one, which commits: only a commit runs the deferred
- * {@code tg_storage_location_owned}.
+ * an east door. Every test rolls back; the deferred {@code tg_storage_location_owned} is run early
+ * with {@code set constraints all immediate}, and {@link AreaCreationCommitIntegrationTest} commits
+ * for real.
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
@@ -50,7 +48,6 @@ class AreaAndBoundaryIntegrationTest {
     @Autowired ShelfLayoutService shelves;
     @Autowired EntityManager entityManager;
     @Autowired JdbcTemplate jdbc;
-    @Autowired PlatformTransactionManager transactionManager;
 
     private UUID hcm() {
         return jdbc.queryForObject("select id from warehouse.warehouse where prefix = 'HCM'", UUID.class);
@@ -96,30 +93,6 @@ class AreaAndBoundaryIntegrationTest {
     @Nested
     @DisplayName("areas")
     class Areas {
-
-        /** Committed for real: the deferred trigger must find the location owned by its area. */
-        @Test
-        @Transactional(propagation = Propagation.NOT_SUPPORTED)
-        @DisplayName("rcv02 in HCM commits with location HCM-RCV02; RCV01 is already taken")
-        public void storageAreaCommits() {
-            try {
-                AreaSummary area = create("rcv02", AreaType.RECEIVING, at("20", "25", "5", "5"));
-
-                assertThat(area.code()).isEqualTo("RCV02");
-                assertThat(area.locationCode()).isEqualTo("HCM-RCV02");
-                assertThat(area.storageClass()).isEqualTo(StorageClass.NORMAL);
-                assertThat(jdbc.queryForObject("select count(*) from warehouse.area a join warehouse.storage_location l "
-                        + "on l.id = a.location_id where l.location_code = 'HCM-RCV02' and l.kind = 'AREA' "
-                        + "and l.status = 'ACTIVE'", Integer.class)).isEqualTo(1);
-                assertThat(errorOf(() -> create("rcv01", AreaType.RECEIVING, at("20", "31", "2", "2"))))
-                        .isEqualTo(ErrorCode.AREA_CODE_ALREADY_EXISTS);
-            } finally {
-                new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
-                    jdbc.update("delete from warehouse.area where code = 'RCV02'");
-                    jdbc.update("delete from warehouse.storage_location where location_code = 'HCM-RCV02'");
-                });
-            }
-        }
 
         @Test
         @DisplayName("overlapping ACTIVE shelf A01 is refused; once A01 is INACTIVE the place is free (#18 D3)")
@@ -239,12 +212,27 @@ class AreaAndBoundaryIntegrationTest {
         @DisplayName("the seeded north wall is deleted for good (#18 D11)")
         void deletesTheWall() {
             UUID wall = northWall();
+            long version = versionOf("boundary", wall);
 
-            boundaries.deleteBoundary(wall);
+            boundaries.deleteBoundary(wall, version);
 
             assertThat(jdbc.queryForObject("select count(*) from warehouse.boundary where id = ?", Integer.class, wall))
                     .isZero();
-            assertThat(errorOf(() -> boundaries.deleteBoundary(wall))).isEqualTo(ErrorCode.BOUNDARY_NOT_FOUND);
+            assertThat(errorOf(() -> boundaries.deleteBoundary(wall, version))).isEqualTo(ErrorCode.BOUNDARY_NOT_FOUND);
+        }
+
+        @Test
+        @DisplayName("a delete based on an older read is refused: the wall was redrawn as a door meanwhile")
+        void staleDeleteIsRefused() {
+            UUID wall = northWall();
+            long seen = versionOf("boundary", wall);
+            boundaries.updateBoundary(new BoundaryCommands.UpdateBoundary(wall, BoundaryType.DOOR,
+                    from("10", "0", "14", "0"), true, DoorStatus.OPEN, seen));
+            entityManager.flush();
+
+            assertThat(errorOf(() -> boundaries.deleteBoundary(wall, seen))).isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
+            assertThat(jdbc.queryForObject("select count(*) from warehouse.boundary where id = ?", Integer.class, wall))
+                    .isEqualTo(1);
         }
 
         @Test

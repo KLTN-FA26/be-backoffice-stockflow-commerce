@@ -51,8 +51,9 @@ class BoundaryLayoutServiceImpl implements BoundaryLayoutService {
     }
 
     @Override
-    public void deleteBoundary(UUID boundaryId) {
+    public void deleteBoundary(UUID boundaryId, long expectedVersion) {
         lockWarehouseOf(boundaryId);
+        require(boundaryId).requireVersion(expectedVersion);
         boundaries.deleteById(boundaryId);
     }
 
