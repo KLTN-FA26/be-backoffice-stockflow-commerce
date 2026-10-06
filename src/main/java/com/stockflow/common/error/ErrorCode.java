@@ -70,6 +70,8 @@ public enum ErrorCode {
     /** Guest checkout is switched off (it is on only where prices can be trusted, see application.yml). */
     GUEST_CHECKOUT_DISABLED("Guest checkout is not available", 403),
     INVALID_PURCHASE_ORDER_TRANSITION("This purchase order cannot move to that status right now", 409),
+    /** A shelf is loaded and locked as one aggregate, so it is bounded: 20 levels, 200 bins a level. */
+    SHELF_CAPACITY_EXCEEDED("This shelf cannot hold that many levels or bins", 409),
 
     /** Someone saved this role's permissions after the editor loaded them. Not retryable as-is:
      *  resending the same body would overwrite their change, so the client must reload first. */
