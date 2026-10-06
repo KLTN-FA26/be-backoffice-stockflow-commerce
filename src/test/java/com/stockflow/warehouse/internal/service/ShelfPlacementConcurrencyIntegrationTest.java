@@ -13,6 +13,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -33,7 +35,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * rule, so the lock is the whole defence and this test is what proves it.
  *
  * <p>Not {@code @Transactional}: both transactions must really commit. The shelves are deleted
- * afterwards (they have no levels, so the delete is allowed).</p>
+ * afterwards (they have no levels, so the delete is allowed), in a transaction of their own: the pool
+ * hands out connections with auto-commit off, so a bare {@code JdbcTemplate} delete is rolled back
+ * when its connection goes back to the pool. It was, until the layout read of #25 found shelf T1
+ * still standing in HCM whenever this test happened to run first.</p>
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
@@ -41,10 +46,12 @@ class ShelfPlacementConcurrencyIntegrationTest {
 
     @Autowired ShelfLayoutService shelves;
     @Autowired JdbcTemplate jdbc;
+    @Autowired PlatformTransactionManager transactionManager;
 
     @AfterEach
     void removeTheShelves() {
-        jdbc.update("delete from warehouse.shelf where code in ('T1', 'T2')");
+        new TransactionTemplate(transactionManager).executeWithoutResult(status ->
+                jdbc.update("delete from warehouse.shelf where code in ('T1', 'T2')"));
     }
 
     @Test
