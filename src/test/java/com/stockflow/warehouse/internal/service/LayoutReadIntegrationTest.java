@@ -2,6 +2,7 @@ package com.stockflow.warehouse.internal.service;
 
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.warehouse.api.StorageLocationView;
@@ -34,6 +35,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.stream.IntStream;
 
+import static com.stockflow.support.DemoData.WAREHOUSE_HCM;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -53,15 +55,6 @@ class LayoutReadIntegrationTest {
     @Autowired EntityManager entityManager;
     @Autowired EntityManagerFactory entityManagerFactory;
     @Autowired JdbcTemplate jdbc;
-
-    private UUID hcm() {
-        return jdbc.queryForObject("select id from warehouse.warehouse where prefix = 'HCM'", UUID.class);
-    }
-
-    private UUID shelfId(String code) {
-        return jdbc.queryForObject("select s.id from warehouse.shelf s join warehouse.warehouse w "
-                + "on w.id = s.warehouse_id where w.prefix = 'HCM' and s.code = ?", UUID.class, code);
-    }
 
     private StorageLocationView location(String code) {
         return locations.findLocation(code).orElseThrow();
@@ -92,7 +85,7 @@ class LayoutReadIntegrationTest {
         @Test
         @DisplayName("HCM comes whole: frame, zones, shelves with levels and bins, areas, boundaries")
         void demoWarehouse() {
-            WarehouseLayout layout = warehouses.layoutOf(hcm());
+            WarehouseLayout layout = warehouses.layoutOf(WAREHOUSE_HCM);
 
             assertThat(layout.warehouse().prefix()).isEqualTo("HCM");
             assertThat(layout.warehouse().mapWidth()).isEqualByComparingTo("60");
@@ -116,7 +109,7 @@ class LayoutReadIntegrationTest {
         @Test
         @DisplayName("a NON_STORAGE area has no location and no usable flag; a storage area has both")
         void areas() {
-            WarehouseLayout layout = warehouses.layoutOf(hcm());
+            WarehouseLayout layout = warehouses.layoutOf(WAREHOUSE_HCM);
 
             WarehouseLayout.Area office = area(layout, "OFFICE");
             assertThat(office.type()).isEqualTo(AreaType.NON_STORAGE);
@@ -192,10 +185,10 @@ class LayoutReadIntegrationTest {
         @Test
         @DisplayName("an ACTIVE bin on a shelf in MAINTENANCE is MAINTENANCE and unusable, in the layout and by lookup")
         void shelfNarrowsItsBins() {
-            shelves.changeShelfStatus(shelfId("A01"), LocationStatus.MAINTENANCE);
+            shelves.changeShelfStatus(DemoData.shelf("A01"), LocationStatus.MAINTENANCE);
             flushAndClear();
 
-            WarehouseLayout layout = warehouses.layoutOf(hcm());
+            WarehouseLayout layout = warehouses.layoutOf(WAREHOUSE_HCM);
             WarehouseLayout.Shelf a01 = shelf(layout, "A01");
             assertThat(a01.status()).isEqualTo(LocationStatus.MAINTENANCE);
             assertThat(bins(a01)).allSatisfy(bin -> {
@@ -214,10 +207,10 @@ class LayoutReadIntegrationTest {
         @Test
         @DisplayName("an INACTIVE warehouse makes every location INACTIVE and unusable")
         void inactiveWarehouse() {
-            warehouses.deactivate(hcm());
+            warehouses.deactivate(WAREHOUSE_HCM);
             flushAndClear();
 
-            WarehouseLayout layout = warehouses.layoutOf(hcm());
+            WarehouseLayout layout = warehouses.layoutOf(WAREHOUSE_HCM);
             assertThat(layout.shelves()).flatExtracting(LayoutReadIntegrationTest::bins).hasSize(12)
                     .allSatisfy(bin -> {
                         assertThat(bin.effectiveStatus()).isEqualTo(LocationStatus.INACTIVE);
@@ -232,10 +225,10 @@ class LayoutReadIntegrationTest {
         @Test
         @DisplayName("an INACTIVE shelf is still on the layout, marked so")
         void inactiveShelvesAreIncluded() {
-            shelves.changeShelfStatus(shelfId("B01"), LocationStatus.INACTIVE);
+            shelves.changeShelfStatus(DemoData.shelf("B01"), LocationStatus.INACTIVE);
             flushAndClear();
 
-            WarehouseLayout.Shelf b01 = shelf(warehouses.layoutOf(hcm()), "B01");
+            WarehouseLayout.Shelf b01 = shelf(warehouses.layoutOf(WAREHOUSE_HCM), "B01");
             assertThat(b01.effectiveStatus()).isEqualTo(LocationStatus.INACTIVE);
             assertThat(bins(b01)).hasSize(4);
         }
@@ -252,7 +245,7 @@ class LayoutReadIntegrationTest {
 
             assertThat(view.kind()).isEqualTo(StorageLocationView.Kind.BIN);
             assertThat(view.locationCode()).isEqualTo("HCM-A01-2-B");
-            assertThat(view.warehouseId()).isEqualTo(hcm());
+            assertThat(view.warehouseId()).isEqualTo(WAREHOUSE_HCM);
             assertThat(view.storageClass()).isEqualTo(StorageLocationView.StorageClass.OVERSIZE);
             assertThat(view.usable()).isTrue();
         }
@@ -263,7 +256,7 @@ class LayoutReadIntegrationTest {
             StorageLocationView view = location("HCM-QC01");
 
             assertThat(view.kind()).isEqualTo(StorageLocationView.Kind.AREA);
-            assertThat(area(warehouses.layoutOf(hcm()), "QC01"))
+            assertThat(area(warehouses.layoutOf(WAREHOUSE_HCM), "QC01"))
                     .satisfies(qc -> {
                         assertThat(qc.type()).isEqualTo(AreaType.QUARANTINE);
                         assertThat(qc.locationId()).isEqualTo(view.id());
@@ -282,8 +275,7 @@ class LayoutReadIntegrationTest {
         @Test
         @DisplayName("by id: the id of HCM-RCV01 finds that row")
         void byId() {
-            UUID id = jdbc.queryForObject("select id from warehouse.storage_location where location_code = 'HCM-RCV01'",
-                    UUID.class);
+            UUID id = DemoData.location("HCM-RCV01");
 
             StorageLocationView view = locations.findLocation(id).orElseThrow();
 

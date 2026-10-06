@@ -24,6 +24,7 @@ import java.math.BigDecimal;
 import java.util.List;
 import java.util.UUID;
 
+import static com.stockflow.support.DemoData.WAREHOUSE_HCM;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -41,10 +42,6 @@ class WarehouseLayoutServiceIntegrationTest {
     @Autowired WarehouseRepository warehouseRepository;
     @Autowired PermissionCatalog permissionCatalog;
     @Autowired JdbcTemplate jdbc;
-
-    private UUID hcm() {
-        return jdbc.queryForObject("select id from warehouse.warehouse where prefix = 'HCM'", UUID.class);
-    }
 
     private WarehouseSummary registerHanoi() {
         return layout.register(new RegisterWarehouseCommand("hn", "Kho Hà Nội", "1 Phố Huế", null,
@@ -123,7 +120,7 @@ class WarehouseLayoutServiceIntegrationTest {
         @Test
         @DisplayName("shrinks the map exactly to what is on it, not a millimetre further (BR-06)")
         void shrinksOnlyToTheLayout() {
-            WarehouseSummary hcm = layout.get(hcm());
+            WarehouseSummary hcm = layout.get(WAREHOUSE_HCM);
 
             assertThat(errorOf(() -> resize(hcm, "59.999", "40"))).isEqualTo(ErrorCode.LAYOUT_OUT_OF_BOUNDS);
             assertThat(errorOf(() -> resize(hcm, "60", "37.999"))).isEqualTo(ErrorCode.LAYOUT_OUT_OF_BOUNDS);
@@ -134,7 +131,7 @@ class WarehouseLayoutServiceIntegrationTest {
         @DisplayName("an INACTIVE area no longer holds the map open (issue #18 D3)")
         void inactiveAreasDoNotCount() {
             jdbc.update("update warehouse.area set status = 'INACTIVE' where code = 'OFFICE'");
-            WarehouseSummary hcm = layout.get(hcm());
+            WarehouseSummary hcm = layout.get(WAREHOUSE_HCM);
 
             assertThat(resize(hcm, "60", "34").mapHeight()).isEqualByComparingTo("34");
         }
@@ -185,17 +182,17 @@ class WarehouseLayoutServiceIntegrationTest {
         @Test
         @DisplayName("creates a zone with an upper-cased colour")
         void creates() {
-            ZoneSummary zone = layout.createZone(new CreateZoneCommand(hcm(), "Khu C - Ghế", "#ff8800"));
+            ZoneSummary zone = layout.createZone(new CreateZoneCommand(WAREHOUSE_HCM, "Khu C - Ghế", "#ff8800"));
 
             assertThat(zone.color()).isEqualTo("#FF8800");
-            assertThat(layout.listZones(hcm())).extracting(ZoneSummary::name)
+            assertThat(layout.listZones(WAREHOUSE_HCM)).extracting(ZoneSummary::name)
                     .containsExactly("Khu A - Sofa", "Khu B - Bàn", "Khu C - Ghế");
         }
 
         @Test
         @DisplayName("refuses a second zone with the same name in one warehouse, allows it in another")
         void namesAreUniquePerWarehouse() {
-            assertThat(errorOf(() -> layout.createZone(new CreateZoneCommand(hcm(), "Khu A - Sofa", null))))
+            assertThat(errorOf(() -> layout.createZone(new CreateZoneCommand(WAREHOUSE_HCM, "Khu A - Sofa", null))))
                     .isEqualTo(ErrorCode.ZONE_NAME_ALREADY_EXISTS);
 
             UUID hanoi = registerHanoi().id();
@@ -224,7 +221,7 @@ class WarehouseLayoutServiceIntegrationTest {
         }
 
         private ZoneSummary zoneNamed(String name) {
-            return layout.listZones(hcm()).stream().filter(z -> z.name().equals(name)).findFirst()
+            return layout.listZones(WAREHOUSE_HCM).stream().filter(z -> z.name().equals(name)).findFirst()
                     .orElseThrow();
         }
     }

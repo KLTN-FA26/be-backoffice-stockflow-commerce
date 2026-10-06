@@ -3,6 +3,7 @@ package com.stockflow.warehouse.internal.service;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.warehouse.internal.domain.AreaDetails;
@@ -26,6 +27,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.util.UUID;
 
+import static com.stockflow.support.DemoData.WAREHOUSE_HCM;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -49,15 +51,6 @@ class AreaAndBoundaryIntegrationTest {
     @Autowired EntityManager entityManager;
     @Autowired JdbcTemplate jdbc;
 
-    private UUID hcm() {
-        return jdbc.queryForObject("select id from warehouse.warehouse where prefix = 'HCM'", UUID.class);
-    }
-
-    private UUID idOf(String table, String code) {
-        return jdbc.queryForObject("select t.id from warehouse." + table + " t join warehouse.warehouse w "
-                + "on w.id = t.warehouse_id where w.prefix = 'HCM' and t.code = ?", UUID.class, code);
-    }
-
     private long versionOf(String table, UUID id) {
         return jdbc.queryForObject("select version from warehouse." + table + " where id = ?", Long.class, id);
     }
@@ -71,7 +64,7 @@ class AreaAndBoundaryIntegrationTest {
     }
 
     private AreaSummary create(String code, AreaType type, Footprint footprint) {
-        return areas.createArea(new AreaCommands.CreateArea(hcm(), code,
+        return areas.createArea(new AreaCommands.CreateArea(WAREHOUSE_HCM, code,
                 new AreaDetails(type, "Khu " + code, footprint, false, null, PUTAWAY_ONLY)));
     }
 
@@ -100,7 +93,7 @@ class AreaAndBoundaryIntegrationTest {
             assertThat(errorOf(() -> create("X01", AreaType.OVERFLOW, at("6", "5", "2", "1"))))
                     .isEqualTo(ErrorCode.LAYOUT_OVERLAP);
 
-            shelves.changeShelfStatus(idOf("shelf", "A01"), LocationStatus.INACTIVE);
+            shelves.changeShelfStatus(DemoData.shelf("A01"), LocationStatus.INACTIVE);
 
             assertThat(create("X01", AreaType.OVERFLOW, at("6", "5", "2", "1")).code()).isEqualTo("X01");
         }
@@ -117,7 +110,7 @@ class AreaAndBoundaryIntegrationTest {
         @Test
         @DisplayName("OFFICE (NON_STORAGE) becomes OVERFLOW and gets location HCM-OFFICE (#18 D10)")
         void officeBecomesOverflow() {
-            UUID office = idOf("area", "OFFICE");
+            UUID office = DemoData.area("OFFICE");
             long version = versionOf("area", office);
 
             AreaSummary updated = areas.updateArea(new AreaCommands.UpdateArea(office, new AreaDetails(
@@ -140,7 +133,7 @@ class AreaAndBoundaryIntegrationTest {
         @Test
         @DisplayName("changing only the location's settings still moves the area's version")
         void locationOnlyEditMovesTheVersion() {
-            UUID rcv01 = idOf("area", "RCV01");
+            UUID rcv01 = DemoData.area("RCV01");
             long version = versionOf("area", rcv01);
             AreaDetails moreCapacity = new AreaDetails(AreaType.RECEIVING, "Khu nhận hàng", at("40", "2", "15", "8"),
                     false, StorageClass.OVERSIZE, new LocationSettings(800, null, false, false));
@@ -160,7 +153,7 @@ class AreaAndBoundaryIntegrationTest {
         @Test
         @DisplayName("RCV01 holds stock, so it cannot become NON_STORAGE (#18 D10)")
         void storageAreaStaysStorage() {
-            UUID rcv01 = idOf("area", "RCV01");
+            UUID rcv01 = DemoData.area("RCV01");
 
             assertThat(errorOf(() -> areas.updateArea(new AreaCommands.UpdateArea(rcv01, new AreaDetails(
                     AreaType.NON_STORAGE, "Văn phòng", at("40", "2", "15", "8"), false, null, null),
@@ -171,7 +164,7 @@ class AreaAndBoundaryIntegrationTest {
         @Test
         @DisplayName("a status change lands on area.status and storage_location.status alike (#18 D8)")
         void statusLandsOnBothRows() {
-            areas.changeAreaStatus(idOf("area", "QC01"), LocationStatus.BLOCKED);
+            areas.changeAreaStatus(DemoData.area("QC01"), LocationStatus.BLOCKED);
             entityManager.flush();
 
             assertThat(jdbc.queryForObject("select a.status || '/' || l.status from warehouse.area a "
@@ -182,7 +175,7 @@ class AreaAndBoundaryIntegrationTest {
         @Test
         @DisplayName("an INACTIVE area frees its place and cannot come back while it is taken (#18 D3)")
         void inactiveAreasFreeTheirPlace() {
-            UUID qc01 = idOf("area", "QC01");
+            UUID qc01 = DemoData.area("QC01");
             areas.changeAreaStatus(qc01, LocationStatus.INACTIVE);
 
             create("X01", AreaType.OVERFLOW, at("41", "13", "2", "2"));
@@ -203,15 +196,10 @@ class AreaAndBoundaryIntegrationTest {
     @DisplayName("boundaries")
     class Boundaries {
 
-        private UUID northWall() {
-            return jdbc.queryForObject("select b.id from warehouse.boundary b join warehouse.warehouse w "
-                    + "on w.id = b.warehouse_id where w.prefix = 'HCM' and b.type = 'WALL'", UUID.class);
-        }
-
         @Test
         @DisplayName("the seeded north wall is deleted for good (#18 D11)")
         void deletesTheWall() {
-            UUID wall = northWall();
+            UUID wall = DemoData.WALL_HCM_NORTH;
             long version = versionOf("boundary", wall);
 
             boundaries.deleteBoundary(wall, version);
@@ -224,7 +212,7 @@ class AreaAndBoundaryIntegrationTest {
         @Test
         @DisplayName("a delete based on an older read is refused: the wall was redrawn as a door meanwhile")
         void staleDeleteIsRefused() {
-            UUID wall = northWall();
+            UUID wall = DemoData.WALL_HCM_NORTH;
             long seen = versionOf("boundary", wall);
             boundaries.updateBoundary(new BoundaryCommands.UpdateBoundary(wall, BoundaryType.DOOR,
                     from("10", "0", "14", "0"), true, DoorStatus.OPEN, seen));
@@ -238,11 +226,11 @@ class AreaAndBoundaryIntegrationTest {
         @Test
         @DisplayName("a wall along a shelf is fine; an end off the map is not")
         void insideTheMapOnly() {
-            BoundarySummary wall = boundaries.createBoundary(new BoundaryCommands.CreateBoundary(hcm(),
+            BoundarySummary wall = boundaries.createBoundary(new BoundaryCommands.CreateBoundary(WAREHOUSE_HCM,
                     BoundaryType.WALL, from("5", "5", "15", "5"), false, null));
 
             assertThat(wall.type()).isEqualTo(BoundaryType.WALL);
-            assertThat(errorOf(() -> boundaries.createBoundary(new BoundaryCommands.CreateBoundary(hcm(),
+            assertThat(errorOf(() -> boundaries.createBoundary(new BoundaryCommands.CreateBoundary(WAREHOUSE_HCM,
                     BoundaryType.WALL, from("0", "40", "60.5", "40"), false, null))))
                     .isEqualTo(ErrorCode.LAYOUT_OUT_OF_BOUNDS);
         }
@@ -250,7 +238,7 @@ class AreaAndBoundaryIntegrationTest {
         @Test
         @DisplayName("a wall can be redrawn as a door")
         void wallBecomesADoor() {
-            UUID wall = northWall();
+            UUID wall = DemoData.WALL_HCM_NORTH;
             long version = versionOf("boundary", wall);
 
             BoundarySummary door = boundaries.updateBoundary(new BoundaryCommands.UpdateBoundary(wall,
