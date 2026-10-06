@@ -190,13 +190,14 @@ flowchart LR
 | 02 | `warehouse` | `+ putaway_suggestion × N` | vị trí xếp hạng + lý do từng gợi ý |
 | 03 | `warehouse` | `~ putaway_task.assigned_to` | → ASSIGNED |
 | 04 | `warehouse` | `~ putaway_task (quét item)` | → IN_PROGRESS |
-| 05 | `warehouse` | `~ putaway_task.actual_location, ~ location.occupied_*, + outbox_event` | → COMPLETED |
+| 05 | `warehouse` | `~ putaway_task.target_location_id, + outbox_event` | → COMPLETED |
 | 06 | `inventory` | `~ stock_item.location_code, + stock_movement, + outbox_event` | StockLevelChanged |
 | 07 | `catalog` | `~ atp_cache` | hàng bắt đầu bán được |
 
 > · Vị trí vi phạm ràng buộc cứng (hazmat, nhiệt độ, single-SKU) bị LOẠI HẲN trước khi chấm điểm — BR-SLT-001.
 > · Mỗi gợi ý phải kèm LÝ DO và lý do đó được lưu cùng task — BR-SLT-004.
-> ★ Chỉ sau PutawayCompleted thì location_code mới là kệ thật và ATP mới tính hàng này.
+> · Không cập nhật `storage_location`: mức đầy suy ra từ tồn so với sức chứa, không lưu (module 06 §5).
+> ★ Chỉ sau PutawayCompleted thì location_code mới là mã một bin (`HCM-A01-2-B`) và ATP mới tính hàng này.
 
 ---
 

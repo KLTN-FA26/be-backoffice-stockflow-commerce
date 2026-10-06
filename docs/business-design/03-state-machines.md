@@ -263,8 +263,9 @@ stateDiagram-v2
 | IN_PROGRESS | EXCEPTION | report blocked | Warehouse staff | reason given | — |
 | EXCEPTION | IN_PROGRESS | override | Warehouse manager | new location passes hard constraints (BR-SLT-003) | — |
 
-`PutawayCompleted` is what moves stock from the receiving dock to a real bin. Until then, the
-stock exists with a location code of the inbound staging area and is **not** pickable.
+`PutawayCompleted` is what moves stock from the receiving area to a real bin. Until then, the
+stock exists with the location code of a `RECEIVING` area (e.g. `HCM-RCV01`) and is **not**
+pickable.
 
 ---
 

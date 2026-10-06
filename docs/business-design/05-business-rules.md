@@ -40,8 +40,26 @@ that a Kafka consumer bypasses. Rules that protect an invariant belong in the ag
 |---|---|---|---|
 | BR-SLT-001 | A location that violates any hard constraint (hazmat, temperature, single-SKU, incompatible neighbour) is eliminated before scoring, never merely down-ranked. | `SlottingEngine.suggest()` | 3.5.2.3 |
 | BR-SLT-002 | Putting away to a location other than the suggested one requires a reason; outside the ranked list it requires manager approval. | `PutawayTask.complete()` | 3.5.4.3 |
-| BR-SLT-003 | A location's occupied weight and volume may never exceed its configured capacity. | `Location` aggregate | 3.5.1.4 |
+| BR-SLT-003 | Putaway never takes a storage location past its `capacity_units`, nor a shelf level past its `max_weight` / `usable_height`. How full a location is is derived from stock, never stored. | slotting hard constraints ([module 06 BR-01](https://github.com/KLTN-FA26/docs/blob/b11945a/docs/warehouse/06-warehouse-map-slotting/README.md)), SCRUM-91 | 3.5.1.4 |
 | BR-SLT-004 | Every slotting suggestion must carry a stated reason, and the reason is stored with the task. | `SlottingEngine.suggest()` | 3.5.3.3 |
+
+### The warehouse map (module 06, BR-06 → BR-14)
+
+The rules themselves are in [module 06 §6](https://github.com/KLTN-FA26/docs/blob/b11945a/docs/warehouse/06-warehouse-map-slotting/README.md); only where each is enforced is listed
+here. Every layout change takes the warehouse's row lock first, because BR-06 and BR-07 span
+several aggregates and no constraint can state them.
+
+| Id | In short | Enforced in |
+|---|---|---|
+| BR-06 | Everything inside the map frame | `Warehouse.requireOnMap`, `Warehouse.resizeMap` |
+| BR-07 | Shelves and areas do not overlap; bins stay inside their shelf, apart on a level | `Placement.requireClear`, `Shelf` |
+| BR-08 | A shelf with a pickable bin has a pick face | `Shelf`, `PickFaces`; the "face not blocked by a wall" half is SCRUM-91 |
+| BR-09 | Distances are walking distances, through open doors only | routing, SCRUM-91 (`Boundary` holds the walls and doors) |
+| BR-10 | `location_code` = `HCM-A01-2-B` / `HCM-QC01`, unique system-wide | `LocationCode`, `CodePart`; `uk_storage_location_code`, `ck_storage_location_code` |
+| BR-11 | Stock only in a bin or a storage area, never `NON_STORAGE` | `AreaDetails`, `Area`; `ck_area_storage` |
+| BR-12 | Picking only from pickable bins | picking, not built yet |
+| BR-13 | Prefix, shelf, level, bin and area codes never change | entities (`updatable = false`); `tg_storage_location_immutable` and the other `*_immutable` triggers |
+| BR-14 | Bin autogeneration on empty levels | `Shelf.generateBins`, `BinGrid` |
 
 ## Inventory — `inventory-service`
 
