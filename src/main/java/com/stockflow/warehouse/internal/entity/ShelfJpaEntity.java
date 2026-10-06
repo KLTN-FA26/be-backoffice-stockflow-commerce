@@ -23,15 +23,19 @@ import java.util.UUID;
  * JPA mapping of a shelf (table {@code warehouse.shelf}): the root of the Shelf aggregate, whose
  * levels and bins are loaded and saved with it. Not the domain model.
  *
- * <p>Only this row is versioned. {@link ShelfLevelJpaEntity} and {@link BinJpaEntity} have no
- * {@code @Version} and no repository: they are written through the shelf, whose version already
- * guards the whole tree ({@code docs/adding-a-module.md} §4.3).</p>
+ * <p>Only this row's version is mapped. {@link ShelfLevelJpaEntity} and {@link BinJpaEntity} have
+ * {@code version} columns in the table but no {@code @Version} and no repository: they are written
+ * through the shelf, whose version guards the whole tree ({@code docs/adding-a-module.md} §4.3).
+ * Hibernate does not raise that version when only a child row changes - a write that touches only
+ * a bin or its location must lock the shelf with {@code OPTIMISTIC_FORCE_INCREMENT}, or the
+ * warehouse row pessimistically (issue #18 §5.5).</p>
  *
  * <p><b>No {@code orphanRemoval}, and never replace the {@code levels} list wholesale.</b> Nothing in
- * this aggregate is ever deleted (a location leaves the layout by becoming {@code INACTIVE}), and
- * bins carry a unique {@code location_code}: clearing the list and re-adding would make Hibernate
- * flush the INSERTs before the DELETEs and trip {@code uk_bin_location_code}. The mapper updates
- * children in place by id and appends new ones - see issue #22.</p>
+ * this aggregate is ever deleted (a location leaves the layout by becoming {@code INACTIVE}, and
+ * other modules hold foreign keys to it): clearing the list and re-adding would make Hibernate
+ * flush the INSERTs before the DELETEs and trip {@code uk_bin_level_code} and
+ * {@code uk_storage_location_code}. The mapper updates children in place by id and appends new
+ * ones - see issue #22.</p>
  *
  * <p>Coordinates are in the warehouse's map unit; {@code (x, y)} is the top-left corner of the
  * footprint after rotation, and {@code rotation} is a quarter turn.</p>

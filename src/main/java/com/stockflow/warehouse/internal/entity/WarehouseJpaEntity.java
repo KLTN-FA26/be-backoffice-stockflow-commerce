@@ -19,12 +19,23 @@ import java.util.UUID;
  *
  * <p>{@code prefix} is the start of every location code and document number raised at this
  * warehouse, and {@code mapUnit} gives every coordinate on its map a meaning; neither changes once
- * the row exists (docs module 06 BR-13).</p>
+ * the row exists (docs module 06 BR-13, trigger {@code tg_warehouse_immutable}).</p>
+ *
+ * <p><b>Expand period.</b> {@code V20260928000100} added the map columns next to the flat model's
+ * {@code code}, {@code address_line} and {@code city}, which stay until contract
+ * {@code db/pending/C2__contract_warehouse.sql} drops them. {@code code} is still {@code NOT NULL},
+ * so this entity keeps writing it - with the prefix, which is what it meant - or no warehouse could
+ * be inserted. {@code address_line} and {@code city} are nullable and left unmapped. Until C2 the
+ * map columns are nullable too, but nothing creates a warehouse without them.</p>
  */
 @Entity
 @Table(name = "warehouse", schema = "warehouse",
         uniqueConstraints = @UniqueConstraint(name = "uk_warehouse_prefix", columnNames = "prefix"))
 public class WarehouseJpaEntity extends BaseEntity {
+
+    // TODO(C2): remove together with the column when contract C2 is activated (issue #18 D12).
+    @Column(name = "code", nullable = false, length = 64, updatable = false)
+    private String legacyCode;
 
     @Column(name = "prefix", nullable = false, length = 10, updatable = false)
     private String prefix;
@@ -60,6 +71,7 @@ public class WarehouseJpaEntity extends BaseEntity {
                               String returnAddress, MapUnit mapUnit, BigDecimal mapWidth,
                               BigDecimal mapHeight, WarehouseStatus status) {
         super(id);
+        this.legacyCode = prefix;
         this.prefix = prefix;
         this.name = name;
         this.address = address;

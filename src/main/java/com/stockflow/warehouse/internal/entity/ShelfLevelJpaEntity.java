@@ -21,7 +21,7 @@ import java.util.UUID;
 /**
  * JPA mapping of one level of a shelf (table {@code warehouse.shelf_level}). A child of
  * {@link ShelfJpaEntity} - never loaded or saved on its own, hence a plain {@code @Id} and no
- * version.
+ * mapped version (the table's {@code version} and audit columns have defaults and stay unmapped).
  *
  * <p>{@code levelIndex} is part of every bin's location code, so it never changes and levels are
  * never renumbered.</p>

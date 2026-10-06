@@ -3,10 +3,15 @@ package com.stockflow.warehouse.internal.entity;
 import com.stockflow.warehouse.internal.domain.AreaType;
 import com.stockflow.warehouse.internal.domain.LocationStatus;
 import com.stockflow.common.persistence.BaseEntity;
+import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
+import jakarta.persistence.FetchType;
+import jakarta.persistence.ForeignKey;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.OneToOne;
 import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
 
@@ -17,30 +22,36 @@ import java.util.UUID;
  * JPA mapping of a floor area (table {@code warehouse.area}): space on the floor that is not a
  * shelf. Not the domain model.
  *
- * <p>Every type except {@code NON_STORAGE} holds stock (docs module 06 BR-11), so an area is a
- * location like a bin and carries a {@code locationCode} - {@code prefix-area}, e.g.
- * {@code HN-RCV01}. It has one {@code -} where a bin code has three, so the two can never
- * collide.</p>
+ * <p>Every type except {@code NON_STORAGE} holds stock (docs module 06 BR-11), so such an area owns
+ * a {@link StorageLocationJpaEntity} of kind {@code AREA} whose code is {@code prefix-area}, e.g.
+ * {@code HN-RCV01}. A {@code NON_STORAGE} area (office, aisle) has none ({@code ck_area_storage}).
+ * Once set, the link never goes back to {@code null} ({@code tg_area_immutable}), so a storage area
+ * can never become {@code NON_STORAGE}.</p>
+ *
+ * <p>Unlike a shelf, an area belongs to no zone: the table has no {@code zone_id}.</p>
  */
 @Entity
 @Table(name = "area", schema = "warehouse",
         uniqueConstraints = {
                 @UniqueConstraint(name = "uk_area_warehouse_code",
                         columnNames = {"warehouse_id", "code"}),
-                @UniqueConstraint(name = "uk_area_location_code", columnNames = "location_code")})
+                @UniqueConstraint(name = "uk_area_location", columnNames = "location_id")})
 public class AreaJpaEntity extends BaseEntity {
 
     @Column(name = "warehouse_id", nullable = false, updatable = false)
     private UUID warehouseId;
 
-    @Column(name = "zone_id")
-    private UUID zoneId;
+    /**
+     * {@code null} for a {@code NON_STORAGE} area. The owning side, so the location is inserted
+     * before the area ({@code fk_area_location} is not deferrable). Updatable, because a
+     * {@code NON_STORAGE} area that becomes a storage area gets its location then.
+     */
+    @OneToOne(fetch = FetchType.LAZY, cascade = {CascadeType.PERSIST, CascadeType.MERGE})
+    @JoinColumn(name = "location_id", foreignKey = @ForeignKey(name = "fk_area_location"))
+    private StorageLocationJpaEntity location;
 
     @Column(name = "code", nullable = false, length = 20, updatable = false)
     private String code;
-
-    @Column(name = "location_code", nullable = false, length = 64, updatable = false)
-    private String locationCode;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "type", nullable = false, length = 32)
@@ -67,6 +78,7 @@ public class AreaJpaEntity extends BaseEntity {
     @Column(name = "is_obstacle", nullable = false)
     private boolean obstacle;
 
+    /** Always written together with the location's status, when there is a location. */
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 32)
     private LocationStatus status;
@@ -74,14 +86,13 @@ public class AreaJpaEntity extends BaseEntity {
     protected AreaJpaEntity() {
     }
 
-    public AreaJpaEntity(UUID id, UUID warehouseId, UUID zoneId, String code, String locationCode,
+    public AreaJpaEntity(UUID id, UUID warehouseId, StorageLocationJpaEntity location, String code,
                          AreaType type, String name, BigDecimal x, BigDecimal y, BigDecimal width,
                          BigDecimal length, int rotation, boolean obstacle, LocationStatus status) {
         super(id);
         this.warehouseId = warehouseId;
-        this.zoneId = zoneId;
+        this.location = location;
         this.code = code;
-        this.locationCode = locationCode;
         this.type = type;
         this.name = name;
         this.x = x;
@@ -94,9 +105,8 @@ public class AreaJpaEntity extends BaseEntity {
     }
 
     public UUID getWarehouseId() { return warehouseId; }
-    public UUID getZoneId() { return zoneId; }
+    public StorageLocationJpaEntity getLocation() { return location; }
     public String getCode() { return code; }
-    public String getLocationCode() { return locationCode; }
     public AreaType getType() { return type; }
     public String getName() { return name; }
     public BigDecimal getX() { return x; }

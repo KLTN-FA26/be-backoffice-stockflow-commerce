@@ -31,9 +31,9 @@ public class PutawayTaskJpaEntity extends BaseEntity {
     private int quantity;
 
     /**
-     * A bin or a storage area, so no single foreign key fits and the column has none (dropped with
-     * the flat {@code location} table in V20260918000100). What it points at is settled in
-     * SCRUM-92.
+     * Still constrained to the flat {@code warehouse.location} table, which no entity maps any
+     * more. Contract C2 moves the foreign key to {@code warehouse.storage_location} - a bin or a
+     * storage area; the putaway code that follows is SCRUM-92.
      */
     @Column(name = "target_location_id")
     private UUID targetLocationId;
