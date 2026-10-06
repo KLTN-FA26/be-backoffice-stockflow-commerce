@@ -43,6 +43,7 @@ public enum ErrorCode {
     BIN_NOT_FOUND("Bin not found", 404),
     AREA_NOT_FOUND("Area not found", 404),
     BOUNDARY_NOT_FOUND("Boundary not found", 404),
+    LOCATION_NOT_FOUND("Storage location not found", 404),
 
     /** Credentials were correct but the account is LOCKED or DISABLED. Distinct from UNAUTHORIZED,
      *  which covers "wrong username or password" without revealing the account exists. */

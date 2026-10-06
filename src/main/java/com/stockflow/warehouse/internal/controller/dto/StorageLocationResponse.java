@@ -1,0 +1,16 @@
+package com.stockflow.warehouse.internal.controller.dto;
+
+import com.stockflow.warehouse.internal.domain.LocationStatus;
+import com.stockflow.warehouse.internal.domain.StorageClass;
+import com.stockflow.warehouse.internal.domain.StorageLocationKind;
+
+import java.util.UUID;
+
+/**
+ * A storage location found by its code - what a scanner resolves to. Check {@code usable}, not
+ * {@code status}: a bin can be {@code ACTIVE} itself on a shelf that is not.
+ */
+public record StorageLocationResponse(UUID id, StorageLocationKind kind, UUID warehouseId, String locationCode,
+                                      StorageClass storageClass, LocationStatus status,
+                                      LocationStatus effectiveStatus, boolean usable) {
+}
