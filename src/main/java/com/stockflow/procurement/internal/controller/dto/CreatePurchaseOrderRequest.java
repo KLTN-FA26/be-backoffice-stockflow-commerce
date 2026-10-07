@@ -10,6 +10,7 @@ import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
 
+@ValidProcurementFields
 @Schema(description = "Create a purchase order")
 public record CreatePurchaseOrderRequest(
 
@@ -18,12 +19,13 @@ public record CreatePurchaseOrderRequest(
 
         @Pattern(regexp = "[A-Z]{3}", message = "currency must be a 3-letter ISO code")
         @Schema(example = "VND")
+        @NotNull
         String currency,
 
         LocalDate expectedAt,
 
         @NotEmpty(message = "at least one line is required")
         @Valid
-        List<CreatePOLineRequest> lines
+        List<@NotNull CreatePOLineRequest> lines
 ) {
 }

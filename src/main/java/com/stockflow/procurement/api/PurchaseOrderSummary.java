@@ -22,6 +22,8 @@ public record PurchaseOrderSummary(
         UUID purchaseOrderId,
         String poNumber,
         UUID supplierId,
+        String supplierCode,
+        String supplierName,
         String status,
         String currency,
         BigDecimal totalAmount,

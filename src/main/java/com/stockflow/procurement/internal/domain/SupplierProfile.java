@@ -1,5 +1,7 @@
 package com.stockflow.procurement.internal.domain;
 
+import java.net.URI;
+
 /** Contact and commercial invariants also apply to callers that bypass HTTP validation. */
 public record SupplierProfile(String code, String name, String email, String phone, String taxCode,
         int paymentTermDays, int leadTimeDays, String communicationChannel, String apiEndpoint) {
@@ -30,7 +32,7 @@ public record SupplierProfile(String code, String name, String email, String pho
                 throw new IllegalArgumentException("Email is required for EMAIL communication");
             }
             if (channel == SupplierCommunicationChannel.API) {
-                var uri = java.net.URI.create(apiEndpoint == null ? "" : apiEndpoint);
+                var uri = URI.create(apiEndpoint == null ? "" : apiEndpoint);
                 if (apiEndpoint == null || apiEndpoint.length() > 500 || !"https".equals(uri.getScheme())
                         || uri.getHost() == null || uri.getUserInfo() != null || uri.getFragment() != null
                         || uri.getQuery() != null || uri.getPort() != -1 && uri.getPort() != 443) {

@@ -15,3 +15,8 @@ In the pinned version, resubmitIncompletePublications loads all incomplete publi
 The cursor advances before dispatch. If dispatch is interrupted, unsent events remain incomplete and become eligible again on the next circuit. Duplicate overlapping execution is still serialized by the delivery lock and deduplicated by the success reference. Malformed serialized events are logged by publication ID, without payloads or credentials, and retained for operator reconciliation. No record is silently deleted.
 
 The maximum selection is 50 per sweep; initial delivery remains after-commit async. This bounds memory per retry sweep, not the global backlog or wall-clock time for every queued event. Monitor incomplete-publication age and terminal FAILED delivery status; SMTP's uncertain-outcome crash window remains unchanged.
+
+The default sweep interval and initial publication grace period are one minute. Without a backlog,
+the first automatic retry normally occurs 1?2 minutes after publication. Subsequent failures retry
+on the next eligible sweep, stopping after five attempts per generation. Attempt numbers count
+transport calls; recovery generations and cancellation notices have separate attempt sequences.

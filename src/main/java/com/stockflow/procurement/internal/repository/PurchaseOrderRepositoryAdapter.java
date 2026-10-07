@@ -120,7 +120,12 @@ class PurchaseOrderRepositoryAdapter implements PurchaseOrderRepository, Purchas
         Specification<PurchaseOrderJpaEntity> spec = Specification
                 .<PurchaseOrderJpaEntity>where(Specs.eq("supplierId", criteria.supplierId()))
                 .and(Specs.in("status", criteria.statuses()));
-        return jpa.findAll(spec, pageable).map(PurchaseOrderPersistenceMapper::toSummaryWithoutLines);
+        var page = jpa.findAll(spec, pageable);
+        var suppliersById = suppliers.findAllById(page.getContent().stream()
+                .map(PurchaseOrderJpaEntity::getSupplierId).distinct().toList()).stream()
+                .collect(Collectors.toMap(SupplierJpaEntity::getId, Function.identity()));
+        return page.map(order -> PurchaseOrderPersistenceMapper.toSummaryWithoutLines(order,
+                suppliersById.get(order.getSupplierId())));
     }
 
     /** SCRUM-119: orders that are not yet a commitment ({@code DRAFT}) or never fulfilled

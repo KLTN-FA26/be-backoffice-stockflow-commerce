@@ -47,6 +47,7 @@ class PurchaseOrderNotificationListener {
             var success = new DeliveryLogJpaEntity(Identifiers.newId(), event.templateCode(), channel,
                     event.recipient(), DeliveryStatus.SENT, null, clock.instant(), reference);
             success.recordGeneration(event.deliveryGeneration());
+            success.recordAttempt(Math.toIntExact(logs.countByOperationReferenceAndDeliveryGeneration(reference, event.deliveryGeneration()) + 1));
             logs.saveAndFlush(success);
         } catch (RuntimeException failure) {
             boolean terminal = failure instanceof IllegalArgumentException

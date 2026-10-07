@@ -17,6 +17,8 @@ public record PurchaseOrderResponse(
         String poNumber,
 
         UUID supplierId,
+        String supplierCode,
+        String supplierName,
 
         @Schema(example = "DRAFT")
         String status,

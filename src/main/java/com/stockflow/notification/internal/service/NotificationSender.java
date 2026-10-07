@@ -6,6 +6,7 @@ import com.stockflow.common.http.RestClientFactory;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.mail.SimpleMailMessage;
+import org.springframework.web.client.RestClientResponseException;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -73,7 +74,8 @@ class NotificationSender {
                             event.paymentTermDays(), event.lines(), event.buyer(), event.cancellation() ? "CANCELLATION" : "PURCHASE_ORDER",
                             event.cancellationReason())).retrieve().toBodilessEntity();
             if (!response.getStatusCode().is2xxSuccessful()) {
-                throw new IllegalStateException("Supplier API did not acknowledge the purchase order");
+                throw new RestClientResponseException("Supplier API did not acknowledge the purchase order",
+                        response.getStatusCode(), "", response.getHeaders(), null, null);
             }
         } else throw new IllegalArgumentException("Unsupported supplier communication channel");
     }

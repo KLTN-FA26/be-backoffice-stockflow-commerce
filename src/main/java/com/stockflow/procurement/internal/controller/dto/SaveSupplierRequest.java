@@ -1,5 +1,7 @@
 package com.stockflow.procurement.internal.controller.dto;
 
+import java.net.URI;
+
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -29,7 +31,7 @@ public record SaveSupplierRequest(
         if ("EMAIL".equals(communicationChannel)) return email != null && !email.isBlank();
         if (!"API".equals(communicationChannel)) return true;
         try {
-            var uri = java.net.URI.create(apiEndpoint == null ? "" : apiEndpoint);
+            var uri = URI.create(apiEndpoint == null ? "" : apiEndpoint);
             return "https".equals(uri.getScheme()) && uri.getHost() != null && uri.getUserInfo() == null
                     && uri.getFragment() == null && uri.getQuery() == null && (uri.getPort() == -1 || uri.getPort() == 443);
         } catch (IllegalArgumentException invalid) { return false; }

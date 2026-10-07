@@ -12,12 +12,12 @@ class PoCommunicationProfile {
     private final PurchaseOrderSent.Buyer buyer;
 
     PoCommunicationProfile(
-            @Value("${PO_BUYER_COMPANY_NAME:}") String name,
-            @Value("${PO_BUYER_COMPANY_ADDRESS:}") String address,
-            @Value("${PO_BUYER_CONTACT_NAME:}") String contact,
-            @Value("${PO_BUYER_PHONE:}") String phone,
-            @Value("${PO_BUYER_EMAIL:}") String email,
-            @Value("${PO_RECEIVING_ADDRESS:}") String receivingAddress) {
+            @Value("${stockflow.procurement.buyer.company-name:}") String name,
+            @Value("${stockflow.procurement.buyer.company-address:}") String address,
+            @Value("${stockflow.procurement.buyer.contact-name:}") String contact,
+            @Value("${stockflow.procurement.buyer.phone:}") String phone,
+            @Value("${stockflow.procurement.buyer.email:}") String email,
+            @Value("${stockflow.procurement.buyer.receiving-address:}") String receivingAddress) {
         buyer = new PurchaseOrderSent.Buyer(name.trim(), address.trim(), contact.trim(),
                 phone.trim(), email.trim(), receivingAddress.trim());
     }

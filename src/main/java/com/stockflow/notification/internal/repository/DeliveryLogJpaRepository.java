@@ -5,6 +5,7 @@ import com.stockflow.common.persistence.BaseJpaRepository;
 
 /** Spring Data repository for {@link DeliveryLogJpaEntity}. STARTER STUB. */
 public interface DeliveryLogJpaRepository extends BaseJpaRepository<DeliveryLogJpaEntity> {
+    long countByOperationReferenceAndDeliveryGeneration(String reference, int generation);
     long countByOperationReferenceAndStatus(String reference, com.stockflow.notification.internal.domain.DeliveryStatus status);
     boolean existsByOperationReferenceAndTerminalTrue(String reference);
     long countByOperationReferenceAndDeliveryGenerationAndStatus(String reference, int generation, com.stockflow.notification.internal.domain.DeliveryStatus status);

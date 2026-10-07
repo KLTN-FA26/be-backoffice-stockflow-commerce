@@ -65,6 +65,7 @@ class ProcurementBusinessDateTest {
         var supplier = new Supplier(supplierId, new SupplierDetails("SUP", "Supplier", null, "s@example.com",
                 null, null, SupplierStatus.ACTIVE, 30, 7, SupplierCommunicationChannel.EMAIL, null), null, null);
         when(suppliers.findByIdForUpdate(supplierId)).thenReturn(Optional.of(supplier));
+        when(suppliers.findById(supplierId)).thenReturn(Optional.of(supplier));
         var orders = mock(PurchaseOrderRepository.class);
         when(orders.nextPoNumber(any())).thenReturn("PO-TEST");
         when(orders.save(any())).thenAnswer(call -> call.getArgument(0));

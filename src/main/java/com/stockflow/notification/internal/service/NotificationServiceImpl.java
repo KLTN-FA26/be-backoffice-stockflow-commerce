@@ -103,6 +103,6 @@ class NotificationServiceImpl implements NotificationService {
                         "purchase-order:" + purchaseOrderId + ":cancellation"), pageable)
                 .map(log -> new DeliveryAttemptSummary(log.getId(), log.getChannel().name(),
                         log.getStatus().name(), log.getCreatedAt(), log.getSentAt(), log.getError(),
-                        log.getDeliveryGeneration(), log.getRecipient(), log.getTemplateCode())));
+                        log.getDeliveryGeneration(), log.getAttemptNumber(), log.getRecipient(), log.getTemplateCode())));
     }
 }

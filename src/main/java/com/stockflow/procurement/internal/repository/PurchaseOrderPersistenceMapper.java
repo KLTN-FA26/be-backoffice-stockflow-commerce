@@ -1,6 +1,7 @@
 package com.stockflow.procurement.internal.repository;
 
 import com.stockflow.procurement.internal.entity.POLineJpaEntity;
+import com.stockflow.procurement.internal.entity.SupplierJpaEntity;
 import com.stockflow.procurement.internal.entity.PurchaseOrderJpaEntity;
 import com.stockflow.procurement.internal.domain.PoLine;
 import com.stockflow.procurement.internal.domain.PurchaseOrder;
@@ -56,11 +57,12 @@ final class PurchaseOrderPersistenceMapper {
     }
 
     /** For the paginated list query only. Deliberately never touches {@code entity.getLines()}. */
-    static PurchaseOrderSummary toSummaryWithoutLines(PurchaseOrderJpaEntity entity) {
+    static PurchaseOrderSummary toSummaryWithoutLines(PurchaseOrderJpaEntity entity, SupplierJpaEntity supplier) {
         return new PurchaseOrderSummary(
                 entity.getId(),
                 entity.getPoNumber(),
                 entity.getSupplierId(),
+                supplier.getCode(), supplier.getName(),
                 entity.getStatus().name(),
                 entity.getCurrency(),
                 entity.getTotalAmount(),

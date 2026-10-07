@@ -40,10 +40,10 @@ class PurchaseOrderNotificationRetry {
         }
     }
 
-    @Scheduled(fixedDelayString = "${stockflow.notification.po-retry-interval:PT5M}")
+    @Scheduled(fixedDelayString = "${stockflow.notification.po-retry-interval:PT1M}")
     @SchedulerLock(name = "notification.retryPurchaseOrders", lockAtMostFor = "PT4M", lockAtLeastFor = "PT30S")
     public void retry() {
-        var cutoff = clock.instant().minus(Duration.ofMinutes(5));
+        var cutoff = clock.instant().minus(Duration.ofMinutes(1));
         var previous = cursor.load();
         var selected = new ArrayList<>(publications.page(PurchaseOrderSent.class.getName(), listenerId, cutoff, previous, 50));
         if (selected.isEmpty() && previous != null) {

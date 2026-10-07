@@ -144,7 +144,7 @@ public final class PurchaseOrder extends AggregateRoot {
         if (candidate == null) {
             throw new BusinessException(ErrorCode.PO_DELIVERY_DATE_REQUIRED);
         }
-        if (replacement != null && !replacement.equals(expectedAt)) requireRecoveryReason(reason);
+        if (expectedAt != null && replacement != null && !replacement.equals(expectedAt)) requireRecoveryReason(reason);
         expectedAt = candidate;
     }
 

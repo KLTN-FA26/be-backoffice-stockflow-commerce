@@ -102,6 +102,8 @@ class SupplierProcurementIntegrationTest {
         assertThat(products.nameForSku(sku.toUpperCase(java.util.Locale.ROOT))).contains("Original product name");
         var po = orders.createPurchaseOrder(new CreatePurchaseOrderCommand(supplier().supplierId(), "VND", null,
                 List.of(new CreatePOLineCommand(sku, null, 1, BigDecimal.TEN))));
+        assertThat(po.lines().getFirst().description()).isEqualTo("Original product name");
+        transactions.executeWithoutResult(tx -> jdbc.update("update product.product set name='Changed before sending' where id=?", productId));
         doThrow(new IllegalArgumentException("terminal transport error")).when(sender)
                 .sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId())));
         orders.approve(po.purchaseOrderId()); orders.send(po.purchaseOrderId());
@@ -325,6 +327,59 @@ class SupplierProcurementIntegrationTest {
         }
     }
 
+    @Test void missingDescriptionAndInvalidAmountsCannotCreateStuckOrders() {
+        var supplierId = supplier().supplierId();
+        expectCode(() -> orders.createPurchaseOrder(new CreatePurchaseOrderCommand(supplierId, "VND", null,
+                List.of(new CreatePOLineCommand("UNKNOWN-SKU", null, 1, BigDecimal.TEN)))),
+                ErrorCode.PO_LINE_DESCRIPTION_REQUIRED);
+        for (var line : List.of(
+                new CreatePOLineCommand("CHAIR-01", "Chair", 1, new BigDecimal("1000.5")),
+                new CreatePOLineCommand("CHAIR-01", "Chair", 1_000_001, BigDecimal.ONE),
+                new CreatePOLineCommand("CHAIR-01", "Chair", 2, new BigDecimal("9999999999999999")))) {
+            expectCode(() -> orders.createPurchaseOrder(new CreatePurchaseOrderCommand(supplierId, "VND", null,
+                    List.of(line))), ErrorCode.VALIDATION_FAILED);
+        }
+        assertThat(jdbc.queryForObject("select count(*) from procurement.purchase_order where supplier_id=?",
+                Long.class, supplierId)).isZero();
+    }
+
+    @Test void httpValidationExposesCurrencyAndLineFields() throws Exception {
+        var supplierId = supplier().supplierId();
+        for (String[] example : List.of(
+                new String[]{"XYZ", "CHAIR-01", "Chair", "1", "10", "currency"},
+                new String[]{"VND", "bad_sku", "Chair", "1", "10", "lines[0].sku"},
+                new String[]{"VND", "CHAIR-01", "x".repeat(301), "1", "10", "lines[0].description"},
+                new String[]{"VND", "CHAIR-01", "Chair", "1", "1000.5", "lines[0].unitPrice"},
+                new String[]{"USD", "CHAIR-01", "Chair", "1", "10.555", "lines[0].unitPrice"},
+                new String[]{"USD", "CHAIR-01", "Chair", "2147483647", "10", "lines[0].quantityOrdered"},
+                new String[]{"USD", "CHAIR-01", "Chair", "2", "9999999999999999", "lines"})) {
+            mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/v1/purchase-orders")
+                    .contentType("application/json").content("""
+                            {"supplierId":"%s","currency":"%s","lines":[{"sku":"%s","description":"%s",
+                              "quantityOrdered":%s,"unitPrice":%s}]}
+                            """.formatted(supplierId, example[0], example[1], example[2], example[3], example[4])))
+                    .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isBadRequest())
+                    .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.errorCode").value("VALIDATION_FAILED"))
+                    .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.fieldErrors[*].field",
+                            org.hamcrest.Matchers.hasItem(example[5])));
+        }
+    }
+
+    @Test void purchaseOrderReadsContainSupplierIdentityWithoutSupplierEndpoint() throws Exception {
+        var supplier = supplier();
+        var po = order(supplier.supplierId());
+        assertThat(po.supplierCode()).isEqualTo(supplier.code());
+        assertThat(po.supplierName()).isEqualTo(supplier.name());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/v1/purchase-orders/" + po.purchaseOrderId()))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.supplierCode").value(supplier.code()))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.supplierName").value(supplier.name()));
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/v1/purchase-orders")
+                .param("supplierId", supplier.supplierId().toString()))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.items[0].supplierName").value(supplier.name()));
+    }
+
     private SaveSupplierCommand command(String code, String status, int terms, int lead) {
         return new SaveSupplierCommand(code, "Furniture supplier", "Contact", "supplier@example.com",
                 "+84901234567", null, status, terms, lead, "EMAIL", null);
@@ -403,8 +458,8 @@ class SupplierProcurementIntegrationTest {
         orders.approve(po.purchaseOrderId());
         orders.send(po.purchaseOrderId());
         await().atMost(java.time.Duration.ofSeconds(10)).untilAsserted(() -> {
-            assertThat(jdbc.queryForObject("select count(*) from notification.delivery_log where status='FAILED' and error like ?",
-                    Long.class, "purchase-order:" + po.purchaseOrderId() + "%")).isEqualTo(1);
+            assertThat(jdbc.queryForObject("select count(*) from notification.delivery_log where status='FAILED' and error='MAIL_SEND_FAILED' and operation_reference = ?",
+                    Long.class, "purchase-order:" + po.purchaseOrderId())).isEqualTo(1);
         });
         assertThat(orders.findById(po.purchaseOrderId()).orElseThrow().status()).isEqualTo("SENT");
         assertThat(jdbc.queryForObject("select count(*) from event_publication where completion_date is null and serialized_event like ?",
@@ -413,6 +468,8 @@ class SupplierProcurementIntegrationTest {
                 .singleElement().satisfies(attempt -> {
                     assertThat(attempt.status()).isEqualTo("FAILED");
                     assertThat(attempt.sentAt()).isNull();
+                    assertThat(attempt.failure()).isEqualTo("MAIL_SEND_FAILED");
+                    assertThat(attempt.attemptNumber()).isEqualTo(1);
                 });
         doNothing().when(sender).sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId())));
         transactions.executeWithoutResult(tx -> {
@@ -436,6 +493,9 @@ class SupplierProcurementIntegrationTest {
                 assertThat(notifications.purchaseOrderDeliveries(po.purchaseOrderId(), 0, 20).items())
                         .extracting(com.stockflow.notification.api.DeliveryAttemptSummary::status)
                         .containsExactly("SENT", "FAILED"));
+        assertThat(notifications.purchaseOrderDeliveries(po.purchaseOrderId(), 0, 20).items())
+                .extracting(com.stockflow.notification.api.DeliveryAttemptSummary::attemptNumber)
+                .containsExactly(2, 1);
         await().atMost(java.time.Duration.ofSeconds(10)).untilAsserted(() ->
                 assertThat(jdbc.queryForObject("select count(*) from event_publication where completion_date is null and serialized_event like ?",
                         Long.class, "%" + po.purchaseOrderId() + "%")).isZero());

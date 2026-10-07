@@ -2,6 +2,7 @@ package com.stockflow.procurement.internal.service;
 
 import com.stockflow.notification.api.NotificationService;
 import com.stockflow.common.domain.BusinessCalendar;
+import com.stockflow.product.api.ProductService;
 
 import com.stockflow.procurement.api.CreatePOLineCommand;
 import com.stockflow.procurement.api.CreatePurchaseOrderCommand;
@@ -48,6 +49,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.context.ApplicationEventPublisher;
 
+import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.util.Currency;
@@ -80,12 +82,12 @@ class ProcurementServiceImpl implements ProcurementService {
     private final NotificationService notifications;
     private final PoDeliveryDecisionRepository deliveryDecisions;
     private final PoCommunicationProfile communication;
-    private final com.stockflow.product.api.ProductService products;
+    private final ProductService products;
 
     ProcurementServiceImpl(PurchaseOrderRepository purchaseOrders, PurchaseOrderSearchRepository search,
                            ProcurementReportRepository reports, Clock clock, SupplierRepository suppliers,
                            ApplicationEventPublisher events, NotificationService notifications, PoDeliveryDecisionRepository deliveryDecisions,
-                           PoCommunicationProfile communication, com.stockflow.product.api.ProductService products) {
+                           PoCommunicationProfile communication, ProductService products) {
         this.purchaseOrders = purchaseOrders;
         this.search = search;
         this.reports = reports;
@@ -117,7 +119,12 @@ class ProcurementServiceImpl implements ProcurementService {
                     "Supplier " + command.supplierId() + " is " + supplierStatus);
         }
 
-        Currency currency = Currency.getInstance(command.currency());
+        Currency currency;
+        try {
+            currency = Currency.getInstance(command.currency());
+        } catch (IllegalArgumentException | NullPointerException invalid) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Unsupported purchase order currency");
+        }
         List<PoLine> lines = toLines(command.lines(), currency);
 
         // Purchasing calendar dates must use the same Vietnam zone as supplier delivery KPIs.
@@ -331,17 +338,44 @@ class ProcurementServiceImpl implements ProcurementService {
                 .anyMatch(other -> other.lines().stream().map(PoLine::sku).anyMatch(skus::contains));
     }
 
-    private static List<PoLine> toLines(List<CreatePOLineCommand> commands, Currency currency) {
+    private List<PoLine> toLines(List<CreatePOLineCommand> commands, Currency currency) {
         if (commands == null || commands.isEmpty()) {
-            throw new IllegalArgumentException("A purchase order must have at least one line");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A purchase order must have at least one line");
         }
-        return commands.stream()
-                .map(c -> new PoLine(Identifiers.newId(), new Sku(c.sku()), c.description(),
-                        c.quantityOrdered(), 0, new Money(c.unitPrice(), currency)))
-                .toList();
+        if (currency.getDefaultFractionDigits() < 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Unsupported purchase order currency");
+        }
+        BigDecimal total = BigDecimal.ZERO;
+        for (var c : commands) {
+            if (c == null || c.quantityOrdered() <= 0 || c.quantityOrdered() > 1_000_000
+                    || c.unitPrice() == null || c.unitPrice().signum() < 0
+                    || c.unitPrice().compareTo(new BigDecimal("9999999999999999.99")) > 0
+                    || c.unitPrice().stripTrailingZeros().scale() > Math.min(2, currency.getDefaultFractionDigits())) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Invalid purchase order quantity or unit price");
+            }
+            total = total.add(c.unitPrice().multiply(BigDecimal.valueOf(c.quantityOrdered())));
+        }
+        if (total.compareTo(new BigDecimal("9999999999999999.99")) > 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Purchase order total exceeds the supported limit");
+        }
+        return commands.stream().map(c -> {
+            var sku = new Sku(c.sku());
+            String description = c.description() != null && !c.description().isBlank()
+                    ? c.description().trim()
+                    : products.nameForSku(sku.code()).filter(name -> !name.isBlank()).map(String::trim)
+                            .orElseThrow(() -> new BusinessException(ErrorCode.PO_LINE_DESCRIPTION_REQUIRED,
+                                    "Missing product description for SKU " + sku.code()));
+            if (description.length() > 300) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Product description must not exceed 300 characters");
+            }
+            return new PoLine(Identifiers.newId(), sku, description, c.quantityOrdered(), 0,
+                    new Money(c.unitPrice(), currency));
+        }).toList();
     }
 
-    private static PurchaseOrderSummary toSummary(PurchaseOrder order, boolean possibleDuplicate) {
+    private PurchaseOrderSummary toSummary(PurchaseOrder order, boolean possibleDuplicate) {
+        var supplier = suppliers.findById(order.supplierId()).orElseThrow(() ->
+                new BusinessException(ErrorCode.SUPPLIER_NOT_FOUND)).details();
         List<POLineSummary> lines = order.lines().stream()
                 .map(line -> new POLineSummary(line.id(), line.sku().code(), line.description(),
                         line.quantityOrdered(), line.quantityReceived(), line.unitPrice().amount()))
@@ -350,6 +384,7 @@ class ProcurementServiceImpl implements ProcurementService {
                 order.id().value(),
                 order.poNumber(),
                 order.supplierId(),
+                supplier.code(), supplier.name(),
                 order.status().name(),
                 order.currency().getCurrencyCode(),
                 order.totalAmount().amount(),

@@ -30,6 +30,21 @@ class ProcurementBusinessValidationTest {
         assertThat(po.supplierConfirmationStatus()).isEqualTo(SupplierConfirmationStatus.PENDING);
     }
 
+    @Test void firstDeliveryDateNeedsNoReasonButChangingItDoes() {
+        var po = PurchaseOrder.draft("PO-NO-DATE", UUID.randomUUID(), Money.VND,
+                List.of(new PoLine(UUID.randomUUID(), new Sku("CHAIR-1"), "Chair", 1, 0, Money.vnd(100))), null);
+        po.approve(Instant.now());
+        var date = LocalDate.of(2026, 10, 8);
+        po.confirmDeliveryDate(date, date, null);
+        assertThat(po.expectedAt()).isEqualTo(date);
+        assertThatThrownBy(() -> po.confirmDeliveryDate(date, date.plusDays(1), null))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        failure -> assertThat(failure.errorCode()).isEqualTo(ErrorCode.PO_REASON_REQUIRED));
+        assertThat(po.expectedAt()).isEqualTo(date);
+        po.confirmDeliveryDate(date, date.plusDays(1), "Supplier requested another day");
+        assertThat(po.expectedAt()).isEqualTo(date.plusDays(1));
+    }
+
     @Test void invalidSupplierProfileIsNotAnUnexpectedApplicationFailure() {
         assertThatThrownBy(() -> new SupplierProfile("SUP-1", "Supplier", "supplier@example.com", null,
                 "TAX-001", 30, 7, "EMAIL", null)).isInstanceOf(BusinessException.class)

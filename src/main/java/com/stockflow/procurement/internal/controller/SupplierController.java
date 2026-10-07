@@ -29,7 +29,7 @@ import java.util.UUID;
 @RestController
 @RequestMapping("/api/v1/suppliers")
 @Tag(name = "Suppliers", description = "Supplier profiles, commercial defaults and performance")
-@PermissionResource(code = "procurement-suppliers", group = "Procurement", label = "Suppliers",
+@PermissionResource(code = SupplierResources.SUPPLIERS, group = "Procurement", label = "Suppliers",
         route = "/admin/suppliers", apiPath = "/api/v1/suppliers",
         actions = {Action.VIEW_PAGE, Action.READ, Action.CREATE, Action.UPDATE, Action.DELETE})
 class SupplierController {
@@ -38,14 +38,14 @@ class SupplierController {
 
     @PostMapping @ResponseStatus(HttpStatus.CREATED)
     @Operation(summary = "Create a supplier profile")
-    @RequiresPermission(resource = "procurement-suppliers", action = Action.CREATE)
+    @RequiresPermission(resource = SupplierResources.SUPPLIERS, action = Action.CREATE)
     public ApiResponse<SupplierResponse> create(@Valid @RequestBody SaveSupplierRequest request) {
         return ApiResponse.ok(response(service.create(command(request))));
     }
 
     @PutMapping("/{supplierId}")
     @Operation(summary = "Update supplier contacts, status and commercial defaults")
-    @RequiresPermission(resource = "procurement-suppliers", action = Action.UPDATE)
+    @RequiresPermission(resource = SupplierResources.SUPPLIERS, action = Action.UPDATE)
     public ApiResponse<SupplierResponse> update(@PathVariable UUID supplierId,
             @Validated(SaveSupplierRequest.Update.class)
             @RequestBody SaveSupplierRequest request) {
@@ -55,18 +55,18 @@ class SupplierController {
     @DeleteMapping("/{supplierId}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     @Operation(summary = "Deactivate a supplier; retained for purchasing history")
-    @RequiresPermission(resource = "procurement-suppliers", action = Action.DELETE)
+    @RequiresPermission(resource = SupplierResources.SUPPLIERS, action = Action.DELETE)
     public void deactivate(@PathVariable UUID supplierId) { service.deactivate(supplierId); }
 
     @GetMapping("/{supplierId}")
-    @RequiresPermission(resource = "procurement-suppliers", action = Action.READ)
+    @RequiresPermission(resource = SupplierResources.SUPPLIERS, action = Action.READ)
     public ApiResponse<SupplierResponse> findOne(@PathVariable UUID supplierId) {
         return service.findById(supplierId).map(SupplierController::response).map(ApiResponse::ok)
                 .orElseThrow(() -> new BusinessException(ErrorCode.SUPPLIER_NOT_FOUND, "No supplier with id " + supplierId));
     }
 
     @GetMapping
-    @RequiresPermission(resource = "procurement-suppliers", action = Action.READ)
+    @RequiresPermission(resource = SupplierResources.SUPPLIERS, action = Action.READ)
     public ApiResponse<PageResponse<SupplierResponse>> list(@RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size, @RequestParam(required = false) String search,
             @RequestParam(required = false) String status, @RequestParam(required = false) String sort) {
@@ -76,7 +76,7 @@ class SupplierController {
 
     @GetMapping("/{supplierId}/performance")
     @Operation(summary = "Calculate supplier delivery and quality performance")
-    @RequiresPermission(resource = "procurement-suppliers", action = Action.READ)
+    @RequiresPermission(resource = SupplierResources.SUPPLIERS, action = Action.READ)
     public ApiResponse<SupplierPerformanceResponse> performance(@PathVariable UUID supplierId) {
         SupplierPerformanceSummary s = service.performance(supplierId);
         return ApiResponse.ok(new SupplierPerformanceResponse(s.supplierId(), s.totalPurchaseOrders(),
