@@ -3,6 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-09-07
 - **Supersedes:** the role-only checks that were in the first draft of `common-security`
+- **Superseded in part by:** [ADR-0008](0008-authorization-resolved-server-side.md) (token strategy)
 
 ## Context
 
@@ -60,17 +61,13 @@ does:
    in the aggregate rather than in the permission table.
 4. **Delegation and temporary grants.** No support for "acting manager while she is on leave".
 
-## Token strategy, and its unfinished part
+## Token strategy
 
-Today a token carries a `permissions` claim. That is fine for a skeleton and wrong for production
-for two reasons: a role holding 134 of 382 permissions produces roughly 3 KB of claim, and a token
-is a snapshot, so revoking a permission does not reach a token already issued.
-
-The intended shape, and the reason `permission_version` exists in the identity schema: the token
-carries only `roles` plus a `perm_ver` counter; identity-service publishes role-to-permission
-changes over Kafka; each service keeps a local cache and rejects any token whose `perm_ver` is
-behind the version it has seen. Revocation then takes effect on the next request instead of at
-token expiry.
+Superseded by [ADR-0008](0008-authorization-resolved-server-side.md). Tokens carry roles only;
+permissions are resolved on the server per request from a cache keyed by role and
+`app_role.version`, and an edit to a role's grants reaches the next request. (An earlier draft of
+this section planned a `perm_ver` claim published over Kafka and referred to a
+`permission_version` column; that column was never created and the plan does not fit a monolith.)
 
 ## Consequences
 

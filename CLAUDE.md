@@ -261,6 +261,15 @@ more than the list: in this stack, the dangerous failures are silent.
   escapes `@RestControllerAdvice` entirely; `AuditAspect` calls it around a business operation it
   must not fail. A JWT whose `sub` is not a UUID, or whose `scope_level` is unrecognised, is an
   ordinary token shape, not a reason to break the response.
+- **Permissions and scope are not in the token** (ADR-0008). They are resolved per request from
+  Redis (`RoleAuthorizationCache`, keyed by role + `app_role.version`) and carried on
+  `StockflowAuthenticationToken`. Never read a `permissions` or `scope_level` claim — a token issued
+  before the change still has them, and they are stale by design.
+- **Any write to `identity.role_permission` must advance `app_role.version` in the same
+  transaction** — the service does it with `advanceVersion`; a migration that changes seeded grants
+  must `UPDATE identity.app_role SET version = version + 1` for those roles, or holders keep the old
+  grants for up to an hour. Never `DEL` authorisation keys to "invalidate": moving the version is the
+  invalidation, and a delete reopens the race the version exists to close.
 
 **Persistence**
 - `BaseEntity.equals`/`hashCode` are final, so they read through `getId()`, never the `id` field —

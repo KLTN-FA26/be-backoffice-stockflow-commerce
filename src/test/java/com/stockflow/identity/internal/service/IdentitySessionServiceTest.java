@@ -66,7 +66,8 @@ class IdentitySessionServiceTest {
         when(encoder.encode(any())).thenReturn("{bcrypt}dummy");
         service = new IdentityServiceImpl(roles, mock(PermissionJpaRepository.class),
                 mock(RolePermissionJpaRepository.class), userRoles, users, mock(PermissionCatalog.class),
-                encoder, jwtEncoder, clock, sessions, TTL);
+                encoder, jwtEncoder, clock, sessions, mock(RoleAuthorizationCache.class),
+                () -> java.util.Optional.of("test"), TTL);
     }
 
     private User user(UserStatus status) {
@@ -101,6 +102,9 @@ class IdentitySessionServiceTest {
         assertThat(claims.getId()).isEqualTo(session.getId().toString());
         assertThat(claims.getExpiresAt()).isEqualTo(NOW.plus(TTL));
         assertThat(token.expiresInSeconds()).isEqualTo(TTL.toSeconds());
+        // ADR-0008: authentication and roles only. Permissions are resolved per request.
+        assertThat(claims.getClaims()).containsKey("roles")
+                .doesNotContainKeys("permissions", "scope_level");
     }
 
     @Test
@@ -256,7 +260,8 @@ class IdentitySessionServiceTest {
         for (Duration bad : new Duration[]{Duration.ZERO, Duration.ofSeconds(-1), Duration.ofHours(25)}) {
             assertThatThrownBy(() -> new IdentityServiceImpl(roles, mock(PermissionJpaRepository.class),
                     mock(RolePermissionJpaRepository.class), userRoles, users, mock(PermissionCatalog.class),
-                    encoder, jwtEncoder, clock, sessions, bad)).isInstanceOf(IllegalArgumentException.class);
+                    encoder, jwtEncoder, clock, sessions, mock(RoleAuthorizationCache.class),
+                    () -> java.util.Optional.of("test"), bad)).isInstanceOf(IllegalArgumentException.class);
         }
     }
 }

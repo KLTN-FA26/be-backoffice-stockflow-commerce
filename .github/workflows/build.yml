@@ -11,14 +11,20 @@ name: build
 
 on:
   push:
-    branches: [main, develop]
+    # infra/deploy deploys too: it is where changes to the deployment itself (deploy/, this file)
+    # are tried against the VPS before they reach develop.
+    branches: [main, develop, infra/deploy]
   pull_request:
 
 # A new push to the same branch cancels the previous run. Without this a busy branch queues five
 # builds of superseded commits and the useful one waits behind them.
+#
+# Except on the branches that deploy: cancelling there could kill a run in the middle of its deploy
+# job, between replacing the container and confirming it is healthy. A newer push waits instead
+# (GitHub keeps only the newest pending run, so superseded commits are still skipped).
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/develop' && github.ref != 'refs/heads/infra/deploy' }}
 
 jobs:
   build:
@@ -115,20 +121,121 @@ jobs:
   # -------------------------------------------------------------------------
   # The image is built on every push to a protected branch, not only at release. An image that is
   # only built at release time is one whose Dockerfile breaks silently for weeks.
+  #
+  # Pushed to GHCR as sha-<7 chars> (what is deployed - immutable, so a rollback is exact) and as
+  # the branch name (a moving pointer, for humans).
   # -------------------------------------------------------------------------
   docker:
     runs-on: ubuntu-latest
     needs: build
     if: github.event_name == 'push'
     timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
+
+      # GHCR rejects upper-case repository names, and the organisation is KLTN-FA26. A tag may not
+      # contain '/', so the branch infra/deploy is tagged infra-deploy.
+      - name: Image name and tag
+        id: meta
+        run: |
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "branch=${GITHUB_REF_NAME//\//-}" >> "$GITHUB_OUTPUT"
+
       - uses: docker/setup-buildx-action@v3
-      - name: Build image
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: false
-          tags: stockflow/monolith:${{ github.sha }}
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.branch }}
+          # Links the package to this repository, so it inherits the repository's access and the
+          # deploy job's GITHUB_TOKEN can pull it.
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # -------------------------------------------------------------------------
+  # develop and infra/deploy -> the VPS. deploy/README.md describes the server side and the
+  # secrets this needs. Both deploy to the SAME server, so whichever pushed last is what runs.
+  #
+  # The `vps` environment holds the secrets; add required reviewers to it in the repository
+  # settings to turn this into a manual approval step without touching this file.
+  # -------------------------------------------------------------------------
+  deploy:
+    runs-on: ubuntu-latest
+    needs: docker
+    if: >-
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/infra/deploy')
+    timeout-minutes: 15
+    environment:
+      name: vps
+      url: https://api.${{ vars.DOMAIN }}
+    permissions:
+      contents: read
+      packages: read
+    concurrency:
+      group: deploy-vps
+      cancel-in-progress: false
+    env:
+      DEPLOY_PATH: ${{ vars.VPS_DEPLOY_PATH || '/opt/stockflow' }}
+      SSH_TARGET: ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Secrets reach the shell through env, never by ${{ }} inside `run:` - interpolated text
+      # becomes part of the script, and a value containing a quote would break or inject into it.
+      # known_hosts is pinned from a secret rather than learned with ssh-keyscan, which would trust
+      # whatever answered on that address the first time.
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VPS_SSH_KNOWN_HOSTS }}
+          SSH_PORT: ${{ secrets.VPS_SSH_PORT || '22' }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf 'Host vps\n  HostName %s\n  User %s\n  Port %s\n  IdentityFile ~/.ssh/id_deploy\n  IdentitiesOnly yes\n' \
+            "${SSH_TARGET#*@}" "${SSH_TARGET%@*}" "$SSH_PORT" > ~/.ssh/config
+
+      # --delete removes files dropped from deploy/ in the repository; excluded paths are
+      # server-only state and are neither overwritten nor deleted.
+      - name: Sync deploy files
+        run: >-
+          rsync -az --delete
+          --exclude='.env' --exclude='certs/' --exclude='auth/' --exclude='backups/'
+          --exclude='.nginx-config-hash'
+          deploy/ "vps:$DEPLOY_PATH/"
+
+      # The token is piped over stdin, so it never appears in a process list on the server, and it
+      # expires when this job ends - the server holds no long-lived registry credential.
+      - name: Log the server in to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | ssh vps "docker login ghcr.io -u '${{ github.actor }}' --password-stdin"
+
+      - name: Deploy ${{ needs.docker.outputs.tag }}
+        run: ssh vps "cd '$DEPLOY_PATH' && bash scripts/deploy.sh '${{ needs.docker.outputs.tag }}'"
+
+      - name: Log the server out of GHCR
+        if: always()
+        run: ssh vps "docker logout ghcr.io" || true

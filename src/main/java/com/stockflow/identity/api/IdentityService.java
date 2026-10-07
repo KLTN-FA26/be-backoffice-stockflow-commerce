@@ -25,11 +25,31 @@ public interface IdentityService {
     /** The permission matrix for one role, for the permission-management screen. */
     RoleMatrixView roleMatrix(String roleCode);
 
+    /**
+     * Replace the permissions a role grants, and return the matrix as saved. Holders of the role see
+     * the change on their next request; no one has to sign in again (ADR-0008).
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code ROLE_NOT_FOUND};
+     *         {@code ROLE_NOT_EDITABLE} for a role managed by migrations; {@code UNKNOWN_PERMISSION}
+     *         for a code that is not declared or not seeded; {@code ROLE_PERMISSIONS_CHANGED} when
+     *         the role moved past {@code expectedVersion}; {@code RBAC_LOCKOUT} when no role would
+     *         be left able to manage permissions
+     */
+    RoleMatrixView updateRolePermissions(UpdateRolePermissionsCommand command);
+
     /** Assign a role to a user. Idempotent: assigning an already-held role is a no-op. */
     void assignRole(UUID userId, String roleCode);
 
     /** Revoke a role from a user. Idempotent: revoking one not held is a no-op. */
     void revokeRole(UUID userId, String roleCode);
+
+    /**
+     * The profile of a user, for {@code GET /identity/me}. The login response carries only a token,
+     * so this is how a client learns the name and e-mail to show.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code USER_NOT_FOUND}
+     */
+    UserProfile profile(UUID userId);
 
     /** Used by task assignment to reject inactive users and users outside an operational role. */
     boolean isActiveUserWithAnyRole(UUID userId, String... roleCodes);
