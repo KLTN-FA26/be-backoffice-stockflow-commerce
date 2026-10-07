@@ -101,7 +101,7 @@ sequenceDiagram
         F->>F: pick, verify design checksum, pack
         F-)I: PickCompleted
         I->>I: allocation → consumed, stock deducted
-        F->>F: label, manifest, hand over
+        F->>F: package label, load plan, load the vehicle, manifest, hand over
         F-)O: ShipmentDispatched
         Note over O: order → SHIPPED
     else payment failed
@@ -129,9 +129,9 @@ sequenceDiagram
 | 13 | fulfillment | Warehouse staff | `~pick_line.picked_qty` | line PENDING → PICKED | `PickCompleted` |
 | 14 | inventory | system (consumer) | `~stock_item.on_hand`, `.allocated` | allocation → CONSUMED | **`StockDeducted`** |
 | 15 | fulfillment | Warehouse staff | `+package`, checksum compared to the order line | order PICKING → PACKED | `OrderPacked` |
-| 16 | fulfillment | Warehouse staff | `+shipment`, `+label`, `+manifest_entry` | shipment → HANDED_OVER | **`ShipmentDispatched`** |
+| 16 | fulfillment | Warehouse staff | `+load_plan`/`+load` (vehicle chosen), parcels scanned onto the vehicle, `+manifest` | shipment → HANDED_OVER, load → DISPATCHED | **`ShipmentDispatched`** |
 | 17 | order | system (consumer) | `~order.shipped_at` | PACKED → SHIPPED | `OrderStatusChanged` |
-| 18 | fulfillment | Carrier webhook | `~shipment.tracking_status`, `+pod` | → DELIVERED | `OrderDelivered` |
+| 18 | fulfillment | Order coordinator (on the carrier's report — no carrier integration) | `~shipment.status` | → DELIVERED | `OrderDelivered` |
 | 19 | order | system | — | SHIPPED → DELIVERED → COMPLETED after 7 days | `OrderCompleted` |
 
 **Two sagas, not one.** The checkout saga (steps 5–9) is short and must answer the customer
@@ -148,7 +148,7 @@ a screen. Treating them as one long saga is why order systems end up with reques
 | Picker cannot find the allocated stock | Line → SHORT, order → ON_HOLD(INVENTORY_ISSUE); coordinator re-allocates or splits | 3.7.5.1 |
 | Design checksum mismatch at packing | **Pack is stopped**, order → ON_HOLD; the parcel does not contain what was approved | 3.8.3.3 |
 | Stock condition turns DAMAGED while reserved | `ReservationImpaired` → order → ON_HOLD(INVENTORY_ISSUE) | 3.17.6.1 |
-| Carrier reports undeliverable | shipment → RTO_IN_TRANSIT → RTO_RECEIVED, goods re-putaway in QUARANTINE | 3.9.7 |
+| Carrier reports undeliverable | Coordinator records shipment → DELIVERY_FAILED; when the parcel is back, → RETURNED and re-putaway in QUARANTINE | 3.9.7 |
 
 ---
 
@@ -214,7 +214,7 @@ sequenceDiagram
 
     C->>O: request return
     S->>O: approve or reject
-    O->>C: return label
+    O->>C: return instructions with the RMA number (customer ships it back with a carrier of their choice)
     C->>W: parcel arrives
     W->>W: QC inspects
     alt goods acceptable
@@ -231,7 +231,7 @@ sequenceDiagram
 |---|---|---|---|---|---|
 | 1 | order | Customer | `+rma`, `+rma_line` | → REQUESTED | `RmaRequested` |
 | 2 | order | Sales staff | `~rma.approved_by` | → APPROVED (or REJECTED) | `RmaApproved` |
-| 3 | fulfillment | system | `+return_label` | → AWAITING_RETURN | — |
+| 3 | order | system | return instructions sent to the customer (no return label — carriers are outside the system) | → AWAITING_RETURN | — |
 | 4 | procurement / warehouse | Warehouse staff | `+return_receipt` | → RECEIVED | `RmaGoodsReceived` |
 | 5 | inventory | system | `+stock_item` in condition **QUARANTINE** | — | `StockReceived` |
 | 6 | procurement | QC staff | `+qc_result` | → INSPECTED | `RmaInspected` |

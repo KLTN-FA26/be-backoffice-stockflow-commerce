@@ -1,6 +1,7 @@
 # StockFlowCommerce — modular monolith
 
-Inventory management and e-commerce for a furniture manufacturer.
+Inventory, print production and B2B sales for a business that prints cups and packaging to its
+wholesale customers' designs.
 Capstone **FA26SE029** · group **GFA26SE03** · supervisor **Nguyễn Minh Sang**.
 
 One Spring Boot application, one Postgres database, **fourteen modules whose boundaries the build

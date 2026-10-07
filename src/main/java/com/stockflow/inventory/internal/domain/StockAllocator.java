@@ -13,8 +13,8 @@ import java.util.List;
  * layer either: FEFO is a business rule, not orchestration, and the business would want it tested
  * on its own.</p>
  *
- * <p><b>FEFO — first expired, first out.</b> Furniture components with a shelf life (adhesives,
- * finishes, foam) must ship the oldest usable lot first, otherwise stock ages out on the shelf and
+ * <p><b>FEFO — first expired, first out.</b> Stock with a shelf life (inks, adhesives, coated
+ * paperboard blanks) must ship the oldest usable lot first, otherwise stock ages out on the shelf and
  * is written off. Ties break on the smaller remainder, which drains partial lots and frees
  * locations instead of leaving a scatter of two-unit remnants across the warehouse.</p>
  *
