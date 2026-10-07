@@ -21,11 +21,24 @@ public record CurrentUser(
         Set<String> warehouseCodes
 ) {
 
+    /**
+     * Whether the caller may act as {@code role}. {@link Role#SYSTEM_ADMIN} may act as any role:
+     * code across several modules still gates actions on role names rather than on permissions, and
+     * the role that holds every permission must not be turned away by those checks. The same rule
+     * reaches {@code @PreAuthorize} and URL rules through {@link RoleHierarchyConfig}.
+     *
+     * <p>This answers "may the caller do what a holder of this role may do", never "does the caller
+     * belong to this role" for data purposes: nothing may use it to narrow a query to the caller's
+     * own rows, or the administrator would be narrowed with everyone else.</p>
+     */
     public boolean hasRole(Role role) {
-        return roles.contains(role);
+        return roles.contains(role) || roles.contains(Role.SYSTEM_ADMIN);
     }
 
     public boolean hasAnyRole(Role... candidates) {
+        if (roles.contains(Role.SYSTEM_ADMIN)) {
+            return true;
+        }
         for (Role candidate : candidates) {
             if (roles.contains(candidate)) {
                 return true;

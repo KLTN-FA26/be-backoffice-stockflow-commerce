@@ -1,7 +1,7 @@
 package com.stockflow.common.security;
 
 /**
- * String constants for the ten roles.
+ * String constants for the roles.
  *
  * <p>This class exists ONLY because Java annotation arguments must be compile-time constants:
  * {@code @PreAuthorize("hasAnyAuthority('" + Roles.QC_STAFF + "')")} compiles,
@@ -19,6 +19,7 @@ public final class Roles {
     public static final String ECOMMERCE_ADMIN     = "ECOMMERCE_ADMIN";
     public static final String PROCUREMENT_STAFF   = "PROCUREMENT_STAFF";
     public static final String ACCOUNTANT          = "ACCOUNTANT";
+    public static final String SYSTEM_ADMIN        = "SYSTEM_ADMIN";
 
     private Roles() {
     }

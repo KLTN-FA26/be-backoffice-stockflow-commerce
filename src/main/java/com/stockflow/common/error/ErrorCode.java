@@ -16,6 +16,8 @@ public enum ErrorCode {
     VALIDATION_FAILED("Invalid request data", 400),
     MALFORMED_REQUEST("The request body could not be read", 400),
     UNSUPPORTED_PARAMETER("Unsupported parameter value", 400),
+    /** The URL itself was refused before routing: {@code //}, an encoded {@code ..}, a {@code ;}. */
+    REQUEST_REJECTED("The request URL is not acceptable", 400),
     /** A permission-matrix edit named a code no {@code @PermissionResource} declares. */
     UNKNOWN_PERMISSION("One or more permissions do not exist", 400),
 
