@@ -36,10 +36,11 @@ public final class Supplier extends AggregateRoot {
         if (open) throw new BusinessException(ErrorCode.SUPPLIER_HAS_OPEN_PURCHASE_ORDERS);
     }
     private static SupplierDetails validated(SupplierDetails d) {
+        if (d == null || d.status() == null || d.communicationChannel() == null
+                || d.contactName() != null && d.contactName().length() > 200)
+            throw new BusinessException(ErrorCode.SUPPLIER_PROFILE_INVALID);
         new SupplierProfile(d.code(), d.name(), d.email(), d.phone(), d.taxCode(), d.paymentTermDays(),
                 d.leadTimeDays(), d.communicationChannel().name(), d.apiEndpoint());
-        if (d.status() == null || d.contactName() != null && d.contactName().length() > 200)
-            throw new IllegalArgumentException("Invalid supplier status or contact name");
         return new SupplierDetails(d.code().toUpperCase(Locale.ROOT), d.name().trim(), clean(d.contactName()),
                 clean(d.email()), clean(d.phone()), clean(d.taxCode()), d.status(), d.paymentTermDays(),
                 d.leadTimeDays(), d.communicationChannel(), clean(d.apiEndpoint()));

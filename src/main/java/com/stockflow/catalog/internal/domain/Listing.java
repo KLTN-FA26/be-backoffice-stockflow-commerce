@@ -7,9 +7,10 @@ import java.util.Locale;
 import java.util.UUID;
 
 /**
- * Catalog owns SEO and the product-level canonical slug, not Product. Product approval/master
- * data are copied through its API. catalog_entry remains a per-SKU read projection, not another
- * independently editable source for SEO. Published slug is immutable to preserve inbound links.
+ * Temporary legacy listing adapter, pending the schema-owner cutover documented in
+ * docs/business-design/db-design/SCRUM-70-71-schema-change-request.md.
+ * The agreed canonical SEO/slug source is product.products, not this legacy catalog table.
+ * Published slug is immutable to preserve inbound links during the transition.
  */
 public record Listing(UUID productId, String slug, String seoTitle, String seoDescription, long revision,
                       long projectedRevision, boolean enabled, boolean everPublished,

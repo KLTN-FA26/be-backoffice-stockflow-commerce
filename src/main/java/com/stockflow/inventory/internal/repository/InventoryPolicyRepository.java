@@ -24,8 +24,9 @@ public class InventoryPolicyRepository {
     }
     public boolean hasActiveCount(String sku) {
         return Boolean.TRUE.equals(jdbc.queryForObject("""
-                select exists(select 1 from inventory.cycle_count_line l join inventory.stock_item s on s.id=l.stock_id
-                where l.active and s.sku=?)
+                select exists(select 1 from inventory.cycle_count_line l
+                join inventory.cycle_count c on c.id=l.cycle_count_id
+                where c.status in ('PLANNED','IN_PROGRESS') and l.sku=?)
                 """,Boolean.class,sku));
     }
     public Optional<InventoryPolicy> find(String sku) {

@@ -116,7 +116,7 @@ class InventoryCatalogIntegrationTest {
         assertThat(inventory.availableToPromise(new Sku(f.sku()))).isEqualTo(9);
         catalog.unpublish(f.product());
         assertThatThrownBy(() -> checkoutCatalog.checkoutPrices(java.util.Set.of(f.sku())))
-                .isInstanceOfSatisfying(BusinessException.class,e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.CATALOG_NOT_READY));
+                .isInstanceOfSatisfying(BusinessException.class,e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.PRODUCT_NOT_PURCHASABLE));
     }
     @Test void thresholdsAreNullableZeroIsMeaningfulAndHigherThanStockIsAllowed() {
         var f=fixture("DRAFT");
@@ -147,8 +147,11 @@ class InventoryCatalogIntegrationTest {
         controls.update(f.product(),f.skuId(),0,policy(2,RemovalStrategy.FIFO,TrackingMode.NONE,false));
         var newer=stock(f,5,Instant.parse("2026-09-02T00:00:00Z"),null,null);
         var older=stock(f,5,Instant.parse("2026-09-01T00:00:00Z"),null,null);
-        var result=inventory.reserve(new ReserveStockCommand(UUID.randomUUID(),new Sku(f.sku()),2,UUID.randomUUID()));
-        assertThat(result.reservations().getFirst().stockItemId()).isEqualTo(older);
+        orders.placeOrder(new com.stockflow.order.api.PlaceOrderCommand(UUID.randomUUID(),
+                com.stockflow.support.DemoData.CUSTOMER_ID,
+                java.util.List.of(new com.stockflow.order.api.PlaceOrderCommand.Line(new Sku(f.sku()),
+                        2, com.stockflow.common.domain.Money.vnd(100), null))));
+        assertThat(jdbc.queryForObject("select reserved from inventory.stock_item where id=?",Integer.class,older)).isEqualTo(2);
         assertThat(jdbc.queryForObject("select reserved from inventory.stock_item where id=?",Integer.class,newer)).isZero();
     }
     @Test void serialFlagIsEnforcedAtStockIngressAndCannotBeDisabledWithStock() {

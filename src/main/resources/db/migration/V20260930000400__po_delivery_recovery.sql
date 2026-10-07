@@ -2,7 +2,8 @@
 CREATE TABLE notification.po_delivery_control (
     purchase_order_id UUID PRIMARY KEY,
     generation INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
-    suppressed BOOLEAN NOT NULL DEFAULT FALSE
+    suppressed BOOLEAN NOT NULL DEFAULT FALSE,
+    cancellation_requested BOOLEAN NOT NULL DEFAULT FALSE
 );
 ALTER TABLE notification.delivery_log ADD COLUMN delivery_generation INTEGER NOT NULL DEFAULT 0
     CHECK (delivery_generation >= 0);
@@ -25,6 +26,7 @@ CREATE TABLE procurement.po_delivery_decision (
     acknowledge_past_due BOOLEAN NOT NULL,
     channel VARCHAR(16) NOT NULL CHECK (channel IN ('EMAIL','API')),
     recipient VARCHAR(500) NOT NULL,
+    payload_snapshot TEXT,
     actor VARCHAR(255) NOT NULL,
     requested_at TIMESTAMPTZ NOT NULL,
     UNIQUE (purchase_order_id, generation),
@@ -38,8 +40,8 @@ BEGIN
         RAISE EXCEPTION 'Cannot amend the delivery date of a sent purchase order' USING ERRCODE = '23514';
     END IF;
     IF OLD.status = 'APPROVED' AND NEW.status = 'SENT' AND
-       (NEW.sent_at IS NULL OR NEW.expected_at IS NULL OR NEW.expected_at < (NEW.sent_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date) THEN
-        RAISE EXCEPTION 'Confirm the delivery date before sending' USING ERRCODE = '23514';
+       (NEW.sent_at IS NULL OR NEW.expected_at IS NULL) THEN
+        RAISE EXCEPTION 'A delivery date and send timestamp are required' USING ERRCODE = '23514';
     END IF;
     RETURN NEW;
 END;

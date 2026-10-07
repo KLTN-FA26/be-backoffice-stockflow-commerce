@@ -31,9 +31,9 @@ public class CatalogProjectionService {
                 && listing.revision()==listing.projectedRevision()) return;
         listings.hideEntries(id);
         if (listing.enabled() && product.status()==ProductStatus.PUBLISHED) {
-            if (product.skus().isEmpty()) throw new BusinessException(ErrorCode.CATALOG_NOT_READY);
+            if (product.skus().isEmpty()) throw new BusinessException(ErrorCode.PRODUCT_SKU_REQUIRED);
             for (var sku : product.skus()) {
-                var price=listings.price(sku.sku()).orElseThrow(() -> new BusinessException(ErrorCode.CATALOG_NOT_READY));
+                var price=listings.price(sku.sku()).orElseThrow(() -> new BusinessException(ErrorCode.PRICE_NOT_AVAILABLE));
                 listings.projectSku(id,sku.skuId(),sku.sku(),product.name(),product.description(),
                         listing.seoTitle(),listing.seoDescription(),price,listing.revision(),clock.instant());
             }

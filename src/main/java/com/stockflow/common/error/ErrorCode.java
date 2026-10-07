@@ -11,13 +11,26 @@ package com.stockflow.common.error;
  * actually depend on: whether to show a form error, retry, or give up.</p>
  */
 public enum ErrorCode {
+    PO_DELIVERY_DATE_REQUIRED("A delivery date is required before sending", 400),
+    PO_REASON_REQUIRED("A reason of 1..1000 characters is required", 400),
+    PO_SUPPLIER_RESPONSE_INVALID("Supplier response must be CONFIRMED or REJECTED", 400),
+    PO_COMMUNICATION_NOT_CONFIGURED("Buyer contact and receiving address must be configured before sending", 409),
+    PO_LINE_DESCRIPTION_REQUIRED("A product description is required for each purchase order line", 400),
+    SUPPLIER_DELIVERY_CONTACT_INVALID("Supplier delivery contact is invalid or not allowed", 400),
+    SUPPLIER_PROFILE_INVALID("Invalid supplier profile or commercial terms", 400),
 
     // ---- 400: the request itself is wrong; retrying it unchanged will not help
     VALIDATION_FAILED("Invalid request data", 400),
     INVENTORY_POLICY_INVALID("Invalid SKU inventory policy", 400),
     INVENTORY_POLICY_STOCK_CONFLICT("Existing stock is incompatible with this policy", 409),
     CATALOG_SLUG_EXISTS("This storefront URL is already reserved", 409),
-    CATALOG_NOT_READY("Product is not ready for storefront publication", 409),
+    CATALOG_LISTING_REQUIRED("Configure the storefront listing before publishing", 409),
+    PRODUCT_NOT_APPROVED("Approve the product before publishing", 409),
+    PRODUCT_CATEGORY_REQUIRED("A valid product category is required", 409),
+    PRODUCT_SKU_REQUIRED("At least one sellable SKU is required", 409),
+    PRODUCT_GALLERY_REQUIRED("An approved non-empty product gallery is required", 409),
+    PRODUCT_NOT_PURCHASABLE("This product is not currently available for purchase", 409),
+    PRICE_NOT_AVAILABLE("No selling price is available for this SKU", 409),
     CATALOG_PRICE_AMBIGUOUS("More than one selling price has the same priority", 409),
     MALFORMED_REQUEST("The request body could not be read", 400),
     UNSUPPORTED_PARAMETER("Unsupported parameter value", 400),
@@ -54,15 +67,8 @@ public enum ErrorCode {
     // ---- 409: the request is fine, the current state is not
     CONFLICT("Conflicting state", 409),
     CHECKOUT_PRICE_CHANGED("The selling price changed; review the basket and confirm again", 409),
-    COUNT_SELF_APPROVAL("The counter cannot approve their own variance",409),
     COUNT_POLICY_CONFLICT("Reconcile the active count and SKU tracking policy before proceeding",409),
     DESIGN_QUOTE_REQUIRED("An accepted design quote matching this order line is required",409),
-    DESIGN_QUOTE_EXPIRED("The design quote has expired",409),
-    DESIGN_QUOTE_CONFLICT("The quote version or state no longer allows this action",409),
-    COUNT_RESERVED_CONFLICT("Release or reallocate affected order holds before posting this shortage",409),
-    COUNT_ALREADY_ACTIVE("Stock is already included in an active count",409),
-    COUNT_INCOMPLETE("Every stock line must be counted",409),
-    COUNT_STOCK_CHANGED("Stock changed during counting; a new count is required",409),
     INSUFFICIENT_STOCK("Not enough available stock", 409),
     OPTIMISTIC_LOCK("The record changed meanwhile, please retry", 409),
     /** Two writers reached the same row; the loser waited for the lock and gave up. Retryable. */

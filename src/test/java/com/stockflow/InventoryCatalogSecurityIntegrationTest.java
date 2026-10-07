@@ -76,24 +76,4 @@ class InventoryCatalogSecurityIntegrationTest {
         mvc.perform(put(path).header("Authorization",token("product-products:READ"))
                 .contentType("application/json").content(body)).andExpect(status().isForbidden());
     }
-    @Test void countAndAlertEndpointsEnforceTheirOwnPermissions() throws Exception {
-        mvc.perform(get("/api/v1/inventory/cycle-counts")).andExpect(status().isUnauthorized());
-        mvc.perform(get("/api/v1/inventory/cycle-counts").header("Authorization",token("inventory-cycle-counts:READ"))).andExpect(status().isOk());
-        mvc.perform(post("/api/v1/inventory/cycle-counts/"+UUID.randomUUID()+"/approval")
-                .header("Authorization",token("inventory-cycle-counts:UPDATE")).contentType("application/json").content("{\"version\":0}"))
-                .andExpect(status().isForbidden());
-        mvc.perform(get("/api/v1/inventory/alerts").header("Authorization",token("inventory-alerts:READ"))).andExpect(status().isOk());
-        mvc.perform(post("/api/v1/inventory/alerts/"+UUID.randomUUID()+"/delivery-retry")
-                .header("Authorization",token("inventory-alerts:READ"))).andExpect(status().isForbidden());
-    }
-    @Test void quoteReadAndCustomerUpdateCannotIssueOrRevisePrices() throws Exception {
-        String path="/api/v1/design-quotes/"+UUID.randomUUID();
-        mvc.perform(get("/api/v1/design-quotes")).andExpect(status().isUnauthorized());
-        mvc.perform(get("/api/v1/design-quotes").header("Authorization",token("sales-quotes:READ"))).andExpect(status().isOk());
-        mvc.perform(post(path+"/issuance").header("Authorization",token("sales-quotes:READ"))
-                .contentType("application/json").content("{\"version\":0}")).andExpect(status().isForbidden());
-        mvc.perform(post(path+"/revisions").header("Authorization",token("sales-quotes:UPDATE"))
-                .contentType("application/json").content("{\"version\":0,\"quantity\":2,\"unitPrice\":1,\"validUntil\":\"2099-01-01T00:00:00Z\",\"terms\":\"Final price\"}"))
-                .andExpect(status().isForbidden());
-    }
 }

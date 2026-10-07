@@ -55,8 +55,7 @@ public record PlaceOrderRequest(
             BigDecimal unitPrice,
 
             @Schema(description = "Frozen design for print-on-demand items; null otherwise")
-            UUID designSnapshotId,
-            @Schema(description="Accepted design quote; required for a design line") UUID quoteId
+            UUID designSnapshotId
     ) {
     }
 }

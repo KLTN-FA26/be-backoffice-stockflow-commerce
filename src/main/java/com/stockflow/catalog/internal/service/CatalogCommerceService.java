@@ -53,11 +53,11 @@ public class CatalogCommerceService {
         var product=products.lock(id);
         if (product.status()==ProductStatus.DISCONTINUED) throw new BusinessException(ErrorCode.CONFLICT);
         if (product.skus().stream().noneMatch(s -> s.sku().equals(sku))) throw new BusinessException(ErrorCode.NOT_FOUND);
-        var listing=listings.find(id).orElseThrow(() -> new BusinessException(ErrorCode.CATALOG_NOT_READY));
+        var listing=listings.find(id).orElseThrow(() -> new BusinessException(ErrorCode.CATALOG_LISTING_REQUIRED));
         if (listing.revision()!=revision) throw new BusinessException(ErrorCode.CONFLICT);
         listings.basePrice(sku,price,actor,clock.instant());
         // Resolve now: do not commit a new base rule which makes the public price ambiguous.
-        listings.price(sku).orElseThrow(() -> new BusinessException(ErrorCode.CATALOG_NOT_READY));
+        listings.price(sku).orElseThrow(() -> new BusinessException(ErrorCode.PRICE_NOT_AVAILABLE));
         listings.dirty(id);
         events.publishEvent(new CatalogListingChanged(id));
         return listings.find(id).orElseThrow();
@@ -73,12 +73,18 @@ public class CatalogCommerceService {
     @Auditable(action=AuditAction.APPROVE,resourceType="catalog-listing",resourceId="#id")
     public void publish(UUID id) {
         var product=products.lock(id);
-        var listing=listings.find(id).orElseThrow(() -> new BusinessException(ErrorCode.CATALOG_NOT_READY));
-        if (product.status()!=ProductStatus.APPROVED && product.status()!=ProductStatus.PUBLISHED
-                || product.categoryId()==null || product.skus().isEmpty())
-            throw new BusinessException(ErrorCode.CATALOG_NOT_READY);
+        var listing=listings.find(id).orElseThrow(() -> new BusinessException(ErrorCode.CATALOG_LISTING_REQUIRED));
+        if (product.status() != ProductStatus.APPROVED && product.status() != ProductStatus.PUBLISHED) {
+            throw new BusinessException(ErrorCode.PRODUCT_NOT_APPROVED);
+        }
+        if (product.categoryId() == null) {
+            throw new BusinessException(ErrorCode.PRODUCT_CATEGORY_REQUIRED);
+        }
+        if (product.skus().isEmpty()) {
+            throw new BusinessException(ErrorCode.PRODUCT_SKU_REQUIRED);
+        }
         for (var sku : product.skus()) listings.price(sku.sku())
-                .orElseThrow(() -> new BusinessException(ErrorCode.CATALOG_NOT_READY));
+                .orElseThrow(() -> new BusinessException(ErrorCode.PRICE_NOT_AVAILABLE));
         products.publish(id); // Same transaction; product validates the approved gallery and category.
         if (!listing.enabled()) listings.enable(id,true);
         events.publishEvent(new CatalogListingChanged(id));
@@ -102,7 +108,7 @@ public class CatalogCommerceService {
         var available = inventory.availableQuantities(product.skus().stream().map(s -> s.sku())
                 .collect(Collectors.toSet()));
         var variants=product.skus().stream().map(s -> {
-            var price=listings.price(s.sku()).orElseThrow(() -> new BusinessException(ErrorCode.CATALOG_NOT_READY));
+            var price=listings.price(s.sku()).orElseThrow(() -> new BusinessException(ErrorCode.PRICE_NOT_AVAILABLE));
             return new Variant(s.sku(),price,available.getOrDefault(s.sku(),0L)>0 ? "IN_STOCK" : "OUT_OF_STOCK");
         }).toList();
         return new PublicView(listing.productId(),listing.slug(),listing.publishedTitle(),listing.publishedDescription(),

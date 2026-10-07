@@ -84,15 +84,12 @@ class OrderServiceImpl implements OrderService {
     private final com.stockflow.order.internal.repository.OrderHoldJpaRepository holds;
     private final CustomerService customers;
     private final com.stockflow.catalog.api.CatalogService catalog;
-    private final com.stockflow.order.internal.repository.CheckoutRequestRepository requests;
-    private final DesignQuoteService quotes;
 
     OrderServiceImpl(OrderRepository repository, OrderSearchRepository search,
                      InventoryService inventory, OrderEventPublisher events, Clock clock,
                      com.stockflow.design.api.DesignService designs,
                      com.stockflow.order.internal.repository.OrderHoldJpaRepository holds,
-                     CustomerService customers, com.stockflow.catalog.api.CatalogService catalog,
-                     com.stockflow.order.internal.repository.CheckoutRequestRepository requests,DesignQuoteService quotes) {
+                     CustomerService customers, com.stockflow.catalog.api.CatalogService catalog) {
         this.repository = repository;
         this.search = search;
         this.inventory = inventory;
@@ -102,7 +99,6 @@ class OrderServiceImpl implements OrderService {
         this.holds = holds;
         this.customers = customers;
         this.catalog = catalog;
-        this.requests=requests;this.quotes=quotes;
     }
 
     /**
@@ -114,13 +110,11 @@ class OrderServiceImpl implements OrderService {
      */
     @Override
     public OrderSummary placeOrder(PlaceOrderCommand command) {
-        requests.lock(command.requestId());
-        String fingerprint=com.stockflow.order.internal.domain.CheckoutFingerprint.of(command);
         // Idempotency first. A double-clicked "Place order" must not create two orders, and this
         // check is cheap compared to discovering the duplicate after the customer has paid twice.
         Optional<Order> alreadyPlaced = repository.findByRequestId(command.requestId());
         if (alreadyPlaced.isPresent()) {
-            if (!command.customerId().equals(alreadyPlaced.get().customerId()) || !requests.matches(command.requestId(),fingerprint)) {
+            if (!command.customerId().equals(alreadyPlaced.get().customerId())) {
                 throw new com.stockflow.common.error.BusinessException(
                         com.stockflow.common.error.ErrorCode.IDEMPOTENCY_KEY_REUSED);
             }
@@ -129,7 +123,10 @@ class OrderServiceImpl implements OrderService {
             return toSummary(alreadyPlaced.get());
         }
 
-        var quotePrices=quotes.checkout(command.customerId(),command.lines());
+        // SCRUM-298 is a separate integration: never fall back to a client-supplied design price.
+        if (command.snapshotCustomer() && command.lines().stream().anyMatch(line -> line.designSnapshotId() != null)) {
+            throw new BusinessException(ErrorCode.DESIGN_QUOTE_REQUIRED);
+        }
         var sellingPrices = command.snapshotCustomer() ? catalog.checkoutPrices(command.lines().stream()
                 .filter(line -> line.designSnapshotId() == null).map(line -> line.sku().code())
                 .collect(java.util.stream.Collectors.toSet())) : java.util.Map.<String, com.stockflow.common.domain.Money>of();
@@ -144,7 +141,7 @@ class OrderServiceImpl implements OrderService {
         for (int index = 0; index < command.lines().size(); index++) {
             PlaceOrderCommand.Line line = command.lines().get(index);
             var orderLine = Order.line(deterministicLineId(command.requestId(), index),
-                    line.sku(), line.quantity(), line.designSnapshotId()!=null ? quotePrices.get(line.quoteId()) : command.snapshotCustomer()
+                    line.sku(), line.quantity(), command.snapshotCustomer()
                             ? agreedPrice(line.sku().code(), line.unitPrice(), sellingPrices) : line.unitPrice(), line.designSnapshotId());
             if (line.designSnapshotId() != null) {
                 orderLine.recordDesignChecksum(designs.verifySnapshotForSku(line.designSnapshotId(), command.customerId(), line.sku().code()).checksum());
@@ -184,8 +181,6 @@ class OrderServiceImpl implements OrderService {
 
         order.submit();
         Order saved = repository.save(order);
-        requests.save(command.requestId(),fingerprint);
-        if(!quotePrices.isEmpty())quotes.consume(quotePrices.keySet(),saved.id().value());
         events.publishEventsOf(order);
 
         log.info("Placed order {} for customer {} with {} line(s), total {}",
@@ -195,7 +190,6 @@ class OrderServiceImpl implements OrderService {
 
     @Override
     public OrderSummary placeGuestOrder(PlaceGuestOrderCommand command) {
-        requests.lock(command.requestId());
         String email = command.email().trim().toLowerCase(java.util.Locale.ROOT);
         // Construct snapshots before the replay lookup as well: a reused request id must not make
         // malformed address data appear valid merely because an earlier checkout succeeded.
@@ -240,7 +234,7 @@ class OrderServiceImpl implements OrderService {
     private static com.stockflow.common.domain.Money agreedPrice(String sku, com.stockflow.common.domain.Money expected,
             java.util.Map<String, com.stockflow.common.domain.Money> prices) {
         var actual = prices.get(sku);
-        if (actual == null) throw new BusinessException(ErrorCode.CATALOG_NOT_READY);
+        if (actual == null) throw new BusinessException(ErrorCode.PRICE_NOT_AVAILABLE);
         if (!actual.equals(expected)) throw new BusinessException(ErrorCode.CHECKOUT_PRICE_CHANGED);
         return actual;
     }

@@ -3,7 +3,7 @@
  *
  * <p>WBS 3.6 + 3.10 · database schema {@code inventory}</p>
  *
- * <p><b>May depend on:</b> warehouse, identity (count assignments), notification (alert delivery). Plus {@code common} and {@code contracts}, which are
+ * <p><b>May depend on:</b> warehouse. Plus {@code common} and {@code contracts}, which are
  * available to every module.</p>
  *
  * <p>The module has two packages and the split is the whole point:</p>
@@ -14,5 +14,5 @@
  *       you reaching in; {@code ModularityTest} will.</li>
  * </ul>
  */
-@org.springframework.modulith.ApplicationModule(allowedDependencies = {"warehouse :: api", "notification :: api", "identity :: api"})
+@org.springframework.modulith.ApplicationModule(allowedDependencies = {"warehouse :: api"})
 package com.stockflow.inventory;

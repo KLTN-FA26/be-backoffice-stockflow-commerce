@@ -10,9 +10,15 @@ ALTER TABLE notification.delivery_log ALTER COLUMN recipient TYPE VARCHAR(500);
 ALTER TABLE notification.delivery_log ADD COLUMN operation_reference VARCHAR(100);
 UPDATE notification.delivery_log SET operation_reference = external_reference WHERE external_reference IS NOT NULL;
 CREATE INDEX ix_delivery_log_operation ON notification.delivery_log(operation_reference, created_at);
+-- Preserve the original value for operator reconciliation; do not invent a valid tax identifier.
+ALTER TABLE procurement.supplier ADD COLUMN legacy_tax_code VARCHAR(32);
+UPDATE procurement.supplier SET legacy_tax_code = tax_code, tax_code = NULL
+WHERE tax_code IS NOT NULL AND NOT (
+    tax_code ~ '^[0-9A-Za-z][0-9A-Za-z-]{6,30}[0-9A-Za-z]$' AND tax_code ~ '[0-9]');
 ALTER TABLE procurement.supplier ADD CONSTRAINT ck_supplier_profile CHECK (
     code ~ '^[A-Za-z0-9._-]{1,64}$' AND length(btrim(name)) > 0
     AND (tax_code IS NULL OR tax_code ~ '^[0-9A-Za-z][0-9A-Za-z-]{6,30}[0-9A-Za-z]$' AND tax_code ~ '[0-9]')) NOT VALID;
+ALTER TABLE procurement.supplier VALIDATE CONSTRAINT ck_supplier_profile;
 
 CREATE FUNCTION procurement.capture_receipt_completion() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN

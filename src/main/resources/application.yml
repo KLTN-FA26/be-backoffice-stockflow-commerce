@@ -331,8 +331,6 @@ stockflow:
     # Exact HTTPS hosts owned by trusted suppliers; blank disables API delivery (email still works).
     supplier-api-allowed-hosts: ${SUPPLIER_API_ALLOWED_HOSTS:}
     mail-from: ${MAIL_FROM:noreply@stockflow.local}
-    # Global inventory planners/managers only. Blank keeps email visibly BLOCKED_CONFIG; inbox still works.
-    inventory-alert-recipients: ${INVENTORY_ALERT_RECIPIENTS:}
     po-retry-interval: PT5M
 
   # ---------------------------------------------------------------------------

@@ -51,5 +51,10 @@ INSERT INTO identity.role_permission (id, role_id, permission_id, version, creat
 SELECT gen_random_uuid(), role.id, permission.id, 0, NOW(), 'flyway'
 FROM identity.app_role role
 JOIN identity.permission permission ON permission.resource = 'procurement-suppliers'
-WHERE role.code = 'PROCUREMENT_STAFF' AND permission.action <> 'DELETE'
+WHERE (role.code = 'PROCUREMENT_STAFF' AND permission.action <> 'DELETE')
+   OR role.code = 'ECOMMERCE_ADMIN'
 ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+-- ADR-0008: role-keyed permission caches must change generation in this same transaction.
+UPDATE identity.app_role SET version = version + 1
+WHERE code IN ('PROCUREMENT_STAFF', 'ECOMMERCE_ADMIN');

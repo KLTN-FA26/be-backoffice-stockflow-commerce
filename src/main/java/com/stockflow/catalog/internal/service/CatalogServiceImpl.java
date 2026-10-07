@@ -26,7 +26,7 @@ class CatalogServiceImpl implements CatalogService {
         java.util.Map<java.util.UUID, java.util.Set<String>> grouped = new java.util.TreeMap<>();
         for (String sku : skus) {
             var id = listings.publishedProductForSku(sku)
-                    .orElseThrow(() -> new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.CATALOG_NOT_READY));
+                    .orElseThrow(() -> new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.PRODUCT_NOT_PURCHASABLE));
             grouped.computeIfAbsent(id, ignored -> new java.util.HashSet<>()).add(sku);
         }
         java.util.Map<String, com.stockflow.common.domain.Money> prices = new java.util.HashMap<>();
@@ -35,11 +35,11 @@ class CatalogServiceImpl implements CatalogService {
             var product = products.lock(group.getKey());
             if (product.status() != com.stockflow.product.api.ProductStatus.PUBLISHED
                     || !listings.find(group.getKey()).map(l -> l.enabled()).orElse(false))
-                throw new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.CATALOG_NOT_READY);
+                throw new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.PRODUCT_NOT_PURCHASABLE);
             for (String sku : group.getValue()) {
                 if (product.skus().stream().noneMatch(s -> s.sku().equals(sku)))
-                    throw new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.CATALOG_NOT_READY);
-                var price = listings.price(sku).orElseThrow(() -> new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.CATALOG_NOT_READY));
+                    throw new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.PRODUCT_NOT_PURCHASABLE);
+                var price = listings.price(sku).orElseThrow(() -> new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.PRICE_NOT_AVAILABLE));
                 prices.put(sku, new com.stockflow.common.domain.Money(price.amount(), com.stockflow.common.domain.Money.VND));
             }
         }

@@ -43,7 +43,9 @@ class ProcurementBusinessDateTest {
         when(orders.save(any())).thenAnswer(call -> call.getArgument(0));
         var service = new ProcurementServiceImpl(orders, null, null, movingClock, suppliers,
                 mock(org.springframework.context.ApplicationEventPublisher.class), mock(com.stockflow.notification.api.NotificationService.class),
-                mock(com.stockflow.procurement.internal.repository.PoDeliveryDecisionRepository.class));
+                mock(com.stockflow.procurement.internal.repository.PoDeliveryDecisionRepository.class),
+                new PoCommunicationProfile("Buyer", "Address", "Buyer contact", "0901234567", "buyer@example.com", "Warehouse"),
+                mock(com.stockflow.product.api.ProductService.class));
         var sent = service.send(order.id().value());
         assertThat(sent.sentAt()).isEqualTo(beforeMidnight);
         assertThat(sent.expectedAt()).isEqualTo(LocalDate.parse("2026-09-25"));
@@ -67,7 +69,7 @@ class ProcurementBusinessDateTest {
         when(orders.nextPoNumber(any())).thenReturn("PO-TEST");
         when(orders.save(any())).thenAnswer(call -> call.getArgument(0));
         var service = new ProcurementServiceImpl(orders, null, null,
-                Clock.fixed(Instant.parse(instant), ZoneOffset.UTC), suppliers, null, null, null);
+                Clock.fixed(Instant.parse(instant), ZoneOffset.UTC), suppliers, null, null, null, null, null);
         var lines = List.of(new CreatePOLineCommand("CHAIR-01", "Chair", 1, BigDecimal.TEN));
         var result = service.createPurchaseOrder(new CreatePurchaseOrderCommand(supplierId, "VND", null, lines));
         assertThat(result.expectedAt()).isEqualTo(LocalDate.parse(date).plusDays(7));

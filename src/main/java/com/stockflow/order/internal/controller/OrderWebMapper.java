@@ -34,7 +34,7 @@ final class OrderWebMapper {
                         new Sku(line.sku()),
                         line.quantity(),
                         wholeVnd(line.unitPrice()),
-                        line.designSnapshotId(),line.quoteId()))
+                        line.designSnapshotId()))
                 .toList();
         return new PlaceOrderCommand(request.requestId(), request.customerId(),
                 request.shippingAddressId(), request.billingAddressId(), true, lines);

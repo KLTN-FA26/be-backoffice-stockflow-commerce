@@ -106,9 +106,13 @@ class SupplierServiceImpl implements SupplierService {
     }
 
     private static SupplierDetails details(SaveSupplierCommand c) {
-        return new SupplierDetails(c.code(), c.name(), c.contactName(), c.email(), c.phone(), c.taxCode(),
-                SupplierStatus.valueOf(c.status()), c.paymentTermDays(), c.leadTimeDays(),
-                SupplierCommunicationChannel.valueOf(c.communicationChannel()), c.apiEndpoint());
+        try {
+            return new SupplierDetails(c.code(), c.name(), c.contactName(), c.email(), c.phone(), c.taxCode(),
+                    SupplierStatus.valueOf(c.status()), c.paymentTermDays(), c.leadTimeDays(),
+                    SupplierCommunicationChannel.valueOf(c.communicationChannel()), c.apiEndpoint());
+        } catch (IllegalArgumentException | NullPointerException invalid) {
+            throw new BusinessException(ErrorCode.SUPPLIER_PROFILE_INVALID);
+        }
     }
 
     private static BigDecimal percent(long numerator, long denominator) {

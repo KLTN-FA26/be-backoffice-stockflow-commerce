@@ -141,9 +141,8 @@ public final class PurchaseOrder extends AggregateRoot {
     public void confirmDeliveryDate(LocalDate today, LocalDate replacement, String reason) {
         requireCanTransitionTo(PurchaseOrderStatus.SENT);
         LocalDate candidate = replacement == null ? expectedAt : replacement;
-        if (candidate == null || candidate.isBefore(today)) {
-            throw new BusinessException(ErrorCode.CONFLICT,
-                    "Confirm a delivery date on or after today's Vietnam date before sending");
+        if (candidate == null) {
+            throw new BusinessException(ErrorCode.PO_DELIVERY_DATE_REQUIRED);
         }
         if (replacement != null && !replacement.equals(expectedAt)) requireRecoveryReason(reason);
         expectedAt = candidate;
@@ -162,7 +161,7 @@ public final class PurchaseOrder extends AggregateRoot {
 
     private static void requireRecoveryReason(String reason) {
         if (reason == null || reason.isBlank() || reason.length() > 1000)
-            throw new IllegalArgumentException("A reason of 1..1000 characters is required");
+            throw new BusinessException(ErrorCode.PO_REASON_REQUIRED);
     }
 
     public void send(Instant now) {
@@ -180,12 +179,12 @@ public final class PurchaseOrder extends AggregateRoot {
                     "supplier response requires a sent purchase order");
         }
         if (response != SupplierConfirmationStatus.CONFIRMED && response != SupplierConfirmationStatus.REJECTED) {
-            throw new IllegalArgumentException("Supplier response must be CONFIRMED or REJECTED");
+            throw new BusinessException(ErrorCode.PO_SUPPLIER_RESPONSE_INVALID);
         }
         reference = reference == null || reference.isBlank() ? null : reference.trim();
         note = note == null || note.isBlank() ? null : note.trim();
         if (response == SupplierConfirmationStatus.REJECTED && note == null) {
-            throw new IllegalArgumentException("A supplier rejection requires a reason");
+            throw new BusinessException(ErrorCode.PO_REASON_REQUIRED);
         }
         if (response == SupplierConfirmationStatus.REJECTED && status != PurchaseOrderStatus.SENT) {
             throw new InvalidPurchaseOrderTransitionException(id, "Cannot reject a purchase order after receipt");
@@ -214,6 +213,7 @@ public final class PurchaseOrder extends AggregateRoot {
      */
     public void cancel(String reason, Instant now) {
         requireCanTransitionTo(PurchaseOrderStatus.CANCELLED);
+        requireRecoveryReason(reason);
         this.status = PurchaseOrderStatus.CANCELLED;
         this.cancellationReason = reason;
     }
@@ -253,6 +253,7 @@ public final class PurchaseOrder extends AggregateRoot {
     /** PARTIALLY_RECEIVED -&gt; CLOSED_SHORT: the remaining open quantity is written off. */
     public void closeShort(String reason, Instant now) {
         requireCanTransitionTo(PurchaseOrderStatus.CLOSED_SHORT);
+        requireRecoveryReason(reason);
         this.status = PurchaseOrderStatus.CLOSED_SHORT;
         this.closeShortReason = reason;
     }
