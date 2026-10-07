@@ -13,7 +13,8 @@ recoverable using `git show b7d6cda:<path>`. Shared notification classes were re
 `9fbb90f`, preserving supplier email/cancellation fixes. Shared checkout types no longer require
 quoteId. Existing standard checkout server-price checks are deliberately retained.
 
-Nothing here has been sent to another team member or pushed to a remote branch yet.
+The source snapshot branch remains local. This handoff is included in scoped PR #38;
+no direct messages have been sent to the story owners.
 
 ## Owners and acceptance gates
 

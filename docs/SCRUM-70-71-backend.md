@@ -1,105 +1,128 @@
-# SCRUM-70 / SCRUM-71 — scoped backend handoff
+# SCRUM-70 / SCRUM-71 backend handoff
 
-## Status (2026-10-03)
+## Status (2026-10-08)
 
-**Not ready to merge or declare complete.** The scope split is implemented, but schema ownership
-and canonical-source adapters still require the schema-owner handoff below. Passing tests against
-the temporary legacy adapters is not acceptance of those adapters.
+Canonical adapters and an append-only cutover migration are implemented. **Schema-owner review,
+upstream PIM writer integration and frontend UAT remain merge gates.** This document does not
+claim that the legacy product/gallery creation APIs have completed their separate C1 migration.
 
-- Current branch: `feature/SCRUM-70-71-inventory-control-ecommerce`.
-- Source snapshot preserved at `feature/SCRUM-146-147-298-split-handoff` (`b7d6cda`).
-- Latest PR36 fixes (`9fbb90f`) incorporated into the working tree; no new commit/push yet.
-- Schema request: [owner checklist](business-design/db-design/SCRUM-70-71-schema-change-request.md).
-- Split manifest: [coordination handoff](SCRUM-146-147-298-split-handoff.md).
+The existing merge commit `6936c91` already includes current develop and supplier/PO fixes.
+There was no unfinished merge at takeover. Existing working changes were retained and formatted;
+no reset, clean, merge abort, PR merge or deployment was performed.
 
-## Scope boundary
+## Canonical ownership
 
-| Keep in 70/71 | Move to separate coordination |
-| --- | --- |
-| Nullable per-SKU reorder/safety thresholds, FIFO/FEFO, tracking/expiry validation | 146: count creation, assignments, blind/recount, approval and posting |
-| Immediate threshold evaluation + SkuInventoryControlChanged contract | 147: alert episodes, inbox, recipient selection, mail/retry |
-| Product publication prerequisites, VND selling prices, public read projection | 298: design quote negotiation, offer acceptance and order consumption |
-| Minimal existing checkout price validation, without new quoteId request field | Checkout fingerprint schema and full quote-dependent checkout integration |
+- Inventory control reads and writes **inventory.inventory_items**, including its own version,
+  audit fields, UoM and tracking flags. No runtime policy reads/writes use `inventory.sku_policy`
+  or threshold columns on `product.sku`.
+- A canonical `product.variants` insert automatically creates one inventory item with no tracking
+  flags and nullable thresholds. The same migration fills items for existing canonical variants.
+- Existing `min_qty`/`max_qty` and logistics fields are preserved. `safety_stock` is independent
+  of `min_qty`. Added fields are `safety_stock`, `removal_strategy`, `max_shelf_life_days` and
+  `policy_configured` (distinguishes unmanaged legacy receipts from explicitly configured policy).
+- Tracking supports NONE, LOT, SERIAL and **LOT_SERIAL**. Expiry requires a lot and FEFO, matching
+  the existing database constraint; SERIAL alone cannot enable expiry. FIFO uses real receipt
+  time, never a fabricated `created_at`/migration timestamp.
+- **product.products** owns slug/SEO. Product API edits the source; catalog stores a read snapshot,
+  projection progress and publication visibility. Public gallery links use the canonical catalog
+  gallery route, not the legacy product-gallery reader. The listing FK targets `product.products`.
+  Slugs remain unique at the source and projection and cannot change after first publication,
+  including after unpublication. SEO title is at most 255; description input at most 5000.
+- Publication reads canonical products, categories, ACTIVE variants and published media with
+  reviewer metadata; an image cannot be approved by its recorded creator. New catalog publication
+  does not read legacy product/gallery tables. Existing legacy gallery endpoints need the PIM
+  owner's cutover before the complete create/approve/gallery/publish UI flow can use these APIs.
 
-The minimal price check remains deliberately: removing the quote workflow must not make public
-checkout trust a submitted unit price again. Standard guest/account checkout compares the client's
-expected amount with the current server price. Missing price is `PRICE_NOT_AVAILABLE`; a changed
-price is `CHECKOUT_PRICE_CHANGED`. No made-up demo price or fallback is supplied.
+## API contract
 
-New customer-facing design checkout is **blocked with DESIGN_QUOTE_REQUIRED** until SCRUM-298
-provides the accepted server quote integration. Existing order reads/cancellation remain available.
-The trusted internal compatibility command remains an existing integration, not a public bypass.
-The HTTP request has no new mandatory `quoteId` field in this scoped PR.
-
-## Current routes (legacy adapters; not final schema acceptance)
-
-| Routes | Purpose | Permission |
+| Route | Behavior | Permission |
 | --- | --- | --- |
-| GET/PUT /api/v1/products/{productId}/skus/{skuId}/inventory-control | Read/replace policy with version; return immediate threshold evaluation | product-products READ/UPDATE |
-| GET/PUT /api/v1/products/{productId}/ecommerce | Read/edit listing and revision | product-products READ/UPDATE |
-| GET/PUT /api/v1/products/{productId}/skus/{sku}/base-price | Read/update VND base price | product-products READ/UPDATE |
-| POST /api/v1/products/{productId}/publication or /unpublication | Publish/unpublish using existing approval rules | product-products APPROVE |
-| GET /api/v1/public/catalog/products[/{slug}] | Public cards/detail; live publication guard | Anonymous |
+| GET/PUT /api/v1/products/{productId}/skus/{skuId}/inventory-control | Canonical product and **variant id**; version is inventory-item version | product-products READ/UPDATE |
+| GET/PUT /api/v1/products/{productId}/ecommerce | Canonical source content and product version; separate projected revision | product-products READ/UPDATE |
+| GET/PUT /api/v1/products/{productId}/skus/{sku}/base-price | Positive whole VND base price | product-products READ/UPDATE |
+| POST /api/v1/products/{productId}/publication or /unpublication | Master/category/gallery/active-SKU/price gates | product-products APPROVE |
+| GET /api/v1/public/catalog/products/{slug}/gallery | Approved canonical media; live visibility guard | Anonymous |
+| GET /api/v1/public/catalog/products[/{slug}] | Projection with live canonical publication guard | Anonymous |
 
-Confirm route/permission changes with the inventory item owner during adapter migration; do not
-silently change FE bindings. Controller annotations and generated OpenAPI are authoritative.
+The URL shapes and permissions are retained. FE must supply canonical product/variant identifiers,
+reload the inventory-item version, and handle LOT_SERIAL. Ecommerce revision is the canonical
+product version; price writes advance it too, so stale edits cannot overwrite another source writer. Legacy ids are not guessed or mapped by
+product name. Configure stock on DRAFT/BLOCKED variants as well as ACTIVE ones; only ACTIVE variants
+can be published or purchased. Obsolete variants are excluded.
 
-## Policy and publication semantics retained
+## Policy and publication behavior
 
 - Null thresholds mean unconfigured; zero is a real threshold; negatives are rejected.
-- Safety stock <= reorder point when both exist. Threshold above stock is allowed.
-- Reorder uses usable on-hand <= threshold; safety uses usable on-hand < safety stock.
-  Expired/quarantined/damaged stock is excluded, reservations are not subtracted (unlike ATP).
-- Policy writes emit an after-commit consumable event; no alert delivery worker remains in this PR.
-- Stock compatibility is checked before tracking/removal changes. An active count check reads the
-  develop cycle_count/cycle_count_line schema, not the removed private count schema.
-- Product master and gallery approval, category, SKU and selling price are separate publish checks.
-- Draft/unapproved products are not public. Slug uniqueness and published URL protection remain.
-- Projection may briefly lag SEO edits. Checkout validates live publication and price under locks.
-- VND only, positive whole selling-price amounts.
+- Safety stock <= reorder point when both exist. A threshold above stock is allowed and evaluated
+  immediately. Reorder uses usable on-hand <= threshold; safety uses usable on-hand < safety stock.
+  Expired/quarantined/damaged stock is excluded; reservations are not subtracted (unlike ATP).
+- A successful policy change emits `SkuInventoryControlChanged` with inventory-item version.
+  SCRUM-147 may consume it after commit; this PR does not send alert email.
+- Incompatible existing stock and active develop cycle counts block operational policy changes.
+  Policy changes and stock ingress share the SKU advisory lock; optimistic version prevents lost edits.
+- SEO projection may briefly lag; retry reads current product source. Checkout rechecks live status,
+  variant availability and server price under product locks. Old events cannot republish hidden data.
+- Standard guest/account checkout rejects missing price (`PRICE_NOT_AVAILABLE`) and client price
+  tampering (`CHECKOUT_PRICE_CHANGED`). No new mandatory quoteId field is introduced.
+  Public design checkout remains `DESIGN_QUOTE_REQUIRED` until SCRUM-298 supplies accepted quotes.
 
 ## Review disposition
 
-| Review finding | Disposition |
+| Tu's finding on PR #38 | Result |
 | --- | --- |
-| Duplicate cycle-count migration prevents fresh boot | Removed five extension migrations 001200..001600 from this branch; recoverable in snapshot |
-| Duplicate inventory policy source / legacy SKU | **Blocked:** owner request specifies inventory_items fields, metadata and cutover |
-| Catalog owns canonical SEO incorrectly | **Blocked:** product.products is the agreed target; adapter/migration cutover still pending |
-| Extra 146/147/298 scope | Removed endpoints/services/entities/tests, notification hooks and new quoteId field; handoff manifest supplied |
-| Price/checkout contract | Standard server validation retained, price errors clarified; full quote workflow moved out |
-| Generic CATALOG_NOT_READY | Replaced by listing/approval/category/gallery/SKU/availability/price codes with English/Vietnamese bundles |
-| Alert recipients/retry; stock-movement ledger; count warehouse scope | Assigned explicitly to separate 147/146 work; not represented as fixed production features |
-| Formatting and language | Conflict markers resolved and new errors localized; broader legacy formatting/DTO alignment belongs to adapter cutover |
-| PR description | This scoped summary is prepared for the PR; remote description is not updated by this working-tree change |
+| Duplicate cycle-count tables / failed CI | Earlier scope split removed extension migrations 001200..001600 and their runtime features; develop owns cycle-count/ledger schema |
+| Duplicate inventory policy source | Canonical item adapter; new migration backfills safely and removes private policy table / new legacy SKU control columns |
+| Duplicate editable SEO / old product FK | Product API owns canonical SEO; catalog snapshot has canonical FK |
+| Scope beyond 70/71 | Preserve split of 146/147/298; see separate handoff manifest |
+| Generic publication errors | Specific listing/approval/category/gallery/SKU/availability/price errors, EN/VI bundles |
+| Missing SYSTEM_ADMIN permission | Corrective grant in new migration covers inherited procurement-suppliers:DELETE; increments version only when grants change |
+| Formatting and i18n conflicts | Touched code formatted; both message and validation bundle pairs have matching unique keys |
+| Alert recipients / count ledger / wrong count warehouse | Work belongs to 147/146 and is absent from this PR; not claimed implemented |
+| Demo checkout | Await confirmed selling prices; supplier purchase costs are not used as selling prices |
 
-## Migration safety / merge gate
+Source review: [29 September](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/38#issuecomment-5892128787),
+[7 October permissions](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/38#issuecomment-6037831143).
+Jira: [SCRUM-70](https://minh7n3.atlassian.net/browse/SCRUM-70),
+[SCRUM-71](https://minh7n3.atlassian.net/browse/SCRUM-71); all six child tasks were also checked.
 
-No new migration was authored in this split. Two existing branch migrations (001000 policy,
-001100 catalog) remain temporarily so the legacy implementation can be tested; **they must not
-be merged as the final design**. They are not compliant with the new single-source schema.
-Tú must approve the replacement/backfill and application cutover together. Do not simply delete
-these migrations while the current repositories still need their columns/tables.
+## Migration and remaining coordination
 
-Do not repair Flyway, erase history or drop a developer database automatically. Databases which
-already applied extension migrations require the owner's explicit upgrade plan.
+PR #36 is still open. This branch retains its existing stacked ancestry; merge order remains
+#36 before #38 as requested in review. No worktree or branch for SCRUM-115-118 was modified.
 
-Before merging: owner schema PR, source adapters/fixtures migrated, no dual source, fresh+upgrade
-tests, DB QA/orphans, permissions and role versions, FE price contract/UAT, then commit/push
-with repository-owner approval.
+`V20261008000100__canonical_inventory_and_ecommerce.sql` is appended after branch/develop migrations.
+Earlier migration contents and checksums remain unchanged. The original temporary policy/listing
+schema is transitioned in this new migration, not by rewriting Flyway history.
 
-## Verification of the split (2026-10-03)
+For databases that used old PR38, run `tools/sql/inventory-commerce-upgrade-preflight.sql` first.
+Every private policy must map to a canonical variant/item by SKU; every listing must map to a
+canonical product by id. Conflicting flags, non-null thresholds or slug/SEO stop migration with a
+reconciliation error. No source is silently selected, text truncated, history repaired or database
+reset. Safe upgrades preserve min/max, logistics, policy values, SEO and published URL protection.
+Databases that already ran removed 146/147/298 migrations require the schema owner's explicit
+upgrade path; this PR does not pretend those histories are compatible.
 
-- First full `mvn -o clean test`: 457 tests, one FIFO fixture error caused by a random
-  nonexistent order id violating the develop FK; all other cases passed.
-- Replaced that fixture with a real order/customer and added a public design-price fallback
-  regression. Re-ran InventoryCatalogIntegrationTest, InventoryCatalogSecurityIntegrationTest,
-  GuestCheckoutServiceTest, ModularityTest and ArchitectureTest: **51/51 passed**.
-- Combined latest Surefire reports: 458 tests, zero errors/failures/skips. This is the full run
-  plus the targeted rerun, not a second full-suite run.
-- Fresh migrations and procurement upgrade test executed successfully. No application/local
-  database was deleted or repaired. Tests used isolated Docker PostgreSQL containers.
-- `verify.py`: 19 existing test-fixture dependency findings remain; not claimed clean.
-- `git diff --check` clean; no unresolved merge paths. The merge and scope edits are staged,
-  but **not committed/pushed**, so Git still reports a merge awaiting its commit.
-- Canonical schema migration, DB QA on that future schema and FE UAT remain pending; these test
-  results do not clear the merge gates above.
+The PIM owner still needs to migrate the legacy product/variant/gallery writers and existing data.
+Do not activate C1/C3 here. The canonical adapters are independently testable but the legacy UI's
+full product-creation flow is not accepted until that dependency and identifier migration are done.
+The owner checklist is `business-design/db-design/SCRUM-70-71-schema-change-request.md`.
+
+## Verification
+
+Local validation on 08 October:
+
+- `mvn -B -ntp -o clean verify`: **523 tests passed**, no failures/errors/skips, including packaging.
+- After the final source-version and canonical-gallery changes, a focused rerun of
+  InventoryCatalogIntegrationTest, InventoryCatalogSecurityIntegrationTest,
+  InventoryCatalogMigrationUpgradeTest, SystemAdminRoleIntegrationTest, ModularityTest and
+  ArchitectureTest: **61 tests passed**, no failures/errors/skips.
+- The final PR commit is also validated by GitHub Actions; see its check result for the complete
+  suite on that exact commit. `git diff --check` and the append-only migration check pass.
+
+ Tests use isolated Docker
+PostgreSQL/Redis containers, not application databases. Covered: fresh migrations, populated upgrade
+and rollback on conflict, inventory version/tracking/expiry/FIFO/ingress concurrency, canonical SEO,
+published slug protection, price validation, public visibility, real security and SYSTEM_ADMIN.
+
+`tools/verify.py` currently reports 29 test-fixture dependency findings in unchanged test files;
+no production-code finding. Module and architecture tests remain authoritative CI gates.

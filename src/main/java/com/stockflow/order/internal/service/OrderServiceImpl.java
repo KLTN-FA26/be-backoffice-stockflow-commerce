@@ -1,39 +1,50 @@
 package com.stockflow.order.internal.service;
 
-import com.stockflow.inventory.api.InventoryService;
-import com.stockflow.inventory.api.ReserveStockResult;
-import com.stockflow.inventory.api.ReserveStockCommand;
+import com.stockflow.catalog.api.CatalogService;
+import com.stockflow.common.api.PageResponse;
+import com.stockflow.common.domain.Money;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
+import com.stockflow.common.id.Identifiers;
+import com.stockflow.common.persistence.Pages;
 import com.stockflow.customer.api.CheckoutCustomer;
 import com.stockflow.customer.api.CustomerService;
+import com.stockflow.design.api.DesignService;
+import com.stockflow.inventory.api.InventoryService;
+import com.stockflow.inventory.api.ReserveStockCommand;
+import com.stockflow.inventory.api.ReserveStockResult;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
-import com.stockflow.order.api.PlaceOrderCommand;
 import com.stockflow.order.api.PlaceGuestOrderCommand;
+import com.stockflow.order.api.PlaceOrderCommand;
 import com.stockflow.order.internal.domain.Order;
+import com.stockflow.order.internal.domain.OrderAddressSnapshot;
 import com.stockflow.order.internal.domain.OrderId;
 import com.stockflow.order.internal.domain.OrderLine;
 import com.stockflow.order.internal.domain.OrderNumber;
-import com.stockflow.order.internal.domain.OrderAddressSnapshot;
 import com.stockflow.order.internal.domain.OrderRepository;
+import com.stockflow.order.internal.entity.OrderHoldJpaEntity;
+import com.stockflow.order.internal.repository.OrderHoldJpaRepository;
 import com.stockflow.order.internal.repository.OrderSearchRepository;
-import com.stockflow.common.api.PageResponse;
-import com.stockflow.common.error.BusinessException;
-import com.stockflow.common.error.ErrorCode;
-import com.stockflow.common.persistence.Pages;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * Order orchestration — and <b>the single clearest illustration of what this architecture buys</b>.
@@ -41,33 +52,34 @@ import java.util.UUID;
  * <h2>Read {@link #placeOrder} against its distributed equivalent</h2>
  *
  * <p>In the microservices build this operation spanned two services and needed all of the
- * following, none of which is business logic:</p>
+ * following, none of which is business logic:
+ *
  * <ol>
- *   <li>write the order row plus an {@code outbox_event} row in one local transaction;</li>
- *   <li>a relay thread polling the outbox and publishing {@code OrderPlaced} to Kafka;</li>
- *   <li>an inventory consumer, made idempotent because Kafka redelivers on any consumer restart;</li>
- *   <li>inventory publishing {@code StockReserved} or {@code StockReservationFailed} back;</li>
- *   <li>an order consumer for both, moving the order forward or cancelling it;</li>
+ *   <li>write the order row plus an {@code outbox_event} row in one local transaction;
+ *   <li>a relay thread polling the outbox and publishing {@code OrderPlaced} to Kafka;
+ *   <li>an inventory consumer, made idempotent because Kafka redelivers on any consumer restart;
+ *   <li>inventory publishing {@code StockReserved} or {@code StockReservationFailed} back;
+ *   <li>an order consumer for both, moving the order forward or cancelling it;
  *   <li>a saga state row, because between (1) and (5) the order sits in a status that exists only
- *       to represent "I have asked and not yet heard back";</li>
- *   <li>a timeout, because (5) may never arrive;</li>
+ *       to represent "I have asked and not yet heard back";
+ *   <li>a timeout, because (5) may never arrive;
  *   <li>a compensating release, for a reservation that succeeded after the order had already been
- *       cancelled by that timeout.</li>
+ *       cancelled by that timeout.
  * </ol>
  *
  * <p>Roughly 600 lines across two services, four Kafka topics, and a class of bug — the customer
  * paid, the stock was never held — that only shows up under load. Below, the same operation is one
- * method, and the failure mode is gone: if anything throws, the transaction rolls back and both
- * the order and the reservation cease to exist together.</p>
+ * method, and the failure mode is gone: if anything throws, the transaction rolls back and both the
+ * order and the reservation cease to exist together.
  *
  * <h2>What was given up</h2>
  *
- * <p>Order and inventory now deploy together and share a database, so inventory cannot be scaled
- * or released independently, and a runaway query in one module can starve the other's connections.
- * For a five-person team shipping a capstone in one semester that is a trade worth making — and
- * the module boundaries are kept enforceable so the trade can be reversed later, module by module,
+ * <p>Order and inventory now deploy together and share a database, so inventory cannot be scaled or
+ * released independently, and a runaway query in one module can starve the other's connections. For
+ * a five-person team shipping a capstone in one semester that is a trade worth making — and the
+ * module boundaries are kept enforceable so the trade can be reversed later, module by module,
  * rather than requiring a rewrite. {@code docs/adr/0005-modular-monolith.md} records the decision
- * in full.</p>
+ * in full.
  */
 @Service
 @Transactional
@@ -80,16 +92,21 @@ class OrderServiceImpl implements OrderService {
     private final InventoryService inventory;
     private final OrderEventPublisher events;
     private final Clock clock;
-    private final com.stockflow.design.api.DesignService designs;
-    private final com.stockflow.order.internal.repository.OrderHoldJpaRepository holds;
+    private final DesignService designs;
+    private final OrderHoldJpaRepository holds;
     private final CustomerService customers;
-    private final com.stockflow.catalog.api.CatalogService catalog;
+    private final CatalogService catalog;
 
-    OrderServiceImpl(OrderRepository repository, OrderSearchRepository search,
-                     InventoryService inventory, OrderEventPublisher events, Clock clock,
-                     com.stockflow.design.api.DesignService designs,
-                     com.stockflow.order.internal.repository.OrderHoldJpaRepository holds,
-                     CustomerService customers, com.stockflow.catalog.api.CatalogService catalog) {
+    OrderServiceImpl(
+            OrderRepository repository,
+            OrderSearchRepository search,
+            InventoryService inventory,
+            OrderEventPublisher events,
+            Clock clock,
+            DesignService designs,
+            OrderHoldJpaRepository holds,
+            CustomerService customers,
+            CatalogService catalog) {
         this.repository = repository;
         this.search = search;
         this.inventory = inventory;
@@ -106,7 +123,7 @@ class OrderServiceImpl implements OrderService {
      *
      * <p><b>One transaction covers everything below.</b> The order rows, every stock reservation,
      * and the {@code event_publication} row for {@code OrderPlaced} all commit together or none of
-     * them do. There is no window in which an order exists without its stock.</p>
+     * them do. There is no window in which an order exists without its stock.
      */
     @Override
     public OrderSummary placeOrder(PlaceOrderCommand command) {
@@ -115,21 +132,28 @@ class OrderServiceImpl implements OrderService {
         Optional<Order> alreadyPlaced = repository.findByRequestId(command.requestId());
         if (alreadyPlaced.isPresent()) {
             if (!command.customerId().equals(alreadyPlaced.get().customerId())) {
-                throw new com.stockflow.common.error.BusinessException(
-                        com.stockflow.common.error.ErrorCode.IDEMPOTENCY_KEY_REUSED);
+                throw new BusinessException(ErrorCode.IDEMPOTENCY_KEY_REUSED);
             }
-            log.info("Request {} already produced order {}",
-                    command.requestId(), alreadyPlaced.get().orderNumber());
+            log.info(
+                    "Request {} already produced order {}",
+                    command.requestId(),
+                    alreadyPlaced.get().orderNumber());
             return toSummary(alreadyPlaced.get());
         }
 
         // SCRUM-298 is a separate integration: never fall back to a client-supplied design price.
-        if (command.snapshotCustomer() && command.lines().stream().anyMatch(line -> line.designSnapshotId() != null)) {
+        if (command.snapshotCustomer()
+                && command.lines().stream().anyMatch(line -> line.designSnapshotId() != null)) {
             throw new BusinessException(ErrorCode.DESIGN_QUOTE_REQUIRED);
         }
-        var sellingPrices = command.snapshotCustomer() ? catalog.checkoutPrices(command.lines().stream()
-                .filter(line -> line.designSnapshotId() == null).map(line -> line.sku().code())
-                .collect(java.util.stream.Collectors.toSet())) : java.util.Map.<String, com.stockflow.common.domain.Money>of();
+        var sellingPrices =
+                command.snapshotCustomer()
+                        ? catalog.checkoutPrices(
+                                command.lines().stream()
+                                        .filter(line -> line.designSnapshotId() == null)
+                                        .map(line -> line.sku().code())
+                                        .collect(Collectors.toSet()))
+                        : Map.<String, Money>of();
         LocalDate today = LocalDate.ofInstant(clock.instant(), ZoneOffset.UTC);
         OrderNumber orderNumber = repository.nextOrderNumber(today);
 
@@ -140,40 +164,74 @@ class OrderServiceImpl implements OrderService {
         List<OrderLine> lines = new ArrayList<>();
         for (int index = 0; index < command.lines().size(); index++) {
             PlaceOrderCommand.Line line = command.lines().get(index);
-            var orderLine = Order.line(deterministicLineId(command.requestId(), index),
-                    line.sku(), line.quantity(), command.snapshotCustomer()
-                            ? agreedPrice(line.sku().code(), line.unitPrice(), sellingPrices) : line.unitPrice(), line.designSnapshotId());
+            var orderLine =
+                    Order.line(
+                            deterministicLineId(command.requestId(), index),
+                            line.sku(),
+                            line.quantity(),
+                            command.snapshotCustomer()
+                                    ? agreedPrice(
+                                            line.sku().code(), line.unitPrice(), sellingPrices)
+                                    : line.unitPrice(),
+                            line.designSnapshotId());
             if (line.designSnapshotId() != null) {
-                orderLine.recordDesignChecksum(designs.verifySnapshotForSku(line.designSnapshotId(), command.customerId(), line.sku().code()).checksum());
+                orderLine.recordDesignChecksum(
+                        designs.verifySnapshotForSku(
+                                        line.designSnapshotId(),
+                                        command.customerId(),
+                                        line.sku().code())
+                                .checksum());
             }
             lines.add(orderLine);
         }
 
         Order order;
         if (command.snapshotCustomer()) {
-            CheckoutCustomer checkout = customers.resolveCheckout(command.customerId(),
-                    command.shippingAddressId(), command.billingAddressId());
-            order = Order.customerDraft(orderNumber, command.customerId(), command.requestId(),
-                    lines, clock.instant(), checkout.fullName(), checkout.email(), checkout.phone(),
-                    toSnapshot(checkout.shippingAddress()), toSnapshot(checkout.billingAddress()));
+            CheckoutCustomer checkout =
+                    customers.resolveCheckout(
+                            command.customerId(),
+                            command.shippingAddressId(),
+                            command.billingAddressId());
+            order =
+                    Order.customerDraft(
+                            orderNumber,
+                            command.customerId(),
+                            command.requestId(),
+                            lines,
+                            clock.instant(),
+                            checkout.fullName(),
+                            checkout.email(),
+                            checkout.phone(),
+                            toSnapshot(checkout.shippingAddress()),
+                            toSnapshot(checkout.billingAddress()));
         } else {
-            order = Order.draft(orderNumber, command.customerId(), command.requestId(),
-                    lines, clock.instant());
+            order =
+                    Order.draft(
+                            orderNumber,
+                            command.customerId(),
+                            command.requestId(),
+                            lines,
+                            clock.instant());
         }
 
         // Direct in-process call across the module boundary, through inventory's published port.
         // It joins this transaction. If reserve() throws InsufficientStockException on line 3,
         // lines 1 and 2 are rolled back with the order — no compensation code, no saga state, no
         // possibility of a half-reserved order surviving the failure.
-        inventory.prepareReservation(order.lines().stream().map(OrderLine::sku).collect(java.util.stream.Collectors.toSet()));
+        inventory.prepareReservation(
+                order.lines().stream().map(OrderLine::sku).collect(Collectors.toSet()));
         for (OrderLine line : order.lines()) {
-            ReserveStockResult reservation = inventory.reserve(new ReserveStockCommand(
-                    // A derived, deterministic request id: a retry of this same checkout produces
-                    // the same key, so inventory recognises the replay instead of double-holding.
-                    deterministicRequestId(command.requestId(), line.id()),
-                    line.sku(),
-                    line.quantity(),
-                    order.id().value()));
+            ReserveStockResult reservation =
+                    inventory.reserve(
+                            new ReserveStockCommand(
+                                    // A derived, deterministic request id: a retry of this same
+                                    // checkout produces
+                                    // the same key, so inventory recognises the replay instead of
+                                    // double-holding.
+                                    deterministicRequestId(command.requestId(), line.id()),
+                                    line.sku(),
+                                    line.quantity(),
+                                    order.id().value()));
             // All of the ids, not the first: a line drawn from two lots comes back with two holds,
             // and cancelling has to release both.
             order.attachReservations(line.id(), reservation.reservationIds());
@@ -183,40 +241,60 @@ class OrderServiceImpl implements OrderService {
         Order saved = repository.save(order);
         events.publishEventsOf(order);
 
-        log.info("Placed order {} for customer {} with {} line(s), total {}",
-                saved.orderNumber(), saved.customerId(), saved.lines().size(), saved.total());
+        log.info(
+                "Placed order {} for customer {} with {} line(s), total {}",
+                saved.orderNumber(),
+                saved.customerId(),
+                saved.lines().size(),
+                saved.total());
         return toSummary(saved);
     }
 
     @Override
     public OrderSummary placeGuestOrder(PlaceGuestOrderCommand command) {
-        String email = command.email().trim().toLowerCase(java.util.Locale.ROOT);
+        String email = command.email().trim().toLowerCase(Locale.ROOT);
         // Construct snapshots before the replay lookup as well: a reused request id must not make
         // malformed address data appear valid merely because an earlier checkout succeeded.
         var shipping = toSnapshot(command.shippingAddress());
         var billing = toSnapshot(command.billingAddress());
         Optional<Order> alreadyPlaced = repository.findByRequestId(command.requestId());
         if (alreadyPlaced.isPresent()) {
-            if (!sameGuestCheckout(alreadyPlaced.get(), email, shipping, billing, command.lines())) {
-                throw new com.stockflow.common.error.BusinessException(
-                        com.stockflow.common.error.ErrorCode.IDEMPOTENCY_KEY_REUSED);
+            if (!sameGuestCheckout(
+                    alreadyPlaced.get(), email, shipping, billing, command.lines())) {
+                throw new BusinessException(ErrorCode.IDEMPOTENCY_KEY_REUSED);
             }
             return toSummary(alreadyPlaced.get());
         }
 
-        var sellingPrices = catalog.checkoutPrices(command.lines().stream().map(line -> line.sku().code())
-                .collect(java.util.stream.Collectors.toSet()));
+        var sellingPrices =
+                catalog.checkoutPrices(
+                        command.lines().stream()
+                                .map(line -> line.sku().code())
+                                .collect(Collectors.toSet()));
         LocalDate today = LocalDate.ofInstant(clock.instant(), ZoneOffset.UTC);
         OrderNumber orderNumber = repository.nextOrderNumber(today);
         List<OrderLine> lines = new ArrayList<>();
         for (int index = 0; index < command.lines().size(); index++) {
             PlaceGuestOrderCommand.Line line = command.lines().get(index);
-            lines.add(Order.line(deterministicLineId(command.requestId(), index), line.sku(),
-                    line.quantity(), agreedPrice(line.sku().code(), line.unitPrice(), sellingPrices), null));
+            lines.add(
+                    Order.line(
+                            deterministicLineId(command.requestId(), index),
+                            line.sku(),
+                            line.quantity(),
+                            agreedPrice(line.sku().code(), line.unitPrice(), sellingPrices),
+                            null));
         }
-        Order order = Order.guestDraft(orderNumber, command.requestId(), lines, clock.instant(),
-                shipping.recipientName(), email,
-                shipping.phone(), shipping, billing);
+        Order order =
+                Order.guestDraft(
+                        orderNumber,
+                        command.requestId(),
+                        lines,
+                        clock.instant(),
+                        shipping.recipientName(),
+                        email,
+                        shipping.phone(),
+                        shipping,
+                        billing);
         reserve(order, command.requestId());
         order.submit();
         Order saved = repository.save(order);
@@ -231,18 +309,19 @@ class OrderServiceImpl implements OrderService {
      * normal callers too; this comparison is the durable, service-level backstop for retries that
      * reach this use case directly.
      */
-    private static com.stockflow.common.domain.Money agreedPrice(String sku, com.stockflow.common.domain.Money expected,
-            java.util.Map<String, com.stockflow.common.domain.Money> prices) {
+    private static Money agreedPrice(String sku, Money expected, Map<String, Money> prices) {
         var actual = prices.get(sku);
         if (actual == null) throw new BusinessException(ErrorCode.PRICE_NOT_AVAILABLE);
         if (!actual.equals(expected)) throw new BusinessException(ErrorCode.CHECKOUT_PRICE_CHANGED);
         return actual;
     }
 
-    private static boolean sameGuestCheckout(Order order, String email,
-                                             OrderAddressSnapshot shipping,
-                                             OrderAddressSnapshot billing,
-                                             List<PlaceGuestOrderCommand.Line> requestedLines) {
+    private static boolean sameGuestCheckout(
+            Order order,
+            String email,
+            OrderAddressSnapshot shipping,
+            OrderAddressSnapshot billing,
+            List<PlaceGuestOrderCommand.Line> requestedLines) {
         if (order.customerId() != null
                 || !email.equals(order.contactEmail())
                 || !shipping.equals(order.shippingAddress())
@@ -275,28 +354,40 @@ class OrderServiceImpl implements OrderService {
      *
      * <p>Symmetrical with {@link #placeOrder}: the status change and every stock release are one
      * transaction. The distributed version needed a compensating command per line plus a
-     * reconciliation job for the ones that got lost.</p>
+     * reconciliation job for the ones that got lost.
      *
-     * <p>SCRUM-242/WBS 3.17.4: looks the order up via {@link OrderRepository#findByIdInScope},
-     * not {@code findByIdForUpdate} directly — this is what makes {@code scope = OWN} on the
+     * <p>SCRUM-242/WBS 3.17.4: looks the order up via {@link OrderRepository#findByIdInScope}, not
+     * {@code findByIdForUpdate} directly — this is what makes {@code scope = OWN} on the
      * customer-facing cancellation endpoint an actual restriction rather than a decorative one. The
      * admin/sales endpoint calls this same method under {@code scope = ALL}, where the lookup
-     * imposes no ownership restriction at all.</p>
+     * imposes no ownership restriction at all.
      */
     @Override
     public void cancel(UUID orderId, String reason) {
-        Order order = repository.findByIdInScope(new OrderId(orderId))
-                .orElseThrow(() -> new BusinessException(
-                        ErrorCode.NOT_FOUND, "No order with id " + orderId));
+        Order order =
+                repository
+                        .findByIdInScope(new OrderId(orderId))
+                        .orElseThrow(
+                                () ->
+                                        new BusinessException(
+                                                ErrorCode.NOT_FOUND,
+                                                "No order with id " + orderId));
         cancelLoaded(order, reason);
     }
 
     @Override
     public void cancelOwn(UUID orderId, UUID customerId, String reason) {
-        Order order = repository.findByIdForUpdate(new OrderId(orderId))
-                .filter(found -> customerId != null && customerId.equals(found.customerId()))
-                .orElseThrow(() -> new BusinessException(
-                        ErrorCode.NOT_FOUND, "No order with id " + orderId));
+        Order order =
+                repository
+                        .findByIdForUpdate(new OrderId(orderId))
+                        .filter(
+                                found ->
+                                        customerId != null && customerId.equals(found.customerId()))
+                        .orElseThrow(
+                                () ->
+                                        new BusinessException(
+                                                ErrorCode.NOT_FOUND,
+                                                "No order with id " + orderId));
         cancelLoaded(order, reason);
     }
 
@@ -321,7 +412,7 @@ class OrderServiceImpl implements OrderService {
      * <p>{@code customerId} must come from the controller resolving {@code @AuthenticatedUser},
      * never from a client-supplied parameter — this method applies no scope check of its own, the
      * same trust boundary {@link #placeOrder} already relies on for {@code
-     * PlaceOrderCommand.customerId()}.</p>
+     * PlaceOrderCommand.customerId()}.
      */
     @Override
     @Transactional(readOnly = true)
@@ -334,14 +425,17 @@ class OrderServiceImpl implements OrderService {
      * Cancel an order whose payment failed, <b>without</b> touching inventory.
      *
      * <p>Separate from {@link #cancel} on purpose. On the payment-failed path, inventory has its
-     * own listener on the same event and releases its own holds; calling
-     * {@code inventory.release(...)} from here as well would work — the release is idempotent —
-     * but it would encode "what inventory does when a payment fails" inside the order module, and
-     * that is inventory's business, not order's.</p>
+     * own listener on the same event and releases its own holds; calling {@code
+     * inventory.release(...)} from here as well would work — the release is idempotent — but it
+     * would encode "what inventory does when a payment fails" inside the order module, and that is
+     * inventory's business, not order's.
      */
     public void cancelAfterPaymentFailure(UUID orderId, String reason) {
-        Order order = repository.findByIdForUpdate(new OrderId(orderId))
-                .orElseThrow(() -> new IllegalArgumentException("No order with id " + orderId));
+        Order order =
+                repository
+                        .findByIdForUpdate(new OrderId(orderId))
+                        .orElseThrow(
+                                () -> new IllegalArgumentException("No order with id " + orderId));
         if (order.status() == OrderStatus.CANCELLED) {
             return; // Redelivered event; already handled.
         }
@@ -353,8 +447,11 @@ class OrderServiceImpl implements OrderService {
 
     /** Move an order to PAID. Called by {@code PaymentEventListener}, not exposed on the port. */
     public void markPaid(UUID orderId) {
-        Order order = repository.findByIdForUpdate(new OrderId(orderId))
-                .orElseThrow(() -> new IllegalArgumentException("No order with id " + orderId));
+        Order order =
+                repository
+                        .findByIdForUpdate(new OrderId(orderId))
+                        .orElseThrow(
+                                () -> new IllegalArgumentException("No order with id " + orderId));
         if (order.status() == OrderStatus.PAID) {
             return; // Redelivered event; nothing to do.
         }
@@ -365,30 +462,40 @@ class OrderServiceImpl implements OrderService {
 
     @Override
     public OrderSummary releaseToFulfillment(UUID orderId) {
-        var order = repository.findByIdForUpdate(new OrderId(orderId))
-                .orElseThrow(() -> new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.NOT_FOUND));
-        if (order.status() == OrderStatus.IN_FULFILMENT) { return toSummary(order); }
+        var order =
+                repository
+                        .findByIdForUpdate(new OrderId(orderId))
+                        .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+        if (order.status() == OrderStatus.IN_FULFILMENT) {
+            return toSummary(order);
+        }
         order.release();
         return toSummary(repository.save(order));
     }
 
     @Override
     public void putOnDesignHold(UUID orderId, String reason) {
-        var order = repository.findByIdForUpdate(new OrderId(orderId))
-                .orElseThrow(() -> new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.NOT_FOUND));
-        if (order.status() == OrderStatus.ON_HOLD) { return; }
+        var order =
+                repository
+                        .findByIdForUpdate(new OrderId(orderId))
+                        .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+        if (order.status() == OrderStatus.ON_HOLD) {
+            return;
+        }
         order.putOnHold();
         repository.save(order);
-        holds.save(new com.stockflow.order.internal.entity.OrderHoldJpaEntity(
-                com.stockflow.common.id.Identifiers.newId(), orderId, reason, clock.instant()));
+        holds.save(new OrderHoldJpaEntity(Identifiers.newId(), orderId, reason, clock.instant()));
     }
 
     @Override
     public void resolveDesignHold(UUID orderId, UUID resolvedBy, String note) {
-        var order = repository.findByIdForUpdate(new OrderId(orderId))
-                .orElseThrow(() -> new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.NOT_FOUND));
-        var hold = holds.findFirstByOrderIdAndResolvedAtIsNullOrderByRaisedAtDesc(orderId)
-                .orElseThrow(() -> new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.CONFLICT));
+        var order =
+                repository
+                        .findByIdForUpdate(new OrderId(orderId))
+                        .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+        var hold =
+                holds.findFirstByOrderIdAndResolvedAtIsNullOrderByRaisedAtDesc(orderId)
+                        .orElseThrow(() -> new BusinessException(ErrorCode.CONFLICT));
         order.resumeFromHold();
         hold.resolve(resolvedBy, note, clock.instant());
         repository.save(order);
@@ -402,17 +509,16 @@ class OrderServiceImpl implements OrderService {
      * first retry: the same checkout would arrive with a new key and hold the stock a second time.
      * Deriving the id from the checkout's request id and the line id makes the retry recognisable.
      * Type 3 (name-based) semantics, built from the two ids so the result is stable across
-     * processes and restarts.</p>
+     * processes and restarts.
      */
     private static UUID deterministicRequestId(UUID requestId, UUID lineId) {
-        return UUID.nameUUIDFromBytes((requestId + ":" + lineId).getBytes(
-                java.nio.charset.StandardCharsets.UTF_8));
+        return UUID.nameUUIDFromBytes((requestId + ":" + lineId).getBytes(StandardCharsets.UTF_8));
     }
 
     /** Stable line identity: same checkout request, same position, same id. */
     private static UUID deterministicLineId(UUID requestId, int index) {
-        return UUID.nameUUIDFromBytes((requestId + "#line#" + index).getBytes(
-                java.nio.charset.StandardCharsets.UTF_8));
+        return UUID.nameUUIDFromBytes(
+                (requestId + "#line#" + index).getBytes(StandardCharsets.UTF_8));
     }
 
     private OrderSummary toSummary(Order order) {
@@ -423,46 +529,84 @@ class OrderServiceImpl implements OrderService {
                 order.status(),
                 order.total(),
                 order.lines().stream()
-                        .map(line -> new OrderSummary.LineSummary(
-                                line.id(),
-                                line.sku().code(),
-                                line.quantity(),
-                                line.unitPrice(),
-                                line.lineTotal(),
-                                line.reservationIds(), line.designSnapshotId(), line.designChecksum()))
+                        .map(
+                                line ->
+                                        new OrderSummary.LineSummary(
+                                                line.id(),
+                                                line.sku().code(),
+                                                line.quantity(),
+                                                line.unitPrice(),
+                                                line.lineTotal(),
+                                                line.reservationIds(),
+                                                line.designSnapshotId(),
+                                                line.designChecksum()))
                         .toList(),
-                order.placedAt(), order.createdBy(), order.lastModifiedAt(), order.lastModifiedBy(),
-                order.contactName(), order.contactEmail(), order.contactPhone(),
-                toSummary(order.shippingAddress()), toSummary(order.billingAddress()));
+                order.placedAt(),
+                order.createdBy(),
+                order.lastModifiedAt(),
+                order.lastModifiedBy(),
+                order.contactName(),
+                order.contactEmail(),
+                order.contactPhone(),
+                toSummary(order.shippingAddress()),
+                toSummary(order.billingAddress()));
     }
 
     private void reserve(Order order, UUID requestId) {
-        inventory.prepareReservation(order.lines().stream().map(OrderLine::sku).collect(java.util.stream.Collectors.toSet()));
+        inventory.prepareReservation(
+                order.lines().stream().map(OrderLine::sku).collect(Collectors.toSet()));
         for (OrderLine line : order.lines()) {
-            ReserveStockResult reservation = inventory.reserve(new ReserveStockCommand(
-                    deterministicRequestId(requestId, line.id()), line.sku(), line.quantity(),
-                    order.id().value()));
+            ReserveStockResult reservation =
+                    inventory.reserve(
+                            new ReserveStockCommand(
+                                    deterministicRequestId(requestId, line.id()),
+                                    line.sku(),
+                                    line.quantity(),
+                                    order.id().value()));
             order.attachReservations(line.id(), reservation.reservationIds());
         }
     }
 
     private static OrderAddressSnapshot toSnapshot(PlaceGuestOrderCommand.Address address) {
-        return new OrderAddressSnapshot(address.recipientName(), address.phone(), address.line1(),
-                address.line2(), address.wardCode(), address.wardName(), address.provinceCode(),
-                address.provinceName(), address.countryCode(), address.postalCode());
+        return new OrderAddressSnapshot(
+                address.recipientName(),
+                address.phone(),
+                address.line1(),
+                address.line2(),
+                address.wardCode(),
+                address.wardName(),
+                address.provinceCode(),
+                address.provinceName(),
+                address.countryCode(),
+                address.postalCode());
     }
 
     private static OrderAddressSnapshot toSnapshot(CheckoutCustomer.CheckoutAddress address) {
-        return new OrderAddressSnapshot(address.recipientName(), address.phone(), address.line1(),
-                address.line2(), address.wardCode(), address.wardName(), address.provinceCode(),
-                address.provinceName(), address.countryCode(), address.postalCode());
+        return new OrderAddressSnapshot(
+                address.recipientName(),
+                address.phone(),
+                address.line1(),
+                address.line2(),
+                address.wardCode(),
+                address.wardName(),
+                address.provinceCode(),
+                address.provinceName(),
+                address.countryCode(),
+                address.postalCode());
     }
 
     private static OrderSummary.AddressSummary toSummary(OrderAddressSnapshot address) {
         if (address == null) return null;
-        return new OrderSummary.AddressSummary(address.recipientName(), address.phone(),
-                address.line1(), address.line2(), address.wardCode(), address.wardName(),
-                address.provinceCode(), address.provinceName(), address.countryCode(),
+        return new OrderSummary.AddressSummary(
+                address.recipientName(),
+                address.phone(),
+                address.line1(),
+                address.line2(),
+                address.wardCode(),
+                address.wardName(),
+                address.provinceCode(),
+                address.provinceName(),
+                address.countryCode(),
                 address.postalCode());
     }
 }

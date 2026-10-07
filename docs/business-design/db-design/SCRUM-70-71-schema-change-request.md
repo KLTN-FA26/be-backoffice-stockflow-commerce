@@ -1,5 +1,12 @@
 # Yêu cầu schema và hợp đồng tích hợp — SCRUM-70/71
 
+> Cập nhật 08/10/2026: nhánh hiện có adapter canonical và migration bổ sung
+> `V20261008000100__canonical_inventory_and_ecommerce.sql` để owner review.
+> Chi tiết triển khai và điểm còn vướng nằm trong `docs/SCRUM-70-71-backend.md`.
+> Nội dung bên dưới là yêu cầu phối hợp ban đầu ngày 03/10; các mô tả "code đang dùng legacy"
+> đã được thay thế cho phần 70/71. Chưa khẳng định Tú đã duyệt schema hay upstream PIM writers
+> đã chuyển xong. Không kích hoạt C1/C3, không thay lịch sử Flyway.
+
 Ngày: 03/10/2026. Người xử lý schema: **Tú**. Trạng thái: **đề xuất chờ owner duyệt**, không phải migration đã thực hiện.
 
 ## 1. Quyết định phạm vi

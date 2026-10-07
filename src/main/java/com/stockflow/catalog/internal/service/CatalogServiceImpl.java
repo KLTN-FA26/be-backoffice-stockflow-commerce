@@ -1,9 +1,22 @@
 package com.stockflow.catalog.internal.service;
 
 import com.stockflow.catalog.api.CatalogService;
+import com.stockflow.catalog.internal.repository.ListingRepository;
+import com.stockflow.common.domain.Money;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
+import com.stockflow.product.api.ProductPublication;
+import com.stockflow.product.api.ProductStatus;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeMap;
+import java.util.UUID;
 
 /**
  * Checkout-facing catalog API. Price validation joins the order transaction so a concurrent
@@ -13,36 +26,41 @@ import org.springframework.transaction.annotation.Transactional;
 @Transactional
 class CatalogServiceImpl implements CatalogService {
 
-    private final com.stockflow.catalog.internal.repository.ListingRepository listings;
-    private final com.stockflow.product.api.ProductPublication products;
-    CatalogServiceImpl(com.stockflow.catalog.internal.repository.ListingRepository listings,
-                       com.stockflow.product.api.ProductPublication products) {
+    private final ListingRepository listings;
+    private final ProductPublication products;
+
+    CatalogServiceImpl(ListingRepository listings, ProductPublication products) {
         this.listings = listings;
         this.products = products;
     }
 
     /** Joins checkout; base-price and publication changes acquire the same product locks. */
-    public java.util.Map<String, com.stockflow.common.domain.Money> checkoutPrices(java.util.Set<String> skus) {
-        java.util.Map<java.util.UUID, java.util.Set<String>> grouped = new java.util.TreeMap<>();
+    public Map<String, Money> checkoutPrices(Set<String> skus) {
+        Map<UUID, Set<String>> grouped = new TreeMap<>();
         for (String sku : skus) {
-            var id = listings.publishedProductForSku(sku)
-                    .orElseThrow(() -> new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.PRODUCT_NOT_PURCHASABLE));
-            grouped.computeIfAbsent(id, ignored -> new java.util.HashSet<>()).add(sku);
+            var id =
+                    listings.publishedProductForSku(sku)
+                            .orElseThrow(
+                                    () -> new BusinessException(ErrorCode.PRODUCT_NOT_PURCHASABLE));
+            grouped.computeIfAbsent(id, ignored -> new HashSet<>()).add(sku);
         }
-        java.util.Map<String, com.stockflow.common.domain.Money> prices = new java.util.HashMap<>();
+        Map<String, Money> prices = new HashMap<>();
         // Stable lock order prevents two baskets from locking products in opposite order.
         for (var group : grouped.entrySet()) {
             var product = products.lock(group.getKey());
-            if (product.status() != com.stockflow.product.api.ProductStatus.PUBLISHED
+            if (product.status() != ProductStatus.PUBLISHED
                     || !listings.find(group.getKey()).map(l -> l.enabled()).orElse(false))
-                throw new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.PRODUCT_NOT_PURCHASABLE);
+                throw new BusinessException(ErrorCode.PRODUCT_NOT_PURCHASABLE);
             for (String sku : group.getValue()) {
                 if (product.skus().stream().noneMatch(s -> s.sku().equals(sku)))
-                    throw new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.PRODUCT_NOT_PURCHASABLE);
-                var price = listings.price(sku).orElseThrow(() -> new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.PRICE_NOT_AVAILABLE));
-                prices.put(sku, new com.stockflow.common.domain.Money(price.amount(), com.stockflow.common.domain.Money.VND));
+                    throw new BusinessException(ErrorCode.PRODUCT_NOT_PURCHASABLE);
+                var price =
+                        listings.price(sku)
+                                .orElseThrow(
+                                        () -> new BusinessException(ErrorCode.PRICE_NOT_AVAILABLE));
+                prices.put(sku, new Money(price.amount(), Money.VND));
             }
         }
-        return java.util.Map.copyOf(prices);
+        return Map.copyOf(prices);
     }
 }

@@ -63,11 +63,13 @@ PR DB đã vào `develop` **trước** #36, nên #36 phải:
 
 ### PR #38 — Võ (SCRUM-70/71)
 
-Trạng thái riêng PR #38 (SCRUM-70/71, 03/10): đang tách 146/147/298 để phối hợp với owner.
-Không merge policy/SEO legacy như nguồn mới. Tú cần chốt
-[yêu cầu schema và cutover](SCRUM-70-71-schema-change-request.md);
-code và hai migration policy/catalog của nhánh còn chờ chuyển sang bảng chuẩn.
-Không kích hoạt C1/C3 chỉ dựa vào test của adapter legacy.
+Trạng thái PR #38 (08/10): đã tách 146/147/298 và chuyển adapter 70/71 sang
+`inventory.inventory_items`, `product.products`/`variants`/`media`.
+Migration bổ sung `V20261008000100` chuyển dữ liệu có kiểm tra xung đột, giữ checksum migration cũ.
+Tú cần review [schema và cutover](SCRUM-70-71-schema-change-request.md);
+upstream tạo sản phẩm/bộ ảnh vẫn cần chuyển khỏi legacy và FE cần dùng ID canonical.
+Chưa kích hoạt C1/C3. Xem kết quả kiểm tra và điểm còn vướng trong
+[bàn giao 70/71](../../SCRUM-70-71-backend.md).
 
 ### PR #28 — Phương (SCRUM-89, warehouse map)
 
