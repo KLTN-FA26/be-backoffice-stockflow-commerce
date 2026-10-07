@@ -16,7 +16,10 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Repository;
 
 import java.time.Instant;
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -121,6 +124,18 @@ class StockItemRepositoryAdapter implements StockItemRepository {
         return jpa.findLevelRowsBySku(sku.code()).stream()
                 .map(StockLevelRow::toLine)
                 .toList();
+    }
+
+    @Override
+    public Map<Sku, Integer> sumAvailableBySkus(Collection<Sku> skus) {
+        if (skus.isEmpty()) {
+            return Map.of();      // "in ()" is not valid SQL, and there is nothing to ask
+        }
+        Map<Sku, Integer> totals = new HashMap<>();
+        for (SkuAtpRow row : jpa.sumAvailableBySkus(skus.stream().map(Sku::code).toList())) {
+            totals.put(new Sku(row.sku()), Math.toIntExact(row.atp()));
+        }
+        return totals;
     }
 
     @Override

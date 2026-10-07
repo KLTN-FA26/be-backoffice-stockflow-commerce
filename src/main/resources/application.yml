@@ -332,6 +332,14 @@ stockflow:
     secret-key: ${MINIO_SECRET_KEY:stockflow123}
     presigned-url-ttl: PT10M        # a signed URL is a credential with no revocation; keep it short
 
+  catalog:
+    availability:
+      # At or under this many units the catalog shows "low stock" (docs 13 §4.2, an assumption
+      # the docs leave open). 0 never warns.
+      low-stock-threshold: ${CATALOG_LOW_STOCK_THRESHOLD:5}
+      # SKUs one availability call may ask about: a page's worth, not the whole catalogue.
+      max-skus-per-request: 50
+
   product-media:
     # Public CloudFront/custom-domain origin. Blank keeps private upload working but public gallery returns 503.
     cloud-front-base-url: ${PRODUCT_MEDIA_CDN_BASE_URL:}

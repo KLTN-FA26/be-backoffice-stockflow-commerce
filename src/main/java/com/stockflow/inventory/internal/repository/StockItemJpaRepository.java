@@ -7,6 +7,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -76,6 +77,23 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
               and s.onHand > s.reserved
             """)
     List<AvailabilityRow> findAvailabilityBySku(@Param("sku") String sku);
+
+    /**
+     * Available to promise for many SKUs in one grouped scan, without loading a single entity.
+     *
+     * <p>Same filter as {@link #findAvailabilityBySku}: AVAILABLE stock with something left after
+     * reservations, so the difference is never negative.</p>
+     */
+    @Query("""
+            select new com.stockflow.inventory.internal.repository.SkuAtpRow(
+                s.sku, sum(s.onHand - s.reserved))
+            from StockItemJpaEntity s
+            where s.sku in :skus
+              and s.status = com.stockflow.inventory.internal.domain.StockStatus.AVAILABLE
+              and s.onHand > s.reserved
+            group by s.sku
+            """)
+    List<SkuAtpRow> sumAvailableBySkus(@Param("skus") Collection<String> skus);
 
     /** Subtotals for the warehouse roll-up; every status, because on-hand counts them all. */
     @Query("""
