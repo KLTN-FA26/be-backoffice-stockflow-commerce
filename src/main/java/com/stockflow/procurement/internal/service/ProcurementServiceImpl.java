@@ -304,7 +304,10 @@ class ProcurementServiceImpl implements ProcurementService {
                             "No supplier with id " + query.supplierId()));
         }
         var pageable = Pages.of(query.page(), query.size());
-        var criteria = new SupplierSpendCriteria(query.supplierId(), query.expectedAtFrom(), query.expectedAtTo());
+        var criteria = new SupplierSpendCriteria(query.supplierId(),
+                query.currency() == null || query.currency().isBlank()
+                        ? null : query.currency().trim().toUpperCase(java.util.Locale.ROOT),
+                query.expectedAtFrom(), query.expectedAtTo());
         return Pages.toResponse(reports.supplierSpend(criteria, pageable));
     }
 

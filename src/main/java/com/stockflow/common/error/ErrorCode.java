@@ -23,6 +23,10 @@ public enum ErrorCode {
     VALIDATION_FAILED("Invalid request data", 400),
     MALFORMED_REQUEST("The request body could not be read", 400),
     UNSUPPORTED_PARAMETER("Unsupported parameter value", 400),
+    /** The URL itself was refused before routing: {@code //}, an encoded {@code ..}, a {@code ;}. */
+    REQUEST_REJECTED("The request URL is not acceptable", 400),
+    /** A permission-matrix edit named a code no {@code @PermissionResource} declares. */
+    UNKNOWN_PERMISSION("One or more permissions do not exist", 400),
 
     // ---- 401 / 403: who the caller is, and what they may do
     UNAUTHORIZED("Not authenticated", 401),
@@ -80,6 +84,14 @@ public enum ErrorCode {
     GUEST_CHECKOUT_DISABLED("Guest checkout is not available", 403),
     INVALID_PURCHASE_ORDER_TRANSITION("This purchase order cannot move to that status right now", 409),
 
+    /** Someone saved this role's permissions after the editor loaded them. Not retryable as-is:
+     *  resending the same body would overwrite their change, so the client must reload first. */
+    ROLE_PERMISSIONS_CHANGED("The permissions of this role were changed by someone else; reload and try again", 409),
+    /** The role's permissions are managed by migrations, not the admin screen (CUSTOMER). */
+    ROLE_NOT_EDITABLE("The permissions of this role cannot be edited here", 409),
+    /** The edit would leave no role able to edit permissions, and nobody could ever undo it. */
+    RBAC_LOCKOUT("At least one role must keep the right to manage permissions", 409),
+
     // ---- 413 / 415: payload problems
     PAYLOAD_TOO_LARGE("The uploaded file is too large", 413),
     UNSUPPORTED_MEDIA_TYPE("This file type is not accepted", 415),
@@ -95,7 +107,10 @@ public enum ErrorCode {
     INTERNAL_ERROR("Internal server error", 500),
     /** A dependency we call failed. Separated from INTERNAL_ERROR so alerting can tell them apart. */
     EXTERNAL_SERVICE_ERROR("An upstream service is unavailable", 502),
-    STORAGE_ERROR("File storage is unavailable", 503);
+    STORAGE_ERROR("File storage is unavailable", 503),
+    /** The caller's permissions could not be looked up (ADR-0008). The token itself may be fine,
+     *  which is why this is a 503 and not a 401 that would sign the user out. */
+    AUTHORIZATION_UNAVAILABLE("Permissions cannot be checked right now, please retry", 503);
 
     private final String defaultMessage;
     private final int httpStatus;
@@ -123,7 +138,8 @@ public enum ErrorCode {
     public boolean isRetryable() {
         return switch (this) {
             case OPTIMISTIC_LOCK, LOCK_TIMEOUT, RATE_LIMITED,
-                 EXTERNAL_SERVICE_ERROR, STORAGE_ERROR, IDEMPOTENT_REQUEST_IN_PROGRESS -> true;
+                 EXTERNAL_SERVICE_ERROR, STORAGE_ERROR, IDEMPOTENT_REQUEST_IN_PROGRESS,
+                 AUTHORIZATION_UNAVAILABLE -> true;
             default -> false;
         };
     }

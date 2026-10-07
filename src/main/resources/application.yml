@@ -380,6 +380,11 @@ stockflow:
     # only bounds how long an abandoned or stolen device keeps working. Changing it affects tokens
     # issued from then on; existing ones keep the lifetime they were signed with.
     token-ttl: PT8H
+    cors:
+      # Browser origins that may call the API (CorsProperties). Patterns: a port or a subdomain may
+      # be '*', the host itself may not. A deployment overrides this with
+      # STOCKFLOW_SECURITY_CORS_ALLOWED_ORIGIN_PATTERNS, comma-separated.
+      allowed-origin-patterns: http://localhost:*,https://*.stockflow.vn
 
 logging:
   level:
