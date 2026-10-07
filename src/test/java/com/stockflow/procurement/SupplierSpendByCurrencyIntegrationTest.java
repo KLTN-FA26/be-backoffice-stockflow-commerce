@@ -39,11 +39,13 @@ class SupplierSpendByCurrencyIntegrationTest {
     @Autowired
     private TransactionTemplate tx;
 
+    /** With an email: a supplier reached by email must have one once the supplier PR's CHECK lands. */
     private UUID supplier() {
         UUID id = Identifiers.newId();
         tx.executeWithoutResult(status -> jdbc.update("""
-                INSERT INTO procurement.supplier (id, code, name, status, version, created_at)
-                VALUES (?, ?, 'Spend test supplier', 'ACTIVE', 0, NOW())""", id, "SPEND-" + id.toString().substring(24)));
+                INSERT INTO procurement.supplier (id, code, name, email, status, version, created_at)
+                VALUES (?, ?, 'Spend test supplier', 'spend@example.com', 'ACTIVE', 0, NOW())""",
+                id, "SPEND-" + id.toString().substring(24)));
         return id;
     }
 
