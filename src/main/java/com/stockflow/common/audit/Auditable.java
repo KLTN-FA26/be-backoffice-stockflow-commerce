@@ -45,6 +45,10 @@ public @interface Auditable {
      * SpEL over the method's arguments naming the affected record, e.g. {@code "#id"} or
      * {@code "#command.orderId()"}.
      *
+     * <p>{@code #result} is the return value, for a method that creates its subject and so has no
+     * argument naming it: {@code "#result?.productId()"}. Null-safe, because {@code #result} is
+     * null on a failure entry.</p>
+     *
      * <p>Optional, because some audited actions have no single subject — a bulk price import, a
      * report export. An entry with no resource id is still worth having: it says the action
      * happened.</p>

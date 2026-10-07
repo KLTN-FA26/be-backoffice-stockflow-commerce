@@ -64,10 +64,10 @@ class ProductServiceImpl implements ProductService {
         this.clock = clock;
     }
 
-    // No @Auditable here: the id is generated inside Product.draft(), so there is no method
-    // argument to bind resourceId to - same reason createPurchaseOrder/placeOrder are not audited
-    // either. update() below is the first point the id exists as an argument.
+    // The id is generated inside Product.draft(), so it is read off the result: the CREATE entry
+    // is the first row of the product's version history (SCRUM-86).
     @Override
+    @Auditable(action = AuditAction.CREATE, resourceType = "product", resourceId = "#result?.productId()")
     public ProductSummary create(CreateProductCommand command) {
         if (command.categoryId() != null && !products.categoryExists(command.categoryId())) {
             throw new BusinessException(ErrorCode.CATEGORY_NOT_FOUND,
