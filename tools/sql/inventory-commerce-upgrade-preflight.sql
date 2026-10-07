@@ -4,6 +4,19 @@ SELECT version, description FROM public.flyway_schema_history
 WHERE success AND version IN ('20260930001200','20260930001300','20260930001400','20260930001500','20260930001600');
 -- These removed, out-of-scope extension versions need a schema-owner upgrade plan, not Flyway repair.
 
+SELECT s.code, 'DIVERGENT_LEGACY_POLICY' AS problem
+FROM product.sku s LEFT JOIN inventory.sku_policy p ON p.sku=s.code
+WHERE (p.sku IS NULL AND (s.reorder_point IS NOT NULL OR s.safety_stock IS NOT NULL
+       OR s.removal_strategy<>'FEFO' OR s.serial_tracked OR s.expiry_tracked
+       OR s.max_shelf_life_days IS NOT NULL))
+   OR (p.sku IS NOT NULL AND
+       (s.reorder_point IS DISTINCT FROM p.reorder_point
+        OR s.safety_stock IS DISTINCT FROM p.safety_stock
+        OR s.removal_strategy IS DISTINCT FROM p.removal_strategy
+        OR s.lot_tracked IS DISTINCT FROM (p.tracking_mode='LOT')
+        OR s.serial_tracked IS DISTINCT FROM (p.tracking_mode='SERIAL')
+        OR s.expiry_tracked IS DISTINCT FROM p.expiry_tracked
+        OR s.max_shelf_life_days IS DISTINCT FROM p.max_shelf_life_days));
 SELECT p.sku, 'MISSING_CANONICAL_ITEM' AS problem
 FROM inventory.sku_policy p LEFT JOIN inventory.inventory_items i ON i.sku=p.sku WHERE i.id IS NULL;
 SELECT p.sku, 'CONFLICTING_POLICY' AS problem

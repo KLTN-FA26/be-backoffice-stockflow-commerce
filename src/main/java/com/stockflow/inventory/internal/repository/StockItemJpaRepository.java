@@ -6,7 +6,9 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.time.LocalDate;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -39,7 +41,7 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
             group by s.sku
             """)
     List<AvailableTotal> availableTotals(@Param("skus") java.util.Set<String> skus,
-                                        @Param("today") java.time.LocalDate today);
+                                        @Param("today") LocalDate today);
 
     /**
      * Load one aggregate with its children in a single query.
@@ -90,6 +92,25 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
               and s.onHand > s.reserved
             """)
     List<AvailabilityRow> findAvailabilityBySku(@Param("sku") String sku);
+
+    /**
+     * Available to promise for many SKUs in one grouped scan, without loading a single entity.
+     *
+     * <p>Same filter as {@link #findAvailabilityBySku}: AVAILABLE stock with something left after
+     * reservations, so the difference is never negative.</p>
+     */
+    @Query("""
+            select new com.stockflow.inventory.internal.repository.SkuAtpRow(
+                s.sku, sum(s.onHand - s.reserved))
+            from StockItemJpaEntity s
+            where s.sku in :skus
+              and s.status = com.stockflow.inventory.internal.domain.StockStatus.AVAILABLE
+              and s.onHand > s.reserved
+              and (s.expiryDate is null or s.expiryDate >= :today)
+            group by s.sku
+            """)
+    List<SkuAtpRow> sumAvailableBySkus(@Param("skus") Collection<String> skus,
+                                     @Param("today") LocalDate today);
 
     /** Subtotals for the warehouse roll-up; every status, because on-hand counts them all. */
     @Query("""

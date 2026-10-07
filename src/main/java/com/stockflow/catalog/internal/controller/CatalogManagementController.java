@@ -16,9 +16,9 @@ import java.util.UUID;
 @RequestMapping("/api/v1/products/{productId}")
 class CatalogManagementController {
     private final CatalogCommerceService service;
-    private final CatalogWebMapper mapper;
+    private final CatalogCommerceWebMapper mapper;
 
-    CatalogManagementController(CatalogCommerceService service, CatalogWebMapper mapper) {
+    CatalogManagementController(CatalogCommerceService service, CatalogCommerceWebMapper mapper) {
         this.service = service;
         this.mapper = mapper;
     }

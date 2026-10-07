@@ -9,13 +9,14 @@ import org.springframework.http.CacheControl;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+/** B2B catalog content; the security chain requires a signed-in customer or staff member. */
 @RestController
-@RequestMapping("/api/v1/public/catalog/products")
-class PublicCatalogController {
+@RequestMapping("/api/v1/catalog/products")
+class StorefrontCatalogController {
     private final CatalogCommerceService service;
-    private final CatalogWebMapper mapper;
+    private final CatalogCommerceWebMapper mapper;
 
-    PublicCatalogController(CatalogCommerceService service, CatalogWebMapper mapper) {
+    StorefrontCatalogController(CatalogCommerceService service, CatalogCommerceWebMapper mapper) {
         this.service = service;
         this.mapper = mapper;
     }

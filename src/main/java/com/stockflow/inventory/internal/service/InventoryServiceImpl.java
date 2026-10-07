@@ -31,10 +31,14 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.UUID;
 
@@ -102,6 +106,18 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
                         .collect(java.util.stream.Collectors.toSet());
         if (normalized.isEmpty()) return Map.of();
         return repository.availableQuantities(normalized, BusinessCalendar.date(clock.instant()));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Map<Sku, Integer> availableToPromise(Collection<Sku> skus) {
+        Set<Sku> wanted = new LinkedHashSet<>(skus);
+        Map<Sku, Integer> found =
+                repository.sumAvailableBySkus(wanted, BusinessCalendar.date(clock.instant()));
+        Map<Sku, Integer> result = new LinkedHashMap<>();
+        // Every SKU asked for gets an answer: no stock is an answer (0), not a missing key.
+        wanted.forEach(sku -> result.put(sku, found.getOrDefault(sku, 0)));
+        return result;
     }
 
     @Override

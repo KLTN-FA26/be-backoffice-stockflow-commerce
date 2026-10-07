@@ -65,7 +65,7 @@ public record CreateProductRequest(
         BigDecimal heightCm,
 
         @Schema(description = "SCRUM-75: the shipped package - distinct from the product's own "
-                + "dimensions above, since flat-pack furniture ships smaller than assembled")
+                + "dimensions above, since cups ship nested and boxes ship flat")
         @Positive(message = "packageWeightKg must be positive")
         BigDecimal packageWeightKg,
 

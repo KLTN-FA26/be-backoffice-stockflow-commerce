@@ -363,6 +363,7 @@ values (?,?,'HCM-A-01',?,0,'AVAILABLE',?,?,?,?,now())
         var f = fixture("DRAFT");
         stock(f, 9, null, LocalDate.of(2000, 1, 1), null);
         assertThat(inventory.availableToPromise(new Sku(f.sku()))).isZero();
+        assertThat(inventory.availableToPromise(java.util.List.of(new Sku(f.sku()))).get(new Sku(f.sku()))).isZero();
         assertThat(inventory.availableToPromise(new Sku(f.sku()), "HCM")).isZero();
         assertThat(inventoryControl.evaluate(new Sku(f.sku())).usableOnHand()).isZero();
     }
@@ -451,7 +452,7 @@ values (?,?,'HCM-A-01',?,0,'AVAILABLE',?,?,?,?,now())
                                 .isBadRequest());
         mvc.perform(
                         org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(
-                                "/api/v1/public/catalog/products"))
+                                "/api/v1/catalog/products"))
                 .andExpect(
                         org.springframework.test.web.servlet.result.MockMvcResultMatchers.status()
                                 .isOk());
@@ -926,7 +927,7 @@ values (?,'Conflicting test rule',?,200,'VND',0,true,now())
                 "test");
         catalog.publish(f.product());
         projection.project(f.product());
-        String path = "/api/v1/public/catalog/products/" + listing.slug();
+        String path = "/api/v1/catalog/products/" + listing.slug();
         mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(path))
                 .andExpect(
                         org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath(

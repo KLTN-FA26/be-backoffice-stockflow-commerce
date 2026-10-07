@@ -55,7 +55,7 @@ Quy ước cho mọi bảng mới (để thành viên kế thừa `BaseEntity` �
 **Giữ nguyên v9:** 83 bảng, thêm các chỉnh sửa sau:
 - Cột audit theo `BaseEntity` cho mọi bảng mới. Bỏ `updated_at/updated_by` và các FK `created_by → app_user` của v9 (xem quy ước §1).
 - `product_categories`, `category_attributes`, `variant_attribute_values` có `id` riêng (v9 còn khoá kép).
-- `inventory_items.package_count`: giữ lại từ bảng cũ (SCRUM-68). Nội thất thường giao nhiều kiện/1 sản phẩm.
+- `inventory_items.package_count`: giữ lại từ bảng cũ (SCRUM-68). Một sản phẩm có thể giao thành nhiều kiện.
 - `media` thêm metadata file (D5).
 - Bỏ unique `(id, kind)`, `(id, warehouse_id)` trên `storage_location`: chúng chỉ phục vụ FK kép, mà FK kép đã bị bỏ.
 - Bảng thật v9 thiếu, nay có mặt trong DBML (vì DBML sinh từ DB): `ordering.order_hold`, `platform.idempotency_record`, `platform.shedlock`, `public.event_publication`, `warehouse.slotting_rule`, 23 cột snapshot của guest checkout, `order_line.design_checksum`, các cột `fulfillment.pick.*`, `design_artifact.upload_key`, đủ cột `catalog.*`. Kiểu `timestamptz` của `identity` cũng được ghi đúng.

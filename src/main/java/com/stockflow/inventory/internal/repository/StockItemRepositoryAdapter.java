@@ -15,8 +15,12 @@ import jakarta.persistence.LockModeType;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Repository;
 
+import java.time.LocalDate;
 import java.time.Instant;
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -124,7 +128,7 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     }
 
     @Override
-    public java.util.Map<String, Long> availableQuantities(java.util.Set<String> skus, java.time.LocalDate today) {
+    public java.util.Map<String, Long> availableQuantities(java.util.Set<String> skus, LocalDate today) {
         if (skus.isEmpty()) return java.util.Map.of();
         return jpa.availableTotals(skus, today).stream().collect(java.util.stream.Collectors.toMap(
                 StockItemJpaRepository.AvailableTotal::getSku, StockItemJpaRepository.AvailableTotal::getQuantity));
@@ -135,6 +139,18 @@ class StockItemRepositoryAdapter implements StockItemRepository {
         return jpa.findLevelRowsBySku(sku.code()).stream()
                 .map(StockLevelRow::toLine)
                 .toList();
+    }
+
+    @Override
+    public Map<Sku, Integer> sumAvailableBySkus(Collection<Sku> skus, LocalDate today) {
+        if (skus.isEmpty()) {
+            return Map.of();      // "in ()" is not valid SQL, and there is nothing to ask
+        }
+        Map<Sku, Integer> totals = new HashMap<>();
+        for (SkuAtpRow row : jpa.sumAvailableBySkus(skus.stream().map(Sku::code).toList(), today)) {
+            totals.put(new Sku(row.sku()), Math.toIntExact(row.atp()));
+        }
+        return totals;
     }
 
     @Override

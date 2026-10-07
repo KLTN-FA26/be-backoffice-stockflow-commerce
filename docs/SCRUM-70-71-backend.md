@@ -6,7 +6,9 @@ Canonical adapters and an append-only cutover migration are implemented. **Schem
 upstream PIM writer integration and frontend UAT remain merge gates.** This document does not
 claim that the legacy product/gallery creation APIs have completed their separate C1 migration.
 
-The existing merge commit `6936c91` already includes current develop and supplier/PO fixes.
+The existing merge commit `6936c91` included the develop baseline and supplier/PO fixes at takeover.
+During validation, develop advanced to `d1b9590` (#53-57); that update is merged without aborting
+the merge. Both SCRUM-158 ATP mapping and 70/71 commerce mapping are retained with distinct names.
 There was no unfinished merge at takeover. Existing working changes were retained and formatted;
 no reset, clean, merge abort, PR merge or deployment was performed.
 
@@ -41,10 +43,12 @@ no reset, clean, merge abort, PR merge or deployment was performed.
 | GET/PUT /api/v1/products/{productId}/ecommerce | Canonical source content and product version; separate projected revision | product-products READ/UPDATE |
 | GET/PUT /api/v1/products/{productId}/skus/{sku}/base-price | Positive whole VND base price | product-products READ/UPDATE |
 | POST /api/v1/products/{productId}/publication or /unpublication | Master/category/gallery/active-SKU/price gates | product-products APPROVE |
-| GET /api/v1/public/catalog/products/{slug}/gallery | Approved canonical media; live visibility guard | Anonymous |
-| GET /api/v1/public/catalog/products[/{slug}] | Projection with live canonical publication guard | Anonymous |
+| GET /api/v1/catalog/products/{slug}/gallery | Approved canonical media; live visibility guard | Authenticated |
+| GET /api/v1/catalog/products[/{slug}] | Projection with live canonical publication guard | Authenticated |
 
-The URL shapes and permissions are retained. FE must supply canonical product/variant identifiers,
+Management URL shapes and permissions are retained. Following the newly merged B2B decision,
+storefront list/detail/gallery require authentication and use `/api/v1/catalog/products`.
+The older anonymous catalog routes are no longer exposed. FE must supply canonical product/variant identifiers,
 reload the inventory-item version, and handle LOT_SERIAL. Ecommerce revision is the canonical
 product version; price writes advance it too, so stale edits cannot overwrite another source writer. Legacy ids are not guessed or mapped by
 product name. Configure stock on DRAFT/BLOCKED variants as well as ACTIVE ones; only ACTIVE variants
@@ -62,8 +66,9 @@ can be published or purchased. Obsolete variants are excluded.
   Policy changes and stock ingress share the SKU advisory lock; optimistic version prevents lost edits.
 - SEO projection may briefly lag; retry reads current product source. Checkout rechecks live status,
   variant availability and server price under product locks. Old events cannot republish hidden data.
-- Standard guest/account checkout rejects missing price (`PRICE_NOT_AVAILABLE`) and client price
-  tampering (`CHECKOUT_PRICE_CHANGED`). No new mandatory quoteId field is introduced.
+- Existing guest/account checkout validation rejects missing price (`PRICE_NOT_AVAILABLE`) and client price
+  tampering (`CHECKOUT_PRICE_CHANGED`). No new mandatory quoteId field is introduced. Guest checkout remains disabled by default; the
+  retained compatibility tests do not authorize guest sales under the new B2B business scope.
   Public design checkout remains `DESIGN_QUOTE_REQUIRED` until SCRUM-298 supplies accepted quotes.
 
 ## Review disposition
@@ -109,17 +114,18 @@ The owner checklist is `business-design/db-design/SCRUM-70-71-schema-change-requ
 
 ## Verification
 
-Local validation on 08 October:
+After integrating `d1b9590`, ATP batch reads share the single-SKU business-date/expiry rule, and
+security tests cover anonymous denial, signed-in catalog/availability reads and mutation permissions.
 
-- `mvn -B -ntp -o clean verify`: **523 tests passed**, no failures/errors/skips, including packaging.
-- After the final source-version and canonical-gallery changes, a focused rerun of
-  InventoryCatalogIntegrationTest, InventoryCatalogSecurityIntegrationTest,
-  InventoryCatalogMigrationUpgradeTest, SystemAdminRoleIntegrationTest, ModularityTest and
-  ArchitectureTest: **61 tests passed**, no failures/errors/skips.
-- The final PR commit is also validated by GitHub Actions; see its check result for the complete
-  suite on that exact commit. `git diff --check` and the append-only migration check pass.
+Final local validation on 08 October after merging `d1b9590`:
 
- Tests use isolated Docker
+- `mvn -B -ntp -o clean verify`: **540 tests passed**, zero failures/errors/skips; packaging passed.
+- Includes canonical APIs/gallery, source-version conflict, security B2B gates, SYSTEM_ADMIN,
+  fresh/populated migration and conflict rollback, ATP expiry consistency, module and architecture tests.
+- Branch diff against develop passes the append-only migration check. No unresolved merge paths.
+- The final PR commit is also validated by GitHub Actions; see its check result for that exact commit.
+
+Tests use isolated Docker
 PostgreSQL/Redis containers, not application databases. Covered: fresh migrations, populated upgrade
 and rollback on conflict, inventory version/tracking/expiry/FIFO/ingress concurrency, canonical SEO,
 published slug protection, price validation, public visibility, real security and SYSTEM_ADMIN.

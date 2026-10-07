@@ -99,10 +99,22 @@ values (?,?,'Table',?,'DRAFT')
     }
 
     @Test
-    void anonymousCanReadPublicCatalogButCannotManageProducts() throws Exception {
-        mvc.perform(get("/api/v1/public/catalog/products")).andExpect(status().isOk());
+    void anonymousCannotReadB2bCatalogOrManageProducts() throws Exception {
+        mvc.perform(get("/api/v1/catalog/products")).andExpect(status().isUnauthorized());
         mvc.perform(get("/api/v1/products/" + UUID.randomUUID() + "/ecommerce"))
                 .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void authenticatedUserCanReadCatalogAndTheAvailabilityEndpoint() throws Exception {
+        String authorization = token("product-products:READ");
+        mvc.perform(get("/api/v1/catalog/products").header("Authorization", authorization))
+                .andExpect(status().isOk());
+        mvc.perform(
+                        get("/api/v1/catalog/products/availability")
+                                .param("sku", "SOFA-3S-GREY")
+                                .header("Authorization", authorization))
+                .andExpect(status().isOk());
     }
 
     @Test
@@ -134,7 +146,7 @@ values (?,?,'Table',?,'DRAFT')
                 .andExpect(status().isOk());
         mvc.perform(post("/api/v1/products/" + id + "/publication").header("Authorization", update))
                 .andExpect(status().isForbidden());
-        mvc.perform(get("/api/v1/public/catalog/products/" + slug))
+        mvc.perform(get("/api/v1/catalog/products/" + slug).header("Authorization", update))
                 .andExpect(status().isNotFound());
     }
 

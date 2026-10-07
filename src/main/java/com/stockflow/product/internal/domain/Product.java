@@ -56,7 +56,7 @@ public final class Product extends AggregateRoot {
     private BigDecimal heightCm;
 
     /** SCRUM-75 (WBS 3.1.3.2): the shipped package, distinct from the product's own physical
-     *  dimensions above — flat-pack furniture ships in a carton smaller than the assembled piece,
+     *  dimensions above — cups ship nested and boxes ship flat, in a carton unrelated to one item's size,
      *  and {@code packageCount} &gt; 1 when one unit ships as several boxes. Nullable/positive,
      *  same treatment as the fields above. */
     private BigDecimal packageWeightKg;

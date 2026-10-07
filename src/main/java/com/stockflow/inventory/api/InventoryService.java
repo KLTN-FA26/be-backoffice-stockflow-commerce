@@ -2,7 +2,9 @@ package com.stockflow.inventory.api;
 
 import com.stockflow.common.domain.Sku;
 
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -31,6 +33,16 @@ public interface InventoryService {
         return skus.stream().collect(java.util.stream.Collectors.toMap(
                 code -> code, code -> (long) availableToPromise(new Sku(code))));
     }
+
+    /**
+     * {@link #availableToPromise(Sku)} for several SKUs in one query: every SKU asked for is a key,
+     * {@code 0} when nothing sellable is held. For a page that shows many variants at once — one
+     * call per SKU would be one query per SKU.
+     *
+     * <p>Read from the denormalised {@code reserved} column, as the allocation planner does, not
+     * from the reservation rows; the two are kept equal on every save.</p>
+     */
+    Map<Sku, Integer> availableToPromise(Collection<Sku> skus);
 
     /**
      * ATP for one SKU inside one warehouse (SCRUM-157: the storefront may promise per warehouse
