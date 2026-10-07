@@ -40,6 +40,7 @@ import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.servlet.NoHandlerFoundException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
+import java.sql.SQLException;
 import java.util.List;
 
 /**
@@ -256,11 +257,20 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * A unique or foreign-key constraint refused the write.
+     * The database refused the write.
      *
-     * <p>Logged at {@code ERROR} even though it returns a 4xx: reaching the database with a duplicate
-     * means the application-level check was missing or lost a race, and something in the code should
-     * have caught it first.</p>
+     * <p>Logged at {@code ERROR} even though it returns a 4xx: reaching the database with a value
+     * it refuses means the application-level check was missing or lost a race, and something in
+     * the code should have caught it first.</p>
+     *
+     * <h2>Why the SQLSTATE decides the code</h2>
+     *
+     * <p>Spring translates far more than duplicates into this exception: a string longer than its
+     * column, a number past its precision, a {@code NOT NULL}, a {@code CHECK} and a foreign key all
+     * arrive here. Answering all of them {@code DUPLICATE_KEY} told a client that a 301-character
+     * description "already exists", and a client that retries a duplicate with a fresh value would
+     * retry those forever. The class of the SQLSTATE says which kind it was without reading the
+     * database's message.</p>
      *
      * <p>The database's message is never returned — it names the constraint, the table and the
      * column, which is a free schema map for anyone probing the API.</p>
@@ -268,7 +278,38 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(DataIntegrityViolationException.class)
     public ResponseEntity<ApiResponse<Void>> handleIntegrity(DataIntegrityViolationException ex) {
         log.error("Database constraint violated - the application should have caught this first", ex);
-        return respond(ErrorCode.DUPLICATE_KEY, messages.forCode(ErrorCode.DUPLICATE_KEY), null);
+        ErrorCode code = integrityCode(sqlState(ex));
+        return respond(code, messages.forCode(code), null);
+    }
+
+    /**
+     * {@code 23505} is the only duplicate. Class {@code 22} (data exception: too long, out of range,
+     * unparseable) and {@code 23502} ({@code NOT NULL}) mean the request carried a value the column
+     * cannot hold — the same answer a missing {@code @Size} would have given. The remaining
+     * integrity violations ({@code CHECK}, foreign key, exclusion) refuse a value that is
+     * well-formed but clashes with a rule or with other rows, which is what {@code CONFLICT} means.
+     */
+    static ErrorCode integrityCode(String sqlState) {
+        if (sqlState == null) {
+            return ErrorCode.CONFLICT;
+        }
+        if (sqlState.equals("23505")) {
+            return ErrorCode.DUPLICATE_KEY;
+        }
+        if (sqlState.startsWith("22") || sqlState.equals("23502")) {
+            return ErrorCode.VALIDATION_FAILED;
+        }
+        return ErrorCode.CONFLICT;
+    }
+
+    /** The first SQLSTATE in the cause chain — Hibernate and the driver each wrap the one below. */
+    private static String sqlState(Throwable ex) {
+        for (Throwable t = ex; t != null && t.getCause() != t; t = t.getCause()) {
+            if (t instanceof SQLException sql && sql.getSQLState() != null) {
+                return sql.getSQLState();
+            }
+        }
+        return null;
     }
 
     // ------------------------------------------------------------------ framework

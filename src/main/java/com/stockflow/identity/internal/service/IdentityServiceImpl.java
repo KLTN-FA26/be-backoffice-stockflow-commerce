@@ -159,9 +159,10 @@ class IdentityServiceImpl implements IdentityService {
      * <p>{@code dataScope} is passed as {@link DataScope#ALL} for every role: {@code app_role} has
      * no scope column yet (ADR-0004 records the row-visibility filter as the largest unimplemented
      * part of the permission model), so this is a placeholder for the matrix screen to render, not
-     * a real grant. {@code systemRole} is {@code true} for all ten seeded roles: they cannot be
+     * a real grant. {@code systemRole} is {@code true} for every seeded role: they cannot be
      * renamed or deleted, but their grants are editable through
-     * {@link #updateRolePermissions} — all except {@code CUSTOMER}'s, see {@link #isEditable}.</p>
+     * {@link #updateRolePermissions} — all except {@code CUSTOMER}'s and {@code SYSTEM_ADMIN}'s, see
+     * {@link #isEditable}.</p>
      */
     @Override
     @Transactional(readOnly = true)
@@ -234,11 +235,19 @@ class IdentityServiceImpl implements IdentityService {
     }
 
     /**
-     * CUSTOMER is excluded: its grants are the storefront's self-service surface, and one wrong tick
-     * would hand every shopper a back-office permission. They stay in migrations, reviewed like code.
+     * Two roles are excluded, and their grants stay in migrations, reviewed like code.
+     *
+     * <ul>
+     *   <li>CUSTOMER: its grants are the storefront's self-service surface, and one wrong tick would
+     *       hand every shopper a back-office permission.</li>
+     *   <li>SYSTEM_ADMIN: it holds every permission by definition. One wrong untick would turn the
+     *       role meant to repair the matrix into an ordinary one, possibly unable to repair it.</li>
+     * </ul>
      */
     private static boolean isEditable(RoleJpaEntity role) {
-        return !com.stockflow.common.security.Roles.CUSTOMER.equals(role.getCode());
+        String code = role.getCode();
+        return !com.stockflow.common.security.Roles.CUSTOMER.equals(code)
+                && !com.stockflow.common.security.Roles.SYSTEM_ADMIN.equals(code);
     }
 
     /** Parses and checks every code up front: declared by a {@code @PermissionResource}, and seeded. */
