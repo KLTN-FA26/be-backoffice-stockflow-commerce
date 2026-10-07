@@ -29,7 +29,7 @@ The remaining thirteen flows would each need their own version.
 Between "order committed" and "stock reserved" there is a window. A crash inside it leaves an order
 with no stock, or stock held for no order. The saga narrows the window; it cannot remove it,
 because two databases cannot commit together without a distributed transaction coordinator, which
-nobody sane runs. For a system whose entire purpose is not overselling furniture, an
+nobody sane runs. For a system whose entire purpose is not overselling stock, an
 unclosable oversell window is the wrong thing to have designed in.
 
 **3. The team is five people for one semester.**
