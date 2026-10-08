@@ -5,7 +5,8 @@
 Canonical adapters and an append-only cutover migration are implemented. Tu approved the final
 schema model in [review 6058462025](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/38#issuecomment-6058462025)
 at reviewed head `a919c75ec47571ea0a42419537e460eabb14f7c1`. The projection fix still needs his
-retest; demo selling prices, upstream PIM writer integration and frontend UAT remain outstanding.
+retest; upstream PIM writer integration and frontend UAT remain outstanding. Demo-only sample
+selling prices now complete the seed, with authenticated fresh/upgrade startup coverage.
 The legacy product/gallery creation APIs have not completed their separate C1 migration.
 
 The branch now includes PR #36 at `c2fa904` (code `1671584`) and develop through `276567d` (#58-60).
@@ -87,7 +88,8 @@ can be published or purchased. Obsolete variants are excluded.
 | Missing SYSTEM_ADMIN permission | Corrective grant in new migration covers inherited procurement-suppliers:DELETE; increments version only when grants change |
 | Formatting and i18n conflicts | Touched code formatted; both message and validation bundle pairs have matching unique keys |
 | Alert recipients / count ledger / wrong count warehouse | Work belongs to 147/146 and is absent from this PR; not claimed implemented |
-| Demo checkout | Await confirmed selling prices; supplier purchase costs are not used as selling prices |
+| Previously PUBLISHED demo products missing from catalog | Startup/retry rebuild canonical projections; real demo selling-price seed completes fresh and upgraded demo databases |
+| Demo checkout | Demo-only sample prices: SOFA 12,500,000 VND / TABLE 8,000,000 VND; existing prices are preserved |
 
 Source review: [29 September](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/38#issuecomment-5892128787),
 [7 October permissions](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/38#issuecomment-6037831143).
@@ -185,17 +187,34 @@ canonical tracked SKUs, so the new operations do not rely on invalid lot data on
   and retry recovery, private DRAFT/APPROVED products, unapproved gallery, newer-revision refusal,
   and unpublish/republish with updated price/SEO and stable slug. The existing security test class
   stubs only JWT decoding; the separate startup test uses a real decoder and signing key.
-- Final `mvn -B -ntp -o clean verify`: **598 tests**, zero failures/errors/skips and packaged jar.
+- At `e622cb4`, `mvn -B -ntp -o clean verify`: **598 tests**, zero failures/errors/skips and packaged jar.
   The fresh-migration test also executes all four repository SQL QA scripts: **166 checks pass**;
   the orphan report is clean. Static checks pass (945 Java files); `git diff --check` passes and
   all previously applied migration files are unchanged. Full log:
   `outputs/pr38-review-6058462025-clean-verify.log`. This fix is local; GitHub CI has not run on it.
-- **Missing business data:** the unmodified demo seed marks SOFA-3S-GREY and TABLE-OAK-160 PUBLISHED
-  but seeds no selling-price rules. Raw demo migration therefore still leaves those products
-  pending with `PRICE_NOT_AVAILABLE`; startup logs the canonical product ID and error code. Test
-  prices (12,500,000 and 8,000,000 VND) are fixture data only, not agreed demo prices. No purchase
-  cost is reused, source is republished, or incomplete product exposed. Confirm and configure
-  actual selling prices before accepting the raw-demo/VPS reproduction.
+- **Demo seed completed after `e622cb4`:** `db/demo/R__demo_catalog_selling_prices.sql` supplies
+  explicit sample prices (SOFA-3S-GREY 12,500,000 VND; TABLE-OAK-160 8,000,000 VND), marked
+  `created_by='demo-seed'`. These are demo/test values, not business quotations or purchase costs.
+  The default/production migration location excludes this file. It requires the exact canonical
+  demo product/variant IDs, codes and seed creator. A repeatable migration works on both blank
+  demo databases and already-migrated ones without old checksum edits or out-of-order overrides.
+  Product row locks serialize with price edits; inserts never update existing rows. Existing
+  SKU rules (including inactive ones), active general rules or cached SKU prices prevent adding
+  competing sample prices; unique constraints also arbitrate duplicate attempts.
+- `CatalogProjectionFreshStartupIntegrationTest` boots from a blank container; the upgrade variant
+  starts from the old fully migrated demo release without the new repeatable seed. Both use the
+  actual seed and **no manual price inserts**, then verify list contains both products and both
+  details work without unpublish/republish. RSA JWTs cover the five roles in Tu's review;
+  anonymous requests still return 401. Upgrade SEO/slug is preserved, and projection reruns,
+  concurrent rebuilds and later unpublish/republish/price edits remain covered.
+- Latest targeted run: **70 tests pass**, zero failures/errors/skips, including seed preservation
+  and idempotency, missing-price rollback/retry for non-demo products, catalog security, upgrade
+  migrations, all **166 SQL QA checks**, clean orphan report, architecture and module boundaries.
+  Static checks pass (947 Java files), `git diff --check` passes, and existing versioned/demo
+  migrations are unchanged. Log: `outputs/pr38-demo-seed-regression.log`. The earlier 598-test
+  full run is retained; the full suite was not repeated for this demo-seed-only follow-up.
+  Missing genuine selling prices still fail normal publication/projection validation; no default
+  business price or relaxed validation was introduced. No production/VPS data was modified.
 - Reduced formatting-only edits in StockOperationsServiceImpl, TransferOrderServiceImpl,
   InventoryServiceImpl and OrderServiceImpl against develop. Executable tokens were preserved;
   SKU-before-row locking, receipt-layer compatibility and ambiguous-layer 409s remain. Tu's future
@@ -228,5 +247,5 @@ item version, and retains refusal for stock, pricing and operational references.
 reassignment and ACTIVE variant renaming remain blocked. The migration regression reproduces
 the old failure before upgrade; SQL QA then passes all 166 checks.
 
-Projection retest, upstream PIM writer migration, canonical FE identifiers, demo selling-price
-confirmation and frontend UAT remain the coordination gates above. Tests do not establish them.
+Projection retest, upstream PIM writer migration, canonical FE identifiers and frontend UAT remain
+the coordination gates above. Demo sample prices no longer require a business-price decision.

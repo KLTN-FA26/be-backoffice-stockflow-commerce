@@ -61,7 +61,8 @@ Trạng thái PR #38 (08/10): đã tách 146/147/298 và chuyển adapter 70/71 
 `inventory.inventory_items`, `product.products`/`variants`/`media`.
 Migration bổ sung `V20261008000100` chuyển dữ liệu có kiểm tra xung đột, giữ checksum migration cũ.
 Tú đã duyệt model về nguyên tắc tại review 08/10, head `a919c75`; xem [schema và cutover](SCRUM-70-71-schema-change-request.md).
-Lỗi thiếu projection cho PUBLISHED đang được sửa và cần kiểm tra lại; seed demo chưa có giá bán.
+Đã sửa rebuild projection cho PUBLISHED và bổ sung seed repeatable giá MẪU trong `db/demo`;
+test DB trắng/upgrade, security bật đều thấy đủ hai sản phẩm. Tú cần kiểm tra lại bản sửa local.
 upstream tạo sản phẩm/bộ ảnh vẫn cần chuyển khỏi legacy và FE cần dùng ID canonical.
 Chưa kích hoạt C1/C3. Xem kết quả kiểm tra và điểm còn vướng trong
 [bàn giao 70/71](../../SCRUM-70-71-backend.md).

@@ -22,6 +22,7 @@ import org.springframework.boot.testcontainers.service.connection.ServiceConnect
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
+import org.springframework.core.env.Environment;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
 import org.springframework.security.oauth2.jwt.*;
@@ -39,7 +40,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
-/** Real populated pre-#38 upgrade, application startup, RSA tokens, filter chain and PostgreSQL. */
+/** Real demo migrations, application startup, RSA tokens, filter chain and PostgreSQL. */
 @IntegrationTest
 @Import({CatalogProjectionStartupIntegrationTest.UpgradeDatabase.class, RedisContainer.class})
 @AutoConfigureMockMvc
@@ -50,20 +51,20 @@ class CatalogProjectionStartupIntegrationTest {
     static class UpgradeDatabase {
         @Bean
         @ServiceConnection
-        PostgreSQLContainer<?> postgres() throws Exception {
+        PostgreSQLContainer<?> postgres(Environment environment) throws Exception {
             var pg = new PostgreSQLContainer<>("postgres:16-alpine");
             pg.start();
             try {
+                if (!environment.getProperty("stockflow.test.catalog-upgrade", Boolean.class, true))
+                    return pg; // Spring migrates a genuinely blank database, including the real demo seed.
                 Flyway.configure().dataSource(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword())
                         .locations("classpath:db/migration", "classpath:db/demo")
-                        .target("20260930000500").load().migrate();
+                        // Reproduce the previous release: all versioned migrations, no new repeatable seed.
+                        .repeatableSqlMigrationPrefix("OLD_RELEASE_WITHOUT_REPEATABLE_SEEDS")
+                        .target("20261008000200").load().migrate();
                 try (var connection = DriverManager.getConnection(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword());
                         var sql = connection.createStatement()) {
-                    // Explicit test selling prices. The production demo still has no agreed prices.
                     sql.executeUpdate("""
-                            insert into catalog.pricing_rule(id,name,sku,price,currency,active,created_at) values
-                            (md5('test:sofa-price')::uuid,'BASE:SOFA-3S-GREY','SOFA-3S-GREY',12500000,'VND',true,now()),
-                            (md5('test:table-price')::uuid,'BASE:TABLE-OAK-160','TABLE-OAK-160',8000000,'VND',true,now());
                             update product.products set seo_title='Upgrade SEO',seo_description='Upgrade description'
                             where code='SOFA-3S';
                             insert into product.products(id,code,name,slug,status) values
@@ -96,12 +97,17 @@ class CatalogProjectionStartupIntegrationTest {
     @Autowired CatalogProjectionListener listener;
     @Autowired CatalogCommerceService commerce;
     @Autowired org.springframework.transaction.support.TransactionTemplate tx;
+    @Autowired Environment environment;
 
     String authorization() {
+        return authorization("SYSTEM_ADMIN");
+    }
+
+    String authorization(String role) {
         var now = Instant.now();
         return "Bearer " + encoder.encode(JwtEncoderParameters.from(JwtClaimsSet.builder()
                 .subject(jdbc.queryForObject("select id::text from identity.app_user where id=md5('demo:user:approver')::uuid", String.class))
-                .issuedAt(now).expiresAt(now.plusSeconds(300)).claim("roles", List.of("SYSTEM_ADMIN"))
+                .issuedAt(now).expiresAt(now.plusSeconds(300)).claim("roles", List.of(role))
                 .build())).getTokenValue();
     }
 
@@ -109,11 +115,23 @@ class CatalogProjectionStartupIntegrationTest {
     void upgradeAndStartupRebuildWithoutRepublishAndRemainSafeOnRestart() throws Exception {
         // No manual project/publish call before these assertions: ApplicationReadyEvent did the backfill.
         String auth = authorization();
+        String initialSeo = environment.getProperty("stockflow.test.catalog-upgrade", Boolean.class, true)
+                ? "Upgrade SEO" : null;
         mvc.perform(get("/api/v1/catalog/products")).andExpect(status().isUnauthorized());
         mvc.perform(get("/api/v1/catalog/products").header("Authorization", auth))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(2))
                 .andExpect(jsonPath("$.data.items.length()").value(2));
-        assertSofa(auth, "Upgrade SEO", 12500000);
+        assertSofa(auth, initialSeo, 12500000);
+        mvc.perform(get("/api/v1/catalog/products/ban-an-go-soi").header("Authorization", auth))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.variants[0].sku").value("TABLE-OAK-160"))
+                .andExpect(jsonPath("$.data.variants[0].price").value(8000000));
+        for (String role : List.of("ECOMMERCE_ADMIN", "SALES_STAFF", "WAREHOUSE_STAFF",
+                "WAREHOUSE_MANAGER", "INVENTORY_PLANNER")) {
+            String signedIn = authorization(role);
+            mvc.perform(get("/api/v1/catalog/products").header("Authorization", signedIn))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.items.length()").value(2));
+            assertSofa(signedIn, initialSeo, 12500000);
+        }
         mvc.perform(get("/api/v1/catalog/products/private-draft").header("Authorization", auth))
                 .andExpect(status().isNotFound());
         mvc.perform(get("/api/v1/catalog/products/private-approved").header("Authorization", auth))
@@ -147,12 +165,12 @@ class CatalogProjectionStartupIntegrationTest {
         assertThat(jdbc.queryForList("select * from catalog.pricing_rule order by id")).isEqualTo(prices);
         assertThat(jdbc.queryForList("select * from catalog.product_listing order by product_id")).isEqualTo(listings);
         assertThat(jdbc.queryForObject("select count(*) from catalog.catalog_entry", Long.class)).isEqualTo(2);
-        assertSofa(auth, "Upgrade SEO", 12500000);
+        assertSofa(auth, initialSeo, 12500000);
 
         // Partial projection loss at the same revision must also be detected.
         tx.executeWithoutResult(s -> jdbc.update("delete from catalog.catalog_entry where sku='SOFA-3S-GREY'"));
         listener.rebuildPublished();
-        assertSofa(auth, "Upgrade SEO", 12500000);
+        assertSofa(auth, initialSeo, 12500000);
         assertThat(jdbc.queryForObject("select count(*) from catalog.catalog_entry", Long.class)).isEqualTo(2);
 
         UUID sofa = jdbc.queryForObject("select id from product.products where code='SOFA-3S'", UUID.class);
@@ -172,10 +190,11 @@ class CatalogProjectionStartupIntegrationTest {
     }
 
     private void assertSofa(String auth, String seo, int price) throws Exception {
-        mvc.perform(get("/api/v1/catalog/products/sofa-3-cho").header("Authorization", auth))
+        var result = mvc.perform(get("/api/v1/catalog/products/sofa-3-cho").header("Authorization", auth))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.slug").value("sofa-3-cho"))
-                .andExpect(jsonPath("$.data.seoTitle").value(seo))
                 .andExpect(jsonPath("$.data.variants[0].sku").value("SOFA-3S-GREY"))
                 .andExpect(jsonPath("$.data.variants[0].price").value(price));
+        if (seo == null) result.andExpect(jsonPath("$.data.seoTitle").doesNotExist());
+        else result.andExpect(jsonPath("$.data.seoTitle").value(seo));
     }
 }
