@@ -6,7 +6,7 @@ Canonical adapters and an append-only cutover migration are implemented. **Schem
 upstream PIM writer integration and frontend UAT remain merge gates.** This document does not
 claim that the legacy product/gallery creation APIs have completed their separate C1 migration.
 
-The branch now includes PR #36 at `1671584` and develop through `276567d` (#58-60).
+The branch now includes PR #36 at `c2fa904` (code `1671584`) and develop through `276567d` (#58-60).
 The conflict resolution retains stock move/adjustment, admin order listing, transfer orders and
 canonical inventory/commerce behavior together. PR #36 was pushed first; merge order remains
 #36 before #38. No GitHub PR merge or production deployment is performed by this handoff.
@@ -95,13 +95,15 @@ this integration pass did not independently access Jira acceptance criteria.
 PR #36 remains the first PR to merge. The supplier review migration is now
 `V20260930000500__po_review_permissions_and_attempt_numbers.sql`, followed by #38's
 `V20260930001000`, `V20260930001100` and
-`V20261008000100__canonical_inventory_and_ecommerce.sql`. This removes the earlier collision
+`V20261008000100__canonical_inventory_and_ecommerce.sql`, then the append-only
+`V20261008000200__preserve_unused_draft_sku_rename.sql` fix. This removes the earlier collision
 with the unpublished PO review version. All SQL already published on develop, remote #36
 and remote #38 retains its original filename/content/checksum.
 
 A DB on the completed #36 release upgrades normally with out-of-order disabled. A populated
 clone check preserved three POs, five delivery logs and their attempt numbers while applying
-exactly the three #38 versions. Fresh and populated upgrades are also regression-tested.
+the three original #38 versions, followed by the draft-rename correction. Fresh and populated
+upgrades are also regression-tested.
 
 An existing DB from **exactly remote #38 `3bfd605`** has already applied canonical `20261008000100`
 but lacks the lower PO review version `20260930000500`. Default Flyway correctly refuses this
@@ -115,7 +117,7 @@ validated the following operator recovery (not an application default):
    pending. A different pending set or script at version `20261008000100` needs its own plan.
 3. On that clone, run `flyway -outOfOrder=true -target=20261008000100 migrate` once. Remove both
    overrides and run normal `flyway migrate` and `flyway validate`; test PO dates, attempts,
-   role grants and inventory/commerce behavior. The probe validated all 75 migrations.
+   role grants and inventory/commerce behavior. The probe validated all 76 migrations, including the normal final draft-rename correction.
 4. Repeat only under the intended environment's operator change plan. No global out-of-order,
    automatic history rewrite, blind repair or database reset is introduced.
 
@@ -157,14 +159,22 @@ canonical tracked SKUs, so the new operations do not rely on invalid lot data on
 
 - Combined #36 plus develop through #59: `mvn -B -ntp -o clean verify` passed **581 tests**,
   zero failures/errors/skips, including packaging, architecture and module checks.
-- Final develop #60 integration: see the exact final commit's GitHub Actions build and the
-  completion report for the final full-suite count.
+- Final develop #60 integration: full `clean verify` passed **591 tests**, zero failures/errors/skips.
+  After the draft-rename SQL QA finding, **27 migration/architecture/module tests plus packaging**
+  passed against the correction. The exact pushed commit is also checked by GitHub Actions.
 - `python -X utf8 tools/verify.py`: all static checks pass (944 Java files at this integration point).
 - Tests cover canonical APIs/gallery, source versions, security B2B gates, SYSTEM_ADMIN,
   fresh/populated migration and conflict rollback, ATP expiry, stock move receipt/serial identity,
   ambiguous-layer refusal and configured transfer allocation.
 - Separate disposable-DB probes verified normal #36-to-#38 upgrade with populated PO history and
   the controlled old-remote-#38 prerequisite backfill. Neither probe used a production database.
+
+The SQL QA suite exposed a cutover regression: the auto-created inventory item prevented an
+otherwise valid unused DRAFT variant SKU rename. The append-only `20261008000200` migration
+preserves item identity/policy with an FK cascade only for unused DRAFT parents, increments the
+item version, and retains refusal for stock, pricing and operational references. Direct item
+reassignment and ACTIVE variant renaming remain blocked. The migration regression reproduces
+the old failure before upgrade; SQL QA then passes all 166 checks.
 
 Schema-owner review, upstream PIM writer migration, canonical FE identifiers, demo selling-price
 confirmation and frontend UAT remain the coordination gates above. Tests do not establish them.

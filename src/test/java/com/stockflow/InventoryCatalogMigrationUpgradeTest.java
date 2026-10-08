@@ -7,12 +7,106 @@ import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.PostgreSQLContainer;
 
 import java.sql.DriverManager;
+import java.sql.SQLException;
 
 /**
  * Exercises populated branch databases, including fail-fast rollback before canonical
  * reconciliation.
  */
 class InventoryCatalogMigrationUpgradeTest {
+    @Test
+    void upgradeRestoresUnusedDraftSkuRenameWithoutReassigningStockOrPolicy() throws Exception {
+        try (var pg = new PostgreSQLContainer<>("postgres:16-alpine")) {
+            pg.start();
+            Flyway.configure()
+                    .dataSource(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword())
+                    .target("20261008000100")
+                    .load()
+                    .migrate();
+            try (var connection =
+                            DriverManager.getConnection(
+                                    pg.getJdbcUrl(), pg.getUsername(), pg.getPassword());
+                    var sql = connection.createStatement()) {
+                sql.executeUpdate(
+                        """
+insert into product.products(id,code,name,slug)
+values ('00000000-0000-0000-0000-000000000080','DRAFT-RENAME','Rename','draft-rename');
+insert into product.variants(id,product_id,sku,name,attribute_signature)
+values ('00000000-0000-0000-0000-000000000081',
+    '00000000-0000-0000-0000-000000000080','DRAFT-OLD','Rename','');
+update inventory.inventory_items set reorder_point=12,safety_stock=5,policy_configured=true
+where sku='DRAFT-OLD';
+""");
+                String rename = "update product.variants set sku='DRAFT-NEW' where sku='DRAFT-OLD'";
+                assertThatThrownBy(() -> sql.executeUpdate(rename))
+                        .isInstanceOf(SQLException.class)
+                        .hasMessageContaining("fk_inventory_items_variant");
+                String itemId;
+                try (var row =
+                        sql.executeQuery(
+                                "select id::text from inventory.inventory_items where"
+                                        + " sku='DRAFT-OLD'")) {
+                    assertThat(row.next()).isTrue();
+                    itemId = row.getString(1);
+                }
+                var upgrade =
+                        Flyway.configure()
+                                .dataSource(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword())
+                                .load();
+                assertThat(upgrade.migrate().migrations)
+                        .extracting(m -> m.version)
+                        .contains("20261008000200");
+                upgrade.validate();
+                assertThat(sql.executeUpdate(rename)).isOne();
+                try (var row =
+                        sql.executeQuery(
+                                "select id::text,reorder_point,safety_stock,version from"
+                                        + " inventory.inventory_items where sku='DRAFT-NEW'")) {
+                    assertThat(row.next()).isTrue();
+                    assertThat(row.getString(1)).isEqualTo(itemId);
+                    assertThat(row.getInt(2)).isEqualTo(12);
+                    assertThat(row.getInt(3)).isEqualTo(5);
+                    assertThat(row.getLong(4)).isEqualTo(1);
+                }
+                assertThatThrownBy(
+                                () ->
+                                        sql.executeUpdate(
+                                                "update inventory.inventory_items set"
+                                                    + " sku='DRAFT-OTHER' where sku='DRAFT-NEW'"))
+                        .isInstanceOf(SQLException.class)
+                        .hasMessageContaining("unused DRAFT");
+                sql.executeUpdate(
+                        """
+insert into inventory.stock_item(id,sku,location_code,on_hand,reserved,status,version,created_at)
+values ('00000000-0000-0000-0000-000000000082','DRAFT-NEW','HCM-A01-1-B',1,0,'AVAILABLE',0,now());
+""");
+                assertThatThrownBy(
+                                () ->
+                                        sql.executeUpdate(
+                                                "update product.variants set sku='DRAFT-STOCKED'"
+                                                        + " where sku='DRAFT-NEW'"))
+                        .isInstanceOf(SQLException.class)
+                        .hasMessageContaining("unused DRAFT");
+                sql.executeUpdate(
+                        "update product.variants set status='ACTIVE' where sku='DRAFT-NEW'");
+                assertThatThrownBy(
+                                () ->
+                                        sql.executeUpdate(
+                                                "update product.variants set sku='ACTIVE-CHANGED'"
+                                                        + " where sku='DRAFT-NEW'"))
+                        .isInstanceOf(SQLException.class)
+                        .hasMessageContaining("cannot change");
+                try (var row =
+                        sql.executeQuery(
+                                "select sku from inventory.stock_item where"
+                                        + " id='00000000-0000-0000-0000-000000000082'")) {
+                    assertThat(row.next()).isTrue();
+                    assertThat(row.getString(1)).isEqualTo("DRAFT-NEW");
+                }
+            }
+        }
+    }
+
     @Test
     void upgradesAfterSupplierReviewWithoutDuplicateOrOutOfOrderVersions() throws Exception {
         try (var pg = new PostgreSQLContainer<>("postgres:16-alpine")) {
@@ -39,7 +133,11 @@ values ('00000000-0000-0000-0000-000000000038','EMAIL','audit@example.test',
                                 .load();
                 assertThat(upgrade.migrate().migrations)
                         .extracting(m -> m.version)
-                        .contains("20260930001000", "20260930001100", "20261008000100");
+                        .contains(
+                                "20260930001000",
+                                "20260930001100",
+                                "20261008000100",
+                                "20261008000200");
                 upgrade.validate();
                 try (var result =
                         sql.executeQuery(

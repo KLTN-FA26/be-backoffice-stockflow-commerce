@@ -2,7 +2,7 @@
 -- Run with: psql -X -v ON_ERROR_STOP=1 -f inventory-commerce-upgrade-preflight.sql
 -- History inventory is informational; rows labelled problem require reconciliation.
 SELECT version, script, checksum, success FROM public.flyway_schema_history
-WHERE version IN ('20260930000500','20260930001000','20260930001100','20261008000100')
+WHERE version IN ('20260930000500','20260930001000','20260930001100','20261008000100','20261008000200')
 ORDER BY installed_rank;
 SELECT 'OLD_PR38_MISSING_PO_REVIEW_00500' AS problem
 WHERE EXISTS (SELECT 1 FROM public.flyway_schema_history
