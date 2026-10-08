@@ -283,6 +283,89 @@ public final class StockItem extends AggregateRoot {
         checkInvariants();
     }
 
+    // ------------------------------------------------------------------ moves and adjustments
+
+    /**
+     * Units that may leave this stock item without breaking a customer's hold: {@code onHand −
+     * reserved}, whatever the status. Unlike {@link #available()} this counts quarantined stock
+     * too — moving it from the receiving area to the QC area is still a move.
+     */
+    public Quantity movable() {
+        return onHand.minus(reserved());
+    }
+
+    /**
+     * The source side of a move between locations (SCRUM-424).
+     *
+     * <p>Only unreserved units move. A reservation names this stock item, and moving its units out
+     * from under it would leave a hold on a shelf that no longer has the goods; the caller releases
+     * the hold, moves, and reserves again at the destination.</p>
+     *
+     * @throws InsufficientStockException when fewer than {@code quantity} units are unreserved
+     */
+    public void moveOut(Quantity quantity) {
+        requirePositive(quantity);
+        if (movable().isLessThan(quantity)) {
+            throw new InsufficientStockException(sku.code(), quantity.value(), movable().value());
+        }
+        this.onHand = onHand.minus(quantity);
+        checkInvariants();
+    }
+
+    /** The destination side of a move: the same SKU, lot and status, arriving from elsewhere. */
+    public void moveIn(Quantity quantity) {
+        requirePositive(quantity);
+        this.onHand = onHand.plus(quantity);
+        checkInvariants();
+    }
+
+    /**
+     * A new stock item at {@code destination} for units moved out of {@code source}: same SKU, lot,
+     * expiry and status. Status travels with the goods — moving quarantined stock to a bin does not
+     * make it sellable, only QC does (see {@link #receive}).
+     */
+    public static StockItem arrivedFrom(StockItem source, LocationId destination, Quantity quantity) {
+        if (source.location.equals(destination)) {
+            throw new IllegalArgumentException("A move needs two different locations");
+        }
+        StockItem arrived = new StockItem(StockItemId.newId(), source.sku, destination, source.lotNumber,
+                source.expiryDate, Quantity.ZERO, source.status, List.of(), 0L);
+        arrived.moveIn(quantity);
+        return arrived;
+    }
+
+    /** Whether units of {@code other} may be merged into this stock item by a move. */
+    public boolean canReceiveFrom(StockItem other) {
+        return sku.equals(other.sku)
+                && java.util.Objects.equals(lotNumber, other.lotNumber)
+                && status == other.status;
+    }
+
+    /**
+     * Post an approved adjustment (SCRUM-145): {@code onHand} changes by {@code delta}.
+     *
+     * <p>Refused when the result would fall below what is reserved, for the same reason as
+     * {@link #adjustTo}: a write-off must not silently cancel a customer's hold. Release the hold
+     * first, then post.</p>
+     */
+    public void adjustBy(int delta) {
+        if (delta == 0) {
+            throw new IllegalArgumentException("An adjustment changes the quantity");
+        }
+        long result = (long) onHand.value() + delta;
+        if (result < reserved().value()) {
+            throw new InsufficientStockException(sku.code(), -delta, movable().value());
+        }
+        this.onHand = Quantity.of(Math.toIntExact(result));
+        checkInvariants();
+    }
+
+    private static void requirePositive(Quantity quantity) {
+        if (quantity.isZero()) {
+            throw new IllegalArgumentException("A move needs a positive quantity");
+        }
+    }
+
     // ------------------------------------------------------------------ invariants
 
     /**

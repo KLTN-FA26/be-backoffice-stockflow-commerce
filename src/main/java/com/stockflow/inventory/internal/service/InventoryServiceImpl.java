@@ -1,6 +1,10 @@
 package com.stockflow.inventory.internal.service;
 
 import com.stockflow.inventory.api.InventoryService;
+import com.stockflow.inventory.api.MoveStockCommand;
+import com.stockflow.inventory.api.RequestAdjustmentCommand;
+import com.stockflow.inventory.api.StockAdjustmentSummary;
+import com.stockflow.inventory.api.StockMove;
 import com.stockflow.inventory.api.ReserveStockResult;
 import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.api.StockAvailability;
@@ -62,12 +66,26 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
 
     private final StockItemRepository repository;
     private final InventoryEventPublisher events;
+    private final StockOperations operations;
     private final Clock clock;
 
-    InventoryServiceImpl(StockItemRepository repository, InventoryEventPublisher events, Clock clock) {
+    InventoryServiceImpl(StockItemRepository repository, InventoryEventPublisher events,
+                         StockOperations operations, Clock clock) {
         this.repository = repository;
         this.events = events;
+        this.operations = operations;
         this.clock = clock;
+    }
+
+    /** Delegated: moves and adjustments write the ledger, which {@link StockOperations} owns. */
+    @Override
+    public StockMove move(MoveStockCommand command) {
+        return operations.move(command);
+    }
+
+    @Override
+    public StockAdjustmentSummary requestAdjustment(RequestAdjustmentCommand command) {
+        return operations.requestAdjustment(command);
     }
 
     @Override

@@ -19,6 +19,8 @@ public final class InventoryResources {
     // rendered in the matrix is rejected at startup rather than at the first 403.
     public static final String STOCK_ITEMS = "inventory-stock-items";
     public static final String RESERVATIONS = "inventory-reservations";
+    public static final String STOCK_MOVEMENTS = "inventory-stock-movements";
+    public static final String STOCK_ADJUSTMENTS = "inventory-stock-adjustments";
 
     private InventoryResources() {
     }
