@@ -1,6 +1,6 @@
 # PR #36 — supplier master and purchase-order communication
 
-Suggested title: `fix(procurement): complete supplier and PO communication review (SCRUM-115/118)`
+PR title: `fix(procurement): complete supplier and PO communication review (SCRUM-115/118)`
 
 Supplier profiles and PO communication now include the validation, permissions, deployment
 configuration and delivery evidence requested in the October review. A PO without a supplied
@@ -14,7 +14,7 @@ and [7 October follow-up](https://github.com/KLTN-FA26/be-backoffice-stockflow-c
 
 | Item | Resolution |
 |---|---|
-| A1 | Merged `origin/develop` at `2c68457`; retained both sets of message keys. No rebase or force-push. |
+| A1 | Merged develop through `43a84fa` (#59); retained both sets of message keys. No rebase or force-push. |
 | A2 | Upgrade tests check required migration versions instead of a fixed migration count. |
 | A3 | Included Tú's supplier-spend fixture fix from develop. |
 | A4 | Added all required buyer variables and supplier API allowlist to deployment Compose and its example environment. Buyer configuration uses `stockflow.procurement.buyer.*`. VPS values remain an operator step below. |
@@ -31,19 +31,49 @@ and [7 October follow-up](https://github.com/KLTN-FA26/be-backoffice-stockflow-c
 | Retry observations | Default retry interval/grace period are each one minute. Persistent `attemptNumber` distinguishes transport attempts from manual recovery generations, including historical backfill. |
 | Supplier resource constant | SupplierController uses `SupplierResources.SUPPLIERS`. |
 
-The recent RBAC, procurement report, deployment, integrity-handler and SYSTEM_ADMIN changes
-(#39–42 and #52) are included through develop. The open warehouse PRs form a separate series;
-their pending module changes are not merged into this branch. The Windows path fix in
-`tools/verify.py` matches the same change already proposed in #49.
+All six review comments (24/09, 29/09, 01/10, 04/10 and both 07/10 comments) were included in
+the independent audit. GitHub returned no formal reviews or inline threads at that check.
+The earlier comments are [24/09](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/36#issuecomment-5814150650),
+[29/09](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/36#issuecomment-5892128195),
+[01/10](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/36#issuecomment-5935037646)
+and [07/10 retry](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/36#issuecomment-6037554140).
+
+The completion pass fixed additional reproduced gaps: the first-date SQL constraint, damaged
+Vietnamese messages, UTF-8 idempotency replay, unintended staff APPROVE, status field validation
+and successful CREATE audit IDs. Feature-touched procurement/notification code is formatted;
+unrelated MinIO/DB README edits match develop. Supplier writes use an aggregate and domain port.
+Delivery-log Spring Data access remains inside notification for append-only transport evidence
+and status projections; it is not an aggregate exposed to another module. Its public Java
+visibility is retained for services in the sibling internal package; module boundaries still
+exclude external access. This is an explicit design disposition of the older advisory comment,
+not a claim that the repository became package-private.
+
+The independent audit also reproduced a historical upgrade failure missed by fresh-DB tests.
+The new fixture pins all 69 published SQL filenames and SHA-256 hashes from `9fbb90f`, reproduces
+the missing develop prerequisites, and tests a controlled one-off recovery. The new review SQL
+is `V20260930000500`, preserving published SQL and leaving #38's canonical version distinct.
+See [the upgrade runbook](SCRUM-115-118-backend.md#database-upgrade); production histories need
+identification before selecting a recovery procedure.
 
 ## Validation
 
 Verified on 8 October 2026 with Java 21, Maven 3.9.9 and Docker Desktop:
 
-- `clean verify`: **BUILD SUCCESS ? 493 tests, 0 failures, 0 errors, 0 skipped**, with the executable JAR packaged.
-- Static checks: **822 Java files, 125 tables, all checks passed**.
-- Deployment Compose: valid with the example environment; missing buyer configuration is rejected.
-- No conflicting message keys, whitespace errors or modifications to migrations already in develop.
+- Local `clean verify` after develop #58: **527 tests**, zero failures/errors/skips, packaged JAR.
+  After develop #59: **66 targeted tests plus packaging**, including new order-list and supplier
+  integration, architecture and module boundaries.
+- GitHub [build 37709035864](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/actions/runs/37709035864)
+  passed for code commit `1671584`: **538 tests**, zero failures/errors/skips. Docker/deploy skipped.
+- Static checks, whitespace and both Compose configurations pass. Each of the six required
+  buyer/address variables was individually omitted to verify deployment configuration rejection.
+- Real HTTP with security enabled: **64 checks** across five JWT roles. Mailpit captured original
+  and cancellation notices. SMTP interruption produced failure attempt 1; after restoration,
+  scheduler delivery attempt 2 succeeded after 113 seconds. No real supplier mail was sent.
+- PostgreSQL QA: 166 checks passed; orphan and supplier preflight checks were clean.
+- Both language bundles retain develop and prior-PR keys; published SQL hashes remain unchanged.
+
+The earlier 493-test handoff described `1aafb96`, not the final pushed implementation.
+The latest PR check is authoritative for any later documentation-only commit.
 
 Commands:
 
