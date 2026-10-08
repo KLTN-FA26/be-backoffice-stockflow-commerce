@@ -122,6 +122,28 @@ class OrderProductionServiceTest {
         verify(repository, never()).insertOrGet(any());
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"customer", "order", "orderNumber", "snapshot", "checksum", "blank", "approval", "dueDate"})
+    void replayCannotReplaceOwnershipOrLockedSourceContent(String changed) {
+        var original = existing(lineId, 100, warehouseId);
+        when(repository.findBySource(original.source())).thenReturn(Optional.of(original));
+        UUID incomingOrder = changed.equals("order") ? UUID.randomUUID() : orderId;
+        UUID incomingCustomer = changed.equals("customer") ? UUID.randomUUID() : customerId;
+        when(releases.requireCustomer(incomingOrder, warehouseId)).thenReturn(incomingCustomer);
+        var incomingLine = new OrderLinesReleasedForProduction.Line(lineId,
+                changed.equals("blank") ? "BOX-001" : "CUP-001", 100,
+                changed.equals("snapshot") ? UUID.randomUUID() : snapshotId,
+                changed.equals("checksum") ? "b".repeat(64) : "a".repeat(64),
+                changed.equals("approval") ? UUID.randomUUID() : sampleId,
+                LocalDate.of(2026, 10, changed.equals("dueDate") ? 21 : 20));
+        var incoming = new OrderLinesReleasedForProduction(incomingOrder,
+                changed.equals("orderNumber") ? "SO-2" : "SO-1", warehouseId, List.of(incomingLine));
+
+        assertThatThrownBy(() -> service.receive(incoming)).isInstanceOf(ConflictException.class);
+        verify(repository, never()).insertOrGet(any());
+        verifyNoInteractions(designs);
+    }
+
     @Test
     void repeatedDesignResolvesItsExistingApprovalInsteadOfBypassingSampleGate() {
         service.receive(event(line(lineId, 100, null)));

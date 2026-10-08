@@ -125,6 +125,37 @@ class SampleRequestServiceTest {
     }
 
     @Test
+    void recordsOffSystemSendingOnlyFromReadyAndDoesNotCreateAnotherProductionOrder() {
+        assertThatThrownBy(() -> service.sendToCustomer(revision())).isInstanceOf(ConflictException.class);
+        verify(samples, never()).save(any(), anyLong());
+        sample.submit(warehouse);
+        sample.startProduction(1);
+        sample.markReady(1);
+        var readyRevision = revision();
+
+        assertThat(service.sendToCustomer(readyRevision).status()).isEqualTo(SampleStatus.SENT_TO_CUSTOMER);
+        verify(samples).save(sample, readyRevision.version());
+        assertThatThrownBy(() -> service.sendToCustomer(readyRevision)).isInstanceOf(ConflictException.class);
+        verify(samples, times(1)).save(any(), anyLong());
+        verifyNoInteractions(production, events);
+    }
+
+    @Test
+    void draftEditAndCancellationPreserveTheSampleSourceWithoutStartingProduction() {
+        var draftRevision = revision();
+        var edited = service.edit(draftRevision, new SampleRequests.Draft(snapshot, "CUP-001", 3, null));
+        assertThat(edited.id()).isEqualTo(sample.id());
+        assertThat(edited.draft().quantity()).isEqualTo(3);
+        verify(samples).save(sample, draftRevision.version());
+        var cancellationRevision = revision();
+        assertThat(service.cancel(cancellationRevision).status()).isEqualTo(SampleStatus.CANCELLED);
+        verify(samples).save(sample, cancellationRevision.version());
+        assertThatThrownBy(() -> service.edit(revision(), draft())).isInstanceOf(ConflictException.class);
+        verify(samples, times(2)).save(any(), anyLong());
+        verifyNoInteractions(production, events);
+    }
+
+    @Test
     void pendingRoundSourceDecisionFailsClosedWithoutInventingAnotherLsx() {
         sent();
         sample.requestChanges("Larger logo", actorId, now);
