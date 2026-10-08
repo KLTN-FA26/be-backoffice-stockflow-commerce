@@ -1,6 +1,9 @@
 package com.stockflow.order.internal.controller;
 
+import com.stockflow.order.api.ListOrdersQuery;
 import com.stockflow.order.api.OrderService;
+import com.stockflow.order.api.OrderStatus;
+import com.stockflow.order.internal.controller.dto.OrderStatusChangeResponse;
 import com.stockflow.order.internal.controller.dto.AdminCancelOrderRequest;
 import com.stockflow.order.internal.controller.dto.OrderResponse;
 import com.stockflow.order.internal.controller.dto.PlaceOrderRequest;
@@ -32,6 +35,8 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.LocalDate;
+import java.util.List;
 import java.util.UUID;
 
 /** HTTP entry point for orders. Thin: request in, command out, response back. *
@@ -167,6 +172,46 @@ class OrderController {
      * identity-to-customer linkage exists yet (see SCRUM-46). This endpoint is correct for the
      * moment that linkage exists; it is not meaningfully callable by a real customer before then.</p>
      */
+    /**
+     * The back-office order list (SCRUM-443, FE 440). Staff only: a customer holds
+     * {@code sales-orders:READ} too, for their own orders, and gets a 403 here rather than everyone's.
+     * Parameters follow FE #12: {@code search}, {@code status} repeated, {@code sort=field,dir}.
+     */
+    @GetMapping
+    @Operation(summary = "List orders for the back office: search, status, customer, placed date, sort")
+    @RequiresPermission(resource = OrderResources.ORDERS, action = Action.READ, scope = DataScope.ALL)
+    public ApiResponse<PageResponse<OrderResponse>> list(
+            @AuthenticatedUser CurrentUser user,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(required = false) Integer size,
+            @RequestParam(required = false) String search,
+            @RequestParam(name = "status", required = false) List<OrderStatus> statuses,
+            @RequestParam(required = false) UUID customerId,
+            @RequestParam(required = false) LocalDate placedFrom,
+            @RequestParam(required = false) LocalDate placedTo,
+            @RequestParam(required = false) String sort) {
+        requireStaff(user);
+        return ApiResponse.ok(orderService.list(new ListOrdersQuery(page,
+                        size == null ? Pages.DEFAULT_PAGE_SIZE : size, search, statuses, customerId,
+                        placedFrom, placedTo, sort))
+                .map(OrderWebMapper::toResponse));
+    }
+
+    @GetMapping("/{orderId}/history")
+    @Operation(summary = "Status history of one order, oldest first")
+    @RequiresPermission(resource = OrderResources.ORDERS, action = Action.READ, scope = DataScope.OWN)
+    public ApiResponse<List<OrderStatusChangeResponse>> history(@PathVariable UUID orderId,
+                                                                @AuthenticatedUser CurrentUser user) {
+        UUID ownCustomerId = ownCustomerIdOrNull(user);
+        orderService.findById(orderId)
+                .filter(order -> ownCustomerId == null || ownCustomerId.equals(order.customerId()))
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));
+        return ApiResponse.ok(orderService.history(orderId).stream()
+                .map(change -> new OrderStatusChangeResponse(change.from(), change.to(), change.reason(),
+                        change.occurredAt()))
+                .toList());
+    }
+
     @GetMapping("/me")
     @Operation(summary = "List the signed-in customer's own orders")
     @RequiresPermission(resource = OrderResources.ORDERS,
@@ -187,6 +232,12 @@ class OrderController {
      *
      * @return null for staff, who may see and cancel any order
      */
+    private static void requireStaff(CurrentUser user) {
+        if (!user.hasAnyRole(Role.SALES_STAFF, Role.ORDER_COORDINATOR, Role.ECOMMERCE_ADMIN)) {
+            throw new BusinessException(ErrorCode.FORBIDDEN, "The order list is for back-office staff");
+        }
+    }
+
     private UUID ownCustomerIdOrNull(CurrentUser user) {
         if (user.hasAnyRole(Role.SALES_STAFF, Role.ORDER_COORDINATOR, Role.ECOMMERCE_ADMIN)) {
             return null;
