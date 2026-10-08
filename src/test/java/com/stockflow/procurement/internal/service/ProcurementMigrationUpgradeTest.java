@@ -127,6 +127,8 @@ values
                                         postgres.getJdbcUrl(),
                                         postgres.getUsername(),
                                         postgres.getPassword())
+                                // Isolate this role-version bump before later stories add grants.
+                                .target("20260930000500")
                                 .load();
                 assertThat(upgrade.migrate().migrations.stream().map(m -> m.version).toList())
                         .contains("20260930000500");
