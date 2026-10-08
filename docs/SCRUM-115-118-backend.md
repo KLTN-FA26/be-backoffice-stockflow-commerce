@@ -33,9 +33,9 @@ All responses use the existing API envelope; collection responses are paginated.
 | POST `/api/v1/purchase-orders/{id}/delivery-recovery` | procurement-purchase-orders:APPROVE | Queue one new generation after terminal failure and reconciliation |
 | GET `/api/v1/purchase-orders/{id}/delivery-decisions` | procurement-purchase-orders:READ | Paginated requester, reason, recipient, generation and old/new date evidence |
 
-PO responses include `deliveryStatus`: NOT_SENT, QUEUED, UNKNOWN (legacy without delivery evidence), RETRYING, FAILED (terminal), SUPPRESSED (pending work stopped), or DELIVERED. A previously successful delivery remains DELIVERED after cancellation. List enrichment uses one bulk lookup. SMTP acceptance and API 2xx are transport success, never supplier business confirmation. An idempotency replay retains its original response; refresh detail for current status. Delivery attempts include `generation` and `recipient`; delivery-decisions records why each generation was authorized.
+PO responses include `deliveryStatus`: NOT_SENT, QUEUED, UNKNOWN (legacy without delivery evidence), RETRYING, FAILED (terminal), SUPPRESSED (pending work stopped), or DELIVERED. A previously successful delivery remains DELIVERED after cancellation. List enrichment uses one bulk lookup. SMTP acceptance and API 2xx are transport success, never supplier business confirmation. An idempotency replay retains its original response; refresh detail for current status. Delivery attempts include `generation`, `attemptNumber` and `recipient`; `attemptNumber` counts transport calls starting at 1 within each generation and notice type, while `generation` changes only on manual recovery; delivery-decisions records why each generation was authorized.
 
-PROCUREMENT_STAFF receives VIEW_PAGE/READ/CREATE/UPDATE, not DELETE. The DELETE endpoint remains available only to explicitly authorized roles. Supplier updates and deactivation use the existing audit trail. PUT is a full replacement and requires explicit paymentTermDays/leadTimeDays (missing values return 400); POST alone applies 30/7 defaults when omitted. No PATCH status endpoint or frontend aliases are introduced without a coordinated API contract.
+SYSTEM_ADMIN holds every permission, including supplier DELETE; ECOMMERCE_ADMIN also holds supplier DELETE. PROCUREMENT_STAFF receives VIEW_PAGE/READ/CREATE/UPDATE, not DELETE. The DELETE endpoint remains available only to explicitly authorized roles. Supplier updates and deactivation use the existing audit trail. PUT is a full replacement and requires explicit paymentTermDays/leadTimeDays (missing values return 400); POST alone applies 30/7 defaults when omitted. No PATCH status endpoint or frontend aliases are introduced without a coordinated API contract.
 
 ## Performance definitions
 
@@ -48,7 +48,7 @@ PROCUREMENT_STAFF receives VIEW_PAGE/READ/CREATE/UPDATE, not DELETE. The DELETE 
 
 ## Delivery and operations
 
-The existing NotificationSender owns transport. The existing Spring Modulith event registry persists delivery requests atomically with the PO. Its AFTER_COMMIT async listener records failures in a separate transaction; a mail/API outage never rolls back SENT. The retry job resubmits at most 50 eligible PO publications every five minutes after their initial five-minute grace period, guarded by ShedLock. Selection rotates in stable publication-ID order using a database cursor, so permanently failing old events cannot monopolize every batch. The cursor survives application restarts and node changes; it is advanced before dispatch, and an interrupted batch is revisited on a later circuit. The registry remains the sole event queue. PostgreSQL advisory transaction locks serialize workers and successful delivery references are unique.
+The existing NotificationSender owns transport. The existing Spring Modulith event registry persists delivery requests atomically with the PO. Its AFTER_COMMIT async listener records failures in a separate transaction; a mail/API outage never rolls back SENT. The retry job resubmits at most 50 eligible PO publications every minute after an initial one-minute grace period (normally 1?2 minutes before the first retry without a backlog), guarded by ShedLock. Selection rotates in stable publication-ID order using a database cursor, so permanently failing old events cannot monopolize every batch. The cursor survives application restarts and node changes; it is advanced before dispatch, and an interrupted batch is revisited on a later circuit. The registry remains the sole event queue. PostgreSQL advisory transaction locks serialize workers and successful delivery references are unique.
 
 - Local IDE: SMTP `MAIL_HOST=localhost`, `MAIL_PORT=1025`, with Mailpit running.
 - Compose app: `MAIL_HOST` is passed from `DOCKER_MAIL_HOST` (default `mailpit`). Start the `mailpit` service along with `app`. SMTP has finite connection/read/write timeouts.
@@ -63,7 +63,7 @@ The existing NotificationSender owns transport. The existing Spring Modulith eve
 
 ## Database upgrade
 
-PR-local migrations are now ordered `V20260930000100`, `V20260930000200`, `V20260930000300`, above develop's `V20260928006000` (renamed again from `V20260925*`/`V20260926000100` when develop gained the full-schema migrations). Run `mvn clean` before building to remove old resource filenames. Do not enable Flyway out-of-order globally to hide this problem.
+PR-local migrations are ordered `V20260930000100` through `V20260930000400`, followed by `V20260930000500`, above develop's `V20260929000200` (renamed again from `V20260925*`/`V20260926000100` when develop gained the full-schema migrations). Run `mvn clean` before building to remove old resource filenames. Do not enable Flyway out-of-order globally to hide this problem.
 
 `V20260930000400` follows these migrations and adds dispatch control, append-only decision history and sent-date protection. It preserves unknown legacy send evidence rather than presenting historical orders without a queued event as QUEUED.
 
@@ -77,11 +77,20 @@ The receipt trigger only guards immutable evidence and requires a timestamp for 
 
 ## Verification
 
-Full `mvn test` completed on 2026-10-02 after the review fixes: **420 tests, zero failures, zero errors, zero skipped**. This includes 28 supplier/PO integration cases, PostgreSQL upgrade with legacy invalid tax data, role grants/version bumps, overdue response warnings, cancellation/dispatch locking, cancellation failure/retry using the original recipient, snapshot-preserving recovery, HTTP idempotency, bounded retry, architecture and module boundaries. An initial targeted `mvn clean test` also removed old migration resources. This does not certify an existing deployment's data or a real supplier's provider credentials.
+Run `mvn -B -ntp clean verify` with Java 21 and Docker for the complete unit/integration suite,
+architecture checks and application packaging. The October review also verifies fresh migrations,
+upgrades from develop and the existing feature schema, role grants/version bumps, HTTP field errors,
+exact monetary boundaries, immutable descriptions, retries and attempt numbering.
 
-Regression tests cover real PostgreSQL migrations, simultaneous send/deactivation/create requests, unique-tax races, snapshots, rejection/receipt rules, successful and failed async delivery, durable retry, HTTP idempotent replay and KPI stability. Notification transport tests verify email contents, API allowlist, idempotency header and redirect rejection. Frontend is excluded by the repository owner's instruction.
+Regression tests cover real PostgreSQL migrations, concurrent send/deactivation/create requests,
+unique-tax races, rejection/receipt rules, durable retry, cancellation/recovery, HTTP idempotency,
+KPI stability and supplier identity in PO responses. Notification transport tests check Vietnamese
+message contents, API allowlist, idempotency headers and redirect rejection. External SMTP/provider
+credentials and the VPS environment require deployment verification.
 
-The static `tools/verify.py` check reports 19 dependency findings in integration-test sources (test support and cross-module fixtures), also reproduced on unmodified commit `79b2d75`; it is not a clean pass. This review fix introduces no additional findings. Production module boundaries are separately checked by ArchitectureTest and ModularityTest. Do not expand production dependencies to suppress test-only findings.
+`python -X utf8 tools/verify.py` passes on Windows after the path normalization also proposed in
+PR #49. ArchitectureTest and ModularityTest independently enforce production module boundaries.
+See [the PR review record](PR-36-review.md#validation) for the current verification results.
 
 ## PR 36 review scope
 
@@ -126,9 +135,9 @@ returns 409 `PO_COMMUNICATION_NOT_CONFIGURED` without committing SENT. The curre
 has no PO warehouse id: this is one default receiving address, not multi-warehouse routing.
 At C4, replace it with the address of the PO's actual `warehouse_id`.
 
-Each first send snapshots company/contact/receiving address and product line descriptions in the
-existing decision record and durable publication. Missing line descriptions resolve through the
-product module's public API; an unknown/ambiguous SKU without a description returns 400
+PO creation resolves and stores each line description, using the supplied text or the product
+module's public API. Each first send snapshots company/contact/receiving address and these stored
+line descriptions in the existing decision record and durable publication; an unknown/ambiguous SKU without a description returns 400
 `PO_LINE_DESCRIPTION_REQUIRED`. Recovery reuses the snapshot even if product names or buyer
 configuration change. A legacy recovery with no snapshot must capture validated current details;
 it cannot reconstruct evidence that was never recorded. SMTP notices are Vietnamese and set the
@@ -137,46 +146,103 @@ buyer email as Reply-To. Supplier API payloads add `buyer`, `type` (`PURCHASE_OR
 `purchase-order:{id}:cancellation`. The internal event's historical name `PurchaseOrderSent`
 is retained for compatibility with existing durable publications.
 
-## C4 mapping: legacy PO versus target purchase_orders
+## C4 remains a separate schema decision
 
-This PR intentionally still runs on the legacy table, as allowed by db-design README §3.
-It does not activate C4 or implement the new revision/approval workflow. The evidence-preserving
-mapping below must be confirmed with the schema owner before cutover: the older state-machine
-document includes SENT, whereas D4 removes it. In particular, do not assume a transport send is
-supplier acceptance merely because the target enum contains CONFIRMED.
-
-| Legacy state/evidence | Target state at cutover | Required handling |
-|---|---|---|
-| DRAFT | DRAFT | Preserve PO id and number |
-| APPROVED, not dispatched | APPROVED | Reconcile required approved revision, actor and approval evidence |
-| SENT + supplier response PENDING | APPROVED, dispatch evidence retained | Do not fabricate supplier confirmation; prevent a second initial send using existing dispatch evidence |
-| SENT + supplier response CONFIRMED | CONFIRMED | Map actual supplier response time and authenticated recording actor, not SMTP delivery time |
-| SENT + supplier response REJECTED | APPROVED with rejection evidence and send/receipt blocked, or CANCELLED after explicit cancellation | Never infer supplier acceptance or silently cancel historical orders |
-| PARTIALLY_RECEIVED | PARTIALLY_RECEIVED | Reconcile missing confirmation and receipt evidence before enabling target constraints |
-| CLOSED (legacy fully received) | RECEIVED | Full receipt is not financial closure; retain completion timestamp |
-| CLOSED_SHORT | CLOSED + SHORT_CLOSE | Reconcile close reason/actor/time and open quantities |
-| CANCELLED | CANCELLED | Preserve reason plus independent cancellation delivery evidence |
-
-Preserve IDs, event publications, original send/response evidence, delivery generations,
-`payload_snapshot`, cancellation control flags, and log references. Carry legacy tax values into
-an approved audit/notes destination before the old supplier table is dropped. Keep supplier
-response evidence distinct from target `confirmed_by/confirmed_at`; do not synthesize a user,
-warehouse, revision or approval history merely to satisfy a constraint. Any unresolved actor,
-revision, warehouse or historical confirmation blocks that row's cutover for reconciliation.
-The target date check also rejects expected dates before order_date; such historical rows need
-an explicit schema/data decision, not silent date rewriting. Coordinate with the schema owner
-before C4; its pending SQL only switches keys/drops old tables, it does not do this reconciliation.
+This PR continues to use `procurement.supplier` and `procurement.purchase_order`.
+The demo supplier GOVIET is in the newer `procurement.suppliers` table and therefore is not
+visible through this API; create a supplier through POST `/api/v1/suppliers` for this flow.
+The C4 state mapping, including how SENT and supplier responses map to the target schema,
+must be agreed separately with the schema owner. This PR does not change the DB-design README,
+activate the contract migration, or move data between the legacy and target tables.
 
 ## October review migration coordination
 
-`V20260930000100` grants supplier DELETE to ECOMMERCE_ADMIN (not PROCUREMENT_STAFF) and bumps
-both affected `app_role.version` values in the same Flyway transaction. This is compatible with
-ADR-0008 role-version cache invalidation. These migrations are edited in place only because PR
-#36 is unmerged and the owner requested it. Databases that already applied them will have
-checksum differences: do not run blind repair; use a reviewed, backed-up deployment plan.
-PR #40's `V20261001000100` must follow this PR; if #40 lands first, rebase and renumber all four
-PR-local migrations above develop's maximum before merge, including upgrade-test targets.
+`V20260930000100` grants supplier DELETE to ECOMMERCE_ADMIN and bumps affected role versions.
+Develop now includes #40 (`V20260929000100`) and #52 (`V20260929000200`). The upgrade test starts
+from that develop baseline and checks required applied versions without counting unrelated migrations.
+`V20260930000500` adds every existing permission to SYSTEM_ADMIN, bumps its version in the same
+transaction, and backfills delivery attempt numbers per operation and generation. Existing migration
+files retain their checksums. Merge develop into this branch; no rebase or force-push is needed.
+
 
 Use `code` (required, immutable), `name`, `contactName`, `email`, `phone`, `taxCode`, `status`, `paymentTermDays`, `leadTimeDays`, `communicationChannel`, and `apiEndpoint`. Do not send mock aliases `contactEmail`, `contactPhone` or free-text `paymentTerms`. Commercial terms are integer calendar days, not arbitrary strings. Currency belongs to each PO; this supplier API does not invent address/rating/currency profile fields. Performance is calculated at `/suppliers/{id}/performance`, not a manually editable rating.
 
 Change supplier status through a complete PUT payload including current commercial terms. POST may omit terms and uses the application defaults; PUT must supply them. There is no PATCH status alias. DELETE is a privileged deactivation, not physical deletion. Delivery history is now `/api/v1/purchase-orders/{id}/deliveries`; update clients from the previous notification-owned URL. `deliveryStatus` and `supplierConfirmationStatus` describe different processes and must not be conflated. Collection responses retain the shared `data.items` envelope and pagination fields.
+
+## Frontend handoff for the October review
+
+PO create/detail/list/action responses now include `supplierCode` and `supplierName`. Use these
+fields on approval screens; WAREHOUSE_MANAGER does not need supplier-directory READ permission.
+List responses load supplier identities in one batch and do not fetch PO lines.
+
+Creation requires a valid ISO currency, quantity 1–1,000,000, description at most 300 characters,
+and nonnegative unit price fitting NUMERIC(18,2). The currency's decimal limit also applies
+(VND: 0, USD: 2); prices are rejected instead of silently rounded. Total amount cannot exceed
+9999999999999999.99. `VALIDATION_FAILED` returns `fieldErrors` such as `currency`,
+`lines[0].sku`, `lines[0].description`, `lines[0].quantityOrdered`, `lines[0].unitPrice`, or `lines`
+for total overflow. Supplier DTO validation similarly attaches errors to the editable fields;
+the existing `SUPPLIER_PROFILE_INVALID` fallback code is retained for API compatibility.
+
+| Error code | HTTP | Suggested Vietnamese message |
+|---|---|---|
+| PO_DELIVERY_DATE_REQUIRED | 400 | Vui lòng nhập ngày giao dự kiến. |
+| PO_REASON_REQUIRED | 400 | Vui lòng nhập lý do từ 1 đến 1000 ký tự. |
+| PO_SUPPLIER_RESPONSE_INVALID | 400 | Phản hồi nhà cung cấp phải là xác nhận hoặc từ chối. |
+| PO_COMMUNICATION_NOT_CONFIGURED | 409 | Chưa cấu hình đầy đủ thông tin bên mua và địa chỉ nhận hàng. |
+| PO_LINE_DESCRIPTION_REQUIRED | 400 | Vui lòng nhập mô tả sản phẩm khi SKU không có tên trong danh mục. |
+| SUPPLIER_DELIVERY_CONTACT_INVALID | 400 | Thông tin nhận đơn của nhà cung cấp không hợp lệ hoặc chưa được cho phép. |
+
+For `/deliveries`, render `attemptNumber` as the attempt count, not `generation + 1`. A manual
+recovery starts a new generation with attempt 1. `failure` is one of `MAIL_SEND_FAILED`,
+`API_TIMEOUT`, `API_REJECTED`, `API_SEND_FAILED`, or `DELIVERY_INVALID`; internal diagnostics
+are logged on the server. Old historical error strings are preserved. A first supplied delivery
+date needs no reason if the PO had none; replacing an existing date still requires a reason.
+
+Deployment requires the six buyer/address variables in `deploy/.env.example` to be configured
+on the VPS before deployment. Repository checks cannot verify the VPS's private `.env` or
+external mail delivery; see `deploy/README.md` for the operator step.
+
+### Upgrade and the #36 → #38 merge order
+
+The unpublished review migration is `V20260930000500`. It follows all published PO migrations,
+precedes #38's `V20260930001000/1100`, and leaves #38's canonical `V20261008000100` distinct.
+It backfills attempt numbers, grants every permission to SYSTEM_ADMIN, removes the accidental
+supplier APPROVE grant from PROCUREMENT_STAFF with a role-version bump, and permits the first
+delivery date without a reason in the database as well as the aggregate. No published SQL is edited.
+Tests and append-only checks must run again if develop gains a newer migration before merge.
+
+Run [the read-only preflight](../tools/sql/supplier-upgrade-preflight.sql) before upgrading an
+existing environment. It reports missing develop prerequisites, old aliases and the earlier local
+review version. A green fresh install does not validate an existing environment's history.
+
+For a DB that ran **exactly remote #36 `9fbb90f`**, versions `20260929000100/200` are absent even
+though `20260930000400` is already applied. Normal Flyway validation correctly refuses that state.
+The regression fixture pins the published filenames and SQL hashes rather than using a target
+against the newer migration directory. It reproduces the refusal and tests this recovery sequence:
+
+1. Stop application writers, back up and restore a clone. Confirm that history matches that release,
+   with no failed/checksum-mismatched/unknown migrations. Any older rename or divergent history
+   requires its own reconciliation; do not run the sequence against an unidentified database.
+2. On the clone, use Flyway with this release's migration directory, default schema `public`,
+   the intended datasource, and **one invocation only** with `outOfOrder=true` and
+   `target=20260930000400`. Inspect `info` first: exactly `20260929000100` and `20260929000200`
+   must be pending. These install the missing PO approval grant and SYSTEM_ADMIN prerequisites.
+3. Remove both overrides. Run normal migrate and validate, then the permission and API smoke checks.
+   The test requires the recovery to apply exactly those two prerequisites and normal migration
+   to apply `20260930000500`. Do not keep outOfOrder in application/Compose or use blind repair.
+4. Only repeat that verified procedure on the intended environment under its operator's change plan.
+   This PR does not perform production reconciliation.
+
+Equivalent Flyway CLI invocations after configuring the clone's connection and migration location:
+
+```sh
+flyway -outOfOrder=true -target=20260930000400 info
+flyway -outOfOrder=true -target=20260930000400 migrate
+flyway migrate
+flyway validate
+```
+
+The regression exercises these settings through Flyway's Java API. It does not test an installed
+CLI or private VPS. A DB that already applied the **unpublished PO** migration named
+`20261008000100`, or ran #38 before #36, needs separate history reconciliation; distinguish the
+PO script from #38's canonical script at that number. Never rename a history row automatically.

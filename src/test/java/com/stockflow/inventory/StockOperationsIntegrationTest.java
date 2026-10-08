@@ -1,0 +1,192 @@
+package com.stockflow.inventory;
+
+import com.stockflow.common.domain.Sku;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
+import com.stockflow.common.id.Identifiers;
+import com.stockflow.inventory.api.InventoryService;
+import com.stockflow.inventory.api.MoveReference;
+import com.stockflow.inventory.api.MoveStockCommand;
+import com.stockflow.inventory.api.RequestAdjustmentCommand;
+import com.stockflow.inventory.api.StockAdjustmentReason;
+import com.stockflow.inventory.api.StockAdjustmentStatus;
+import com.stockflow.inventory.api.StockAdjustmentSummary;
+import com.stockflow.inventory.api.StockMove;
+import com.stockflow.inventory.internal.service.StockOperations;
+import com.stockflow.support.PostgresContainer;
+import com.stockflow.support.ReferenceRows;
+import jakarta.persistence.EntityManager;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.modulith.test.ApplicationModuleTest;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.transaction.support.TransactionTemplate;
+
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * SCRUM-424 / SCRUM-145 against a real database: the stock rows, the ledger line and the
+ * adjustment all land, with the table constraints (four eyes, ledger shape, foreign keys) live.
+ * Each test works on its own canonical SKU and lot, so it never disturbs the demo stock other tests read.
+ */
+@ApplicationModuleTest
+@ActiveProfiles("test")
+@Import(PostgresContainer.class)
+class StockOperationsIntegrationTest {
+
+    private Sku sku;
+    private static final String BIN = "HCM-A01-1-B";
+    private static final String PACKING = "HCM-PACK01";
+
+    @Autowired InventoryService inventory;
+    @Autowired StockOperations operations;
+    @Autowired JdbcTemplate jdbc;
+    @Autowired EntityManager entityManager;
+    @Autowired TransactionTemplate tx;
+
+    private String lot;
+    private UUID clerk;
+    private UUID manager;
+
+    @BeforeEach
+    void ownLot() {
+        lot = "IT-" + UUID.randomUUID().toString().substring(0, 8);
+        sku = new Sku("MOVE-" + UUID.randomUUID().toString().substring(0, 8));
+        clerk = tx.execute(s -> ReferenceRows.user(entityManager));
+        manager = tx.execute(s -> ReferenceRows.user(entityManager));
+        // The demo sofa is explicitly untracked. A test that uses lots needs its own canonical
+        // LOT item, rather than violating that live policy or disabling policy enforcement.
+        tx.executeWithoutResult(s -> {
+            UUID product = Identifiers.newId();
+            jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)",
+                    product, sku.code(), "Move fixture", sku.code().toLowerCase(java.util.Locale.ROOT));
+            jdbc.update("""
+                    insert into product.variants(id,product_id,sku,name,attribute_signature)
+                    values (?,?,?,'Move fixture','')
+                    """, Identifiers.newId(), product, sku.code());
+            jdbc.update("""
+                    update inventory.inventory_items set lot_tracked=true,policy_configured=true
+                    where sku=?
+                    """, sku.code());
+        });
+        insertStock(BIN, 10, "AVAILABLE");
+    }
+
+    /** In a transaction: Hikari runs with auto-commit off, so a bare update would be rolled back. */
+    private void insertStock(String location, int onHand, String status) {
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version, created_at)
+                VALUES (?, ?, ?, ?, ?, 0, ?, 0, NOW())""", Identifiers.newId(), sku.code(), location, lot, onHand, status));
+    }
+
+    private Integer onHand(String location) {
+        return jdbc.query("SELECT on_hand FROM inventory.stock_item WHERE sku = ? AND location_code = ? AND lot_number = ?",
+                rs -> rs.next() ? rs.getInt(1) : null, sku.code(), location, lot);
+    }
+
+    private MoveStockCommand move(UUID requestId, String from, String to, int quantity) {
+        return new MoveStockCommand(requestId, sku, lot, from, to, quantity, MoveReference.MOVE_TASK, null, clerk);
+    }
+
+    @Test
+    @DisplayName("a move takes units from one row, adds them to another, and writes one ledger line")
+    void moveWritesStockAndLedger() {
+        UUID requestId = UUID.randomUUID();
+        StockMove first = inventory.move(move(requestId, BIN, PACKING, 4));
+
+        assertThat(onHand(BIN)).isEqualTo(6);
+        assertThat(onHand(PACKING)).isEqualTo(4);
+        Map<String, Object> line = jdbc.queryForMap("SELECT * FROM inventory.stock_movement WHERE id = ?", first.movementId());
+        assertThat(line).containsEntry("movement_type", "MOVE").containsEntry("from_location_code", BIN)
+                .containsEntry("to_location_code", PACKING).containsEntry("quantity", 4)
+                .containsEntry("reference_type", "MOVE_TASK").containsEntry("reference_id", requestId)
+                .containsEntry("actor_id", clerk);
+
+        // The same request again is the same move, not a second one.
+        StockMove replay = inventory.move(move(requestId, BIN, PACKING, 4));
+        assertThat(replay.movementId()).isEqualTo(first.movementId());
+        assertThat(onHand(BIN)).isEqualTo(6);
+
+        // A second move merges into the row already at the destination.
+        inventory.move(move(UUID.randomUUID(), BIN, PACKING, 6));
+        assertThat(onHand(BIN)).isZero();
+        assertThat(onHand(PACKING)).isEqualTo(10);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_item WHERE lot_number = ? AND location_code = ?",
+                Integer.class, lot, PACKING)).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("a move refuses more than is unreserved, an unknown location, and stock that is not there")
+    void moveRefusals() {
+        assertThatThrownBy(() -> inventory.move(move(UUID.randomUUID(), BIN, PACKING, 11)))
+                .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
+        assertThatThrownBy(() -> inventory.move(move(UUID.randomUUID(), BIN, "HCM-NOPE99", 1)))
+                .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.LOCATION_NOT_FOUND);
+        assertThatThrownBy(() -> inventory.move(move(UUID.randomUUID(), PACKING, BIN, 1)))
+                .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.STOCK_ITEM_NOT_FOUND);
+        assertThat(onHand(BIN)).isEqualTo(10);
+    }
+
+    @Test
+    @DisplayName("a lot held in another status at the destination is not merged into")
+    void statusMismatch() {
+        insertStock(PACKING, 2, "QUARANTINE");
+        assertThatThrownBy(() -> inventory.move(move(UUID.randomUUID(), BIN, PACKING, 1)))
+                .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.STOCK_STATUS_MISMATCH);
+    }
+
+    @Test
+    @DisplayName("an adjustment changes nothing until another person approves it, then posts with a ledger line")
+    void adjustmentFourEyes() {
+        StockAdjustmentSummary requested = inventory.requestAdjustment(new RequestAdjustmentCommand(
+                BIN, sku, lot, -3, StockAdjustmentReason.DAMAGED, "Crushed corner", clerk));
+        assertThat(requested.status()).isEqualTo(StockAdjustmentStatus.PENDING_APPROVAL);
+        assertThat(requested.number()).matches("ADJ-\\d{8}-\\d{4}");
+        assertThat(onHand(BIN)).isEqualTo(10);
+
+        assertThatThrownBy(() -> operations.approve(requested.adjustmentId(), clerk))
+                .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.ADJUSTMENT_SELF_APPROVAL);
+
+        StockAdjustmentSummary posted = operations.approve(requested.adjustmentId(), manager);
+        assertThat(posted.status()).isEqualTo(StockAdjustmentStatus.POSTED);
+        assertThat(onHand(BIN)).isEqualTo(7);
+        assertThat(jdbc.queryForObject("""
+                        SELECT count(*) FROM inventory.stock_movement
+                        WHERE reference_type = 'STOCK_ADJUSTMENT' AND reference_id = ? AND movement_type = 'ADJUSTMENT'
+                          AND from_location_code = ? AND to_location_code IS NULL AND quantity = 3""",
+                Integer.class, requested.adjustmentId(), BIN)).isEqualTo(1);
+
+        assertThatThrownBy(() -> operations.approve(requested.adjustmentId(), manager))
+                .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.INVALID_ADJUSTMENT_TRANSITION);
+    }
+
+    @Test
+    @DisplayName("numbers are unique per day, rejection leaves stock alone, and the queue filters by status")
+    void numbersRejectionAndQueue() {
+        StockAdjustmentSummary a = inventory.requestAdjustment(new RequestAdjustmentCommand(
+                BIN, sku, lot, 2, StockAdjustmentReason.FOUND, null, clerk));
+        StockAdjustmentSummary b = inventory.requestAdjustment(new RequestAdjustmentCommand(
+                BIN, sku, lot, -1, StockAdjustmentReason.LOST, null, clerk));
+        assertThat(a.number()).isNotEqualTo(b.number());
+
+        operations.reject(b.adjustmentId(), manager, "Found it on the next shelf");
+        assertThat(onHand(BIN)).isEqualTo(10);
+
+        var pending = operations.adjustments(StockAdjustmentStatus.PENDING_APPROVAL, sku.code(), BIN, 0, 50, null);
+        List<UUID> ids = pending.items().stream().map(StockAdjustmentSummary::adjustmentId).toList();
+        assertThat(ids).contains(a.adjustmentId()).doesNotContain(b.adjustmentId());
+
+        var history = operations.ledger(sku.code(), BIN, null, 0, 50);
+        assertThat(history.items()).allSatisfy(line ->
+                assertThat(BIN.equals(line.fromLocation()) || BIN.equals(line.toLocation())).isTrue());
+    }
+}

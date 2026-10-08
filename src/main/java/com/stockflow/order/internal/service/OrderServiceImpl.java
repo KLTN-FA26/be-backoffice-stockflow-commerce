@@ -7,14 +7,17 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.persistence.Pages;
+import com.stockflow.common.persistence.SortWhitelist;
 import com.stockflow.customer.api.CheckoutCustomer;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.design.api.DesignService;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.api.ReserveStockResult;
+import com.stockflow.order.api.ListOrdersQuery;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
+import com.stockflow.order.api.OrderStatusChange;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.api.PlaceGuestOrderCommand;
 import com.stockflow.order.api.PlaceOrderCommand;
@@ -37,6 +40,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
@@ -86,6 +90,13 @@ import java.util.stream.Collectors;
 class OrderServiceImpl implements OrderService {
 
     private static final Logger log = LoggerFactory.getLogger(OrderServiceImpl.class);
+
+    /** The days a coordinator filters by are Saigon days: "placed on the 8th" ends at 17:00 UTC. */
+    private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
+
+    private static final SortWhitelist LIST_SORT =
+            SortWhitelist.of("orderNumber", "placedAt", "totalAmount", "status")
+                    .withDefault("placedAt", Sort.Direction.DESC);
 
     private final OrderRepository repository;
     private final OrderSearchRepository search;
@@ -404,6 +415,47 @@ class OrderServiceImpl implements OrderService {
         repository.save(order);
         events.publishEventsOf(order);
         log.info("Cancelled order {} ({})", order.orderNumber(), reason);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Whether the caller may see every order is decided by the controller (staff only); this
+     * method applies no scope of its own, like {@link #myOrders}.
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<OrderSummary> list(ListOrdersQuery query) {
+        if (query.placedFrom() != null
+                && query.placedTo() != null
+                && query.placedTo().isBefore(query.placedFrom())) {
+            throw new BusinessException(
+                    ErrorCode.VALIDATION_FAILED, "placedTo is before placedFrom");
+        }
+        var criteria =
+                new OrderSearchRepository.Criteria(
+                        query.search(),
+                        query.statuses(),
+                        query.customerId(),
+                        query.placedFrom() == null
+                                ? null
+                                : query.placedFrom().atStartOfDay(BUSINESS_ZONE).toInstant(),
+                        query.placedTo() == null
+                                ? null
+                                : query.placedTo()
+                                        .plusDays(1)
+                                        .atStartOfDay(BUSINESS_ZONE)
+                                        .toInstant());
+        return Pages.toResponse(
+                search.search(
+                        criteria,
+                        Pages.of(query.page(), query.size(), LIST_SORT.parse(query.sort()))));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<OrderStatusChange> history(UUID orderId) {
+        return search.history(orderId);
     }
 
     /**

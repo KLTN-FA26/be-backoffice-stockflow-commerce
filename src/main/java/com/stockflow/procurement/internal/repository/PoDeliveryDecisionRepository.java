@@ -1,15 +1,21 @@
 package com.stockflow.procurement.internal.repository;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.security.CurrentUserProvider;
+import com.stockflow.contracts.PurchaseOrderSent;
 import com.stockflow.procurement.api.PurchaseOrderDeliveryDecision;
+
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
+
 import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.LocalDate;
+import java.util.Optional;
 import java.util.UUID;
 
 /** Append-only business evidence in the same transaction as queueing the delivery. */
@@ -18,55 +24,108 @@ public class PoDeliveryDecisionRepository {
     private final JdbcTemplate jdbc;
     private final Clock clock;
     private final CurrentUserProvider users;
-    private final com.fasterxml.jackson.databind.ObjectMapper json;
+    private final ObjectMapper json;
 
-    public PoDeliveryDecisionRepository(JdbcTemplate jdbc, Clock clock, CurrentUserProvider users,
-            com.fasterxml.jackson.databind.ObjectMapper json) {
+    public PoDeliveryDecisionRepository(
+            JdbcTemplate jdbc, Clock clock, CurrentUserProvider users, ObjectMapper json) {
         this.jdbc = jdbc;
         this.clock = clock;
         this.users = users;
         this.json = json;
     }
 
-    public void snapshot(com.stockflow.contracts.PurchaseOrderSent event) {
+    public void snapshot(PurchaseOrderSent event) {
         try {
-            jdbc.update("update procurement.po_delivery_decision set payload_snapshot=? where purchase_order_id=? and generation=?",
-                    json.writeValueAsString(event), event.purchaseOrderId(), event.deliveryGeneration());
-        } catch (com.fasterxml.jackson.core.JsonProcessingException failure) {
+            jdbc.update(
+                    "update procurement.po_delivery_decision set payload_snapshot=? where"
+                        + " purchase_order_id=? and generation=?",
+                    json.writeValueAsString(event),
+                    event.purchaseOrderId(),
+                    event.deliveryGeneration());
+        } catch (JsonProcessingException failure) {
             throw new IllegalStateException("Cannot persist PO communication snapshot", failure);
         }
     }
 
-    public java.util.Optional<com.stockflow.contracts.PurchaseOrderSent> latestSnapshot(UUID id) {
-        return jdbc.query("select payload_snapshot from procurement.po_delivery_decision where purchase_order_id=? and payload_snapshot is not null order by generation desc limit 1",
-                (row, index) -> {
-                    try { return json.readValue(row.getString(1), com.stockflow.contracts.PurchaseOrderSent.class); }
-                    catch (com.fasterxml.jackson.core.JsonProcessingException failure) {
-                        throw new IllegalStateException("Cannot read PO communication snapshot", failure);
-                    }
-                }, id).stream().findFirst();
+    public Optional<PurchaseOrderSent> latestSnapshot(UUID id) {
+        return jdbc
+                .query(
+                        "select payload_snapshot from procurement.po_delivery_decision where"
+                            + " purchase_order_id=? and payload_snapshot is not null order by"
+                            + " generation desc limit 1",
+                        (row, index) -> {
+                            try {
+                                return json.readValue(row.getString(1), PurchaseOrderSent.class);
+                            } catch (JsonProcessingException failure) {
+                                throw new IllegalStateException(
+                                        "Cannot read PO communication snapshot", failure);
+                            }
+                        },
+                        id)
+                .stream()
+                .findFirst();
     }
 
-    public void record(UUID id, int generation, LocalDate previousDate, LocalDate date, String reason,
-            boolean reconciled, boolean acknowledgePastDue, String channel, String recipient) {
-        jdbc.update("""
-                insert into procurement.po_delivery_decision(id,purchase_order_id,generation,previous_expected_at,
-                    expected_at,reason,reconciled,acknowledge_past_due,channel,recipient,actor,requested_at)
-                values (?,?,?,?,?,?,?,?,?,?,?,?)
-                """, Identifiers.newId(), id, generation, previousDate, date, reason, reconciled, acknowledgePastDue,
-                channel, recipient, users.current().map(u -> u.userId().toString()).orElse("system"), Timestamp.from(clock.instant()));
+    public void record(
+            UUID id,
+            int generation,
+            LocalDate previousDate,
+            LocalDate date,
+            String reason,
+            boolean reconciled,
+            boolean acknowledgePastDue,
+            String channel,
+            String recipient) {
+        jdbc.update(
+                """
+insert into procurement.po_delivery_decision(id,purchase_order_id,generation,previous_expected_at,
+    expected_at,reason,reconciled,acknowledge_past_due,channel,recipient,actor,requested_at)
+values (?,?,?,?,?,?,?,?,?,?,?,?)
+""",
+                Identifiers.newId(),
+                id,
+                generation,
+                previousDate,
+                date,
+                reason,
+                reconciled,
+                acknowledgePastDue,
+                channel,
+                recipient,
+                users.current().map(u -> u.userId().toString()).orElse("system"),
+                Timestamp.from(clock.instant()));
     }
 
     public PageResponse<PurchaseOrderDeliveryDecision> list(UUID id, int page, int size) {
         var pageable = Pages.of(page, size);
-        long total = jdbc.queryForObject("select count(*) from procurement.po_delivery_decision where purchase_order_id=?", Long.class, id);
-        var rows = jdbc.query("""
-                select * from procurement.po_delivery_decision where purchase_order_id=?
-                order by requested_at desc,id desc limit ? offset ?
-                """, (r, index) -> new PurchaseOrderDeliveryDecision(r.getObject("id", UUID.class), r.getInt("generation"),
-                r.getObject("previous_expected_at", LocalDate.class), r.getObject("expected_at", LocalDate.class), r.getString("reason"),
-                r.getBoolean("reconciled"), r.getBoolean("acknowledge_past_due"), r.getString("channel"),
-                r.getString("recipient"), r.getString("actor"), r.getTimestamp("requested_at").toInstant()), id, size, pageable.getOffset());
+        long total =
+                jdbc.queryForObject(
+                        "select count(*) from procurement.po_delivery_decision where"
+                            + " purchase_order_id=?",
+                        Long.class,
+                        id);
+        var rows =
+                jdbc.query(
+                        """
+                        select * from procurement.po_delivery_decision where purchase_order_id=?
+                        order by requested_at desc,id desc limit ? offset ?
+                        """,
+                        (r, index) ->
+                                new PurchaseOrderDeliveryDecision(
+                                        r.getObject("id", UUID.class),
+                                        r.getInt("generation"),
+                                        r.getObject("previous_expected_at", LocalDate.class),
+                                        r.getObject("expected_at", LocalDate.class),
+                                        r.getString("reason"),
+                                        r.getBoolean("reconciled"),
+                                        r.getBoolean("acknowledge_past_due"),
+                                        r.getString("channel"),
+                                        r.getString("recipient"),
+                                        r.getString("actor"),
+                                        r.getTimestamp("requested_at").toInstant()),
+                        id,
+                        size,
+                        pageable.getOffset());
         return PageResponse.of(rows, page, size, total);
     }
 }

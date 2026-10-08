@@ -14,6 +14,47 @@ import java.sql.DriverManager;
  */
 class InventoryCatalogMigrationUpgradeTest {
     @Test
+    void upgradesAfterSupplierReviewWithoutDuplicateOrOutOfOrderVersions() throws Exception {
+        try (var pg = new PostgreSQLContainer<>("postgres:16-alpine")) {
+            pg.start();
+            Flyway.configure()
+                    .dataSource(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword())
+                    .target("20260930000500")
+                    .load()
+                    .migrate();
+            try (var connection =
+                            DriverManager.getConnection(
+                                    pg.getJdbcUrl(), pg.getUsername(), pg.getPassword());
+                    var sql = connection.createStatement()) {
+                sql.executeUpdate(
+                        """
+insert into notification.delivery_log
+    (id,channel,recipient,status,operation_reference,delivery_generation,attempt_number,created_at)
+values ('00000000-0000-0000-0000-000000000038','EMAIL','audit@example.test',
+        'SENT','purchase-order:before-38',0,2,now())
+""");
+                var upgrade =
+                        Flyway.configure()
+                                .dataSource(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword())
+                                .load();
+                assertThat(upgrade.migrate().migrations)
+                        .extracting(m -> m.version)
+                        .contains("20260930001000", "20260930001100", "20261008000100");
+                upgrade.validate();
+                try (var result =
+                        sql.executeQuery(
+                                """
+                                select attempt_number from notification.delivery_log
+                                where operation_reference='purchase-order:before-38'
+                                """)) {
+                    assertThat(result.next()).isTrue();
+                    assertThat(result.getInt(1)).isEqualTo(2);
+                }
+            }
+        }
+    }
+
+    @Test
     void preservesMappedDataAndRefusesToOverwriteConflictingCanonicalSource() throws Exception {
         try (var pg = new PostgreSQLContainer<>("postgres:16-alpine")) {
             pg.start();

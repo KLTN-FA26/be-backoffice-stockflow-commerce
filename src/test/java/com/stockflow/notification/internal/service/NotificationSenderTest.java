@@ -67,7 +67,11 @@ class NotificationSenderTest {
                 .andExpect(org.springframework.test.web.client.match.MockRestRequestMatchers.jsonPath("$.lines[0].sku").value("CHAIR-1"))
                 .andExpect(org.springframework.test.web.client.match.MockRestRequestMatchers.jsonPath("$.deliveryGeneration").doesNotExist())
                 .andRespond(org.springframework.test.web.client.response.MockRestResponseCreators.withStatus(org.springframework.http.HttpStatus.FOUND));
-        assertThatThrownBy(() -> sender.sendPurchaseOrder(event)).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> sender.sendPurchaseOrder(event))
+                .isInstanceOfSatisfying(org.springframework.web.client.RestClientResponseException.class,
+                        failure -> assertThat(DeliveryAttemptRecorder.failureCode(
+                                com.stockflow.notification.internal.domain.NotificationChannel.API, failure))
+                                .isEqualTo("API_REJECTED"));
         server.verify();
     }
 }

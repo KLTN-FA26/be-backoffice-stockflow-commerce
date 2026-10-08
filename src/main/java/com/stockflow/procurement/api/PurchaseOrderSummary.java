@@ -7,21 +7,23 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Read model of a purchase order, for the API. Flat and immutable — handing out the
- * {@code PurchaseOrder} aggregate would let a caller invoke its methods outside a transaction.
+ * Read model of a purchase order, for the API. Flat and immutable — handing out the {@code
+ * PurchaseOrder} aggregate would let a caller invoke its methods outside a transaction.
  *
  * <p>{@code lines} is empty on a row from the paginated list query, same reasoning and same
- * pagination trap as {@code product.api.ProductSummary}; only a single-PO read populates it.</p>
+ * pagination trap as {@code ProductSummary}; only a single-PO read populates it.
  *
- * <p>{@code possibleDuplicate} (BR-PO-003) is only ever {@code true} on the response to
- * {@link ProcurementService#createPurchaseOrder}, flagging that another open PO exists for the
- * same supplier, delivery date and at least one overlapping SKU — a warning, not a rejection, so
- * it is always {@code false} on every other read.</p>
+ * <p>{@code possibleDuplicate} (BR-PO-003) is only ever {@code true} on the response to {@link
+ * ProcurementService#createPurchaseOrder}, flagging that another open PO exists for the same
+ * supplier, delivery date and at least one overlapping SKU — a warning, not a rejection, so it is
+ * always {@code false} on every other read.
  */
 public record PurchaseOrderSummary(
         UUID purchaseOrderId,
         String poNumber,
         UUID supplierId,
+        String supplierCode,
+        String supplierName,
         String status,
         String currency,
         BigDecimal totalAmount,
@@ -40,8 +42,7 @@ public record PurchaseOrderSummary(
         String supplierConfirmationStatus,
         Instant supplierRespondedAt,
         String supplierReference,
-        String supplierResponseNote
-) {
+        String supplierResponseNote) {
 
     public PurchaseOrderSummary {
         lines = lines == null ? List.of() : List.copyOf(lines);

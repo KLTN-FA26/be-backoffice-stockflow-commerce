@@ -58,8 +58,15 @@ dev profile inherits it): there is no 200-thread Tomcat pool to size, and a requ
 Postgres or MinIO costs a few KB rather than a platform thread's stack. The database pool
 (`DB_POOL_MAX`) is therefore what bounds concurrent database work.
 
-Mail: the application is pointed at Mailpit, but nothing sends mail yet - `NotificationSender`
-only logs. Until it does, read notifications with `docker compose logs app | grep NOTIFY`.
+Mail: supplier purchase orders and cancellation notices are sent through SMTP to Mailpit at
+`mail.<domain>`. Other notification templates still write to the application log.
+
+Before deploying this feature, set all six `PO_BUYER_*` / `PO_RECEIVING_ADDRESS` values from
+`.env.example` in `/opt/stockflow/.env`. Compose refuses missing or empty values. Use the actual
+buyer identity and receiving address, including a valid reply-to email. Set
+`SUPPLIER_API_ALLOWED_HOSTS` only for approved supplier HTTPS hosts; leave it empty for email-only
+delivery. Validate with `docker compose config --quiet` before deploying. Mailpit captures messages
+for testing; it does not deliver them to external supplier inboxes.
 
 ---
 

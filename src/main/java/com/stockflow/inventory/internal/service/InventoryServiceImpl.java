@@ -4,10 +4,14 @@ import com.stockflow.common.domain.BusinessCalendar;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.api.InventoryService;
+import com.stockflow.inventory.api.MoveStockCommand;
+import com.stockflow.inventory.api.RequestAdjustmentCommand;
 import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.api.ReserveStockResult;
+import com.stockflow.inventory.api.StockAdjustmentSummary;
 import com.stockflow.inventory.api.StockAvailability;
 import com.stockflow.inventory.api.StockLevel;
+import com.stockflow.inventory.api.StockMove;
 import com.stockflow.inventory.api.StockReservation;
 import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.Quantity;
@@ -28,8 +32,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
@@ -41,6 +47,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * The only implementation of {@link InventoryService}, and the module's transaction boundary.
@@ -66,6 +73,7 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
 
     private final StockItemRepository repository;
     private final InventoryEventPublisher events;
+    private final StockOperations operations;
     private final Clock clock;
     private final InventoryControlService controls;
     private final InventoryPolicyRepository policies;
@@ -73,11 +81,13 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
     InventoryServiceImpl(
             StockItemRepository repository,
             InventoryEventPublisher events,
+            StockOperations operations,
             Clock clock,
             InventoryControlService controls,
             InventoryPolicyRepository policies) {
         this.repository = repository;
         this.events = events;
+        this.operations = operations;
         this.clock = clock;
         this.controls = controls;
         this.policies = policies;
@@ -85,25 +95,33 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
 
     @Override
     @Transactional(propagation = Propagation.MANDATORY)
-    public void prepareReservation(java.util.Set<Sku> skus) {
-        policies.lockReservationStock(
-                skus.stream().map(Sku::code).collect(java.util.stream.Collectors.toSet()));
+    public void prepareReservation(Set<Sku> skus) {
+        policies.lockReservationStock(skus.stream().map(Sku::code).collect(Collectors.toSet()));
+    }
+
+    /** Delegated: moves and adjustments write the ledger, which {@link StockOperations} owns. */
+    @Override
+    public StockMove move(MoveStockCommand command) {
+        return operations.move(command);
+    }
+
+    @Override
+    public StockAdjustmentSummary requestAdjustment(RequestAdjustmentCommand command) {
+        return operations.requestAdjustment(command);
     }
 
     @Override
     @Transactional(readOnly = true)
     public int availableToPromise(Sku sku) {
         return Math.toIntExact(
-                availableQuantities(java.util.Set.of(sku.code())).getOrDefault(sku.code(), 0L));
+                availableQuantities(Set.of(sku.code())).getOrDefault(sku.code(), 0L));
     }
 
     @Override
     @Transactional(readOnly = true)
-    public Map<String, Long> availableQuantities(java.util.Set<String> skus) {
+    public Map<String, Long> availableQuantities(Set<String> skus) {
         var normalized =
-                skus.stream()
-                        .map(code -> new Sku(code).code())
-                        .collect(java.util.stream.Collectors.toSet());
+                skus.stream().map(code -> new Sku(code).code()).collect(Collectors.toSet());
         if (normalized.isEmpty()) return Map.of();
         return repository.availableQuantities(normalized, BusinessCalendar.date(clock.instant()));
     }
@@ -157,7 +175,7 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
     @Transactional(readOnly = true)
     public List<StockLevel> levelsOf(Sku sku) {
         record Totals(int onHand, int available, int reserved, int atp) {
-            static Totals of(StockLevelLine line, java.time.LocalDate today) {
+            static Totals of(StockLevelLine line, LocalDate today) {
                 boolean usable =
                         line.status() == StockStatus.AVAILABLE
                                 && (line.expiryDate() == null
@@ -413,7 +431,7 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
      */
     private static UUID perStockItemRequestId(UUID requestId, StockItemId stockItemId) {
         return UUID.nameUUIDFromBytes(
-                (requestId + ":" + stockItemId).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                (requestId + ":" + stockItemId).getBytes(StandardCharsets.UTF_8));
     }
 
     /**
@@ -445,7 +463,7 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
                 item.available().value());
     }
 
-    private static boolean notExpired(StockItem item, java.time.LocalDate today) {
+    private static boolean notExpired(StockItem item, LocalDate today) {
         return item.expiryDate() == null || !item.expiryDate().isBefore(today);
     }
 }

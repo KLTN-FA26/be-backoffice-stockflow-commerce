@@ -245,6 +245,7 @@ public final class IdempotencyFilter extends OncePerRequestFilter {
         log.info("Replaying stored response for idempotency key {}", key);
         response.setStatus(record.responseStatus());
         response.setContentType("application/json");
+        response.setCharacterEncoding(StandardCharsets.UTF_8.name());
         // Marks the response as a replay, so a client - and anyone reading a HAR file - can tell
         // that no new work was done. Without it a replayed 201 looks like a second creation.
         response.setHeader("Idempotency-Replayed", "true");
@@ -255,6 +256,7 @@ public final class IdempotencyFilter extends OncePerRequestFilter {
             throws IOException {
         response.setStatus(code.httpStatus());
         response.setContentType("application/json");
+        response.setCharacterEncoding(StandardCharsets.UTF_8.name());
         response.getWriter().write(
                 objectMapper.writeValueAsString(ApiResponse.error(code.name(), message)));
     }

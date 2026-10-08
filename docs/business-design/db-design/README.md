@@ -50,16 +50,10 @@ Trước mỗi PR đụng tới DB: `python3 tools/verify.py`, `mvn -o clean tes
 PR DB đã vào `develop` **trước** #36, nên #36 phải:
 
 1. **Đổi số 4 file migration** cho lớn hơn `V20260928006000`, ví dụ:
-   `V20260925000100` → `V20260930000100`, `…000200` → `V20260930000200`, `…000300` → `V20260930000300`,
-   `V20260926000100` → `V20260930000400` (**đã làm 29/9** khi merge develop vào nhánh). Phần riêng của #38 dùng dải
-   `V20260930001000` trở đi, để luôn chạy sau #36.
+   `V20260925000100` → `V20260929000100`, `…000200` → `V20260929000200`, `…000300` → `V20260929000300`,
+   `V20260926000100` → `V20260929000400`. Chỉ đổi tên file, nội dung giữ nguyên, rồi rebase lên `develop`.
 2. Biết rằng procurement đã có **bộ bảng mới** theo po-schema (`suppliers`, `supplier_items`, `purchase_orders` + revisions/approvals/events, `goods_receipts`, `supplier_invoices`…). Trạng thái PO mới là `CONFIRMED`, **không có `SENT`**. Bảng cũ còn nguyên nên #36 vẫn chạy.
 3. Tính năng của #36 **không mất** khi dọn: bước C4 chuyển FK của `procurement.po_delivery_decision` và `notification.po_delivery_control` sang `purchase_orders` (đã test). Khi chuyển code PO, giữ nguyên id của PO.
-4. **Không đổi tên `SENT` thành `CONFIRMED` một cách máy móc:** SENT chỉ là đã yêu cầu gửi;
-   phản hồi NCC vẫn độc lập. Xem bảng ánh xạ và điều kiện đối soát tại
-   [`SCRUM-115-118-backend.md — C4 mapping`](../../SCRUM-115-118-backend.md#c4-mapping-legacy-po-versus-target-purchase_orders).
-   Giữ snapshot nội dung gửi, lịch sử gửi/huỷ, MST cũ và bằng chứng người/thời điểm xác nhận;
-   không tự bịa dữ liệu để qua constraint bảng mới. #36 chưa kích hoạt C4.
 
 ### PR #38 — Võ (SCRUM-70/71)
 

@@ -2,31 +2,51 @@ package com.stockflow;
 
 import static org.assertj.core.api.Assertions.*;
 
+import com.stockflow.catalog.api.CatalogService;
 import com.stockflow.catalog.internal.domain.SellingPrice;
 import com.stockflow.catalog.internal.service.CatalogCommerceService;
 import com.stockflow.catalog.internal.service.CatalogProjectionService;
+import com.stockflow.common.domain.BusinessCalendar;
+import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.inventory.api.*;
+import com.stockflow.order.api.OrderService;
+import com.stockflow.order.api.PlaceGuestOrderCommand;
+import com.stockflow.order.api.PlaceOrderCommand;
 import com.stockflow.product.internal.service.SkuInventoryControlService;
+import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
+import org.springframework.test.web.servlet.result.MockMvcResultMatchers;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
+import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 @IntegrationTest
 @Import(PostgresContainer.class)
-@org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc
+@AutoConfigureMockMvc
 class InventoryCatalogIntegrationTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired SkuInventoryControlService controls;
@@ -35,9 +55,86 @@ class InventoryCatalogIntegrationTest {
     @Autowired CatalogCommerceService catalog;
     @Autowired CatalogProjectionService projection;
     @Autowired TransactionTemplate transactions;
-    @Autowired org.springframework.test.web.servlet.MockMvc mvc;
-    @Autowired com.stockflow.order.api.OrderService orders;
-    @Autowired com.stockflow.catalog.api.CatalogService checkoutCatalog;
+    @Autowired MockMvc mvc;
+    @Autowired OrderService orders;
+    @Autowired CatalogService checkoutCatalog;
+
+    @Test
+    void stockMoveKeepsCanonicalSerialAndReceiptIdentity() {
+        var f = fixture("APPROVED");
+        controls.update(
+                f.product(),
+                f.skuId(),
+                0,
+                policy(null, RemovalStrategy.FIFO, TrackingMode.SERIAL, false));
+        var received = Instant.parse("2026-09-01T00:00:00Z");
+        var source = stock(f, 1, received, null, "MOVE-SERIAL");
+        write("update inventory.stock_item set location_code='HCM-A01-1-B' where id=?", source);
+        var command =
+                new MoveStockCommand(
+                        UUID.randomUUID(),
+                        new Sku(f.sku()),
+                        null,
+                        "HCM-A01-1-B",
+                        "HCM-PACK01",
+                        1,
+                        MoveReference.MOVE_TASK,
+                        null,
+                        jdbc.queryForObject(
+                                "select id from identity.app_user where"
+                                    + " id=md5('demo:user:editor')::uuid",
+                                UUID.class));
+        var moved = inventory.move(command);
+        assertThat(
+                        jdbc.queryForMap(
+                                """
+                                select on_hand,serial_number,received_at from inventory.stock_item
+                                where sku=? and location_code='HCM-PACK01'
+                                """,
+                                f.sku()))
+                .containsEntry("on_hand", 1)
+                .containsEntry("serial_number", "MOVE-SERIAL")
+                .containsEntry("received_at", Timestamp.from(received));
+        assertThat(inventory.move(command).movementId()).isEqualTo(moved.movementId());
+    }
+
+    @Test
+    void stockMoveDoesNotChooseAnArbitraryReceiptLayer() {
+        var f = fixture("APPROVED");
+        controls.update(
+                f.product(),
+                f.skuId(),
+                0,
+                policy(null, RemovalStrategy.FIFO, TrackingMode.NONE, false));
+        stock(f, 3, Instant.parse("2026-09-01T00:00:00Z"), null, null);
+        stock(f, 4, Instant.parse("2026-09-02T00:00:00Z"), null, null);
+        var command =
+                new MoveStockCommand(
+                        UUID.randomUUID(),
+                        new Sku(f.sku()),
+                        null,
+                        "HCM-A-01",
+                        "HCM-PACK01",
+                        1,
+                        MoveReference.MOVE_TASK,
+                        null,
+                        jdbc.queryForObject(
+                                "select id from identity.app_user where"
+                                    + " id=md5('demo:user:editor')::uuid",
+                                UUID.class));
+        assertThatThrownBy(() -> inventory.move(command))
+                .isInstanceOfSatisfying(
+                        BusinessException.class,
+                        ex ->
+                                assertThat(ex.errorCode())
+                                        .isEqualTo(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT));
+        assertThat(
+                        jdbc.queryForObject(
+                                "select sum(on_hand) from inventory.stock_item where sku=?",
+                                Integer.class,
+                                f.sku()))
+                .isEqualTo(7);
+    }
 
     record Fixture(UUID product, UUID skuId, String sku) {}
 
@@ -50,8 +147,7 @@ class InventoryCatalogIntegrationTest {
                 variant = UUID.randomUUID(),
                 sku = UUID.randomUUID(),
                 category = UUID.randomUUID();
-        String code =
-                ("TEST-" + sku.toString().substring(0, 12)).toUpperCase(java.util.Locale.ROOT);
+        String code = ("TEST-" + sku.toString().substring(0, 12)).toUpperCase(Locale.ROOT);
         write(
                 "insert into product.categories(id,code,name,slug,path) values (?,?,?,?,?)",
                 category,
@@ -107,7 +203,7 @@ values (?,?,'HCM-A-01',?,0,'AVAILABLE',?,?,?,?,now())
                 id,
                 f.sku(),
                 quantity,
-                receipt == null ? null : java.sql.Timestamp.from(receipt),
+                receipt == null ? null : Timestamp.from(receipt),
                 expiry,
                 serial,
                 expiry == null ? null : "TEST-LOT");
@@ -129,8 +225,7 @@ values (?,?,'HCM-A-01',?,0,'AVAILABLE',?,?,?,?,now())
         UUID blocked = stock(b, 10, null, null, null);
         write("update inventory.stock_item set status='QUARANTINE' where id=?", blocked);
         stock(a, 20, Instant.parse("2026-01-01T00:00:00Z"), LocalDate.of(2000, 1, 1), null);
-        var available =
-                inventory.availableQuantities(java.util.Set.of(a.sku(), b.sku(), "MISSING-SKU"));
+        var available = inventory.availableQuantities(Set.of(a.sku(), b.sku(), "MISSING-SKU"));
         assertThat(available.get(a.sku())).isEqualTo(4L);
         assertThat(available.getOrDefault(b.sku(), 0L)).isZero();
         assertThat(available.getOrDefault("MISSING-SKU", 0L)).isZero();
@@ -152,13 +247,13 @@ values (?,?,'HCM-A-01',?,0,'AVAILABLE',?,?,?,?,now())
                                         "update catalog.pricing_rule set currency='USD' where"
                                                 + " name=?",
                                         "BASE:" + f.sku()))
-                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+                .isInstanceOf(DataIntegrityViolationException.class);
         assertThatThrownBy(
                         () ->
                                 write(
                                         "update catalog.pricing_rule set price=100.49 where name=?",
                                         "BASE:" + f.sku()))
-                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+                .isInstanceOf(DataIntegrityViolationException.class);
     }
 
     @Test
@@ -176,7 +271,7 @@ values (?,?,'HCM-A-01',?,0,'AVAILABLE',?,?,?,?,now())
         catalog.publish(f.product());
         projection.project(f.product());
         var address =
-                new com.stockflow.order.api.PlaceGuestOrderCommand.Address(
+                new PlaceGuestOrderCommand.Address(
                         "Minh",
                         "0901234567",
                         "12 Nguyen Hue",
@@ -188,32 +283,28 @@ values (?,?,'HCM-A-01',?,0,'AVAILABLE',?,?,?,?,now())
                         "VN",
                         null);
         var tampered =
-                new com.stockflow.order.api.PlaceGuestOrderCommand(
+                new PlaceGuestOrderCommand(
                         UUID.randomUUID(),
                         "minh@example.com",
                         address,
                         address,
-                        java.util.List.of(
-                                new com.stockflow.order.api.PlaceGuestOrderCommand.Line(
-                                        new com.stockflow.common.domain.Sku(f.sku()),
-                                        1,
-                                        com.stockflow.common.domain.Money.vnd(1))));
+                        List.of(
+                                new PlaceGuestOrderCommand.Line(
+                                        new Sku(f.sku()), 1, Money.vnd(1))));
         assertThatThrownBy(() -> orders.placeGuestOrder(tampered))
                 .isInstanceOfSatisfying(
                         BusinessException.class,
                         e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.CHECKOUT_PRICE_CHANGED));
         assertThat(inventory.availableToPromise(new Sku(f.sku()))).isEqualTo(10);
         var accepted =
-                new com.stockflow.order.api.PlaceGuestOrderCommand(
+                new PlaceGuestOrderCommand(
                         UUID.randomUUID(),
                         "minh@example.com",
                         address,
                         address,
-                        java.util.List.of(
-                                new com.stockflow.order.api.PlaceGuestOrderCommand.Line(
-                                        new Sku(f.sku()),
-                                        1,
-                                        com.stockflow.common.domain.Money.vnd(100))));
+                        List.of(
+                                new PlaceGuestOrderCommand.Line(
+                                        new Sku(f.sku()), 1, Money.vnd(100))));
         var order = orders.placeGuestOrder(accepted);
         catalog.price(
                 f.product(),
@@ -222,11 +313,10 @@ values (?,?,'HCM-A-01',?,0,'AVAILABLE',?,?,?,?,now())
                 new SellingPrice(new BigDecimal("200"), "VND"),
                 "test");
         assertThat(orders.placeGuestOrder(accepted).orderId()).isEqualTo(order.orderId());
-        assertThat(orders.placeGuestOrder(accepted).total())
-                .isEqualTo(com.stockflow.common.domain.Money.vnd(100));
+        assertThat(orders.placeGuestOrder(accepted).total()).isEqualTo(Money.vnd(100));
         assertThat(inventory.availableToPromise(new Sku(f.sku()))).isEqualTo(9);
         catalog.unpublish(f.product());
-        assertThatThrownBy(() -> checkoutCatalog.checkoutPrices(java.util.Set.of(f.sku())))
+        assertThatThrownBy(() -> checkoutCatalog.checkoutPrices(Set.of(f.sku())))
                 .isInstanceOfSatisfying(
                         BusinessException.class,
                         e ->
@@ -309,15 +399,12 @@ values (?,?,'HCM-A-01',?,0,'AVAILABLE',?,?,?,?,now())
         var newer = stock(f, 5, Instant.parse("2026-09-02T00:00:00Z"), null, null);
         var older = stock(f, 5, Instant.parse("2026-09-01T00:00:00Z"), null, null);
         orders.placeOrder(
-                new com.stockflow.order.api.PlaceOrderCommand(
+                new PlaceOrderCommand(
                         UUID.randomUUID(),
-                        com.stockflow.support.DemoData.CUSTOMER_ID,
-                        java.util.List.of(
-                                new com.stockflow.order.api.PlaceOrderCommand.Line(
-                                        new Sku(f.sku()),
-                                        2,
-                                        com.stockflow.common.domain.Money.vnd(100),
-                                        null))));
+                        DemoData.CUSTOMER_ID,
+                        List.of(
+                                new PlaceOrderCommand.Line(
+                                        new Sku(f.sku()), 2, Money.vnd(100), null))));
         assertThat(
                         jdbc.queryForObject(
                                 "select reserved from inventory.stock_item where id=?",
@@ -342,7 +429,7 @@ values (?,?,'HCM-A-01',?,0,'AVAILABLE',?,?,?,?,now())
                         0,
                         policy(null, RemovalStrategy.FIFO, TrackingMode.SERIAL, false));
         assertThatThrownBy(() -> stock(f, 2, Instant.parse("2026-09-01T00:00:00Z"), null, "SN-1"))
-                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+                .isInstanceOf(DataIntegrityViolationException.class);
         stock(f, 1, Instant.parse("2026-09-01T00:00:00Z"), null, "SN-1");
         assertThatThrownBy(
                         () ->
@@ -363,7 +450,8 @@ values (?,?,'HCM-A-01',?,0,'AVAILABLE',?,?,?,?,now())
         var f = fixture("DRAFT");
         stock(f, 9, null, LocalDate.of(2000, 1, 1), null);
         assertThat(inventory.availableToPromise(new Sku(f.sku()))).isZero();
-        assertThat(inventory.availableToPromise(java.util.List.of(new Sku(f.sku()))).get(new Sku(f.sku()))).isZero();
+        assertThat(inventory.availableToPromise(List.of(new Sku(f.sku()))).get(new Sku(f.sku())))
+                .isZero();
         assertThat(inventory.availableToPromise(new Sku(f.sku()), "HCM")).isZero();
         assertThat(inventoryControl.evaluate(new Sku(f.sku())).usableOnHand()).isZero();
     }
@@ -436,7 +524,7 @@ values (?,?,'HCM-A-01',?,0,'AVAILABLE',?,?,?,?,now())
     void negativeThresholdIsHttp400AndPublicCatalogReturnsAPage() throws Exception {
         var f = fixture("DRAFT");
         mvc.perform(
-                        org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put(
+                        MockMvcRequestBuilders.put(
                                         "/api/v1/products/"
                                                 + f.product()
                                                 + "/skus/"
@@ -447,15 +535,9 @@ values (?,?,'HCM-A-01',?,0,'AVAILABLE',?,?,?,?,now())
                                         """
 {"version":0,"reorderPoint":-1,"removalStrategy":"FIFO","trackingMode":"NONE","expiryTracked":false}
 """))
-                .andExpect(
-                        org.springframework.test.web.servlet.result.MockMvcResultMatchers.status()
-                                .isBadRequest());
-        mvc.perform(
-                        org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(
-                                "/api/v1/catalog/products"))
-                .andExpect(
-                        org.springframework.test.web.servlet.result.MockMvcResultMatchers.status()
-                                .isOk());
+                .andExpect(MockMvcResultMatchers.status().isBadRequest());
+        mvc.perform(MockMvcRequestBuilders.get("/api/v1/catalog/products"))
+                .andExpect(MockMvcResultMatchers.status().isOk());
     }
 
     @Test
@@ -467,12 +549,12 @@ values (?,?,'HCM-A-01',?,0,'AVAILABLE',?,?,?,?,now())
                                         "update inventory.inventory_items set reorder_point=-1"
                                                 + " where sku=?",
                                         f.sku()))
-                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+                .isInstanceOf(DataIntegrityViolationException.class);
     }
 
     @Test
     void inventoryControlCannotChangeDuringApprovalOrAfterDiscontinuation() {
-        for (String status : java.util.List.of("PENDING_APPROVAL", "DISCONTINUED")) {
+        for (String status : List.of("PENDING_APPROVAL", "DISCONTINUED")) {
             var f = fixture(status);
             assertThatThrownBy(
                             () ->
@@ -499,11 +581,11 @@ values (?,?,'HCM-A-01',?,0,'AVAILABLE',?,?,?,?,now())
                         0,
                         policy(5, RemovalStrategy.FEFO, TrackingMode.LOT_SERIAL, true));
         Instant receipt = Instant.now().minusSeconds(60);
-        LocalDate today = com.stockflow.common.domain.BusinessCalendar.date(receipt);
+        LocalDate today = BusinessCalendar.date(receipt);
         assertThatThrownBy(() -> stock(f, 1, receipt, null, "EXP-1"))
-                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+                .isInstanceOf(DataIntegrityViolationException.class);
         assertThatThrownBy(() -> stock(f, 1, receipt, today.minusDays(1), "EXP-1"))
-                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+                .isInstanceOf(DataIntegrityViolationException.class);
         stock(f, 1, receipt, today.plusDays(10), "EXP-1");
         assertThatThrownBy(
                         () ->
@@ -529,7 +611,7 @@ values (?,?,'HCM-A-01',?,0,'AVAILABLE',?,?,?,?,now())
                         0,
                         policy(5, RemovalStrategy.FEFO, TrackingMode.LOT_SERIAL, true));
         Instant receipt = Instant.now().minusSeconds(60);
-        LocalDate receiptDay = com.stockflow.common.domain.BusinessCalendar.date(receipt);
+        LocalDate receiptDay = BusinessCalendar.date(receipt);
         stock(f, 1, receipt, receiptDay.plusDays(10), "SHELF-1");
 
         assertThatThrownBy(
@@ -567,7 +649,7 @@ values (?,?,'HCM-A-01',?,0,'AVAILABLE',?,?,?,?,now())
     void shelfLifeLimitRequiresKnownReceiptAgeForExistingStock() {
         var f = fixture("DRAFT");
         Instant now = Instant.now();
-        LocalDate today = com.stockflow.common.domain.BusinessCalendar.date(now);
+        LocalDate today = BusinessCalendar.date(now);
         stock(f, 1, null, today.plusDays(10), "UNKNOWN-AGE");
         assertThatThrownBy(
                         () ->
@@ -650,9 +732,9 @@ values (?,'Conflicting test rule',?,200,'VND',0,true,now())
     @Test
     void twoWritersWithTheSameSkuVersionCannotBothWin() throws Exception {
         var f = fixture("DRAFT");
-        try (var executor = java.util.concurrent.Executors.newFixedThreadPool(2)) {
-            var start = new java.util.concurrent.CountDownLatch(1);
-            java.util.concurrent.Callable<Boolean> action =
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            var start = new CountDownLatch(1);
+            Callable<Boolean> action =
                     () -> {
                         start.await();
                         try {
@@ -670,10 +752,7 @@ values (?,'Conflicting test rule',?,200,'VND',0,true,now())
             var first = executor.submit(action);
             var second = executor.submit(action);
             start.countDown();
-            assertThat(
-                            java.util.List.of(
-                                    first.get(15, java.util.concurrent.TimeUnit.SECONDS),
-                                    second.get(15, java.util.concurrent.TimeUnit.SECONDS)))
+            assertThat(List.of(first.get(15, TimeUnit.SECONDS), second.get(15, TimeUnit.SECONDS)))
                     .containsExactlyInAnyOrder(true, false);
         }
     }
@@ -683,10 +762,10 @@ values (?,'Conflicting test rule',?,200,'VND',0,true,now())
         var a = fixture("DRAFT");
         var b = fixture("DRAFT");
         String slug = "race-" + a.sku();
-        try (var executor = java.util.concurrent.Executors.newFixedThreadPool(2)) {
-            var start = new java.util.concurrent.CountDownLatch(1);
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            var start = new CountDownLatch(1);
             var futures =
-                    java.util.List.of(a, b).stream()
+                    List.of(a, b).stream()
                             .map(
                                     f ->
                                             executor.submit(
@@ -711,9 +790,9 @@ values (?,'Conflicting test rule',?,200,'VND',0,true,now())
                             .toList();
             start.countDown();
             assertThat(
-                            java.util.List.of(
-                                    futures.get(0).get(15, java.util.concurrent.TimeUnit.SECONDS),
-                                    futures.get(1).get(15, java.util.concurrent.TimeUnit.SECONDS)))
+                            List.of(
+                                    futures.get(0).get(15, TimeUnit.SECONDS),
+                                    futures.get(1).get(15, TimeUnit.SECONDS)))
                     .containsExactlyInAnyOrder(true, false);
         }
     }
@@ -721,9 +800,9 @@ values (?,'Conflicting test rule',?,200,'VND',0,true,now())
     @Test
     void concurrentIngressIsSeenBeforePolicyChangeCanCommit() throws Exception {
         var f = fixture("DRAFT");
-        try (var executor = java.util.concurrent.Executors.newFixedThreadPool(2)) {
-            var inserted = new java.util.concurrent.CountDownLatch(1);
-            var commit = new java.util.concurrent.CountDownLatch(1);
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            var inserted = new CountDownLatch(1);
+            var commit = new CountDownLatch(1);
             var ingress =
                     executor.submit(
                             () ->
@@ -737,9 +816,7 @@ values (?,'Conflicting test rule',?,200,'VND',0,true,now())
                                                         null);
                                                 inserted.countDown();
                                                 try {
-                                                    if (!commit.await(
-                                                            10,
-                                                            java.util.concurrent.TimeUnit.SECONDS))
+                                                    if (!commit.await(10, TimeUnit.SECONDS))
                                                         throw new IllegalStateException(
                                                                 "Timed out");
                                                 } catch (InterruptedException e) {
@@ -748,7 +825,7 @@ values (?,'Conflicting test rule',?,200,'VND',0,true,now())
                                                 }
                                                 return true;
                                             }));
-            assertThat(inserted.await(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            assertThat(inserted.await(10, TimeUnit.SECONDS)).isTrue();
             var changed =
                     executor.submit(
                             () -> {
@@ -770,8 +847,8 @@ values (?,'Conflicting test rule',?,200,'VND',0,true,now())
                                 }
                             });
             commit.countDown();
-            assertThat(ingress.get(15, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
-            assertThat(changed.get(15, java.util.concurrent.TimeUnit.SECONDS)).isFalse();
+            assertThat(ingress.get(15, TimeUnit.SECONDS)).isTrue();
+            assertThat(changed.get(15, TimeUnit.SECONDS)).isFalse();
         }
     }
 
@@ -864,7 +941,7 @@ values (?,'Conflicting test rule',?,200,'VND',0,true,now())
                                         "update product.products set slug=? where id=?",
                                         "changed-" + f.sku().toLowerCase(),
                                         f.product()))
-                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+                .isInstanceOf(DataIntegrityViolationException.class);
     }
 
     @Test
@@ -901,7 +978,7 @@ values (?,'Conflicting test rule',?,200,'VND',0,true,now())
         catalog.publish(f.product());
         projection.project(f.product());
         write("update product.variants set status='BLOCKED' where id=?", f.skuId());
-        assertThatThrownBy(() -> checkoutCatalog.checkoutPrices(java.util.Set.of(f.sku())))
+        assertThatThrownBy(() -> checkoutCatalog.checkoutPrices(Set.of(f.sku())))
                 .isInstanceOfSatisfying(
                         BusinessException.class,
                         e ->
@@ -928,31 +1005,18 @@ values (?,'Conflicting test rule',?,200,'VND',0,true,now())
         catalog.publish(f.product());
         projection.project(f.product());
         String path = "/api/v1/catalog/products/" + listing.slug();
-        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(path))
+        mvc.perform(MockMvcRequestBuilders.get(path))
                 .andExpect(
-                        org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath(
-                                        "$.data.galleryUrl")
+                        MockMvcResultMatchers.jsonPath("$.data.galleryUrl")
                                 .value(path + "/gallery"));
-        mvc.perform(
-                        org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(
-                                path + "/gallery"))
+        mvc.perform(MockMvcRequestBuilders.get(path + "/gallery"))
+                .andExpect(MockMvcResultMatchers.status().isOk())
+                .andExpect(MockMvcResultMatchers.jsonPath("$.data.images.length()").value(1))
                 .andExpect(
-                        org.springframework.test.web.servlet.result.MockMvcResultMatchers.status()
-                                .isOk())
-                .andExpect(
-                        org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath(
-                                        "$.data.images.length()")
-                                .value(1))
-                .andExpect(
-                        org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath(
-                                        "$.data.images[0].url")
+                        MockMvcResultMatchers.jsonPath("$.data.images[0].url")
                                 .value("https://example.test/cover.jpg"));
         catalog.unpublish(f.product());
-        mvc.perform(
-                        org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(
-                                path + "/gallery"))
-                .andExpect(
-                        org.springframework.test.web.servlet.result.MockMvcResultMatchers.status()
-                                .isNotFound());
+        mvc.perform(MockMvcRequestBuilders.get(path + "/gallery"))
+                .andExpect(MockMvcResultMatchers.status().isNotFound());
     }
 }
