@@ -88,6 +88,32 @@ final class OrderPersistenceMapper {
                 null, null, null, null, null);
     }
 
+    /** A list row: contact block and shipping address (the list shows the recipient), no lines. */
+    static OrderSummary toListSummary(OrderJpaEntity entity) {
+        return new OrderSummary(
+                entity.getId(),
+                entity.getOrderNumber(),
+                entity.getCustomerId(),
+                entity.getStatus(),
+                new Money(entity.getTotalAmount(), Currency.getInstance(entity.getCurrency())),
+                List.of(),
+                entity.getPlacedAt(),
+                entity.getCreatedBy(),
+                entity.getLastModifiedAt(),
+                entity.getLastModifiedBy(),
+                entity.getContactName(), entity.getContactEmail(), entity.getContactPhone(),
+                toSummary(entity.getShippingAddress()), null);
+    }
+
+    private static OrderSummary.AddressSummary toSummary(OrderAddressJpaEmbeddable a) {
+        if (a == null || a.getRecipientName() == null && a.getLine1() == null) {
+            return null;
+        }
+        return new OrderSummary.AddressSummary(a.getRecipientName(), a.getPhone(), a.getLine1(), a.getLine2(),
+                a.getWardCode(), a.getWardName(), a.getProvinceCode(), a.getProvinceName(),
+                a.getCountryCode(), a.getPostalCode());
+    }
+
     static void applyToEntity(Order order, OrderJpaEntity entity) {
         Money total = order.total();
         entity.apply(order.status(), total.amount(),

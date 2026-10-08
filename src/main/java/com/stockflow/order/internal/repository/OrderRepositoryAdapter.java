@@ -7,7 +7,11 @@ import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderId;
 import com.stockflow.order.internal.domain.OrderNumber;
 import com.stockflow.order.internal.domain.OrderRepository;
+import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.persistence.Specs;
+import com.stockflow.order.api.OrderStatus;
+import com.stockflow.order.api.OrderStatusChange;
+import com.stockflow.order.internal.entity.OrderStatusHistoryJpaEntity;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
@@ -25,10 +29,15 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
 
     private final OrderJpaRepository jpa;
     private final OrderNumberSequence sequence;
+    private final OrderStatusHistoryJpaRepository history;
+    private final java.time.Clock clock;
 
-    OrderRepositoryAdapter(OrderJpaRepository jpa, OrderNumberSequence sequence) {
+    OrderRepositoryAdapter(OrderJpaRepository jpa, OrderNumberSequence sequence,
+                           OrderStatusHistoryJpaRepository history, java.time.Clock clock) {
         this.jpa = jpa;
         this.sequence = sequence;
+        this.history = history;
+        this.clock = clock;
     }
 
     @Override
@@ -78,14 +87,90 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
         Optional<OrderJpaEntity> existing = jpa.findByIdWithLines(order.id().value());
         if (existing.isPresent()) {
             OrderJpaEntity managed = existing.get();
+            recordTransition(order, managed.getStatus());
             OrderPersistenceMapper.applyToEntity(order, managed);
             // saveAndFlush, not save: @PreUpdate (which sets lastModifiedAt/lastModifiedBy) only
             // runs at flush time, so reading the entity back from a plain save() here would return
             // its stale pre-update audit fields even though the eventual UPDATE is correct.
             return OrderPersistenceMapper.toDomain(jpa.saveAndFlush(managed));
         }
-        return OrderPersistenceMapper.toDomain(
+        Order saved = OrderPersistenceMapper.toDomain(
                 jpa.save(OrderPersistenceMapper.toNewEntity(order)));
+        recordTransition(order, null);
+        return saved;
+    }
+
+    /**
+     * Status history is written here, where every save passes, rather than at each transition in
+     * the service: a transition added later is recorded without anyone remembering to.
+     */
+    private void recordTransition(Order order, OrderStatus previous) {
+        if (order.status() == previous) {
+            return;
+        }
+        history.save(new OrderStatusHistoryJpaEntity(Identifiers.newId(), order.id().value(),
+                previous == null ? null : previous.name(), order.status().name(),
+                order.status() == OrderStatus.CANCELLED ? order.cancellationReason() : null,
+                clock.instant()));
+    }
+
+    @Override
+    public Page<OrderSummary> search(Criteria criteria, Pageable pageable) {
+        Specification<OrderJpaEntity> spec = Specification.<OrderJpaEntity>where(
+                        Specs.eq("customerId", criteria.customerId()))
+                .and(statusIn(criteria.statuses()))
+                .and(placedBetween(criteria.placedFrom(), criteria.placedBefore()))
+                .and(matches(criteria.search()));
+        return jpa.findAll(spec, pageable).map(OrderPersistenceMapper::toListSummary);
+    }
+
+    @Override
+    public List<OrderStatusChange> history(UUID orderId) {
+        return history.findByOrderIdOrderByOccurredAtAscCreatedAtAsc(orderId).stream()
+                .map(row -> new OrderStatusChange(
+                        row.getFromStatus() == null ? null : statusOrNull(row.getFromStatus()),
+                        statusOrNull(row.getToStatus()), row.getReason(), row.getOccurredAt()))
+                .toList();
+    }
+
+    /** A status name this build no longer knows reads as null rather than failing the whole history. */
+    private static OrderStatus statusOrNull(String name) {
+        try {
+            return OrderStatus.valueOf(name);
+        } catch (IllegalArgumentException unknown) {
+            return null;
+        }
+    }
+
+    private static Specification<OrderJpaEntity> statusIn(List<OrderStatus> statuses) {
+        // Empty means "not filtered" here, which Specs.in would read as "match nothing".
+        return statuses == null || statuses.isEmpty() ? null : Specs.in("status", statuses);
+    }
+
+    private static Specification<OrderJpaEntity> placedBetween(java.time.Instant from, java.time.Instant before) {
+        if (from == null && before == null) {
+            return null;
+        }
+        return (root, query, cb) -> {
+            var path = root.<java.time.Instant>get("placedAt");
+            if (from == null) {
+                return cb.lessThan(path, before);
+            }
+            return before == null ? cb.greaterThanOrEqualTo(path, from)
+                    : cb.and(cb.greaterThanOrEqualTo(path, from), cb.lessThan(path, before));
+        };
+    }
+
+    /** Contains, case-insensitive, over the fields a coordinator types from a phone call. */
+    private static Specification<OrderJpaEntity> matches(String search) {
+        if (search == null || search.isBlank()) {
+            return null;
+        }
+        return Specification.<OrderJpaEntity>where(Specs.contains("orderNumber", search))
+                .or(Specs.contains("contactName", search))
+                .or(Specs.contains("contactPhone", search))
+                .or(Specs.contains("shippingAddress.recipientName", search))
+                .or(Specs.contains("shippingAddress.phone", search));
     }
 
     @Override
