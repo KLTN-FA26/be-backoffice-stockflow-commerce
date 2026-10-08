@@ -17,6 +17,7 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 @Repository
@@ -168,6 +169,12 @@ on conflict (name) where name like 'BASE:%' do update set price=excluded.price,
         jdbc.update("update catalog.catalog_entry set published=false where product_id=?", id);
     }
 
+    public Set<String> projectedSkus(UUID id, long revision) {
+        return Set.copyOf(jdbc.query(
+                "select sku from catalog.catalog_entry where product_id=? and published and source_revision=?",
+                (r, n) -> r.getString(1), id, revision));
+    }
+
     public void projectSku(
             UUID productId,
             UUID skuId,
@@ -179,7 +186,7 @@ on conflict (name) where name like 'BASE:%' do update set price=excluded.price,
             SellingPrice price,
             long revision,
             Instant now) {
-        jdbc.update(
+        int changed = jdbc.update(
                 """
 insert into catalog.catalog_entry(id,sku,title,slug,description,price,currency,published,
     seo_title,seo_description,version,created_at,product_id,source_revision)
@@ -189,6 +196,8 @@ on conflict(sku) do update set title=excluded.title,description=excluded.descrip
     seo_title=excluded.seo_title,seo_description=excluded.seo_description,
     product_id=excluded.product_id,source_revision=excluded.source_revision,
     version=catalog.catalog_entry.version+1,last_modified_at=excluded.created_at
+where (catalog.catalog_entry.product_id is null or catalog.catalog_entry.product_id=excluded.product_id)
+    and (catalog.catalog_entry.source_revision is null or catalog.catalog_entry.source_revision<=excluded.source_revision)
 """,
                 Identifiers.newId(),
                 sku,
@@ -202,6 +211,7 @@ on conflict(sku) do update set title=excluded.title,description=excluded.descrip
                 Timestamp.from(now),
                 productId,
                 revision);
+        if (changed != 1) throw new BusinessException(ErrorCode.CONFLICT);
     }
 
     public void projected(UUID id, String title, String description) {
@@ -243,7 +253,8 @@ where product_id=?
     public List<UUID> dirtyIds() {
         return jdbc.query(
                 """
-select product_id from catalog.product_listing where revision<>projected_revision or enabled
+select product_id from catalog.product_listing where revision<>projected_revision
+    or (enabled and published_title is null)
 order by last_attempt_at nulls first,product_id limit 50
 """,
                 (r, n) -> r.getObject(1, UUID.class));

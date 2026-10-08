@@ -2,9 +2,11 @@
 
 ## Status (2026-10-08)
 
-Canonical adapters and an append-only cutover migration are implemented. **Schema-owner review,
-upstream PIM writer integration and frontend UAT remain merge gates.** This document does not
-claim that the legacy product/gallery creation APIs have completed their separate C1 migration.
+Canonical adapters and an append-only cutover migration are implemented. Tu approved the final
+schema model in [review 6058462025](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/38#issuecomment-6058462025)
+at reviewed head `a919c75ec47571ea0a42419537e460eabb14f7c1`. The projection fix still needs his
+retest; demo selling prices, upstream PIM writer integration and frontend UAT remain outstanding.
+The legacy product/gallery creation APIs have not completed their separate C1 migration.
 
 The branch now includes PR #36 at `c2fa904` (code `1671584`) and develop through `276567d` (#58-60).
 The conflict resolution retains stock move/adjustment, admin order listing, transfer orders and
@@ -18,6 +20,9 @@ canonical inventory/commerce behavior together. PR #36 was pushed first; merge o
   or threshold columns on `product.sku`.
 - A canonical `product.variants` insert automatically creates one inventory item with no tracking
   flags and nullable thresholds. The same migration fills items for existing canonical variants.
+  **Cutover debt accepted by Tu:** replace `tg_variant_inventory_item` with an inventory-owned
+  listener for a variant-created event through the module API/contracts. The trigger remains for
+  this cutover; no new event architecture or C1/C3 activation is included in this fix.
 - Existing `min_qty`/`max_qty` and logistics fields are preserved. `safety_stock` is independent
   of `min_qty`. Added fields are `safety_stock`, `removal_strategy`, `max_shelf_life_days` and
   `policy_configured` (distinguishes unmanaged legacy receipts from explicitly configured policy).
@@ -157,6 +162,53 @@ canonical tracked SKUs, so the new operations do not rely on invalid lot data on
 
 ## Verification
 
+### Review 6058462025 correction (local, not pushed)
+
+- Baseline: local HEAD and fetched PR #38 head were both `a919c75`; fetched develop was `276567d`
+  and already an ancestor. There were no tracked edits, unmerged paths or `MERGE_HEAD`.
+- Before fix: a new PostgreSQL/Testcontainers security regression migrated a fresh database,
+  inserted a valid canonical PUBLISHED fixture with approved gallery and an explicit test selling
+  price, then requested detail. Detail failed **expected 200, actual 404**. Neither projection
+  table had a row for the product. Log: `outputs/pr38-review-6058462025-before.log`.
+- Fix: `CatalogProjectionListener` scans canonical publications on `ApplicationReadyEvent` and
+  continues a bounded keyset scan during scheduled retry, including products with no listing.
+  `CatalogProjectionService` locks the canonical product and creates/rebuilds its snapshot in one
+  REQUIRES_NEW transaction. It checks active category/SKUs, approved gallery and effective selling
+  prices. It never changes source publication, slug, SEO or pricing rules. Complete projections
+  at the current revision are unchanged; missing SKU entries are repaired. Upserts reject another
+  product owner or a newer entry revision instead of overwriting it. Failed work rolls back and is
+  retried from current source after restart; no migration checksum changes are required.
+- After fix: the same regression returned 200 for authenticated list/detail. Targeted validation
+  passed 63 tests, followed by four recovery/startup cases. Coverage includes an actual populated
+  pre-#38 database upgrade followed by application startup, real RSA JWT signature validation,
+  unchanged reruns, concurrent initial rebuilds, partial projection loss, missing-price rollback
+  and retry recovery, private DRAFT/APPROVED products, unapproved gallery, newer-revision refusal,
+  and unpublish/republish with updated price/SEO and stable slug. The existing security test class
+  stubs only JWT decoding; the separate startup test uses a real decoder and signing key.
+- Final `mvn -B -ntp -o clean verify`: **598 tests**, zero failures/errors/skips and packaged jar.
+  The fresh-migration test also executes all four repository SQL QA scripts: **166 checks pass**;
+  the orphan report is clean. Static checks pass (945 Java files); `git diff --check` passes and
+  all previously applied migration files are unchanged. Full log:
+  `outputs/pr38-review-6058462025-clean-verify.log`. This fix is local; GitHub CI has not run on it.
+- **Missing business data:** the unmodified demo seed marks SOFA-3S-GREY and TABLE-OAK-160 PUBLISHED
+  but seeds no selling-price rules. Raw demo migration therefore still leaves those products
+  pending with `PRICE_NOT_AVAILABLE`; startup logs the canonical product ID and error code. Test
+  prices (12,500,000 and 8,000,000 VND) are fixture data only, not agreed demo prices. No purchase
+  cost is reused, source is republished, or incomplete product exposed. Confirm and configure
+  actual selling prices before accepting the raw-demo/VPS reproduction.
+- Reduced formatting-only edits in StockOperationsServiceImpl, TransferOrderServiceImpl,
+  InventoryServiceImpl and OrderServiceImpl against develop. Executable tokens were preserved;
+  SKU-before-row locking, receipt-layer compatibility and ambiguous-layer 409s remain. Tu's future
+  `stockItemId` selector is not implemented here. The four-file diff against develop shrank from
+  1,310 to 246 changed lines (additions plus deletions).
+- Removed the branch-only progress report after backup outside the repo at
+  `C:/Users/VO HOANG MINH/Documents/Codex/PR38-review-6058462025-backup/`.
+  `docs/PR-36-review.md` is inherited unchanged from #36 and referenced by its backend handoff;
+  deleting it would delete another PR's work. It is not a separate #38 contribution when compared
+  with the prerequisite branch. Merge order remains #36 -> #38.
+
+### Earlier integration checks
+
 - Combined #36 plus develop through #59: `mvn -B -ntp -o clean verify` passed **581 tests**,
   zero failures/errors/skips, including packaging, architecture and module checks.
 - Final develop #60 integration: full `clean verify` passed **591 tests**, zero failures/errors/skips.
@@ -176,5 +228,5 @@ item version, and retains refusal for stock, pricing and operational references.
 reassignment and ACTIVE variant renaming remain blocked. The migration regression reproduces
 the old failure before upgrade; SQL QA then passes all 166 checks.
 
-Schema-owner review, upstream PIM writer migration, canonical FE identifiers, demo selling-price
+Projection retest, upstream PIM writer migration, canonical FE identifiers, demo selling-price
 confirmation and frontend UAT remain the coordination gates above. Tests do not establish them.

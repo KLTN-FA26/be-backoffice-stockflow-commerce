@@ -54,10 +54,76 @@ class InventoryCatalogIntegrationTest {
     @Autowired InventoryService inventory;
     @Autowired CatalogCommerceService catalog;
     @Autowired CatalogProjectionService projection;
+    @Autowired com.stockflow.catalog.internal.service.CatalogProjectionListener projectionListener;
     @Autowired TransactionTemplate transactions;
     @Autowired MockMvc mvc;
     @Autowired OrderService orders;
     @Autowired CatalogService checkoutCatalog;
+
+    @Test
+    void missingPriceRollsBackTheWholeBackfillAndRetryDiscoversItLater() {
+        var f = fixture("APPROVED");
+        gallery(f);
+        String second = f.sku() + "-2";
+        write("insert into product.variants(id,product_id,sku,name,status,attribute_signature)"
+                + " values (?,?,?,'Second','ACTIVE','SECOND')", UUID.randomUUID(), f.product(), second);
+        write("update product.products set status='PUBLISHED',published_at=now() where id=?", f.product());
+        testPrice(f.sku());
+        var source = jdbc.queryForMap("select * from product.products where id=?", f.product());
+        assertThatThrownBy(() -> projection.project(f.product()))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.PRICE_NOT_AVAILABLE));
+        assertThat(jdbc.queryForObject("select count(*) from catalog.product_listing where product_id=?",
+                Long.class, f.product())).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from catalog.catalog_entry where product_id=?",
+                Long.class, f.product())).isZero();
+        testPrice(second);
+        projectionListener.retry();
+        assertThat(catalog.detail(catalog.get(f.product()).slug()).variants()).hasSize(2);
+        assertThat(jdbc.queryForMap("select * from product.products where id=?", f.product())).isEqualTo(source);
+    }
+
+    @Test
+    void backfillDoesNotExposeDraftApprovedOrUnapprovedMedia() {
+        for (String status : List.of("DRAFT", "APPROVED")) {
+            var f = fixture(status);
+            gallery(f);
+            testPrice(f.sku());
+            projection.project(f.product());
+            assertThat(jdbc.queryForObject("select count(*) from catalog.product_listing where product_id=?",
+                    Long.class, f.product())).isZero();
+        }
+        var f = fixture("APPROVED");
+        gallery(f);
+        testPrice(f.sku());
+        write("update product.products set status='PUBLISHED',published_at=now() where id=?", f.product());
+        write("update product.media set is_published=false where variant_id=?", f.skuId());
+        assertThatThrownBy(() -> projection.project(f.product()))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.PRODUCT_GALLERY_REQUIRED));
+        assertThat(jdbc.queryForObject("select count(*) from catalog.product_listing where product_id=?",
+                Long.class, f.product())).isZero();
+    }
+
+    @Test
+    void rebuildCannotOverwriteANewerEntryAndRollsBackPartialWrites() {
+        var f = fixture("APPROVED");
+        gallery(f);
+        testPrice(f.sku());
+        write("update product.products set status='PUBLISHED',published_at=now() where id=?", f.product());
+        projection.project(f.product());
+        write("update catalog.catalog_entry set source_revision=100,price=777,title='Newer snapshot' where sku=?", f.sku());
+        var entry = jdbc.queryForMap("select * from catalog.catalog_entry where sku=?", f.sku());
+        assertThatThrownBy(() -> projection.project(f.product()))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.CONFLICT));
+        assertThat(jdbc.queryForMap("select * from catalog.catalog_entry where sku=?", f.sku())).isEqualTo(entry);
+    }
+
+    private void testPrice(String sku) {
+        write("insert into catalog.pricing_rule(id,name,sku,price,currency,active,created_at)"
+                + " values (?,?,?,12500000,'VND',true,now())", UUID.randomUUID(), "BASE:" + sku, sku);
+    }
 
     @Test
     void stockMoveKeepsCanonicalSerialAndReceiptIdentity() {

@@ -1,6 +1,7 @@
 package com.stockflow;
 
 import static org.mockito.Mockito.when;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
@@ -33,13 +34,14 @@ import java.util.UUID;
 @IntegrationTest
 @Import({PostgresContainer.class, RedisContainer.class})
 @AutoConfigureMockMvc
-@TestPropertySource(properties = "stockflow.security.enabled=true")
+@TestPropertySource(properties = {"stockflow.security.enabled=true", "stockflow.catalog.projection-retry-ms=3600000"})
 class InventoryCatalogSecurityIntegrationTest {
     @Autowired MockMvc mvc;
     @MockitoBean JwtDecoder decoder;
     @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
     @Autowired org.springframework.transaction.support.TransactionTemplate tx;
     @Autowired IdentityService identity;
+    @Autowired com.stockflow.catalog.internal.service.CatalogProjectionService projection;
     private static final String TEST_ROLE = "INVENTORY_PLANNER";
     private List<String> originalPermissions;
 
@@ -96,6 +98,56 @@ values (?,?,'Table',?,'DRAFT')
                                 "SEC-" + id.toString().toUpperCase(java.util.Locale.ROOT),
                                 "sec-" + id));
         return id;
+    }
+
+    @Test
+    void previouslyPublishedCanonicalProductAppearsWithoutRepublishing() throws Exception {
+        UUID id = product();
+        String sku = "BACKFILL-" + id.toString().substring(0, 8).toUpperCase(java.util.Locale.ROOT);
+        UUID variant = UUID.randomUUID();
+        tx.executeWithoutResult(s -> {
+            jdbc.update("insert into product.product_categories(id,product_id,category_id,is_primary)"
+                    + " values (?,?,md5('demo:cat:SOFA')::uuid,true)", UUID.randomUUID(), id);
+            jdbc.update("insert into product.variants(id,product_id,sku,name,status,attribute_signature)"
+                    + " values (?,?,?,'Backfill','ACTIVE','')", variant, id, sku);
+            jdbc.update("""
+                    insert into product.media(id,variant_id,url,is_published,published_at,published_by,created_by)
+                    values (?,?,'https://example.test/backfill.jpg',true,now(),
+                        md5('demo:user:approver')::uuid,md5('demo:user:editor')::uuid::text)
+                    """, UUID.randomUUID(), variant);
+            // Explicit test selling price, not a new demo seed or an inferred purchase cost.
+            jdbc.update("""
+                    insert into catalog.pricing_rule(id,name,sku,price,currency,active,created_at)
+                    values (?,?,?,12500000,'VND',true,now())
+                    """, UUID.randomUUID(), "BASE:" + sku, sku);
+            jdbc.update("""
+                    update product.products set status='PUBLISHED',submitted_by=md5('demo:user:editor')::uuid,
+                    submitted_at=now(),approved_by=md5('demo:user:approver')::uuid,approved_at=now(),
+                    published_at=now(),seo_title='Canonical SEO',seo_description='Canonical description'
+                    where id=?
+                    """, id);
+        });
+        var source = jdbc.queryForMap("select * from product.products where id=?", id);
+        assertThat(jdbc.queryForObject("select count(*) from catalog.product_listing where product_id=?",
+                Long.class, id)).isZero();
+        projection.project(id);
+        String authorization = token("product-products:READ");
+        mvc.perform(get("/api/v1/catalog/products/sec-" + id).header("Authorization", authorization))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.slug").value("sec-" + id))
+                .andExpect(jsonPath("$.data.seoTitle").value("Canonical SEO"))
+                .andExpect(jsonPath("$.data.variants[0].price").value(12500000));
+        mvc.perform(get("/api/v1/catalog/products").param("size", "100")
+                        .header("Authorization", authorization))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[?(@.slug == 'sec-" + id + "')]").isNotEmpty());
+        assertThat(jdbc.queryForMap("select * from product.products where id=?", id)).isEqualTo(source);
+        var listing = jdbc.queryForMap("select * from catalog.product_listing where product_id=?", id);
+        var entry = jdbc.queryForMap("select * from catalog.catalog_entry where sku=?", sku);
+        projection.project(id);
+        assertThat(jdbc.queryForMap("select * from catalog.product_listing where product_id=?", id))
+                .isEqualTo(listing);
+        assertThat(jdbc.queryForMap("select * from catalog.catalog_entry where sku=?", sku)).isEqualTo(entry);
     }
 
     @Test

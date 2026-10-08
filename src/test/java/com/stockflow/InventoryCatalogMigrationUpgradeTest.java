@@ -5,15 +5,48 @@ import static org.assertj.core.api.Assertions.*;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.utility.MountableFile;
 
 import java.sql.DriverManager;
 import java.sql.SQLException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 /**
  * Exercises populated branch databases, including fail-fast rollback before canonical
  * reconciliation.
  */
 class InventoryCatalogMigrationUpgradeTest {
+    @Test
+    void freshDatabasePassesRepositorySqlQaAndHasNoOrphans() throws Exception {
+        try (var pg = new PostgreSQLContainer<>("postgres:16-alpine")) {
+            pg.start();
+            Flyway.configure().dataSource(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword())
+                    .locations("classpath:db/migration", "classpath:db/demo").load().migrate();
+            long checks = 0;
+            try (var scripts = Files.list(Path.of("tools/db/qa"))) {
+                for (var script : scripts.filter(p -> p.getFileName().toString().matches("[0-9]{2}_.*\\.sql"))
+                        .sorted().toList()) {
+                    String target = "/tmp/" + script.getFileName();
+                    pg.copyFileToContainer(MountableFile.forHostPath(script), target);
+                    var result = pg.execInContainer("psql", "-U", pg.getUsername(), "-d", pg.getDatabaseName(),
+                            "-X", "-q", "-o", "/dev/null", "-f", target);
+                    assertThat(result.getExitCode()).withFailMessage(result.getStderr()).isZero();
+                    assertThat(result.getStderr()).doesNotContain("FAIL", "ERROR:");
+                    checks += result.getStderr().lines().filter(line -> line.contains("ok    ")).count();
+                }
+            }
+            assertThat(checks).isGreaterThan(0);
+            System.out.println("Repository SQL QA checks passed: " + checks);
+            pg.copyFileToContainer(MountableFile.forHostPath(Path.of("tools/db/orphan_check.sql")), "/tmp/orphan.sql");
+            var orphans = pg.execInContainer("psql", "-U", pg.getUsername(), "-d", pg.getDatabaseName(),
+                    "-X", "-A", "-t", "-f", "/tmp/orphan.sql");
+            assertThat(orphans.getExitCode()).withFailMessage(orphans.getStderr()).isZero();
+            assertThat(orphans.getStdout().lines().filter(line -> !line.isBlank()).toList())
+                    .isNotEmpty().allMatch(line -> line.endsWith("|0|ok"));
+        }
+    }
+
     @Test
     void upgradeRestoresUnusedDraftSkuRenameWithoutReassigningStockOrPolicy() throws Exception {
         try (var pg = new PostgreSQLContainer<>("postgres:16-alpine")) {

@@ -11,6 +11,9 @@ public interface ProductPublication {
 
     Set<UUID> published(Set<UUID> productIds);
 
+    /** Keyset page of canonical publications, including products with no catalog snapshot yet. */
+    List<UUID> publishedPage(UUID after, int size);
+
     PublicationProduct.PublicationSku inventorySku(UUID productId, UUID variantId);
 
     List<PublishedProductImage> publishedImages(UUID productId);

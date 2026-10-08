@@ -1,13 +1,16 @@
 # Yêu cầu schema và hợp đồng tích hợp — SCRUM-70/71
 
 > Cập nhật 08/10/2026: nhánh hiện có adapter canonical và migration bổ sung
-> `V20261008000100__canonical_inventory_and_ecommerce.sql` để owner review.
+> `V20261008000100__canonical_inventory_and_ecommerce.sql` đã được Tú duyệt model về nguyên tắc
+> tại [review 08/10 18:04](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/38#issuecomment-6058462025), head `a919c75`.
 > Chi tiết triển khai và điểm còn vướng nằm trong `docs/SCRUM-70-71-backend.md`.
 > Nội dung bên dưới là yêu cầu phối hợp ban đầu ngày 03/10; các mô tả "code đang dùng legacy"
-> đã được thay thế cho phần 70/71. Chưa khẳng định Tú đã duyệt schema hay upstream PIM writers
-> đã chuyển xong. Không kích hoạt C1/C3, không thay lịch sử Flyway.
+> đã được thay thế cho phần 70/71. Upstream PIM writers chưa chuyển xong; trigger tạo inventory item
+> được chấp nhận tạm cho cutover, debt chuyển sang inventory listener đã ghi trong handoff.
+> Không kích hoạt C1/C3, không thay lịch sử Flyway. Lỗi projection và giá demo xem handoff.
 
-Ngày: 03/10/2026. Người xử lý schema: **Tú**. Trạng thái: **đề xuất chờ owner duyệt**, không phải migration đã thực hiện.
+Ngày đề xuất ban đầu: 03/10/2026. Người xử lý schema: **Tú**. Các phần bên dưới lưu bối cảnh
+đề xuất cũ; trạng thái triển khai và duyệt hiện tại nằm trong cập nhật 08/10 phía trên.
 
 ## 1. Quyết định phạm vi
 

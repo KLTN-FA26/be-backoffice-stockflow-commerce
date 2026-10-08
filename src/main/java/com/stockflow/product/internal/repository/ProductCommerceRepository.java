@@ -86,6 +86,14 @@ order by pc.is_primary desc, pc.id limit 1
                         ids.toArray()));
     }
 
+    public List<UUID> publishedPage(UUID after, int size) {
+        return jdbc.query(
+                "select id from product.products where status='PUBLISHED'"
+                        + (after == null ? "" : " and id>?") + " order by id limit ?",
+                (r, n) -> r.getObject(1, UUID.class),
+                after == null ? new Object[] {size} : new Object[] {after, size});
+    }
+
     public PublicationProduct.PublicationSku inventorySku(UUID productId, UUID variantId) {
         return jdbc
                 .query(

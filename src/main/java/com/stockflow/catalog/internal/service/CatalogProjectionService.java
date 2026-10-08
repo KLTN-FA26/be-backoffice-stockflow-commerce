@@ -14,6 +14,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Clock;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @Service
 public class CatalogProjectionService {
@@ -38,8 +39,18 @@ public class CatalogProjectionService {
     public void project(UUID id) {
         var product = products.lock(id);
         var listing = listings.find(id).orElse(null);
-        if (listing == null) return;
+        if (listing == null && product.status() != ProductStatus.PUBLISHED) return;
         var source = products.ecommerce(id);
+        if (listing == null) {
+            // Backfill the snapshot, never the source publication or its selling prices.
+            if (!Listing.normalizeSlug(source.slug()).equals(source.slug()))
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED);
+            listings.save(new Listing(id, source.slug(), source.seoTitle(), source.seoDescription(),
+                    source.version(), -1, false, source.everPublished(), null, null, null, null));
+            listing = listings.find(id).orElseThrow();
+        }
+        if (listing.revision() > source.version())
+            throw new BusinessException(ErrorCode.CONFLICT);
         if (listing.revision() != source.version()
                 || !Objects.equals(listing.slug(), source.slug())
                 || !Objects.equals(listing.seoTitle(), source.seoTitle())
@@ -60,9 +71,19 @@ public class CatalogProjectionService {
                             listing.publishedSeoDescription()));
             listing = listings.find(id).orElseThrow();
         }
-        if (listing.enabled()
-                && product.status() == ProductStatus.PUBLISHED
-                && listing.revision() == listing.projectedRevision()) return;
+        if (product.status() == ProductStatus.PUBLISHED) {
+            if (!listing.enabled()) {
+                listings.enable(id, true);
+                listing = listings.find(id).orElseThrow();
+            }
+            if (listing.publishedTitle() != null && listing.revision() == listing.projectedRevision()
+                    && listings.projectedSkus(id, source.version()).equals(product.skus().stream()
+                            .map(s -> s.sku()).collect(Collectors.toSet()))) return;
+            if (product.categoryId() == null)
+                throw new BusinessException(ErrorCode.PRODUCT_CATEGORY_REQUIRED);
+            if (products.publishedImages(id).isEmpty())
+                throw new BusinessException(ErrorCode.PRODUCT_GALLERY_REQUIRED);
+        }
         listings.hideEntries(id);
         if (listing.enabled() && product.status() == ProductStatus.PUBLISHED) {
             if (product.skus().isEmpty())

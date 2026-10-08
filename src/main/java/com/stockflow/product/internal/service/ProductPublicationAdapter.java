@@ -54,6 +54,11 @@ class ProductPublicationAdapter implements ProductPublication {
     }
 
     @Transactional(readOnly = true)
+    public List<UUID> publishedPage(UUID after, int size) {
+        return products.publishedPage(after, size);
+    }
+
+    @Transactional(readOnly = true)
     public PublicationProduct.PublicationSku inventorySku(UUID productId, UUID variantId) {
         return products.inventorySku(productId, variantId);
     }
