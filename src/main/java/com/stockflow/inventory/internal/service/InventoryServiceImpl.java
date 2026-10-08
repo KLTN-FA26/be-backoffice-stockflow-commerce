@@ -1,17 +1,15 @@
 package com.stockflow.inventory.internal.service;
 
-import com.stockflow.common.domain.BusinessCalendar;
-import com.stockflow.common.domain.Sku;
-import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.MoveStockCommand;
 import com.stockflow.inventory.api.RequestAdjustmentCommand;
-import com.stockflow.inventory.api.ReserveStockCommand;
-import com.stockflow.inventory.api.ReserveStockResult;
+
 import com.stockflow.inventory.api.StockAdjustmentSummary;
+import com.stockflow.inventory.api.StockMove;
+import com.stockflow.inventory.api.ReserveStockResult;
+import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.api.StockAvailability;
 import com.stockflow.inventory.api.StockLevel;
-import com.stockflow.inventory.api.StockMove;
 import com.stockflow.inventory.api.StockReservation;
 import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.Quantity;
@@ -24,19 +22,16 @@ import com.stockflow.inventory.internal.domain.StockItemId;
 import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.inventory.internal.domain.StockLevelLine;
 import com.stockflow.inventory.internal.domain.StockStatus;
-import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
-
+import com.stockflow.common.domain.Sku;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
-
-import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.ArrayList;
+
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -47,6 +42,11 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.UUID;
+import com.stockflow.common.domain.BusinessCalendar;
+import com.stockflow.inventory.api.InventoryControlService;
+import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
+import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
 import java.util.stream.Collectors;
 
 /**
@@ -55,15 +55,15 @@ import java.util.stream.Collectors;
  * <p><b>What the application layer is for.</b> It orchestrates: load the aggregates, call the
  * domain method, save, publish. It contains no business rules — every "may I?" and "how much?"
  * question is answered by {@link StockItem} or {@link StockAllocator}. If a rule appears in this
- * class it is in the wrong place, and {@code ArchitectureTest} is what keeps that honest.
+ * class it is in the wrong place, and {@code ArchitectureTest} is what keeps that honest.</p>
  *
  * <p><b>Package-private class, public interface.</b> Spring injects it by the interface. Nothing
- * outside this package can name the implementation, so nobody can bypass the port by autowiring the
- * concrete class and calling a method the interface does not expose.
+ * outside this package can name the implementation, so nobody can bypass the port by
+ * autowiring the concrete class and calling a method the interface does not expose.</p>
  *
- * <p><b>Clock is injected.</b> Reservation expiry is time-dependent, and {@code Instant.now()}
- * scattered through the code makes that untestable. With a {@code Clock} bean the sweeper test
- * fast-forwards 31 minutes instead of sleeping for them.
+ * <p><b>Clock is injected.</b> Reservation expiry is time-dependent, and
+ * {@code Instant.now()} scattered through the code makes that untestable. With a {@code Clock}
+ * bean the sweeper test fast-forwards 31 minutes instead of sleeping for them.</p>
  */
 @Service
 @Transactional
@@ -78,11 +78,8 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
     private final InventoryControlService controls;
     private final InventoryPolicyRepository policies;
 
-    InventoryServiceImpl(
-            StockItemRepository repository,
-            InventoryEventPublisher events,
-            StockOperations operations,
-            Clock clock,
+    InventoryServiceImpl(StockItemRepository repository, InventoryEventPublisher events,
+                         StockOperations operations, Clock clock,
             InventoryControlService controls,
             InventoryPolicyRepository policies) {
         this.repository = repository;
@@ -121,7 +118,9 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
     @Transactional(readOnly = true)
     public Map<String, Long> availableQuantities(Set<String> skus) {
         var normalized =
-                skus.stream().map(code -> new Sku(code).code()).collect(Collectors.toSet());
+                skus.stream()
+                .map(code -> new Sku(code).code())
+                .collect(Collectors.toSet());
         if (normalized.isEmpty()) return Map.of();
         return repository.availableQuantities(normalized, BusinessCalendar.date(clock.instant()));
     }
@@ -130,8 +129,7 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
     @Transactional(readOnly = true)
     public Map<Sku, Integer> availableToPromise(Collection<Sku> skus) {
         Set<Sku> wanted = new LinkedHashSet<>(skus);
-        Map<Sku, Integer> found =
-                repository.sumAvailableBySkus(wanted, BusinessCalendar.date(clock.instant()));
+        Map<Sku, Integer> found = repository.sumAvailableBySkus(wanted, BusinessCalendar.date(clock.instant()));
         Map<Sku, Integer> result = new LinkedHashMap<>();
         // Every SKU asked for gets an answer: no stock is an answer (0), not a missing key.
         wanted.forEach(sku -> result.put(sku, found.getOrDefault(sku, 0)));
@@ -155,9 +153,7 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
         // Use the configured picking order and one business date for the entire result.
         return repository.findAvailableBySku(sku).stream()
                 .filter(item -> notExpired(item, today))
-                .sorted(
-                        Comparator.comparing(
-                                item ->
+                .sorted(Comparator.comparing(item ->
                                         new StockAllocator.Candidate(
                                                 item.id(),
                                                 item.location(),
@@ -176,22 +172,16 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
     public List<StockLevel> levelsOf(Sku sku) {
         record Totals(int onHand, int available, int reserved, int atp) {
             static Totals of(StockLevelLine line, LocalDate today) {
-                boolean usable =
-                        line.status() == StockStatus.AVAILABLE
+                boolean usable = line.status() == StockStatus.AVAILABLE
                                 && (line.expiryDate() == null
                                         || !line.expiryDate().isBefore(today));
                 int sellable = usable ? line.onHand() : 0;
-                return new Totals(
-                        line.onHand(),
-                        sellable,
-                        line.reserved(),
+                return new Totals(line.onHand(), sellable, line.reserved(),
                         usable ? line.onHand() - line.reserved() : 0);
             }
 
             Totals plus(Totals other) {
-                return new Totals(
-                        onHand + other.onHand,
-                        available + other.available,
+                return new Totals(onHand + other.onHand, available + other.available,
                         reserved + other.reserved,
                         atp + other.atp);
             }
@@ -199,20 +189,13 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
         Map<String, Totals> byWarehouse = new TreeMap<>();
         var today = BusinessCalendar.date(clock.instant());
         for (StockLevelLine line : repository.findLevelLinesBySku(sku)) {
-            byWarehouse.merge(
-                    line.location().warehouseCode(), Totals.of(line, today), Totals::plus);
+            byWarehouse.merge(line.location().warehouseCode(), Totals.of(line, today), Totals::plus);
         }
         return byWarehouse.entrySet().stream()
-                .map(
-                        entry ->
-                                new StockLevel(
-                                        sku.code(),
-                                        entry.getKey(),
-                                        entry.getValue().onHand(),
-                                        entry.getValue().available(),
-                                        entry.getValue().reserved(),
-                                        0,
-                                        entry.getValue().atp()))
+                .map(entry -> new StockLevel(sku.code(), entry.getKey(),
+                        entry.getValue().onHand(), entry.getValue().available(),
+                        entry.getValue().reserved(), 0,
+                        entry.getValue().atp()))
                 .toList();
     }
 
@@ -223,14 +206,14 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
      * transaction ({@code Propagation.REQUIRED}, the default, stated explicitly here because it is
      * load-bearing rather than incidental). {@code order} calls it while saving the order; one
      * commit covers both. If the order insert then violates a constraint, this reservation
-     * disappears with it, automatically.
+     * disappears with it, automatically.</p>
      *
      * <p>The microservices version of this same step needed: an outbox row, a Kafka topic, a saga
      * orchestrator holding the in-flight state, a compensating {@code ReleaseStock} command for
      * when the order failed after the reservation succeeded, a reservation timeout in case the
      * compensation itself was lost, and an idempotent consumer so a redelivered command did not
      * reserve twice. All of that existed to approximate what one database transaction gives for
-     * free — see {@code docs/adr/0005-modular-monolith.md}.
+     * free — see {@code docs/adr/0005-modular-monolith.md}.</p>
      */
     @Override
     @Transactional(propagation = Propagation.REQUIRED)
@@ -244,10 +227,8 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
         //    succeeded. Answering from the existing holds sidesteps both.
         Optional<ReserveStockResult> alreadyServed = replayOf(command);
         if (alreadyServed.isPresent()) {
-            log.info(
-                    "Request {} was already served; returning the original {} hold(s)",
-                    command.requestId(),
-                    alreadyServed.get().reservations().size());
+            log.info("Request {} was already served; returning the original {} hold(s)",
+                    command.requestId(), alreadyServed.get().reservations().size());
             return alreadyServed.get();
         }
 
@@ -257,20 +238,16 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
         //    checking availability against pre-lock data. (Step 0 above can load aggregates only
         //    because it returns immediately when it finds any - it never reaches step 3.)
         List<StockAllocator.Candidate> candidates = repository.findAvailabilityBySku(command.sku());
-        List<StockAllocator.AllocationLine> plan =
-                StockAllocator.plan(
-                        command.sku().code(),
-                        candidates,
-                        Quantity.of(command.quantity()),
+        List<StockAllocator.AllocationLine> plan = StockAllocator.plan(
+                command.sku().code(), candidates, Quantity.of(command.quantity()),
                         controls.policy(command.sku()).removalStrategy(),
                         BusinessCalendar.date(now));
 
         // 2. ORDER THE LOCKS. Two checkouts touching the same two stock items in opposite orders
         //    deadlock; sorting by id gives every transaction the same acquisition order.
-        List<StockAllocator.AllocationLine> ordered =
-                plan.stream()
-                        .sorted(Comparator.comparing(line -> line.stockItemId().value().toString()))
-                        .toList();
+        List<StockAllocator.AllocationLine> ordered = plan.stream()
+                .sorted(Comparator.comparing(line -> line.stockItemId().value().toString()))
+                .toList();
 
         List<StockReservation> reservations = new ArrayList<>();
 
@@ -279,48 +256,32 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
             //    taken the same units in between. findByIdForUpdate takes a write lock AND forces a
             //    reload, so the aggregate re-checks availability against what is true right now and
             //    throws if it no longer holds.
-            StockItem locked =
-                    repository
-                            .findByIdForUpdate(line.stockItemId())
-                            .orElseThrow(
-                                    () ->
-                                            new IllegalStateException(
-                                                    "Stock item %s vanished mid-reservation"
-                                                            .formatted(line.stockItemId())));
+            StockItem locked = repository.findByIdForUpdate(line.stockItemId()).orElseThrow(() ->
+                    new IllegalStateException(
+                            "Stock item %s vanished mid-reservation".formatted(line.stockItemId())));
 
-            Reservation reservation =
-                    locked.reserve(
-                            command.orderId(),
-                            command.requestId(),
-                            // One derived key per stock item. Reusing the caller's single id across
-                            // the
-                            // loop would violate uk_stock_reservation_request on the second lot, so
-                            // any
-                            // line spanning two lots would fail outright.
-                            perStockItemRequestId(command.requestId(), line.stockItemId()),
-                            line.quantity(),
-                            now);
+            Reservation reservation = locked.reserve(
+                    command.orderId(),
+                    command.requestId(),
+                    // One derived key per stock item. Reusing the caller's single id across the
+                    // loop would violate uk_stock_reservation_request on the second lot, so any
+                    // line spanning two lots would fail outright.
+                    perStockItemRequestId(command.requestId(), line.stockItemId()),
+                    line.quantity(),
+                    now);
             repository.save(locked);
             events.publishEventsOf(locked);
 
             reservations.add(toApiReservation(locked, reservation));
         }
 
-        log.info(
-                "Reserved {} units of {} for order {} across {} stock item(s)",
-                command.quantity(),
-                command.sku(),
-                command.orderId(),
-                reservations.size());
+        log.info("Reserved {} units of {} for order {} across {} stock item(s)",
+                command.quantity(), command.sku(), command.orderId(), reservations.size());
 
-        return new ReserveStockResult(
-                command.orderId(),
-                reservations,
-                command.quantity(),
+        return new ReserveStockResult(command.orderId(), reservations, command.quantity(),
                 // Across every location, not only the lots just drawn from: a caller shown
                 // "3 left" when 30 sit in the next aisle would reasonably call that a bug.
-                availableToPromise(command.sku()),
-                now);
+                availableToPromise(command.sku()), now);
     }
 
     /**
@@ -328,18 +289,16 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
      *
      * <p>Reads the quantities from the stored reservations rather than from the command, so a
      * partially-applied earlier attempt reports what is actually held rather than what was asked
-     * for.
+     * for.</p>
      */
     private Optional<ReserveStockResult> replayOf(ReserveStockCommand command) {
-        List<StockItem> holders =
-                repository.findWithReservationsForRequest(command.requestId()).stream()
-                        // Same id ordering as the reserve loop. These loads take write locks too,
-                        // and two
-                        // replays of different requests touching the same pair of stock items in
-                        // opposite
-                        // orders would deadlock exactly as two fresh checkouts would.
-                        .sorted(Comparator.comparing(item -> item.id().value().toString()))
-                        .toList();
+        List<StockItem> holders = repository.findWithReservationsForRequest(command.requestId())
+                .stream()
+                // Same id ordering as the reserve loop. These loads take write locks too, and two
+                // replays of different requests touching the same pair of stock items in opposite
+                // orders would deadlock exactly as two fresh checkouts would.
+                .sorted(Comparator.comparing(item -> item.id().value().toString()))
+                .toList();
         if (holders.isEmpty()) {
             return Optional.empty();
         }
@@ -359,13 +318,8 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
         }
 
         int quantityHeld = reservations.stream().mapToInt(StockReservation::quantity).sum();
-        return Optional.of(
-                new ReserveStockResult(
-                        command.orderId(),
-                        reservations,
-                        quantityHeld,
-                        availableToPromise(command.sku()),
-                        earliest));
+        return Optional.of(new ReserveStockResult(command.orderId(), reservations, quantityHeld,
+                availableToPromise(command.sku()), earliest));
     }
 
     private static StockReservation toApiReservation(StockItem item, Reservation reservation) {
@@ -381,13 +335,9 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
     @Override
     public void release(UUID reservationId, String reason) {
         ReleaseReason releaseReason = parseReason(reason);
-        StockItem item =
-                repository
-                        .findByReservationIdForUpdate(ReservationId.of(reservationId))
-                        .orElseThrow(
-                                () ->
-                                        new IllegalArgumentException(
-                                                "No reservation with id " + reservationId));
+        StockItem item = repository.findByReservationIdForUpdate(ReservationId.of(reservationId))
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "No reservation with id " + reservationId));
 
         item.releaseReservation(ReservationId.of(reservationId), releaseReason, clock.instant());
         repository.save(item);
@@ -400,19 +350,15 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
      * {@inheritDoc}
      *
      * <p>Reached from {@code POST /reservations/{id}/consumption}, which {@code fulfillment} calls
-     * when a pick is confirmed. Not on the published {@link InventoryService} port — see {@link
-     * StockConsumption} for why.
+     * when a pick is confirmed. Not on the published {@link InventoryService} port — see
+     * {@link StockConsumption} for why.</p>
      */
     @Override
     public void consume(UUID reservationId) {
         ReservationId id = ReservationId.of(reservationId);
-        StockItem item =
-                repository
-                        .findByReservationIdForUpdate(id)
-                        .orElseThrow(
-                                () ->
-                                        new IllegalArgumentException(
-                                                "No reservation with id " + reservationId));
+        StockItem item = repository.findByReservationIdForUpdate(id)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "No reservation with id " + reservationId));
         item.consumeReservation(id, clock.instant());
         repository.save(item);
         events.publishEventsOf(item);
@@ -427,16 +373,16 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
      * item it applies to. Two properties matter: it differs per stock item, so the unique
      * constraint on {@code request_id} is not violated when one line spans several lots; and it is
      * stable across processes and restarts, so a retried checkout is recognised as a replay rather
-     * than held a second time.
+     * than held a second time.</p>
      */
     private static UUID perStockItemRequestId(UUID requestId, StockItemId stockItemId) {
-        return UUID.nameUUIDFromBytes(
-                (requestId + ":" + stockItemId).getBytes(StandardCharsets.UTF_8));
+        return UUID.nameUUIDFromBytes((requestId + ":" + stockItemId)
+                .getBytes(StandardCharsets.UTF_8));
     }
 
     /**
-     * Free-text reason in, enum out. The string arrives from another module's call or from JSON, so
-     * it is validated here at the boundary — nothing downstream ever sees an unparsed reason.
+     * Free-text reason in, enum out. The string arrives from another module's call or from JSON,
+     * so it is validated here at the boundary — nothing downstream ever sees an unparsed reason.
      */
     private ReleaseReason parseReason(String reason) {
         if (reason == null || reason.isBlank()) {
