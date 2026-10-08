@@ -36,7 +36,7 @@ public record StockMovement(
     }
 
     /** The subset of {@code ck_stock_movement_type} this module writes so far. */
-    public enum MovementType { MOVE, ADJUSTMENT }
+    public enum MovementType { MOVE, ADJUSTMENT, TRANSFER_OUT }
 
     /** The subset of {@code ck_stock_movement_reference} this module writes so far. */
     public enum ReferenceType { MOVE_TASK, PUTAWAY_TASK, TRANSFER_ORDER_LINE, ORDER, STOCK_ADJUSTMENT }
