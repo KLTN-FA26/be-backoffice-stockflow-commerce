@@ -3,7 +3,9 @@ package com.stockflow.inventory.internal.domain;
 import com.stockflow.common.domain.Sku;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -58,6 +60,9 @@ public interface StockItemRepository {
 
     /** Per (location, status) subtotals of one SKU, all statuses included; feeds Inventory Level. */
     List<StockLevelLine> findLevelLinesBySku(Sku sku);
+
+    /** Sellable units ({@code onHand − reserved} of AVAILABLE stock) per SKU; absent when none. */
+    Map<Sku, Integer> sumAvailableBySkus(Collection<Sku> skus);
 
     List<StockItem> findBySkuAndLocation(Sku sku, LocationId location);
 

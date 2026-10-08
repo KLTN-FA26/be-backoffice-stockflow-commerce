@@ -1,7 +1,8 @@
 # StockFlowCommerce — working notes for Claude Code
 
 FPT University capstone **FA26SE029**, group **GFA26SE03**, 5 members, supervisor Nguyễn Minh Sang.
-A warehouse + e-commerce platform for a Vietnamese furniture business.
+A warehouse, print-production and B2B sales platform for a Vietnamese business that prints cups
+and packaging to its wholesale customers' designs (decided 2026-10-06: B2B only).
 
 Read this before touching anything. It is short on purpose; it says what is not obvious from the
 code, and points at the code for the rest.

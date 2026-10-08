@@ -97,6 +97,12 @@ jobs:
           fi
           echo "No applied migration was modified."
 
+      # Coverage per module on the run's own page. The artifact below holds the full HTML report,
+      # but a number nobody downloads a zip to read is a number nobody reads.
+      - name: Coverage summary
+        if: always()
+        run: python3 tools/ci/coverage_summary.py >> "$GITHUB_STEP_SUMMARY"
+
       - name: Publish test report
         uses: actions/upload-artifact@v4
         # Uploaded even on failure - a red build is when the report is actually wanted.

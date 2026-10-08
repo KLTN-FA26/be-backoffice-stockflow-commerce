@@ -3,7 +3,8 @@
  *
  * <p>WBS 3.13 · database schema {@code catalog}</p>
  *
- * <p><b>May depend on:</b> product. Plus {@code common} and {@code contracts}, which are
+ * <p><b>May depend on:</b> product, and inventory for the availability shown on a product page
+ * (docs 13 BR-03: catalog is a consumer of available-to-promise, never its owner). Plus {@code common} and {@code contracts}, which are
  * available to every module.</p>
  *
  * <p>The module has two packages and the split is the whole point:</p>
@@ -14,5 +15,5 @@
  *       you reaching in; {@code ModularityTest} will.</li>
  * </ul>
  */
-@org.springframework.modulith.ApplicationModule(allowedDependencies = {"product :: api"})
+@org.springframework.modulith.ApplicationModule(allowedDependencies = {"product :: api", "inventory :: api"})
 package com.stockflow.catalog;
