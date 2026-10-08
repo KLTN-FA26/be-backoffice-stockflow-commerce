@@ -42,6 +42,11 @@ public enum ErrorCode {
     CATEGORY_NOT_FOUND("Category not found", 404),
     CUSTOMER_NOT_FOUND("Customer not found", 404),
     ADDRESS_NOT_FOUND("Address not found", 404),
+    /** No stock of this SKU (and lot) is held at this location. */
+    STOCK_ITEM_NOT_FOUND("No such stock at this location", 404),
+    /** The location code is not on any warehouse map. */
+    LOCATION_NOT_FOUND("Location not found", 404),
+    STOCK_ADJUSTMENT_NOT_FOUND("Stock adjustment not found", 404),
 
     /** Credentials were correct but the account is LOCKED or DISABLED. Distinct from UNAUTHORIZED,
      *  which covers "wrong username or password" without revealing the account exists. */
@@ -59,6 +64,11 @@ public enum ErrorCode {
     PO_COMMUNICATION_NOT_CONFIGURED("Buyer contact and receiving address must be configured before sending", 409),
     CONFLICT("Conflicting state", 409),
     INSUFFICIENT_STOCK("Not enough available stock", 409),
+    /** The destination already holds this SKU and lot in another status (QC state does not merge). */
+    STOCK_STATUS_MISMATCH("The destination holds this lot in a different status", 409),
+    /** Four eyes: whoever asked for a stock adjustment may not decide it. */
+    ADJUSTMENT_SELF_APPROVAL("A stock adjustment cannot be decided by the person who requested it", 409),
+    INVALID_ADJUSTMENT_TRANSITION("This stock adjustment has already been decided", 409),
     OPTIMISTIC_LOCK("The record changed meanwhile, please retry", 409),
     /** Two writers reached the same row; the loser waited for the lock and gave up. Retryable. */
     LOCK_TIMEOUT("The record is busy, please retry", 409),

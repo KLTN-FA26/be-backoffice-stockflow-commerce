@@ -68,4 +68,21 @@ public interface InventoryService {
 
     /** Release a reservation — order cancelled, payment failed, or the hold expired. */
     void release(UUID reservationId, String reason);
+
+    /**
+     * Move unreserved stock between two locations, writing one ledger line (SCRUM-424). Joins the
+     * caller's transaction, like {@link #reserve}. Locks the source and destination rows in id
+     * order, as {@code reserve} does, so two moves crossing the same pair cannot deadlock.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code STOCK_ITEM_NOT_FOUND},
+     *         {@code LOCATION_NOT_FOUND}, {@code INSUFFICIENT_STOCK} (fewer unreserved units than
+     *         asked), {@code STOCK_STATUS_MISMATCH} (the destination holds the lot in another status)
+     */
+    StockMove move(MoveStockCommand command);
+
+    /**
+     * Ask for a stock correction with a reason (SCRUM-145). The stock does not change until a
+     * different person approves it; production records scrapped blanks through this.
+     */
+    StockAdjustmentSummary requestAdjustment(RequestAdjustmentCommand command);
 }
