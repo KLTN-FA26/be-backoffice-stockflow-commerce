@@ -84,7 +84,10 @@ public enum ErrorCode {
     /** Checkout needs somewhere to deliver: no shipping address was chosen and none is the default. */
     SHIPPING_ADDRESS_REQUIRED("Add a shipping address before placing an order", 409),
 
-    /** Guest checkout is switched off (it is on only where prices can be trusted, see application.yml). */
+    /** B2B accounts must be onboarded by Sales, not through public registration. */
+    CUSTOMER_REGISTRATION_DISABLED("Public customer registration is not available", 403),
+    PORTAL_INVITATION_INVALID("This portal invitation is invalid or no longer available", 400),
+    /** Guest checkout is permanently disabled by the B2B-only decision. */
     GUEST_CHECKOUT_DISABLED("Guest checkout is not available", 403),
     INVALID_PURCHASE_ORDER_TRANSITION("This purchase order cannot move to that status right now", 409),
 

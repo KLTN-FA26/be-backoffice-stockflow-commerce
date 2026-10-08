@@ -137,11 +137,15 @@ public class ResourceServerSecurityConfig {
                         // /actuator/shutdown the moment either is exposed. The local profile
                         // already exposes "*".
                         .requestMatchers("/actuator/**").hasAuthority(Roles.ECOMMERCE_ADMIN)
-                        // No token exists yet at either of these: /auth/login is what mints one,
-                        // and /oauth2/jwks is what THIS filter's own JwtDecoder fetches to validate
-                        // it. Both are unauthenticated by necessity, not by oversight.
-                        .requestMatchers("/api/v1/identity/auth/login", "/api/v1/customers/registrations",
-                                "/api/v1/orders/guest-checkout", "/oauth2/jwks",
+                        // Retired B2C routes stay denied even if an old client retries an
+                        // Idempotency-Key whose successful response is still stored.
+                        .requestMatchers("/api/v1/customers/registrations", "/api/v1/customers/registrations/**",
+                                "/api/v1/orders/guest-checkout", "/api/v1/orders/guest-checkout/**",
+                                "/api/v1/public/products/availability", "/api/v1/public/products/availability/**")
+                        .denyAll()
+                        // Login mints the token; JWKS supplies its public verification key.
+                        // Both remain anonymous, as does the existing product-media surface.
+                        .requestMatchers("/api/v1/identity/auth/login", "/oauth2/jwks",
                                 "/api/v1/public/products/**").permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(oauth -> oauth

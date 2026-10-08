@@ -188,68 +188,9 @@ class OrderServiceImpl implements OrderService {
 
     @Override
     public OrderSummary placeGuestOrder(PlaceGuestOrderCommand command) {
-        String email = command.email().trim().toLowerCase(java.util.Locale.ROOT);
-        // Construct snapshots before the replay lookup as well: a reused request id must not make
-        // malformed address data appear valid merely because an earlier checkout succeeded.
-        var shipping = toSnapshot(command.shippingAddress());
-        var billing = toSnapshot(command.billingAddress());
-        Optional<Order> alreadyPlaced = repository.findByRequestId(command.requestId());
-        if (alreadyPlaced.isPresent()) {
-            if (!sameGuestCheckout(alreadyPlaced.get(), email, shipping, billing, command.lines())) {
-                throw new com.stockflow.common.error.BusinessException(
-                        com.stockflow.common.error.ErrorCode.IDEMPOTENCY_KEY_REUSED);
-            }
-            return toSummary(alreadyPlaced.get());
-        }
-
-        LocalDate today = LocalDate.ofInstant(clock.instant(), ZoneOffset.UTC);
-        OrderNumber orderNumber = repository.nextOrderNumber(today);
-        List<OrderLine> lines = new ArrayList<>();
-        for (int index = 0; index < command.lines().size(); index++) {
-            PlaceGuestOrderCommand.Line line = command.lines().get(index);
-            lines.add(Order.line(deterministicLineId(command.requestId(), index), line.sku(),
-                    line.quantity(), line.unitPrice(), null));
-        }
-        Order order = Order.guestDraft(orderNumber, command.requestId(), lines, clock.instant(),
-                shipping.recipientName(), email,
-                shipping.phone(), shipping, billing);
-        reserve(order, command.requestId());
-        order.submit();
-        Order saved = repository.save(order);
-        events.publishEventsOf(order);
-        return toSummary(saved);
-    }
-
-    /**
-     * A body {@code requestId} is an idempotency key, not an order lookup key. Returning an old
-     * order for a changed basket or address would make a customer believe the changed checkout was
-     * accepted while fulfilment receives the earlier one. The HTTP idempotency filter protects
-     * normal callers too; this comparison is the durable, service-level backstop for retries that
-     * reach this use case directly.
-     */
-    private static boolean sameGuestCheckout(Order order, String email,
-                                             OrderAddressSnapshot shipping,
-                                             OrderAddressSnapshot billing,
-                                             List<PlaceGuestOrderCommand.Line> requestedLines) {
-        if (order.customerId() != null
-                || !email.equals(order.contactEmail())
-                || !shipping.equals(order.shippingAddress())
-                || !billing.equals(order.billingAddress())
-                || order.lines().size() != requestedLines.size()) {
-            return false;
-        }
-        for (int index = 0; index < requestedLines.size(); index++) {
-            PlaceGuestOrderCommand.Line requested = requestedLines.get(index);
-            OrderLine stored = order.lines().get(index);
-            if (!requested.sku().equals(stored.sku())
-                    || requested.quantity() != stored.quantity()
-                    || !requested.unitPrice().equals(stored.unitPrice())
-                    || stored.designSnapshotId() != null
-                    || stored.designChecksum() != null) {
-                return false;
-            }
-        }
-        return true;
+        // Guard the module API as well as HTTP: no caller may reserve stock for a guest.
+        throw new com.stockflow.common.error.BusinessException(
+                com.stockflow.common.error.ErrorCode.GUEST_CHECKOUT_DISABLED);
     }
 
     @Override
@@ -446,21 +387,6 @@ class OrderServiceImpl implements OrderService {
                 order.placedAt(), order.createdBy(), order.lastModifiedAt(), order.lastModifiedBy(),
                 order.contactName(), order.contactEmail(), order.contactPhone(),
                 toSummary(order.shippingAddress()), toSummary(order.billingAddress()));
-    }
-
-    private void reserve(Order order, UUID requestId) {
-        for (OrderLine line : order.lines()) {
-            ReserveStockResult reservation = inventory.reserve(new ReserveStockCommand(
-                    deterministicRequestId(requestId, line.id()), line.sku(), line.quantity(),
-                    order.id().value()));
-            order.attachReservations(line.id(), reservation.reservationIds());
-        }
-    }
-
-    private static OrderAddressSnapshot toSnapshot(PlaceGuestOrderCommand.Address address) {
-        return new OrderAddressSnapshot(address.recipientName(), address.phone(), address.line1(),
-                address.line2(), address.wardCode(), address.wardName(), address.provinceCode(),
-                address.provinceName(), address.countryCode(), address.postalCode());
     }
 
     private static OrderAddressSnapshot toSnapshot(CheckoutCustomer.CheckoutAddress address) {

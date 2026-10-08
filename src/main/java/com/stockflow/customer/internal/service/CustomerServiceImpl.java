@@ -21,8 +21,6 @@ import com.stockflow.customer.internal.domain.CustomerAddress;
 import com.stockflow.customer.internal.domain.CustomerRepository;
 import com.stockflow.customer.internal.domain.CustomerStatus;
 import com.stockflow.customer.internal.repository.CustomerSearchRepository;
-import com.stockflow.identity.api.IdentityService;
-import com.stockflow.identity.api.RegisterAccountCommand;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -43,27 +41,15 @@ class CustomerServiceImpl implements CustomerService {
 
     private final CustomerRepository customers;
     private final CustomerSearchRepository search;
-    private final IdentityService identities;
 
-    CustomerServiceImpl(CustomerRepository customers, CustomerSearchRepository search,
-                        IdentityService identities) {
+    CustomerServiceImpl(CustomerRepository customers, CustomerSearchRepository search) {
         this.customers = customers;
         this.search = search;
-        this.identities = identities;
     }
 
     @Override
     public CustomerRegistration register(RegisterCustomerCommand command) {
-        String email = command.email().trim().toLowerCase(Locale.ROOT);
-        if (customers.findByEmail(email).isPresent()) {
-            throw new BusinessException(ErrorCode.CUSTOMER_EMAIL_ALREADY_EXISTS);
-        }
-        var account = identities.registerCustomer(new RegisterAccountCommand(
-                email, command.password(), command.fullName()));
-        Customer saved = customers.save(Customer.register(Identifiers.newId(), account.userId(),
-                command.fullName(), email, command.phone()));
-        return new CustomerRegistration(toSummary(saved), account.token().accessToken(),
-                account.token().tokenType(), account.token().expiresInSeconds());
+        throw new BusinessException(ErrorCode.CUSTOMER_REGISTRATION_DISABLED);
     }
 
     @Override

@@ -6,6 +6,7 @@ import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.inventory.api.InventoryService;
+import com.stockflow.customer.api.CustomerService;
 import org.springframework.stereotype.Service;
 
 import java.util.LinkedHashSet;
@@ -13,6 +14,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 /**
  * The stock indicator a storefront page shows for its SKUs (SCRUM-158, docs 13 BR-03).
@@ -30,18 +32,26 @@ public class StorefrontAvailabilityService {
 
     private final InventoryService inventory;
     private final AvailabilityProperties properties;
+    private final CustomerService customers;
 
-    public StorefrontAvailabilityService(InventoryService inventory, AvailabilityProperties properties) {
+    public StorefrontAvailabilityService(InventoryService inventory, AvailabilityProperties properties,
+                                        CustomerService customers) {
         this.inventory = inventory;
         this.properties = properties;
+        this.customers = customers;
     }
 
     /**
+     * @param userId the authenticated identity subject, not a client-selected customer id
      * @param codes the SKUs asked about, in display order; duplicates collapse to one answer
      * @return one entry per distinct SKU, in the order asked; an unknown SKU is out of stock
      * @throws BusinessException {@code VALIDATION_FAILED} for no SKU, too many, or a malformed one
      */
-    public List<SkuAvailability> availabilityOf(List<String> codes) {
+    public List<SkuAvailability> availabilityOf(UUID userId, List<String> codes) {
+        if (userId == null) throw new BusinessException(ErrorCode.UNAUTHORIZED);
+        // Resolve the profile from the authenticated subject; never accept a client customer id.
+        customers.findByUserId(userId).filter(customer -> "ACTIVE".equals(customer.status()))
+                .orElseThrow(() -> new BusinessException(ErrorCode.FORBIDDEN));
         Set<Sku> skus = parse(codes);
         Map<Sku, Integer> atp = inventory.availableToPromise(skus);
         return skus.stream()
