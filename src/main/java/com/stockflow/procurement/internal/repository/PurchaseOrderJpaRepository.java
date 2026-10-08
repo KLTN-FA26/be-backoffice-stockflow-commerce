@@ -1,12 +1,14 @@
 package com.stockflow.procurement.internal.repository;
 
-import com.stockflow.procurement.internal.entity.PurchaseOrderJpaEntity;
-import com.stockflow.procurement.internal.domain.PurchaseOrderStatus;
 import com.stockflow.common.persistence.BaseJpaRepository;
-import org.springframework.data.jpa.repository.EntityGraph;
-import org.springframework.data.jpa.repository.Query;
-import org.springframework.data.jpa.repository.Lock;
+import com.stockflow.procurement.internal.domain.PurchaseOrderStatus;
+import com.stockflow.procurement.internal.entity.PurchaseOrderJpaEntity;
+
 import jakarta.persistence.LockModeType;
+
+import org.springframework.data.jpa.repository.EntityGraph;
+import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Query;
 
 import java.time.LocalDate;
 import java.util.List;
@@ -18,8 +20,10 @@ interface PurchaseOrderJpaRepository extends BaseJpaRepository<PurchaseOrderJpaE
 
     boolean existsBySupplierIdAndStatusIn(UUID supplierId, List<PurchaseOrderStatus> statuses);
 
-    /** For a single-PO read: the lazy {@code lines} collection is fetch-joined here only — see
-     *  {@code ProductJpaRepository.findByIdWithImages} for why never on the paginated list query. */
+    /**
+     * For a single-PO read: the lazy {@code lines} collection is fetch-joined here only — see
+     * {@code ProductJpaRepository.findByIdWithImages} for why never on the paginated list query.
+     */
     @EntityGraph(attributePaths = "lines")
     Optional<PurchaseOrderJpaEntity> findWithLinesById(UUID id);
 
@@ -30,8 +34,10 @@ interface PurchaseOrderJpaRepository extends BaseJpaRepository<PurchaseOrderJpaE
     List<PurchaseOrderJpaEntity> findBySupplierIdAndExpectedAtAndStatusNotIn(
             UUID supplierId, LocalDate expectedAt, List<PurchaseOrderStatus> excludedStatuses);
 
-    /** SCRUM-119/WBS 3.2.7 status dashboard. One row per status that has at least one purchase
-     *  order — the adapter fills in the missing (zero-count) statuses itself. */
+    /**
+     * SCRUM-119/WBS 3.2.7 status dashboard. One row per status that has at least one purchase order
+     * — the adapter fills in the missing (zero-count) statuses itself.
+     */
     @Query("select po.status, count(po) from PurchaseOrderJpaEntity po group by po.status")
     List<Object[]> countByStatus();
 

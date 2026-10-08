@@ -1,8 +1,9 @@
 package com.stockflow.notification.internal.entity;
 
+import com.stockflow.common.persistence.BaseEntity;
 import com.stockflow.notification.internal.domain.DeliveryStatus;
 import com.stockflow.notification.internal.domain.NotificationChannel;
-import com.stockflow.common.persistence.BaseEntity;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -42,24 +43,38 @@ public class DeliveryLogJpaEntity extends BaseEntity {
 
     @Column(name = "operation_reference", length = 100)
     private String operationReference;
+
     @Column(name = "terminal", nullable = false)
     private boolean terminal;
+
     @Column(name = "delivery_generation", nullable = false)
     private int deliveryGeneration;
+
     @Column(name = "attempt_number", nullable = false)
     private int attemptNumber = 1;
 
-    protected DeliveryLogJpaEntity() {
-    }
+    protected DeliveryLogJpaEntity() {}
 
-    public DeliveryLogJpaEntity(UUID id, String templateCode, NotificationChannel channel,
-                                String recipient, DeliveryStatus status, String error, Instant sentAt) {
+    public DeliveryLogJpaEntity(
+            UUID id,
+            String templateCode,
+            NotificationChannel channel,
+            String recipient,
+            DeliveryStatus status,
+            String error,
+            Instant sentAt) {
         this(id, templateCode, channel, recipient, status, error, sentAt, null);
     }
 
-    public DeliveryLogJpaEntity(UUID id, String templateCode, NotificationChannel channel,
-                                String recipient, DeliveryStatus status, String error, Instant sentAt,
-                                String externalReference) {
+    public DeliveryLogJpaEntity(
+            UUID id,
+            String templateCode,
+            NotificationChannel channel,
+            String recipient,
+            DeliveryStatus status,
+            String error,
+            Instant sentAt,
+            String externalReference) {
         super(id);
         this.templateCode = templateCode;
         this.channel = channel;
@@ -71,17 +86,55 @@ public class DeliveryLogJpaEntity extends BaseEntity {
         this.operationReference = externalReference;
     }
 
-    public String getTemplateCode() { return templateCode; }
-    public NotificationChannel getChannel() { return channel; }
-    public String getRecipient() { return recipient; }
-    public DeliveryStatus getStatus() { return status; }
-    public String getError() { return error; }
-    public Instant getSentAt() { return sentAt; }
-    public String getExternalReference() { return externalReference; }
-    public int getAttemptNumber() { return attemptNumber; }
-    public void recordAttempt(int number) { this.attemptNumber = number; }
-    public int getDeliveryGeneration() { return deliveryGeneration; }
-    public void correlate(String reference) { this.operationReference = reference; }
-    public void stopRetrying() { this.terminal = true; }
-    public void recordGeneration(int generation) { this.deliveryGeneration = generation; }
+    public String getTemplateCode() {
+        return templateCode;
+    }
+
+    public NotificationChannel getChannel() {
+        return channel;
+    }
+
+    public String getRecipient() {
+        return recipient;
+    }
+
+    public DeliveryStatus getStatus() {
+        return status;
+    }
+
+    public String getError() {
+        return error;
+    }
+
+    public Instant getSentAt() {
+        return sentAt;
+    }
+
+    public String getExternalReference() {
+        return externalReference;
+    }
+
+    public int getAttemptNumber() {
+        return attemptNumber;
+    }
+
+    public void recordAttempt(int number) {
+        this.attemptNumber = number;
+    }
+
+    public int getDeliveryGeneration() {
+        return deliveryGeneration;
+    }
+
+    public void correlate(String reference) {
+        this.operationReference = reference;
+    }
+
+    public void stopRetrying() {
+        this.terminal = true;
+    }
+
+    public void recordGeneration(int generation) {
+        this.deliveryGeneration = generation;
+    }
 }

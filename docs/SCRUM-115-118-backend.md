@@ -63,7 +63,7 @@ The existing NotificationSender owns transport. The existing Spring Modulith eve
 
 ## Database upgrade
 
-PR-local migrations are ordered `V20260930000100` through `V20260930000400`, followed by `V20261008000100`, above develop's `V20260929000200` (renamed again from `V20260925*`/`V20260926000100` when develop gained the full-schema migrations). Run `mvn clean` before building to remove old resource filenames. Do not enable Flyway out-of-order globally to hide this problem.
+PR-local migrations are ordered `V20260930000100` through `V20260930000400`, followed by `V20260930000500`, above develop's `V20260929000200` (renamed again from `V20260925*`/`V20260926000100` when develop gained the full-schema migrations). Run `mvn clean` before building to remove old resource filenames. Do not enable Flyway out-of-order globally to hide this problem.
 
 `V20260930000400` follows these migrations and adds dispatch control, append-only decision history and sent-date protection. It preserves unknown legacy send evidence rather than presenting historical orders without a queued event as QUEUED.
 
@@ -160,7 +160,7 @@ activate the contract migration, or move data between the legacy and target tabl
 `V20260930000100` grants supplier DELETE to ECOMMERCE_ADMIN and bumps affected role versions.
 Develop now includes #40 (`V20260929000100`) and #52 (`V20260929000200`). The upgrade test starts
 from that develop baseline and checks required applied versions without counting unrelated migrations.
-`V20261008000100` adds every existing permission to SYSTEM_ADMIN, bumps its version in the same
+`V20260930000500` adds every existing permission to SYSTEM_ADMIN, bumps its version in the same
 transaction, and backfills delivery attempt numbers per operation and generation. Existing migration
 files retain their checksums. Merge develop into this branch; no rebase or force-push is needed.
 
@@ -175,7 +175,7 @@ PO create/detail/list/action responses now include `supplierCode` and `supplierN
 fields on approval screens; WAREHOUSE_MANAGER does not need supplier-directory READ permission.
 List responses load supplier identities in one batch and do not fetch PO lines.
 
-Creation requires a valid ISO currency, quantity 1?1,000,000, description at most 300 characters,
+Creation requires a valid ISO currency, quantity 1–1,000,000, description at most 300 characters,
 and nonnegative unit price fitting NUMERIC(18,2). The currency's decimal limit also applies
 (VND: 0, USD: 2); prices are rejected instead of silently rounded. Total amount cannot exceed
 9999999999999999.99. `VALIDATION_FAILED` returns `fieldErrors` such as `currency`,
@@ -185,12 +185,12 @@ the existing `SUPPLIER_PROFILE_INVALID` fallback code is retained for API compat
 
 | Error code | HTTP | Suggested Vietnamese message |
 |---|---|---|
-| PO_DELIVERY_DATE_REQUIRED | 400 | Vui l?ng nh?p ng?y giao d? ki?n. |
-| PO_REASON_REQUIRED | 400 | Vui l?ng nh?p l? do t? 1 ??n 1000 k? t?. |
-| PO_SUPPLIER_RESPONSE_INVALID | 400 | Ph?n h?i nh? cung c?p ph?i l? x?c nh?n ho?c t? ch?i. |
-| PO_COMMUNICATION_NOT_CONFIGURED | 409 | Ch?a c?u h?nh ??y ?? th?ng tin b?n mua v? ??a ch? nh?n h?ng. |
-| PO_LINE_DESCRIPTION_REQUIRED | 400 | Vui l?ng nh?p m? t? s?n ph?m khi SKU kh?ng c? t?n trong danh m?c. |
-| SUPPLIER_DELIVERY_CONTACT_INVALID | 400 | Th?ng tin nh?n ??n c?a nh? cung c?p kh?ng h?p l? ho?c ch?a ???c cho ph?p. |
+| PO_DELIVERY_DATE_REQUIRED | 400 | Vui lòng nhập ngày giao dự kiến. |
+| PO_REASON_REQUIRED | 400 | Vui lòng nhập lý do từ 1 đến 1000 ký tự. |
+| PO_SUPPLIER_RESPONSE_INVALID | 400 | Phản hồi nhà cung cấp phải là xác nhận hoặc từ chối. |
+| PO_COMMUNICATION_NOT_CONFIGURED | 409 | Chưa cấu hình đầy đủ thông tin bên mua và địa chỉ nhận hàng. |
+| PO_LINE_DESCRIPTION_REQUIRED | 400 | Vui lòng nhập mô tả sản phẩm khi SKU không có tên trong danh mục. |
+| SUPPLIER_DELIVERY_CONTACT_INVALID | 400 | Thông tin nhận đơn của nhà cung cấp không hợp lệ hoặc chưa được cho phép. |
 
 For `/deliveries`, render `attemptNumber` as the attempt count, not `generation + 1`. A manual
 recovery starts a new generation with attempt 1. `failure` is one of `MAIL_SEND_FAILED`,
@@ -199,5 +199,50 @@ are logged on the server. Old historical error strings are preserved. A first su
 date needs no reason if the PO had none; replacing an existing date still requires a reason.
 
 Deployment requires the six buyer/address variables in `deploy/.env.example` to be configured
-on the VPS before merge/deploy. Repository checks cannot verify the VPS's private `.env` or
+on the VPS before deployment. Repository checks cannot verify the VPS's private `.env` or
 external mail delivery; see `deploy/README.md` for the operator step.
+
+### Upgrade and the #36 → #38 merge order
+
+The unpublished review migration is `V20260930000500`. It follows all published PO migrations,
+precedes #38's `V20260930001000/1100`, and leaves #38's canonical `V20261008000100` distinct.
+It backfills attempt numbers, grants every permission to SYSTEM_ADMIN, removes the accidental
+supplier APPROVE grant from PROCUREMENT_STAFF with a role-version bump, and permits the first
+delivery date without a reason in the database as well as the aggregate. No published SQL is edited.
+Tests and append-only checks must run again if develop gains a newer migration before merge.
+
+Run [the read-only preflight](../tools/sql/supplier-upgrade-preflight.sql) before upgrading an
+existing environment. It reports missing develop prerequisites, old aliases and the earlier local
+review version. A green fresh install does not validate an existing environment's history.
+
+For a DB that ran **exactly remote #36 `9fbb90f`**, versions `20260929000100/200` are absent even
+though `20260930000400` is already applied. Normal Flyway validation correctly refuses that state.
+The regression fixture pins the published filenames and SQL hashes rather than using a target
+against the newer migration directory. It reproduces the refusal and tests this recovery sequence:
+
+1. Stop application writers, back up and restore a clone. Confirm that history matches that release,
+   with no failed/checksum-mismatched/unknown migrations. Any older rename or divergent history
+   requires its own reconciliation; do not run the sequence against an unidentified database.
+2. On the clone, use Flyway with this release's migration directory, default schema `public`,
+   the intended datasource, and **one invocation only** with `outOfOrder=true` and
+   `target=20260930000400`. Inspect `info` first: exactly `20260929000100` and `20260929000200`
+   must be pending. These install the missing PO approval grant and SYSTEM_ADMIN prerequisites.
+3. Remove both overrides. Run normal migrate and validate, then the permission and API smoke checks.
+   The test requires the recovery to apply exactly those two prerequisites and normal migration
+   to apply `20260930000500`. Do not keep outOfOrder in application/Compose or use blind repair.
+4. Only repeat that verified procedure on the intended environment under its operator's change plan.
+   This PR does not perform production reconciliation.
+
+Equivalent Flyway CLI invocations after configuring the clone's connection and migration location:
+
+```sh
+flyway -outOfOrder=true -target=20260930000400 info
+flyway -outOfOrder=true -target=20260930000400 migrate
+flyway migrate
+flyway validate
+```
+
+The regression exercises these settings through Flyway's Java API. It does not test an installed
+CLI or private VPS. A DB that already applied the **unpublished PO** migration named
+`20261008000100`, or ran #38 before #36, needs separate history reconciliation; distinguish the
+PO script from #38's canonical script at that number. Never rename a history row automatically.

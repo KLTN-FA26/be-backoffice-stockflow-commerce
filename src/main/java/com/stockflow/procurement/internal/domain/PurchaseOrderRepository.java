@@ -7,17 +7,20 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
-public interface PurchaseOrderRepository extends AggregateRepository<PurchaseOrder, PurchaseOrderId> {
+public interface PurchaseOrderRepository
+        extends AggregateRepository<PurchaseOrder, PurchaseOrderId> {
 
     /**
      * {@code nextPoNumber} sits here rather than in a utility class because generating the next
      * number is a persistence concern — it needs a database sequence to stay unique across
-     * instances. Same reasoning as {@code order.internal.domain.OrderRepository.nextOrderNumber}.
+     * instances. Same reasoning as {@code OrderRepository.nextOrderNumber}.
      */
     String nextPoNumber(LocalDate date);
 
-    /** Empty when no such supplier exists. Category has no aggregate/port yet, hosted here — same
-     *  precedent as {@code product.internal.domain.ProductRepository.categoryExists}. */
+    /**
+     * Empty when no such supplier exists. Category has no aggregate/port yet, hosted here — same
+     * precedent as {@code ProductRepository.categoryExists}.
+     */
     Optional<SupplierStatus> supplierStatus(UUID supplierId);
 
     /**

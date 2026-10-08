@@ -1,23 +1,25 @@
 package com.stockflow.procurement.internal.repository;
 
-import com.stockflow.procurement.internal.entity.PurchaseOrderJpaEntity;
-import com.stockflow.procurement.internal.entity.SupplierJpaEntity;
+import com.stockflow.common.persistence.Specs;
+import com.stockflow.procurement.api.PurchaseOrderStatusCount;
+import com.stockflow.procurement.api.PurchaseOrderSummary;
+import com.stockflow.procurement.api.SupplierSpendSummary;
 import com.stockflow.procurement.internal.domain.PurchaseOrder;
 import com.stockflow.procurement.internal.domain.PurchaseOrderId;
 import com.stockflow.procurement.internal.domain.PurchaseOrderRepository;
 import com.stockflow.procurement.internal.domain.PurchaseOrderStatus;
 import com.stockflow.procurement.internal.domain.SupplierStatus;
-import com.stockflow.procurement.api.PurchaseOrderStatusCount;
-import com.stockflow.procurement.api.PurchaseOrderSummary;
-import com.stockflow.procurement.api.SupplierSpendSummary;
-import com.stockflow.common.persistence.Specs;
+import com.stockflow.procurement.internal.entity.PurchaseOrderJpaEntity;
+import com.stockflow.procurement.internal.entity.SupplierJpaEntity;
 
 import jakarta.persistence.EntityManager;
+import jakarta.persistence.LockModeType;
 import jakarta.persistence.PersistenceContext;
 import jakarta.persistence.criteria.CriteriaBuilder;
 import jakarta.persistence.criteria.CriteriaQuery;
 import jakarta.persistence.criteria.Predicate;
 import jakarta.persistence.criteria.Root;
+
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
@@ -41,8 +43,10 @@ import java.util.stream.Stream;
  * apply, save.
  */
 @Repository
-class PurchaseOrderRepositoryAdapter implements PurchaseOrderRepository, PurchaseOrderSearchRepository,
-        ProcurementReportRepository {
+class PurchaseOrderRepositoryAdapter
+        implements PurchaseOrderRepository,
+                PurchaseOrderSearchRepository,
+                ProcurementReportRepository {
 
     private static final DateTimeFormatter PO_DATE = DateTimeFormatter.ofPattern("yyyyMMdd");
 
@@ -50,11 +54,12 @@ class PurchaseOrderRepositoryAdapter implements PurchaseOrderRepository, Purchas
     private final SupplierJpaRepository suppliers;
     private final PoNumberSequence poNumberSequence;
 
-    @PersistenceContext
-    private EntityManager entityManager;
+    @PersistenceContext private EntityManager entityManager;
 
-    PurchaseOrderRepositoryAdapter(PurchaseOrderJpaRepository jpa, SupplierJpaRepository suppliers,
-                                   PoNumberSequence poNumberSequence) {
+    PurchaseOrderRepositoryAdapter(
+            PurchaseOrderJpaRepository jpa,
+            SupplierJpaRepository suppliers,
+            PoNumberSequence poNumberSequence) {
         this.jpa = jpa;
         this.suppliers = suppliers;
         this.poNumberSequence = poNumberSequence;
@@ -67,10 +72,12 @@ class PurchaseOrderRepositoryAdapter implements PurchaseOrderRepository, Purchas
 
     @Override
     public Optional<PurchaseOrder> findByIdForUpdate(PurchaseOrderId id) {
-        return jpa.findWithLinesByIdForUpdate(id.value()).map(entity -> {
-            entityManager.refresh(entity, jakarta.persistence.LockModeType.PESSIMISTIC_WRITE);
-            return PurchaseOrderPersistenceMapper.toDomain(entity);
-        });
+        return jpa.findWithLinesByIdForUpdate(id.value())
+                .map(
+                        entity -> {
+                            entityManager.refresh(entity, LockModeType.PESSIMISTIC_WRITE);
+                            return PurchaseOrderPersistenceMapper.toDomain(entity);
+                        });
     }
 
     @Override
@@ -89,17 +96,25 @@ class PurchaseOrderRepositoryAdapter implements PurchaseOrderRepository, Purchas
     }
 
     @Override
-    public List<PurchaseOrder> findOpenBySupplierAndExpectedAt(UUID supplierId, LocalDate expectedAt) {
-        return jpa.findBySupplierIdAndExpectedAtAndStatusNotIn(supplierId, expectedAt,
-                        List.of(PurchaseOrderStatus.CANCELLED, PurchaseOrderStatus.CLOSED,
+    public List<PurchaseOrder> findOpenBySupplierAndExpectedAt(
+            UUID supplierId, LocalDate expectedAt) {
+        return jpa
+                .findBySupplierIdAndExpectedAtAndStatusNotIn(
+                        supplierId,
+                        expectedAt,
+                        List.of(
+                                PurchaseOrderStatus.CANCELLED,
+                                PurchaseOrderStatus.CLOSED,
                                 PurchaseOrderStatus.CLOSED_SHORT))
                 .stream()
                 .map(PurchaseOrderPersistenceMapper::toDomain)
                 .toList();
     }
 
-    /** Insert or update — the aggregate carries its own id, so look the row up first, same shape
-     *  as {@code ProductRepositoryAdapter.save}. */
+    /**
+     * Insert or update — the aggregate carries its own id, so look the row up first, same shape as
+     * {@code ProductRepositoryAdapter.save}.
+     */
     @Override
     public PurchaseOrder save(PurchaseOrder order) {
         Optional<PurchaseOrderJpaEntity> existing = jpa.findWithLinesById(order.id().value());
@@ -116,65 +131,94 @@ class PurchaseOrderRepositoryAdapter implements PurchaseOrderRepository, Purchas
     }
 
     @Override
-    public Page<PurchaseOrderSummary> search(PurchaseOrderSearchCriteria criteria, Pageable pageable) {
-        Specification<PurchaseOrderJpaEntity> spec = Specification
-                .<PurchaseOrderJpaEntity>where(Specs.eq("supplierId", criteria.supplierId()))
-                .and(Specs.in("status", criteria.statuses()));
+    public Page<PurchaseOrderSummary> search(
+            PurchaseOrderSearchCriteria criteria, Pageable pageable) {
+        Specification<PurchaseOrderJpaEntity> spec =
+                Specification.<PurchaseOrderJpaEntity>where(
+                                Specs.eq("supplierId", criteria.supplierId()))
+                        .and(Specs.in("status", criteria.statuses()));
         var page = jpa.findAll(spec, pageable);
-        var suppliersById = suppliers.findAllById(page.getContent().stream()
-                .map(PurchaseOrderJpaEntity::getSupplierId).distinct().toList()).stream()
-                .collect(Collectors.toMap(SupplierJpaEntity::getId, Function.identity()));
-        return page.map(order -> PurchaseOrderPersistenceMapper.toSummaryWithoutLines(order,
-                suppliersById.get(order.getSupplierId())));
+        var suppliersById =
+                suppliers
+                        .findAllById(
+                                page.getContent().stream()
+                                        .map(PurchaseOrderJpaEntity::getSupplierId)
+                                        .distinct()
+                                        .toList())
+                        .stream()
+                        .collect(Collectors.toMap(SupplierJpaEntity::getId, Function.identity()));
+        return page.map(
+                order ->
+                        PurchaseOrderPersistenceMapper.toSummaryWithoutLines(
+                                order, suppliersById.get(order.getSupplierId())));
     }
 
-    /** SCRUM-119: orders that are not yet a commitment ({@code DRAFT}) or never fulfilled
-     *  ({@code CANCELLED}) do not count as spend — see {@code ProcurementService.supplierSpend}'s
-     *  javadoc for why. */
+    /**
+     * SCRUM-119: orders that are not yet a commitment ({@code DRAFT}) or never fulfilled ({@code
+     * CANCELLED}) do not count as spend — see {@code ProcurementService.supplierSpend}'s javadoc
+     * for why.
+     */
     private static final List<PurchaseOrderStatus> NON_SPEND_STATUSES =
             List.of(PurchaseOrderStatus.DRAFT, PurchaseOrderStatus.CANCELLED);
 
     @Override
     public List<PurchaseOrderStatusCount> statusDashboard() {
-        Map<PurchaseOrderStatus, Long> counts = jpa.countByStatus().stream()
-                .collect(Collectors.toMap(row -> (PurchaseOrderStatus) row[0], row -> (Long) row[1]));
+        Map<PurchaseOrderStatus, Long> counts =
+                jpa.countByStatus().stream()
+                        .collect(
+                                Collectors.toMap(
+                                        row -> (PurchaseOrderStatus) row[0], row -> (Long) row[1]));
         return Stream.of(PurchaseOrderStatus.values())
-                .map(status -> new PurchaseOrderStatusCount(status.name(), counts.getOrDefault(status, 0L)))
+                .map(
+                        status ->
+                                new PurchaseOrderStatusCount(
+                                        status.name(), counts.getOrDefault(status, 0L)))
                 .toList();
     }
 
     /**
-     * Built with the Criteria API rather than a static {@code @Query} string: a static JPQL
-     * {@code (:x is null or col >= :x)} pattern binds {@code :x} as a real parameter even when the
-     * filter is absent, and Postgres's extended query protocol cannot always infer that parameter's
-     * type from an {@code is null} check alone — reproduced directly against psql while building
-     * this method, both as a prepare-time "could not determine data type of parameter" error and,
-     * after wrapping the parameter in an explicit {@code cast(:x as date)} to fix that, as a second
+     * Built with the Criteria API rather than a static {@code @Query} string: a static JPQL {@code
+     * (:x is null or col >= :x)} pattern binds {@code :x} as a real parameter even when the filter
+     * is absent, and Postgres's extended query protocol cannot always infer that parameter's type
+     * from an {@code is null} check alone — reproduced directly against psql while building this
+     * method, both as a prepare-time "could not determine data type of parameter" error and, after
+     * wrapping the parameter in an explicit {@code cast(:x as date)} to fix that, as a second
      * failure ("cannot cast type bytea to date") for the equally real case of the filter being
      * absent. Building the predicate list in Java and simply never adding a predicate for a filter
-     * that is null — same idea as {@link Specs}, used two methods above — sidesteps the whole
-     * class of problem: an absent filter never becomes a bind parameter at all.
+     * that is null — same idea as {@link Specs}, used two methods above — sidesteps the whole class
+     * of problem: an absent filter never becomes a bind parameter at all.
      */
     @Override
-    public Page<SupplierSpendSummary> supplierSpend(SupplierSpendCriteria criteria, Pageable pageable) {
+    public Page<SupplierSpendSummary> supplierSpend(
+            SupplierSpendCriteria criteria, Pageable pageable) {
         CriteriaBuilder cb = entityManager.getCriteriaBuilder();
 
         CriteriaQuery<SupplierSpendRow> query = cb.createQuery(SupplierSpendRow.class);
         Root<PurchaseOrderJpaEntity> root = query.from(PurchaseOrderJpaEntity.class);
-        query.select(cb.construct(SupplierSpendRow.class, root.get("supplierId"), root.get("currency"),
-                        cb.sum(root.get("totalAmount")), cb.count(root)))
+        query.select(
+                        cb.construct(
+                                SupplierSpendRow.class,
+                                root.get("supplierId"),
+                                root.get("currency"),
+                                cb.sum(root.get("totalAmount")),
+                                cb.count(root)))
                 .where(spendPredicates(cb, root, criteria).toArray(new Predicate[0]))
                 .groupBy(root.get("supplierId"), root.get("currency"))
                 // Currency first: ranking 64,000,000 VND above 602.50 USD compares nothing.
-                .orderBy(cb.asc(root.get("currency")), cb.desc(cb.sum(root.get("totalAmount"))),
+                .orderBy(
+                        cb.asc(root.get("currency")),
+                        cb.desc(cb.sum(root.get("totalAmount"))),
                         cb.asc(root.get("supplierId")));
-        List<SupplierSpendRow> content = entityManager.createQuery(query)
-                .setFirstResult((int) pageable.getOffset())
-                .setMaxResults(pageable.getPageSize())
-                .getResultList();
+        List<SupplierSpendRow> content =
+                entityManager
+                        .createQuery(query)
+                        .setFirstResult((int) pageable.getOffset())
+                        .setMaxResults(pageable.getPageSize())
+                        .getResultList();
 
         // The total is the number of (supplier, currency) groups. The Criteria API cannot count
-        // distinct pairs, so the group keys are listed and counted: a few rows per supplier at most.
+        // distinct pairs, so the group keys are listed and counted: a few rows per supplier at
+        // most.
         CriteriaQuery<Object[]> keyQuery = cb.createQuery(Object[].class);
         Root<PurchaseOrderJpaEntity> keyRoot = keyQuery.from(PurchaseOrderJpaEntity.class);
         keyQuery.multiselect(keyRoot.get("supplierId"), keyRoot.get("currency"))
@@ -182,22 +226,31 @@ class PurchaseOrderRepositoryAdapter implements PurchaseOrderRepository, Purchas
                 .groupBy(keyRoot.get("supplierId"), keyRoot.get("currency"));
         long total = entityManager.createQuery(keyQuery).getResultList().size();
 
-        Map<UUID, SupplierJpaEntity> suppliersById = suppliers
-                .findAllById(content.stream().map(SupplierSpendRow::supplierId).toList())
-                .stream()
-                .collect(Collectors.toMap(SupplierJpaEntity::getId, Function.identity()));
-        List<SupplierSpendSummary> summaries = content.stream()
-                .map(row -> {
-                    SupplierJpaEntity supplier = suppliersById.get(row.supplierId());
-                    return new SupplierSpendSummary(row.supplierId(), supplier.getCode(), supplier.getName(),
-                            row.currency(), row.totalSpend(), row.orderCount());
-                })
-                .toList();
+        Map<UUID, SupplierJpaEntity> suppliersById =
+                suppliers
+                        .findAllById(content.stream().map(SupplierSpendRow::supplierId).toList())
+                        .stream()
+                        .collect(Collectors.toMap(SupplierJpaEntity::getId, Function.identity()));
+        List<SupplierSpendSummary> summaries =
+                content.stream()
+                        .map(
+                                row -> {
+                                    SupplierJpaEntity supplier =
+                                            suppliersById.get(row.supplierId());
+                                    return new SupplierSpendSummary(
+                                            row.supplierId(),
+                                            supplier.getCode(),
+                                            supplier.getName(),
+                                            row.currency(),
+                                            row.totalSpend(),
+                                            row.orderCount());
+                                })
+                        .toList();
         return new PageImpl<>(summaries, pageable, total);
     }
 
-    private List<Predicate> spendPredicates(CriteriaBuilder cb, Root<PurchaseOrderJpaEntity> root,
-                                            SupplierSpendCriteria criteria) {
+    private List<Predicate> spendPredicates(
+            CriteriaBuilder cb, Root<PurchaseOrderJpaEntity> root, SupplierSpendCriteria criteria) {
         List<Predicate> predicates = new ArrayList<>();
         predicates.add(cb.not(root.get("status").in(NON_SPEND_STATUSES)));
         if (criteria.supplierId() != null) {
@@ -207,7 +260,8 @@ class PurchaseOrderRepositoryAdapter implements PurchaseOrderRepository, Purchas
             predicates.add(cb.equal(root.get("currency"), criteria.currency()));
         }
         if (criteria.expectedAtFrom() != null) {
-            predicates.add(cb.greaterThanOrEqualTo(root.get("expectedAt"), criteria.expectedAtFrom()));
+            predicates.add(
+                    cb.greaterThanOrEqualTo(root.get("expectedAt"), criteria.expectedAtFrom()));
         }
         if (criteria.expectedAtTo() != null) {
             predicates.add(cb.lessThanOrEqualTo(root.get("expectedAt"), criteria.expectedAtTo()));

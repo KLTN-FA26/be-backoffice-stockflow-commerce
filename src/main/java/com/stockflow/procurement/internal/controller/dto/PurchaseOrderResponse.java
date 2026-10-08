@@ -10,40 +10,32 @@ import java.util.UUID;
 
 @Schema(name = "PurchaseOrder", description = "A purchase order to a supplier")
 public record PurchaseOrderResponse(
-
         UUID purchaseOrderId,
-
-        @Schema(example = "PO-20260913-000001")
-        String poNumber,
-
+        @Schema(example = "PO-20260913-000001") String poNumber,
         UUID supplierId,
         String supplierCode,
         String supplierName,
-
-        @Schema(example = "DRAFT")
-        String status,
-
+        @Schema(example = "DRAFT") String status,
         String currency,
         BigDecimal totalAmount,
         LocalDate expectedAt,
-
-        @Schema(description = "Empty on a list row - see the docs on PurchaseOrderSearchRepository for why.")
-        List<POLineResponse> lines,
-
+        @Schema(
+                        description =
+                                "Empty on a list row - see the docs on"
+                                    + " PurchaseOrderSearchRepository for why.")
+                List<POLineResponse> lines,
         Instant createdAt,
         String createdBy,
         Instant lastModifiedAt,
         String lastModifiedBy,
-
-        @Schema(description = "BR-PO-003: true when another open PO for this supplier, delivery "
-                + "date and at least one overlapping SKU already exists. A warning, not a rejection.")
-        boolean possibleDuplicate,
-
-        @Schema(description = "Set only once the order is CANCELLED.")
-        String cancellationReason,
-
-        @Schema(description = "Set only once the order is CLOSED_SHORT.")
-        String closeShortReason,
+        @Schema(
+                        description =
+                                "BR-PO-003: true when another open PO for this supplier, delivery"
+                                    + " date and at least one overlapping SKU already exists. A"
+                                    + " warning, not a rejection.")
+                boolean possibleDuplicate,
+        @Schema(description = "Set only once the order is CANCELLED.") String cancellationReason,
+        @Schema(description = "Set only once the order is CLOSED_SHORT.") String closeShortReason,
         int paymentTermDays,
         int leadTimeDays,
         Instant sentAt,
@@ -51,11 +43,16 @@ public record PurchaseOrderResponse(
         Instant supplierRespondedAt,
         String supplierReference,
         String supplierResponseNote,
-        @Schema(description = "NOT_SENT, QUEUED, UNKNOWN (legacy), RETRYING, FAILED (terminal), or DELIVERED (transport accepted, not supplier confirmation)")
-        String deliveryStatus,
-        @Schema(description = "Cancellation notice only: NOT_REQUIRED, UNKNOWN (legacy), QUEUED, RETRYING, FAILED, DELIVERED")
-        String cancellationDeliveryStatus,
+        @Schema(
+                        description =
+                                "NOT_SENT, QUEUED, UNKNOWN (legacy), RETRYING, FAILED (terminal),"
+                                    + " or DELIVERED (transport accepted, not supplier"
+                                    + " confirmation)")
+                String deliveryStatus,
+        @Schema(
+                        description =
+                                "Cancellation notice only: NOT_REQUIRED, UNKNOWN (legacy), QUEUED,"
+                                    + " RETRYING, FAILED, DELIVERED")
+                String cancellationDeliveryStatus,
         @Schema(description = "Non-blocking business warnings, e.g. DELIVERY_DATE_IN_PAST (BR-06)")
-        List<String> warnings
-) {
-}
+                List<String> warnings) {}
