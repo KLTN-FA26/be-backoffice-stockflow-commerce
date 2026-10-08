@@ -97,8 +97,10 @@ Enum inventory.stock_adjustment_status {
 }
 
 Enum inventory.stock_item_status {
+  INBOUND
   AVAILABLE
   QUARANTINE
+  BLOCKED
   DAMAGED
   EXPIRED
 }
@@ -169,6 +171,7 @@ Enum warehouse.area_status {
 
 Enum warehouse.area_type {
   RECEIVING
+  QUALITY_CONTROL
   QUARANTINE
   PACKING
   DISPATCH
@@ -199,6 +202,7 @@ Enum warehouse.move_task_origin {
   REPLENISHMENT
   RESLOTTING
   MANUAL
+  RECEIPT_QC
 }
 
 Enum warehouse.move_task_reason {
@@ -271,7 +275,10 @@ Enum warehouse.warehouse_status {
 
 Enum procurement.goods_receipts_status {
   DRAFT
-  POSTED
+  CONFIRMED
+  IN_QC
+  IN_PUTAWAY
+  CLOSED
   CANCELLED
 }
 
@@ -991,6 +998,7 @@ Table inventory.inventory_items [headercolor: #3E7C4A] {
   created_by                varchar(100)
   last_modified_at          timestamptz
   last_modified_by          varchar(100)
+  qc_required               boolean [not null, default: false]
 }
 
 Table inventory.stock_adjustment [headercolor: #3E7C4A] {
@@ -1211,6 +1219,7 @@ Table warehouse.move_task [headercolor: #8E6C3A] {
   created_by       varchar(100)
   last_modified_at timestamptz
   last_modified_by varchar(100)
+  receipt_line_id  uuid
 }
 
 Table warehouse.putaway_task [headercolor: #8E6C3A] {
@@ -1373,6 +1382,7 @@ Table procurement.goods_receipt_lines [headercolor: #7D5BA6] {
   created_by        varchar(100)
   last_modified_at  timestamptz
   last_modified_by  varchar(100)
+  qc_required       boolean [not null, default: false]
 }
 
 Table procurement.goods_receipts [headercolor: #7D5BA6] {
@@ -1384,8 +1394,8 @@ Table procurement.goods_receipts [headercolor: #7D5BA6] {
   status           procurement.goods_receipts_status [not null, default: 'DRAFT']
   received_at      timestamptz [not null]
   received_by      uuid [not null]
-  posted_at        timestamptz
-  posted_by        uuid
+  confirmed_at     timestamptz
+  confirmed_by     uuid
   delivery_note    varchar(100)
   note             text
   version          bigint [not null, default: 0]
@@ -1393,6 +1403,7 @@ Table procurement.goods_receipts [headercolor: #7D5BA6] {
   created_by       varchar(100)
   last_modified_at timestamptz
   last_modified_by varchar(100)
+  closed_at        timestamptz
 }
 
 Table procurement.po_number_sequence [headercolor: #7D5BA6] {
@@ -2675,6 +2686,7 @@ Ref: warehouse.boundary.warehouse_id > warehouse.warehouse.id
 Ref: warehouse.move_task.approved_by > identity.app_user.id
 Ref: warehouse.move_task.assigned_user_id > identity.app_user.id
 Ref: warehouse.move_task.from_location_id > warehouse.storage_location.id [delete: restrict]
+Ref: warehouse.move_task.receipt_line_id > procurement.goods_receipt_lines.id [delete: restrict]
 Ref: warehouse.move_task.sku > inventory.inventory_items.sku [delete: restrict]
 Ref: warehouse.move_task.to_location_id > warehouse.storage_location.id [delete: restrict]
 Ref: warehouse.move_task.warehouse_id > warehouse.warehouse.id [delete: restrict]
@@ -2695,9 +2707,9 @@ Ref: procurement.goods_receipt_lines.inventory_item_id > inventory.inventory_ite
 Ref: procurement.goods_receipt_lines.location_id > warehouse.storage_location.id [delete: restrict]
 Ref: procurement.goods_receipt_lines.po_line_id > procurement.purchase_order_lines.id [delete: restrict]
 Ref: procurement.goods_receipt_lines.receipt_id > procurement.goods_receipts.id [delete: cascade]
+Ref: procurement.goods_receipts.confirmed_by > identity.app_user.id
 Ref: procurement.goods_receipts.po_id > procurement.purchase_orders.id [delete: restrict]
 Ref: procurement.goods_receipts.po_revision_id > procurement.purchase_order_revisions.id [delete: restrict]
-Ref: procurement.goods_receipts.posted_by > identity.app_user.id
 Ref: procurement.goods_receipts.received_by > identity.app_user.id
 Ref: procurement.goods_receipts.warehouse_id > warehouse.warehouse.id [delete: restrict]
 Ref: procurement.purchase_order_approvals.approver_id > identity.app_user.id
