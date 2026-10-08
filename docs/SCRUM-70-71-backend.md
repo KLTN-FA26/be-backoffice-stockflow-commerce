@@ -6,11 +6,10 @@ Canonical adapters and an append-only cutover migration are implemented. **Schem
 upstream PIM writer integration and frontend UAT remain merge gates.** This document does not
 claim that the legacy product/gallery creation APIs have completed their separate C1 migration.
 
-The existing merge commit `6936c91` included the develop baseline and supplier/PO fixes at takeover.
-During validation, develop advanced to `d1b9590` (#53-57); that update is merged without aborting
-the merge. Both SCRUM-158 ATP mapping and 70/71 commerce mapping are retained with distinct names.
-There was no unfinished merge at takeover. Existing working changes were retained and formatted;
-no reset, clean, merge abort, PR merge or deployment was performed.
+The branch now includes PR #36 at `1671584` and develop through `276567d` (#58-60).
+The conflict resolution retains stock move/adjustment, admin order listing, transfer orders and
+canonical inventory/commerce behavior together. PR #36 was pushed first; merge order remains
+#36 before #38. No GitHub PR merge or production deployment is performed by this handoff.
 
 ## Canonical ownership
 
@@ -88,18 +87,47 @@ can be published or purchased. Obsolete variants are excluded.
 Source review: [29 September](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/38#issuecomment-5892128787),
 [7 October permissions](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/38#issuecomment-6037831143).
 Jira: [SCRUM-70](https://minh7n3.atlassian.net/browse/SCRUM-70),
-[SCRUM-71](https://minh7n3.atlassian.net/browse/SCRUM-71); all six child tasks were also checked.
+[SCRUM-71](https://minh7n3.atlassian.net/browse/SCRUM-71). The previous handoff reported child-task checks;
+this integration pass did not independently access Jira acceptance criteria.
 
 ## Migration and remaining coordination
 
-PR #36 is still open. This branch retains its existing stacked ancestry; merge order remains
-#36 before #38 as requested in review. No worktree or branch for SCRUM-115-118 was modified.
+PR #36 remains the first PR to merge. The supplier review migration is now
+`V20260930000500__po_review_permissions_and_attempt_numbers.sql`, followed by #38's
+`V20260930001000`, `V20260930001100` and
+`V20261008000100__canonical_inventory_and_ecommerce.sql`. This removes the earlier collision
+with the unpublished PO review version. All SQL already published on develop, remote #36
+and remote #38 retains its original filename/content/checksum.
 
-`V20261008000100__canonical_inventory_and_ecommerce.sql` is appended after branch/develop migrations.
-Earlier migration contents and checksums remain unchanged. The original temporary policy/listing
-schema is transitioned in this new migration, not by rewriting Flyway history.
+A DB on the completed #36 release upgrades normally with out-of-order disabled. A populated
+clone check preserved three POs, five delivery logs and their attempt numbers while applying
+exactly the three #38 versions. Fresh and populated upgrades are also regression-tested.
 
-For databases that used old PR38, run `tools/sql/inventory-commerce-upgrade-preflight.sql` first.
+An existing DB from **exactly remote #38 `3bfd605`** has already applied canonical `20261008000100`
+but lacks the lower PO review version `20260930000500`. Default Flyway correctly refuses this
+history. A disposable DB built from the actual archived release reproduced the failure and
+validated the following operator recovery (not an application default):
+
+1. Stop writers, back up and restore a clone. Verify the release's full migration history,
+   filenames/checksums, absence of failed/unknown versions and canonical schema state.
+2. Run the read-only preflight. With the new migration directory and clone datasource configured,
+   inspect `flyway -outOfOrder=true -target=20261008000100 info`. **Only `20260930000500`** may be
+   pending. A different pending set or script at version `20261008000100` needs its own plan.
+3. On that clone, run `flyway -outOfOrder=true -target=20261008000100 migrate` once. Remove both
+   overrides and run normal `flyway migrate` and `flyway validate`; test PO dates, attempts,
+   role grants and inventory/commerce behavior. The probe validated all 75 migrations.
+4. Repeat only under the intended environment's operator change plan. No global out-of-order,
+   automatic history rewrite, blind repair or database reset is introduced.
+
+The equivalent settings were tested with Flyway's Java API; an installed CLI/VPS was not tested.
+For old remote #36 `9fbb90f`, follow the distinct prerequisite recovery in
+[the supplier runbook](SCRUM-115-118-backend.md#database-upgrade).
+A DB that applied the unpublished **PO** script at `20261008000100` is a different history from
+#38's canonical script at that number and must not use either procedure blindly.
+
+Run `psql -X -v ON_ERROR_STOP=1 -f tools/sql/inventory-commerce-upgrade-preflight.sql` first.
+History checks work before and after cutover; legacy-source checks run only while the private
+policy table exists.
 Every private policy must map to a canonical variant/item by SKU; every listing must map to a
 canonical product by id. Conflicting flags, non-null thresholds or slug/SEO stop migration with a
 reconciliation error. No source is silently selected, text truncated, history repaired or database
@@ -112,23 +140,31 @@ Do not activate C1/C3 here. The canonical adapters are independently testable bu
 full product-creation flow is not accepted until that dependency and identifier migration are done.
 The owner checklist is `business-design/db-design/SCRUM-70-71-schema-change-request.md`.
 
+## Compatibility with new develop inventory operations
+
+Stock moves preserve receipt timestamps and serial identity. SKU locks precede row locks to match
+reservation/policy edits. The old move/adjust request identifies only SKU/location/lot: when several
+receipt/serial layers match, it now returns `INVENTORY_POLICY_STOCK_CONFLICT` instead of choosing
+an arbitrary row. Consolidating different receipt identities is also refused. A future explicit
+layer/serial selector is required to support those ambiguous operations; FIFO replenishment guards
+remain active. This limitation is not hidden by a green build.
+
+Transfer creation and dispatch use the configured FIFO/FEFO policy and the Vietnam business date,
+exclude expired stock and take SKU locks before row locks at dispatch. Regression fixtures use
+canonical tracked SKUs, so the new operations do not rely on invalid lot data on untracked demo SKUs.
+
 ## Verification
 
-After integrating `d1b9590`, ATP batch reads share the single-SKU business-date/expiry rule, and
-security tests cover anonymous denial, signed-in catalog/availability reads and mutation permissions.
+- Combined #36 plus develop through #59: `mvn -B -ntp -o clean verify` passed **581 tests**,
+  zero failures/errors/skips, including packaging, architecture and module checks.
+- Final develop #60 integration: see the exact final commit's GitHub Actions build and the
+  completion report for the final full-suite count.
+- `python -X utf8 tools/verify.py`: all static checks pass (944 Java files at this integration point).
+- Tests cover canonical APIs/gallery, source versions, security B2B gates, SYSTEM_ADMIN,
+  fresh/populated migration and conflict rollback, ATP expiry, stock move receipt/serial identity,
+  ambiguous-layer refusal and configured transfer allocation.
+- Separate disposable-DB probes verified normal #36-to-#38 upgrade with populated PO history and
+  the controlled old-remote-#38 prerequisite backfill. Neither probe used a production database.
 
-Final local validation on 08 October after merging `d1b9590`:
-
-- `mvn -B -ntp -o clean verify`: **540 tests passed**, zero failures/errors/skips; packaging passed.
-- Includes canonical APIs/gallery, source-version conflict, security B2B gates, SYSTEM_ADMIN,
-  fresh/populated migration and conflict rollback, ATP expiry consistency, module and architecture tests.
-- Branch diff against develop passes the append-only migration check. No unresolved merge paths.
-- The final PR commit is also validated by GitHub Actions; see its check result for that exact commit.
-
-Tests use isolated Docker
-PostgreSQL/Redis containers, not application databases. Covered: fresh migrations, populated upgrade
-and rollback on conflict, inventory version/tracking/expiry/FIFO/ingress concurrency, canonical SEO,
-published slug protection, price validation, public visibility, real security and SYSTEM_ADMIN.
-
-`tools/verify.py` currently reports 29 test-fixture dependency findings in unchanged test files;
-no production-code finding. Module and architecture tests remain authoritative CI gates.
+Schema-owner review, upstream PIM writer migration, canonical FE identifiers, demo selling-price
+confirmation and frontend UAT remain the coordination gates above. Tests do not establish them.

@@ -58,6 +58,8 @@ public enum ErrorCode {
     /** The location code is not on any warehouse map. */
     LOCATION_NOT_FOUND("Location not found", 404),
     STOCK_ADJUSTMENT_NOT_FOUND("Stock adjustment not found", 404),
+    TRANSFER_ORDER_NOT_FOUND("Transfer order not found", 404),
+    WAREHOUSE_NOT_FOUND("Warehouse not found", 404),
 
     /** Credentials were correct but the account is LOCKED or DISABLED. Distinct from UNAUTHORIZED,
      *  which covers "wrong username or password" without revealing the account exists. */
@@ -83,6 +85,9 @@ public enum ErrorCode {
     /** Four eyes: whoever asked for a stock adjustment may not decide it. */
     ADJUSTMENT_SELF_APPROVAL("A stock adjustment cannot be decided by the person who requested it", 409),
     INVALID_ADJUSTMENT_TRANSITION("This stock adjustment has already been decided", 409),
+    INVALID_TRANSFER_TRANSITION("This transfer order cannot move to that status right now", 409),
+    /** Four eyes on a transfer above the approval threshold. */
+    TRANSFER_SELF_APPROVAL("A transfer order cannot be decided by the person who submitted it", 409),
     OPTIMISTIC_LOCK("The record changed meanwhile, please retry", 409),
     /** Two writers reached the same row; the loser waited for the lock and gave up. Retryable. */
     LOCK_TIMEOUT("The record is busy, please retry", 409),

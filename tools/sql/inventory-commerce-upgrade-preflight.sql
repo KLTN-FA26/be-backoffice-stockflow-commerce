@@ -1,9 +1,27 @@
--- Read-only checks for databases that ran PR #38 before the canonical cutover.
--- Run before V20261008000100; empty result sets mean no listed blocker. No data is changed.
+-- Read-only psql checks, before upgrading to the combined #36/#38 release.
+-- Run with: psql -X -v ON_ERROR_STOP=1 -f inventory-commerce-upgrade-preflight.sql
+-- History inventory is informational; rows labelled problem require reconciliation.
+SELECT version, script, checksum, success FROM public.flyway_schema_history
+WHERE version IN ('20260930000500','20260930001000','20260930001100','20261008000100')
+ORDER BY installed_rank;
+SELECT 'OLD_PR38_MISSING_PO_REVIEW_00500' AS problem
+WHERE EXISTS (SELECT 1 FROM public.flyway_schema_history
+              WHERE success AND version='20261008000100'
+                AND script='V20261008000100__canonical_inventory_and_ecommerce.sql')
+  AND NOT EXISTS (SELECT 1 FROM public.flyway_schema_history
+                  WHERE success AND version='20260930000500');
+SELECT 'UNPUBLISHED_PO_VERSION_COLLIDES_WITH_CANONICAL_38' AS problem, version, script
+FROM public.flyway_schema_history
+WHERE success AND version='20261008000100'
+  AND script<>'V20261008000100__canonical_inventory_and_ecommerce.sql';
 SELECT version, description FROM public.flyway_schema_history
 WHERE success AND version IN ('20260930001200','20260930001300','20260930001400','20260930001500','20260930001600');
 -- These removed, out-of-scope extension versions need a schema-owner upgrade plan, not Flyway repair.
 
+-- Canonical cutover drops the private policy table and the duplicate SKU fields. Skip those
+-- checks when already cut over; never query removed columns on an old remote #38 database.
+SELECT to_regclass('inventory.sku_policy') IS NOT NULL AS has_legacy_policy \gset
+\if :has_legacy_policy
 SELECT s.code, 'DIVERGENT_LEGACY_POLICY' AS problem
 FROM product.sku s LEFT JOIN inventory.sku_policy p ON p.sku=s.code
 WHERE (p.sku IS NULL AND (s.reorder_point IS NOT NULL OR s.safety_stock IS NOT NULL
@@ -34,3 +52,6 @@ WHERE p.slug IS DISTINCT FROM l.slug
    OR (p.seo_title IS NOT NULL AND p.seo_title IS DISTINCT FROM l.seo_title)
    OR (p.seo_description IS NOT NULL AND p.seo_description IS DISTINCT FROM l.seo_description)
    OR length(l.seo_title)>255;
+\else
+\echo Private policy table absent; legacy-source checks skipped. Inspect the history inventory above.
+\endif
