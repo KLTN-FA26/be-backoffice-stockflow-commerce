@@ -6,6 +6,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.time.LocalDate;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
@@ -27,6 +28,20 @@ import java.util.UUID;
  * and cannot express the fetch joins and lock modes these need.</p>
  */
 interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID> {
+
+    interface AvailableTotal {
+        String getSku();
+        Long getQuantity();
+    }
+
+    @Query("""
+            select s.sku as sku, sum(s.onHand-s.reserved) as quantity from StockItemJpaEntity s
+            where s.sku in :skus and s.status=com.stockflow.inventory.internal.domain.StockStatus.AVAILABLE
+              and s.onHand>s.reserved and (s.expiryDate is null or s.expiryDate>=:today)
+            group by s.sku
+            """)
+    List<AvailableTotal> availableTotals(@Param("skus") java.util.Set<String> skus,
+                                        @Param("today") LocalDate today);
 
     /**
      * Load one aggregate with its children in a single query.
@@ -70,7 +85,7 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
      */
     @Query("""
             select new com.stockflow.inventory.internal.repository.AvailabilityRow(
-                s.id, s.locationCode, s.lotNumber, s.expiryDate, s.status, s.onHand, s.reserved)
+                s.id, s.locationCode, s.lotNumber, s.expiryDate, s.status, s.onHand, s.reserved, s.receivedAt)
             from StockItemJpaEntity s
             where s.sku = :sku
               and s.status = com.stockflow.inventory.internal.domain.StockStatus.AVAILABLE
@@ -91,17 +106,19 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
             where s.sku in :skus
               and s.status = com.stockflow.inventory.internal.domain.StockStatus.AVAILABLE
               and s.onHand > s.reserved
+              and (s.expiryDate is null or s.expiryDate >= :today)
             group by s.sku
             """)
-    List<SkuAtpRow> sumAvailableBySkus(@Param("skus") Collection<String> skus);
+    List<SkuAtpRow> sumAvailableBySkus(@Param("skus") Collection<String> skus,
+                                     @Param("today") LocalDate today);
 
     /** Subtotals for the warehouse roll-up; every status, because on-hand counts them all. */
     @Query("""
             select new com.stockflow.inventory.internal.repository.StockLevelRow(
-                s.locationCode, s.status, sum(s.onHand), sum(s.reserved))
+                s.locationCode, s.status, sum(s.onHand), sum(s.reserved), s.expiryDate)
             from StockItemJpaEntity s
             where s.sku = :sku
-            group by s.locationCode, s.status
+            group by s.locationCode, s.status, s.expiryDate
             """)
     List<StockLevelRow> findLevelRowsBySku(@Param("sku") String sku);
 

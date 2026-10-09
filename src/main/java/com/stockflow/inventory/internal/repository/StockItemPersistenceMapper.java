@@ -44,7 +44,7 @@ final class StockItemPersistenceMapper {
                 Quantity.of(entity.getOnHand()),
                 entity.getStatus(),
                 reservations,
-                entity.getVersion());
+                entity.getVersion(), entity.getReceivedAt(), entity.getSerialNumber());
     }
 
     static Reservation toDomain(ReservationJpaEntity entity) {
@@ -71,7 +71,7 @@ final class StockItemPersistenceMapper {
                 item.expiryDate(),
                 item.onHand().value(),
                 item.reserved().value(),
-                item.status());
+                item.status(), item.receivedAt(), item.serialNumber());
         entity.replaceReservations(toEntities(item));
         return entity;
     }

@@ -1,47 +1,96 @@
 package com.stockflow.inventory.internal.service;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
 import com.stockflow.common.domain.Sku;
+import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.api.StockLevel;
 import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.inventory.internal.domain.StockLevelLine;
 import com.stockflow.inventory.internal.domain.StockStatus;
+import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
+
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 
 import java.time.Clock;
+import java.time.Instant;
+import java.time.LocalDate;
 import java.util.List;
-
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Inventory Level is a roll-up, so the test feeds it subtotals and checks the glossary's
- * arithmetic: on-hand counts every status, available only {@code AVAILABLE}, ATP is available
- * minus reservations, and a warehouse is whatever precedes the first hyphen of a location code.
+ * arithmetic: on-hand counts every status, available only {@code AVAILABLE}, ATP is available minus
+ * reservations, and a warehouse is whatever precedes the first hyphen of a location code.
  */
 class InventoryLevelTest {
+
+    @Test
+    void oneBusinessDateIsUsedEvenWhenClockCrossesMidnight() {
+        var clock = mock(Clock.class);
+        when(clock.instant())
+                .thenReturn(
+                        Instant.parse("2026-09-28T16:59:59Z"),
+                        Instant.parse("2026-09-28T17:00:00Z"));
+        when(repository.findLevelLinesBySku(SKU))
+                .thenReturn(
+                        List.of(
+                                new StockLevelLine(
+                                        new LocationId("HN-A"),
+                                        StockStatus.AVAILABLE,
+                                        10,
+                                        0,
+                                        LocalDate.of(2026, 9, 28)),
+                                new StockLevelLine(
+                                        new LocationId("HN-B"),
+                                        StockStatus.AVAILABLE,
+                                        10,
+                                        0,
+                                        LocalDate.of(2026, 9, 28))));
+        var tested =
+                new InventoryServiceImpl(
+                        repository,
+                        mock(InventoryEventPublisher.class),
+                        mock(StockOperations.class),
+                        clock,
+                        mock(InventoryControlService.class),
+                        mock(InventoryPolicyRepository.class));
+        assertThat(tested.levelsOf(SKU).getFirst().atp()).isEqualTo(20);
+        Mockito.verify(clock, Mockito.times(1)).instant();
+    }
 
     private static final Sku SKU = new Sku("SOFA-3S-GREY");
 
     private final StockItemRepository repository = mock(StockItemRepository.class);
     private final InventoryServiceImpl service =
-            new InventoryServiceImpl(repository, mock(InventoryEventPublisher.class),
-                    mock(StockOperations.class), Clock.systemUTC());
+            new InventoryServiceImpl(
+                    repository,
+                    mock(InventoryEventPublisher.class),
+                    mock(StockOperations.class),
+                    Clock.systemUTC(),
+                    mock(InventoryControlService.class),
+                    mock(InventoryPolicyRepository.class));
 
-    private static StockLevelLine line(String location, StockStatus status, int onHand, int reserved) {
+    private static StockLevelLine line(
+            String location, StockStatus status, int onHand, int reserved) {
         return new StockLevelLine(new LocationId(location), status, onHand, reserved);
     }
 
     @Test
-    @DisplayName("sums locations per warehouse; only AVAILABLE counts as available, ATP subtracts holds")
+    @DisplayName(
+            "sums locations per warehouse; only AVAILABLE counts as available, ATP subtracts holds")
     void rollsUpPerWarehouse() {
-        when(repository.findLevelLinesBySku(SKU)).thenReturn(List.of(
-                line("HN-A01-2-03", StockStatus.AVAILABLE, 10, 4),
-                line("HN-A01-2-04", StockStatus.AVAILABLE, 5, 0),
-                line("HN-QC01", StockStatus.QUARANTINE, 7, 0),
-                line("HCM-A01-1-01", StockStatus.AVAILABLE, 3, 1)));
+        when(repository.findLevelLinesBySku(SKU))
+                .thenReturn(
+                        List.of(
+                                line("HN-A01-2-03", StockStatus.AVAILABLE, 10, 4),
+                                line("HN-A01-2-04", StockStatus.AVAILABLE, 5, 0),
+                                line("HN-QC01", StockStatus.QUARANTINE, 7, 0),
+                                line("HCM-A01-1-01", StockStatus.AVAILABLE, 3, 1)));
 
         List<StockLevel> levels = service.levelsOf(SKU);
 
@@ -53,9 +102,11 @@ class InventoryLevelTest {
     @Test
     @DisplayName("ATP of one warehouse ignores the others; an unknown warehouse promises nothing")
     void atpPerWarehouse() {
-        when(repository.findLevelLinesBySku(SKU)).thenReturn(List.of(
-                line("HN-A01-2-03", StockStatus.AVAILABLE, 10, 4),
-                line("HCM-A01-1-01", StockStatus.AVAILABLE, 3, 1)));
+        when(repository.findLevelLinesBySku(SKU))
+                .thenReturn(
+                        List.of(
+                                line("HN-A01-2-03", StockStatus.AVAILABLE, 10, 4),
+                                line("HCM-A01-1-01", StockStatus.AVAILABLE, 3, 1)));
 
         assertThat(service.availableToPromise(SKU, "hn")).isEqualTo(6);
         assertThat(service.availableToPromise(SKU, "HCM")).isEqualTo(2);

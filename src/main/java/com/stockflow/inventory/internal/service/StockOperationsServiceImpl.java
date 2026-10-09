@@ -26,6 +26,7 @@ import com.stockflow.inventory.internal.domain.StockItem;
 import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.inventory.internal.domain.StockMovement;
 import com.stockflow.inventory.internal.domain.StockMovementLog;
+import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
 import com.stockflow.inventory.internal.repository.StockAdjustmentSearch;
 import com.stockflow.inventory.internal.repository.StockLedgerSearch;
 import org.slf4j.Logger;
@@ -69,10 +70,12 @@ class StockOperationsServiceImpl implements StockOperations {
     private final StockLedgerSearch ledgerSearch;
     private final LocationDirectory locations;
     private final Clock clock;
+    private final InventoryPolicyRepository policies;
 
     StockOperationsServiceImpl(StockItemRepository stockItems, StockAdjustmentRepository adjustments,
                                StockAdjustmentSearch adjustmentSearch, StockMovementLog ledger,
-                               StockLedgerSearch ledgerSearch, LocationDirectory locations, Clock clock) {
+                               StockLedgerSearch ledgerSearch, LocationDirectory locations, Clock clock,
+                               InventoryPolicyRepository policies) {
         this.stockItems = stockItems;
         this.adjustments = adjustments;
         this.adjustmentSearch = adjustmentSearch;
@@ -80,6 +83,7 @@ class StockOperationsServiceImpl implements StockOperations {
         this.ledgerSearch = ledgerSearch;
         this.locations = locations;
         this.clock = clock;
+        this.policies = policies;
     }
 
     // ------------------------------------------------------------------ move
@@ -87,6 +91,8 @@ class StockOperationsServiceImpl implements StockOperations {
     @Override
     @Auditable(action = AuditAction.UPDATE, resourceType = "stock-move", resourceId = "#command.requestId()")
     public StockMove move(MoveStockCommand command) {
+        // Match policy edits/reservations: take the SKU lock before any stock-row locks.
+        policies.lock(command.sku().code());
         StockMovement.ReferenceType referenceType = StockMovement.ReferenceType.valueOf(command.reference().name());
         UUID referenceId = command.referenceId() != null ? command.referenceId() : command.requestId();
 
@@ -130,7 +136,10 @@ class StockOperationsServiceImpl implements StockOperations {
         Objects.requireNonNull(source, "source");
 
         if (destination != null && !destination.canReceiveFrom(source)) {
-            throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH,
+            throw new BusinessException(
+                    destination.status() == source.status()
+                            ? ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT
+                            : ErrorCode.STOCK_STATUS_MISMATCH,
                     "%s holds %s%s as %s; this stock is %s".formatted(to, command.sku(),
                             lotSuffix(command.lotNumber()), destination.status(), source.status()));
         }
@@ -175,6 +184,7 @@ class StockOperationsServiceImpl implements StockOperations {
     @Auditable(action = AuditAction.APPROVE, resourceType = "stock-adjustment", resourceId = "#adjustmentId")
     public StockAdjustmentSummary approve(UUID adjustmentId, UUID approverId) {
         StockAdjustment adjustment = load(adjustmentId);
+        policies.lock(adjustment.sku().code());
         StockItem view = findOne(adjustment.sku(), adjustment.location(), adjustment.lotNumber())
                 .orElseThrow(() -> new BusinessException(ErrorCode.STOCK_ITEM_NOT_FOUND,
                         "The stock of adjustment %s no longer exists".formatted(adjustment.number())));
@@ -237,8 +247,16 @@ class StockOperationsServiceImpl implements StockOperations {
 
     private Optional<StockItem> findOne(Sku sku, LocationId location, String lotNumber) {
         String lot = blankToNull(lotNumber);
-        return stockItems.findBySkuAndLocation(sku, location).stream()
+        var matches =
+                stockItems.findBySkuAndLocation(sku, location).stream()
                 .filter(item -> Objects.equals(item.lotNumber(), lot))
+                        .toList();
+        if (matches.size() > 1) {
+            // The existing move/adjustment request has no receipt/serial selector. Never pick
+            // an arbitrary layer now that canonical policy permits several at one location.
+            throw new BusinessException(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT);
+        }
+        return matches.stream()
                 .findFirst();
     }
 

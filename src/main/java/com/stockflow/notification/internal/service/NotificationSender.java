@@ -1,31 +1,184 @@
 package com.stockflow.notification.internal.service;
 
+import com.stockflow.common.http.RestClientFactory;
+import com.stockflow.contracts.PurchaseOrderSent;
+import com.stockflow.notification.internal.domain.SupplierEndpointPolicy;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.mail.SimpleMailMessage;
+import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.stereotype.Component;
+import org.springframework.web.client.RestClientResponseException;
 
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.util.List;
+import java.util.Locale;
+import java.util.ResourceBundle;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * Delivers one notification.
  *
- * <p>A logging stub for now — the real implementation queues to email, in-app and push channels
- * per the customer's preferences (WBS 3.18). It is a separate bean rather than inline code in the
- * listener so that swapping the transport later touches one class, and so a test can assert what
- * would have been sent without a mail server.</p>
+ * <p>Purchase orders use real SMTP/HTTPS transport. Other notification templates retain their
+ * existing logging behavior. Transport stays separate from durable event handling.
  */
 @Component
 class NotificationSender {
+    private final JavaMailSender mail;
+    private final RestClientFactory clients;
+    private final String mailFrom;
+    private final SupplierEndpointPolicy policy;
+
+    NotificationSender(
+            JavaMailSender mail,
+            RestClientFactory clients,
+            @Value("${stockflow.notification.mail-from:noreply@stockflow.local}") String mailFrom,
+            @Value("${stockflow.notification.supplier-api-allowed-hosts:}") String allowedHosts) {
+        this.mail = mail;
+        this.clients = clients;
+        this.mailFrom = mailFrom;
+        this.policy = new SupplierEndpointPolicy(allowedHosts);
+    }
+
+    /**
+     * Uses the existing notification transport boundary; event retries retain the same PO payload.
+     */
+    void sendPurchaseOrder(PurchaseOrderSent event) {
+        policy.validate(event.channel(), event.recipient());
+        if (!event.cancellation() && event.lines().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "Purchase order notification has no line snapshot; manual reconciliation"
+                        + " required");
+        }
+        if ("EMAIL".equals(event.channel())) {
+            var message = new SimpleMailMessage();
+            message.setFrom(mailFrom);
+            message.setTo(event.recipient());
+            var messages = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
+            message.setSubject(
+                    messages.getString(
+                                    event.cancellation()
+                                            ? "po.mail.cancel.subject"
+                                            : "po.mail.subject")
+                            .formatted(event.poNumber()));
+            String lines =
+                    event.lines().stream()
+                            .map(
+                                    line ->
+                                            messages.getString("po.mail.line")
+                                                    .formatted(
+                                                            line.sku(),
+                                                            line.description() == null
+                                                                    ? ""
+                                                                    : line.description(),
+                                                            line.quantity(),
+                                                            line.unitPrice(),
+                                                            event.currency()))
+                            .collect(Collectors.joining("\n"));
+            var buyer = event.buyer();
+            String identity =
+                    buyer == null
+                            ? messages.getString("po.mail.legacy")
+                            : messages.getString("po.mail.buyer")
+                                    .formatted(
+                                            buyer.companyName(),
+                                            buyer.companyAddress(),
+                                            buyer.contactName(),
+                                            buyer.phone(),
+                                            buyer.email(),
+                                            buyer.receivingAddress());
+            if (buyer != null) message.setReplyTo(buyer.email());
+            message.setText(
+                    event.cancellation()
+                            ? messages.getString("po.mail.cancel.body")
+                                    .formatted(
+                                            event.poNumber(), identity, event.cancellationReason())
+                            : messages.getString("po.mail.body")
+                                    .formatted(
+                                            event.poNumber(),
+                                            identity,
+                                            event.expectedAt(),
+                                            event.paymentTermDays(),
+                                            lines,
+                                            event.totalAmount(),
+                                            event.currency()));
+            mail.send(message);
+        } else if ("API".equals(event.channel())) {
+            var response =
+                    clients.forService("supplier-po-api", event.recipient())
+                            .build()
+                            .post()
+                            .header("Idempotency-Key", event.operationReference())
+                            .body(
+                                    new SupplierPurchaseOrderMessage(
+                                            event.purchaseOrderId(),
+                                            event.poNumber(),
+                                            event.supplierId(),
+                                            event.channel(),
+                                            event.recipient(),
+                                            event.totalAmount(),
+                                            event.currency(),
+                                            event.expectedAt(),
+                                            event.paymentTermDays(),
+                                            event.lines(),
+                                            event.buyer(),
+                                            event.cancellation()
+                                                    ? "CANCELLATION"
+                                                    : "PURCHASE_ORDER",
+                                            event.cancellationReason()))
+                            .retrieve()
+                            .toBodilessEntity();
+            if (!response.getStatusCode().is2xxSuccessful()) {
+                throw new RestClientResponseException(
+                        "Supplier API did not acknowledge the purchase order",
+                        response.getStatusCode(),
+                        "",
+                        response.getHeaders(),
+                        null,
+                        null);
+            }
+        } else throw new IllegalArgumentException("Unsupported supplier communication channel");
+    }
 
     private static final Logger log = LoggerFactory.getLogger(NotificationSender.class);
+
+    /** Internal recovery generations must not change the supplier's idempotent PO payload. */
+    private record SupplierPurchaseOrderMessage(
+            UUID purchaseOrderId,
+            String poNumber,
+            UUID supplierId,
+            String channel,
+            String recipient,
+            BigDecimal totalAmount,
+            String currency,
+            LocalDate expectedAt,
+            int paymentTermDays,
+            List<PurchaseOrderSent.Line> lines,
+            PurchaseOrderSent.Buyer buyer,
+            String type,
+            String cancellationReason) {}
 
     void send(UUID recipientId, String templateCode, String subject, String body) {
         send(recipientId, null, templateCode, subject, body);
     }
 
-    void send(UUID recipientId, String recipientEmail, String templateCode, String subject, String body) {
-        log.info("NOTIFY recipient={} template={} subject='{}' body='{}'",
-                recipientId == null ? "guest-email-present=" + (recipientEmail != null) : recipientId,
-                templateCode, subject, body);
+    void send(
+            UUID recipientId,
+            String recipientEmail,
+            String templateCode,
+            String subject,
+            String body) {
+        log.info(
+                "NOTIFY recipient={} template={} subject='{}' body='{}'",
+                recipientId == null
+                        ? "guest-email-present=" + (recipientEmail != null)
+                        : recipientId,
+                templateCode,
+                subject,
+                body);
     }
 }

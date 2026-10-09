@@ -126,7 +126,7 @@ CREATE TABLE production.production_order
     subcontract_unit_price NUMERIC(19, 4),
     subcontract_currency VARCHAR(3),
     -- The SUBCONTRACT purchase order (SCRUM-434), on the new purchase-order table. The foreign key
-    -- is added by V20260929000500 together with the PO type, which points back at this row.
+    -- is added by V20261010000400 together with the PO type, which points back at this row.
     purchase_order_id    UUID,
 
     prepress_checked_by  UUID,
