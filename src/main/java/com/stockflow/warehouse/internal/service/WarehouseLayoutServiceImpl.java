@@ -14,6 +14,7 @@ import com.stockflow.warehouse.internal.domain.Warehouse;
 import com.stockflow.warehouse.internal.domain.WarehouseRepository;
 import com.stockflow.warehouse.internal.domain.Zone;
 import com.stockflow.warehouse.internal.domain.ZoneRepository;
+import com.stockflow.warehouse.internal.repository.LayoutReadRepository;
 import com.stockflow.warehouse.internal.repository.WarehouseSearchRepository;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
@@ -44,12 +45,14 @@ class WarehouseLayoutServiceImpl implements WarehouseLayoutService {
     private final WarehouseRepository warehouses;
     private final WarehouseSearchRepository warehouseSearch;
     private final ZoneRepository zones;
+    private final LayoutReadRepository layoutRead;
 
     WarehouseLayoutServiceImpl(WarehouseRepository warehouses, WarehouseSearchRepository warehouseSearch,
-                               ZoneRepository zones) {
+                               ZoneRepository zones, LayoutReadRepository layoutRead) {
         this.warehouses = warehouses;
         this.warehouseSearch = warehouseSearch;
         this.zones = zones;
+        this.layoutRead = layoutRead;
     }
 
     /**
@@ -152,6 +155,22 @@ class WarehouseLayoutServiceImpl implements WarehouseLayoutService {
         return zones.findByWarehouseId(warehouseId).stream()
                 .map(WarehouseLayoutServiceImpl::toSummary)
                 .toList();
+    }
+
+    /**
+     * One query per table, each filtered by the warehouse, put together in memory. Not locked, and
+     * not one snapshot: under {@code READ COMMITTED} each query sees what was committed when it ran,
+     * so a shelf created between two of them may come without its levels (a level or bin whose parent
+     * was not read is dropped, never shown floating). The next read is whole; a map is redrawn often.
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public WarehouseLayout layoutOf(UUID warehouseId) {
+        var warehouse = layoutRead.findWarehouse(warehouseId).orElseThrow(() -> warehouseNotFound(warehouseId));
+        return WarehouseLayout.assemble(warehouse, layoutRead.findZones(warehouseId),
+                layoutRead.findShelves(warehouseId), layoutRead.findLevels(warehouseId),
+                layoutRead.findBins(warehouseId), layoutRead.findAreas(warehouseId),
+                layoutRead.findBoundaries(warehouseId));
     }
 
     /**

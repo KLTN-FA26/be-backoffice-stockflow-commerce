@@ -40,4 +40,10 @@ public interface WarehouseLayoutService {
 
     /** Ordered by name. */
     List<ZoneSummary> listZones(UUID warehouseId);
+
+    /**
+     * The whole map in one value, for drawing it (issue #25). Read as projections, never as
+     * aggregates: seven queries, however many shelves and bins the warehouse has.
+     */
+    WarehouseLayout layoutOf(UUID warehouseId);
 }

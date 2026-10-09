@@ -5,7 +5,7 @@ import com.stockflow.common.security.PermissionResource;
 
 /**
  * Declares {@link WarehouseResources#LOCATIONS} once for the whole map. Its endpoints are spread over
- * several controllers - zones now, shelves, areas and boundaries later - and a resource code may be
+ * several controllers - zones, shelves, areas, boundaries, the layout - and a resource code may be
  * declared only once, so it hangs on this class rather than on any one of them.
  */
 @PermissionResource(code = WarehouseResources.LOCATIONS, group = "Warehouse", label = "Warehouse map",
