@@ -1,23 +1,35 @@
 package com.stockflow.warehouse.api;
 
+import java.util.Optional;
+import java.util.UUID;
+
 /**
- * THE public API of the warehouse module — the only package other modules may import.
+ * THE public API of the warehouse module - the only package other modules may import.
  *
- * <p>STARTER STUB. Replace the empty body with the module's real use cases. Two rules from
- * {@code docs/adding-a-module.md} §1:</p>
- * <ul>
- *   <li>declare only what other modules actually call — the shortest surface that works;</li>
- *   <li>every parameter and return type is a record or enum declared in THIS package, never a
- *       domain object or JPA entity. {@code ArchitectureTest.theApiPackageLeaksNothingInternal}
- *       and {@code theApiPublishesNoEntities} enforce it.</li>
- * </ul>
+ * <p>Two lookups and nothing else (issue #18 D6). {@code warehouse.storage_location} is the target of
+ * foreign keys from procurement (goods receipt lines, QC inspections), inventory (stock items,
+ * movements, adjustments, cycle counts) and fulfillment (pick lines, move tasks), and ADR-0007 has
+ * each of them check a reference in its service before writing it, with a real error code rather
+ * than a foreign-key violation. Receiving, QC, putaway, picking and move tasks call these to do so:
+ * by id when they already hold one, by code when a person scanned or typed it.</p>
  *
- * <p>To finish the module: add a migration, then the entity + repository adapter, then a
- * controller — see {@code docs/adding-a-module.md} §4.</p>
+ * <p>Administering the map - warehouses, zones, shelves, areas, boundaries - is used by this
+ * module's own controllers only and lives on the internal {@code WarehouseLayoutService} and its
+ * siblings.</p>
+ *
+ * <p>Both methods run in the caller's transaction when there is one. Neither locks: a location's
+ * status can change right after the lookup, as it can after any read; what a caller must not do is
+ * skip {@link StorageLocationView#usable()} and look only at the location's own status.</p>
  */
 public interface WarehouseService {
 
-    // TODO: declare this module's use cases here. Every parameter and return type is a record
-    //       or enum declared in THIS package, never a domain object. See
-    //       inventory.api.InventoryService for the worked example.
+    /**
+     * @param locationCode as scanned or typed - {@code hn-a01-2-03} finds {@code HN-A01-2-03}.
+     *                     A {@code NON_STORAGE} area has no location and is never found.
+     * @return empty when no location has this code, or the code is blank
+     */
+    Optional<StorageLocationView> findLocation(String locationCode);
+
+    /** @return empty when no location has this id */
+    Optional<StorageLocationView> findLocation(UUID locationId);
 }

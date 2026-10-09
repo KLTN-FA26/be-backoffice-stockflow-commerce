@@ -16,5 +16,13 @@ public enum AreaType {
     PACKING,
     DISPATCH,
     OVERFLOW,
-    NON_STORAGE
+    NON_STORAGE;
+
+    /**
+     * Whether an area of this type is a stock location, and so owns a {@code storage_location} row
+     * ({@code ck_area_storage}).
+     */
+    public boolean isStorage() {
+        return this != NON_STORAGE;
+    }
 }
