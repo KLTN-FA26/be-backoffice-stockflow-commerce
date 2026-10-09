@@ -33,11 +33,6 @@ class ZoneRepositoryAdapter implements ZoneRepository {
     }
 
     @Override
-    public Optional<Zone> findByWarehouseIdAndName(UUID warehouseId, String name) {
-        return jpa.findByWarehouseIdAndName(warehouseId, name).map(WarehousePersistenceMapper::toDomain);
-    }
-
-    @Override
     public List<Zone> findByWarehouseId(UUID warehouseId) {
         return jpa.findByWarehouseIdOrderByNameAsc(warehouseId).stream()
                 .map(WarehousePersistenceMapper::toDomain)
