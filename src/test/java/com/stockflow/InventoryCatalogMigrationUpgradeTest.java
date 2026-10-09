@@ -59,7 +59,10 @@ class InventoryCatalogMigrationUpgradeTest {
                         .containsExactly("20260929000250");
                 assertThat(recovery.migrate().migrations).extracting(m -> m.version)
                         .containsExactly("20260929000250");
-                assertThat(normal.migrate().migrations).isEmpty();
+                // After the recovery, a normal migrate applies only what develop added after #38 (e.g. the
+                // product bridge of issue #68), never anything at or before the recovery target.
+                assertThat(normal.migrate().migrations).allSatisfy(m -> assertThat(
+                        new java.math.BigInteger(m.version)).isGreaterThan(new java.math.BigInteger("20261008000200")));
                 normal.validate();
                 try (var row = sql.executeQuery("select safety_stock,reorder_point,qc_required from "
                         + "inventory.inventory_items where sku='SOFA-3S-GREY'")) {
