@@ -217,8 +217,11 @@ class StockOperationsServiceImpl implements StockOperations {
             return toMove(done.get());
         }
         LocationId location = new LocationId(command.locationCode());
-        if (!locations.exists(location)) {
-            throw new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + location);
+        switch (locations.stateOf(location)) {
+            case UNKNOWN -> throw new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + location);
+            case UNUSABLE -> throw new BusinessException(ErrorCode.LOCATION_NOT_USABLE,
+                    "%s cannot take stock now: it, its shelf or its warehouse is not active".formatted(location));
+            case USABLE -> { }
         }
         String lot = blankToNull(command.lotNumber());
         Quantity quantity = Quantity.of(command.quantity());
