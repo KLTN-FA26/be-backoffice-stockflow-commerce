@@ -69,10 +69,11 @@ idempotency, rate limiting, auditing, storage, locking, validation, i18n, the AP
 exception handler. **Do not rebuild any of it inside a module.** `README.md` has the table of what
 is there; `docs/adding-a-module.md` §3 has the "use this, not that" list.
 
-Migrations: the full target schema is on `develop` (107 tables, 213 foreign keys after the pending
-contract steps; `docs/business-design/db-design/schema.dbml` is generated from it). Old and new product,
-procurement and warehouse tables coexist until each module's code moves; `event_publication` stays
-unqualified in `public` because Spring Modulith owns it (`V20260901000400` explains why).
+Migrations: the full target schema is on `develop`; `docs/business-design/db-design/schema.dbml` is
+generated from it. The legacy product, procurement and warehouse-location tables are gone (contracts
+C1–C4, `V20261011000300`–`0600`); their rows were carried to the new tables and archived whole in
+`platform.legacy_archive` by `V20261011000200`. `event_publication` stays unqualified in `public`
+because Spring Modulith owns it (`V20260901000400` explains why).
 
 ---
 
@@ -306,7 +307,7 @@ more than the list: in this stack, the dangerous failures are silent.
 | `docs/business-design/04c-all-flows.md` | all 25 business flows (18 `F-*`, 3 `X-*`, 4 `P-*`) |
 | `docs/business-design/05-business-rules.md` | the 50 rules, each with its enforcement point |
 | `docs/business-design/06-open-questions.md` | what is deliberately undecided |
-| `docs/business-design/db-design/` | the migration plan (expand now, contracts in `db/pending`), and `schema.dbml` generated from the migrated database by `tools/db/gen_dbml.py` |
+| `docs/business-design/db-design/` | the migration plan (C1–C4 activated; only C0 left in `db/pending`), and `schema.dbml` generated from the migrated database by `tools/db/gen_dbml.py` |
 | `tools/db/` | `orphan_check.sql`, the adversarial schema checks `qa/run.sh`, the DBML generator |
 | `inventory/**` | the worked example. Every layer is implemented. |
 | `tools/verify.py` | the fast static pass; its module docstring lists all 15 checks |

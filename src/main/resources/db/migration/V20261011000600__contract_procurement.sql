@@ -1,14 +1,10 @@
 -- =============================================================================
 -- CONTRACT C4 - procurement: the new purchasing tables become the only purchasing model.
--- NOT APPLIED YET. See README.md in this directory for how to activate it.
---
--- Run when: nothing maps procurement.supplier, purchase_order, po_line, goods_receipt, qc_result
--- or supplier_invoice; putaway tasks are created from procurement.goods_receipt_lines.
---
--- PR #36 (supplier PO communication), if merged, added procurement.po_delivery_decision and
--- notification.po_delivery_control keyed on the OLD purchase_order id. Its feature is kept: both
--- are re-pointed at procurement.purchase_orders below, which requires the PO ids to have been
--- carried over (or those rows cleared) by the code migration.
+-- Activated from db/pending by the legacy-tables removal: the code no longer maps the old tables,
+-- and V20261011000200 carried their rows over (and archived them in platform.legacy_archive).
+-- PR #36 keeps its feature: po_delivery_decision and po_delivery_control follow the order, whose id
+-- did not change, to procurement.purchase_orders.
+-- The orphan check below stops with the table and the row count instead of failing half way.
 -- =============================================================================
 
 DO $$

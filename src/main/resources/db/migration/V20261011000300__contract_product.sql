@@ -1,16 +1,9 @@
 -- =============================================================================
 -- CONTRACT C1 - product: the new PIM tables become the only product model.
--- NOT APPLIED YET. db/pending is outside every Flyway location on purpose (see README.md here).
---
--- Run when: the product module's entities map product.products / variants / categories / media /
--- customization_templates, and nothing maps product.product, variant, sku, category,
--- print_config, product_image, product_gallery or variant_gallery any more
--- (grep '@Table(name = "product"' etc. must find nothing). That includes the DESIGN module: its
--- create() validates productId through ProductService against the old product.product today,
--- and existing drafts must point at product.products ids before the key below can be added.
---
--- How: rename to V<yyyyMMddHHmm00>__contract_product.sql, newer than the newest file in
--- db/migration at that moment, move it into db/migration, run the checklist of the plan §4.
+-- Activated from db/pending by the legacy-tables removal: the code no longer maps the old tables,
+-- and V20261011000200 carried their rows over (and archived them in platform.legacy_archive).
+-- The #68 bridge triggers go with the legacy tables; their functions are dropped at the end.
+-- The orphan check below stops with the table and the row count instead of failing half way.
 -- =============================================================================
 
 DO $$
@@ -62,3 +55,7 @@ DROP TABLE product.sku;
 DROP TABLE product.variant;
 DROP TABLE product.product;
 DROP TABLE product.category;
+
+-- The #68 bridge (V20261009000100): its triggers went with product.product and product.category.
+DROP FUNCTION product.bridge_product_to_pim();
+DROP FUNCTION product.bridge_category_to_pim();

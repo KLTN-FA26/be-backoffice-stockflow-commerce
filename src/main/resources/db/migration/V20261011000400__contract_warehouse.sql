@@ -1,11 +1,8 @@
 -- =============================================================================
 -- CONTRACT C2 - warehouse: the map model becomes the only location model.
--- NOT APPLIED YET. See README.md in this directory for how to activate it.
---
--- Run when: WarehouseJpaEntity maps prefix/address/map_* and no longer code/address_line/city;
--- LocationJpaEntity is deleted and putaway points at warehouse.storage_location; every warehouse
--- row has its map frame filled in; every inventory.stock_item sits in a location of the map
--- (the demo seed V20260928009000 does this for local databases).
+-- Activated from db/pending by the legacy-tables removal: the code no longer maps the old tables,
+-- and V20261011000200 carried their rows over (and archived them in platform.legacy_archive).
+-- The orphan check below stops with the table and the row count instead of failing half way.
 -- =============================================================================
 
 DO $$

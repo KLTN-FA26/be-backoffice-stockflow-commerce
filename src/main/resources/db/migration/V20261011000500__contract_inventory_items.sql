@@ -1,10 +1,8 @@
 -- =============================================================================
 -- CONTRACT C3 - inventory: stock and putaway are of known inventory items.
--- NOT APPLIED YET. See README.md in this directory for how to activate it.
---
--- Run when: creating a variant creates its inventory item (docs 01 BR-07, 1:1), and every sku
--- present in inventory.stock_item and warehouse.putaway_task has one. Requires C1 first
--- (inventory_items.sku -> product.variants.sku is already enforced since V20260928003000).
+-- Activated from db/pending by the legacy-tables removal: the code no longer maps the old tables,
+-- and V20261011000200 carried their rows over (and archived them in platform.legacy_archive).
+-- The orphan check below stops with the table and the row count instead of failing half way.
 -- =============================================================================
 
 DO $$
