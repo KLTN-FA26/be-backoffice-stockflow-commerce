@@ -19,6 +19,7 @@ public final class Roles {
     public static final String ECOMMERCE_ADMIN     = "ECOMMERCE_ADMIN";
     public static final String PROCUREMENT_STAFF   = "PROCUREMENT_STAFF";
     public static final String ACCOUNTANT          = "ACCOUNTANT";
+    public static final String PRODUCTION_STAFF    = "PRODUCTION_STAFF";
     public static final String SYSTEM_ADMIN        = "SYSTEM_ADMIN";
 
     private Roles() {
