@@ -45,7 +45,10 @@ ROOT = sys.argv[1] if len(sys.argv) > 1 else os.path.dirname(os.path.dirname(os.
 SRC = os.path.join(ROOT, "src")
 problems = []
 
-files = [p for p in glob.glob(SRC + "/**/*.java", recursive=True)]
+# Forward slashes on every platform: the checks below match path fragments such as "/src/test/",
+# and on Windows glob returns backslashes, so those matches silently failed and every test that
+# imports com.stockflow.support was reported as an undeclared module dependency.
+files = [p.replace(os.sep, "/") for p in glob.glob(SRC + "/**/*.java", recursive=True)]
 
 def pkg_of(path):
     s = open(path).read()

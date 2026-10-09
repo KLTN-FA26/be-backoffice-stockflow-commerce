@@ -144,6 +144,28 @@ public class ShelfJpaEntity extends BaseEntity {
         this.status = status;
     }
 
+    /** Everything about a shelf that may change; warehouse and code never do (BR-13). */
+    public void apply(UUID zoneId, String name, String description, BigDecimal x, BigDecimal y,
+                      BigDecimal width, BigDecimal length, int rotation, boolean obstacle,
+                      boolean pickNorth, boolean pickEast, boolean pickSouth, boolean pickWest,
+                      StorageClass defaultStorageClass, LocationStatus status) {
+        this.zoneId = zoneId;
+        this.name = name;
+        this.description = description;
+        this.x = x;
+        this.y = y;
+        this.width = width;
+        this.length = length;
+        this.rotation = rotation;
+        this.obstacle = obstacle;
+        this.pickNorth = pickNorth;
+        this.pickEast = pickEast;
+        this.pickSouth = pickSouth;
+        this.pickWest = pickWest;
+        this.defaultStorageClass = defaultStorageClass;
+        this.status = status;
+    }
+
     /** Appends a level; it is inserted with the shelf on the next flush. */
     public void addLevel(ShelfLevelJpaEntity level) {
         level.attachTo(this);

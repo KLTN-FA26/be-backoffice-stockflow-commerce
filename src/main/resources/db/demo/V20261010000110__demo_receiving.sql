@@ -20,9 +20,9 @@ INSERT INTO warehouse.area (id, warehouse_id, location_id, code, type, name, x, 
                             is_obstacle, status, created_by)
 VALUES
     (md5('demo:area:HCM-QCA01')::uuid, md5('demo:wh:HCM')::uuid, md5('demo:loc:HCM-QCA01')::uuid, 'QCA01',
-     'QUALITY_CONTROL', 'Khu kiểm tra chất lượng', 20, 25, 8, 6, 0, FALSE, 'ACTIVE', 'flyway'),
+     'QUALITY_CONTROL', 'Khu kiểm tra chất lượng', 50, 12, 8, 6, 0, FALSE, 'ACTIVE', 'flyway'),
     (md5('demo:area:HCM-RTV01')::uuid, md5('demo:wh:HCM')::uuid, md5('demo:loc:HCM-RTV01')::uuid, 'RTV01',
-     'QUARANTINE', 'Khu hàng lỗi chờ trả NCC', 30, 25, 6, 6, 0, FALSE, 'ACTIVE', 'flyway');
+     'QUARANTINE', 'Khu hàng lỗi chờ trả NCC', 51, 20, 6, 6, 0, FALSE, 'ACTIVE', 'flyway');
 
 UPDATE inventory.inventory_items SET qc_required = TRUE WHERE sku = 'TABLE-OAK-160';
 

@@ -2,6 +2,7 @@ package com.stockflow.inventory.api;
 
 import com.stockflow.common.domain.Sku;
 
+import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -15,6 +16,7 @@ import java.util.UUID;
  *
  * @param referenceId the document that decided it (a QC inspection, a putaway task); also the
  *                    idempotency key together with {@code reference}
+ * @param receivedAt  the stock layer to take from (its receipt time), null when the location holds one
  */
 public record ReclassifyStockCommand(
         Sku sku,
@@ -26,7 +28,8 @@ public record ReclassifyStockCommand(
         MoveReference reference,
         UUID referenceId,
         UUID actorId,
-        String reason
+        String reason,
+        Instant receivedAt
 ) {
 
     public ReclassifyStockCommand {

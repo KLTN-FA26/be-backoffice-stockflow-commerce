@@ -1,6 +1,7 @@
 package com.stockflow.product.internal.entity;
 
 import com.stockflow.common.persistence.BaseEntity;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Table;
@@ -11,12 +12,14 @@ import java.util.UUID;
 /**
  * JPA mapping of a SKU (table {@code product.sku}). Not the domain model.
  *
- * <p>STARTER ENTITY. The {@code code} is the SKU string used across modules (inventory rows,
- * order lines). {@code lotTracked} decides whether inventory keeps lot/expiry for it. Same-schema
- * reference to {@code product.variant}.</p>
+ * <p>The {@code code} is the SKU string used across modules (inventory rows, order lines).
+ * Lot/serial tracking and expiry are distinct SKU policies. Same-schema reference to {@code
+ * product.variant}.
  */
 @Entity
-@Table(name = "sku", schema = "product",
+@Table(
+        name = "sku",
+        schema = "product",
         uniqueConstraints = @UniqueConstraint(name = "uk_sku_code", columnNames = "code"))
 public class SkuJpaEntity extends BaseEntity {
 
@@ -35,11 +38,15 @@ public class SkuJpaEntity extends BaseEntity {
     @Column(name = "unit_of_measure", nullable = false, length = 16)
     private String unitOfMeasure;
 
-    protected SkuJpaEntity() {
-    }
+    protected SkuJpaEntity() {}
 
-    public SkuJpaEntity(UUID id, UUID variantId, String code, String barcode,
-                        boolean lotTracked, String unitOfMeasure) {
+    public SkuJpaEntity(
+            UUID id,
+            UUID variantId,
+            String code,
+            String barcode,
+            boolean lotTracked,
+            String unitOfMeasure) {
         super(id);
         this.variantId = variantId;
         this.code = code;
@@ -48,9 +55,23 @@ public class SkuJpaEntity extends BaseEntity {
         this.unitOfMeasure = unitOfMeasure;
     }
 
-    public UUID getVariantId() { return variantId; }
-    public String getCode() { return code; }
-    public String getBarcode() { return barcode; }
-    public boolean isLotTracked() { return lotTracked; }
-    public String getUnitOfMeasure() { return unitOfMeasure; }
+    public UUID getVariantId() {
+        return variantId;
+    }
+
+    public String getCode() {
+        return code;
+    }
+
+    public String getBarcode() {
+        return barcode;
+    }
+
+    public boolean isLotTracked() {
+        return lotTracked;
+    }
+
+    public String getUnitOfMeasure() {
+        return unitOfMeasure;
+    }
 }

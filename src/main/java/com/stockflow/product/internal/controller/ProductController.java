@@ -8,7 +8,6 @@ import com.stockflow.product.internal.controller.dto.ProductResponse;
 import com.stockflow.product.internal.controller.dto.ProductVersionResponse;
 import com.stockflow.product.internal.controller.dto.RejectProductRequest;
 import com.stockflow.product.internal.controller.dto.UpdateProductRequest;
-import com.stockflow.product.internal.service.ProductPublicationService;
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.error.BusinessException;
@@ -58,12 +57,10 @@ class ProductController {
 
     private final ProductService productService;
     private final ProductWebMapper mapper;
-    private final ProductPublicationService publication;
 
-    ProductController(ProductService productService, ProductWebMapper mapper, ProductPublicationService publication) {
+    ProductController(ProductService productService, ProductWebMapper mapper) {
         this.productService = productService;
         this.mapper = mapper;
-        this.publication = publication;
     }
 
     @GetMapping
@@ -143,20 +140,6 @@ class ProductController {
     @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.APPROVE)
     public ApiResponse<ProductResponse> discontinue(@PathVariable UUID productId) {
         return ApiResponse.ok(mapper.toResponse(productService.discontinue(productId)));
-    }
-
-    @PostMapping("/{productId}/publication")
-    @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.APPROVE)
-    public ApiResponse<Void> publish(@PathVariable UUID productId) {
-        publication.publish(productId);
-        return ApiResponse.ok(null);
-    }
-
-    @PostMapping("/{productId}/unpublication")
-    @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.APPROVE)
-    public ApiResponse<Void> unpublish(@PathVariable UUID productId) {
-        publication.unpublish(productId);
-        return ApiResponse.ok(null);
     }
 
     /** SCRUM-86 (WBS 3.1.8.2). 404s via {@code ProductService.history} if the product does not

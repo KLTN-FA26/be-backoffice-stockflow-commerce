@@ -71,6 +71,11 @@ Enum inventory.cycle_count_trigger_type {
   MANUAL
 }
 
+Enum inventory.inventory_items_removal_strategy {
+  FIFO
+  FEFO
+}
+
 Enum inventory.inventory_items_storage_class {
   NORMAL
   COLD
@@ -286,6 +291,11 @@ Enum procurement.goods_receipts_status {
   CANCELLED
 }
 
+Enum procurement.po_delivery_decision_channel {
+  EMAIL
+  API
+}
+
 Enum procurement.purchase_order_approvals_decision {
   APPROVED
   REJECTED
@@ -466,6 +476,7 @@ Enum ordering.customer_order_status {
   PENDING_PAYMENT
   PAID
   IN_PRODUCTION
+  READY_TO_FULFILL
   IN_FULFILMENT
   ON_HOLD
   SHIPPED
@@ -654,6 +665,7 @@ Enum notification.delivery_log_channel {
   EMAIL
   SMS
   PUSH
+  API
 }
 
 Enum notification.delivery_log_status {
@@ -965,6 +977,7 @@ Table product.products [headercolor: #2E86AB] {
   created_by        varchar(100)
   last_modified_at  timestamptz
   last_modified_by  varchar(100)
+  ever_published    boolean [not null, default: false]
 }
 
 Table product.variant_attribute_values [headercolor: #2E86AB] {
@@ -1073,6 +1086,10 @@ Table inventory.inventory_items [headercolor: #3E7C4A] {
   last_modified_at          timestamptz
   last_modified_by          varchar(100)
   qc_required               boolean [not null, default: false]
+  safety_stock              int
+  removal_strategy          inventory.inventory_items_removal_strategy [not null, default: 'FEFO']
+  max_shelf_life_days       int
+  policy_configured         boolean [not null, default: false]
 }
 
 Table inventory.stock_adjustment [headercolor: #3E7C4A] {
@@ -1112,6 +1129,8 @@ Table inventory.stock_item [headercolor: #3E7C4A] {
   created_by       varchar(100)
   last_modified_at timestamptz
   last_modified_by varchar(100)
+  received_at      timestamptz
+  serial_number    varchar(100)
 }
 
 Table inventory.stock_movement [headercolor: #3E7C4A] {
@@ -1481,6 +1500,25 @@ Table procurement.goods_receipts [headercolor: #7D5BA6] {
   last_modified_at timestamptz
   last_modified_by varchar(100)
   closed_at        timestamptz
+}
+
+Table procurement.po_delivery_decision [headercolor: #7D5BA6] {
+  id                   uuid [pk]
+  purchase_order_id    uuid [not null]
+  generation           int [not null]
+  previous_expected_at date
+  expected_at          date
+  reason               varchar(1000)
+  reconciled           boolean [not null]
+  acknowledge_past_due boolean [not null]
+  channel              procurement.po_delivery_decision_channel [not null]
+  recipient            varchar(500) [not null]
+  payload_snapshot     text
+  actor                varchar(255) [not null]
+  requested_at         timestamptz [not null]
+  indexes {
+    (purchase_order_id, generation) [unique]
+  }
 }
 
 Table procurement.po_number_sequence [headercolor: #7D5BA6] {
@@ -1955,6 +1993,14 @@ Table production.sample_request [headercolor: #E67E22] {
 // SCHEMA: ordering
 // =============================================================================
 
+Table ordering.approved_sample [headercolor: #C0392B] {
+  sample_request_id  uuid [pk]
+  customer_id        uuid [not null]
+  design_snapshot_id uuid [not null]
+  blank_sku          varchar(64) [not null]
+  approved_at        timestamptz [not null]
+}
+
 Table ordering.cart [headercolor: #C0392B] {
   id                  uuid [pk]
   customer_id         uuid
@@ -2057,6 +2103,13 @@ Table ordering.order_line [headercolor: #C0392B] {
   currency           varchar(3) [not null]
   design_snapshot_id uuid
   design_checksum    varchar(64)
+}
+
+Table ordering.order_line_production [headercolor: #C0392B] {
+  production_order_id uuid [pk]
+  order_line_id       uuid [not null]
+  good_quantity       int [not null]
+  completed_at        timestamptz [not null]
 }
 
 Table ordering.order_line_reservation [headercolor: #C0392B] {
@@ -2499,18 +2552,20 @@ Table catalog.catalog_entry [headercolor: #1B998B] {
   sku              varchar(64) [not null, unique]
   title            varchar(300) [not null]
   slug             varchar(200) [not null, unique]
-  description      varchar(2000)
+  description      text
   price            decimal(18,2)
   currency         varchar(3) [not null, default: 'VND']
   atp              int
   published        boolean [not null, default: false]
   seo_title        varchar(300)
-  seo_description  varchar(500)
+  seo_description  text
   version          bigint [not null, default: 0]
   created_at       timestamptz [not null]
   created_by       varchar(100)
   last_modified_at timestamptz
   last_modified_by varchar(100)
+  product_id       uuid
+  source_revision  bigint
 }
 
 Table catalog.pricing_rule [headercolor: #1B998B] {
@@ -2527,6 +2582,22 @@ Table catalog.pricing_rule [headercolor: #1B998B] {
   created_by       varchar(100)
   last_modified_at timestamptz
   last_modified_by varchar(100)
+}
+
+Table catalog.product_listing [headercolor: #1B998B] {
+  product_id                uuid [pk]
+  slug                      varchar(255) [not null, unique]
+  seo_title                 varchar(255)
+  seo_description           text
+  revision                  bigint [not null, default: 0]
+  projected_revision        bigint [not null, default: `'-1'::integer`]
+  enabled                   boolean [not null, default: false]
+  ever_published            boolean [not null, default: false]
+  published_title           varchar(300)
+  published_description     text
+  published_seo_title       varchar(255)
+  published_seo_description text
+  last_attempt_at           timestamptz
 }
 
 Table catalog.promotion [headercolor: #1B998B] {
@@ -2582,18 +2653,35 @@ Table chat.message [headercolor: #4C93A8] {
 // =============================================================================
 
 Table notification.delivery_log [headercolor: #A6763F] {
-  id               uuid [pk]
-  template_code    varchar(64)
-  channel          notification.delivery_log_channel [not null]
-  recipient        varchar(320) [not null]
-  status           notification.delivery_log_status [not null]
-  error            varchar(1000)
-  sent_at          timestamptz
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
+  id                  uuid [pk]
+  template_code       varchar(64)
+  channel             notification.delivery_log_channel [not null]
+  recipient           varchar(500) [not null]
+  status              notification.delivery_log_status [not null]
+  error               varchar(1000)
+  sent_at             timestamptz
+  version             bigint [not null, default: 0]
+  created_at          timestamptz [not null]
+  created_by          varchar(100)
+  last_modified_at    timestamptz
+  last_modified_by    varchar(100)
+  external_reference  varchar(100)
+  operation_reference varchar(100)
+  terminal            boolean [not null, default: false]
+  delivery_generation int [not null, default: 0]
+  attempt_number      int [not null, default: 1]
+}
+
+Table notification.po_delivery_control [headercolor: #A6763F] {
+  purchase_order_id      uuid [pk]
+  generation             int [not null, default: 0]
+  suppressed             boolean [not null, default: false]
+  cancellation_requested boolean [not null, default: false]
+}
+
+Table notification.po_retry_cursor [headercolor: #A6763F] {
+  id                  smallint [pk]
+  last_publication_id uuid
 }
 
 Table notification.preference [headercolor: #A6763F] {
@@ -2905,6 +2993,7 @@ Ref: procurement.goods_receipts.po_id > procurement.purchase_orders.id [delete: 
 Ref: procurement.goods_receipts.po_revision_id > procurement.purchase_order_revisions.id [delete: restrict]
 Ref: procurement.goods_receipts.received_by > identity.app_user.id
 Ref: procurement.goods_receipts.warehouse_id > warehouse.warehouse.id [delete: restrict]
+Ref: procurement.po_delivery_decision.purchase_order_id > procurement.purchase_orders.id [delete: cascade]
 Ref: procurement.purchase_order_approvals.approver_id > identity.app_user.id
 Ref: procurement.purchase_order_approvals.po_revision_id > procurement.purchase_order_revisions.id [delete: cascade]
 Ref: procurement.purchase_order_attachments.po_id > procurement.purchase_orders.id [delete: cascade]
@@ -2972,6 +3061,9 @@ Ref: production.sample_request.customer_id > customer.customer.id [delete: restr
 Ref: production.sample_request.design_snapshot_id > design.design_snapshot.id [delete: restrict]
 Ref: production.sample_request.previous_round_id > production.sample_request.id [delete: restrict]
 Ref: production.sample_request.responded_by > identity.app_user.id
+Ref: ordering.approved_sample.customer_id > customer.customer.id [delete: restrict]
+Ref: ordering.approved_sample.design_snapshot_id > design.design_snapshot.id [delete: restrict]
+Ref: ordering.approved_sample.sample_request_id > production.sample_request.id [delete: restrict]
 Ref: ordering.cart.converted_order_id > ordering.customer_order.id [delete: restrict]
 Ref: ordering.cart.customer_id > customer.customer.id [delete: restrict]
 Ref: ordering.cart.merged_into_cart_id > ordering.cart.id [delete: restrict]
@@ -2986,6 +3078,8 @@ Ref: ordering.order_hold.resolved_by > identity.app_user.id
 Ref: ordering.order_line.design_snapshot_id > design.design_snapshot.id [delete: restrict]
 Ref: ordering.order_line.order_id > ordering.customer_order.id [delete: cascade]
 Ref: ordering.order_line.sku > product.variants.sku [delete: restrict]
+Ref: ordering.order_line_production.order_line_id > ordering.order_line.id [delete: cascade]
+Ref: ordering.order_line_production.production_order_id > production.production_order.id [delete: restrict]
 Ref: ordering.order_line_reservation.order_line_id > ordering.order_line.id [delete: cascade]
 Ref: ordering.order_line_reservation.reservation_id > inventory.stock_reservation.id [delete: restrict]
 Ref: ordering.order_status_history.actor_id > identity.app_user.id
@@ -3047,10 +3141,12 @@ Ref: fulfillment.shipment_event.shipment_id > fulfillment.shipment.id [delete: c
 Ref: catalog.catalog_entry.sku > product.variants.sku [delete: restrict]
 Ref: catalog.pricing_rule.segment_id > customer.segment.id [delete: restrict]
 Ref: catalog.pricing_rule.sku > product.variants.sku [delete: restrict]
+Ref: catalog.product_listing.product_id > product.products.id
 Ref: chat.conversation.assigned_agent_id > identity.app_user.id
 Ref: chat.conversation.customer_id > customer.customer.id [delete: restrict]
 Ref: chat.conversation.order_id > ordering.customer_order.id [delete: restrict]
 Ref: chat.message.conversation_id > chat.conversation.id [delete: cascade]
+Ref: notification.po_delivery_control.purchase_order_id > procurement.purchase_orders.id [delete: cascade]
 Ref: notification.preference.user_id > identity.app_user.id [delete: cascade]
 Ref: reporting.product_sales_summary.sku > product.variants.sku [delete: restrict]
 Ref: identity.role_permission.permission_id > identity.permission.id [delete: cascade]
@@ -3107,6 +3203,7 @@ TableGroup procurement_group [color: #7D5BA6] {
   procurement.approval_limits
   procurement.goods_receipt_lines
   procurement.goods_receipts
+  procurement.po_delivery_decision
   procurement.po_number_sequence
   procurement.purchase_order_approvals
   procurement.purchase_order_attachments
@@ -3136,11 +3233,13 @@ TableGroup production_group [color: #E67E22] {
 }
 
 TableGroup ordering_group [color: #C0392B] {
+  ordering.approved_sample
   ordering.cart
   ordering.cart_line
   ordering.customer_order
   ordering.order_hold
   ordering.order_line
+  ordering.order_line_production
   ordering.order_line_reservation
   ordering.order_number_sequence
   ordering.order_status_history
@@ -3183,6 +3282,7 @@ TableGroup fulfillment_group [color: #2C7873] {
 TableGroup catalog_group [color: #1B998B] {
   catalog.catalog_entry
   catalog.pricing_rule
+  catalog.product_listing
   catalog.promotion
 }
 
@@ -3193,6 +3293,8 @@ TableGroup chat_group [color: #4C93A8] {
 
 TableGroup notification_group [color: #A6763F] {
   notification.delivery_log
+  notification.po_delivery_control
+  notification.po_retry_cursor
   notification.preference
   notification.template
 }
