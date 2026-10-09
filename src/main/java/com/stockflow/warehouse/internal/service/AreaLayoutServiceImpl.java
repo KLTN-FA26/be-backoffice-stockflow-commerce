@@ -1,5 +1,7 @@
 package com.stockflow.warehouse.internal.service;
 
+import com.stockflow.common.audit.AuditAction;
+import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ConflictException;
 import com.stockflow.common.error.ErrorCode;
@@ -21,6 +23,9 @@ import java.util.UUID;
  * The transaction boundary for areas. BR-06 and BR-07 have no database twin, for the reason
  * {@code ShelfLayoutServiceImpl} gives; the warehouse row lock taken first in every write is their
  * second line of defence (issue #18 D4).
+ *
+ * <p>Every change is {@link Auditable}: a new area under its warehouse, since its id is minted inside
+ * the call, and every later change under the area's own id.</p>
  */
 @Service
 @Transactional
@@ -35,6 +40,7 @@ class AreaLayoutServiceImpl implements AreaLayoutService {
     }
 
     @Override
+    @Auditable(action = AuditAction.CREATE, resourceType = "area", resourceId = "#command.warehouseId()")
     public AreaSummary createArea(AreaCommands.CreateArea command) {
         Warehouse warehouse = warehouses.findByIdForUpdate(command.warehouseId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.WAREHOUSE_NOT_FOUND,
@@ -51,6 +57,7 @@ class AreaLayoutServiceImpl implements AreaLayoutService {
     }
 
     @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "area", resourceId = "#command.areaId()")
     public AreaSummary updateArea(AreaCommands.UpdateArea command) {
         Warehouse warehouse = lockWarehouseOf(command.areaId());
         Area area = require(command.areaId());
@@ -62,6 +69,7 @@ class AreaLayoutServiceImpl implements AreaLayoutService {
     }
 
     @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "area", resourceId = "#areaId")
     public AreaSummary changeAreaStatus(UUID areaId, LocationStatus status) {
         Warehouse warehouse = lockWarehouseOf(areaId);
         Area area = require(areaId);
