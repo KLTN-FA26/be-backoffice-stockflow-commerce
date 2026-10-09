@@ -1,5 +1,7 @@
 package com.stockflow.warehouse.internal.service;
 
+import com.stockflow.common.audit.AuditAction;
+import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
@@ -16,6 +18,10 @@ import java.util.UUID;
  * The transaction boundary for walls and doors. The warehouse lock comes first in every write, as
  * for shelves and areas: shrinking the map reads how far boundaries reach (BR-06), and must not race
  * a boundary being drawn further out.
+ *
+ * <p>Every change is {@link Auditable}: a new boundary under its warehouse, since its id is minted
+ * inside the call, and every later change under the boundary's own id. A delete matters most - it is
+ * the one hard delete on the map (issue #18 D11), so the audit entry is all that is left of it.</p>
  */
 @Service
 @Transactional
@@ -30,6 +36,7 @@ class BoundaryLayoutServiceImpl implements BoundaryLayoutService {
     }
 
     @Override
+    @Auditable(action = AuditAction.CREATE, resourceType = "boundary", resourceId = "#command.warehouseId()")
     public BoundarySummary createBoundary(BoundaryCommands.CreateBoundary command) {
         Warehouse warehouse = warehouses.findByIdForUpdate(command.warehouseId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.WAREHOUSE_NOT_FOUND,
@@ -41,6 +48,7 @@ class BoundaryLayoutServiceImpl implements BoundaryLayoutService {
     }
 
     @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "boundary", resourceId = "#command.boundaryId()")
     public BoundarySummary updateBoundary(BoundaryCommands.UpdateBoundary command) {
         Warehouse warehouse = lockWarehouseOf(command.boundaryId());
         Boundary boundary = require(command.boundaryId());
@@ -51,6 +59,7 @@ class BoundaryLayoutServiceImpl implements BoundaryLayoutService {
     }
 
     @Override
+    @Auditable(action = AuditAction.DELETE, resourceType = "boundary", resourceId = "#boundaryId")
     public void deleteBoundary(UUID boundaryId, long expectedVersion) {
         lockWarehouseOf(boundaryId);
         require(boundaryId).requireVersion(expectedVersion);
