@@ -21,5 +21,5 @@ import org.springframework.transaction.annotation.Transactional;
 @Transactional
 class WarehouseServiceImpl implements WarehouseService {
 
-    // TODO: constructor-inject the repository port here, then implement WarehouseService.
+    // TODO(#25): implement the storage-location lookup. Map administration is WarehouseLayoutServiceImpl.
 }
