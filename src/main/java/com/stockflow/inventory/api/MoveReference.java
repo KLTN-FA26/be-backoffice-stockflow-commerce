@@ -10,5 +10,9 @@ public enum MoveReference {
     MOVE_TASK,
     PUTAWAY_TASK,
     TRANSFER_ORDER_LINE,
-    ORDER
+    ORDER,
+    /** A goods-receipt line: moving received goods from the receiving area to the QC area. */
+    GOODS_RECEIPT_LINE,
+    /** A QC decision on received goods: quarantined or rejected parts leave the QC area. */
+    QC_INSPECTION
 }

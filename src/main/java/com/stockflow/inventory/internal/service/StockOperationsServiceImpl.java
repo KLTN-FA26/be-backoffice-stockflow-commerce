@@ -10,6 +10,8 @@ import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.SortWhitelist;
 import com.stockflow.inventory.api.MoveStockCommand;
+import com.stockflow.inventory.api.ReceiveStockCommand;
+import com.stockflow.inventory.api.ReclassifyStockCommand;
 import com.stockflow.inventory.api.RequestAdjustmentCommand;
 import com.stockflow.inventory.api.StockAdjustmentReason;
 import com.stockflow.inventory.api.StockAdjustmentStatus;
@@ -26,6 +28,7 @@ import com.stockflow.inventory.internal.domain.StockItem;
 import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.inventory.internal.domain.StockMovement;
 import com.stockflow.inventory.internal.domain.StockMovementLog;
+import com.stockflow.inventory.internal.domain.StockStatus;
 import com.stockflow.inventory.internal.repository.StockAdjustmentSearch;
 import com.stockflow.inventory.internal.repository.StockLedgerSearch;
 import org.slf4j.Logger;
@@ -89,27 +92,47 @@ class StockOperationsServiceImpl implements StockOperations {
     public StockMove move(MoveStockCommand command) {
         StockMovement.ReferenceType referenceType = StockMovement.ReferenceType.valueOf(command.reference().name());
         UUID referenceId = command.referenceId() != null ? command.referenceId() : command.requestId();
+        return relocate(command.sku(), command.lotNumber(), command.fromLocation(), command.toLocation(),
+                command.quantity(), null, referenceType, referenceId, command.actorId(), null);
+    }
 
+    @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "stock-move", resourceId = "#command.referenceId()")
+    public StockMove reclassify(ReclassifyStockCommand command) {
+        return relocate(command.sku(), command.lotNumber(), command.fromLocation(), command.toLocation(),
+                command.quantity(), StockStatus.valueOf(command.disposition().name()),
+                StockMovement.ReferenceType.valueOf(command.reference().name()), command.referenceId(),
+                command.actorId(), blankToNull(command.reason()));
+    }
+
+    /**
+     * The one implementation of moving stock between two locations, for a plain move ({@code target}
+     * null: the status travels with the goods) and for a reclassification (the goods arrive as
+     * {@code target}).
+     */
+    private StockMove relocate(Sku sku, String lotNumber, String fromCode, String toCode, int qty,
+                               StockStatus target, StockMovement.ReferenceType referenceType, UUID referenceId,
+                               UUID actorId, String reason) {
         // Replay first: a retried move must not move the goods again.
         Optional<StockMovement> done = ledger.findByReference(StockMovement.MovementType.MOVE, referenceType, referenceId);
         if (done.isPresent()) {
             return toMove(done.get());
         }
 
-        LocationId from = new LocationId(command.fromLocation());
-        LocationId to = new LocationId(command.toLocation());
+        LocationId from = new LocationId(fromCode);
+        LocationId to = new LocationId(toCode);
         if (from.equals(to)) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A move needs two different locations");
         }
         if (!locations.exists(to)) {
             throw new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + to);
         }
-        Quantity quantity = Quantity.of(command.quantity());
+        Quantity quantity = Quantity.of(qty);
 
-        StockItem sourceView = findOne(command.sku(), from, command.lotNumber())
+        StockItem sourceView = findOne(sku, from, lotNumber)
                 .orElseThrow(() -> new BusinessException(ErrorCode.STOCK_ITEM_NOT_FOUND,
-                        "No %s%s at %s".formatted(command.sku(), lotSuffix(command.lotNumber()), from)));
-        Optional<StockItem> destinationView = findOne(command.sku(), to, command.lotNumber());
+                        "No %s%s at %s".formatted(sku, lotSuffix(lotNumber), from)));
+        Optional<StockItem> destinationView = findOne(sku, to, lotNumber);
 
         // Lock in id order, as reserve() does: two moves crossing the same pair in opposite
         // directions would otherwise deadlock.
@@ -129,15 +152,22 @@ class StockOperationsServiceImpl implements StockOperations {
         }
         Objects.requireNonNull(source, "source");
 
-        if (destination != null && !destination.canReceiveFrom(source)) {
+        if (target != null && source.status() != StockStatus.INBOUND && source.status() != StockStatus.QUARANTINE) {
             throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH,
-                    "%s holds %s%s as %s; this stock is %s".formatted(to, command.sku(),
-                            lotSuffix(command.lotNumber()), destination.status(), source.status()));
+                    "%s%s at %s is %s; only INBOUND or QUARANTINE stock takes a receiving decision".formatted(
+                            sku, lotSuffix(lotNumber), from, source.status()));
+        }
+        StockStatus arriving = target != null ? target : source.status();
+        if (destination != null && !destination.canReceiveFrom(source, arriving)) {
+            throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH,
+                    "%s holds %s%s as %s; this stock would arrive as %s".formatted(to, sku,
+                            lotSuffix(lotNumber), destination.status(), arriving));
         }
 
+        StockStatus before = source.status();
         source.moveOut(quantity);
         if (destination == null) {
-            destination = StockItem.arrivedFrom(source, to, quantity);
+            destination = StockItem.arrivedAs(source, to, quantity, arriving);
         } else {
             destination.moveIn(quantity);
         }
@@ -146,10 +176,53 @@ class StockOperationsServiceImpl implements StockOperations {
 
         Instant now = clock.instant();
         StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.MOVE,
-                command.sku(), command.lotNumber(), from, to, quantity.value(), source.status(),
-                referenceType, referenceId, null, command.actorId(), now);
+                sku, blankToNull(lotNumber), from, to, quantity.value(), before, arriving,
+                referenceType, referenceId, reason, actorId, now);
         ledger.append(line);
-        log.info("Moved {} x {}{} from {} to {}", quantity, command.sku(), lotSuffix(command.lotNumber()), from, to);
+        log.info("Moved {} x {}{} from {} to {} ({} -> {})", quantity, sku, lotSuffix(lotNumber), from, to,
+                before, arriving);
+        return toMove(line);
+    }
+
+    // ------------------------------------------------------------------ receipt
+
+    @Override
+    @Auditable(action = AuditAction.CREATE, resourceType = "stock-receipt", resourceId = "#command.receiptLineId()")
+    public StockMove receive(ReceiveStockCommand command) {
+        Optional<StockMovement> done = ledger.findByReference(StockMovement.MovementType.RECEIPT,
+                StockMovement.ReferenceType.GOODS_RECEIPT_LINE, command.receiptLineId());
+        if (done.isPresent()) {
+            return toMove(done.get());
+        }
+        LocationId location = new LocationId(command.locationCode());
+        if (!locations.exists(location)) {
+            throw new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + location);
+        }
+        String lot = blankToNull(command.lotNumber());
+        Quantity quantity = Quantity.of(command.quantity());
+
+        Optional<StockItem> existing = findOne(command.sku(), location, lot);
+        StockItem item;
+        if (existing.isPresent()) {
+            item = stockItems.findByIdForUpdate(existing.get().id()).orElseThrow(() ->
+                    new IllegalStateException("Stock item %s vanished mid-receipt".formatted(existing.get().id())));
+            if (!item.canTakeReceipt(command.sku(), lot)) {
+                throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH,
+                        "%s holds %s%s as %s; received goods arrive as INBOUND".formatted(
+                                location, command.sku(), lotSuffix(lot), item.status()));
+            }
+            item.moveIn(quantity);
+        } else {
+            item = StockItem.receiveInbound(command.sku(), location, lot, command.expiryDate(), quantity);
+        }
+        stockItems.save(item);
+
+        StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.RECEIPT,
+                command.sku(), lot, null, location, quantity.value(), StockStatus.INBOUND,
+                StockMovement.ReferenceType.GOODS_RECEIPT_LINE, command.receiptLineId(), null,
+                command.actorId(), clock.instant());
+        ledger.append(line);
+        log.info("Received {} x {}{} into {}", quantity, command.sku(), lotSuffix(lot), location);
         return toMove(line);
     }
 
@@ -251,15 +324,15 @@ class StockOperationsServiceImpl implements StockOperations {
     }
 
     private static StockMove toMove(StockMovement m) {
-        return new StockMove(m.id(), m.sku().code(), m.lotNumber(), m.from().code(), m.to().code(),
-                m.quantity(), m.occurredAt());
+        return new StockMove(m.id(), m.sku().code(), m.lotNumber(), m.from() == null ? null : m.from().code(),
+                m.to() == null ? null : m.to().code(), m.quantity(), m.occurredAt());
     }
 
     private static LedgerLine toLine(StockMovement m) {
         return new LedgerLine(m.id(), m.type(), m.sku().code(), m.lotNumber(),
                 m.from() == null ? null : m.from().code(), m.to() == null ? null : m.to().code(),
                 m.quantity(), m.status() == null ? null : m.status().name(),
-                m.referenceType().name(), m.referenceId(), m.reason(), m.actorId(), m.occurredAt());
+                m.toStatus() == null ? null : m.toStatus().name(), m.referenceType().name(), m.referenceId(), m.reason(), m.actorId(), m.occurredAt());
     }
 
     static StockAdjustmentSummary toSummary(StockAdjustment a) {

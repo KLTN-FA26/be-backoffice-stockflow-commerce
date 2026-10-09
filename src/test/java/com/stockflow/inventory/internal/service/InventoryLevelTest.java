@@ -28,7 +28,7 @@ class InventoryLevelTest {
     private final StockItemRepository repository = mock(StockItemRepository.class);
     private final InventoryServiceImpl service =
             new InventoryServiceImpl(repository, mock(InventoryEventPublisher.class),
-                    mock(StockOperations.class), Clock.systemUTC());
+                    mock(StockOperations.class), mock(com.stockflow.inventory.internal.domain.InventoryItemDirectory.class), Clock.systemUTC());
 
     private static StockLevelLine line(String location, StockStatus status, int onHand, int reserved) {
         return new StockLevelLine(new LocationId(location), status, onHand, reserved);

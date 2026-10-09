@@ -1,7 +1,10 @@
 package com.stockflow.inventory.internal.service;
 
 import com.stockflow.inventory.api.InventoryService;
+import com.stockflow.inventory.api.InventoryItemPolicy;
 import com.stockflow.inventory.api.MoveStockCommand;
+import com.stockflow.inventory.api.ReceiveStockCommand;
+import com.stockflow.inventory.api.ReclassifyStockCommand;
 import com.stockflow.inventory.api.RequestAdjustmentCommand;
 import com.stockflow.inventory.api.StockAdjustmentSummary;
 import com.stockflow.inventory.api.StockMove;
@@ -10,6 +13,7 @@ import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.api.StockAvailability;
 import com.stockflow.inventory.api.StockLevel;
 import com.stockflow.inventory.api.StockReservation;
+import com.stockflow.inventory.internal.domain.InventoryItemDirectory;
 import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.Quantity;
 import com.stockflow.inventory.internal.domain.ReleaseReason;
@@ -67,13 +71,15 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
     private final StockItemRepository repository;
     private final InventoryEventPublisher events;
     private final StockOperations operations;
+    private final InventoryItemDirectory items;
     private final Clock clock;
 
     InventoryServiceImpl(StockItemRepository repository, InventoryEventPublisher events,
-                         StockOperations operations, Clock clock) {
+                         StockOperations operations, InventoryItemDirectory items, Clock clock) {
         this.repository = repository;
         this.events = events;
         this.operations = operations;
+        this.items = items;
         this.clock = clock;
     }
 
@@ -81,6 +87,22 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
     @Override
     public StockMove move(MoveStockCommand command) {
         return operations.move(command);
+    }
+
+    @Override
+    public StockMove receive(ReceiveStockCommand command) {
+        return operations.receive(command);
+    }
+
+    @Override
+    public StockMove reclassify(ReclassifyStockCommand command) {
+        return operations.reclassify(command);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<InventoryItemPolicy> itemPolicy(UUID inventoryItemId) {
+        return items.policyOf(inventoryItemId);
     }
 
     @Override
