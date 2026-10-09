@@ -9,6 +9,8 @@ import com.stockflow.warehouse.api.WarehouseService;
 import com.stockflow.warehouse.internal.controller.dto.StorageLocationResponse;
 import com.stockflow.warehouse.internal.controller.dto.WarehouseLayoutResponse;
 import com.stockflow.warehouse.internal.service.WarehouseLayoutService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -22,6 +24,8 @@ import java.util.UUID;
  * {@link WarehouseLocationResourceDeclaration}.
  */
 @RestController
+@Tag(name = "Warehouse map: layout and lookup", description = "The whole map in one request, and "
+        + "one storage location by the code on its label")
 @RequestMapping("/api/v1")
 class LayoutController {
 
@@ -37,6 +41,12 @@ class LayoutController {
 
     /** Includes {@code INACTIVE} places; see {@link WarehouseLayoutResponse}. */
     @GetMapping("/warehouses/{warehouseId}/layout")
+    @Operation(summary = "The whole map of a warehouse",
+            description = "Frame, zones, shelves with levels and bins, areas and boundaries, INACTIVE ones "
+                + "included. Colour by effectiveStatus (narrowed by the warehouse and, for a bin, "
+                + "its shelf), not status; usable = effectiveStatus ACTIVE. Null fields are absent: "
+                + "a NON_STORAGE area has no location fields and no usable. Bin footprints are "
+                + "relative to their shelf.")
     @RequiresPermission(resource = WarehouseResources.LOCATIONS, action = Action.READ)
     public ApiResponse<WarehouseLayoutResponse> layout(@PathVariable UUID warehouseId) {
         return ApiResponse.ok(mapper.toResponse(layout.layoutOf(warehouseId)));
@@ -47,6 +57,9 @@ class LayoutController {
      * the error: it is whatever the client put in the path, and would go into the log line as is.
      */
     @GetMapping("/locations/{locationCode}")
+    @Operation(summary = "Look up a storage location by its code",
+            description = "Case does not matter: hcm-a01-2-b finds HCM-A01-2-B. Check usable, not status. "
+                + "An unknown code, or a NON_STORAGE area, answers 404 LOCATION_NOT_FOUND.")
     @RequiresPermission(resource = WarehouseResources.LOCATIONS, action = Action.READ)
     public ApiResponse<StorageLocationResponse> location(@PathVariable String locationCode) {
         return ApiResponse.ok(locations.findLocation(locationCode)

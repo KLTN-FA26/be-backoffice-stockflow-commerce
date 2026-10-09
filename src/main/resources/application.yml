@@ -269,6 +269,9 @@ springdoc:
     - group: order
       packages-to-scan: com.stockflow.order
 
+    - group: warehouse
+      packages-to-scan: com.stockflow.warehouse
+
 # -----------------------------------------------------------------------------
 # Application settings owned by this system rather than by a framework.
 # -----------------------------------------------------------------------------

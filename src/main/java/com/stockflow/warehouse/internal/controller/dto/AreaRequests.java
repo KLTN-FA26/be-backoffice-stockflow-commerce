@@ -3,6 +3,7 @@ package com.stockflow.warehouse.internal.controller.dto;
 import com.stockflow.warehouse.internal.domain.AreaType;
 import com.stockflow.warehouse.internal.domain.LocationStatus;
 import com.stockflow.warehouse.internal.domain.StorageClass;
+import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Digits;
 import jakarta.validation.constraints.NotBlank;
@@ -29,7 +30,9 @@ public final class AreaRequests {
      *
      * @param storageClass {@code null} = {@code NORMAL} (issue #18 D9)
      */
+    @Schema(name = "AreaLocationRequest")
     public record Location(
+            @Schema(description = "null = NORMAL")
             StorageClass storageClass,
             @Positive Integer capacityUnits,
             @Positive @Digits(integer = 7, fraction = 3) BigDecimal maxWeight,
@@ -39,11 +42,14 @@ public final class AreaRequests {
     }
 
     public record CreateArea(
+            @Schema(description = "Upper-cased. The location code becomes prefix-area; never changes",
+                    example = "RCV02")
             @NotBlank @Pattern(regexp = "[A-Za-z0-9]{1,20}") String code,
             @NotNull AreaType type,
             @NotBlank @Size(max = 200) String name,
             @NotNull @Valid FootprintRequest footprint,
             boolean obstacle,
+            @Schema(description = "Required for every type but NON_STORAGE, where it is ignored")
             @Valid Location location
     ) {
     }
@@ -61,12 +67,15 @@ public final class AreaRequests {
             @NotBlank @Size(max = 200) String name,
             @NotNull @Valid FootprintRequest footprint,
             boolean obstacle,
+            @Schema(description = "Required for every type but NON_STORAGE, where it is ignored")
             @Valid Location location,
+            @Schema(description = "The version from the last read; a stale one answers 409 OPTIMISTIC_LOCK")
             @PositiveOrZero long version
     ) {
     }
 
     /** Written to the area and its location alike (issue #18 D8). */
+    @Schema(name = "ChangeAreaStatus")
     public record ChangeStatus(@NotNull LocationStatus status) {
     }
 }

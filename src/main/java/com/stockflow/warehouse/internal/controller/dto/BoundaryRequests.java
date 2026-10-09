@@ -2,6 +2,7 @@ package com.stockflow.warehouse.internal.controller.dto;
 
 import com.stockflow.warehouse.internal.domain.BoundaryType;
 import com.stockflow.warehouse.internal.domain.DoorStatus;
+import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Digits;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.PositiveOrZero;
@@ -23,7 +24,9 @@ public final class BoundaryRequests {
             @NotNull @PositiveOrZero @Digits(integer = 7, fraction = 3) BigDecimal startY,
             @NotNull @PositiveOrZero @Digits(integer = 7, fraction = 3) BigDecimal endX,
             @NotNull @PositiveOrZero @Digits(integer = 7, fraction = 3) BigDecimal endY,
+            @Schema(description = "Always false for a wall")
             boolean passable,
+            @Schema(description = "Doors only; null for a wall")
             DoorStatus operationalStatus
     ) {
     }
@@ -35,8 +38,11 @@ public final class BoundaryRequests {
             @NotNull @PositiveOrZero @Digits(integer = 7, fraction = 3) BigDecimal startY,
             @NotNull @PositiveOrZero @Digits(integer = 7, fraction = 3) BigDecimal endX,
             @NotNull @PositiveOrZero @Digits(integer = 7, fraction = 3) BigDecimal endY,
+            @Schema(description = "Always false for a wall")
             boolean passable,
+            @Schema(description = "Doors only; null for a wall")
             DoorStatus operationalStatus,
+            @Schema(description = "The version from the last read; a stale one answers 409 OPTIMISTIC_LOCK")
             @PositiveOrZero long version
     ) {
     }

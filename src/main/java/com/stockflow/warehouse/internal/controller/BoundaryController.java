@@ -6,6 +6,9 @@ import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.warehouse.internal.controller.dto.BoundaryRequests;
 import com.stockflow.warehouse.internal.controller.dto.BoundaryResponse;
 import com.stockflow.warehouse.internal.service.BoundaryLayoutService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -28,6 +31,7 @@ import java.util.UUID;
  * checked against shelves or areas: a wall runs beside them.</p>
  */
 @RestController
+@Tag(name = "Warehouse map: boundaries", description = "Walls and doors. Read them through the layout")
 @RequestMapping("/api/v1")
 class BoundaryController {
 
@@ -40,6 +44,9 @@ class BoundaryController {
     }
 
     @PostMapping("/warehouses/{warehouseId}/boundaries")
+    @Operation(summary = "Draw a wall or a door",
+            description = "A wall: passable false and no operationalStatus. A door: an operationalStatus. "
+                + "Both ends inside the map (409 LAYOUT_OUT_OF_BOUNDS).")
     @ResponseStatus(HttpStatus.CREATED)
     @RequiresPermission(resource = WarehouseResources.LOCATIONS, action = Action.CREATE)
     public ApiResponse<BoundaryResponse> create(@PathVariable UUID warehouseId,
@@ -49,6 +56,8 @@ class BoundaryController {
     }
 
     @PutMapping("/boundaries/{boundaryId}")
+    @Operation(summary = "Redraw a boundary",
+            description = "Send the version from the last read; a stale one answers 409 OPTIMISTIC_LOCK.")
     @RequiresPermission(resource = WarehouseResources.LOCATIONS, action = Action.UPDATE)
     public ApiResponse<BoundaryResponse> update(@PathVariable UUID boundaryId,
                                                 @Valid @RequestBody BoundaryRequests.UpdateBoundary request) {
@@ -62,8 +71,13 @@ class BoundaryController {
      * a stale view answers {@code 409 OPTIMISTIC_LOCK} instead.
      */
     @DeleteMapping("/boundaries/{boundaryId}")
+    @Operation(summary = "Delete a boundary for good",
+            description = "A hard delete, so it names the version it removes: version is required (400 "
+                + "without it), and a stale one answers 409 OPTIMISTIC_LOCK.")
     @RequiresPermission(resource = WarehouseResources.LOCATIONS, action = Action.DELETE)
-    public ApiResponse<Void> delete(@PathVariable UUID boundaryId, @RequestParam long version) {
+    public ApiResponse<Void> delete(@PathVariable UUID boundaryId,
+                                    @Parameter(description = "The version from the last read")
+                                    @RequestParam long version) {
         boundaries.deleteBoundary(boundaryId, version);
         return ApiResponse.ok();
     }
