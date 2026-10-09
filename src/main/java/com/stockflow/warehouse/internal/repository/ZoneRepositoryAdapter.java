@@ -39,6 +39,11 @@ class ZoneRepositoryAdapter implements ZoneRepository {
                 .toList();
     }
 
+    @Override
+    public Optional<UUID> findWarehouseIdOf(UUID zoneId) {
+        return jpa.findWarehouseIdById(zoneId);
+    }
+
     /** Load-and-copy, flushed so a duplicate name is named here; see {@code WarehouseRepositoryAdapter.save}. */
     @Override
     public Zone save(Zone zone) {
