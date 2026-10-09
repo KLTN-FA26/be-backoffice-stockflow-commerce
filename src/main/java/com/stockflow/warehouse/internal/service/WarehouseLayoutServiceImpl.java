@@ -52,8 +52,13 @@ class WarehouseLayoutServiceImpl implements WarehouseLayoutService {
         this.zones = zones;
     }
 
+    /**
+     * Audited under the prefix: there is no id before the call, and the prefix is unique and never
+     * changes. Upper-cased as {@link CodePart} stores it, so "hcm" and "HCM" are one resource.
+     */
     @Override
-    @Auditable(action = AuditAction.CREATE, resourceType = "warehouse", resourceId = "#command.prefix()")
+    @Auditable(action = AuditAction.CREATE, resourceType = "warehouse",
+            resourceId = "#command.prefix()?.toUpperCase(T(java.util.Locale).ROOT)")
     public WarehouseSummary register(RegisterWarehouseCommand command) {
         String prefix = CodePart.of(command.prefix(), CodePart.PREFIX_MAX_LENGTH).value();
         if (warehouses.existsByPrefix(prefix)) {
@@ -112,8 +117,12 @@ class WarehouseLayoutServiceImpl implements WarehouseLayoutService {
         return toSummary(require(warehouseId));
     }
 
+    /**
+     * Audited under the warehouse id: the zone's own id is minted inside the call, and the
+     * warehouse is what says where the zone was added. Its later edits are under the zone id.
+     */
     @Override
-    @Auditable(action = AuditAction.CREATE, resourceType = "zone")
+    @Auditable(action = AuditAction.CREATE, resourceType = "zone", resourceId = "#command.warehouseId()")
     public ZoneSummary createZone(CreateZoneCommand command) {
         if (!warehouses.existsById(command.warehouseId())) {
             throw warehouseNotFound(command.warehouseId());
