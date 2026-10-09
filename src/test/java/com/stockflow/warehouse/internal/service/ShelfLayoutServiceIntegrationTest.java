@@ -11,6 +11,7 @@ import com.stockflow.warehouse.internal.domain.BinType;
 import com.stockflow.warehouse.internal.domain.Footprint;
 import com.stockflow.warehouse.internal.domain.LevelMeasures;
 import com.stockflow.warehouse.internal.domain.LocationSettings;
+import com.stockflow.warehouse.internal.domain.Bin;
 import com.stockflow.warehouse.internal.domain.LocationStatus;
 import com.stockflow.warehouse.internal.domain.MapUnit;
 import com.stockflow.warehouse.internal.domain.PickFaces;
@@ -273,6 +274,39 @@ class ShelfLayoutServiceIntegrationTest {
         long largeQueries = statistics.getPrepareStatementCount();
 
         assertThat(largeQueries).isEqualTo(smallQueries).isEqualTo(2);
+    }
+
+    /**
+     * Saving an edited shelf reads its tree once, to merge onto: the shelf it returns is built from
+     * the rows it just wrote, not read back with a second fetch join over every bin.
+     */
+    @Test
+    @DisplayName("saving an edited shelf runs the tree query once")
+    void savingReadsTheTreeOnce() {
+        UUID id = shelfRepository.save(treeOf("S50", 50)).id();
+        entityManager.flush();
+        jdbc.execute("set constraints all immediate");
+        entityManager.clear();
+
+        Shelf shelf = shelfRepository.findById(id).orElseThrow();
+        ShelfLevel level = shelf.levels().get(1);
+        Bin bin = level.bins().get(7);
+        shelf.changeBinStatus(level.id(), bin.id(), LocationStatus.BLOCKED);
+
+        Statistics statistics = entityManagerFactory.unwrap(SessionFactory.class).getStatistics();
+        statistics.setStatisticsEnabled(true);
+        statistics.clear();
+        Shelf saved = shelfRepository.save(shelf);
+        long treeQueries = statistics.getQueryExecutionCount();
+        long lazyLoads = statistics.getCollectionFetchCount();
+        statistics.setStatisticsEnabled(false);
+
+        assertThat(treeQueries).isEqualTo(1);
+        // The shelf's own level list, so new levels can be appended to it; no level's bins.
+        assertThat(lazyLoads).isEqualTo(1);
+        assertThat(saved.levels()).extracting(ShelfLevel::levelIndex).containsExactly(1, 2, 3);
+        assertThat(saved.level(level.id()).bin(bin.id()).location().status()).isEqualTo(LocationStatus.BLOCKED);
+        assertThat(saved.level(level.id()).bins()).hasSize(50);
     }
 
     /** Three levels of {@code binsPerLevel} 1 x 1 bins in a row, built through the aggregate. */

@@ -5,9 +5,11 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.warehouse.internal.domain.Shelf;
 import com.stockflow.warehouse.internal.domain.ShelfRepository;
 import com.stockflow.warehouse.internal.entity.ShelfJpaEntity;
+import com.stockflow.warehouse.internal.entity.ShelfLevelJpaEntity;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Repository;
 
+import java.util.Comparator;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -62,24 +64,30 @@ class ShelfRepositoryAdapter implements ShelfRepository {
      * A new shelf is persisted with its whole tree; an existing one is merged child by child
      * ({@link ShelfPersistenceMapper#merge}) onto its managed rows, and the cascade inserts what is
      * new at the flush. Flushed here so a unique violation surfaces where it can be named.
+     *
+     * <p>The shelf returned is built from the rows just flushed - every level and bin is already in
+     * memory, bins included - rather than read back with a second fetch join over the whole tree.
+     * Levels are put in {@code levelIndex} order, as a load returns them; a level appended in this
+     * call would otherwise sit last.</p>
      */
     @Override
     public Shelf save(Shelf shelf) {
-        Optional<ShelfJpaEntity> existing = jpa.findById(shelf.id());
-        if (existing.isPresent()) {
-            ShelfJpaEntity row = existing.get();
+        ShelfJpaEntity row = jpa.findById(shelf.id()).orElse(null);
+        if (row != null) {
             // Initialised so new levels are appended to a loaded list, not queued on a lazy one.
             row.getLevels().size();
             ShelfPersistenceMapper.merge(shelf, row, levels.findWithBinsByShelfId(shelf.id()));
         } else {
-            jpa.save(ShelfPersistenceMapper.toNewEntity(shelf));
+            row = jpa.save(ShelfPersistenceMapper.toNewEntity(shelf));
         }
         try {
             jpa.flush();
         } catch (DataIntegrityViolationException ex) {
             throw translate(ex, shelf);
         }
-        return findById(shelf.id()).orElseThrow();
+        return ShelfPersistenceMapper.toDomain(row, row.getLevels().stream()
+                .sorted(Comparator.comparingInt(ShelfLevelJpaEntity::getLevelIndex))
+                .toList());
     }
 
     private static RuntimeException translate(DataIntegrityViolationException ex, Shelf shelf) {
