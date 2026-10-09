@@ -1,18 +1,20 @@
 # SCRUM-70 / SCRUM-71 backend handoff
 
-## Status (2026-10-08)
+## Status (2026-10-09)
 
 Canonical adapters and an append-only cutover migration are implemented. Tu approved the final
 schema model in [review 6058462025](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/38#issuecomment-6058462025)
-at reviewed head `a919c75ec47571ea0a42419537e460eabb14f7c1`. The projection fix still needs his
-retest; upstream PIM writer integration and frontend UAT remain outstanding. Demo-only sample
+at reviewed head `a919c75ec47571ea0a42419537e460eabb14f7c1`. His
+[9 October re-review](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/38#pullrequestreview-5462668849)
+approved `9572c7a` after runtime projection/recovery checks. Upstream PIM writer integration and
+frontend UAT remain outstanding. Demo-only sample
 selling prices now complete the seed, with authenticated fresh/upgrade startup coverage.
 The legacy product/gallery creation APIs have not completed their separate C1 migration.
 
-The branch now includes PR #36 at `c2fa904` (code `1671584`) and develop through `276567d` (#58-60).
+The branch now includes develop `fe0daa7`, with merged PR #36 and #61's receiving/QC schema.
 The conflict resolution retains stock move/adjustment, admin order listing, transfer orders and
 canonical inventory/commerce behavior together. PR #36 was pushed first; merge order remains
-#36 before #38. No GitHub PR merge or production deployment is performed by this handoff.
+#36 before #38; #36 is now merged upstream. No GitHub PR merge or production deployment is performed by this handoff.
 
 ## Canonical ownership
 
@@ -107,20 +109,21 @@ PR #36 remains the first PR to merge. The supplier review migration is now
 with the unpublished PO review version. All SQL already published on develop, remote #36
 and remote #38 retains its original filename/content/checksum.
 
-A DB on the completed #36 release upgrades normally with out-of-order disabled. A populated
+A DB on develop after both #36 and #61 upgrades normally with out-of-order disabled. A populated
 clone check preserved three POs, five delivery logs and their attempt numbers while applying
 the three original #38 versions, followed by the draft-rename correction. Fresh and populated
 upgrades are also regression-tested.
 
 An existing DB from **exactly remote #38 `3bfd605`** has already applied canonical `20261008000100`
-but lacks the lower PO review version `20260930000500`. Default Flyway correctly refuses this
+but lacks the lower PO review version `20260930000500` and newly merged develop QC version
+`20260929000250`. Default Flyway correctly refuses this
 history. A disposable DB built from the actual archived release reproduced the failure and
 validated the following operator recovery (not an application default):
 
 1. Stop writers, back up and restore a clone. Verify the release's full migration history,
    filenames/checksums, absence of failed/unknown versions and canonical schema state.
 2. Run the read-only preflight. With the new migration directory and clone datasource configured,
-   inspect `flyway -outOfOrder=true -target=20261008000100 info`. **Only `20260930000500`** may be
+   inspect `flyway -outOfOrder=true -target=20261008000100 info`. **Only `20260929000250` and `20260930000500`** may be
    pending. A different pending set or script at version `20261008000100` needs its own plan.
 3. On that clone, run `flyway -outOfOrder=true -target=20261008000100 migrate` once. Remove both
    overrides and run normal `flyway migrate` and `flyway validate`; test PO dates, attempts,
@@ -128,11 +131,26 @@ validated the following operator recovery (not an application default):
 4. Repeat only under the intended environment's operator change plan. No global out-of-order,
    automatic history rewrite, blind repair or database reset is introduced.
 
-The equivalent settings were tested with Flyway's Java API; an installed CLI/VPS was not tested.
+The earlier probe predates the QC migration; its 76-version result is historical evidence only.
+The current `9572c7a` recovery is separately tested below. The equivalent settings use Flyway's
+Java API; an installed CLI/VPS was not tested.
 For old remote #36 `9fbb90f`, follow the distinct prerequisite recovery in
 [the supplier runbook](SCRUM-115-118-backend.md#database-upgrade).
 A DB that applied the unpublished **PO** script at `20261008000100` is a different history from
 #38's canonical script at that number and must not use either procedure blindly.
+
+**New develop #61 prerequisite:** a database from the published #38 `9572c7a` (or completed
+#36 before #61) lacks `V20260929000250__receipt_qc_flow.sql`. Preserve that develop filename and
+checksum; do not renumber it, rewrite history or enable out-of-order in application configuration.
+On a backed-up disposable clone of exactly `9572c7a`, verify the complete history against the
+archived manifest, and check that
+`flyway -outOfOrder=true -target=20261008000200 info` reports **only `20260929000250`** pending.
+Apply that bounded one-off migration, remove both overrides, then run normal migrate/validate
+and API checks. The regression reconstructs all 79 published migration/demo files with their
+normalized SHA-256 hashes and verifies policy, SEO/slug/publication and demo selling prices survive.
+Fresh databases and develop after #61 need no override. Other release histories need their own
+pending-set review; old #36 `9fbb90f` now also needs QC `20260929000250` alongside its two earlier
+develop prerequisites. No real database or VPS is changed here.
 
 Run `psql -X -v ON_ERROR_STOP=1 -f tools/sql/inventory-commerce-upgrade-preflight.sql` first.
 History checks work before and after cutover; legacy-source checks run only while the private
@@ -163,6 +181,43 @@ exclude expired stock and take SKU locks before row locks at dispatch. Regressio
 canonical tracked SKUs, so the new operations do not rely on invalid lot data on untracked demo SKUs.
 
 ## Verification
+
+### Re-review 5462668849 and develop #61 integration (2026-10-09)
+
+- Verified local HEAD and fetched PR head at `9572c7a`; no tracked edits or unfinished merge.
+  No `AGENTS.md` exists in the checkout or its parent chain. Read all three issue comments,
+  the approval review and the complete inline/thread collections (both empty).
+- Merged develop `fe0daa7` without textual conflicts. Its receiving/QC migration, domain enums,
+  schema documentation and SQL QA are retained byte-for-byte. All previously published #38 and
+  develop migration filenames/content remain unchanged.
+- Retry contention: bounded keyset scanning now checks listing/source revision, SEO, visibility
+  and projected ACTIVE SKU completeness in a read-only transaction before taking a writer lock.
+  Healthy products are skipped. Repairs still lock and re-read current canonical data; startup
+  retains its complete scan. Missing-price rollback/retry and stale-event guards remain in place.
+  The authenticated fresh/upgrade startup tests hold real product row locks on another connection
+  while retry completes within five seconds without writes, then check lost entry/listing repair.
+- Formatting: only import grouping/order and the added constructor parameter indentation changed
+  in `StockOperationsServiceImpl`; no broad formatting pass.
+- Removed `docs/PR-36-review.md` as requested, with a backup at
+  `C:/Users/VO HOANG MINH/Documents/Codex/PR38-review-5462668849-backup/`. The supplier handoff's
+  sole local reference now links to that document at immutable prerequisite commit `c2fa904`.
+- The archived `9572c7a` migration regression proves normal validation rejects the lower QC
+  prerequisite, verifies the exact one-file recovery set and validates normal operation afterward.
+  The existing archived #36 test now includes the same develop QC prerequisite. Default Flyway
+  out-of-order stays disabled. Updated the read-only preflight and release-specific runbook.
+- Targeted startup/migration regressions: **10 tests**, zero failures/errors/skips; all **186 SQL QA
+  checks** pass and the orphan report is clean. Log:
+  `outputs/pr38-review-5462668849-targeted.log`. Static checks pass (947 Java files).
+- Added post-merge regression coverage proving new `INBOUND` and `BLOCKED` stock contributes
+  neither to storefront availability nor policy usable-on-hand evaluation.
+- Local full `clean verify` exercised **602 tests**: 601 passed, with one error in the newly added
+  QC fixture (duplicate receipt-layer key). Corrected the fixture to use distinct receipt times;
+  reran its complete **32-test class** with `mvn -B -ntp -o verify
+  -Dtest=InventoryCatalogIntegrationTest`: zero failures/errors/skips, JaCoCo and packaged jar.
+  All other full-suite classes, including 18 architecture, 3 module and 9 catalog/security tests,
+  passed. No whole-suite rerun was needed for that fixture-only correction. Logs:
+  `outputs/pr38-review-5462668849-clean-verify.log` and
+  `outputs/pr38-review-5462668849-fixture-verify.log`. GitHub CI must verify the pushed SHA.
 
 ### Review 6058462025 correction (local, not pushed)
 
@@ -222,9 +277,9 @@ canonical tracked SKUs, so the new operations do not rely on invalid lot data on
   1,310 to 246 changed lines (additions plus deletions).
 - Removed the branch-only progress report after backup outside the repo at
   `C:/Users/VO HOANG MINH/Documents/Codex/PR38-review-6058462025-backup/`.
-  `docs/PR-36-review.md` is inherited unchanged from #36 and referenced by its backend handoff;
-  deleting it would delete another PR's work. It is not a separate #38 contribution when compared
-  with the prerequisite branch. Merge order remains #36 -> #38.
+  `docs/PR-36-review.md` was initially retained as an inherited prerequisite record. The
+  9 October follow-up removes it as requested after archiving it outside the repo, and changes
+  the supplier handoff's reference to the immutable GitHub archive. Merge order remains #36 -> #38.
 
 ### Earlier integration checks
 
@@ -247,5 +302,5 @@ item version, and retains refusal for stock, pricing and operational references.
 reassignment and ACTIVE variant renaming remain blocked. The migration regression reproduces
 the old failure before upgrade; SQL QA then passes all 166 checks.
 
-Projection retest, upstream PIM writer migration, canonical FE identifiers and frontend UAT remain
+Upstream PIM writer migration, canonical FE identifiers and frontend UAT remain
 the coordination gates above. Demo sample prices no longer require a business-price decision.

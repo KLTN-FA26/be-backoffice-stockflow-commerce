@@ -146,6 +146,21 @@ class CatalogProjectionStartupIntegrationTest {
         listener.rebuildPublished();
         assertThat(jdbc.queryForList("select * from catalog.product_listing order by product_id")).isEqualTo(listings);
         assertThat(jdbc.queryForList("select * from catalog.catalog_entry order by sku")).isEqualTo(entries);
+        // An admin can hold a product writer lock without a healthy retry waiting on it.
+        var dataSource = jdbc.getDataSource();
+        try (var connection = dataSource.getConnection();
+                var sql = connection.createStatement();
+                var pool = Executors.newSingleThreadExecutor()) {
+            connection.setAutoCommit(false);
+            sql.executeQuery("select id from product.products where status='PUBLISHED' for update").close();
+            try {
+                pool.submit(listener::retry).get(5, TimeUnit.SECONDS);
+            } finally {
+                connection.rollback();
+            }
+        }
+        assertThat(jdbc.queryForList("select * from catalog.product_listing order by product_id")).isEqualTo(listings);
+        assertThat(jdbc.queryForList("select * from catalog.catalog_entry order by sku")).isEqualTo(entries);
         // Simulate lost projections before several instances start at once.
         tx.executeWithoutResult(s -> {
             jdbc.update("delete from catalog.catalog_entry");
@@ -169,9 +184,18 @@ class CatalogProjectionStartupIntegrationTest {
 
         // Partial projection loss at the same revision must also be detected.
         tx.executeWithoutResult(s -> jdbc.update("delete from catalog.catalog_entry where sku='SOFA-3S-GREY'"));
-        listener.rebuildPublished();
+        listener.retry();
         assertSofa(auth, initialSeo, 12500000);
         assertThat(jdbc.queryForObject("select count(*) from catalog.catalog_entry", Long.class)).isEqualTo(2);
+
+        tx.executeWithoutResult(s -> {
+            jdbc.update("delete from catalog.catalog_entry where sku='SOFA-3S-GREY'");
+            jdbc.update("delete from catalog.product_listing where slug='sofa-3-cho'");
+        });
+        listener.retry();
+        assertSofa(auth, initialSeo, 12500000);
+        assertThat(jdbc.queryForList("select * from product.products order by id")).isEqualTo(source);
+        assertThat(jdbc.queryForList("select * from catalog.pricing_rule order by id")).isEqualTo(prices);
 
         UUID sofa = jdbc.queryForObject("select id from product.products where code='SOFA-3S'", UUID.class);
         commerce.unpublish(sofa);

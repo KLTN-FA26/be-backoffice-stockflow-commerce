@@ -290,11 +290,19 @@ values (?,?,'HCM-A-01',?,0,'AVAILABLE',?,?,?,?,now())
         write("update inventory.stock_item set reserved=2 where id=?", held);
         UUID blocked = stock(b, 10, null, null, null);
         write("update inventory.stock_item set status='QUARANTINE' where id=?", blocked);
+        Instant qcReceipt = Instant.parse("2026-09-03T00:00:00Z");
+        for (String status : List.of("INBOUND", "BLOCKED")) {
+            UUID pending = stock(a, 30, qcReceipt, null, null);
+            write("update inventory.stock_item set status=? where id=?", status, pending);
+            qcReceipt = qcReceipt.plusSeconds(1);
+        }
         stock(a, 20, Instant.parse("2026-01-01T00:00:00Z"), LocalDate.of(2000, 1, 1), null);
         var available = inventory.availableQuantities(Set.of(a.sku(), b.sku(), "MISSING-SKU"));
         assertThat(available.get(a.sku())).isEqualTo(4L);
         assertThat(available.getOrDefault(b.sku(), 0L)).isZero();
         assertThat(available.getOrDefault("MISSING-SKU", 0L)).isZero();
+        // Policy uses usable on-hand before reservations; QC stock is still excluded.
+        assertThat(inventoryControl.evaluate(new Sku(a.sku())).usableOnHand()).isEqualTo(6L);
     }
 
     @Test

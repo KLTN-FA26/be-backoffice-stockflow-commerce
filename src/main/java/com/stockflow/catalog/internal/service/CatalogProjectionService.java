@@ -34,6 +34,25 @@ public class CatalogProjectionService {
         listings.attempted(id, clock.instant());
     }
 
+    /** Healthy snapshots need no writer lock; a repair rechecks current source under the lock. */
+    @Transactional(readOnly = true, propagation = Propagation.REQUIRES_NEW)
+    public boolean needsRepair(UUID id) {
+        var listing = listings.find(id).orElse(null);
+        if (listing == null) return true;
+        var product = products.read(id);
+        var source = products.ecommerce(id);
+        return product.status() != ProductStatus.PUBLISHED
+                || !listing.enabled()
+                || listing.publishedTitle() == null
+                || listing.revision() != source.version()
+                || listing.projectedRevision() != source.version()
+                || !Objects.equals(listing.slug(), source.slug())
+                || !Objects.equals(listing.seoTitle(), source.seoTitle())
+                || !Objects.equals(listing.seoDescription(), source.seoDescription())
+                || !listings.projectedSkus(id, source.version()).equals(product.skus().stream()
+                        .map(s -> s.sku()).collect(Collectors.toSet()));
+    }
+
     /** Current-source rebuild is idempotent and cannot resurrect a stale publish event. */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void project(UUID id) {

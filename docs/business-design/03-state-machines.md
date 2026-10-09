@@ -91,45 +91,44 @@ retained for the audit trail. Amendment is forbidden once any receipt exists (BR
 
 ## 3. Goods Receipt — `procurement-service`
 
-WBS 3.3.5.2 names the inventory outcome `Inbound → Available/Quarantine`; 3.3.4.4 adds RTV.
+**Changed 2026-10-09** to the receiving docs (KLTN-FA26/docs 03 Receipt, 05 Putaway, commit
+`084365d`) and migration `V20260929000250`. Receiving is a 2-step or 3-step flow, chosen per SKU by
+the inventory item's **QC required** flag (snapshotted on the receipt line):
+
+| Flow | SKU | Path |
+|---|---|---|
+| 3 steps | `qc_required` | supplier → Area `RECEIVING` → Area `QUALITY_CONTROL` → bin |
+| 2 steps | not QC-required | supplier → Area `RECEIVING` → bin |
 
 ```mermaid
 stateDiagram-v2
     [*] --> DRAFT
-    DRAFT --> COUNTING: start counting
-    COUNTING --> COUNTED: finish counting
-    COUNTED --> QC_PENDING: QC required
-    COUNTED --> POSTED: QC not required
-    QC_PENDING --> QC_PASSED: accept
-    QC_PENDING --> QC_QUARANTINED: quarantine
-    QC_PENDING --> QC_REJECTED: reject
-    QC_PASSED --> POSTED: post
-    QC_QUARANTINED --> QC_PASSED: re-inspect and accept
-    QC_QUARANTINED --> QC_REJECTED: re-inspect and reject
-    QC_REJECTED --> RTV: return to vendor
-    POSTED --> [*]
-    RTV --> [*]
+    DRAFT --> CONFIRMED: confirm counts
     DRAFT --> CANCELLED: cancel
+    CONFIRMED --> IN_QC: a QC-required line has no verdict yet
+    CONFIRMED --> IN_PUTAWAY: no line needs QC
+    IN_QC --> IN_PUTAWAY: every QC line has a verdict
+    IN_QC --> CLOSED: nothing accepted is left to put away
+    IN_PUTAWAY --> CLOSED: putaway done, rejected returned, quarantine decided
+    CLOSED --> [*]
     CANCELLED --> [*]
 ```
 
 | From | To | Trigger | Actor | Guard | Event |
 |---|---|---|---|---|---|
-| — | DRAFT | create from PO, or blind | Warehouse staff | PO in CONFIRMED/PARTIALLY_RECEIVED, or blind receipt allowed (BR-RCP-002) | — |
-| DRAFT | COUNTING | start | Warehouse staff | — | — |
-| COUNTING | COUNTED | finish | Warehouse staff | every line counted; lot/expiry captured where the SKU requires it (BR-RCP-003) | — |
-| COUNTED | QC_PENDING | — | system | product flagged QC-required | `QcTaskCreated` |
-| COUNTED | POSTED | post | Warehouse staff | over-receipt within tolerance, else manager approval (BR-RCP-001) | `GoodsReceived` |
-| QC_PENDING | QC_PASSED | accept | QC staff | — | `QcCompleted(ACCEPTED)` |
-| QC_PENDING | QC_QUARANTINED | quarantine | QC staff | reason given | `QcCompleted(QUARANTINED)` |
-| QC_PENDING | QC_REJECTED | reject | QC staff | reason given | `QcCompleted(REJECTED)` |
-| QC_PASSED | POSTED | post | Warehouse staff | — | `GoodsReceived` |
-| QC_REJECTED | RTV | return to vendor | Procurement staff | supplier notified | `ReturnToVendorRaised` |
+| — | DRAFT | create from PO | Warehouse staff | PO `CONFIRMED` / `PARTIALLY_RECEIVED` (BR-RCP-001) | — |
+| DRAFT | CONFIRMED | confirm | Warehouse staff | lot / expiry where required (BR-RCP-003); over-receipt within tolerance, else manager approval | `GoodsReceived` |
+| DRAFT | CANCELLED | cancel | Warehouse staff | never confirmed (`ck_goods_receipts_cancelled`) | — |
+| CONFIRMED | IN_QC | — | system | ≥1 line with `qc_required`; a **move-to-QC task** (`move_task.origin = RECEIPT_QC`) is created per such line | — |
+| CONFIRMED | IN_PUTAWAY | — | system | no line needs QC; putaway tasks from `RECEIVING` | — |
+| IN_QC | IN_PUTAWAY | last QC verdict | QC staff | QC only on goods already in the QC area (BR-08); accepted + quarantined + rejected = moved quantity | `QcCompleted` |
+| IN_PUTAWAY / IN_QC | CLOSED | — | system | every line handled | — |
 
-**What `POSTED` does to inventory.** It is the only transition here that changes stock. It
-creates stock rows in condition **GOOD** when QC passed or was not required, and condition
-**QUARANTINE** when QC quarantined them. Quarantined stock is physically present and counted in
-on-hand, but excluded from ATP — see machine 5.
+**What confirming does to inventory.** Stock rows appear in the `RECEIVING` area in condition
+**INBOUND** (machine 5). A QC-required line then moves `RECEIVING → QUALITY_CONTROL` (still INBOUND);
+QC splits it: **accepted** → putaway task from the QC area; **quarantine** → Area `QUARANTINE`,
+condition QUARANTINE; **rejected** → Area `QUARANTINE`, condition BLOCKED, return to vendor. A
+confirmed receipt is never deleted; mistakes are reversals or adjustments with a reason (BR-05).
 
 ---
 
@@ -172,35 +171,42 @@ stateDiagram-v2
 
 This machine governs the **condition** dimension only. Quantities (on hand / reserved /
 allocated) are numbers on the same record, not states — see `01-ubiquitous-language.md`.
+Stored as `inventory.stock_item.status`; `GOOD` in older text is `AVAILABLE`.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> QUARANTINE: received, QC pending
-    [*] --> GOOD: received, QC passed or not required
-    QUARANTINE --> GOOD: QC accepts
-    QUARANTINE --> DAMAGED: QC finds damage
-    GOOD --> DAMAGED: damage reported
-    GOOD --> EXPIRED: expiry date passes
-    GOOD --> QUARANTINE: recall or re-inspection
+    [*] --> INBOUND: receipt confirmed (RECEIVING / QUALITY_CONTROL area)
+    INBOUND --> AVAILABLE: putaway (QC accepted, or not required)
+    INBOUND --> QUARANTINE: QC puts on hold
+    INBOUND --> BLOCKED: QC rejects
+    QUARANTINE --> AVAILABLE: re-inspected and accepted, then put away
+    QUARANTINE --> BLOCKED: re-inspected and rejected
+    BLOCKED --> [*]: returned to vendor
+    AVAILABLE --> DAMAGED: damage reported
+    AVAILABLE --> EXPIRED: expiry date passes
+    AVAILABLE --> QUARANTINE: recall or re-inspection
     DAMAGED --> [*]: written off
     EXPIRED --> [*]: written off
 ```
 
 | From | To | Trigger | Actor | Guard | Event |
 |---|---|---|---|---|---|
-| — | GOOD | receipt posted | system | QC passed or not required | `StockReceived` |
-| — | QUARANTINE | receipt posted | system | QC quarantined | `StockReceived` |
-| QUARANTINE | GOOD | release | QC staff | inspection recorded | `StockReleasedFromQuarantine` |
-| QUARANTINE / GOOD | DAMAGED | report damage | Warehouse staff | reason and photo (BR-STK-003) | `StockBlocked(DAMAGED)` |
-| GOOD | EXPIRED | nightly sweep | system | `expiry_date < today` (BR-STK-004) | `StockBlocked(EXPIRED)` |
-| GOOD | QUARANTINE | recall | Warehouse manager | reason given | `StockBlocked(QUARANTINE)` |
+| — | INBOUND | receipt confirmed | system | — | `StockReceived` |
+| INBOUND | AVAILABLE | putaway completed | Warehouse staff | QC accepted or not required (docs 05 BR-01) | `StockPutAway` |
+| INBOUND | QUARANTINE / BLOCKED | QC verdict | QC staff | reason given | `QcCompleted` |
+| QUARANTINE | AVAILABLE | re-inspection accepts | QC staff | then putaway from the `QUARANTINE` area | `StockReleasedFromQuarantine` |
+| QUARANTINE | BLOCKED | re-inspection rejects | QC staff | reason given | `StockBlocked(BLOCKED)` |
+| BLOCKED | left stock | return to vendor | Procurement staff | movement out of the warehouse | `ReturnToVendorRaised` |
+| AVAILABLE | DAMAGED | report damage | Warehouse staff | reason and photo (BR-STK-003) | `StockBlocked(DAMAGED)` |
+| AVAILABLE | EXPIRED | nightly sweep | system | `expiry_date < today` (BR-STK-004) | `StockBlocked(EXPIRED)` |
+| AVAILABLE | QUARANTINE | recall | Warehouse manager | reason given | `StockBlocked(QUARANTINE)` |
 | DAMAGED / EXPIRED | written off | write-off | Warehouse manager | approved adjustment (BR-STK-005) | `StockWrittenOff` |
 
-**Only GOOD counts towards ATP.** That single sentence is the reason this dimension is separate
-from the quantity buckets: quarantined stock is on hand, occupies its bin, appears in a physical
-count, and is invisible to the storefront.
+**Only AVAILABLE counts towards ATP.** That single sentence is the reason this dimension is separate
+from the quantity buckets: inbound, quarantined and blocked stock is on hand, occupies its location, appears in a
+physical count, and is invisible to the storefront.
 
-**Reserved stock whose condition turns bad.** If GOOD stock with an outstanding reservation moves
+**Reserved stock whose condition turns bad.** If AVAILABLE stock with an outstanding reservation moves
 to DAMAGED or EXPIRED, the reservation is *not* silently dropped — `inventory-service` emits
 `ReservationImpaired`, and `order-service` puts the order on hold with reason
 `INVENTORY_ISSUE` (WBS 3.17.6.1). Dropping it quietly is how a paid order never ships.

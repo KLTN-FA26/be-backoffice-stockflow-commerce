@@ -61,14 +61,20 @@ public class CatalogProjectionListener {
     public void retry() {
         // Oldest attempted first: fifty permanently failing products cannot starve later work.
         for (var id : listings.dirtyIds()) refresh(id);
-        // Keyset traversal also finds missing snapshots. Failures cannot starve later products.
+        // Read-only checks find missing/partial snapshots without locking healthy products.
+        // Keyset traversal keeps permanently failing products from starving later work.
         var ids = products.publishedPage(scanAfter, 50);
-        for (var id : ids) refresh(id);
+        for (var id : ids) refresh(id, true);
         scanAfter = ids.size() < 50 ? null : ids.getLast();
     }
 
     private void refresh(UUID id) {
+        refresh(id, false);
+    }
+
+    private void refresh(UUID id, boolean onlyIfNeeded) {
         try {
+            if (onlyIfNeeded && !projection.needsRepair(id)) return;
             projection.project(id);
         } catch (RuntimeException e) {
             projection.attempt(id);

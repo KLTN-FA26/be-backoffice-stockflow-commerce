@@ -3,7 +3,9 @@ package com.stockflow;
 import static org.assertj.core.api.Assertions.*;
 
 import org.flywaydb.core.Flyway;
+import org.flywaydb.core.api.exception.FlywayValidateException;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.utility.MountableFile;
 
@@ -11,12 +13,75 @@ import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 
 /**
  * Exercises populated branch databases, including fail-fast rollback before canonical
  * reconciliation.
  */
 class InventoryCatalogMigrationUpgradeTest {
+    @Test
+    void publishedPr38NeedsOnlyTheDevelopQcPrerequisiteAndPreservesCanonicalData(
+            @TempDir Path baseline) throws Exception {
+        var loader = getClass().getClassLoader();
+        try (var manifest = loader.getResourceAsStream("db/upgrade/pr38-9572c7a-manifest.txt")) {
+            for (String line : new String(manifest.readAllBytes(), StandardCharsets.UTF_8).lines().toList()) {
+                if (line.startsWith("#") || line.isBlank()) continue;
+                String[] entry = line.split(" ");
+                try (var resource = loader.getResourceAsStream(entry[0])) {
+                    byte[] sql = new String(resource.readAllBytes(), StandardCharsets.UTF_8)
+                            .replace("\r\n", "\n").getBytes(StandardCharsets.UTF_8);
+                    assertThat(HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(sql)))
+                            .as("Published migration %s must keep its SQL", entry[0]).isEqualTo(entry[1]);
+                    Files.write(baseline.resolve(Path.of(entry[0]).getFileName()), sql);
+                }
+            }
+        }
+        try (var pg = new PostgreSQLContainer<>("postgres:16-alpine")) {
+            pg.start();
+            Flyway.configure().dataSource(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword())
+                    .locations("filesystem:" + baseline).load().migrate();
+            try (var connection = DriverManager.getConnection(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword());
+                    var sql = connection.createStatement()) {
+                sql.executeUpdate("update inventory.inventory_items set safety_stock=5,reorder_point=12,"
+                        + "policy_configured=true where sku='SOFA-3S-GREY'");
+                sql.executeUpdate("update product.products set seo_title='Preserved upgrade SEO' where code='SOFA-3S'");
+                var normal = Flyway.configure().dataSource(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword())
+                        .locations("classpath:db/migration", "classpath:db/demo").load();
+                assertThatThrownBy(normal::migrate).isInstanceOf(FlywayValidateException.class)
+                        .hasMessageContaining("20260929000250");
+                var recovery = Flyway.configure().dataSource(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword())
+                        .locations("classpath:db/migration", "classpath:db/demo")
+                        .outOfOrder(true).target("20261008000200").load();
+                assertThat(recovery.info().pending()).extracting(m -> m.getVersion().toString())
+                        .containsExactly("20260929000250");
+                assertThat(recovery.migrate().migrations).extracting(m -> m.version)
+                        .containsExactly("20260929000250");
+                assertThat(normal.migrate().migrations).isEmpty();
+                normal.validate();
+                try (var row = sql.executeQuery("select safety_stock,reorder_point,qc_required from "
+                        + "inventory.inventory_items where sku='SOFA-3S-GREY'")) {
+                    assertThat(row.next()).isTrue();
+                    assertThat(row.getInt(1)).isEqualTo(5);
+                    assertThat(row.getInt(2)).isEqualTo(12);
+                    assertThat(row.getBoolean(3)).isFalse();
+                }
+                try (var row = sql.executeQuery("select seo_title,slug,status from product.products where code='SOFA-3S'")) {
+                    assertThat(row.next()).isTrue();
+                    assertThat(row.getString(1)).isEqualTo("Preserved upgrade SEO");
+                    assertThat(row.getString(2)).isEqualTo("sofa-3-cho");
+                    assertThat(row.getString(3)).isEqualTo("PUBLISHED");
+                }
+                try (var row = sql.executeQuery("select price from catalog.pricing_rule where name='BASE:SOFA-3S-GREY'")) {
+                    assertThat(row.next()).isTrue();
+                    assertThat(row.getBigDecimal(1)).isEqualByComparingTo("12500000");
+                }
+            }
+        }
+    }
+
     @Test
     void freshDatabasePassesRepositorySqlQaAndHasNoOrphans() throws Exception {
         try (var pg = new PostgreSQLContainer<>("postgres:16-alpine")) {

@@ -26,6 +26,7 @@ import com.stockflow.inventory.internal.domain.StockItem;
 import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.inventory.internal.domain.StockMovement;
 import com.stockflow.inventory.internal.domain.StockMovementLog;
+import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
 import com.stockflow.inventory.internal.repository.StockAdjustmentSearch;
 import com.stockflow.inventory.internal.repository.StockLedgerSearch;
 import org.slf4j.Logger;
@@ -33,8 +34,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import java.time.Clock;
 
+import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
@@ -43,7 +44,6 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
-import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
 
 /**
  * Moves stock between locations and posts approved adjustments, writing the ledger as it goes.
@@ -75,7 +75,7 @@ class StockOperationsServiceImpl implements StockOperations {
     StockOperationsServiceImpl(StockItemRepository stockItems, StockAdjustmentRepository adjustments,
                                StockAdjustmentSearch adjustmentSearch, StockMovementLog ledger,
                                StockLedgerSearch ledgerSearch, LocationDirectory locations, Clock clock,
-            InventoryPolicyRepository policies) {
+                               InventoryPolicyRepository policies) {
         this.stockItems = stockItems;
         this.adjustments = adjustments;
         this.adjustmentSearch = adjustmentSearch;
