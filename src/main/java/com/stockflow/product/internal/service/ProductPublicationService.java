@@ -32,12 +32,14 @@ public class ProductPublicationService {
         if (product.status() == ProductStatus.PUBLISHED) {
             return;
         }
+        if (product.categoryId() == null || !products.categoryExists(product.categoryId())) {
+            throw new BusinessException(ErrorCode.PRODUCT_CATEGORY_REQUIRED);
+        }
         var gallery = galleries.findById(productId)
                 .filter(value -> !value.getPublishedItems().isEmpty())
-                .orElseThrow(() -> new BusinessException(ErrorCode.CONFLICT,
-                        "Approve a non-empty product gallery before publishing the product"));
+                .orElseThrow(() -> new BusinessException(ErrorCode.PRODUCT_GALLERY_REQUIRED));
         if (gallery.getApprovedBy() == null) {
-            throw new BusinessException(ErrorCode.CONFLICT, "The product gallery is not approved");
+            throw new BusinessException(ErrorCode.PRODUCT_GALLERY_REQUIRED);
         }
         product.publish();
         products.save(product);

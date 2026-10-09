@@ -10,8 +10,8 @@ import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.SortWhitelist;
 import com.stockflow.inventory.api.MoveStockCommand;
-import com.stockflow.inventory.api.ReceiveStockCommand;
 import com.stockflow.inventory.api.ReclassifyStockCommand;
+import com.stockflow.inventory.api.ReceiveStockCommand;
 import com.stockflow.inventory.api.RequestAdjustmentCommand;
 import com.stockflow.inventory.api.StockAdjustmentReason;
 import com.stockflow.inventory.api.StockAdjustmentStatus;
@@ -29,6 +29,7 @@ import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.inventory.internal.domain.StockMovement;
 import com.stockflow.inventory.internal.domain.StockMovementLog;
 import com.stockflow.inventory.internal.domain.StockStatus;
+import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
 import com.stockflow.inventory.internal.repository.StockAdjustmentSearch;
 import com.stockflow.inventory.internal.repository.StockLedgerSearch;
 import org.slf4j.Logger;
@@ -72,10 +73,12 @@ class StockOperationsServiceImpl implements StockOperations {
     private final StockLedgerSearch ledgerSearch;
     private final LocationDirectory locations;
     private final Clock clock;
+    private final InventoryPolicyRepository policies;
 
     StockOperationsServiceImpl(StockItemRepository stockItems, StockAdjustmentRepository adjustments,
                                StockAdjustmentSearch adjustmentSearch, StockMovementLog ledger,
-                               StockLedgerSearch ledgerSearch, LocationDirectory locations, Clock clock) {
+                               StockLedgerSearch ledgerSearch, LocationDirectory locations, Clock clock,
+                               InventoryPolicyRepository policies) {
         this.stockItems = stockItems;
         this.adjustments = adjustments;
         this.adjustmentSearch = adjustmentSearch;
@@ -83,6 +86,7 @@ class StockOperationsServiceImpl implements StockOperations {
         this.ledgerSearch = ledgerSearch;
         this.locations = locations;
         this.clock = clock;
+        this.policies = policies;
     }
 
     // ------------------------------------------------------------------ move
@@ -92,15 +96,15 @@ class StockOperationsServiceImpl implements StockOperations {
     public StockMove move(MoveStockCommand command) {
         StockMovement.ReferenceType referenceType = StockMovement.ReferenceType.valueOf(command.reference().name());
         UUID referenceId = command.referenceId() != null ? command.referenceId() : command.requestId();
-        return relocate(command.sku(), command.lotNumber(), command.fromLocation(), command.toLocation(),
-                command.quantity(), null, referenceType, referenceId, command.actorId(), null);
+        return relocate(command.sku(), command.lotNumber(), command.receivedAt(), command.fromLocation(),
+                command.toLocation(), command.quantity(), null, referenceType, referenceId, command.actorId(), null);
     }
 
     @Override
     @Auditable(action = AuditAction.UPDATE, resourceType = "stock-move", resourceId = "#command.referenceId()")
     public StockMove reclassify(ReclassifyStockCommand command) {
-        return relocate(command.sku(), command.lotNumber(), command.fromLocation(), command.toLocation(),
-                command.quantity(), StockStatus.valueOf(command.disposition().name()),
+        return relocate(command.sku(), command.lotNumber(), command.receivedAt(), command.fromLocation(),
+                command.toLocation(), command.quantity(), StockStatus.valueOf(command.disposition().name()),
                 StockMovement.ReferenceType.valueOf(command.reference().name()), command.referenceId(),
                 command.actorId(), blankToNull(command.reason()));
     }
@@ -108,11 +112,14 @@ class StockOperationsServiceImpl implements StockOperations {
     /**
      * The one implementation of moving stock between two locations, for a plain move ({@code target}
      * null: the status travels with the goods) and for a reclassification (the goods arrive as
-     * {@code target}).
+     * {@code target}). {@code receivedAt} picks the stock layer when the source holds several.
      */
-    private StockMove relocate(Sku sku, String lotNumber, String fromCode, String toCode, int qty,
-                               StockStatus target, StockMovement.ReferenceType referenceType, UUID referenceId,
-                               UUID actorId, String reason) {
+    private StockMove relocate(Sku sku, String lotNumber, Instant receivedAt, String fromCode, String toCode,
+                               int qty, StockStatus target, StockMovement.ReferenceType referenceType,
+                               UUID referenceId, UUID actorId, String reason) {
+        // Match policy edits/reservations: take the SKU lock before any stock-row locks.
+        policies.lock(sku.code());
+
         // Replay first: a retried move must not move the goods again.
         Optional<StockMovement> done = ledger.findByReference(StockMovement.MovementType.MOVE, referenceType, referenceId);
         if (done.isPresent()) {
@@ -129,10 +136,11 @@ class StockOperationsServiceImpl implements StockOperations {
         }
         Quantity quantity = Quantity.of(qty);
 
-        StockItem sourceView = findOne(sku, from, lotNumber)
+        StockItem sourceView = findLayer(sku, from, lotNumber, receivedAt)
                 .orElseThrow(() -> new BusinessException(ErrorCode.STOCK_ITEM_NOT_FOUND,
                         "No %s%s at %s".formatted(sku, lotSuffix(lotNumber), from)));
-        Optional<StockItem> destinationView = findOne(sku, to, lotNumber);
+        Optional<StockItem> destinationView = findLayer(sku, to, lotNumber, sourceView.receivedAt())
+                .filter(item -> java.util.Objects.equals(item.receivedAt(), sourceView.receivedAt()));
 
         // Lock in id order, as reserve() does: two moves crossing the same pair in opposite
         // directions would otherwise deadlock.
@@ -159,7 +167,10 @@ class StockOperationsServiceImpl implements StockOperations {
         }
         StockStatus arriving = target != null ? target : source.status();
         if (destination != null && !destination.canReceiveFrom(source, arriving)) {
-            throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH,
+            throw new BusinessException(
+                    destination.status() == arriving
+                            ? ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT
+                            : ErrorCode.STOCK_STATUS_MISMATCH,
                     "%s holds %s%s as %s; this stock would arrive as %s".formatted(to, sku,
                             lotSuffix(lotNumber), destination.status(), arriving));
         }
@@ -186,9 +197,14 @@ class StockOperationsServiceImpl implements StockOperations {
 
     // ------------------------------------------------------------------ receipt
 
+    /**
+     * Always a new stock layer (one per receipt, V20260930001000): the receipt time tells it apart from
+     * every other layer of the lot at the location, so nothing is merged into an older receipt.
+     */
     @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "stock-receipt", resourceId = "#command.receiptLineId()")
     public StockMove receive(ReceiveStockCommand command) {
+        policies.lock(command.sku().code());
         Optional<StockMovement> done = ledger.findByReference(StockMovement.MovementType.RECEIPT,
                 StockMovement.ReferenceType.GOODS_RECEIPT_LINE, command.receiptLineId());
         if (done.isPresent()) {
@@ -200,22 +216,8 @@ class StockOperationsServiceImpl implements StockOperations {
         }
         String lot = blankToNull(command.lotNumber());
         Quantity quantity = Quantity.of(command.quantity());
-
-        Optional<StockItem> existing = findOne(command.sku(), location, lot);
-        StockItem item;
-        if (existing.isPresent()) {
-            item = stockItems.findByIdForUpdate(existing.get().id()).orElseThrow(() ->
-                    new IllegalStateException("Stock item %s vanished mid-receipt".formatted(existing.get().id())));
-            if (!item.canTakeReceipt(command.sku(), lot)) {
-                throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH,
-                        "%s holds %s%s as %s; received goods arrive as INBOUND".formatted(
-                                location, command.sku(), lotSuffix(lot), item.status()));
-            }
-            item.moveIn(quantity);
-        } else {
-            item = StockItem.receiveInbound(command.sku(), location, lot, command.expiryDate(), quantity);
-        }
-        stockItems.save(item);
+        stockItems.save(StockItem.receiveInbound(command.sku(), location, lot, command.expiryDate(), quantity,
+                command.receivedAt()));
 
         StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.RECEIPT,
                 command.sku(), lot, null, location, quantity.value(), StockStatus.INBOUND,
@@ -248,6 +250,7 @@ class StockOperationsServiceImpl implements StockOperations {
     @Auditable(action = AuditAction.APPROVE, resourceType = "stock-adjustment", resourceId = "#adjustmentId")
     public StockAdjustmentSummary approve(UUID adjustmentId, UUID approverId) {
         StockAdjustment adjustment = load(adjustmentId);
+        policies.lock(adjustment.sku().code());
         StockItem view = findOne(adjustment.sku(), adjustment.location(), adjustment.lotNumber())
                 .orElseThrow(() -> new BusinessException(ErrorCode.STOCK_ITEM_NOT_FOUND,
                         "The stock of adjustment %s no longer exists".formatted(adjustment.number())));
@@ -308,10 +311,29 @@ class StockOperationsServiceImpl implements StockOperations {
                 new BusinessException(ErrorCode.STOCK_ADJUSTMENT_NOT_FOUND, "No stock adjustment " + adjustmentId));
     }
 
-    private Optional<StockItem> findOne(Sku sku, LocationId location, String lotNumber) {
+    /** {@link #findOne}, or the one layer received at {@code receivedAt} when it is given. */
+    private Optional<StockItem> findLayer(Sku sku, LocationId location, String lotNumber, Instant receivedAt) {
+        if (receivedAt == null) {
+            return findOne(sku, location, lotNumber);
+        }
         String lot = blankToNull(lotNumber);
         return stockItems.findBySkuAndLocation(sku, location).stream()
+                .filter(item -> Objects.equals(item.lotNumber(), lot) && receivedAt.equals(item.receivedAt()))
+                .findFirst();
+    }
+
+    private Optional<StockItem> findOne(Sku sku, LocationId location, String lotNumber) {
+        String lot = blankToNull(lotNumber);
+        var matches =
+                stockItems.findBySkuAndLocation(sku, location).stream()
                 .filter(item -> Objects.equals(item.lotNumber(), lot))
+                        .toList();
+        if (matches.size() > 1) {
+            // The existing move/adjustment request has no receipt/serial selector. Never pick
+            // an arbitrary layer now that canonical policy permits several at one location.
+            throw new BusinessException(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT);
+        }
+        return matches.stream()
                 .findFirst();
     }
 

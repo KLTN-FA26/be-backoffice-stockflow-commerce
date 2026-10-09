@@ -6,6 +6,7 @@ import com.stockflow.inventory.api.MoveStockCommand;
 import com.stockflow.inventory.api.ReceiveStockCommand;
 import com.stockflow.inventory.api.ReclassifyStockCommand;
 import com.stockflow.inventory.api.RequestAdjustmentCommand;
+
 import com.stockflow.inventory.api.StockAdjustmentSummary;
 import com.stockflow.inventory.api.StockMove;
 import com.stockflow.inventory.api.ReserveStockResult;
@@ -31,10 +32,10 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
-
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
+
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -45,6 +46,12 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.UUID;
+import com.stockflow.common.domain.BusinessCalendar;
+import com.stockflow.inventory.api.InventoryControlService;
+import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
+import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
+import java.util.stream.Collectors;
 
 /**
  * The only implementation of {@link InventoryService}, and the module's transaction boundary.
@@ -73,14 +80,25 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
     private final StockOperations operations;
     private final InventoryItemDirectory items;
     private final Clock clock;
+    private final InventoryControlService controls;
+    private final InventoryPolicyRepository policies;
 
     InventoryServiceImpl(StockItemRepository repository, InventoryEventPublisher events,
-                         StockOperations operations, InventoryItemDirectory items, Clock clock) {
+                         StockOperations operations, InventoryItemDirectory items, Clock clock,
+                         InventoryControlService controls, InventoryPolicyRepository policies) {
         this.repository = repository;
         this.events = events;
         this.operations = operations;
         this.items = items;
         this.clock = clock;
+        this.controls = controls;
+        this.policies = policies;
+    }
+
+    @Override
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void prepareReservation(Set<Sku> skus) {
+        policies.lockReservationStock(skus.stream().map(Sku::code).collect(Collectors.toSet()));
     }
 
     /** Delegated: moves and adjustments write the ledger, which {@link StockOperations} owns. */
@@ -113,16 +131,26 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
     @Override
     @Transactional(readOnly = true)
     public int availableToPromise(Sku sku) {
-        return repository.findAvailableBySku(sku).stream()
-                .mapToInt(item -> item.available().value())
-                .sum();
+        return Math.toIntExact(
+                availableQuantities(Set.of(sku.code())).getOrDefault(sku.code(), 0L));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Map<String, Long> availableQuantities(Set<String> skus) {
+        var normalized =
+                skus.stream()
+                .map(code -> new Sku(code).code())
+                .collect(Collectors.toSet());
+        if (normalized.isEmpty()) return Map.of();
+        return repository.availableQuantities(normalized, BusinessCalendar.date(clock.instant()));
     }
 
     @Override
     @Transactional(readOnly = true)
     public Map<Sku, Integer> availableToPromise(Collection<Sku> skus) {
         Set<Sku> wanted = new LinkedHashSet<>(skus);
-        Map<Sku, Integer> found = repository.sumAvailableBySkus(wanted);
+        Map<Sku, Integer> found = repository.sumAvailableBySkus(wanted, BusinessCalendar.date(clock.instant()));
         Map<Sku, Integer> result = new LinkedHashMap<>();
         // Every SKU asked for gets an answer: no stock is an answer (0), not a missing key.
         wanted.forEach(sku -> result.put(sku, found.getOrDefault(sku, 0)));
@@ -142,13 +170,20 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
     @Override
     @Transactional(readOnly = true)
     public List<StockAvailability> availabilityOf(Sku sku) {
-        // Earliest expiry first, matching the order the allocator would draw from, so what a
-        // warehouse user sees on screen is the order the system will actually pick in.
+        var today = BusinessCalendar.date(clock.instant());
+        // Use the configured picking order and one business date for the entire result.
         return repository.findAvailableBySku(sku).stream()
-                .sorted(Comparator.<StockItem, java.time.LocalDate>comparing(
-                                StockItem::expiryDate,
-                                Comparator.nullsLast(Comparator.naturalOrder()))
-                        .thenComparing(item -> item.location().code()))
+                .filter(item -> notExpired(item, today))
+                .sorted(Comparator.comparing(item ->
+                                        new StockAllocator.Candidate(
+                                                item.id(),
+                                                item.location(),
+                                                item.lotNumber(),
+                                                item.expiryDate(),
+                                                item.status(),
+                                                item.available(),
+                                                item.receivedAt()),
+                                StockAllocator.comparator(controls.policy(sku).removalStrategy())))
                 .map(this::toAvailability)
                 .toList();
     }
@@ -156,26 +191,32 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
     @Override
     @Transactional(readOnly = true)
     public List<StockLevel> levelsOf(Sku sku) {
-        record Totals(int onHand, int available, int reserved) {
-            static Totals of(StockLevelLine line) {
-                int sellable = line.status() == StockStatus.AVAILABLE ? line.onHand() : 0;
-                return new Totals(line.onHand(), sellable, line.reserved());
+        record Totals(int onHand, int available, int reserved, int atp) {
+            static Totals of(StockLevelLine line, LocalDate today) {
+                boolean usable = line.status() == StockStatus.AVAILABLE
+                                && (line.expiryDate() == null
+                                        || !line.expiryDate().isBefore(today));
+                int sellable = usable ? line.onHand() : 0;
+                return new Totals(line.onHand(), sellable, line.reserved(),
+                        usable ? line.onHand() - line.reserved() : 0);
             }
 
             Totals plus(Totals other) {
                 return new Totals(onHand + other.onHand, available + other.available,
-                        reserved + other.reserved);
+                        reserved + other.reserved,
+                        atp + other.atp);
             }
         }
         Map<String, Totals> byWarehouse = new TreeMap<>();
+        var today = BusinessCalendar.date(clock.instant());
         for (StockLevelLine line : repository.findLevelLinesBySku(sku)) {
-            byWarehouse.merge(line.location().warehouseCode(), Totals.of(line), Totals::plus);
+            byWarehouse.merge(line.location().warehouseCode(), Totals.of(line, today), Totals::plus);
         }
         return byWarehouse.entrySet().stream()
                 .map(entry -> new StockLevel(sku.code(), entry.getKey(),
                         entry.getValue().onHand(), entry.getValue().available(),
                         entry.getValue().reserved(), 0,
-                        entry.getValue().available() - entry.getValue().reserved()))
+                        entry.getValue().atp()))
                 .toList();
     }
 
@@ -219,7 +260,9 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
         //    because it returns immediately when it finds any - it never reaches step 3.)
         List<StockAllocator.Candidate> candidates = repository.findAvailabilityBySku(command.sku());
         List<StockAllocator.AllocationLine> plan = StockAllocator.plan(
-                command.sku().code(), candidates, Quantity.of(command.quantity()));
+                command.sku().code(), candidates, Quantity.of(command.quantity()),
+                        controls.policy(command.sku()).removalStrategy(),
+                        BusinessCalendar.date(now));
 
         // 2. ORDER THE LOCKS. Two checkouts touching the same two stock items in opposite orders
         //    deadlock; sorting by id gives every transaction the same acquisition order.
@@ -355,7 +398,7 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
      */
     private static UUID perStockItemRequestId(UUID requestId, StockItemId stockItemId) {
         return UUID.nameUUIDFromBytes((requestId + ":" + stockItemId)
-                .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                .getBytes(StandardCharsets.UTF_8));
     }
 
     /**
@@ -385,5 +428,9 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
                 item.reserved().value(),
                 0,
                 item.available().value());
+    }
+
+    private static boolean notExpired(StockItem item, LocalDate today) {
+        return item.expiryDate() == null || !item.expiryDate().isBefore(today);
     }
 }

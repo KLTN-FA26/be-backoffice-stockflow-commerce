@@ -102,11 +102,15 @@ class GoodsReceiptIntegrationTest {
         return jdbc.queryForObject("SELECT status FROM procurement.purchase_orders WHERE id = ?", String.class, po);
     }
 
+    /** Status and units at a location, summed over its stock layers (one layer per receipt). */
     private String stock(String sku, String location, String lotNumber) {
         return jdbc.query("""
-                SELECT status || ':' || on_hand FROM inventory.stock_item
-                 WHERE sku = ? AND location_code = ? AND COALESCE(lot_number, '') = COALESCE(?, '')""",
-                (rs, n) -> rs.getString(1), sku, location, lotNumber).stream().findFirst().orElse("none");
+                SELECT string_agg(status || ':' || total, ',' ORDER BY status) FROM (
+                    SELECT status, SUM(on_hand) AS total FROM inventory.stock_item
+                     WHERE sku = ? AND location_code = ? AND COALESCE(lot_number, '') = COALESCE(?, '')
+                     GROUP BY status) layers""",
+                (rs, n) -> rs.getString(1), sku, location, lotNumber).stream().filter(java.util.Objects::nonNull)
+                .findFirst().orElse("none");
     }
 
     private static ErrorCode code(Throwable e) {

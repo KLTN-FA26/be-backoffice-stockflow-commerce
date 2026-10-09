@@ -338,7 +338,7 @@ SELECT pg_temp.expect_ok('QC19 ledger line INBOUND → AVAILABLE on putaway', $q
                                           from_status, to_status, reference_type, reference_id, occurred_at)
     VALUES (gen_random_uuid(), 'PUTAWAY', 'TABLE-OAK-160', 'LOT-QC', 'HCM-QC02', 'HCM-B01-2-A', 2, 'INBOUND', 'AVAILABLE',
             'PUTAWAY_TASK', gen_random_uuid(), NOW()) $q$);
--- SCRUM-435 (V20260929000260): where a QC line's goods are, BR-05 on lines, BR-08 in the database.
+-- SCRUM-435 (V20261010000100): where a QC line's goods are, BR-05 on lines, BR-08 in the database.
 SELECT pg_temp.expect_fail('QC21 inspection before the goods are moved to the QC area (BR-08)', $q$
     INSERT INTO procurement.qc_inspections (id, receipt_line_id, outcome, quantity, inspected_by)
     VALUES (gen_random_uuid(), md5('qa:grl:qc')::uuid, 'ACCEPTED', 2, md5('demo:user:editor')::uuid) $q$);

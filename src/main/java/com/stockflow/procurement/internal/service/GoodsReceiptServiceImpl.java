@@ -158,7 +158,9 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                     "This receipt has items that need QC, and the warehouse has no QUALITY_CONTROL area yet");
         }
 
-        Instant now = clock.instant();
+        // Microseconds, as the database keeps them: the confirmation time is also the receipt time of
+        // the stock layers this creates, and the QC steps find their layer again by it.
+        Instant now = clock.instant().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
         receipt.confirm(userId, now);
         GoodsReceipt saved = receipts.save(receipt);
 
@@ -171,7 +173,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
             InventoryItemPolicy item = items.computeIfAbsent(line.inventoryItemId(), this::policy);
             String locationCode = where.get(line.locationId()).code();
             inventory.receive(new ReceiveStockCommand(line.id(), new Sku(item.sku()), line.lotNumber(),
-                    line.expiryDate(), locationCode, line.receivedQuantity(), userId));
+                    line.expiryDate(), locationCode, line.receivedQuantity(), userId, saved.confirmedAt()));
             confirmedLines.add(new GoodsReceiptConfirmed.Line(line.id(), line.poLineId(), item.sku(), line.lotNumber(),
                     line.receivedQuantity(), line.qcRequired()));
             if (!line.qcRequired()) {
@@ -221,7 +223,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         String from = locations.byIds(List.of(line.locationId())).get(line.locationId()).code();
         InventoryItemPolicy item = policy(line.inventoryItemId());
         inventory.move(new MoveStockCommand(line.id(), new Sku(item.sku()), line.lotNumber(), from, qcArea.code(),
-                line.receivedQuantity(), MoveReference.GOODS_RECEIPT_LINE, line.id(), userId));
+                line.receivedQuantity(), MoveReference.GOODS_RECEIPT_LINE, line.id(), userId, saved.confirmedAt()));
         return view(saved, orderOf(saved));
     }
 
@@ -260,12 +262,12 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         if (quarantined != null) {
             inventory.reclassify(new ReclassifyStockCommand(sku, line.lotNumber(), qcCode, quarantineTo.code(),
                     quarantined.quantity(), StockDisposition.QUARANTINE, MoveReference.QC_INSPECTION, quarantined.id(),
-                    userId, quarantined.reason()));
+                    userId, quarantined.reason(), saved.confirmedAt()));
         }
         if (rejected != null) {
             inventory.reclassify(new ReclassifyStockCommand(sku, line.lotNumber(), qcCode, rejectTo.code(),
                     rejected.quantity(), StockDisposition.BLOCKED, MoveReference.QC_INSPECTION, rejected.id(),
-                    userId, rejected.reason()));
+                    userId, rejected.reason(), saved.confirmedAt()));
         }
         if (decision.accepted() > 0) {
             events.publishEvent(new ReceiptStockReadyForPutaway(saved.id(), saved.number(), saved.warehouseId(),

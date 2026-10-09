@@ -45,6 +45,10 @@ class ProductServiceImpl implements ProductService {
     @Transactional(readOnly = true)
     public boolean containsSku(UUID productId, String sku) { return products.containsSku(productId, sku); }
 
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<String> nameForSku(String sku) { return products.nameForSku(sku); }
+
     private static final SortWhitelist SORT =
             SortWhitelist.of("name", "code", "createdAt", "lastModifiedAt", "status")
                     .withDefault("lastModifiedAt", Sort.Direction.DESC);

@@ -177,6 +177,23 @@ public class GlobalExceptionHandler {
                 messages.forCode(ErrorCode.VALIDATION_FAILED), fieldErrors);
     }
 
+    /** Spring MVC validates constrained query parameters without a service proxy. */
+    @ExceptionHandler(HandlerMethodValidationException.class)
+    public ResponseEntity<ApiResponse<Void>> handleMethodValidation(HandlerMethodValidationException ex) {
+        if (ex.isForReturnValue()) {
+            log.error("Controller return value failed validation", ex);
+            return respond(ErrorCode.INTERNAL_ERROR, messages.forCode(ErrorCode.INTERNAL_ERROR), null);
+        }
+        List<FieldError> fieldErrors = ex.getParameterValidationResults().stream()
+                .flatMap(result -> result.getResolvableErrors().stream().map(error -> FieldError.of(
+                        result.getMethodParameter().getParameterName(),
+                        messageSource.getMessage(error, LocaleContextHolder.getLocale()))))
+                .toList();
+        log.warn("Request parameter validation failed: {}", fieldErrors);
+        return respond(ErrorCode.VALIDATION_FAILED,
+                messages.forCode(ErrorCode.VALIDATION_FAILED), fieldErrors);
+    }
+
     /** Bean Validation on a method parameter or path variable rather than on a body. */
     @ExceptionHandler(ConstraintViolationException.class)
     public ResponseEntity<ApiResponse<Void>> handleConstraintViolation(ConstraintViolationException ex) {
@@ -336,9 +353,7 @@ public class GlobalExceptionHandler {
      * a new one arriving in a future Spring version should be a deliberate addition here rather
      * than something silently swept into a catch-all.</p>
      *
-     * <p>{@code HandlerMethodValidationException} is in the list because since Spring 6.1 a
-     * constraint on a controller <b>parameter</b> raises that rather than
-     * {@code ConstraintViolationException} — so the handler further up would not have fired.</p>
+     * <p>Controller parameter validation has its own handler so field messages are retained.</p>
      *
      * <p>Every omission from this list costs the same thing twice: the client gets 500 instead of
      * the 400/404/503 the request actually deserved, and the server logs a full stack trace at
@@ -352,7 +367,6 @@ public class GlobalExceptionHandler {
             MissingServletRequestParameterException.class,
             MissingServletRequestPartException.class,
             ServletRequestBindingException.class,
-            HandlerMethodValidationException.class,
             // BindException is the SUPERCLASS of MethodArgumentNotValidException, which has its own
             // handler above. Listing the subclass does not cover the parent, and the parent is what
             // a failed @Valid @ModelAttribute (query-object binding) raises. Spring picks the most

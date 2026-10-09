@@ -45,6 +45,12 @@ class ProductRepositoryAdapter implements ProductRepository, ProductSearchReposi
     public boolean containsSku(UUID productId, String sku) { return jpa.containsSku(productId, sku); }
 
     @Override
+    public Optional<String> nameForSku(String sku) {
+        var names = jpa.namesForSku(sku);
+        return names.size() == 1 ? Optional.of(names.getFirst()) : Optional.empty();
+    }
+
+    @Override
     public Optional<Product> findByCode(String code) {
         return jpa.findByCode(code).map(ProductPersistenceMapper::toDomain);
     }
