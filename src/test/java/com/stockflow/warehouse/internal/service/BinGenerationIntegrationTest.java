@@ -31,6 +31,7 @@ import java.math.BigDecimal;
 import java.util.List;
 import java.util.UUID;
 
+import static com.stockflow.support.DemoData.WAREHOUSE_HCM;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -62,8 +63,7 @@ class BinGenerationIntegrationTest {
 
     @BeforeEach
     void placeAnEmptyShelf() {
-        UUID hcm = jdbc.queryForObject("select id from warehouse.warehouse where prefix = 'HCM'", UUID.class);
-        shelfId = shelves.createShelf(new ShelfCommands.CreateShelf(hcm, null, "G1", "Kệ G1", null,
+        shelfId = shelves.createShelf(new ShelfCommands.CreateShelf(WAREHOUSE_HCM, null, "G1", "Kệ G1", null,
                 new Footprint(new BigDecimal("15"), new BigDecimal("36"), new BigDecimal("20"), BigDecimal.ONE, 0),
                 true, new PickFaces(true, false, false, false), StorageClass.NORMAL)).id();
         levelId = shelves.addLevel(new ShelfCommands.AddLevel(shelfId, 1, LevelMeasures.NONE)).id();

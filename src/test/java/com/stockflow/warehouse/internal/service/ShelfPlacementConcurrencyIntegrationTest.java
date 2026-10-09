@@ -19,13 +19,13 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
+import static com.stockflow.support.DemoData.WAREHOUSE_HCM;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -57,7 +57,6 @@ class ShelfPlacementConcurrencyIntegrationTest {
     @Test
     @DisplayName("of two overlapping shelves placed at once, exactly one is created")
     void onlyOneOfTwoOverlappingShelvesWins() throws Exception {
-        UUID hcm = jdbc.queryForObject("select id from warehouse.warehouse where prefix = 'HCM'", UUID.class);
         CountDownLatch start = new CountDownLatch(1);
         ExecutorService pool = Executors.newFixedThreadPool(2);
         try {
@@ -66,7 +65,8 @@ class ShelfPlacementConcurrencyIntegrationTest {
                 outcomes.add(pool.submit(() -> {
                     start.await();
                     try {
-                        shelves.createShelf(new ShelfCommands.CreateShelf(hcm, null, code, "Kệ " + code, null,
+                        shelves.createShelf(new ShelfCommands.CreateShelf(WAREHOUSE_HCM, null, code,
+                                "Kệ " + code, null,
                                 new Footprint(new BigDecimal("20"), new BigDecimal("20"), new BigDecimal("5"),
                                         BigDecimal.ONE, 0),
                                 true, PickFaces.NONE, StorageClass.NORMAL));

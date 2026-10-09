@@ -19,8 +19,8 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
-import java.util.UUID;
 
+import static com.stockflow.support.DemoData.WAREHOUSE_HCM;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -49,8 +49,7 @@ class AreaCreationCommitIntegrationTest {
     }
 
     private AreaSummary create(String code, Footprint footprint) {
-        UUID hcm = jdbc.queryForObject("select id from warehouse.warehouse where prefix = 'HCM'", UUID.class);
-        return areas.createArea(new AreaCommands.CreateArea(hcm, code, new AreaDetails(AreaType.RECEIVING,
+        return areas.createArea(new AreaCommands.CreateArea(WAREHOUSE_HCM, code, new AreaDetails(AreaType.RECEIVING,
                 "Khu " + code, footprint, false, null, new LocationSettings(null, null, false, true))));
     }
 

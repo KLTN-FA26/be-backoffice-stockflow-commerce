@@ -3,6 +3,7 @@ package com.stockflow.warehouse.internal.service;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.warehouse.internal.domain.BinDetails;
@@ -32,6 +33,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.util.UUID;
 
+import static com.stockflow.support.DemoData.WAREHOUSE_HCM;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -52,15 +54,6 @@ class ShelfLayoutServiceIntegrationTest {
     @Autowired EntityManagerFactory entityManagerFactory;
     @Autowired JdbcTemplate jdbc;
 
-    private UUID hcm() {
-        return jdbc.queryForObject("select id from warehouse.warehouse where prefix = 'HCM'", UUID.class);
-    }
-
-    private UUID shelfId(String code) {
-        return jdbc.queryForObject("select s.id from warehouse.shelf s join warehouse.warehouse w "
-                + "on w.id = s.warehouse_id where w.prefix = 'HCM' and s.code = ?", UUID.class, code);
-    }
-
     private static Footprint at(String x, String y, String width, String length) {
         return at(x, y, width, length, 0);
     }
@@ -71,7 +64,7 @@ class ShelfLayoutServiceIntegrationTest {
     }
 
     private ShelfSummary create(String code, Footprint footprint) {
-        return create(hcm(), null, code, footprint);
+        return create(WAREHOUSE_HCM, null, code, footprint);
     }
 
     private ShelfSummary create(UUID warehouseId, UUID zoneId, String code, Footprint footprint) {
@@ -152,14 +145,14 @@ class ShelfLayoutServiceIntegrationTest {
                     MapUnit.M, new BigDecimal("40"), new BigDecimal("25"))).id();
             UUID hanoiZone = warehouses.createZone(new CreateZoneCommand(hanoi, "Khu A", null)).id();
 
-            assertThat(errorOf(() -> create(hcm(), hanoiZone, "X01", at("20", "5", "10", "1.2"))))
+            assertThat(errorOf(() -> create(WAREHOUSE_HCM, hanoiZone, "X01", at("20", "5", "10", "1.2"))))
                     .isEqualTo(ErrorCode.ZONE_NOT_FOUND);
         }
 
         @Test
         @DisplayName("an INACTIVE shelf frees its place, and cannot come back while it is taken (#18 D3)")
         void inactiveShelvesFreeTheirPlace() {
-            UUID a02 = shelfId("A02");
+            UUID a02 = DemoData.shelf("A02");
             shelves.changeShelfStatus(a02, LocationStatus.INACTIVE);
 
             create("X01", at("5", "9", "10", "1.2"));
@@ -181,7 +174,7 @@ class ShelfLayoutServiceIntegrationTest {
         @Test
         @DisplayName("a new level and bin on a shelf that already has bins")
         void growsAnExistingTree() {
-            UUID a01 = shelfId("A01");
+            UUID a01 = DemoData.shelf("A01");
 
             ShelfSummary.Level level = shelves.addLevel(new ShelfCommands.AddLevel(a01, 3,
                     new LevelMeasures(new BigDecimal("3"), new BigDecimal("1.4"), new BigDecimal("500"))));
@@ -204,7 +197,7 @@ class ShelfLayoutServiceIntegrationTest {
         @Test
         @DisplayName("a bin code is unique on its level and a bin may not overlap its neighbours")
         void binRules() {
-            UUID a01 = shelfId("A01");
+            UUID a01 = DemoData.shelf("A01");
             UUID level1 = shelves.getShelf(a01).levels().get(0).id();
 
             assertThat(errorOf(() -> shelves.addBin(new ShelfCommands.AddBin(a01, level1, "a",
@@ -218,7 +211,7 @@ class ShelfLayoutServiceIntegrationTest {
         @Test
         @DisplayName("a bin's status is its location's status")
         void binStatusIsTheLocationStatus() {
-            UUID a01 = shelfId("A01");
+            UUID a01 = DemoData.shelf("A01");
             ShelfSummary.Level level1 = shelves.getShelf(a01).levels().get(0);
 
             shelves.changeBinStatus(a01, level1.id(), level1.bins().get(0).id(), LocationStatus.BLOCKED);
@@ -231,7 +224,7 @@ class ShelfLayoutServiceIntegrationTest {
         @Test
         @DisplayName("a new default class reaches every bin of the shelf in the database (#18 D9)")
         void defaultClassReachesTheLocations() {
-            ShelfSummary a01 = shelves.getShelf(shelfId("A01"));
+            ShelfSummary a01 = shelves.getShelf(DemoData.shelf("A01"));
 
             ShelfSummary updated = shelves.updateShelf(new ShelfCommands.UpdateShelf(a01.id(), a01.zoneId(),
                     a01.name(), a01.description(), a01.footprint(), a01.obstacle(), a01.pickFaces(),
@@ -284,7 +277,7 @@ class ShelfLayoutServiceIntegrationTest {
 
     /** Three levels of {@code binsPerLevel} 1 x 1 bins in a row, built through the aggregate. */
     private Shelf treeOf(String code, int binsPerLevel) {
-        Shelf shelf = Shelf.create(Identifiers.newId(), hcm(), null, code, "Kệ " + code, null,
+        Shelf shelf = Shelf.create(Identifiers.newId(), WAREHOUSE_HCM, null, code, "Kệ " + code, null,
                 at("0", "0", String.valueOf(binsPerLevel), "1"), true, new PickFaces(true, false, false, false),
                 StorageClass.NORMAL);
         for (int index = 1; index <= 3; index++) {
