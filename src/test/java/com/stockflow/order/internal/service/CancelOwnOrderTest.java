@@ -41,7 +41,8 @@ class CancelOwnOrderTest {
     private final OrderRepository repository = mock(OrderRepository.class);
     private final OrderServiceImpl service = new OrderServiceImpl(repository, mock(OrderSearchRepository.class),
             mock(InventoryService.class), mock(OrderEventPublisher.class), Clock.systemUTC(),
-            mock(DesignService.class), mock(OrderHoldJpaRepository.class), mock(CustomerService.class));
+            mock(DesignService.class), mock(OrderHoldJpaRepository.class), mock(CustomerService.class),
+            mock(com.stockflow.catalog.api.CatalogService.class));
 
     private Order orderOf(UUID customerId) {
         var order = Order.draft(OrderNumber.of(LocalDate.of(2026, 9, 20), 7), customerId, UUID.randomUUID(),

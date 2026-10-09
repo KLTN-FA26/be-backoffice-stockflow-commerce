@@ -55,6 +55,18 @@ PR DB đã vào `develop` **trước** #36, nên #36 phải:
 2. Biết rằng procurement đã có **bộ bảng mới** theo po-schema (`suppliers`, `supplier_items`, `purchase_orders` + revisions/approvals/events, `goods_receipts`, `supplier_invoices`…). Trạng thái PO mới là `CONFIRMED`, **không có `SENT`**. Bảng cũ còn nguyên nên #36 vẫn chạy.
 3. Tính năng của #36 **không mất** khi dọn: bước C4 chuyển FK của `procurement.po_delivery_decision` và `notification.po_delivery_control` sang `purchase_orders` (đã test). Khi chuyển code PO, giữ nguyên id của PO.
 
+### PR #38 — Võ (SCRUM-70/71)
+
+Trạng thái PR #38 (08/10): đã tách 146/147/298 và chuyển adapter 70/71 sang
+`inventory.inventory_items`, `product.products`/`variants`/`media`.
+Migration bổ sung `V20261008000100` chuyển dữ liệu có kiểm tra xung đột, giữ checksum migration cũ.
+Tú đã duyệt model về nguyên tắc tại review 08/10, head `a919c75`; xem [schema và cutover](SCRUM-70-71-schema-change-request.md).
+Đã sửa rebuild projection cho PUBLISHED và bổ sung seed repeatable giá MẪU trong `db/demo`;
+test DB trắng/upgrade, security bật đều thấy đủ hai sản phẩm. Tú cần kiểm tra lại bản sửa local.
+upstream tạo sản phẩm/bộ ảnh vẫn cần chuyển khỏi legacy và FE cần dùng ID canonical.
+Chưa kích hoạt C1/C3. Xem kết quả kiểm tra và điểm còn vướng trong
+[bàn giao 70/71](../../SCRUM-70-71-backend.md).
+
 ### PR #28 — Phương (SCRUM-89, warehouse map)
 
 1. **Xoá file `V20260918000100__warehouse_map_layout.sql`**. Số của nó đã cũ (Flyway không chạy), và bảng map kho đã do `V20260928000100/0200` tạo.

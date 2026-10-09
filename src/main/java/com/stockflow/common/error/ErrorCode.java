@@ -19,6 +19,17 @@ public enum ErrorCode {
     SUPPLIER_DELIVERY_CONTACT_INVALID("Supplier delivery contact is invalid or not allowed", 400),
     SUPPLIER_PROFILE_INVALID("Invalid supplier profile or commercial terms", 400),
     VALIDATION_FAILED("Invalid request data", 400),
+    INVENTORY_POLICY_INVALID("Invalid SKU inventory policy", 400),
+    INVENTORY_POLICY_STOCK_CONFLICT("Existing stock is incompatible with this policy", 409),
+    CATALOG_SLUG_EXISTS("This storefront URL is already reserved", 409),
+    CATALOG_LISTING_REQUIRED("Configure the storefront listing before publishing", 409),
+    PRODUCT_NOT_APPROVED("Approve the product before publishing", 409),
+    PRODUCT_CATEGORY_REQUIRED("A valid product category is required", 409),
+    PRODUCT_SKU_REQUIRED("At least one sellable SKU is required", 409),
+    PRODUCT_GALLERY_REQUIRED("An approved non-empty product gallery is required", 409),
+    PRODUCT_NOT_PURCHASABLE("This product is not currently available for purchase", 409),
+    PRICE_NOT_AVAILABLE("No selling price is available for this SKU", 409),
+    CATALOG_PRICE_AMBIGUOUS("More than one selling price has the same priority", 409),
     MALFORMED_REQUEST("The request body could not be read", 400),
     UNSUPPORTED_PARAMETER("Unsupported parameter value", 400),
     /** The URL itself was refused before routing: {@code //}, an encoded {@code ..}, a {@code ;}. */
@@ -65,6 +76,9 @@ public enum ErrorCode {
     // ---- 409: the request is fine, the current state is not
     PO_COMMUNICATION_NOT_CONFIGURED("Buyer contact and receiving address must be configured before sending", 409),
     CONFLICT("Conflicting state", 409),
+    CHECKOUT_PRICE_CHANGED("The selling price changed; review the basket and confirm again", 409),
+    COUNT_POLICY_CONFLICT("Reconcile the active count and SKU tracking policy before proceeding",409),
+    DESIGN_QUOTE_REQUIRED("An accepted design quote matching this order line is required",409),
     INSUFFICIENT_STOCK("Not enough available stock", 409),
     /** The destination already holds this SKU and lot in another status (QC state does not merge). */
     STOCK_STATUS_MISMATCH("The destination holds this lot in a different status", 409),
@@ -94,7 +108,7 @@ public enum ErrorCode {
     /** Checkout needs somewhere to deliver: no shipping address was chosen and none is the default. */
     SHIPPING_ADDRESS_REQUIRED("Add a shipping address before placing an order", 409),
 
-    /** Guest checkout is switched off (it is on only where prices can be trusted, see application.yml). */
+    /** Deployment rollout gate for guest checkout; see application.yml. */
     GUEST_CHECKOUT_DISABLED("Guest checkout is not available", 403),
     INVALID_PURCHASE_ORDER_TRANSITION("This purchase order cannot move to that status right now", 409),
 

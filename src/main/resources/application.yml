@@ -381,9 +381,8 @@ stockflow:
     # How often the sweeper looks for holds that outlived their expiry. ISO-8601 duration.
     reservation-sweep-interval: PT1M
   checkout:
-    # Public checkout without an account. OFF by default: the request carries its own unit price and
-    # nothing checks it against a catalogue price yet, so an open endpoint lets anyone order at any
-    # price and hold real stock. The local profile turns it on for development.
+    # Public checkout without an account. Server-side catalog pricing is enforced. Keep OFF until
+    # published data and deployment checkout UAT are verified. Local enables it for development.
     guest-enabled: false
 
   security:

@@ -90,7 +90,7 @@ credentials and the VPS environment require deployment verification.
 
 `python -X utf8 tools/verify.py` passes on Windows after the path normalization also proposed in
 PR #49. ArchitectureTest and ModularityTest independently enforce production module boundaries.
-See [the PR review record](PR-36-review.md#validation) for the current verification results.
+See [the archived PR review record](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/blob/c2fa904658c031cdaaae39af429b65416eba6750/docs/PR-36-review.md#validation) for the prerequisite release's verification results.
 
 ## PR 36 review scope
 

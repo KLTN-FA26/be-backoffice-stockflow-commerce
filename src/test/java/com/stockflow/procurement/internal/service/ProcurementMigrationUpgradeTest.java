@@ -79,7 +79,7 @@ class ProcurementMigrationUpgradeTest {
                             .load();
             assertThat(prerequisite.migrate().migrations)
                     .extracting(m -> m.version)
-                    .containsExactly("20260929000100", "20260929000200");
+                    .containsExactly("20260929000100", "20260929000200", "20260929000250");
             assertThat(normal.migrate().migrations)
                     .extracting(m -> m.version)
                     .contains("20260930000500");

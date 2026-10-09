@@ -28,6 +28,12 @@ public interface InventoryService {
      */
     int availableToPromise(Sku sku);
 
+    /** Batch availability; missing keys mean zero. Never authorizes a checkout without reserve(). */
+    default java.util.Map<String, Long> availableQuantities(java.util.Set<String> skus) {
+        return skus.stream().collect(java.util.stream.Collectors.toMap(
+                code -> code, code -> (long) availableToPromise(new Sku(code))));
+    }
+
     /**
      * {@link #availableToPromise(Sku)} for several SKUs in one query: every SKU asked for is a key,
      * {@code 0} when nothing sellable is held. For a page that shows many variants at once — one
@@ -65,6 +71,9 @@ public interface InventoryService {
      * @throws com.stockflow.common.error.BusinessException when ATP is below the requested quantity
      */
     ReserveStockResult reserve(ReserveStockCommand command);
+    /** Acquire policy locks and all stock rows in global order before reserving any basket line.
+     * Must join the same transaction as every subsequent reserve call. */
+    void prepareReservation(java.util.Set<Sku> skus);
 
     /** Release a reservation — order cancelled, payment failed, or the hold expired. */
     void release(UUID reservationId, String reason);
