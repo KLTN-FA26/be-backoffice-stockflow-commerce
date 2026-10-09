@@ -3,7 +3,9 @@ package com.stockflow.warehouse.internal.controller;
 import com.stockflow.warehouse.internal.controller.dto.FootprintRequest;
 import com.stockflow.warehouse.internal.controller.dto.ShelfRequests;
 import com.stockflow.warehouse.internal.controller.dto.ShelfResponse;
+import com.stockflow.warehouse.internal.domain.BinDefaults;
 import com.stockflow.warehouse.internal.domain.BinDetails;
+import com.stockflow.warehouse.internal.domain.BinNamingScheme;
 import com.stockflow.warehouse.internal.domain.Footprint;
 import com.stockflow.warehouse.internal.domain.LevelMeasures;
 import com.stockflow.warehouse.internal.domain.LocationSettings;
@@ -13,6 +15,7 @@ import com.stockflow.warehouse.internal.service.ShelfSummary;
 import org.mapstruct.Mapper;
 import org.mapstruct.ReportingPolicy;
 
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -36,6 +39,16 @@ interface ShelfWebMapper {
     ShelfResponse.Level toResponse(ShelfSummary.Level level);
 
     ShelfResponse.Bin toResponse(ShelfSummary.BinEntry bin);
+
+    ShelfResponse.Footprint toResponse(Footprint footprint);
+
+    /** The filled levels, flattened to one list of bins, each tagged with its level. */
+    default List<ShelfResponse.GeneratedBin> toGeneratedBins(List<ShelfSummary.Level> levels) {
+        return levels.stream()
+                .flatMap(level -> level.bins().stream().map(bin -> new ShelfResponse.GeneratedBin(bin.id(),
+                        level.id(), bin.code(), bin.locationId(), bin.locationCode(), toResponse(bin.footprint()))))
+                .toList();
+    }
 
     default ShelfCommands.CreateShelf toCommand(UUID warehouseId, ShelfRequests.CreateShelf r) {
         return new ShelfCommands.CreateShelf(warehouseId, r.zoneId(), r.code(), r.name(), r.description(),
@@ -68,5 +81,13 @@ interface ShelfWebMapper {
         return new ShelfCommands.UpdateBin(shelfId, levelId, binId,
                 new BinDetails(r.description(), toFootprint(r.footprint()), r.type(), r.storageClassOverride()),
                 new LocationSettings(r.capacityUnits(), r.maxWeight(), r.pickable(), r.putawayTarget()));
+    }
+
+    default ShelfCommands.GenerateBins toCommand(UUID shelfId, ShelfRequests.GenerateBins r) {
+        ShelfRequests.BinDefaults d = r.defaults();
+        return new ShelfCommands.GenerateBins(shelfId, r.levelIds(), r.rowCount(), r.columnCount(),
+                r.namingScheme() != null ? r.namingScheme() : BinNamingScheme.SEQUENTIAL,
+                new BinDefaults(d.type(), d.storageClassOverride(),
+                        new LocationSettings(d.capacityUnits(), d.maxWeight(), d.pickable(), d.putawayTarget())));
     }
 }

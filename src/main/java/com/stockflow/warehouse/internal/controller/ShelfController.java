@@ -17,6 +17,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -105,5 +106,23 @@ class ShelfController {
                                                           @PathVariable UUID binId,
                                                           @Valid @RequestBody ShelfRequests.ChangeStatus request) {
         return ApiResponse.ok(mapper.toResponse(shelves.changeBinStatus(shelfId, levelId, binId, request.status())));
+    }
+
+    /**
+     * Fills empty levels with a {@code rowCount x columnCount} grid of equal bins (BR-14). All the
+     * chosen levels or none: an unknown level answers {@code 404 SHELF_LEVEL_NOT_FOUND}, a level that
+     * already has a bin - {@code INACTIVE} included - {@code 409 SHELF_LEVEL_HAS_BINS}, and more than
+     * 200 bins a level {@code 409 SHELF_CAPACITY_EXCEEDED}.
+     *
+     * <p><b>Clients should send an {@code Idempotency-Key} header.</b> Without one, a double click
+     * or a retry after a lost response fails the second time with {@code SHELF_LEVEL_HAS_BINS},
+     * because the first already filled the levels; with one, it gets the first response back.</p>
+     */
+    @PostMapping("/shelves/{shelfId}/bin-generation")
+    @ResponseStatus(HttpStatus.CREATED)
+    @RequiresPermission(resource = WarehouseResources.LOCATIONS, action = Action.CREATE)
+    public ApiResponse<List<ShelfResponse.GeneratedBin>> generateBins(
+            @PathVariable UUID shelfId, @Valid @RequestBody ShelfRequests.GenerateBins request) {
+        return ApiResponse.ok(mapper.toGeneratedBins(shelves.generateBins(mapper.toCommand(shelfId, request))));
     }
 }

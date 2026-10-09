@@ -90,6 +90,8 @@ public enum ErrorCode {
     PICK_FACE_REQUIRED("A shelf with pickable bins needs at least one pick face", 409),
     /** A shelf is loaded and locked as one aggregate, so it is bounded: 20 levels, 200 bins a level. */
     SHELF_CAPACITY_EXCEEDED("This shelf cannot hold that many levels or bins", 409),
+    /** BR-14: bins are generated on empty levels only - an INACTIVE bin still counts, its code is taken. */
+    SHELF_LEVEL_HAS_BINS("Bins can only be generated on levels that have none yet", 409),
 
     /** Someone saved this role's permissions after the editor loaded them. Not retryable as-is:
      *  resending the same body would overwrite their change, so the client must reload first. */

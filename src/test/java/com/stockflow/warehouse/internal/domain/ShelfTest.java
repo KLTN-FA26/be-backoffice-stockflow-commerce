@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -270,6 +271,116 @@ class ShelfTest {
             assertThat(errorOf(() -> new LocationSettings(0, null, true, true))).isEqualTo(ErrorCode.VALIDATION_FAILED);
             assertThat(errorOf(() -> new LocationSettings(null, BigDecimal.ZERO, true, true)))
                     .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        }
+    }
+
+    @Nested
+    @DisplayName("generating bins (BR-14)")
+    class GeneratingBins {
+
+        private static final BinDefaults PICKABLE_PALLETS = new BinDefaults(BinType.PALLET, null,
+                new LocationSettings(40, new BigDecimal("250"), true, true));
+
+        private static List<Bin> generate(Shelf shelf, List<UUID> levelIds, int rows, int columns,
+                                          BinDefaults defaults) {
+            return shelf.generateBins(levelIds, rows, columns, BinNamingScheme.SEQUENTIAL, defaults, "hn",
+                    ShelfTest::newId);
+        }
+
+        @Test
+        @DisplayName("2 levels x (2 rows x 3 columns) makes 12 bins and 12 locations, coded per level")
+        void fillsEveryChosenLevel() {
+            Shelf shelf = shelf();
+            ShelfLevel second = level(shelf, 2);
+            ShelfLevel first = level(shelf, 1);
+
+            List<Bin> bins = generate(shelf, List.of(second.id(), first.id()), 2, 3, PICKABLE_PALLETS);
+
+            assertThat(bins).hasSize(12);
+            assertThat(bins).extracting(bin -> bin.location().locationCode()).startsWith(
+                    "HN-A01-1-01", "HN-A01-1-02").contains("HN-A01-1-06", "HN-A01-2-01", "HN-A01-2-06");
+            assertThat(bins).extracting(bin -> bin.location().id()).doesNotHaveDuplicates()
+                    .doesNotContainAnyElementsOf(bins.stream().map(Bin::id).toList());
+            assertThat(shelf.level(first.id()).bins()).hasSize(6);
+            assertThat(shelf.level(second.id()).bins()).hasSize(6);
+            Bin last = shelf.level(first.id()).bins().get(5);
+            assertThat(last.footprint()).isEqualTo(at("6.666", "0.6", "3.333", "0.6"));
+            assertThat(last.details().type()).isEqualTo(BinType.PALLET);
+            assertThat(last.location().status()).isEqualTo(LocationStatus.ACTIVE);
+            assertThat(last.location().storageClass()).isEqualTo(StorageClass.NORMAL);
+            assertThat(last.location().capacityUnits()).isEqualTo(40);
+            assertThat(last.location().pickable()).isTrue();
+        }
+
+        @Test
+        @DisplayName("an override reaches every generated location; without one the shelf's default does (#18 D9)")
+        void resolvesTheStorageClass() {
+            Shelf shelf = shelf();
+            ShelfLevel level = level(shelf, 1);
+
+            List<Bin> bins = generate(shelf, List.of(level.id()), 1, 2, new BinDefaults(BinType.STANDARD,
+                    StorageClass.COLD, new LocationSettings(null, null, false, true)));
+
+            assertThat(bins).allSatisfy(bin -> {
+                assertThat(bin.details().storageClassOverride()).isEqualTo(StorageClass.COLD);
+                assertThat(bin.location().storageClass()).isEqualTo(StorageClass.COLD);
+            });
+        }
+
+        @Test
+        @DisplayName("one level that already has a bin, even an INACTIVE one, refuses the lot")
+        void refusesALevelWithBins() {
+            Shelf shelf = shelf();
+            ShelfLevel empty = level(shelf, 1);
+            ShelfLevel used = level(shelf, 2);
+            Bin old = bin(shelf, used, "01", at("0", "0", "1", "1"));
+            shelf.changeBinStatus(used.id(), old.id(), LocationStatus.INACTIVE);
+
+            assertThat(errorOf(() -> generate(shelf, List.of(empty.id(), used.id()), 2, 3, PICKABLE_PALLETS)))
+                    .isEqualTo(ErrorCode.SHELF_LEVEL_HAS_BINS);
+            assertThat(shelf.level(empty.id()).bins()).isEmpty();
+            assertThat(shelf.level(used.id()).bins()).hasSize(1);
+        }
+
+        @Test
+        @DisplayName("a level of another shelf refuses the lot")
+        void refusesAForeignLevel() {
+            Shelf shelf = shelf();
+            ShelfLevel mine = level(shelf, 1);
+            Shelf other = shelf();
+            ShelfLevel theirs = level(other, 1);
+
+            assertThat(errorOf(() -> generate(shelf, List.of(mine.id(), theirs.id()), 1, 1, PICKABLE_PALLETS)))
+                    .isEqualTo(ErrorCode.SHELF_LEVEL_NOT_FOUND);
+            assertThat(shelf.level(mine.id()).bins()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("checks BR-08 once, and more than 200 bins a level or no level at all are refused")
+        void refusesWhatTheShelfCannotTake() {
+            Shelf faceless = shelf(PickFaces.NONE);
+            ShelfLevel level = level(faceless, 1);
+
+            assertThat(errorOf(() -> generate(faceless, List.of(level.id()), 1, 2, PICKABLE_PALLETS)))
+                    .isEqualTo(ErrorCode.PICK_FACE_REQUIRED);
+            assertThat(errorOf(() -> generate(faceless, List.of(level.id()), 1, 201, new BinDefaults(BinType.PALLET,
+                    null, new LocationSettings(null, null, false, true))))).isEqualTo(ErrorCode.SHELF_CAPACITY_EXCEEDED);
+            assertThat(errorOf(() -> generate(faceless, List.of(), 1, 1, PICKABLE_PALLETS)))
+                    .isEqualTo(ErrorCode.VALIDATION_FAILED);
+            assertThat(faceless.level(level.id()).bins()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("lettered rows give A01, A02, ... B01 on every level")
+        void lettersTheRows() {
+            Shelf shelf = shelf();
+            ShelfLevel level = level(shelf, 3);
+
+            List<Bin> bins = shelf.generateBins(List.of(level.id()), 2, 2, BinNamingScheme.ROW_LETTER_COLUMN,
+                    PICKABLE_PALLETS, "hn", ShelfTest::newId);
+
+            assertThat(bins).extracting(bin -> bin.location().locationCode())
+                    .containsExactly("HN-A01-3-A01", "HN-A01-3-A02", "HN-A01-3-B01", "HN-A01-3-B02");
         }
     }
 

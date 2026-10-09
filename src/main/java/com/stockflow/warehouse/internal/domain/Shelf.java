@@ -5,10 +5,16 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 /**
  * A shelf with its levels, their bins and each bin's storage location - one aggregate, because the
@@ -173,6 +179,67 @@ public final class Shelf extends AggregateRoot {
         Bin bin = new Bin(binId, binCode, details, location);
         level.add(bin);
         return bin;
+    }
+
+    /**
+     * Fills empty levels with the same {@code rows x columns} grid of equal bins (BR-14), each with
+     * an {@code ACTIVE} storage location coded like any other bin. The grid splits the shelf's own
+     * {@code width x length}, so it does not depend on where the shelf stands or how it is turned.
+     *
+     * <p><b>All or nothing.</b> Every level is checked before any bin is added: one id that is not a
+     * level of this shelf, or one level that already has a bin - even an {@code INACTIVE} one, whose
+     * code would still collide - refuses the whole request. Generating half the levels would leave
+     * the user unable to repeat the request, since the filled half would then refuse it.</p>
+     *
+     * <p>No overlap check: the level is empty and the grid's cells only touch. No capacity check
+     * beyond {@link BinGrid}'s: an empty level takes up to {@value BinGrid#MAX_BINS_PER_LEVEL}.</p>
+     *
+     * @param warehousePrefix the prefix of this shelf's warehouse - immutable, so safe to bake in
+     * @param newId           supplies the ids, two per bin: the bin's and its location's
+     * @return the new bins, level by level in level order, each level's in grid order
+     */
+    public List<Bin> generateBins(Collection<UUID> levelIds, int rows, int columns, BinNamingScheme scheme,
+                                  BinDefaults defaults, String warehousePrefix, Supplier<UUID> newId) {
+        if (levelIds == null || levelIds.isEmpty()) {
+            throw DomainChecks.invalid("Choose at least one level to generate bins on");
+        }
+        if (scheme == null || defaults == null) {
+            throw DomainChecks.invalid("Bin generation needs a naming scheme and bin defaults");
+        }
+        List<ShelfLevel> targets = new LinkedHashSet<>(levelIds).stream()
+                .map(this::level)
+                .sorted(Comparator.comparingInt(ShelfLevel::levelIndex))
+                .toList();
+        for (ShelfLevel target : targets) {
+            if (!target.bins().isEmpty()) {
+                throw new BusinessException(ErrorCode.SHELF_LEVEL_HAS_BINS,
+                        "Level %d of shelf %s already has bins; generation fills empty levels only"
+                                .formatted(target.levelIndex(), code));
+            }
+        }
+        requirePickFaceFor(defaults.settings());
+        List<BinGrid.GeneratedBin> grid = BinGrid.generate(footprint.width(), footprint.length(), rows, columns,
+                scheme);
+
+        // Built in full before the first add, so a code that fails late leaves the shelf untouched.
+        Map<ShelfLevel, List<Bin>> planned = new LinkedHashMap<>();
+        for (ShelfLevel target : targets) {
+            List<Bin> bins = new ArrayList<>(grid.size());
+            for (BinGrid.GeneratedBin cell : grid) {
+                BinDetails details = defaults.detailsAt(cell.footprint());
+                LocationCode locationCode = LocationCode.ofBin(warehousePrefix, code, target.levelIndex(), cell.code());
+                StorageLocation location = StorageLocation.forBin(newId.get(), warehouseId, locationCode,
+                        storageClassOf(details), defaults.settings());
+                bins.add(new Bin(newId.get(), cell.code(), details, location));
+            }
+            planned.put(target, bins);
+        }
+        List<Bin> created = new ArrayList<>();
+        planned.forEach((target, bins) -> {
+            bins.forEach(target::add);
+            created.addAll(bins);
+        });
+        return List.copyOf(created);
     }
 
     /** Everything but the code. A bin on the layout must still fit and stay clear of its neighbours. */
