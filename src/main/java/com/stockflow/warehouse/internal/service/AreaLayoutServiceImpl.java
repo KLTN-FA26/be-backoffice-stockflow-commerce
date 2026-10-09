@@ -42,9 +42,7 @@ class AreaLayoutServiceImpl implements AreaLayoutService {
     @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "area", resourceId = "#command.warehouseId()")
     public AreaSummary createArea(AreaCommands.CreateArea command) {
-        Warehouse warehouse = warehouses.findByIdForUpdate(command.warehouseId())
-                .orElseThrow(() -> new BusinessException(ErrorCode.WAREHOUSE_NOT_FOUND,
-                        "Warehouse " + command.warehouseId() + " not found"));
+        Warehouse warehouse = WarehouseLocks.lock(warehouses, command.warehouseId());
         String code = CodePart.of(command.code(), CodePart.CODE_MAX_LENGTH).value();
         if (areas.existsByWarehouseIdAndCode(warehouse.id(), code)) {
             throw new ConflictException(ErrorCode.AREA_CODE_ALREADY_EXISTS,
@@ -88,8 +86,7 @@ class AreaLayoutServiceImpl implements AreaLayoutService {
 
     /** Locks before reading the area, so the area read is not stale; see {@code ShelfLayoutServiceImpl}. */
     private Warehouse lockWarehouseOf(UUID areaId) {
-        UUID warehouseId = areas.findWarehouseIdOf(areaId).orElseThrow(() -> areaNotFound(areaId));
-        return warehouses.findByIdForUpdate(warehouseId).orElseThrow(() -> areaNotFound(areaId));
+        return WarehouseLocks.lockOwner(warehouses, areas.findWarehouseIdOf(areaId), () -> areaNotFound(areaId));
     }
 
     private Area require(UUID areaId) {

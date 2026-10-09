@@ -38,9 +38,7 @@ class BoundaryLayoutServiceImpl implements BoundaryLayoutService {
     @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "boundary", resourceId = "#command.warehouseId()")
     public BoundarySummary createBoundary(BoundaryCommands.CreateBoundary command) {
-        Warehouse warehouse = warehouses.findByIdForUpdate(command.warehouseId())
-                .orElseThrow(() -> new BusinessException(ErrorCode.WAREHOUSE_NOT_FOUND,
-                        "Warehouse " + command.warehouseId() + " not found"));
+        Warehouse warehouse = WarehouseLocks.lock(warehouses, command.warehouseId());
         Boundary boundary = Boundary.create(Identifiers.newId(), warehouse.id(), command.type(), command.segment(),
                 command.passable(), command.operationalStatus());
         warehouse.requireOnMap(boundary.segment());
@@ -68,8 +66,7 @@ class BoundaryLayoutServiceImpl implements BoundaryLayoutService {
 
     /** Locks before reading the boundary, so the read is not stale; see {@code ShelfLayoutServiceImpl}. */
     private Warehouse lockWarehouseOf(UUID boundaryId) {
-        UUID warehouseId = boundaries.findWarehouseIdOf(boundaryId).orElseThrow(() -> boundaryNotFound(boundaryId));
-        return warehouses.findByIdForUpdate(warehouseId).orElseThrow(() -> boundaryNotFound(boundaryId));
+        return WarehouseLocks.lockOwner(warehouses, boundaries.findWarehouseIdOf(boundaryId), () -> boundaryNotFound(boundaryId));
     }
 
     private Boundary require(UUID boundaryId) {

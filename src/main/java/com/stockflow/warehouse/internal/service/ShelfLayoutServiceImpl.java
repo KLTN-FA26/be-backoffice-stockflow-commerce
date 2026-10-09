@@ -55,9 +55,7 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
     @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "shelf", resourceId = "#command.warehouseId()")
     public ShelfSummary createShelf(ShelfCommands.CreateShelf command) {
-        Warehouse warehouse = warehouses.findByIdForUpdate(command.warehouseId())
-                .orElseThrow(() -> new BusinessException(ErrorCode.WAREHOUSE_NOT_FOUND,
-                        "Warehouse " + command.warehouseId() + " not found"));
+        Warehouse warehouse = WarehouseLocks.lock(warehouses, command.warehouseId());
         requireZoneOf(command.zoneId(), warehouse.id());
         String code = CodePart.of(command.code(), CodePart.CODE_MAX_LENGTH).value();
         if (shelves.existsByWarehouseIdAndCode(warehouse.id(), code)) {
@@ -182,8 +180,7 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
      * read the tree: a tree read before the lock could be stale by the time the lock is granted.
      */
     private Warehouse lockWarehouseOf(UUID shelfId) {
-        UUID warehouseId = shelves.findWarehouseIdOf(shelfId).orElseThrow(() -> shelfNotFound(shelfId));
-        return warehouses.findByIdForUpdate(warehouseId).orElseThrow(() -> shelfNotFound(shelfId));
+        return WarehouseLocks.lockOwner(warehouses, shelves.findWarehouseIdOf(shelfId), () -> shelfNotFound(shelfId));
     }
 
     /** A zone of another warehouse is as good as no zone at all: 404, the zone id means nothing here. */
