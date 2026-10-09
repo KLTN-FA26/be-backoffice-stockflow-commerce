@@ -65,8 +65,10 @@ class FulfillmentServiceImpl implements FulfillmentService {
             return visible(existing.get(), actor);
         }
         OrderSummary order = requireOrder(orderId);
-        if (order.status() != OrderStatus.PAID) {
-            throw new BusinessException(ErrorCode.CONFLICT, "Only a paid order can enter fulfillment");
+        // READY_TO_FULFILL: released, and production (if any) delivered (SCRUM-423). PAID: a stock-only
+        // order nobody released yet, as before release existed; the order refuses one with print lines.
+        if (order.status() != OrderStatus.PAID && order.status() != OrderStatus.READY_TO_FULFILL) {
+            throw new BusinessException(ErrorCode.CONFLICT, "Only a paid or released order can enter fulfillment");
         }
         orders.releaseToFulfillment(orderId);
         var now = clock.instant();
