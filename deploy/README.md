@@ -16,8 +16,9 @@ browser ── Cloudflare Free (DNS, CDN, WAF, TLS "Full (strict)")
                          ├─ media.<domain>   → minio:9000/<bucket>/product-images/ only
                          ├─ jaeger.<domain>  → jaeger:16686    (basic auth)
                          └─ mail.<domain>    → mailpit:8025    (basic auth)
-                  internal network, no published ports:
+                  internal network, no public ports:
                   app · postgres · redis · minio · jaeger · mailpit
+                  (postgres also on 127.0.0.1:5432 of the VPS, for SSH tunnels)
 ```
 
 | URL | For |
@@ -29,7 +30,7 @@ browser ── Cloudflare Free (DNS, CDN, WAF, TLS "Full (strict)")
 
 | File | Purpose |
 |---|---|
-| `docker-compose.yml` | the whole stack; only nginx publishes ports; a memory limit on everything |
+| `docker-compose.yml` | the whole stack; only nginx publishes public ports (Postgres: loopback only); a memory limit on everything |
 | `.env.example` | every variable; copied to `.env` on the server, never committed |
 | `nginx/nginx.conf` | real client IP from Cloudflare, origin lock, per-request DNS |
 | `nginx/templates/stockflow.conf.template` | the five sites |
@@ -232,18 +233,23 @@ bash scripts/deploy.sh                     # recreates Postgres and re-runs ever
 # then create the accounts again (scripts/create-user.sh)
 ```
 
-**Database access** - no published port. On the server:
-`docker compose exec postgres psql -U stockflow stockflow`. For a GUI client (DBeaver, DataGrip),
-tunnel to the container's address, which the host can reach directly:
+**Database access** - Postgres is published on the VPS's **loopback only** (`127.0.0.1:5432`), so
+it is invisible from the internet but reachable through SSH. On the server:
+`docker compose exec postgres psql -U stockflow stockflow`. From your machine:
 
 ```bash
-# on the VPS: the container's IP
-docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' stockflow-postgres-1
-# on your machine, then connect the client to localhost:15432
-ssh -N -L 15432:<that-ip>:5432 deploy@<vps-ip>
+# then connect the client to localhost:15432 with DB_NAME / DB_USER / DB_PASSWORD from .env
+ssh -N -L 15432:localhost:5432 deploy@<vps-ip>
 ```
 
-The same works for the MinIO console on port 9001 of `stockflow-minio-1`.
+In DBeaver / DataGrip, the built-in SSH tab does the same: SSH host `<vps-ip>`, user `deploy`, your
+key; main tab host `localhost`, port `5432`. Use the VPS IP, not the domain - Cloudflare proxies
+the domain, not SSH. The publish needs Docker >= 28 (`docker version`): older releases let hosts on
+the same L2 segment reach loopback-published ports.
+
+The MinIO console (port 9001) is not published; tunnel to the container's address instead
+(`docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' stockflow-minio-1`),
+which changes whenever the container is recreated.
 
 **Backups** - `crontab -e` as `deploy`, and copy `backups/` off the machine (a backup on the same
 disk is not a backup). MinIO's files live in the `stockflow_minio-data` volume; back that up too if

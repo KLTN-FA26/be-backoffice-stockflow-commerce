@@ -9,9 +9,12 @@
 # "Before this becomes production" in README.md for what changes.
 #
 # Differences from the development compose file at the repository root, all deliberate:
-#   - ONLY nginx publishes ports. Docker writes its own iptables rules ahead of ufw, so a published
-#     Postgres port is reachable from the internet with the firewall "on". Nothing here may gain a
-#     `ports:` entry; reach a service with `docker compose exec` or an SSH tunnel instead.
+#   - ONLY nginx publishes PUBLIC ports. Docker writes its own iptables rules ahead of ufw, so a
+#     port published on 0.0.0.0 is reachable from the internet with the firewall "on". The one
+#     exception is Postgres, published on 127.0.0.1 only, so an SSH tunnel has a stable target
+#     (localhost:5432) instead of a container IP that changes on every recreate. Any new `ports:`
+#     entry must carry the 127.0.0.1 prefix, and needs Docker >= 28: older releases let hosts on
+#     the same L2 segment reach loopback-published ports.
 #   - Every service has a memory limit, and they add up to ~3.4 GB. Without limits the JVM sizes its
 #     heap from the HOST's 4 GB and the kernel's OOM killer picks a victim - usually Postgres.
 #   - No ClamAV (~1.2 GB, a third of the machine). Upload scanning is switched OFF instead, which
@@ -186,6 +189,10 @@ services:
       - idle_in_transaction_session_timeout=60000
       - -c
       - log_min_duration_statement=500
+    # Loopback only - reachable through `ssh -L`, never from the internet. Without the 127.0.0.1
+    # prefix Docker binds 0.0.0.0 and bypasses ufw (see the header).
+    ports:
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     # shared_buffers lives in /dev/shm; Docker's default 64 MB would make Postgres fail to start.
