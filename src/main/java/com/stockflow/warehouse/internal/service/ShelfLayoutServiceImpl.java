@@ -1,5 +1,7 @@
 package com.stockflow.warehouse.internal.service;
 
+import com.stockflow.common.audit.AuditAction;
+import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ConflictException;
 import com.stockflow.common.error.ErrorCode;
@@ -31,6 +33,10 @@ import java.util.UUID;
  * warehouse row lock taken first in every write here: two people placing two shelves on the same
  * spot are serialised, and the second one reads the first one's shelf before deciding
  * (issue #18 D4).</p>
+ *
+ * <p>Every change is {@link Auditable}. An addition is recorded under its parent - the warehouse
+ * for a shelf, the shelf for a level, the level for a bin - because its own id is minted inside the
+ * call; every later change is recorded under the thing's own id.</p>
  */
 @Service
 @Transactional
@@ -47,6 +53,7 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
     }
 
     @Override
+    @Auditable(action = AuditAction.CREATE, resourceType = "shelf", resourceId = "#command.warehouseId()")
     public ShelfSummary createShelf(ShelfCommands.CreateShelf command) {
         Warehouse warehouse = warehouses.findByIdForUpdate(command.warehouseId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.WAREHOUSE_NOT_FOUND,
@@ -65,6 +72,7 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
     }
 
     @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "shelf", resourceId = "#command.shelfId()")
     public ShelfSummary updateShelf(ShelfCommands.UpdateShelf command) {
         Warehouse warehouse = lockWarehouseOf(command.shelfId());
         Shelf shelf = require(command.shelfId());
@@ -78,6 +86,7 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
     }
 
     @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "shelf", resourceId = "#shelfId")
     public ShelfSummary changeShelfStatus(UUID shelfId, LocationStatus status) {
         Warehouse warehouse = lockWarehouseOf(shelfId);
         Shelf shelf = require(shelfId);
@@ -95,6 +104,7 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
     }
 
     @Override
+    @Auditable(action = AuditAction.CREATE, resourceType = "shelf-level", resourceId = "#command.shelfId()")
     public ShelfSummary.Level addLevel(ShelfCommands.AddLevel command) {
         lockWarehouseOf(command.shelfId());
         Shelf shelf = require(command.shelfId());
@@ -103,6 +113,7 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
     }
 
     @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "shelf-level", resourceId = "#command.levelId()")
     public ShelfSummary.Level updateLevel(ShelfCommands.UpdateLevel command) {
         lockWarehouseOf(command.shelfId());
         Shelf shelf = require(command.shelfId());
@@ -111,6 +122,7 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
     }
 
     @Override
+    @Auditable(action = AuditAction.CREATE, resourceType = "bin", resourceId = "#command.levelId()")
     public ShelfSummary.BinEntry addBin(ShelfCommands.AddBin command) {
         Warehouse warehouse = lockWarehouseOf(command.shelfId());
         Shelf shelf = require(command.shelfId());
@@ -120,6 +132,7 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
     }
 
     @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "bin", resourceId = "#command.binId()")
     public ShelfSummary.BinEntry updateBin(ShelfCommands.UpdateBin command) {
         lockWarehouseOf(command.shelfId());
         Shelf shelf = require(command.shelfId());
@@ -128,6 +141,7 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
     }
 
     @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "bin", resourceId = "#binId")
     public ShelfSummary.BinEntry changeBinStatus(UUID shelfId, UUID levelId, UUID binId, LocationStatus status) {
         lockWarehouseOf(shelfId);
         Shelf shelf = require(shelfId);
