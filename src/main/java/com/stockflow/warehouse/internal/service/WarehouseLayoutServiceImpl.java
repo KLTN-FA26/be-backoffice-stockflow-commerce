@@ -134,10 +134,20 @@ class WarehouseLayoutServiceImpl implements WarehouseLayoutService {
                 .toList();
     }
 
-    /** Another zone of the same warehouse with this name; the zone itself keeping its name is fine. */
+    /**
+     * Another zone of the same warehouse with this name, ignoring case: "Cups" and "cups" side by
+     * side on one map read as the same zone. The zone itself keeping, or re-casing, its own name is
+     * fine. Compared in Java over the warehouse's handful of zones rather than with SQL
+     * {@code upper()}, whose result for accented letters depends on the database's locale.
+     *
+     * <p>{@code uk_zone_warehouse_name} is case-sensitive, so two requests racing past this check
+     * with differently cased names both commit; only an exact duplicate is stopped there.</p>
+     */
     private void requireNameFree(Zone zone) {
-        zones.findByWarehouseIdAndName(zone.warehouseId(), zone.name())
+        zones.findByWarehouseId(zone.warehouseId()).stream()
                 .filter(other -> !other.id().equals(zone.id()))
+                .filter(other -> other.name().equalsIgnoreCase(zone.name()))
+                .findAny()
                 .ifPresent(other -> {
                     throw new ConflictException(ErrorCode.ZONE_NAME_ALREADY_EXISTS,
                             "The warehouse already has a zone named " + zone.name());
