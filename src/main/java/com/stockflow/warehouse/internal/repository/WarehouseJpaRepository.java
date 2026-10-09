@@ -6,6 +6,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.math.BigDecimal;
+import java.util.List;
 import java.util.UUID;
 
 /** Spring Data repository for {@link WarehouseJpaEntity}. */
@@ -41,6 +42,40 @@ interface WarehouseJpaRepository extends BaseJpaRepository<WarehouseJpaEntity> {
             ) AS e(right_edge, bottom_edge)
             """)
     ExtentRow findOccupiedExtent(@Param("warehouseId") UUID warehouseId);
+
+    /**
+     * Every shelf and area of the warehouse still on the layout (not {@code INACTIVE}), as raw
+     * footprints. One query rather than one per table; few enough rows per warehouse to read whole.
+     */
+    @Query(nativeQuery = true, value = """
+            SELECT s.id AS "id", 'SHELF' AS "kind", s.code AS "code", s.x AS "x", s.y AS "y",
+                   s.width AS "width", s.length AS "length", s.rotation AS "rotation"
+            FROM warehouse.shelf s
+            WHERE s.warehouse_id = :warehouseId AND s.status <> 'INACTIVE'
+            UNION ALL
+            SELECT a.id, 'AREA', a.code, a.x, a.y, a.width, a.length, a.rotation
+            FROM warehouse.area a
+            WHERE a.warehouse_id = :warehouseId AND a.status <> 'INACTIVE'
+            """)
+    List<PlacementRow> findPlacements(@Param("warehouseId") UUID warehouseId);
+
+    interface PlacementRow {
+        UUID getId();
+
+        String getKind();
+
+        String getCode();
+
+        BigDecimal getX();
+
+        BigDecimal getY();
+
+        BigDecimal getWidth();
+
+        BigDecimal getLength();
+
+        Integer getRotation();
+    }
 
     /** Both {@code null} when nothing is on the map. */
     interface ExtentRow {
