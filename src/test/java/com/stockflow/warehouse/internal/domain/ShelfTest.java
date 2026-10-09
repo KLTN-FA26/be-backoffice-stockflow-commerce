@@ -415,7 +415,7 @@ class ShelfTest {
     class Updating {
 
         @Test
-        @DisplayName("may not shrink so that a bin sticks out; an INACTIVE bin does not count")
+        @DisplayName("may not shrink so that a bin sticks out; an INACTIVE bin does not count, and cannot come back outside")
         void binsKeepItFromShrinking() {
             Shelf shelf = shelf();
             ShelfLevel level = level(shelf, 1);
@@ -428,6 +428,11 @@ class ShelfTest {
             shelf.update(null, "Kệ A01", null, at("5", "5", "6", "1.2"), true, shelf.pickFaces(),
                     StorageClass.NORMAL, 0L);
             assertThat(shelf.footprint().width()).isEqualByComparingTo("6");
+
+            // Left outside by the shrink, the bin may not return to the layout there.
+            assertThat(errorOf(() -> shelf.changeBinStatus(level.id(), farBin.id(), LocationStatus.ACTIVE)))
+                    .isEqualTo(ErrorCode.LAYOUT_OUT_OF_BOUNDS);
+            assertThat(farBin.location().status()).isEqualTo(LocationStatus.INACTIVE);
         }
 
         @Test

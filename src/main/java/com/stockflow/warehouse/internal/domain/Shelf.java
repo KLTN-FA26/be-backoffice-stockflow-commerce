@@ -256,12 +256,16 @@ public final class Shelf extends AggregateRoot {
         bin.location().apply(storageClassOf(details), settings);
     }
 
-    /** Bringing a bin back from {@code INACTIVE} needs its place free again (issue #18 D3). */
+    /**
+     * Bringing a bin back from {@code INACTIVE} needs its place free again (issue #18 D3), and the
+     * place still inside the shelf: {@link #update} lets a shelf shrink past bins that are off the
+     * layout, so one may now lie partly outside it.
+     */
     public void changeBinStatus(UUID levelId, UUID binId, LocationStatus status) {
         ShelfLevel level = level(levelId);
         Bin bin = level.bin(binId);
         if (!bin.holdsPlace() && status != null && status != LocationStatus.INACTIVE) {
-            requireClear(level, bin.footprint(), binId);
+            requirePlaceable(level, bin.footprint(), binId);
         }
         bin.location().changeStatus(status);
     }
