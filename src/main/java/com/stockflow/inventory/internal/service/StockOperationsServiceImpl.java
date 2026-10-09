@@ -107,8 +107,14 @@ class StockOperationsServiceImpl implements StockOperations {
         if (from.equals(to)) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A move needs two different locations");
         }
-        if (!locations.exists(to)) {
-            throw new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + to);
+        // Only the destination is checked (issue #67): taking stock out of a blocked bin or a shelf in
+        // maintenance is how it gets emptied, and an adjustment at a bin blocked for counting must
+        // still post.
+        switch (locations.stateOf(to)) {
+            case UNKNOWN -> throw new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + to);
+            case UNUSABLE -> throw new BusinessException(ErrorCode.LOCATION_NOT_USABLE,
+                    "%s cannot take stock now: it, its shelf or its warehouse is not active".formatted(to));
+            case USABLE -> { }
         }
         Quantity quantity = Quantity.of(command.quantity());
 
