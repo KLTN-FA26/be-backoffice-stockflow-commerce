@@ -37,7 +37,7 @@ final class OrderPersistenceMapper {
                 })
                 .toList();
 
-        return new Order(
+        Order order = new Order(
                 new OrderId(entity.getId()),
                 new OrderNumber(entity.getOrderNumber()),
                 entity.getCustomerId(),
@@ -50,6 +50,10 @@ final class OrderPersistenceMapper {
                 entity.getCreatedBy(), entity.getLastModifiedAt(), entity.getLastModifiedBy(),
                 entity.getContactName(), entity.getContactEmail(), entity.getContactPhone(),
                 toDomain(entity.getShippingAddress()), toDomain(entity.getBillingAddress()));
+        order.restoreTermsAndRelease(entity.getPaymentTerm(), entity.getDepositRequired(),
+                entity.getDepositReceivedAt(), entity.getWarehouseId(), entity.getReleasedAt(),
+                entity.getReleasedBy());
+        return order;
     }
 
     static OrderJpaEntity toNewEntity(Order order) {
@@ -67,7 +71,13 @@ final class OrderPersistenceMapper {
                 order.contactPhone(), toEntity(order.shippingAddress()),
                 toEntity(order.billingAddress()));
         entity.replaceLines(toLineEntities(order));
+        applyTermsAndRelease(order, entity);
         return entity;
+    }
+
+    private static void applyTermsAndRelease(Order order, OrderJpaEntity entity) {
+        entity.applyTermsAndRelease(order.paymentTerm(), order.depositRequired(), order.depositReceivedAt(),
+                order.warehouseId(), order.releasedAt(), order.releasedBy());
     }
 
     /** For the paginated order-history query only. Deliberately never touches {@code
@@ -102,7 +112,8 @@ final class OrderPersistenceMapper {
                 entity.getLastModifiedAt(),
                 entity.getLastModifiedBy(),
                 entity.getContactName(), entity.getContactEmail(), entity.getContactPhone(),
-                toSummary(entity.getShippingAddress()), null);
+                toSummary(entity.getShippingAddress()), null,
+                entity.getPaymentTerm(), entity.getWarehouseId(), entity.getReleasedAt());
     }
 
     private static OrderSummary.AddressSummary toSummary(OrderAddressJpaEmbeddable a) {
@@ -119,6 +130,7 @@ final class OrderPersistenceMapper {
         entity.apply(order.status(), total.amount(),
                 total.currency().getCurrencyCode(), order.cancellationReason());
         entity.replaceLines(toLineEntities(order));
+        applyTermsAndRelease(order, entity);
     }
 
     private static List<OrderLineJpaEntity> toLineEntities(Order order) {

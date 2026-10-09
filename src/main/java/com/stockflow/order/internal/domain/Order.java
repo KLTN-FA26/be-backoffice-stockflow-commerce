@@ -2,6 +2,7 @@ package com.stockflow.order.internal.domain;
 
 import com.stockflow.contracts.OrderPlaced;
 import com.stockflow.order.api.OrderStatus;
+import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.common.domain.AggregateRoot;
 import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
@@ -46,6 +47,12 @@ public final class Order extends AggregateRoot {
 
     private OrderStatus status;
     private String cancellationReason;
+    private PaymentTerm paymentTerm = PaymentTerm.PREPAID;
+    private java.math.BigDecimal depositRequired;
+    private Instant depositReceivedAt;
+    private UUID warehouseId;
+    private Instant releasedAt;
+    private UUID releasedBy;
     private final long version;
     private final String createdBy;
     private final Instant lastModifiedAt;
@@ -206,8 +213,101 @@ public final class Order extends AggregateRoot {
         transitionTo(OrderStatus.PAID);
     }
 
-    public void release() {
+    /**
+     * Fulfilment takes the order on (picking starts). From READY_TO_FULFILL, or from PAID for an
+     * order with nothing to print — an order with print lines that skipped production would ship
+     * blank cups (BR-PRD-06).
+     */
+    public void startFulfilment() {
+        if (status == OrderStatus.PAID && hasPrintLines()) {
+            throw new InvalidOrderTransitionException(orderNumber, status,
+                    "release it to production first: it has lines to print");
+        }
         transitionTo(OrderStatus.IN_FULFILMENT);
+    }
+
+    /**
+     * The Order Coordinator releases the order from a warehouse (SCRUM-423, 03 §9): with lines to
+     * print it goes to IN_PRODUCTION and asks production for them, otherwise straight to
+     * READY_TO_FULFILL.
+     *
+     * <p>A PAID order may be released; so may a DEPOSIT order still awaiting the balance, once its
+     * deposit has arrived (BR-PRD-09). Whether every new design has an approved sample (BR-PRD-08) is
+     * the caller's to check — it needs the sample records — and {@code approvedSamples} carries the
+     * answer per print line: the sample id, or null for a repeat design.</p>
+     */
+    public void release(UUID warehouse, String warehouseCode, UUID by, Instant now,
+                        java.util.Map<UUID, UUID> approvedSamples) {
+        java.util.Objects.requireNonNull(warehouse, "warehouse");
+        java.util.Objects.requireNonNull(by, "by");
+        boolean depositOrderAwaitingBalance = status == OrderStatus.PENDING_PAYMENT && paymentTerm == PaymentTerm.DEPOSIT;
+        if (status != OrderStatus.PAID && !depositOrderAwaitingBalance) {
+            throw new InvalidOrderTransitionException(orderNumber, status, "only a paid order can be released");
+        }
+        if (paymentTerm == PaymentTerm.DEPOSIT && depositReceivedAt == null && hasPrintLines()) {
+            throw new com.stockflow.common.error.BusinessException(
+                    com.stockflow.common.error.ErrorCode.ORDER_DEPOSIT_NOT_RECEIVED,
+                    "Order %s cannot go to production before its deposit arrives (BR-PRD-09)".formatted(orderNumber));
+        }
+        OrderStatus target = hasPrintLines() ? OrderStatus.IN_PRODUCTION : OrderStatus.READY_TO_FULFILL;
+        if (depositOrderAwaitingBalance && target != OrderStatus.IN_PRODUCTION) {
+            throw new InvalidOrderTransitionException(orderNumber, status,
+                    "a deposit order with nothing to print is released once paid in full");
+        }
+        transitionTo(target);
+        this.warehouseId = warehouse;
+        this.releasedAt = now;
+        this.releasedBy = by;
+        if (target == OrderStatus.IN_PRODUCTION) {
+            registerEvent(new OrderEvent.LinesReleased(new com.stockflow.contracts.OrderLinesReleasedForProduction(
+                    id.value(), orderNumber.value(), warehouse,
+                    printLines().stream().map(line -> new com.stockflow.contracts.OrderLinesReleasedForProduction.Line(
+                            line.id(), line.sku().code(), line.quantity(), line.designSnapshotId(),
+                            line.designChecksum(), approvedSamples.get(line.id()), null)).toList())));
+        } else {
+            registerEvent(new OrderEvent.Released(new com.stockflow.contracts.OrderReleased(
+                    id.value(), warehouseCode, now)));
+        }
+    }
+
+    /**
+     * Production delivered every print line (BR-PRD-06): {@code producedByLine} is the good quantity
+     * finished per line so far. Does nothing while a line is still short.
+     *
+     * @return whether the order moved to READY_TO_FULFILL
+     */
+    public boolean completeProduction(java.util.Map<UUID, Integer> producedByLine, String warehouseCode, Instant now) {
+        if (status != OrderStatus.IN_PRODUCTION) {
+            return false;
+        }
+        boolean allDone = printLines().stream()
+                .allMatch(line -> producedByLine.getOrDefault(line.id(), 0) >= line.quantity());
+        if (!allDone) {
+            return false;
+        }
+        transitionTo(OrderStatus.READY_TO_FULFILL);
+        registerEvent(new OrderEvent.Released(new com.stockflow.contracts.OrderReleased(id.value(), warehouseCode, now)));
+        return true;
+    }
+
+    /** Lines printed to order: they carry a design snapshot. */
+    public List<OrderLine> printLines() {
+        return lines.stream().filter(OrderLine::isMadeToOrder).toList();
+    }
+
+    public boolean hasPrintLines() {
+        return lines.stream().anyMatch(OrderLine::isMadeToOrder);
+    }
+
+    /** Rehydration of the payment terms and the release, from the row. */
+    public void restoreTermsAndRelease(PaymentTerm term, java.math.BigDecimal deposit, Instant depositReceived,
+                                       UUID warehouse, Instant released, UUID releasedByUser) {
+        this.paymentTerm = term == null ? PaymentTerm.PREPAID : term;
+        this.depositRequired = deposit;
+        this.depositReceivedAt = depositReceived;
+        this.warehouseId = warehouse;
+        this.releasedAt = released;
+        this.releasedBy = releasedByUser;
     }
 
     public void putOnHold() {
@@ -278,6 +378,12 @@ public final class Order extends AggregateRoot {
     public OrderStatus status() { return status; }
     public Instant placedAt() { return placedAt; }
     public String cancellationReason() { return cancellationReason; }
+    public PaymentTerm paymentTerm() { return paymentTerm; }
+    public java.math.BigDecimal depositRequired() { return depositRequired; }
+    public Instant depositReceivedAt() { return depositReceivedAt; }
+    public UUID warehouseId() { return warehouseId; }
+    public Instant releasedAt() { return releasedAt; }
+    public UUID releasedBy() { return releasedBy; }
     public long version() { return version; }
     public String createdBy() { return createdBy; }
     public Instant lastModifiedAt() { return lastModifiedAt; }

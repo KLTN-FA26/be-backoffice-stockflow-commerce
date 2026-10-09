@@ -69,7 +69,9 @@ final class OrderWebMapper {
                         .toList(),
                 summary.placedAt(), summary.createdBy(), summary.lastModifiedAt(), summary.lastModifiedBy(),
                 summary.contactName(), summary.contactEmail(), summary.contactPhone(),
-                toResponse(summary.shippingAddress()), toResponse(summary.billingAddress()));
+                toResponse(summary.shippingAddress()), toResponse(summary.billingAddress()),
+                summary.paymentTerm() == null ? null : summary.paymentTerm().name(),
+                summary.warehouseId(), summary.releasedAt());
     }
 
     private static PlaceGuestOrderCommand.Address toCommand(PlaceGuestOrderRequest.Address address) {

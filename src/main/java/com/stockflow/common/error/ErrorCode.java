@@ -68,6 +68,10 @@ public enum ErrorCode {
     INVALID_TRANSFER_TRANSITION("This transfer order cannot move to that status right now", 409),
     /** Four eyes on a transfer above the approval threshold. */
     TRANSFER_SELF_APPROVAL("A transfer order cannot be decided by the person who submitted it", 409),
+    /** BR-PRD-08: a new design goes to print only after the customer approved its sample. */
+    DESIGN_SAMPLE_NOT_APPROVED("A design on this order has no approved sample yet", 409),
+    /** BR-PRD-09: a deposit order goes to production only once the deposit has arrived. */
+    ORDER_DEPOSIT_NOT_RECEIVED("The deposit for this order has not arrived yet", 409),
     OPTIMISTIC_LOCK("The record changed meanwhile, please retry", 409),
     /** Two writers reached the same row; the loser waited for the lock and gave up. Retryable. */
     LOCK_TIMEOUT("The record is busy, please retry", 409),
