@@ -153,8 +153,12 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
      * Up to {@value com.stockflow.warehouse.internal.domain.BinGrid#MAX_BINS_PER_LEVEL} bins and as many
      * locations a level, inserted in one flush: {@code hibernate.jdbc.batch_size} and
      * {@code order_inserts} send them in batches, locations ahead of bins.
+     *
+     * <p>One audit entry for the whole batch, under the shelf: the bins span several levels and
+     * none of their ids exists before the call.</p>
      */
     @Override
+    @Auditable(action = AuditAction.CREATE, resourceType = "bin", resourceId = "#command.shelfId()")
     public List<ShelfSummary.Level> generateBins(ShelfCommands.GenerateBins command) {
         Warehouse warehouse = lockWarehouseOf(command.shelfId());
         Shelf shelf = require(command.shelfId());

@@ -12,6 +12,8 @@ import com.stockflow.warehouse.internal.domain.LevelMeasures;
 import com.stockflow.warehouse.internal.domain.LocationSettings;
 import com.stockflow.warehouse.internal.domain.PickFaces;
 import com.stockflow.warehouse.internal.domain.StorageClass;
+import com.stockflow.warehouse.internal.entity.BinJpaEntity;
+import com.stockflow.warehouse.internal.entity.StorageLocationJpaEntity;
 import jakarta.persistence.EntityManagerFactory;
 import org.hibernate.SessionFactory;
 import org.hibernate.stat.Statistics;
@@ -100,6 +102,7 @@ class BinGenerationIntegrationTest {
     /**
      * 400 rows in one flush. Unbatched, that is 400 prepared statements; batched by 50 with the
      * inserts ordered, it is a handful - and the commit succeeding means every location preceded its bin.
+     * Inserts are counted per entity: the audit entry {@code generateBins} writes is an insert too.
      */
     @Test
     @DisplayName("1 x 200 on one level commits 200 bins and 200 owned locations, inserted in batches")
@@ -114,7 +117,9 @@ class BinGenerationIntegrationTest {
             statistics.setStatisticsEnabled(false);
         }
 
-        assertThat(statistics.getEntityInsertCount()).isEqualTo(400);
+        assertThat(statistics.getEntityStatistics(BinJpaEntity.class.getName()).getInsertCount()).isEqualTo(200);
+        assertThat(statistics.getEntityStatistics(StorageLocationJpaEntity.class.getName()).getInsertCount())
+                .isEqualTo(200);
         assertThat(statistics.getPrepareStatementCount()).isLessThan(40);
         assertThat(filled).singleElement().satisfies(level -> {
             assertThat(level.id()).isEqualTo(levelId);
