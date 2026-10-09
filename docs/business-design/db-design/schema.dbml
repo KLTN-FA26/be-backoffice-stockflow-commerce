@@ -1383,6 +1383,9 @@ Table procurement.goods_receipt_lines [headercolor: #7D5BA6] {
   last_modified_at  timestamptz
   last_modified_by  varchar(100)
   qc_required       boolean [not null, default: false]
+  qc_location_id    uuid
+  moved_to_qc_at    timestamptz
+  moved_to_qc_by    uuid
 }
 
 Table procurement.goods_receipts [headercolor: #7D5BA6] {
@@ -2705,7 +2708,9 @@ Ref: warehouse.zone.warehouse_id > warehouse.warehouse.id
 Ref: procurement.approval_limits.role_id > identity.app_role.id [delete: cascade]
 Ref: procurement.goods_receipt_lines.inventory_item_id > inventory.inventory_items.id [delete: restrict]
 Ref: procurement.goods_receipt_lines.location_id > warehouse.storage_location.id [delete: restrict]
+Ref: procurement.goods_receipt_lines.moved_to_qc_by > identity.app_user.id
 Ref: procurement.goods_receipt_lines.po_line_id > procurement.purchase_order_lines.id [delete: restrict]
+Ref: procurement.goods_receipt_lines.qc_location_id > warehouse.storage_location.id [delete: restrict]
 Ref: procurement.goods_receipt_lines.receipt_id > procurement.goods_receipts.id [delete: cascade]
 Ref: procurement.goods_receipts.confirmed_by > identity.app_user.id
 Ref: procurement.goods_receipts.po_id > procurement.purchase_orders.id [delete: restrict]

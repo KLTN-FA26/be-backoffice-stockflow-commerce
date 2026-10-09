@@ -5,6 +5,7 @@ import com.stockflow.common.domain.Sku;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -79,6 +80,26 @@ public interface InventoryService {
      *         asked), {@code STOCK_STATUS_MISMATCH} (the destination holds the lot in another status)
      */
     StockMove move(MoveStockCommand command);
+
+    /**
+     * Count received goods in at a receiving location as INBOUND stock, writing a RECEIPT ledger line
+     * (SCRUM-435, docs 03 step 6). Joins the caller's transaction: the receipt and the stock it
+     * creates commit or roll back together. Merges into INBOUND stock of the same SKU and lot already
+     * at that location.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code LOCATION_NOT_FOUND},
+     *         {@code STOCK_STATUS_MISMATCH} (the location holds the lot in a status other than INBOUND)
+     */
+    StockMove receive(ReceiveStockCommand command);
+
+    /**
+     * Move units and change their status in one step (QC decision, putaway); see
+     * {@link ReclassifyStockCommand}. Same locking and errors as {@link #move}.
+     */
+    StockMove reclassify(ReclassifyStockCommand command);
+
+    /** The receiving policy of an inventory item, empty when no such item exists. */
+    Optional<InventoryItemPolicy> itemPolicy(UUID inventoryItemId);
 
     /**
      * Ask for a stock correction with a reason (SCRUM-145). The stock does not change until a

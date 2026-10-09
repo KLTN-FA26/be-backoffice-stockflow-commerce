@@ -44,6 +44,7 @@ public enum ErrorCode {
     STOCK_ADJUSTMENT_NOT_FOUND("Stock adjustment not found", 404),
     TRANSFER_ORDER_NOT_FOUND("Transfer order not found", 404),
     WAREHOUSE_NOT_FOUND("Warehouse not found", 404),
+    GOODS_RECEIPT_NOT_FOUND("Goods receipt not found", 404),
 
     /** Credentials were correct but the account is LOCKED or DISABLED. Distinct from UNAUTHORIZED,
      *  which covers "wrong username or password" without revealing the account exists. */
@@ -68,6 +69,19 @@ public enum ErrorCode {
     INVALID_TRANSFER_TRANSITION("This transfer order cannot move to that status right now", 409),
     /** Four eyes on a transfer above the approval threshold. */
     TRANSFER_SELF_APPROVAL("A transfer order cannot be decided by the person who submitted it", 409),
+    /** BR-01 (docs 03): goods are received only against a CONFIRMED or PARTIALLY_RECEIVED purchase order. */
+    PURCHASE_ORDER_NOT_RECEIVABLE("Goods cannot be received against this purchase order now", 409),
+    INVALID_RECEIPT_TRANSITION("This goods receipt cannot move to that status right now", 409),
+    /** BR-02: the PO line would be received beyond the supplier's over-receipt tolerance. */
+    OVER_RECEIPT_TOLERANCE("The quantity exceeds what the purchase order line allows", 409),
+    /** The location exists but is not the kind of area this step needs (RECEIVING, QUALITY_CONTROL,
+     *  QUARANTINE), or is in another warehouse. */
+    LOCATION_AREA_MISMATCH("The location is not an area of the right kind in this warehouse", 409),
+    /** BR-03: a lot-tracked or expiry-tracked item was received without its lot or expiry date, or an
+     *  untracked one with a lot. */
+    RECEIPT_LOT_DATA_INVALID("Lot or expiry data does not match how the item is tracked", 409),
+    /** BR-08: accepted + quarantined + rejected must add up to what was moved to the QC area. */
+    QC_QUANTITY_MISMATCH("The QC quantities do not add up to the quantity inspected", 409),
     OPTIMISTIC_LOCK("The record changed meanwhile, please retry", 409),
     /** Two writers reached the same row; the loser waited for the lock and gave up. Retryable. */
     LOCK_TIMEOUT("The record is busy, please retry", 409),

@@ -91,6 +91,18 @@ public final class StockItem extends AggregateRoot {
                 quantity, StockStatus.QUARANTINE, List.of(), 0L);
     }
 
+    /**
+     * Goods counted in at a receiving location against a goods receipt (docs 03 step 6).
+     *
+     * <p>They start {@link StockStatus#INBOUND}: received, not yet put away, never sellable. Only a
+     * putaway (or, for goods QC put on hold, a later QC decision) turns them into another status.</p>
+     */
+    public static StockItem receiveInbound(Sku sku, LocationId location, String lotNumber,
+                                           LocalDate expiryDate, Quantity quantity) {
+        return new StockItem(StockItemId.newId(), sku, location, lotNumber, expiryDate,
+                quantity, StockStatus.INBOUND, List.of(), 0L);
+    }
+
     // ------------------------------------------------------------------ queries
 
     /** Units currently held by live reservations. */
@@ -334,11 +346,39 @@ public final class StockItem extends AggregateRoot {
         return arrived;
     }
 
+    /**
+     * Units moved out of {@code source} that change status on the way: a QC decision sends part of
+     * a receipt to the quarantine area as QUARANTINE or BLOCKED, a putaway turns INBOUND goods into
+     * AVAILABLE ones at the bin.
+     */
+    public static StockItem arrivedAs(StockItem source, LocationId destination, Quantity quantity,
+                                      StockStatus status) {
+        if (source.location.equals(destination)) {
+            throw new IllegalArgumentException("A move needs two different locations");
+        }
+        StockItem arrived = new StockItem(StockItemId.newId(), source.sku, destination, source.lotNumber,
+                source.expiryDate, Quantity.ZERO, java.util.Objects.requireNonNull(status, "status"),
+                List.of(), 0L);
+        arrived.moveIn(quantity);
+        return arrived;
+    }
+
     /** Whether units of {@code other} may be merged into this stock item by a move. */
     public boolean canReceiveFrom(StockItem other) {
+        return canReceiveFrom(other, other.status);
+    }
+
+    /** Whether units of {@code other}, arriving as {@code arrivingStatus}, may be merged into this one. */
+    public boolean canReceiveFrom(StockItem other, StockStatus arrivingStatus) {
         return sku.equals(other.sku)
                 && java.util.Objects.equals(lotNumber, other.lotNumber)
-                && status == other.status;
+                && status == arrivingStatus;
+    }
+
+    /** The receiving side of a goods receipt: more of the same SKU and lot, still INBOUND. */
+    public boolean canTakeReceipt(Sku receivedSku, String receivedLot) {
+        return sku.equals(receivedSku) && java.util.Objects.equals(lotNumber, receivedLot)
+                && status == StockStatus.INBOUND;
     }
 
     /**

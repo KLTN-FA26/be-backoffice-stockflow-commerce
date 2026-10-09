@@ -43,11 +43,10 @@ public interface ProcurementService {
      * SCRUM-116/WBS 3.2.4.1. Advances the named lines' received quantities; the order rolls up to
      * {@code CLOSED} once every line is fully received, or {@code PARTIALLY_RECEIVED} otherwise.
      *
-     * <p>Only the PO-line running totals are updated. A dedicated goods-receipt record (receipt
-     * number, QC outcome, discrepancies) is not created here — {@code GoodsReceiptJpaEntity} is
-     * still a starter stub with no line-item table, and inventing that shape without a groomed
-     * story for it would be guessing rather than implementing. Flagged as a gap, same treatment
-     * BR-PO-001/002 got above.</p>
+     * <p>Only the PO-line running totals on the old {@code purchase_order} tables are updated. Real
+     * goods receipts — receipt number, lots, inbound QC, stock — are {@code /api/v1/goods-receipts}
+     * (SCRUM-435), which work against the new {@code purchase_orders} tables; this method goes away
+     * with contract C4, when the order itself moves there.</p>
      */
     PurchaseOrderSummary receiveGoods(UUID purchaseOrderId, ReceiveGoodsCommand command);
 
