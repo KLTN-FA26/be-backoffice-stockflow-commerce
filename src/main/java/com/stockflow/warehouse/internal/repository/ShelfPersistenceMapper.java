@@ -4,15 +4,12 @@ import com.stockflow.warehouse.internal.domain.Bin;
 import com.stockflow.warehouse.internal.domain.BinDetails;
 import com.stockflow.warehouse.internal.domain.Footprint;
 import com.stockflow.warehouse.internal.domain.LevelMeasures;
-import com.stockflow.warehouse.internal.domain.LocationSettings;
 import com.stockflow.warehouse.internal.domain.PickFaces;
 import com.stockflow.warehouse.internal.domain.Shelf;
 import com.stockflow.warehouse.internal.domain.ShelfLevel;
-import com.stockflow.warehouse.internal.domain.StorageLocation;
 import com.stockflow.warehouse.internal.entity.BinJpaEntity;
 import com.stockflow.warehouse.internal.entity.ShelfJpaEntity;
 import com.stockflow.warehouse.internal.entity.ShelfLevelJpaEntity;
-import com.stockflow.warehouse.internal.entity.StorageLocationJpaEntity;
 
 import java.util.HashMap;
 import java.util.List;
@@ -50,16 +47,11 @@ final class ShelfPersistenceMapper {
     }
 
     private static Bin toDomain(BinJpaEntity bin) {
-        StorageLocationJpaEntity location = bin.getLocation();
         return new Bin(bin.getId(), bin.getCode(),
                 new BinDetails(bin.getDescription(),
                         new Footprint(bin.getX(), bin.getY(), bin.getWidth(), bin.getLength(), bin.getRotation()),
                         bin.getType(), bin.getStorageClassOverride()),
-                new StorageLocation(location.getId(), location.getWarehouseId(), location.getKind(),
-                        location.getLocationCode(), location.getStorageClass(),
-                        new LocationSettings(location.getCapacityUnits(), location.getMaxWeight(),
-                                location.isPickable(), location.isPutawayTarget()),
-                        location.getStatus()));
+                StorageLocationPersistenceMapper.toDomain(bin.getLocation()));
     }
 
     static ShelfJpaEntity toNewEntity(Shelf shelf) {
@@ -121,11 +113,7 @@ final class ShelfPersistenceMapper {
 
     private static BinJpaEntity toNewEntity(Bin bin) {
         Footprint f = bin.footprint();
-        StorageLocation l = bin.location();
-        StorageLocationJpaEntity location = new StorageLocationJpaEntity(l.id(), l.warehouseId(), l.kind(),
-                l.locationCode(), l.storageClass(), l.capacityUnits(), l.maxWeight(), l.pickable(),
-                l.putawayTarget(), l.status());
-        return new BinJpaEntity(bin.id(), location, bin.code(), bin.details().description(), f.x(), f.y(),
+        return new BinJpaEntity(bin.id(), StorageLocationPersistenceMapper.toNewEntity(bin.location()), bin.code(), bin.details().description(), f.x(), f.y(),
                 f.width(), f.length(), f.rotation(), bin.details().type(), bin.details().storageClassOverride());
     }
 
@@ -133,8 +121,6 @@ final class ShelfPersistenceMapper {
         Footprint f = bin.footprint();
         row.apply(bin.details().description(), f.x(), f.y(), f.width(), f.length(), f.rotation(),
                 bin.details().type(), bin.details().storageClassOverride());
-        StorageLocation l = bin.location();
-        row.getLocation().apply(l.storageClass(), l.capacityUnits(), l.maxWeight(), l.pickable(),
-                l.putawayTarget(), l.status());
+        StorageLocationPersistenceMapper.apply(bin.location(), row.getLocation());
     }
 }

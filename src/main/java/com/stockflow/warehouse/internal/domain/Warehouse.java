@@ -120,6 +120,15 @@ public final class Warehouse extends AggregateRoot {
         }
     }
 
+    /** BR-06 for a wall or door: both ends inside the map frame; on its edge is inside. */
+    public void requireOnMap(Segment segment) {
+        if (!segment.fitsWithin(mapWidth, mapHeight)) {
+            throw new BusinessException(ErrorCode.LAYOUT_OUT_OF_BOUNDS,
+                    "This boundary would run off the %s x %s map of %s".formatted(
+                            mapWidth.toPlainString(), mapHeight.toPlainString(), prefix));
+        }
+    }
+
     public void activate() {
         this.status = WarehouseStatus.ACTIVE;
     }
