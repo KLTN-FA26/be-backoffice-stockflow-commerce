@@ -37,6 +37,11 @@ import java.util.UUID;
  * <p>Every change is {@link Auditable}. An addition is recorded under its parent - the warehouse
  * for a shelf, the shelf for a level, the level for a bin - because its own id is minted inside the
  * call; every later change is recorded under the thing's own id.</p>
+ *
+ * <p>Placing or editing a shelf or a bin records only what succeeded ({@code includeFailures =
+ * false}). Its refusals - an overlap, a spot off the map, a code taken - are what a map editor
+ * produces by the dozen while someone drags a shelf into place, and as audit entries they would
+ * bury the ones that matter. A refused status change is still recorded.</p>
  */
 @Service
 @Transactional
@@ -53,7 +58,8 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
     }
 
     @Override
-    @Auditable(action = AuditAction.CREATE, resourceType = "shelf", resourceId = "#command.warehouseId()")
+    @Auditable(action = AuditAction.CREATE, resourceType = "shelf",
+            resourceId = "#command.warehouseId()", includeFailures = false)
     public ShelfSummary createShelf(ShelfCommands.CreateShelf command) {
         Warehouse warehouse = WarehouseLocks.lock(warehouses, command.warehouseId());
         requireZoneOf(command.zoneId(), warehouse.id());
@@ -70,7 +76,8 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
     }
 
     @Override
-    @Auditable(action = AuditAction.UPDATE, resourceType = "shelf", resourceId = "#command.shelfId()")
+    @Auditable(action = AuditAction.UPDATE, resourceType = "shelf",
+            resourceId = "#command.shelfId()", includeFailures = false)
     public ShelfSummary updateShelf(ShelfCommands.UpdateShelf command) {
         Warehouse warehouse = lockWarehouseOf(command.shelfId());
         Shelf shelf = require(command.shelfId());
@@ -120,7 +127,8 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
     }
 
     @Override
-    @Auditable(action = AuditAction.CREATE, resourceType = "bin", resourceId = "#command.levelId()")
+    @Auditable(action = AuditAction.CREATE, resourceType = "bin",
+            resourceId = "#command.levelId()", includeFailures = false)
     public ShelfSummary.BinEntry addBin(ShelfCommands.AddBin command) {
         Warehouse warehouse = lockWarehouseOf(command.shelfId());
         Shelf shelf = require(command.shelfId());
@@ -130,7 +138,8 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
     }
 
     @Override
-    @Auditable(action = AuditAction.UPDATE, resourceType = "bin", resourceId = "#command.binId()")
+    @Auditable(action = AuditAction.UPDATE, resourceType = "bin",
+            resourceId = "#command.binId()", includeFailures = false)
     public ShelfSummary.BinEntry updateBin(ShelfCommands.UpdateBin command) {
         lockWarehouseOf(command.shelfId());
         Shelf shelf = require(command.shelfId());
@@ -156,7 +165,8 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
      * none of their ids exists before the call.</p>
      */
     @Override
-    @Auditable(action = AuditAction.CREATE, resourceType = "bin", resourceId = "#command.shelfId()")
+    @Auditable(action = AuditAction.CREATE, resourceType = "bin",
+            resourceId = "#command.shelfId()", includeFailures = false)
     public List<ShelfSummary.Level> generateBins(ShelfCommands.GenerateBins command) {
         Warehouse warehouse = lockWarehouseOf(command.shelfId());
         Shelf shelf = require(command.shelfId());

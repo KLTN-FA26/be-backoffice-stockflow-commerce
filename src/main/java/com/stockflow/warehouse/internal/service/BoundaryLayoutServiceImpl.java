@@ -21,7 +21,9 @@ import java.util.UUID;
  *
  * <p>Every change is {@link Auditable}: a new boundary under its warehouse, since its id is minted
  * inside the call, and every later change under the boundary's own id. A delete matters most - it is
- * the one hard delete on the map (issue #18 D11), so the audit entry is all that is left of it.</p>
+ * the one hard delete on the map (issue #18 D11), so the audit entry is all that is left of it, and a
+ * refused delete is recorded too. Drawing or editing a boundary records only what succeeded, for the
+ * reason {@code ShelfLayoutServiceImpl} gives.</p>
  */
 @Service
 @Transactional
@@ -36,7 +38,8 @@ class BoundaryLayoutServiceImpl implements BoundaryLayoutService {
     }
 
     @Override
-    @Auditable(action = AuditAction.CREATE, resourceType = "boundary", resourceId = "#command.warehouseId()")
+    @Auditable(action = AuditAction.CREATE, resourceType = "boundary",
+            resourceId = "#command.warehouseId()", includeFailures = false)
     public BoundarySummary createBoundary(BoundaryCommands.CreateBoundary command) {
         Warehouse warehouse = WarehouseLocks.lock(warehouses, command.warehouseId());
         Boundary boundary = Boundary.create(Identifiers.newId(), warehouse.id(), command.type(), command.segment(),
@@ -46,7 +49,8 @@ class BoundaryLayoutServiceImpl implements BoundaryLayoutService {
     }
 
     @Override
-    @Auditable(action = AuditAction.UPDATE, resourceType = "boundary", resourceId = "#command.boundaryId()")
+    @Auditable(action = AuditAction.UPDATE, resourceType = "boundary",
+            resourceId = "#command.boundaryId()", includeFailures = false)
     public BoundarySummary updateBoundary(BoundaryCommands.UpdateBoundary command) {
         Warehouse warehouse = lockWarehouseOf(command.boundaryId());
         Boundary boundary = require(command.boundaryId());

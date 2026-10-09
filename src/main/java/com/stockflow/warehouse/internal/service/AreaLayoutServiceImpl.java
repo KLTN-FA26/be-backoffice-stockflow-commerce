@@ -25,7 +25,9 @@ import java.util.UUID;
  * second line of defence (issue #18 D4).
  *
  * <p>Every change is {@link Auditable}: a new area under its warehouse, since its id is minted inside
- * the call, and every later change under the area's own id.</p>
+ * the call, and every later change under the area's own id. Placing or editing an area records
+ * only what succeeded, for the reason {@code ShelfLayoutServiceImpl} gives; a refused status change
+ * is still recorded.</p>
  */
 @Service
 @Transactional
@@ -40,7 +42,8 @@ class AreaLayoutServiceImpl implements AreaLayoutService {
     }
 
     @Override
-    @Auditable(action = AuditAction.CREATE, resourceType = "area", resourceId = "#command.warehouseId()")
+    @Auditable(action = AuditAction.CREATE, resourceType = "area",
+            resourceId = "#command.warehouseId()", includeFailures = false)
     public AreaSummary createArea(AreaCommands.CreateArea command) {
         Warehouse warehouse = WarehouseLocks.lock(warehouses, command.warehouseId());
         String code = CodePart.of(command.code(), CodePart.CODE_MAX_LENGTH).value();
@@ -55,7 +58,8 @@ class AreaLayoutServiceImpl implements AreaLayoutService {
     }
 
     @Override
-    @Auditable(action = AuditAction.UPDATE, resourceType = "area", resourceId = "#command.areaId()")
+    @Auditable(action = AuditAction.UPDATE, resourceType = "area",
+            resourceId = "#command.areaId()", includeFailures = false)
     public AreaSummary updateArea(AreaCommands.UpdateArea command) {
         Warehouse warehouse = lockWarehouseOf(command.areaId());
         Area area = require(command.areaId());
