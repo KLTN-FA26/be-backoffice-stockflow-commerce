@@ -82,6 +82,17 @@ public class WarehouseJpaEntity extends BaseEntity {
         this.status = status;
     }
 
+    /** Everything a warehouse may change after registration; prefix and map unit never do. */
+    public void apply(String name, String address, String returnAddress, BigDecimal mapWidth,
+                      BigDecimal mapHeight, WarehouseStatus status) {
+        this.name = name;
+        this.address = address;
+        this.returnAddress = returnAddress;
+        this.mapWidth = mapWidth;
+        this.mapHeight = mapHeight;
+        this.status = status;
+    }
+
     public String getPrefix() { return prefix; }
     public String getName() { return name; }
     public String getAddress() { return address; }

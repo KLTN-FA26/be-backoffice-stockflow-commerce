@@ -15,6 +15,7 @@ import jakarta.persistence.LockModeType;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Repository;
 
+import java.time.LocalDate;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.HashMap;
@@ -74,7 +75,10 @@ class StockItemRepositoryAdapter implements StockItemRepository {
      * correctly serialised and still reserve against pre-lock numbers, which is the oversell the
      * lock was taken to prevent.</p>
      *
-     * <p>{@code refresh(entity, PESSIMISTIC_WRITE)} re-reads the row and its cascaded collection
+     * <p>A scalar SELECT FOR UPDATE first locks the row before loading any entity version.
+     * Hibernate's follow-on locking of a fetched collection can otherwise read an old version,
+     * wait for a concurrent checkout, then reject that version instead of refreshing current stock.
+     * {@code refresh(entity, PESSIMISTIC_WRITE)} then re-reads the row and its cascaded collection
      * under the lock and overwrites the cached state, so the aggregate handed back reflects what
      * every earlier transaction committed. The load-then-refresh pair also keeps the lock and the
      * fetch join apart, which not every database supports combining.</p>
@@ -90,6 +94,10 @@ class StockItemRepositoryAdapter implements StockItemRepository {
      */
     @Override
     public Optional<StockItem> findByIdForUpdate(StockItemId id) {
+        if (entityManager.createNativeQuery("select id from inventory.stock_item where id = :id for update")
+                .setParameter("id", id.value()).getResultList().isEmpty()) {
+            return Optional.empty();
+        }
         return jpa.findByIdWithReservations(id.value())
                 .map(entity -> {
                     entityManager.refresh(entity, LockModeType.PESSIMISTIC_WRITE, LOCK_TIMEOUT);
@@ -120,6 +128,13 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     }
 
     @Override
+    public java.util.Map<String, Long> availableQuantities(java.util.Set<String> skus, LocalDate today) {
+        if (skus.isEmpty()) return java.util.Map.of();
+        return jpa.availableTotals(skus, today).stream().collect(java.util.stream.Collectors.toMap(
+                StockItemJpaRepository.AvailableTotal::getSku, StockItemJpaRepository.AvailableTotal::getQuantity));
+    }
+
+    @Override
     public List<StockLevelLine> findLevelLinesBySku(Sku sku) {
         return jpa.findLevelRowsBySku(sku.code()).stream()
                 .map(StockLevelRow::toLine)
@@ -127,12 +142,12 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     }
 
     @Override
-    public Map<Sku, Integer> sumAvailableBySkus(Collection<Sku> skus) {
+    public Map<Sku, Integer> sumAvailableBySkus(Collection<Sku> skus, LocalDate today) {
         if (skus.isEmpty()) {
             return Map.of();      // "in ()" is not valid SQL, and there is nothing to ask
         }
         Map<Sku, Integer> totals = new HashMap<>();
-        for (SkuAtpRow row : jpa.sumAvailableBySkus(skus.stream().map(Sku::code).toList())) {
+        for (SkuAtpRow row : jpa.sumAvailableBySkus(skus.stream().map(Sku::code).toList(), today)) {
             totals.put(new Sku(row.sku()), Math.toIntExact(row.atp()));
         }
         return totals;

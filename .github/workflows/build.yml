@@ -13,7 +13,7 @@ on:
   push:
     # infra/deploy deploys too: it is where changes to the deployment itself (deploy/, this file)
     # are tried against the VPS before they reach develop.
-    branches: [main, develop, infra/deploy]
+    branches: [develop]
   pull_request:
 
 # A new push to the same branch cancels the previous run. Without this a busy branch queues five

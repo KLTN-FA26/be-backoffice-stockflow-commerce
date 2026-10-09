@@ -70,6 +70,18 @@ public class BoundaryJpaEntity extends BaseEntity {
         this.operationalStatus = operationalStatus;
     }
 
+    /** Everything about a boundary but its warehouse. */
+    public void apply(BoundaryType type, BigDecimal startX, BigDecimal startY, BigDecimal endX, BigDecimal endY,
+                      boolean passable, DoorStatus operationalStatus) {
+        this.type = type;
+        this.startX = startX;
+        this.startY = startY;
+        this.endX = endX;
+        this.endY = endY;
+        this.passable = passable;
+        this.operationalStatus = operationalStatus;
+    }
+
     public UUID getWarehouseId() { return warehouseId; }
     public BoundaryType getType() { return type; }
     public BigDecimal getStartX() { return startX; }

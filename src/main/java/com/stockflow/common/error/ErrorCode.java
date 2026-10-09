@@ -11,9 +11,25 @@ package com.stockflow.common.error;
  * actually depend on: whether to show a form error, retry, or give up.</p>
  */
 public enum ErrorCode {
-
     // ---- 400: the request itself is wrong; retrying it unchanged will not help
+    PO_DELIVERY_DATE_REQUIRED("A delivery date is required before sending", 400),
+    PO_REASON_REQUIRED("A reason of 1..1000 characters is required", 400),
+    PO_SUPPLIER_RESPONSE_INVALID("Supplier response must be CONFIRMED or REJECTED", 400),
+    PO_LINE_DESCRIPTION_REQUIRED("A product description is required for each purchase order line", 400),
+    SUPPLIER_DELIVERY_CONTACT_INVALID("Supplier delivery contact is invalid or not allowed", 400),
+    SUPPLIER_PROFILE_INVALID("Invalid supplier profile or commercial terms", 400),
     VALIDATION_FAILED("Invalid request data", 400),
+    INVENTORY_POLICY_INVALID("Invalid SKU inventory policy", 400),
+    INVENTORY_POLICY_STOCK_CONFLICT("Existing stock is incompatible with this policy", 409),
+    CATALOG_SLUG_EXISTS("This storefront URL is already reserved", 409),
+    CATALOG_LISTING_REQUIRED("Configure the storefront listing before publishing", 409),
+    PRODUCT_NOT_APPROVED("Approve the product before publishing", 409),
+    PRODUCT_CATEGORY_REQUIRED("A valid product category is required", 409),
+    PRODUCT_SKU_REQUIRED("At least one sellable SKU is required", 409),
+    PRODUCT_GALLERY_REQUIRED("An approved non-empty product gallery is required", 409),
+    PRODUCT_NOT_PURCHASABLE("This product is not currently available for purchase", 409),
+    PRICE_NOT_AVAILABLE("No selling price is available for this SKU", 409),
+    CATALOG_PRICE_AMBIGUOUS("More than one selling price has the same priority", 409),
     MALFORMED_REQUEST("The request body could not be read", 400),
     UNSUPPORTED_PARAMETER("Unsupported parameter value", 400),
     /** The URL itself was refused before routing: {@code //}, an encoded {@code ..}, a {@code ;}. */
@@ -37,13 +53,20 @@ public enum ErrorCode {
     CATEGORY_NOT_FOUND("Category not found", 404),
     CUSTOMER_NOT_FOUND("Customer not found", 404),
     ADDRESS_NOT_FOUND("Address not found", 404),
+    WAREHOUSE_NOT_FOUND("Warehouse not found", 404),
+    /** Also the answer for a zone of another warehouse: a zone id is only meaningful in its own. */
+    ZONE_NOT_FOUND("Zone not found", 404),
+    SHELF_NOT_FOUND("Shelf not found", 404),
+    SHELF_LEVEL_NOT_FOUND("Shelf level not found", 404),
+    BIN_NOT_FOUND("Bin not found", 404),
+    AREA_NOT_FOUND("Area not found", 404),
+    BOUNDARY_NOT_FOUND("Boundary not found", 404),
+    /** The storage location id or code is not on any warehouse map. */
+    LOCATION_NOT_FOUND("Location not found", 404),
     /** No stock of this SKU (and lot) is held at this location. */
     STOCK_ITEM_NOT_FOUND("No such stock at this location", 404),
-    /** The location code is not on any warehouse map. */
-    LOCATION_NOT_FOUND("Location not found", 404),
     STOCK_ADJUSTMENT_NOT_FOUND("Stock adjustment not found", 404),
     TRANSFER_ORDER_NOT_FOUND("Transfer order not found", 404),
-    WAREHOUSE_NOT_FOUND("Warehouse not found", 404),
 
     /** Credentials were correct but the account is LOCKED or DISABLED. Distinct from UNAUTHORIZED,
      *  which covers "wrong username or password" without revealing the account exists. */
@@ -58,7 +81,11 @@ public enum ErrorCode {
     PASSWORD_UNCHANGED("The new password must differ from the current one", 400),
 
     // ---- 409: the request is fine, the current state is not
+    PO_COMMUNICATION_NOT_CONFIGURED("Buyer contact and receiving address must be configured before sending", 409),
     CONFLICT("Conflicting state", 409),
+    CHECKOUT_PRICE_CHANGED("The selling price changed; review the basket and confirm again", 409),
+    COUNT_POLICY_CONFLICT("Reconcile the active count and SKU tracking policy before proceeding",409),
+    DESIGN_QUOTE_REQUIRED("An accepted design quote matching this order line is required",409),
     INSUFFICIENT_STOCK("Not enough available stock", 409),
     /** The destination already holds this SKU and lot in another status (QC state does not merge). */
     STOCK_STATUS_MISMATCH("The destination holds this lot in a different status", 409),
@@ -76,6 +103,10 @@ public enum ErrorCode {
     IDEMPOTENT_REQUEST_IN_PROGRESS("An identical request is still being processed", 409),
     /** BR-PO: a new PO cannot be raised against a supplier that is not ACTIVE. */
     SUPPLIER_INACTIVE("This supplier cannot receive new purchase orders", 409),
+    SUPPLIER_HAS_OPEN_PURCHASE_ORDERS("Supplier has open purchase orders", 409),
+    SUPPLIER_CODE_ALREADY_EXISTS("A supplier with this code already exists", 409),
+    SUPPLIER_TAX_CODE_ALREADY_EXISTS("A supplier with this tax code already exists", 409),
+    INVALID_SUPPLIER_CONFIRMATION("This supplier confirmation cannot be recorded", 409),
     PRODUCT_CODE_ALREADY_EXISTS("A product with this code already exists", 409),
     INVALID_PRODUCT_STATUS_TRANSITION("This product cannot move to that status right now", 409),
     SELF_APPROVAL_NOT_ALLOWED("A product cannot be approved by the person who submitted it", 409),
@@ -84,9 +115,28 @@ public enum ErrorCode {
     /** Checkout needs somewhere to deliver: no shipping address was chosen and none is the default. */
     SHIPPING_ADDRESS_REQUIRED("Add a shipping address before placing an order", 409),
 
-    /** Guest checkout is switched off (it is on only where prices can be trusted, see application.yml). */
+    /** Deployment rollout gate for guest checkout; see application.yml. */
     GUEST_CHECKOUT_DISABLED("Guest checkout is not available", 403),
     INVALID_PURCHASE_ORDER_TRANSITION("This purchase order cannot move to that status right now", 409),
+    /** The prefix starts every location code of the warehouse, so it is unique system-wide. */
+    WAREHOUSE_PREFIX_ALREADY_EXISTS("A warehouse with this prefix already exists", 409),
+    ZONE_NAME_ALREADY_EXISTS("This warehouse already has a zone with this name", 409),
+    /** BR-06: something would end up outside the warehouse map. */
+    LAYOUT_OUT_OF_BOUNDS("This would leave part of the layout outside the warehouse map", 409),
+    SHELF_CODE_ALREADY_EXISTS("This warehouse already has a shelf with this code", 409),
+    SHELF_LEVEL_ALREADY_EXISTS("This shelf already has a level with this number", 409),
+    BIN_CODE_ALREADY_EXISTS("This shelf level already has a bin with this code", 409),
+    AREA_CODE_ALREADY_EXISTS("This warehouse already has an area with this code", 409),
+    /** Issue #18 D10: a storage area keeps its storage location for good, so it never becomes NON_STORAGE. */
+    AREA_TYPE_CHANGE_NOT_ALLOWED("An area that holds stock cannot become a non-storage area", 409),
+    /** BR-07: two shelves, areas or bins would cover the same floor. Touching edges is fine. */
+    LAYOUT_OVERLAP("This would overlap something already on the map", 409),
+    /** BR-08: a shelf with pickable bins needs at least one side a picker can reach them from. */
+    PICK_FACE_REQUIRED("A shelf with pickable bins needs at least one pick face", 409),
+    /** A shelf is loaded and locked as one aggregate, so it is bounded: 20 levels, 200 bins a level. */
+    SHELF_CAPACITY_EXCEEDED("This shelf cannot hold that many levels or bins", 409),
+    /** BR-14: bins are generated on empty levels only - an INACTIVE bin still counts, its code is taken. */
+    SHELF_LEVEL_HAS_BINS("Bins can only be generated on levels that have none yet", 409),
 
     /** Someone saved this role's permissions after the editor loaded them. Not retryable as-is:
      *  resending the same body would overwrite their change, so the client must reload first. */

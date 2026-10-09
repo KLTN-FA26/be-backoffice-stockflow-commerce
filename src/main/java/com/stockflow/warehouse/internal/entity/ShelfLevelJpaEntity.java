@@ -83,6 +83,13 @@ public class ShelfLevelJpaEntity {
         this.shelf = parent;
     }
 
+    /** The measures; the index never changes. */
+    public void apply(BigDecimal elevation, BigDecimal usableHeight, BigDecimal maxWeight) {
+        this.elevation = elevation;
+        this.usableHeight = usableHeight;
+        this.maxWeight = maxWeight;
+    }
+
     /** Appends a bin; it is inserted with the shelf on the next flush. */
     public void addBin(BinJpaEntity bin) {
         bin.attachTo(this);
