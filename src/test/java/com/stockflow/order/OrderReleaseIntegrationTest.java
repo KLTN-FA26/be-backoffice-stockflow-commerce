@@ -71,7 +71,7 @@ class OrderReleaseIntegrationTest {
         tx.executeWithoutResult(s -> {
             jdbc.update("""
                     INSERT INTO design.design_draft (id, customer_id, product_id, status, created_at, current_artifacts)
-                    VALUES (?, ?, ?, 'DRAFT', NOW(), '{}'::jsonb)""", draft, DemoData.CUSTOMER_ID, UUID.randomUUID());
+                    VALUES (?, ?, ?, 'DRAFT', NOW(), '{}'::jsonb)""", draft, DemoData.CUSTOMER_ID, DemoData.PRODUCT_SOFA);
             jdbc.update("""
                     INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at,
                                                         artifact_manifest)

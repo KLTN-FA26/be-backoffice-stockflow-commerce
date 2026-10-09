@@ -150,9 +150,12 @@ where sku='DRAFT-OLD';
                     assertThat(row.next()).isTrue();
                     itemId = row.getString(1);
                 }
+                // Up to the fix under test only: later contracts (C2) require map locations this
+                // database, migrated without the demo seed, does not have.
                 var upgrade =
                         Flyway.configure()
                                 .dataSource(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword())
+                                .target("20261008000200")
                                 .load();
                 assertThat(upgrade.migrate().migrations)
                         .extracting(m -> m.version)

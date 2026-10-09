@@ -129,6 +129,17 @@ class LayoutReadRepositoryAdapter implements LayoutReadRepository, LocationLooku
     }
 
     @Override
+    public Optional<WarehouseHeader> findWarehouseHeader(UUID warehouseId) {
+        return entityManager.createQuery("""
+                        select w.id, w.prefix, w.name, w.address, w.status
+                        from WarehouseJpaEntity w
+                        where w.id = :warehouseId
+                        """, WarehouseHeader.class)
+                .setParameter("warehouseId", warehouseId)
+                .getResultList().stream().findFirst();
+    }
+
+    @Override
     public Optional<LocationRow> findById(UUID locationId) {
         return findLocation("loc.id = :key", locationId);
     }

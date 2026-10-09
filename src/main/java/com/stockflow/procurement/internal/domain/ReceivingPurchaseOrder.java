@@ -9,13 +9,13 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * A purchase order as receiving sees it, read from the new tables ({@code procurement.purchase_orders},
- * {@code purchase_order_lines}). Not the {@code PurchaseOrder} aggregate, which still lives on the old
- * {@code purchase_order} table until contract C4 (plan 2026-10-02): goods receipts reference the new
- * tables, so receiving reads them directly and writes back only what receipt progress changes — the
- * line and header status, and an event on the order's timeline.
+ * A purchase order as receiving sees it ({@code procurement.purchase_orders},
+ * {@code purchase_order_lines}). Not the {@code PurchaseOrder} aggregate: receiving changes only what
+ * receipt progress changes — the line and header status, and an event on the order's timeline — and
+ * reads nothing else, so it reads the rows directly.
  *
  * @param tolerancePercent the supplier's over-receipt tolerance (BR-02), zero when none is set
+ * @param supplierRejected the supplier refused the order (#36): nothing is received against it
  */
 public record ReceivingPurchaseOrder(
         UUID id,
@@ -25,6 +25,7 @@ public record ReceivingPurchaseOrder(
         UUID warehouseId,
         UUID activeRevisionId,
         BigDecimal tolerancePercent,
+        boolean supplierRejected,
         List<Line> lines
 ) {
 
@@ -51,9 +52,9 @@ public record ReceivingPurchaseOrder(
         lines = List.copyOf(lines);
     }
 
-    /** BR-01: goods are received only against an order the supplier has confirmed. */
+    /** BR-01: goods are received only against a confirmed order the supplier did not refuse. */
     public boolean receivable() {
-        return status == Status.CONFIRMED || status == Status.PARTIALLY_RECEIVED;
+        return (status == Status.CONFIRMED || status == Status.PARTIALLY_RECEIVED) && !supplierRejected;
     }
 
     public Optional<Line> line(UUID lineId) {

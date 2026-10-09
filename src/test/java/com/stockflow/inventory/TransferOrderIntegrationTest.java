@@ -64,11 +64,10 @@ class TransferOrderIntegrationTest {
         tx.executeWithoutResult(
                 s -> {
                     jdbc.update(
-                            "INSERT INTO warehouse.warehouse (id, code, name, status, prefix,"
-                                + " version, created_at) VALUES (?, ?, 'Test warehouse', 'ACTIVE',"
-                                + " ?, 0, NOW())",
+                            "INSERT INTO warehouse.warehouse (id, name, status, prefix, address, map_unit,"
+                                + " map_width, map_height, version, created_at) VALUES (?, 'Test warehouse',"
+                                + " 'ACTIVE', ?, 'Test address', 'M', 50, 50, 0, NOW())",
                             other,
-                            prefix,
                             prefix);
                     UUID product = Identifiers.newId();
                     jdbc.update(

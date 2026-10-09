@@ -98,20 +98,6 @@ class ShelfJpaRepositoryIntegrationTest {
         assertThat(areas.findById(officeId).orElseThrow().getLocation()).isNull();
     }
 
-    /**
-     * Until contract C2 the flat model's {@code warehouse.code} is still {@code NOT NULL}; the
-     * entity fills it with the prefix, or no warehouse could be created at all.
-     */
-    @Test
-    @DisplayName("a new warehouse fills the legacy code column with its prefix")
-    void newWarehouseWritesTheLegacyCode() {
-        UUID id = warehouse("HN").getId();
-        entityManager.flush();
-
-        assertThat(jdbc.queryForObject("select code from warehouse.warehouse where id = ?",
-                String.class, id)).isEqualTo("HN");
-    }
-
     @Test
     @DisplayName("a location owned by no bin and no area is refused at commit")
     void anOrphanLocationIsRefused() {

@@ -39,6 +39,10 @@ public final class DemoData {
 
     /** Warehouse {@code HCM}, the only warehouse with a map. */
     public static final UUID WAREHOUSE_HCM = demoId("demo:wh:HCM");
+
+    /** The demo sofa, a published product; its default variant is {@code SOFA-3S-GREY}. Since C1 a design
+     *  draft's product is a foreign key, so a test needs a real one. */
+    public static final UUID PRODUCT_SOFA = demoId("demo:product:SOFA-3S");
     /** Zone A (sofas): shelves A01 and A02. */
     public static final UUID ZONE_HCM_A = demoId("demo:zone:HCM:A");
     /** Zone B (tables): shelf B01. */

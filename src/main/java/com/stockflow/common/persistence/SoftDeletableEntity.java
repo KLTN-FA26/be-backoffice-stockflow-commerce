@@ -35,7 +35,7 @@ import java.util.UUID;
  * instead:</p>
  * <pre>
  * CREATE UNIQUE INDEX uk_product_code
- *     ON product.product (code) WHERE deleted_at IS NULL;
+ *     ON product.products (code) WHERE deleted_at IS NULL;
  * </pre>
  *
  * <p>Both points are the reason this is a base class with documentation rather than an annotation:

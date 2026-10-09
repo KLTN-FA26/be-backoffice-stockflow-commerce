@@ -11,4 +11,7 @@ public record SaveSupplierCommand(
         int paymentTermDays,
         int leadTimeDays,
         String communicationChannel,
-        String apiEndpoint) {}
+        String apiEndpoint,
+        java.math.BigDecimal overReceiptTolerancePercent,
+        boolean printSubcontractor,
+        java.math.BigDecimal lossTolerancePercent) {}

@@ -1,20 +1,16 @@
 package com.stockflow.procurement.internal.repository;
 
 import com.stockflow.common.persistence.BaseJpaRepository;
-import com.stockflow.procurement.internal.domain.PurchaseOrderStatus;
 import com.stockflow.procurement.internal.entity.SupplierJpaEntity;
-
 import jakarta.persistence.LockModeType;
-
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 
-import java.util.Collection;
 import java.util.Optional;
 import java.util.UUID;
 
-/** Supplier writes and PO creation share this lock to serialize deactivation against new orders. */
 interface SupplierJpaRepository extends BaseJpaRepository<SupplierJpaEntity> {
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select s from SupplierJpaEntity s where s.id = :id")
     Optional<SupplierJpaEntity> findByIdForUpdate(UUID id);
@@ -27,44 +23,56 @@ interface SupplierJpaRepository extends BaseJpaRepository<SupplierJpaEntity> {
 
     boolean existsByTaxCodeAndIdNot(String taxCode, UUID id);
 
-    @Query(
-            """
-            select count(po) > 0 from PurchaseOrderJpaEntity po
-            where po.supplierId = :supplierId and po.status in :statuses
-            """)
-    boolean hasPurchaseOrdersInStatuses(UUID supplierId, Collection<PurchaseOrderStatus> statuses);
+    /** Open = still expecting goods or still on its way to the supplier: not received, closed or cancelled. */
+    @Query(value = """
+            SELECT EXISTS (SELECT 1 FROM procurement.purchase_orders
+                            WHERE supplier_id = :supplierId
+                              AND status IN ('DRAFT', 'PENDING_APPROVAL', 'APPROVED', 'CONFIRMED', 'PARTIALLY_RECEIVED'))
+            """, nativeQuery = true)
+    boolean hasOpenPurchaseOrders(UUID supplierId);
 
-    @Query(
-            value =
-                    """
-WITH receipts AS (
-    SELECT po.id, MAX(gr.received_at) received_at
-    FROM procurement.purchase_order po
-    LEFT JOIN procurement.goods_receipt gr ON gr.purchase_order_id = po.id AND gr.status = 'COMPLETED'
-    WHERE po.supplier_id = :supplierId
-    GROUP BY po.id
-), quality AS (
-    SELECT COALESCE(SUM(q.quantity_passed), 0) passed,
-           COALESCE(SUM(q.quantity_failed), 0) failed
-    FROM procurement.goods_receipt gr
-    JOIN procurement.purchase_order po ON po.id = gr.purchase_order_id
-    JOIN procurement.qc_result q ON q.goods_receipt_id = gr.id
-    WHERE po.supplier_id = :supplierId AND gr.status = 'COMPLETED' AND q.inspected_at IS NOT NULL
-)
-SELECT COUNT(po.id) totalPurchaseOrders,
-       COUNT(po.id) FILTER (WHERE po.status = 'CLOSED') fulfilledPurchaseOrders,
-       COUNT(po.id) FILTER (WHERE po.status = 'CLOSED' AND po.expected_at IS NOT NULL
-           AND (COALESCE(po.receipt_completed_at, r.received_at) AT TIME ZONE :businessZone)::date <= po.expected_at) onTimeOrders,
-       COUNT(po.id) FILTER (WHERE po.status = 'CLOSED' AND po.expected_at IS NOT NULL
-           AND (COALESCE(po.receipt_completed_at, r.received_at) AT TIME ZONE :businessZone)::date > po.expected_at) lateOrders,
-       AVG(EXTRACT(EPOCH FROM (COALESCE(po.receipt_completed_at, r.received_at) - po.sent_at)) / 86400.0)
-           FILTER (WHERE po.status = 'CLOSED' AND po.sent_at IS NOT NULL
-               AND COALESCE(po.receipt_completed_at, r.received_at) >= po.sent_at) averageLeadTimeDays,
-       (SELECT passed FROM quality) acceptedQuantity, (SELECT failed FROM quality) rejectedQuantity
-FROM procurement.purchase_order po
-LEFT JOIN receipts r ON r.id = po.id
-WHERE po.supplier_id = :supplierId
-""",
-            nativeQuery = true)
+    /**
+     * On-time delivery, lead time and quality of one supplier, from its purchase orders and their goods
+     * receipts. A PO is fulfilled once every line is received ({@code RECEIVED}, or {@code CLOSED} the
+     * normal way); it was delivered on the day its last receipt was confirmed, counted from the day it
+     * was confirmed to the supplier (sent). Quality counts the QC decisions: accepted against rejected;
+     * a quarantine is not yet a verdict.
+     */
+    @Query(value = """
+            WITH receipts AS (
+                SELECT po.id, MAX(gr.confirmed_at) received_at
+                  FROM procurement.purchase_orders po
+                  LEFT JOIN procurement.goods_receipts gr
+                         ON gr.po_id = po.id AND gr.confirmed_at IS NOT NULL AND gr.status <> 'CANCELLED'
+                 WHERE po.supplier_id = :supplierId
+                 GROUP BY po.id
+            ), quality AS (
+                SELECT COALESCE(SUM(q.quantity) FILTER (WHERE q.outcome = 'ACCEPTED'), 0) passed,
+                       COALESCE(SUM(q.quantity) FILTER (WHERE q.outcome = 'REJECTED'), 0) failed
+                  FROM procurement.qc_inspections q
+                  JOIN procurement.goods_receipt_lines l ON l.id = q.receipt_line_id
+                  JOIN procurement.goods_receipts gr ON gr.id = l.receipt_id
+                  JOIN procurement.purchase_orders po ON po.id = gr.po_id
+                 WHERE po.supplier_id = :supplierId
+            ), orders AS (
+                SELECT po.*, r.received_at,
+                       (po.status = 'RECEIVED' OR (po.status = 'CLOSED' AND po.close_kind = 'NORMAL')) fulfilled
+                  FROM procurement.purchase_orders po
+                  LEFT JOIN receipts r ON r.id = po.id
+                 WHERE po.supplier_id = :supplierId
+            )
+            SELECT COUNT(*) totalPurchaseOrders,
+                   COUNT(*) FILTER (WHERE fulfilled) fulfilledPurchaseOrders,
+                   COUNT(*) FILTER (WHERE fulfilled AND expected_date IS NOT NULL AND received_at IS NOT NULL
+                       AND (received_at AT TIME ZONE :businessZone)::date <= expected_date) onTimeOrders,
+                   COUNT(*) FILTER (WHERE fulfilled AND expected_date IS NOT NULL AND received_at IS NOT NULL
+                       AND (received_at AT TIME ZONE :businessZone)::date > expected_date) lateOrders,
+                   AVG(EXTRACT(EPOCH FROM (received_at - confirmed_at)) / 86400.0)
+                       FILTER (WHERE fulfilled AND confirmed_at IS NOT NULL AND received_at >= confirmed_at)
+                       averageLeadTimeDays,
+                   (SELECT passed FROM quality)::bigint acceptedQuantity,
+                   (SELECT failed FROM quality)::bigint rejectedQuantity
+              FROM orders
+            """, nativeQuery = true)
     SupplierPerformanceProjection performance(UUID supplierId, String businessZone);
 }

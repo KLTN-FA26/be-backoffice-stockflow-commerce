@@ -15,11 +15,14 @@ public record SupplierProfile(
         int paymentTermDays,
         int leadTimeDays,
         String communicationChannel,
-        String apiEndpoint) {
+        String apiEndpoint,
+        String contactName,
+        java.math.BigDecimal overReceiptTolerancePercent,
+        java.math.BigDecimal lossTolerancePercent) {
     public SupplierProfile {
         try {
             if (code == null
-                    || !code.matches("[A-Za-z0-9._-]{1,64}")
+                    || !code.matches("[A-Z0-9][A-Z0-9_-]{0,29}")
                     || name == null
                     || name.isBlank()
                     || name.length() > 200) {
@@ -35,12 +38,12 @@ public record SupplierProfile(
             }
             if (email != null
                     && !email.isBlank()
-                    && (email.length() > 320 || !email.matches("[^\\s@]+@[^\\s@]+"))) {
+                    && (email.length() > 150 || !email.matches("[^\\s@]+@[^\\s@]+"))) {
                 throw new IllegalArgumentException("Invalid supplier email");
             }
             if (phone != null && !phone.isEmpty()) {
                 long digits = phone.chars().filter(c -> c >= '0' && c <= '9').count();
-                if (phone.length() > 32
+                if (phone.length() > 30
                         || digits < 8
                         || digits > 15
                         || !phone.matches("\\+?[0-9][0-9 .()-]*[0-9]")) {
@@ -49,8 +52,15 @@ public record SupplierProfile(
             }
             if (taxCode != null
                     && !taxCode.isEmpty()
-                    && !taxCode.matches("(?=.*[0-9])[0-9A-Za-z][0-9A-Za-z-]{6,30}[0-9A-Za-z]")) {
+                    && !taxCode.matches("(?=.*[0-9])[0-9A-Za-z][0-9A-Za-z-]{6,28}[0-9A-Za-z]")) {
                 throw new IllegalArgumentException("Invalid supplier tax identifier");
+            }
+            // ck_supplier_contacts_reachable: a named contact is reachable by email or phone.
+            if (contactName != null && (email == null || email.isBlank()) && (phone == null || phone.isBlank())) {
+                throw new IllegalArgumentException("A contact needs an email or a phone");
+            }
+            if (!percent(overReceiptTolerancePercent) || !percent(lossTolerancePercent)) {
+                throw new IllegalArgumentException("Tolerances are percentages between 0 and 100");
             }
             var channel = SupplierCommunicationChannel.valueOf(communicationChannel);
             if (channel == SupplierCommunicationChannel.EMAIL
@@ -74,5 +84,9 @@ public record SupplierProfile(
         } catch (IllegalArgumentException | NullPointerException invalid) {
             throw new BusinessException(ErrorCode.SUPPLIER_PROFILE_INVALID);
         }
+    }
+
+    private static boolean percent(java.math.BigDecimal value) {
+        return value == null || value.signum() >= 0 && value.compareTo(java.math.BigDecimal.valueOf(100)) <= 0;
     }
 }

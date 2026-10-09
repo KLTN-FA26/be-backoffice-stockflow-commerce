@@ -12,13 +12,23 @@ import java.util.UUID;
 public record PurchaseOrderResponse(
         UUID purchaseOrderId,
         @Schema(example = "PO-20260913-000001") String poNumber,
+        @Schema(example = "STANDARD", description = "STANDARD, or SUBCONTRACT for print work") String type,
+        UUID productionOrderId,
         UUID supplierId,
         String supplierCode,
         String supplierName,
-        @Schema(example = "DRAFT") String status,
+        UUID warehouseId,
+        @Schema(description = "The warehouse prefix") String warehouseCode,
+        String warehouseName,
+        @Schema(example = "DRAFT", description = "DRAFT, PENDING_APPROVAL, APPROVED, CONFIRMED (= sent),"
+                + " PARTIALLY_RECEIVED, RECEIVED, CLOSED, CANCELLED") String status,
         String currency,
-        BigDecimal totalAmount,
+        LocalDate orderDate,
         LocalDate expectedAt,
+        BigDecimal subtotal,
+        BigDecimal taxTotal,
+        BigDecimal totalAmount,
+        String note,
         @Schema(
                         description =
                                 "Empty on a list row - see the docs on"
@@ -34,11 +44,20 @@ public record PurchaseOrderResponse(
                                     + " date and at least one overlapping SKU already exists. A"
                                     + " warning, not a rejection.")
                 boolean possibleDuplicate,
+        @Schema(description = "The revision being approved or last approved") long revisionNo,
+        UUID submittedBy,
+        Instant submittedAt,
+        UUID approvedBy,
+        Instant approvedAt,
+        UUID confirmedBy,
+        Instant confirmedAt,
+        Instant closedAt,
+        @Schema(description = "NORMAL or SHORT_CLOSE once CLOSED") String closeKind,
+        @Schema(description = "Why it was closed short") String closeReason,
         @Schema(description = "Set only once the order is CANCELLED.") String cancellationReason,
-        @Schema(description = "Set only once the order is CLOSED_SHORT.") String closeShortReason,
         int paymentTermDays,
         int leadTimeDays,
-        Instant sentAt,
+        @Schema(description = "Same as confirmedAt: confirming is sending") Instant sentAt,
         String supplierConfirmationStatus,
         Instant supplierRespondedAt,
         String supplierReference,

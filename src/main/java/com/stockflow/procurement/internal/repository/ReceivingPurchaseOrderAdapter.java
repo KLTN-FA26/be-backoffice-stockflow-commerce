@@ -42,7 +42,7 @@ class ReceivingPurchaseOrderAdapter implements ReceivingPurchaseOrders {
         @SuppressWarnings("unchecked")
         List<Object[]> header = entityManager.createNativeQuery("""
                         SELECT p.po_number, p.status, p.supplier_id, p.warehouse_id, p.active_revision_id,
-                               s.over_receipt_tolerance
+                               s.over_receipt_tolerance, p.supplier_confirmation_status
                           FROM procurement.purchase_orders p
                           JOIN procurement.suppliers s ON s.id = p.supplier_id
                          WHERE p.id = :id""" + (forUpdate ? " FOR UPDATE OF p" : ""))
@@ -63,7 +63,7 @@ class ReceivingPurchaseOrderAdapter implements ReceivingPurchaseOrders {
                 ReceivingPurchaseOrder.LineStatus.valueOf((String) r[4]))).toList();
         return Optional.of(new ReceivingPurchaseOrder(id, (String) h[0],
                 ReceivingPurchaseOrder.Status.valueOf((String) h[1]), (UUID) h[2], (UUID) h[3], (UUID) h[4],
-                (BigDecimal) h[5], lines));
+                (BigDecimal) h[5], "REJECTED".equals(h[6]), lines));
     }
 
     @Override

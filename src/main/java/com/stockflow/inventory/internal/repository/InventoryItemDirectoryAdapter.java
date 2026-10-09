@@ -42,4 +42,19 @@ class InventoryItemDirectoryAdapter implements InventoryItemDirectory {
         return rows.stream().findFirst().map(row -> new InventoryItemPolicy((UUID) row[0], sku,
                 (Boolean) row[1], (Boolean) row[2], (Boolean) row[3]));
     }
+
+    @Override
+    public java.util.Map<UUID, String> skusOf(java.util.Collection<UUID> inventoryItemIds) {
+        if (inventoryItemIds.isEmpty()) {
+            return java.util.Map.of();
+        }
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = entityManager.createNativeQuery(
+                        "SELECT id, sku FROM inventory.inventory_items WHERE id IN (:ids)")
+                .setParameter("ids", java.util.Set.copyOf(inventoryItemIds))
+                .getResultList();
+        var skus = new java.util.HashMap<UUID, String>();
+        rows.forEach(row -> skus.put((UUID) row[0], (String) row[1]));
+        return skus;
+    }
 }
