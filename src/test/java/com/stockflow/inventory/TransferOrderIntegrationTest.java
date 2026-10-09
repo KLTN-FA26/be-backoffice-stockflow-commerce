@@ -34,7 +34,8 @@ import java.util.UUID;
  * dispatch lowers the source stock FEFO and writes TRANSFER_OUT ledger lines, and the table's
  * four-eyes and status constraints hold. Each test uses its own canonical SKU and lot in HCM.
  */
-@ApplicationModuleTest
+// DIRECT_DEPENDENCIES: moves ask warehouse :: api whether a location may take stock (issue #67).
+@ApplicationModuleTest(mode = ApplicationModuleTest.BootstrapMode.DIRECT_DEPENDENCIES)
 @ActiveProfiles("test")
 @Import(PostgresContainer.class)
 class TransferOrderIntegrationTest {
