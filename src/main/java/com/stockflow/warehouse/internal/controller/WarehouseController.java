@@ -12,6 +12,8 @@ import com.stockflow.warehouse.internal.controller.dto.WarehouseResponse;
 import com.stockflow.warehouse.internal.domain.WarehouseStatus;
 import com.stockflow.warehouse.internal.service.ListWarehousesQuery;
 import com.stockflow.warehouse.internal.service.WarehouseLayoutService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -31,6 +33,7 @@ import java.util.UUID;
  * advised, and {@code @RequiresPermission} would silently not apply.
  */
 @RestController
+@Tag(name = "Warehouses", description = "Warehouses and the frame of their map")
 @RequestMapping("/api/v1/warehouses")
 @PermissionResource(code = WarehouseResources.WAREHOUSES, group = "Warehouse", label = "Warehouses",
         route = "/admin/warehouses", apiPath = "/api/v1/warehouses",
@@ -46,6 +49,9 @@ class WarehouseController {
     }
 
     @PostMapping
+    @Operation(summary = "Register a warehouse",
+            description = "prefix is upper-cased and never changes: it starts every location code (BR-10). "
+                + "A prefix in use answers 409 WAREHOUSE_PREFIX_ALREADY_EXISTS.")
     @ResponseStatus(HttpStatus.CREATED)
     @RequiresPermission(resource = WarehouseResources.WAREHOUSES, action = Action.CREATE)
     public ApiResponse<WarehouseResponse> register(@Valid @RequestBody RegisterWarehouseRequest request) {
@@ -53,6 +59,7 @@ class WarehouseController {
     }
 
     @GetMapping
+    @Operation(summary = "List warehouses, paginated; q matches prefix or name")
     @RequiresPermission(resource = WarehouseResources.WAREHOUSES, action = Action.READ)
     public ApiResponse<PageResponse<WarehouseResponse>> list(
             @RequestParam(defaultValue = "0") int page,
@@ -66,6 +73,7 @@ class WarehouseController {
     }
 
     @GetMapping("/{warehouseId}")
+    @Operation(summary = "Look up one warehouse")
     @RequiresPermission(resource = WarehouseResources.WAREHOUSES, action = Action.READ)
     public ApiResponse<WarehouseResponse> get(@PathVariable UUID warehouseId) {
         return ApiResponse.ok(mapper.toResponse(layout.get(warehouseId)));
@@ -73,6 +81,10 @@ class WarehouseController {
 
     /** Shrinking the map below what is on it is a {@code 409 LAYOUT_OUT_OF_BOUNDS} (BR-06). */
     @PutMapping("/{warehouseId}")
+    @Operation(summary = "Edit a warehouse and resize its map",
+            description = "A full replacement. prefix and mapUnit cannot change. Shrinking the map below "
+                + "anything on it answers 409 LAYOUT_OUT_OF_BOUNDS (BR-06). Send the version from "
+                + "the last read; a stale one answers 409 OPTIMISTIC_LOCK.")
     @RequiresPermission(resource = WarehouseResources.WAREHOUSES, action = Action.UPDATE)
     public ApiResponse<WarehouseResponse> update(@PathVariable UUID warehouseId,
                                                  @Valid @RequestBody UpdateWarehouseRequest request) {
@@ -80,6 +92,7 @@ class WarehouseController {
     }
 
     @PostMapping("/{warehouseId}/activation")
+    @Operation(summary = "Activate a warehouse")
     @RequiresPermission(resource = WarehouseResources.WAREHOUSES, action = Action.UPDATE)
     public ApiResponse<WarehouseResponse> activate(@PathVariable UUID warehouseId) {
         return ApiResponse.ok(mapper.toResponse(layout.activate(warehouseId)));
@@ -87,6 +100,9 @@ class WarehouseController {
 
     /** Does not cascade to locations; they read as unusable while the warehouse is inactive. */
     @PostMapping("/{warehouseId}/deactivation")
+    @Operation(summary = "Deactivate a warehouse",
+            description = "Nothing in it is changed; every shelf, bin and area reads as effectiveStatus "
+                + "INACTIVE and usable false until it is activated again.")
     @RequiresPermission(resource = WarehouseResources.WAREHOUSES, action = Action.UPDATE)
     public ApiResponse<WarehouseResponse> deactivate(@PathVariable UUID warehouseId) {
         return ApiResponse.ok(mapper.toResponse(layout.deactivate(warehouseId)));
