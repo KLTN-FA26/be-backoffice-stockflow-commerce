@@ -215,6 +215,21 @@ class WarehouseLayoutServiceIntegrationTest {
         }
 
         @Test
+        @DisplayName("a name differing only in case is taken; re-casing a zone's own name is fine")
+        void namesIgnoreCase() {
+            assertThat(errorOf(() -> layout.createZone(new CreateZoneCommand(hcm(), "KHU A - SOFA", null))))
+                    .isEqualTo(ErrorCode.ZONE_NAME_ALREADY_EXISTS);
+            assertThat(errorOf(() -> layout.createZone(new CreateZoneCommand(hcm(), "khu b - bàn", null))))
+                    .isEqualTo(ErrorCode.ZONE_NAME_ALREADY_EXISTS);
+
+            ZoneSummary a = zoneNamed("Khu A - Sofa");
+            assertThat(errorOf(() -> layout.updateZone(new UpdateZoneCommand(a.id(), "KHU B - BÀN",
+                    null, a.version())))).isEqualTo(ErrorCode.ZONE_NAME_ALREADY_EXISTS);
+            assertThat(layout.updateZone(new UpdateZoneCommand(a.id(), "KHU A - SOFA", null,
+                    a.version())).name()).isEqualTo("KHU A - SOFA");
+        }
+
+        @Test
         @DisplayName("a zone of an unknown warehouse, or an unknown zone, is not found")
         void unknownTargets() {
             assertThat(errorOf(() -> layout.createZone(new CreateZoneCommand(Identifiers.newId(), "X", null))))

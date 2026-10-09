@@ -1,6 +1,8 @@
 package com.stockflow.warehouse.internal.service;
 
 import com.stockflow.common.api.PageResponse;
+import com.stockflow.common.audit.AuditAction;
+import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ConflictException;
 import com.stockflow.common.error.ErrorCode;
@@ -27,6 +29,9 @@ import java.util.UUID;
  * <p>Uniqueness (prefix, zone name) is checked before writing for a precise message; the unique
  * constraints catch two requests racing past the check, and the adapters translate those into the
  * same error codes.</p>
+ *
+ * <p>Every change is {@link Auditable}: who registered, resized, deactivated a warehouse or renamed a
+ * zone is not recoverable from the rows, which keep only the last writer.</p>
  */
 @Service
 @Transactional
@@ -47,7 +52,13 @@ class WarehouseLayoutServiceImpl implements WarehouseLayoutService {
         this.zones = zones;
     }
 
+    /**
+     * Audited under the prefix: there is no id before the call, and the prefix is unique and never
+     * changes. Upper-cased as {@link CodePart} stores it, so "hcm" and "HCM" are one resource.
+     */
     @Override
+    @Auditable(action = AuditAction.CREATE, resourceType = "warehouse",
+            resourceId = "#command.prefix()?.toUpperCase(T(java.util.Locale).ROOT)")
     public WarehouseSummary register(RegisterWarehouseCommand command) {
         String prefix = CodePart.of(command.prefix(), CodePart.PREFIX_MAX_LENGTH).value();
         if (warehouses.existsByPrefix(prefix)) {
@@ -65,6 +76,7 @@ class WarehouseLayoutServiceImpl implements WarehouseLayoutService {
      * placed beyond the new edge between the check and the commit.
      */
     @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "warehouse", resourceId = "#command.warehouseId()")
     public WarehouseSummary update(UpdateWarehouseCommand command) {
         Warehouse warehouse = warehouses.findByIdForUpdate(command.warehouseId())
                 .orElseThrow(() -> warehouseNotFound(command.warehouseId()));
@@ -76,6 +88,7 @@ class WarehouseLayoutServiceImpl implements WarehouseLayoutService {
     }
 
     @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "warehouse", resourceId = "#warehouseId")
     public WarehouseSummary activate(UUID warehouseId) {
         Warehouse warehouse = require(warehouseId);
         warehouse.activate();
@@ -83,6 +96,7 @@ class WarehouseLayoutServiceImpl implements WarehouseLayoutService {
     }
 
     @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "warehouse", resourceId = "#warehouseId")
     public WarehouseSummary deactivate(UUID warehouseId) {
         Warehouse warehouse = require(warehouseId);
         warehouse.deactivate();
@@ -103,7 +117,12 @@ class WarehouseLayoutServiceImpl implements WarehouseLayoutService {
         return toSummary(require(warehouseId));
     }
 
+    /**
+     * Audited under the warehouse id: the zone's own id is minted inside the call, and the
+     * warehouse is what says where the zone was added. Its later edits are under the zone id.
+     */
     @Override
+    @Auditable(action = AuditAction.CREATE, resourceType = "zone", resourceId = "#command.warehouseId()")
     public ZoneSummary createZone(CreateZoneCommand command) {
         if (!warehouses.existsById(command.warehouseId())) {
             throw warehouseNotFound(command.warehouseId());
@@ -114,6 +133,7 @@ class WarehouseLayoutServiceImpl implements WarehouseLayoutService {
     }
 
     @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "zone", resourceId = "#command.zoneId()")
     public ZoneSummary updateZone(UpdateZoneCommand command) {
         Zone zone = zones.findById(command.zoneId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.ZONE_NOT_FOUND,
@@ -134,10 +154,20 @@ class WarehouseLayoutServiceImpl implements WarehouseLayoutService {
                 .toList();
     }
 
-    /** Another zone of the same warehouse with this name; the zone itself keeping its name is fine. */
+    /**
+     * Another zone of the same warehouse with this name, ignoring case: "Cups" and "cups" side by
+     * side on one map read as the same zone. The zone itself keeping, or re-casing, its own name is
+     * fine. Compared in Java over the warehouse's handful of zones rather than with SQL
+     * {@code upper()}, whose result for accented letters depends on the database's locale.
+     *
+     * <p>{@code uk_zone_warehouse_name} is case-sensitive, so two requests racing past this check
+     * with differently cased names both commit; only an exact duplicate is stopped there.</p>
+     */
     private void requireNameFree(Zone zone) {
-        zones.findByWarehouseIdAndName(zone.warehouseId(), zone.name())
+        zones.findByWarehouseId(zone.warehouseId()).stream()
                 .filter(other -> !other.id().equals(zone.id()))
+                .filter(other -> other.name().equalsIgnoreCase(zone.name()))
+                .findAny()
                 .ifPresent(other -> {
                     throw new ConflictException(ErrorCode.ZONE_NAME_ALREADY_EXISTS,
                             "The warehouse already has a zone named " + zone.name());
