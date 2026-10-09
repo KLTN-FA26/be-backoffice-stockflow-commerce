@@ -6,27 +6,26 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * The persistence <b>port</b> for {@link Product}.
- *
- * <p>Pure Java, no {@code Page}/{@code Specification}/JPA — {@code ArchitectureTest.
- * domainDoesNotDependOnFrameworks} enforces it. The paginated, filterable product list is a
- * separate, deliberately non-port interface: see {@code ProductSearchRepository} in
- * {@code internal.repository} for why.</p>
+ * Domain port of the {@link Product} aggregate. {@code save} also writes the product's primary
+ * category ({@code product.product_categories}); the reference checks below exist so the service
+ * can answer 404 with a real error code before the foreign key would answer 500.
  */
 public interface ProductRepository extends AggregateRepository<Product, ProductId> {
 
     Optional<Product> findForUpdate(ProductId id);
-    boolean containsSku(UUID productId, String sku);
-    Optional<String> nameForSku(String sku);
 
-    Optional<Product> findByCode(String code);
+    /** Whether {@code sku} is a variant of this product. */
+    boolean containsSku(UUID productId, String sku);
+
+    /** The name of the product whose variant {@code sku} is. */
+    Optional<String> nameForSku(String sku);
 
     boolean existsByCode(String code);
 
-    /**
-     * {@code Category} has no aggregate or port of its own yet (still a flat reference table) —
-     * hosted here rather than invented elsewhere, since this is the only module that currently
-     * needs to ask.
-     */
+    /** Whether a variant anywhere already carries {@code sku}: the default variant takes the code. */
+    boolean skuExists(String sku);
+
     boolean categoryExists(UUID categoryId);
+
+    boolean brandExists(UUID brandId);
 }

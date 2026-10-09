@@ -1,178 +1,43 @@
 package com.stockflow.product.internal.repository;
 
-import com.stockflow.product.internal.entity.ProductImageJpaEntity;
-import com.stockflow.product.internal.entity.ProductJpaEntity;
+import com.stockflow.product.api.ProductSummary;
 import com.stockflow.product.internal.domain.Product;
 import com.stockflow.product.internal.domain.ProductId;
-import com.stockflow.product.internal.domain.ProductImage;
-import com.stockflow.product.api.ProductSummary;
-
-import java.util.List;
+import com.stockflow.product.internal.entity.ProductJpaEntity;
 
 /**
- * Translates between the {@code Product} aggregate and its rows.
- *
- * <p>Hand-written rather than MapStruct, same reasoning as {@code StockItemPersistenceMapper}:
- * rehydration has to go through the aggregate's full constructor so its invariants are re-checked,
- * not merely copied field to field.</p>
+ * Hand-written entity⇄domain mapping. Rehydration goes through the aggregate's real constructor, so
+ * a row that breaks an invariant fails loudly on load instead of becoming a half-valid aggregate —
+ * the same reasoning as {@code StockItemPersistenceMapper}.
  */
 final class ProductPersistenceMapper {
 
     private ProductPersistenceMapper() {
     }
 
-    static Product toDomain(ProductJpaEntity entity) {
-        List<ProductImage> images = entity.getImages().stream()
-                .map(ProductPersistenceMapper::toDomain)
-                .toList();
-
-        return new Product(
-                new ProductId(entity.getId()),
-                entity.getCode(),
-                entity.getName(),
-                entity.getNameEn(),
-                entity.getCategoryId(),
-                entity.getDescription(),
-                entity.getDescriptionEn(),
-                entity.getBrand(),
-                entity.getTaxClass(),
-                entity.isCustomizable(),
-                images,
-                entity.getStatus(),
-                entity.getVersion(),
-                entity.getCreatedAt(),
-                entity.getCreatedBy(),
-                entity.getLastModifiedAt(),
-                entity.getLastModifiedBy(),
-                entity.getSubmittedBy(),
-                entity.getSubmittedAt(),
-                entity.getApprovedBy(),
-                entity.getApprovedAt(),
-                entity.getRejectionReason(),
-                entity.getWeightKg(),
-                entity.getLengthCm(),
-                entity.getWidthCm(),
-                entity.getHeightCm(),
-                entity.getPackageWeightKg(),
-                entity.getPackageLengthCm(),
-                entity.getPackageWidthCm(),
-                entity.getPackageHeightCm(),
-                entity.getPackageCount(),
-                entity.isHazmat(),
-                entity.isOversized(),
-                entity.getStorageClass(),
-                entity.isRequiresAdultSignature(),
-                entity.getShippingRestrictionNote());
+    static Product toDomain(ProductJpaEntity e) {
+        return new Product(new ProductId(e.getId()), e.getCode(), e.getName(), e.getNameEn(), e.getBrandId(),
+                e.getCategoryId(), e.getShortDescription(), e.getDescription(), e.getDescriptionEn(),
+                e.getTaxClass(), e.getKind(), e.getStatus(), e.getVersion(), e.getSubmittedBy(),
+                e.getSubmittedAt(), e.getApprovedBy(), e.getApprovedAt(), e.getRejectionReason(),
+                e.getDiscontinuedAt());
     }
 
-    private static ProductImage toDomain(ProductImageJpaEntity entity) {
-        return new ProductImage(entity.getId(), entity.getUrl(), entity.getSortOrder(), entity.storedFile(), entity.getRenditions(),
-                entity.getUploadKey(), entity.getChecksum());
+    /** Everything the aggregate owns. The primary category is not a column of this row; the
+     *  adapter writes it to {@code product_categories}. */
+    static void applyToEntity(Product p, ProductJpaEntity e) {
+        e.setDetails(p.name(), p.nameEn(), p.brandId(), p.shortDescription(), p.description(), p.descriptionEn(),
+                p.taxClass(), p.kind());
+        e.setWorkflow(p.status(), p.submittedBy(), p.submittedAt(), p.approvedBy(), p.approvedAt(),
+                p.rejectionReason(), p.discontinuedAt());
     }
 
-    /**
-     * For the paginated list query only. Deliberately never touches {@code entity.getImages()} —
-     * that collection is lazy and the list query does not fetch-join it (see
-     * {@code ProductSearchRepository}'s javadoc for why), so reading it here would either throw outside a
-     * session or issue one extra SELECT per row.
-     */
-    static ProductSummary toSummaryWithoutImages(ProductJpaEntity entity) {
-        return new ProductSummary(
-                entity.getId(),
-                entity.getCode(),
-                entity.getName(),
-                entity.getNameEn(),
-                entity.getCategoryId(),
-                entity.getDescription(),
-                entity.getDescriptionEn(),
-                entity.getBrand(),
-                entity.getTaxClass(),
-                entity.isCustomizable(),
-                List.of(),
-                entity.getStatus(),
-                entity.getCreatedAt(),
-                entity.getCreatedBy(),
-                entity.getLastModifiedAt(),
-                entity.getLastModifiedBy(),
-                entity.getSubmittedBy(),
-                entity.getSubmittedAt(),
-                entity.getApprovedBy(),
-                entity.getApprovedAt(),
-                entity.getRejectionReason(),
-                entity.getWeightKg(),
-                entity.getLengthCm(),
-                entity.getWidthCm(),
-                entity.getHeightCm(),
-                entity.getPackageWeightKg(),
-                entity.getPackageLengthCm(),
-                entity.getPackageWidthCm(),
-                entity.getPackageHeightCm(),
-                entity.getPackageCount(),
-                entity.isHazmat(),
-                entity.isOversized(),
-                entity.getStorageClass(),
-                entity.isRequiresAdultSignature(),
-                entity.getShippingRestrictionNote());
-    }
-
-    /** Fresh row for an aggregate that has never been persisted. */
-    static ProductJpaEntity toNewEntity(Product product) {
-        ProductJpaEntity entity = new ProductJpaEntity(
-                product.id().value(),
-                product.code(),
-                product.name(),
-                product.nameEn(),
-                product.categoryId(),
-                product.description(),
-                product.descriptionEn(),
-                product.brand(),
-                product.taxClass(),
-                product.status(),
-                product.customizable(),
-                product.submittedBy(),
-                product.submittedAt(),
-                product.approvedBy(),
-                product.approvedAt(),
-                product.rejectionReason(),
-                product.weightKg(),
-                product.lengthCm(),
-                product.widthCm(),
-                product.heightCm(),
-                product.packageWeightKg(),
-                product.packageLengthCm(),
-                product.packageWidthCm(),
-                product.packageHeightCm(),
-                product.packageCount(),
-                product.hazmat(),
-                product.oversized(), product.storageClass(),
-                product.requiresAdultSignature(),
-                product.shippingRestrictionNote());
-        entity.replaceImages(toEntities(product));
-        return entity;
-    }
-
-    /** Copy the aggregate's state onto a row already managed by the persistence context. */
-    static void applyToEntity(Product product, ProductJpaEntity entity) {
-        entity.apply(product.name(), product.nameEn(), product.categoryId(), product.description(),
-                product.descriptionEn(), product.brand(), product.taxClass(), product.customizable(),
-                product.status(), product.submittedBy(), product.submittedAt(), product.approvedBy(),
-                product.approvedAt(), product.rejectionReason(), product.weightKg(),
-                product.lengthCm(), product.widthCm(), product.heightCm(),
-                product.packageWeightKg(), product.packageLengthCm(), product.packageWidthCm(),
-                product.packageHeightCm(), product.packageCount(), product.hazmat(),
-                product.oversized(), product.storageClass(), product.requiresAdultSignature(),
-                product.shippingRestrictionNote());
-        entity.replaceImages(toEntities(product));
-    }
-
-    private static List<ProductImageJpaEntity> toEntities(Product product) {
-        return product.images().stream()
-                .map(image -> {
-                    var row = new ProductImageJpaEntity(image.id(), image.url(), image.sortOrder(), image.storedFile());
-                    row.setRenditions(image.renditions());
-                    row.setUploadFingerprint(image.uploadKey(), image.checksum());
-                    return row;
-                })
-                .toList();
+    static ProductSummary toSummary(ProductJpaEntity e) {
+        return new ProductSummary(e.getId(), e.getCode(), e.getName(), e.getNameEn(), e.getSlug(), e.getBrandId(),
+                e.getBrandName(), e.getCategoryId(), e.getShortDescription(), e.getDescription(),
+                e.getDescriptionEn(), e.getTaxClass(), e.getKind(), e.getStatus(), e.getCreatedAt(),
+                e.getCreatedBy(), e.getLastModifiedAt(), e.getLastModifiedBy(), e.getSubmittedBy(),
+                e.getSubmittedAt(), e.getApprovedBy(), e.getApprovedAt(), e.getRejectionReason(),
+                e.getPublishedAt(), e.getDiscontinuedAt());
     }
 }

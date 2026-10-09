@@ -71,9 +71,11 @@ class ProductController {
             @RequestParam(required = false) Integer size,
             @RequestParam(name = "q", required = false) String search,
             @RequestParam(required = false) List<ProductStatus> status,
+            @RequestParam(required = false) UUID categoryId,
+            @RequestParam(required = false) UUID brandId,
             @RequestParam(required = false) String sort) {
         var query = new ListProductsQuery(
-                page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, search, status, sort);
+                page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, search, status, categoryId, brandId, sort);
         return ApiResponse.ok(productService.list(query).map(mapper::toResponse));
     }
 
@@ -90,7 +92,7 @@ class ProductController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    @Operation(summary = "Create a product master row")
+    @Operation(summary = "Create a product master row, with its default variant (SKU = code)")
     @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.CREATE)
     public ApiResponse<ProductResponse> create(@Valid @RequestBody CreateProductRequest request) {
         return ApiResponse.ok(mapper.toResponse(productService.create(mapper.toCommand(request))));

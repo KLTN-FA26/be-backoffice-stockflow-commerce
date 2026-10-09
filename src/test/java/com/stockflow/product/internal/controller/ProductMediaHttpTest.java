@@ -3,11 +3,8 @@ package com.stockflow.product.internal.controller;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.i18n.Messages;
-import com.stockflow.common.storage.StorageException;
-import com.stockflow.common.storage.StoredFile;
-import com.stockflow.product.internal.domain.ProductImage;
-import com.stockflow.common.web.GlobalExceptionHandler;
 import com.stockflow.common.security.Action;
+import com.stockflow.common.security.AuthenticatedUserArgumentResolver;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.CurrentUserProvider;
 import com.stockflow.common.security.DataScope;
@@ -15,7 +12,10 @@ import com.stockflow.common.security.PermissionChecker;
 import com.stockflow.common.security.PermissionCode;
 import com.stockflow.common.security.PermissionDeniedException;
 import com.stockflow.common.security.RequiresPermissionAspect;
-import com.stockflow.product.internal.service.ProductImageService;
+import com.stockflow.common.storage.StorageException;
+import com.stockflow.common.storage.StoredFile;
+import com.stockflow.common.web.GlobalExceptionHandler;
+import com.stockflow.product.internal.service.ProductMediaService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -30,56 +30,74 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.EnableAspectJAutoProxy;
+import org.springframework.context.annotation.Import;
 import org.springframework.context.support.StaticMessageSource;
+import org.springframework.web.method.support.HandlerMethodArgumentResolver;
+import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.util.UUID;
+import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.Set;
-import java.time.Instant;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
-import static org.mockito.Mockito.doThrow;
 
 /** Real embedded Tomcat: MockMvc multipart requests bypass the servlet size limit. */
-@SpringBootTest(classes = ProductImageHttpTest.Config.class,
+@SpringBootTest(classes = ProductMediaHttpTest.Config.class,
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {"spring.servlet.multipart.max-file-size=1KB", "spring.servlet.multipart.max-request-size=2KB"})
-class ProductImageHttpTest {
+class ProductMediaHttpTest {
+
     @Configuration(proxyBeanMethods = false)
     @EnableAspectJAutoProxy(proxyTargetClass = true)
     @ImportAutoConfiguration({ServletWebServerFactoryAutoConfiguration.class,
             DispatcherServletAutoConfiguration.class, WebMvcAutoConfiguration.class,
             MultipartAutoConfiguration.class, JacksonAutoConfiguration.class, HttpMessageConvertersAutoConfiguration.class})
-    @Import({ProductImageController.class, ProductImageWebMapper.class, GlobalExceptionHandler.class,
-            Messages.class, RequiresPermissionAspect.class})
+    @Import({ProductMediaController.class, ProductAdminWebMapper.class, GlobalExceptionHandler.class,
+            Messages.class, RequiresPermissionAspect.class, AuthenticatedUserArgumentResolver.class})
     static class Config {
-        @Bean ProductImageService productImageService() { return mock(ProductImageService.class); }
+        @Bean ProductMediaService productMediaService() { return mock(ProductMediaService.class); }
         @Bean StaticMessageSource messageSource() { return new StaticMessageSource(); }
         @Bean PermissionChecker permissionChecker() { return mock(PermissionChecker.class); }
         @Bean CurrentUserProvider currentUserProvider() { return mock(CurrentUserProvider.class); }
+
+        @Bean WebMvcConfigurer resolvers(AuthenticatedUserArgumentResolver resolver) {
+            return new WebMvcConfigurer() {
+                @Override
+                public void addArgumentResolvers(List<HandlerMethodArgumentResolver> resolvers) {
+                    resolvers.add(resolver);
+                }
+            };
+        }
     }
 
     @LocalServerPort int port;
-    @Autowired ProductImageService images;
+    @Autowired ProductMediaService media;
     @Autowired PermissionChecker permissions;
     @Autowired CurrentUserProvider users;
 
     @BeforeEach void resetMocks() {
-        reset(images, permissions, users);
+        reset(media, permissions, users);
         when(users.current()).thenReturn(Optional.of(new CurrentUser(UUID.randomUUID(), "staff",
                 Set.of(), Set.of(), DataScope.ALL, Set.of())));
+    }
+
+    private String mediaPath() {
+        return "http://localhost:" + port + "/api/v1/products/" + UUID.randomUUID() + "/variants/"
+                + UUID.randomUUID() + "/media";
     }
 
     private HttpResponse<String> upload(int bytes) throws Exception {
@@ -87,10 +105,9 @@ class ProductImageHttpTest {
         String body = "--" + boundary + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"x.png\"\r\n"
                 + "Content-Type: image/png\r\n\r\n" + "x".repeat(bytes) + "\r\n--" + boundary + "--\r\n";
         try (var client = HttpClient.newHttpClient()) {
-            return client.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port
-                    + "/api/v1/products/" + UUID.randomUUID() + "/images"))
-                    .header("Content-Type", "multipart/form-data; boundary=" + boundary)
-                    .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8)).build(),
+            return client.send(HttpRequest.newBuilder(URI.create(mediaPath()))
+                            .header("Content-Type", "multipart/form-data; boundary=" + boundary)
+                            .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8)).build(),
                     HttpResponse.BodyHandlers.ofString());
         }
     }
@@ -99,13 +116,15 @@ class ProductImageHttpTest {
         var response = upload(1500);
         assertThat(response.statusCode()).isEqualTo(413);
         assertThat(response.body()).contains("PAYLOAD_TOO_LARGE").doesNotContain("INTERNAL_ERROR");
-        verifyNoInteractions(images);
+        verifyNoInteractions(media);
     }
 
     @Test void successfulUploadReturns201AndMetadataWithoutExposingStorageKey() throws Exception {
         var id = UUID.randomUUID();
-        when(images.upload(any(), any())).thenReturn(new ProductImage(id, null, 0,
-                new StoredFile("product-images/private-key.png", "x.png", "image/png", 12, Instant.EPOCH)));
+        var file = new StoredFile("product-images/private-key.png", "x.png", "image/png", 12, Instant.EPOCH);
+        when(media.upload(any(), any(), any(), any(), any())).thenReturn(new ProductMediaService.MediaView(id,
+                UUID.randomUUID(), "IMAGE", null, file, List.of(), null, 0, true, false, null, null, "staff",
+                Instant.EPOCH, 0));
         var response = upload(12);
         assertThat(response.statusCode()).isEqualTo(201);
         assertThat(response.body()).contains(id.toString(), "image/png", "sizeBytes")
@@ -113,21 +132,22 @@ class ProductImageHttpTest {
     }
 
     @Test void policyOversizeReturns413() throws Exception {
-        when(images.upload(any(), any())).thenThrow(new BusinessException(ErrorCode.PAYLOAD_TOO_LARGE));
+        when(media.upload(any(), any(), any(), any(), any())).thenThrow(new BusinessException(ErrorCode.PAYLOAD_TOO_LARGE));
         var response = upload(12);
         assertThat(response.statusCode()).isEqualTo(413);
         assertThat(response.body()).contains("PAYLOAD_TOO_LARGE");
     }
 
     @Test void unsupportedTypeReturns415() throws Exception {
-        when(images.upload(any(), any())).thenThrow(new BusinessException(ErrorCode.UNSUPPORTED_MEDIA_TYPE));
+        when(media.upload(any(), any(), any(), any(), any()))
+                .thenThrow(new BusinessException(ErrorCode.UNSUPPORTED_MEDIA_TYPE));
         var response = upload(12);
         assertThat(response.statusCode()).isEqualTo(415);
         assertThat(response.body()).contains("UNSUPPORTED_MEDIA_TYPE");
     }
 
     @Test void outageReturns503WithoutLeakingBackendDetails() throws Exception {
-        when(images.upload(any(), any())).thenThrow(new StorageException("secret-server/private-path"));
+        when(media.upload(any(), any(), any(), any(), any())).thenThrow(new StorageException("secret-server/private-path"));
         var response = upload(12);
         assertThat(response.statusCode()).isEqualTo(503);
         assertThat(response.body()).contains("STORAGE_ERROR").doesNotContain("secret-server", "private-path");
@@ -138,13 +158,19 @@ class ProductImageHttpTest {
         doThrow(new PermissionDeniedException(permission)).when(permissions).require(permission);
         var response = upload(12);
         assertThat(response.statusCode()).isEqualTo(403);
-        verifyNoInteractions(images);
+        verifyNoInteractions(media);
+    }
+
+    @Test void anonymousUploadIs401() throws Exception {
+        when(users.current()).thenReturn(Optional.empty());
+        var response = upload(12);
+        assertThat(response.statusCode()).isEqualTo(401);
+        verifyNoInteractions(media);
     }
 
     @Test void wrongRequestMediaTypeUses415Code() throws Exception {
         try (var client = HttpClient.newHttpClient()) {
-            var response = client.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port
-                    + "/api/v1/products/" + UUID.randomUUID() + "/images"))
+            var response = client.send(HttpRequest.newBuilder(URI.create(mediaPath()))
                     .header("Content-Type", "application/json")
                     .POST(HttpRequest.BodyPublishers.ofString("{}")).build(), HttpResponse.BodyHandlers.ofString());
             assertThat(response.statusCode()).isEqualTo(415);

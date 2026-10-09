@@ -7,11 +7,15 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.CurrentUserProvider;
 import com.stockflow.contracts.SkuInventoryControlChanged;
 import com.stockflow.inventory.api.InventoryControlItem;
+import com.stockflow.inventory.api.InventoryItemLogistics;
+import com.stockflow.inventory.api.ItemLogistics;
+import org.springframework.dao.DuplicateKeyException;
 import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.api.InventoryPolicy;
 import com.stockflow.inventory.api.RemovalStrategy;
 import com.stockflow.inventory.api.StockThresholdEvaluation;
 import com.stockflow.inventory.api.TrackingMode;
+import com.stockflow.inventory.internal.domain.ItemLogisticsRules;
 import com.stockflow.inventory.internal.domain.StockPolicy;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
 
@@ -94,5 +98,32 @@ class InventoryControlServiceImpl implements InventoryControlService {
                 p.safetyStock(),
                 p.reorderPoint() == null ? null : quantity <= p.reorderPoint(),
                 p.safetyStock() == null ? null : quantity < p.safetyStock());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public InventoryItemLogistics logistics(Sku sku) {
+        return policies.findLogistics(sku.code())
+                .orElseThrow(() -> new BusinessException(ErrorCode.INVENTORY_ITEM_NOT_FOUND, "No inventory item " + sku));
+    }
+
+    @Override
+    public InventoryItemLogistics describe(Sku sku, long expectedVersion, ItemLogistics logistics) {
+        ItemLogisticsRules.validate(logistics);
+        policies.lock(sku.code());
+        var current = logistics(sku);
+        if (current.version() != expectedVersion) throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
+        if (!current.logistics().unitOfMeasure().equals(logistics.unitOfMeasure()) && policies.holdsStock(sku.code())) {
+            throw new BusinessException(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT,
+                    "The unit of measure of %s cannot change while stock of it is held".formatted(sku));
+        }
+        String actor = users.current().map(u -> u.userId().toString()).orElse("system");
+        try {
+            if (!policies.saveLogistics(sku.code(), expectedVersion, logistics, actor))
+                throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
+        } catch (DuplicateKeyException e) {
+            throw new BusinessException(ErrorCode.CONFLICT, "Another inventory item already has barcode " + logistics.barcode());
+        }
+        return logistics(sku);
     }
 }
