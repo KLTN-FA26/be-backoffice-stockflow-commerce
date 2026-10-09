@@ -2,7 +2,9 @@ package com.stockflow.inventory.api;
 
 import com.stockflow.common.domain.Sku;
 
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -25,6 +27,22 @@ public interface InventoryService {
      * because stock leaves the {@code available} bucket the moment it is allocated.
      */
     int availableToPromise(Sku sku);
+
+    /** Batch availability; missing keys mean zero. Never authorizes a checkout without reserve(). */
+    default java.util.Map<String, Long> availableQuantities(java.util.Set<String> skus) {
+        return skus.stream().collect(java.util.stream.Collectors.toMap(
+                code -> code, code -> (long) availableToPromise(new Sku(code))));
+    }
+
+    /**
+     * {@link #availableToPromise(Sku)} for several SKUs in one query: every SKU asked for is a key,
+     * {@code 0} when nothing sellable is held. For a page that shows many variants at once — one
+     * call per SKU would be one query per SKU.
+     *
+     * <p>Read from the denormalised {@code reserved} column, as the allocation planner does, not
+     * from the reservation rows; the two are kept equal on every save.</p>
+     */
+    Map<Sku, Integer> availableToPromise(Collection<Sku> skus);
 
     /**
      * ATP for one SKU inside one warehouse (SCRUM-157: the storefront may promise per warehouse
@@ -53,7 +71,27 @@ public interface InventoryService {
      * @throws com.stockflow.common.error.BusinessException when ATP is below the requested quantity
      */
     ReserveStockResult reserve(ReserveStockCommand command);
+    /** Acquire policy locks and all stock rows in global order before reserving any basket line.
+     * Must join the same transaction as every subsequent reserve call. */
+    void prepareReservation(java.util.Set<Sku> skus);
 
     /** Release a reservation — order cancelled, payment failed, or the hold expired. */
     void release(UUID reservationId, String reason);
+
+    /**
+     * Move unreserved stock between two locations, writing one ledger line (SCRUM-424). Joins the
+     * caller's transaction, like {@link #reserve}. Locks the source and destination rows in id
+     * order, as {@code reserve} does, so two moves crossing the same pair cannot deadlock.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code STOCK_ITEM_NOT_FOUND},
+     *         {@code LOCATION_NOT_FOUND}, {@code INSUFFICIENT_STOCK} (fewer unreserved units than
+     *         asked), {@code STOCK_STATUS_MISMATCH} (the destination holds the lot in another status)
+     */
+    StockMove move(MoveStockCommand command);
+
+    /**
+     * Ask for a stock correction with a reason (SCRUM-145). The stock does not change until a
+     * different person approves it; production records scrapped blanks through this.
+     */
+    StockAdjustmentSummary requestAdjustment(RequestAdjustmentCommand command);
 }

@@ -1,6 +1,6 @@
 # Bản đồ toàn bộ luồng dữ liệu
 
-25 luồng của StockFlowCommerce: chính, phụ, ngoại lệ và nền tảng. Mỗi luồng gồm sơ đồ
+27 luồng của StockFlowCommerce: chính, phụ, ngoại lệ và nền tảng. Mỗi luồng gồm sơ đồ
 service–database và bảng liệt kê từng bước ghi vào bảng nào.
 
 Ký hiệu trong bảng: `+` tạo dòng · `~` sửa dòng · `−` trừ hoặc xoá.
@@ -20,14 +20,19 @@ Kafka. Xem ADR-0003.
 - `F-PUT` Slotting và putaway — hàng vào đúng kệ (WBS 3.5)
 - `F-MTC` Đối chiếu ba chiều và trả tiền nhà cung cấp (WBS 3.4)
 
-**Bán hàng** — 6 luồng
+**Bán hàng sỉ (B2B)** — 6 luồng
 
 - `F-DSG` Thiết kế 2D, xem 3D, chốt snapshot (WBS 3.12)
 - `F-CAT` Đồng bộ catalog và số tồn hiển thị (WBS 3.13)
-- `F-CART` Giỏ hàng, checkout và giữ chỗ tồn (WBS 3.14)
-- `F-PAY` Thanh toán — bốn hình thức, bốn thời điểm ghi nhận (WBS 3.15)
+- `F-CART` Báo giá, đặt hàng sỉ và giữ chỗ tồn (WBS 3.14)
+- `F-PAY` Thanh toán sỉ — trả trước, đặt cọc, công nợ (WBS 3.15)
 - `F-FUL` Phát lệnh, nhặt hàng, đóng gói (WBS 3.7 · 3.8)
-- `F-SHP` Giao hàng và theo dõi tới lúc có POD (WBS 3.9)
+- `F-SHP` Xếp xe, bàn giao hãng và ghi nhận kết quả giao (WBS 3.9)
+
+**Sản xuất in** — 2 luồng
+
+- `F-SAMPLE` Làm mẫu và khách duyệt mẫu (WBS 3.25.1)
+- `F-PROD` Sản xuất đơn hàng — từ release tới khu đóng gói (WBS 3.25)
 
 **Vận hành kho** — 4 luồng
 
@@ -190,13 +195,14 @@ flowchart LR
 | 02 | `warehouse` | `+ putaway_suggestion × N` | vị trí xếp hạng + lý do từng gợi ý |
 | 03 | `warehouse` | `~ putaway_task.assigned_to` | → ASSIGNED |
 | 04 | `warehouse` | `~ putaway_task (quét item)` | → IN_PROGRESS |
-| 05 | `warehouse` | `~ putaway_task.actual_location, ~ location.occupied_*, + outbox_event` | → COMPLETED |
+| 05 | `warehouse` | `~ putaway_task.target_location_id, + outbox_event` | → COMPLETED |
 | 06 | `inventory` | `~ stock_item.location_code, + stock_movement, + outbox_event` | StockLevelChanged |
 | 07 | `catalog` | `~ atp_cache` | hàng bắt đầu bán được |
 
 > · Vị trí vi phạm ràng buộc cứng (hazmat, nhiệt độ, single-SKU) bị LOẠI HẲN trước khi chấm điểm — BR-SLT-001.
 > · Mỗi gợi ý phải kèm LÝ DO và lý do đó được lưu cùng task — BR-SLT-004.
-> ★ Chỉ sau PutawayCompleted thì location_code mới là kệ thật và ATP mới tính hàng này.
+> · Không cập nhật `storage_location`: mức đầy suy ra từ tồn so với sức chứa, không lưu (module 06 §5).
+> ★ Chỉ sau PutawayCompleted thì location_code mới là mã một bin (`HCM-A01-2-B`) và ATP mới tính hàng này.
 
 ---
 
@@ -236,7 +242,7 @@ flowchart LR
 ---
 
 
-# Bán hàng
+# Bán hàng sỉ (B2B)
 
 ## `F-DSG` Thiết kế 2D, xem 3D, chốt snapshot
 
@@ -307,76 +313,77 @@ flowchart LR
 
 ---
 
-## `F-CART` Giỏ hàng, checkout và giữ chỗ tồn
+## `F-CART` Báo giá, đặt hàng sỉ và giữ chỗ tồn
 
-*WBS 3.14*
+*WBS 3.14 · đổi 2026-10-06: chỉ bán sỉ (B2B), không còn giỏ hàng bán lẻ / guest / voucher*
 
-Chỗ duy nhất trong luồng bán hàng gọi đồng bộ — vì khách đang đứng chờ trước màn hình.
+Đơn sỉ sinh ra từ **báo giá đã chấp nhận** hoặc từ **khách tự đặt trên cổng** (đặt nhanh / đặt lại). Giữ chỗ tồn vẫn là bước đồng bộ duy nhất — vì người đặt đang chờ kết quả.
 
 ```mermaid
 flowchart LR
-    N0(["Khách hàng"])
-    N1["order<br><small>sf_order</small>"]
-    N2[("Redis")]
-    N3["inventory<br><small>sf_inventory</small>"]
-    N4["order<br><small>sf_order</small>"]
-    N0 -->|"thêm vào giỏ"| N1
-    N1 -->|"cache giỏ"| N2
-    N2 -->|"giữ chỗ"| N3
+    N0(["Sale / Khách sỉ"])
+    N1["order<br><small>quote</small>"]
+    N2["production<br><small>sample_request</small>"]
+    N3["inventory<br><small>stock_item</small>"]
+    N4["order<br><small>order</small>"]
+    N0 -->|"lập / chấp nhận báo giá"| N1
+    N1 -->|"thiết kế mới → yêu cầu làm mẫu"| N2
+    N2 -.->|"SampleApproved"| N1
+    N1 -->|"chấp nhận → giữ chỗ phôi"| N3
+    N0 -->|"đặt nhanh / đặt lại trên cổng"| N3
     N3 -->|"tạo đơn"| N4
-    N3 -.->|"không đủ ATP → checkout hỏng NGAY, chưa có đơn nào tồn tại"| N1
+    N3 -.->|"không đủ ATP → hỏng NGAY, chưa có đơn nào tồn tại"| N0
 ```
 
-| # | Service | Ghi vào | Kết quả |
+| # | Module | Ghi vào | Kết quả |
 |---|---|---|---|
-| 01 | `order` | `+ cart_item` | sku, qty, design_snapshot_id nếu là hàng in |
-| 02 | `Redis` | `~ cart:{sessionId}` | cache, TTL 30 ngày |
-| 03 | `order` | `→ catalog: lấy giá hiện hành` | tính tổng, thuế, phí ship |
-| 04 | `order` | `~ cart.voucher_code` | kiểm hiệu lực voucher |
-| 05 | `inventory` | `+ stock_reservation, ~ stock_item.reserved, + outbox_event` | status = HELD · StockReserved |
-| 06 | `order` | `+ order, + order_line × N, + order_status_history` | → PENDING_PAYMENT |
-| 07 | `order` | `− cart_item, + outbox_event` | dọn giỏ · OrderPlaced |
+| 01 | `order` | `+ quote, + quote_line` | DRAFT → SENT; giá mặc định từ bảng giá riêng của khách |
+| 02 | `production` | `+ sample_request` | chỉ khi cặp (thiết kế, phôi) chưa có mẫu APPROVED — xem `F-SAMPLE` |
+| 03 | `order` | `~ quote.status` | → ACCEPTED; bị chặn nếu thiết kế mới chưa có mẫu APPROVED |
+| 04 | `order` | `→ customer: phương thức thanh toán được phép, hạn mức, dư nợ` | kiểm MOQ, phương thức, hạn mức |
+| 05 | `inventory` | `+ stock_reservation, ~ stock_item.reserved` | giữ chỗ **phôi** |
+| 06 | `order` | `+ order, + order_line × N, + order_status_history` | trả trước / cọc → PENDING_PAYMENT; công nợ trong hạn mức → CONFIRMED; vượt hạn mức → ON_HOLD |
+| 07 | `order` | `~ quote.status, + outbox_event` | → CONVERTED · OrderPlaced |
 
 > ★ Đơn chỉ được tạo sau khi MỌI dòng đã giữ chỗ xong. Đơn giữ chỗ một phần không bao giờ được lưu — BR-ORD-001.
-> ★ order_line CHÉP tên sản phẩm, đơn giá và địa chỉ tại thời điểm này. Giá đổi ngày mai không đổi hoá đơn hôm nay.
-> · Reservation có expires_at: 15 phút cho thẻ/ví, 24 giờ cho chuyển khoản, 30 phút cho COD — OQ-03.
+> ★ order_line CHÉP tên sản phẩm, đơn giá (theo báo giá / bảng giá riêng) và địa chỉ tại thời điểm này.
+> ★ Không có guest checkout: chỉ khách sỉ ACTIVE mới tạo được đơn.
+> · Reservation có expires_at với đơn chờ trả trước / chờ cọc (thời hạn chuyển khoản); đơn công nợ không hết hạn — OQ-03.
 
 ---
 
-## `F-PAY` Thanh toán — bốn hình thức, bốn thời điểm ghi nhận
+## `F-PAY` Thanh toán sỉ — trả trước, đặt cọc, công nợ
 
-*WBS 3.15*
+*WBS 3.15 · đổi 2026-10-06: cổng thẻ/ví và COD bán lẻ tạm gác*
 
-Cùng một máy trạng thái, nhưng thời điểm chuyển sang CAPTURED khác nhau hoàn toàn. Nhầm chỗ này là sổ sách lệch.
+Cùng một máy trạng thái giao dịch; khác nhau ở **điều kiện để đơn CONFIRMED** và lúc phát sinh **công nợ phải thu**.
 
 ```mermaid
 flowchart LR
-    N0["order<br><small>sf_order</small>"]
-    N1["payment<br><small>sf_payment</small>"]
-    N2(["Cổng TT"])
-    N3["payment<br><small>sf_payment</small>"]
-    N4["order<br><small>sf_order</small>"]
-    N0 -.->|"OrderPlaced"| N1
-    N1 -->|"redirect / API"| N2
-    N2 -->|"webhook đã ký"| N3
-    N3 -.->|"PaymentCaptured"| N4
-    N3 -.->|"PaymentFailed → giải phóng giữ chỗ, đơn → PAYMENT_FAILED"| N0
+    N0["order<br><small>order</small>"]
+    N1["payment<br><small>payment</small>"]
+    N2(["Kế toán<br>đối chiếu sao kê"])
+    N3["payment<br><small>receivable</small>"]
+    N4["order<br><small>order</small>"]
+    N0 -.->|"OrderPlaced (trả trước / cọc)"| N1
+    N1 -->|"chờ chuyển khoản"| N2
+    N2 -->|"xác nhận tiền về"| N1
+    N1 -.->|"PaymentCaptured"| N4
+    N0 -.->|"đơn công nợ đã giao"| N3
 ```
 
-| # | Service | Ghi vào | Kết quả |
+| # | Module | Ghi vào | Kết quả |
 |---|---|---|---|
-| 01 | `payment` | `+ processed_event, + payment` | status = INITIATED |
-| 02 | `payment` | `~ payment.status` | → AUTHORIZED (thẻ/ví) |
-| 03 | `payment` | `+ payment_transaction` | payload thô của cổng, để đối soát |
-| 04 | `payment` | `~ payment.status, + outbox_event` | → CAPTURED · PaymentCaptured |
-| 05 | `order` | `+ processed_event, ~ order, + order_status_history` | → CONFIRMED |
-| 06 | `payment` | `+ cod_remittance (nếu COD)` | đối chiếu với hãng vận chuyển |
-| 07 | `payment` | `+ deposit_record (nếu đặt cọc)` | theo dõi số dư còn phải trả |
+| 01 | `payment` | `+ processed_event, + payment` | status = AWAITING_CONFIRMATION (trả trước: tổng đơn; cọc: % cọc) |
+| 02 | `payment` | `~ payment.status, + payment_transaction, + outbox_event` | → CAPTURED khi kế toán khớp sao kê · PaymentCaptured |
+| 03 | `order` | `+ processed_event, ~ order, + order_status_history` | → CONFIRMED khi đủ tiền (trả trước) hoặc đủ cọc (đặt cọc) |
+| 04 | `payment` | `+ deposit_record (nếu đặt cọc)` | theo dõi phần còn lại |
+| 05 | `payment` | `+ receivable (đơn công nợ, khi DELIVERED)` | due_date = ngày giao + kỳ hạn của khách |
+| 06 | `payment` | `~ receivable` | phân bổ tiền khách trả vào khoản đến hạn sớm nhất; quá hạn → OVERDUE |
 
-> · Thẻ / ví: CAPTURED ngay khi cổng callback. Chuyển khoản: khi kế toán đối chiếu sao kê.
-> ⚠ COD: CHỈ CAPTURED khi hãng vận chuyển chuyển tiền về — BR-PAY-004. Coi COD là đã trả lúc checkout là sổ sách sai.
-> · Đặt cọc: đơn → CONFIRMED khi tổng đã thu ≥ mức cọc yêu cầu, không phải bằng tổng đơn — BR-PAY-002.
-> ⚠ Webhook sai chữ ký thì KHÔNG đổi trạng thái gì, chỉ ghi log — BR-PAY-001.
+> · Trả trước / cọc: CAPTURED **chỉ** khi kế toán đối chiếu sao kê — không theo lời khách báo.
+> ★ Đặt cọc: đơn → CONFIRMED khi tổng đã thu ≥ mức cọc yêu cầu, và chỉ khi đó mới được release sang sản xuất — BR-PAY-002, BR-PRD-09.
+> ★ Công nợ: không qua PENDING_PAYMENT; kiểm `dư nợ + giá trị đơn ≤ hạn mức` lúc tạo đơn — vượt → ON_HOLD chờ người có quyền duyệt.
 
 ---
 
@@ -416,41 +423,151 @@ flowchart LR
 
 ---
 
-## `F-SHP` Giao hàng và theo dõi tới lúc có POD
+## `F-SHP` Xếp xe, bàn giao hãng và ghi nhận kết quả giao
 
 *WBS 3.9*
 
-Mỗi hãng vận chuyển đặt tên trạng thái một kiểu. Phải chuẩn hoá về máy trạng thái của mình trước khi cho phần còn lại của hệ thống nhìn thấy.
+Hãng vận chuyển là bên thứ ba **ngoài hệ thống**: không gọi API hãng, không lấy vận đơn, không theo dõi hành trình (chốt 06/10/2026, docs 09). Hệ thống chỉ lo phần của kho — chọn xe, xếp kiện, bàn giao — rồi ghi nhận kết quả giao khi hãng báo lại.
 
 ```mermaid
 flowchart LR
-    N0["fulfillment<br><small>sf_fulfillment</small>"]
-    N1(["Hãng VC"])
-    N2["fulfillment<br><small>sf_fulfillment</small>"]
-    N3["order<br><small>sf_order</small>"]
+    N0(["NV kho"])
+    N1["fulfillment<br><small>sf_fulfillment</small>"]
+    N2["order<br><small>sf_order</small>"]
+    N3(["Điều phối đơn"])
     N4["notification<br><small>sf_notification</small>"]
-    N0 -->|"xin nhãn, AWB"| N1
-    N1 -->|"webhook trạng thái"| N2
-    N2 -.->|"OrderDelivered"| N3
-    N3 -.->|"báo khách"| N4
-    N1 -.->|"giao không thành công N lần → RTO"| N2
+    N0 -->|"load planning, quét kiện lên xe"| N1
+    N1 -.->|"ShipmentDispatched"| N2
+    N3 -->|"hãng báo đã giao / thất bại"| N1
+    N1 -.->|"OrderDelivered"| N2
+    N2 -.->|"báo khách"| N4
 ```
 
 | # | Service | Ghi vào | Kết quả |
 |---|---|---|---|
-| 01 | `fulfillment` | `+ shipment` | status = CREATED |
-| 02 | `fulfillment` | `~ shipment.tracking_number, .awb` | → LABELLED |
-| 03 | `MinIO` | `+ labels/{awb}.pdf` | file nhãn |
-| 04 | `fulfillment` | `+ manifest_entry, ~ manifest` | → MANIFESTED → HANDED_OVER |
-| 05 | `fulfillment` | `+ tracking_event (mỗi lần webhook)` | nhật ký thô |
-| 06 | `fulfillment` | `~ shipment.tracking_status` | đã chuẩn hoá |
-| 07 | `fulfillment` | `+ pod, + outbox_event` | ảnh và chữ ký · OrderDelivered |
+| 01 | `fulfillment` | `+ shipment` | status = READY_TO_DISPATCH (kiện đã đóng gói, ở khu `DISPATCH`) |
+| 02 | `fulfillment` | `+ load_plan, + load, + load_line` | phương án xếp: loại xe, số xe, kiện nào lên xe nào → load PLANNED |
+| 03 | `fulfillment` | `~ load.status` | → VEHICLE_BOOKED (đặt xe với hãng ngoài hệ thống) |
+| 04 | `fulfillment` | `~ load_line.loaded_at` (mỗi lần quét kiện) | → LOADING; chặn kiện không thuộc chuyến |
+| 05 | `fulfillment` | `+ manifest, ~ shipment, ~ load, + outbox_event` | shipment → HANDED_OVER, load → DISPATCHED · ShipmentDispatched |
+| 06 | `order` | `~ order.status, + order_status_history` | → SHIPPED |
+| 07 | `fulfillment` | `~ shipment.status, + outbox_event` | Điều phối cập nhật → DELIVERED / DELIVERY_FAILED · OrderDelivered |
 
-> · Trạng thái thô của hãng lưu vào tracking_event; shipment chỉ giữ trạng thái ĐÃ CHUẨN HOÁ — WBS 3.9.5.2.
+> · Phương án xếp không vượt thể tích lòng thùng và tải trọng xe; hàng `FRAGILE` không bị đè — docs 09 BR-02.
+> · DELIVERED / DELIVERY_FAILED chỉ do nhân viên có quyền cập nhật, ghi người và thời điểm — docs 09 BR-05.
 > · Sau DELIVERED 7 ngày không có RMA thì đơn tự động → COMPLETED — BR-ORD-005.
+> · Schema: bảng `load_plan`, `load`, `load_line` và trạng thái `DELIVERY_FAILED` chưa có trong DB — xem ghi chú ở `03-state-machines.md` §11.
 
 ---
 
+
+# Sản xuất in
+
+## `F-SAMPLE` Làm mẫu và khách duyệt mẫu
+
+*WBS 3.25.1 · module `production` (mới, 2026-10-06)*
+
+Thiết kế mới phải có mẫu được khách duyệt trước khi sản xuất đơn hàng. Mẫu dùng chung xưởng với đơn hàng, chỉ khác nguồn và kết thúc.
+
+```mermaid
+flowchart LR
+    N0(["Sale"])
+    N1["production<br><small>sample_request</small>"]
+    N2["production<br><small>production_order</small>"]
+    N3["inventory<br><small>stock_item</small>"]
+    N4(["Khách sỉ<br>trên cổng"])
+    N0 -->|"tạo, gửi xưởng"| N1
+    N1 -->|"LSX type = SAMPLE"| N2
+    N2 -->|"xuất phôi lý do SAMPLE"| N3
+    N2 -->|"QC đạt → READY"| N1
+    N1 -->|"gửi mẫu (ngoài hệ thống)"| N4
+    N4 -->|"duyệt / yêu cầu sửa"| N1
+    N1 -.->|"SampleApproved"| N0
+```
+
+| # | Module | Ghi vào | Kết quả |
+|---|---|---|---|
+| 01 | `production` | `+ sample_request` | DRAFT → SUBMITTED |
+| 02 | `inventory` | `+ stock_reservation` | giữ chỗ phôi cho mẫu |
+| 03 | `production` | `+ production_order (type = SAMPLE)` | PENDING_PREPRESS — các bước tại xưởng như `F-PROD` 02–07 |
+| 04 | `production` | `~ sample_request` | → READY → SENT_TO_CUSTOMER |
+| 05 | `production` | `~ sample_request, + outbox_event` | → APPROVED · SampleApproved (khoá thiết kế cho cặp thiết kế + phôi) |
+| 06 | `production` | `~ sample_request` | hoặc → CHANGES_REQUESTED; lần mẫu tiếp theo là bản ghi mới, round + 1 |
+
+> ★ Mẫu APPROVED là **chuẩn QC** cho mọi LSX ORDER sau này của cùng thiết kế + phôi — BR-PRD-05.
+> · Phôi làm mẫu ra khỏi tồn bằng điều chỉnh có lý do `SAMPLE`, không trừ âm thầm.
+
+---
+
+## `F-PROD` Sản xuất đơn hàng — từ release tới khu đóng gói
+
+*WBS 3.25 · module `production` (mới, 2026-10-06)*
+
+Order Coordinator release đơn; mỗi dòng in sinh một lệnh sản xuất (LSX). `order` và `production` chỉ nói chuyện qua event.
+
+```mermaid
+flowchart LR
+    N0["order<br><small>order</small>"]
+    N1["production<br><small>production_order</small>"]
+    N2["inventory<br><small>stock_item</small>"]
+    N3["design<br><small>design_artifact</small>"]
+    N4["order<br><small>order</small>"]
+    N0 -.->|"OrderLinesReleasedForProduction"| N1
+    N1 -->|"tải PRINT_READY, kiểm checksum"| N3
+    N1 -->|"xuất phôi → PRODUCTION; phế phẩm; thành phẩm → PACKING"| N2
+    N1 -.->|"ProductionCompleted"| N4
+```
+
+| # | Module | Ghi vào | Kết quả |
+|---|---|---|---|
+| 01 | `production` | `+ processed_event, + production_order (type = ORDER)` | một LSX cho mỗi dòng in · PENDING_PREPRESS — BR-PRD-01 |
+| 02 | `production` | `~ production_order` | prepress đạt → READY; lỗi → ON_HOLD (lý do) |
+| 03 | `inventory` | `~ stock_item (chuyển sang khu PRODUCTION)` | → MATERIAL_ISSUED; không vượt số còn thiếu — BR-PRD-03 |
+| 04 | `production` | `~ production_order` | → PRINTING; ghi số in, số phế phẩm + lý do |
+| 05 | `inventory` | `+ adjustment (reason = SCRAP)` | phôi hỏng ra khỏi tồn — BR-PRD-04 |
+| 06 | `production` | `+ qc_result, ~ production_order` | QC theo mẫu đã duyệt; thiếu → READY (in bù) |
+| 07 | `inventory` | `~ stock_item (chuyển sang khu PACKING)` | thành phẩm sẵn đóng gói |
+| 08 | `production` | `~ production_order, + outbox_event` | → COMPLETED · ProductionCompleted |
+| 09 | `order` | `+ processed_event, ~ order, + order_status_history` | → IN_FULFILMENT khi **mọi** LSX của đơn xong — BR-PRD-06 |
+
+> ★ `order` từ chối release dòng có thiết kế mới chưa có mẫu APPROVED, và đơn đặt cọc chưa nhận đủ cọc — BR-PRD-08, BR-PRD-09.
+> ★ Không in khi checksum file lệch thiết kế đã khoá — BR-PRD-02 (cùng nguyên tắc với `X-CHK`).
+> · Bảng `production.*` chưa có trong migration — chờ task T2 (SCRUM-422) của DB owner.
+
+### Nhánh gia công ngoài (bổ sung 2026-10-06)
+
+Khi xưởng nội bộ không kịp hạn, Quản lý kho tách một phần LSX `ORDER` thành **LSX con gia công**. Hai cách: `SUPPLIED_BLANKS` (mình cấp phôi) và `FULL_SERVICE` (nhà gia công lo phôi). LSX `SAMPLE` không được gia công.
+
+```mermaid
+flowchart LR
+    N1["production<br><small>production_order (con)</small>"]
+    N2["procurement<br><small>purchase_order (SUBCONTRACT)</small>"]
+    N3["inventory<br><small>stock_item</small>"]
+    N4["procurement<br><small>goods_receipt</small>"]
+    N5["production<br><small>production_order (con)</small>"]
+    N1 -->|"tạo PO gia công"| N2
+    N1 -->|"SUPPLIED_BLANKS: phôi → vị trí nhà gia công"| N3
+    N4 -.->|"GoodsReceiptPosted"| N5
+    N5 -->|"thành phẩm → PACKING"| N3
+```
+
+| # | Module | Ghi vào | Kết quả |
+|---|---|---|---|
+| G1 | `production` | `~ production_order (gốc), + production_order (con, execution = SUBCONTRACTED)` | gốc giảm số lượng, giữ nguyên trạng thái; con PENDING_PREPRESS hoặc READY — BR-PRD-11, 12 |
+| G2 | `procurement` | `+ purchase_order (type = SUBCONTRACT, DRAFT)` | một dòng = thành phẩm của LSX con × số lượng × đơn giá |
+| G3 | `inventory` | `~ reservation` | SUPPLIED_BLANKS: giữ chỗ phôi chuyển sang LSX con; FULL_SERVICE: nhả giữ chỗ |
+| G4 | `procurement` | `~ purchase_order` | duyệt theo hạn mức như PO thường |
+| G5 | `inventory` | `~ stock_item (chuyển sang vị trí nhà gia công)` | chỉ SUPPLIED_BLANKS; không tính ATP — BR-PRD-15 |
+| G6 | `production` | `~ production_order (con)` | → SUBCONTRACTED; chỉ khi PO đã duyệt — BR-PRD-13, 14 |
+| G7 | `procurement` | `+ goods_receipt, + goods_receipt_line, + outbox_event` | đếm thành phẩm; SUPPLIED_BLANKS đếm thêm phế phẩm, phôi trả về; đối soát hao hụt · GoodsReceiptPosted |
+| G8 | `inventory` | `+ adjustment (reason = SUBCONTRACT_LOSS)` | hao hụt ra khỏi vị trí nhà gia công; vượt mức cần Quản lý kho duyệt — BR-PRD-17 |
+| G9 | `production` | `+ processed_event, + qc_result, ~ production_order (con)` | → QC → COMPLETED (như `F-PROD` 06–08); thiếu → READY, gửi bù hoặc in bù nội bộ — BR-PRD-16 |
+| G10 | `procurement` | `+ supplier_invoice, ~ match` | đối chiếu ba chiều theo **số đạt QC**, trừ hao hụt đã duyệt |
+
+> ★ `order` vẫn chỉ chờ `ProductionCompleted` của **mọi** LSX của đơn (gốc và con) — BR-PRD-06 không đổi.
+> · Cần thêm: loại PO `SUBCONTRACT`, cờ "gia công in" trên NCC, vị trí ảo cho nhà gia công, cột `parent_id` / `execution` / `subcontract_mode` / `purchase_order_id` trên `production_order` — thuộc task T2 (SCRUM-422) và T6.
+
+---
 
 # Vận hành kho
 
@@ -638,7 +755,7 @@ flowchart LR
     N2(["NV kho"])
     N3["warehouse<br><small>sf_warehouse</small>"]
     N4["inventory<br><small>sf_inventory</small>"]
-    N0 -->|"webhook RTO"| N1
+    N0 -->|"trả kiện về kho"| N1
     N1 -->|"nhận kiện"| N2
     N2 -.->|"re-putaway"| N3
     N3 -.->|"nhập lại kho"| N4
@@ -646,8 +763,8 @@ flowchart LR
 
 | # | Service | Ghi vào | Kết quả |
 |---|---|---|---|
-| 01 | `fulfillment` | `~ shipment.tracking_status, + tracking_event` | → RTO_IN_TRANSIT |
-| 02 | `fulfillment` | `~ shipment.status` | → RTO_RECEIVED |
+| 01 | `fulfillment` | `~ shipment.status` (Điều phối, khi hãng báo không giao được) | → DELIVERY_FAILED |
+| 02 | `fulfillment` | `~ shipment.status` (NV kho nhận kiện hoàn qua phiếu nhận hàng hoàn) | → RETURNED |
 | 03 | `order` | `~ order.status, + order_status_history` | → RTO |
 | 04 | `warehouse` | `+ putaway_task` | tái xếp kho |
 | 05 | `inventory` | `+ stock_item, + stock_movement` | GOOD nếu kiện nguyên, QUARANTINE nếu không |

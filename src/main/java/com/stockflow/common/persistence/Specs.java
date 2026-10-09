@@ -70,13 +70,27 @@ public final class Specs {
      *
      * <p>Note the cost: a leading wildcard cannot use a normal B-tree index. On a large table this
      * needs a trigram index ({@code pg_trgm}) or a search projection, not just this helper.</p>
+     *
+     * <p>{@code attribute} may be a dotted path into an embeddable, e.g.
+     * {@code "shippingAddress.recipientName"}.</p>
      */
     public static <E> Specification<E> contains(String attribute, String term) {
         if (term == null || term.isBlank()) {
             return all();
         }
         String pattern = "%" + escapeLike(term.trim().toLowerCase()) + "%";
-        return (root, query, cb) -> cb.like(cb.lower(root.get(attribute)), pattern, '\\');
+        return (root, query, cb) -> cb.like(cb.lower(path(root, attribute)), pattern, '\\');
+    }
+
+    private static jakarta.persistence.criteria.Path<String> path(
+            jakarta.persistence.criteria.Path<?> root, String attribute) {
+        jakarta.persistence.criteria.Path<?> path = root;
+        for (String part : attribute.split("\\.")) {
+            path = path.get(part);
+        }
+        @SuppressWarnings("unchecked")
+        jakarta.persistence.criteria.Path<String> typed = (jakarta.persistence.criteria.Path<String>) path;
+        return typed;
     }
 
     /** Case-insensitive "starts with" - index-friendly, unlike {@link #contains}. */

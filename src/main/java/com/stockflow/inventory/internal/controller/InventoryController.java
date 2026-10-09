@@ -60,7 +60,8 @@ import java.util.UUID;
         label = "Stock on hand",
         route = "/inventory/stock",
         apiPath = "/api/v1/inventory/stock-items",
-        actions = {Action.VIEW_PAGE, Action.READ, Action.EXPORT})
+        // UPDATE guards moving stock and asking for a correction (StockOperationsController).
+        actions = {Action.VIEW_PAGE, Action.READ, Action.UPDATE, Action.EXPORT})
 class InventoryController {
 
     private final InventoryService inventoryService;

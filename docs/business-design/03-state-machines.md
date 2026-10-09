@@ -1,6 +1,6 @@
 # State Machines
 
-Thirteen machines. For each: the diagram, then a transition table giving the **trigger**, the
+Eighteen machines. For each: the diagram, then a transition table giving the **trigger**, the
 **actor allowed to fire it**, the **guard** that must hold, and the **event emitted**.
 
 Rules that apply to every machine on this page:
@@ -91,45 +91,44 @@ retained for the audit trail. Amendment is forbidden once any receipt exists (BR
 
 ## 3. Goods Receipt — `procurement-service`
 
-WBS 3.3.5.2 names the inventory outcome `Inbound → Available/Quarantine`; 3.3.4.4 adds RTV.
+**Changed 2026-10-09** to the receiving docs (KLTN-FA26/docs 03 Receipt, 05 Putaway, commit
+`084365d`) and migration `V20260929000250`. Receiving is a 2-step or 3-step flow, chosen per SKU by
+the inventory item's **QC required** flag (snapshotted on the receipt line):
+
+| Flow | SKU | Path |
+|---|---|---|
+| 3 steps | `qc_required` | supplier → Area `RECEIVING` → Area `QUALITY_CONTROL` → bin |
+| 2 steps | not QC-required | supplier → Area `RECEIVING` → bin |
 
 ```mermaid
 stateDiagram-v2
     [*] --> DRAFT
-    DRAFT --> COUNTING: start counting
-    COUNTING --> COUNTED: finish counting
-    COUNTED --> QC_PENDING: QC required
-    COUNTED --> POSTED: QC not required
-    QC_PENDING --> QC_PASSED: accept
-    QC_PENDING --> QC_QUARANTINED: quarantine
-    QC_PENDING --> QC_REJECTED: reject
-    QC_PASSED --> POSTED: post
-    QC_QUARANTINED --> QC_PASSED: re-inspect and accept
-    QC_QUARANTINED --> QC_REJECTED: re-inspect and reject
-    QC_REJECTED --> RTV: return to vendor
-    POSTED --> [*]
-    RTV --> [*]
+    DRAFT --> CONFIRMED: confirm counts
     DRAFT --> CANCELLED: cancel
+    CONFIRMED --> IN_QC: a QC-required line has no verdict yet
+    CONFIRMED --> IN_PUTAWAY: no line needs QC
+    IN_QC --> IN_PUTAWAY: every QC line has a verdict
+    IN_QC --> CLOSED: nothing accepted is left to put away
+    IN_PUTAWAY --> CLOSED: putaway done, rejected returned, quarantine decided
+    CLOSED --> [*]
     CANCELLED --> [*]
 ```
 
 | From | To | Trigger | Actor | Guard | Event |
 |---|---|---|---|---|---|
-| — | DRAFT | create from PO, or blind | Warehouse staff | PO in CONFIRMED/PARTIALLY_RECEIVED, or blind receipt allowed (BR-RCP-002) | — |
-| DRAFT | COUNTING | start | Warehouse staff | — | — |
-| COUNTING | COUNTED | finish | Warehouse staff | every line counted; lot/expiry captured where the SKU requires it (BR-RCP-003) | — |
-| COUNTED | QC_PENDING | — | system | product flagged QC-required | `QcTaskCreated` |
-| COUNTED | POSTED | post | Warehouse staff | over-receipt within tolerance, else manager approval (BR-RCP-001) | `GoodsReceived` |
-| QC_PENDING | QC_PASSED | accept | QC staff | — | `QcCompleted(ACCEPTED)` |
-| QC_PENDING | QC_QUARANTINED | quarantine | QC staff | reason given | `QcCompleted(QUARANTINED)` |
-| QC_PENDING | QC_REJECTED | reject | QC staff | reason given | `QcCompleted(REJECTED)` |
-| QC_PASSED | POSTED | post | Warehouse staff | — | `GoodsReceived` |
-| QC_REJECTED | RTV | return to vendor | Procurement staff | supplier notified | `ReturnToVendorRaised` |
+| — | DRAFT | create from PO | Warehouse staff | PO `CONFIRMED` / `PARTIALLY_RECEIVED` (BR-RCP-001) | — |
+| DRAFT | CONFIRMED | confirm | Warehouse staff | lot / expiry where required (BR-RCP-003); over-receipt within tolerance, else manager approval | `GoodsReceived` |
+| DRAFT | CANCELLED | cancel | Warehouse staff | never confirmed (`ck_goods_receipts_cancelled`) | — |
+| CONFIRMED | IN_QC | — | system | ≥1 line with `qc_required`; a **move-to-QC task** (`move_task.origin = RECEIPT_QC`) is created per such line | — |
+| CONFIRMED | IN_PUTAWAY | — | system | no line needs QC; putaway tasks from `RECEIVING` | — |
+| IN_QC | IN_PUTAWAY | last QC verdict | QC staff | QC only on goods already in the QC area (BR-08); accepted + quarantined + rejected = moved quantity | `QcCompleted` |
+| IN_PUTAWAY / IN_QC | CLOSED | — | system | every line handled | — |
 
-**What `POSTED` does to inventory.** It is the only transition here that changes stock. It
-creates stock rows in condition **GOOD** when QC passed or was not required, and condition
-**QUARANTINE** when QC quarantined them. Quarantined stock is physically present and counted in
-on-hand, but excluded from ATP — see machine 5.
+**What confirming does to inventory.** Stock rows appear in the `RECEIVING` area in condition
+**INBOUND** (machine 5). A QC-required line then moves `RECEIVING → QUALITY_CONTROL` (still INBOUND);
+QC splits it: **accepted** → putaway task from the QC area; **quarantine** → Area `QUARANTINE`,
+condition QUARANTINE; **rejected** → Area `QUARANTINE`, condition BLOCKED, return to vendor. A
+confirmed receipt is never deleted; mistakes are reversals or adjustments with a reason (BR-05).
 
 ---
 
@@ -172,35 +171,42 @@ stateDiagram-v2
 
 This machine governs the **condition** dimension only. Quantities (on hand / reserved /
 allocated) are numbers on the same record, not states — see `01-ubiquitous-language.md`.
+Stored as `inventory.stock_item.status`; `GOOD` in older text is `AVAILABLE`.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> QUARANTINE: received, QC pending
-    [*] --> GOOD: received, QC passed or not required
-    QUARANTINE --> GOOD: QC accepts
-    QUARANTINE --> DAMAGED: QC finds damage
-    GOOD --> DAMAGED: damage reported
-    GOOD --> EXPIRED: expiry date passes
-    GOOD --> QUARANTINE: recall or re-inspection
+    [*] --> INBOUND: receipt confirmed (RECEIVING / QUALITY_CONTROL area)
+    INBOUND --> AVAILABLE: putaway (QC accepted, or not required)
+    INBOUND --> QUARANTINE: QC puts on hold
+    INBOUND --> BLOCKED: QC rejects
+    QUARANTINE --> AVAILABLE: re-inspected and accepted, then put away
+    QUARANTINE --> BLOCKED: re-inspected and rejected
+    BLOCKED --> [*]: returned to vendor
+    AVAILABLE --> DAMAGED: damage reported
+    AVAILABLE --> EXPIRED: expiry date passes
+    AVAILABLE --> QUARANTINE: recall or re-inspection
     DAMAGED --> [*]: written off
     EXPIRED --> [*]: written off
 ```
 
 | From | To | Trigger | Actor | Guard | Event |
 |---|---|---|---|---|---|
-| — | GOOD | receipt posted | system | QC passed or not required | `StockReceived` |
-| — | QUARANTINE | receipt posted | system | QC quarantined | `StockReceived` |
-| QUARANTINE | GOOD | release | QC staff | inspection recorded | `StockReleasedFromQuarantine` |
-| QUARANTINE / GOOD | DAMAGED | report damage | Warehouse staff | reason and photo (BR-STK-003) | `StockBlocked(DAMAGED)` |
-| GOOD | EXPIRED | nightly sweep | system | `expiry_date < today` (BR-STK-004) | `StockBlocked(EXPIRED)` |
-| GOOD | QUARANTINE | recall | Warehouse manager | reason given | `StockBlocked(QUARANTINE)` |
+| — | INBOUND | receipt confirmed | system | — | `StockReceived` |
+| INBOUND | AVAILABLE | putaway completed | Warehouse staff | QC accepted or not required (docs 05 BR-01) | `StockPutAway` |
+| INBOUND | QUARANTINE / BLOCKED | QC verdict | QC staff | reason given | `QcCompleted` |
+| QUARANTINE | AVAILABLE | re-inspection accepts | QC staff | then putaway from the `QUARANTINE` area | `StockReleasedFromQuarantine` |
+| QUARANTINE | BLOCKED | re-inspection rejects | QC staff | reason given | `StockBlocked(BLOCKED)` |
+| BLOCKED | left stock | return to vendor | Procurement staff | movement out of the warehouse | `ReturnToVendorRaised` |
+| AVAILABLE | DAMAGED | report damage | Warehouse staff | reason and photo (BR-STK-003) | `StockBlocked(DAMAGED)` |
+| AVAILABLE | EXPIRED | nightly sweep | system | `expiry_date < today` (BR-STK-004) | `StockBlocked(EXPIRED)` |
+| AVAILABLE | QUARANTINE | recall | Warehouse manager | reason given | `StockBlocked(QUARANTINE)` |
 | DAMAGED / EXPIRED | written off | write-off | Warehouse manager | approved adjustment (BR-STK-005) | `StockWrittenOff` |
 
-**Only GOOD counts towards ATP.** That single sentence is the reason this dimension is separate
-from the quantity buckets: quarantined stock is on hand, occupies its bin, appears in a physical
-count, and is invisible to the storefront.
+**Only AVAILABLE counts towards ATP.** That single sentence is the reason this dimension is separate
+from the quantity buckets: inbound, quarantined and blocked stock is on hand, occupies its location, appears in a
+physical count, and is invisible to the storefront.
 
-**Reserved stock whose condition turns bad.** If GOOD stock with an outstanding reservation moves
+**Reserved stock whose condition turns bad.** If AVAILABLE stock with an outstanding reservation moves
 to DAMAGED or EXPIRED, the reservation is *not* silently dropped — `inventory-service` emits
 `ReservationImpaired`, and `order-service` puts the order on hold with reason
 `INVENTORY_ISSUE` (WBS 3.17.6.1). Dropping it quietly is how a paid order never ships.
@@ -263,8 +269,9 @@ stateDiagram-v2
 | IN_PROGRESS | EXCEPTION | report blocked | Warehouse staff | reason given | — |
 | EXCEPTION | IN_PROGRESS | override | Warehouse manager | new location passes hard constraints (BR-SLT-003) | — |
 
-`PutawayCompleted` is what moves stock from the receiving dock to a real bin. Until then, the
-stock exists with a location code of the inbound staging area and is **not** pickable.
+`PutawayCompleted` is what moves stock from the receiving area to a real bin. Until then, the
+stock exists with the location code of a `RECEIVING` area (e.g. `HCM-RCV01`) and is **not**
+pickable.
 
 ---
 
@@ -309,20 +316,29 @@ The central machine. WBS 3.17.1.1 spells it out:
 `Pending Payment → Confirmed → Ready to Fulfill → In Production → Picking → Packed → Shipped →
 Delivered → Completed/Cancelled`. Hold (3.17.6) and RMA (3.17.5) attach to it.
 
+**Changed 2026-10-06** (B2B only, production module): an order is a wholesale order created from
+an accepted quote or on the customer portal. A **credit** order skips `PENDING_PAYMENT` — it is
+`CONFIRMED` within the customer's credit limit, `ON_HOLD` (reason `CREDIT`) above it. Release
+sends print lines to production **before** the order is ready to fulfil: `CONFIRMED →
+IN_PRODUCTION → READY_TO_FULFILL`, and the order leaves `IN_PRODUCTION` only when every production
+order of the order is completed (machine 16).
+
 ```mermaid
 stateDiagram-v2
-    [*] --> PENDING_PAYMENT: checkout completed
-    PENDING_PAYMENT --> CONFIRMED: payment captured
+    [*] --> PENDING_PAYMENT: prepay / deposit order placed
+    [*] --> CONFIRMED: credit order within limit
+    [*] --> ON_HOLD: credit order over limit
+    PENDING_PAYMENT --> CONFIRMED: payment / deposit captured
     PENDING_PAYMENT --> PAYMENT_FAILED: payment declined or timed out
     PAYMENT_FAILED --> [*]
-    CONFIRMED --> READY_TO_FULFILL: released by coordinator
-    READY_TO_FULFILL --> IN_PRODUCTION: print job started
-    READY_TO_FULFILL --> PICKING: no print items
-    IN_PRODUCTION --> PICKING: printing done
+    CONFIRMED --> IN_PRODUCTION: released, has print lines
+    CONFIRMED --> READY_TO_FULFILL: released, no print lines
+    IN_PRODUCTION --> READY_TO_FULFILL: every production order completed
+    READY_TO_FULFILL --> PICKING: pick list generated
     PICKING --> PACKED: packing confirmed
     PACKED --> SHIPPED: handed to carrier
-    SHIPPED --> DELIVERED: POD received
-    SHIPPED --> RTO: undeliverable
+    SHIPPED --> DELIVERED: carrier reports delivered
+    SHIPPED --> RTO: parcel returned to the warehouse
     DELIVERED --> COMPLETED: return window closes
     DELIVERED --> RETURN_REQUESTED: customer opens RMA
     RETURN_REQUESTED --> DELIVERED: RMA rejected
@@ -347,22 +363,24 @@ stateDiagram-v2
 
 | From | To | Trigger | Actor | Guard | Event |
 |---|---|---|---|---|---|
-| — | PENDING_PAYMENT | checkout | Customer / Sales staff | every line reserved (BR-ORD-001) | `OrderPlaced` |
+| — | PENDING_PAYMENT | order placed (prepay / deposit) | Customer / Sales staff | active B2B customer; every line reserved (BR-ORD-001); quantity ≥ MOQ (BR-ORD-007) | `OrderPlaced` |
+| — | CONFIRMED | order placed (credit) | Customer / Sales staff | outstanding balance + order total ≤ credit limit (BR-PAY-005) | `OrderPlaced`, `OrderConfirmed` |
+| — | ON_HOLD | order placed (credit) | system | over the credit limit; reason `CREDIT` | `OrderPlaced`, `OrderPutOnHold` |
 | PENDING_PAYMENT | CONFIRMED | payment captured | system | amount = order total, or deposit rule met (BR-PAY-002) | `OrderConfirmed` |
 | PENDING_PAYMENT | PAYMENT_FAILED | declined or timed out | system | reservations released first | `OrderPaymentFailed` |
-| CONFIRMED | READY_TO_FULFILL | release | Order coordinator | fulfilling warehouse chosen; stock allocated (BR-ORD-002) | `OrderReleased` |
-| READY_TO_FULFILL | IN_PRODUCTION | start print job | Warehouse staff | order has ≥1 print line with a LOCKED snapshot | `ProductionStarted` |
-| READY_TO_FULFILL | PICKING | pick list generated | system | no print lines | `PickListGenerated` |
-| IN_PRODUCTION | PICKING | printing done | Warehouse staff | printed qty = ordered qty | `PickListGenerated` |
+| CONFIRMED | IN_PRODUCTION | release | Order coordinator | warehouse chosen; ≥1 print line; every new design has an APPROVED sample (BR-PRD-08); deposit received (BR-PRD-09) | `OrderLinesReleasedForProduction` |
+| CONFIRMED | READY_TO_FULFILL | release | Order coordinator | warehouse chosen; no print lines; stock allocated (BR-ORD-002) | `OrderReleased` |
+| IN_PRODUCTION | READY_TO_FULFILL | production completed | system | every production order of the order COMPLETED (BR-PRD-06) | `OrderReleased` |
+| READY_TO_FULFILL | PICKING | pick list generated | system | stock lines allocated; print output already in the PACKING area | `PickListGenerated` |
 | PICKING | PACKED | packing confirmed | Warehouse staff | every line picked; design checksums match (BR-DSG-003) | `OrderPacked` |
 | PACKED | SHIPPED | handover | Warehouse staff | manifest signed by carrier | `ShipmentDispatched` |
-| SHIPPED | DELIVERED | POD received | system, via carrier webhook | POD payload valid | `OrderDelivered` |
-| SHIPPED | RTO | undeliverable | system, via carrier webhook | carrier reports RTO | `OrderReturnedToOrigin` |
+| SHIPPED | DELIVERED | carrier reports delivered | Order coordinator | every shipment of the order DELIVERED; recorded with who and when (no carrier integration) | `OrderDelivered` |
+| SHIPPED | RTO | parcel back at the warehouse | Warehouse staff | received through the returns receipt (BR-06 of docs 09) | `OrderReturnedToOrigin` |
 | DELIVERED | COMPLETED | window closes | system | 7 days after delivery, no open RMA (BR-ORD-005) | `OrderCompleted` |
 | DELIVERED | RETURN_REQUESTED | open RMA | Customer / Sales staff | within return window | `RmaRequested` |
 | any of PENDING_PAYMENT…PICKING | CANCELLED | cancel | see below | see BR-ORD-003 | `OrderCancelled` |
-| CONFIRMED / READY_TO_FULFILL / IN_PRODUCTION | ON_HOLD | raise exception | Order coordinator, or system | reason is one of PAYMENT / ADDRESS / INVENTORY (WBS 3.17.6.1) | `OrderPutOnHold` |
-| ON_HOLD | CONFIRMED | resolve | Order coordinator | resolution note recorded | `OrderHoldResolved` |
+| CONFIRMED / READY_TO_FULFILL / IN_PRODUCTION | ON_HOLD | raise exception | Order coordinator, or system | reason is one of PAYMENT / ADDRESS / INVENTORY / CREDIT (WBS 3.17.6.1) | `OrderPutOnHold` |
+| ON_HOLD | CONFIRMED | resolve | Order coordinator; for `CREDIT` the credit-limit approver | resolution note recorded | `OrderHoldResolved` |
 
 ### Who may cancel, and until when
 
@@ -375,7 +393,7 @@ artwork and cannot be resold.
 | PENDING_PAYMENT | yes | yes | release reservations |
 | CONFIRMED | yes | yes | release reservations, refund in full |
 | READY_TO_FULFILL | no — must request | yes | release allocations, raise put-back task |
-| IN_PRODUCTION | no — must request | yes, with reason | printed items are **not refunded** (BR-ORD-004) |
+| IN_PRODUCTION | no — must request | yes, with reason | production orders not yet printing are cancelled and blanks returned; printed items are **not refunded** (BR-ORD-004, BR-PRD-10) |
 | PICKING | no | yes, with reason | put-back task (WBS 3.7.7.2) |
 | PACKED and later | no | no — must go through RMA | — |
 
@@ -430,32 +448,55 @@ stateDiagram-v2
 
 ---
 
-## 11. Shipment — `fulfillment-service`
+## 11. Shipment and load — `fulfillment-service`
 
-WBS 3.9.
+WBS 3.9. **The carrier is a third party outside the system** (decided 2026-10-06, docs 09): no carrier
+API, no carrier waybill, no tracking. The system records the handover and the outcome the carrier
+reports back; nothing in between.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> CREATED
-    CREATED --> LABELLED: carrier label obtained
-    LABELLED --> MANIFESTED: added to manifest
-    MANIFESTED --> HANDED_OVER: carrier signs
-    HANDED_OVER --> IN_TRANSIT: first carrier scan
-    IN_TRANSIT --> OUT_FOR_DELIVERY
-    OUT_FOR_DELIVERY --> DELIVERED: POD captured
-    OUT_FOR_DELIVERY --> FAILED_ATTEMPT: recipient unavailable
-    FAILED_ATTEMPT --> OUT_FOR_DELIVERY: retry
-    FAILED_ATTEMPT --> RTO_IN_TRANSIT: attempts exhausted
-    RTO_IN_TRANSIT --> RTO_RECEIVED: back at warehouse
-    RTO_RECEIVED --> [*]
+    [*] --> READY_TO_DISPATCH: packed
+    READY_TO_DISPATCH --> HANDED_OVER: loaded onto the truck, manifest signed
+    READY_TO_DISPATCH --> CANCELLED: order cancelled before handover
+    HANDED_OVER --> DELIVERED: carrier reports delivered
+    HANDED_OVER --> DELIVERY_FAILED: carrier reports not delivered
+    DELIVERY_FAILED --> DELIVERED: carrier delivered on a retry
+    DELIVERY_FAILED --> RETURNED: parcel back at the warehouse
     DELIVERED --> [*]
+    RETURNED --> [*]
+    CANCELLED --> [*]
 ```
 
-Carrier statuses are normalised into this machine (WBS 3.9.5.2) — every carrier names them
-differently, and the rest of the platform must never see a carrier's vocabulary.
+| From | To | Trigger | Actor | Guard |
+|---|---|---|---|---|
+| READY_TO_DISPATCH | HANDED_OVER | handover | Warehouse staff | parcel is on a load that is being dispatched; scanned onto that vehicle |
+| HANDED_OVER | DELIVERED / DELIVERY_FAILED | outcome reported | Order coordinator | failure carries a reason (absent, refused, wrong address, lost) |
+| DELIVERY_FAILED | RETURNED | parcel received back | Warehouse staff | through the returns receipt, never straight into stock |
 
-`RTO_RECEIVED` triggers a **re-putaway** (WBS 3.9.7.2): the goods return to stock through the
+A **load** is one vehicle (truck or container) and the parcels placed on it:
+
+```mermaid
+stateDiagram-v2
+    [*] --> PLANNED: load plan accepted
+    PLANNED --> VEHICLE_BOOKED: vehicle booked with the carrier (outside the system)
+    PLANNED --> CANCELLED: parcels go back to READY_TO_DISPATCH
+    VEHICLE_BOOKED --> LOADING: vehicle arrived
+    LOADING --> DISPATCHED: every planned parcel scanned on, manifest signed
+    DISPATCHED --> [*]
+    CANCELLED --> [*]
+```
+
+The load plan respects the vehicle's internal volume and payload, and never puts a `FRAGILE`
+parcel under a heavier one (docs 09 BR-02).
+
+`RETURNED` triggers a **re-putaway** (WBS 3.9.7.2): the goods return to stock through the
 same putaway machine, in condition GOOD if the parcel is intact and QUARANTINE otherwise.
+
+> **Schema gap (DB owner):** `fulfillment.shipment_status` today is `PENDING, DISPATCHED, DELIVERED,
+> RETURNED`. It needs `DELIVERY_FAILED` and `CANCELLED`, plus tables for the vehicle-type catalogue,
+> the load plan and the load with its parcels. `shipment.tracking_number` and the carrier-sourced
+> `shipment_event` rows lose their purpose and go in a later contract step.
 
 ---
 
@@ -468,7 +509,7 @@ stateDiagram-v2
     [*] --> REQUESTED
     REQUESTED --> APPROVED: sales approves
     REQUESTED --> REJECTED: outside policy
-    APPROVED --> AWAITING_RETURN: label sent
+    APPROVED --> AWAITING_RETURN: return instructions sent
     AWAITING_RETURN --> RECEIVED: parcel arrives
     AWAITING_RETURN --> EXPIRED: never returned
     RECEIVED --> INSPECTED: QC inspects
@@ -485,7 +526,7 @@ stateDiagram-v2
 |---|---|---|---|---|---|
 | — | REQUESTED | open RMA | Customer / Sales staff | order DELIVERED, within window (BR-RMA-001) | `RmaRequested` |
 | REQUESTED | APPROVED | approve | Sales staff | reason in policy; **custom-printed items are not returnable unless defective** (BR-RMA-002) | `RmaApproved` |
-| APPROVED | AWAITING_RETURN | send label | system | return label generated | — |
+| APPROVED | AWAITING_RETURN | send return instructions | system | customer told to write the RMA number on the parcel; no return label (carriers are outside the system) | — |
 | AWAITING_RETURN | RECEIVED | parcel arrives | Warehouse staff | RMA number on parcel | `RmaGoodsReceived` |
 | RECEIVED | INSPECTED | inspect | QC staff | condition recorded | `RmaInspected` |
 | INSPECTED | REFUNDED | refund | Accountant | within refund limit | `RefundCompleted` |
@@ -557,3 +598,126 @@ WBS 3.16.2.2 names the states: `OPEN → RESOLVED`, with `ESCALATED` in between.
 
 `OPEN → ASSIGNED → RESOLVED`, `ASSIGNED → ESCALATED → ASSIGNED`, `RESOLVED → OPEN` on a customer
 reply within 24 hours. SLA timers (WBS 3.16.6) run on `OPEN` and `ESCALATED` only.
+
+---
+
+## 16. Production order — `production`
+
+New 2026-10-06. One per custom order line (`ORDER`) or per sample request (`SAMPLE`). Both kinds
+run the same workshop steps; only the source and the end differ. Business doc:
+`kltn-docs/docs/warehouse/19-production`.
+
+**Subcontracting** (added 2026-10-06, §4.4 of the business doc): when the in-house shop cannot meet
+the due date, the warehouse manager splits part of an `ORDER` production order into a **child**
+production order with `execution = SUBCONTRACTED`, linked to its parent and to a `SUBCONTRACT`
+purchase order. The child skips `MATERIAL_ISSUED` / `PRINTING` and goes
+`READY → SUBCONTRACTED → QC`. Splitting does not change the parent's state, only its quantity.
+Two modes, chosen per split: `SUPPLIED_BLANKS` (we send the blanks; they stay our stock at a
+virtual subcontractor location, outside ATP) and `FULL_SERVICE` (the subcontractor sources the
+blanks; we buy finished goods).
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING_PREPRESS: created from release / sample request
+    PENDING_PREPRESS --> READY: prepress passed
+    READY --> MATERIAL_ISSUED: blanks issued to PRODUCTION area
+    MATERIAL_ISSUED --> PRINTING: print started
+    PRINTING --> QC: printed + scrap recorded
+    QC --> COMPLETED: good quantity reached
+    QC --> READY: shortfall → reprint
+    READY --> SUBCONTRACTED: subcontracted child sent out (PO approved)
+    SUBCONTRACTED --> QC: subcontract goods receipt posted
+    PENDING_PREPRESS --> ON_HOLD
+    READY --> ON_HOLD
+    MATERIAL_ISSUED --> ON_HOLD
+    PRINTING --> ON_HOLD
+    SUBCONTRACTED --> ON_HOLD
+    ON_HOLD --> PENDING_PREPRESS: resume (back to the state it left)
+    PENDING_PREPRESS --> CANCELLED
+    READY --> CANCELLED
+    MATERIAL_ISSUED --> CANCELLED: blanks returned
+    SUBCONTRACTED --> CANCELLED: blanks recalled, PO cancelled
+    COMPLETED --> [*]
+    CANCELLED --> [*]
+```
+
+| From | To | Trigger | Actor | Guard | Event |
+|---|---|---|---|---|---|
+| — | PENDING_PREPRESS | release / sample submitted | system | one per source line (BR-PRD-01) | — |
+| PENDING_PREPRESS | READY | prepress pass | Production staff | file checksum = locked snapshot (BR-PRD-02) | — |
+| READY | MATERIAL_ISSUED | blanks scanned out | Warehouse staff | issued ≤ remaining need (BR-PRD-03) | — |
+| MATERIAL_ISSUED | PRINTING | start | Production staff | — | — |
+| PRINTING | QC | record output | Production staff | good + scrap = printed; scrap has a reason (BR-PRD-04) | — |
+| QC | COMPLETED | QC pass | QC staff | good quantity = required; ORDER compared with the approved sample (BR-PRD-05) | `ProductionCompleted` (ORDER) |
+| QC | READY | shortfall | QC staff | more blanks reserved; none → ON_HOLD | — |
+| PENDING_PREPRESS / READY / ON_HOLD | *(unchanged)* + child PENDING_PREPRESS or READY | split for subcontracting | Warehouse manager | ORDER only (BR-PRD-11); 0 < split < quantity not yet issued (BR-PRD-12); active subcontractor; child inherits the parent's prepress result | — |
+| READY | SUBCONTRACTED | send to subcontractor (child only) | Warehouse staff | `SUBCONTRACT` PO approved (BR-PRD-13); SUPPLIED_BLANKS: blanks scanned to the subcontractor location (BR-PRD-15) | — |
+| SUBCONTRACTED | QC | subcontract goods receipt posted | system | SUPPLIED_BLANKS: blank reconciliation done, excess loss approved (BR-PRD-16, 17) | — |
+| any before COMPLETED | ON_HOLD | hold | Production staff / Warehouse manager | reason: bad file, out of blanks, machine down, waiting for customer, subcontractor late | — |
+| PENDING_PREPRESS / READY / MATERIAL_ISSUED | CANCELLED | cancel | Warehouse manager | issued blanks returned to stock | — |
+| SUBCONTRACTED | CANCELLED | cancel | Warehouse manager | blanks recalled from the subcontractor, PO cancelled (or fee paid per BR-PRD-10) | — |
+
+Once `PRINTING` or `SUBCONTRACTED`, the design cannot change (BR-PRD-07, BR-PRD-14) and
+cancellation follows BR-PRD-10. A shortfall on a subcontracted child goes back to `READY`, from
+where the manager either sends more to the same subcontractor (PO supplement) or splits the gap
+into a new in-house child.
+
+---
+
+## 17. Sample request — `production`
+
+New 2026-10-06. Mandatory for a new design (design + blank pair without an approved sample).
+
+```mermaid
+stateDiagram-v2
+    [*] --> DRAFT
+    DRAFT --> SUBMITTED: sent to the workshop
+    SUBMITTED --> IN_PRODUCTION
+    IN_PRODUCTION --> READY: sample production order COMPLETED
+    READY --> SENT_TO_CUSTOMER: sample handed over (off-system)
+    SENT_TO_CUSTOMER --> APPROVED: customer approves
+    SENT_TO_CUSTOMER --> CHANGES_REQUESTED: customer asks for changes
+    CHANGES_REQUESTED --> [*]: next round is a new request (round + 1)
+    DRAFT --> CANCELLED
+    APPROVED --> [*]
+    CANCELLED --> [*]
+```
+
+| From | To | Trigger | Actor | Guard | Event |
+|---|---|---|---|---|---|
+| DRAFT | SUBMITTED | submit | Sales staff | confirmed design snapshot; blanks reservable | — |
+| READY | SENT_TO_CUSTOMER | mark sent | Sales staff | — | — |
+| SENT_TO_CUSTOMER | APPROVED | approve | Customer (portal) / Sales staff on their behalf | — | `SampleApproved` |
+| SENT_TO_CUSTOMER | CHANGES_REQUESTED | request changes | Customer / Sales staff | feedback recorded | — |
+
+`APPROVED` locks the design for the design + blank pair and becomes the QC reference for order
+production (BR-PRD-05, BR-PRD-08).
+
+---
+
+## 18. Quote — `order`
+
+New 2026-10-06 (B2B only). Partly built in PR #38 (`DesignQuote`).
+
+```mermaid
+stateDiagram-v2
+    [*] --> DRAFT
+    DRAFT --> SENT: sent to the customer
+    SENT --> ACCEPTED: customer accepts
+    SENT --> CHANGES_REQUESTED: customer asks for changes
+    CHANGES_REQUESTED --> DRAFT: revised
+    SENT --> EXPIRED: validity ends
+    ACCEPTED --> CONVERTED: sales order created
+    DRAFT --> CANCELLED
+    CONVERTED --> [*]
+    EXPIRED --> [*]
+    CANCELLED --> [*]
+```
+
+| From | To | Trigger | Actor | Guard | Event |
+|---|---|---|---|---|---|
+| DRAFT | SENT | send | Sales staff | discount within the sales staff's limit, or approved | — |
+| SENT | ACCEPTED | accept | Customer (portal) | within validity; every new design has an APPROVED sample (BR-PRD-08) | — |
+| ACCEPTED | CONVERTED | create order | system / Sales staff | lines reserved (BR-ORD-001) | `OrderPlaced` |
+| SENT | EXPIRED | validity ends | system | — | — |
+

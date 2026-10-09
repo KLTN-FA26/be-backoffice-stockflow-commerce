@@ -5,7 +5,9 @@ import com.stockflow.inventory.api.ReserveStockResult;
 import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.customer.api.CheckoutCustomer;
 import com.stockflow.customer.api.CustomerService;
+import com.stockflow.order.api.ListOrdersQuery;
 import com.stockflow.order.api.OrderService;
+import com.stockflow.order.api.OrderStatusChange;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.api.PlaceOrderCommand;
@@ -21,19 +23,31 @@ import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Pages;
+import com.stockflow.common.persistence.SortWhitelist;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-
 import java.time.Clock;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+
 import java.util.UUID;
+import com.stockflow.catalog.api.CatalogService;
+import com.stockflow.common.domain.Money;
+import com.stockflow.common.id.Identifiers;
+import com.stockflow.design.api.DesignService;
+import com.stockflow.order.internal.entity.OrderHoldJpaEntity;
+import com.stockflow.order.internal.repository.OrderHoldJpaRepository;
+import java.nio.charset.StandardCharsets;
+import java.time.ZoneId;
+import java.util.Locale;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * Order orchestration — and <b>the single clearest illustration of what this architecture buys</b>.
@@ -75,20 +89,28 @@ class OrderServiceImpl implements OrderService {
 
     private static final Logger log = LoggerFactory.getLogger(OrderServiceImpl.class);
 
+    /** The days a coordinator filters by are Saigon days: "placed on the 8th" ends at 17:00 UTC. */
+    private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
+
+    private static final SortWhitelist LIST_SORT = SortWhitelist.of("orderNumber", "placedAt", "totalAmount", "status")
+            .withDefault("placedAt", Sort.Direction.DESC);
+
     private final OrderRepository repository;
     private final OrderSearchRepository search;
     private final InventoryService inventory;
     private final OrderEventPublisher events;
     private final Clock clock;
-    private final com.stockflow.design.api.DesignService designs;
-    private final com.stockflow.order.internal.repository.OrderHoldJpaRepository holds;
+    private final DesignService designs;
+    private final OrderHoldJpaRepository holds;
     private final CustomerService customers;
+    private final CatalogService catalog;
 
     OrderServiceImpl(OrderRepository repository, OrderSearchRepository search,
                      InventoryService inventory, OrderEventPublisher events, Clock clock,
-                     com.stockflow.design.api.DesignService designs,
-                     com.stockflow.order.internal.repository.OrderHoldJpaRepository holds,
-                     CustomerService customers) {
+            DesignService designs,
+            OrderHoldJpaRepository holds,
+                     CustomerService customers,
+            CatalogService catalog) {
         this.repository = repository;
         this.search = search;
         this.inventory = inventory;
@@ -97,6 +119,7 @@ class OrderServiceImpl implements OrderService {
         this.designs = designs;
         this.holds = holds;
         this.customers = customers;
+        this.catalog = catalog;
     }
 
     /**
@@ -113,14 +136,26 @@ class OrderServiceImpl implements OrderService {
         Optional<Order> alreadyPlaced = repository.findByRequestId(command.requestId());
         if (alreadyPlaced.isPresent()) {
             if (!command.customerId().equals(alreadyPlaced.get().customerId())) {
-                throw new com.stockflow.common.error.BusinessException(
-                        com.stockflow.common.error.ErrorCode.IDEMPOTENCY_KEY_REUSED);
+                throw new BusinessException(ErrorCode.IDEMPOTENCY_KEY_REUSED);
             }
             log.info("Request {} already produced order {}",
                     command.requestId(), alreadyPlaced.get().orderNumber());
             return toSummary(alreadyPlaced.get());
         }
 
+        // SCRUM-298 is a separate integration: never fall back to a client-supplied design price.
+        if (command.snapshotCustomer()
+                && command.lines().stream().anyMatch(line -> line.designSnapshotId() != null)) {
+            throw new BusinessException(ErrorCode.DESIGN_QUOTE_REQUIRED);
+        }
+        var sellingPrices =
+                command.snapshotCustomer()
+                        ? catalog.checkoutPrices(
+                                command.lines().stream()
+                                        .filter(line -> line.designSnapshotId() == null)
+                                        .map(line -> line.sku().code())
+                                        .collect(Collectors.toSet()))
+                        : Map.<String, Money>of();
         LocalDate today = LocalDate.ofInstant(clock.instant(), ZoneOffset.UTC);
         OrderNumber orderNumber = repository.nextOrderNumber(today);
 
@@ -132,7 +167,11 @@ class OrderServiceImpl implements OrderService {
         for (int index = 0; index < command.lines().size(); index++) {
             PlaceOrderCommand.Line line = command.lines().get(index);
             var orderLine = Order.line(deterministicLineId(command.requestId(), index),
-                    line.sku(), line.quantity(), line.unitPrice(), line.designSnapshotId());
+                    line.sku(), line.quantity(),
+                            command.snapshotCustomer()
+                                    ? agreedPrice(
+                                            line.sku().code(), line.unitPrice(), sellingPrices)
+                                    : line.unitPrice(), line.designSnapshotId());
             if (line.designSnapshotId() != null) {
                 orderLine.recordDesignChecksum(designs.verifySnapshotForSku(line.designSnapshotId(), command.customerId(), line.sku().code()).checksum());
             }
@@ -155,11 +194,13 @@ class OrderServiceImpl implements OrderService {
         // It joins this transaction. If reserve() throws InsufficientStockException on line 3,
         // lines 1 and 2 are rolled back with the order — no compensation code, no saga state, no
         // possibility of a half-reserved order surviving the failure.
+        inventory.prepareReservation(
+                order.lines().stream().map(OrderLine::sku).collect(Collectors.toSet()));
         for (OrderLine line : order.lines()) {
             ReserveStockResult reservation = inventory.reserve(new ReserveStockCommand(
                     // A derived, deterministic request id: a retry of this same checkout produces
                     // the same key, so inventory recognises the replay instead of double-holding.
-                    deterministicRequestId(command.requestId(), line.id()),
+                                    deterministicRequestId(command.requestId(), line.id()),
                     line.sku(),
                     line.quantity(),
                     order.id().value()));
@@ -179,7 +220,7 @@ class OrderServiceImpl implements OrderService {
 
     @Override
     public OrderSummary placeGuestOrder(PlaceGuestOrderCommand command) {
-        String email = command.email().trim().toLowerCase(java.util.Locale.ROOT);
+        String email = command.email().trim().toLowerCase(Locale.ROOT);
         // Construct snapshots before the replay lookup as well: a reused request id must not make
         // malformed address data appear valid merely because an earlier checkout succeeded.
         var shipping = toSnapshot(command.shippingAddress());
@@ -187,19 +228,24 @@ class OrderServiceImpl implements OrderService {
         Optional<Order> alreadyPlaced = repository.findByRequestId(command.requestId());
         if (alreadyPlaced.isPresent()) {
             if (!sameGuestCheckout(alreadyPlaced.get(), email, shipping, billing, command.lines())) {
-                throw new com.stockflow.common.error.BusinessException(
-                        com.stockflow.common.error.ErrorCode.IDEMPOTENCY_KEY_REUSED);
+                throw new BusinessException(ErrorCode.IDEMPOTENCY_KEY_REUSED);
             }
             return toSummary(alreadyPlaced.get());
         }
 
+        var sellingPrices =
+                catalog.checkoutPrices(
+                        command.lines().stream()
+                                .map(line -> line.sku().code())
+                                .collect(Collectors.toSet()));
         LocalDate today = LocalDate.ofInstant(clock.instant(), ZoneOffset.UTC);
         OrderNumber orderNumber = repository.nextOrderNumber(today);
         List<OrderLine> lines = new ArrayList<>();
         for (int index = 0; index < command.lines().size(); index++) {
             PlaceGuestOrderCommand.Line line = command.lines().get(index);
             lines.add(Order.line(deterministicLineId(command.requestId(), index), line.sku(),
-                    line.quantity(), line.unitPrice(), null));
+                    line.quantity(),
+                            agreedPrice(line.sku().code(), line.unitPrice(), sellingPrices), null));
         }
         Order order = Order.guestDraft(orderNumber, command.requestId(), lines, clock.instant(),
                 shipping.recipientName(), email,
@@ -218,6 +264,13 @@ class OrderServiceImpl implements OrderService {
      * normal callers too; this comparison is the durable, service-level backstop for retries that
      * reach this use case directly.
      */
+    private static Money agreedPrice(String sku, Money expected, Map<String, Money> prices) {
+        var actual = prices.get(sku);
+        if (actual == null) throw new BusinessException(ErrorCode.PRICE_NOT_AVAILABLE);
+        if (!actual.equals(expected)) throw new BusinessException(ErrorCode.CHECKOUT_PRICE_CHANGED);
+        return actual;
+    }
+
     private static boolean sameGuestCheckout(Order order, String email,
                                              OrderAddressSnapshot shipping,
                                              OrderAddressSnapshot billing,
@@ -297,6 +350,30 @@ class OrderServiceImpl implements OrderService {
     /**
      * {@inheritDoc}
      *
+     * <p>Whether the caller may see every order is decided by the controller (staff only); this
+     * method applies no scope of its own, like {@link #myOrders}.</p>
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<OrderSummary> list(ListOrdersQuery query) {
+        if (query.placedFrom() != null && query.placedTo() != null && query.placedTo().isBefore(query.placedFrom())) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "placedTo is before placedFrom");
+        }
+        var criteria = new OrderSearchRepository.Criteria(query.search(), query.statuses(), query.customerId(),
+                query.placedFrom() == null ? null : query.placedFrom().atStartOfDay(BUSINESS_ZONE).toInstant(),
+                query.placedTo() == null ? null : query.placedTo().plusDays(1).atStartOfDay(BUSINESS_ZONE).toInstant());
+        return Pages.toResponse(search.search(criteria, Pages.of(query.page(), query.size(), LIST_SORT.parse(query.sort()))));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<OrderStatusChange> history(UUID orderId) {
+        return search.history(orderId);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
      * <p>{@code customerId} must come from the controller resolving {@code @AuthenticatedUser},
      * never from a client-supplied parameter — this method applies no scope check of its own, the
      * same trust boundary {@link #placeOrder} already relies on for {@code
@@ -345,7 +422,7 @@ class OrderServiceImpl implements OrderService {
     @Override
     public OrderSummary releaseToFulfillment(UUID orderId) {
         var order = repository.findByIdForUpdate(new OrderId(orderId))
-                .orElseThrow(() -> new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.NOT_FOUND));
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         if (order.status() == OrderStatus.IN_FULFILMENT) { return toSummary(order); }
         order.release();
         return toSummary(repository.save(order));
@@ -354,20 +431,19 @@ class OrderServiceImpl implements OrderService {
     @Override
     public void putOnDesignHold(UUID orderId, String reason) {
         var order = repository.findByIdForUpdate(new OrderId(orderId))
-                .orElseThrow(() -> new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.NOT_FOUND));
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         if (order.status() == OrderStatus.ON_HOLD) { return; }
         order.putOnHold();
         repository.save(order);
-        holds.save(new com.stockflow.order.internal.entity.OrderHoldJpaEntity(
-                com.stockflow.common.id.Identifiers.newId(), orderId, reason, clock.instant()));
+        holds.save(new OrderHoldJpaEntity(Identifiers.newId(), orderId, reason, clock.instant()));
     }
 
     @Override
     public void resolveDesignHold(UUID orderId, UUID resolvedBy, String note) {
         var order = repository.findByIdForUpdate(new OrderId(orderId))
-                .orElseThrow(() -> new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.NOT_FOUND));
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         var hold = holds.findFirstByOrderIdAndResolvedAtIsNullOrderByRaisedAtDesc(orderId)
-                .orElseThrow(() -> new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.CONFLICT));
+                .orElseThrow(() -> new BusinessException(ErrorCode.CONFLICT));
         order.resumeFromHold();
         hold.resolve(resolvedBy, note, clock.instant());
         repository.save(order);
@@ -384,14 +460,12 @@ class OrderServiceImpl implements OrderService {
      * processes and restarts.</p>
      */
     private static UUID deterministicRequestId(UUID requestId, UUID lineId) {
-        return UUID.nameUUIDFromBytes((requestId + ":" + lineId).getBytes(
-                java.nio.charset.StandardCharsets.UTF_8));
+        return UUID.nameUUIDFromBytes((requestId + ":" + lineId).getBytes(StandardCharsets.UTF_8));
     }
 
     /** Stable line identity: same checkout request, same position, same id. */
     private static UUID deterministicLineId(UUID requestId, int index) {
-        return UUID.nameUUIDFromBytes((requestId + "#line#" + index).getBytes(
-                java.nio.charset.StandardCharsets.UTF_8));
+        return UUID.nameUUIDFromBytes((requestId + "#line#" + index).getBytes(StandardCharsets.UTF_8));
     }
 
     private OrderSummary toSummary(Order order) {
@@ -416,6 +490,8 @@ class OrderServiceImpl implements OrderService {
     }
 
     private void reserve(Order order, UUID requestId) {
+        inventory.prepareReservation(
+                order.lines().stream().map(OrderLine::sku).collect(Collectors.toSet()));
         for (OrderLine line : order.lines()) {
             ReserveStockResult reservation = inventory.reserve(new ReserveStockCommand(
                     deterministicRequestId(requestId, line.id()), line.sku(), line.quantity(),

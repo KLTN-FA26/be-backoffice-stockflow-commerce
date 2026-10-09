@@ -7,7 +7,16 @@ package com.stockflow.warehouse.internal.domain;
  * charging bay is on the map only so it can be drawn and walked around.</p>
  */
 public enum AreaType {
-    RECEIVING, QUARANTINE, PACKING, DISPATCH, OVERFLOW, NON_STORAGE;
+    /** WH/Input: goods just received, before QC or putaway. */
+    RECEIVING,
+    /** WH/Quality Control: goods of a QC-required SKU waiting for inspection (docs 03, 3-step flow). */
+    QUALITY_CONTROL,
+    /** After QC: goods put on hold or rejected, waiting for a decision or the return to the supplier. */
+    QUARANTINE,
+    PACKING,
+    DISPATCH,
+    OVERFLOW,
+    NON_STORAGE;
 
     /**
      * Whether an area of this type is a stock location, and so owns a {@code storage_location} row

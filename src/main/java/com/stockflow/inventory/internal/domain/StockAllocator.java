@@ -13,8 +13,8 @@ import java.util.List;
  * layer either: FEFO is a business rule, not orchestration, and the business would want it tested
  * on its own.</p>
  *
- * <p><b>FEFO — first expired, first out.</b> Furniture components with a shelf life (adhesives,
- * finishes, foam) must ship the oldest usable lot first, otherwise stock ages out on the shelf and
+ * <p><b>FEFO — first expired, first out.</b> Stock with a shelf life (inks, adhesives, coated
+ * paperboard blanks) must ship the oldest usable lot first, otherwise stock ages out on the shelf and
  * is written off. Ties break on the smaller remainder, which drains partial lots and frees
  * locations instead of leaving a scatter of two-unit remnants across the warehouse.</p>
  *
@@ -45,8 +45,13 @@ public final class StockAllocator {
             String lotNumber,
             LocalDate expiryDate,
             StockStatus status,
-            Quantity available
+            Quantity available,
+            java.time.Instant receivedAt
     ) {
+        public Candidate(StockItemId id, LocationId location, String lotNumber, LocalDate expiryDate,
+                         StockStatus status, Quantity available) {
+            this(id, location, lotNumber, expiryDate, status, available, null);
+        }
 
         public Candidate {
             java.util.Objects.requireNonNull(stockItemId, "stockItemId");
@@ -68,7 +73,18 @@ public final class StockAllocator {
                             Candidate::expiryDate,
                             Comparator.nullsLast(Comparator.naturalOrder()))
                     .thenComparing(candidate -> candidate.available().value())
-                    .thenComparing(candidate -> candidate.location().code());
+                    .thenComparing(candidate -> candidate.location().code())
+                    .thenComparing(candidate -> candidate.stockItemId().value());
+
+    public static Comparator<Candidate> comparator(com.stockflow.inventory.api.RemovalStrategy strategy) {
+        Comparator<Candidate> receipt = Comparator.comparing(Candidate::receivedAt,
+                Comparator.nullsLast(Comparator.naturalOrder()));
+        Comparator<Candidate> primary = strategy == com.stockflow.inventory.api.RemovalStrategy.FIFO ? receipt
+                : Comparator.comparing(Candidate::expiryDate, Comparator.nullsLast(Comparator.naturalOrder()))
+                    .thenComparing(receipt);
+        return primary.thenComparing(c -> c.available().value()).thenComparing(c -> c.location().code())
+                .thenComparing(c -> c.stockItemId().value());
+    }
 
     /**
      * Split {@code required} units across the candidates in FEFO order.
@@ -77,10 +93,26 @@ public final class StockAllocator {
      * @throws InsufficientStockException if the candidates together cannot cover {@code required}
      */
     public static List<AllocationLine> plan(String sku, List<Candidate> candidates, Quantity required) {
+        return allocate(sku, candidates, required, FEFO);
+    }
+
+    public static List<AllocationLine> plan(String sku, List<Candidate> candidates, Quantity required,
+            com.stockflow.inventory.api.RemovalStrategy strategy, LocalDate today) {
+        List<Candidate> usable = candidates.stream()
+                .filter(c -> c.expiryDate() == null || !c.expiryDate().isBefore(today)).toList();
+        if (strategy == com.stockflow.inventory.api.RemovalStrategy.FIFO
+                && usable.stream().anyMatch(c -> c.status().isReservable() && !c.available().isZero() && c.receivedAt() == null)) {
+            throw new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT);
+        }
+        return allocate(sku, usable, required, comparator(strategy));
+    }
+
+    private static List<AllocationLine> allocate(String sku, List<Candidate> candidates, Quantity required,
+                                                Comparator<Candidate> comparator) {
         List<Candidate> sellable = candidates.stream()
                 .filter(candidate -> candidate.status().isReservable())
                 .filter(candidate -> !candidate.available().isZero())
-                .sorted(FEFO)
+                .sorted(comparator)
                 .toList();
 
         int totalAvailable = sellable.stream().mapToInt(c -> c.available().value()).sum();

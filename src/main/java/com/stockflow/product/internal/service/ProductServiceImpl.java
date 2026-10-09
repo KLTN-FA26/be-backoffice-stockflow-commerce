@@ -45,6 +45,10 @@ class ProductServiceImpl implements ProductService {
     @Transactional(readOnly = true)
     public boolean containsSku(UUID productId, String sku) { return products.containsSku(productId, sku); }
 
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<String> nameForSku(String sku) { return products.nameForSku(sku); }
+
     private static final SortWhitelist SORT =
             SortWhitelist.of("name", "code", "createdAt", "lastModifiedAt", "status")
                     .withDefault("lastModifiedAt", Sort.Direction.DESC);
@@ -64,10 +68,10 @@ class ProductServiceImpl implements ProductService {
         this.clock = clock;
     }
 
-    // No @Auditable here: the id is generated inside Product.draft(), so there is no method
-    // argument to bind resourceId to - same reason createPurchaseOrder/placeOrder are not audited
-    // either. update() below is the first point the id exists as an argument.
+    // The id is generated inside Product.draft(), so it is read off the result: the CREATE entry
+    // is the first row of the product's version history (SCRUM-86).
     @Override
+    @Auditable(action = AuditAction.CREATE, resourceType = "product", resourceId = "#result?.productId()")
     public ProductSummary create(CreateProductCommand command) {
         if (command.categoryId() != null && !products.categoryExists(command.categoryId())) {
             throw new BusinessException(ErrorCode.CATEGORY_NOT_FOUND,

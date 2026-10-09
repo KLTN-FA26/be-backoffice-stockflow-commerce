@@ -40,8 +40,26 @@ that a Kafka consumer bypasses. Rules that protect an invariant belong in the ag
 |---|---|---|---|
 | BR-SLT-001 | A location that violates any hard constraint (hazmat, temperature, single-SKU, incompatible neighbour) is eliminated before scoring, never merely down-ranked. | `SlottingEngine.suggest()` | 3.5.2.3 |
 | BR-SLT-002 | Putting away to a location other than the suggested one requires a reason; outside the ranked list it requires manager approval. | `PutawayTask.complete()` | 3.5.4.3 |
-| BR-SLT-003 | A location's occupied weight and volume may never exceed its configured capacity. | `Location` aggregate | 3.5.1.4 |
+| BR-SLT-003 | Putaway never takes a storage location past its `capacity_units`, nor a shelf level past its `max_weight` / `usable_height`. How full a location is is derived from stock, never stored. | slotting hard constraints ([module 06 BR-01](https://github.com/KLTN-FA26/docs/blob/b11945a/docs/warehouse/06-warehouse-map-slotting/README.md)), SCRUM-91 | 3.5.1.4 |
 | BR-SLT-004 | Every slotting suggestion must carry a stated reason, and the reason is stored with the task. | `SlottingEngine.suggest()` | 3.5.3.3 |
+
+### The warehouse map (module 06, BR-06 → BR-14)
+
+The rules themselves are in [module 06 §6](https://github.com/KLTN-FA26/docs/blob/b11945a/docs/warehouse/06-warehouse-map-slotting/README.md); only where each is enforced is listed
+here. Every layout change takes the warehouse's row lock first, because BR-06 and BR-07 span
+several aggregates and no constraint can state them.
+
+| Id | In short | Enforced in |
+|---|---|---|
+| BR-06 | Everything inside the map frame | `Warehouse.requireOnMap`, `Warehouse.resizeMap` |
+| BR-07 | Shelves and areas do not overlap; bins stay inside their shelf, apart on a level | `Placement.requireClear`, `Shelf` |
+| BR-08 | A shelf with a pickable bin has a pick face | `Shelf`, `PickFaces`; the "face not blocked by a wall" half is SCRUM-91 |
+| BR-09 | Distances are walking distances, through open doors only | routing, SCRUM-91 (`Boundary` holds the walls and doors) |
+| BR-10 | `location_code` = `HCM-A01-2-B` / `HCM-QC01`, unique system-wide | `LocationCode`, `CodePart`; `uk_storage_location_code`, `ck_storage_location_code` |
+| BR-11 | Stock only in a bin or a storage area, never `NON_STORAGE` | `AreaDetails`, `Area`; `ck_area_storage` |
+| BR-12 | Picking only from pickable bins | picking, not built yet |
+| BR-13 | Prefix, shelf, level, bin and area codes never change | entities (`updatable = false`); `tg_storage_location_immutable` and the other `*_immutable` triggers |
+| BR-14 | Bin autogeneration on empty levels | `Shelf.generateBins`, `BinGrid` |
 
 ## Inventory — `inventory-service`
 
@@ -74,13 +92,39 @@ that a Kafka consumer bypasses. Rules that protect an invariant belong in the ag
 | BR-ORD-003 | Cancellation windows by state and actor are exactly as tabulated in `03-state-machines.md`, machine 9. | `Order.cancel()` | 3.17.4.1 |
 | BR-ORD-004 | Custom-printed lines already in production are not refunded on cancellation. | `Order.cancel()` | 3.17.4.2 |
 | BR-ORD-005 | An order completes automatically 7 days after delivery when no RMA is open. | scheduled sweeper | 3.17.1.1 |
-| BR-ORD-006 | A voucher is validated again at order creation, not only when it is applied to the cart. | `Order.place()` | 3.14.3.3 |
+| BR-ORD-006 | *(On hold 2026-10-06 — vouchers not used in B2B.)* A voucher is validated again at order creation, not only when it is applied to the cart. | `Order.place()` | 3.14.3.3 |
+| BR-ORD-007 | Only an ACTIVE B2B customer can receive quotes or place orders; there is no guest checkout. Every line quantity is ≥ the MOQ of the blank / quote. | `Order.place()`, `Quote.accept()` | 3.14.6 |
+| BR-ORD-008 | A quote can be accepted only within its validity; a new design needs an APPROVED sample first. | `Quote.accept()` | 3.14.7 |
 | BR-PAY-001 | A gateway callback with an invalid signature is rejected and logged; it never changes payment status. | payment webhook adapter | 3.15.1.3 |
 | BR-PAY-002 | An order moves to CONFIRMED when captured amount ≥ the required deposit, which for a full-payment order equals the order total. | `Order.confirmPayment()` | 3.15.5.2 |
 | BR-PAY-003 | A refund above the approver's limit cannot be issued; it must be escalated. | `Refund.approve()` | 3.15.6.2 |
-| BR-PAY-004 | A COD payment is only captured at carrier reconciliation, never at checkout. | reconciliation use case | 3.15.4.2 |
+| BR-PAY-004 | *(On hold 2026-10-06 — no retail COD.)* A COD payment is only captured at carrier reconciliation, never at checkout. | reconciliation use case | 3.15.4.2 |
+| BR-PAY-005 | A credit order is CONFIRMED only when outstanding balance + order total ≤ the customer's credit limit; above it the order is ON_HOLD (reason CREDIT) until an authorised approver releases it. | `Order.place()` | 3.15.7 |
+| BR-PAY-006 | A bank transfer is recorded as captured only after accounting matches it to the bank statement. | payment confirmation use case | 3.15.3 |
 | BR-RMA-001 | A return can only be opened within the configured return window after delivery. | `Rma.request()` | 3.17.5.1 |
 | BR-RMA-002 | Custom-printed items are not returnable unless defective. | `Rma.approve()` | 3.17.5.2 |
+
+## Production — `production` (new 2026-10-06)
+
+| Id | Rule | Enforced in | WBS |
+|---|---|---|---|
+| BR-PRD-01 | Exactly one production order per custom order line or sample request; a redelivered event creates nothing new. | release listener (idempotent on source id) | 3.25.2 |
+| BR-PRD-02 | Nothing is printed before prepress passes and the file checksum matches the locked design snapshot. | `ProductionOrder.passPrepress()` | 3.25.3 |
+| BR-PRD-03 | Blanks are issued only against a production order and never above its remaining need. | `ProductionOrder.issueBlanks()` | 3.25.4 |
+| BR-PRD-04 | Good + scrap = printed; scrap always has a reason and leaves stock through a reasoned adjustment. | `ProductionOrder.recordOutput()` | 3.25.5 |
+| BR-PRD-05 | A production order completes only after QC; an ORDER production order is checked against the customer-approved sample. | `ProductionOrder.passQc()` | 3.25.6 |
+| BR-PRD-06 | An order leaves IN_PRODUCTION only when every production order of the order is completed (or its line cancelled). | order listener on `ProductionCompleted` | 3.25.7 |
+| BR-PRD-07 | The design cannot change once a production order is PRINTING. | `Order.replaceDesign()` | 3.25.5 |
+| BR-PRD-08 | A line with a new design (no APPROVED sample for design + blank) cannot be released to production. | `Order.release()` | 3.25.2 |
+| BR-PRD-09 | A deposit order is released to production only after the deposit is received. | `Order.release()` | 3.15.5 |
+| BR-PRD-10 | Cancelling while PRINTING follows the order cancellation policy: refused, or cancelled with a production fee; printed items are scrap. | `ProductionOrder.cancel()` | 3.25.8 |
+| BR-PRD-11 | Only an ORDER production order can be subcontracted; a SAMPLE is always printed in-house. | `ProductionOrder.splitForSubcontracting()` | 3.25.10 |
+| BR-PRD-12 | A split takes only quantity not yet issued, from a parent in PENDING_PREPRESS, READY or ON_HOLD; 0 < split < unissued quantity (sending everything converts the order itself instead of creating a child). | `ProductionOrder.splitForSubcontracting()` + `CHECK` on quantities | 3.25.10 |
+| BR-PRD-13 | The subcontractor is an active supplier flagged as a print subcontractor; a child is sent out only once its `SUBCONTRACT` PO is approved. | `ProductionOrder.sendToSubcontractor()` via `procurement :: api` | 3.25.10 |
+| BR-PRD-14 | The file sent out is the prepress-checked `PRINT_READY` artifact; after sending, the design is locked as if printing. | `ProductionOrder.sendToSubcontractor()` | 3.25.10 |
+| BR-PRD-15 | Blanks sent to a subcontractor stay our stock at a virtual subcontractor location, never count towards ATP, and leave it only through a goods receipt or a reasoned adjustment. | `inventory` move + ATP query excludes subcontractor locations | 3.25.10 |
+| BR-PRD-16 | A subcontracted child completes only after its goods receipt is posted, the blank reconciliation is done (SUPPLIED_BLANKS) and QC passes the full quantity. | `ProductionOrder.passQc()` | 3.25.10 |
+| BR-PRD-17 | Loss above the subcontractor's tolerance needs warehouse-manager approval and becomes a deduction on the subcontract invoice; units failing QC are not paid. | reconciliation in `procurement` receipt + 3-way match | 3.25.10, 3.4.2 |
 
 ## Customer and access — `customer-service`, `identity-service`
 

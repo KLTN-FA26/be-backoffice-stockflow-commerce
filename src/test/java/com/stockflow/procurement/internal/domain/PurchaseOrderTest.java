@@ -24,6 +24,33 @@ class PurchaseOrderTest {
     private static final UUID SUPPLIER = UUID.randomUUID();
     private static final LocalDate EXPECTED = LocalDate.parse("2026-10-01");
 
+    @Test void recoveryRequiresPendingSentAndExplicitOverdueAcknowledgement() {
+        var order = PurchaseOrder.draft("PO-RECOVERY", SUPPLIER, Money.VND, List.of(line(1, 100)), EXPECTED);
+        assertThatThrownBy(() -> order.requireDeliveryRecovery(EXPECTED, "checked", true, true))
+                .isInstanceOf(InvalidPurchaseOrderTransitionException.class);
+        order.approve(Instant.now()); order.send(Instant.now());
+        assertThatThrownBy(() -> order.requireDeliveryRecovery(EXPECTED.plusDays(1), "checked", true, false))
+                .isInstanceOf(com.stockflow.common.error.BusinessException.class);
+        order.requireDeliveryRecovery(EXPECTED.plusDays(1), "checked with supplier", true, true);
+        assertThat(order.expectedAt()).isEqualTo(EXPECTED);
+        order.recordSupplierConfirmation(SupplierConfirmationStatus.CONFIRMED, "ACK", null, Instant.now());
+        assertThatThrownBy(() -> order.requireDeliveryRecovery(EXPECTED, "checked", true, true))
+                .isInstanceOf(InvalidPurchaseOrderTransitionException.class);
+    }
+
+    @Test void receiptCompletionUsesProvidedClockAndSurvivesSupplierResponse() {
+        var item = line(2, 100);
+        var order = PurchaseOrder.draft("PO-CLOCK", SUPPLIER, Money.VND, List.of(item), EXPECTED);
+        var clock = java.time.Clock.fixed(Instant.parse("2026-09-25T02:00:00Z"), java.time.ZoneOffset.UTC);
+        order.approve(clock.instant()); order.send(clock.instant());
+        order.receiveGoods(Map.of(item.id(), 1), clock.instant());
+        assertThat(order.receiptCompletedAt()).isNull();
+        order.receiveGoods(Map.of(item.id(), 1), clock.instant());
+        assertThat(order.receiptCompletedAt()).isEqualTo(clock.instant());
+        order.recordSupplierConfirmation(SupplierConfirmationStatus.CONFIRMED, "ACK", null, clock.instant().plusSeconds(3600));
+        assertThat(order.receiptCompletedAt()).isEqualTo(clock.instant());
+    }
+
     private static PoLine line(int qty, long unitPrice) {
         return new PoLine(UUID.randomUUID(), new Sku("SOFA-3S-GREY"), "Grey sofa", qty, 0,
                 Money.vnd(unitPrice));
@@ -201,7 +228,10 @@ class PurchaseOrderTest {
         @Test
         @DisplayName("partial receipt moves the order to PARTIALLY_RECEIVED")
         void partialReceiptSucceeds() {
-            PurchaseOrder order = sentOrder(10);
+            PurchaseOrder order = PurchaseOrder.draft("PO-20261001-000001", SUPPLIER, Money.VND,
+                    List.of(line(10, 100_000)), EXPECTED);
+            order.approve(Instant.now());
+            order.send(Instant.now());
             UUID lineId = order.lines().get(0).id();
 
             order.receiveGoods(Map.of(lineId, 4), Instant.now());
@@ -284,6 +314,54 @@ class PurchaseOrderTest {
             order.send(Instant.now());
 
             assertThatThrownBy(() -> order.closeShort("reason", Instant.now()))
+                    .isInstanceOf(InvalidPurchaseOrderTransitionException.class);
+        }
+    }
+
+    @Nested
+    @DisplayName("supplier confirmation")
+    class SupplierConfirmation {
+
+        @Test
+        void sendStartsPendingConfirmationAndSnapshotsSentTime() {
+            PurchaseOrder order = PurchaseOrder.draft("PO-20261001-000001", SUPPLIER, Money.VND,
+                    List.of(line(10, 100_000)), EXPECTED, 45, 12);
+            Instant sentAt = Instant.parse("2026-10-01T01:00:00Z");
+            order.approve(sentAt);
+
+            order.send(sentAt);
+
+            assertThat(order.supplierConfirmationStatus()).isEqualTo(SupplierConfirmationStatus.PENDING);
+            assertThat(order.sentAt()).isEqualTo(sentAt);
+            assertThat(order.paymentTermDays()).isEqualTo(45);
+            assertThat(order.leadTimeDays()).isEqualTo(12);
+        }
+
+        @Test
+        void supplierCanConfirmExactlyOnceAfterSending() {
+            PurchaseOrder order = PurchaseOrder.draft("PO-20261001-000001", SUPPLIER, Money.VND,
+                    List.of(line(10, 100_000)), EXPECTED);
+            order.approve(Instant.now());
+            order.send(Instant.now());
+            Instant respondedAt = Instant.parse("2026-10-02T01:00:00Z");
+
+            order.recordSupplierConfirmation(SupplierConfirmationStatus.CONFIRMED,
+                    "SUP-REF-19", "Accepted", respondedAt);
+
+            assertThat(order.supplierConfirmationStatus()).isEqualTo(SupplierConfirmationStatus.CONFIRMED);
+            assertThat(order.supplierReference()).isEqualTo("SUP-REF-19");
+            assertThatThrownBy(() -> order.recordSupplierConfirmation(SupplierConfirmationStatus.REJECTED,
+                    null, "changed mind", respondedAt.plusSeconds(1)))
+                    .isInstanceOf(InvalidPurchaseOrderTransitionException.class);
+        }
+
+        @Test
+        void draftCannotReceiveSupplierConfirmation() {
+            PurchaseOrder order = PurchaseOrder.draft("PO-20261001-000001", SUPPLIER, Money.VND,
+                    List.of(line(10, 100_000)), EXPECTED);
+
+            assertThatThrownBy(() -> order.recordSupplierConfirmation(SupplierConfirmationStatus.CONFIRMED,
+                    null, null, Instant.now()))
                     .isInstanceOf(InvalidPurchaseOrderTransitionException.class);
         }
     }

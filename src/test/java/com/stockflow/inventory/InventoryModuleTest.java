@@ -12,6 +12,8 @@ import org.springframework.context.annotation.Import;
 import org.springframework.modulith.test.ApplicationModuleTest;
 import org.springframework.test.context.ActiveProfiles;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -38,12 +40,38 @@ class InventoryModuleTest {
 
     @Autowired InventoryService inventory;
     @Autowired ApplicationContext context;
+    // Explicit ports only: the slice must not boot the external modules to satisfy these calls.
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    com.stockflow.notification.api.NotificationService notifications;
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    com.stockflow.identity.api.IdentityService identities;
 
     @Test
     @DisplayName("inventory starts and serves queries with no other module present")
     void bootsInIsolation() {
         assertThat(inventory.availableToPromise(SOFA)).isPositive();
         assertThat(inventory.availabilityOf(SOFA)).isNotEmpty();
+    }
+
+    /**
+     * The batch read (one grouped query over the denormalised column) must say exactly what the
+     * single read (entities plus their reservation rows) says, or a product page and a checkout
+     * would disagree about the same SKU. TABLE-OAK-160 also holds QUARANTINE stock, which neither
+     * may count.
+     */
+    @Test
+    @DisplayName("ATP for several SKUs in one query equals ATP asked one SKU at a time")
+    void batchAtpMatchesSingleAtp() {
+        Sku table = new Sku("TABLE-OAK-160");
+        Sku unknown = new Sku("NO-SUCH-SKU");
+
+        var batch = inventory.availableToPromise(List.of(SOFA, table, unknown, SOFA));
+
+        assertThat(batch).containsOnlyKeys(SOFA, table, unknown);
+        assertThat(batch.get(SOFA)).isEqualTo(inventory.availableToPromise(SOFA)).isPositive();
+        assertThat(batch.get(table)).isEqualTo(inventory.availableToPromise(table)).isPositive();
+        assertThat(batch.get(unknown)).isZero();
+        assertThat(inventory.availableToPromise(List.of())).isEmpty();
     }
 
     /**

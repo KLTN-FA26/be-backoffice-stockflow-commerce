@@ -51,4 +51,13 @@ public interface OrderService {
      * lines are available from {@link #findById}.
      */
     PageResponse<OrderSummary> myOrders(UUID customerId, int page, int size);
+
+    /** The back-office list: every order the caller may see, filtered and paged (SCRUM-443). */
+    PageResponse<OrderSummary> list(ListOrdersQuery query);
+
+    /**
+     * Status history, oldest first. Orders placed before history was recorded start at the first
+     * transition after that; an order with no recorded change returns an empty list.
+     */
+    java.util.List<OrderStatusChange> history(UUID orderId);
 }

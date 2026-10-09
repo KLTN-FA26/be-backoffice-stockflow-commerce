@@ -2,8 +2,11 @@ package com.stockflow.inventory.internal.domain;
 
 import com.stockflow.common.domain.Sku;
 
+import java.time.LocalDate;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -56,8 +59,19 @@ public interface StockItemRepository {
     /** Sellable stock for one SKU across all locations. Used by the query side, never before a lock. */
     List<StockItem> findAvailableBySku(Sku sku);
 
+    /** Aggregated query port: no reservation history is needed for storefront availability. */
+    default java.util.Map<String, Long> availableQuantities(java.util.Set<String> skus, LocalDate today) {
+        return skus.stream().collect(java.util.stream.Collectors.toMap(code -> code,
+                code -> findAvailableBySku(new Sku(code)).stream()
+                        .filter(item -> item.expiryDate() == null || !item.expiryDate().isBefore(today))
+                        .mapToLong(item -> item.available().value()).sum()));
+    }
+
     /** Per (location, status) subtotals of one SKU, all statuses included; feeds Inventory Level. */
     List<StockLevelLine> findLevelLinesBySku(Sku sku);
+
+    /** Sellable units ({@code onHand − reserved} of AVAILABLE stock) per SKU; absent when none. */
+    Map<Sku, Integer> sumAvailableBySkus(Collection<Sku> skus, LocalDate today);
 
     List<StockItem> findBySkuAndLocation(Sku sku, LocationId location);
 
