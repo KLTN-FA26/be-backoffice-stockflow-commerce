@@ -62,7 +62,7 @@ public enum ErrorCode {
     AREA_NOT_FOUND("Area not found", 404),
     BOUNDARY_NOT_FOUND("Boundary not found", 404),
     /** The storage location id or code is not on any warehouse map. */
-    LOCATION_NOT_FOUND("Storage location not found", 404),
+    LOCATION_NOT_FOUND("Location not found", 404),
     /** No stock of this SKU (and lot) is held at this location. */
     STOCK_ITEM_NOT_FOUND("No such stock at this location", 404),
     STOCK_ADJUSTMENT_NOT_FOUND("Stock adjustment not found", 404),
