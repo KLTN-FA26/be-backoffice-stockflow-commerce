@@ -101,6 +101,9 @@ public interface InventoryService {
     /** The receiving policy of an inventory item, empty when no such item exists. */
     Optional<InventoryItemPolicy> itemPolicy(UUID inventoryItemId);
 
+    /** The same, by SKU: the inventory item a variant has, empty when it has none yet. */
+    Optional<InventoryItemPolicy> itemPolicy(Sku sku);
+
     /**
      * Ask for a stock correction with a reason (SCRUM-145). The stock does not change until a
      * different person approves it; production records scrapped blanks through this.

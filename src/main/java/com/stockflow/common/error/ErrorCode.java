@@ -45,6 +45,8 @@ public enum ErrorCode {
     TRANSFER_ORDER_NOT_FOUND("Transfer order not found", 404),
     WAREHOUSE_NOT_FOUND("Warehouse not found", 404),
     GOODS_RECEIPT_NOT_FOUND("Goods receipt not found", 404),
+    /** The SKU has no inventory item yet: its logistics data must be completed first (docs 01 BR-03). */
+    INVENTORY_ITEM_NOT_FOUND("No inventory item for this SKU", 404),
 
     /** Credentials were correct but the account is LOCKED or DISABLED. Distinct from UNAUTHORIZED,
      *  which covers "wrong username or password" without revealing the account exists. */
@@ -82,6 +84,8 @@ public enum ErrorCode {
     RECEIPT_LOT_DATA_INVALID("Lot or expiry data does not match how the item is tracked", 409),
     /** BR-08: accepted + quarantined + rejected must add up to what was moved to the QC area. */
     QC_QUANTITY_MISMATCH("The QC quantities do not add up to the quantity inspected", 409),
+    /** SCRUM-434: a SUBCONTRACT purchase order goes only to a supplier flagged print subcontractor. */
+    SUPPLIER_NOT_SUBCONTRACTOR("This supplier is not a print subcontractor", 409),
     OPTIMISTIC_LOCK("The record changed meanwhile, please retry", 409),
     /** Two writers reached the same row; the loser waited for the lock and gave up. Retryable. */
     LOCK_TIMEOUT("The record is busy, please retry", 409),

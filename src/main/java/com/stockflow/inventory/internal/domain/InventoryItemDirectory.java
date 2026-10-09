@@ -13,4 +13,6 @@ import java.util.UUID;
 public interface InventoryItemDirectory {
 
     Optional<InventoryItemPolicy> policyOf(UUID inventoryItemId);
+
+    Optional<InventoryItemPolicy> policyOf(String sku);
 }
