@@ -31,7 +31,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *       surfaces as a broken test rather than as an import nobody noticed in review.</li>
  * </ul>
  */
-@ApplicationModuleTest
+// DIRECT_DEPENDENCIES: moves ask warehouse :: api whether a location may take stock (issue #67).
+@ApplicationModuleTest(mode = ApplicationModuleTest.BootstrapMode.DIRECT_DEPENDENCIES)
 @ActiveProfiles("test")
 @Import(PostgresContainer.class)
 class InventoryModuleTest {
