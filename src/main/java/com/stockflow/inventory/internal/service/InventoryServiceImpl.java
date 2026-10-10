@@ -124,6 +124,12 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public Optional<InventoryItemPolicy> itemPolicy(Sku sku) {
+        return items.policyOf(sku.code());
+    }
+
+    @Override
     public StockAdjustmentSummary requestAdjustment(RequestAdjustmentCommand command) {
         return operations.requestAdjustment(command);
     }

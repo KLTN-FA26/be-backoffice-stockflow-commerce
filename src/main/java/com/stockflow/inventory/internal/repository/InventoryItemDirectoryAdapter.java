@@ -30,4 +30,16 @@ class InventoryItemDirectoryAdapter implements InventoryItemDirectory {
         return rows.stream().findFirst().map(row -> new InventoryItemPolicy(inventoryItemId, (String) row[0],
                 (Boolean) row[1], (Boolean) row[2], (Boolean) row[3]));
     }
+
+    @Override
+    public Optional<InventoryItemPolicy> policyOf(String sku) {
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = entityManager.createNativeQuery("""
+                        SELECT id, lot_tracked, expiry_tracked, qc_required
+                          FROM inventory.inventory_items WHERE sku = :sku""")
+                .setParameter("sku", sku)
+                .getResultList();
+        return rows.stream().findFirst().map(row -> new InventoryItemPolicy((UUID) row[0], sku,
+                (Boolean) row[1], (Boolean) row[2], (Boolean) row[3]));
+    }
 }

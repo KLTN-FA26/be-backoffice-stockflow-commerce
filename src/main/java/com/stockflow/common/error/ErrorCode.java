@@ -68,6 +68,8 @@ public enum ErrorCode {
     STOCK_ITEM_NOT_FOUND("No such stock at this location", 404),
     STOCK_ADJUSTMENT_NOT_FOUND("Stock adjustment not found", 404),
     TRANSFER_ORDER_NOT_FOUND("Transfer order not found", 404),
+    /** The SKU has no inventory item yet: its logistics data must be completed first (docs 01 BR-03). */
+    INVENTORY_ITEM_NOT_FOUND("No inventory item for this SKU", 404),
 
     /** Credentials were correct but the account is LOCKED or DISABLED. Distinct from UNAUTHORIZED,
      *  which covers "wrong username or password" without revealing the account exists. */
@@ -111,6 +113,8 @@ public enum ErrorCode {
     RECEIPT_LOT_DATA_INVALID("Lot or expiry data does not match how the item is tracked", 409),
     /** BR-08: accepted + quarantined + rejected must add up to what was moved to the QC area. */
     QC_QUANTITY_MISMATCH("The QC quantities do not add up to the quantity inspected", 409),
+    /** SCRUM-434: a SUBCONTRACT purchase order goes only to a supplier flagged print subcontractor. */
+    SUPPLIER_NOT_SUBCONTRACTOR("This supplier is not a print subcontractor", 409),
     /** BR-PRD-08: a new design goes to print only after the customer approved its sample. */
     DESIGN_SAMPLE_NOT_APPROVED("A design on this order has no approved sample yet", 409),
     /** BR-PRD-09: a deposit order goes to production only once the deposit has arrived. */
