@@ -1,0 +1,57 @@
+name: "CodeQL Advanced"
+
+on:
+  push:
+    branches: [ "main", "develop" ]
+  pull_request:
+    branches: [ "main", "develop" ]
+  schedule:
+    # Quét định kỳ mỗi thứ Sáu 19:36 UTC (~2:36 sáng thứ Bảy giờ VN)
+    - cron: '36 19 * * 5'
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      packages: read
+      actions: read
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Quét các file workflow GitHub Actions
+          - language: actions
+            build-mode: none
+          # Quét code Java / Spring Boot (không cần build)
+          - language: java-kotlin
+            build-mode: none
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # Chỉ cần nếu đổi build-mode của Java sang 'autobuild'
+      # - name: Setup Java
+      #   if: matrix.language == 'java-kotlin'
+      #   uses: actions/setup-java@v4
+      #   with:
+      #     distribution: temurin
+      #     java-version: '21'
+      #     cache: maven
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          # Bắt cả lỗi bảo mật lẫn lỗi chất lượng code
+          queries: security-and-quality
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ matrix.language }}"

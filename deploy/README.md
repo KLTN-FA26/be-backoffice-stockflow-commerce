@@ -1,12 +1,12 @@
 # Dev server on a single VPS
 
-The shared backend the frontend team builds against. `develop` and `infra/deploy` are deployed
-automatically: every push that passes the `build` job is built into an image, pushed to GHCR, and
-rolled out to the VPS by the `deploy` job in `.github/workflows/build.yml`.
+The shared backend the frontend team builds against. `develop` is deployed automatically: every
+push that passes the `build` job is built into an image, pushed to GHCR, and rolled out to the VPS
+by the `deploy` job in `.github/workflows/build.yml`. Before a new image goes live, `deploy.sh`
+dumps the database to `backups/pre-deploy-*.dump`.
 
-`infra/deploy` is where changes to the deployment itself (this directory, the workflow) are tried
-against the server before they reach `develop`. Both branches deploy to the **same** VPS, so
-whichever was pushed last is what runs - push `develop` again afterwards to put it back.
+Changes to the deployment itself (this directory, the workflow) go through a pull request into
+`develop` like any other change; the pull request runs the build but never deploys.
 
 ```
 browser ── Cloudflare Free (DNS, CDN, WAF, TLS "Full (strict)")
@@ -132,8 +132,8 @@ htpasswd -cB /opt/stockflow/auth/htpasswd team      # -c only the first time
 ## 3. One-time: GitHub
 
 Settings → Environments → **New environment `vps`**. Add required reviewers there if a deploy
-should wait for approval. If you set *Deployment branches* on it, allow both `develop` and
-`infra/deploy`, or the deploy job of the missing one is refused.
+should wait for approval. If you set *Deployment branches* on it, allow `develop`, or the deploy
+job is refused.
 
 | Kind | Name | Value |
 |---|---|---|
@@ -150,7 +150,7 @@ change is needed.
 
 ## 4. First deploy
 
-1. Push to `infra/deploy` (or `develop`) once, so CI rsyncs this directory to the server and
+1. Push to `develop` once, so CI rsyncs this directory to the server and
    pushes the first image.
    The deploy step fails at this point because `.env` does not exist yet - expected.
 2. On the VPS:
