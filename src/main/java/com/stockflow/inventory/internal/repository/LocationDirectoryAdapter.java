@@ -2,31 +2,27 @@ package com.stockflow.inventory.internal.repository;
 
 import com.stockflow.inventory.internal.domain.LocationDirectory;
 import com.stockflow.inventory.internal.domain.LocationId;
-import jakarta.persistence.EntityManager;
+import com.stockflow.warehouse.api.WarehouseService;
 import org.springframework.stereotype.Repository;
 
 /**
- * Interim: reads {@code warehouse.storage_location} until {@code warehouse :: api} publishes
- * {@code findLocation} (SCRUM-89, PR #48). One existence probe on a unique column, no join — and
- * the ledger's foreign key would refuse an unknown code anyway; this only turns that refusal into
- * a 404 the client can act on. Replace with the API call when it lands.
+ * Asks {@code warehouse :: api} (issue #67): {@code StorageLocationView.usable()} already folds the
+ * warehouse's and the shelf's status into the location's own, which is the part a direct read of
+ * {@code warehouse.storage_location} got wrong — it saw a bin, not whether stock may go into it.
  */
 @Repository
 class LocationDirectoryAdapter implements LocationDirectory {
 
-    private final EntityManager entityManager;
+    private final WarehouseService warehouses;
 
-    LocationDirectoryAdapter(EntityManager entityManager) {
-        this.entityManager = entityManager;
+    LocationDirectoryAdapter(WarehouseService warehouses) {
+        this.warehouses = warehouses;
     }
 
     @Override
-    public boolean exists(LocationId location) {
-        return !entityManager.createNativeQuery(
-                        "SELECT 1 FROM warehouse.storage_location WHERE location_code = :code")
-                .setParameter("code", location.code())
-                .setMaxResults(1)
-                .getResultList()
-                .isEmpty();
+    public LocationState stateOf(LocationId location) {
+        return warehouses.findLocation(location.code())
+                .map(view -> view.usable() ? LocationState.USABLE : LocationState.UNUSABLE)
+                .orElse(LocationState.UNKNOWN);
     }
 }

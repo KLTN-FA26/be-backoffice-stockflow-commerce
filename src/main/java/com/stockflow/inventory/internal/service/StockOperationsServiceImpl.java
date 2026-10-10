@@ -10,6 +10,8 @@ import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.SortWhitelist;
 import com.stockflow.inventory.api.MoveStockCommand;
+import com.stockflow.inventory.api.ReclassifyStockCommand;
+import com.stockflow.inventory.api.ReceiveStockCommand;
 import com.stockflow.inventory.api.RequestAdjustmentCommand;
 import com.stockflow.inventory.api.StockAdjustmentReason;
 import com.stockflow.inventory.api.StockAdjustmentStatus;
@@ -26,6 +28,7 @@ import com.stockflow.inventory.internal.domain.StockItem;
 import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.inventory.internal.domain.StockMovement;
 import com.stockflow.inventory.internal.domain.StockMovementLog;
+import com.stockflow.inventory.internal.domain.StockStatus;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
 import com.stockflow.inventory.internal.repository.StockAdjustmentSearch;
 import com.stockflow.inventory.internal.repository.StockLedgerSearch;
@@ -91,10 +94,31 @@ class StockOperationsServiceImpl implements StockOperations {
     @Override
     @Auditable(action = AuditAction.UPDATE, resourceType = "stock-move", resourceId = "#command.requestId()")
     public StockMove move(MoveStockCommand command) {
-        // Match policy edits/reservations: take the SKU lock before any stock-row locks.
-        policies.lock(command.sku().code());
         StockMovement.ReferenceType referenceType = StockMovement.ReferenceType.valueOf(command.reference().name());
         UUID referenceId = command.referenceId() != null ? command.referenceId() : command.requestId();
+        return relocate(command.sku(), command.lotNumber(), command.receivedAt(), command.fromLocation(),
+                command.toLocation(), command.quantity(), null, referenceType, referenceId, command.actorId(), null);
+    }
+
+    @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "stock-move", resourceId = "#command.referenceId()")
+    public StockMove reclassify(ReclassifyStockCommand command) {
+        return relocate(command.sku(), command.lotNumber(), command.receivedAt(), command.fromLocation(),
+                command.toLocation(), command.quantity(), StockStatus.valueOf(command.disposition().name()),
+                StockMovement.ReferenceType.valueOf(command.reference().name()), command.referenceId(),
+                command.actorId(), blankToNull(command.reason()));
+    }
+
+    /**
+     * The one implementation of moving stock between two locations, for a plain move ({@code target}
+     * null: the status travels with the goods) and for a reclassification (the goods arrive as
+     * {@code target}). {@code receivedAt} picks the stock layer when the source holds several.
+     */
+    private StockMove relocate(Sku sku, String lotNumber, Instant receivedAt, String fromCode, String toCode,
+                               int qty, StockStatus target, StockMovement.ReferenceType referenceType,
+                               UUID referenceId, UUID actorId, String reason) {
+        // Match policy edits/reservations: take the SKU lock before any stock-row locks.
+        policies.lock(sku.code());
 
         // Replay first: a retried move must not move the goods again.
         Optional<StockMovement> done = ledger.findByReference(StockMovement.MovementType.MOVE, referenceType, referenceId);
@@ -102,20 +126,27 @@ class StockOperationsServiceImpl implements StockOperations {
             return toMove(done.get());
         }
 
-        LocationId from = new LocationId(command.fromLocation());
-        LocationId to = new LocationId(command.toLocation());
+        LocationId from = new LocationId(fromCode);
+        LocationId to = new LocationId(toCode);
         if (from.equals(to)) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A move needs two different locations");
         }
-        if (!locations.exists(to)) {
-            throw new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + to);
+        // Only the destination is checked (issue #67): taking stock out of a blocked bin or a shelf in
+        // maintenance is how it gets emptied, and an adjustment at a bin blocked for counting must
+        // still post.
+        switch (locations.stateOf(to)) {
+            case UNKNOWN -> throw new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + to);
+            case UNUSABLE -> throw new BusinessException(ErrorCode.LOCATION_NOT_USABLE,
+                    "%s cannot take stock now: it, its shelf or its warehouse is not active".formatted(to));
+            case USABLE -> { }
         }
-        Quantity quantity = Quantity.of(command.quantity());
+        Quantity quantity = Quantity.of(qty);
 
-        StockItem sourceView = findOne(command.sku(), from, command.lotNumber())
+        StockItem sourceView = findLayer(sku, from, lotNumber, receivedAt)
                 .orElseThrow(() -> new BusinessException(ErrorCode.STOCK_ITEM_NOT_FOUND,
-                        "No %s%s at %s".formatted(command.sku(), lotSuffix(command.lotNumber()), from)));
-        Optional<StockItem> destinationView = findOne(command.sku(), to, command.lotNumber());
+                        "No %s%s at %s".formatted(sku, lotSuffix(lotNumber), from)));
+        Optional<StockItem> destinationView = findLayer(sku, to, lotNumber, sourceView.receivedAt())
+                .filter(item -> java.util.Objects.equals(item.receivedAt(), sourceView.receivedAt()));
 
         // Lock in id order, as reserve() does: two moves crossing the same pair in opposite
         // directions would otherwise deadlock.
@@ -135,18 +166,25 @@ class StockOperationsServiceImpl implements StockOperations {
         }
         Objects.requireNonNull(source, "source");
 
-        if (destination != null && !destination.canReceiveFrom(source)) {
+        if (target != null && source.status() != StockStatus.INBOUND && source.status() != StockStatus.QUARANTINE) {
+            throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH,
+                    "%s%s at %s is %s; only INBOUND or QUARANTINE stock takes a receiving decision".formatted(
+                            sku, lotSuffix(lotNumber), from, source.status()));
+        }
+        StockStatus arriving = target != null ? target : source.status();
+        if (destination != null && !destination.canReceiveFrom(source, arriving)) {
             throw new BusinessException(
-                    destination.status() == source.status()
+                    destination.status() == arriving
                             ? ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT
                             : ErrorCode.STOCK_STATUS_MISMATCH,
-                    "%s holds %s%s as %s; this stock is %s".formatted(to, command.sku(),
-                            lotSuffix(command.lotNumber()), destination.status(), source.status()));
+                    "%s holds %s%s as %s; this stock would arrive as %s".formatted(to, sku,
+                            lotSuffix(lotNumber), destination.status(), arriving));
         }
 
+        StockStatus before = source.status();
         source.moveOut(quantity);
         if (destination == null) {
-            destination = StockItem.arrivedFrom(source, to, quantity);
+            destination = StockItem.arrivedAs(source, to, quantity, arriving);
         } else {
             destination.moveIn(quantity);
         }
@@ -155,10 +193,47 @@ class StockOperationsServiceImpl implements StockOperations {
 
         Instant now = clock.instant();
         StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.MOVE,
-                command.sku(), command.lotNumber(), from, to, quantity.value(), source.status(),
-                referenceType, referenceId, null, command.actorId(), now);
+                sku, blankToNull(lotNumber), from, to, quantity.value(), before, arriving,
+                referenceType, referenceId, reason, actorId, now);
         ledger.append(line);
-        log.info("Moved {} x {}{} from {} to {}", quantity, command.sku(), lotSuffix(command.lotNumber()), from, to);
+        log.info("Moved {} x {}{} from {} to {} ({} -> {})", quantity, sku, lotSuffix(lotNumber), from, to,
+                before, arriving);
+        return toMove(line);
+    }
+
+    // ------------------------------------------------------------------ receipt
+
+    /**
+     * Always a new stock layer (one per receipt, V20260930001000): the receipt time tells it apart from
+     * every other layer of the lot at the location, so nothing is merged into an older receipt.
+     */
+    @Override
+    @Auditable(action = AuditAction.CREATE, resourceType = "stock-receipt", resourceId = "#command.receiptLineId()")
+    public StockMove receive(ReceiveStockCommand command) {
+        policies.lock(command.sku().code());
+        Optional<StockMovement> done = ledger.findByReference(StockMovement.MovementType.RECEIPT,
+                StockMovement.ReferenceType.GOODS_RECEIPT_LINE, command.receiptLineId());
+        if (done.isPresent()) {
+            return toMove(done.get());
+        }
+        LocationId location = new LocationId(command.locationCode());
+        switch (locations.stateOf(location)) {
+            case UNKNOWN -> throw new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + location);
+            case UNUSABLE -> throw new BusinessException(ErrorCode.LOCATION_NOT_USABLE,
+                    "%s cannot take stock now: it, its shelf or its warehouse is not active".formatted(location));
+            case USABLE -> { }
+        }
+        String lot = blankToNull(command.lotNumber());
+        Quantity quantity = Quantity.of(command.quantity());
+        stockItems.save(StockItem.receiveInbound(command.sku(), location, lot, command.expiryDate(), quantity,
+                command.receivedAt()));
+
+        StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.RECEIPT,
+                command.sku(), lot, null, location, quantity.value(), StockStatus.INBOUND,
+                StockMovement.ReferenceType.GOODS_RECEIPT_LINE, command.receiptLineId(), null,
+                command.actorId(), clock.instant());
+        ledger.append(line);
+        log.info("Received {} x {}{} into {}", quantity, command.sku(), lotSuffix(lot), location);
         return toMove(line);
     }
 
@@ -245,6 +320,17 @@ class StockOperationsServiceImpl implements StockOperations {
                 new BusinessException(ErrorCode.STOCK_ADJUSTMENT_NOT_FOUND, "No stock adjustment " + adjustmentId));
     }
 
+    /** {@link #findOne}, or the one layer received at {@code receivedAt} when it is given. */
+    private Optional<StockItem> findLayer(Sku sku, LocationId location, String lotNumber, Instant receivedAt) {
+        if (receivedAt == null) {
+            return findOne(sku, location, lotNumber);
+        }
+        String lot = blankToNull(lotNumber);
+        return stockItems.findBySkuAndLocation(sku, location).stream()
+                .filter(item -> Objects.equals(item.lotNumber(), lot) && receivedAt.equals(item.receivedAt()))
+                .findFirst();
+    }
+
     private Optional<StockItem> findOne(Sku sku, LocationId location, String lotNumber) {
         String lot = blankToNull(lotNumber);
         var matches =
@@ -269,15 +355,15 @@ class StockOperationsServiceImpl implements StockOperations {
     }
 
     private static StockMove toMove(StockMovement m) {
-        return new StockMove(m.id(), m.sku().code(), m.lotNumber(), m.from().code(), m.to().code(),
-                m.quantity(), m.occurredAt());
+        return new StockMove(m.id(), m.sku().code(), m.lotNumber(), m.from() == null ? null : m.from().code(),
+                m.to() == null ? null : m.to().code(), m.quantity(), m.occurredAt());
     }
 
     private static LedgerLine toLine(StockMovement m) {
         return new LedgerLine(m.id(), m.type(), m.sku().code(), m.lotNumber(),
                 m.from() == null ? null : m.from().code(), m.to() == null ? null : m.to().code(),
                 m.quantity(), m.status() == null ? null : m.status().name(),
-                m.referenceType().name(), m.referenceId(), m.reason(), m.actorId(), m.occurredAt());
+                m.toStatus() == null ? null : m.toStatus().name(), m.referenceType().name(), m.referenceId(), m.reason(), m.actorId(), m.occurredAt());
     }
 
     static StockAdjustmentSummary toSummary(StockAdjustment a) {
