@@ -29,6 +29,8 @@ public class PickJpaEntity extends BaseEntity {
     @Column(name = "assigned_at") private Instant assignedAt;
     @Column(name = "started_at") private Instant startedAt;
     @Column(name = "picked_at") private Instant pickedAt;
+    /** Goods already taken off their bins for a cancelled order: someone puts them back (17 BR-03). */
+    @Column(name = "needs_put_back", nullable = false) private boolean needsPutBack;
 
     protected PickJpaEntity() {
     }
@@ -57,6 +59,20 @@ public class PickJpaEntity extends BaseEntity {
         if (status != PickStatus.PICKING) { throw new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.CONFLICT); }
         status = PickStatus.PICKED; pickedAt = now;
     }
+    /**
+     * The order was cancelled (SCRUM-460). Once picking has started, goods may be off their bins, so
+     * the pick is flagged for a put-back. Idempotent.
+     *
+     * @return false when it was already cancelled
+     */
+    public boolean cancel() {
+        if (status == PickStatus.CANCELLED) {
+            return false;
+        }
+        needsPutBack = status != PickStatus.PENDING;
+        status = PickStatus.CANCELLED;
+        return true;
+    }
     public void requireAssigned(UUID actor) {
         if (actor == null || !actor.equals(assignedUserId)) {
             throw new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.NOT_FOUND,
@@ -71,4 +87,5 @@ public class PickJpaEntity extends BaseEntity {
     public Instant getAssignedAt() { return assignedAt; }
     public Instant getStartedAt() { return startedAt; }
     public Instant getPickedAt() { return pickedAt; }
+    public boolean isNeedsPutBack() { return needsPutBack; }
 }

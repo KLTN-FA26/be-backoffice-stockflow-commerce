@@ -108,7 +108,7 @@ class AdminOrderListIntegrationTest {
                 .containsExactly(
                         org.assertj.core.groups.Tuple.tuple(null, OrderStatus.PENDING_PAYMENT),
                         org.assertj.core.groups.Tuple.tuple(OrderStatus.PENDING_PAYMENT, OrderStatus.CANCELLED));
-        assertThat(history.get(1).reason()).isEqualTo("CUSTOMER_CHANGED_MIND");
+        assertThat(history.get(1).reason()).isEqualTo("OTHER: CUSTOMER_CHANGED_MIND");
         assertThat(orders.history(UUID.randomUUID())).isEmpty();
     }
 }

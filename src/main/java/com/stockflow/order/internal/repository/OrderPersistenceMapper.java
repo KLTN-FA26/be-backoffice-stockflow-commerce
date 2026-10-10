@@ -4,7 +4,9 @@ import com.stockflow.order.internal.entity.OrderJpaEntity;
 import com.stockflow.order.internal.entity.OrderLineJpaEntity;
 import com.stockflow.order.internal.entity.OrderAddressJpaEmbeddable;
 
+import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
+import com.stockflow.order.api.PaymentStatus;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderId;
 import com.stockflow.order.internal.domain.OrderLine;
@@ -53,6 +55,8 @@ final class OrderPersistenceMapper {
         order.restoreTermsAndRelease(entity.getPaymentTerm(), entity.getDepositRequired(),
                 entity.getDepositReceivedAt(), entity.getWarehouseId(), entity.getReleasedAt(),
                 entity.getReleasedBy());
+        order.restorePaymentAndCancellation(entity.getPaidAmount(), entity.getPaidInFullAt(),
+                entity.getCancellationReasonCode(), entity.getCancellationRetainedAmount());
         return order;
     }
 
@@ -78,6 +82,8 @@ final class OrderPersistenceMapper {
     private static void applyTermsAndRelease(Order order, OrderJpaEntity entity) {
         entity.applyTermsAndRelease(order.paymentTerm(), order.depositRequired(), order.depositReceivedAt(),
                 order.warehouseId(), order.releasedAt(), order.releasedBy());
+        entity.applyPaymentAndCancellation(order.paidAmount(), order.paidInFullAt(), order.cancellationReasonCode(),
+                order.cancellationRetainedAmount());
     }
 
     /** For the paginated order-history query only. Deliberately never touches {@code
@@ -113,7 +119,14 @@ final class OrderPersistenceMapper {
                 entity.getLastModifiedBy(),
                 entity.getContactName(), entity.getContactEmail(), entity.getContactPhone(),
                 toSummary(entity.getShippingAddress()), null,
-                entity.getPaymentTerm(), entity.getWarehouseId(), entity.getReleasedAt());
+                entity.getPaymentTerm(), entity.getWarehouseId(), entity.getReleasedAt(),
+                new OrderSummary.Payment(entity.getPaidAmount(), entity.getDepositRequired(),
+                        entity.getDepositReceivedAt(), entity.getPaidInFullAt(),
+                        PaymentStatus.of(entity.getPaymentTerm(), entity.getPaidAmount(), entity.getPaidInFullAt())),
+                entity.getStatus() == OrderStatus.CANCELLED
+                        ? new OrderSummary.Cancellation(entity.getCancellationReasonCode(),
+                                entity.getCancellationReason(), entity.getCancellationRetainedAmount())
+                        : null);
     }
 
     private static OrderSummary.AddressSummary toSummary(OrderAddressJpaEmbeddable a) {

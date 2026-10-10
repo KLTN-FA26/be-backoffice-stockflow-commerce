@@ -43,6 +43,8 @@ public class PackJpaEntity extends BaseEntity {
         if (status == PackStatus.PENDING) { status = PackStatus.PACKING; }
     }
     public void hold() { status = PackStatus.ON_HOLD; packedAt = null; }
+    /** The order was cancelled (SCRUM-460): any label made for the parcel is void with it. */
+    public void cancel() { status = PackStatus.CANCELLED; }
     public void complete(Instant now) {
         if (status != PackStatus.PENDING && status != PackStatus.PACKING && status != PackStatus.ON_HOLD) {
             throw new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.CONFLICT);

@@ -60,10 +60,11 @@ class PaidOrderHoldIntegrationTest {
                 new PlaceOrderCommand.Line(SOFA, quantity, Money.vnd(12_000_000), null)))).orderId();
     }
 
-    /** As the payment module will: published in a transaction, delivered after commit. */
+    /** As the payment module will: the whole total, published in a transaction, delivered after commit. */
     private void paymentCaptured(UUID orderId) {
+        BigDecimal total = orders.findById(orderId).orElseThrow().total().amount();
         transactions.executeWithoutResult(status -> publisher.publishEvent(new PaymentCaptured(
-                orderId, UUID.randomUUID(), new BigDecimal("12000000"), "VND", PaymentMethod.BANK_TRANSFER)));
+                orderId, UUID.randomUUID(), total, "VND", PaymentMethod.BANK_TRANSFER)));
     }
 
     private OrderStatus statusOf(UUID orderId) {
@@ -116,7 +117,7 @@ class PaidOrderHoldIntegrationTest {
         assertThat(holdStates(orderId)).allMatch(state -> state.equals("HELD:deadline"));
 
         paymentCaptured(orderId);
-        Await.until("order paid", ASYNC, () -> statusOf(orderId) == OrderStatus.PAID);
+        Await.until("order confirmed", ASYNC, () -> statusOf(orderId) == OrderStatus.CONFIRMED);
 
         assertThat(holdStates(orderId)).isNotEmpty().allMatch(state -> state.equals("HELD:pinned"));
         deadlinePassed(orderId);   // nothing to move: pinned holds have no deadline
@@ -142,7 +143,7 @@ class PaidOrderHoldIntegrationTest {
         assertThat(holdStates(orderId)).isNotEmpty().allMatch(state -> state.startsWith("EXPIRED")
                 || state.startsWith("RELEASED"));
         assertThat(jdbc.queryForObject("SELECT cancellation_reason FROM ordering.customer_order WHERE id = ?",
-                String.class, orderId)).startsWith("RESERVATION_EXPIRED");
+                String.class, orderId)).startsWith("PAYMENT_NOT_RECEIVED");
         assertThat(inventory.availableToPromise(SOFA)).isEqualTo(before);
     }
 

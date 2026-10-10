@@ -90,7 +90,8 @@ several aggregates and no constraint can state them.
 | BR-ORD-001 | An order is only created after **every** line has been reserved. A partially reserved order is never persisted. | checkout use case, one transaction | 3.14.5.1 |
 | BR-ORD-002 | An order can only be released to a warehouse that can fulfil every line from its own stock, unless the coordinator explicitly splits it. | `Order.release()` | 3.17.2.2 |
 | BR-ORD-003 | Cancellation windows by state and actor are exactly as tabulated in `03-state-machines.md`, machine 9. | `Order.cancel()` | 3.17.4.1 |
-| BR-ORD-004 | Custom-printed lines already in production are not refunded on cancellation. | `Order.cancel()` | 3.17.4.2 |
+| BR-ORD-004 | Custom-printed lines already in production are not refunded on cancellation. | `Order.cancel()`: the share kept (`retainedPercent`) is decided by Sales / the coordinator when cancelling or approving a request (SCRUM-460) | 3.17.4.2 |
+| BR-ORD-009 | Every cancellation records a reason code (OTHER needs a note) and is announced as `OrderCancelled`, so the money and the warehouse work follow (kltn-docs 17 BR-03). | `Order.cancel()`, CHECK `ck_order_cancellation_code` | 3.17.4 |
 | BR-ORD-005 | An order completes automatically 7 days after delivery when no RMA is open. | scheduled sweeper | 3.17.1.1 |
 | BR-ORD-006 | *(On hold 2026-10-06 — vouchers not used in B2B.)* A voucher is validated again at order creation, not only when it is applied to the cart. | `Order.place()` | 3.14.3.3 |
 | BR-ORD-007 | Only an ACTIVE B2B customer can receive quotes or place orders; there is no guest checkout. Every line quantity is ≥ the MOQ of the blank / quote. | `Order.place()`, `Quote.accept()` | 3.14.6 |

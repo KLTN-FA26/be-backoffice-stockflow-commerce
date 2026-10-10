@@ -1,5 +1,6 @@
 package com.stockflow.order.internal.domain;
 
+import com.stockflow.contracts.OrderCancelled;
 import com.stockflow.contracts.OrderLinesReleasedForProduction;
 import com.stockflow.contracts.OrderPlaced;
 import com.stockflow.contracts.OrderReleased;
@@ -33,6 +34,19 @@ public sealed interface OrderEvent extends DomainEvent {
     record LinesReleased(UUID eventId, Instant occurredAt, OrderLinesReleasedForProduction payload) implements OrderEvent {
 
         public LinesReleased(OrderLinesReleasedForProduction payload) {
+            this(UUID.randomUUID(), Instant.now(), payload);
+        }
+
+        @Override
+        public String aggregateId() {
+            return payload.orderId().toString();
+        }
+    }
+
+    /** Cancelled, on any path: payment, fulfillment and production follow (SCRUM-460). */
+    record Cancelled(UUID eventId, Instant occurredAt, OrderCancelled payload) implements OrderEvent {
+
+        public Cancelled(OrderCancelled payload) {
             this(UUID.randomUUID(), Instant.now(), payload);
         }
 

@@ -178,9 +178,10 @@ SELECT pg_temp.expect_fail('I37 lowercase document type', $q$
 
 \echo '--- holds: a deadline only while the order waits for payment (SCRUM-465, V20261013000100)'
 SELECT pg_temp.expect_ok('I38 a pinned hold (no deadline) on a stock row', $q$
-    INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at, created_at)
-    VALUES (md5('qa:order:pinned')::uuid, 'SO-QA-PIN', 'c0000000-0000-4000-8000-000000000001', gen_random_uuid(), 'PAID',
-            10000000, 'VND', NOW(), NOW());
+    INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at,
+                                         created_at, paid_amount, paid_in_full_at)
+    VALUES (md5('qa:order:pinned')::uuid, 'SO-QA-PIN', 'c0000000-0000-4000-8000-000000000001', gen_random_uuid(), 'CONFIRMED',
+            10000000, 'VND', NOW(), NOW(), 10000000, NOW());
     INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity,
                                             reserved_at, expires_at, status)
     SELECT md5('qa:res:pinned')::uuid, s.id, md5('qa:order:pinned')::uuid, md5('qa:req:pinned')::uuid,

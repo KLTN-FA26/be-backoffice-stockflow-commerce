@@ -133,8 +133,15 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
                 .toList();
     }
 
-    /** A status name this build no longer knows reads as null rather than failing the whole history. */
+    /**
+     * A status name this build no longer knows reads as null rather than failing the whole history.
+     * PAID, recorded before SCRUM-460, meant what CONFIRMED means now; the append-only history keeps
+     * the word, the timeline shows the state.
+     */
     private static OrderStatus statusOrNull(String name) {
+        if ("PAID".equals(name)) {
+            return OrderStatus.CONFIRMED;
+        }
         try {
             return OrderStatus.valueOf(name);
         } catch (IllegalArgumentException unknown) {
