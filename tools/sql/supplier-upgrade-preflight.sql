@@ -1,3 +1,6 @@
+-- SCOPE: a database that has NOT yet run the legacy-tables removal (V20261011000300-0600, contracts
+-- C1-C4). Those drop the old tables this script reads; on a database past them, or a fresh one, it
+-- stops at the first missing table. See README.md here.
 -- Read-only. Classify history before deployment; see docs/SCRUM-115-118-backend.md for recovery.
 SELECT current_database(), current_user;
 SELECT version, description, script, checksum, success FROM public.flyway_schema_history
