@@ -1,6 +1,7 @@
 package com.stockflow.order.internal.domain;
 
 import com.stockflow.contracts.OrderCancelled;
+import com.stockflow.contracts.OrderDelivered;
 import com.stockflow.contracts.OrderLinesReleasedForProduction;
 import com.stockflow.contracts.OrderPlaced;
 import com.stockflow.contracts.OrderReleased;
@@ -34,6 +35,19 @@ public sealed interface OrderEvent extends DomainEvent {
     record LinesReleased(UUID eventId, Instant occurredAt, OrderLinesReleasedForProduction payload) implements OrderEvent {
 
         public LinesReleased(OrderLinesReleasedForProduction payload) {
+            this(UUID.randomUUID(), Instant.now(), payload);
+        }
+
+        @Override
+        public String aggregateId() {
+            return payload.orderId().toString();
+        }
+    }
+
+    /** Delivered by the carrier, as the coordinator recorded it: payment opens the receivable (SCRUM-431). */
+    record Delivered(UUID eventId, Instant occurredAt, OrderDelivered payload) implements OrderEvent {
+
+        public Delivered(OrderDelivered payload) {
             this(UUID.randomUUID(), Instant.now(), payload);
         }
 

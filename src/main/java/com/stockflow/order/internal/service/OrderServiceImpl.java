@@ -121,6 +121,7 @@ class OrderServiceImpl implements OrderService {
     private final OrderPayments payments;
     private final CancellationRequestRepository cancellationRequests;
     private final CreditChecks creditChecks;
+    private final com.stockflow.payment.api.PaymentService paymentService;
 
     OrderServiceImpl(OrderRepository repository, OrderSearchRepository search,
                      InventoryService inventory, OrderEventPublisher events, Clock clock,
@@ -128,7 +129,8 @@ class OrderServiceImpl implements OrderService {
             OrderHoldJpaRepository holds,
                      CustomerService customers,
             CatalogService catalog, OrderPayments payments,
-                     CancellationRequestRepository cancellationRequests, CreditChecks creditChecks) {
+                     CancellationRequestRepository cancellationRequests, CreditChecks creditChecks,
+                     com.stockflow.payment.api.PaymentService paymentService) {
         this.repository = repository;
         this.search = search;
         this.inventory = inventory;
@@ -141,6 +143,7 @@ class OrderServiceImpl implements OrderService {
         this.payments = payments;
         this.cancellationRequests = cancellationRequests;
         this.creditChecks = creditChecks;
+        this.paymentService = paymentService;
     }
 
     /**
@@ -267,17 +270,24 @@ class OrderServiceImpl implements OrderService {
     /**
      * kltn-docs 15 §4.3 and BR-03: a credit order is CONFIRMED when what the customer already owes plus
      * this order stays within the limit, otherwise ON_HOLD (hold reason CREDIT) for whoever approves
-     * credit. Either way it waits for no payment, so its stock holds are pinned now.
+     * credit. What the customer owes is the undelivered credit orders plus the open receivables of
+     * delivered ones (SCRUM-431); a customer with an overdue receivable gets no new credit without the
+     * approver (15 §4.3 step 4). Either way the order waits for no payment, so its holds are pinned now.
      */
     private Order submitOnCredit(Order order, CreditTerms terms) {
-        BigDecimal exposure = creditChecks.undeliveredCreditExposure(order.customerId(), order.id().value());
+        var position = paymentService.creditPosition(order.customerId());
+        BigDecimal exposure = creditChecks.undeliveredCreditExposure(order.customerId(), order.id().value())
+                .add(position.outstandingReceivables());
         BigDecimal amount = order.total().amount();
-        boolean within = exposure.add(amount).compareTo(terms.creditLimit()) <= 0;
+        CreditChecks.Outcome outcome = position.hasOverdue() ? CreditChecks.Outcome.OVERDUE
+                : exposure.add(amount).compareTo(terms.creditLimit()) <= 0 ? CreditChecks.Outcome.WITHIN_LIMIT
+                : CreditChecks.Outcome.OVER_LIMIT;
+        boolean within = outcome == CreditChecks.Outcome.WITHIN_LIMIT;
         order.submitOnCredit(within);
         Order saved = repository.save(order);
         java.time.Instant now = clock.instant();
         creditChecks.record(new CreditChecks.Check(order.id().value(), now, terms.creditLimit(), exposure, amount,
-                within ? CreditChecks.Outcome.WITHIN_LIMIT : CreditChecks.Outcome.OVER_LIMIT, null, null, null));
+                outcome, null, null, null));
         if (!within) {
             holds.save(new OrderHoldJpaEntity(Identifiers.newId(), order.id().value(), CREDIT_HOLD, now));
         }
@@ -566,6 +576,22 @@ class OrderServiceImpl implements OrderService {
         }
         cancelLoaded(found.get(), new CancelOrderCommand(CancellationReasonCode.PAYMENT_NOT_RECEIVED,
                 "not paid before the stock hold ran out", null, null));
+    }
+
+    @Override
+    @com.stockflow.common.audit.Auditable(action = com.stockflow.common.audit.AuditAction.TRANSITION,
+            resourceType = "order", resourceId = "#orderId")
+    public OrderSummary recordDelivery(UUID orderId) {
+        Order order = repository.findByIdForUpdate(new OrderId(orderId))
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));
+        if (order.status() == OrderStatus.DELIVERED) {
+            return toSummary(order);
+        }
+        order.markDelivered(clock.instant());
+        Order saved = repository.save(order);
+        events.publishEventsOf(order);
+        log.info("Order {} delivered", order.orderNumber());
+        return toSummary(saved);
     }
 
     @Override

@@ -71,6 +71,7 @@ public enum ErrorCode {
     STOCK_ITEM_NOT_FOUND("No such stock at this location", 404),
     STOCK_ADJUSTMENT_NOT_FOUND("Stock adjustment not found", 404),
     CANCELLATION_REQUEST_NOT_FOUND("Cancellation request not found", 404),
+    RECEIVABLE_NOT_FOUND("Receivable not found", 404),
     RESERVATION_NOT_FOUND("Stock reservation not found", 404),
     TRANSFER_ORDER_NOT_FOUND("Transfer order not found", 404),
     /** The SKU has no inventory item yet: its logistics data must be completed first (docs 01 BR-03). */
@@ -145,6 +146,11 @@ public enum ErrorCode {
     PAYMENT_TERM_NOT_ALLOWED("This payment term is not available for this order", 409),
     /** SCRUM-427: credit approval or refusal on an order that is not waiting for one. */
     ORDER_NOT_ON_CREDIT_HOLD("This order is not waiting for a credit decision", 409),
+    /** SCRUM-431, kltn-docs 15 BR-07: one bank statement line is recorded once. */
+    TRANSFER_REFERENCE_ALREADY_RECORDED("This transfer was already recorded", 409),
+    ALLOCATION_CUSTOMER_MISMATCH("This receivable belongs to another customer", 409),
+    /** SCRUM-431, kltn-docs 15 §4.3 step 4: an overdue customer gets no new credit until they pay. */
+    CUSTOMER_CREDIT_OVERDUE("The customer has overdue receivables", 409),
     OPTIMISTIC_LOCK("The record changed meanwhile, please retry", 409),
     /** Two writers reached the same row; the loser waited for the lock and gave up. Retryable. */
     LOCK_TIMEOUT("The record is busy, please retry", 409),

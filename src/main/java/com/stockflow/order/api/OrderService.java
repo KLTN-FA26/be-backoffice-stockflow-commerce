@@ -54,6 +54,16 @@ public interface OrderService {
                                   UUID requestedBy);
 
     OrderSummary releaseToFulfillment(UUID orderId);
+
+    /**
+     * The carrier reported the order delivered (kltn-docs 09 §4.3): SHIPPED → DELIVERED, announced as
+     * {@code OrderDelivered}. Idempotent for an order already delivered. Shipping (SCRUM-294) calls
+     * this when it records the shipment's outcome.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code CONFLICT} when it
+     *         is not SHIPPED
+     */
+    OrderSummary recordDelivery(UUID orderId);
     void putOnDesignHold(UUID orderId, String reason);
     void resolveDesignHold(UUID orderId, UUID resolvedBy, String note);
 

@@ -302,6 +302,27 @@ class OrderTest {
     }
 
     @Test
+    @DisplayName("SCRUM-431: delivered from SHIPPED, announced with what the credit order still owes")
+    void delivery() {
+        Order order = new Order(OrderId.newId(), NUMBER, UUID.randomUUID(), UUID.randomUUID(), List.of(
+                Order.line(new Sku("SOFA-3S-GREY"), 1, Money.vnd(12_000_000), null)), OrderStatus.SHIPPED, NOW, null, 0L);
+        order.restoreTermsAndRelease(PaymentTerm.CREDIT, null, null, null, null, null);
+        order.restorePaymentAndCancellation(new BigDecimal("2000000"), null, null, null, 30);
+
+        order.markDelivered(NOW);
+
+        assertThat(order.status()).isEqualTo(OrderStatus.DELIVERED);
+        assertThat(order.pullDomainEvents()).singleElement().isInstanceOfSatisfying(OrderEvent.Delivered.class, e -> {
+            assertThat(e.payload().paymentTerm()).isEqualTo("CREDIT");
+            assertThat(e.payload().orderTotal()).isEqualByComparingTo("12000000");
+            assertThat(e.payload().paidAmount()).isEqualByComparingTo("2000000");
+            assertThat(e.payload().creditTermDays()).isEqualTo(30);
+            assertThat(e.payload().deliveredAt()).isEqualTo(NOW);
+        });
+        assertThatThrownBy(() -> order.markDelivered(NOW)).isInstanceOf(InvalidOrderTransitionException.class);
+    }
+
+    @Test
     @DisplayName("refused credit, paid another way: the hold ends in PENDING_PAYMENT on the new terms")
     void refusedCreditSwitchesTerms() {
         Order over = creditDraft();

@@ -45,7 +45,7 @@ public class CreditHoldService {
     public enum RefusalAction { CANCEL, SWITCH_TO_PREPAID, SWITCH_TO_DEPOSIT }
 
     /** The terms a customer may use and the credit left, for the checkout and the back office. */
-    public record CreditPosition(CreditTerms terms, BigDecimal exposure, BigDecimal available) {
+    public record CreditPosition(CreditTerms terms, BigDecimal exposure, BigDecimal available, boolean hasOverdue) {
     }
 
     private final OrderRepository repository;
@@ -57,12 +57,14 @@ public class CreditHoldService {
     private final CustomerService customers;
     private final com.stockflow.order.internal.repository.CreditHoldSearch search;
     private final com.stockflow.inventory.api.InventoryService inventory;
+    private final com.stockflow.payment.api.PaymentService paymentService;
     private final Clock clock;
 
     CreditHoldService(OrderRepository repository, OrderServiceImpl orders, OrderService orderService,
                       OrderEventPublisher events, CreditChecks creditChecks, OrderHoldJpaRepository holds,
                       CustomerService customers, com.stockflow.order.internal.repository.CreditHoldSearch search,
-                      com.stockflow.inventory.api.InventoryService inventory, Clock clock) {
+                      com.stockflow.inventory.api.InventoryService inventory,
+                      com.stockflow.payment.api.PaymentService paymentService, Clock clock) {
         this.repository = repository;
         this.orders = orders;
         this.orderService = orderService;
@@ -72,6 +74,7 @@ public class CreditHoldService {
         this.customers = customers;
         this.search = search;
         this.inventory = inventory;
+        this.paymentService = paymentService;
         this.clock = clock;
     }
 
@@ -79,9 +82,11 @@ public class CreditHoldService {
     @Transactional(readOnly = true)
     public CreditPosition position(UUID customerId) {
         CreditTerms terms = customers.creditTerms(customerId);
-        BigDecimal exposure = creditChecks.undeliveredCreditExposure(customerId, null);
+        var receivables = paymentService.creditPosition(customerId);
+        BigDecimal exposure = creditChecks.undeliveredCreditExposure(customerId, null)
+                .add(receivables.outstandingReceivables());
         BigDecimal available = terms.allowCredit() ? terms.creditLimit().subtract(exposure).max(BigDecimal.ZERO) : null;
-        return new CreditPosition(terms, exposure, available);
+        return new CreditPosition(terms, exposure, available, receivables.hasOverdue());
     }
 
     @Transactional(readOnly = true)

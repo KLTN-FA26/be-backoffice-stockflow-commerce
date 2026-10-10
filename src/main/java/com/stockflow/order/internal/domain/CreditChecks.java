@@ -12,7 +12,7 @@ import java.util.UUID;
 public interface CreditChecks {
 
     /** What a credit decision says, as stored. */
-    enum Outcome { WITHIN_LIMIT, OVER_LIMIT, APPROVED, REJECTED }
+    enum Outcome { WITHIN_LIMIT, OVER_LIMIT, OVERDUE, APPROVED, REJECTED }
 
     /** One stored decision. */
     record Check(UUID orderId, Instant checkedAt, BigDecimal creditLimit, BigDecimal exposure, BigDecimal orderAmount,

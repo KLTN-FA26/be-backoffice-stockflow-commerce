@@ -467,6 +467,28 @@ stateDiagram-v2
 **A deposit is a payment for part of the total.** The order moves to `CONFIRMED` when
 `sum(captured) ≥ deposit_required` (BR-PAY-002), not when it equals the order total.
 
+### Receivable (credit orders) — implemented 2026-10-10 (SCRUM-431)
+
+kltn-docs 15 §4.3 and §5.3. One receivable per delivered credit order, for what the order still owes.
+
+```mermaid
+stateDiagram-v2
+    [*] --> OPEN: order delivered (due = delivery day + days to pay, Saigon)
+    OPEN --> PARTIALLY_PAID: transfer allocated, part
+    OPEN --> PAID: transfer allocated, all
+    PARTIALLY_PAID --> PAID: transfer allocated, rest
+    OPEN --> OVERDUE: nightly run, past due
+    PARTIALLY_PAID --> OVERDUE: nightly run, past due
+    OVERDUE --> PAID: paid in full
+    PAID --> [*]
+```
+
+- **Overdue stays overdue.** A part payment keeps the receivable `OVERDUE` until it is paid in full. Being overdue is what blocks new credit and release (15 §4.3 step 4).
+- **Transfers.** The accountant records each transfer from the bank statement, once per reference (BR-04, BR-07). It pays the receivables the customer named, otherwise the earliest due first (BR-09). Whatever is left stays as the customer's credit and pays their next receivable as it opens.
+- **The order learns of every payment.** Each allocation is published as `PaymentCaptured` (source `RECEIVABLE_ALLOCATION`), so the order's `paidAmount` follows.
+- **Allocations are append-only** (BR-06).
+
+
 ---
 
 ## 11. Shipment and load — `fulfillment-service`
