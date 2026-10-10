@@ -73,7 +73,8 @@ class TransferOrderRepositoryAdapter implements TransferOrderRepository, Transfe
                 .and(Specs.eq("toWarehouseId", criteria.toWarehouseId()))
                 .and(Specs.contains("transferNumber", criteria.number()))
                 .and(criteria.statuses() == null || criteria.statuses().isEmpty()
-                        ? null : Specs.in("status", criteria.statuses()));
+                        ? null : Specs.in("status", criteria.statuses()))
+                .and(com.stockflow.common.security.WarehouseScope.warehousesIn("fromWarehouseId", "toWarehouseId"));
         return jpa.findAll(spec, pageable).map(e -> new Row(e.getId(), e.getTransferNumber(), e.getFromWarehouseId(),
                 e.getToWarehouseId(), e.getStatus(), e.getExpectedDate(), e.getCreatedAt(), e.getDispatchedAt()));
     }

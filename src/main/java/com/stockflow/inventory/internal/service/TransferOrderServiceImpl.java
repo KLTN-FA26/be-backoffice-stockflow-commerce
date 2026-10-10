@@ -83,6 +83,8 @@ class TransferOrderServiceImpl implements TransferOrders {
     @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "transfer-order", resourceId = "#result?.transferId()")
     public Transfer create(Create command) {
+        // BR-SEC-002: a warehouse-bound caller raises transfers into or out of their own warehouses.
+        com.stockflow.common.security.WarehouseScope.requireEither(command.fromWarehouseId(), command.toWarehouseId());
         String sourcePrefix = prefixOf(command.fromWarehouseId());
         prefixOf(command.toWarehouseId());
         Instant now = clock.instant();
@@ -157,7 +159,7 @@ class TransferOrderServiceImpl implements TransferOrders {
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "transfer-order", resourceId = "#transferId")
     public Transfer startPicking(UUID transferId) {
-        TransferOrder order = load(transferId);
+        TransferOrder order = loadAtSource(transferId);
         order.startPicking();
         return toView(transfers.save(order));
     }
@@ -165,7 +167,7 @@ class TransferOrderServiceImpl implements TransferOrders {
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "transfer-order", resourceId = "#transferId")
     public Transfer cancelPicking(UUID transferId) {
-        TransferOrder order = load(transferId);
+        TransferOrder order = loadAtSource(transferId);
         order.cancelPicking();
         return toView(transfers.save(order));
     }
@@ -180,7 +182,7 @@ class TransferOrderServiceImpl implements TransferOrders {
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "transfer-order", resourceId = "#transferId")
     public Transfer dispatch(UUID transferId, UUID userId, Map<UUID, Integer> shippedByLine) {
-        TransferOrder order = load(transferId);
+        TransferOrder order = loadAtSource(transferId);
         Instant now = clock.instant();
         order.dispatch(userId, shippedByLine, now);
         String sourcePrefix = prefixOf(order.fromWarehouseId());
@@ -246,9 +248,19 @@ class TransferOrderServiceImpl implements TransferOrders {
                 new BusinessException(ErrorCode.WAREHOUSE_NOT_FOUND, "No warehouse " + warehouseId));
     }
 
+    /** The order, if the caller is assigned to one of its two warehouses (BR-SEC-002). */
     private TransferOrder load(UUID id) {
-        return transfers.findById(id).orElseThrow(() ->
+        TransferOrder order = transfers.findById(id).orElseThrow(() ->
                 new BusinessException(ErrorCode.TRANSFER_ORDER_NOT_FOUND, "No transfer order " + id));
+        com.stockflow.common.security.WarehouseScope.requireEither(order.fromWarehouseId(), order.toWarehouseId());
+        return order;
+    }
+
+    /** Picking and dispatch happen on the source warehouse's floor, so only its staff do them. */
+    private TransferOrder loadAtSource(UUID id) {
+        TransferOrder order = load(id);
+        com.stockflow.common.security.WarehouseScope.requireWarehouse(order.fromWarehouseId());
+        return order;
     }
 
     private static Transfer toView(TransferOrder o) {

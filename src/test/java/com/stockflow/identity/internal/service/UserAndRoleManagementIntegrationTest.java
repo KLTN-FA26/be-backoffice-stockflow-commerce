@@ -61,6 +61,9 @@ class UserAndRoleManagementIntegrationTest {
     @Autowired
     private JdbcTemplate jdbc;
 
+    @Autowired
+    private com.stockflow.common.security.UserWarehouseLookup warehouseLookup;
+
     private static String unique(String prefix) {
         return prefix + UUID.randomUUID().toString().substring(0, 8);
     }
@@ -68,7 +71,7 @@ class UserAndRoleManagementIntegrationTest {
     private CreatedStaffUser create(String... roles) {
         String name = unique("u.");
         return identity.createStaffUser(new CreateStaffUserCommand(name, name + "@example.com", "Test " + name,
-                null, List.of(roles)));
+                null, List.of(roles), null));
     }
 
     /** A caller holding exactly what {@code roles} grant, as RequiresPermissionAspect would install. */
@@ -110,15 +113,15 @@ class UserAndRoleManagementIntegrationTest {
 
         refused(ErrorCode.USERNAME_ALREADY_EXISTS, () -> identity.createStaffUser(new CreateStaffUserCommand(
                 first.username().toUpperCase(Locale.ROOT), unique("x") + "@example.com", null, null,
-                List.of("SALES_STAFF"))));
+                List.of("SALES_STAFF"), null)));
         refused(ErrorCode.USER_EMAIL_ALREADY_EXISTS, () -> identity.createStaffUser(new CreateStaffUserCommand(
-                unique("x."), first.email().toUpperCase(Locale.ROOT), null, null, List.of("SALES_STAFF"))));
+                unique("x."), first.email().toUpperCase(Locale.ROOT), null, null, List.of("SALES_STAFF"), null)));
         refused(ErrorCode.ROLE_NOT_ASSIGNABLE, () -> identity.createStaffUser(new CreateStaffUserCommand(
-                unique("x."), unique("x") + "@example.com", null, null, List.of("CUSTOMER"))));
+                unique("x."), unique("x") + "@example.com", null, null, List.of("CUSTOMER"), null)));
         refused(ErrorCode.ROLE_NOT_FOUND, () -> identity.createStaffUser(new CreateStaffUserCommand(
-                unique("x."), unique("x") + "@example.com", null, null, List.of("NO_SUCH_ROLE"))));
+                unique("x."), unique("x") + "@example.com", null, null, List.of("NO_SUCH_ROLE"), null)));
         refused(ErrorCode.VALIDATION_FAILED, () -> identity.createStaffUser(new CreateStaffUserCommand(
-                unique("x."), unique("x") + "@example.com", null, "short", List.of("SALES_STAFF"))));
+                unique("x."), unique("x") + "@example.com", null, "short", List.of("SALES_STAFF"), null)));
     }
 
     @Test
@@ -219,7 +222,7 @@ class UserAndRoleManagementIntegrationTest {
         StaffUser clerk = create("SALES_STAFF").user();
         StaffUser admin = create("SYSTEM_ADMIN").user();
         String empty = unique("EMPTY_").toUpperCase(Locale.ROOT);
-        identity.createRole(new CreateRoleCommand(empty, "Nothing", null, null));
+        identity.createRole(new CreateRoleCommand(empty, "Nothing", null, null, null));
         StaffUser newcomer = create(empty).user();
         CurrentUser caller = actor(shopAdmin.userId(), Role.ECOMMERCE_ADMIN);
 
@@ -245,7 +248,7 @@ class UserAndRoleManagementIntegrationTest {
             return null;
         }));
         refused(ErrorCode.PRIVILEGE_ESCALATION, () -> as(caller, () -> identity.createStaffUser(
-                new CreateStaffUserCommand(unique("x."), unique("x") + "@example.com", null, null, List.of("SYSTEM_ADMIN")))));
+                new CreateStaffUserCommand(unique("x."), unique("x") + "@example.com", null, null, List.of("SYSTEM_ADMIN"), null))));
 
         assertThat(roleCodes(shopAdmin.userId())).containsExactly("ECOMMERCE_ADMIN");
     }
@@ -255,7 +258,7 @@ class UserAndRoleManagementIntegrationTest {
         StaffUser shopAdmin = create("ECOMMERCE_ADMIN").user();
         CurrentUser caller = actor(shopAdmin.userId(), Role.ECOMMERCE_ADMIN);
         String custom = unique("R_").toUpperCase(Locale.ROOT);
-        identity.createRole(new CreateRoleCommand(custom, "Custom", null, null));
+        identity.createRole(new CreateRoleCommand(custom, "Custom", null, null, null));
 
         refused(ErrorCode.PRIVILEGE_ESCALATION,
                 () -> as(caller, () -> identity.grantPermission(custom, "procurement-purchase-orders:APPROVE")));
@@ -291,7 +294,7 @@ class UserAndRoleManagementIntegrationTest {
     @Test
     void aCustomRoleCanBeCreatedCopiedGrantedRenamedAndDeletedWhenUnused() {
         String code = unique("shift_lead_").toUpperCase(Locale.ROOT);
-        RoleSummary created = identity.createRole(new CreateRoleCommand(code, "Shift lead", "Floor lead", "WAREHOUSE_STAFF"));
+        RoleSummary created = identity.createRole(new CreateRoleCommand(code, "Shift lead", "Floor lead", "WAREHOUSE_STAFF", null));
         assertThat(created.system()).isFalse();
         assertThat(lookup.resolve(List.of(code)).permissions())
                 .isEqualTo(lookup.resolve(List.of("WAREHOUSE_STAFF")).permissions());
@@ -309,10 +312,10 @@ class UserAndRoleManagementIntegrationTest {
 
         RoleSummary current = identity.listRoles().stream().filter(r -> r.code().equals(code)).findFirst().orElseThrow();
         assertThat(current.holderCount()).isEqualTo(1);
-        RoleSummary renamed = identity.updateRole(new UpdateRoleCommand(code, current.version(), "Shift lead (night)", null));
+        RoleSummary renamed = identity.updateRole(new UpdateRoleCommand(code, current.version(), "Shift lead (night)", null, null));
         assertThat(renamed.name()).isEqualTo("Shift lead (night)");
         refused(ErrorCode.OPTIMISTIC_LOCK,
-                () -> identity.updateRole(new UpdateRoleCommand(code, current.version(), "Stale", null)));
+                () -> identity.updateRole(new UpdateRoleCommand(code, current.version(), "Stale", null, null)));
 
         refused(ErrorCode.ROLE_IN_USE, () -> identity.deleteRole(code));
         identity.revokeRole(holder.user().userId(), code);
@@ -324,11 +327,56 @@ class UserAndRoleManagementIntegrationTest {
     void systemRolesAndDuplicateCodesAreRefused() {
         refused(ErrorCode.SYSTEM_ROLE_IMMUTABLE, () -> identity.deleteRole("WAREHOUSE_STAFF"));
         refused(ErrorCode.SYSTEM_ROLE_IMMUTABLE,
-                () -> identity.updateRole(new UpdateRoleCommand("SALES_STAFF", 0, "Sellers", null)));
+                () -> identity.updateRole(new UpdateRoleCommand("SALES_STAFF", 0, "Sellers", null, null)));
         refused(ErrorCode.ROLE_CODE_ALREADY_EXISTS,
-                () -> identity.createRole(new CreateRoleCommand("ACCOUNTANT", "Dup", null, null)));
+                () -> identity.createRole(new CreateRoleCommand("ACCOUNTANT", "Dup", null, null, null)));
         assertThat(identity.listRoles()).filteredOn(RoleSummary::system)
                 .extracting(RoleSummary::code).contains("SYSTEM_ADMIN", "CUSTOMER", "PRODUCTION_STAFF");
+    }
+
+    // ---- warehouse data scope (SCRUM-457) -----------------------------------------------------
+
+    @Test
+    void warehouseRolesAreLimitedToTheirAssignedWarehousesResolvedPerRequest() {
+        assertThat(lookup.resolve(List.of("WAREHOUSE_STAFF")).scope()).isEqualTo(DataScope.WAREHOUSE);
+        assertThat(lookup.resolve(List.of("QC_STAFF", "PRODUCTION_STAFF")).scope()).isEqualTo(DataScope.WAREHOUSE);
+        // The broadest of a user's roles: a clerk who also plans plans across warehouses.
+        assertThat(lookup.resolve(List.of("WAREHOUSE_STAFF", "INVENTORY_PLANNER")).scope()).isEqualTo(DataScope.ALL);
+
+        StaffUser clerk = create("WAREHOUSE_STAFF").user();
+        assertThat(clerk.warehouseIds()).isEmpty();
+        assertThat(warehouseLookup.warehousesOf(clerk.userId()).ids()).isEmpty();
+
+        StaffUser assigned = identity.assignWarehouses(clerk.userId(),
+                List.of(com.stockflow.support.DemoData.WAREHOUSE_HCM, com.stockflow.support.DemoData.WAREHOUSE_HCM));
+        assertThat(assigned.warehouseIds()).containsExactly(com.stockflow.support.DemoData.WAREHOUSE_HCM);
+        assertThat(warehouseLookup.warehousesOf(clerk.userId()).prefixes()).containsExactly("HCM");
+
+        refused(ErrorCode.WAREHOUSE_NOT_FOUND,
+                () -> identity.assignWarehouses(clerk.userId(), List.of(UUID.randomUUID())));
+        assertThat(identity.assignWarehouses(clerk.userId(), List.of()).warehouseIds()).isEmpty();
+        assertThat(warehouseLookup.warehousesOf(clerk.userId()).prefixes()).isEmpty();
+
+        CreatedStaffUser withWarehouse = identity.createStaffUser(new CreateStaffUserCommand(unique("w."),
+                unique("w") + "@example.com", null, null, List.of("QC_STAFF"),
+                List.of(com.stockflow.support.DemoData.WAREHOUSE_HCM)));
+        assertThat(withWarehouse.user().warehouseIds()).containsExactly(com.stockflow.support.DemoData.WAREHOUSE_HCM);
+    }
+
+    @Test
+    void aCustomRoleCarriesTheDataScopeItIsGiven() {
+        String code = unique("FLOOR_").toUpperCase(Locale.ROOT);
+        RoleSummary created = identity.createRole(new CreateRoleCommand(code, "Floor", null, null, "warehouse"));
+        assertThat(created.dataScope()).isEqualTo("WAREHOUSE");
+        assertThat(lookup.resolve(List.of(code)).scope()).isEqualTo(DataScope.WAREHOUSE);
+
+        RoleSummary widened = identity.updateRole(new UpdateRoleCommand(code, created.version(), "Floor", null, "ALL"));
+        assertThat(widened.dataScope()).isEqualTo("ALL");
+        assertThat(lookup.resolve(List.of(code)).scope()).isEqualTo(DataScope.ALL);
+
+        refused(ErrorCode.VALIDATION_FAILED,
+                () -> identity.createRole(new CreateRoleCommand(unique("X_").toUpperCase(Locale.ROOT), "x", null, null, "TEAM")));
+        identity.deleteRole(code);
     }
 
     // ---- helpers -------------------------------------------------------------------------------

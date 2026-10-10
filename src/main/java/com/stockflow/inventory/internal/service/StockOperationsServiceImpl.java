@@ -6,6 +6,7 @@ import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.SortWhitelist;
@@ -117,6 +118,10 @@ class StockOperationsServiceImpl implements StockOperations {
     private StockMove relocate(Sku sku, String lotNumber, Instant receivedAt, String fromCode, String toCode,
                                int qty, StockStatus target, StockMovement.ReferenceType referenceType,
                                UUID referenceId, UUID actorId, String reason) {
+        // BR-SEC-002 (SCRUM-457): both ends in a warehouse the caller is assigned to. First, so a
+        // replay cannot reveal a move made in someone else's warehouse.
+        WarehouseScope.requireLocation(fromCode);
+        WarehouseScope.requireLocation(toCode);
         // Match policy edits/reservations: take the SKU lock before any stock-row locks.
         policies.lock(sku.code());
 
@@ -130,6 +135,12 @@ class StockOperationsServiceImpl implements StockOperations {
         LocationId to = new LocationId(toCode);
         if (from.equals(to)) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A move needs two different locations");
+        }
+        // Docs 11 BR-01: stock leaves its warehouse only on a transfer order (docs 10), which records the
+        // dispatch, the transit and the receipt. A plain move between warehouses skipped all of that.
+        if (!from.warehouseCode().equals(to.warehouseCode())) {
+            throw new BusinessException(ErrorCode.MOVE_ACROSS_WAREHOUSES,
+                    "%s and %s are in different warehouses; use a transfer order".formatted(fromCode, toCode));
         }
         // Only the destination is checked (issue #67): taking stock out of a blocked bin or a shelf in
         // maintenance is how it gets emptied, and an adjustment at a bin blocked for counting must
@@ -210,6 +221,7 @@ class StockOperationsServiceImpl implements StockOperations {
     @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "stock-receipt", resourceId = "#command.receiptLineId()")
     public StockMove receive(ReceiveStockCommand command) {
+        WarehouseScope.requireLocation(command.locationCode());
         policies.lock(command.sku().code());
         Optional<StockMovement> done = ledger.findByReference(StockMovement.MovementType.RECEIPT,
                 StockMovement.ReferenceType.GOODS_RECEIPT_LINE, command.receiptLineId());
@@ -242,6 +254,7 @@ class StockOperationsServiceImpl implements StockOperations {
     @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "stock-adjustment", resourceId = "#result?.adjustmentId()")
     public StockAdjustmentSummary requestAdjustment(RequestAdjustmentCommand command) {
+        WarehouseScope.requireLocation(command.locationCode());
         LocationId location = new LocationId(command.locationCode());
         // The stock item must exist now; FOUND stock adds to a lot already recorded at the location.
         findOne(command.sku(), location, command.lotNumber())
@@ -291,7 +304,10 @@ class StockOperationsServiceImpl implements StockOperations {
     @Override
     @Transactional(readOnly = true)
     public Optional<StockAdjustmentSummary> findAdjustment(UUID adjustmentId) {
-        return adjustments.findById(adjustmentId).map(StockOperationsServiceImpl::toSummary);
+        // Out of the caller's warehouses reads as not found: its existence is not theirs to know.
+        return adjustments.findById(adjustmentId)
+                .filter(adjustment -> inScope(adjustment.location().code()))
+                .map(StockOperationsServiceImpl::toSummary);
     }
 
     @Override
@@ -316,8 +332,16 @@ class StockOperationsServiceImpl implements StockOperations {
     // ------------------------------------------------------------------ helpers
 
     private StockAdjustment load(UUID adjustmentId) {
-        return adjustments.findById(adjustmentId).orElseThrow(() ->
+        StockAdjustment adjustment = adjustments.findById(adjustmentId).orElseThrow(() ->
                 new BusinessException(ErrorCode.STOCK_ADJUSTMENT_NOT_FOUND, "No stock adjustment " + adjustmentId));
+        WarehouseScope.requireLocation(adjustment.location().code());
+        return adjustment;
+    }
+
+    private static boolean inScope(String locationCode) {
+        return WarehouseScope.restriction()
+                .map(allowed -> allowed.prefixes().contains(WarehouseScope.prefixOf(locationCode)))
+                .orElse(true);
     }
 
     /** {@link #findOne}, or the one layer received at {@code receivedAt} when it is given. */

@@ -58,9 +58,19 @@ public class StockflowJwtAuthenticationConverter
     private static final java.util.regex.Pattern ROLE_CODE = java.util.regex.Pattern.compile("^[A-Z][A-Z0-9_]{1,63}$");
 
     private final RoleAuthorizationLookup lookup;
+    private final UserWarehouseLookup warehouses;
 
     public StockflowJwtAuthenticationConverter(RoleAuthorizationLookup lookup) {
+        this(lookup, null);
+    }
+
+    /**
+     * @param warehouses resolves the warehouses of a caller whose scope is {@link DataScope#WAREHOUSE};
+     *                   null only where no such caller can exist (tests)
+     */
+    public StockflowJwtAuthenticationConverter(RoleAuthorizationLookup lookup, UserWarehouseLookup warehouses) {
         this.lookup = lookup;
+        this.warehouses = warehouses;
     }
 
     @Override
@@ -76,10 +86,22 @@ public class StockflowJwtAuthenticationConverter
             throw new AuthenticationServiceException("Permissions are unavailable", unavailable);
         }
 
+        AssignedWarehouses assigned = AssignedWarehouses.none();
+        if (resolved.scope() == DataScope.WAREHOUSE && warehouses != null) {
+            try {
+                assigned = warehouses.warehousesOf(java.util.UUID.fromString(jwt.getSubject()));
+            } catch (RuntimeException unavailable) {
+                // Not knowing someone's warehouses is not "every warehouse": refuse, as above.
+                log.error("Cannot resolve the warehouses of subject {}; refusing the request", jwt.getSubject(),
+                        unavailable);
+                throw new AuthenticationServiceException("Warehouse assignment is unavailable", unavailable);
+            }
+        }
+
         Set<GrantedAuthority> authorities = new LinkedHashSet<>();
         roles.forEach(role -> authorities.add(new SimpleGrantedAuthority(role)));
         resolved.permissions().forEach(code -> authorities.add(new SimpleGrantedAuthority(code.toString())));
-        return new StockflowAuthenticationToken(jwt, authorities, resolved.scope());
+        return new StockflowAuthenticationToken(jwt, authorities, resolved.scope(), assigned);
     }
 
     private static Set<String> knownRoles(Jwt jwt) {

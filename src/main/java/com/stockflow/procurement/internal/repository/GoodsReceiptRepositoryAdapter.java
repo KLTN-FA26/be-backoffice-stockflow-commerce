@@ -126,7 +126,8 @@ class GoodsReceiptRepositoryAdapter implements GoodsReceiptRepository, GoodsRece
                 .and(Specs.contains("receiptNumber", criteria.number()))
                 .and(criteria.statuses() == null || criteria.statuses().isEmpty()
                         ? null : Specs.in("status", criteria.statuses()))
-                .and(receivedBetween(criteria.receivedFrom(), criteria.receivedTo()));
+                .and(receivedBetween(criteria.receivedFrom(), criteria.receivedTo()))
+                .and(com.stockflow.common.security.WarehouseScope.warehousesIn("warehouseId"));
         return jpa.findAll(spec, pageable).map(e -> new Row(e.getId(), e.getReceiptNumber(), e.getPurchaseOrderId(),
                 e.getWarehouseId(), e.getStatus(), e.getDeliveryNote(), e.getReceivedAt(), e.getReceivedBy(),
                 e.getConfirmedAt(), e.getClosedAt()));

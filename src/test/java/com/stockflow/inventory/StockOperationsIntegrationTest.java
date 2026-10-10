@@ -326,4 +326,48 @@ WHERE reference_type = 'STOCK_ADJUSTMENT' AND reference_id = ? AND movement_type
             assertThat(onHand(PACKING)).isEqualTo(3);
         });
     }
+
+    // ---- SCRUM-457 / SCRUM-459 ----------------------------------------------------------------
+
+    private static com.stockflow.common.error.ErrorCode codeOf(Throwable thrown) {
+        return ((com.stockflow.common.error.BusinessException) thrown).errorCode();
+    }
+
+    @Test
+    @DisplayName("stock changes warehouse only through a transfer order, never by a plain move")
+    void aMoveToAnotherWarehouseIsRefused() {
+        Throwable thrown = org.assertj.core.api.Assertions.catchThrowable(
+                () -> inventory.move(move(UUID.randomUUID(), BIN, "HN-RCV01", 1)));
+
+        assertThat(codeOf(thrown)).isEqualTo(com.stockflow.common.error.ErrorCode.MOVE_ACROSS_WAREHOUSES);
+        assertThat(onHand(BIN)).isEqualTo(10);
+    }
+
+    @Test
+    @DisplayName("a warehouse-bound clerk moves and adjusts only in the warehouses assigned to them")
+    void aWarehouseBoundClerkStaysInTheirWarehouses() {
+        var elsewhere = com.stockflow.support.TestUsers.warehouseStaff("HN");
+        var here = com.stockflow.support.TestUsers.warehouseStaff("HCM");
+
+        Throwable moved = org.assertj.core.api.Assertions.catchThrowable(() ->
+                com.stockflow.support.WithCurrentUser.run(elsewhere,
+                        () -> inventory.move(move(UUID.randomUUID(), BIN, PACKING, 1))));
+        assertThat(codeOf(moved)).isEqualTo(com.stockflow.common.error.ErrorCode.OUT_OF_DATA_SCOPE);
+        Throwable adjusted = org.assertj.core.api.Assertions.catchThrowable(() ->
+                com.stockflow.support.WithCurrentUser.run(elsewhere, () -> inventory.requestAdjustment(
+                        new RequestAdjustmentCommand(BIN, sku, lot, -1, StockAdjustmentReason.DAMAGED, "x", clerk))));
+        assertThat(codeOf(adjusted)).isEqualTo(com.stockflow.common.error.ErrorCode.OUT_OF_DATA_SCOPE);
+        assertThat(onHand(BIN)).isEqualTo(10);
+
+        com.stockflow.support.WithCurrentUser.run(here,
+                () -> inventory.move(move(UUID.randomUUID(), BIN, PACKING, 2)));
+        assertThat(onHand(PACKING)).isEqualTo(2);
+
+        // Assigned nowhere: nothing in reach, not everything.
+        var nowhere = com.stockflow.support.TestUsers.warehouseStaff();
+        Throwable none = org.assertj.core.api.Assertions.catchThrowable(() ->
+                com.stockflow.support.WithCurrentUser.run(nowhere,
+                        () -> inventory.move(move(UUID.randomUUID(), BIN, PACKING, 1))));
+        assertThat(codeOf(none)).isEqualTo(com.stockflow.common.error.ErrorCode.OUT_OF_DATA_SCOPE);
+    }
 }

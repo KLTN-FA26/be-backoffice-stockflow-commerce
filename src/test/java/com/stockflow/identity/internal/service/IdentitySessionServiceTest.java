@@ -19,6 +19,7 @@ import com.stockflow.identity.internal.repository.RoleJpaRepository;
 import com.stockflow.identity.internal.repository.RolePermissionJpaRepository;
 import com.stockflow.identity.internal.entity.UserJpaEntity;
 import com.stockflow.identity.internal.repository.UserJpaRepository;
+import com.stockflow.identity.internal.repository.UserWarehouseJpaRepository;
 import com.stockflow.identity.internal.repository.UserRoleJpaRepository;
 import com.stockflow.identity.internal.repository.UserSessionJpaRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -72,7 +73,8 @@ class IdentitySessionServiceTest {
                 mock(RolePermissionJpaRepository.class), userRoles, users, mock(PermissionCatalog.class),
                 encoder, jwtEncoder, clock, sessions, mock(RoleAuthorizationCache.class),
                 () -> java.util.Optional.of("test"), userRows, mock(PrivilegeGuard.class),
-                loginAttempts, TTL);
+                loginAttempts, mock(UserWarehouseJpaRepository.class),
+                mock(com.stockflow.warehouse.api.WarehouseService.class), TTL);
     }
 
     private User user(UserStatus status) {
@@ -267,7 +269,8 @@ class IdentitySessionServiceTest {
                     mock(RolePermissionJpaRepository.class), userRoles, users, mock(PermissionCatalog.class),
                     encoder, jwtEncoder, clock, sessions, mock(RoleAuthorizationCache.class),
                     () -> java.util.Optional.of("test"), mock(UserJpaRepository.class), mock(PrivilegeGuard.class),
-                    loginAttempts, bad)).isInstanceOf(IllegalArgumentException.class);
+                    loginAttempts, mock(UserWarehouseJpaRepository.class),
+                    mock(com.stockflow.warehouse.api.WarehouseService.class), bad)).isInstanceOf(IllegalArgumentException.class);
         }
     }
 

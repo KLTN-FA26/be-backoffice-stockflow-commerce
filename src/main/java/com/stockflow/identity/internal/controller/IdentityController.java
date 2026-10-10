@@ -90,16 +90,17 @@ class IdentityController {
     @RequiresPermission(resource = IdentityResources.ROLES, action = Action.CREATE)
     public ApiResponse<RoleResponse> createRole(@Valid @RequestBody CreateRoleRequest request) {
         return ApiResponse.ok(mapper.toResponse(identityService.createRole(new CreateRoleCommand(
-                request.code(), request.name(), request.description(), request.copyPermissionsFrom()))));
+                request.code(), request.name(), request.description(), request.copyPermissionsFrom(),
+                request.dataScope()))));
     }
 
     @PatchMapping("/roles/{roleCode}")
-    @Operation(summary = "Rename a custom role; system roles cannot be renamed")
+    @Operation(summary = "Rename a custom role or change its data scope; system roles cannot be changed")
     @RequiresPermission(resource = IdentityResources.ROLES, action = Action.UPDATE)
     public ApiResponse<RoleResponse> updateRole(@PathVariable String roleCode,
                                                 @Valid @RequestBody UpdateRoleRequest request) {
         return ApiResponse.ok(mapper.toResponse(identityService.updateRole(new UpdateRoleCommand(
-                roleCode, request.version(), request.name(), request.description()))));
+                roleCode, request.version(), request.name(), request.description(), request.dataScope()))));
     }
 
     @DeleteMapping("/roles/{roleCode}")

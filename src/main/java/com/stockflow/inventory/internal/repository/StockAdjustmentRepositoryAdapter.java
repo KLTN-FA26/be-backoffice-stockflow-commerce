@@ -69,7 +69,8 @@ class StockAdjustmentRepositoryAdapter implements StockAdjustmentRepository, Sto
         Specification<StockAdjustmentJpaEntity> spec = Specification
                 .<StockAdjustmentJpaEntity>where(Specs.eq("status", criteria.status()))
                 .and(Specs.eq("sku", upper(criteria.sku())))
-                .and(Specs.eq("locationCode", upper(criteria.location())));
+                .and(Specs.eq("locationCode", upper(criteria.location())))
+                .and(com.stockflow.common.security.WarehouseScope.locationsIn("locationCode"));
         return jpa.findAll(spec, pageable).map(StockAdjustmentRepositoryAdapter::toDomain);
     }
 

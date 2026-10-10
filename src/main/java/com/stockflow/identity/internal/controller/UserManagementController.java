@@ -10,6 +10,7 @@ import com.stockflow.identity.api.IdentityService;
 import com.stockflow.identity.api.ListUsersQuery;
 import com.stockflow.identity.api.UpdateUserCommand;
 import com.stockflow.identity.api.UserStatusChange;
+import com.stockflow.identity.internal.controller.dto.AssignWarehousesRequest;
 import com.stockflow.identity.internal.controller.dto.CreateUserRequest;
 import com.stockflow.identity.internal.controller.dto.CreatedUserResponse;
 import com.stockflow.identity.internal.controller.dto.PasswordResetRequest;
@@ -24,6 +25,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -84,7 +86,8 @@ class UserManagementController {
     @RequiresPermission(resource = IdentityResources.USERS, action = Action.CREATE)
     public ApiResponse<CreatedUserResponse> create(@Valid @RequestBody CreateUserRequest request) {
         return ApiResponse.ok(mapper.toResponse(identityService.createStaffUser(new CreateStaffUserCommand(
-                request.username(), request.email(), request.fullName(), request.password(), request.roles()))));
+                request.username(), request.email(), request.fullName(), request.password(), request.roles(),
+                request.warehouseIds()))));
     }
 
     @PatchMapping("/{userId}")
@@ -94,6 +97,15 @@ class UserManagementController {
                                             @Valid @RequestBody UpdateUserRequest request) {
         return ApiResponse.ok(mapper.toResponse(identityService.updateUser(
                 new UpdateUserCommand(userId, request.version(), request.email(), request.fullName()))));
+    }
+
+    /** Replace the warehouses the account works in (SCRUM-457); applies on the user's next request. */
+    @PutMapping("/{userId}/warehouses")
+    @Operation(summary = "Set the warehouses a warehouse-bound account may act on")
+    @RequiresPermission(resource = IdentityResources.USERS, action = Action.UPDATE)
+    public ApiResponse<UserResponse> assignWarehouses(@PathVariable UUID userId,
+                                                      @Valid @RequestBody AssignWarehousesRequest request) {
+        return ApiResponse.ok(mapper.toResponse(identityService.assignWarehouses(userId, request.warehouseIds())));
     }
 
     @PostMapping("/{userId}/lock")

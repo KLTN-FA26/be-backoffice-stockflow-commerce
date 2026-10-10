@@ -105,6 +105,8 @@ public enum ErrorCode {
     STOCK_STATUS_MISMATCH("The destination holds this lot in a different status", 409),
     /** The location exists, but it, its shelf or its warehouse is BLOCKED, in MAINTENANCE or INACTIVE (issue #67). */
     LOCATION_NOT_USABLE("This location cannot take stock right now", 409),
+    /** Docs 11 BR-01: stock changes warehouse only through a transfer order (SCRUM-459). */
+    MOVE_ACROSS_WAREHOUSES("Stock moves to another warehouse only through a transfer order", 409),
     /** Four eyes: whoever asked for a stock adjustment may not decide it. */
     ADJUSTMENT_SELF_APPROVAL("A stock adjustment cannot be decided by the person who requested it", 409),
     INVALID_ADJUSTMENT_TRANSITION("This stock adjustment has already been decided", 409),

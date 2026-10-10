@@ -42,7 +42,7 @@ public interface RoleJpaRepository extends BaseJpaRepository<RoleJpaEntity> {
      * returns no rows.</p>
      */
     @Query(value = """
-            SELECT r.version AS version, p.resource AS resource, p.action AS action
+            SELECT r.version AS version, p.resource AS resource, p.action AS action, r.data_scope AS dataScope
             FROM identity.app_role r
             LEFT JOIN identity.role_permission rp ON rp.role_id = r.id
             LEFT JOIN identity.permission p ON p.id = rp.permission_id
