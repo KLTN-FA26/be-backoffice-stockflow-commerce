@@ -92,6 +92,8 @@ public enum ErrorCode {
     INSUFFICIENT_STOCK("Not enough available stock", 409),
     /** The destination already holds this SKU and lot in another status (QC state does not merge). */
     STOCK_STATUS_MISMATCH("The destination holds this lot in a different status", 409),
+    /** The location exists, but it, its shelf or its warehouse is BLOCKED, in MAINTENANCE or INACTIVE (issue #67). */
+    LOCATION_NOT_USABLE("This location cannot take stock right now", 409),
     /** Four eyes: whoever asked for a stock adjustment may not decide it. */
     ADJUSTMENT_SELF_APPROVAL("A stock adjustment cannot be decided by the person who requested it", 409),
     INVALID_ADJUSTMENT_TRANSITION("This stock adjustment has already been decided", 409),
