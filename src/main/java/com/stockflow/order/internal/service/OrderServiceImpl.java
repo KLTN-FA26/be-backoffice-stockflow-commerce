@@ -424,8 +424,10 @@ class OrderServiceImpl implements OrderService {
         var order = repository.findByIdForUpdate(new OrderId(orderId))
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         if (order.status() == OrderStatus.IN_FULFILMENT) { return toSummary(order); }
-        order.release();
-        return toSummary(repository.save(order));
+        order.startFulfilment();
+        Order saved = repository.save(order);
+        events.publishEventsOf(order);
+        return toSummary(saved);
     }
 
     @Override
@@ -486,7 +488,8 @@ class OrderServiceImpl implements OrderService {
                         .toList(),
                 order.placedAt(), order.createdBy(), order.lastModifiedAt(), order.lastModifiedBy(),
                 order.contactName(), order.contactEmail(), order.contactPhone(),
-                toSummary(order.shippingAddress()), toSummary(order.billingAddress()));
+                toSummary(order.shippingAddress()), toSummary(order.billingAddress()),
+                order.paymentTerm(), order.warehouseId(), order.releasedAt());
     }
 
     private void reserve(Order order, UUID requestId) {

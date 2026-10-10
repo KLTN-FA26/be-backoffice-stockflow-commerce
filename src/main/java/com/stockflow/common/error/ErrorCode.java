@@ -111,6 +111,10 @@ public enum ErrorCode {
     RECEIPT_LOT_DATA_INVALID("Lot or expiry data does not match how the item is tracked", 409),
     /** BR-08: accepted + quarantined + rejected must add up to what was moved to the QC area. */
     QC_QUANTITY_MISMATCH("The QC quantities do not add up to the quantity inspected", 409),
+    /** BR-PRD-08: a new design goes to print only after the customer approved its sample. */
+    DESIGN_SAMPLE_NOT_APPROVED("A design on this order has no approved sample yet", 409),
+    /** BR-PRD-09: a deposit order goes to production only once the deposit has arrived. */
+    ORDER_DEPOSIT_NOT_RECEIVED("The deposit for this order has not arrived yet", 409),
     OPTIMISTIC_LOCK("The record changed meanwhile, please retry", 409),
     /** Two writers reached the same row; the loser waited for the lock and gave up. Retryable. */
     LOCK_TIMEOUT("The record is busy, please retry", 409),

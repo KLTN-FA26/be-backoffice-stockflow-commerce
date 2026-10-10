@@ -43,7 +43,15 @@ public record OrderResponse(
         String contactEmail,
         String contactPhone,
         Address shippingAddress,
-        Address billingAddress
+        Address billingAddress,
+
+        @Schema(example = "PREPAID", description = "PREPAID, DEPOSIT or CREDIT; null on list rows that do not carry it")
+        String paymentTerm,
+
+        @Schema(description = "The warehouse the order was released from; null until released (SCRUM-423)")
+        UUID warehouseId,
+
+        Instant releasedAt
 ) {
 
     public record Address(String recipientName, String phone, String line1, String line2,

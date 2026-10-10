@@ -28,13 +28,26 @@ public record OrderSummary(
         String contactEmail,
         String contactPhone,
         AddressSummary shippingAddress,
-        AddressSummary billingAddress
+        AddressSummary billingAddress,
+        PaymentTerm paymentTerm,
+        UUID warehouseId,
+        Instant releasedAt
 ) {
 
     public OrderSummary(UUID orderId, String orderNumber, UUID customerId, OrderStatus status,
                         Money total, List<LineSummary> lines, Instant placedAt) {
         this(orderId, orderNumber, customerId, status, total, lines, placedAt,
                 null, null, null, null, null, null, null, null);
+    }
+
+    /** Without the release block: rows and callers that do not show where an order ships from. */
+    public OrderSummary(UUID orderId, String orderNumber, UUID customerId, OrderStatus status, Money total,
+                        List<LineSummary> lines, Instant placedAt, String createdBy, Instant lastModifiedAt,
+                        String lastModifiedBy, String contactName, String contactEmail, String contactPhone,
+                        AddressSummary shippingAddress, AddressSummary billingAddress) {
+        this(orderId, orderNumber, customerId, status, total, lines, placedAt, createdBy, lastModifiedAt,
+                lastModifiedBy, contactName, contactEmail, contactPhone, shippingAddress, billingAddress,
+                null, null, null);
     }
 
     public record AddressSummary(String recipientName, String phone, String line1, String line2,
