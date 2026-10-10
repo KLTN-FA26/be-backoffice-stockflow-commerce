@@ -54,6 +54,7 @@ public enum ErrorCode {
     CUSTOMER_NOT_FOUND("Customer not found", 404),
     ADDRESS_NOT_FOUND("Address not found", 404),
     WAREHOUSE_NOT_FOUND("Warehouse not found", 404),
+    GOODS_RECEIPT_NOT_FOUND("Goods receipt not found", 404),
     /** Also the answer for a zone of another warehouse: a zone id is only meaningful in its own. */
     ZONE_NOT_FOUND("Zone not found", 404),
     SHELF_NOT_FOUND("Shelf not found", 404),
@@ -95,6 +96,19 @@ public enum ErrorCode {
     INVALID_TRANSFER_TRANSITION("This transfer order cannot move to that status right now", 409),
     /** Four eyes on a transfer above the approval threshold. */
     TRANSFER_SELF_APPROVAL("A transfer order cannot be decided by the person who submitted it", 409),
+    /** BR-01 (docs 03): goods are received only against a CONFIRMED or PARTIALLY_RECEIVED purchase order. */
+    PURCHASE_ORDER_NOT_RECEIVABLE("Goods cannot be received against this purchase order now", 409),
+    INVALID_RECEIPT_TRANSITION("This goods receipt cannot move to that status right now", 409),
+    /** BR-02: the PO line would be received beyond the supplier's over-receipt tolerance. */
+    OVER_RECEIPT_TOLERANCE("The quantity exceeds what the purchase order line allows", 409),
+    /** The location exists but is not the kind of area this step needs (RECEIVING, QUALITY_CONTROL,
+     *  QUARANTINE), or is in another warehouse. */
+    LOCATION_AREA_MISMATCH("The location is not an area of the right kind in this warehouse", 409),
+    /** BR-03: a lot-tracked or expiry-tracked item was received without its lot or expiry date, or an
+     *  untracked one with a lot. */
+    RECEIPT_LOT_DATA_INVALID("Lot or expiry data does not match how the item is tracked", 409),
+    /** BR-08: accepted + quarantined + rejected must add up to what was moved to the QC area. */
+    QC_QUANTITY_MISMATCH("The QC quantities do not add up to the quantity inspected", 409),
     /** BR-PRD-08: a new design goes to print only after the customer approved its sample. */
     DESIGN_SAMPLE_NOT_APPROVED("A design on this order has no approved sample yet", 409),
     /** BR-PRD-09: a deposit order goes to production only once the deposit has arrived. */

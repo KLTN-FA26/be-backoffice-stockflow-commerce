@@ -56,6 +56,7 @@ class InventoryLevelTest {
                         repository,
                         mock(InventoryEventPublisher.class),
                         mock(StockOperations.class),
+                        mock(com.stockflow.inventory.internal.domain.InventoryItemDirectory.class),
                         clock,
                         mock(InventoryControlService.class),
                         mock(InventoryPolicyRepository.class));
@@ -71,6 +72,7 @@ class InventoryLevelTest {
                     repository,
                     mock(InventoryEventPublisher.class),
                     mock(StockOperations.class),
+                    mock(com.stockflow.inventory.internal.domain.InventoryItemDirectory.class),
                     Clock.systemUTC(),
                     mock(InventoryControlService.class),
                     mock(InventoryPolicyRepository.class));

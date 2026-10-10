@@ -171,6 +171,20 @@ public final class StockItem extends AggregateRoot {
                 0L);
     }
 
+    /**
+     * Goods counted in at a receiving location against a goods receipt (docs 03 step 6, SCRUM-435).
+     *
+     * <p>They start {@link StockStatus#INBOUND}: received, not yet put away, never sellable. One stock
+     * layer per receipt: {@code receivedAt} is the confirmation time, which also tells this layer
+     * apart from other receipts of the same SKU and lot at the same location.</p>
+     */
+    public static StockItem receiveInbound(Sku sku, LocationId location, String lotNumber,
+                                           LocalDate expiryDate, Quantity quantity, Instant receivedAt) {
+        Objects.requireNonNull(receivedAt, "receivedAt");
+        return new StockItem(StockItemId.newId(), sku, location, lotNumber, expiryDate, quantity,
+                StockStatus.INBOUND, List.of(), 0L, receivedAt, null);
+    }
+
     // ------------------------------------------------------------------ queries
 
     /** Units currently held by live reservations. */
@@ -459,14 +473,36 @@ public final class StockItem extends AggregateRoot {
         return arrived;
     }
 
+    /**
+     * Units moved out of {@code source} that change status on the way (SCRUM-435): a QC decision
+     * sends part of a receipt to the quarantine area as QUARANTINE or BLOCKED, a putaway turns
+     * INBOUND goods into AVAILABLE ones. The layer (receipt time, serial) travels with the goods.
+     */
+    public static StockItem arrivedAs(StockItem source, LocationId destination, Quantity quantity,
+                                      StockStatus status) {
+        if (source.location.equals(destination)) {
+            throw new IllegalArgumentException("A move needs two different locations");
+        }
+        StockItem arrived = new StockItem(StockItemId.newId(), source.sku, destination, source.lotNumber,
+                source.expiryDate, Quantity.ZERO, Objects.requireNonNull(status, "status"), List.of(), 0L,
+                source.receivedAt, source.serialNumber);
+        arrived.moveIn(quantity);
+        return arrived;
+    }
+
     /** Whether units of {@code other} may be merged into this stock item by a move. */
     public boolean canReceiveFrom(StockItem other) {
+        return canReceiveFrom(other, other.status);
+    }
+
+    /** Whether units of {@code other}, arriving as {@code arrivingStatus}, may be merged into this one. */
+    public boolean canReceiveFrom(StockItem other, StockStatus arrivingStatus) {
         return sku.equals(other.sku)
                 && Objects.equals(lotNumber, other.lotNumber)
                 && Objects.equals(receivedAt, other.receivedAt)
                 && Objects.equals(serialNumber, other.serialNumber)
                 && Objects.equals(expiryDate, other.expiryDate)
-                && status == other.status;
+                && status == arrivingStatus;
     }
 
     /**

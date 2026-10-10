@@ -148,10 +148,12 @@ SELECT pg_temp.expect_fail('R23 receiving 11 of 10 at 5% tolerance (BR-04)', $q$
     INSERT INTO procurement.goods_receipt_lines (id, receipt_id, po_line_id, inventory_item_id, location_id, received_qty)
     VALUES (gen_random_uuid(), md5('qa:gr:1')::uuid, md5('demo:po:1:line:1')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid,
             md5('demo:loc:HCM-RCV01')::uuid, 11) $q$);
+-- Received under the 3-step flow (qc_required snapshot), so QC below has goods to decide on.
 SELECT pg_temp.expect_ok('R24 receiving 10.5 of 10 (exactly at tolerance)', $q$
-    INSERT INTO procurement.goods_receipt_lines (id, receipt_id, po_line_id, inventory_item_id, location_id, received_qty)
+    INSERT INTO procurement.goods_receipt_lines (id, receipt_id, po_line_id, inventory_item_id, location_id, received_qty,
+                                                 qc_required)
     VALUES (md5('qa:grl:1')::uuid, md5('qa:gr:1')::uuid, md5('demo:po:1:line:1')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid,
-            md5('demo:loc:HCM-RCV01')::uuid, 10.5) $q$);
+            md5('demo:loc:HCM-RCV01')::uuid, 10.5, TRUE) $q$);
 SELECT pg_temp.expect_fail('R25 a second receipt pushing the total past tolerance', $q$
     INSERT INTO procurement.goods_receipts (id, receipt_number, po_id, po_revision_id, warehouse_id, received_at, received_by)
     VALUES (md5('qa:gr:2')::uuid, 'GR-QA-2', md5('demo:po:1')::uuid, md5('qa:po:1:rev0')::uuid, md5('demo:wh:HCM')::uuid, NOW(), md5('demo:user:editor')::uuid);
@@ -167,6 +169,11 @@ SELECT pg_temp.expect_fail('R26 the same PO line and lot twice on one receipt', 
             md5('demo:loc:HCM-RCV01')::uuid, 1, 'LOT-QA', '2030-01-01') $q$);
 SELECT pg_temp.expect_fail('R27 CONFIRMED receipt without who/when', $q$
     UPDATE procurement.goods_receipts SET status = 'CONFIRMED' WHERE id = md5('qa:gr:1')::uuid $q$);
+SELECT pg_temp.expect_ok('R27b receipt confirmed, the line moved to the QC area (BR-08 precondition)', $q$
+    UPDATE procurement.goods_receipts SET status = 'IN_QC', confirmed_by = md5('demo:user:approver')::uuid,
+        confirmed_at = NOW() WHERE id = md5('qa:gr:1')::uuid;
+    UPDATE procurement.goods_receipt_lines SET qc_location_id = md5('demo:loc:HCM-QCA01')::uuid, moved_to_qc_at = NOW(),
+        moved_to_qc_by = md5('demo:user:editor')::uuid WHERE id = md5('qa:grl:1')::uuid $q$);
 SELECT pg_temp.expect_fail('R28 QC inspects more than received', $q$
     INSERT INTO procurement.qc_inspections (id, receipt_line_id, outcome, quantity, inspected_by)
     VALUES (gen_random_uuid(), md5('qa:grl:1')::uuid, 'ACCEPTED', 11, md5('demo:user:editor')::uuid) $q$);
@@ -176,25 +183,31 @@ SELECT pg_temp.expect_fail('R29 quarantine without a location', $q$
 SELECT pg_temp.expect_fail('R30 rejection without a reason', $q$
     INSERT INTO procurement.qc_inspections (id, receipt_line_id, outcome, quantity, inspected_by)
     VALUES (gen_random_uuid(), md5('qa:grl:1')::uuid, 'REJECTED', 1, md5('demo:user:editor')::uuid) $q$);
-SELECT pg_temp.expect_ok('R31 QC: 8.5 accepted + 2 quarantined at QC01, then confirm', $q$
+SELECT pg_temp.expect_ok('R31 QC: 8.5 accepted + 2 quarantined at QC01', $q$
     INSERT INTO procurement.qc_inspections (id, receipt_line_id, outcome, quantity, inspected_by)
     VALUES (gen_random_uuid(), md5('qa:grl:1')::uuid, 'ACCEPTED', 8.5, md5('demo:user:editor')::uuid);
     INSERT INTO procurement.qc_inspections (id, receipt_line_id, outcome, quantity, target_location_id, reason, inspected_by)
     VALUES (gen_random_uuid(), md5('qa:grl:1')::uuid, 'QUARANTINE', 2, md5('demo:loc:HCM-QC01')::uuid, 'Trầy xước', md5('demo:user:editor')::uuid);
-    UPDATE procurement.goods_receipts SET status = 'CONFIRMED', confirmed_by = md5('demo:user:approver')::uuid,
-        confirmed_at = NOW() WHERE id = md5('qa:gr:1')::uuid $q$);
+    UPDATE procurement.goods_receipts SET status = 'IN_PUTAWAY' WHERE id = md5('qa:gr:1')::uuid $q$);
 SELECT pg_temp.expect_ok('R32 putaway task sourced from the receipt line', $q$
     INSERT INTO warehouse.putaway_task (id, goods_receipt_id, goods_receipt_line_id, sku, quantity, target_location_id, status, created_at)
     VALUES (gen_random_uuid(), md5('qa:gr:1')::uuid, md5('qa:grl:1')::uuid, 'SOFA-3S-GREY', 8, NULL, 'PENDING', NOW()) $q$);
 
 \echo '--- item data required before receiving (docs 01 BR-03)'
+-- GR-QA-1 is past DRAFT now and its lines are frozen (BR-05); the checks below count into a new draft.
+SELECT pg_temp.expect_ok('R32b a second, draft receipt with one 2-step line', $q$
+    INSERT INTO procurement.goods_receipts (id, receipt_number, po_id, po_revision_id, warehouse_id, received_at, received_by)
+    VALUES (md5('qa:gr:3')::uuid, 'GR-QA-3', md5('demo:po:1')::uuid, md5('qa:po:1:rev0')::uuid, md5('demo:wh:HCM')::uuid, NOW(), md5('demo:user:editor')::uuid);
+    INSERT INTO procurement.goods_receipt_lines (id, receipt_id, po_line_id, inventory_item_id, location_id, received_qty, lot_number, expiry_date)
+    VALUES (md5('qa:grl:3')::uuid, md5('qa:gr:3')::uuid, md5('qa:po:1:line:2')::uuid, md5('demo:item:TABLE-OAK-160')::uuid,
+            md5('demo:loc:HCM-RCV01')::uuid, 1, 'LOT-QA3', '2030-01-01') $q$);
 SELECT pg_temp.expect_fail('R33 lot-tracked item received without a lot', $q$
     INSERT INTO procurement.goods_receipt_lines (id, receipt_id, po_line_id, inventory_item_id, location_id, received_qty)
-    VALUES (gen_random_uuid(), md5('qa:gr:1')::uuid, md5('qa:po:1:line:2')::uuid, md5('demo:item:TABLE-OAK-160')::uuid,
+    VALUES (gen_random_uuid(), md5('qa:gr:3')::uuid, md5('qa:po:1:line:2')::uuid, md5('demo:item:TABLE-OAK-160')::uuid,
             md5('demo:loc:HCM-RCV01')::uuid, 1) $q$);
 SELECT pg_temp.expect_fail('R33b expiry-tracked item received without an expiry date', $q$
     INSERT INTO procurement.goods_receipt_lines (id, receipt_id, po_line_id, inventory_item_id, location_id, received_qty, lot_number)
-    VALUES (gen_random_uuid(), md5('qa:gr:1')::uuid, md5('qa:po:1:line:2')::uuid, md5('demo:item:TABLE-OAK-160')::uuid,
+    VALUES (gen_random_uuid(), md5('qa:gr:3')::uuid, md5('qa:po:1:line:2')::uuid, md5('demo:item:TABLE-OAK-160')::uuid,
             md5('demo:loc:HCM-RCV01')::uuid, 1, 'LOT-QA') $q$);
 SELECT pg_temp.expect_fail('R34 item without weight/dimensions received', $q$
     UPDATE inventory.inventory_items SET weight_kg = NULL WHERE sku = 'SOFA-3S-GREY';
@@ -294,8 +307,8 @@ SELECT pg_temp.expect_fail('QC11 a MANUAL move task pointing at a receipt line',
 SELECT pg_temp.expect_fail('QC12 move to QC for a line received under the 2-step flow (BR-07)', $q$
     INSERT INTO warehouse.move_task (id, task_number, warehouse_id, origin, sku, from_location_id, to_location_id,
                                      requested_qty, receipt_line_id)
-    VALUES (gen_random_uuid(), 'MT-QA-QC2', md5('demo:wh:HCM')::uuid, 'RECEIPT_QC', 'SOFA-3S-GREY',
-            md5('demo:loc:HCM-RCV01')::uuid, md5('qa:loc:HCM-QC02')::uuid, 1, md5('qa:grl:1')::uuid) $q$);
+    VALUES (gen_random_uuid(), 'MT-QA-QC2', md5('demo:wh:HCM')::uuid, 'RECEIPT_QC', 'TABLE-OAK-160',
+            md5('demo:loc:HCM-RCV01')::uuid, md5('qa:loc:HCM-QC02')::uuid, 1, md5('qa:grl:3')::uuid) $q$);
 SELECT pg_temp.expect_fail('QC13 move to QC in the wrong direction (QC area to RECEIVING)', $q$
     INSERT INTO warehouse.move_task (id, task_number, warehouse_id, origin, sku, lot_number, from_location_id, to_location_id,
                                      requested_qty, receipt_line_id)
@@ -325,6 +338,33 @@ SELECT pg_temp.expect_ok('QC19 ledger line INBOUND → AVAILABLE on putaway', $q
                                           from_status, to_status, reference_type, reference_id, occurred_at)
     VALUES (gen_random_uuid(), 'PUTAWAY', 'TABLE-OAK-160', 'LOT-QC', 'HCM-QC02', 'HCM-B01-2-A', 2, 'INBOUND', 'AVAILABLE',
             'PUTAWAY_TASK', gen_random_uuid(), NOW()) $q$);
+-- SCRUM-435 (V20261010000100): where a QC line's goods are, BR-05 on lines, BR-08 in the database.
+SELECT pg_temp.expect_fail('QC21 inspection before the goods are moved to the QC area (BR-08)', $q$
+    INSERT INTO procurement.qc_inspections (id, receipt_line_id, outcome, quantity, inspected_by)
+    VALUES (gen_random_uuid(), md5('qa:grl:qc')::uuid, 'ACCEPTED', 2, md5('demo:user:editor')::uuid) $q$);
+SELECT pg_temp.expect_fail('QC22 QC location set without who and when', $q$
+    UPDATE procurement.goods_receipt_lines SET qc_location_id = md5('qa:loc:HCM-QC02')::uuid
+     WHERE id = md5('qa:grl:qc')::uuid $q$);
+SELECT pg_temp.expect_fail('QC23 QC location that is a QUARANTINE area, not QUALITY_CONTROL', $q$
+    UPDATE procurement.goods_receipt_lines SET qc_location_id = md5('demo:loc:HCM-QC01')::uuid,
+           moved_to_qc_at = NOW(), moved_to_qc_by = md5('demo:user:editor')::uuid
+     WHERE id = md5('qa:grl:qc')::uuid $q$);
+SELECT pg_temp.expect_ok('QC24 goods of a QC line moved to the QC area', $q$
+    UPDATE procurement.goods_receipt_lines SET qc_location_id = md5('qa:loc:HCM-QC02')::uuid,
+           moved_to_qc_at = NOW(), moved_to_qc_by = md5('demo:user:editor')::uuid
+     WHERE id = md5('qa:grl:qc')::uuid $q$);
+SELECT pg_temp.expect_ok('QC25 inspection once the goods are in the QC area', $q$
+    INSERT INTO procurement.qc_inspections (id, receipt_line_id, outcome, quantity, inspected_by)
+    VALUES (gen_random_uuid(), md5('qa:grl:qc')::uuid, 'ACCEPTED', 2, md5('demo:user:editor')::uuid) $q$);
+SELECT pg_temp.expect_fail('QC26 recounting a line of a confirmed receipt (BR-05)', $q$
+    UPDATE procurement.goods_receipt_lines SET received_qty = 1 WHERE id = md5('qa:grl:qc')::uuid $q$);
+SELECT pg_temp.expect_fail('QC27 adding a line to a confirmed receipt (BR-05)', $q$
+    INSERT INTO procurement.goods_receipt_lines (id, receipt_id, po_line_id, inventory_item_id, location_id, received_qty,
+                                                 lot_number, expiry_date, qc_required)
+    SELECT gen_random_uuid(), receipt_id, po_line_id, inventory_item_id, location_id, 1, 'LOT-QC2', expiry_date, TRUE
+      FROM procurement.goods_receipt_lines WHERE id = md5('qa:grl:qc')::uuid $q$);
+SELECT pg_temp.expect_fail('QC28 removing a line of a confirmed receipt (BR-05)', $q$
+    DELETE FROM procurement.goods_receipt_lines WHERE id = md5('qa:grl:qc')::uuid $q$);
 SELECT pg_temp.expect_ok('QC20 receipt CLOSED with closed_at', $q$
     UPDATE procurement.goods_receipts SET status = 'CLOSED', closed_at = NOW() WHERE id = md5('qa:gr:qc')::uuid $q$);
 
