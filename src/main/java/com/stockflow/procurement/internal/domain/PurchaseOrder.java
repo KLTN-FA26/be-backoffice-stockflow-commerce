@@ -153,6 +153,27 @@ public final class PurchaseOrder extends AggregateRoot {
                 SupplierConfirmationStatus.NOT_SENT, null, null, null, 0L, null, null, null, null));
     }
 
+    /**
+     * A new SUBCONTRACT purchase order (SCRUM-434): the print work for one SUBCONTRACTED production
+     * order, one line, born {@link PurchaseOrderStatus#DRAFT}. From there it is submitted, approved and
+     * received like any other order. The database states the rest again ({@code check_subcontract_po}:
+     * print subcontractor, production order of the same warehouse, one line, one live order per
+     * production order).
+     */
+    public static PurchaseOrder subcontract(String poNumber, UUID productionOrderId, UUID supplierId, UUID warehouseId,
+                                            Currency currency, PoLine line, LocalDate orderDate, LocalDate expectedAt,
+                                            int paymentTermDays, int leadTimeDays) {
+        Objects.requireNonNull(productionOrderId, "productionOrderId");
+        if (expectedAt != null && expectedAt.isBefore(orderDate)) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "The expected delivery date cannot be before the order date");
+        }
+        return new PurchaseOrder(new State(PurchaseOrderId.newId(), poNumber, Type.SUBCONTRACT, productionOrderId,
+                supplierId, warehouseId, PurchaseOrderStatus.DRAFT, currency, List.of(line), orderDate, expectedAt,
+                null, paymentTermDays, leadTimeDays, 0, null, null, null, null, null, null, null, null, null, null,
+                null, null, null, SupplierConfirmationStatus.NOT_SENT, null, null, null, 0L, null, null, null, null));
+    }
+
     /** Line numbers of a new order: 1, 2, 3… in the order given. */
     public static PoLine line(int lineNo, UUID inventoryItemId, com.stockflow.common.domain.Sku sku, String uom,
                               String description, int quantity, Money unitPrice, BigDecimal taxRate) {

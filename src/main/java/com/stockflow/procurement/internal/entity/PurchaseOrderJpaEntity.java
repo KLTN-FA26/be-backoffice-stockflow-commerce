@@ -26,9 +26,12 @@ import java.util.UUID;
  *
  * <p>Number, supplier, warehouse, type and production order are fixed at creation — the
  * {@code tg_purchase_orders_immutable} triggers state it again, so they are
- * {@code updatable = false} here. Receiving changes {@code status} with native SQL from the goods
- * receipt; the {@code @Version} column makes a concurrent write through this entity fail instead of
- * putting the old status back. Free-text payment terms, incoterms, discounts, shipping fee and the
+ * {@code updatable = false} here. Everything else changes through {@link #apply} from the aggregate,
+ * except two narrow writers that keep their own view of the order: receiving moves the status with
+ * {@link #advanceByReceipt}, and a SUBCONTRACT draft's single line is resized with
+ * {@link PoLineJpaEntity#reviseDraftQuantity} and {@link #recomputeDraftTotals}. All of them go
+ * through this entity, so the {@code @Version} column makes a concurrent write fail instead of putting
+ * an old value back. Free-text payment terms, incoterms, discounts, shipping fee and the
  * replenishment link are not edited by any screen yet and are not mapped, so nothing overwrites them.</p>
  */
 @Entity
@@ -177,6 +180,31 @@ public class PurchaseOrderJpaEntity extends BaseEntity {
         this.supplierRespondedAt = o.supplierRespondedAt();
         this.supplierReference = o.supplierReference();
         this.supplierResponseNote = o.supplierResponseNote();
+    }
+
+    /**
+     * What a confirmed goods receipt does to the header: CONFIRMED or PARTIALLY_RECEIVED becomes
+     * PARTIALLY_RECEIVED or RECEIVED. The receiving model decides which; this refuses anything else so
+     * receiving can never close, cancel or reopen an order.
+     */
+    public void advanceByReceipt(PurchaseOrderStatus next) {
+        boolean receivingNow = status == PurchaseOrderStatus.CONFIRMED || status == PurchaseOrderStatus.PARTIALLY_RECEIVED;
+        boolean receivingNext = next == PurchaseOrderStatus.PARTIALLY_RECEIVED || next == PurchaseOrderStatus.RECEIVED;
+        if (!receivingNow || !receivingNext) {
+            throw new IllegalStateException("A goods receipt moves " + poNumber + " only between receiving states, not "
+                    + status + " -> " + next);
+        }
+        this.status = next;
+    }
+
+    /** Header totals from the lines, for a DRAFT whose lines changed ({@link PoLineJpaEntity#reviseDraftQuantity}). */
+    public void recomputeDraftTotals() {
+        if (status != PurchaseOrderStatus.DRAFT) {
+            throw new IllegalStateException(poNumber + " is " + status + ": only a draft's totals follow its lines");
+        }
+        this.subtotal = lines.stream().map(PoLineJpaEntity::getSubtotal).reduce(BigDecimal.ZERO, BigDecimal::add);
+        this.taxTotal = lines.stream().map(PoLineJpaEntity::getTax).reduce(BigDecimal.ZERO, BigDecimal::add);
+        this.totalAmount = lines.stream().map(PoLineJpaEntity::getTotal).reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
     public void addLine(PoLineJpaEntity line) {

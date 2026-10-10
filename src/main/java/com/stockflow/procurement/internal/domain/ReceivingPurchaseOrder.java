@@ -12,7 +12,7 @@ import java.util.UUID;
  * A purchase order as receiving sees it ({@code procurement.purchase_orders},
  * {@code purchase_order_lines}). Not the {@code PurchaseOrder} aggregate: receiving changes only what
  * receipt progress changes — the line and header status, and an event on the order's timeline — and
- * reads nothing else, so it reads the rows directly.
+ * reads nothing else. Its adapter reads and writes through the same JPA entities as the aggregate.
  *
  * @param tolerancePercent the supplier's over-receipt tolerance (BR-02), zero when none is set
  * @param supplierRejected the supplier refused the order (#36): nothing is received against it

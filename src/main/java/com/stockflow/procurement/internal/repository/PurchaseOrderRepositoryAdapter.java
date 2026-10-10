@@ -70,18 +70,20 @@ class PurchaseOrderRepositoryAdapter
     private final PoNumberSequence poNumberSequence;
     private final InventoryService inventory;
     private final WarehouseService warehouses;
+    private final PurchaseOrderEventLog events;
 
     @PersistenceContext
     private EntityManager entityManager;
 
     PurchaseOrderRepositoryAdapter(PurchaseOrderJpaRepository jpa, SupplierJpaRepository suppliers,
                                    PoNumberSequence poNumberSequence, InventoryService inventory,
-                                   WarehouseService warehouses) {
+                                   WarehouseService warehouses, PurchaseOrderEventLog events) {
         this.jpa = jpa;
         this.suppliers = suppliers;
         this.poNumberSequence = poNumberSequence;
         this.inventory = inventory;
         this.warehouses = warehouses;
+        this.events = events;
     }
 
     // ------------------------------------------------------------------ aggregate
@@ -91,7 +93,10 @@ class PurchaseOrderRepositoryAdapter
         return jpa.findWithLinesById(id.value()).map(this::toDomain);
     }
 
-    /** Locked and re-read: a goods receipt may have moved the status with native SQL since it was cached. */
+    /**
+     * Locked and re-read: the lock is taken by a query, and the entity this persistence context may
+     * already hold was read before it — deciding on that copy would make the lock decorative.
+     */
     @Override
     public Optional<PurchaseOrder> findByIdForUpdate(PurchaseOrderId id) {
         return jpa.findByIdForUpdate(id.value()).map(entity -> {
@@ -252,20 +257,8 @@ class PurchaseOrderRepositoryAdapter
     @Override
     public void recordEvent(PurchaseOrderId id, UUID revisionId, String action, UUID actorId, PurchaseOrderStatus from,
                             PurchaseOrderStatus to, String reason) {
-        entityManager.createNativeQuery("""
-                        INSERT INTO procurement.purchase_order_events
-                               (id, po_id, po_revision_id, action, actor_id, from_status, to_status, reason, created_at,
-                                created_by)
-                        VALUES (:id, :po, :revision, :action, :actor, :from, :to, :reason, NOW(), 'procurement')""")
-                .setParameter("id", Identifiers.newId())
-                .setParameter("po", id.value())
-                .setParameter("revision", revisionId)
-                .setParameter("action", action)
-                .setParameter("actor", actorId)
-                .setParameter("from", from == null ? null : from.name())
-                .setParameter("to", to == null ? null : to.name())
-                .setParameter("reason", reason == null ? null : truncate(reason, 500))
-                .executeUpdate();
+        events.record(id.value(), revisionId, action, actorId, from == null ? null : from.name(),
+                to == null ? null : to.name(), reason, null, "procurement");
     }
 
     // ------------------------------------------------------------------ search
