@@ -2,6 +2,7 @@ package com.stockflow.order.api;
 
 import com.stockflow.common.domain.Money;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -31,8 +32,34 @@ public record OrderSummary(
         AddressSummary billingAddress,
         PaymentTerm paymentTerm,
         UUID warehouseId,
-        Instant releasedAt
+        Instant releasedAt,
+        Payment payment,
+        Cancellation cancellation
 ) {
+
+    /** With the release block but without money and cancellation: list rows of other modules. */
+    public OrderSummary(UUID orderId, String orderNumber, UUID customerId, OrderStatus status, Money total,
+                        List<LineSummary> lines, Instant placedAt, String createdBy, Instant lastModifiedAt,
+                        String lastModifiedBy, String contactName, String contactEmail, String contactPhone,
+                        AddressSummary shippingAddress, AddressSummary billingAddress, PaymentTerm paymentTerm,
+                        UUID warehouseId, Instant releasedAt) {
+        this(orderId, orderNumber, customerId, status, total, lines, placedAt, createdBy, lastModifiedAt,
+                lastModifiedBy, contactName, contactEmail, contactPhone, shippingAddress, billingAddress,
+                paymentTerm, warehouseId, releasedAt, null, null);
+    }
+
+    /**
+     * The money side of the order (SCRUM-460, kltn-docs 15 §5.2).
+     *
+     * @param depositRequired null unless the order is on DEPOSIT terms
+     */
+    public record Payment(BigDecimal paidAmount, BigDecimal depositRequired, Instant depositReceivedAt,
+                          Instant paidInFullAt, PaymentStatus status) {
+    }
+
+    /** Why and on what terms a cancelled order was cancelled; null while it is not. */
+    public record Cancellation(CancellationReasonCode reasonCode, String reason, BigDecimal retainedAmount) {
+    }
 
     public OrderSummary(UUID orderId, String orderNumber, UUID customerId, OrderStatus status,
                         Money total, List<LineSummary> lines, Instant placedAt) {

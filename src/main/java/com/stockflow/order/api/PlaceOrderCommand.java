@@ -19,12 +19,20 @@ public record PlaceOrderCommand(
         UUID shippingAddressId,
         UUID billingAddressId,
         boolean snapshotCustomer,
-        List<Line> lines
+        List<Line> lines,
+        PaymentTerm paymentTerm,
+        java.math.BigDecimal depositPercent
 ) {
 
     /** Compatibility constructor for trusted internal callers and existing integrations. */
     public PlaceOrderCommand(UUID requestId, UUID customerId, List<Line> lines) {
-        this(requestId, customerId, null, null, false, lines);
+        this(requestId, customerId, null, null, false, lines, null, null);
+    }
+
+    /** Prepaid, the default terms (kltn-docs 15 §4.1). */
+    public PlaceOrderCommand(UUID requestId, UUID customerId, UUID shippingAddressId, UUID billingAddressId,
+                             boolean snapshotCustomer, List<Line> lines) {
+        this(requestId, customerId, shippingAddressId, billingAddressId, snapshotCustomer, lines, null, null);
     }
 
     public PlaceOrderCommand {

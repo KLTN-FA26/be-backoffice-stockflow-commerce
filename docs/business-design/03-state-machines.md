@@ -397,6 +397,27 @@ artwork and cannot be resold.
 | PICKING | no | yes, with reason | put-back task (WBS 3.7.7.2) |
 | PACKED and later | no | no — must go through RMA | — |
 
+**Implemented 2026-10-10 (SCRUM-460).**
+- **One state for "may go ahead":** the code has `CONFIRMED` (kltn-docs 17 §5); `PAID` became `CONFIRMED`.
+  The money is the order's `paid_amount`, from which the payment status of kltn-docs 15 §5.2 (UNPAID /
+  PARTIALLY_PAID / ON_CREDIT / PAID) is derived. A prepaid order is confirmed when paid in full, a
+  deposit order when its deposit is in (15 BR-02). Money arriving later never moves the order.
+- **Every cancellation names a reason code** — CUSTOMER_REQUEST, PAYMENT_NOT_RECEIVED, PAYMENT_FAILED,
+  OUT_OF_STOCK, SUSPECTED_FRAUD, CREDIT_REJECTED, DUPLICATE_ORDER, PRODUCTION_ISSUE, or OTHER with a note.
+- **When the customer cancels directly:** in DRAFT / PENDING_PAYMENT / CONFIRMED, at once. From
+  IN_PRODUCTION / READY_TO_FULFILL / IN_FULFILMENT / ON_HOLD the customer opens a **cancellation
+  request**, one pending at a time.
+- **Who decides a request:** Sales or the coordinator approve or reject it with
+  `sales-order-cancellations:UPDATE` (kltn-docs 17 §2), the permission that also cancels from the back
+  office.
+- **Fee kept:** approving or cancelling from the back office may keep a percentage of what was paid
+  (17 §4.4, 15 §4.4, never more than paid — 15 BR-05).
+- **`OrderCancelled` is published on every path.**
+  - Payment cancels awaited payments and asks back the refundable amount as PENDING refunds.
+  - Fulfillment cancels the pick and pack, flagging picked goods for put-back.
+  - Production (SCRUM-393) cancels the production orders not yet printing and holds the others; the
+    contract is `contracts.OrderCancelled`.
+
 ### Order-line status
 
 Order lines carry their own status, because a partially shortable order is normal.

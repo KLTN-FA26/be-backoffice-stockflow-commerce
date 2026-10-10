@@ -4,7 +4,12 @@ import com.stockflow.order.api.ListOrdersQuery;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.internal.controller.dto.OrderStatusChangeResponse;
+import com.stockflow.order.api.CancelOrderCommand;
+import com.stockflow.order.api.CancellationOutcome;
+import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.internal.controller.dto.AdminCancelOrderRequest;
+import com.stockflow.order.internal.controller.dto.CancelOrderRequest;
+import com.stockflow.order.internal.controller.dto.CancellationResultResponse;
 import com.stockflow.order.internal.controller.dto.OrderResponse;
 import com.stockflow.order.internal.controller.dto.PlaceOrderRequest;
 import com.stockflow.common.api.ApiResponse;
@@ -125,21 +130,39 @@ class OrderController {
      * the permission layer.</p>
      */
     @PostMapping("/{orderId}/cancellation")
-    @Operation(summary = "Cancel an order and release its reservations")
+    @Operation(summary = "Cancel your order; once released to production or the warehouse, ask for it to be "
+            + "cancelled (202, decided by Sales)")
     @RequiresPermission(resource = OrderResources.ORDERS,
             action = Action.UPDATE, scope = DataScope.OWN)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "order", resourceId = "#orderId")
-    public ApiResponse<Void> cancel(@PathVariable UUID orderId,
-                             @RequestParam(value = "reason", required = false) String reason,
-                             @AuthenticatedUser CurrentUser user) {
-        String why = reason == null ? "CUSTOMER_REQUEST" : reason;
+    public org.springframework.http.ResponseEntity<ApiResponse<CancellationResultResponse>> cancel(
+            @PathVariable UUID orderId,
+            @Valid @RequestBody(required = false) CancelOrderRequest request,
+            @RequestParam(value = "reason", required = false) String reason,
+            @AuthenticatedUser CurrentUser user) {
         UUID ownCustomerId = ownCustomerIdOrNull(user);
         if (ownCustomerId == null) {
-            orderService.cancel(orderId, why);
-        } else {
-            orderService.cancelOwn(orderId, ownCustomerId, why);
+            // Staff on the customer path: an immediate cancellation, as before reason codes.
+            CancelOrderCommand command = request != null && request.reasonCode() != null
+                    ? new CancelOrderCommand(request.reasonCode(), request.note(), null, user.userId())
+                    : CancelOrderCommand.fromText(reason == null ? "CUSTOMER_REQUEST" : reason, user.userId());
+            var order = orderService.cancel(orderId, command);
+            return org.springframework.http.ResponseEntity.ok(ApiResponse.ok(new CancellationResultResponse(
+                    CancellationOutcome.Result.CANCELLED.name(), null, OrderWebMapper.toResponse(order))));
         }
-        return ApiResponse.ok(null);
+        CancellationReasonCode code = request != null ? request.reasonCode() : null;
+        String note = request != null ? request.note() : null;
+        if (request == null && reason != null && !reason.isBlank()) {
+            CancelOrderCommand legacy = CancelOrderCommand.fromText(reason, user.userId());
+            code = legacy.reasonCode();
+            note = legacy.note();
+        }
+        CancellationOutcome outcome = orderService.cancelOwn(orderId, ownCustomerId, code, note, user.userId());
+        var body = ApiResponse.ok(new CancellationResultResponse(outcome.result().name(), outcome.requestId(),
+                OrderWebMapper.toResponse(outcome.order())));
+        return outcome.result() == CancellationOutcome.Result.REQUESTED
+                ? org.springframework.http.ResponseEntity.status(HttpStatus.ACCEPTED).body(body)
+                : org.springframework.http.ResponseEntity.ok(body);
     }
 
     /**
@@ -156,10 +179,21 @@ class OrderController {
     @RequiresPermission(resource = OrderResources.ORDER_CANCELLATIONS,
             action = Action.UPDATE, scope = DataScope.ALL)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "order", resourceId = "#orderId")
-    public ApiResponse<Void> adminCancel(@PathVariable UUID orderId,
-                             @Valid @RequestBody AdminCancelOrderRequest request) {
-        orderService.cancel(orderId, request.reason());
-        return ApiResponse.ok(null);
+    public ApiResponse<OrderResponse> adminCancel(@PathVariable UUID orderId,
+                                                  @Valid @RequestBody AdminCancelOrderRequest request,
+                                                  @AuthenticatedUser CurrentUser user) {
+        CancelOrderCommand command;
+        if (request.reasonCode() != null) {
+            command = new CancelOrderCommand(request.reasonCode(), request.note(), request.retainedPercent(),
+                    user.userId());
+        } else if (request.reason() != null && !request.reason().isBlank()) {
+            CancelOrderCommand legacy = CancelOrderCommand.fromText(request.reason(), user.userId());
+            command = new CancelOrderCommand(legacy.reasonCode(), legacy.note(), request.retainedPercent(),
+                    user.userId());
+        } else {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "reasonCode is required");
+        }
+        return ApiResponse.ok(OrderWebMapper.toResponse(orderService.cancel(orderId, command)));
     }
 
     /**

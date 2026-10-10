@@ -70,6 +70,7 @@ public enum ErrorCode {
     /** No stock of this SKU (and lot) is held at this location. */
     STOCK_ITEM_NOT_FOUND("No such stock at this location", 404),
     STOCK_ADJUSTMENT_NOT_FOUND("Stock adjustment not found", 404),
+    CANCELLATION_REQUEST_NOT_FOUND("Cancellation request not found", 404),
     RESERVATION_NOT_FOUND("Stock reservation not found", 404),
     TRANSFER_ORDER_NOT_FOUND("Transfer order not found", 404),
     /** The SKU has no inventory item yet: its logistics data must be completed first (docs 01 BR-03). */
@@ -135,6 +136,11 @@ public enum ErrorCode {
     DESIGN_SAMPLE_NOT_APPROVED("A design on this order has no approved sample yet", 409),
     /** BR-PRD-09: a deposit order goes to production only once the deposit has arrived. */
     ORDER_DEPOSIT_NOT_RECEIVED("The deposit for this order has not arrived yet", 409),
+    /** SCRUM-460: from IN_PRODUCTION on, a customer asks and Sales or the coordinator decides. */
+    ORDER_NOT_CANCELLABLE("This order can no longer be cancelled; raise a return instead", 409),
+    ORDER_CANCELLATION_REQUEST_PENDING("A cancellation request for this order is already waiting for a decision", 409),
+    ORDER_CANCELLATION_REQUEST_NOT_PENDING("This cancellation request has already been decided", 409),
+    PAYMENT_TERM_NOT_ALLOWED("This payment term is not available for this order", 409),
     OPTIMISTIC_LOCK("The record changed meanwhile, please retry", 409),
     /** Two writers reached the same row; the loser waited for the lock and gave up. Retryable. */
     LOCK_TIMEOUT("The record is busy, please retry", 409),

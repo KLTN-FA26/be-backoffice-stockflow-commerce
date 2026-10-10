@@ -5,6 +5,9 @@ import com.stockflow.inventory.api.ReserveStockResult;
 import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.customer.api.CheckoutCustomer;
 import com.stockflow.customer.api.CustomerService;
+import com.stockflow.order.api.CancelOrderCommand;
+import com.stockflow.order.api.CancellationOutcome;
+import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.ListOrdersQuery;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatusChange;
@@ -18,6 +21,9 @@ import com.stockflow.order.internal.domain.OrderLine;
 import com.stockflow.order.internal.domain.OrderNumber;
 import com.stockflow.order.internal.domain.OrderAddressSnapshot;
 import com.stockflow.order.internal.domain.OrderRepository;
+import com.stockflow.order.internal.domain.CancellationRequest;
+import com.stockflow.order.internal.domain.CancellationRequestRepository;
+import com.stockflow.order.internal.domain.OrderPayments;
 import com.stockflow.order.internal.repository.OrderSearchRepository;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.error.BusinessException;
@@ -104,13 +110,16 @@ class OrderServiceImpl implements OrderService {
     private final OrderHoldJpaRepository holds;
     private final CustomerService customers;
     private final CatalogService catalog;
+    private final OrderPayments payments;
+    private final CancellationRequestRepository cancellationRequests;
 
     OrderServiceImpl(OrderRepository repository, OrderSearchRepository search,
                      InventoryService inventory, OrderEventPublisher events, Clock clock,
             DesignService designs,
             OrderHoldJpaRepository holds,
                      CustomerService customers,
-            CatalogService catalog) {
+            CatalogService catalog, OrderPayments payments,
+                     CancellationRequestRepository cancellationRequests) {
         this.repository = repository;
         this.search = search;
         this.inventory = inventory;
@@ -120,6 +129,8 @@ class OrderServiceImpl implements OrderService {
         this.holds = holds;
         this.customers = customers;
         this.catalog = catalog;
+        this.payments = payments;
+        this.cancellationRequests = cancellationRequests;
     }
 
     /**
@@ -189,6 +200,8 @@ class OrderServiceImpl implements OrderService {
             order = Order.draft(orderNumber, command.customerId(), command.requestId(),
                     lines, clock.instant());
         }
+        // Before any stock is held: terms that cannot be accepted refuse the order cheaply.
+        order.applyTerms(command.paymentTerm(), command.depositPercent());
 
         // Direct in-process call across the module boundary, through inventory's published port.
         // It joins this transaction. If reserve() throws InsufficientStockException on line 3,
@@ -316,25 +329,60 @@ class OrderServiceImpl implements OrderService {
      * imposes no ownership restriction at all.</p>
      */
     @Override
-    public void cancel(UUID orderId, String reason) {
+    public OrderSummary cancel(UUID orderId, CancelOrderCommand command) {
         Order order = repository.findByIdInScope(new OrderId(orderId))
                 .orElseThrow(() -> new BusinessException(
                         ErrorCode.NOT_FOUND, "No order with id " + orderId));
-        cancelLoaded(order, reason);
+        return toSummary(cancelLoaded(order, command));
     }
 
     @Override
-    public void cancelOwn(UUID orderId, UUID customerId, String reason) {
+    public void cancel(UUID orderId, String reason) {
+        cancel(orderId, CancelOrderCommand.fromText(reason, null));
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>A second request while one is pending is refused rather than stacked: the customer has
+     * already asked, and Sales should see one question per order.</p>
+     */
+    @Override
+    public CancellationOutcome cancelOwn(UUID orderId, UUID customerId, CancellationReasonCode reasonCode,
+                                         String note, UUID requestedBy) {
         Order order = repository.findByIdForUpdate(new OrderId(orderId))
                 .filter(found -> customerId != null && customerId.equals(found.customerId()))
                 .orElseThrow(() -> new BusinessException(
                         ErrorCode.NOT_FOUND, "No order with id " + orderId));
-        cancelLoaded(order, reason);
+        CancellationReasonCode code = reasonCode == null ? CancellationReasonCode.CUSTOMER_REQUEST : reasonCode;
+        if (order.status().customerMayCancelDirectly()) {
+            Order cancelled = cancelLoaded(order, new CancelOrderCommand(code, note, null, requestedBy));
+            return new CancellationOutcome(CancellationOutcome.Result.CANCELLED, null, toSummary(cancelled));
+        }
+        if (!order.status().canTransitionTo(OrderStatus.CANCELLED)) {
+            throw new BusinessException(ErrorCode.ORDER_NOT_CANCELLABLE,
+                    "Order %s is %s and can no longer be cancelled; raise a return instead"
+                            .formatted(order.orderNumber(), order.status()));
+        }
+        if (cancellationRequests.hasPending(order.id().value())) {
+            throw new BusinessException(ErrorCode.ORDER_CANCELLATION_REQUEST_PENDING,
+                    "Order %s already has a cancellation request waiting".formatted(order.orderNumber()));
+        }
+        CancellationRequest request = cancellationRequests.save(
+                CancellationRequest.open(order.id().value(), requestedBy, code, note, clock.instant()));
+        log.info("Cancellation of order {} requested ({})", order.orderNumber(), code);
+        return new CancellationOutcome(CancellationOutcome.Result.REQUESTED, request.id(), toSummary(order));
     }
 
-    private void cancelLoaded(Order order, String reason) {
+    /**
+     * Cancels a loaded, locked order: releases its holds, records the reason and publishes
+     * {@code OrderCancelled}, all in this transaction. Shared by every cancellation path, including
+     * an approved request ({@code CancellationRequestService}).
+     */
+    Order cancelLoaded(Order order, CancelOrderCommand command) {
         boolean wasHoldingStock = order.status().holdsStock();
-        order.cancel(reason);
+        order.cancel(command.reasonCode(), command.note(), command.retainedPercent(), command.cancelledBy(),
+                clock.instant());
 
         if (wasHoldingStock) {
             order.reservationIds()
@@ -342,9 +390,16 @@ class OrderServiceImpl implements OrderService {
             order.clearReservations();
         }
 
-        repository.save(order);
+        Order saved = repository.save(order);
         events.publishEventsOf(order);
-        log.info("Cancelled order {} ({})", order.orderNumber(), reason);
+        log.info("Cancelled order {} ({})", order.orderNumber(), order.cancellationReason());
+        return saved;
+    }
+
+    /** For an approved cancellation request: the order, locked. */
+    Order loadForUpdate(UUID orderId) {
+        return repository.findByIdForUpdate(new OrderId(orderId))
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));
     }
 
     /**
@@ -395,42 +450,50 @@ class OrderServiceImpl implements OrderService {
      * but it would encode "what inventory does when a payment fails" inside the order module, and
      * that is inventory's business, not order's.</p>
      */
-    public void cancelAfterPaymentFailure(UUID orderId, String reason) {
+    public void cancelAfterPaymentFailure(UUID orderId, String failureCode) {
         Order order = repository.findByIdForUpdate(new OrderId(orderId))
                 .orElseThrow(() -> new IllegalArgumentException("No order with id " + orderId));
         if (order.status() == OrderStatus.CANCELLED) {
             return; // Redelivered event; already handled.
         }
-        order.cancel(reason);
+        order.cancel(CancellationReasonCode.PAYMENT_FAILED, failureCode, null, null, clock.instant());
         order.clearReservations();
         repository.save(order);
         events.publishEventsOf(order);
     }
 
     /**
-     * Move an order to PAID and pin its holds. Called by {@code PaymentEventListener}, not exposed on
-     * the port.
+     * Count a captured payment, and confirm the order when it is the money its terms ask for (kltn-docs
+     * 15 BR-02). Called by {@code PaymentEventListener}, not exposed on the port.
      *
-     * <p>Pinning joins this transaction (kltn-docs 14 BR-07, SCRUM-465): a paid order's stock no
-     * longer expires, and committing the status and the pins together leaves the expiry sweep no
-     * moment in which the order is paid but its holds can still lapse.</p>
+     * <p>Counted once per payment ({@code ordering.order_payment}): the event is delivered at least
+     * once. Confirming pins the holds in this transaction (kltn-docs 14 BR-07, SCRUM-465): a
+     * confirmed order's stock no longer expires, and committing the status and the pins together
+     * leaves the expiry sweep no moment in which the order is confirmed but its holds can still lapse.</p>
      *
-     * <p>A payment for an order already cancelled — its holds expired before the money arrived — is
-     * not an error to retry forever: it is logged for the refund flow (SCRUM-460) and left alone.</p>
+     * <p>Money in a currency the order is not in is not added up: it is logged for a person to sort
+     * out, not retried forever. Money for an order already cancelled — its hold expired before the
+     * money arrived — is counted and logged for Sales to settle with the customer (kltn-docs 15).</p>
      */
-    public void markPaid(UUID orderId) {
+    public void recordPayment(UUID orderId, UUID paymentId, java.math.BigDecimal amount, String currency) {
         Order order = repository.findByIdForUpdate(new OrderId(orderId))
                 .orElseThrow(() -> new IllegalArgumentException("No order with id " + orderId));
-        if (order.status() == OrderStatus.PAID) {
-            return; // Redelivered event; nothing to do.
-        }
-        if (order.status() == OrderStatus.CANCELLED) {
-            log.warn("Payment captured for order {}, which is already cancelled ({}); it needs a refund",
-                    order.orderNumber(), order.cancellationReason());
+        if (!order.total().currency().getCurrencyCode().equals(currency)) {
+            log.error("Payment {} for order {} is in {}, the order in {}; not counted",
+                    paymentId, order.orderNumber(), currency, order.total().currency());
             return;
         }
-        order.markPaid();
-        inventory.pinReservations(orderId);
+        if (!payments.record(paymentId, orderId, amount, currency, clock.instant())) {
+            return; // Redelivered event; already counted.
+        }
+        boolean confirmed = order.recordPayment(new Money(amount, order.total().currency()), clock.instant());
+        if (confirmed) {
+            inventory.pinReservations(orderId);
+        }
+        if (order.status() == OrderStatus.CANCELLED) {
+            log.warn("Payment {} of {} {} arrived for order {}, already cancelled ({}); settle it with the customer",
+                    paymentId, amount, currency, order.orderNumber(), order.cancellationReason());
+        }
         repository.save(order);
         events.publishEventsOf(order);
     }
@@ -447,7 +510,8 @@ class OrderServiceImpl implements OrderService {
         if (found.isEmpty() || found.get().status() != OrderStatus.PENDING_PAYMENT) {
             return;
         }
-        cancelLoaded(found.get(), "RESERVATION_EXPIRED: not paid before the stock hold ran out");
+        cancelLoaded(found.get(), new CancelOrderCommand(CancellationReasonCode.PAYMENT_NOT_RECEIVED,
+                "not paid before the stock hold ran out", null, null));
     }
 
     @Override
@@ -520,7 +584,13 @@ class OrderServiceImpl implements OrderService {
                 order.placedAt(), order.createdBy(), order.lastModifiedAt(), order.lastModifiedBy(),
                 order.contactName(), order.contactEmail(), order.contactPhone(),
                 toSummary(order.shippingAddress()), toSummary(order.billingAddress()),
-                order.paymentTerm(), order.warehouseId(), order.releasedAt());
+                order.paymentTerm(), order.warehouseId(), order.releasedAt(),
+                new OrderSummary.Payment(order.paidAmount(), order.depositRequired(), order.depositReceivedAt(),
+                        order.paidInFullAt(), order.paymentStatus()),
+                order.status() == OrderStatus.CANCELLED
+                        ? new OrderSummary.Cancellation(order.cancellationReasonCode(), order.cancellationReason(),
+                                order.cancellationRetainedAmount())
+                        : null);
     }
 
     private void reserve(Order order, UUID requestId) {

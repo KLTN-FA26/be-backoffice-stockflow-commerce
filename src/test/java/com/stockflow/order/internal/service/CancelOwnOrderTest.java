@@ -1,5 +1,10 @@
 package com.stockflow.order.internal.service;
 
+import com.stockflow.order.api.CancellationOutcome;
+import com.stockflow.order.api.CancellationReasonCode;
+import com.stockflow.order.internal.domain.CancellationRequestRepository;
+import com.stockflow.order.internal.domain.OrderId;
+import com.stockflow.order.internal.domain.OrderPayments;
 import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
@@ -39,10 +44,11 @@ class CancelOwnOrderTest {
 
     private static final Instant NOW = Instant.parse("2026-09-20T03:00:00Z");
     private final OrderRepository repository = mock(OrderRepository.class);
+    private final CancellationRequestRepository requests = mock(CancellationRequestRepository.class);
     private final OrderServiceImpl service = new OrderServiceImpl(repository, mock(OrderSearchRepository.class),
             mock(InventoryService.class), mock(OrderEventPublisher.class), Clock.systemUTC(),
             mock(DesignService.class), mock(OrderHoldJpaRepository.class), mock(CustomerService.class),
-            mock(com.stockflow.catalog.api.CatalogService.class));
+            mock(com.stockflow.catalog.api.CatalogService.class), mock(OrderPayments.class), requests);
 
     private Order orderOf(UUID customerId) {
         var order = Order.draft(OrderNumber.of(LocalDate.of(2026, 9, 20), 7), customerId, UUID.randomUUID(),
@@ -57,17 +63,55 @@ class CancelOwnOrderTest {
         UUID customer = UUID.randomUUID();
         var order = orderOf(customer);
 
-        service.cancelOwn(order.id().value(), customer, "CUSTOMER_REQUEST");
+        var outcome = service.cancelOwn(order.id().value(), customer, null, null, UUID.randomUUID());
 
+        assertThat(outcome.result()).isEqualTo(CancellationOutcome.Result.CANCELLED);
         assertThat(order.status()).isEqualTo(OrderStatus.CANCELLED);
+        assertThat(order.cancellationReasonCode()).isEqualTo(CancellationReasonCode.CUSTOMER_REQUEST);
         verify(repository).save(order);
+        verify(requests, never()).save(any());
+    }
+
+    @Test
+    void onceReleasedTheCustomerAsksAndTheOrderGoesOn() {
+        UUID customer = UUID.randomUUID();
+        var order = released(customer);
+        when(requests.save(any())).thenAnswer(call -> call.getArgument(0));
+
+        var outcome = service.cancelOwn(order.id().value(), customer, CancellationReasonCode.CUSTOMER_REQUEST,
+                "wrong logo", UUID.randomUUID());
+
+        assertThat(outcome.result()).isEqualTo(CancellationOutcome.Result.REQUESTED);
+        assertThat(outcome.requestId()).isNotNull();
+        assertThat(order.status()).isEqualTo(OrderStatus.IN_PRODUCTION);
+        verify(repository, never()).save(any());
+    }
+
+    @Test
+    void aSecondRequestWhileOneIsPendingIsRefused() {
+        UUID customer = UUID.randomUUID();
+        var order = released(customer);
+        when(requests.hasPending(order.id().value())).thenReturn(true);
+
+        assertThatThrownBy(() -> service.cancelOwn(order.id().value(), customer, null, null, UUID.randomUUID()))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.ORDER_CANCELLATION_REQUEST_PENDING));
+        verify(requests, never()).save(any());
+    }
+
+    private Order released(UUID customerId) {
+        var order = new Order(OrderId.newId(), OrderNumber.of(LocalDate.of(2026, 9, 20), 8), customerId,
+                UUID.randomUUID(), List.of(Order.line(new Sku("CUP-12OZ-WHITE"), 500, Money.vnd(2_000), UUID.randomUUID())),
+                OrderStatus.IN_PRODUCTION, NOW, null, 0L);
+        when(repository.findByIdForUpdate(order.id())).thenReturn(Optional.of(order));
+        return order;
     }
 
     @Test
     void anotherCustomerGetsNotFoundAndNothingChanges() {
         var order = orderOf(UUID.randomUUID());
 
-        assertThatThrownBy(() -> service.cancelOwn(order.id().value(), UUID.randomUUID(), "x"))
+        assertThatThrownBy(() -> service.cancelOwn(order.id().value(), UUID.randomUUID(), null, "x", null))
                 .isInstanceOfSatisfying(BusinessException.class,
                         ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.NOT_FOUND));
         assertThat(order.status()).isEqualTo(OrderStatus.DRAFT);
@@ -78,7 +122,7 @@ class CancelOwnOrderTest {
     void aMissingCustomerIdNeverMatchesAnOrder() {
         var order = orderOf(UUID.randomUUID());
 
-        assertThatThrownBy(() -> service.cancelOwn(order.id().value(), null, "x"))
+        assertThatThrownBy(() -> service.cancelOwn(order.id().value(), null, null, "x", null))
                 .isInstanceOf(BusinessException.class);
     }
 }

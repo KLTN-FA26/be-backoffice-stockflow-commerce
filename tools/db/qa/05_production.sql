@@ -33,8 +33,10 @@ SELECT md5('qa:draft:1')::uuid, id, (SELECT p.id FROM product.products p ORDER B
        '{}'::jsonb FROM customer.customer LIMIT 1;
 INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at, artifact_manifest)
 VALUES (md5('qa:snap:1')::uuid, md5('qa:draft:1')::uuid, repeat('a', 64), 'https://example.com/a.pdf', NOW(), NOW(), '[]'::jsonb);
-INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at, created_at)
-SELECT md5('qa:order:1')::uuid, 'ORD-QA-PRD-1', id, gen_random_uuid(), 'PAID', 1000000, 'VND', NOW(), NOW() FROM customer.customer LIMIT 1;
+INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at, created_at,
+                                     paid_amount, paid_in_full_at)
+SELECT md5('qa:order:1')::uuid, 'ORD-QA-PRD-1', id, gen_random_uuid(), 'CONFIRMED', 1000000, 'VND', NOW(), NOW(), 1000000, NOW()
+  FROM customer.customer LIMIT 1;
 INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency, design_snapshot_id, design_checksum)
 VALUES (md5('qa:oline:1')::uuid, md5('qa:order:1')::uuid, 'SOFA-3S-GREY', 500, 2000, 'VND', md5('qa:snap:1')::uuid, repeat('a', 64));
 

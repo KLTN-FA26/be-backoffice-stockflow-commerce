@@ -28,18 +28,30 @@ public interface OrderService {
 
     Optional<OrderSummary> findById(UUID orderId);
 
-    /** Cancel an order and release whatever stock it was holding. */
+    /**
+     * Cancel an order and release whatever stock it was holding; {@code OrderCancelled} tells payment,
+     * fulfillment and production (SCRUM-460).
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code ORDER_NOT_CANCELLABLE} from SHIPPED on
+     */
+    OrderSummary cancel(UUID orderId, CancelOrderCommand command);
+
+    /** {@link #cancel(UUID, CancelOrderCommand)} with a free-text reason, read by {@link CancelOrderCommand#fromText}. */
     void cancel(UUID orderId, String reason);
 
     /**
-     * A customer cancelling their own order. {@code customerId} is the customer profile id that
-     * orders are stored under, not the sign-in id, so the ownership check is made here explicitly
-     * rather than through the ambient data scope (which compares against the sign-in id).
+     * A customer cancelling their own order: at once while nothing has been released, otherwise as a
+     * request Sales decides (kltn-docs 17 §2, §4.4). {@code customerId} is the customer profile id
+     * that orders are stored under, not the sign-in id, so the ownership check is made here
+     * explicitly rather than through the ambient data scope (which compares against the sign-in id).
      *
+     * @param requestedBy the signed-in user, recorded on a request
      * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND} if the order is not this
-     *         customer's, so the existence of another customer's order is not revealed
+     *         customer's, so the existence of another customer's order is not revealed;
+     *         {@code ORDER_CANCELLATION_REQUEST_PENDING} when a request is already waiting
      */
-    void cancelOwn(UUID orderId, UUID customerId, String reason);
+    CancellationOutcome cancelOwn(UUID orderId, UUID customerId, CancellationReasonCode reasonCode, String note,
+                                  UUID requestedBy);
 
     OrderSummary releaseToFulfillment(UUID orderId);
     void putOnDesignHold(UUID orderId, String reason);

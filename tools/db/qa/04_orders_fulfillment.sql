@@ -171,5 +171,61 @@ SELECT pg_temp.expect_fail('O37 REFUNDED without the refund', $q$
 SELECT pg_temp.expect_fail('O38 disposition decided before inspection', $q$
     UPDATE ordering.return_request_line SET item_condition = NULL WHERE id = md5('qa:rmal:1')::uuid $q$);
 
+\echo '--- CONFIRMED, money received, cancellations (SCRUM-460, V20261013000300)'
+INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at, created_at)
+VALUES (md5('qa:order:c1')::uuid, 'SO-QA-C1', 'c0000000-0000-4000-8000-000000000001', gen_random_uuid(), 'PENDING_PAYMENT',
+        1000000, 'VND', NOW(), NOW());
+SELECT pg_temp.expect_fail('O39 a prepaid order CONFIRMED before it is paid in full', $q$
+    UPDATE ordering.customer_order SET status = 'CONFIRMED', paid_amount = 400000 WHERE id = md5('qa:order:c1')::uuid $q$);
+SELECT pg_temp.expect_fail('O40 paid in full on less than the total', $q$
+    UPDATE ordering.customer_order SET paid_amount = 400000, paid_in_full_at = NOW() WHERE id = md5('qa:order:c1')::uuid $q$);
+SELECT pg_temp.expect_ok('O41 paid in full, then CONFIRMED', $q$
+    UPDATE ordering.customer_order SET paid_amount = 1000000, paid_in_full_at = NOW(), status = 'CONFIRMED'
+     WHERE id = md5('qa:order:c1')::uuid $q$);
+SELECT pg_temp.expect_fail('O42 the old PAID status', $q$
+    UPDATE ordering.customer_order SET status = 'PAID' WHERE id = md5('qa:order:c1')::uuid $q$);
+SELECT pg_temp.expect_fail('O43 CANCELLED without a reason code', $q$
+    UPDATE ordering.customer_order SET status = 'CANCELLED', cancellation_reason = 'x' WHERE id = md5('qa:order:c1')::uuid $q$);
+SELECT pg_temp.expect_fail('O44 an unknown reason code', $q$
+    UPDATE ordering.customer_order SET status = 'CANCELLED', cancellation_reason = 'x', cancellation_reason_code = 'BORED'
+     WHERE id = md5('qa:order:c1')::uuid $q$);
+SELECT pg_temp.expect_fail('O45 keeping more than was paid', $q$
+    UPDATE ordering.customer_order SET status = 'CANCELLED', cancellation_reason = 'x', cancellation_reason_code = 'CUSTOMER_REQUEST',
+           cancellation_retained_amount = 1000001 WHERE id = md5('qa:order:c1')::uuid $q$);
+SELECT pg_temp.expect_ok('O46 cancelled, keeping part of what was paid', $q$
+    UPDATE ordering.customer_order SET status = 'CANCELLED', cancellation_reason = 'x', cancellation_reason_code = 'CUSTOMER_REQUEST',
+           cancellation_retained_amount = 200000 WHERE id = md5('qa:order:c1')::uuid $q$);
+SELECT pg_temp.expect_fail('O47 a payment counted twice', $q$
+    INSERT INTO ordering.order_payment (payment_id, order_id, amount, currency, captured_at)
+    VALUES (md5('qa:pay:c1')::uuid, md5('qa:order:c1')::uuid, 1000000, 'VND', NOW()),
+           (md5('qa:pay:c1')::uuid, md5('qa:order:c1')::uuid, 1000000, 'VND', NOW()) $q$);
+SELECT pg_temp.expect_ok('O48 a cancellation request', $q$
+    INSERT INTO ordering.order_cancellation_request (id, order_id, reason_code, requested_at)
+    VALUES (md5('qa:ocr:1')::uuid, md5('qa:order:1')::uuid, 'CUSTOMER_REQUEST', NOW()) $q$);
+SELECT pg_temp.expect_fail('O49 a second pending request on the same order', $q$
+    INSERT INTO ordering.order_cancellation_request (id, order_id, reason_code, requested_at)
+    VALUES (gen_random_uuid(), md5('qa:order:1')::uuid, 'CUSTOMER_REQUEST', NOW()) $q$);
+SELECT pg_temp.expect_fail('O50 a request for OTHER without a note', $q$
+    INSERT INTO ordering.order_cancellation_request (id, order_id, reason_code, requested_at)
+    VALUES (gen_random_uuid(), md5('qa:order:c1')::uuid, 'OTHER', NOW()) $q$);
+SELECT pg_temp.expect_fail('O51 a rejection without a reason', $q$
+    UPDATE ordering.order_cancellation_request SET status = 'REJECTED', decided_by = md5('demo:user:approver')::uuid,
+           decided_at = NOW() WHERE id = md5('qa:ocr:1')::uuid $q$);
+SELECT pg_temp.expect_fail('O52 a pick to put back that was not cancelled', $q$
+    UPDATE fulfillment.pick SET needs_put_back = TRUE WHERE id = md5('qa:pick:1')::uuid $q$);
+SELECT pg_temp.expect_ok('O53 a cancelled pick whose goods go back', $q$
+    UPDATE fulfillment.pick SET status = 'CANCELLED', needs_put_back = TRUE WHERE id = md5('qa:pick:1')::uuid $q$);
+SELECT pg_temp.expect_ok('O54 a refund asked for a cancelled order', $q$
+    INSERT INTO payment.payment (id, order_id, amount, method, status, created_at)
+    VALUES (md5('qa:pay:c2')::uuid, md5('qa:order:c1')::uuid, 1000000, 'BANK_TRANSFER', 'CAPTURED', NOW());
+    INSERT INTO payment.refund (id, payment_id, amount, status, created_at, order_id, source)
+    VALUES (gen_random_uuid(), md5('qa:pay:c2')::uuid, 800000, 'PENDING', NOW(), md5('qa:order:c1')::uuid, 'ORDER_CANCELLED') $q$);
+SELECT pg_temp.expect_fail('O55 the same payment asked back twice for the cancellation', $q$
+    INSERT INTO payment.refund (id, payment_id, amount, status, created_at, order_id, source)
+    VALUES (gen_random_uuid(), md5('qa:pay:c2')::uuid, 1, 'PENDING', NOW(), md5('qa:order:c1')::uuid, 'ORDER_CANCELLED') $q$);
+SELECT pg_temp.expect_fail('O56 a cancellation refund naming no order', $q$
+    INSERT INTO payment.refund (id, payment_id, amount, status, created_at, source)
+    VALUES (gen_random_uuid(), md5('qa:pay:c2')::uuid, 1, 'PENDING', NOW(), 'ORDER_CANCELLED') $q$);
+
 ROLLBACK;
 \echo 'PASS 04_orders_fulfillment'

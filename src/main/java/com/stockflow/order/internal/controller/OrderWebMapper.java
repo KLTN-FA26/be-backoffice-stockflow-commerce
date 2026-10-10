@@ -46,7 +46,9 @@ final class OrderWebMapper {
                 request.shippingAddressId(),
                 request.billingAddressId(),
                 true,
-                lines);
+                lines,
+                request.paymentTerm(),
+                request.depositPercent());
     }
 
     static PlaceGuestOrderCommand toCommand(PlaceGuestOrderRequest request) {
@@ -101,7 +103,15 @@ final class OrderWebMapper {
                 summary.contactName(), summary.contactEmail(), summary.contactPhone(),
                 toResponse(summary.shippingAddress()), toResponse(summary.billingAddress()),
                 summary.paymentTerm() == null ? null : summary.paymentTerm().name(),
-                summary.warehouseId(), summary.releasedAt());
+                summary.warehouseId(), summary.releasedAt(),
+                summary.payment() == null ? null : summary.payment().paidAmount(),
+                summary.payment() == null ? null : summary.payment().depositRequired(),
+                summary.payment() == null ? null : summary.payment().depositReceivedAt(),
+                summary.payment() == null ? null : summary.payment().paidInFullAt(),
+                summary.payment() == null ? null : summary.payment().status().name(),
+                summary.cancellation() == null ? null : new OrderResponse.Cancellation(
+                        summary.cancellation().reasonCode() == null ? null : summary.cancellation().reasonCode().name(),
+                        summary.cancellation().reason(), summary.cancellation().retainedAmount()));
     }
 
     private static PlaceGuestOrderCommand.Address toCommand(
