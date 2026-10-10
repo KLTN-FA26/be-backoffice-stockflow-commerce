@@ -133,8 +133,9 @@ public class ReceivableService {
             throw alreadyRecorded(command.reference());
         }
         List<ReceivableBook.Allocation> made = allocate(new ArrayList<>(List.of(transfer)), targets, command.recordedBy());
+        // The id, not the statement reference the accountant typed (log injection).
         log.info("Transfer {} of {} {} recorded for customer {}: {} allocation(s), {} left as credit",
-                command.reference(), command.amount(), transfer.currency(), command.customerId(), made.size(),
+                transfer.id(), command.amount(), transfer.currency(), command.customerId(), made.size(),
                 transfer.unallocatedAmount());
         return new TransferResult(transfer, made);
     }

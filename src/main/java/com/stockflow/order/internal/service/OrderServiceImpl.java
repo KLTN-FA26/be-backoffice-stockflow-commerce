@@ -456,7 +456,9 @@ class OrderServiceImpl implements OrderService {
 
         Order saved = repository.save(order);
         events.publishEventsOf(order);
-        log.info("Cancelled order {} ({})", order.orderNumber(), order.cancellationReason());
+        // The code, not the reason text: the text carries the customer's note, and a line break in it
+        // would forge log lines (CodeQL java/log-injection).
+        log.info("Cancelled order {} ({})", order.orderNumber(), order.cancellationReasonCode());
         return saved;
     }
 
@@ -556,7 +558,7 @@ class OrderServiceImpl implements OrderService {
         }
         if (order.status() == OrderStatus.CANCELLED) {
             log.warn("Payment {} of {} {} arrived for order {}, already cancelled ({}); settle it with the customer",
-                    paymentId, amount, currency, order.orderNumber(), order.cancellationReason());
+                    paymentId, amount, currency, order.orderNumber(), order.cancellationReasonCode());
         }
         repository.save(order);
         events.publishEventsOf(order);
