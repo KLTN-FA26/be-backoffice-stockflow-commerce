@@ -8,6 +8,7 @@ import com.stockflow.common.security.AuthenticatedUser;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.RequiresPermission;
+import com.stockflow.common.security.ScopeGuards;
 import com.stockflow.order.internal.controller.dto.ApproveCancellationRequest;
 import com.stockflow.order.internal.controller.dto.CancellationRequestResponse;
 import com.stockflow.order.internal.controller.dto.OrderResponse;
@@ -53,7 +54,10 @@ class CancellationRequestController {
             @RequestParam(required = false) UUID orderId,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size,
-            @RequestParam(required = false) String sort) {
+            @RequestParam(required = false) String sort,
+            @AuthenticatedUser CurrentUser user) {
+        // Customers hold sales-orders:READ for their own orders; this queue is every customer's.
+        ScopeGuards.requireBackOffice(user);
         return ApiResponse.ok(requests.list(status, orderId, page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort)
                 .map(CancellationRequestController::toResponse));
     }
