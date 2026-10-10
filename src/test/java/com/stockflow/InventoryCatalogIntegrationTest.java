@@ -179,7 +179,7 @@ class InventoryCatalogIntegrationTest {
                         UUID.randomUUID(),
                         new Sku(f.sku()),
                         null,
-                        "HCM-A-01",
+                        "HCM-A01-1-A",
                         "HCM-PACK01",
                         1,
                         MoveReference.MOVE_TASK,
@@ -264,7 +264,7 @@ values (?,?,'https://example.test/cover.jpg',true,now(),md5('demo:user:approver'
         write(
                 """
 insert into inventory.stock_item(id,sku,location_code,on_hand,reserved,status,received_at,expiry_date,serial_number,lot_number,created_at)
-values (?,?,'HCM-A-01',?,0,'AVAILABLE',?,?,?,?,now())
+values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
 """,
                 id,
                 f.sku(),

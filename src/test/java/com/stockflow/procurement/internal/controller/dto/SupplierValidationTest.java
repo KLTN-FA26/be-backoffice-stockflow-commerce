@@ -24,11 +24,11 @@ class SupplierValidationTest {
             assertThat(validator.validate(new SupplierConfirmationRequest("REJECTED", null, " ")))
                     .extracting(v -> v.getPropertyPath().toString()).containsExactly("note");
             assertThat(validator.validate(new SaveSupplierRequest("SUP-API", "Supplier", null, null, null, null,
-                    "ACTIVE", 30, 7, "API", "http://example.com")))
+                    "ACTIVE", 30, 7, "API", "http://example.com", null, null, null)))
                     .extracting(v -> v.getPropertyPath().toString()).contains("apiEndpoint");
         }
     }
     private SaveSupplierRequest request(String email, String phone, String tax, Integer terms, Integer lead) {
-        return new SaveSupplierRequest("SUP-1", "Supplier", null, email, phone, tax, "ACTIVE", terms, lead, "EMAIL", null);
+        return new SaveSupplierRequest("SUP-1", "Supplier", null, email, phone, tax, "ACTIVE", terms, lead, "EMAIL", null, null, null, null);
     }
 }

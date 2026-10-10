@@ -1,70 +1,87 @@
 package com.stockflow.product.internal.entity;
 
-import com.stockflow.product.api.StorageClass;
+import com.stockflow.common.persistence.BaseEntity;
+import com.stockflow.product.api.ProductKind;
 import com.stockflow.product.api.ProductStatus;
 import com.stockflow.product.api.TaxClass;
-import com.stockflow.common.persistence.BaseEntity;
-import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
-import jakarta.persistence.FetchType;
-import jakarta.persistence.OneToMany;
 import jakarta.persistence.Table;
-import jakarta.persistence.UniqueConstraint;
+import org.hibernate.annotations.Formula;
 
-import java.math.BigDecimal;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.UUID;
 
 /**
- * JPA mapping of a product master row (table {@code product.product}). Not the domain model.
+ * JPA mapping of a product master row (table {@code product.products}). Not the domain model.
  *
- * <p>{@code categoryId} is a same-schema reference to {@code product.category}. Variants and print
- * config live in their own tables ({@link VariantJpaEntity}, {@link PrintConfigJpaEntity}); whether
- * they belong inside the {@code Product} aggregate is still a TODO for when the write use cases
- * exist (WBS 3.1.2).</p>
+ * <p>Three kinds of column, on purpose:</p>
+ * <ul>
+ *   <li>the master data the {@code Product} aggregate owns, read and written here;</li>
+ *   <li>{@code slug}: written once, at creation, from the code. After that it is selling content,
+ *       edited through the catalog by {@code ProductCommerceRepository} (and immutable once the
+ *       product was ever published, trigger {@code tg_products_commerce_slug}) — so it is
+ *       {@code updatable = false} here, or an admin edit of the name would write back a stale slug;</li>
+ *   <li>{@code published_at}, {@code categoryId}, {@code brandName}: read-only. Publication is the
+ *       catalog's decision; the primary category lives in {@code product.product_categories} and is
+ *       written by the repository adapter; the brand name is read for display. The two
+ *       {@code @Formula}s are scalar subqueries, so the paginated list reads them without a join
+ *       fetch or an N+1.</li>
+ * </ul>
+ *
+ * <p>SEO fields and {@code ever_published} are not mapped at all: nothing in this module reads them,
+ * and an unmapped column is one Hibernate can never overwrite.</p>
  */
 @Entity
-@Table(name = "product", schema = "product",
-        uniqueConstraints = @UniqueConstraint(name = "uk_product_code", columnNames = "code"))
+@Table(name = "products", schema = "product")
 public class ProductJpaEntity extends BaseEntity {
 
-    @Column(name = "code", nullable = false, length = 64)
+    @Column(name = "code", nullable = false, length = 50, updatable = false)
     private String code;
 
-    @Column(name = "name", nullable = false, length = 300)
+    @Column(name = "name", nullable = false, length = 255)
     private String name;
 
     @Column(name = "name_en", length = 300)
     private String nameEn;
 
-    @Column(name = "category_id")
+    @Column(name = "slug", nullable = false, length = 255, updatable = false)
+    private String slug;
+
+    @Column(name = "brand_id")
+    private UUID brandId;
+
+    @Formula("(select b.name from product.brands b where b.id = brand_id)")
+    private String brandName;
+
+    @Formula("(select pc.category_id from product.product_categories pc where pc.product_id = id and pc.is_primary)")
     private UUID categoryId;
 
-    @Column(name = "description", length = 2000)
+    @Column(name = "short_description", columnDefinition = "text")
+    private String shortDescription;
+
+    @Column(name = "description", columnDefinition = "text")
     private String description;
 
-    @Column(name = "description_en", length = 2000)
+    @Column(name = "description_en", columnDefinition = "text")
     private String descriptionEn;
-
-    @Column(name = "brand", length = 150)
-    private String brand;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "tax_class", length = 32)
     private TaxClass taxClass;
 
     @Enumerated(EnumType.STRING)
+    @Column(name = "kind", nullable = false, length = 16)
+    private ProductKind kind;
+
+    @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 32)
     private ProductStatus status;
 
-    /** True when the product can carry a custom print / 3D design (cups, packaging). */
-    @Column(name = "customizable", nullable = false)
-    private boolean customizable;
+    @Column(name = "rejection_reason", columnDefinition = "text")
+    private String rejectionReason;
 
     @Column(name = "submitted_by")
     private UUID submittedBy;
@@ -78,193 +95,62 @@ public class ProductJpaEntity extends BaseEntity {
     @Column(name = "approved_at")
     private Instant approvedAt;
 
-    @Column(name = "rejection_reason", length = 1000)
-    private String rejectionReason;
+    @Column(name = "published_at", insertable = false, updatable = false)
+    private Instant publishedAt;
 
-    @Column(name = "weight_kg", precision = 10, scale = 3)
-    private BigDecimal weightKg;
-
-    @Column(name = "length_cm", precision = 10, scale = 2)
-    private BigDecimal lengthCm;
-
-    @Column(name = "width_cm", precision = 10, scale = 2)
-    private BigDecimal widthCm;
-
-    @Column(name = "height_cm", precision = 10, scale = 2)
-    private BigDecimal heightCm;
-
-    @Column(name = "package_weight_kg", precision = 10, scale = 3)
-    private BigDecimal packageWeightKg;
-
-    @Column(name = "package_length_cm", precision = 10, scale = 2)
-    private BigDecimal packageLengthCm;
-
-    @Column(name = "package_width_cm", precision = 10, scale = 2)
-    private BigDecimal packageWidthCm;
-
-    @Column(name = "package_height_cm", precision = 10, scale = 2)
-    private BigDecimal packageHeightCm;
-
-    @Column(name = "package_count")
-    private Integer packageCount;
-
-    @Column(name = "hazmat", nullable = false)
-    private boolean hazmat;
-
-    @Column(name = "oversized", nullable = false)
-    private boolean oversized;
-
-    @Enumerated(EnumType.STRING)
-    @Column(name = "storage_class", nullable = false, length = 16)
-    private StorageClass storageClass;
-
-    @Column(name = "requires_adult_signature", nullable = false)
-    private boolean requiresAdultSignature;
-
-    @Column(name = "shipping_restriction_note", length = 500)
-    private String shippingRestrictionNote;
-
-    /**
-     * The media gallery is part of the aggregate, so it is loaded and saved with it —
-     * {@code cascade = ALL}, {@code orphanRemoval = true}, and no repository of their own. Mirrors
-     * {@code StockItemJpaEntity.reservations}.
-     */
-    @OneToMany(mappedBy = "product", cascade = CascadeType.ALL, orphanRemoval = true,
-            fetch = FetchType.LAZY)
-    @org.hibernate.annotations.BatchSize(size = 50)
-    private List<ProductImageJpaEntity> images = new ArrayList<>();
-
-    /** Forces optimistic version checks even when only the inverse child collection changes. */
-    @Column(name = "media_revision", nullable = false)
-    private long mediaRevision;
+    @Column(name = "discontinued_at")
+    private Instant discontinuedAt;
 
     protected ProductJpaEntity() {
     }
 
-    public ProductJpaEntity(UUID id, String code, String name, String nameEn, UUID categoryId,
-                            String description, String descriptionEn, String brand,
-                            TaxClass taxClass, ProductStatus status, boolean customizable,
-                            UUID submittedBy, Instant submittedAt, UUID approvedBy,
-                            Instant approvedAt, String rejectionReason, BigDecimal weightKg,
-                            BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm,
-                            BigDecimal packageWeightKg, BigDecimal packageLengthCm,
-                            BigDecimal packageWidthCm, BigDecimal packageHeightCm,
-                            Integer packageCount, boolean hazmat, boolean oversized, StorageClass storageClass,
-                            boolean requiresAdultSignature, String shippingRestrictionNote) {
+    public ProductJpaEntity(UUID id, String code, String slug) {
         super(id);
         this.code = code;
-        this.name = name;
-        this.nameEn = nameEn;
-        this.categoryId = categoryId;
-        this.description = description;
-        this.descriptionEn = descriptionEn;
-        this.brand = brand;
-        this.taxClass = taxClass;
-        this.status = status;
-        this.customizable = customizable;
-        this.submittedBy = submittedBy;
-        this.submittedAt = submittedAt;
-        this.approvedBy = approvedBy;
-        this.approvedAt = approvedAt;
-        this.rejectionReason = rejectionReason;
-        this.weightKg = weightKg;
-        this.lengthCm = lengthCm;
-        this.widthCm = widthCm;
-        this.heightCm = heightCm;
-        this.packageWeightKg = packageWeightKg;
-        this.packageLengthCm = packageLengthCm;
-        this.packageWidthCm = packageWidthCm;
-        this.packageHeightCm = packageHeightCm;
-        this.packageCount = packageCount;
-        this.hazmat = hazmat;
-        this.oversized = oversized;
-        this.storageClass = java.util.Objects.requireNonNullElse(storageClass, StorageClass.NORMAL);
-        this.requiresAdultSignature = requiresAdultSignature;
-        this.shippingRestrictionNote = shippingRestrictionNote;
+        this.slug = slug;
     }
 
-    /** Copies every editable field onto a managed row, so Hibernate's dirty checking writes the UPDATE. */
-    public void apply(String name, String nameEn, UUID categoryId, String description,
-                      String descriptionEn, String brand, TaxClass taxClass, boolean customizable,
-                      ProductStatus status, UUID submittedBy, Instant submittedAt, UUID approvedBy,
-                      Instant approvedAt, String rejectionReason, BigDecimal weightKg,
-                      BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm,
-                      BigDecimal packageWeightKg, BigDecimal packageLengthCm,
-                      BigDecimal packageWidthCm, BigDecimal packageHeightCm, Integer packageCount,
-                      boolean hazmat, boolean oversized, StorageClass storageClass, boolean requiresAdultSignature,
-                      String shippingRestrictionNote) {
+    public void setDetails(String name, String nameEn, UUID brandId, String shortDescription, String description,
+                           String descriptionEn, TaxClass taxClass, ProductKind kind) {
         this.name = name;
         this.nameEn = nameEn;
-        this.categoryId = categoryId;
+        this.brandId = brandId;
+        this.shortDescription = shortDescription;
         this.description = description;
         this.descriptionEn = descriptionEn;
-        this.brand = brand;
         this.taxClass = taxClass;
-        this.customizable = customizable;
+        this.kind = kind;
+    }
+
+    public void setWorkflow(ProductStatus status, UUID submittedBy, Instant submittedAt, UUID approvedBy,
+                            Instant approvedAt, String rejectionReason, Instant discontinuedAt) {
         this.status = status;
         this.submittedBy = submittedBy;
         this.submittedAt = submittedAt;
         this.approvedBy = approvedBy;
         this.approvedAt = approvedAt;
         this.rejectionReason = rejectionReason;
-        this.weightKg = weightKg;
-        this.lengthCm = lengthCm;
-        this.widthCm = widthCm;
-        this.heightCm = heightCm;
-        this.packageWeightKg = packageWeightKg;
-        this.packageLengthCm = packageLengthCm;
-        this.packageWidthCm = packageWidthCm;
-        this.packageHeightCm = packageHeightCm;
-        this.packageCount = packageCount;
-        this.hazmat = hazmat;
-        this.oversized = oversized;
-        this.storageClass = java.util.Objects.requireNonNullElse(storageClass, StorageClass.NORMAL);
-        this.requiresAdultSignature = requiresAdultSignature;
-        this.shippingRestrictionNote = shippingRestrictionNote;
-    }
-
-    public void replaceImages(List<ProductImageJpaEntity> replacement) {
-        // Keep already managed children. Recreating the same id after clear() conflicts with
-        // Hibernate's persistence context when a second image is appended to the aggregate.
-        var retained = replacement.stream().map(ProductImageJpaEntity::getId).toList();
-        this.images.removeIf(image -> !retained.contains(image.getId()));
-        replacement.forEach(child -> {
-            if (this.images.stream().noneMatch(image -> image.getId().equals(child.getId()))) {
-                child.attachTo(this);
-                this.images.add(child);
-            }
-        });
-        mediaRevision++;
+        this.discontinuedAt = discontinuedAt;
     }
 
     public String getCode() { return code; }
     public String getName() { return name; }
     public String getNameEn() { return nameEn; }
+    public String getSlug() { return slug; }
+    public UUID getBrandId() { return brandId; }
+    public String getBrandName() { return brandName; }
     public UUID getCategoryId() { return categoryId; }
+    public String getShortDescription() { return shortDescription; }
     public String getDescription() { return description; }
     public String getDescriptionEn() { return descriptionEn; }
-    public String getBrand() { return brand; }
     public TaxClass getTaxClass() { return taxClass; }
+    public ProductKind getKind() { return kind; }
     public ProductStatus getStatus() { return status; }
-    public boolean isCustomizable() { return customizable; }
+    public String getRejectionReason() { return rejectionReason; }
     public UUID getSubmittedBy() { return submittedBy; }
     public Instant getSubmittedAt() { return submittedAt; }
     public UUID getApprovedBy() { return approvedBy; }
     public Instant getApprovedAt() { return approvedAt; }
-    public String getRejectionReason() { return rejectionReason; }
-    public BigDecimal getWeightKg() { return weightKg; }
-    public BigDecimal getLengthCm() { return lengthCm; }
-    public BigDecimal getWidthCm() { return widthCm; }
-    public BigDecimal getHeightCm() { return heightCm; }
-    public BigDecimal getPackageWeightKg() { return packageWeightKg; }
-    public BigDecimal getPackageLengthCm() { return packageLengthCm; }
-    public BigDecimal getPackageWidthCm() { return packageWidthCm; }
-    public BigDecimal getPackageHeightCm() { return packageHeightCm; }
-    public Integer getPackageCount() { return packageCount; }
-    public boolean isHazmat() { return hazmat; }
-    public boolean isOversized() { return oversized; }
-    public StorageClass getStorageClass() { return storageClass; }
-    public boolean isRequiresAdultSignature() { return requiresAdultSignature; }
-    public String getShippingRestrictionNote() { return shippingRestrictionNote; }
-    public List<ProductImageJpaEntity> getImages() { return images; }
+    public Instant getPublishedAt() { return publishedAt; }
+    public Instant getDiscontinuedAt() { return discontinuedAt; }
 }

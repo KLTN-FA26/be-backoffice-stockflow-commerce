@@ -16,5 +16,8 @@ public record SupplierResponse(
         int leadTimeDays,
         String communicationChannel,
         String apiEndpoint,
+        java.math.BigDecimal overReceiptTolerancePercent,
+        boolean printSubcontractor,
+        java.math.BigDecimal lossTolerancePercent,
         Instant createdAt,
         Instant lastModifiedAt) {}

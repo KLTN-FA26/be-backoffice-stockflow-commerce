@@ -29,7 +29,8 @@ END $$;
 
 -- Fixtures: a customer, a confirmed design snapshot, a released order with one print line.
 INSERT INTO design.design_draft (id, customer_id, product_id, status, created_at, current_artifacts)
-SELECT md5('qa:draft:1')::uuid, id, gen_random_uuid(), 'DRAFT', NOW(), '{}'::jsonb FROM customer.customer LIMIT 1;
+SELECT md5('qa:draft:1')::uuid, id, (SELECT p.id FROM product.products p ORDER BY p.code LIMIT 1), 'DRAFT', NOW(),
+       '{}'::jsonb FROM customer.customer LIMIT 1;
 INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at, artifact_manifest)
 VALUES (md5('qa:snap:1')::uuid, md5('qa:draft:1')::uuid, repeat('a', 64), 'https://example.com/a.pdf', NOW(), NOW(), '[]'::jsonb);
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at, created_at)

@@ -15,86 +15,42 @@ import java.util.UUID;
  */
 public interface ProcurementService {
 
-    /**
-     * SCRUM-113/WBS 3.2.1. Rejects a supplier that does not exist or is {@code INACTIVE}, a PO with
-     * zero lines, and a line with {@code quantityOrdered <= 0} or a negative {@code unitPrice} (the
-     * aggregate's own invariants — see {@code PurchaseOrder}/{@code PoLine}). Flags (does not
-     * reject) a likely BR-PO-003 duplicate — see {@link PurchaseOrderSummary#possibleDuplicate}.
-     */
+    /** A DRAFT order to an ACTIVE supplier, received into an ACTIVE warehouse (SCRUM-113/390). */
     PurchaseOrderSummary createPurchaseOrder(CreatePurchaseOrderCommand command);
 
     Optional<PurchaseOrderSummary> findById(UUID purchaseOrderId);
 
-    /**
-     * Paginated, filterable list. {@code lines} is empty on every row — see {@link
-     * PurchaseOrderSummary}.
-     */
+    /** Paginated, filterable list; {@code lines} is empty on every row. */
     PageResponse<PurchaseOrderSummary> list(ListPurchaseOrdersQuery query);
 
-    /** SCRUM-116/WBS 3.2.4. DRAFT -&gt; APPROVED. */
-    PurchaseOrderSummary approve(UUID purchaseOrderId);
+    /** DRAFT → PENDING_APPROVAL, freezing the order as a revision (SCRUM-114). */
+    PurchaseOrderSummary submit(UUID purchaseOrderId, UUID submittedBy);
 
-    /**
-     * SCRUM-115. APPROVED -&gt; SENT. HTTP retries replay through the shared Idempotency-Key
-     * filter.
-     */
-    PurchaseOrderSummary send(UUID purchaseOrderId);
+    /** PENDING_APPROVAL → APPROVED. Four-eyes: {@code approverId} must not be who submitted it. */
+    PurchaseOrderSummary approve(UUID purchaseOrderId, UUID approverId);
 
-    PurchaseOrderSummary send(UUID purchaseOrderId, SendPurchaseOrderCommand command);
+    /** PENDING_APPROVAL → DRAFT, with a reason. */
+    PurchaseOrderSummary reject(UUID purchaseOrderId, UUID approverId, String reason);
 
-    PurchaseOrderSummary recoverDelivery(
-            UUID purchaseOrderId, RecoverPurchaseOrderDeliveryCommand command);
+    /** APPROVED → CONFIRMED: the order is locked and sent to the supplier (#36, plan Q1). */
+    PurchaseOrderSummary confirm(UUID purchaseOrderId, UUID userId, SendPurchaseOrderCommand command);
 
-    PageResponse<PurchaseOrderDeliveryDecision> deliveryDecisions(
-            UUID purchaseOrderId, int page, int size);
+    PurchaseOrderSummary recoverDelivery(UUID purchaseOrderId, RecoverPurchaseOrderDeliveryCommand command);
 
-    PurchaseOrderSummary recordSupplierConfirmation(
-            UUID purchaseOrderId, RecordSupplierConfirmationCommand command);
+    PageResponse<PurchaseOrderDeliveryDecision> deliveryDecisions(UUID purchaseOrderId, int page, int size);
 
-    /**
-     * SCRUM-116/WBS 3.2.4. DRAFT/APPROVED/SENT -&gt; CANCELLED. Rejected once anything has been
-     * received against the order.
-     */
-    PurchaseOrderSummary cancel(UUID purchaseOrderId, String reason);
+    PurchaseOrderSummary recordSupplierConfirmation(UUID purchaseOrderId, RecordSupplierConfirmationCommand command);
 
-    /**
-     * SCRUM-116/WBS 3.2.4.1. Advances the named lines' received quantities; the order rolls up to
-     * {@code CLOSED} once every line is fully received, or {@code PARTIALLY_RECEIVED} otherwise.
-     *
-     * <p>Only the PO-line running totals on the old {@code purchase_order} tables are updated. Real
-     * goods receipts — receipt number, lots, inbound QC, stock — are {@code /api/v1/goods-receipts}
-     * (SCRUM-435), which work against the new {@code purchase_orders} tables; this method goes away
-     * with contract C4, when the order itself moves there.</p>
-     */
-    PurchaseOrderSummary receiveGoods(UUID purchaseOrderId, ReceiveGoodsCommand command);
+    /** → CANCELLED with a reason, while nothing has been received. A confirmed order's supplier is told. */
+    PurchaseOrderSummary cancel(UUID purchaseOrderId, UUID userId, String reason);
 
-    /**
-     * SCRUM-116/WBS 3.2.4. PARTIALLY_RECEIVED -&gt; CLOSED_SHORT: the remaining open quantity is
-     * written off.
-     */
-    PurchaseOrderSummary closeShort(UUID purchaseOrderId, String reason);
+    /** PARTIALLY_RECEIVED → CLOSED (SHORT_CLOSE): the rest is written off with a reason. */
+    PurchaseOrderSummary closeShort(UUID purchaseOrderId, UUID userId, String reason);
 
-    /**
-     * SCRUM-119/WBS 3.2.7. One row per {@code PurchaseOrderStatus}, including a status with zero
-     * purchase orders right now. Not paginated — the house rule (always paginate list endpoints)
-     * targets growable collections, and this is a fixed seven-bucket summary, not a list.
-     */
+    /** RECEIVED → CLOSED (NORMAL). */
+    PurchaseOrderSummary close(UUID purchaseOrderId, UUID userId);
+
     List<PurchaseOrderStatusCount> statusDashboard();
 
-    /**
-     * SCRUM-119/WBS 3.2.7. Suppliers ranked by total spend, highest first, optionally filtered by
-     * supplier and/or {@code expectedAt} date range.
-     *
-     * <p><b>What counts as "spend", a judgment call the ticket does not define:</b> the sum of
-     * {@code totalAmount} over orders that are not {@code DRAFT} (not yet a real commitment) and
-     * not {@code CANCELLED} (never fulfilled) — {@code APPROVED}, {@code SENT}, {@code
-     * PARTIALLY_RECEIVED}, {@code CLOSED}, {@code CLOSED_SHORT}. Flagged here rather than guessed
-     * silently, same treatment BR-PO-001/002 got above.
-     *
-     * <p>A {@code supplierId} that matches a real supplier but has no qualifying orders returns an
-     * empty page. A {@code supplierId} that does not name a real supplier at all throws {@code
-     * SUPPLIER_NOT_FOUND} (404) instead — the two are different answers and must not look the same,
-     * per the ticket's own unhappy-case list.
-     */
     PageResponse<SupplierSpendSummary> supplierSpend(SupplierSpendReportQuery query);
 }

@@ -4,7 +4,7 @@ import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.common.id.Identifiers;
+import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.api.InventoryItemPolicy;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.procurement.api.CreateSubcontractOrderCommand;
@@ -41,16 +41,23 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing {
     /** BR-PRD-13: the work goes out once the PO is approved, and stays out through receipt. */
     private static final Set<String> APPROVED = Set.of("APPROVED", "CONFIRMED", "PARTIALLY_RECEIVED", "RECEIVED", "CLOSED");
 
-    /** An order still being prepared or reviewed; after approval only an amendment changes it. */
-    private static final Set<String> EDITABLE = Set.of("DRAFT", "PENDING_APPROVAL");
+    /**
+     * Only a draft is resized in place. From submission on, the approver decides on the revision
+     * snapshot taken at submit; resizing the live line under it would have the order approved for one
+     * quantity and placed for another. A pending order goes back to DRAFT (rejected) first.
+     */
+    private static final String EDITABLE = "DRAFT";
 
     private final SubcontractOrderStore store;
     private final InventoryService inventory;
+    private final InventoryControlService inventoryControl;
     private final Clock clock;
 
-    SubcontractPurchasingImpl(SubcontractOrderStore store, InventoryService inventory, Clock clock) {
+    SubcontractPurchasingImpl(SubcontractOrderStore store, InventoryService inventory,
+                              InventoryControlService inventoryControl, Clock clock) {
         this.store = store;
         this.inventory = inventory;
+        this.inventoryControl = inventoryControl;
         this.clock = clock;
     }
 
@@ -84,10 +91,11 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The expected date is in the past");
         }
 
-        UUID id = Identifiers.newId();
-        store.insert(new SubcontractOrderStore.NewOrder(id, store.nextNumber(today), command.productionOrderId(),
-                supplier.id(), command.warehouseId(), command.currency(), today, command.expectedDate(),
-                item.inventoryItemId(), command.quantity(), command.unitPrice(), command.createdBy()));
+        // The line is in the item's own unit, as on every purchase order (ProcurementServiceImpl).
+        String uom = inventoryControl.item(command.finishedSku()).unitOfMeasure();
+        UUID id = store.insert(new SubcontractOrderStore.NewOrder(store.nextNumber(today), command.productionOrderId(),
+                supplier, command.warehouseId(), command.currency(), today, command.expectedDate(),
+                item.inventoryItemId(), item.sku(), uom, command.quantity(), command.unitPrice(), command.createdBy()));
         SubcontractOrder created = toOrder(store.findById(id, false).orElseThrow());
         log.info("Raised {} to {} for production order {}: {} x {}", created.poNumber(), supplier.code(),
                 command.productionOrderId(), command.quantity(), command.finishedSku());
@@ -117,9 +125,11 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing {
         }
         SubcontractOrderStore.Row order = store.findById(purchaseOrderId, true).orElseThrow(() ->
                 new BusinessException(ErrorCode.PURCHASE_ORDER_NOT_FOUND, "No subcontract order " + purchaseOrderId));
-        if (!EDITABLE.contains(order.status())) {
+        if (!EDITABLE.equals(order.status())) {
             throw new BusinessException(ErrorCode.INVALID_PURCHASE_ORDER_TRANSITION,
-                    "%s is %s: an approved order is changed by an amendment (SCRUM-117), not in place"
+                    ("PENDING_APPROVAL".equals(order.status())
+                            ? "%s is awaiting approval of its submitted quantity: reject it back to DRAFT first"
+                            : "%s is %s: an approved order is changed by an amendment (SCRUM-117), not in place")
                             .formatted(order.poNumber(), order.status()));
         }
         int newQuantity = order.quantity().intValueExact() + additionalQuantity;

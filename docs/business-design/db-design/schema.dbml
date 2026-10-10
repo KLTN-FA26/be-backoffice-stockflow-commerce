@@ -361,6 +361,13 @@ Enum procurement.purchase_orders_status {
   CANCELLED
 }
 
+Enum procurement.purchase_orders_supplier_confirmation_status {
+  NOT_SENT
+  PENDING
+  CONFIRMED
+  REJECTED
+}
+
 Enum procurement.qc_inspections_outcome {
   ACCEPTED
   QUARANTINE
@@ -392,6 +399,11 @@ Enum procurement.supplier_invoices_status {
   DISPUTED
   VOID
   PAID
+}
+
+Enum procurement.suppliers_communication_channel {
+  EMAIL
+  API
 }
 
 Enum procurement.suppliers_status {
@@ -1651,44 +1663,50 @@ Table procurement.purchase_order_revisions [headercolor: #7D5BA6] {
 }
 
 Table procurement.purchase_orders [headercolor: #7D5BA6] {
-  id                  uuid [pk]
-  po_number           varchar(30) [not null, unique]
-  revision_no         bigint [not null, default: 0]
-  status              procurement.purchase_orders_status [not null, default: 'DRAFT']
-  supplier_id         uuid [not null]
-  warehouse_id        uuid [not null]
-  currency            varchar(3) [not null]
-  order_date          date [not null]
-  expected_date       date
-  payment_terms       varchar(50)
-  incoterms           varchar(10)
-  subtotal            decimal(18,2) [not null, default: 0]
-  discount_total      decimal(18,2) [not null, default: 0]
-  tax_total           decimal(18,2) [not null, default: 0]
-  shipping_fee        decimal(18,2) [not null, default: 0]
-  total_amount        decimal(18,2) [not null, default: 0]
-  active_revision_id  uuid
-  pending_revision_id uuid
-  source_proposal_id  uuid
-  note                text
-  close_kind          procurement.purchase_orders_close_kind
-  close_reason        varchar(255)
-  cancel_reason       varchar(255)
-  submitted_at        timestamptz
-  submitted_by        uuid
-  approved_at         timestamptz
-  approved_by         uuid
-  confirmed_at        timestamptz
-  confirmed_by        uuid
-  closed_at           timestamptz
-  closed_by           uuid
-  version             bigint [not null, default: 0]
-  created_at          timestamptz [not null, default: `now()`]
-  created_by          varchar(100)
-  last_modified_at    timestamptz
-  last_modified_by    varchar(100)
-  po_type             procurement.purchase_orders_po_type [not null, default: 'STANDARD']
-  production_order_id uuid
+  id                           uuid [pk]
+  po_number                    varchar(30) [not null, unique]
+  revision_no                  bigint [not null, default: 0]
+  status                       procurement.purchase_orders_status [not null, default: 'DRAFT']
+  supplier_id                  uuid [not null]
+  warehouse_id                 uuid [not null]
+  currency                     varchar(3) [not null]
+  order_date                   date [not null]
+  expected_date                date
+  payment_terms                varchar(50)
+  incoterms                    varchar(10)
+  subtotal                     decimal(18,2) [not null, default: 0]
+  discount_total               decimal(18,2) [not null, default: 0]
+  tax_total                    decimal(18,2) [not null, default: 0]
+  shipping_fee                 decimal(18,2) [not null, default: 0]
+  total_amount                 decimal(18,2) [not null, default: 0]
+  active_revision_id           uuid
+  pending_revision_id          uuid
+  source_proposal_id           uuid
+  note                         text
+  close_kind                   procurement.purchase_orders_close_kind
+  close_reason                 varchar(255)
+  cancel_reason                varchar(255)
+  submitted_at                 timestamptz
+  submitted_by                 uuid
+  approved_at                  timestamptz
+  approved_by                  uuid
+  confirmed_at                 timestamptz
+  confirmed_by                 uuid
+  closed_at                    timestamptz
+  closed_by                    uuid
+  version                      bigint [not null, default: 0]
+  created_at                   timestamptz [not null, default: `now()`]
+  created_by                   varchar(100)
+  last_modified_at             timestamptz
+  last_modified_by             varchar(100)
+  po_type                      procurement.purchase_orders_po_type [not null, default: 'STANDARD']
+  production_order_id          uuid
+  payment_term_days            int [not null, default: 30]
+  lead_time_days               int [not null, default: 7]
+  supplier_confirmation_status procurement.purchase_orders_supplier_confirmation_status [not null, default: 'NOT_SENT']
+  supplier_responded_at        timestamptz
+  supplier_reference           varchar(100)
+  supplier_response_note       varchar(1000)
 }
 
 Table procurement.qc_inspections [headercolor: #7D5BA6] {
@@ -1883,6 +1901,9 @@ Table procurement.suppliers [headercolor: #7D5BA6] {
   last_modified_by       varchar(100)
   is_print_subcontractor boolean [not null, default: false]
   loss_tolerance_percent decimal(5,2) [not null, default: 2]
+  payment_term_days      int [not null, default: 30]
+  communication_channel  procurement.suppliers_communication_channel [not null, default: 'EMAIL']
+  api_endpoint           varchar(500)
 }
 
 // =============================================================================
@@ -2882,6 +2903,14 @@ Table platform.idempotency_record [headercolor: #616161] {
   }
 }
 
+Table platform.legacy_archive [headercolor: #616161] {
+  id           bigint [pk]
+  source_table varchar(100) [not null]
+  row_id       uuid
+  row_data     jsonb [not null]
+  archived_at  timestamptz [not null, default: `now()`]
+}
+
 Table platform.shedlock [headercolor: #616161] {
   name       varchar(64) [pk]
   lock_until timestamptz [not null]
@@ -3317,6 +3346,7 @@ TableGroup platform_group [color: #616161] {
   platform.audit_log
   platform.document_sequence
   platform.idempotency_record
+  platform.legacy_archive
   platform.shedlock
 }
 

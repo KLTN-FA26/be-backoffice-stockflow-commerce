@@ -17,8 +17,7 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * {@code procurement.goods_receipts} (the new table; the old {@code goods_receipt} is unmapped and
- * goes with contract C4). Not the domain model; see {@code GoodsReceipt}.
+ * {@code procurement.goods_receipts}. Not the domain model; see {@code GoodsReceipt}.
  */
 @Entity
 @Table(name = "goods_receipts", schema = "procurement")

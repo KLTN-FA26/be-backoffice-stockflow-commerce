@@ -152,7 +152,9 @@ Fresh databases and develop after #61 need no override. Other release histories 
 pending-set review; old #36 `9fbb90f` now also needs QC `20260929000250` alongside its two earlier
 develop prerequisites. No real database or VPS is changed here.
 
-Run `psql -X -v ON_ERROR_STOP=1 -f tools/sql/inventory-commerce-upgrade-preflight.sql` first.
+Run `psql -X -v ON_ERROR_STOP=1 -f tools/sql/inventory-commerce-upgrade-preflight.sql` first — on a
+database that is still before the legacy-tables removal (C1–C4); past it the script's old tables are
+gone (`tools/sql/README.md`).
 History checks work before and after cutover; legacy-source checks run only while the private
 policy table exists.
 Every private policy must map to a canonical variant/item by SKU; every listing must map to a

@@ -31,7 +31,8 @@ public final class Supplier extends AggregateRoot {
         replacement = validated(replacement);
         if (!details.code().equalsIgnoreCase(replacement.code()))
             throw new BusinessException(ErrorCode.CONFLICT, "Supplier code is immutable");
-        if (replacement.status() == SupplierStatus.INACTIVE) requireNoOpenOrders(hasOpenOrders);
+        if (replacement.status() != SupplierStatus.ACTIVE && details.status() == SupplierStatus.ACTIVE)
+            requireNoOpenOrders(hasOpenOrders);
         details = replacement;
     }
 
@@ -50,7 +51,10 @@ public final class Supplier extends AggregateRoot {
                         d.paymentTermDays(),
                         d.leadTimeDays(),
                         d.communicationChannel(),
-                        d.apiEndpoint());
+                        d.apiEndpoint(),
+                        d.overReceiptTolerancePercent(),
+                        d.printSubcontractor(),
+                        d.lossTolerancePercent());
     }
 
     private static void requireNoOpenOrders(boolean open) {
@@ -61,10 +65,10 @@ public final class Supplier extends AggregateRoot {
         if (d == null
                 || d.status() == null
                 || d.communicationChannel() == null
-                || d.contactName() != null && d.contactName().length() > 200)
+                || d.contactName() != null && d.contactName().length() > 150)
             throw new BusinessException(ErrorCode.SUPPLIER_PROFILE_INVALID);
         new SupplierProfile(
-                d.code(),
+                d.code() == null ? null : d.code().toUpperCase(Locale.ROOT),
                 d.name(),
                 d.email(),
                 d.phone(),
@@ -72,7 +76,10 @@ public final class Supplier extends AggregateRoot {
                 d.paymentTermDays(),
                 d.leadTimeDays(),
                 d.communicationChannel().name(),
-                d.apiEndpoint());
+                d.apiEndpoint(),
+                clean(d.contactName()),
+                d.overReceiptTolerancePercent(),
+                d.lossTolerancePercent());
         return new SupplierDetails(
                 d.code().toUpperCase(Locale.ROOT),
                 d.name().trim(),
@@ -84,8 +91,14 @@ public final class Supplier extends AggregateRoot {
                 d.paymentTermDays(),
                 d.leadTimeDays(),
                 d.communicationChannel(),
-                clean(d.apiEndpoint()));
+                clean(d.apiEndpoint()),
+                d.overReceiptTolerancePercent(),
+                d.printSubcontractor(),
+                d.lossTolerancePercent() == null ? DEFAULT_LOSS_TOLERANCE : d.lossTolerancePercent());
     }
+
+    /** {@code suppliers.loss_tolerance_percent} default: the print waste a subcontract order allows for. */
+    private static final java.math.BigDecimal DEFAULT_LOSS_TOLERANCE = java.math.BigDecimal.valueOf(2);
 
     private static String clean(String value) {
         return value == null || value.isBlank() ? null : value.trim();

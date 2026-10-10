@@ -20,7 +20,7 @@ Mỗi người **chỉ viết code** (entity, repository, service, controller). 
    - Service phải **kiểm tham chiếu trước** và trả 404/409 có mã lỗi riêng. Nếu để DB chặn, người dùng nhận `409 DUPLICATE_KEY` (sai nghĩa) kèm log ERROR.
    - Test không được dùng `Identifiers.newId()` cho khách/user/đơn "tưởng tượng". Dùng `support/DemoData` (test có seed demo) hoặc `support/ReferenceRows` (test `@DataJpaTest`).
 4. **Entity:** kế thừa `BaseEntity`, enum dùng `EnumType.STRING`, id là `Identifiers.newId()`. Mọi bảng mới đã có đủ cột audit.
-5. **Bảng cũ và bảng mới đang song song** (product, procurement, warehouse). Code mới **viết trên bảng mới**, không thêm tính năng vào bảng cũ.
+5. **Bảng cũ đã bị xoá** (10/2026, `V20261011000200`–`0600`): product, procurement, `warehouse.location` và 3 cột cũ của `warehouse.warehouse`. Mọi dòng cũ được chép sang bảng mới (giữ id) và lưu nguyên bản dạng JSON trong `platform.legacy_archive`. Không tạo lại bảng cũ.
 6. **Ghi `inventory.stock_movement` ở mọi chỗ làm thay đổi tồn** (nhận, cất, lấy, chuyển, điều chỉnh, hoàn).
 7. **Số chứng từ mới** (phiếu nhận, lệnh chuyển, điều chỉnh, kiểm kê, RMA…) lấy từ `platform.document_sequence`, không tạo bảng đếm riêng.
 8. **Khai báo `@PermissionResource` đúng tên đã seed** (plan §8). Tên sai là quyền không gán được cho vai trò nào.
@@ -32,13 +32,23 @@ Mỗi người **chỉ viết code** (entity, repository, service, controller). 
 Code module trên bảng mới  ──▶  PR vào develop (review + test)
         │
         ▼  báo Tú "module X đã chuyển xong"
-Tú kích hoạt bước dọn tương ứng trong db/pending:
-   product + design xong ─▶ C1    warehouse xong ─▶ C2
-   C1 xong + inventory item ─▶ C3    procurement xong ─▶ C4
+C1–C4 đã kích hoạt (V20261011000300–0600). Còn lại trong db/pending:
    dữ liệu cũ sạch (orphan_check = 0) ─▶ C0
-        │
-        ▼  bước dọn xoá bảng cũ + thêm FK còn lại
 ```
+
+### Chuyển dữ liệu cũ (V20261011000200)
+
+| Bảng cũ | Sang | Ghi chú |
+|---|---|---|
+| `product.category`, `product.product` | `categories`, `products`, `product_categories` | mã không hợp lệ được chuẩn hoá (in hoa, ký tự lạ → `-`), mã gốc còn trong archive |
+| `product.variant` + `product.sku` | `variants` (id = id dòng sku) + `inventory_items` | mỗi sản phẩm có 1 variant mặc định, SKU = mã sản phẩm |
+| logistics trên `product.product` | `inventory_items` của mọi variant | hazmat → `HAZMAT`, oversized → `OVERSIZE` |
+| `product_image` + `product_gallery` | `media` của variant mặc định | ảnh trong bộ ảnh đã duyệt → `is_published` |
+| `variant_gallery`, `print_config`, `goods_receipt`, `qc_result`, `warehouse.location` | chỉ archive | mô hình mới không có chỗ tương ứng |
+| `supplier` | `suppliers` + `supplier_contacts` (liên hệ chính) | mã ≤ 30 ký tự, in hoa |
+| `purchase_order` + `po_line` | `purchase_orders` + lines + revision/approval/event | SENT → CONFIRMED, CLOSED_SHORT → CLOSED/SHORT_CLOSE, kho nhận = kho ACTIVE cũ nhất; người duyệt/gửi không được ghi ở bảng cũ nên dùng user kỹ thuật `system.legacy-*` (DISABLED); PO có dòng giá 0 chỉ vào archive |
+| `supplier_invoice` | `supplier_invoices` | |
+| SKU không thuộc variant nào (đơn hàng, tồn, PO…) | variant của sản phẩm `LEGACY-UNMAPPED` (DISCONTINUED) | để thêm được FK mà không mất lịch sử |
 
 Trước mỗi PR đụng tới DB: `python3 tools/verify.py`, `mvn -o clean test`, `tools/db/qa/run.sh <db>`
 (DB local có seed demo). Kiểm tra dữ liệu mồ côi: `tools/db/orphan_check.sql`.
@@ -53,7 +63,7 @@ PR DB đã vào `develop` **trước** #36, nên #36 phải:
    `V20260925000100` → `V20260929000100`, `…000200` → `V20260929000200`, `…000300` → `V20260929000300`,
    `V20260926000100` → `V20260929000400`. Chỉ đổi tên file, nội dung giữ nguyên, rồi rebase lên `develop`.
 2. Biết rằng procurement đã có **bộ bảng mới** theo po-schema (`suppliers`, `supplier_items`, `purchase_orders` + revisions/approvals/events, `goods_receipts`, `supplier_invoices`…). Trạng thái PO mới là `CONFIRMED`, **không có `SENT`**. Bảng cũ còn nguyên nên #36 vẫn chạy.
-3. Tính năng của #36 **không mất** khi dọn: bước C4 chuyển FK của `procurement.po_delivery_decision` và `notification.po_delivery_control` sang `purchase_orders` (đã test). Khi chuyển code PO, giữ nguyên id của PO.
+3. Tính năng của #36 **không mất** khi dọn: bước C4 chuyển FK của `procurement.po_delivery_decision` và `notification.po_delivery_control` sang `purchase_orders` (đã test). Khi chuyển code PO, giữ nguyên id của PO. *(Đã làm, 10/2026.)*
 
 ### PR #38 — Võ (SCRUM-70/71)
 
@@ -75,7 +85,7 @@ Chưa kích hoạt C1/C3. Xem kết quả kiểm tra và điểm còn vướng t
    - `area` không có `zone_id`. `shelf.warehouse_id` và `storage_location.warehouse_id` có FK.
    - `bin`, `shelf_level` có thêm cột audit (có default, không bắt buộc map).
    - DB đã có trigger chặn: bin trỏ location loại AREA hoặc khác kho, mã ghép sai (`PREFIX-KỆ-TẦNG-BIN`), đổi prefix/code/level (BR-13).
-3. Bảng `warehouse` giữ tạm cột cũ `code/address_line/city` (entity cũ còn map). Entity mới map `prefix/address/return_address/map_*`. Làm xong báo Tú chạy C2.
+3. Bảng `warehouse` đã bỏ cột cũ `code/address_line/city` (C2, 10/2026). Entity map `prefix/address/return_address/map_*`.
 
 ## 4. Việc tiếp theo của từng người
 

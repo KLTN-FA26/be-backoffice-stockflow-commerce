@@ -150,7 +150,10 @@ class SupplierServiceImpl implements SupplierService {
                     c.paymentTermDays(),
                     c.leadTimeDays(),
                     SupplierCommunicationChannel.valueOf(c.communicationChannel()),
-                    c.apiEndpoint());
+                    c.apiEndpoint(),
+                    c.overReceiptTolerancePercent(),
+                    c.printSubcontractor(),
+                    c.lossTolerancePercent());
         } catch (IllegalArgumentException | NullPointerException invalid) {
             throw new BusinessException(ErrorCode.SUPPLIER_PROFILE_INVALID);
         }
@@ -179,6 +182,9 @@ class SupplierServiceImpl implements SupplierService {
                 d.leadTimeDays(),
                 d.communicationChannel().name(),
                 d.apiEndpoint(),
+                d.overReceiptTolerancePercent(),
+                d.printSubcontractor(),
+                d.lossTolerancePercent(),
                 supplier.createdAt(),
                 supplier.lastModifiedAt());
     }

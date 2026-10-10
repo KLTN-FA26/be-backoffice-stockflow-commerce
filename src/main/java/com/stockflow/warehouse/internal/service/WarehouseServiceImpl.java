@@ -2,6 +2,8 @@ package com.stockflow.warehouse.internal.service;
 
 import com.stockflow.warehouse.api.StorageLocationView;
 import com.stockflow.warehouse.api.WarehouseService;
+import com.stockflow.warehouse.api.WarehouseView;
+import com.stockflow.warehouse.internal.domain.WarehouseStatus;
 import com.stockflow.warehouse.internal.domain.EffectiveStatus;
 import com.stockflow.warehouse.internal.domain.LocationStatus;
 import com.stockflow.warehouse.internal.domain.StorageLocationKind;
@@ -51,6 +53,15 @@ class WarehouseServiceImpl implements WarehouseService {
             return Optional.empty();
         }
         return locations.findById(locationId).map(WarehouseServiceImpl::toView);
+    }
+
+    @Override
+    public Optional<WarehouseView> findWarehouse(UUID warehouseId) {
+        if (warehouseId == null) {
+            return Optional.empty();
+        }
+        return locations.findWarehouseHeader(warehouseId).map(w -> new WarehouseView(w.id(), w.prefix(), w.name(),
+                w.address(), w.status() == WarehouseStatus.ACTIVE));
     }
 
     private static StorageLocationView toView(LocationRow row) {

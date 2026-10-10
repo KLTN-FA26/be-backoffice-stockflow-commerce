@@ -137,7 +137,7 @@ class GoodsReceiptTest {
         assertThat(ReceivingPurchaseOrder.lineStatusFor(line, 10)).isEqualTo(ReceivingPurchaseOrder.LineStatus.RECEIVED);
 
         var order = new ReceivingPurchaseOrder(UUID.randomUUID(), "PO-1", ReceivingPurchaseOrder.Status.CONFIRMED,
-                UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), null, List.of(line, closed));
+                UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), null, false, List.of(line, closed));
         assertThat(order.statusAfter(Map.of(line.id(), ReceivingPurchaseOrder.LineStatus.PARTIALLY_RECEIVED)))
                 .isEqualTo(ReceivingPurchaseOrder.Status.PARTIALLY_RECEIVED);
         assertThat(order.statusAfter(Map.of(line.id(), ReceivingPurchaseOrder.LineStatus.RECEIVED)))

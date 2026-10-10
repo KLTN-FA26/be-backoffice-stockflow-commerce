@@ -14,7 +14,18 @@ import com.stockflow.notification.api.DeliveryAttemptSummary;
 import com.stockflow.notification.api.NotificationService;
 import com.stockflow.notification.internal.repository.PoRetryCursorRepository;
 import com.stockflow.procurement.api.*;
+import com.stockflow.common.security.CurrentUser;
+import com.stockflow.common.security.CurrentUserProvider;
+import com.stockflow.common.security.DataScope;
+import com.stockflow.procurement.internal.service.GoodsReceipts;
+import com.stockflow.product.api.CreateProductCommand;
+import com.stockflow.product.api.ProductKind;
 import com.stockflow.product.api.ProductService;
+import com.stockflow.product.api.TaxClass;
+import com.stockflow.support.DemoData;
+import com.stockflow.support.ReferenceRows;
+import jakarta.persistence.EntityManager;
+import org.junit.jupiter.api.BeforeEach;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 
@@ -37,11 +48,12 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.sql.Date;
-import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
@@ -78,6 +90,26 @@ class SupplierProcurementIntegrationTest {
     @MockitoBean NotificationSender sender;
     @Autowired MockMvc mvc;
     @Autowired ProductService products;
+    @Autowired GoodsReceipts receipts;
+    @Autowired EntityManager entityManager;
+    @MockitoBean CurrentUserProvider users;
+
+    UUID submitter;
+    UUID approver;
+    UUID buyer;
+
+    /**
+     * Three people: who submits, who approves (four-eyes) and who sends and receives. The HTTP calls
+     * act as the buyer: security is off in the test profile, so the current user is installed here.
+     */
+    @BeforeEach
+    void people() {
+        submitter = transactions.execute(tx -> ReferenceRows.user(entityManager));
+        approver = transactions.execute(tx -> ReferenceRows.user(entityManager));
+        buyer = transactions.execute(tx -> ReferenceRows.user(entityManager));
+        when(users.current()).thenReturn(Optional.of(new CurrentUser(buyer, "test-" + buyer, Set.of(), Set.of(),
+                DataScope.ALL, Set.of())));
+    }
 
     @Test
     void supplierCreationAuditContainsTheCreatedResourceId() {
@@ -99,9 +131,9 @@ where resource_type='supplier' and action='CREATE' and resource_id=?
     @Test
     void firstDeliveryDatePersistsWithoutReasonButAnExistingDateStillNeedsOne() throws Exception {
         var first = order(supplier().supplierId());
-        orders.approve(first.purchaseOrderId());
+        approve(first.purchaseOrderId());
         transactions.executeWithoutResult(tx -> jdbc.update(
-                "update procurement.purchase_order set expected_at=null where id=?",
+                "update procurement.purchase_orders set expected_date=null where id=?",
                 first.purchaseOrderId()));
         mvc.perform(
                         MockMvcRequestBuilders.post(
@@ -112,7 +144,7 @@ where resource_type='supplier' and action='CREATE' and resource_id=?
                                 .content("{\"expectedAt\":\"2030-01-15\"}"))
                 .andExpect(MockMvcResultMatchers.status().isOk());
         assertThat(orders.findById(first.purchaseOrderId()).orElseThrow().status())
-                .isEqualTo("SENT");
+                .isEqualTo("CONFIRMED");
         assertThat(
                         jdbc.queryForMap(
                                 """
@@ -125,7 +157,7 @@ where purchase_order_id=?
                 .containsEntry("reason", null);
 
         var existing = order(supplier().supplierId());
-        orders.approve(existing.purchaseOrderId());
+        approve(existing.purchaseOrderId());
         mvc.perform(
                         MockMvcRequestBuilders.post(
                                         "/api/v1/purchase-orders/"
@@ -163,7 +195,7 @@ from procurement.po_delivery_decision where purchase_order_id=?
                 .andExpect(MockMvcResultMatchers.jsonPath("$.fieldErrors[0].field").value("status"))
                 .andExpect(
                         MockMvcResultMatchers.jsonPath("$.fieldErrors[0].message")
-                                .value("Trạng thái nhà cung cấp phải là ACTIVE hoặc INACTIVE."));
+                                .value("Trạng thái nhà cung cấp phải là ACTIVE, INACTIVE hoặc BLACKLISTED."));
     }
 
     @Test
@@ -225,8 +257,8 @@ from procurement.po_delivery_decision where purchase_order_id=?
         doThrow(failure)
                 .when(sender)
                 .sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId())));
-        orders.approve(po.purchaseOrderId());
-        orders.send(po.purchaseOrderId());
+        approve(po.purchaseOrderId());
+        send(po.purchaseOrderId());
         await().atMost(Duration.ofSeconds(10))
                 .untilAsserted(
                         () ->
@@ -243,8 +275,8 @@ from procurement.po_delivery_decision where purchase_order_id=?
     void cancellationFailureDoesNotUndoCancellationAndRetryUsesOriginalRecipient() {
         var supplier = supplier();
         var po = order(supplier.supplierId());
-        orders.approve(po.purchaseOrderId());
-        orders.send(po.purchaseOrderId());
+        approve(po.purchaseOrderId());
+        send(po.purchaseOrderId());
         await().atMost(Duration.ofSeconds(10))
                 .untilAsserted(
                         () ->
@@ -255,8 +287,8 @@ from procurement.po_delivery_decision where purchase_order_id=?
         transactions.executeWithoutResult(
                 tx ->
                         jdbc.update(
-                                "update procurement.supplier set email='changed@example.com' where"
-                                    + " id=?",
+                                "update procurement.supplier_contacts set email='changed@example.com'"
+                                    + " where supplier_id=?",
                                 supplier.supplierId()));
         doThrow(new MailSendException("offline"))
                 .when(sender)
@@ -265,7 +297,7 @@ from procurement.po_delivery_decision where purchase_order_id=?
                                 e ->
                                         e.purchaseOrderId().equals(po.purchaseOrderId())
                                                 && e.cancellation()));
-        assertThat(orders.cancel(po.purchaseOrderId(), "Customer cancelled").status())
+        assertThat(orders.cancel(po.purchaseOrderId(), buyer, "Customer cancelled").status())
                 .isEqualTo("CANCELLED");
         await().atMost(Duration.ofSeconds(10))
                 .untilAsserted(
@@ -306,14 +338,14 @@ from procurement.po_delivery_decision where purchase_order_id=?
                 .extracting(DeliveryAttemptSummary::templateCode)
                 .contains("purchase-order.sent", "purchase-order.cancelled");
         expectCode(
-                () -> orders.cancel(po.purchaseOrderId(), "Duplicate cancellation"),
+                () -> orders.cancel(po.purchaseOrderId(), buyer, "Duplicate cancellation"),
                 ErrorCode.INVALID_PURCHASE_ORDER_TRANSITION);
     }
 
     @Test
     void unsentCancellationDoesNotNotifySupplier() {
         var po = order(supplier().supplierId());
-        orders.cancel(po.purchaseOrderId(), "Draft withdrawn");
+        orders.cancel(po.purchaseOrderId(), buyer, "Draft withdrawn");
         assertThat(notifications.purchaseOrderCancellationStatuses(List.of(po.purchaseOrderId())))
                 .isEmpty();
         verify(sender, never())
@@ -322,37 +354,29 @@ from procurement.po_delivery_decision where purchase_order_id=?
 
     @Test
     void missingDescriptionComesFromProductMasterAndRecoveryKeepsSnapshot() {
-        var productId = UUID.randomUUID();
-        String sku = "PO-" + UUID.randomUUID().toString().substring(0, 8);
-        transactions.executeWithoutResult(
-                tx ->
-                        jdbc.update(
-                                "insert into product.product(id,code,name,status,created_at) values"
-                                    + " (?,?,?,'DRAFT',now())",
-                                productId,
-                                sku,
-                                "Original product name"));
-        assertThat(products.nameForSku(sku.toUpperCase(Locale.ROOT)))
-                .contains("Original product name");
+        String sku = "PO-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
+        var productId = products.create(new CreateProductCommand(sku, "Original product name", "Original", null,
+                null, null, null, null, TaxClass.STANDARD, ProductKind.STANDARD)).productId();
+        assertThat(products.nameForSku(sku)).contains("Original product name");
         var po =
                 orders.createPurchaseOrder(
                         new CreatePurchaseOrderCommand(
-                                supplier().supplierId(),
+                                supplier().supplierId(), DemoData.WAREHOUSE_HCM,
                                 "VND",
-                                null,
+                                null, null,
                                 List.of(new CreatePOLineCommand(sku, null, 1, BigDecimal.TEN))));
         assertThat(po.lines().getFirst().description()).isEqualTo("Original product name");
         transactions.executeWithoutResult(
                 tx ->
                         jdbc.update(
-                                "update product.product set name='Changed before sending' where"
+                                "update product.products set name='Changed before sending' where"
                                     + " id=?",
                                 productId));
         doThrow(new IllegalArgumentException("terminal transport error"))
                 .when(sender)
                 .sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId())));
-        orders.approve(po.purchaseOrderId());
-        orders.send(po.purchaseOrderId());
+        approve(po.purchaseOrderId());
+        send(po.purchaseOrderId());
         await().atMost(Duration.ofSeconds(10))
                 .untilAsserted(
                         () ->
@@ -363,10 +387,9 @@ from procurement.po_delivery_decision where purchase_order_id=?
         transactions.executeWithoutResult(
                 tx ->
                         jdbc.update(
-                                "update product.product set name='Changed product name' where id=?",
+                                "update product.products set name='Changed product name' where id=?",
                                 productId));
-        assertThat(products.nameForSku(sku.toUpperCase(Locale.ROOT)))
-                .contains("Changed product name");
+        assertThat(products.nameForSku(sku)).contains("Changed product name");
         doNothing()
                 .when(sender)
                 .sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId())));
@@ -397,7 +420,7 @@ from procurement.po_delivery_decision where purchase_order_id=?
     @Test
     void cancelledOrderCannotBeDispatchedByAnOldPublication() {
         var po = failedOrder(false);
-        orders.cancel(po.purchaseOrderId(), "No longer needed");
+        orders.cancel(po.purchaseOrderId(), buyer, "No longer needed");
         doNothing()
                 .when(sender)
                 .sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId())));
@@ -579,15 +602,15 @@ from procurement.po_delivery_decision where purchase_order_id=?
                         })
                 .when(sender)
                 .sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId())));
-        orders.approve(po.purchaseOrderId());
-        orders.send(po.purchaseOrderId());
+        approve(po.purchaseOrderId());
+        send(po.purchaseOrderId());
         assertThat(entered.await(10, TimeUnit.SECONDS)).isTrue();
         try (var pool = Executors.newSingleThreadExecutor()) {
             var cancel =
                     pool.submit(
                             () ->
                                     orders.cancel(
-                                            po.purchaseOrderId(), "Cancel after dispatch started"));
+                                            po.purchaseOrderId(), buyer, "Cancel after dispatch started"));
             try {
                 assertThatThrownBy(() -> cancel.get(200, TimeUnit.MILLISECONDS))
                         .isInstanceOf(TimeoutException.class);
@@ -624,20 +647,17 @@ from procurement.po_delivery_decision where purchase_order_id=?
     @Test
     void overdueInitialSendIsAllowedWithWarningWithoutInventingNewDeliveryDate() throws Exception {
         var yesterday = BusinessCalendar.date(Instant.now()).minusDays(1);
-        var po =
-                orders.createPurchaseOrder(
-                        new CreatePurchaseOrderCommand(
-                                supplier().supplierId(),
-                                "VND",
-                                yesterday,
-                                List.of(
-                                        new CreatePOLineCommand(
-                                                "CHAIR-01", "Chair", 1, BigDecimal.TEN))));
-        orders.approve(po.purchaseOrderId());
+        // An order raised days ago whose delivery date has passed by the time it is sent: a new order
+        // cannot be dated in the past, so the dates are moved back as time would have moved them.
+        var po = order(supplier().supplierId());
+        transactions.executeWithoutResult(tx -> jdbc.update(
+                "update procurement.purchase_orders set order_date=?, expected_date=? where id=?",
+                yesterday.minusDays(3), yesterday, po.purchaseOrderId()));
+        approve(po.purchaseOrderId());
         var tomorrow = yesterday.plusDays(2);
         expectCode(
                 () ->
-                        orders.send(
+                        send(
                                 po.purchaseOrderId(), new SendPurchaseOrderCommand(tomorrow, " ")),
                 ErrorCode.PO_REASON_REQUIRED);
         mvc.perform(
@@ -647,7 +667,7 @@ from procurement.po_delivery_decision where purchase_order_id=?
                                                 + "/sending")
                                 .header("Idempotency-Key", UUID.randomUUID().toString()))
                 .andExpect(MockMvcResultMatchers.status().isOk())
-                .andExpect(MockMvcResultMatchers.jsonPath("$.data.status").value("SENT"))
+                .andExpect(MockMvcResultMatchers.jsonPath("$.data.status").value("CONFIRMED"))
                 .andExpect(
                         MockMvcResultMatchers.jsonPath("$.data.warnings[0]")
                                 .value("DELIVERY_DATE_IN_PAST"));
@@ -733,7 +753,7 @@ from procurement.po_delivery_decision where purchase_order_id=?
                                                 30,
                                                 7,
                                                 "API",
-                                                "https://unapproved.example.com/po")))
+                                                "https://unapproved.example.com/po", null, false, null)))
                 .isInstanceOf(BusinessException.class)
                 .extracting(e -> ((BusinessException) e).errorCode())
                 .isEqualTo(ErrorCode.SUPPLIER_DELIVERY_CONTACT_INVALID);
@@ -745,8 +765,8 @@ from procurement.po_delivery_decision where purchase_order_id=?
         doThrow(new IllegalArgumentException("invalid destination configuration"))
                 .when(sender)
                 .sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId())));
-        orders.approve(po.purchaseOrderId());
-        orders.send(po.purchaseOrderId());
+        approve(po.purchaseOrderId());
+        send(po.purchaseOrderId());
         await().atMost(Duration.ofSeconds(15))
                 .untilAsserted(
                         () ->
@@ -771,8 +791,8 @@ from procurement.po_delivery_decision where purchase_order_id=?
         doThrow(new IllegalStateException("mail offline"))
                 .when(sender)
                 .sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId())));
-        orders.approve(po.purchaseOrderId());
-        orders.send(po.purchaseOrderId());
+        approve(po.purchaseOrderId());
+        send(po.purchaseOrderId());
         for (int i = 1; i <= 5; i++) {
             int count = i;
             await().atMost(Duration.ofSeconds(15))
@@ -814,13 +834,13 @@ from procurement.po_delivery_decision where purchase_order_id=?
                 () ->
                         orders.createPurchaseOrder(
                                 new CreatePurchaseOrderCommand(
-                                        supplierId,
+                                        supplierId, DemoData.WAREHOUSE_HCM,
                                         "VND",
-                                        null,
+                                        null, null,
                                         List.of(
                                                 new CreatePOLineCommand(
                                                         "UNKNOWN-SKU", null, 1, BigDecimal.TEN)))),
-                ErrorCode.PO_LINE_DESCRIPTION_REQUIRED);
+                ErrorCode.INVENTORY_ITEM_NOT_FOUND);
         for (var line :
                 List.of(
                         new CreatePOLineCommand("CHAIR-01", "Chair", 1, new BigDecimal("1000.5")),
@@ -831,12 +851,12 @@ from procurement.po_delivery_decision where purchase_order_id=?
                     () ->
                             orders.createPurchaseOrder(
                                     new CreatePurchaseOrderCommand(
-                                            supplierId, "VND", null, List.of(line))),
+                                            supplierId, DemoData.WAREHOUSE_HCM, "VND", null, null, List.of(line))),
                     ErrorCode.VALIDATION_FAILED);
         }
         assertThat(
                         jdbc.queryForObject(
-                                "select count(*) from procurement.purchase_order where"
+                                "select count(*) from procurement.purchase_orders where"
                                     + " supplier_id=?",
                                 Long.class,
                                 supplierId))
@@ -849,7 +869,7 @@ from procurement.po_delivery_decision where purchase_order_id=?
         for (String[] example :
                 List.of(
                         new String[] {"XYZ", "CHAIR-01", "Chair", "1", "10", "currency"},
-                        new String[] {"VND", "bad_sku", "Chair", "1", "10", "lines[0].sku"},
+                        new String[] {"VND", "bad sku", "Chair", "1", "10", "lines[0].sku"},
                         new String[] {
                             "VND", "CHAIR-01", "x".repeat(301), "1", "10", "lines[0].description"
                         },
@@ -930,22 +950,22 @@ from procurement.po_delivery_decision where purchase_order_id=?
                 terms,
                 lead,
                 "EMAIL",
-                null);
+                null, null, false, null);
     }
 
     private SupplierSummary supplier() {
-        return suppliers.create(command("S-" + UUID.randomUUID(), "ACTIVE", 45, 12));
+        return suppliers.create(command("S-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(), "ACTIVE", 45, 12));
     }
 
     private PurchaseOrderSummary order(UUID supplier) {
         return orders.createPurchaseOrder(
                 new CreatePurchaseOrderCommand(
-                        supplier,
+                        supplier, DemoData.WAREHOUSE_HCM,
                         "VND",
-                        null,
+                        null, null,
                         List.of(
                                 new CreatePOLineCommand(
-                                        "CHAIR-01", "Oak chair", 2, new BigDecimal("100000")))));
+                                        "SOFA-3S-GREY", "Oak chair", 2, new BigDecimal("100000")))));
     }
 
     private void expectCode(Runnable action, ErrorCode code) {
@@ -976,7 +996,7 @@ from procurement.po_delivery_decision where purchase_order_id=?
         expectCode(
                 () -> suppliers.deactivate(s.supplierId()),
                 ErrorCode.SUPPLIER_HAS_OPEN_PURCHASE_ORDERS);
-        orders.cancel(po.purchaseOrderId(), "No longer required");
+        orders.cancel(po.purchaseOrderId(), buyer, "No longer required");
         suppliers.deactivate(s.supplierId());
         expectCode(() -> order(s.supplierId()), ErrorCode.SUPPLIER_INACTIVE);
     }
@@ -993,16 +1013,16 @@ from procurement.po_delivery_decision where purchase_order_id=?
     void draftCannotBeSentAndConcurrentSendingProducesOnlyOneNotification() throws Exception {
         var po = order(supplier().supplierId());
         expectCode(
-                () -> orders.send(po.purchaseOrderId()),
+                () -> send(po.purchaseOrderId()),
                 ErrorCode.INVALID_PURCHASE_ORDER_TRANSITION);
-        orders.approve(po.purchaseOrderId());
+        approve(po.purchaseOrderId());
         var start = new CountDownLatch(1);
         try (var pool = Executors.newFixedThreadPool(2)) {
             Callable<Boolean> send =
                     () -> {
                         start.await();
                         try {
-                            orders.send(po.purchaseOrderId());
+                            send(po.purchaseOrderId());
                             return true;
                         } catch (BusinessException conflict) {
                             assertThat(conflict.errorCode())
@@ -1042,8 +1062,8 @@ from procurement.po_delivery_decision where purchase_order_id=?
         doThrow(new MailSendException("offline"))
                 .when(sender)
                 .sendPurchaseOrder(argThat(e -> e.purchaseOrderId().equals(po.purchaseOrderId())));
-        orders.approve(po.purchaseOrderId());
-        orders.send(po.purchaseOrderId());
+        approve(po.purchaseOrderId());
+        send(po.purchaseOrderId());
         await().atMost(Duration.ofSeconds(10))
                 .untilAsserted(
                         () -> {
@@ -1057,7 +1077,7 @@ from procurement.po_delivery_decision where purchase_order_id=?
                                                     "purchase-order:" + po.purchaseOrderId()))
                                     .isEqualTo(1);
                         });
-        assertThat(orders.findById(po.purchaseOrderId()).orElseThrow().status()).isEqualTo("SENT");
+        assertThat(orders.findById(po.purchaseOrderId()).orElseThrow().status()).isEqualTo("CONFIRMED");
         assertThat(
                         jdbc.queryForObject(
                                 "select count(*) from event_publication where completion_date is"
@@ -1207,10 +1227,10 @@ values (?, 'test-listener', 'test-event', '{}', now()-interval '10 minutes')
     @Test
     void rolledBackSendDoesNotNotifySupplier() {
         var po = order(supplier().supplierId());
-        orders.approve(po.purchaseOrderId());
+        approve(po.purchaseOrderId());
         transactions.executeWithoutResult(
                 tx -> {
-                    orders.send(po.purchaseOrderId());
+                    send(po.purchaseOrderId());
                     tx.setRollbackOnly();
                 });
         assertThat(orders.findById(po.purchaseOrderId()).orElseThrow().status())
@@ -1229,7 +1249,7 @@ values (?, 'test-listener', 'test-event', '{}', now()-interval '10 minutes')
     @Test
     void sameHttpIdempotencyKeyReplaysButNewSendingRequestConflicts() throws Exception {
         var po = order(supplier().supplierId());
-        orders.approve(po.purchaseOrderId());
+        approve(po.purchaseOrderId());
         String path = "/api/v1/purchase-orders/" + po.purchaseOrderId() + "/sending";
         String key = UUID.randomUUID().toString();
         var first =
@@ -1259,8 +1279,8 @@ values (?, 'test-listener', 'test-event', '{}', now()-interval '10 minutes')
     @Test
     void rejectionPreventsReceiptAndChangedReplayDoesNotOverwriteEvidence() {
         var po = order(supplier().supplierId());
-        orders.approve(po.purchaseOrderId());
-        orders.send(po.purchaseOrderId());
+        approve(po.purchaseOrderId());
+        send(po.purchaseOrderId());
         var response = new RecordSupplierConfirmationCommand("REJECTED", "R-1", "Out of stock");
         orders.recordSupplierConfirmation(po.purchaseOrderId(), response);
         orders.recordSupplierConfirmation(po.purchaseOrderId(), response);
@@ -1271,15 +1291,10 @@ values (?, 'test-listener', 'test-event', '{}', now()-interval '10 minutes')
                                 new RecordSupplierConfirmationCommand(
                                         "REJECTED", "R-2", "Different")),
                 ErrorCode.INVALID_PURCHASE_ORDER_TRANSITION);
+        // A refused order takes no goods: the goods receipt is refused at creation.
         expectCode(
-                () ->
-                        orders.receiveGoods(
-                                po.purchaseOrderId(),
-                                new ReceiveGoodsCommand(
-                                        List.of(
-                                                new ReceiveGoodsLineCommand(
-                                                        po.lines().getFirst().lineId(), 1)))),
-                ErrorCode.INVALID_PURCHASE_ORDER_TRANSITION);
+                () -> receipts.create(new GoodsReceipts.Create(po.purchaseOrderId(), null, null), buyer),
+                ErrorCode.PURCHASE_ORDER_NOT_RECEIVABLE);
     }
 
     @Test
@@ -1339,7 +1354,7 @@ values (?, 'test-listener', 'test-event', '{}', now()-interval '10 minutes')
                         try {
                             suppliers.create(
                                     new SaveSupplierCommand(
-                                            "SUP-" + UUID.randomUUID(),
+                                            "SUP-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(),
                                             "Supplier",
                                             null,
                                             "s@example.com",
@@ -1349,7 +1364,7 @@ values (?, 'test-listener', 'test-event', '{}', now()-interval '10 minutes')
                                             30,
                                             7,
                                             "EMAIL",
-                                            null));
+                                            null, null, false, null));
                             return "created";
                         } catch (BusinessException e) {
                             return e.errorCode().name();
@@ -1364,45 +1379,54 @@ values (?, 'test-listener', 'test-event', '{}', now()-interval '10 minutes')
     }
 
     @Test
-    void completionEvidenceSurvivesLaterUpdatesAndCloseShortIsNotFullDelivery() {
+    void fullReceiptIsFulfilmentAndCloseShortIsNot() {
         var s = supplier();
         var po = order(s.supplierId());
-        orders.approve(po.purchaseOrderId());
-        orders.send(po.purchaseOrderId());
-        orders.receiveGoods(
-                po.purchaseOrderId(),
-                new ReceiveGoodsCommand(
-                        List.of(new ReceiveGoodsLineCommand(po.lines().getFirst().lineId(), 2))));
-        var before =
-                jdbc.queryForObject(
-                        "select receipt_completed_at from procurement.purchase_order where id=?",
-                        Timestamp.class,
-                        po.purchaseOrderId());
-        assertThat(before).isNotNull();
+        approve(po.purchaseOrderId());
+        send(po.purchaseOrderId());
+        receive(po, 2);
+        assertThat(orders.findById(po.purchaseOrderId()).orElseThrow().status()).isEqualTo("RECEIVED");
         orders.recordSupplierConfirmation(
                 po.purchaseOrderId(),
                 new RecordSupplierConfirmationCommand("CONFIRMED", "ACK", null));
-        assertThat(
-                        jdbc.queryForObject(
-                                "select receipt_completed_at from procurement.purchase_order where"
-                                    + " id=?",
-                                Timestamp.class,
-                                po.purchaseOrderId()))
-                .isEqualTo(before);
+        assertThat(orders.findById(po.purchaseOrderId()).orElseThrow().lines().getFirst().quantityReceived())
+                .isEqualTo(2);
         var shortPo = order(s.supplierId());
-        orders.approve(shortPo.purchaseOrderId());
-        orders.send(shortPo.purchaseOrderId());
-        orders.receiveGoods(
-                shortPo.purchaseOrderId(),
-                new ReceiveGoodsCommand(
-                        List.of(
-                                new ReceiveGoodsLineCommand(
-                                        shortPo.lines().getFirst().lineId(), 1))));
-        orders.closeShort(shortPo.purchaseOrderId(), "Supplier unable to supply the remainder");
+        approve(shortPo.purchaseOrderId());
+        send(shortPo.purchaseOrderId());
+        receive(shortPo, 1);
+        var closed = orders.closeShort(shortPo.purchaseOrderId(), buyer, "Supplier unable to supply the remainder");
+        assertThat(closed.status()).isEqualTo("CLOSED");
+        assertThat(closed.closeKind()).isEqualTo("SHORT_CLOSE");
         var metrics = suppliers.performance(s.supplierId());
         assertThat(metrics.totalPurchaseOrders()).isEqualTo(2);
         assertThat(metrics.fulfilledPurchaseOrders()).isEqualTo(1);
         assertThat(metrics.onTimeOrders()).isEqualTo(1);
         assertThat(metrics.qualityAcceptanceRate()).isNull();
+    }
+
+    // ------------------------------------------------------------------ the purchase order flow
+
+    /** Submitted by one person, approved by another (four-eyes). */
+    private void approve(UUID purchaseOrderId) {
+        orders.submit(purchaseOrderId, submitter);
+        orders.approve(purchaseOrderId, approver);
+    }
+
+    /** Confirming an approved order is sending it to the supplier. */
+    private PurchaseOrderSummary send(UUID purchaseOrderId) {
+        return orders.confirm(purchaseOrderId, buyer, new SendPurchaseOrderCommand(null, null));
+    }
+
+    private PurchaseOrderSummary send(UUID purchaseOrderId, SendPurchaseOrderCommand command) {
+        return orders.confirm(purchaseOrderId, buyer, command);
+    }
+
+    /** Goods counted in through a goods receipt at the HCM receiving area, as the warehouse does it. */
+    private void receive(PurchaseOrderSummary po, int quantity) {
+        var receipt = receipts.create(new GoodsReceipts.Create(po.purchaseOrderId(), null, null), buyer);
+        receipts.replaceLines(receipt.id(), List.of(new GoodsReceipts.NewLine(po.lines().getFirst().lineId(), quantity,
+                null, null, "HCM-RCV01", null)));
+        receipts.confirm(receipt.id(), buyer);
     }
 }

@@ -22,6 +22,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -69,7 +70,7 @@ class SubcontractPurchasingIntegrationTest {
         tx.executeWithoutResult(s -> {
             jdbc.update("""
                     INSERT INTO design.design_draft (id, customer_id, product_id, status, created_at, current_artifacts)
-                    VALUES (?, ?, ?, 'DRAFT', NOW(), '{}'::jsonb)""", draft, DemoData.CUSTOMER_ID, UUID.randomUUID());
+                    VALUES (?, ?, ?, 'DRAFT', NOW(), '{}'::jsonb)""", draft, DemoData.CUSTOMER_ID, DemoData.PRODUCT_SOFA);
             jdbc.update("""
                     INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at,
                                                         artifact_manifest)
@@ -112,7 +113,7 @@ class SubcontractPurchasingIntegrationTest {
     }
 
     @Test
-    @DisplayName("raise once per production order, DRAFT with one line; supplement while DRAFT; refused once approved")
+    @DisplayName("raise once per production order, DRAFT with one line; supplement while DRAFT; refused once submitted")
     void lifecycle() {
         assertThatThrownBy(() -> subcontracting.create(command(goviet, CUP, 400)))
                 .extracting(SubcontractPurchasingIntegrationTest::code).isEqualTo(ErrorCode.SUPPLIER_NOT_SUBCONTRACTOR);
@@ -130,6 +131,18 @@ class SubcontractPurchasingIntegrationTest {
         assertThat(created.totalAmount()).isEqualByComparingTo("320000");
         assertThat(jdbc.queryForObject("SELECT po_type FROM procurement.purchase_orders WHERE id = ?", String.class,
                 created.purchaseOrderId())).isEqualTo("SUBCONTRACT");
+        // Like every purchase order: the supplier's terms are captured, the line is in the item's own unit.
+        Map<String, Object> stored = jdbc.queryForMap("""
+                SELECT p.payment_term_days, p.lead_time_days, l.uom
+                  FROM procurement.purchase_orders p JOIN procurement.purchase_order_lines l ON l.po_id = p.id
+                 WHERE p.id = ?""", created.purchaseOrderId());
+        Map<String, Object> terms = jdbc.queryForMap(
+                "SELECT payment_term_days, COALESCE(lead_time_days, 0) AS lead_time_days FROM procurement.suppliers WHERE id = ?",
+                innhanh);
+        assertThat(stored).containsEntry("payment_term_days", terms.get("payment_term_days"))
+                .containsEntry("lead_time_days", terms.get("lead_time_days"))
+                .containsEntry("uom", jdbc.queryForObject(
+                        "SELECT unit_of_measure FROM inventory.inventory_items WHERE sku = ?", String.class, CUP.code()));
 
         // Idempotent per production order.
         assertThat(subcontracting.create(command(innhanh, CUP, 999)).purchaseOrderId()).isEqualTo(created.purchaseOrderId());
@@ -144,18 +157,29 @@ class SubcontractPurchasingIntegrationTest {
         assertThatThrownBy(() -> subcontracting.supplement(created.purchaseOrderId(), 0, "x", manager))
                 .extracting(SubcontractPurchasingIntegrationTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
 
-        // Approved (submitted by one person, approved by another, against a revision).
+        // Submitted: the approver decides on the revision frozen at submission, so the line is not
+        // resized under it — the order goes back to DRAFT (rejected) first.
         UUID revision = Identifiers.newId();
-        UUID approver = tx.execute(s -> ReferenceRows.user(entityManager));
         tx.executeWithoutResult(s -> {
             jdbc.update("""
                     INSERT INTO procurement.purchase_order_revisions (id, po_id, revision_no, kind, snapshot_header, changed_by)
                     VALUES (?, ?, 0, 'INITIAL', '{}'::jsonb, ?)""", revision, created.purchaseOrderId(), manager);
             jdbc.update("""
-                    UPDATE procurement.purchase_orders SET status = 'APPROVED', active_revision_id = ?, submitted_at = NOW(),
-                           submitted_by = ?, approved_at = NOW(), approved_by = ? WHERE id = ?""",
-                    revision, manager, approver, created.purchaseOrderId());
+                    UPDATE procurement.purchase_orders SET status = 'PENDING_APPROVAL', pending_revision_id = ?,
+                           submitted_at = NOW(), submitted_by = ? WHERE id = ?""",
+                    revision, manager, created.purchaseOrderId());
         });
+        assertThatThrownBy(() -> subcontracting.supplement(created.purchaseOrderId(), 10, "more", manager))
+                .extracting(SubcontractPurchasingIntegrationTest::code).isEqualTo(ErrorCode.INVALID_PURCHASE_ORDER_TRANSITION);
+        assertThat(subcontracting.findById(created.purchaseOrderId())).get()
+                .extracting(SubcontractOrder::quantity).isEqualTo(450);
+
+        // Approved (submitted by one person, approved by another, against that revision).
+        UUID approver = tx.execute(s -> ReferenceRows.user(entityManager));
+        tx.executeWithoutResult(s -> jdbc.update("""
+                UPDATE procurement.purchase_orders SET status = 'APPROVED', active_revision_id = ?, pending_revision_id = NULL,
+                       approved_at = NOW(), approved_by = ? WHERE id = ?""",
+                revision, approver, created.purchaseOrderId()));
         assertThat(subcontracting.findById(created.purchaseOrderId())).get()
                 .satisfies(o -> assertThat(o.approved()).isTrue());
         assertThatThrownBy(() -> subcontracting.supplement(created.purchaseOrderId(), 10, "more", manager))

@@ -1,6 +1,16 @@
 package com.stockflow.procurement.internal.domain;
 
-/** State can represent a historical incomplete profile; aggregate commands validate new writes. */
+import java.math.BigDecimal;
+
+/**
+ * Everything editable about a supplier. The contact (name, email, phone) is the supplier's primary
+ * contact, kept in {@code supplier_contacts}; {@code taxCode} is {@code suppliers.tax_id}.
+ *
+ * @param overReceiptTolerancePercent how far above the ordered quantity a receipt may go (BR-02);
+ *                                    null means no tolerance
+ * @param printSubcontractor          the supplier prints to order and can take subcontract POs
+ * @param lossTolerancePercent        the print waste a subcontract order allows for
+ */
 public record SupplierDetails(
         String code,
         String name,
@@ -12,4 +22,7 @@ public record SupplierDetails(
         int paymentTermDays,
         int leadTimeDays,
         SupplierCommunicationChannel communicationChannel,
-        String apiEndpoint) {}
+        String apiEndpoint,
+        BigDecimal overReceiptTolerancePercent,
+        boolean printSubcontractor,
+        BigDecimal lossTolerancePercent) {}

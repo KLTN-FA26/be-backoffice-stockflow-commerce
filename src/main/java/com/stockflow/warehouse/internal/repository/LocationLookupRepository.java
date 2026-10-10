@@ -19,6 +19,12 @@ public interface LocationLookupRepository {
 
     Optional<LocationRow> findById(UUID locationId);
 
+    /** The warehouse itself, for other modules naming it on a document (a purchase order's receiving warehouse). */
+    Optional<WarehouseHeader> findWarehouseHeader(UUID warehouseId);
+
+    record WarehouseHeader(UUID id, String prefix, String name, String address, WarehouseStatus status) {
+    }
+
     /**
      * @param shelfStatus the bin's shelf; {@code null} for an area, whose own status is the
      *                    location's (D8)

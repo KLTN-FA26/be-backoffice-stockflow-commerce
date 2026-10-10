@@ -62,14 +62,14 @@ class WarehouseLayoutServiceIntegrationTest {
     class Warehouses {
 
         @Test
-        @DisplayName("registers a warehouse with an upper-cased prefix, also written to the legacy code column")
+        @DisplayName("registers a warehouse with an upper-cased prefix")
         void registers() {
             WarehouseSummary hanoi = registerHanoi();
 
             assertThat(hanoi.prefix()).isEqualTo("HN");
             assertThat(hanoi.status()).isEqualTo(WarehouseStatus.ACTIVE);
             assertThat(hanoi.createdAt()).isNotNull();
-            assertThat(jdbc.queryForObject("select code from warehouse.warehouse where id = ?",
+            assertThat(jdbc.queryForObject("select prefix from warehouse.warehouse where id = ?",
                     String.class, hanoi.id())).isEqualTo("HN");
         }
 

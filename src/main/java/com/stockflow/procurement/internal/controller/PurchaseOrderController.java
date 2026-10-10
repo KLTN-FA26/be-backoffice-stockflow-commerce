@@ -7,6 +7,8 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.security.Action;
+import com.stockflow.common.security.AuthenticatedUser;
+import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.notification.api.NotificationService;
@@ -22,7 +24,6 @@ import com.stockflow.procurement.internal.controller.dto.CloseShortRequest;
 import com.stockflow.procurement.internal.controller.dto.CreatePurchaseOrderRequest;
 import com.stockflow.procurement.internal.controller.dto.PurchaseOrderResponse;
 import com.stockflow.procurement.internal.controller.dto.PurchaseOrderStatusCountResponse;
-import com.stockflow.procurement.internal.controller.dto.ReceiveGoodsRequest;
 import com.stockflow.procurement.internal.controller.dto.RecoverPurchaseOrderDeliveryRequest;
 import com.stockflow.procurement.internal.controller.dto.SendPurchaseOrderRequest;
 import com.stockflow.procurement.internal.controller.dto.SupplierConfirmationRequest;
@@ -51,7 +52,9 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * HTTP entry point for purchase order creation (SCRUM-113/WBS 3.2.1).
+ * HTTP entry point for purchase orders (SCRUM-113/114/115/116/390): create, submit, approve or
+ * reject, confirm (= send to the supplier), record the supplier's answer, cancel, close. Receiving is
+ * {@code /api/v1/goods-receipts}.
  *
  * <p><b>Handler methods are public.</b> {@code @RequiresPermission} is applied by a Spring AOP
  * proxy, which advises a non-public method only when the generated proxy happens to land in the
@@ -124,14 +127,18 @@ class PurchaseOrderController {
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size,
             @RequestParam(required = false) UUID supplierId,
+            @RequestParam(required = false) UUID warehouseId,
             @RequestParam(required = false) List<String> status,
+            @RequestParam(name = "q", required = false) String search,
             @RequestParam(required = false) String sort) {
         var query =
                 new ListPurchaseOrdersQuery(
                         page,
                         size == null ? Pages.DEFAULT_PAGE_SIZE : size,
                         supplierId,
+                        warehouseId,
                         status,
+                        search,
                         sort);
         var result = procurementService.list(query);
         var statuses =
@@ -147,29 +154,49 @@ class PurchaseOrderController {
         return ApiResponse.ok(result.map(po -> response(po, statuses, cancellations)));
     }
 
-    @PostMapping("/{purchaseOrderId}/approval")
-    @Operation(summary = "Approve a draft purchase order")
-    @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.APPROVE)
-    public ApiResponse<PurchaseOrderResponse> approve(@PathVariable UUID purchaseOrderId) {
-        return ApiResponse.ok(toResponse(procurementService.approve(purchaseOrderId)));
+    @PostMapping("/{purchaseOrderId}/submission")
+    @Operation(summary = "Submit a draft purchase order for approval; freezes it as a revision")
+    @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.UPDATE)
+    public ApiResponse<PurchaseOrderResponse> submit(@PathVariable UUID purchaseOrderId,
+                                                     @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(toResponse(procurementService.submit(purchaseOrderId, user.userId())));
     }
 
-    @PostMapping("/{purchaseOrderId}/sending")
+    @PostMapping("/{purchaseOrderId}/approval")
+    @Operation(summary = "Approve a submitted purchase order; the approver must not be who submitted it")
+    @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.APPROVE)
+    public ApiResponse<PurchaseOrderResponse> approve(@PathVariable UUID purchaseOrderId,
+                                                      @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(toResponse(procurementService.approve(purchaseOrderId, user.userId())));
+    }
+
+    @PostMapping("/{purchaseOrderId}/rejection")
+    @Operation(summary = "Send a submitted purchase order back to draft, with a reason")
+    @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.APPROVE)
+    public ApiResponse<PurchaseOrderResponse> reject(@PathVariable UUID purchaseOrderId,
+                                                     @AuthenticatedUser CurrentUser user,
+                                                     @Valid @RequestBody CancelPurchaseOrderRequest request) {
+        return ApiResponse.ok(toResponse(procurementService.reject(purchaseOrderId, user.userId(), request.reason())));
+    }
+
+    /** {@code /sending} is the old name, kept while the screens move to {@code /confirmation}. */
+    @PostMapping({"/{purchaseOrderId}/confirmation", "/{purchaseOrderId}/sending"})
     @Operation(
-            summary = "Queue an approved PO for supplier delivery",
+            summary = "Confirm an approved PO: lock it and queue it for supplier delivery",
             description =
-                    "Use the same Idempotency-Key on retries. A new request for an already SENT PO"
-                        + " returns 409. Delivery is asynchronous; SENT does not mean supplier"
-                        + " acceptance.")
+                    "Use the same Idempotency-Key on retries. A new request for an already CONFIRMED PO"
+                        + " returns 409. Delivery is asynchronous; CONFIRMED does not mean supplier"
+                        + " acceptance (see supplierConfirmationStatus).")
     @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.UPDATE)
-    public ApiResponse<PurchaseOrderResponse> send(
+    public ApiResponse<PurchaseOrderResponse> confirm(
             @PathVariable UUID purchaseOrderId,
+            @AuthenticatedUser CurrentUser user,
             @Valid @RequestBody(required = false) SendPurchaseOrderRequest request) {
         var command =
                 request == null
                         ? new SendPurchaseOrderCommand(null, null)
                         : new SendPurchaseOrderCommand(request.expectedAt(), request.reason());
-        return ApiResponse.ok(toResponse(procurementService.send(purchaseOrderId, command)));
+        return ApiResponse.ok(toResponse(procurementService.confirm(purchaseOrderId, user.userId(), command)));
     }
 
     @PostMapping("/{purchaseOrderId}/delivery-recovery")
@@ -215,29 +242,28 @@ class PurchaseOrderController {
     @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.UPDATE)
     public ApiResponse<PurchaseOrderResponse> cancel(
             @PathVariable UUID purchaseOrderId,
+            @AuthenticatedUser CurrentUser user,
             @Valid @RequestBody CancelPurchaseOrderRequest request) {
         return ApiResponse.ok(
-                toResponse(procurementService.cancel(purchaseOrderId, request.reason())));
-    }
-
-    @PostMapping("/{purchaseOrderId}/receipts")
-    @Operation(summary = "Record goods received against a purchase order")
-    @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.UPDATE)
-    public ApiResponse<PurchaseOrderResponse> receiveGoods(
-            @PathVariable UUID purchaseOrderId, @Valid @RequestBody ReceiveGoodsRequest request) {
-        return ApiResponse.ok(
-                toResponse(
-                        procurementService.receiveGoods(
-                                purchaseOrderId, mapper.toCommand(request))));
+                toResponse(procurementService.cancel(purchaseOrderId, user.userId(), request.reason())));
     }
 
     @PostMapping("/{purchaseOrderId}/closure-short")
     @Operation(summary = "Close a purchase order short, writing off the remaining open quantity")
     @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.UPDATE)
     public ApiResponse<PurchaseOrderResponse> closeShort(
-            @PathVariable UUID purchaseOrderId, @Valid @RequestBody CloseShortRequest request) {
+            @PathVariable UUID purchaseOrderId, @AuthenticatedUser CurrentUser user,
+            @Valid @RequestBody CloseShortRequest request) {
         return ApiResponse.ok(
-                toResponse(procurementService.closeShort(purchaseOrderId, request.reason())));
+                toResponse(procurementService.closeShort(purchaseOrderId, user.userId(), request.reason())));
+    }
+
+    @PostMapping("/{purchaseOrderId}/closure")
+    @Operation(summary = "Close a fully received purchase order")
+    @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.UPDATE)
+    public ApiResponse<PurchaseOrderResponse> close(@PathVariable UUID purchaseOrderId,
+                                                    @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(toResponse(procurementService.close(purchaseOrderId, user.userId())));
     }
 
     private PurchaseOrderResponse toResponse(PurchaseOrderSummary po) {
@@ -254,7 +280,7 @@ class PurchaseOrderController {
         var warnings =
                 po.expectedAt() != null
                                 && po.expectedAt().isBefore(today)
-                                && !List.of("CANCELLED", "CLOSED", "CLOSED_SHORT")
+                                && !List.of("CANCELLED", "CLOSED", "RECEIVED")
                                         .contains(po.status())
                         ? List.of("DELIVERY_DATE_IN_PAST")
                         : List.<String>of();

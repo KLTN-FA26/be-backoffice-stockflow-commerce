@@ -113,6 +113,9 @@ public interface InventoryService {
     /** The same, by SKU: the inventory item a variant has, empty when it has none yet. */
     Optional<InventoryItemPolicy> itemPolicy(Sku sku);
 
+    /** The SKU of each inventory item that exists, for a list of purchase order lines in one query. */
+    java.util.Map<UUID, String> skusOf(java.util.Collection<UUID> inventoryItemIds);
+
     /**
      * Ask for a stock correction with a reason (SCRUM-145). The stock does not change until a
      * different person approves it; production records scrapped blanks through this.

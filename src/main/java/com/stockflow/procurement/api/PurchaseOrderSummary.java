@@ -7,35 +7,51 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Read model of a purchase order, for the API. Flat and immutable — handing out the {@code
- * PurchaseOrder} aggregate would let a caller invoke its methods outside a transaction.
+ * Read model of a purchase order ({@code procurement.purchase_orders}). {@code lines} is empty on a
+ * row of the paginated list; only a single-order read loads them.
  *
- * <p>{@code lines} is empty on a row from the paginated list query, same reasoning and same
- * pagination trap as {@code ProductSummary}; only a single-PO read populates it.
- *
- * <p>{@code possibleDuplicate} (BR-PO-003) is only ever {@code true} on the response to {@link
- * ProcurementService#createPurchaseOrder}, flagging that another open PO exists for the same
- * supplier, delivery date and at least one overlapping SKU — a warning, not a rejection, so it is
- * always {@code false} on every other read.
+ * <p>{@code status} is one of DRAFT, PENDING_APPROVAL, APPROVED, CONFIRMED, PARTIALLY_RECEIVED,
+ * RECEIVED, CLOSED, CANCELLED (decision D4). {@code sentAt} is {@code confirmedAt}: confirming an
+ * order is sending it (plan Q1), and the field keeps its old name for the supplier-communication
+ * screens. A short close is {@code CLOSED} with {@code closeKind = SHORT_CLOSE} and its reason in
+ * {@code closeReason}.</p>
  */
 public record PurchaseOrderSummary(
         UUID purchaseOrderId,
         String poNumber,
+        String type,
+        UUID productionOrderId,
         UUID supplierId,
         String supplierCode,
         String supplierName,
+        UUID warehouseId,
+        String warehouseCode,
+        String warehouseName,
         String status,
         String currency,
-        BigDecimal totalAmount,
+        LocalDate orderDate,
         LocalDate expectedAt,
+        BigDecimal subtotal,
+        BigDecimal taxTotal,
+        BigDecimal totalAmount,
+        String note,
         List<POLineSummary> lines,
         Instant createdAt,
         String createdBy,
         Instant lastModifiedAt,
         String lastModifiedBy,
         boolean possibleDuplicate,
+        long revisionNo,
+        UUID submittedBy,
+        Instant submittedAt,
+        UUID approvedBy,
+        Instant approvedAt,
+        UUID confirmedBy,
+        Instant confirmedAt,
+        Instant closedAt,
+        String closeKind,
+        String closeReason,
         String cancellationReason,
-        String closeShortReason,
         int paymentTermDays,
         int leadTimeDays,
         Instant sentAt,

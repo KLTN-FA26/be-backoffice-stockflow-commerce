@@ -6,7 +6,7 @@ import java.util.UUID;
 /**
  * THE public API of the warehouse module - the only package other modules may import.
  *
- * <p>Two lookups and nothing else (issue #18 D6). {@code warehouse.storage_location} is the target of
+ * <p>Three lookups and nothing else (issue #18 D6). {@code warehouse.storage_location} is the target of
  * foreign keys from procurement (goods receipt lines, QC inspections), inventory (stock items,
  * movements, adjustments, cycle counts) and fulfillment (pick lines, move tasks), and ADR-0007 has
  * each of them check a reference in its service before writing it, with a real error code rather
@@ -32,4 +32,7 @@ public interface WarehouseService {
 
     /** @return empty when no location has this id */
     Optional<StorageLocationView> findLocation(UUID locationId);
+
+    /** @return empty when no warehouse has this id; a purchase order receives into one (SCRUM-390) */
+    Optional<WarehouseView> findWarehouse(UUID warehouseId);
 }

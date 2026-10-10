@@ -6,7 +6,7 @@ import static org.assertj.core.api.Assertions.*;
 class SupplierTest {
     private SupplierDetails profile(String code, SupplierStatus status) {
         return new SupplierDetails(code, " Supplier ", null, "s@example.com", null, null,
-                status, 30, 7, SupplierCommunicationChannel.EMAIL, null);
+                status, 30, 7, SupplierCommunicationChannel.EMAIL, null, null, false, null);
     }
     @Test void aggregateOwnsImmutableCodeAndDeactivation() {
         var supplier = Supplier.create(profile("sup-1", SupplierStatus.ACTIVE));

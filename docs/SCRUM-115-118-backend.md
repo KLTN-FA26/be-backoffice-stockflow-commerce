@@ -100,7 +100,7 @@ Supplier now owns immutable code, profile validation and status transitions; Sup
 
 ## Deployment checklist
 
-1. Run tools/sql/supplier-upgrade-preflight.sql against the intended database (read-only). Review migration identities as well as duplicate/invalid supplier records.
+1. Run tools/sql/supplier-upgrade-preflight.sql against the intended database (read-only; only on a database still before the legacy-tables removal C1–C4, see `tools/sql/README.md`). Review migration identities as well as duplicate/invalid supplier records.
 2. Back up before any operator reconciliation. Do not blindly repair Flyway history, reassign duplicate supplier references, or recreate a non-disposable database. If old PR migrations were already applied, compare their exact scripts/checksums and reconcile that database separately before deployment.
 3. Build with mvn clean, upgrade in staging, and run the API contract checks. No application data or local Flyway history is modified by this coding task.
 4. Invalid legacy tax values are archived/cleared and the profile check is validated during migration. Other invalid historical checks produce an explicit warning and protect subsequent writes. After reconciliation, run tools/sql/validate-supplier-constraints.sql; that validation script never deletes or rewrites business records.

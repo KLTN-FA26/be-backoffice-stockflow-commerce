@@ -96,10 +96,7 @@ class WarehouseRepositoryAdapter implements WarehouseRepository, WarehouseSearch
         try {
             return WarehousePersistenceMapper.toDomain(jpa.saveAndFlush(row));
         } catch (DataIntegrityViolationException ex) {
-            // Until contract C2 the legacy code column holds the prefix too and is unique as well, and
-            // Postgres reports whichever index it checks first. TODO(C2): uk_warehouse_prefix only.
-            if (ConstraintViolations.isViolationOf(ex, "uk_warehouse_prefix")
-                    || ConstraintViolations.isViolationOf(ex, "uk_warehouse_code")) {
+            if (ConstraintViolations.isViolationOf(ex, "uk_warehouse_prefix")) {
                 throw new ConflictException(ErrorCode.WAREHOUSE_PREFIX_ALREADY_EXISTS,
                         "Prefix " + warehouse.prefix() + " is already used by another warehouse");
             }

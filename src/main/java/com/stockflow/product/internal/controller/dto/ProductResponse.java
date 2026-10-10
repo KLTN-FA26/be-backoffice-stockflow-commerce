@@ -1,12 +1,10 @@
 package com.stockflow.product.internal.controller.dto;
 
-import com.stockflow.product.api.StorageClass;
+import com.stockflow.product.api.ProductKind;
 import com.stockflow.product.api.TaxClass;
 import io.swagger.v3.oas.annotations.media.Schema;
 
-import java.math.BigDecimal;
 import java.time.Instant;
-import java.util.List;
 import java.util.UUID;
 
 /** What the API returns for one product master row. */
@@ -15,21 +13,26 @@ public record ProductResponse(
 
         UUID productId,
 
-        @Schema(example = "SOFA-3S-GREY")
+        @Schema(example = "CUP-12OZ")
         String code,
 
         String name,
         String nameEn,
+
+        @Schema(description = "Storefront slug; edited with the selling content, fixed once ever published")
+        String slug,
+
+        UUID brandId,
+        String brandName,
+
+        @Schema(description = "The primary category")
         UUID categoryId,
+
+        String shortDescription,
         String description,
         String descriptionEn,
-        String brand,
         TaxClass taxClass,
-        boolean customizable,
-
-        @Schema(description = "Media gallery, in display order. Empty on a list row - see the "
-                + "docs on ProductSearchRepository for why.")
-        List<String> images,
+        ProductKind kind,
 
         @Schema(example = "DRAFT")
         String status,
@@ -50,23 +53,7 @@ public record ProductResponse(
         @Schema(description = "Set when the last approval decision was a rejection.")
         String rejectionReason,
 
-        @Schema(description = "SCRUM-74: shipping weight/dimensions, null until known.")
-        BigDecimal weightKg,
-        BigDecimal lengthCm,
-        BigDecimal widthCm,
-        BigDecimal heightCm,
-
-        @Schema(description = "SCRUM-75: the shipped package - null until known.")
-        BigDecimal packageWeightKg,
-        BigDecimal packageLengthCm,
-        BigDecimal packageWidthCm,
-        BigDecimal packageHeightCm,
-        Integer packageCount,
-
-        @Schema(description = "SCRUM-76: carrier-facing shipping restrictions.")
-        boolean hazmat,
-        boolean oversized, StorageClass storageClass,
-        boolean requiresAdultSignature,
-        String shippingRestrictionNote
+        Instant publishedAt,
+        Instant discontinuedAt
 ) {
 }

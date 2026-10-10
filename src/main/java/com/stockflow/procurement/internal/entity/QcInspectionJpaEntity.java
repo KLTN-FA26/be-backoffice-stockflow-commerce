@@ -15,7 +15,7 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
 
-/** {@code procurement.qc_inspections} (replaces the old {@code qc_result}, unmapped until C4). Written once. */
+/** {@code procurement.qc_inspections} (replaces the old {@code qc_result}). Written once. */
 @Entity
 @Table(name = "qc_inspections", schema = "procurement")
 public class QcInspectionJpaEntity extends BaseEntity {

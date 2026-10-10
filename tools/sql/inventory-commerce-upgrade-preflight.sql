@@ -1,3 +1,6 @@
+-- SCOPE: a database that has NOT yet run the legacy-tables removal (V20261011000300-0600, contracts
+-- C1-C4). Those drop the old tables this script reads; on a database past them, or a fresh one, it
+-- stops at the first missing table. See README.md here.
 -- Read-only psql checks, before upgrading to the combined #36/#38 release.
 -- Run with: psql -X -v ON_ERROR_STOP=1 -f inventory-commerce-upgrade-preflight.sql
 -- History inventory is informational; rows labelled problem require reconciliation.

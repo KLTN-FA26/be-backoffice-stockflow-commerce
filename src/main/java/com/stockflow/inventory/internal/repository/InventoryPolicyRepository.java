@@ -1,6 +1,9 @@
 package com.stockflow.inventory.internal.repository;
 
 import com.stockflow.inventory.api.InventoryControlItem;
+import com.stockflow.inventory.api.InventoryItemLogistics;
+import com.stockflow.inventory.api.ItemLogistics;
+import com.stockflow.inventory.api.StorageClass;
 import com.stockflow.inventory.api.InventoryPolicy;
 import com.stockflow.inventory.api.RemovalStrategy;
 import com.stockflow.inventory.api.TrackingMode;
@@ -140,5 +143,41 @@ where sku=? and version=?
                         sku,
                         today);
         return quantity == null ? 0 : quantity;
+    }
+
+    public Optional<InventoryItemLogistics> findLogistics(String sku) {
+        return jdbc.query("select * from inventory.inventory_items where sku = ?", (rs, n) ->
+                new InventoryItemLogistics(rs.getString("sku"), rs.getLong("version"), new ItemLogistics(
+                        rs.getString("unit_of_measure"), rs.getString("barcode"),
+                        rs.getBigDecimal("weight_kg"), rs.getBigDecimal("length_cm"),
+                        rs.getBigDecimal("width_cm"), rs.getBigDecimal("height_cm"),
+                        rs.getBigDecimal("package_weight_kg"), rs.getBigDecimal("package_length_cm"),
+                        rs.getBigDecimal("package_width_cm"), rs.getBigDecimal("package_height_cm"),
+                        rs.getInt("package_count"), rs.getInt("pack_size"),
+                        StorageClass.valueOf(rs.getString("storage_class")),
+                        rs.getBoolean("requires_adult_signature"), rs.getString("shipping_restriction_note"),
+                        rs.getBoolean("qc_required"))), sku).stream().findFirst();
+    }
+
+    /** Whether any stock of the SKU is held anywhere, in any status. */
+    public boolean holdsStock(String sku) {
+        return Boolean.TRUE.equals(jdbc.queryForObject(
+                "select exists(select 1 from inventory.stock_item where sku = ? and (on_hand > 0 or reserved > 0))",
+                Boolean.class, sku));
+    }
+
+    /** False when the version moved on: someone else changed the item since it was read. */
+    public boolean saveLogistics(String sku, long version, ItemLogistics l, String actor) {
+        return jdbc.update("""
+                update inventory.inventory_items set unit_of_measure=?, barcode=?, weight_kg=?, length_cm=?,
+                    width_cm=?, height_cm=?, package_weight_kg=?, package_length_cm=?, package_width_cm=?,
+                    package_height_cm=?, package_count=?, pack_size=?, storage_class=?, requires_adult_signature=?,
+                    shipping_restriction_note=?, qc_required=?, version=version+1, last_modified_at=now(),
+                    last_modified_by=?
+                where sku=? and version=?
+                """, l.unitOfMeasure(), l.barcode(), l.weightKg(), l.lengthCm(), l.widthCm(), l.heightCm(),
+                l.packageWeightKg(), l.packageLengthCm(), l.packageWidthCm(), l.packageHeightCm(), l.packageCount(),
+                l.packSize(), l.storageClass().name(), l.requiresAdultSignature(), l.shippingRestrictionNote(),
+                l.qcRequired(), actor, sku, version) == 1;
     }
 }

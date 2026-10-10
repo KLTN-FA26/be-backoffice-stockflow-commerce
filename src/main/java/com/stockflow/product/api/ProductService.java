@@ -15,17 +15,19 @@ import java.util.UUID;
  */
 public interface ProductService {
 
-    /** Prevents attaching a valid design for a different product to an order SKU. */
+    /** Whether {@code sku} is one of this product's variants. Prevents attaching a valid design for a
+     *  different product to an order SKU. */
     boolean containsSku(UUID productId, String sku);
 
-    /** Procurement fallback for an omitted line description; never exposes persistence objects. */
+    /** Procurement fallback for an omitted line description: the name of the product the variant
+     *  {@code sku} belongs to. Never exposes persistence objects. */
     Optional<String> nameForSku(String sku);
 
     ProductSummary create(CreateProductCommand command);
 
     Optional<ProductSummary> findById(UUID productId);
 
-    /** Paginated, filterable list. {@code images} is empty on every row — see {@link ProductSummary}. */
+    /** Paginated, filterable list. */
     PageResponse<ProductSummary> list(ListProductsQuery query);
 
     ProductSummary update(UpdateProductCommand command);

@@ -7,4 +7,4 @@ import jakarta.validation.constraints.Size;
 
 @Schema(description = "Close a purchase order short, writing off the remaining open quantity")
 public record CloseShortRequest(
-        @NotBlank(message = "reason is required") @Size(max = 1000) String reason) {}
+        @NotBlank(message = "reason is required") @Size(max = 255) String reason) {}

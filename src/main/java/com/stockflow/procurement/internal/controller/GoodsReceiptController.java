@@ -40,8 +40,8 @@ import java.util.UUID;
  * to QC are warehouse work ({@code procurement-goods-receipts}); deciding QC is the QC staff's
  * ({@code procurement-qc-tasks:APPROVE}).
  *
- * <p>Replaces, once contract C4 runs, the old {@code POST /purchase-orders/{id}/receipts}, which only
- * advances PO-line totals on the old tables.</p>
+ * <p>The only way goods are received: the old {@code POST /purchase-orders/{id}/receipts}, which only
+ * advanced PO-line totals, went with the old purchasing tables (contract C4).</p>
  */
 @RestController
 @RequestMapping("/api/v1/goods-receipts")

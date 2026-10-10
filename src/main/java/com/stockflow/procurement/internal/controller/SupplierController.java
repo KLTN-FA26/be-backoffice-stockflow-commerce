@@ -93,7 +93,7 @@ class SupplierController {
             @RequestParam(required = false) Integer size,
             @RequestParam(required = false) String search,
             @RequestParam(required = false)
-                    @Pattern(regexp = "ACTIVE|INACTIVE|", message = "{procurement.supplierStatus}")
+                    @Pattern(regexp = "ACTIVE|INACTIVE|BLACKLISTED|", message = "{procurement.supplierStatus}")
                     String status,
             @RequestParam(required = false) String sort) {
         return ApiResponse.ok(
@@ -138,7 +138,10 @@ class SupplierController {
                 r.paymentTermDays() == null ? CommercialTerms.PAYMENT_DAYS : r.paymentTermDays(),
                 r.leadTimeDays() == null ? CommercialTerms.LEAD_DAYS : r.leadTimeDays(),
                 r.communicationChannel(),
-                r.apiEndpoint());
+                r.apiEndpoint(),
+                r.overReceiptTolerancePercent(),
+                Boolean.TRUE.equals(r.printSubcontractor()),
+                r.lossTolerancePercent());
     }
 
     private static SupplierResponse response(SupplierSummary s) {
@@ -155,6 +158,9 @@ class SupplierController {
                 s.leadTimeDays(),
                 s.communicationChannel(),
                 s.apiEndpoint(),
+                s.overReceiptTolerancePercent(),
+                s.printSubcontractor(),
+                s.lossTolerancePercent(),
                 s.createdAt(),
                 s.lastModifiedAt());
     }

@@ -33,8 +33,9 @@ public interface SubcontractPurchasing {
 
     /**
      * Add quantity on a resend (the subcontractor reprints a shortfall). Only while the PO is still
-     * DRAFT or PENDING_APPROVAL: an approved order is changed by an amendment that is approved again
-     * (PO revisions, SCRUM-117), not edited in place.
+     * DRAFT. A submitted order is approved against the revision frozen at submission, so a pending one
+     * is rejected back to DRAFT first; an approved one is changed by an amendment that is approved
+     * again (PO revisions, SCRUM-117). Neither is edited in place.
      *
      * @throws com.stockflow.common.error.BusinessException {@code PURCHASE_ORDER_NOT_FOUND},
      *         {@code INVALID_PURCHASE_ORDER_TRANSITION}
