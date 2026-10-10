@@ -283,6 +283,17 @@ public final class StockItem extends AggregateRoot {
      *
      * @return how many holds this call pinned (0 when they were all pinned already)
      */
+    /** Gives the order's pinned holds here a deadline again; see {@link Reservation#rearm}. */
+    public int rearmReservationsOf(UUID orderId, Instant deadline) {
+        int rearmed = 0;
+        for (Reservation reservation : reservations) {
+            if (reservation.orderId().equals(orderId) && reservation.rearm(deadline)) {
+                rearmed++;
+            }
+        }
+        return rearmed;
+    }
+
     public int pinReservationsOf(UUID orderId) {
         int pinned = 0;
         for (Reservation reservation : reservations) {

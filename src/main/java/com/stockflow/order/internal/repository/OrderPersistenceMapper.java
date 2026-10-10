@@ -56,7 +56,7 @@ final class OrderPersistenceMapper {
                 entity.getDepositReceivedAt(), entity.getWarehouseId(), entity.getReleasedAt(),
                 entity.getReleasedBy());
         order.restorePaymentAndCancellation(entity.getPaidAmount(), entity.getPaidInFullAt(),
-                entity.getCancellationReasonCode(), entity.getCancellationRetainedAmount());
+                entity.getCancellationReasonCode(), entity.getCancellationRetainedAmount(), entity.getCreditTermDays());
         return order;
     }
 
@@ -83,7 +83,7 @@ final class OrderPersistenceMapper {
         entity.applyTermsAndRelease(order.paymentTerm(), order.depositRequired(), order.depositReceivedAt(),
                 order.warehouseId(), order.releasedAt(), order.releasedBy());
         entity.applyPaymentAndCancellation(order.paidAmount(), order.paidInFullAt(), order.cancellationReasonCode(),
-                order.cancellationRetainedAmount());
+                order.cancellationRetainedAmount(), order.creditTermDays());
     }
 
     /** For the paginated order-history query only. Deliberately never touches {@code
@@ -122,7 +122,8 @@ final class OrderPersistenceMapper {
                 entity.getPaymentTerm(), entity.getWarehouseId(), entity.getReleasedAt(),
                 new OrderSummary.Payment(entity.getPaidAmount(), entity.getDepositRequired(),
                         entity.getDepositReceivedAt(), entity.getPaidInFullAt(),
-                        PaymentStatus.of(entity.getPaymentTerm(), entity.getPaidAmount(), entity.getPaidInFullAt())),
+                        PaymentStatus.of(entity.getPaymentTerm(), entity.getPaidAmount(), entity.getPaidInFullAt()),
+                        entity.getCreditTermDays()),
                 entity.getStatus() == OrderStatus.CANCELLED
                         ? new OrderSummary.Cancellation(entity.getCancellationReasonCode(),
                                 entity.getCancellationReason(), entity.getCancellationRetainedAmount())

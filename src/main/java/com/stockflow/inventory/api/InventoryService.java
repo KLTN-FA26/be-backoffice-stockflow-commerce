@@ -91,6 +91,15 @@ public interface InventoryService {
     int pinReservations(UUID orderId);
 
     /**
+     * The order waits for payment again (SCRUM-427: credit refused, switched to prepaid or deposit):
+     * its pinned holds get the checkout deadline from now (kltn-docs 14 BR-07). Joins the caller's
+     * transaction. Idempotent.
+     *
+     * @return how many holds got a deadline
+     */
+    int rearmReservations(UUID orderId);
+
+    /**
      * Move unreserved stock between two locations, writing one ledger line (SCRUM-424). Joins the
      * caller's transaction, like {@link #reserve}. Locks the source and destination rows in id
      * order, as {@code reserve} does, so two moves crossing the same pair cannot deadlock.

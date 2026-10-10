@@ -4,6 +4,8 @@ import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.ReserveStockResult;
 import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.customer.api.CheckoutCustomer;
+import com.stockflow.customer.api.CommercialTerm;
+import com.stockflow.customer.api.CreditTerms;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.order.api.CancelOrderCommand;
 import com.stockflow.order.api.CancellationOutcome;
@@ -24,6 +26,9 @@ import com.stockflow.order.internal.domain.OrderRepository;
 import com.stockflow.order.internal.domain.CancellationRequest;
 import com.stockflow.order.internal.domain.CancellationRequestRepository;
 import com.stockflow.order.internal.domain.OrderPayments;
+import com.stockflow.order.internal.domain.CreditChecks;
+import com.stockflow.order.api.PaymentTerm;
+import java.math.BigDecimal;
 import com.stockflow.order.internal.repository.OrderSearchRepository;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.error.BusinessException;
@@ -98,6 +103,9 @@ class OrderServiceImpl implements OrderService {
     /** The days a coordinator filters by are Saigon days: "placed on the 8th" ends at 17:00 UTC. */
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
 
+    /** {@code ordering.order_hold.reason} of an order over its customer's credit limit (SCRUM-427). */
+    static final String CREDIT_HOLD = "CREDIT";
+
     private static final SortWhitelist LIST_SORT = SortWhitelist.of("orderNumber", "placedAt", "totalAmount", "status")
             .withDefault("placedAt", Sort.Direction.DESC);
 
@@ -112,6 +120,7 @@ class OrderServiceImpl implements OrderService {
     private final CatalogService catalog;
     private final OrderPayments payments;
     private final CancellationRequestRepository cancellationRequests;
+    private final CreditChecks creditChecks;
 
     OrderServiceImpl(OrderRepository repository, OrderSearchRepository search,
                      InventoryService inventory, OrderEventPublisher events, Clock clock,
@@ -119,7 +128,7 @@ class OrderServiceImpl implements OrderService {
             OrderHoldJpaRepository holds,
                      CustomerService customers,
             CatalogService catalog, OrderPayments payments,
-                     CancellationRequestRepository cancellationRequests) {
+                     CancellationRequestRepository cancellationRequests, CreditChecks creditChecks) {
         this.repository = repository;
         this.search = search;
         this.inventory = inventory;
@@ -131,6 +140,7 @@ class OrderServiceImpl implements OrderService {
         this.catalog = catalog;
         this.payments = payments;
         this.cancellationRequests = cancellationRequests;
+        this.creditChecks = creditChecks;
     }
 
     /**
@@ -200,8 +210,16 @@ class OrderServiceImpl implements OrderService {
             order = Order.draft(orderNumber, command.customerId(), command.requestId(),
                     lines, clock.instant());
         }
-        // Before any stock is held: terms that cannot be accepted refuse the order cheaply.
-        order.applyTerms(command.paymentTerm(), command.depositPercent());
+        // Before any stock is held: terms that cannot be accepted refuse the order cheaply. The
+        // customer row is locked here, before reserving, so two credit orders of one customer are
+        // checked against the limit one after the other (kltn-docs 15 BR-03) and every checkout takes
+        // its locks in the same order.
+        CreditTerms terms = customers.lockCreditTerms(command.customerId());
+        PaymentTerm term = termFor(command.paymentTerm(), terms);
+        order.applyTerms(term,
+                term == PaymentTerm.DEPOSIT && command.depositPercent() == null ? terms.depositPercent()
+                        : command.depositPercent(),
+                term == PaymentTerm.CREDIT ? terms.creditTermDays() : null);
 
         // Direct in-process call across the module boundary, through inventory's published port.
         // It joins this transaction. If reserve() throws InsufficientStockException on line 3,
@@ -222,13 +240,49 @@ class OrderServiceImpl implements OrderService {
             order.attachReservations(line.id(), reservation.reservationIds());
         }
 
-        order.submit();
-        Order saved = repository.save(order);
+        Order saved;
+        if (term == PaymentTerm.CREDIT) {
+            saved = submitOnCredit(order, terms);
+        } else {
+            order.submit();
+            saved = repository.save(order);
+        }
         events.publishEventsOf(order);
 
-        log.info("Placed order {} for customer {} with {} line(s), total {}",
-                saved.orderNumber(), saved.customerId(), saved.lines().size(), saved.total());
+        log.info("Placed order {} for customer {} with {} line(s), total {}, {} ({})",
+                saved.orderNumber(), saved.customerId(), saved.lines().size(), saved.total(), term, saved.status());
         return toSummary(saved);
+    }
+
+    /** kltn-docs 15 BR-01: the term asked for, or the customer's default, and only one they may use. */
+    private static PaymentTerm termFor(PaymentTerm requested, CreditTerms terms) {
+        PaymentTerm term = requested != null ? requested : PaymentTerm.valueOf(terms.defaultTerm().name());
+        if (!terms.allows(CommercialTerm.valueOf(term.name()))) {
+            throw new BusinessException(ErrorCode.PAYMENT_TERM_NOT_ALLOWED,
+                    "Customer %s may not be sold on %s terms".formatted(terms.customerId(), term));
+        }
+        return term;
+    }
+
+    /**
+     * kltn-docs 15 §4.3 and BR-03: a credit order is CONFIRMED when what the customer already owes plus
+     * this order stays within the limit, otherwise ON_HOLD (hold reason CREDIT) for whoever approves
+     * credit. Either way it waits for no payment, so its stock holds are pinned now.
+     */
+    private Order submitOnCredit(Order order, CreditTerms terms) {
+        BigDecimal exposure = creditChecks.undeliveredCreditExposure(order.customerId(), order.id().value());
+        BigDecimal amount = order.total().amount();
+        boolean within = exposure.add(amount).compareTo(terms.creditLimit()) <= 0;
+        order.submitOnCredit(within);
+        Order saved = repository.save(order);
+        java.time.Instant now = clock.instant();
+        creditChecks.record(new CreditChecks.Check(order.id().value(), now, terms.creditLimit(), exposure, amount,
+                within ? CreditChecks.Outcome.WITHIN_LIMIT : CreditChecks.Outcome.OVER_LIMIT, null, null, null));
+        if (!within) {
+            holds.save(new OrderHoldJpaEntity(Identifiers.newId(), order.id().value(), CREDIT_HOLD, now));
+        }
+        inventory.pinReservations(order.id().value());
+        return saved;
     }
 
     @Override
@@ -586,7 +640,7 @@ class OrderServiceImpl implements OrderService {
                 toSummary(order.shippingAddress()), toSummary(order.billingAddress()),
                 order.paymentTerm(), order.warehouseId(), order.releasedAt(),
                 new OrderSummary.Payment(order.paidAmount(), order.depositRequired(), order.depositReceivedAt(),
-                        order.paidInFullAt(), order.paymentStatus()),
+                        order.paidInFullAt(), order.paymentStatus(), order.creditTermDays()),
                 order.status() == OrderStatus.CANCELLED
                         ? new OrderSummary.Cancellation(order.cancellationReasonCode(), order.cancellationReason(),
                                 order.cancellationRetainedAmount())

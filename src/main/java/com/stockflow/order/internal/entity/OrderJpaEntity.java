@@ -161,6 +161,10 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "cancellation_retained_amount", precision = 19, scale = 4)
     private java.math.BigDecimal cancellationRetainedAmount;
 
+    /** A credit order's days to pay after delivery, as sold (SCRUM-427). */
+    @Column(name = "credit_term_days")
+    private Integer creditTermDays;
+
     @OneToMany(mappedBy = "order", cascade = CascadeType.ALL,
             orphanRemoval = true, fetch = FetchType.LAZY)
     @org.hibernate.annotations.BatchSize(size = 50)
@@ -218,7 +222,8 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
 
     public void applyPaymentAndCancellation(java.math.BigDecimal paidAmount, Instant paidInFullAt,
                                             com.stockflow.order.api.CancellationReasonCode code,
-                                            java.math.BigDecimal retained) {
+                                            java.math.BigDecimal retained, Integer creditTermDays) {
+        this.creditTermDays = creditTermDays;
         this.paidAmount = paidAmount == null ? java.math.BigDecimal.ZERO : paidAmount;
         this.paidInFullAt = paidInFullAt;
         this.cancellationReasonCode = code;
@@ -256,6 +261,7 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     public Instant getPaidInFullAt() { return paidInFullAt; }
     public com.stockflow.order.api.CancellationReasonCode getCancellationReasonCode() { return cancellationReasonCode; }
     public java.math.BigDecimal getCancellationRetainedAmount() { return cancellationRetainedAmount; }
+    public Integer getCreditTermDays() { return creditTermDays; }
     public List<OrderLineJpaEntity> getLines() { return lines; }
 
     /**

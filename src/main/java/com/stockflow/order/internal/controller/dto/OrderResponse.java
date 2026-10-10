@@ -65,6 +65,9 @@ public record OrderResponse(
         @Schema(example = "PARTIALLY_PAID", description = "UNPAID, PARTIALLY_PAID, ON_CREDIT or PAID (kltn-docs 15 §5.2)")
         String paymentStatus,
 
+        @Schema(description = "A credit order's days to pay after delivery; null otherwise")
+        Integer creditTermDays,
+
         @Schema(description = "Set when the order is CANCELLED")
         Cancellation cancellation
 ) {

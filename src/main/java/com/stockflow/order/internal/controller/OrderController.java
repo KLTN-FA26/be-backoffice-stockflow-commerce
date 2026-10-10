@@ -95,8 +95,15 @@ class OrderController {
                 throw new BusinessException(ErrorCode.NOT_FOUND);
             }
         }
-        return ApiResponse.ok(OrderWebMapper.toResponse(
-                orderService.placeOrder(OrderWebMapper.toCommand(request))));
+        var command = OrderWebMapper.toCommand(request);
+        if (!mayPlaceForAnotherCustomer && command.depositPercent() != null) {
+            // The deposit share is the customer's terms, or a quote's (kltn-docs 15 §3) — never the
+            // customer's own pick: their configured share is used.
+            command = new com.stockflow.order.api.PlaceOrderCommand(command.requestId(), command.customerId(),
+                    command.shippingAddressId(), command.billingAddressId(), command.snapshotCustomer(),
+                    command.lines(), command.paymentTerm(), null);
+        }
+        return ApiResponse.ok(OrderWebMapper.toResponse(orderService.placeOrder(command)));
     }
 
     @GetMapping("/{orderId}")
