@@ -197,6 +197,11 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
                                                 item.receivedAt()),
                                 StockAllocator.comparator(controls.policy(sku).removalStrategy())))
                 .map(this::toAvailability)
+                // BR-SEC-002: a warehouse-bound caller sees the stock of their own warehouses only.
+                .filter(row -> com.stockflow.common.security.WarehouseScope.restriction()
+                        .map(allowed -> allowed.prefixes().contains(
+                                com.stockflow.common.security.WarehouseScope.prefixOf(row.locationCode())))
+                        .orElse(true))
                 .toList();
     }
 
@@ -225,6 +230,10 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
             byWarehouse.merge(line.location().warehouseCode(), Totals.of(line, today), Totals::plus);
         }
         return byWarehouse.entrySet().stream()
+                // BR-SEC-002: a warehouse-bound caller sees their own warehouses' levels only.
+                .filter(entry -> com.stockflow.common.security.WarehouseScope.restriction()
+                        .map(allowed -> allowed.prefixes().contains(entry.getKey()))
+                        .orElse(true))
                 .map(entry -> new StockLevel(sku.code(), entry.getKey(),
                         entry.getValue().onHand(), entry.getValue().available(),
                         entry.getValue().reserved(), 0,

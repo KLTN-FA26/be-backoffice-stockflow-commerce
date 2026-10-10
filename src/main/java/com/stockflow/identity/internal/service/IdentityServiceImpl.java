@@ -15,6 +15,9 @@ import com.stockflow.identity.api.UserStatusChange;
 import com.stockflow.identity.internal.domain.UserStatus;
 import com.stockflow.identity.internal.entity.UserJpaEntity;
 import com.stockflow.identity.internal.repository.UserJpaRepository;
+import com.stockflow.identity.internal.repository.UserWarehouseJpaRepository;
+import com.stockflow.identity.internal.entity.UserWarehouseJpaEntity;
+import com.stockflow.warehouse.api.WarehouseService;
 import com.stockflow.common.persistence.SortWhitelist;
 import com.stockflow.common.security.Roles;
 import org.springframework.data.domain.Page;
@@ -120,6 +123,8 @@ class IdentityServiceImpl implements IdentityService {
     private final UserJpaRepository users;
     private final PrivilegeGuard guard;
     private final LoginAttempts loginAttempts;
+    private final UserWarehouseJpaRepository userWarehouses;
+    private final WarehouseService warehouses;
 
     private static final SortWhitelist USER_SORT =
             SortWhitelist.of("username", "fullName", "status", "lastLoginAt", "createdAt")
@@ -144,7 +149,8 @@ class IdentityServiceImpl implements IdentityService {
                         PasswordEncoder passwordEncoder, JwtEncoder jwtEncoder, Clock clock,
                         UserSessionJpaRepository sessions, RoleAuthorizationCache authorizationCache,
                         AuditorAware<String> auditor, UserJpaRepository users, PrivilegeGuard guard,
-                        LoginAttempts loginAttempts,
+                        LoginAttempts loginAttempts, UserWarehouseJpaRepository userWarehouses,
+                        WarehouseService warehouses,
                         @Value("${stockflow.security.token-ttl:PT8H}") Duration tokenTtl) {
         if (tokenTtl == null || tokenTtl.isZero() || tokenTtl.isNegative()
                 || tokenTtl.compareTo(MAX_TOKEN_TTL) > 0) {
@@ -166,6 +172,8 @@ class IdentityServiceImpl implements IdentityService {
         this.users = users;
         this.guard = guard;
         this.loginAttempts = loginAttempts;
+        this.userWarehouses = userWarehouses;
+        this.warehouses = warehouses;
         this.tokenTtl = tokenTtl;
         this.dummyPasswordHash = passwordEncoder.encode(Identifiers.newId().toString());
     }
@@ -182,17 +190,16 @@ class IdentityServiceImpl implements IdentityService {
 
     private static RoleSummary summaryOf(RoleJpaEntity r, long holderCount) {
         return new RoleSummary(r.getCode(), r.getName(), r.getDescription(), r.isSystem(), r.getVersion(),
-                holderCount, r.getCreatedAt(), r.getCreatedBy(), r.getLastModifiedAt(), r.getLastModifiedBy());
+                holderCount, r.getDataScope().name(), r.getCreatedAt(), r.getCreatedBy(),
+                r.getLastModifiedAt(), r.getLastModifiedBy());
     }
 
     /**
      * {@inheritDoc}
      *
-     * <p>{@code dataScope} is passed as {@link DataScope#ALL} for every role: {@code app_role} has
-     * no scope column yet (ADR-0004 records the row-visibility filter as the largest unimplemented
-     * part of the permission model), so this is a placeholder for the matrix screen to render, not
-     * a real grant. {@code systemRole} is {@code true} for every seeded role: they cannot be
-     * renamed or deleted, but their grants are editable through
+     * <p>{@code dataScope} is the role's {@code app_role.data_scope} (SCRUM-457): WAREHOUSE limits
+     * holders to their assigned warehouses, ALL does not. {@code systemRole} marks the roles the
+     * code knows by name: they cannot be renamed or deleted, but their grants are editable through
      * {@link #updateRolePermissions} — all except {@code CUSTOMER}'s and {@code SYSTEM_ADMIN}'s, see
      * {@link #isEditable}.</p>
      */
@@ -354,7 +361,7 @@ class IdentityServiceImpl implements IdentityService {
 
     private RoleMatrixView matrixOf(RoleJpaEntity role, long version, Set<PermissionCode> granted) {
         return RoleMatrixAssembler.assemble(role.getCode(), role.getName(), role.isSystem(), isEditable(role),
-                version, DataScope.ALL, catalog, granted);
+                version, role.getDataScope(), catalog, granted);
     }
 
     private String actor() {
@@ -502,8 +509,12 @@ class IdentityServiceImpl implements IdentityService {
             guard.requireHolds(grantedPermissionsOf(source.getId()));
             rolePermissions.findByRoleId(source.getId()).forEach(row -> copied.add(row.getPermissionId()));
         }
-        RoleJpaEntity role = roles.save(new RoleJpaEntity(Identifiers.newId(), code, command.name().trim(),
-                blankToNull(command.description()), false));
+        RoleJpaEntity fresh = new RoleJpaEntity(Identifiers.newId(), code, command.name().trim(),
+                blankToNull(command.description()), false);
+        if (command.dataScope() != null) {
+            fresh.changeDataScope(parseScope(command.dataScope()));
+        }
+        RoleJpaEntity role = roles.save(fresh);
         rolePermissions.saveAll(copied.stream()
                 .map(permissionId -> new RolePermissionJpaEntity(Identifiers.newId(), role.getId(), permissionId))
                 .toList());
@@ -520,6 +531,9 @@ class IdentityServiceImpl implements IdentityService {
                     "Role %s is no longer at version %d".formatted(role.getCode(), command.expectedVersion()));
         }
         role.rename(command.name().trim(), blankToNull(command.description()));
+        if (command.dataScope() != null) {
+            role.changeDataScope(parseScope(command.dataScope()));
+        }
         RoleJpaEntity saved = roles.saveAndFlush(role);
         // The rename moved the row's version, which is also the key of its cached grants.
         long version = saved.getVersion();
@@ -564,14 +578,22 @@ class IdentityServiceImpl implements IdentityService {
                 ? null : "%" + query.q().trim().toLowerCase(Locale.ROOT) + "%";
         Page<UserJpaEntity> page = users.search(pattern, status, roleId, excluded,
                 Pages.of(query.page(), query.size(), USER_SORT.parse(query.sort())));
-        Map<UUID, List<String>> rolesByUser = roleCodesOf(page.getContent().stream().map(UserJpaEntity::getId).toList());
-        return Pages.toResponse(page, user -> staffUserOf(user, rolesByUser.getOrDefault(user.getId(), List.of())));
+        List<UUID> ids = page.getContent().stream().map(UserJpaEntity::getId).toList();
+        Map<UUID, List<String>> rolesByUser = roleCodesOf(ids);
+        Map<UUID, List<UUID>> warehousesByUser = new java.util.HashMap<>();
+        if (!ids.isEmpty()) {
+            userWarehouses.findByUserIdIn(ids).forEach(row -> warehousesByUser
+                    .computeIfAbsent(row.getUserId(), id -> new java.util.ArrayList<>()).add(row.getWarehouseId()));
+        }
+        return Pages.toResponse(page, user -> staffUserOf(user, rolesByUser.getOrDefault(user.getId(), List.of()),
+                warehousesByUser.getOrDefault(user.getId(), List.of())));
     }
 
     @Override
     @Transactional(readOnly = true)
     public StaffUser user(UUID userId) {
-        return staffUserOf(requireAccount(userId), codesOf(rolesOf(new UserId(userId))));
+        return staffUserOf(requireAccount(userId), codesOf(rolesOf(new UserId(userId))),
+                userWarehouses.findByUserId(userId).stream().map(UserWarehouseJpaEntity::getWarehouseId).toList());
     }
 
     @Override
@@ -592,6 +614,7 @@ class IdentityServiceImpl implements IdentityService {
             throw new BusinessException(ErrorCode.ROLE_NOT_ASSIGNABLE, "A staff account cannot hold CUSTOMER");
         }
         guard.requireHoldsRoles(codesOf(granted));
+        List<UUID> warehouseIds = existingWarehouses(command.warehouseIds());
 
         String temporary = null;
         String password = command.password();
@@ -606,6 +629,9 @@ class IdentityServiceImpl implements IdentityService {
         UUID userId = saved.id().value();
         userRoles.saveAll(granted.stream()
                 .map(role -> new UserRoleJpaEntity(Identifiers.newId(), userId, role.getId()))
+                .toList());
+        userWarehouses.saveAll(warehouseIds.stream()
+                .map(warehouseId -> new UserWarehouseJpaEntity(Identifiers.newId(), userId, warehouseId))
                 .toList());
         return new CreatedStaffUser(user(userId), temporary);
     }
@@ -655,6 +681,53 @@ class IdentityServiceImpl implements IdentityService {
             sessions.revokeLive(userId, null, clock.instant(), SessionEndReason.ACCOUNT_DISABLED);
         }
         return user(userId);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Only the difference is written, so the audit trail and row ids of unchanged assignments
+     * survive. No session is ended: warehouses are resolved per request (SCRUM-457).</p>
+     */
+    @Override
+    @Auditable(action = AuditAction.GRANT, resourceType = "user-warehouses", resourceId = "#userId")
+    public StaffUser assignWarehouses(UUID userId, List<UUID> warehouseIds) {
+        requireStaffAccount(userId);
+        Set<UUID> wanted = new LinkedHashSet<>(existingWarehouses(warehouseIds));
+        List<UserWarehouseJpaEntity> held = userWarehouses.findByUserId(userId);
+        userWarehouses.deleteAll(held.stream().filter(row -> !wanted.contains(row.getWarehouseId())).toList());
+        Set<UUID> kept = held.stream().map(UserWarehouseJpaEntity::getWarehouseId).collect(Collectors.toSet());
+        userWarehouses.saveAll(wanted.stream()
+                .filter(id -> !kept.contains(id))
+                .map(id -> new UserWarehouseJpaEntity(Identifiers.newId(), userId, id))
+                .toList());
+        return user(userId);
+    }
+
+    /** Distinct ids, each an existing warehouse. */
+    private List<UUID> existingWarehouses(List<UUID> warehouseIds) {
+        if (warehouseIds == null || warehouseIds.isEmpty()) {
+            return List.of();
+        }
+        List<UUID> distinct = List.copyOf(new LinkedHashSet<>(warehouseIds));
+        for (UUID id : distinct) {
+            if (id == null || warehouses.findWarehouse(id).isEmpty()) {
+                throw new BusinessException(ErrorCode.WAREHOUSE_NOT_FOUND, "No warehouse with id " + id);
+            }
+        }
+        return distinct;
+    }
+
+    private static DataScope parseScope(String raw) {
+        try {
+            DataScope scope = DataScope.valueOf(raw.trim().toUpperCase(Locale.ROOT));
+            if (scope == DataScope.TEAM) {
+                throw new IllegalArgumentException("TEAM has no rows to apply to yet");
+            }
+            return scope;
+        } catch (IllegalArgumentException unknown) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "dataScope must be OWN, WAREHOUSE or ALL");
+        }
     }
 
     @Override
@@ -739,9 +812,9 @@ class IdentityServiceImpl implements IdentityService {
         return held.stream().map(RoleJpaEntity::getCode).sorted().toList();
     }
 
-    private static StaffUser staffUserOf(UserJpaEntity user, List<String> roleCodes) {
+    private static StaffUser staffUserOf(UserJpaEntity user, List<String> roleCodes, List<UUID> warehouseIds) {
         return new StaffUser(user.getId(), user.getUsername(), user.getEmail(), user.getFullName(),
-                user.getStatus().name(), roleCodes, user.isMustChangePassword(), user.getLockedUntil(),
+                user.getStatus().name(), roleCodes, warehouseIds, user.isMustChangePassword(), user.getLockedUntil(),
                 user.getLastLoginAt(), user.getCreatedAt(), user.getCreatedBy(), user.getVersion());
     }
 

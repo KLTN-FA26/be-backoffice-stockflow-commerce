@@ -9,8 +9,10 @@ import java.util.UUID;
  * <p>Application code should depend on this record, not on {@code Jwt} or
  * {@code SecurityContextHolder} - otherwise the security library leaks into every use case.</p>
  *
- * @param scope how far this user can see. Permissions say which actions are allowed; scope says
- *              on which rows. The query layer must apply it - see {@link DataScope}.
+ * @param scope          how far this user can see. Permissions say which actions are allowed; scope
+ *                       says on which rows. The query layer must apply it - see {@link DataScope}.
+ * @param warehouseCodes prefixes of the warehouses the user is assigned to (BR-SEC-002)
+ * @param warehouseIds   ids of the same warehouses
  */
 public record CurrentUser(
         UUID userId,
@@ -18,8 +20,18 @@ public record CurrentUser(
         Set<Role> roles,
         Set<PermissionCode> permissions,
         DataScope scope,
-        Set<String> warehouseCodes
+        Set<String> warehouseCodes,
+        Set<java.util.UUID> warehouseIds
 ) {
+
+    /**
+     * Without warehouse ids: callers that limit by location code only, and every caller written
+     * before ids were carried (SCRUM-457).
+     */
+    public CurrentUser(UUID userId, String username, Set<Role> roles, Set<PermissionCode> permissions,
+                       DataScope scope, Set<String> warehouseCodes) {
+        this(userId, username, roles, permissions, scope, warehouseCodes, Set.of());
+    }
 
     /**
      * Whether the caller may act as {@code role}. {@link Role#SYSTEM_ADMIN} may act as any role:

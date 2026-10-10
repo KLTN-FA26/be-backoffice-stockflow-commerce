@@ -40,7 +40,7 @@ import java.util.function.Supplier;
  *
  * <pre>
  * stockflow:{cacheVersion}:authz:role-versions        HASH  roleCode -> version        TTL 60 s
- * stockflow:{cacheVersion}:authz:role:{code}:v{ver}   SET   resource:ACTION, plus "~"  TTL 1 h
+ * stockflow:{cacheVersion}:authz:role:{code}:v{ver}   SET   resource:ACTION, "~", "@SCOPE"  TTL 1 h
  * </pre>
  *
  * <h2>Why the version is in the key, and why nothing is ever deleted</h2>
@@ -93,6 +93,11 @@ class RoleAuthorizationCache implements RoleAuthorizationLookup {
      *  a miss — Redis cannot hold an empty set. Never a valid permission code. */
     static final String PRESENT = "~";
 
+    /** Prefix of the member that stores the role's data scope ({@code @WAREHOUSE}, SCRUM-457). Never
+     *  the start of a permission code. A set without one was cached before scopes existed and is
+     *  reloaded, not read as ALL: guessing the widest scope is the wrong way to fail. */
+    static final String SCOPE_PREFIX = "@";
+
     /**
      * {@code HSET field value} for each pair, but only where the stored value is absent or lower.
      * ARGV: code1, version1, code2, version2, ..., ttlMillis.
@@ -133,7 +138,7 @@ class RoleAuthorizationCache implements RoleAuthorizationLookup {
             return ResolvedAuthorization.none();
         }
         List<String> codes = List.copyOf(new LinkedHashSet<>(roleCodes));
-        Map<String, Set<PermissionCode>> grants;
+        Map<String, Grants> grants;
         if (clock.instant().isBefore(redisBackoffUntil)) {
             grants = fromDatabase(codes);
         } else {
@@ -150,8 +155,15 @@ class RoleAuthorizationCache implements RoleAuthorizationLookup {
             return ResolvedAuthorization.none();
         }
         Set<PermissionCode> union = new LinkedHashSet<>();
-        grants.values().forEach(union::addAll);
-        return new ResolvedAuthorization(union, DataScope.ALL);
+        DataScope broadest = DataScope.OWN;
+        for (Grants role : grants.values()) {
+            union.addAll(role.permissions());
+            if (role.scope().isBroaderThan(broadest)) {
+                broadest = role.scope();
+            }
+        }
+        // The broadest, not the narrowest: a clerk who is also a planner plans across warehouses.
+        return new ResolvedAuthorization(union, broadest);
     }
 
     /**
@@ -169,7 +181,7 @@ class RoleAuthorizationCache implements RoleAuthorizationLookup {
 
     // ---- cache path ------------------------------------------------------------------------
 
-    private Map<String, Set<PermissionCode>> fromCache(List<String> codes) {
+    private Map<String, Grants> fromCache(List<String> codes) {
         Map<String, Long> versions = currentVersions(codes);
         List<String> known = codes.stream().filter(versions::containsKey).toList();
         if (known.isEmpty()) {
@@ -183,11 +195,11 @@ class RoleAuthorizationCache implements RoleAuthorizationLookup {
             return null;
         }));
 
-        Map<String, Set<PermissionCode>> grants = new LinkedHashMap<>();
+        Map<String, Grants> grants = new LinkedHashMap<>();
         for (int i = 0; i < known.size(); i++) {
             String code = known.get(i);
             Set<?> members = cached.get(i) instanceof Set<?> set ? set : Set.of();
-            if (members.isEmpty()) {
+            if (members.isEmpty() || members.stream().noneMatch(m -> m.toString().startsWith(SCOPE_PREFIX))) {
                 long pointer = versions.get(code);
                 loadRole(code).ifPresent(loaded -> {
                     store(code, loaded);
@@ -195,7 +207,7 @@ class RoleAuthorizationCache implements RoleAuthorizationLookup {
                         // The pointer lagged the database; move it so the next request hits.
                         advance(Map.of(code, loaded.version()));
                     }
-                    grants.put(code, loaded.permissions());
+                    grants.put(code, new Grants(loaded.permissions(), loaded.scope()));
                 });
             } else {
                 grants.put(code, parse(code, members));
@@ -232,6 +244,7 @@ class RoleAuthorizationCache implements RoleAuthorizationLookup {
         String key = grantsKey(code, loaded.version());
         List<String> members = new ArrayList<>();
         members.add(PRESENT);
+        members.add(SCOPE_PREFIX + loaded.scope().name());
         loaded.permissions().forEach(p -> members.add(p.toString()));
         onRedis(() -> {
             redis.opsForSet().add(key, members.toArray(String[]::new));
@@ -264,11 +277,16 @@ class RoleAuthorizationCache implements RoleAuthorizationLookup {
 
     /** A malformed member can only come from someone writing to Redis by hand; it is dropped, and
      *  dropping a permission is the safe direction to fail. */
-    private static Set<PermissionCode> parse(String roleCode, Set<?> members) {
+    private static Grants parse(String roleCode, Set<?> members) {
         Set<PermissionCode> permissions = new LinkedHashSet<>();
+        DataScope scope = DataScope.ALL;
         for (Object member : members) {
             String raw = member.toString();
             if (PRESENT.equals(raw)) {
+                continue;
+            }
+            if (raw.startsWith(SCOPE_PREFIX)) {
+                scope = scopeOf(roleCode, raw.substring(SCOPE_PREFIX.length()));
                 continue;
             }
             try {
@@ -277,15 +295,25 @@ class RoleAuthorizationCache implements RoleAuthorizationLookup {
                 log.warn("Ignoring malformed cached permission '{}' of role {}", raw, roleCode);
             }
         }
-        return permissions;
+        return new Grants(permissions, scope);
+    }
+
+    /** An unknown value is read as the narrowest scope: failing narrow is the safe direction. */
+    private static DataScope scopeOf(String roleCode, String raw) {
+        try {
+            return DataScope.valueOf(raw);
+        } catch (IllegalArgumentException | NullPointerException unknown) {
+            log.warn("Role {} has an unknown data scope '{}'; reading it as OWN", roleCode, raw);
+            return DataScope.OWN;
+        }
     }
 
     // ---- database path ---------------------------------------------------------------------
 
-    private Map<String, Set<PermissionCode>> fromDatabase(List<String> codes) {
-        Map<String, Set<PermissionCode>> grants = new LinkedHashMap<>();
+    private Map<String, Grants> fromDatabase(List<String> codes) {
+        Map<String, Grants> grants = new LinkedHashMap<>();
         for (String code : codes) {
-            loadRole(code).ifPresent(loaded -> grants.put(code, loaded.permissions()));
+            loadRole(code).ifPresent(loaded -> grants.put(code, new Grants(loaded.permissions(), loaded.scope())));
         }
         return grants;
     }
@@ -316,7 +344,8 @@ class RoleAuthorizationCache implements RoleAuthorizationLookup {
                         row.getResource(), row.getAction(), code);
             }
         }
-        return Optional.of(new LoadedRole(rows.get(0).getVersion(), permissions));
+        return Optional.of(new LoadedRole(rows.get(0).getVersion(), permissions,
+                scopeOf(code, rows.get(0).getDataScope())));
     }
 
     // ---- keys ------------------------------------------------------------------------------
@@ -333,7 +362,10 @@ class RoleAuthorizationCache implements RoleAuthorizationLookup {
         return key.getBytes(StandardCharsets.UTF_8);
     }
 
-    private record LoadedRole(long version, Set<PermissionCode> permissions) {
+    private record LoadedRole(long version, Set<PermissionCode> permissions, DataScope scope) {
+    }
+
+    private record Grants(Set<PermissionCode> permissions, DataScope scope) {
     }
 
     private static final class CacheUnavailableException extends RuntimeException {

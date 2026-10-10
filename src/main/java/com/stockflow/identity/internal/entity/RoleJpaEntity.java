@@ -1,8 +1,11 @@
 package com.stockflow.identity.internal.entity;
 
 import com.stockflow.common.persistence.BaseEntity;
+import com.stockflow.common.security.DataScope;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
 
@@ -35,6 +38,11 @@ public class RoleJpaEntity extends BaseEntity {
     @Column(name = "is_system", nullable = false)
     private boolean system;
 
+    /** Which rows holders of the role reach (SCRUM-457). A user gets the broadest of their roles'. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "data_scope", nullable = false, length = 16)
+    private DataScope dataScope = DataScope.ALL;
+
     protected RoleJpaEntity() {
     }
 
@@ -55,8 +63,13 @@ public class RoleJpaEntity extends BaseEntity {
         this.description = description;
     }
 
+    public void changeDataScope(DataScope dataScope) {
+        this.dataScope = dataScope;
+    }
+
     public String getCode() { return code; }
     public String getName() { return name; }
     public String getDescription() { return description; }
     public boolean isSystem() { return system; }
+    public DataScope getDataScope() { return dataScope; }
 }

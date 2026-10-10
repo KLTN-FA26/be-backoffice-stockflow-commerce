@@ -44,7 +44,8 @@ class StockMovementLogAdapter implements StockMovementLog, StockLedgerSearch {
         Specification<StockMovementJpaEntity> spec = Specification
                 .<StockMovementJpaEntity>where(Specs.eq("sku", upper(criteria.sku())))
                 .and(Specs.eq("movementType", criteria.type()))
-                .and(location(upper(criteria.location())));
+                .and(location(upper(criteria.location())))
+                .and(com.stockflow.common.security.WarehouseScope.locationsIn("fromLocationCode", "toLocationCode"));
         return jpa.findAll(spec, pageable).map(StockMovementLogAdapter::toDomain);
     }
 

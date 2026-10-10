@@ -15,6 +15,8 @@ public record UserResponse(
         String fullName,
         @Schema(example = "ACTIVE", allowableValues = {"ACTIVE", "LOCKED", "DISABLED"}) String status,
         List<String> roles,
+        @Schema(description = "Warehouses a warehouse-bound user may act on (SCRUM-457)")
+        List<UUID> warehouseIds,
         @Schema(description = "The password was set by an administrator and must be changed")
         boolean mustChangePassword,
         @Schema(description = "Set while a lock after too many wrong passwords runs")

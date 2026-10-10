@@ -11,5 +11,6 @@ import jakarta.validation.constraints.Size;
 public record UpdateRoleRequest(
         @NotBlank @Size(max = 200) String name,
         @Size(max = 1000) String description,
+        @Schema(allowableValues = {"OWN", "WAREHOUSE", "ALL"}, description = "Omit to keep it") String dataScope,
         @Schema(description = "The version the editor loaded") @NotNull @PositiveOrZero Long version) {
 }

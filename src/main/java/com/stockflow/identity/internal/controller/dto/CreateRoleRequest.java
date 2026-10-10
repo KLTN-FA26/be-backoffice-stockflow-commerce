@@ -15,5 +15,7 @@ public record CreateRoleRequest(
         @NotBlank @Size(max = 200) String name,
         @Size(max = 1000) String description,
         @Schema(example = "WAREHOUSE_STAFF", description = "Optional: copy this role's permissions")
-        String copyPermissionsFrom) {
+        String copyPermissionsFrom,
+        @Schema(example = "WAREHOUSE", allowableValues = {"OWN", "WAREHOUSE", "ALL"}, description = "Default ALL")
+        String dataScope) {
 }

@@ -24,6 +24,9 @@ public record RoleResponse(
         long version,
         @Schema(description = "How many accounts hold the role")
         long holderCount,
+        @Schema(example = "WAREHOUSE", allowableValues = {"OWN", "WAREHOUSE", "ALL"},
+                description = "Which rows holders reach; WAREHOUSE = only their assigned warehouses")
+        String dataScope,
         Instant createdAt,
         String createdBy,
         Instant lastModifiedAt,

@@ -246,4 +246,21 @@ class RolePermissionEditingIntegrationTest {
 
         assertThat(redis.opsForHash().get(pointerKey, ROLE)).isEqualTo(String.valueOf(current + 5));
     }
+
+    /**
+     * A grant set cached before data scopes existed has no scope member. It must be reloaded, not
+     * read as ALL — otherwise a warehouse clerk would see every warehouse until the key expired.
+     */
+    @Test
+    void aGrantSetCachedWithoutAScopeIsReloadedNotReadAsAll() {
+        assertThat(lookup.resolve(List.of("WAREHOUSE_STAFF")).scope())
+                .isEqualTo(com.stockflow.common.security.DataScope.WAREHOUSE);
+        Set<String> keys = redis.keys("*authz:role:WAREHOUSE_STAFF:v*");
+        assertThat(keys).isNotEmpty();
+        keys.forEach(key -> redis.opsForSet().remove(key, "@WAREHOUSE"));
+
+        assertThat(lookup.resolve(List.of("WAREHOUSE_STAFF")).scope())
+                .isEqualTo(com.stockflow.common.security.DataScope.WAREHOUSE);
+        keys.forEach(key -> assertThat(redis.opsForSet().isMember(key, "@WAREHOUSE")).isTrue());
+    }
 }

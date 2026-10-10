@@ -104,6 +104,15 @@ public interface IdentityService {
     StaffUser changeUserStatus(UUID userId, UserStatusChange change);
 
     /**
+     * Replace the warehouses a staff member is assigned to (SCRUM-457). Applies on their next
+     * request; matters for holders of a WAREHOUSE-scoped role.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code WAREHOUSE_NOT_FOUND} and the rules of
+     *         {@link #updateUser}
+     */
+    StaffUser assignWarehouses(UUID userId, List<UUID> warehouseIds);
+
+    /**
      * Set a new temporary password and end every session of the account.
      *
      * @param newPassword null to have one generated

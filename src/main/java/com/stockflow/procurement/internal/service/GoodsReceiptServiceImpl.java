@@ -102,6 +102,8 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         ReceivingPurchaseOrder order = orders.find(command.purchaseOrderId()).orElseThrow(() ->
                 new BusinessException(ErrorCode.PURCHASE_ORDER_NOT_FOUND, "No purchase order " + command.purchaseOrderId()));
         requireReceivable(order);
+        // BR-SEC-002: goods are received by the staff of the warehouse the order delivers to.
+        com.stockflow.common.security.WarehouseScope.requireWarehouse(order.warehouseId());
         Instant now = clock.instant();
         GoodsReceipt receipt = GoodsReceipt.draft(Identifiers.newId(),
                 receipts.nextNumber(LocalDate.ofInstant(now, BUSINESS_ZONE)), order.id(), order.activeRevisionId(),
@@ -376,9 +378,12 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                 new BusinessException(ErrorCode.NOT_FOUND, "No inventory item " + inventoryItemId));
     }
 
+    /** The receipt, if it is in a warehouse the caller is assigned to (BR-SEC-002). */
     private GoodsReceipt load(UUID receiptId) {
-        return receipts.findById(receiptId).orElseThrow(() ->
+        GoodsReceipt receipt = receipts.findById(receiptId).orElseThrow(() ->
                 new BusinessException(ErrorCode.GOODS_RECEIPT_NOT_FOUND, "No goods receipt " + receiptId));
+        com.stockflow.common.security.WarehouseScope.requireWarehouse(receipt.warehouseId());
+        return receipt;
     }
 
     private ReceivingPurchaseOrder orderOf(GoodsReceipt receipt) {
