@@ -368,5 +368,33 @@ SELECT pg_temp.expect_fail('QC28 removing a line of a confirmed receipt (BR-05)'
 SELECT pg_temp.expect_ok('QC20 receipt CLOSED with closed_at', $q$
     UPDATE procurement.goods_receipts SET status = 'CLOSED', closed_at = NOW() WHERE id = md5('qa:gr:qc')::uuid $q$);
 
+\echo '--- supplier communication (C4 P0, V20261011000100)'
+SELECT pg_temp.expect_fail('R48 API supplier without an endpoint', $q$
+    UPDATE procurement.suppliers SET communication_channel = 'API', api_endpoint = NULL
+     WHERE id = md5('demo:supplier:GOVIET')::uuid $q$);
+SELECT pg_temp.expect_fail('R49 API supplier on plain http', $q$
+    UPDATE procurement.suppliers SET communication_channel = 'API', api_endpoint = 'http://po.goviet.vn/orders'
+     WHERE id = md5('demo:supplier:GOVIET')::uuid $q$);
+SELECT pg_temp.expect_ok('R50 API supplier on https', $q$
+    UPDATE procurement.suppliers SET communication_channel = 'API', api_endpoint = 'https://po.goviet.vn/orders'
+     WHERE id = md5('demo:supplier:GOVIET')::uuid $q$);
+SELECT pg_temp.expect_fail('R51 unknown delivery channel', $q$
+    UPDATE procurement.suppliers SET communication_channel = 'FAX' WHERE id = md5('demo:supplier:GOVIET')::uuid $q$);
+SELECT pg_temp.expect_fail('R52 payment term of 400 days', $q$
+    UPDATE procurement.suppliers SET payment_term_days = 400 WHERE id = md5('demo:supplier:GOVIET')::uuid $q$);
+SELECT pg_temp.expect_fail('R53 supplier answer without a time', $q$
+    UPDATE procurement.purchase_orders SET supplier_confirmation_status = 'CONFIRMED'
+     WHERE id = md5('demo:po:1')::uuid $q$);
+SELECT pg_temp.expect_fail('R54 supplier refusal without a reason', $q$
+    UPDATE procurement.purchase_orders SET supplier_confirmation_status = 'REJECTED',
+           supplier_responded_at = NOW(), supplier_response_note = '   '
+     WHERE id = md5('demo:po:1')::uuid $q$);
+SELECT pg_temp.expect_ok('R55 supplier confirmation with time and reference', $q$
+    UPDATE procurement.purchase_orders SET supplier_confirmation_status = 'CONFIRMED',
+           supplier_responded_at = NOW(), supplier_reference = 'GV-SO-1'
+     WHERE id = md5('demo:po:1')::uuid $q$);
+SELECT pg_temp.expect_fail('R56 negative lead time snapshot', $q$
+    UPDATE procurement.purchase_orders SET lead_time_days = -1 WHERE id = md5('demo:po:1')::uuid $q$);
+
 ROLLBACK;
 \echo 'PASS 02_procurement'

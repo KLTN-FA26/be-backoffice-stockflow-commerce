@@ -39,7 +39,10 @@ select json_agg(json_build_object('s',c.table_schema,'t',c.table_name,'c',c.colu
 from information_schema.columns c
 join pg_attribute a on a.attrelid = (quote_ident(c.table_schema)||'.'||quote_ident(c.table_name))::regclass and a.attname = c.column_name
 join information_schema.tables t on t.table_schema=c.table_schema and t.table_name=c.table_name and t.table_type='BASE TABLE'
-where c.table_schema not in ('pg_catalog','information_schema')"""))
+where c.table_schema not in ('pg_catalog','information_schema')
+  -- Flyway's own bookkeeping lands in public on a database the application migrated itself; it
+  -- is not part of the model the diagram shows.
+  and not (c.table_schema = 'public' and c.table_name = 'flyway_schema_history')"""))
 
 cons = json.loads(q("""
 select json_agg(json_build_object('s',n.nspname,'t',r.relname,'name',c.conname,'type',c.contype,
