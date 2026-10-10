@@ -41,7 +41,8 @@ import java.util.UUID;
  * all land, with the table constraints (four eyes, ledger shape, foreign keys) live. Each test
  * works on its own canonical SKU and lot, so it never disturbs the demo stock other tests read.
  */
-@ApplicationModuleTest
+// DIRECT_DEPENDENCIES: moves ask warehouse :: api whether a location may take stock (issue #67).
+@ApplicationModuleTest(mode = ApplicationModuleTest.BootstrapMode.DIRECT_DEPENDENCIES)
 @ActiveProfiles("test")
 @Import(PostgresContainer.class)
 class StockOperationsIntegrationTest {
@@ -269,5 +270,60 @@ WHERE reference_type = 'STOCK_ADJUSTMENT' AND reference_id = ? AND movement_type
                                                 BIN.equals(line.fromLocation())
                                                         || BIN.equals(line.toLocation()))
                                         .isTrue());
+    }
+
+    // ------------------------------------------------------------------ issue #67
+
+    /** Runs {@code body} with a demo row's status changed, and always puts it back. */
+    private void withStatus(String table, String where, Object key, String status, Runnable body) {
+        String before = jdbc.queryForObject("SELECT status FROM " + table + " WHERE " + where + " = ?", String.class, key);
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE " + table + " SET status = ? WHERE " + where + " = ?", status, key));
+        try {
+            body.run();
+        } finally {
+            tx.executeWithoutResult(s -> jdbc.update("UPDATE " + table + " SET status = ? WHERE " + where + " = ?", before, key));
+        }
+    }
+
+    private ErrorCode errorOf(Runnable call) {
+        try {
+            call.run();
+        } catch (BusinessException e) {
+            return e.errorCode();
+        }
+        return null;
+    }
+
+    @Test
+    @DisplayName("issue #67: no move into a BLOCKED bin, a bin of a shelf in MAINTENANCE, or an INACTIVE warehouse")
+    void movesOnlyIntoUsableLocations() {
+        withStatus("warehouse.storage_location", "location_code", "HCM-B01-2-B", "BLOCKED", () ->
+                assertThat(errorOf(() -> inventory.move(move(UUID.randomUUID(), BIN, "HCM-B01-2-B", 1))))
+                        .isEqualTo(ErrorCode.LOCATION_NOT_USABLE));
+
+        UUID shelfA02 = jdbc.queryForObject("SELECT id FROM warehouse.shelf WHERE code = 'A02' AND warehouse_id ="
+                + " (SELECT id FROM warehouse.warehouse WHERE prefix = 'HCM')", UUID.class);
+        withStatus("warehouse.shelf", "id", shelfA02, "MAINTENANCE", () ->
+                assertThat(errorOf(() -> inventory.move(move(UUID.randomUUID(), BIN, "HCM-A02-2-B", 1))))
+                        .isEqualTo(ErrorCode.LOCATION_NOT_USABLE));
+
+        withStatus("warehouse.warehouse", "prefix", "HCM", "INACTIVE", () ->
+                assertThat(errorOf(() -> inventory.move(move(UUID.randomUUID(), BIN, "HCM-B01-1-A", 1))))
+                        .isEqualTo(ErrorCode.LOCATION_NOT_USABLE));
+
+        // Nothing moved, nothing written.
+        assertThat(onHand(BIN)).isEqualTo(10);
+        assertThat(errorOf(() -> inventory.move(move(UUID.randomUUID(), BIN, "HCM-ZZZ-9-Z", 1))))
+                .isEqualTo(ErrorCode.LOCATION_NOT_FOUND);
+    }
+
+    @Test
+    @DisplayName("issue #67: a blocked bin can still be emptied, and a lower-case code is found")
+    void blockedBinCanBeEmptied() {
+        withStatus("warehouse.storage_location", "location_code", BIN, "BLOCKED", () -> {
+            inventory.move(move(UUID.randomUUID(), BIN, "hcm-pack01", 3));
+            assertThat(onHand(BIN)).isEqualTo(7);
+            assertThat(onHand(PACKING)).isEqualTo(3);
+        });
     }
 }
