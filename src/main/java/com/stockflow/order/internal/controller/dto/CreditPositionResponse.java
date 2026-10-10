@@ -21,6 +21,8 @@ public record CreditPositionResponse(
         @Schema(description = "Owed on credit orders not yet delivered") BigDecimal exposure,
         @Schema(description = "Limit minus exposure; null without credit. An order above it waits for approval")
         BigDecimal availableCredit,
-        String currency
+        String currency,
+        @Schema(description = "An overdue receivable: new credit orders wait for the credit approver")
+        boolean hasOverdue
 ) {
 }

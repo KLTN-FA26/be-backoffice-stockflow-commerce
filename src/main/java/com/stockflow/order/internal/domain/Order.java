@@ -361,6 +361,19 @@ public final class Order extends AggregateRoot {
         }
     }
 
+    /**
+     * The carrier delivered it, as the Order Coordinator records when the carrier reports back
+     * (kltn-docs 09 §4.3, 17 §4.3): SHIPPED → DELIVERED. Payment opens the receivable of a credit
+     * order from the event (15 §4.3 step 2).
+     */
+    public void markDelivered(Instant now) {
+        transitionTo(OrderStatus.DELIVERED);
+        Money total = total();
+        registerEvent(new OrderEvent.Delivered(new com.stockflow.contracts.OrderDelivered(id.value(),
+                orderNumber.value(), customerId, paymentTerm.name(), total.amount(), paidAmount,
+                total.currency().getCurrencyCode(), creditTermDays, now)));
+    }
+
     /** kltn-docs 15 §5.2, derived from the term and the money received. */
     public PaymentStatus paymentStatus() {
         return PaymentStatus.of(paymentTerm, paidAmount, paidInFullAt);

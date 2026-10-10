@@ -48,10 +48,11 @@ class OrderReleaseService implements OrderReleases {
     private final OrderService orders;
     private final Clock clock;
     private final InventoryService inventory;
+    private final com.stockflow.payment.api.PaymentService paymentService;
 
     OrderReleaseService(OrderRepository repository, ProductionRecords production, WarehouseDirectory warehouses,
                         OrderEventPublisher events, OrderService orders, Clock clock,
-                        InventoryService inventory) {
+                        InventoryService inventory, com.stockflow.payment.api.PaymentService paymentService) {
         this.repository = repository;
         this.production = production;
         this.warehouses = warehouses;
@@ -59,6 +60,7 @@ class OrderReleaseService implements OrderReleases {
         this.orders = orders;
         this.clock = clock;
         this.inventory = inventory;
+        this.paymentService = paymentService;
     }
 
     @Override
@@ -87,6 +89,12 @@ class OrderReleaseService implements OrderReleases {
                             .formatted(order.orderNumber(), String.join(", ", missing)));
         }
 
+        // kltn-docs 15 §4.3 step 4, 17 BR-02: no credit order is released for a customer who is overdue.
+        if (order.paymentTerm() == com.stockflow.order.api.PaymentTerm.CREDIT
+                && paymentService.creditPosition(order.customerId()).hasOverdue()) {
+            throw new BusinessException(ErrorCode.CUSTOMER_CREDIT_OVERDUE,
+                    "Order %s is on credit and its customer has overdue receivables".formatted(order.orderNumber()));
+        }
         order.release(warehouseId, warehouseCode, releasedBy, clock.instant(), approvedSamples);
         // A deposit order leaves PENDING_PAYMENT here (BR-PRD-09): from now on its holds must not
         // expire (kltn-docs 14 BR-07, SCRUM-465). Idempotent for an order already paid and pinned.
