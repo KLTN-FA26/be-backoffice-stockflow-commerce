@@ -43,6 +43,15 @@ public class UserJpaEntity extends BaseEntity {
     @Column(name = "last_login_at")
     private Instant lastLoginAt;
 
+    @Column(name = "must_change_password", nullable = false)
+    private boolean mustChangePassword;
+
+    @Column(name = "failed_login_count", nullable = false)
+    private int failedLoginCount;
+
+    @Column(name = "locked_until")
+    private Instant lockedUntil;
+
     protected UserJpaEntity() {
     }
 
@@ -57,13 +66,21 @@ public class UserJpaEntity extends BaseEntity {
         this.lastLoginAt = lastLoginAt;
     }
 
-    /** The only mutation this login flow needs; other fields have no write use case yet. */
-    public void recordLogin(Instant now) {
-        this.lastLoginAt = now;
-    }
-
-    public void replacePasswordHash(String newHash) {
-        this.passwordHash = newHash;
+    /**
+     * Copies the aggregate's mutable state. {@code username} is not among it: it never changes once
+     * the account exists.
+     */
+    public void apply(String email, String passwordHash, String fullName, UserStatus status,
+                      Instant lastLoginAt, boolean mustChangePassword, int failedLoginCount,
+                      Instant lockedUntil) {
+        this.email = email;
+        this.passwordHash = passwordHash;
+        this.fullName = fullName;
+        this.status = status;
+        this.lastLoginAt = lastLoginAt;
+        this.mustChangePassword = mustChangePassword;
+        this.failedLoginCount = failedLoginCount;
+        this.lockedUntil = lockedUntil;
     }
 
     public String getUsername() { return username; }
@@ -72,4 +89,7 @@ public class UserJpaEntity extends BaseEntity {
     public String getFullName() { return fullName; }
     public UserStatus getStatus() { return status; }
     public Instant getLastLoginAt() { return lastLoginAt; }
+    public boolean isMustChangePassword() { return mustChangePassword; }
+    public int getFailedLoginCount() { return failedLoginCount; }
+    public Instant getLockedUntil() { return lockedUntil; }
 }

@@ -8,7 +8,6 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.PermissionCatalog;
 import com.stockflow.common.security.PermissionCode;
-import com.stockflow.common.security.Role;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.identity.api.UserProfile;
 import com.stockflow.identity.internal.controller.dto.MeResponse;
@@ -53,7 +52,8 @@ class MeController {
     public ApiResponse<MeResponse> me(@AuthenticatedUser CurrentUser user) {
         UserProfile profile = identityService.profile(user.userId());
         return ApiResponse.ok(new MeResponse(profile.userId(), profile.username(), profile.email(),
-                profile.fullName(), profile.status(), roles(user), profile.lastLoginAt()));
+                profile.fullName(), profile.status(), roles(), profile.lastLoginAt(),
+                profile.mustChangePassword()));
     }
 
     /**
@@ -67,7 +67,7 @@ class MeController {
     @Operation(summary = "The signed-in user's roles and effective permissions; refetch after a 403")
     public ApiResponse<MyPermissionsResponse> permissions(@AuthenticatedUser Optional<CurrentUser> user) {
         if (user.isPresent()) {
-            return ApiResponse.ok(new MyPermissionsResponse(roles(user.get()),
+            return ApiResponse.ok(new MyPermissionsResponse(roles(),
                     user.get().permissions().stream().map(PermissionCode::toString).sorted().toList(),
                     user.get().scope()));
         }
@@ -79,7 +79,22 @@ class MeController {
                 DataScope.ALL));
     }
 
-    private static List<String> roles(CurrentUser user) {
-        return user.roles().stream().map(Role::authority).sorted().toList();
+    /**
+     * The roles of the token, custom ones included (SCRUM-455). {@link CurrentUser#roles()} only
+     * holds the roles the code knows by name, so it is not the source here: the converter keeps
+     * every role as an authority, and a role is the authority without a {@code ':'}.
+     */
+    private static List<String> roles() {
+        var authentication = org.springframework.security.core.context.SecurityContextHolder.getContext()
+                .getAuthentication();
+        if (authentication == null) {
+            return List.of();
+        }
+        return authentication.getAuthorities().stream()
+                .map(org.springframework.security.core.GrantedAuthority::getAuthority)
+                .filter(authority -> authority.indexOf(PermissionCode.SEPARATOR) < 0)
+                .filter(authority -> !authority.startsWith("ROLE_") && !authority.startsWith("SCOPE_"))
+                .sorted()
+                .toList();
     }
 }

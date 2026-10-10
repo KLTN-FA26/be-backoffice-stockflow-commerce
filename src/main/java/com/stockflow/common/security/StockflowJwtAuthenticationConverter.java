@@ -11,7 +11,6 @@ import org.springframework.security.oauth2.jwt.Jwt;
 
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -35,8 +34,11 @@ import java.util.Set;
  * purpose, not merged: trusting it would keep a revoked permission alive for the rest of that
  * token's life, which is the defect this design exists to remove.</p>
  *
- * <p>Unknown roles are dropped rather than trusted: identity is the only authority on what is
- * valid, and a token carrying something else must not gain access.</p>
+ * <p>Roles are no longer limited to the {@link Role} enum: administrators can add roles at runtime
+ * (SCRUM-455). A role code is kept if it has the shape of one; whether it grants anything is
+ * decided by the lookup, which only knows roles that exist in {@code identity.app_role} — a code
+ * that does not exist there grants nothing. A value that is not even shaped like a role code is
+ * dropped, so it can never be mistaken for a permission authority (those contain {@code ':'}).</p>
  *
  * <h2>When the lookup cannot answer</h2>
  *
@@ -51,6 +53,9 @@ public class StockflowJwtAuthenticationConverter
     private static final Logger log = LoggerFactory.getLogger(StockflowJwtAuthenticationConverter.class);
 
     public static final String ROLES_CLAIM = "roles";
+
+    /** Same rule as {@code ck_app_role_code_format}. */
+    private static final java.util.regex.Pattern ROLE_CODE = java.util.regex.Pattern.compile("^[A-Z][A-Z0-9_]{1,63}$");
 
     private final RoleAuthorizationLookup lookup;
 
@@ -84,11 +89,10 @@ public class StockflowJwtAuthenticationConverter
             return known;
         }
         for (String raw : claimed) {
-            Optional<Role> role = Role.fromAuthority(raw);
-            if (role.isPresent()) {
-                known.add(role.get().authority());
+            if (raw != null && ROLE_CODE.matcher(raw).matches()) {
+                known.add(raw);
             } else {
-                log.warn("Dropping unknown role '{}' from token of subject {}", raw, jwt.getSubject());
+                log.warn("Dropping malformed role '{}' from token of subject {}", raw, jwt.getSubject());
             }
         }
         return known;

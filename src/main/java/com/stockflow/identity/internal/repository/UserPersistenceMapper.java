@@ -24,6 +24,9 @@ final class UserPersistenceMapper {
                 entity.getFullName(),
                 entity.getStatus(),
                 entity.getLastLoginAt(),
+                entity.isMustChangePassword(),
+                entity.getFailedLoginCount(),
+                entity.getLockedUntil(),
                 entity.getVersion(),
                 entity.getCreatedAt(),
                 entity.getCreatedBy());
@@ -36,7 +39,7 @@ final class UserPersistenceMapper {
 
     /** Copies the aggregate's mutable state onto a row already managed by the persistence context. */
     static void applyToEntity(User user, UserJpaEntity entity) {
-        entity.recordLogin(user.lastLoginAt());
-        entity.replacePasswordHash(user.passwordHash());
+        entity.apply(user.email(), user.passwordHash(), user.fullName(), user.status(), user.lastLoginAt(),
+                user.mustChangePassword(), user.failedLoginCount(), user.lockedUntil());
     }
 }

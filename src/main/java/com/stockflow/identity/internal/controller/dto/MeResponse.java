@@ -9,5 +9,7 @@ import java.util.UUID;
 /** Body of {@code GET /api/v1/identity/me}. */
 @Schema(description = "The signed-in user's profile and roles")
 public record MeResponse(UUID userId, String username, String email, String fullName, String status,
-                         List<String> roles, Instant lastLoginAt) {
+                         List<String> roles, Instant lastLoginAt,
+                         @Schema(description = "The password was set by an administrator: ask for a new one first")
+                         boolean mustChangePassword) {
 }

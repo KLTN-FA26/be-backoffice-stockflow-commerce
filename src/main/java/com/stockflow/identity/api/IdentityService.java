@@ -37,11 +37,78 @@ public interface IdentityService {
      */
     RoleMatrixView updateRolePermissions(UpdateRolePermissionsCommand command);
 
-    /** Assign a role to a user. Idempotent: assigning an already-held role is a no-op. */
+    /**
+     * Grant one permission to a role. Idempotent. Same rules as {@link #updateRolePermissions}, and
+     * the caller must hold the permission themselves (SCRUM-456).
+     */
+    RoleMatrixView grantPermission(String roleCode, String permission);
+
+    /** Take one permission away from a role. Idempotent. Refuses an RBAC lockout. */
+    RoleMatrixView revokePermission(String roleCode, String permission);
+
+    /**
+     * Create a custom role (SCRUM-455), empty or with the grants of {@code copyPermissionsFrom}.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code ROLE_CODE_ALREADY_EXISTS};
+     *         {@code PRIVILEGE_ESCALATION} when copying grants the caller does not hold
+     */
+    RoleSummary createRole(CreateRoleCommand command);
+
+    /** @throws com.stockflow.common.error.BusinessException {@code SYSTEM_ROLE_IMMUTABLE}, {@code OPTIMISTIC_LOCK} */
+    RoleSummary updateRole(UpdateRoleCommand command);
+
+    /** @throws com.stockflow.common.error.BusinessException {@code SYSTEM_ROLE_IMMUTABLE}, {@code ROLE_IN_USE} */
+    void deleteRole(String roleCode);
+
+    /**
+     * Assign a role to a user. Idempotent: assigning an already-held role is a no-op.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code PRIVILEGE_ESCALATION} when the role
+     *         grants something the caller lacks or the account holds more than the caller;
+     *         {@code OWN_ACCOUNT_NOT_MANAGEABLE}; {@code ROLE_NOT_ASSIGNABLE} for CUSTOMER
+     */
     void assignRole(UUID userId, String roleCode);
 
-    /** Revoke a role from a user. Idempotent: revoking one not held is a no-op. */
+    /**
+     * Revoke a role from a user. Idempotent: revoking one not held is a no-op.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code LAST_SYSTEM_ADMIN} and the rules of
+     *         {@link #assignRole}
+     */
     void revokeRole(UUID userId, String roleCode);
+
+    /** Staff accounts (customers on request), paginated (SCRUM-454). */
+    PageResponse<StaffUser> listUsers(ListUsersQuery query);
+
+    /** @throws com.stockflow.common.error.BusinessException {@code USER_NOT_FOUND} */
+    StaffUser user(UUID userId);
+
+    /**
+     * Create a staff account with its roles. The password is temporary: the user must change it.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code USERNAME_ALREADY_EXISTS},
+     *         {@code USER_EMAIL_ALREADY_EXISTS}, {@code ROLE_NOT_FOUND}, {@code ROLE_NOT_ASSIGNABLE},
+     *         {@code PRIVILEGE_ESCALATION}, {@code VALIDATION_FAILED} for a weak password
+     */
+    CreatedStaffUser createStaffUser(CreateStaffUserCommand command);
+
+    /** @throws com.stockflow.common.error.BusinessException {@code OPTIMISTIC_LOCK}, {@code USER_EMAIL_ALREADY_EXISTS} */
+    StaffUser updateUser(UpdateUserCommand command);
+
+    /**
+     * Lock, unlock, disable or enable an account. Locking and disabling end its sessions.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code INVALID_USER_STATUS_TRANSITION},
+     *         {@code LAST_SYSTEM_ADMIN}, {@code OWN_ACCOUNT_NOT_MANAGEABLE}, {@code PRIVILEGE_ESCALATION}
+     */
+    StaffUser changeUserStatus(UUID userId, UserStatusChange change);
+
+    /**
+     * Set a new temporary password and end every session of the account.
+     *
+     * @param newPassword null to have one generated
+     */
+    PasswordReset resetPassword(UUID userId, String newPassword);
 
     /**
      * The profile of a user, for {@code GET /identity/me}. The login response carries only a token,

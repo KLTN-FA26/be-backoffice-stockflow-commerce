@@ -77,6 +77,14 @@ public enum ErrorCode {
     /** Credentials were correct but the account is LOCKED or DISABLED. Distinct from UNAUTHORIZED,
      *  which covers "wrong username or password" without revealing the account exists. */
     ACCOUNT_NOT_ACTIVE("This account cannot sign in right now", 403),
+    /** Too many wrong passwords in a row; the lock ends on its own (SCRUM-456). Only revealed to a
+     *  caller who then gave the right password, so it cannot be used to probe for accounts. */
+    ACCOUNT_TEMPORARILY_LOCKED("Too many failed sign-in attempts; try again later", 403),
+    /** You can only hand out what you hold: a role or permission the caller lacks, or managing an
+     *  account that holds more than the caller (SCRUM-456). */
+    PRIVILEGE_ESCALATION("You cannot grant or manage permissions you do not hold yourself", 403),
+    /** The account administration endpoints never act on the caller's own account. */
+    OWN_ACCOUNT_NOT_MANAGEABLE("You cannot change your own account from user management", 403),
 
     /** The current password given when changing it was wrong. Distinct from a weak new password so a
      *  form can mark the right field, and a 400 rather than a 401 so a client does not read it as
@@ -176,6 +184,20 @@ public enum ErrorCode {
     ROLE_NOT_EDITABLE("The permissions of this role cannot be edited here", 409),
     /** The edit would leave no role able to edit permissions, and nobody could ever undo it. */
     RBAC_LOCKOUT("At least one role must keep the right to manage permissions", 409),
+    USERNAME_ALREADY_EXISTS("An account with this username already exists", 409),
+    USER_EMAIL_ALREADY_EXISTS("An account with this email already exists", 409),
+    ROLE_CODE_ALREADY_EXISTS("A role with this code already exists", 409),
+    /** A custom role still held by someone cannot be deleted; reassign them first. */
+    ROLE_IN_USE("This role is still assigned to users", 409),
+    /** The roles the code knows by name are never renamed or deleted. */
+    SYSTEM_ROLE_IMMUTABLE("System roles cannot be renamed or deleted", 409),
+    /** The change would leave no active System Admin to administer the platform. */
+    LAST_SYSTEM_ADMIN("At least one active System Admin must remain", 409),
+    /** CUSTOMER belongs to customer accounts only, and staff roles to staff accounts only. */
+    ROLE_NOT_ASSIGNABLE("This role cannot be assigned to this account", 409),
+    INVALID_USER_STATUS_TRANSITION("This account cannot move to that status", 409),
+    /** User management acts on staff accounts; customer accounts belong to the customer screens. */
+    STAFF_ACCOUNT_REQUIRED("Customer accounts are managed from the customer screens", 409),
 
     // ---- 413 / 415: payload problems
     PAYLOAD_TOO_LARGE("The uploaded file is too large", 413),
