@@ -62,6 +62,9 @@ public class StockAdjustmentJpaEntity extends BaseEntity {
     @Column(name = "posted_at")
     private Instant postedAt;
 
+    @Column(name = "withdrawn_at")
+    private Instant withdrawnAt;
+
     protected StockAdjustmentJpaEntity() {
     }
 
@@ -81,12 +84,13 @@ public class StockAdjustmentJpaEntity extends BaseEntity {
     }
 
     public void decide(AdjustmentStatus status, UUID decidedBy, Instant decidedAt, String rejectionReason,
-                       Instant postedAt) {
+                       Instant postedAt, Instant withdrawnAt) {
         this.status = status;
         this.decidedBy = decidedBy;
         this.decidedAt = decidedAt;
         this.rejectionReason = rejectionReason;
         this.postedAt = postedAt;
+        this.withdrawnAt = withdrawnAt;
     }
 
     public String getAdjustmentNumber() { return adjustmentNumber; }
@@ -102,4 +106,5 @@ public class StockAdjustmentJpaEntity extends BaseEntity {
     public Instant getDecidedAt() { return decidedAt; }
     public String getRejectionReason() { return rejectionReason; }
     public Instant getPostedAt() { return postedAt; }
+    public Instant getWithdrawnAt() { return withdrawnAt; }
 }

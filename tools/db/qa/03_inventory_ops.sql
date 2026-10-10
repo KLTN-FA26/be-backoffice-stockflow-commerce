@@ -193,5 +193,23 @@ SELECT pg_temp.expect_ok('I40 a pinned hold released when its order is cancelled
     UPDATE inventory.stock_reservation SET status = 'RELEASED', release_reason = 'ORDER_CANCELLED',
            closed_at = NOW() WHERE id = md5('qa:res:pinned')::uuid $q$);
 
+\echo '--- adjustment withdrawal, scrap and samples (SCRUM-459)'
+SELECT pg_temp.expect_fail('I41 a SCRAP adjustment that adds stock', $q$
+    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by)
+    VALUES (gen_random_uuid(), 'ADJ-QA-S1', 'HCM-A01-2-B', 'SOFA-3S-GREY', 2, 'SCRAP', md5('demo:user:editor')::uuid) $q$);
+SELECT pg_temp.expect_ok('I42 a SAMPLE adjustment that takes stock', $q$
+    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by)
+    VALUES (md5('qa:adj:sample')::uuid, 'ADJ-QA-S2', 'HCM-A01-2-B', 'SOFA-3S-GREY', -1, 'SAMPLE', md5('demo:user:editor')::uuid) $q$);
+SELECT pg_temp.expect_fail('I43 WITHDRAWN without the time it was withdrawn', $q$
+    UPDATE inventory.stock_adjustment SET status = 'WITHDRAWN' WHERE id = md5('qa:adj:sample')::uuid $q$);
+SELECT pg_temp.expect_fail('I44 WITHDRAWN with a decider', $q$
+    UPDATE inventory.stock_adjustment SET status = 'WITHDRAWN', withdrawn_at = NOW(),
+           decided_by = md5('demo:user:approver')::uuid, decided_at = NOW() WHERE id = md5('qa:adj:sample')::uuid $q$);
+SELECT pg_temp.expect_ok('I45 withdrawn by its requester', $q$
+    UPDATE inventory.stock_adjustment SET status = 'WITHDRAWN', withdrawn_at = NOW() WHERE id = md5('qa:adj:sample')::uuid $q$);
+SELECT pg_temp.expect_fail('I46 a pending adjustment that says it was withdrawn', $q$
+    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by, withdrawn_at)
+    VALUES (gen_random_uuid(), 'ADJ-QA-S3', 'HCM-A01-2-B', 'SOFA-3S-GREY', -1, 'DAMAGED', md5('demo:user:editor')::uuid, NOW()) $q$);
+
 ROLLBACK;
 \echo 'PASS 03_inventory_ops'

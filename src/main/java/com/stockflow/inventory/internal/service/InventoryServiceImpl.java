@@ -27,6 +27,9 @@ import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.inventory.internal.domain.StockLevelLine;
 import com.stockflow.inventory.internal.domain.StockStatus;
 import com.stockflow.common.domain.Sku;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
+import com.stockflow.common.security.WarehouseScope;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -409,9 +412,7 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
     @Override
     public void release(UUID reservationId, String reason) {
         ReleaseReason releaseReason = parseReason(reason);
-        StockItem item = repository.findByReservationIdForUpdate(ReservationId.of(reservationId))
-                .orElseThrow(() -> new IllegalArgumentException(
-                        "No reservation with id " + reservationId));
+        StockItem item = holderOf(ReservationId.of(reservationId));
 
         item.releaseReservation(ReservationId.of(reservationId), releaseReason, clock.instant());
         repository.save(item);
@@ -430,14 +431,25 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
     @Override
     public void consume(UUID reservationId) {
         ReservationId id = ReservationId.of(reservationId);
-        StockItem item = repository.findByReservationIdForUpdate(id)
-                .orElseThrow(() -> new IllegalArgumentException(
-                        "No reservation with id " + reservationId));
+        StockItem item = holderOf(id);
         item.consumeReservation(id, clock.instant());
         repository.save(item);
         events.publishEventsOf(item);
 
         log.info("Consumed reservation {}: stock deducted for real", reservationId);
+    }
+
+    /**
+     * The stock item holding {@code reservationId}, locked. A warehouse-bound caller reaches only
+     * holds in their own warehouses (BR-SEC-002); the system — an event listener, the sweeper — is
+     * not limited.
+     */
+    private StockItem holderOf(ReservationId reservationId) {
+        StockItem item = repository.findByReservationIdForUpdate(reservationId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.RESERVATION_NOT_FOUND,
+                        "No reservation with id " + reservationId.value()));
+        WarehouseScope.requireLocation(item.location().code());
+        return item;
     }
 
     /**

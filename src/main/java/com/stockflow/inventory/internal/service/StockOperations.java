@@ -32,6 +32,9 @@ public interface StockOperations {
 
     StockAdjustmentSummary reject(UUID adjustmentId, UUID approverId, String reason);
 
+    /** The requester takes back an adjustment nobody has decided yet (SCRUM-459). */
+    StockAdjustmentSummary withdraw(UUID adjustmentId, UUID userId);
+
     Optional<StockAdjustmentSummary> findAdjustment(UUID adjustmentId);
 
     PageResponse<StockAdjustmentSummary> adjustments(StockAdjustmentStatus status, String sku, String location,

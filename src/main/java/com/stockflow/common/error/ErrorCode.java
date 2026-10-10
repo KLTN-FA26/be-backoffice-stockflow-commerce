@@ -70,6 +70,7 @@ public enum ErrorCode {
     /** No stock of this SKU (and lot) is held at this location. */
     STOCK_ITEM_NOT_FOUND("No such stock at this location", 404),
     STOCK_ADJUSTMENT_NOT_FOUND("Stock adjustment not found", 404),
+    RESERVATION_NOT_FOUND("Stock reservation not found", 404),
     TRANSFER_ORDER_NOT_FOUND("Transfer order not found", 404),
     /** The SKU has no inventory item yet: its logistics data must be completed first (docs 01 BR-03). */
     INVENTORY_ITEM_NOT_FOUND("No inventory item for this SKU", 404),
@@ -85,6 +86,8 @@ public enum ErrorCode {
     PRIVILEGE_ESCALATION("You cannot grant or manage permissions you do not hold yourself", 403),
     /** The account administration endpoints never act on the caller's own account. */
     OWN_ACCOUNT_NOT_MANAGEABLE("You cannot change your own account from user management", 403),
+    /** Only the person who asked for a stock adjustment may take it back (SCRUM-459). */
+    ADJUSTMENT_NOT_REQUESTER("Only the person who requested this stock adjustment can withdraw it", 403),
 
     /** The current password given when changing it was wrong. Distinct from a weak new password so a
      *  form can mark the right field, and a 400 rather than a 401 so a client does not read it as

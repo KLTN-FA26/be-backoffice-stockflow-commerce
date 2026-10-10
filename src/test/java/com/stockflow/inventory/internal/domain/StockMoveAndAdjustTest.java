@@ -147,5 +147,52 @@ class StockMoveAndAdjustTest {
             assertThatThrownBy(() -> adjustment.reject(MANAGER, " ", NOW))
                     .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
         }
+
+        @Test
+        @DisplayName("scrap and samples only write stock down (kltn-docs 19)")
+        void scrapAndSampleOnlyWriteDown() {
+            StockItem item = available(10);
+            StockAdjustment scrap = writeOff(-4, AdjustmentReason.SCRAP, null);
+            scrap.approveAndPost(MANAGER, item, NOW);
+            assertThat(item.onHand()).isEqualTo(Quantity.of(6));
+            assertThat(writeOff(-1, AdjustmentReason.SAMPLE, null).reason()).isEqualTo(AdjustmentReason.SAMPLE);
+
+            assertThatThrownBy(() -> writeOff(4, AdjustmentReason.SCRAP, null))
+                    .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+            assertThatThrownBy(() -> writeOff(1, AdjustmentReason.SAMPLE, null))
+                    .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        }
+
+        @Test
+        @DisplayName("the requester withdraws a pending request; stock is untouched and nobody decided it")
+        void requesterWithdraws() {
+            StockAdjustment adjustment = writeOff(-2, AdjustmentReason.DAMAGED, null);
+            adjustment.withdraw(CLERK, NOW);
+
+            assertThat(adjustment.status()).isEqualTo(AdjustmentStatus.WITHDRAWN);
+            assertThat(adjustment.withdrawnAt()).isEqualTo(NOW);
+            assertThat(adjustment.decidedBy()).isNull();
+            assertThat(adjustment.decidedAt()).isNull();
+            assertThatThrownBy(() -> adjustment.approveAndPost(MANAGER, available(5), NOW))
+                    .extracting(e -> ((BusinessException) e).errorCode())
+                    .isEqualTo(ErrorCode.INVALID_ADJUSTMENT_TRANSITION);
+            assertThatThrownBy(() -> adjustment.withdraw(CLERK, NOW))
+                    .extracting(e -> ((BusinessException) e).errorCode())
+                    .isEqualTo(ErrorCode.INVALID_ADJUSTMENT_TRANSITION);
+        }
+
+        @Test
+        @DisplayName("only the requester may withdraw, and only before it is decided")
+        void onlyRequesterWithdrawsBeforeDecision() {
+            StockAdjustment adjustment = writeOff(-2, AdjustmentReason.DAMAGED, null);
+            assertThatThrownBy(() -> adjustment.withdraw(MANAGER, NOW))
+                    .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.ADJUSTMENT_NOT_REQUESTER);
+            assertThat(adjustment.status()).isEqualTo(AdjustmentStatus.PENDING_APPROVAL);
+
+            adjustment.approveAndPost(MANAGER, available(5), NOW);
+            assertThatThrownBy(() -> adjustment.withdraw(CLERK, NOW))
+                    .extracting(e -> ((BusinessException) e).errorCode())
+                    .isEqualTo(ErrorCode.INVALID_ADJUSTMENT_TRANSITION);
+        }
     }
 }
