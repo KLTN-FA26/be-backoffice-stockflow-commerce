@@ -15,6 +15,33 @@ map $http_upgrade $connection_upgrade {
     ''      "";
 }
 
+# -----------------------------------------------------------------------------
+# Back-office BFF client IP (login rate limit).
+#
+# The Next.js back-office calls the API server-to-server, so after Cloudflare/realip every admin
+# has the BFF's egress address and RateLimitInterceptor puts the whole team in one login bucket.
+# The BFF sends the browser IP it took from its hosting platform, plus the shared
+# BFF_ORIGIN_SECRET. Only with the exact secret is that IP used; otherwise X-Stockflow-Client-IP
+# is ignored and $remote_addr (CF-Connecting-IP via realip) stays the identity, as before.
+#
+# Fail closed: compose refuses an unset or empty BFF_ORIGIN_SECRET, and the explicit "" key makes
+# an empty rendering a duplicate key - `nginx -t` fails instead of every header-less request
+# matching. The secret must be hex (openssl rand -hex 32): it is pasted into this file verbatim.
+# proxy-headers.conf consumes $effective_client_ip and strips both headers before Spring.
+# map_hash_bucket_size (nginx.conf) is sized for the 64-character secret key.
+# -----------------------------------------------------------------------------
+map $http_x_stockflow_bff_secret $stockflow_bff_trusted {
+    default                0;
+    ""                     0;
+    "${BFF_ORIGIN_SECRET}" 1;
+}
+
+# Defence in depth on top of the BFF's own validation: one bare IPv4/IPv6 token, no list.
+map "$stockflow_bff_trusted:$http_x_stockflow_client_ip" $effective_client_ip {
+    default                                     $remote_addr;
+    "~^1:(?<bff_client_ip>[0-9A-Fa-f:.]{2,45})$" $bff_client_ip;
+}
+
 # Product image keys contain a UUIDv7 and are never overwritten, so a successful response may be
 # cached for a year. Anything else - a 404 for an image not uploaded yet, a 403 - must not be,
 # or Cloudflare would serve the error for a year after the image appears.

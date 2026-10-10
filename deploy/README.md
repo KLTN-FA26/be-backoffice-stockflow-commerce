@@ -69,6 +69,13 @@ buyer identity and receiving address, including a valid reply-to email. Set
 delivery. Validate with `docker compose config --quiet` before deploying. Mailpit captures messages
 for testing; it does not deliver them to external supplier inboxes.
 
+Back-office login rate limit: the Next.js back-office calls the API from its own server, so without
+help every admin shares one login rate-limit bucket. Set `BFF_ORIGIN_SECRET` (`openssl rand -hex 32`,
+hex only) in `/opt/stockflow/.env` and the SAME value as a server-only env var of the back-office
+deployment (never `NEXT_PUBLIC_*`). nginx then accepts the back-office's `X-Stockflow-Client-IP` only
+when `X-Stockflow-Bff-Secret` matches, and strips both before Spring; any other caller keeps the
+Cloudflare-restored address. Compose refuses an unset or empty value. Rotate both sides together.
+
 ---
 
 ## 1. One-time: the VPS
