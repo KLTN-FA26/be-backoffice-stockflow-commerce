@@ -269,7 +269,9 @@ class PurchaseOrderRepositoryAdapter
                 .<PurchaseOrderJpaEntity>where(Specs.eq("supplierId", criteria.supplierId()))
                 .and(Specs.eq("warehouseId", criteria.warehouseId()))
                 .and(Specs.in("status", criteria.statuses()))
-                .and(Specs.contains("poNumber", criteria.search()));
+                .and(Specs.contains("poNumber", criteria.search()))
+                // BR-SEC-002: warehouse staff see the purchase orders of their own warehouses only.
+                .and(com.stockflow.common.security.WarehouseScope.warehousesIn("warehouseId"));
         var page = jpa.findAll(spec, pageable);
         var suppliersById = suppliers.findAllById(page.getContent().stream()
                         .map(PurchaseOrderJpaEntity::getSupplierId).distinct().toList())

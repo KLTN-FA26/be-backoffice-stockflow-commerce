@@ -146,14 +146,15 @@ class OrderController {
      * Cancel any order as an admin or sales rep, with a documented reason.
      *
      * <p>SCRUM-242/WBS 3.17.4. Same underlying {@link OrderService#cancel}, but {@code scope =
-     * ALL} and a distinct action ({@code APPROVE}, not {@code UPDATE}) — a customer's role is never
-     * granted {@code APPROVE} on this resource, so this endpoint is unreachable for them even
-     * though it accepts the same path shape as {@link #cancel}.</p>
+     * ALL} and its own resource, {@code sales-order-cancellations:UPDATE}: kltn-docs 17 §2 has Sales
+     * handle cancellations, while releasing an order to production ({@code sales-orders:APPROVE})
+     * stays with the coordinator. A customer's role is never granted it, so this endpoint is
+     * unreachable for them even though it accepts the same path shape as {@link #cancel}.</p>
      */
     @PostMapping("/{orderId}/admin-cancellation")
     @Operation(summary = "Cancel any order as an admin or sales rep, with a documented reason")
-    @RequiresPermission(resource = OrderResources.ORDERS,
-            action = Action.APPROVE, scope = DataScope.ALL)
+    @RequiresPermission(resource = OrderResources.ORDER_CANCELLATIONS,
+            action = Action.UPDATE, scope = DataScope.ALL)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "order", resourceId = "#orderId")
     public ApiResponse<Void> adminCancel(@PathVariable UUID orderId,
                              @Valid @RequestBody AdminCancelOrderRequest request) {

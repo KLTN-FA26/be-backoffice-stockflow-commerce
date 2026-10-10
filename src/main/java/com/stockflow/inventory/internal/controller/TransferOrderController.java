@@ -36,6 +36,10 @@ import java.util.UUID;
 /**
  * Inter-warehouse transfer orders (SCRUM-326/327). One verb per transition, so each carries its own
  * permission: approving needs {@code APPROVE}, which the planner who creates a transfer does not hold.
+ *
+ * <p>Submitting and cancelling need {@code CREATE}, like drafting: kltn-docs 10 §5 gives them to the
+ * planner (and cancelling to the approver too), while the source warehouse only picks and dispatches
+ * ({@code UPDATE}). Whoever may raise a transfer may put it forward or call it off (SCRUM-459).</p>
  */
 @RestController
 @RequestMapping("/api/v1/inventory/transfer-orders")
@@ -91,7 +95,7 @@ class TransferOrderController {
 
     @PostMapping("/{transferId}/submission")
     @Operation(summary = "Submit: approved at once at or under the threshold, otherwise PENDING_APPROVAL")
-    @RequiresPermission(resource = InventoryResources.TRANSFER_ORDERS, action = Action.UPDATE)
+    @RequiresPermission(resource = InventoryResources.TRANSFER_ORDERS, action = Action.CREATE)
     public ApiResponse<TransferOrderResponse> submit(@PathVariable UUID transferId,
                                                        @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(mapper.toResponse(transfers.submit(transferId, user.userId())));
@@ -141,7 +145,7 @@ class TransferOrderController {
 
     @PostMapping("/{transferId}/cancellation")
     @Operation(summary = "Cancel; only before dispatch (BR-04)")
-    @RequiresPermission(resource = InventoryResources.TRANSFER_ORDERS, action = Action.UPDATE)
+    @RequiresPermission(resource = InventoryResources.TRANSFER_ORDERS, action = Action.CREATE)
     public ApiResponse<TransferOrderResponse> cancel(@PathVariable UUID transferId,
                                                        @Valid @RequestBody ReasonRequest request) {
         return ApiResponse.ok(mapper.toResponse(transfers.cancel(transferId, request.reason())));

@@ -12,6 +12,7 @@ import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.SortWhitelist;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.CurrentUserProvider;
+import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.contracts.PurchaseOrderSent;
 import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.api.InventoryItemPolicy;
@@ -143,6 +144,7 @@ class ProcurementServiceImpl implements ProcurementService {
         var warehouse = warehouses.findWarehouse(command.warehouseId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.WAREHOUSE_NOT_FOUND,
                         "No warehouse with id " + command.warehouseId()));
+        WarehouseScope.requireWarehouse(command.warehouseId());
         if (!warehouse.active()) {
             throw new BusinessException(ErrorCode.CONFLICT, "Warehouse " + warehouse.prefix() + " is not active");
         }
@@ -175,7 +177,9 @@ class ProcurementServiceImpl implements ProcurementService {
     @Override
     @Transactional(readOnly = true)
     public Optional<PurchaseOrderSummary> findById(UUID purchaseOrderId) {
-        return search.summary(new PurchaseOrderId(purchaseOrderId), false);
+        Optional<PurchaseOrderSummary> found = search.summary(new PurchaseOrderId(purchaseOrderId), false);
+        found.ifPresent(order -> WarehouseScope.requireWarehouse(order.warehouseId()));
+        return found;
     }
 
     @Override
@@ -271,9 +275,9 @@ class ProcurementServiceImpl implements ProcurementService {
     @Override
     @Transactional(readOnly = true)
     public PageResponse<PurchaseOrderDeliveryDecision> deliveryDecisions(UUID id, int page, int size) {
-        if (!purchaseOrders.existsById(new PurchaseOrderId(id))) {
-            throw new BusinessException(ErrorCode.PURCHASE_ORDER_NOT_FOUND);
-        }
+        PurchaseOrderSummary order = search.summary(new PurchaseOrderId(id), false)
+                .orElseThrow(() -> new BusinessException(ErrorCode.PURCHASE_ORDER_NOT_FOUND));
+        WarehouseScope.requireWarehouse(order.warehouseId());
         return deliveryDecisions.list(id, page, size);
     }
 
@@ -399,12 +403,14 @@ class ProcurementServiceImpl implements ProcurementService {
     @Override
     @Transactional(readOnly = true)
     public List<PurchaseOrderStatusCount> statusDashboard() {
+        refuseWarehouseBound();
         return reports.statusDashboard();
     }
 
     @Override
     @Transactional(readOnly = true)
     public PageResponse<SupplierSpendSummary> supplierSpend(SupplierSpendReportQuery query) {
+        refuseWarehouseBound();
         if (query.supplierId() != null) {
             purchaseOrders.supplierStatus(query.supplierId())
                     .orElseThrow(() -> new BusinessException(ErrorCode.SUPPLIER_NOT_FOUND,
@@ -420,10 +426,25 @@ class ProcurementServiceImpl implements ProcurementService {
 
     // ------------------------------------------------------------------ helpers
 
+    /**
+     * The reports add up every warehouse. Warehouse staff read purchase orders to prepare receiving
+     * (kltn-docs 02 §2), not the company's spend, so a warehouse-bound caller is refused rather than
+     * shown totals that include warehouses they are not assigned to (BR-SEC-002).
+     */
+    private static void refuseWarehouseBound() {
+        if (WarehouseScope.restriction().isPresent()) {
+            throw new BusinessException(ErrorCode.OUT_OF_DATA_SCOPE,
+                    "Purchasing reports cover every warehouse");
+        }
+    }
+
+    /** Locked, and only within the caller's warehouses when they are warehouse-bound (BR-SEC-002). */
     private PurchaseOrder loadForUpdate(UUID purchaseOrderId) {
-        return purchaseOrders.findByIdForUpdate(new PurchaseOrderId(purchaseOrderId))
+        PurchaseOrder order = purchaseOrders.findByIdForUpdate(new PurchaseOrderId(purchaseOrderId))
                 .orElseThrow(() -> new BusinessException(ErrorCode.PURCHASE_ORDER_NOT_FOUND,
                         "No purchase order with id " + purchaseOrderId));
+        WarehouseScope.requireWarehouse(order.warehouseId());
+        return order;
     }
 
     private PurchaseOrderSummary summaryOf(PurchaseOrder order, boolean possibleDuplicate) {

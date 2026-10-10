@@ -20,6 +20,7 @@ public record StockAdjustmentSummary(
         Instant decidedAt,
         String rejectionReason,
         Instant postedAt,
+        Instant withdrawnAt,
         long version
 ) {
 }

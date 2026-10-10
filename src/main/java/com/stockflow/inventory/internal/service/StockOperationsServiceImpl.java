@@ -302,6 +302,15 @@ class StockOperationsServiceImpl implements StockOperations {
     }
 
     @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "stock-adjustment", resourceId = "#adjustmentId")
+    public StockAdjustmentSummary withdraw(UUID adjustmentId, UUID userId) {
+        StockAdjustment adjustment = load(adjustmentId);
+        adjustment.withdraw(userId, clock.instant());
+        log.info("Adjustment {} withdrawn by its requester", adjustment.number());
+        return toSummary(adjustments.save(adjustment));
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public Optional<StockAdjustmentSummary> findAdjustment(UUID adjustmentId) {
         // Out of the caller's warehouses reads as not found: its existence is not theirs to know.
@@ -394,6 +403,6 @@ class StockOperationsServiceImpl implements StockOperations {
         return new StockAdjustmentSummary(a.id(), a.number(), a.location().code(), a.sku().code(), a.lotNumber(),
                 a.quantityDelta(), StockAdjustmentReason.valueOf(a.reason().name()), a.note(),
                 StockAdjustmentStatus.valueOf(a.status().name()), a.requestedBy(), a.requestedAt(),
-                a.decidedBy(), a.decidedAt(), a.rejectionReason(), a.postedAt(), a.version());
+                a.decidedBy(), a.decidedAt(), a.rejectionReason(), a.postedAt(), a.withdrawnAt(), a.version());
     }
 }
