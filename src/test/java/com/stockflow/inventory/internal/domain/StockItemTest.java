@@ -282,4 +282,44 @@ class StockItemTest {
                     .hasMessageContaining("Invariant violated");
         }
     }
+
+    // ---- SCRUM-465: a hold expires only while its order waits for payment (kltn-docs 14 BR-07) ----
+
+    @Test
+    @DisplayName("pinning an order's holds stops them expiring; other orders' holds still expire")
+    void pinnedHoldsDoNotExpire() {
+        StockItem item = availableWith(10);
+        UUID paid = UUID.randomUUID();
+        UUID unpaid = UUID.randomUUID();
+        Reservation kept = item.reserve(paid, UUID.randomUUID(), UUID.randomUUID(), Quantity.of(3), NOW);
+        item.reserve(unpaid, UUID.randomUUID(), UUID.randomUUID(), Quantity.of(2), NOW);
+
+        assertThat(item.pinReservationsOf(paid)).isEqualTo(1);
+        assertThat(item.pinReservationsOf(paid)).isZero();   // idempotent
+        assertThat(kept.isPinned()).isTrue();
+        assertThat(kept.expiresAt()).isNull();
+
+        int released = item.releaseExpired(NOW.plus(java.time.Duration.ofDays(30)));
+
+        assertThat(released).isEqualTo(1);
+        assertThat(kept.status()).isEqualTo(ReservationStatus.HELD);
+        assertThat(item.reserved()).isEqualTo(Quantity.of(3));
+    }
+
+    @Test
+    @DisplayName("a closed hold is not pinned, and a pinned hold can still be released or consumed")
+    void pinOnlyTouchesActiveHolds() {
+        StockItem item = availableWith(10);
+        UUID orderId = UUID.randomUUID();
+        Reservation cancelled = item.reserve(orderId, UUID.randomUUID(), UUID.randomUUID(), Quantity.of(2), NOW);
+        item.releaseReservation(cancelled.id(), ReleaseReason.ORDER_CANCELLED, NOW);
+        Reservation live = item.reserve(orderId, UUID.randomUUID(), UUID.randomUUID(), Quantity.of(3), NOW);
+
+        assertThat(item.pinReservationsOf(orderId)).isEqualTo(1);
+        assertThat(cancelled.expiresAt()).isNotNull();
+
+        item.releaseReservation(live.id(), ReleaseReason.ORDER_CANCELLED, NOW);
+        assertThat(live.status()).isEqualTo(ReservationStatus.RELEASED);
+        assertThat(item.reserved()).isEqualTo(Quantity.ZERO);
+    }
 }

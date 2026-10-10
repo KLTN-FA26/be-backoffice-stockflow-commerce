@@ -54,7 +54,11 @@ public final class StockItem extends AggregateRoot {
     // checkInvariants(), and javac's this-escape lint is right to flag that on a non-final class -
     // a subclass could override a method it reaches before its own fields are initialised.
 
-    /** How long a checkout hold survives without payment (BR-014). */
+    /**
+     * How long a checkout hold survives while its order waits for payment (kltn-docs 14 BR-07), when
+     * no other value is configured ({@code stockflow.inventory.reservation-ttl}). Once the order is
+     * paid or released the hold is pinned and no longer expires.
+     */
     public static final Duration DEFAULT_RESERVATION_TTL = Duration.ofMinutes(30);
 
     private final StockItemId id;
@@ -271,6 +275,23 @@ public final class StockItem extends AggregateRoot {
     }
 
     // ------------------------------------------------------------------ reservation lifecycle
+
+    /**
+     * Pin every active hold of {@code orderId} on this stock row: its order is no longer waiting for
+     * payment, so the holds must not expire (kltn-docs 14 BR-07, SCRUM-465). Nothing else changes —
+     * the quantities held stay exactly as they are.
+     *
+     * @return how many holds this call pinned (0 when they were all pinned already)
+     */
+    public int pinReservationsOf(UUID orderId) {
+        int pinned = 0;
+        for (Reservation reservation : reservations) {
+            if (reservation.orderId().equals(orderId) && reservation.pin()) {
+                pinned++;
+            }
+        }
+        return pinned;
+    }
 
     /**
      * Hold stock for an order line at checkout (BRD 3.14.5).

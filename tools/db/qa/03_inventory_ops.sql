@@ -176,5 +176,22 @@ SELECT pg_temp.expect_ok('I36 two document types on one day', $q$
 SELECT pg_temp.expect_fail('I37 lowercase document type', $q$
     INSERT INTO platform.document_sequence (document_type, sequence_date) VALUES ('gr', CURRENT_DATE) $q$);
 
+\echo '--- holds: a deadline only while the order waits for payment (SCRUM-465, V20261013000100)'
+SELECT pg_temp.expect_ok('I38 a pinned hold (no deadline) on a stock row', $q$
+    INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at, created_at)
+    VALUES (md5('qa:order:pinned')::uuid, 'SO-QA-PIN', 'c0000000-0000-4000-8000-000000000001', gen_random_uuid(), 'PAID',
+            10000000, 'VND', NOW(), NOW());
+    INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity,
+                                            reserved_at, expires_at, status)
+    SELECT md5('qa:res:pinned')::uuid, s.id, md5('qa:order:pinned')::uuid, md5('qa:req:pinned')::uuid,
+           md5('qa:req:pinned')::uuid, 1, NOW(), NULL, 'HELD'
+      FROM inventory.stock_item s WHERE s.sku = 'SOFA-3S-GREY' AND s.location_code = 'HCM-A01-2-B' LIMIT 1 $q$);
+SELECT pg_temp.expect_fail('I39 an EXPIRED hold that never had a deadline', $q$
+    UPDATE inventory.stock_reservation SET status = 'EXPIRED', release_reason = 'RESERVATION_EXPIRED',
+           closed_at = NOW() WHERE id = md5('qa:res:pinned')::uuid $q$);
+SELECT pg_temp.expect_ok('I40 a pinned hold released when its order is cancelled', $q$
+    UPDATE inventory.stock_reservation SET status = 'RELEASED', release_reason = 'ORDER_CANCELLED',
+           closed_at = NOW() WHERE id = md5('qa:res:pinned')::uuid $q$);
+
 ROLLBACK;
 \echo 'PASS 03_inventory_ops'

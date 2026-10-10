@@ -83,9 +83,18 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
     private final InventoryControlService controls;
     private final InventoryPolicyRepository policies;
 
+    /** How long a hold lasts while its order waits for payment (kltn-docs 14: set by the business). */
+    private final java.time.Duration reservationTtl;
+
     InventoryServiceImpl(StockItemRepository repository, InventoryEventPublisher events,
                          StockOperations operations, InventoryItemDirectory items, Clock clock,
-                         InventoryControlService controls, InventoryPolicyRepository policies) {
+                         InventoryControlService controls, InventoryPolicyRepository policies,
+                         @org.springframework.beans.factory.annotation.Value(
+                                 "${stockflow.inventory.reservation-ttl:PT30M}") java.time.Duration reservationTtl) {
+        if (reservationTtl == null || reservationTtl.isZero() || reservationTtl.isNegative()) {
+            throw new IllegalArgumentException("stockflow.inventory.reservation-ttl must be positive");
+        }
+        this.reservationTtl = reservationTtl;
         this.repository = repository;
         this.events = events;
         this.operations = operations;
@@ -310,7 +319,8 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
                     // line spanning two lots would fail outright.
                     perStockItemRequestId(command.requestId(), line.stockItemId()),
                     line.quantity(),
-                    now);
+                    now,
+                    reservationTtl);
             repository.save(locked);
             events.publishEventsOf(locked);
 
@@ -372,6 +382,28 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
                 item.lotNumber(),
                 // The reservation's own quantity, never the plan's: on a replay the two can differ.
                 reservation.quantity().value());
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>{@code findWithReservationsForOrder} locks each stock row, the same lock the expiry sweep
+     * takes, so a hold is either pinned here or expired there — never both.</p>
+     */
+    @Override
+    public int pinReservations(UUID orderId) {
+        int pinned = 0;
+        for (StockItem item : repository.findWithReservationsForOrder(orderId)) {
+            int here = item.pinReservationsOf(orderId);
+            if (here > 0) {
+                repository.save(item);
+                pinned += here;
+            }
+        }
+        if (pinned > 0) {
+            log.info("Pinned {} hold(s) of order {}: it no longer waits for payment", pinned, orderId);
+        }
+        return pinned;
     }
 
     @Override

@@ -38,7 +38,8 @@ public final class Reservation {
     private final UUID requestId;
     private final Quantity quantity;
     private final Instant reservedAt;
-    private final Instant expiresAt;
+    /** Null once pinned: the order left PENDING_PAYMENT and the hold no longer expires (SCRUM-465). */
+    private Instant expiresAt;
 
     private ReservationStatus status;
     private ReleaseReason releaseReason;
@@ -54,7 +55,7 @@ public final class Reservation {
         this.requestId = java.util.Objects.requireNonNull(requestId, "requestId");
         this.quantity = java.util.Objects.requireNonNull(quantity, "quantity");
         this.reservedAt = java.util.Objects.requireNonNull(reservedAt, "reservedAt");
-        this.expiresAt = java.util.Objects.requireNonNull(expiresAt, "expiresAt");
+        this.expiresAt = expiresAt;
         this.status = java.util.Objects.requireNonNull(status, "status");
         this.releaseReason = releaseReason;
         this.closedAt = closedAt;
@@ -72,7 +73,25 @@ public final class Reservation {
 
     /** True once {@code expiresAt} has passed and nobody has consumed or released the hold. */
     public boolean isExpiredAt(Instant now) {
-        return status.isActive() && !now.isBefore(expiresAt);
+        return status.isActive() && expiresAt != null && !now.isBefore(expiresAt);
+    }
+
+    /**
+     * Keep the hold until the stock is consumed or the order releases it (kltn-docs 14 BR-07: a hold
+     * has a deadline only while its order waits for payment). Idempotent.
+     *
+     * @return true if this call pinned an active hold; false if it was already pinned or is closed
+     */
+    boolean pin() {
+        if (!status.isActive() || expiresAt == null) {
+            return false;
+        }
+        this.expiresAt = null;
+        return true;
+    }
+
+    public boolean isPinned() {
+        return expiresAt == null;
     }
 
     void consume(Instant now) {
