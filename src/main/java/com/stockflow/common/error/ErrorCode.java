@@ -113,6 +113,10 @@ public enum ErrorCode {
     QC_QUANTITY_MISMATCH("The QC quantities do not add up to the quantity inspected", 409),
     /** SCRUM-434: a SUBCONTRACT purchase order goes only to a supplier flagged print subcontractor. */
     SUPPLIER_NOT_SUBCONTRACTOR("This supplier is not a print subcontractor", 409),
+    /** BR-PRD-08: a new design goes to print only after the customer approved its sample. */
+    DESIGN_SAMPLE_NOT_APPROVED("A design on this order has no approved sample yet", 409),
+    /** BR-PRD-09: a deposit order goes to production only once the deposit has arrived. */
+    ORDER_DEPOSIT_NOT_RECEIVED("The deposit for this order has not arrived yet", 409),
     OPTIMISTIC_LOCK("The record changed meanwhile, please retry", 409),
     /** Two writers reached the same row; the loser waited for the lock and gave up. Retryable. */
     LOCK_TIMEOUT("The record is busy, please retry", 409),
