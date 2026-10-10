@@ -90,10 +90,13 @@ class SystemAdminRoleIntegrationTest {
         assertThat(identity.roleMatrix(ROLE).version()).isEqualTo(version);
     }
 
-    /** The enum and the table must name the same roles: a JWT carries the codes, not the enum. */
+    /**
+     * The enum and the table's system roles must name the same roles: code gates behaviour on the
+     * enum, a JWT carries the codes. Custom roles (SCRUM-455) live only in the table.
+     */
     @Test
     void everyRoleInTheEnumIsSeededAndViceVersa() {
-        List<String> seeded = jdbc.queryForList("SELECT code FROM identity.app_role", String.class);
+        List<String> seeded = jdbc.queryForList("SELECT code FROM identity.app_role WHERE is_system", String.class);
         List<String> declared = Arrays.stream(Role.values()).map(Role::authority).toList();
 
         assertThat(seeded).containsExactlyInAnyOrderElementsOf(declared);

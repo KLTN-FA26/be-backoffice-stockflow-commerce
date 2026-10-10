@@ -3,6 +3,22 @@ package com.stockflow.identity.internal.service;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.identity.api.ChangePasswordCommand;
+import com.stockflow.identity.api.CreateRoleCommand;
+import com.stockflow.identity.api.CreateStaffUserCommand;
+import com.stockflow.identity.api.CreatedStaffUser;
+import com.stockflow.identity.api.ListUsersQuery;
+import com.stockflow.identity.api.PasswordReset;
+import com.stockflow.identity.api.StaffUser;
+import com.stockflow.identity.api.UpdateRoleCommand;
+import com.stockflow.identity.api.UpdateUserCommand;
+import com.stockflow.identity.api.UserStatusChange;
+import com.stockflow.identity.internal.domain.UserStatus;
+import com.stockflow.identity.internal.entity.UserJpaEntity;
+import com.stockflow.identity.internal.repository.UserJpaRepository;
+import com.stockflow.common.persistence.SortWhitelist;
+import com.stockflow.common.security.Roles;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Sort;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.identity.api.SessionSummary;
 import com.stockflow.identity.api.LoginCommand;
@@ -101,6 +117,13 @@ class IdentityServiceImpl implements IdentityService {
     private final UserSessionJpaRepository sessions;
     private final RoleAuthorizationCache authorizationCache;
     private final AuditorAware<String> auditor;
+    private final UserJpaRepository users;
+    private final PrivilegeGuard guard;
+    private final LoginAttempts loginAttempts;
+
+    private static final SortWhitelist USER_SORT =
+            SortWhitelist.of("username", "fullName", "status", "lastLoginAt", "createdAt")
+                    .withDefault("username", Sort.Direction.ASC);
 
     /**
      * How long a token, and its session, lives. It was a fixed hour because nothing could end a token
@@ -120,7 +143,8 @@ class IdentityServiceImpl implements IdentityService {
                         UserRepository userRepository, PermissionCatalog catalog,
                         PasswordEncoder passwordEncoder, JwtEncoder jwtEncoder, Clock clock,
                         UserSessionJpaRepository sessions, RoleAuthorizationCache authorizationCache,
-                        AuditorAware<String> auditor,
+                        AuditorAware<String> auditor, UserJpaRepository users, PrivilegeGuard guard,
+                        LoginAttempts loginAttempts,
                         @Value("${stockflow.security.token-ttl:PT8H}") Duration tokenTtl) {
         if (tokenTtl == null || tokenTtl.isZero() || tokenTtl.isNegative()
                 || tokenTtl.compareTo(MAX_TOKEN_TTL) > 0) {
@@ -139,6 +163,9 @@ class IdentityServiceImpl implements IdentityService {
         this.sessions = sessions;
         this.authorizationCache = authorizationCache;
         this.auditor = auditor;
+        this.users = users;
+        this.guard = guard;
+        this.loginAttempts = loginAttempts;
         this.tokenTtl = tokenTtl;
         this.dummyPasswordHash = passwordEncoder.encode(Identifiers.newId().toString());
     }
@@ -146,11 +173,16 @@ class IdentityServiceImpl implements IdentityService {
     @Override
     @Transactional(readOnly = true)
     public List<RoleSummary> listRoles() {
+        Map<UUID, Long> holders = new java.util.HashMap<>();
+        roles.countHoldersPerRole().forEach(row -> holders.put((UUID) row[0], ((Number) row[1]).longValue()));
         return roles.findAllByOrderByCodeAsc().stream()
-                .map(r -> new RoleSummary(r.getCode(), r.getName(), r.getDescription(),
-                        r.getCreatedAt(), r.getCreatedBy(),
-                        r.getLastModifiedAt(), r.getLastModifiedBy()))
+                .map(r -> summaryOf(r, holders.getOrDefault(r.getId(), 0L)))
                 .toList();
+    }
+
+    private static RoleSummary summaryOf(RoleJpaEntity r, long holderCount) {
+        return new RoleSummary(r.getCode(), r.getName(), r.getDescription(), r.isSystem(), r.getVersion(),
+                holderCount, r.getCreatedAt(), r.getCreatedBy(), r.getLastModifiedAt(), r.getLastModifiedBy());
     }
 
     /**
@@ -222,6 +254,10 @@ class IdentityServiceImpl implements IdentityService {
                 .toList();
         Set<UUID> kept = held.stream().map(RolePermissionJpaEntity::getPermissionId)
                 .collect(Collectors.toSet());
+        guard.requireHolds(requested.entrySet().stream()
+                .filter(entry -> !kept.contains(entry.getValue()))
+                .map(Map.Entry::getKey)
+                .toList());
         List<RolePermissionJpaEntity> added = wanted.stream()
                 .filter(permissionId -> !kept.contains(permissionId))
                 .map(permissionId -> new RolePermissionJpaEntity(Identifiers.newId(), role.getId(), permissionId))
@@ -317,7 +353,7 @@ class IdentityServiceImpl implements IdentityService {
     }
 
     private RoleMatrixView matrixOf(RoleJpaEntity role, long version, Set<PermissionCode> granted) {
-        return RoleMatrixAssembler.assemble(role.getCode(), role.getName(), true, isEditable(role),
+        return RoleMatrixAssembler.assemble(role.getCode(), role.getName(), role.isSystem(), isEditable(role),
                 version, DataScope.ALL, catalog, granted);
     }
 
@@ -334,10 +370,24 @@ class IdentityServiceImpl implements IdentityService {
         });
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Order matters for what the caller learns: existence first (404), then whether this role can
+     * go on this account at all (409), then whether the caller may do it (403).</p>
+     */
     @Override
+    @Auditable(action = AuditAction.GRANT, resourceType = "user", resourceId = "#userId")
     public void assignRole(UUID userId, String roleCode) {
-        requireUser(userId);
+        UserJpaEntity account = requireAccount(userId);
         RoleJpaEntity role = findRoleByCode(roleCode);
+        List<String> held = codesOf(rolesOf(new UserId(userId)));
+        if (Roles.CUSTOMER.equals(role.getCode()) || held.contains(Roles.CUSTOMER)) {
+            throw new BusinessException(ErrorCode.ROLE_NOT_ASSIGNABLE,
+                    "Role %s cannot be assigned to account %s".formatted(role.getCode(), account.getUsername()));
+        }
+        guard.requireCanManage(userId, held);
+        guard.requireHoldsRoles(List.of(role.getCode()));
         if (userRoles.findByUserIdAndRoleId(userId, role.getId()).isPresent()) {
             return;
         }
@@ -346,12 +396,34 @@ class IdentityServiceImpl implements IdentityService {
     }
 
     @Override
+    @Auditable(action = AuditAction.REVOKE, resourceType = "user", resourceId = "#userId")
     public void revokeRole(UUID userId, String roleCode) {
-        requireUser(userId);
+        UserJpaEntity account = requireAccount(userId);
         RoleJpaEntity role = findRoleByCode(roleCode);
-        userRoles.findByUserIdAndRoleId(userId, role.getId()).ifPresent(held -> {
-            userRoles.delete(held);
-            endSessionsAfterRoleChange(userId);
+        if (Roles.CUSTOMER.equals(role.getCode())) {
+            throw new BusinessException(ErrorCode.ROLE_NOT_ASSIGNABLE,
+                    "Role CUSTOMER is not revoked from account " + account.getUsername());
+        }
+        guard.requireCanManage(userId, codesOf(rolesOf(new UserId(userId))));
+        Optional<UserRoleJpaEntity> held = userRoles.findByUserIdAndRoleId(userId, role.getId());
+        if (held.isEmpty()) {
+            return;
+        }
+        if (Roles.SYSTEM_ADMIN.equals(role.getCode()) && account.getStatus() == UserStatus.ACTIVE) {
+            refuseLastSystemAdmin(userId);
+        }
+        userRoles.delete(held.get());
+        endSessionsAfterRoleChange(userId);
+    }
+
+    /** Refuses to leave the platform without an active SYSTEM_ADMIN, if {@code userId} is one now. */
+    private void refuseLastSystemAdmin(UUID userId) {
+        roles.findByCode(Roles.SYSTEM_ADMIN).ifPresent(admin -> {
+            if (userRoles.findByUserIdAndRoleId(userId, admin.getId()).isPresent()
+                    && userRoles.countOtherActiveHolders(admin.getId(), userId) == 0) {
+                throw new BusinessException(ErrorCode.LAST_SYSTEM_ADMIN,
+                        "User %s is the last active System Admin".formatted(userId));
+            }
         });
     }
 
@@ -361,13 +433,329 @@ class IdentityServiceImpl implements IdentityService {
         sessions.revokeLive(userId, null, clock.instant(), SessionEndReason.ROLE_CHANGED);
     }
 
+    // ---- single-permission edits and custom roles (SCRUM-455) -------------------------------
+
+    @Override
+    @Auditable(action = AuditAction.GRANT, resourceType = "role", resourceId = "#roleCode")
+    public RoleMatrixView grantPermission(String roleCode, String permission) {
+        return editOne(roleCode, permission, true);
+    }
+
+    @Override
+    @Auditable(action = AuditAction.REVOKE, resourceType = "role", resourceId = "#roleCode")
+    public RoleMatrixView revokePermission(String roleCode, String permission) {
+        return editOne(roleCode, permission, false);
+    }
+
+    /**
+     * One tick or untick of the matrix. The same lock, version move and lockout guard as a full
+     * save, without asking for the version the editor loaded: adding or removing one permission is
+     * idempotent, so there is nothing of someone else's to overwrite.
+     */
+    private RoleMatrixView editOne(String roleCode, String permission, boolean grant) {
+        RoleJpaEntity role = findRoleByCode(roleCode);
+        if (!isEditable(role)) {
+            throw new BusinessException(ErrorCode.ROLE_NOT_EDITABLE,
+                    "The permissions of role " + role.getCode() + " are managed by migrations");
+        }
+        Map.Entry<PermissionCode, UUID> target =
+                resolvePermissionIds(List.of(permission)).entrySet().iterator().next();
+        if (grant) {
+            guard.requireHolds(List.of(target.getKey()));
+        }
+        rolePermissions.lockMatrixEdits(MATRIX_EDIT_LOCK);
+        Optional<RolePermissionJpaEntity> current =
+                rolePermissions.findByRoleIdAndPermissionId(role.getId(), target.getValue());
+        if (grant == current.isPresent()) {
+            return roleMatrix(role.getCode());
+        }
+        long version = role.getVersion();
+        if (roles.advanceVersion(role.getId(), version, clock.instant(), actor()) == 0) {
+            throw new BusinessException(ErrorCode.ROLE_PERMISSIONS_CHANGED,
+                    "Role %s changed while it was being edited".formatted(role.getCode()));
+        }
+        if (grant) {
+            rolePermissions.save(new RolePermissionJpaEntity(Identifiers.newId(), role.getId(), target.getValue()));
+        } else {
+            List<RolePermissionJpaEntity> held = rolePermissions.findByRoleId(role.getId());
+            Set<UUID> wanted = held.stream().map(RolePermissionJpaEntity::getPermissionId)
+                    .filter(id -> !id.equals(target.getValue()))
+                    .collect(Collectors.toSet());
+            refuseLockout(role, held, wanted);
+            rolePermissions.delete(current.get());
+        }
+        long newVersion = version + 1;
+        afterCommit(() -> authorizationCache.publishVersion(role.getCode(), newVersion));
+        return matrixOf(role, newVersion, grantedPermissionsOf(role.getId()));
+    }
+
+    @Override
+    @Auditable(action = AuditAction.CREATE, resourceType = "role", resourceId = "#command.code()")
+    public RoleSummary createRole(CreateRoleCommand command) {
+        String code = command.code().trim().toUpperCase(Locale.ROOT);
+        if (roles.existsByCode(code)) {
+            throw new BusinessException(ErrorCode.ROLE_CODE_ALREADY_EXISTS, "Role " + code + " already exists");
+        }
+        Set<UUID> copied = new LinkedHashSet<>();
+        if (command.copyPermissionsFrom() != null && !command.copyPermissionsFrom().isBlank()) {
+            RoleJpaEntity source = findRoleByCode(command.copyPermissionsFrom().trim());
+            guard.requireHolds(grantedPermissionsOf(source.getId()));
+            rolePermissions.findByRoleId(source.getId()).forEach(row -> copied.add(row.getPermissionId()));
+        }
+        RoleJpaEntity role = roles.save(new RoleJpaEntity(Identifiers.newId(), code, command.name().trim(),
+                blankToNull(command.description()), false));
+        rolePermissions.saveAll(copied.stream()
+                .map(permissionId -> new RolePermissionJpaEntity(Identifiers.newId(), role.getId(), permissionId))
+                .toList());
+        return summaryOf(role, 0);
+    }
+
+    @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "role", resourceId = "#command.code()")
+    public RoleSummary updateRole(UpdateRoleCommand command) {
+        RoleJpaEntity role = findRoleByCode(command.code());
+        requireCustom(role);
+        if (role.getVersion() != command.expectedVersion()) {
+            throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK,
+                    "Role %s is no longer at version %d".formatted(role.getCode(), command.expectedVersion()));
+        }
+        role.rename(command.name().trim(), blankToNull(command.description()));
+        RoleJpaEntity saved = roles.saveAndFlush(role);
+        // The rename moved the row's version, which is also the key of its cached grants.
+        long version = saved.getVersion();
+        afterCommit(() -> authorizationCache.publishVersion(saved.getCode(), version));
+        return summaryOf(saved, userRoles.countByRoleId(saved.getId()));
+    }
+
+    @Override
+    @Auditable(action = AuditAction.DELETE, resourceType = "role", resourceId = "#roleCode")
+    public void deleteRole(String roleCode) {
+        RoleJpaEntity role = findRoleByCode(roleCode);
+        requireCustom(role);
+        long holders = userRoles.countByRoleId(role.getId());
+        if (holders > 0) {
+            throw new BusinessException(ErrorCode.ROLE_IN_USE,
+                    "Role %s is held by %d account(s)".formatted(role.getCode(), holders));
+        }
+        rolePermissions.lockMatrixEdits(MATRIX_EDIT_LOCK);
+        List<RolePermissionJpaEntity> held = rolePermissions.findByRoleId(role.getId());
+        refuseLockout(role, held, Set.of());
+        rolePermissions.deleteAll(held);
+        roles.delete(role);
+    }
+
+    private static void requireCustom(RoleJpaEntity role) {
+        if (role.isSystem()) {
+            throw new BusinessException(ErrorCode.SYSTEM_ROLE_IMMUTABLE, "Role " + role.getCode() + " is a system role");
+        }
+    }
+
+    // ---- staff user management (SCRUM-454) ------------------------------------------------
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<StaffUser> listUsers(ListUsersQuery query) {
+        UserStatus status = parseStatus(query.status());
+        UUID roleId = query.roleCode() == null || query.roleCode().isBlank()
+                ? null : findRoleByCode(query.roleCode().trim()).getId();
+        UUID excluded = query.includeCustomers()
+                ? null : roles.findByCode(Roles.CUSTOMER).map(RoleJpaEntity::getId).orElse(null);
+        String pattern = query.q() == null || query.q().isBlank()
+                ? null : "%" + query.q().trim().toLowerCase(Locale.ROOT) + "%";
+        Page<UserJpaEntity> page = users.search(pattern, status, roleId, excluded,
+                Pages.of(query.page(), query.size(), USER_SORT.parse(query.sort())));
+        Map<UUID, List<String>> rolesByUser = roleCodesOf(page.getContent().stream().map(UserJpaEntity::getId).toList());
+        return Pages.toResponse(page, user -> staffUserOf(user, rolesByUser.getOrDefault(user.getId(), List.of())));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public StaffUser user(UUID userId) {
+        return staffUserOf(requireAccount(userId), codesOf(rolesOf(new UserId(userId))));
+    }
+
+    @Override
+    @Auditable(action = AuditAction.CREATE, resourceType = "user", resourceId = "#result?.user()?.userId()")
+    public CreatedStaffUser createStaffUser(CreateStaffUserCommand command) {
+        String username = command.username().trim();
+        String email = command.email().trim().toLowerCase(Locale.ROOT);
+        if (users.findByUsernameIgnoreCase(username).isPresent()) {
+            throw new BusinessException(ErrorCode.USERNAME_ALREADY_EXISTS, "Username " + username + " is taken");
+        }
+        if (users.findByEmailIgnoreCase(email).isPresent()) {
+            throw new BusinessException(ErrorCode.USER_EMAIL_ALREADY_EXISTS, "E-mail " + email + " is taken");
+        }
+        List<RoleJpaEntity> granted = new LinkedHashSet<>(command.roleCodes()).stream()
+                .map(code -> findRoleByCode(code.trim()))
+                .toList();
+        if (granted.stream().anyMatch(role -> Roles.CUSTOMER.equals(role.getCode()))) {
+            throw new BusinessException(ErrorCode.ROLE_NOT_ASSIGNABLE, "A staff account cannot hold CUSTOMER");
+        }
+        guard.requireHoldsRoles(codesOf(granted));
+
+        String temporary = null;
+        String password = command.password();
+        if (password == null || password.isBlank()) {
+            temporary = TemporaryPasswords.generate();
+            password = temporary;
+        } else {
+            requireStrong(password);
+        }
+        User saved = userRepository.save(User.createStaff(Identifiers.newId(), username, email,
+                passwordEncoder.encode(password), blankToNull(command.fullName()), true));
+        UUID userId = saved.id().value();
+        userRoles.saveAll(granted.stream()
+                .map(role -> new UserRoleJpaEntity(Identifiers.newId(), userId, role.getId()))
+                .toList());
+        return new CreatedStaffUser(user(userId), temporary);
+    }
+
+    @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "user", resourceId = "#command.userId()")
+    public StaffUser updateUser(UpdateUserCommand command) {
+        UUID userId = command.userId();
+        UserJpaEntity account = requireStaffAccount(userId);
+        if (account.getVersion() != command.expectedVersion()) {
+            throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK,
+                    "User %s is no longer at version %d".formatted(userId, command.expectedVersion()));
+        }
+        if (command.email() != null) {
+            String email = command.email().trim().toLowerCase(Locale.ROOT);
+            users.findByEmailIgnoreCase(email)
+                    .filter(other -> !other.getId().equals(userId))
+                    .ifPresent(other -> {
+                        throw new BusinessException(ErrorCode.USER_EMAIL_ALREADY_EXISTS, "E-mail " + email + " is taken");
+                    });
+        }
+        User user = loadUser(userId);
+        user.updateProfile(command.email(), command.fullName());
+        userRepository.save(user);
+        return user(userId);
+    }
+
+    @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "user", resourceId = "#userId")
+    public StaffUser changeUserStatus(UUID userId, UserStatusChange change) {
+        requireStaffAccount(userId);
+        User user = loadUser(userId);
+        boolean takesAccess = change == UserStatusChange.LOCK || change == UserStatusChange.DISABLE;
+        if (takesAccess && user.status() == com.stockflow.identity.internal.domain.UserStatus.ACTIVE) {
+            refuseLastSystemAdmin(userId);
+        }
+        switch (change) {
+            case LOCK -> user.lock();
+            case UNLOCK -> user.unlock();
+            case DISABLE -> user.disable();
+            case ENABLE -> user.enable();
+        }
+        userRepository.save(user);
+        if (change == UserStatusChange.LOCK) {
+            sessions.revokeLive(userId, null, clock.instant(), SessionEndReason.ACCOUNT_LOCKED);
+        } else if (change == UserStatusChange.DISABLE) {
+            sessions.revokeLive(userId, null, clock.instant(), SessionEndReason.ACCOUNT_DISABLED);
+        }
+        return user(userId);
+    }
+
+    @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "user", resourceId = "#userId")
+    public PasswordReset resetPassword(UUID userId, String newPassword) {
+        requireStaffAccount(userId);
+        String temporary = null;
+        String password = newPassword;
+        if (password == null || password.isBlank()) {
+            temporary = TemporaryPasswords.generate();
+            password = temporary;
+        } else {
+            requireStrong(password);
+        }
+        User user = loadUser(userId);
+        user.resetPassword(passwordEncoder.encode(password));
+        userRepository.save(user);
+        int ended = sessions.revokeLive(userId, null, clock.instant(), SessionEndReason.PASSWORD_RESET);
+        return new PasswordReset(temporary, ended);
+    }
+
+    /**
+     * The account, if it is a staff account the caller may manage. Customer accounts are left to
+     * the customer screens: their sign-in name is their e-mail, and a staff tool editing one would
+     * break their login.
+     */
+    private UserJpaEntity requireStaffAccount(UUID userId) {
+        UserJpaEntity account = requireAccount(userId);
+        List<String> held = codesOf(rolesOf(new UserId(userId)));
+        if (held.contains(Roles.CUSTOMER)) {
+            throw new BusinessException(ErrorCode.STAFF_ACCOUNT_REQUIRED,
+                    "Account %s is a customer account".formatted(account.getUsername()));
+        }
+        guard.requireCanManage(userId, held);
+        return account;
+    }
+
+    private UserJpaEntity requireAccount(UUID userId) {
+        return users.findById(userId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.USER_NOT_FOUND, "No user with id " + userId));
+    }
+
+    private User loadUser(UUID userId) {
+        return userRepository.findById(new UserId(userId))
+                .orElseThrow(() -> new BusinessException(ErrorCode.USER_NOT_FOUND, "No user with id " + userId));
+    }
+
+    private static void requireStrong(String password) {
+        PasswordPolicy.violation(password).ifPresent(reason -> {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, reason);
+        });
+    }
+
+    private static UserStatus parseStatus(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            return UserStatus.valueOf(raw.trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException unknown) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "status must be one of " + java.util.Arrays.toString(UserStatus.values()));
+        }
+    }
+
+    private Map<UUID, List<String>> roleCodesOf(List<UUID> userIds) {
+        if (userIds.isEmpty()) {
+            return Map.of();
+        }
+        List<UserRoleJpaEntity> rows = userRoles.findByUserIdIn(userIds);
+        Map<UUID, String> codeById = new java.util.HashMap<>();
+        roles.findAllById(rows.stream().map(UserRoleJpaEntity::getRoleId).distinct().toList())
+                .forEach(role -> codeById.put(role.getId(), role.getCode()));
+        Map<UUID, List<String>> byUser = new java.util.HashMap<>();
+        rows.forEach(row -> byUser.computeIfAbsent(row.getUserId(), id -> new java.util.ArrayList<>())
+                .add(codeById.get(row.getRoleId())));
+        byUser.values().forEach(codes -> codes.sort(null));
+        return byUser;
+    }
+
+    private static List<String> codesOf(List<RoleJpaEntity> held) {
+        return held.stream().map(RoleJpaEntity::getCode).sorted().toList();
+    }
+
+    private static StaffUser staffUserOf(UserJpaEntity user, List<String> roleCodes) {
+        return new StaffUser(user.getId(), user.getUsername(), user.getEmail(), user.getFullName(),
+                user.getStatus().name(), roleCodes, user.isMustChangePassword(), user.getLockedUntil(),
+                user.getLastLoginAt(), user.getCreatedAt(), user.getCreatedBy(), user.getVersion());
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
+    }
+
     @Override
     @Transactional(readOnly = true)
     public UserProfile profile(UUID userId) {
         User user = userRepository.findById(new UserId(userId))
                 .orElseThrow(() -> new BusinessException(ErrorCode.USER_NOT_FOUND, "No user with id " + userId));
         return new UserProfile(user.id().value(), user.username(), user.email(), user.fullName(),
-                user.status().name(), user.lastLoginAt());
+                user.status().name(), user.lastLoginAt(), user.mustChangePassword());
     }
 
     @Override
@@ -401,11 +789,17 @@ class IdentityServiceImpl implements IdentityService {
         Optional<User> found = userRepository.findByUsername(loginName);
         String hashToCheck = found.map(User::passwordHash).orElse(dummyPasswordHash);
         boolean passwordMatches = passwordEncoder.matches(command.password(), hashToCheck);
-        if (found.isEmpty() || !passwordMatches) {
+        if (found.isEmpty()) {
             throw new BusinessException(ErrorCode.UNAUTHORIZED, "Invalid username or password");
         }
-
         User user = found.get();
+        if (!passwordMatches) {
+            // During a lock the count stays where it is (User#recordFailedSignIn), so nobody can keep
+            // an account locked for good; and the answer stays the plain one, so a locked account is
+            // indistinguishable from a wrong password to someone who does not know the password.
+            loginAttempts.recordFailure(user.id());
+            throw new BusinessException(ErrorCode.UNAUTHORIZED, "Invalid username or password");
+        }
         user.signIn(clock.instant());
         User saved = userRepository.save(user);
 
@@ -533,12 +927,6 @@ class IdentityServiceImpl implements IdentityService {
                 .map(UserRoleJpaEntity::getRoleId)
                 .toList();
         return roles.findAllById(roleIds);
-    }
-
-    private void requireUser(UUID userId) {
-        if (!userRepository.existsById(new UserId(userId))) {
-            throw new BusinessException(ErrorCode.USER_NOT_FOUND, "No user with id " + userId);
-        }
     }
 
     private RoleJpaEntity findRoleByCode(String code) {

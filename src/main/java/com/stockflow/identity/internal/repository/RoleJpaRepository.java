@@ -16,6 +16,14 @@ public interface RoleJpaRepository extends BaseJpaRepository<RoleJpaEntity> {
 
     Optional<RoleJpaEntity> findByCode(String code);
 
+    boolean existsByCode(String code);
+
+    List<RoleJpaEntity> findByCodeIn(java.util.Collection<String> codes);
+
+    /** Holders per role, for the role list: {@code [roleId, count]}. */
+    @Query("select ur.roleId, count(ur) from UserRoleJpaEntity ur group by ur.roleId")
+    List<Object[]> countHoldersPerRole();
+
     List<RoleJpaEntity> findAllByOrderByCodeAsc();
 
     /** Every role's current version, for the authorisation cache's version pointer (ADR-0008). */

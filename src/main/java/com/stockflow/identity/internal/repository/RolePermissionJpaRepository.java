@@ -13,6 +13,8 @@ public interface RolePermissionJpaRepository extends BaseJpaRepository<RolePermi
 
     List<RolePermissionJpaEntity> findByRoleId(UUID roleId);
 
+    java.util.Optional<RolePermissionJpaEntity> findByRoleIdAndPermissionId(UUID roleId, UUID permissionId);
+
     /** Whether any role other than {@code roleId} holds the permission — the lockout check. */
     boolean existsByPermissionIdAndRoleIdNot(UUID permissionId, UUID roleId);
 
