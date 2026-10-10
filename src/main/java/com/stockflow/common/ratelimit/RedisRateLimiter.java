@@ -1,5 +1,6 @@
 package com.stockflow.common.ratelimit;
 
+import com.stockflow.common.logging.LogSafe;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -133,7 +134,7 @@ class RedisRateLimiter implements RateLimiter {
             // Redis unreachable, script error, connection pool exhausted. See Decision.failOpen()
             // for why this allows the request rather than blocking it.
             log.warn("Rate limiter unavailable for bucket {} - allowing the request: {}",
-                    bucketKey, ex.toString());
+                    LogSafe.text(bucketKey), LogSafe.text(ex));
             return Decision.failOpen();
         }
     }

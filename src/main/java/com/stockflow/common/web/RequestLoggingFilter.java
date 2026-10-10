@@ -1,5 +1,6 @@
 package com.stockflow.common.web;
 
+import com.stockflow.common.logging.LogSafe;
 import com.stockflow.common.security.CurrentUserProvider;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -107,8 +108,8 @@ public final class RequestLoggingFilter extends OncePerRequestFilter {
                 .orElse("-");
 
         String message = "{} {}{} -> {} in {}ms [user={}]";
-        Object[] args = {request.getMethod(), request.getRequestURI(),
-                safeQuery(request), status, millis, user};
+        Object[] args = {LogSafe.text(request.getMethod()), LogSafe.text(request.getRequestURI()),
+                LogSafe.text(safeQuery(request)), status, millis, LogSafe.text(user)};
 
         if (status >= 500) {
             log.error(message, args);

@@ -1,5 +1,6 @@
 package com.stockflow.common.security;
 
+import com.stockflow.common.logging.LogSafe;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.error.ErrorCode;
@@ -44,7 +45,8 @@ public class ApiAccessDeniedHandler implements AccessDeniedHandler {
     public void handle(HttpServletRequest request, HttpServletResponse response,
                        AccessDeniedException accessDeniedException) throws IOException {
         log.warn("AUTHORISATION DENIED by the filter chain: {} {} - {}",
-                request.getMethod(), request.getRequestURI(), accessDeniedException.getMessage());
+                LogSafe.text(request.getMethod()), LogSafe.text(request.getRequestURI()),
+                LogSafe.text(accessDeniedException.getMessage()));
 
         response.setStatus(ErrorCode.FORBIDDEN.httpStatus());
         response.setContentType("application/json;charset=UTF-8");
