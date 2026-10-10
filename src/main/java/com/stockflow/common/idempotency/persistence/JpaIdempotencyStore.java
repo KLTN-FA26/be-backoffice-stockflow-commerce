@@ -1,5 +1,6 @@
 package com.stockflow.common.idempotency.persistence;
 
+import com.stockflow.common.logging.LogSafe;
 import com.stockflow.common.idempotency.IdempotencyRecord;
 import com.stockflow.common.idempotency.IdempotencyStore;
 import org.slf4j.Logger;
@@ -64,7 +65,7 @@ class JpaIdempotencyStore implements IdempotencyStore {
             } catch (DataIntegrityViolationException secondConflict) {
                 // Somebody else claimed it in the microseconds between the delete and this insert.
                 // Their claim is valid; report it rather than retrying indefinitely.
-                log.debug("Idempotency key {} was re-claimed concurrently", key);
+                log.debug("Idempotency key {} was re-claimed concurrently", LogSafe.text(key));
                 return transactions.load(key, caller);
             }
         }

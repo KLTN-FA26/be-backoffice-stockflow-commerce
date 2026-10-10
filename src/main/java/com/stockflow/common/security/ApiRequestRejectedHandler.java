@@ -1,5 +1,6 @@
 package com.stockflow.common.security;
 
+import com.stockflow.common.logging.LogSafe;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.error.ErrorCode;
@@ -53,7 +54,8 @@ public class ApiRequestRejectedHandler implements RequestRejectedHandler {
     public void handle(HttpServletRequest request, HttpServletResponse response,
                        RequestRejectedException rejected) throws IOException {
         log.warn("Rejected request {} {}: {}",
-                request.getMethod(), request.getRequestURI(), rejected.getMessage());
+                LogSafe.text(request.getMethod()), LogSafe.text(request.getRequestURI()),
+                LogSafe.text(rejected.getMessage()));
         response.setStatus(ErrorCode.REQUEST_REJECTED.httpStatus());
         response.setContentType("application/json;charset=UTF-8");
         response.getWriter().write(objectMapper.writeValueAsString(

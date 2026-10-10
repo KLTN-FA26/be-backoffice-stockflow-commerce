@@ -1,5 +1,6 @@
 package com.stockflow.inventory.internal.service;
 
+import com.stockflow.common.logging.LogSafe;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.InventoryItemPolicy;
 import com.stockflow.inventory.api.MoveStockCommand;
@@ -494,7 +495,7 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
         try {
             return ReleaseReason.valueOf(reason.trim().toUpperCase());
         } catch (IllegalArgumentException ex) {
-            log.warn("Unknown release reason '{}', recording as MANUAL_OVERRIDE", reason);
+            log.warn("Unknown release reason '{}', recording as MANUAL_OVERRIDE", LogSafe.text(reason));
             return ReleaseReason.MANUAL_OVERRIDE;
         }
     }
