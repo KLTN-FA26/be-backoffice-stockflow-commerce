@@ -1,5 +1,6 @@
 package com.stockflow.order.internal.service;
 
+import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
@@ -46,15 +47,18 @@ class OrderReleaseService implements OrderReleases {
     private final OrderEventPublisher events;
     private final OrderService orders;
     private final Clock clock;
+    private final InventoryService inventory;
 
     OrderReleaseService(OrderRepository repository, ProductionRecords production, WarehouseDirectory warehouses,
-                        OrderEventPublisher events, OrderService orders, Clock clock) {
+                        OrderEventPublisher events, OrderService orders, Clock clock,
+                        InventoryService inventory) {
         this.repository = repository;
         this.production = production;
         this.warehouses = warehouses;
         this.events = events;
         this.orders = orders;
         this.clock = clock;
+        this.inventory = inventory;
     }
 
     @Override
@@ -84,6 +88,9 @@ class OrderReleaseService implements OrderReleases {
         }
 
         order.release(warehouseId, warehouseCode, releasedBy, clock.instant(), approvedSamples);
+        // A deposit order leaves PENDING_PAYMENT here (BR-PRD-09): from now on its holds must not
+        // expire (kltn-docs 14 BR-07, SCRUM-465). Idempotent for an order already paid and pinned.
+        inventory.pinReservations(orderId);
         repository.save(order);
         events.publishEventsOf(order);
         log.info("Released order {} from {}: {} ({} print line(s))", order.orderNumber(), warehouseCode,

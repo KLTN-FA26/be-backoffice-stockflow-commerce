@@ -407,16 +407,47 @@ class OrderServiceImpl implements OrderService {
         events.publishEventsOf(order);
     }
 
-    /** Move an order to PAID. Called by {@code PaymentEventListener}, not exposed on the port. */
+    /**
+     * Move an order to PAID and pin its holds. Called by {@code PaymentEventListener}, not exposed on
+     * the port.
+     *
+     * <p>Pinning joins this transaction (kltn-docs 14 BR-07, SCRUM-465): a paid order's stock no
+     * longer expires, and committing the status and the pins together leaves the expiry sweep no
+     * moment in which the order is paid but its holds can still lapse.</p>
+     *
+     * <p>A payment for an order already cancelled — its holds expired before the money arrived — is
+     * not an error to retry forever: it is logged for the refund flow (SCRUM-460) and left alone.</p>
+     */
     public void markPaid(UUID orderId) {
         Order order = repository.findByIdForUpdate(new OrderId(orderId))
                 .orElseThrow(() -> new IllegalArgumentException("No order with id " + orderId));
         if (order.status() == OrderStatus.PAID) {
             return; // Redelivered event; nothing to do.
         }
+        if (order.status() == OrderStatus.CANCELLED) {
+            log.warn("Payment captured for order {}, which is already cancelled ({}); it needs a refund",
+                    order.orderNumber(), order.cancellationReason());
+            return;
+        }
         order.markPaid();
+        inventory.pinReservations(orderId);
         repository.save(order);
         events.publishEventsOf(order);
+    }
+
+    /**
+     * A hold of the order expired before it was paid: the order is cancelled and its other holds
+     * released (kltn-docs 14 BR-07, 15 step 4). Called by {@code InventoryEventListener} for every
+     * expired hold — the first one cancels, the rest find the order already cancelled. An order that
+     * is no longer waiting for payment is left alone: its holds are pinned and cannot expire, so the
+     * event can only be a late redelivery.
+     */
+    public void cancelAfterHoldExpired(UUID orderId) {
+        Optional<Order> found = repository.findByIdForUpdate(new OrderId(orderId));
+        if (found.isEmpty() || found.get().status() != OrderStatus.PENDING_PAYMENT) {
+            return;
+        }
+        cancelLoaded(found.get(), "RESERVATION_EXPIRED: not paid before the stock hold ran out");
     }
 
     @Override

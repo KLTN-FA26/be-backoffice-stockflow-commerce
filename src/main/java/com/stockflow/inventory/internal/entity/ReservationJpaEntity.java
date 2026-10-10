@@ -73,7 +73,8 @@ public class ReservationJpaEntity {
     @Column(name = "reserved_at", nullable = false, updatable = false)
     private Instant reservedAt;
 
-    @Column(name = "expires_at", nullable = false)
+    /** Null once pinned: the order is no longer waiting for payment (SCRUM-465). */
+    @Column(name = "expires_at")
     private Instant expiresAt;
 
     @Enumerated(EnumType.STRING)

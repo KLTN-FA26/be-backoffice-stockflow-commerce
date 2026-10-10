@@ -80,6 +80,17 @@ public interface InventoryService {
     void release(UUID reservationId, String reason);
 
     /**
+     * Stop the holds of an order from expiring: the order no longer waits for payment (paid, or
+     * released on its deposit), so its stock stays held until it is consumed or the order releases
+     * it (kltn-docs 14 BR-07, SCRUM-465). Joins the caller's transaction, like {@link #reserve}, so
+     * the order's new status and the pinned holds commit together and the expiry sweep cannot slip
+     * in between. Idempotent.
+     *
+     * @return how many holds were pinned by this call
+     */
+    int pinReservations(UUID orderId);
+
+    /**
      * Move unreserved stock between two locations, writing one ledger line (SCRUM-424). Joins the
      * caller's transaction, like {@link #reserve}. Locks the source and destination rows in id
      * order, as {@code reserve} does, so two moves crossing the same pair cannot deadlock.
