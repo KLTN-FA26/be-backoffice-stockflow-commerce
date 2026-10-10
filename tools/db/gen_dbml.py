@@ -26,9 +26,9 @@ def q(sql):
                         "-At", "-c", sql], capture_output=True, text=True, check=True)
     return r.stdout.strip()
 
-SCHEMAS = ["product", "inventory", "warehouse", "procurement", "ordering", "customer", "payment",
+SCHEMAS = ["product", "inventory", "warehouse", "procurement", "production", "ordering", "customer", "payment",
            "design", "fulfillment", "catalog", "chat", "notification", "reporting", "identity", "platform", "public"]
-COLORS = {"product": "#2E86AB", "inventory": "#3E7C4A", "warehouse": "#8E6C3A", "procurement": "#7D5BA6",
+COLORS = {"product": "#2E86AB", "inventory": "#3E7C4A", "warehouse": "#8E6C3A", "procurement": "#7D5BA6", "production": "#E67E22",
           "ordering": "#C0392B", "customer": "#D68910", "payment": "#B8860B", "design": "#AA4A9E",
           "fulfillment": "#2C7873", "catalog": "#1B998B", "chat": "#4C93A8", "notification": "#A6763F",
           "reporting": "#607D8B", "identity": "#5A6ACF", "platform": "#616161", "public": "#9E9E9E"}

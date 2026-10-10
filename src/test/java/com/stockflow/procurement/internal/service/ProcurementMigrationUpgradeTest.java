@@ -221,12 +221,15 @@ values ('00000000-0000-0000-0000-000000000002','PO-LEGACY',
                     versions.next();
                     staffVersion = versions.getLong(1);
                 }
+                // Up to #36's own migrations only: later ones (e.g. the production grants of SCRUM-422)
+                // advance the same roles again, and this test counts what #36 did to them.
                 var upgrade =
                         Flyway.configure()
                                 .dataSource(
                                         postgres.getJdbcUrl(),
                                         postgres.getUsername(),
                                         postgres.getPassword())
+                                .target("20260930000500")
                                 .load();
                 assertThat(upgrade.migrate().migrations.stream().map(m -> m.version).toList())
                         .contains(
