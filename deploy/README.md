@@ -251,8 +251,10 @@ The MinIO console (port 9001) is not published; tunnel to the container's addres
 (`docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' stockflow-minio-1`),
 which changes whenever the container is recreated.
 
-**Backups** - `crontab -e` as `deploy`, and copy `backups/` off the machine (a backup on the same
-disk is not a backup). MinIO's files live in the `stockflow_minio-data` volume; back that up too if
+**Backups** - `scripts/deploy.sh` dumps the database to `backups/pre-deploy-*.dump` before every
+deploy of a new tag and refuses to deploy if the dump fails (the last 10 are kept): a migration
+cannot be rolled back, only restored over. Add the nightly dump below with `crontab -e` as `deploy`,
+and copy `backups/` off the machine (a backup on the same disk is not a backup). MinIO's files live in the `stockflow_minio-data` volume; back that up too if
 the uploaded files matter.
 
 ```cron
