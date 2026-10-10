@@ -13,6 +13,9 @@ public final class OrderResources {
      */
     public static final String ORDER_CANCELLATIONS = "sales-order-cancellations";
 
+    /** Orders over their customer's credit limit, waiting for whoever approves credit (SCRUM-427). */
+    public static final String CREDIT_HOLDS = "sales-order-credit-holds";
+
     private OrderResources() {
     }
 }

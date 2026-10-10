@@ -24,6 +24,11 @@ package com.stockflow.order.api;
  * paid) is derived from it (kltn-docs 15 §5.2). There was a {@code PAID} status until SCRUM-460;
  * rows in it became {@code CONFIRMED}.</p>
  *
+ * <p>A credit order skips PENDING_PAYMENT (kltn-docs 17 §5, 15 §4.3; SCRUM-427): within the
+ * customer's limit it is CONFIRMED when placed, over it ON_HOLD until whoever approves credit
+ * confirms it or refuses — then it is cancelled, or switched to prepaid or deposit and waits for
+ * payment like any other order.</p>
+ *
  * <p>Release (SCRUM-423, 03 §9) is the Order Coordinator's step: it fixes the warehouse and, for an
  * order with print lines, starts production. An order with print lines reaches fulfilment only through
  * READY_TO_FULFILL, once production has delivered every line (BR-PRD-06).</p>
@@ -96,7 +101,8 @@ public enum OrderStatus {
      */
     public boolean canTransitionTo(OrderStatus target) {
         return switch (this) {
-            case DRAFT -> target == PENDING_PAYMENT || target == CANCELLED;
+            // CONFIRMED / ON_HOLD: a credit order, within or over its limit (SCRUM-427).
+            case DRAFT -> target == PENDING_PAYMENT || target == CONFIRMED || target == ON_HOLD || target == CANCELLED;
             // kltn-docs 15 BR-02: a deposit order is confirmed once its deposit is in; nothing leaves
             // PENDING_PAYMENT for production or the warehouse directly.
             case PENDING_PAYMENT -> target == CONFIRMED || target == CANCELLED;
@@ -106,7 +112,10 @@ public enum OrderStatus {
             case IN_PRODUCTION -> target == READY_TO_FULFILL || target == ON_HOLD || target == CANCELLED;
             case READY_TO_FULFILL -> target == IN_FULFILMENT || target == ON_HOLD || target == CANCELLED;
             case IN_FULFILMENT -> target == SHIPPED || target == ON_HOLD || target == CANCELLED;
-            case ON_HOLD -> target == IN_FULFILMENT || target == CANCELLED;
+            // CONFIRMED: credit approved; PENDING_PAYMENT: credit refused, switched to prepaid or deposit
+            // (kltn-docs 15 §4.3). IN_FULFILMENT: a design hold resolved.
+            case ON_HOLD -> target == CONFIRMED || target == PENDING_PAYMENT || target == IN_FULFILMENT
+                    || target == CANCELLED;
             case SHIPPED -> target == DELIVERED;
             case DELIVERED -> target == COMPLETED || target == RETURNED;
             case COMPLETED, CANCELLED, RETURNED -> false;

@@ -66,6 +66,7 @@ public final class Order extends AggregateRoot {
     private Instant depositReceivedAt;
     private BigDecimal paidAmount = BigDecimal.ZERO;
     private Instant paidInFullAt;
+    private Integer creditTermDays;
     private UUID warehouseId;
     private Instant releasedAt;
     private UUID releasedBy;
@@ -201,6 +202,12 @@ public final class Order extends AggregateRoot {
         // would roll back anyway: a caller that catches this exception - a test, a batch importer -
         // would otherwise hold an aggregate that says PENDING_PAYMENT while nothing is reserved,
         // which is precisely the state this method exists to make impossible.
+        requireEveryLineReserved();
+        transitionTo(OrderStatus.PENDING_PAYMENT);
+        registerPlaced();
+    }
+
+    private void requireEveryLineReserved() {
         List<OrderLine> unreserved = lines.stream()
                 .filter(line -> !line.isReserved())
                 .toList();
@@ -209,7 +216,9 @@ public final class Order extends AggregateRoot {
                     "Cannot submit order %s: %d line(s) hold no stock reservation"
                             .formatted(orderNumber, unreserved.size()));
         }
-        transitionTo(OrderStatus.PENDING_PAYMENT);
+    }
+
+    private void registerPlaced() {
         registerEvent(new OrderEvent.Placed(new OrderPlaced(
                 id.value(),
                 customerId,
@@ -224,35 +233,49 @@ public final class Order extends AggregateRoot {
                 total().currency().getCurrencyCode())));
     }
 
+    /** {@link #applyTerms(PaymentTerm, BigDecimal, Integer)} for prepaid and deposit orders. */
+    public void applyTerms(PaymentTerm term, BigDecimal depositPercent) {
+        applyTerms(term, depositPercent, null);
+    }
+
     /**
      * The payment terms the order is sold on, fixed before it is submitted (kltn-docs 15 §3: the
-     * term of the order, and the deposit percentage of the customer's terms or the quote).
+     * term of the order, and the deposit percentage of the customer's terms or the quote). Whether
+     * the customer may use the term (15 BR-01) is the caller's to check — it needs their terms.
      *
-     * <p>A deposit is {@code depositPercent} of the total, rounded to the currency's whole unit. CREDIT
-     * needs the customer's credit limit, which arrives with SCRUM-427; until then it is refused.</p>
+     * <p>A deposit is {@code depositPercent} of the total, rounded to the currency's whole unit. A
+     * credit order keeps {@code creditTermDays}, the days it has to be paid after delivery (SCRUM-427).</p>
      */
-    public void applyTerms(PaymentTerm term, BigDecimal depositPercent) {
+    public void applyTerms(PaymentTerm term, BigDecimal depositPercent, Integer creditTermDays) {
         if (status != OrderStatus.DRAFT) {
             throw new IllegalStateException("Terms are fixed when the order is placed");
         }
+        assignTerms(term, depositPercent, creditTermDays);
+    }
+
+    /** Validates everything first, then assigns: a refused change leaves the order as it was. */
+    private void assignTerms(PaymentTerm term, BigDecimal depositPercent, Integer creditTermDays) {
         PaymentTerm chosen = term == null ? PaymentTerm.PREPAID : term;
-        if (chosen == PaymentTerm.CREDIT) {
-            throw new BusinessException(ErrorCode.PAYMENT_TERM_NOT_ALLOWED,
-                    "Credit orders need the customer's credit limit (SCRUM-427)");
+        if ((chosen == PaymentTerm.CREDIT) != (creditTermDays != null)) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Only a credit order has days to pay");
         }
+        BigDecimal deposit = null;
         if (chosen == PaymentTerm.DEPOSIT) {
             if (depositPercent == null || depositPercent.signum() <= 0 || depositPercent.compareTo(HUNDRED) >= 0) {
                 throw new BusinessException(ErrorCode.VALIDATION_FAILED,
                         "A deposit order needs a deposit percentage above 0 and below 100");
             }
             Money total = total();
-            this.depositRequired = total.amount().multiply(depositPercent)
+            deposit = total.amount().multiply(depositPercent)
                     .divide(HUNDRED, total.currency().getDefaultFractionDigits(), RoundingMode.HALF_UP);
         } else if (depositPercent != null) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Only a deposit order takes a deposit percentage");
         }
         this.paymentTerm = chosen;
+        this.depositRequired = deposit;
+        this.creditTermDays = creditTermDays;
     }
+
 
     /**
      * Money received for the order, as payment reports it (one call per captured payment; the
@@ -295,6 +318,47 @@ public final class Order extends AggregateRoot {
             transitionTo(OrderStatus.CONFIRMED);
         }
         return cleared;
+    }
+
+    /**
+     * Submit a credit order (kltn-docs 15 §4.3, 17 §5; SCRUM-427): it skips PENDING_PAYMENT and is
+     * CONFIRMED within the customer's limit, or ON_HOLD until whoever approves credit decides.
+     * Whether it is within the limit is the caller's to decide — it needs the exposure.
+     */
+    public void submitOnCredit(boolean withinLimit) {
+        if (paymentTerm != PaymentTerm.CREDIT) {
+            throw new IllegalStateException("Order %s is not a credit order".formatted(orderNumber));
+        }
+        requireEveryLineReserved();
+        transitionTo(withinLimit ? OrderStatus.CONFIRMED : OrderStatus.ON_HOLD);
+        registerPlaced();
+    }
+
+    /** Over the limit, approved by whoever approves credit (15 BR-03): ON_HOLD → CONFIRMED. */
+    public void approveCredit() {
+        requireCreditHold();
+        transitionTo(OrderStatus.CONFIRMED);
+    }
+
+    /**
+     * Over the limit and refused, but the customer pays another way (15 §4.3): the order leaves the
+     * hold for PENDING_PAYMENT on its new terms, like any prepaid or deposit order.
+     */
+    public void switchTermsAfterCreditRefusal(PaymentTerm term, BigDecimal depositPercent) {
+        requireCreditHold();
+        if (term == null || term == PaymentTerm.CREDIT) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Switch to PREPAID or DEPOSIT");
+        }
+        assignTerms(term, depositPercent, null);
+        transitionTo(OrderStatus.PENDING_PAYMENT);
+    }
+
+    private void requireCreditHold() {
+        if (status != OrderStatus.ON_HOLD || paymentTerm != PaymentTerm.CREDIT) {
+            throw new BusinessException(ErrorCode.ORDER_NOT_ON_CREDIT_HOLD,
+                    "Order %s is %s on %s terms, not waiting for a credit decision"
+                            .formatted(orderNumber, status, paymentTerm));
+        }
     }
 
     /** kltn-docs 15 §5.2, derived from the term and the money received. */
@@ -397,6 +461,12 @@ public final class Order extends AggregateRoot {
     /** Rehydration of the money received and how the order was cancelled, from the row. */
     public void restorePaymentAndCancellation(BigDecimal paid, Instant paidInFull, CancellationReasonCode code,
                                               BigDecimal retained) {
+        restorePaymentAndCancellation(paid, paidInFull, code, retained, null);
+    }
+
+    public void restorePaymentAndCancellation(BigDecimal paid, Instant paidInFull, CancellationReasonCode code,
+                                              BigDecimal retained, Integer creditDays) {
+        this.creditTermDays = creditDays;
         this.paidAmount = paid == null ? BigDecimal.ZERO : paid;
         this.paidInFullAt = paidInFull;
         this.cancellationReasonCode = code;
@@ -495,6 +565,7 @@ public final class Order extends AggregateRoot {
     public BigDecimal cancellationRetainedAmount() { return cancellationRetainedAmount; }
     public BigDecimal paidAmount() { return paidAmount; }
     public Instant paidInFullAt() { return paidInFullAt; }
+    public Integer creditTermDays() { return creditTermDays; }
     public PaymentTerm paymentTerm() { return paymentTerm; }
     public java.math.BigDecimal depositRequired() { return depositRequired; }
     public Instant depositReceivedAt() { return depositReceivedAt; }

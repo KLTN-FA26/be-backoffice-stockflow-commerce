@@ -109,6 +109,7 @@ final class OrderWebMapper {
                 summary.payment() == null ? null : summary.payment().depositReceivedAt(),
                 summary.payment() == null ? null : summary.payment().paidInFullAt(),
                 summary.payment() == null ? null : summary.payment().status().name(),
+                summary.payment() == null ? null : summary.payment().creditTermDays(),
                 summary.cancellation() == null ? null : new OrderResponse.Cancellation(
                         summary.cancellation().reasonCode() == null ? null : summary.cancellation().reasonCode().name(),
                         summary.cancellation().reason(), summary.cancellation().retainedAmount()));

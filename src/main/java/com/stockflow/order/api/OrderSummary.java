@@ -54,7 +54,12 @@ public record OrderSummary(
      * @param depositRequired null unless the order is on DEPOSIT terms
      */
     public record Payment(BigDecimal paidAmount, BigDecimal depositRequired, Instant depositReceivedAt,
-                          Instant paidInFullAt, PaymentStatus status) {
+                          Instant paidInFullAt, PaymentStatus status, Integer creditTermDays) {
+
+        public Payment(BigDecimal paidAmount, BigDecimal depositRequired, Instant depositReceivedAt,
+                       Instant paidInFullAt, PaymentStatus status) {
+            this(paidAmount, depositRequired, depositReceivedAt, paidInFullAt, status, null);
+        }
     }
 
     /** Why and on what terms a cancelled order was cancelled; null while it is not. */

@@ -97,6 +97,8 @@ public enum ErrorCode {
 
     /** The new password is the same as the current one. */
     PASSWORD_UNCHANGED("The new password must differ from the current one", 400),
+    /** SCRUM-427: commercial terms that contradict themselves (kltn-docs 18 §3). */
+    CREDIT_PROFILE_INVALID("These commercial terms are inconsistent", 400),
 
     // ---- 409: the request is fine, the current state is not
     PO_COMMUNICATION_NOT_CONFIGURED("Buyer contact and receiving address must be configured before sending", 409),
@@ -141,6 +143,8 @@ public enum ErrorCode {
     ORDER_CANCELLATION_REQUEST_PENDING("A cancellation request for this order is already waiting for a decision", 409),
     ORDER_CANCELLATION_REQUEST_NOT_PENDING("This cancellation request has already been decided", 409),
     PAYMENT_TERM_NOT_ALLOWED("This payment term is not available for this order", 409),
+    /** SCRUM-427: credit approval or refusal on an order that is not waiting for one. */
+    ORDER_NOT_ON_CREDIT_HOLD("This order is not waiting for a credit decision", 409),
     OPTIMISTIC_LOCK("The record changed meanwhile, please retry", 409),
     /** Two writers reached the same row; the loser waited for the lock and gave up. Retryable. */
     LOCK_TIMEOUT("The record is busy, please retry", 409),

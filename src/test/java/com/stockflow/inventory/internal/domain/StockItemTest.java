@@ -307,6 +307,22 @@ class StockItemTest {
     }
 
     @Test
+    @DisplayName("SCRUM-427: an order waiting for payment again gets a deadline on its pinned holds")
+    void rearmedHoldsExpireAgain() {
+        StockItem item = availableWith(10);
+        UUID orderId = UUID.randomUUID();
+        Reservation hold = item.reserve(orderId, UUID.randomUUID(), UUID.randomUUID(), Quantity.of(3), NOW);
+        item.pinReservationsOf(orderId);
+        java.time.Instant deadline = NOW.plus(java.time.Duration.ofMinutes(30));
+
+        assertThat(item.rearmReservationsOf(orderId, deadline)).isEqualTo(1);
+        assertThat(item.rearmReservationsOf(orderId, deadline.plusSeconds(60))).isZero();   // idempotent
+        assertThat(hold.expiresAt()).isEqualTo(deadline);
+        assertThat(item.releaseExpired(deadline)).isEqualTo(1);
+        assertThat(hold.status()).isEqualTo(ReservationStatus.EXPIRED);
+    }
+
+    @Test
     @DisplayName("a closed hold is not pinned, and a pinned hold can still be released or consumed")
     void pinOnlyTouchesActiveHolds() {
         StockItem item = availableWith(10);

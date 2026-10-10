@@ -90,6 +90,20 @@ public final class Reservation {
         return true;
     }
 
+    /**
+     * The order is waiting for payment again (a credit order refused and switched to prepaid or
+     * deposit, SCRUM-427): a pinned hold gets a deadline, as at checkout (kltn-docs 14 BR-07).
+     *
+     * @return true if this call gave an active pinned hold its deadline
+     */
+    boolean rearm(Instant deadline) {
+        if (!status.isActive() || expiresAt != null) {
+            return false;
+        }
+        this.expiresAt = java.util.Objects.requireNonNull(deadline, "deadline");
+        return true;
+    }
+
     public boolean isPinned() {
         return expiresAt == null;
     }

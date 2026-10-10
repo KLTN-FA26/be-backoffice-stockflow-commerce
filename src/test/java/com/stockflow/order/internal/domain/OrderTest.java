@@ -259,10 +259,10 @@ class OrderTest {
     }
 
     @Test
-    @DisplayName("terms: CREDIT waits for credit limits, a deposit needs a percentage in (0, 100), prepaid takes none")
+    @DisplayName("terms: CREDIT needs its days to pay, a deposit a percentage in (0, 100), prepaid takes none")
     void termsAreChecked() {
         assertThatThrownBy(() -> draftWithTwoLines().applyTerms(PaymentTerm.CREDIT, null))
-                .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.PAYMENT_TERM_NOT_ALLOWED);
+                .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
         assertThatThrownBy(() -> draftWithTwoLines().applyTerms(PaymentTerm.DEPOSIT, new BigDecimal("100")))
                 .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
         assertThatThrownBy(() -> draftWithTwoLines().applyTerms(PaymentTerm.PREPAID, new BigDecimal("30")))
@@ -271,6 +271,63 @@ class OrderTest {
         prepaid.applyTerms(null, null);
         assertThat(prepaid.paymentTerm()).isEqualTo(PaymentTerm.PREPAID);
         assertThat(prepaid.depositRequired()).isNull();
+    }
+
+    // ------------------------------------------------------------------ credit (SCRUM-427)
+
+    private static Order creditDraft() {
+        Order order = draftWithTwoLines();
+        order.applyTerms(PaymentTerm.CREDIT, null, 30);
+        order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
+        return order;
+    }
+
+    @Test
+    @DisplayName("kltn-docs 17 §5: a credit order skips PENDING_PAYMENT — CONFIRMED within the limit, ON_HOLD over it")
+    void creditOrderSkipsPendingPayment() {
+        Order within = creditDraft();
+        within.submitOnCredit(true);
+        assertThat(within.status()).isEqualTo(OrderStatus.CONFIRMED);
+        assertThat(within.creditTermDays()).isEqualTo(30);
+        assertThat(within.paymentStatus()).isEqualTo(PaymentStatus.ON_CREDIT);
+        assertThat(within.pullDomainEvents()).singleElement().isInstanceOf(OrderEvent.Placed.class);
+
+        Order over = creditDraft();
+        over.submitOnCredit(false);
+        assertThat(over.status()).isEqualTo(OrderStatus.ON_HOLD);
+        over.approveCredit();
+        assertThat(over.status()).isEqualTo(OrderStatus.CONFIRMED);
+        assertThatThrownBy(over::approveCredit)
+                .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.ORDER_NOT_ON_CREDIT_HOLD);
+    }
+
+    @Test
+    @DisplayName("refused credit, paid another way: the hold ends in PENDING_PAYMENT on the new terms")
+    void refusedCreditSwitchesTerms() {
+        Order over = creditDraft();
+        over.submitOnCredit(false);
+
+        assertThatThrownBy(() -> over.switchTermsAfterCreditRefusal(PaymentTerm.DEPOSIT, new BigDecimal("100")))
+                .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(over.paymentTerm()).isEqualTo(PaymentTerm.CREDIT);
+        assertThat(over.creditTermDays()).isEqualTo(30);
+
+        over.switchTermsAfterCreditRefusal(PaymentTerm.DEPOSIT, new BigDecimal("40"));
+        assertThat(over.status()).isEqualTo(OrderStatus.PENDING_PAYMENT);
+        assertThat(over.paymentTerm()).isEqualTo(PaymentTerm.DEPOSIT);
+        assertThat(over.depositRequired()).isEqualByComparingTo("12800000");
+        assertThat(over.creditTermDays()).isNull();
+    }
+
+    @Test
+    @DisplayName("only a credit order has days to pay, and only a credit order is submitted on credit")
+    void creditDaysBelongToCredit() {
+        assertThatThrownBy(() -> draftWithTwoLines().applyTerms(PaymentTerm.CREDIT, null, null))
+                .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThatThrownBy(() -> draftWithTwoLines().applyTerms(PaymentTerm.PREPAID, null, 30))
+                .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        Order prepaid = draftWithTwoLines();
+        assertThatThrownBy(() -> prepaid.submitOnCredit(true)).isInstanceOf(IllegalStateException.class);
     }
 
     @Test

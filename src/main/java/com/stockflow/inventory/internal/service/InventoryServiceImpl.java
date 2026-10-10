@@ -410,6 +410,23 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
     }
 
     @Override
+    public int rearmReservations(UUID orderId) {
+        Instant deadline = clock.instant().plus(reservationTtl);
+        int rearmed = 0;
+        for (StockItem item : repository.findWithReservationsForOrder(orderId)) {
+            int here = item.rearmReservationsOf(orderId, deadline);
+            if (here > 0) {
+                repository.save(item);
+                rearmed += here;
+            }
+        }
+        if (rearmed > 0) {
+            log.info("Order {} waits for payment again: {} hold(s) expire at {}", orderId, rearmed, deadline);
+        }
+        return rearmed;
+    }
+
+    @Override
     public void release(UUID reservationId, String reason) {
         ReleaseReason releaseReason = parseReason(reason);
         StockItem item = holderOf(ReservationId.of(reservationId));
