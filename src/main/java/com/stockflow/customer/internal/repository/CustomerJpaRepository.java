@@ -25,4 +25,8 @@ interface CustomerJpaRepository extends BaseJpaRepository<CustomerJpaEntity> {
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select c from CustomerJpaEntity c where c.id = :id")
     Optional<CustomerJpaEntity> lockById(@Param("id") UUID id);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select c from CustomerJpaEntity c where c.userId = :userId")
+    Optional<CustomerJpaEntity> lockByUserId(@Param("userId") UUID userId);
 }

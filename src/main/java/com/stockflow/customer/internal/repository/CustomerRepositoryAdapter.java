@@ -46,6 +46,11 @@ class CustomerRepositoryAdapter implements CustomerRepository, CustomerSearchRep
     }
 
     @Override
+    public Optional<Customer> findByUserIdForUpdate(UUID userId) {
+        return customers.lockByUserId(userId).map(this::withAddresses);
+    }
+
+    @Override
     public Optional<Customer> findByEmail(String email) {
         return customers.findByEmailIgnoreCase(email).map(this::withAddresses);
     }

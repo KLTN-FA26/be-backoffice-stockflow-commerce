@@ -56,7 +56,6 @@ import com.stockflow.order.internal.entity.OrderHoldJpaEntity;
 import com.stockflow.order.internal.repository.OrderHoldJpaRepository;
 import java.nio.charset.StandardCharsets;
 import java.time.ZoneId;
-import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Collectors;
 

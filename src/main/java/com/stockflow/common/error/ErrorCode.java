@@ -178,6 +178,8 @@ public enum ErrorCode {
     /** B2B accounts must be onboarded by Sales, not through public registration. */
     CUSTOMER_REGISTRATION_DISABLED("Public customer registration is not available", 403),
     PORTAL_INVITATION_INVALID("This portal invitation is invalid or no longer available", 400),
+    /** Resending would reset a password the customer already chose. */
+    PORTAL_ACCOUNT_ALREADY_ACTIVE("This customer has already activated their portal account", 409),
     /** Guest checkout is permanently disabled by the B2B-only decision. */
     GUEST_CHECKOUT_DISABLED("Guest checkout is not available", 403),
     INVALID_PURCHASE_ORDER_TRANSITION("This purchase order cannot move to that status right now", 409),
@@ -239,6 +241,8 @@ public enum ErrorCode {
     /** A dependency we call failed. Separated from INTERNAL_ERROR so alerting can tell them apart. */
     EXTERNAL_SERVICE_ERROR("An upstream service is unavailable", 502),
     STORAGE_ERROR("File storage is unavailable", 503),
+    /** No portal activation address is configured, so no invitation link can be built. */
+    PORTAL_INVITATION_UNAVAILABLE("Portal invitations cannot be sent right now", 503),
     /** The caller's permissions could not be looked up (ADR-0008). The token itself may be fine,
      *  which is why this is a 503 and not a 401 that would sign the user out. */
     AUTHORIZATION_UNAVAILABLE("Permissions cannot be checked right now, please retry", 503);

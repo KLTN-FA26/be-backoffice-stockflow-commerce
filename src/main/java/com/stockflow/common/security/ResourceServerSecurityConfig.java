@@ -5,6 +5,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.config.ObjectPostProcessor;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -148,6 +149,9 @@ public class ResourceServerSecurityConfig {
                         // Both remain anonymous, as does the existing product-media surface.
                         .requestMatchers("/api/v1/identity/auth/login", "/oauth2/jwks",
                                 "/api/v1/public/products/**").permitAll()
+                        // A Sales-invited contact has no password yet; the invitation token in the
+                        // body is the credential (SCRUM-450). POST only: nothing else lives there.
+                        .requestMatchers(HttpMethod.POST, "/api/v1/customers/portal-activation").permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(oauth -> oauth
                         .jwt(jwt -> jwt.jwtAuthenticationConverter(converter))

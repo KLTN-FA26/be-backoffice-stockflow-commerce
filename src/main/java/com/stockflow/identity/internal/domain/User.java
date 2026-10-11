@@ -8,6 +8,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -82,6 +83,62 @@ public final class User extends AggregateRoot {
                                    String fullName, boolean temporaryPassword) {
         return new User(new UserId(id), requireNonBlank(username, "username").trim(), normaliseEmail(email),
                 passwordHash, fullName, UserStatus.ACTIVE, null, temporaryPassword, 0, null, 0L, null, null);
+    }
+
+    /**
+     * A customer contact that Sales onboarded (SCRUM-450): signs in with the e-mail address, but has
+     * no password until they redeem the invitation. Until then the account cannot authenticate -
+     * nobody, including Sales, knows a password for it.
+     */
+    public static User inviteCustomer(UUID id, String email, String fullName, PortalInvitation invitation) {
+        String normalisedEmail = normaliseEmail(email);
+        return new User(new UserId(id), normalisedEmail, normalisedEmail,
+                Objects.requireNonNull(invitation, "invitation").toCredential(), fullName,
+                UserStatus.ACTIVE, null, false, 0, null, 0L, null, null);
+    }
+
+    /** The open invitation, if this account has never been activated. */
+    public Optional<PortalInvitation> pendingInvitation() {
+        return PortalInvitation.fromCredential(passwordHash);
+    }
+
+    public boolean awaitingActivation() {
+        return passwordHash.startsWith(PortalInvitation.PREFIX);
+    }
+
+    /**
+     * Replaces the invitation, which is what makes the previous link stop working. An expired
+     * invitation can be replaced at once; an open one only after {@code cooldown}.
+     *
+     * @throws BusinessException {@code PORTAL_ACCOUNT_ALREADY_ACTIVE} once the account has a password;
+     *         {@code RATE_LIMITED} within the cooldown
+     */
+    public void reissueInvitation(PortalInvitation next, Duration cooldown) {
+        PortalInvitation current = pendingInvitation().orElseThrow(() ->
+                new BusinessException(ErrorCode.PORTAL_ACCOUNT_ALREADY_ACTIVE,
+                        "Account %s has already been activated".formatted(id)));
+        if (!current.expiredAt(next.issuedAt())) current.requireReplaceableAt(next.issuedAt(), cooldown);
+        this.passwordHash = next.toCredential();
+    }
+
+    /**
+     * Redeems the invitation: the contact chose a password. Writing the hash is what consumes the
+     * link, so a second redemption - concurrent or later - finds no invitation to match. Every
+     * failure looks the same to the caller, so a link cannot be probed for why it failed.
+     *
+     * @throws BusinessException {@code PORTAL_INVITATION_INVALID}
+     */
+    public void activate(PortalInvitationToken token, String newPasswordHash, Instant now) {
+        boolean redeemable = status == UserStatus.ACTIVE && token.userId().equals(id.value())
+                && pendingInvitation().filter(open -> open.redeemableBy(token, now)).isPresent();
+        if (!redeemable) throw new BusinessException(ErrorCode.PORTAL_INVITATION_INVALID);
+        if (requireNonBlank(newPasswordHash, "passwordHash").startsWith(PortalInvitation.PREFIX)) {
+            throw new IllegalArgumentException("A password hash is required");
+        }
+        this.passwordHash = newPasswordHash;
+        this.mustChangePassword = false;
+        this.failedLoginCount = 0;
+        this.lockedUntil = null;
     }
 
     /**

@@ -384,6 +384,18 @@ stockflow:
     # How often the sweeper looks for holds that outlived their expiry. ISO-8601 duration.
     reservation-sweep-interval: PT1M
 
+  customer:
+    # Where the portal invitation e-mail sends the customer's contact (SCRUM-450); the token is
+    # appended as a URL fragment, which browsers never send to a server. Blank switches invitations
+    # off (503 PORTAL_INVITATION_UNAVAILABLE) rather than failing startup. Set it per deployment.
+    portal-activation-url: ${PORTAL_ACTIVATION_URL:}
+
+  identity:
+    portal-invitation:
+      # How long an invitation link works, and how soon Sales may replace an open one.
+      lifetime: ${PORTAL_INVITATION_LIFETIME:PT72H}
+      resend-cooldown: ${PORTAL_INVITATION_RESEND_COOLDOWN:PT1M}
+
   security:
     # Turns on the resource-server filter chain AND RequiresPermissionAspect. Both are behind the
     # same switch on purpose: a state where the chain is on but the aspect is off means every

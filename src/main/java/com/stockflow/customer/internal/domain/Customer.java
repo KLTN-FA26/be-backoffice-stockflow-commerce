@@ -46,6 +46,34 @@ public final class Customer extends AggregateRoot {
                 null, CustomerStatus.ACTIVE, List.of(), 0L, null);
     }
 
+    /**
+     * A business customer Sales onboarded (SCRUM-450), linked to the contact's invited account.
+     *
+     * <p>The business lifecycle starts at Pending Activation (kltn-docs 18 §5), which
+     * {@code ck_customer_status} does not have yet. Until the schema owner adds it, a pending
+     * customer is {@code INACTIVE} with an account whose invitation is open: it can neither sign in
+     * nor order, which is what Pending Activation means, and activation is the one way out.</p>
+     *
+     * @param companyName the business name; the contact's own name stays on their account
+     */
+    public static Customer onboard(UUID id, UUID userId, String companyName, String email, String phone) {
+        return new Customer(id, Objects.requireNonNull(userId, "userId"), companyName, email, phone,
+                null, CustomerStatus.INACTIVE, List.of(), 0L, null);
+    }
+
+    /**
+     * The contact redeemed the invitation. A customer someone made ACTIVE meanwhile stays so; a
+     * BLOCKED one stays blocked - activating an account must not lift a block.
+     *
+     * @throws IllegalStateException for a BLOCKED customer
+     */
+    public void activatePortal() {
+        if (status == CustomerStatus.BLOCKED) {
+            throw new IllegalStateException("A blocked customer cannot activate its portal account");
+        }
+        this.status = CustomerStatus.ACTIVE;
+    }
+
     public void updateProfile(String fullName, String phone, long expectedVersion) {
         if (version != expectedVersion) {
             throw new IllegalStateException("Customer profile changed meanwhile");

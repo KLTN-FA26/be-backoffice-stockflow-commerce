@@ -24,6 +24,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtValidators;
@@ -63,6 +64,7 @@ class B2bAccessIntegrationTest {
     @Autowired PlatformTransactionManager transactions;
     @Autowired IdempotencyStore idempotency;
     @Autowired Clock clock;
+    @Autowired PasswordEncoder passwordEncoder;
     @Autowired @Qualifier("requestMappingHandlerMapping") RequestMappingHandlerMapping mappings;
 
     private static final String PASSWORD = "B2bTestPass1!";
@@ -101,11 +103,25 @@ class B2bAccessIntegrationTest {
 
     private Account account(String name, String role, String customerStatus) {
         String email = name + ".scrum429@example.test";
-        // Trusted identity API used ONLY to seed this isolated database, not an HTTP registration.
-        var registered = identities.registerCustomer(new RegisterAccountCommand(email, PASSWORD, name));
-        if (!"CUSTOMER".equals(role)) {
-            identities.assignRole(registered.userId(), role);
-            identities.revokeRole(registered.userId(), "CUSTOMER");
+        UUID userId;
+        if ("CUSTOMER".equals(role)) {
+            // Trusted identity API used ONLY to seed this isolated database, not an HTTP registration.
+            userId = identities.registerCustomer(new RegisterAccountCommand(email, PASSWORD, name)).userId();
+        } else {
+            // A staff account straight into the tables: since SCRUM-453 a customer account cannot be
+            // turned into a staff one, and user management needs an administrator caller.
+            userId = Identifiers.newId();
+            UUID staffId = userId;
+            new TransactionTemplate(transactions).executeWithoutResult(transaction -> {
+                jdbc.update("""
+                        INSERT INTO identity.app_user(id, username, email, password_hash, full_name, status, version, created_at)
+                        VALUES (?,?,?,?,?,'ACTIVE',0,now())
+                        """, staffId, email, email, passwordEncoder.encode(PASSWORD), name);
+                jdbc.update("""
+                        INSERT INTO identity.user_role(id, user_id, role_id, version, created_at)
+                        SELECT ?, ?, id, 0, now() FROM identity.app_role WHERE code = ?
+                        """, Identifiers.newId(), staffId, role);
+            });
         }
         UUID customerId = null;
         if (customerStatus != null) {
@@ -114,10 +130,10 @@ class B2bAccessIntegrationTest {
             new TransactionTemplate(transactions).executeWithoutResult(transaction -> jdbc.update("""
                     INSERT INTO customer.customer(id,user_id,full_name,email,status,version,created_at)
                     VALUES (?,?,?,?,?,0,now())
-                    """, profileId, registered.userId(), name, email, customerStatus));
+                    """, profileId, userId, name, email, customerStatus));
         }
         String token = identities.login(new LoginCommand(email, PASSWORD, null, "scrum429-test")).accessToken();
-        return new Account(registered.userId(), customerId, email, token);
+        return new Account(userId, customerId, email, token);
     }
 
     @Test

@@ -277,7 +277,7 @@ class CustomerServiceImpl implements CustomerService {
         }
     }
 
-    private static CustomerSummary toSummary(Customer customer) {
+    static CustomerSummary toSummary(Customer customer) {
         return new CustomerSummary(customer.id(), customer.userId(), customer.fullName(), customer.email(),
                 customer.phone(), customer.segmentId(), customer.status().name(), customer.version(),
                 customer.createdAt());
