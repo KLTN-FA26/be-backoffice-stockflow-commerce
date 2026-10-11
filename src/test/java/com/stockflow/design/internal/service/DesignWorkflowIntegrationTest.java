@@ -53,14 +53,15 @@ class DesignWorkflowIntegrationTest {
     @MockitoBean com.stockflow.common.storage.UploadInspection inspection;
     @MockitoBean com.stockflow.common.storage.FileTransfers files;
     @MockitoBean com.stockflow.identity.api.IdentityService identities;
-    /** Real rows: the draft's customer and every actor are foreign keys since ADR-0007. */
-    private UUID owner, editor, reviewer, customer;
+    /** Real rows: the draft's customer, every actor and (since C1) its product are foreign keys. */
+    private UUID owner, editor, reviewer, customer, product;
 
     @BeforeEach void referencedRows() {
         owner = ReferenceRows.user(entityManager);
         editor = ReferenceRows.user(entityManager);
         reviewer = ReferenceRows.user(entityManager);
         customer = ReferenceRows.customer(entityManager);
+        product = ReferenceRows.product(entityManager).productId();
     }
 
     private DesignWorkflowService.DraftView draftWithArtifact() throws Exception {
@@ -71,7 +72,7 @@ class DesignWorkflowIntegrationTest {
         }).when(inspection).requireClean(any());
         when(clock.instant()).thenReturn(Instant.parse("2026-09-17T00:00:00Z"));
         when(products.findById(any())).thenReturn(Optional.of(mock(ProductSummary.class)));
-        var draft = workflow.create(customer, Identifiers.newId(), owner, editor, reviewer,
+        var draft = workflow.create(customer, product, owner, editor, reviewer,
                 "Custom cabinet", "Width 1800 mm, white", editor);
         byte[] bytes = "confirmed bytes".getBytes(java.nio.charset.StandardCharsets.UTF_8);
         var checksum = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes));

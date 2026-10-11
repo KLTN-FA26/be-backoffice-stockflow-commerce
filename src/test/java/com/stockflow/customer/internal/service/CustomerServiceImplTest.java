@@ -6,6 +6,7 @@ import com.stockflow.customer.api.RegisterCustomerCommand;
 import com.stockflow.customer.internal.domain.Customer;
 import com.stockflow.customer.internal.domain.CustomerRepository;
 import com.stockflow.customer.internal.repository.CustomerSearchRepository;
+import com.stockflow.identity.api.IdentityService;
 import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
@@ -23,13 +24,15 @@ class CustomerServiceImplTest {
     void selfRegistrationIsRefusedBeforeReadingOrCreatingAnyAccount() {
         CustomerRepository customers = mock(CustomerRepository.class);
         CustomerSearchRepository search = mock(CustomerSearchRepository.class);
-        var service = new CustomerServiceImpl(customers, search);
+        IdentityService identities = mock(IdentityService.class);
+        var service = new CustomerServiceImpl(customers, search, identities,
+                mock(com.stockflow.customer.internal.domain.CreditProfileRepository.class), java.time.Clock.systemUTC());
 
         assertThatThrownBy(() -> service.register(new RegisterCustomerCommand("Customer",
                 "Customer@Example.com", "0901234567", "StrongPass1")))
                 .isInstanceOfSatisfying(BusinessException.class,
                         ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.CUSTOMER_REGISTRATION_DISABLED));
-        verifyNoInteractions(customers, search);
+        verifyNoInteractions(customers, search, identities);
     }
 
     private static com.stockflow.customer.internal.domain.CustomerAddress address(
@@ -42,7 +45,8 @@ class CustomerServiceImplTest {
     private CustomerServiceImpl serviceWith(Customer customer) {
         CustomerRepository customers = mock(CustomerRepository.class);
         when(customers.findById(customer.id())).thenReturn(Optional.of(customer));
-        return new CustomerServiceImpl(customers, mock(CustomerSearchRepository.class));
+        return new CustomerServiceImpl(customers, mock(CustomerSearchRepository.class), mock(IdentityService.class),
+                mock(com.stockflow.customer.internal.domain.CreditProfileRepository.class), java.time.Clock.systemUTC());
     }
 
     @Test

@@ -1,5 +1,6 @@
 package com.stockflow.common.security;
 
+import com.stockflow.common.logging.LogSafe;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.error.ErrorCode;
@@ -60,7 +61,8 @@ public class ApiAuthenticationEntryPoint implements AuthenticationEntryPoint {
         }
         // The real reason goes to the log, where an operator can see it, and not to the caller.
         log.warn("Unauthenticated request to {} {}: {}",
-                request.getMethod(), request.getRequestURI(), authException.getMessage());
+                LogSafe.text(request.getMethod()), LogSafe.text(request.getRequestURI()),
+                LogSafe.text(authException.getMessage()));
 
         response.setStatus(ErrorCode.UNAUTHORIZED.httpStatus());
         response.setContentType("application/json;charset=UTF-8");
@@ -85,7 +87,8 @@ public class ApiAuthenticationEntryPoint implements AuthenticationEntryPoint {
     private void unavailable(HttpServletRequest request, HttpServletResponse response,
                              AuthenticationException cause) throws IOException {
         log.error("Could not authenticate {} {}: {}",
-                request.getMethod(), request.getRequestURI(), cause.getMessage());
+                LogSafe.text(request.getMethod()), LogSafe.text(request.getRequestURI()),
+                LogSafe.text(cause.getMessage()));
         response.setStatus(ErrorCode.AUTHORIZATION_UNAVAILABLE.httpStatus());
         response.setContentType("application/json;charset=UTF-8");
         response.getWriter().write(objectMapper.writeValueAsString(

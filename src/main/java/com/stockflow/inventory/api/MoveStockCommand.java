@@ -2,6 +2,7 @@ package com.stockflow.inventory.api;
 
 import com.stockflow.common.domain.Sku;
 
+import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -16,6 +17,8 @@ import java.util.UUID;
  *                      asks for directly
  * @param referenceId   the id of that document; null means the request id itself
  * @param actorId       who moved the goods, for the ledger; null for a system move
+ * @param receivedAt    the stock layer to take from, when one location holds several layers of the lot
+ *                      (one per receipt): its receipt time. Null when the location holds one layer
  */
 public record MoveStockCommand(
         UUID requestId,
@@ -26,8 +29,15 @@ public record MoveStockCommand(
         int quantity,
         MoveReference reference,
         UUID referenceId,
-        UUID actorId
+        UUID actorId,
+        Instant receivedAt
 ) {
+
+    /** A move from a location that holds one layer of the lot: no layer selector needed. */
+    public MoveStockCommand(UUID requestId, Sku sku, String lotNumber, String fromLocation, String toLocation,
+                            int quantity, MoveReference reference, UUID referenceId, UUID actorId) {
+        this(requestId, sku, lotNumber, fromLocation, toLocation, quantity, reference, referenceId, actorId, null);
+    }
 
     public MoveStockCommand {
         Objects.requireNonNull(requestId, "requestId");

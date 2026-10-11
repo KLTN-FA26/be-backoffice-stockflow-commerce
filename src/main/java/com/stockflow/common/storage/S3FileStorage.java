@@ -1,5 +1,6 @@
 package com.stockflow.common.storage;
 
+import com.stockflow.common.logging.LogSafe;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -91,7 +92,7 @@ class S3FileStorage implements FileStorage {
             s3.putObject(request.build(),
                     RequestBody.fromInputStream(sniffable, sizeBytes));
 
-            log.debug("Stored {} ({} bytes) as {}", originalName, sizeBytes, key);
+            log.debug("Stored {} ({} bytes) as {}", LogSafe.text(originalName), sizeBytes, key);
             return new StoredFile(key, originalName, normalisedType, sizeBytes, clock.instant());
 
         } catch (IOException ex) {

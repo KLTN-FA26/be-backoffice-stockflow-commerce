@@ -21,11 +21,23 @@ public class StockflowAuthenticationToken extends JwtAuthenticationToken {
     private static final long serialVersionUID = 1L;
 
     private final DataScope scope;
+    private final AssignedWarehouses warehouses;
 
     public StockflowAuthenticationToken(Jwt jwt, Collection<? extends GrantedAuthority> authorities,
                                         DataScope scope) {
+        this(jwt, authorities, scope, AssignedWarehouses.none());
+    }
+
+    public StockflowAuthenticationToken(Jwt jwt, Collection<? extends GrantedAuthority> authorities,
+                                        DataScope scope, AssignedWarehouses warehouses) {
         super(jwt, authorities, jwt.getSubject());
         this.scope = scope;
+        this.warehouses = warehouses == null ? AssignedWarehouses.none() : warehouses;
+    }
+
+    /** The warehouses resolved on the server for a warehouse-bound caller (SCRUM-457); else none. */
+    public AssignedWarehouses warehouses() {
+        return warehouses;
     }
 
     public DataScope scope() {

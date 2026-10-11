@@ -237,12 +237,12 @@ no test can enforce it.
 
 ### 4.1 Migration first
 
-`src/main/resources/db/migration/V<yyyyMMddHHmmss>__procurement_purchase_order.sql`
+`src/main/resources/db/migration/V<yyyyMMddHHmmss>__procurement_purchase_orders.sql`
 
 Timestamped, not `V7__`. With five people committing in parallel, sequential numbers collide daily.
 
 ```sql
-CREATE TABLE procurement.purchase_order
+CREATE TABLE procurement.purchase_orders
 (
     id               UUID         NOT NULL,
     version          BIGINT       NOT NULL DEFAULT 0,   -- BaseEntity
@@ -251,7 +251,7 @@ CREATE TABLE procurement.purchase_order
     last_modified_at TIMESTAMPTZ,
     last_modified_by VARCHAR(100),
     ...
-    CONSTRAINT pk_purchase_order PRIMARY KEY (id)
+    CONSTRAINT pk_purchase_orders PRIMARY KEY (id)
 );
 ```
 
@@ -272,7 +272,9 @@ public final class PurchaseOrder extends AggregateRoot {
 
     public void approve(UserId approver, Instant now) {
         if (!status.canTransitionTo(APPROVED)) {
-            throw new IllegalStateException("...");   // handled as 400
+            // a dedicated BusinessException (409): GlobalExceptionHandler logs a bare
+            // IllegalStateException at ERROR, as the bug it usually is
+            throw new InvalidPurchaseOrderTransitionException(id, status, APPROVED);
         }
         this.status = APPROVED;
         registerEvent(new PurchaseOrderEvent.Approved(...));
@@ -296,7 +298,7 @@ public interface PurchaseOrderRepository extends AggregateRepository<PurchaseOrd
 
 ```java
 @Entity
-@Table(name = "purchase_order", schema = "procurement")
+@Table(name = "purchase_orders", schema = "procurement")
 class PurchaseOrderJpaEntity extends BaseEntity implements ScopedEntity {
 
     static final PurchaseOrderJpaEntity SCOPE_PROTOTYPE = new PurchaseOrderJpaEntity();

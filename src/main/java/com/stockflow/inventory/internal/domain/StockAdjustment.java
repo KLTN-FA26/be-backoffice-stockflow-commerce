@@ -18,6 +18,9 @@ import java.util.UUID;
  * who approves ({@code ck_stock_adjustment_four_eyes} says it again in the table). Approving posts
  * — the stock item's {@code onHand} moves in the same transaction — so an approved adjustment that
  * has not touched stock cannot exist.</p>
+ *
+ * <p>Until it is decided, the person who asked may take it back ({@link #withdraw}); nobody else
+ * may, so a manager cannot make a request disappear without deciding it.</p>
  */
 public final class StockAdjustment extends AggregateRoot {
 
@@ -37,12 +40,13 @@ public final class StockAdjustment extends AggregateRoot {
     private Instant decidedAt;
     private String rejectionReason;
     private Instant postedAt;
+    private Instant withdrawnAt;
     private final long version;
 
     public StockAdjustment(UUID id, String number, LocationId location, Sku sku, String lotNumber,
                            int quantityDelta, AdjustmentReason reason, String note, UUID requestedBy,
                            Instant requestedAt, AdjustmentStatus status, UUID decidedBy, Instant decidedAt,
-                           String rejectionReason, Instant postedAt, long version) {
+                           String rejectionReason, Instant postedAt, Instant withdrawnAt, long version) {
         this.id = Objects.requireNonNull(id, "id");
         this.number = Objects.requireNonNull(number, "number");
         this.location = Objects.requireNonNull(location, "location");
@@ -58,6 +62,7 @@ public final class StockAdjustment extends AggregateRoot {
         this.decidedAt = decidedAt;
         this.rejectionReason = rejectionReason;
         this.postedAt = postedAt;
+        this.withdrawnAt = withdrawnAt;
         this.version = version;
         if (quantityDelta == 0) {
             throw new IllegalArgumentException("An adjustment changes the quantity");
@@ -66,13 +71,18 @@ public final class StockAdjustment extends AggregateRoot {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
                     "An adjustment with reason OTHER must say why in the note");
         }
+        // ck_stock_adjustment_writes_down says it again in the table.
+        if (this.reason.onlyWritesDown() && quantityDelta > 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "An adjustment with reason %s can only reduce stock".formatted(this.reason));
+        }
     }
 
     public static StockAdjustment request(String number, LocationId location, Sku sku, String lotNumber,
                                           int quantityDelta, AdjustmentReason reason, String note,
                                           UUID requestedBy, Instant now) {
         return new StockAdjustment(Identifiers.newId(), number, location, sku, lotNumber, quantityDelta,
-                reason, note, requestedBy, now, AdjustmentStatus.PENDING_APPROVAL, null, null, null, null, 0L);
+                reason, note, requestedBy, now, AdjustmentStatus.PENDING_APPROVAL, null, null, null, null, null, 0L);
     }
 
     /**
@@ -115,8 +125,25 @@ public final class StockAdjustment extends AggregateRoot {
         this.rejectionReason = reason.trim();
     }
 
+    /**
+     * The requester takes back a request nobody has decided yet. Stock was never touched, so there
+     * is nothing to undo.
+     *
+     * @throws BusinessException {@code ADJUSTMENT_NOT_REQUESTER} when someone else tries;
+     *         {@code INVALID_ADJUSTMENT_TRANSITION} when it is no longer pending
+     */
+    public void withdraw(UUID userId, Instant now) {
+        requirePending();
+        if (!requestedBy.equals(Objects.requireNonNull(userId, "userId"))) {
+            throw new BusinessException(ErrorCode.ADJUSTMENT_NOT_REQUESTER,
+                    "Only the person who requested adjustment %s can withdraw it".formatted(number));
+        }
+        this.status = AdjustmentStatus.WITHDRAWN;
+        this.withdrawnAt = now;
+    }
+
     private void requirePending() {
-        if (status.isDecided()) {
+        if (status.isClosed()) {
             throw new BusinessException(ErrorCode.INVALID_ADJUSTMENT_TRANSITION,
                     "Adjustment %s is already %s".formatted(number, status));
         }
@@ -137,5 +164,6 @@ public final class StockAdjustment extends AggregateRoot {
     public Instant decidedAt() { return decidedAt; }
     public String rejectionReason() { return rejectionReason; }
     public Instant postedAt() { return postedAt; }
+    public Instant withdrawnAt() { return withdrawnAt; }
     public long version() { return version; }
 }

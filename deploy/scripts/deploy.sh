@@ -118,10 +118,44 @@ remove_old_images() {
   docker image prune -f >/dev/null
 }
 
+# A dump of the database before every deploy that changes the running tag. A new image may carry a
+# migration that cannot be undone (a contract step drops tables), and the rollback below only
+# rolls back the image - Flyway never un-applies a migration. So the deploy does not start without a
+# restorable copy of what is there now. Restore with:
+#   docker compose exec -T postgres pg_restore -U "$DB_USER" -d "$DB_NAME" --clean --if-exists < backups/<file>
+# Kept: the last 10 pre-deploy dumps, next to the nightly ones of the README's cron. They are on the
+# same disk, so they protect against a bad release, not against losing the machine.
+backup_database() {
+  if [ -z "$(docker compose ps --status running -q postgres 2>/dev/null)" ]; then
+    echo "==> postgres is not running yet (first deploy?); no pre-deploy dump."
+    return 0
+  fi
+  local db user file
+  db=$(env_value DB_NAME)
+  user=$(env_value DB_USER)
+  mkdir -p backups
+  file="backups/pre-deploy-$(date -u +%Y%m%dT%H%M%SZ)-from-${previous_tag:-none}.dump"
+  # pg_dump turns statement_timeout and lock_timeout off for its own session, so the server's 10 s
+  # statement limit does not cut a long table short. Written beside the target first: a dump that
+  # stopped half way must never look like a good one.
+  if docker compose exec -T postgres pg_dump -U "$user" -Fc "$db" > "$file.partial" && [ -s "$file.partial" ]; then
+    mv "$file.partial" "$file"
+    echo "==> Database dumped to $file ($(du -h "$file" | cut -f1))."
+  else
+    rm -f "$file.partial"
+    echo "==> The pre-deploy database dump FAILED; nothing was deployed." >&2
+    return 1
+  fi
+  ls -1t backups/pre-deploy-*.dump 2>/dev/null | tail -n +11 | xargs -r rm -f
+}
+
 # Fresh Cloudflare ranges on every deploy; a failed fetch keeps the current lists.
 bash scripts/refresh-cloudflare-ips.sh || echo "WARN: could not refresh Cloudflare ranges; keeping the current lists."
 
 echo "==> Deploying $IMAGE_TAG (previous: ${previous_tag:-none})"
+if [ "$IMAGE_TAG" != "$previous_tag" ]; then
+  backup_database || exit 1
+fi
 # Pull only what is missing. Re-applying the running tag after an .env change, or rolling back to a
 # tag still on disk, must not depend on a registry login that only exists during a CI job.
 if [ -n "$app_image" ] && docker image inspect "$app_image:$IMAGE_TAG" >/dev/null 2>&1; then

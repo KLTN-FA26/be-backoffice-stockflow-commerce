@@ -28,7 +28,7 @@ class StockMovementLogAdapter implements StockMovementLog, StockLedgerSearch {
         jpa.save(new StockMovementJpaEntity(m.id(), m.type(), m.sku().code(), m.lotNumber(),
                 m.from() == null ? null : m.from().code(), m.to() == null ? null : m.to().code(),
                 m.quantity(),
-                m.from() == null ? null : m.status(), m.to() == null ? null : m.status(),
+                m.from() == null ? null : m.status(), m.to() == null ? null : m.toStatus(),
                 m.referenceType(), m.referenceId(), m.reason(), m.actorId(), m.occurredAt()));
     }
 
@@ -44,7 +44,8 @@ class StockMovementLogAdapter implements StockMovementLog, StockLedgerSearch {
         Specification<StockMovementJpaEntity> spec = Specification
                 .<StockMovementJpaEntity>where(Specs.eq("sku", upper(criteria.sku())))
                 .and(Specs.eq("movementType", criteria.type()))
-                .and(location(upper(criteria.location())));
+                .and(location(upper(criteria.location())))
+                .and(com.stockflow.common.security.WarehouseScope.locationsIn("fromLocationCode", "toLocationCode"));
         return jpa.findAll(spec, pageable).map(StockMovementLogAdapter::toDomain);
     }
 
@@ -66,6 +67,7 @@ class StockMovementLogAdapter implements StockMovementLog, StockLedgerSearch {
                 e.getToLocationCode() == null ? null : new LocationId(e.getToLocationCode()),
                 e.getQuantity(),
                 e.getFromStatus() != null ? e.getFromStatus() : e.getToStatus(),
+                e.getToStatus() != null ? e.getToStatus() : e.getFromStatus(),
                 e.getReferenceType(), e.getReferenceId(), e.getReason(), e.getActorId(), e.getOccurredAt());
     }
 }

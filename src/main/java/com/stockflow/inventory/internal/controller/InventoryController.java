@@ -142,7 +142,8 @@ class InventoryController {
 
     @DeleteMapping("/reservations/{reservationId}")
     @Operation(summary = "Release a hold")
-    @RequiresPermission(resource = InventoryResources.RESERVATIONS, action = Action.DELETE)
+    @RequiresPermission(resource = InventoryResources.RESERVATIONS,
+            action = Action.DELETE, scope = DataScope.WAREHOUSE)
     public ApiResponse<Void> release(@PathVariable UUID reservationId,
                               @RequestParam(value = "reason", required = false) String reason) {
         inventoryService.release(reservationId, reason);

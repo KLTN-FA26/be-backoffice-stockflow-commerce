@@ -6,7 +6,11 @@ import com.stockflow.procurement.api.CreatePurchaseOrderCommand;
 import com.stockflow.procurement.api.ProcurementService;
 import com.stockflow.procurement.api.SupplierSpendReportQuery;
 import com.stockflow.procurement.api.SupplierSpendSummary;
+import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
+import com.stockflow.support.ReferenceRows;
+import jakarta.persistence.EntityManager;
+import org.junit.jupiter.api.BeforeEach;
 import com.stockflow.support.PostgresContainer;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -39,21 +43,40 @@ class SupplierSpendByCurrencyIntegrationTest {
     @Autowired
     private TransactionTemplate tx;
 
-    /** With an email: a supplier reached by email must have one once the supplier PR's CHECK lands. */
+    @Autowired
+    private EntityManager entityManager;
+
+    private UUID submitter;
+    private UUID approver;
+
+    @BeforeEach
+    void people() {
+        submitter = tx.execute(s -> ReferenceRows.user(entityManager));
+        approver = tx.execute(s -> ReferenceRows.user(entityManager));
+    }
+
+    /** With an email contact: a supplier reached by email must have one. */
     private UUID supplier() {
         UUID id = Identifiers.newId();
-        tx.executeWithoutResult(status -> jdbc.update("""
-                INSERT INTO procurement.supplier (id, code, name, email, status, version, created_at)
-                VALUES (?, ?, 'Spend test supplier', 'spend@example.com', 'ACTIVE', 0, NOW())""",
-                id, "SPEND-" + id.toString().substring(24)));
+        tx.executeWithoutResult(status -> {
+            jdbc.update("""
+                    INSERT INTO procurement.suppliers (id, code, name, status, version, created_at)
+                    VALUES (?, ?, 'Spend test supplier', 'ACTIVE', 0, NOW())""",
+                    id, "SPEND-" + id.toString().substring(24).toUpperCase());
+            jdbc.update("""
+                    INSERT INTO procurement.supplier_contacts (id, supplier_id, full_name, email, is_primary, version, created_at)
+                    VALUES (?, ?, 'Spend', 'spend@example.com', TRUE, 0, NOW())""", Identifiers.newId(), id);
+        });
         return id;
     }
 
+    /** Approved: submitted and approved by two people. Only an approved order is spend. */
     private void approvedOrder(UUID supplierId, String currency, int quantity, String unitPrice) {
-        var order = procurement.createPurchaseOrder(new CreatePurchaseOrderCommand(supplierId, currency,
-                LocalDate.now().plusDays(10),
-                List.of(new CreatePOLineCommand("SPEND-SKU", "spend test", quantity, new BigDecimal(unitPrice)))));
-        procurement.approve(order.purchaseOrderId());
+        var order = procurement.createPurchaseOrder(new CreatePurchaseOrderCommand(supplierId, DemoData.WAREHOUSE_HCM,
+                currency, LocalDate.now().plusDays(10), null,
+                List.of(new CreatePOLineCommand("SOFA-3S-GREY", "spend test", quantity, new BigDecimal(unitPrice)))));
+        procurement.submit(order.purchaseOrderId(), submitter);
+        procurement.approve(order.purchaseOrderId(), approver);
     }
 
     private List<SupplierSpendSummary> report(UUID supplierId, String currency) {

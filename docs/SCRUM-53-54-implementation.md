@@ -16,15 +16,21 @@ credentials and real-user UAT remain deployment activities and cannot be inferre
 Paths are relative to `/api/v1`; responses use `ApiResponse`. Uploads use multipart part `file`.
 The parent must exist. Storage keys are never accepted from the caller.
 
+Since the legacy-tables removal (10/2026) images belong to a **variant** (`product.media`,
+decision D5) and are published one by one; the product-level `/images` and `/gallery` endpoints
+are gone.
+
 | Method | Path | Permission / behavior |
 | --- | --- | --- |
-| POST | `/products/{id}/images` | `product-products:UPDATE`; original and three renditions |
-| GET | `/products/{id}/images` | `product-products:READ`; asset library, not approved display order |
-| GET | `/products/{id}/images/{imageId}/download-url` | READ; private original URL |
-| GET | `/products/{id}/images/{imageId}/renditions/{edge}/download-url` | READ; private rendition URL |
-| GET | `/products/{id}/gallery` | READ; working and approved (`published`) lists plus revision |
-| PUT | `/products/{id}/gallery` | UPDATE; `{revision, items:[{imageId, caption}]}` |
-| POST | `/products/{id}/gallery/approval` | APPROVE; `{revision}`; editor cannot approve own changes |
+| POST | `/products/{id}/variants/{vid}/media` | `product-products:UPDATE`; original and three renditions |
+| GET | `/products/{id}/variants/{vid}/media` | `product-products:READ`; the variant's images (at most 20) |
+| PUT | `/products/{id}/variants/{vid}/media/{mid}` | UPDATE; `{altText, sortOrder, primary}` |
+| DELETE | `/products/{id}/variants/{vid}/media/{mid}` | UPDATE |
+| POST | `/products/{id}/variants/{vid}/media/publication` | APPROVE; `{mediaIds}`; the uploader cannot publish own images |
+| POST | `/products/{id}/variants/{vid}/media/{mid}/withdrawal` | APPROVE; off the storefront |
+| GET | `/products/{id}/variants/{vid}/media/{mid}/download-url` | READ; private original URL |
+| GET | `/products/{id}/variants/{vid}/media/{mid}/renditions/{edge}/download-url` | READ; private rendition URL |
+| GET | `/public/products/{id}/gallery?sku=` | anonymous; published images of the variant (default variant when no sku) |
 
 Flow:
 
@@ -32,28 +38,28 @@ Flow:
 2. Upload JPEG/PNG/WebP, at most 10 MiB. Decode with a 40-million-pixel ceiling; normalize EXIF
    orientation and preserve transparency. Scan the original with ClamAV.
 3. Store the original under `product-originals/` and longest-edge 256/768/1600 renditions (no
-   upscaling) under `product-renditions/`; both are private. Approving a gallery copies the renditions
-   of the approved images to `product-images/`, the only prefix the CDN serves, so an image is public
-   only after someone other than its editor approved it. The copy is made inside the approving
+   upscaling) under `product-renditions/`; both are private. Publishing an image copies its renditions
+   to `product-images/`, the only prefix the CDN serves, so an image is public only after someone
+   other than its uploader published it. The copy is made inside the publishing
    transaction and removed again if that rolls back; it is never removed afterwards (URLs are
    immutable and cached for a year).
    Decode work, the virus scan and the object-store writes run outside any database transaction;
    two short transactions bracket them (read to fail fast, locked write to attach). Display files are
    PNG for alpha images, JPEG at 85% quality otherwise, without source metadata.
-4. Edit up to 20 distinct managed image IDs; first is cover, caption at most 500 characters.
-   Reorder/replace/remove changes the working list, not approved content or stored objects.
-5. After the product is APPROVED/PUBLISHED, a different authorized actor approves the exact
-   gallery revision atomically. Publication requires an approved non-empty product gallery.
-   The anonymous storefront endpoint returns immutable CloudFront rendition URLs. Variant/SKU
-   overrides are optional and otherwise inherit the product gallery.
+4. Describe each image (alt text at most 255 characters, position, cover). A variant holds at most
+   20 images; making one the cover takes it away from the previous one.
+5. After the product is APPROVED/PUBLISHED, a different authorized actor publishes the images.
+   Catalog publication requires at least one published image of an active variant. The anonymous
+   storefront endpoint returns immutable CloudFront rendition URLs; a variant with no published
+   image of its own shows the default variant's.
 
 Uploads/edits are allowed in DRAFT, APPROVED and PUBLISHED, blocked in PENDING_APPROVAL and
 DISCONTINUED. Existing product approval remains separate. Original and rendition storage use
 existing rollback cleanup. Processing is synchronous with bounded decoder concurrency.
 
-Legacy JSON `images` URLs remain readable and uploaded attachments survive legacy detail updates.
-External URLs are not inspected and cannot enter the new gallery. Re-upload old stored images
-without renditions before approving them. Originals can retain metadata; display renditions do not.
+Images carried over from the old `product_image` table keep their id and land on the default
+variant; those the approved product gallery showed are published. An image that is only an external
+URL cannot be published; re-upload it. Originals can retain metadata; display renditions do not.
 
 ## Design artifacts (SCRUM-54)
 

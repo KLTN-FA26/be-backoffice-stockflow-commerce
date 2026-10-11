@@ -1,33 +1,22 @@
 package com.stockflow.product.api;
 
-import java.math.BigDecimal;
-import java.util.List;
 import java.util.UUID;
 
-/** Input to {@link ProductService#create}. */
+/**
+ * Input to {@link ProductService#create}. The product is born with one default variant whose SKU is
+ * the product code, and that variant with its inventory item; logistics live on the inventory item
+ * and images on a variant, not here.
+ */
 public record CreateProductCommand(
         String code,
         String name,
         String nameEn,
+        UUID brandId,
         UUID categoryId,
+        String shortDescription,
         String description,
         String descriptionEn,
-        String brand,
         TaxClass taxClass,
-        boolean customizable,
-        List<String> images,
-        BigDecimal weightKg,
-        BigDecimal lengthCm,
-        BigDecimal widthCm,
-        BigDecimal heightCm,
-        BigDecimal packageWeightKg,
-        BigDecimal packageLengthCm,
-        BigDecimal packageWidthCm,
-        BigDecimal packageHeightCm,
-        Integer packageCount,
-        boolean hazmat,
-        boolean oversized, StorageClass storageClass,
-        boolean requiresAdultSignature,
-        String shippingRestrictionNote
+        ProductKind kind
 ) {
 }

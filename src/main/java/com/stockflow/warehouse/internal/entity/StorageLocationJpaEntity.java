@@ -91,6 +91,17 @@ public class StorageLocationJpaEntity extends BaseEntity {
         this.status = status;
     }
 
+    /** Everything about a location that may change; warehouse, kind and code never do (BR-13). */
+    public void apply(StorageClass storageClass, Integer capacityUnits, BigDecimal maxWeight, boolean pickable,
+                      boolean putawayTarget, LocationStatus status) {
+        this.storageClass = storageClass;
+        this.capacityUnits = capacityUnits;
+        this.maxWeight = maxWeight;
+        this.pickable = pickable;
+        this.putawayTarget = putawayTarget;
+        this.status = status;
+    }
+
     public UUID getWarehouseId() { return warehouseId; }
     public StorageLocationKind getKind() { return kind; }
     public String getLocationCode() { return locationCode; }

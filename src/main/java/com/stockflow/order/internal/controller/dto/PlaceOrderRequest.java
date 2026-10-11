@@ -36,7 +36,18 @@ public record PlaceOrderRequest(
         UUID billingAddressId,
 
         @NotEmpty(message = "An order needs at least one line")
-        List<@Valid Line> lines
+        List<@Valid Line> lines,
+
+        @Schema(description = "PREPAID (default) or DEPOSIT; CREDIT comes with the customer's credit limit",
+                example = "DEPOSIT")
+        com.stockflow.order.api.PaymentTerm paymentTerm,
+
+        @Schema(description = "Deposit as a percentage of the total, above 0 and below 100; DEPOSIT orders only",
+                example = "30")
+        @DecimalMin(value = "0.0", inclusive = false, message = "depositPercent must be above 0")
+        @jakarta.validation.constraints.DecimalMax(value = "100.0", inclusive = false,
+                message = "depositPercent must be below 100")
+        BigDecimal depositPercent
 ) {
 
     @Schema(description = "One order line")

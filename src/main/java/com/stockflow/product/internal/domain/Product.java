@@ -1,210 +1,125 @@
 package com.stockflow.product.internal.domain;
 
-import com.stockflow.product.api.StorageClass;
-import com.stockflow.product.api.ProductStatus;
-import com.stockflow.product.api.TaxClass;
+import com.stockflow.common.domain.AggregateRoot;
 import com.stockflow.contracts.ProductApproved;
 import com.stockflow.contracts.ProductDiscontinued;
-import com.stockflow.common.domain.AggregateRoot;
+import com.stockflow.product.api.ProductKind;
+import com.stockflow.product.api.ProductStatus;
+import com.stockflow.product.api.TaxClass;
 
-import java.math.BigDecimal;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 /**
- * <b>Aggregate root of the product module: one product master row.</b>
+ * <b>Aggregate root of the product module: one product master row</b> ({@code product.products}).
  *
  * <p>SCRUM-56 (WBS 3.1.1.2) landed the master-data fields; SCRUM-57 (WBS 3.1.1.3) adds the
  * approval workflow on top: {@code submit()}/{@code approve()}/{@code reject()}. SCRUM-85
  * (WBS 3.1.8.1) adds {@code discontinue()}, the terminal edge — all following
- * {@link ProductStatus#canTransitionTo}'s table. {@link #updateDetails} guards on
- * {@code DRAFT} for real — that guard was a dead branch before SCRUM-57 added any other
- * reachable status.</p>
+ * {@link ProductStatus#canTransitionTo}'s table. {@link #updateDetails} guards on {@code DRAFT}.</p>
+ *
+ * <p>What is deliberately <b>not</b> on the product (the PIM model, docs 01): logistics — weight,
+ * dimensions, package, storage class — belong to the inventory item of each SKU (BR-08), and images
+ * belong to a variant (decision D5). The product's selling SKUs are its variants; the first one is
+ * created with the product, its SKU equal to the product code. Publication (status
+ * {@code PUBLISHED}) is decided by the catalog through {@code ProductPublication}, never here.</p>
  *
  * <p>No Spring, no JPA, no annotations — {@code ArchitectureTest.domainDoesNotDependOnFrameworks}
- * enforces it. {@code code} is immutable once created (like {@code Sku}/{@code OrderNumber}); every
- * other field goes through {@link #updateDetails}. Transition guards throw
- * {@link InvalidProductStatusTransitionException}/{@link SelfApprovalNotAllowedException}
- * (dedicated {@code BusinessException}s), never {@code IllegalStateException} — see
- * {@code InvalidProductStatusTransitionException}'s javadoc for why that distinction matters here.</p>
+ * enforces it. {@code code} is immutable once created, as the {@code tg_products_immutable} trigger
+ * states again. Transition guards throw {@link InvalidProductStatusTransitionException}/
+ * {@link SelfApprovalNotAllowedException} (dedicated {@code BusinessException}s), never
+ * {@code IllegalStateException}.</p>
  */
 public final class Product extends AggregateRoot {
+
+    /** {@code ck_products_code}, stated again. Also a valid variant SKU, which the default variant needs. */
+    public static final Pattern CODE = Pattern.compile("[A-Z0-9][A-Z0-9_-]{0,49}");
 
     private final ProductId id;
     private final String code;
 
     private String name;
     private String nameEn;
+    private UUID brandId;
     private UUID categoryId;
+    private String shortDescription;
     private String description;
     private String descriptionEn;
-    private String brand;
     private TaxClass taxClass;
-    private boolean customizable;
-    private final List<ProductImage> images;
+    private ProductKind kind;
     private ProductStatus status;
     private final long version;
-
-    /** SCRUM-74 (WBS 3.1.3.1): shipping weight/dimensions, for later rate/carton calculations.
-     *  Nullable — a product can exist before these are known; when set, each must be positive. */
-    private BigDecimal weightKg;
-    private BigDecimal lengthCm;
-    private BigDecimal widthCm;
-    private BigDecimal heightCm;
-
-    /** SCRUM-75 (WBS 3.1.3.2): the shipped package, distinct from the product's own physical
-     *  dimensions above — cups ship nested and boxes ship flat, in a carton unrelated to one item's size,
-     *  and {@code packageCount} &gt; 1 when one unit ships as several boxes. Nullable/positive,
-     *  same treatment as the fields above. */
-    private BigDecimal packageWeightKg;
-    private BigDecimal packageLengthCm;
-    private BigDecimal packageWidthCm;
-    private BigDecimal packageHeightCm;
-    private Integer packageCount;
-
-    /** SCRUM-76 (WBS 3.1.3.3): carrier-facing shipping restrictions. Flags default false — most
-     *  products carry none of them. {@code shippingRestrictionNote} is free text (same treatment
-     *  as {@code rejectionReason}) rather than a structured region list: nothing in this codebase
-     *  models regions/zones yet, and inventing one here would be scope this ticket never asked
-     *  for. */
-    private boolean hazmat;
-    private boolean oversized;
-    private StorageClass storageClass;
-    private boolean requiresAdultSignature;
-    private String shippingRestrictionNote;
-
-    /** Read-only: who/when created this row. Carried for the API response, never checked by an
-     *  invariant — same treatment {@code version} gets, not a protected business rule. */
-    private final Instant createdAt;
-    private final String createdBy;
-    private final Instant lastModifiedAt;
-    private final String lastModifiedBy;
 
     private UUID submittedBy;
     private Instant submittedAt;
     private UUID approvedBy;
     private Instant approvedAt;
     private String rejectionReason;
+    private Instant discontinuedAt;
 
-    public Product(ProductId id, String code, String name, String nameEn, UUID categoryId,
-                   String description, String descriptionEn, String brand, TaxClass taxClass,
-                   boolean customizable, List<ProductImage> images, ProductStatus status,
-                   long version, Instant createdAt, String createdBy,
-                   Instant lastModifiedAt, String lastModifiedBy,
+    public Product(ProductId id, String code, String name, String nameEn, UUID brandId, UUID categoryId,
+                   String shortDescription, String description, String descriptionEn, TaxClass taxClass,
+                   ProductKind kind, ProductStatus status, long version,
                    UUID submittedBy, Instant submittedAt, UUID approvedBy, Instant approvedAt,
-                   String rejectionReason, BigDecimal weightKg, BigDecimal lengthCm,
-                   BigDecimal widthCm, BigDecimal heightCm, BigDecimal packageWeightKg,
-                   BigDecimal packageLengthCm, BigDecimal packageWidthCm, BigDecimal packageHeightCm,
-                   Integer packageCount, boolean hazmat, boolean oversized, StorageClass storageClass,
-                   boolean requiresAdultSignature, String shippingRestrictionNote) {
+                   String rejectionReason, Instant discontinuedAt) {
         this.id = Objects.requireNonNull(id, "id");
-        this.code = requireNonBlank(code, "code");
+        this.code = requireCode(code);
         this.name = requireNonBlank(name, "name");
-        this.nameEn = requireNonBlank(nameEn, "nameEn");
+        this.nameEn = nameEn;
+        this.brandId = brandId;
         this.categoryId = categoryId;
+        this.shortDescription = shortDescription;
         this.description = description;
         this.descriptionEn = descriptionEn;
-        this.brand = requireNonBlank(brand, "brand");
-        this.taxClass = Objects.requireNonNull(taxClass, "taxClass");
-        this.customizable = customizable;
-        this.images = new ArrayList<>(images == null ? List.of() : images);
+        this.taxClass = taxClass;
+        this.kind = Objects.requireNonNullElse(kind, ProductKind.STANDARD);
         this.status = Objects.requireNonNull(status, "status");
         this.version = version;
-        this.createdAt = createdAt;
-        this.createdBy = createdBy;
-        this.lastModifiedAt = lastModifiedAt;
-        this.lastModifiedBy = lastModifiedBy;
         this.submittedBy = submittedBy;
         this.submittedAt = submittedAt;
         this.approvedBy = approvedBy;
         this.approvedAt = approvedAt;
         this.rejectionReason = rejectionReason;
-        this.weightKg = requirePositive(weightKg, "weightKg");
-        this.lengthCm = requirePositive(lengthCm, "lengthCm");
-        this.widthCm = requirePositive(widthCm, "widthCm");
-        this.heightCm = requirePositive(heightCm, "heightCm");
-        this.packageWeightKg = requirePositive(packageWeightKg, "packageWeightKg");
-        this.packageLengthCm = requirePositive(packageLengthCm, "packageLengthCm");
-        this.packageWidthCm = requirePositive(packageWidthCm, "packageWidthCm");
-        this.packageHeightCm = requirePositive(packageHeightCm, "packageHeightCm");
-        this.packageCount = requirePositive(packageCount, "packageCount");
-        this.hazmat = hazmat;
-        this.oversized = oversized;
-        this.storageClass = java.util.Objects.requireNonNullElse(storageClass, StorageClass.NORMAL);
-        this.requiresAdultSignature = requiresAdultSignature;
-        this.shippingRestrictionNote = shippingRestrictionNote;
+        this.discontinuedAt = discontinuedAt;
     }
 
     /** A new product master row, always born {@link ProductStatus#DRAFT}. */
-    public static Product draft(String code, String name, String nameEn, UUID categoryId,
-                                String description, String descriptionEn, String brand,
-                                TaxClass taxClass, boolean customizable, List<ProductImage> images,
-                                BigDecimal weightKg, BigDecimal lengthCm, BigDecimal widthCm,
-                                BigDecimal heightCm, BigDecimal packageWeightKg,
-                                BigDecimal packageLengthCm, BigDecimal packageWidthCm,
-                                BigDecimal packageHeightCm, Integer packageCount, boolean hazmat,
-                                boolean oversized, StorageClass storageClass, boolean requiresAdultSignature,
-                                String shippingRestrictionNote) {
-        return new Product(ProductId.newId(), code, name, nameEn, categoryId, description,
-                descriptionEn, brand, taxClass, customizable, images, ProductStatus.DRAFT, 0L,
-                null, null, null, null, null, null, null, null, null,
-                weightKg, lengthCm, widthCm, heightCm, packageWeightKg, packageLengthCm,
-                packageWidthCm, packageHeightCm, packageCount, hazmat, oversized, storageClass,
-                requiresAdultSignature, shippingRestrictionNote);
+    public static Product draft(String code, String name, String nameEn, UUID brandId, UUID categoryId,
+                                String shortDescription, String description, String descriptionEn,
+                                TaxClass taxClass, ProductKind kind) {
+        return new Product(ProductId.newId(), code, name, nameEn, brandId, categoryId, shortDescription,
+                description, descriptionEn, taxClass, kind, ProductStatus.DRAFT, 0L,
+                null, null, null, null, null, null);
     }
 
     /**
-     * Replace every editable field. {@code code} is not a parameter: it is fixed at creation, the
-     * same way {@code Sku}/{@code OrderNumber} are immutable once assigned elsewhere in this
-     * codebase.
+     * Replace every editable field. {@code code} is not a parameter: it is fixed at creation.
      *
      * <p>{@code DRAFT}-only: no business rule defines what an edit means once a product is
      * {@code PENDING_APPROVAL} or {@code APPROVED} — refusing outright is the honest choice until
-     * product/PM decide whether an edit should reset the workflow or is allowed to pass through.</p>
+     * product/PM decide whether an edit should reset the workflow or is allowed to pass through.
+     * The selling content (slug, SEO) is edited through the catalog and is not affected.</p>
      */
-    public void updateDetails(String name, String nameEn, UUID categoryId, String description,
-                              String descriptionEn, String brand, TaxClass taxClass,
-                              boolean customizable, List<ProductImage> images,
-                              BigDecimal weightKg, BigDecimal lengthCm, BigDecimal widthCm,
-                              BigDecimal heightCm, BigDecimal packageWeightKg,
-                              BigDecimal packageLengthCm, BigDecimal packageWidthCm,
-                              BigDecimal packageHeightCm, Integer packageCount, boolean hazmat,
-                              boolean oversized, StorageClass storageClass, boolean requiresAdultSignature,
-                              String shippingRestrictionNote) {
+    public void updateDetails(String name, String nameEn, UUID brandId, UUID categoryId, String shortDescription,
+                              String description, String descriptionEn, TaxClass taxClass, ProductKind kind) {
         requireStatus(ProductStatus.DRAFT, "edited");
         this.name = requireNonBlank(name, "name");
-        this.nameEn = requireNonBlank(nameEn, "nameEn");
+        this.nameEn = nameEn;
+        this.brandId = brandId;
         this.categoryId = categoryId;
+        this.shortDescription = shortDescription;
         this.description = description;
         this.descriptionEn = descriptionEn;
-        this.brand = requireNonBlank(brand, "brand");
-        this.taxClass = Objects.requireNonNull(taxClass, "taxClass");
-        this.customizable = customizable;
-        this.images.clear();
-        this.images.addAll(images == null ? List.of() : images);
-        this.weightKg = requirePositive(weightKg, "weightKg");
-        this.lengthCm = requirePositive(lengthCm, "lengthCm");
-        this.widthCm = requirePositive(widthCm, "widthCm");
-        this.heightCm = requirePositive(heightCm, "heightCm");
-        this.packageWeightKg = requirePositive(packageWeightKg, "packageWeightKg");
-        this.packageLengthCm = requirePositive(packageLengthCm, "packageLengthCm");
-        this.packageWidthCm = requirePositive(packageWidthCm, "packageWidthCm");
-        this.packageHeightCm = requirePositive(packageHeightCm, "packageHeightCm");
-        this.packageCount = requirePositive(packageCount, "packageCount");
-        this.hazmat = hazmat;
-        this.oversized = oversized;
-        this.storageClass = java.util.Objects.requireNonNullElse(storageClass, StorageClass.NORMAL);
-        this.requiresAdultSignature = requiresAdultSignature;
-        this.shippingRestrictionNote = shippingRestrictionNote;
+        this.taxClass = taxClass;
+        this.kind = Objects.requireNonNullElse(kind, ProductKind.STANDARD);
     }
 
     /**
-     * Submit for approval. BR-PRD-001's fuller precondition (name + category + UoM + ≥1 variant +
-     * dimensions) is WBS 3.1.9.1, a later story — those fields don't exist on this module yet, so
-     * only the minimal subset this module can actually check applies: a category must be set.
+     * Submit for approval. BR-PRD-001's fuller precondition (UoM, dimensions) is about the SKUs'
+     * inventory items now, not the product; what the product itself must have is a category. The
+     * product always has at least one variant — it is created with one.
      */
     public void submit(UUID submittedBy, Instant now) {
         requireCanTransitionTo(ProductStatus.PENDING_APPROVAL);
@@ -243,31 +158,24 @@ public final class Product extends AggregateRoot {
 
     /**
      * Terminal (WBS 3.1.8.1). Valid from {@code APPROVED} or {@code PUBLISHED} per
-     * {@link ProductStatus#canTransitionTo}.
+     * {@link ProductStatus#canTransitionTo}. {@code discontinuedAt} is what
+     * {@code ck_products_discontinued} requires of a discontinued row.
      *
      * <p><b>BR-PRD-005 is not enforced here</b> ("no open PO and no unshipped order line
-     * references it"): checking it needs {@code procurement} (still an empty skeleton — there is
-     * nothing to check against yet) and a cross-module read of {@code order}, which this module
-     * does not depend on today. Enforcing it properly belongs in the application service once
-     * procurement exists, not as a silent no-op invariant here — flagged rather than faked.</p>
+     * references it"): checking it needs cross-module reads of procurement and order, which belong
+     * in an application service, not in a silent no-op invariant here — flagged rather than faked.</p>
      */
     public void discontinue(Instant now) {
         requireCanTransitionTo(ProductStatus.DISCONTINUED);
         this.status = ProductStatus.DISCONTINUED;
-        registerEvent(new ProductEvent.Discontinued(
-                new ProductDiscontinued(id.value(), Objects.requireNonNull(now, "now"))));
+        this.discontinuedAt = Objects.requireNonNull(now, "now");
+        registerEvent(new ProductEvent.Discontinued(new ProductDiscontinued(id.value(), now)));
     }
 
-    /** Publication is separate from approval because only an approved gallery is customer-facing. */
-    public void publish() {
-        requireCanTransitionTo(ProductStatus.PUBLISHED);
-        this.status = ProductStatus.PUBLISHED;
-    }
-
-    /** Removes the product from the storefront without discarding its approved master data. */
-    public void unpublish() {
-        requireCanTransitionTo(ProductStatus.APPROVED);
-        this.status = ProductStatus.APPROVED;
+    /** Whether the product's media and variants may be changed now: not while it is under review,
+     *  and never once it is discontinued. */
+    public boolean acceptsChanges() {
+        return status != ProductStatus.PENDING_APPROVAL && status != ProductStatus.DISCONTINUED;
     }
 
     private void requireCanTransitionTo(ProductStatus target) {
@@ -283,24 +191,16 @@ public final class Product extends AggregateRoot {
         }
     }
 
+    private static String requireCode(String code) {
+        if (code == null || !CODE.matcher(code).matches()) {
+            throw new IllegalArgumentException("code must match " + CODE.pattern());
+        }
+        return code;
+    }
+
     private static String requireNonBlank(String value, String field) {
         if (value == null || value.isBlank()) {
             throw new IllegalArgumentException(field + " must not be blank");
-        }
-        return value;
-    }
-
-    /** {@code null} means "not yet known" and passes; a supplied value must be positive. */
-    private static BigDecimal requirePositive(BigDecimal value, String field) {
-        if (value != null && value.signum() <= 0) {
-            throw new IllegalArgumentException(field + " must be positive");
-        }
-        return value;
-    }
-
-    private static Integer requirePositive(Integer value, String field) {
-        if (value != null && value <= 0) {
-            throw new IllegalArgumentException(field + " must be positive");
         }
         return value;
     }
@@ -309,42 +209,19 @@ public final class Product extends AggregateRoot {
     public String code() { return code; }
     public String name() { return name; }
     public String nameEn() { return nameEn; }
+    public UUID brandId() { return brandId; }
     public UUID categoryId() { return categoryId; }
+    public String shortDescription() { return shortDescription; }
     public String description() { return description; }
     public String descriptionEn() { return descriptionEn; }
-    public String brand() { return brand; }
     public TaxClass taxClass() { return taxClass; }
-    public boolean customizable() { return customizable; }
-    public List<ProductImage> images() { return List.copyOf(images); }
-    public void addImage(ProductImage image) {
-        if (status == ProductStatus.DISCONTINUED || status == ProductStatus.PENDING_APPROVAL) {
-            throw new InvalidProductStatusTransitionException(id, "does not accept new media in this state");
-        }
-        images.add(image);
-    }
+    public ProductKind kind() { return kind; }
     public ProductStatus status() { return status; }
     public long version() { return version; }
-    public Instant createdAt() { return createdAt; }
-    public String createdBy() { return createdBy; }
-    public Instant lastModifiedAt() { return lastModifiedAt; }
-    public String lastModifiedBy() { return lastModifiedBy; }
     public UUID submittedBy() { return submittedBy; }
     public Instant submittedAt() { return submittedAt; }
     public UUID approvedBy() { return approvedBy; }
     public Instant approvedAt() { return approvedAt; }
     public String rejectionReason() { return rejectionReason; }
-    public BigDecimal weightKg() { return weightKg; }
-    public BigDecimal lengthCm() { return lengthCm; }
-    public BigDecimal widthCm() { return widthCm; }
-    public BigDecimal heightCm() { return heightCm; }
-    public BigDecimal packageWeightKg() { return packageWeightKg; }
-    public BigDecimal packageLengthCm() { return packageLengthCm; }
-    public BigDecimal packageWidthCm() { return packageWidthCm; }
-    public BigDecimal packageHeightCm() { return packageHeightCm; }
-    public Integer packageCount() { return packageCount; }
-    public boolean hazmat() { return hazmat; }
-    public boolean oversized() { return oversized; }
-    public StorageClass storageClass() { return storageClass; }
-    public boolean requiresAdultSignature() { return requiresAdultSignature; }
-    public String shippingRestrictionNote() { return shippingRestrictionNote; }
+    public Instant discontinuedAt() { return discontinuedAt; }
 }

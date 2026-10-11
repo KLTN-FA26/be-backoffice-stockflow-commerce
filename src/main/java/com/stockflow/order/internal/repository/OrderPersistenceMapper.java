@@ -4,7 +4,9 @@ import com.stockflow.order.internal.entity.OrderJpaEntity;
 import com.stockflow.order.internal.entity.OrderLineJpaEntity;
 import com.stockflow.order.internal.entity.OrderAddressJpaEmbeddable;
 
+import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
+import com.stockflow.order.api.PaymentStatus;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderId;
 import com.stockflow.order.internal.domain.OrderLine;
@@ -37,7 +39,7 @@ final class OrderPersistenceMapper {
                 })
                 .toList();
 
-        return new Order(
+        Order order = new Order(
                 new OrderId(entity.getId()),
                 new OrderNumber(entity.getOrderNumber()),
                 entity.getCustomerId(),
@@ -50,6 +52,12 @@ final class OrderPersistenceMapper {
                 entity.getCreatedBy(), entity.getLastModifiedAt(), entity.getLastModifiedBy(),
                 entity.getContactName(), entity.getContactEmail(), entity.getContactPhone(),
                 toDomain(entity.getShippingAddress()), toDomain(entity.getBillingAddress()));
+        order.restoreTermsAndRelease(entity.getPaymentTerm(), entity.getDepositRequired(),
+                entity.getDepositReceivedAt(), entity.getWarehouseId(), entity.getReleasedAt(),
+                entity.getReleasedBy());
+        order.restorePaymentAndCancellation(entity.getPaidAmount(), entity.getPaidInFullAt(),
+                entity.getCancellationReasonCode(), entity.getCancellationRetainedAmount(), entity.getCreditTermDays());
+        return order;
     }
 
     static OrderJpaEntity toNewEntity(Order order) {
@@ -67,7 +75,15 @@ final class OrderPersistenceMapper {
                 order.contactPhone(), toEntity(order.shippingAddress()),
                 toEntity(order.billingAddress()));
         entity.replaceLines(toLineEntities(order));
+        applyTermsAndRelease(order, entity);
         return entity;
+    }
+
+    private static void applyTermsAndRelease(Order order, OrderJpaEntity entity) {
+        entity.applyTermsAndRelease(order.paymentTerm(), order.depositRequired(), order.depositReceivedAt(),
+                order.warehouseId(), order.releasedAt(), order.releasedBy());
+        entity.applyPaymentAndCancellation(order.paidAmount(), order.paidInFullAt(), order.cancellationReasonCode(),
+                order.cancellationRetainedAmount(), order.creditTermDays());
     }
 
     /** For the paginated order-history query only. Deliberately never touches {@code
@@ -102,7 +118,16 @@ final class OrderPersistenceMapper {
                 entity.getLastModifiedAt(),
                 entity.getLastModifiedBy(),
                 entity.getContactName(), entity.getContactEmail(), entity.getContactPhone(),
-                toSummary(entity.getShippingAddress()), null);
+                toSummary(entity.getShippingAddress()), null,
+                entity.getPaymentTerm(), entity.getWarehouseId(), entity.getReleasedAt(),
+                new OrderSummary.Payment(entity.getPaidAmount(), entity.getDepositRequired(),
+                        entity.getDepositReceivedAt(), entity.getPaidInFullAt(),
+                        PaymentStatus.of(entity.getPaymentTerm(), entity.getPaidAmount(), entity.getPaidInFullAt()),
+                        entity.getCreditTermDays()),
+                entity.getStatus() == OrderStatus.CANCELLED
+                        ? new OrderSummary.Cancellation(entity.getCancellationReasonCode(),
+                                entity.getCancellationReason(), entity.getCancellationRetainedAmount())
+                        : null);
     }
 
     private static OrderSummary.AddressSummary toSummary(OrderAddressJpaEmbeddable a) {
@@ -119,6 +144,7 @@ final class OrderPersistenceMapper {
         entity.apply(order.status(), total.amount(),
                 total.currency().getCurrencyCode(), order.cancellationReason());
         entity.replaceLines(toLineEntities(order));
+        applyTermsAndRelease(order, entity);
     }
 
     private static List<OrderLineJpaEntity> toLineEntities(Order order) {

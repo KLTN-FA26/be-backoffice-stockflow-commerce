@@ -1,7 +1,7 @@
 package com.stockflow.warehouse.internal.repository;
 
-import com.stockflow.warehouse.internal.entity.ShelfJpaEntity;
 import com.stockflow.common.persistence.BaseJpaRepository;
+import com.stockflow.warehouse.internal.entity.ShelfJpaEntity;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -25,4 +25,9 @@ interface ShelfJpaRepository extends BaseJpaRepository<ShelfJpaEntity> {
             where s.id = :id
             """)
     Optional<ShelfJpaEntity> findByIdWithLevels(@Param("id") UUID id);
+
+    @Query("select s.warehouseId from ShelfJpaEntity s where s.id = :id")
+    Optional<UUID> findWarehouseIdById(@Param("id") UUID id);
+
+    boolean existsByWarehouseIdAndCode(UUID warehouseId, String code);
 }

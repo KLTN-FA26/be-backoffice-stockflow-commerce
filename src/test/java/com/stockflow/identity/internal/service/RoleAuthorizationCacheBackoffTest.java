@@ -97,6 +97,7 @@ class RoleAuthorizationCacheBackoffTest {
             public Long getVersion() { return version; }
             public String getResource() { return resource; }
             public String getAction() { return action; }
+            public String getDataScope() { return "ALL"; }
         };
     }
 

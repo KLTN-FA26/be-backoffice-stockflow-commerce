@@ -43,8 +43,41 @@ public record OrderResponse(
         String contactEmail,
         String contactPhone,
         Address shippingAddress,
-        Address billingAddress
+        Address billingAddress,
+
+        @Schema(example = "PREPAID", description = "PREPAID, DEPOSIT or CREDIT; null on list rows that do not carry it")
+        String paymentTerm,
+
+        @Schema(description = "The warehouse the order was released from; null until released (SCRUM-423)")
+        UUID warehouseId,
+
+        Instant releasedAt,
+
+        @Schema(description = "Money received so far; null on rows that do not carry it")
+        BigDecimal paidAmount,
+
+        @Schema(description = "The deposit a DEPOSIT order needs before it is confirmed; null otherwise")
+        BigDecimal depositRequired,
+
+        Instant depositReceivedAt,
+        Instant paidInFullAt,
+
+        @Schema(example = "PARTIALLY_PAID", description = "UNPAID, PARTIALLY_PAID, ON_CREDIT or PAID (kltn-docs 15 §5.2)")
+        String paymentStatus,
+
+        @Schema(description = "A credit order's days to pay after delivery; null otherwise")
+        Integer creditTermDays,
+
+        @Schema(description = "Set when the order is CANCELLED")
+        Cancellation cancellation
 ) {
+
+    @Schema(name = "OrderCancellation")
+    public record Cancellation(
+            @Schema(example = "CUSTOMER_REQUEST") String reasonCode,
+            String reason,
+            @Schema(description = "Kept from the money received for work already done") BigDecimal retainedAmount) {
+    }
 
     public record Address(String recipientName, String phone, String line1, String line2,
                           String wardCode, String wardName, String provinceCode,

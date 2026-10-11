@@ -11,4 +11,7 @@ public interface RoleGrantRow {
     String getResource();
 
     String getAction();
+
+    /** The role's {@code data_scope}, repeated on every row. */
+    String getDataScope();
 }

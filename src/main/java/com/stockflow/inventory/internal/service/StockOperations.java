@@ -2,6 +2,8 @@ package com.stockflow.inventory.internal.service;
 
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.inventory.api.MoveStockCommand;
+import com.stockflow.inventory.api.ReceiveStockCommand;
+import com.stockflow.inventory.api.ReclassifyStockCommand;
 import com.stockflow.inventory.api.RequestAdjustmentCommand;
 import com.stockflow.inventory.api.StockAdjustmentStatus;
 import com.stockflow.inventory.api.StockAdjustmentSummary;
@@ -20,11 +22,18 @@ public interface StockOperations {
 
     StockMove move(MoveStockCommand command);
 
+    StockMove receive(ReceiveStockCommand command);
+
+    StockMove reclassify(ReclassifyStockCommand command);
+
     StockAdjustmentSummary requestAdjustment(RequestAdjustmentCommand command);
 
     StockAdjustmentSummary approve(UUID adjustmentId, UUID approverId);
 
     StockAdjustmentSummary reject(UUID adjustmentId, UUID approverId, String reason);
+
+    /** The requester takes back an adjustment nobody has decided yet (SCRUM-459). */
+    StockAdjustmentSummary withdraw(UUID adjustmentId, UUID userId);
 
     Optional<StockAdjustmentSummary> findAdjustment(UUID adjustmentId);
 
@@ -34,7 +43,7 @@ public interface StockOperations {
     /** One line of the stock history, as the screen shows it. */
     record LedgerLine(UUID movementId, StockMovement.MovementType type, String sku, String lotNumber,
                       String fromLocation, String toLocation, int quantity, String status,
-                      String referenceType, UUID referenceId, String reason, UUID actorId,
+                      String toStatus, String referenceType, UUID referenceId, String reason, UUID actorId,
                       java.time.Instant occurredAt) {
     }
 

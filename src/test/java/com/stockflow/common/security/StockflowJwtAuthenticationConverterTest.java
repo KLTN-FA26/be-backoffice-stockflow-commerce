@@ -63,14 +63,28 @@ class StockflowJwtAuthenticationConverterTest {
                 .containsExactlyInAnyOrder("PROCUREMENT_STAFF", "procurement-purchase-orders:READ");
     }
 
+    /** Custom roles exist since SCRUM-455: the lookup, which only knows real roles, decides. */
     @Test
-    void unknownRolesAreNeitherGrantedNorLookedUp() {
+    void customRoleCodesReachTheLookup() {
         var converter = converterGranting(new ResolvedAuthorization(Set.of(PO_READ), DataScope.ALL));
 
-        var auth = converter.convert(token(List.of("PROCUREMENT_STAFF", "GOD_MODE"), null));
+        var auth = converter.convert(token(List.of("PROCUREMENT_STAFF", "SHIFT_LEAD"), null));
+
+        assertThat(asked).containsExactly(List.of("PROCUREMENT_STAFF", "SHIFT_LEAD"));
+        assertThat(authorities(auth.getAuthorities()))
+                .containsExactlyInAnyOrder("PROCUREMENT_STAFF", "SHIFT_LEAD", "procurement-purchase-orders:READ");
+    }
+
+    /** A value not shaped like a role code could pass for a permission authority; it never gets in. */
+    @Test
+    void malformedRoleValuesAreDroppedBeforeTheLookup() {
+        var converter = converterGranting(new ResolvedAuthorization(Set.of(PO_READ), DataScope.ALL));
+
+        var auth = converter.convert(token(List.of("PROCUREMENT_STAFF", "identity-rbac:APPROVE", "lower_case", ""), null));
 
         assertThat(asked).containsExactly(List.of("PROCUREMENT_STAFF"));
-        assertThat(authorities(auth.getAuthorities())).doesNotContain("GOD_MODE");
+        assertThat(authorities(auth.getAuthorities()))
+                .doesNotContain("identity-rbac:APPROVE", "lower_case", "");
     }
 
     @Test

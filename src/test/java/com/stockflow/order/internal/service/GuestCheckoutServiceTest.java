@@ -35,6 +35,35 @@ import static org.mockito.Mockito.when;
 class GuestCheckoutServiceTest {
 
     @Test
+    void publicDesignCheckoutCannotFallBackToTheSubmittedPriceAfterQuoteSplit() {
+        OrderRepository orders = mock(OrderRepository.class);
+        InventoryService inventory = mock(InventoryService.class);
+        when(orders.findByRequestId(any())).thenReturn(Optional.empty());
+        var service = new OrderServiceImpl(orders,
+                mock(com.stockflow.order.internal.repository.OrderSearchRepository.class),
+                inventory, mock(OrderEventPublisher.class), Clock.systemUTC(), mock(DesignService.class),
+                mock(OrderHoldJpaRepository.class), mock(CustomerService.class), catalog(),
+                mock(com.stockflow.order.internal.domain.OrderPayments.class),
+                mock(com.stockflow.order.internal.domain.CancellationRequestRepository.class),
+                mock(com.stockflow.order.internal.domain.CreditChecks.class),
+                mock(com.stockflow.payment.api.PaymentService.class));
+        var command = new PlaceOrderCommand(UUID.randomUUID(), UUID.randomUUID(), null, null, true,
+                List.of(new PlaceOrderCommand.Line(new Sku("TABLE-OAK"), 1, Money.vnd(1), UUID.randomUUID())));
+
+        assertThatThrownBy(() -> service.placeOrder(command))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.DESIGN_QUOTE_REQUIRED));
+        verify(orders, org.mockito.Mockito.never()).save(any());
+        verify(inventory, org.mockito.Mockito.never()).reserve(any());
+    }
+
+    private static com.stockflow.catalog.api.CatalogService catalog() {
+        var catalog = mock(com.stockflow.catalog.api.CatalogService.class);
+        when(catalog.checkoutPrices(any())).thenReturn(java.util.Map.of("TABLE-OAK", Money.vnd(100)));
+        return catalog;
+    }
+
+    @Test
     void accountCheckoutResolvesSavedAddressesAndFreezesThemOnTheOrder() {
         OrderRepository orders = mock(OrderRepository.class);
         InventoryService inventory = mock(InventoryService.class);
@@ -53,12 +82,18 @@ class GuestCheckoutServiceTest {
                 List.of(new com.stockflow.inventory.api.StockReservation(UUID.randomUUID(),
                         UUID.randomUUID(), "A-01", null, 1)), 1, 0, now));
         when(orders.save(any())).thenAnswer(call -> call.getArgument(0));
+        when(customers.lockCreditTerms(customerId))
+                .thenReturn(com.stockflow.customer.api.CreditTerms.prepaidOnly(customerId));
         when(customers.resolveCheckout(customerId, shippingId, null))
                 .thenReturn(new CheckoutCustomer(customerId, "Minh", "minh@example.com",
                         "0901234567", address, address));
         var service = new OrderServiceImpl(orders, mock(com.stockflow.order.internal.repository.OrderSearchRepository.class), inventory, events,
                 Clock.fixed(now, ZoneOffset.UTC), mock(DesignService.class),
-                mock(OrderHoldJpaRepository.class), customers);
+                mock(OrderHoldJpaRepository.class), customers, catalog(),
+                mock(com.stockflow.order.internal.domain.OrderPayments.class),
+                mock(com.stockflow.order.internal.domain.CancellationRequestRepository.class),
+                mock(com.stockflow.order.internal.domain.CreditChecks.class),
+                mock(com.stockflow.payment.api.PaymentService.class));
 
         var result = service.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), customerId,
                 shippingId, null, true,
@@ -80,7 +115,11 @@ class GuestCheckoutServiceTest {
         CustomerService customers = mock(CustomerService.class);
         var service = new OrderServiceImpl(orders,
                 mock(com.stockflow.order.internal.repository.OrderSearchRepository.class), inventory, events,
-                Clock.systemUTC(), mock(DesignService.class), mock(OrderHoldJpaRepository.class), customers);
+                Clock.systemUTC(), mock(DesignService.class), mock(OrderHoldJpaRepository.class), customers, catalog(),
+                mock(com.stockflow.order.internal.domain.OrderPayments.class),
+                mock(com.stockflow.order.internal.domain.CancellationRequestRepository.class),
+                mock(com.stockflow.order.internal.domain.CreditChecks.class),
+                mock(com.stockflow.payment.api.PaymentService.class));
         var address = new PlaceGuestOrderCommand.Address("Minh", "0901234567", "12 Nguyen Hue",
                 null, "26734", "Ben Nghe", "79", "Ho Chi Minh City", "VN", null);
         var command = new PlaceGuestOrderCommand(UUID.randomUUID(), "guest@example.test", address, address,

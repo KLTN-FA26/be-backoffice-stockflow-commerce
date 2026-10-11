@@ -9,5 +9,11 @@ public enum SessionEndReason {
     /** The password changed and the user chose to end the other sessions. */
     PASSWORD_CHANGED,
     /** The user's roles changed, so tokens carrying the old permissions must not outlive it. */
-    ROLE_CHANGED
+    ROLE_CHANGED,
+    /** An administrator locked the account. */
+    ACCOUNT_LOCKED,
+    /** An administrator disabled the account. */
+    ACCOUNT_DISABLED,
+    /** An administrator set a new password; whoever held the old one must not stay signed in. */
+    PASSWORD_RESET
 }

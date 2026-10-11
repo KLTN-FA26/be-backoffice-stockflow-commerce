@@ -49,10 +49,10 @@ sequenceDiagram
 | 7 | procurement | system | `+qc_task` | COUNTED → QC_PENDING | `QcTaskCreated` |
 | 8 | procurement | QC staff | `+qc_result` | QC_PENDING → QC_PASSED | `QcCompleted(ACCEPTED)` |
 | 9 | procurement | Warehouse staff | `~goods_receipt.posted_at`; PO open qty recomputed | QC_PASSED → POSTED; PO → PARTIALLY_RECEIVED or RECEIVED | **`GoodsReceived`** |
-| 10 | inventory | system (consumer) | `+stock_item` at the dock location, condition GOOD | — | `StockReceived` |
+| 10 | inventory | system (consumer) | `+stock_item` at the receiving area's location (e.g. `HCM-RCV01`), condition GOOD | — | `StockReceived` |
 | 11 | warehouse | system (consumer) | `+putaway_task` with ranked suggestions | → CREATED | `PutawayTaskCreated` |
-| 12 | warehouse | Warehouse staff | `~putaway_task.actual_location` | CREATED → … → COMPLETED | **`PutawayCompleted`** |
-| 13 | inventory | system (consumer) | `~stock_item.location_code` | — | `StockLevelChanged` |
+| 12 | warehouse | Warehouse staff | `~putaway_task.target_location_id` (a `storage_location`) | CREATED → … → COMPLETED | **`PutawayCompleted`** |
+| 13 | inventory | system (consumer) | `~stock_item.location_code` → the bin's code, e.g. `HCM-A01-2-B` | — | `StockLevelChanged` |
 
 **Where this flow can go wrong, and what happens**
 

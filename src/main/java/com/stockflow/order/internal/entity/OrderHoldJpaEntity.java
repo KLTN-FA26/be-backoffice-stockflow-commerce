@@ -21,6 +21,10 @@ public class OrderHoldJpaEntity extends BaseEntity {
     public OrderHoldJpaEntity(UUID id, UUID orderId, String reason, Instant raisedAt) {
         super(id); this.orderId = orderId; this.reason = reason; this.raisedAt = raisedAt;
     }
+    public UUID getOrderId() { return orderId; }
+    public String getReason() { return reason; }
+    public Instant getRaisedAt() { return raisedAt; }
+    public Instant getResolvedAt() { return resolvedAt; }
     public void resolve(UUID actor, String note, Instant now) {
         if (resolvedAt != null) { return; }
         if (note == null || note.isBlank()) { throw new IllegalArgumentException("A hold resolution needs evidence"); }

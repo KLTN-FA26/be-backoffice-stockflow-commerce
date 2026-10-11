@@ -43,4 +43,35 @@ public final class ReferenceRows {
                 .executeUpdate();
         return id;
     }
+
+    /** A product and its default variant, as product creation leaves them. */
+    public record ProductRow(UUID productId, UUID variantId, String sku) {
+    }
+
+    /**
+     * A DRAFT {@code product.products} row with its default ACTIVE variant; the variant insert creates
+     * the SKU's inventory item (trigger). Since C1, a design draft's {@code product_id} and an order
+     * line's {@code sku} are foreign keys to these.
+     */
+    public static ProductRow product(EntityManager em) {
+        UUID productId = Identifiers.newId();
+        UUID variantId = Identifiers.newId();
+        String code = "T" + productId.toString().replace("-", "").substring(20).toUpperCase();
+        em.createNativeQuery("""
+                        INSERT INTO product.products (id, code, name, slug, status, version, created_at)
+                        VALUES (?1, ?2, 'Test product', ?3, 'DRAFT', 0, NOW())""")
+                .setParameter(1, productId)
+                .setParameter(2, code)
+                .setParameter(3, code.toLowerCase())
+                .executeUpdate();
+        em.createNativeQuery("""
+                        INSERT INTO product.variants (id, product_id, sku, name, status, is_default,
+                                                      attribute_signature, position, version, created_at)
+                        VALUES (?1, ?2, ?3, 'Test product', 'ACTIVE', TRUE, 'DEFAULT', 0, 0, NOW())""")
+                .setParameter(1, variantId)
+                .setParameter(2, productId)
+                .setParameter(3, code)
+                .executeUpdate();
+        return new ProductRow(productId, variantId, code);
+    }
 }

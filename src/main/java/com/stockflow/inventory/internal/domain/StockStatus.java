@@ -6,20 +6,31 @@ package com.stockflow.inventory.internal.domain;
  * <p>Only {@link #AVAILABLE} stock may be reserved or sold, which is what keeps goods still
  * awaiting QC (BRD 3.3.4) out of customer orders.</p>
  *
- * <p>State machine, from {@code docs/business-design/03-state-machines.md}:</p>
+ * <p>State machine, from the receiving docs (KLTN-FA26/docs 03 Receipt, 05 Putaway):</p>
  * <pre>
- *   QUARANTINE ──qcPassed──▶ AVAILABLE ──damageFound──▶ DAMAGED
- *        │                       │
- *        └──qcFailed──▶ DAMAGED  └──expiryReached──▶ EXPIRED
+ *   INBOUND ──putaway (no QC, or QC accepted)──▶ AVAILABLE ──damageFound──▶ DAMAGED
+ *      │                                             │
+ *      ├──QC: quarantine──▶ QUARANTINE ──accepted──▶ (putaway) AVAILABLE
+ *      │                        └──rejected──▶ BLOCKED   └──expiryReached──▶ EXPIRED
+ *      └──QC: rejected──▶ BLOCKED ──returned to supplier──▶ (leaves stock)
  * </pre>
+ *
+ * <p>{@link StockItem#receive} still creates {@link #QUARANTINE} stock; the receipt flow that
+ * starts goods as {@link #INBOUND} arrives with SCRUM-435.</p>
  */
 public enum StockStatus {
+
+    /** Received, not yet put away: in a RECEIVING or QUALITY_CONTROL area (docs 03). Not sellable. */
+    INBOUND,
 
     /** Passed QC, in a pickable location, counted towards available-to-promise. */
     AVAILABLE,
 
-    /** Awaiting or failed QC. Physically present, commercially invisible. */
+    /** Put on hold by QC, waiting for a second decision. Physically present, commercially invisible. */
     QUARANTINE,
+
+    /** Rejected by QC, waiting to go back to the supplier. Never sold, never put away. */
+    BLOCKED,
 
     /** Damaged in handling; awaiting a write-off decision. */
     DAMAGED,
@@ -35,14 +46,14 @@ public enum StockStatus {
     public boolean isReservable() {
         return switch (this) {
             case AVAILABLE -> true;
-            case QUARANTINE, DAMAGED, EXPIRED -> false;
+            case INBOUND, QUARANTINE, BLOCKED, DAMAGED, EXPIRED -> false;
         };
     }
 
     /** Whether stock in this status still counts as company property on the balance sheet. */
     public boolean isOnBalanceSheet() {
         return switch (this) {
-            case AVAILABLE, QUARANTINE, DAMAGED -> true;
+            case INBOUND, AVAILABLE, QUARANTINE, BLOCKED, DAMAGED -> true;
             case EXPIRED -> false;
         };
     }

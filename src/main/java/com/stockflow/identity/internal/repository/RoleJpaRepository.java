@@ -16,6 +16,14 @@ public interface RoleJpaRepository extends BaseJpaRepository<RoleJpaEntity> {
 
     Optional<RoleJpaEntity> findByCode(String code);
 
+    boolean existsByCode(String code);
+
+    List<RoleJpaEntity> findByCodeIn(java.util.Collection<String> codes);
+
+    /** Holders per role, for the role list: {@code [roleId, count]}. */
+    @Query("select ur.roleId, count(ur) from UserRoleJpaEntity ur group by ur.roleId")
+    List<Object[]> countHoldersPerRole();
+
     List<RoleJpaEntity> findAllByOrderByCodeAsc();
 
     /** Every role's current version, for the authorisation cache's version pointer (ADR-0008). */
@@ -34,7 +42,7 @@ public interface RoleJpaRepository extends BaseJpaRepository<RoleJpaEntity> {
      * returns no rows.</p>
      */
     @Query(value = """
-            SELECT r.version AS version, p.resource AS resource, p.action AS action
+            SELECT r.version AS version, p.resource AS resource, p.action AS action, r.data_scope AS dataScope
             FROM identity.app_role r
             LEFT JOIN identity.role_permission rp ON rp.role_id = r.id
             LEFT JOIN identity.permission p ON p.id = rp.permission_id

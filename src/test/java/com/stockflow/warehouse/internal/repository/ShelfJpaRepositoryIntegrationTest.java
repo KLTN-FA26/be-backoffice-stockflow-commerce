@@ -1,6 +1,7 @@
 package com.stockflow.warehouse.internal.repository;
 
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.warehouse.internal.domain.AreaType;
@@ -97,20 +98,6 @@ class ShelfJpaRepositoryIntegrationTest {
         assertThat(areas.findById(officeId).orElseThrow().getLocation()).isNull();
     }
 
-    /**
-     * Until contract C2 the flat model's {@code warehouse.code} is still {@code NOT NULL}; the
-     * entity fills it with the prefix, or no warehouse could be created at all.
-     */
-    @Test
-    @DisplayName("a new warehouse fills the legacy code column with its prefix")
-    void newWarehouseWritesTheLegacyCode() {
-        UUID id = warehouse("HN").getId();
-        entityManager.flush();
-
-        assertThat(jdbc.queryForObject("select code from warehouse.warehouse where id = ?",
-                String.class, id)).isEqualTo("HN");
-    }
-
     @Test
     @DisplayName("a location owned by no bin and no area is refused at commit")
     void anOrphanLocationIsRefused() {
@@ -149,13 +136,10 @@ class ShelfJpaRepositoryIntegrationTest {
     @Test
     @DisplayName("the demo warehouse HCM reads back through the mapping")
     void demoWarehouseReadsBack() {
-        UUID shelfId = entityManager.createQuery("""
-                        select s.id from ShelfJpaEntity s, WarehouseJpaEntity w
-                        where s.warehouseId = w.id and w.prefix = 'HCM' and s.code = 'A01'""",
-                        UUID.class)
-                .getSingleResult();
-
-        ShelfJpaEntity a01 = shelves.findByIdWithLevels(shelfId).orElseThrow();
+        ShelfJpaEntity a01 = shelves.findByIdWithLevels(DemoData.shelf("A01")).orElseThrow();
+        assertThat(a01.getWarehouseId()).isEqualTo(DemoData.WAREHOUSE_HCM);
+        assertThat(a01.getCode()).isEqualTo("A01");
+        assertThat(a01.getZoneId()).isEqualTo(DemoData.ZONE_HCM_A);
         assertThat(a01.getLevels()).hasSize(2);
         assertThat(a01.getLevels().get(0).getBins())
                 .extracting(b -> b.getLocation().getLocationCode())
