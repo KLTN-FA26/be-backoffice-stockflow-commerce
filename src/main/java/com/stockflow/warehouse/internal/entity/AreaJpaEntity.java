@@ -104,6 +104,31 @@ public class AreaJpaEntity extends BaseEntity {
         this.status = status;
     }
 
+    /** Everything about an area that may change; warehouse and code never do (BR-13). */
+    public void apply(AreaType type, String name, BigDecimal x, BigDecimal y, BigDecimal width, BigDecimal length,
+                      int rotation, boolean obstacle, LocationStatus status) {
+        this.type = type;
+        this.name = name;
+        this.x = x;
+        this.y = y;
+        this.width = width;
+        this.length = length;
+        this.rotation = rotation;
+        this.obstacle = obstacle;
+        this.status = status;
+    }
+
+    /**
+     * Gives a {@code NON_STORAGE} area that becomes a storage area its location (issue #18 D10). Once
+     * only: the link never changes or goes back to {@code null} ({@code tg_area_immutable}).
+     */
+    public void attachLocation(StorageLocationJpaEntity location) {
+        if (this.location != null) {
+            throw new IllegalStateException("Area " + code + " already has a storage location");
+        }
+        this.location = location;
+    }
+
     public UUID getWarehouseId() { return warehouseId; }
     public StorageLocationJpaEntity getLocation() { return location; }
     public String getCode() { return code; }

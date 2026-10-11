@@ -12,8 +12,12 @@ import java.util.function.Function;
  * them looks trivial — {@code page + 1 < totalPages} — and is exactly the kind of arithmetic that
  * gets written slightly differently in three screens, with one of them being off by one on the last
  * page. Deriving them once, on the side that already knows the totals, removes the question.</p>
+ *
+ * <p>No {@code name} on the {@code @Schema}: a fixed name makes springdoc publish one schema for
+ * every {@code PageResponse<X>}, so the last one generated wins and every endpoint's {@code items} is
+ * documented as that one type. Unnamed, each gets its own, e.g. {@code PageResponseWarehouseResponse}.</p>
  */
-@Schema(name = "Page", description = "One page of results")
+@Schema(description = "One page of results")
 public record PageResponse<T>(
 
         List<T> items,

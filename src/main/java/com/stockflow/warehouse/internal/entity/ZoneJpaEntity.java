@@ -40,6 +40,11 @@ public class ZoneJpaEntity extends BaseEntity {
         this.color = color;
     }
 
+    public void apply(String name, String color) {
+        this.name = name;
+        this.color = color;
+    }
+
     public UUID getWarehouseId() { return warehouseId; }
     public String getName() { return name; }
     public String getColor() { return color; }

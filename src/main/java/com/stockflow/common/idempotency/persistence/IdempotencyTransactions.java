@@ -1,5 +1,6 @@
 package com.stockflow.common.idempotency.persistence;
 
+import com.stockflow.common.logging.LogSafe;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.idempotency.IdempotencyRecord;
 import org.slf4j.Logger;
@@ -94,7 +95,7 @@ class IdempotencyTransactions {
         if (entity.isAbandonedClaimAt(now)) {
             log.warn("Idempotency key {} held an IN_PROGRESS claim older than {} - the request that "
                             + "made it did not finish. Releasing the key.",
-                    key, IdempotencyRecordEntity.CLAIM_TIMEOUT);
+                    LogSafe.text(key), IdempotencyRecordEntity.CLAIM_TIMEOUT);
             repository.delete(entity);
             return Optional.empty();
         }

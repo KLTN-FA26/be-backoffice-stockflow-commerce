@@ -33,7 +33,8 @@ class CustomerServiceImplTest {
         when(identities.registerCustomer(any())).thenReturn(new RegisteredAccount(userId,
                 new TokenResponse("jwt", "Bearer", 3600)));
         when(customers.save(any())).thenAnswer(call -> call.getArgument(0));
-        var service = new CustomerServiceImpl(customers, mock(CustomerSearchRepository.class), identities);
+        var service = new CustomerServiceImpl(customers, mock(CustomerSearchRepository.class), identities,
+                mock(com.stockflow.customer.internal.domain.CreditProfileRepository.class), java.time.Clock.systemUTC());
 
         var result = service.register(new RegisterCustomerCommand("Customer",
                 " Customer@Example.COM ", "0901234567", "StrongPass1"));
@@ -51,7 +52,8 @@ class CustomerServiceImplTest {
         when(customers.findByEmail("customer@example.com"))
                 .thenReturn(Optional.of(Customer.register(UUID.randomUUID(), UUID.randomUUID(),
                         "Customer", "customer@example.com", "0901234567")));
-        var service = new CustomerServiceImpl(customers, mock(CustomerSearchRepository.class), identities);
+        var service = new CustomerServiceImpl(customers, mock(CustomerSearchRepository.class), identities,
+                mock(com.stockflow.customer.internal.domain.CreditProfileRepository.class), java.time.Clock.systemUTC());
 
         assertThatThrownBy(() -> service.register(new RegisterCustomerCommand("Customer",
                 "Customer@Example.com", "0901234567", "StrongPass1")))
@@ -71,7 +73,8 @@ class CustomerServiceImplTest {
     private CustomerServiceImpl serviceWith(Customer customer) {
         CustomerRepository customers = mock(CustomerRepository.class);
         when(customers.findById(customer.id())).thenReturn(Optional.of(customer));
-        return new CustomerServiceImpl(customers, mock(CustomerSearchRepository.class), mock(IdentityService.class));
+        return new CustomerServiceImpl(customers, mock(CustomerSearchRepository.class), mock(IdentityService.class),
+                mock(com.stockflow.customer.internal.domain.CreditProfileRepository.class), java.time.Clock.systemUTC());
     }
 
     @Test

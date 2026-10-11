@@ -22,6 +22,10 @@ import java.util.UUID;
 @Mapper(componentModel = "spring", unmappedTargetPolicy = ReportingPolicy.ERROR)
 interface ProductWebMapper {
 
+    /** The code is upper-cased here: {@code ck_products_code} accepts upper case only, and a code is
+     *  also the default variant's SKU. */
+    @Mapping(target = "code",
+            expression = "java(request.code() == null ? null : request.code().strip().toUpperCase(java.util.Locale.ROOT))")
     CreateProductCommand toCommand(CreateProductRequest request);
 
     @Mapping(target = "productId", source = "productId")

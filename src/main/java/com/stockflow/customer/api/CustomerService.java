@@ -50,4 +50,26 @@ public interface CustomerService {
 
     /** Resolves defaults and returns immutable checkout data without exposing internal entities. */
     CheckoutCustomer resolveCheckout(UUID customerId, UUID shippingAddressId, UUID billingAddressId);
+
+    /**
+     * The customer's commercial terms (kltn-docs 18 §3); prepaid only when none were set (SCRUM-427).
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code CUSTOMER_NOT_FOUND}
+     */
+    CreditTerms creditTerms(UUID customerId);
+
+    /**
+     * {@link #creditTerms}, with the customer row locked for the rest of the caller's transaction: two
+     * credit orders of one customer are checked against the limit one after the other, never on the
+     * same exposure (kltn-docs 15 BR-03).
+     */
+    CreditTerms lockCreditTerms(UUID customerId);
+
+    /**
+     * Set the terms; whoever approves credit only (18 BR-02), recorded with who and when.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code CREDIT_PROFILE_INVALID},
+     *         {@code CUSTOMER_NOT_FOUND}, {@code OPTIMISTIC_LOCK} when they changed since read
+     */
+    CreditTerms saveCreditTerms(SaveCreditTermsCommand command);
 }

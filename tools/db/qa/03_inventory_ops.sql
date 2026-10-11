@@ -176,5 +176,41 @@ SELECT pg_temp.expect_ok('I36 two document types on one day', $q$
 SELECT pg_temp.expect_fail('I37 lowercase document type', $q$
     INSERT INTO platform.document_sequence (document_type, sequence_date) VALUES ('gr', CURRENT_DATE) $q$);
 
+\echo '--- holds: a deadline only while the order waits for payment (SCRUM-465, V20261013000100)'
+SELECT pg_temp.expect_ok('I38 a pinned hold (no deadline) on a stock row', $q$
+    INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at,
+                                         created_at, paid_amount, paid_in_full_at)
+    VALUES (md5('qa:order:pinned')::uuid, 'SO-QA-PIN', 'c0000000-0000-4000-8000-000000000001', gen_random_uuid(), 'CONFIRMED',
+            10000000, 'VND', NOW(), NOW(), 10000000, NOW());
+    INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity,
+                                            reserved_at, expires_at, status)
+    SELECT md5('qa:res:pinned')::uuid, s.id, md5('qa:order:pinned')::uuid, md5('qa:req:pinned')::uuid,
+           md5('qa:req:pinned')::uuid, 1, NOW(), NULL, 'HELD'
+      FROM inventory.stock_item s WHERE s.sku = 'SOFA-3S-GREY' AND s.location_code = 'HCM-A01-2-B' LIMIT 1 $q$);
+SELECT pg_temp.expect_fail('I39 an EXPIRED hold that never had a deadline', $q$
+    UPDATE inventory.stock_reservation SET status = 'EXPIRED', release_reason = 'RESERVATION_EXPIRED',
+           closed_at = NOW() WHERE id = md5('qa:res:pinned')::uuid $q$);
+SELECT pg_temp.expect_ok('I40 a pinned hold released when its order is cancelled', $q$
+    UPDATE inventory.stock_reservation SET status = 'RELEASED', release_reason = 'ORDER_CANCELLED',
+           closed_at = NOW() WHERE id = md5('qa:res:pinned')::uuid $q$);
+
+\echo '--- adjustment withdrawal, scrap and samples (SCRUM-459)'
+SELECT pg_temp.expect_fail('I41 a SCRAP adjustment that adds stock', $q$
+    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by)
+    VALUES (gen_random_uuid(), 'ADJ-QA-S1', 'HCM-A01-2-B', 'SOFA-3S-GREY', 2, 'SCRAP', md5('demo:user:editor')::uuid) $q$);
+SELECT pg_temp.expect_ok('I42 a SAMPLE adjustment that takes stock', $q$
+    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by)
+    VALUES (md5('qa:adj:sample')::uuid, 'ADJ-QA-S2', 'HCM-A01-2-B', 'SOFA-3S-GREY', -1, 'SAMPLE', md5('demo:user:editor')::uuid) $q$);
+SELECT pg_temp.expect_fail('I43 WITHDRAWN without the time it was withdrawn', $q$
+    UPDATE inventory.stock_adjustment SET status = 'WITHDRAWN' WHERE id = md5('qa:adj:sample')::uuid $q$);
+SELECT pg_temp.expect_fail('I44 WITHDRAWN with a decider', $q$
+    UPDATE inventory.stock_adjustment SET status = 'WITHDRAWN', withdrawn_at = NOW(),
+           decided_by = md5('demo:user:approver')::uuid, decided_at = NOW() WHERE id = md5('qa:adj:sample')::uuid $q$);
+SELECT pg_temp.expect_ok('I45 withdrawn by its requester', $q$
+    UPDATE inventory.stock_adjustment SET status = 'WITHDRAWN', withdrawn_at = NOW() WHERE id = md5('qa:adj:sample')::uuid $q$);
+SELECT pg_temp.expect_fail('I46 a pending adjustment that says it was withdrawn', $q$
+    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by, withdrawn_at)
+    VALUES (gen_random_uuid(), 'ADJ-QA-S3', 'HCM-A01-2-B', 'SOFA-3S-GREY', -1, 'DAMAGED', md5('demo:user:editor')::uuid, NOW()) $q$);
+
 ROLLBACK;
 \echo 'PASS 03_inventory_ops'

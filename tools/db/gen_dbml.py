@@ -26,9 +26,9 @@ def q(sql):
                         "-At", "-c", sql], capture_output=True, text=True, check=True)
     return r.stdout.strip()
 
-SCHEMAS = ["product", "inventory", "warehouse", "procurement", "ordering", "customer", "payment",
+SCHEMAS = ["product", "inventory", "warehouse", "procurement", "production", "ordering", "customer", "payment",
            "design", "fulfillment", "catalog", "chat", "notification", "reporting", "identity", "platform", "public"]
-COLORS = {"product": "#2E86AB", "inventory": "#3E7C4A", "warehouse": "#8E6C3A", "procurement": "#7D5BA6",
+COLORS = {"product": "#2E86AB", "inventory": "#3E7C4A", "warehouse": "#8E6C3A", "procurement": "#7D5BA6", "production": "#E67E22",
           "ordering": "#C0392B", "customer": "#D68910", "payment": "#B8860B", "design": "#AA4A9E",
           "fulfillment": "#2C7873", "catalog": "#1B998B", "chat": "#4C93A8", "notification": "#A6763F",
           "reporting": "#607D8B", "identity": "#5A6ACF", "platform": "#616161", "public": "#9E9E9E"}
@@ -39,7 +39,10 @@ select json_agg(json_build_object('s',c.table_schema,'t',c.table_name,'c',c.colu
 from information_schema.columns c
 join pg_attribute a on a.attrelid = (quote_ident(c.table_schema)||'.'||quote_ident(c.table_name))::regclass and a.attname = c.column_name
 join information_schema.tables t on t.table_schema=c.table_schema and t.table_name=c.table_name and t.table_type='BASE TABLE'
-where c.table_schema not in ('pg_catalog','information_schema')"""))
+where c.table_schema not in ('pg_catalog','information_schema')
+  -- Flyway's own bookkeeping lands in public on a database the application migrated itself; it
+  -- is not part of the model the diagram shows.
+  and not (c.table_schema = 'public' and c.table_name = 'flyway_schema_history')"""))
 
 cons = json.loads(q("""
 select json_agg(json_build_object('s',n.nspname,'t',r.relname,'name',c.conname,'type',c.contype,

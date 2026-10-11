@@ -7,10 +7,8 @@ import com.stockflow.common.storage.StoredFile;
 import com.stockflow.design.internal.domain.DesignStatus;
 import com.stockflow.design.internal.entity.DesignArtifactJpaEntity;
 import com.stockflow.design.internal.entity.DesignDraftJpaEntity;
-import com.stockflow.product.api.ProductStatus;
-import com.stockflow.product.api.TaxClass;
-import com.stockflow.product.internal.entity.ProductImageJpaEntity;
-import com.stockflow.product.internal.entity.ProductJpaEntity;
+import com.stockflow.product.internal.domain.ImageRendition;
+import com.stockflow.product.internal.entity.MediaJpaEntity;
 import com.stockflow.support.ReferenceRows;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.Test;
@@ -40,33 +38,34 @@ class MediaPersistenceIntegrationTest {
     @Autowired EntityManager em;
     @MockitoBean CurrentUserProvider users;
 
-    @Test void productImageRoundTripsAndRepeatedSaveRetainsManagedChildren() {
-        var id = Identifiers.newId();
-        var product = new ProductJpaEntity(id, "MEDIA-TEST", "Cup", "Cup", null, null, null,
-                "StockFlow", TaxClass.STANDARD, ProductStatus.DRAFT, true,
-                null, null, null, null, null, null, null, null, null,
-                null, null, null, null, null, false, false, null, false, null);
+    @Test void variantImageRoundTripsWithItsRenditions() {
+        var product = ReferenceRows.product(em);
         var file = new StoredFile("product-images/test.png", "test.png", "image/png", 12, Instant.EPOCH);
-        var imageId = Identifiers.newId();
-        product.replaceImages(List.of(new ProductImageJpaEntity(imageId, null, 0, file)));
-        em.persist(product);
+        var rendition = new ImageRendition(320, 320, 240,
+                new StoredFile("product-renditions/test-320.jpg", "display-320.jpg", "image/jpeg", 8, Instant.EPOCH));
+        var id = Identifiers.newId();
+        var image = new MediaJpaEntity(id, product.variantId(), file, List.of(rendition), "key-1", "a".repeat(64), 0);
+        image.setPrimary(true);
+        em.persist(image);
         em.flush();
         em.clear();
-        var loaded = em.find(ProductJpaEntity.class, id);
+        var loaded = em.find(MediaJpaEntity.class, id);
         long version = loaded.getVersion();
-        loaded.replaceImages(List.of(new ProductImageJpaEntity(imageId, null, 0, file)));
+        loaded.describe("Cup, front", 3);
         em.flush();
         em.clear();
-        var updated = em.find(ProductJpaEntity.class, id);
+        var updated = em.find(MediaJpaEntity.class, id);
         assertThat(updated.getVersion()).isGreaterThan(version);
-        assertThat(updated.getImages()).hasSize(1);
-        assertThat(updated.getImages().getFirst().storedFile()).isEqualTo(file);
+        assertThat(updated.storedFile()).isEqualTo(file);
+        assertThat(updated.getRenditions()).containsExactly(rendition);
+        assertThat(updated.getAltText()).isEqualTo("Cup, front");
+        assertThat(updated.isPrimary()).isTrue();
     }
 
     @Test void designReplacementKeepsPreviousRevisionAndInvalidatesPreflight() {
         var draftId = Identifiers.newId();
-        // The customer and the people are foreign keys since ADR-0007; the product is not yet (C1).
-        var draft = new DesignDraftJpaEntity(draftId, ReferenceRows.customer(em), Identifiers.newId(),
+        // The customer, the people and (since C1) the product are foreign keys.
+        var draft = new DesignDraftJpaEntity(draftId, ReferenceRows.customer(em), ReferenceRows.product(em).productId(),
                 "Cup design", null, DesignStatus.DRAFT);
         em.persist(draft);
         var file = new StoredFile("design-renders/one.pdf", "one.pdf", "application/pdf", 12, Instant.EPOCH);

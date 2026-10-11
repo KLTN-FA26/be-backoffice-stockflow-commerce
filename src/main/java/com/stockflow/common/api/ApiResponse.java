@@ -37,9 +37,13 @@ import java.util.List;
  *
  * <p>Null fields are omitted from the JSON ({@code @JsonInclude(NON_NULL)}), so a success response
  * does not carry four null error fields and a failure does not carry a null {@code data}.</p>
+ *
+ * <p>No {@code name} on the {@code @Schema}: a fixed name makes springdoc publish one schema for
+ * every {@code ApiResponse<X>}, so the last one generated wins and every endpoint's {@code data} is
+ * documented as that one type. Unnamed, each gets its own, e.g. {@code ApiResponseShelfResponse}.</p>
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
-@Schema(name = "ApiResponse", description = "Uniform response envelope")
+@Schema(description = "Uniform response envelope")
 public record ApiResponse<T>(
 
         boolean success,

@@ -6,9 +6,6 @@ package com.stockflow.inventory.internal.domain;
  *
  * <p>{@code COUNT_VARIANCE} is in the table but not here: it is posted by a cycle count, which
  * links the count line, never typed in by a person.</p>
- *
- * <p>Production scrap and blanks used for samples are written off as {@link #DAMAGED} and
- * {@link #OTHER} until the table gains {@code SCRAP} and {@code SAMPLE} (production plan T4).</p>
  */
 public enum AdjustmentReason {
     DAMAGED,
@@ -16,6 +13,15 @@ public enum AdjustmentReason {
     FOUND,
     EXPIRED,
     DATA_CORRECTION,
+    /** Blanks spoiled in printing or failed at QC (kltn-docs 19). Stock only goes down. */
+    SCRAP,
+    /** Blanks used to make a sample for the customer (kltn-docs 19 §4.1). Stock only goes down. */
+    SAMPLE,
     /** Needs a note: "other" with no explanation is not a reason. */
-    OTHER
+    OTHER;
+
+    /** Scrap and samples consume blanks; they never bring stock back. */
+    public boolean onlyWritesDown() {
+        return this == SCRAP || this == SAMPLE;
+    }
 }

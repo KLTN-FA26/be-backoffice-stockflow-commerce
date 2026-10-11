@@ -115,6 +115,19 @@ public class BinJpaEntity {
         this.storageClassOverride = storageClassOverride;
     }
 
+    /** Everything about a bin that may change; level, location and code never do (BR-13). */
+    public void apply(String description, BigDecimal x, BigDecimal y, BigDecimal width, BigDecimal length,
+                      int rotation, BinType type, StorageClass storageClassOverride) {
+        this.description = description;
+        this.x = x;
+        this.y = y;
+        this.width = width;
+        this.length = length;
+        this.rotation = rotation;
+        this.type = type;
+        this.storageClassOverride = storageClassOverride;
+    }
+
     void attachTo(ShelfLevelJpaEntity parent) {
         this.level = parent;
     }

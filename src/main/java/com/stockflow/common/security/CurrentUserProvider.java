@@ -70,7 +70,18 @@ public class CurrentUserProvider {
             return Optional.empty();
         }
 
-        List<String> warehouses = jwt.getClaimAsStringList("warehouses");
+        // Resolved on the server for a warehouse-bound caller (SCRUM-457). The claim is only read for an
+        // authentication built some other way — a test — since tokens no longer carry it.
+        Set<String> codes;
+        Set<UUID> ids;
+        if (token instanceof StockflowAuthenticationToken resolved) {
+            codes = resolved.warehouses().prefixes();
+            ids = resolved.warehouses().ids();
+        } else {
+            List<String> claimed = jwt.getClaimAsStringList("warehouses");
+            codes = claimed == null ? Set.of() : Set.copyOf(claimed);
+            ids = Set.of();
+        }
 
         return Optional.of(new CurrentUser(
                 userId,
@@ -78,7 +89,8 @@ public class CurrentUserProvider {
                 roles,
                 permissions,
                 scopeOf(token, jwt),
-                warehouses == null ? Set.of() : Set.copyOf(warehouses)));
+                codes,
+                ids));
     }
 
     /**

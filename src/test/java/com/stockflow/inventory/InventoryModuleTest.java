@@ -31,7 +31,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *       surfaces as a broken test rather than as an import nobody noticed in review.</li>
  * </ul>
  */
-@ApplicationModuleTest
+// DIRECT_DEPENDENCIES: moves ask warehouse :: api whether a location may take stock (issue #67).
+@ApplicationModuleTest(mode = ApplicationModuleTest.BootstrapMode.DIRECT_DEPENDENCIES)
 @ActiveProfiles("test")
 @Import(PostgresContainer.class)
 class InventoryModuleTest {
@@ -40,6 +41,11 @@ class InventoryModuleTest {
 
     @Autowired InventoryService inventory;
     @Autowired ApplicationContext context;
+    // Explicit ports only: the slice must not boot the external modules to satisfy these calls.
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    com.stockflow.notification.api.NotificationService notifications;
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    com.stockflow.identity.api.IdentityService identities;
 
     @Test
     @DisplayName("inventory starts and serves queries with no other module present")

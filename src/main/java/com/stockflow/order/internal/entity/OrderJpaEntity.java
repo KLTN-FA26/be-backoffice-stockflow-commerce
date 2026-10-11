@@ -1,6 +1,7 @@
 package com.stockflow.order.internal.entity;
 
 import com.stockflow.order.api.OrderStatus;
+import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.common.persistence.BaseEntity;
 import com.stockflow.common.security.ScopedEntity;
 import jakarta.persistence.CascadeType;
@@ -127,6 +128,43 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "cancellation_reason", length = 500)
     private String cancellationReason;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "payment_term", nullable = false, length = 16)
+    private PaymentTerm paymentTerm = PaymentTerm.PREPAID;
+
+    @Column(name = "deposit_required", precision = 19, scale = 4)
+    private java.math.BigDecimal depositRequired;
+
+    @Column(name = "deposit_received_at")
+    private Instant depositReceivedAt;
+
+    @Column(name = "warehouse_id")
+    private UUID warehouseId;
+
+    @Column(name = "released_at")
+    private Instant releasedAt;
+
+    @Column(name = "released_by")
+    private UUID releasedBy;
+
+    /** Money received so far (SCRUM-460); the payment status is derived from it. */
+    @Column(name = "paid_amount", nullable = false, precision = 19, scale = 4)
+    private java.math.BigDecimal paidAmount = java.math.BigDecimal.ZERO;
+
+    @Column(name = "paid_in_full_at")
+    private Instant paidInFullAt;
+
+    @jakarta.persistence.Enumerated(jakarta.persistence.EnumType.STRING)
+    @Column(name = "cancellation_reason_code", length = 32)
+    private com.stockflow.order.api.CancellationReasonCode cancellationReasonCode;
+
+    @Column(name = "cancellation_retained_amount", precision = 19, scale = 4)
+    private java.math.BigDecimal cancellationRetainedAmount;
+
+    /** A credit order's days to pay after delivery, as sold (SCRUM-427). */
+    @Column(name = "credit_term_days")
+    private Integer creditTermDays;
+
     @OneToMany(mappedBy = "order", cascade = CascadeType.ALL,
             orphanRemoval = true, fetch = FetchType.LAZY)
     @org.hibernate.annotations.BatchSize(size = 50)
@@ -171,6 +209,27 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
         this.cancellationReason = cancellationReason;
     }
 
+    public void applyTermsAndRelease(PaymentTerm paymentTerm, java.math.BigDecimal depositRequired,
+                                     Instant depositReceivedAt, UUID warehouseId, Instant releasedAt,
+                                     UUID releasedBy) {
+        this.paymentTerm = paymentTerm == null ? PaymentTerm.PREPAID : paymentTerm;
+        this.depositRequired = depositRequired;
+        this.depositReceivedAt = depositReceivedAt;
+        this.warehouseId = warehouseId;
+        this.releasedAt = releasedAt;
+        this.releasedBy = releasedBy;
+    }
+
+    public void applyPaymentAndCancellation(java.math.BigDecimal paidAmount, Instant paidInFullAt,
+                                            com.stockflow.order.api.CancellationReasonCode code,
+                                            java.math.BigDecimal retained, Integer creditTermDays) {
+        this.creditTermDays = creditTermDays;
+        this.paidAmount = paidAmount == null ? java.math.BigDecimal.ZERO : paidAmount;
+        this.paidInFullAt = paidInFullAt;
+        this.cancellationReasonCode = code;
+        this.cancellationRetainedAmount = retained;
+    }
+
     public void replaceLines(List<OrderLineJpaEntity> replacement) {
         this.lines.clear();
         replacement.forEach(child -> {
@@ -192,6 +251,17 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     public String getCurrency() { return currency; }
     public Instant getPlacedAt() { return placedAt; }
     public String getCancellationReason() { return cancellationReason; }
+    public PaymentTerm getPaymentTerm() { return paymentTerm; }
+    public java.math.BigDecimal getDepositRequired() { return depositRequired; }
+    public Instant getDepositReceivedAt() { return depositReceivedAt; }
+    public UUID getWarehouseId() { return warehouseId; }
+    public Instant getReleasedAt() { return releasedAt; }
+    public UUID getReleasedBy() { return releasedBy; }
+    public java.math.BigDecimal getPaidAmount() { return paidAmount; }
+    public Instant getPaidInFullAt() { return paidInFullAt; }
+    public com.stockflow.order.api.CancellationReasonCode getCancellationReasonCode() { return cancellationReasonCode; }
+    public java.math.BigDecimal getCancellationRetainedAmount() { return cancellationRetainedAmount; }
+    public Integer getCreditTermDays() { return creditTermDays; }
     public List<OrderLineJpaEntity> getLines() { return lines; }
 
     /**

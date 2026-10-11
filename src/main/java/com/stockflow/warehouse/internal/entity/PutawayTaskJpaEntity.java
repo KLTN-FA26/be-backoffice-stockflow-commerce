@@ -13,16 +13,27 @@ import java.util.UUID;
 /**
  * JPA mapping of a putaway task (table {@code warehouse.putaway_task}). Not the domain model.
  *
- * <p>STARTER ENTITY. Created when goods are received and need moving to a storage location.
- * {@code goodsReceiptId} references procurement across schemas — a plain UUID, no FK.</p>
+ * <p>STARTER ENTITY. Created when goods arrive and need moving to a storage location. A task has
+ * exactly one source ({@code ck_putaway_task_source}): a goods receipt line (with its receipt), a
+ * transfer order line or a return line. The receipt references are foreign keys to
+ * {@code procurement.goods_receipts}/{@code goods_receipt_lines} since contract C4, the target one to
+ * {@code warehouse.storage_location} (a bin or a storage area) since C2.</p>
  */
 @Entity
 @Table(name = "putaway_task", schema = "warehouse")
 public class PutawayTaskJpaEntity extends BaseEntity {
 
-    /** Cross-schema reference to {@code procurement.goods_receipt}. Plain UUID by design. */
     @Column(name = "goods_receipt_id")
     private UUID goodsReceiptId;
+
+    @Column(name = "goods_receipt_line_id")
+    private UUID goodsReceiptLineId;
+
+    @Column(name = "transfer_order_line_id")
+    private UUID transferOrderLineId;
+
+    @Column(name = "return_request_line_id")
+    private UUID returnRequestLineId;
 
     @Column(name = "sku", nullable = false, length = 64)
     private String sku;
@@ -30,11 +41,7 @@ public class PutawayTaskJpaEntity extends BaseEntity {
     @Column(name = "quantity", nullable = false)
     private int quantity;
 
-    /**
-     * Still constrained to the flat {@code warehouse.location} table, which no entity maps any
-     * more. Contract C2 moves the foreign key to {@code warehouse.storage_location} - a bin or a
-     * storage area; the putaway code that follows is SCRUM-92.
-     */
+    /** A {@code warehouse.storage_location}: a bin or a storage area. */
     @Column(name = "target_location_id")
     private UUID targetLocationId;
 
@@ -45,10 +52,12 @@ public class PutawayTaskJpaEntity extends BaseEntity {
     protected PutawayTaskJpaEntity() {
     }
 
-    public PutawayTaskJpaEntity(UUID id, UUID goodsReceiptId, String sku, int quantity,
+    /** A task for one counted goods receipt line. */
+    public PutawayTaskJpaEntity(UUID id, UUID goodsReceiptId, UUID goodsReceiptLineId, String sku, int quantity,
                                 UUID targetLocationId, PutawayStatus status) {
         super(id);
         this.goodsReceiptId = goodsReceiptId;
+        this.goodsReceiptLineId = goodsReceiptLineId;
         this.sku = sku;
         this.quantity = quantity;
         this.targetLocationId = targetLocationId;
@@ -56,6 +65,9 @@ public class PutawayTaskJpaEntity extends BaseEntity {
     }
 
     public UUID getGoodsReceiptId() { return goodsReceiptId; }
+    public UUID getGoodsReceiptLineId() { return goodsReceiptLineId; }
+    public UUID getTransferOrderLineId() { return transferOrderLineId; }
+    public UUID getReturnRequestLineId() { return returnRequestLineId; }
     public String getSku() { return sku; }
     public int getQuantity() { return quantity; }
     public UUID getTargetLocationId() { return targetLocationId; }

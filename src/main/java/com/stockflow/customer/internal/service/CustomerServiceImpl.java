@@ -7,6 +7,8 @@ import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.SortWhitelist;
 import com.stockflow.customer.api.CheckoutCustomer;
+import com.stockflow.customer.api.CreditTerms;
+import com.stockflow.customer.api.SaveCreditTermsCommand;
 import com.stockflow.customer.api.CustomerAddressSummary;
 import com.stockflow.customer.api.CustomerRegistration;
 import com.stockflow.customer.api.CustomerService;
@@ -16,6 +18,8 @@ import com.stockflow.customer.api.RegisterCustomerCommand;
 import com.stockflow.customer.api.SaveAddressCommand;
 import com.stockflow.customer.api.UpdateCustomerCommand;
 import com.stockflow.customer.internal.domain.AddressType;
+import com.stockflow.customer.internal.domain.CreditProfile;
+import com.stockflow.customer.internal.domain.CreditProfileRepository;
 import com.stockflow.customer.internal.domain.Customer;
 import com.stockflow.customer.internal.domain.CustomerAddress;
 import com.stockflow.customer.internal.domain.CustomerRepository;
@@ -44,12 +48,69 @@ class CustomerServiceImpl implements CustomerService {
     private final CustomerRepository customers;
     private final CustomerSearchRepository search;
     private final IdentityService identities;
+    private final CreditProfileRepository creditProfiles;
+    private final java.time.Clock clock;
 
     CustomerServiceImpl(CustomerRepository customers, CustomerSearchRepository search,
-                        IdentityService identities) {
+                        IdentityService identities, CreditProfileRepository creditProfiles, java.time.Clock clock) {
         this.customers = customers;
         this.search = search;
         this.identities = identities;
+        this.creditProfiles = creditProfiles;
+        this.clock = clock;
+    }
+
+    // ------------------------------------------------------------------ commercial terms (SCRUM-427)
+
+    @Override
+    @Transactional(readOnly = true)
+    public CreditTerms creditTerms(UUID customerId) {
+        if (!customers.existsById(customerId)) {
+            throw new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND, "No customer " + customerId);
+        }
+        return termsOf(customerId);
+    }
+
+    @Override
+    public CreditTerms lockCreditTerms(UUID customerId) {
+        customers.findForUpdate(customerId).orElseThrow(() ->
+                new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND, "No customer " + customerId));
+        return termsOf(customerId);
+    }
+
+    @Override
+    @com.stockflow.common.audit.Auditable(action = com.stockflow.common.audit.AuditAction.APPROVE,
+            resourceType = "customer-credit-profile", resourceId = "#command.customerId()")
+    public CreditTerms saveCreditTerms(SaveCreditTermsCommand command) {
+        customers.findForUpdate(command.customerId()).orElseThrow(() ->
+                new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND, "No customer " + command.customerId()));
+        var existing = creditProfiles.findByCustomerId(command.customerId());
+        long current = existing.map(CreditProfile::version).orElse(-1L);
+        if (command.expectedVersion() != null && command.expectedVersion() != current) {
+            throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK,
+                    "The terms of customer %s changed since they were read".formatted(command.customerId()));
+        }
+        var now = clock.instant();
+        CreditProfile profile = existing.map(found -> {
+            found.change(command.allowPrepaid(), command.allowDeposit(), command.allowCredit(), command.defaultTerm(),
+                    command.depositPercent(), command.creditLimit(), command.creditTermDays(), command.approvedBy(),
+                    now, command.note());
+            return found;
+        }).orElseGet(() -> CreditProfile.create(command.customerId(), command.allowPrepaid(), command.allowDeposit(),
+                command.allowCredit(), command.defaultTerm(), command.depositPercent(), command.creditLimit(),
+                command.creditTermDays(), command.approvedBy(), now, command.note()));
+        return toTerms(creditProfiles.save(profile));
+    }
+
+    private CreditTerms termsOf(UUID customerId) {
+        return creditProfiles.findByCustomerId(customerId).map(CustomerServiceImpl::toTerms)
+                .orElseGet(() -> CreditTerms.prepaidOnly(customerId));
+    }
+
+    private static CreditTerms toTerms(CreditProfile p) {
+        return new CreditTerms(p.customerId(), true, p.allowPrepaid(), p.allowDeposit(), p.allowCredit(), p.defaultTerm(),
+                p.depositPercent(), p.creditLimit(), p.creditTermDays(), p.currency(), p.approvedBy(), p.approvedAt(),
+                p.note(), p.version());
     }
 
     @Override

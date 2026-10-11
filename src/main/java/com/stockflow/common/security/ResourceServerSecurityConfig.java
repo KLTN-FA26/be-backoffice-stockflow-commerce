@@ -113,8 +113,9 @@ public class ResourceServerSecurityConfig {
     /** Roles from the token, permissions from the server-side lookup (ADR-0008). */
     @Bean
     public StockflowJwtAuthenticationConverter stockflowJwtAuthenticationConverter(
-            RoleAuthorizationLookup lookup) {
-        return new StockflowJwtAuthenticationConverter(lookup);
+            RoleAuthorizationLookup lookup,
+            org.springframework.beans.factory.ObjectProvider<UserWarehouseLookup> warehouses) {
+        return new StockflowJwtAuthenticationConverter(lookup, warehouses.getIfAvailable());
     }
 
     /** Everything else: the API itself, plus the rest of actuator. CORS policy: {@link CorsConfig}. */

@@ -1,5 +1,6 @@
 package com.stockflow.common.idempotency;
 
+import com.stockflow.common.logging.LogSafe;
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
@@ -228,13 +229,13 @@ public final class IdempotencyFilter extends OncePerRequestFilter {
     private void replayOrReject(IdempotencyRecord record, String key, String fingerprint,
                                 HttpServletResponse response) throws IOException {
         if (!record.matches(fingerprint)) {
-            log.warn("Idempotency key {} reused for a different request", key);
+            log.warn("Idempotency key {} reused for a different request", LogSafe.text(key));
             writeError(response, ErrorCode.IDEMPOTENCY_KEY_REUSED,
                     ErrorCode.IDEMPOTENCY_KEY_REUSED.defaultMessage());
             return;
         }
         if (!record.isReplayable()) {
-            log.info("Idempotency key {} is still being processed", key);
+            log.info("Idempotency key {} is still being processed", LogSafe.text(key));
             // Tells a well-behaved client to wait rather than hammer.
             response.setHeader("Retry-After", "1");
             writeError(response, ErrorCode.IDEMPOTENT_REQUEST_IN_PROGRESS,
@@ -242,9 +243,10 @@ public final class IdempotencyFilter extends OncePerRequestFilter {
             return;
         }
 
-        log.info("Replaying stored response for idempotency key {}", key);
+        log.info("Replaying stored response for idempotency key {}", LogSafe.text(key));
         response.setStatus(record.responseStatus());
         response.setContentType("application/json");
+        response.setCharacterEncoding(StandardCharsets.UTF_8.name());
         // Marks the response as a replay, so a client - and anyone reading a HAR file - can tell
         // that no new work was done. Without it a replayed 201 looks like a second creation.
         response.setHeader("Idempotency-Replayed", "true");
@@ -255,6 +257,7 @@ public final class IdempotencyFilter extends OncePerRequestFilter {
             throws IOException {
         response.setStatus(code.httpStatus());
         response.setContentType("application/json");
+        response.setCharacterEncoding(StandardCharsets.UTF_8.name());
         response.getWriter().write(
                 objectMapper.writeValueAsString(ApiResponse.error(code.name(), message)));
     }

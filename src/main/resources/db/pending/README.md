@@ -7,10 +7,11 @@ that could not exist while the old code was still writing the old tables.
 
 | File | Run after | Does |
 |---|---|---|
-| `C1__contract_product.sql` | product **and design** code use only the new PIM tables | FK `sku → product.variants` from ordering/catalog/reporting, `design_draft.product_id → products`; drops 8 old product tables |
-| `C2__contract_warehouse.sql` | warehouse code maps the map model; every stock row sits in a map location | map columns NOT NULL, drops `code/address_line/city` and `warehouse.location`; FK putaway target and `stock_item.location_code → storage_location` |
-| `C3__contract_inventory_items.sql` | C1, and every SKU in stock/putaway has an inventory item | FK `stock_item.sku`, `putaway_task.sku → inventory_items.sku` |
-| `C4__contract_procurement.sql` | procurement code maps only the new purchasing tables | putaway source FKs + exactly-one-source CHECK; re-points PR #36 tables; drops 6 old procurement tables |
+| `C0__validate_foreign_keys.sql` | see its header | validates the foreign keys added `NOT VALID` |
+
+C1–C4 were activated by the legacy-tables removal as `V20261011000300`–`V20261011000600`, after
+`V20261011000200` carried the legacy rows to the new tables and archived them in
+`platform.legacy_archive`.
 
 ## Activating one
 

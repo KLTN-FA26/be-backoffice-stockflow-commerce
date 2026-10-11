@@ -338,7 +338,7 @@ Mười ba bước. Chú ý bước 12: trước đó hàng đã tồn tại tro
 | Nơi lưu | | Bảng | Ghi gì |
 |---|---|---|---|
 | `sf_inventory` | `+` | `processed_event` |  |
-| `sf_inventory` | `+` | `stock_item` | location = khu vực nhận hàng, condition = GOOD hoặc QUARANTINE |
+| `sf_inventory` | `+` | `stock_item` | location_code = mã của khu nhận hàng (`storage_location` loại `AREA`, ví dụ `HCM-RCV01`), condition = GOOD hoặc QUARANTINE |
 | `sf_inventory` | `+` | `stock_movement` | bút toán nhập |
 | `sf_inventory` | `+` | `outbox_event` | StockReceived |
 
@@ -360,9 +360,10 @@ Mười ba bước. Chú ý bước 12: trước đó hàng đã tồn tại tro
 
 | Nơi lưu | | Bảng | Ghi gì |
 |---|---|---|---|
-| `sf_warehouse` | `~` | `putaway_task` | status → COMPLETED, actual_location, completed_by |
-| `sf_warehouse` | `~` | `location` | occupied_weight +=, occupied_volume += |
+| `sf_warehouse` | `~` | `putaway_task` | status → COMPLETED, target_location_id (một `storage_location`), completed_by |
 | `sf_warehouse` | `+` | `outbox_event` | PutawayCompleted |
+
+> · Không ghi gì vào `storage_location`: mức đầy **suy ra** từ tồn so với `capacity_units` (và tải trọng tầng), không lưu thành cột ([module 06 §5](https://github.com/KLTN-FA26/docs/blob/b11945a/docs/warehouse/06-warehouse-map-slotting/README.md)).
 
 > **⇢ event** — inventory-service dời hàng khỏi khu nhận hàng
 
@@ -370,7 +371,7 @@ Mười ba bước. Chú ý bước 12: trước đó hàng đã tồn tại tro
 
 | Nơi lưu | | Bảng | Ghi gì |
 |---|---|---|---|
-| `sf_inventory` | `~` | `stock_item` | location_code = vị trí thật trên kệ |
+| `sf_inventory` | `~` | `stock_item` | location_code = mã của bin đích, ví dụ `HCM-A01-2-B` |
 | `sf_inventory` | `+` | `stock_movement` | bút toán chuyển vị trí |
 | `sf_inventory` | `+` | `outbox_event` | StockLevelChanged |
 

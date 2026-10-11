@@ -10,10 +10,12 @@ import java.math.BigDecimal;
 import java.util.UUID;
 
 /**
- * JPA mapping of a published storefront entry (table {@code catalog.catalog_entry}). STARTER ENTITY.
+ * JPA mapping of a per-SKU storefront projection (table {@code catalog.catalog_entry}).
  *
  * <p>A read replica built from product + inventory events: {@code sku} and {@code atp} are copied,
- * not owned. {@code atp} may be a second stale — acceptable for a product page, never for the
+ * not owned. SEO is copied from catalog.product_listing; it is never independently edited here.
+ * The canonical product URL belongs to that source row, not this per-SKU slug.
+ * {@code atp} may be a second stale — acceptable for a product page, never for the
  * reservation decision (which calls inventory synchronously).</p>
  */
 @Entity

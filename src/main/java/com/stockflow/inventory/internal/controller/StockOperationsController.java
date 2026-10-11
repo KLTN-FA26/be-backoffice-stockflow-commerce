@@ -45,7 +45,8 @@ import java.util.UUID;
  * ({@code inventory-stock-items:UPDATE}, held by warehouse staff); reading the ledger is
  * {@code inventory-stock-movements:READ}; deciding a correction is
  * {@code inventory-stock-adjustments:APPROVE}, which only the warehouse manager holds, and the
- * person who asked can never decide it (four eyes, enforced in the aggregate and the table).</p>
+ * person who asked can never decide it (four eyes, enforced in the aggregate and the table). The
+ * person who asked may withdraw it while it is pending, under the same permission they asked with.</p>
  */
 @RestController
 @RequestMapping("/api/v1/inventory")
@@ -140,5 +141,13 @@ class StockOperationsController {
                                                        @Valid @RequestBody RejectAdjustmentRequest request,
                                                        @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(mapper.toResponse(operations.reject(adjustmentId, user.userId(), request.reason())));
+    }
+
+    @PostMapping("/adjustments/{adjustmentId}/withdrawal")
+    @Operation(summary = "Withdraw your own stock adjustment while it is still pending")
+    @RequiresPermission(resource = InventoryResources.STOCK_ITEMS, action = Action.UPDATE)
+    public ApiResponse<StockAdjustmentResponse> withdraw(@PathVariable UUID adjustmentId,
+                                                         @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(mapper.toResponse(operations.withdraw(adjustmentId, user.userId())));
     }
 }

@@ -15,6 +15,18 @@ spring:
   application:
     name: stockflow-monolith
 
+  mail:
+    host: ${MAIL_HOST:localhost}
+    port: ${MAIL_PORT:1025}
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
+    properties:
+      mail.smtp.auth: ${MAIL_SMTP_AUTH:false}
+      mail.smtp.starttls.enable: ${MAIL_SMTP_STARTTLS:false}
+      mail.smtp.connectiontimeout: 5000
+      mail.smtp.timeout: 10000
+      mail.smtp.writetimeout: 10000
+
   # ---------------------------------------------------------------------------
   # ONE datasource. This single block is what replaced fourteen of them.
   # ---------------------------------------------------------------------------
@@ -268,6 +280,11 @@ springdoc:
 
     - group: order
       packages-to-scan: com.stockflow.order
+    - group: procurement
+      packages-to-scan: com.stockflow.procurement
+
+    - group: warehouse
+      packages-to-scan: com.stockflow.warehouse
 
 # -----------------------------------------------------------------------------
 # Application settings owned by this system rather than by a framework.
@@ -313,6 +330,21 @@ stockflow:
     connect-timeout: PT3S
     read-timeout: PT10S
 
+  procurement:
+    buyer:
+      company-name: ${PO_BUYER_COMPANY_NAME:}
+      company-address: ${PO_BUYER_COMPANY_ADDRESS:}
+      contact-name: ${PO_BUYER_CONTACT_NAME:}
+      phone: ${PO_BUYER_PHONE:}
+      email: ${PO_BUYER_EMAIL:}
+      receiving-address: ${PO_RECEIVING_ADDRESS:}
+
+  notification:
+    # Exact HTTPS hosts owned by trusted suppliers; blank disables API delivery (email still works).
+    supplier-api-allowed-hosts: ${SUPPLIER_API_ALLOWED_HOSTS:}
+    mail-from: ${MAIL_FROM:noreply@stockflow.local}
+    po-retry-interval: PT1M
+
   # ---------------------------------------------------------------------------
   # File storage. 's3' talks to MinIO locally and to S3 in a deployment - the same code path.
   # 'local' writes to the filesystem and is for development only; it cannot work with more than
@@ -352,9 +384,8 @@ stockflow:
     # How often the sweeper looks for holds that outlived their expiry. ISO-8601 duration.
     reservation-sweep-interval: PT1M
   checkout:
-    # Public checkout without an account. OFF by default: the request carries its own unit price and
-    # nothing checks it against a catalogue price yet, so an open endpoint lets anyone order at any
-    # price and hold real stock. The local profile turns it on for development.
+    # Public checkout without an account. Server-side catalog pricing is enforced. Keep OFF until
+    # published data and deployment checkout UAT are verified. Local enables it for development.
     guest-enabled: false
 
   security:

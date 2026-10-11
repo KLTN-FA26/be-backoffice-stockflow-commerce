@@ -4,46 +4,86 @@ import com.stockflow.common.persistence.BaseEntity;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Table;
-import jakarta.persistence.UniqueConstraint;
 
 import java.util.UUID;
 
 /**
- * JPA mapping of a product category (table {@code product.category}). Not the domain model.
+ * JPA mapping of a product category (table {@code product.categories}): a node of the category tree.
  *
- * <p>STARTER ENTITY. {@code parentId} is a same-schema self-reference forming the category tree.</p>
+ * <p>{@code path} ({@code /ROOT/CHILD}) and {@code depth} are materialised so a subtree is one
+ * prefix scan; trigger {@code tg_categories_tree} refuses a row whose path and depth disagree with
+ * its parent. They, the parent and the code are therefore fixed at creation: moving a node would
+ * rewrite the path of its whole subtree, which no screen asks for yet.</p>
  */
 @Entity
-@Table(name = "category", schema = "product",
-        uniqueConstraints = @UniqueConstraint(name = "uk_category_code", columnNames = "code"))
+@Table(name = "categories", schema = "product")
 public class CategoryJpaEntity extends BaseEntity {
 
-    @Column(name = "code", nullable = false, length = 64)
-    private String code;
-
-    @Column(name = "name", nullable = false, length = 200)
-    private String name;
-
-    /** Same-schema reference to the parent {@code product.category}; null for a root category. */
-    @Column(name = "parent_id")
+    @Column(name = "parent_id", updatable = false)
     private UUID parentId;
 
-    @Column(name = "description", length = 1000)
-    private String description;
+    @Column(name = "code", nullable = false, length = 50, updatable = false)
+    private String code;
+
+    @Column(name = "name", nullable = false, length = 255)
+    private String name;
+
+    @Column(name = "slug", nullable = false, length = 255, updatable = false)
+    private String slug;
+
+    @Column(name = "path", nullable = false, columnDefinition = "text", updatable = false)
+    private String path;
+
+    @Column(name = "depth", nullable = false, updatable = false)
+    private int depth;
+
+    @Column(name = "sort_order", nullable = false)
+    private int sortOrder;
+
+    @Column(name = "image_url", columnDefinition = "text")
+    private String imageUrl;
+
+    @Column(name = "seo_title", length = 255)
+    private String seoTitle;
+
+    @Column(name = "seo_description", columnDefinition = "text")
+    private String seoDescription;
+
+    @Column(name = "is_active", nullable = false)
+    private boolean active;
 
     protected CategoryJpaEntity() {
     }
 
-    public CategoryJpaEntity(UUID id, String code, String name, UUID parentId, String description) {
+    public CategoryJpaEntity(UUID id, CategoryJpaEntity parent, String code, String slug) {
         super(id);
+        this.parentId = parent == null ? null : parent.getId();
         this.code = code;
-        this.name = name;
-        this.parentId = parentId;
-        this.description = description;
+        this.slug = slug;
+        this.path = (parent == null ? "" : parent.getPath()) + "/" + code;
+        this.depth = parent == null ? 0 : parent.getDepth() + 1;
+        this.active = true;
     }
 
+    public void setDetails(String name, int sortOrder, String imageUrl, String seoTitle, String seoDescription,
+                           boolean active) {
+        this.name = name;
+        this.sortOrder = sortOrder;
+        this.imageUrl = imageUrl;
+        this.seoTitle = seoTitle;
+        this.seoDescription = seoDescription;
+        this.active = active;
+    }
+
+    public UUID getParentId() { return parentId; }
     public String getCode() { return code; }
     public String getName() { return name; }
-    public UUID getParentId() { return parentId; }
-    public String getDescription() { return description; }
+    public String getSlug() { return slug; }
+    public String getPath() { return path; }
+    public int getDepth() { return depth; }
+    public int getSortOrder() { return sortOrder; }
+    public String getImageUrl() { return imageUrl; }
+    public String getSeoTitle() { return seoTitle; }
+    public String getSeoDescription() { return seoDescription; }
+    public boolean isActive() { return active; }
 }

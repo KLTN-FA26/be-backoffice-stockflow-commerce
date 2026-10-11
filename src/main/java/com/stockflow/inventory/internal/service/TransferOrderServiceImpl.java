@@ -29,10 +29,10 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
+
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -41,6 +41,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import com.stockflow.common.domain.BusinessCalendar;
+import com.stockflow.inventory.api.InventoryControlService;
+import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
+import java.util.stream.Collectors;
 
 @Service
 @Transactional
@@ -56,10 +60,14 @@ class TransferOrderServiceImpl implements TransferOrders {
     private final StockMovementLog ledger;
     private final Clock clock;
     private final int approvalThreshold;
+    private final InventoryControlService controls;
+    private final InventoryPolicyRepository policies;
 
     TransferOrderServiceImpl(TransferOrderRepository transfers, TransferOrderSearch search,
                              WarehouseDirectory warehouses, StockItemRepository stockItems, StockMovementLog ledger,
                              Clock clock,
+            InventoryControlService controls,
+            InventoryPolicyRepository policies,
                              @Value("${stockflow.inventory.transfer.approval-threshold-units:100}") int approvalThreshold) {
         this.transfers = transfers;
         this.search = search;
@@ -68,11 +76,15 @@ class TransferOrderServiceImpl implements TransferOrders {
         this.ledger = ledger;
         this.clock = clock;
         this.approvalThreshold = approvalThreshold;
+        this.controls = controls;
+        this.policies = policies;
     }
 
     @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "transfer-order", resourceId = "#result?.transferId()")
     public Transfer create(Create command) {
+        // BR-SEC-002: a warehouse-bound caller raises transfers into or out of their own warehouses.
+        com.stockflow.common.security.WarehouseScope.requireEither(command.fromWarehouseId(), command.toWarehouseId());
         String sourcePrefix = prefixOf(command.fromWarehouseId());
         prefixOf(command.toWarehouseId());
         Instant now = clock.instant();
@@ -87,10 +99,11 @@ class TransferOrderServiceImpl implements TransferOrders {
         // SCRUM-330: every line must be coverable from sellable, unreserved stock at the source now.
         // Checked again, under lock, at dispatch — this only stops a transfer nobody can fill.
         for (TransferLine line : order.lines()) {
-            int available = candidates(line, sourcePrefix).stream().mapToInt(c -> c.available().value()).sum();
-            if (available < line.requested()) {
-                throw new InsufficientStockException(line.sku().code(), line.requested(), available);
-            }
+            StockAllocator.plan(line.sku().code(),
+                    candidates(line, sourcePrefix),
+                    Quantity.of(line.requested()),
+                    controls.policy(line.sku()).removalStrategy(),
+                    BusinessCalendar.date(now));
         }
         TransferOrder numbered = TransferOrder.draft(order.id(),
                 transfers.nextNumber(LocalDate.ofInstant(now, BUSINESS_ZONE)), order.fromWarehouseId(),
@@ -146,7 +159,7 @@ class TransferOrderServiceImpl implements TransferOrders {
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "transfer-order", resourceId = "#transferId")
     public Transfer startPicking(UUID transferId) {
-        TransferOrder order = load(transferId);
+        TransferOrder order = loadAtSource(transferId);
         order.startPicking();
         return toView(transfers.save(order));
     }
@@ -154,24 +167,28 @@ class TransferOrderServiceImpl implements TransferOrders {
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "transfer-order", resourceId = "#transferId")
     public Transfer cancelPicking(UUID transferId) {
-        TransferOrder order = load(transferId);
+        TransferOrder order = loadAtSource(transferId);
         order.cancelPicking();
         return toView(transfers.save(order));
     }
 
     /**
-     * The goods leave the source (SCRUM-327 / 332): per line, FEFO over sellable, unreserved stock in
-     * the source warehouse (and the line's lot, when it names one); every stock row is locked in id
-     * order across all lines, as reserve() does, then lowered, with one TRANSFER_OUT ledger line each.
-     * The units are then owned by the transfer — counted in no warehouse — until receipt.
+     * The goods leave the source (SCRUM-327 / 332): per line, the configured FIFO/FEFO policy over
+     * unexpired, sellable, unreserved stock in the source warehouse (and the line's lot, when it
+     * names one); every stock row is locked in id order across all lines, as reserve() does, then
+     * lowered, with one TRANSFER_OUT ledger line each. The units are then owned by the transfer —
+     * counted in no warehouse — until receipt.
      */
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "transfer-order", resourceId = "#transferId")
     public Transfer dispatch(UUID transferId, UUID userId, Map<UUID, Integer> shippedByLine) {
-        TransferOrder order = load(transferId);
+        TransferOrder order = loadAtSource(transferId);
         Instant now = clock.instant();
         order.dispatch(userId, shippedByLine, now);
         String sourcePrefix = prefixOf(order.fromWarehouseId());
+        // Match reservation and policy-edit lock order before planning or taking row locks.
+        policies.lockReservationStock(
+                order.lines().stream().map(line -> line.sku().code()).collect(Collectors.toSet()));
 
         record Take(TransferLine line, StockItemId stockItemId, Quantity quantity) {
         }
@@ -181,7 +198,9 @@ class TransferOrderServiceImpl implements TransferOrders {
                 continue;
             }
             for (StockAllocator.AllocationLine allocation : StockAllocator.plan(line.sku().code(),
-                    candidates(line, sourcePrefix), Quantity.of(line.shipped()))) {
+                    candidates(line, sourcePrefix), Quantity.of(line.shipped()),
+                            controls.policy(line.sku()).removalStrategy(),
+                            BusinessCalendar.date(now))) {
                 takes.add(new Take(line, allocation.stockItemId(), allocation.quantity()));
             }
         }
@@ -229,9 +248,19 @@ class TransferOrderServiceImpl implements TransferOrders {
                 new BusinessException(ErrorCode.WAREHOUSE_NOT_FOUND, "No warehouse " + warehouseId));
     }
 
+    /** The order, if the caller is assigned to one of its two warehouses (BR-SEC-002). */
     private TransferOrder load(UUID id) {
-        return transfers.findById(id).orElseThrow(() ->
+        TransferOrder order = transfers.findById(id).orElseThrow(() ->
                 new BusinessException(ErrorCode.TRANSFER_ORDER_NOT_FOUND, "No transfer order " + id));
+        com.stockflow.common.security.WarehouseScope.requireEither(order.fromWarehouseId(), order.toWarehouseId());
+        return order;
+    }
+
+    /** Picking and dispatch happen on the source warehouse's floor, so only its staff do them. */
+    private TransferOrder loadAtSource(UUID id) {
+        TransferOrder order = load(id);
+        com.stockflow.common.security.WarehouseScope.requireWarehouse(order.fromWarehouseId());
+        return order;
     }
 
     private static Transfer toView(TransferOrder o) {

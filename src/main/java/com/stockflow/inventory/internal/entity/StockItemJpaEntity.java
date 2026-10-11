@@ -41,6 +41,18 @@ import java.util.UUID;
                 name = "uk_stock_item_sku_location_lot",
                 columnNames = {"sku", "location_code", "lot_number"}))
 public class StockItemJpaEntity extends BaseEntity {
+    @Column(name = "received_at")
+    private java.time.Instant receivedAt;
+    @Column(name = "serial_number", length = 100)
+    private String serialNumber;
+    public java.time.Instant getReceivedAt() { return receivedAt; }
+    public String getSerialNumber() { return serialNumber; }
+    public StockItemJpaEntity(UUID id, String sku, String locationCode, String lotNumber,
+                       LocalDate expiryDate, int onHand, int reserved, StockStatus status,
+                       java.time.Instant receivedAt, String serialNumber) {
+        this(id, sku, locationCode, lotNumber, expiryDate, onHand, reserved, status);
+        this.receivedAt = receivedAt; this.serialNumber = serialNumber;
+    }
 
     @Column(name = "sku", nullable = false, length = 64)
     private String sku;

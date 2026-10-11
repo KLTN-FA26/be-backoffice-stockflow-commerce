@@ -17,6 +17,9 @@ import com.stockflow.identity.internal.entity.UserSessionJpaEntity;
 import com.stockflow.identity.internal.repository.PermissionJpaRepository;
 import com.stockflow.identity.internal.repository.RoleJpaRepository;
 import com.stockflow.identity.internal.repository.RolePermissionJpaRepository;
+import com.stockflow.identity.internal.entity.UserJpaEntity;
+import com.stockflow.identity.internal.repository.UserJpaRepository;
+import com.stockflow.identity.internal.repository.UserWarehouseJpaRepository;
 import com.stockflow.identity.internal.repository.UserRoleJpaRepository;
 import com.stockflow.identity.internal.repository.UserSessionJpaRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -57,6 +60,8 @@ class IdentitySessionServiceTest {
     private final JwtEncoder jwtEncoder = mock(JwtEncoder.class);
     private final UserSessionJpaRepository sessions = mock(UserSessionJpaRepository.class);
     private final Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
+    private final LoginAttempts loginAttempts = mock(LoginAttempts.class);
+    private final UserJpaRepository userRows = mock(UserJpaRepository.class);
     private IdentityServiceImpl service;
 
     private final UUID userId = UUID.randomUUID();
@@ -67,12 +72,14 @@ class IdentitySessionServiceTest {
         service = new IdentityServiceImpl(roles, mock(PermissionJpaRepository.class),
                 mock(RolePermissionJpaRepository.class), userRoles, users, mock(PermissionCatalog.class),
                 encoder, jwtEncoder, clock, sessions, mock(RoleAuthorizationCache.class),
-                () -> java.util.Optional.of("test"), TTL);
+                () -> java.util.Optional.of("test"), userRows, mock(PrivilegeGuard.class),
+                loginAttempts, mock(UserWarehouseJpaRepository.class),
+                mock(com.stockflow.warehouse.api.WarehouseService.class), TTL);
     }
 
     private User user(UserStatus status) {
         return new User(new UserId(userId), "jane", "jane@example.com", "{bcrypt}hash", "Jane", status,
-                null, 0, NOW, "seed");
+                null, false, 0, null, 0, NOW, "seed");
     }
 
     @Test
@@ -228,7 +235,7 @@ class IdentitySessionServiceTest {
     @Test
     void grantingARoleEndsTheUsersSessionsButRegrantingDoesNot() {
         var role = new RoleJpaEntity(UUID.randomUUID(), "SALES_STAFF", "Sales", null);
-        when(users.existsById(new UserId(userId))).thenReturn(true);
+        when(userRows.findById(userId)).thenReturn(Optional.of(staffRow()));
         when(roles.findByCode("SALES_STAFF")).thenReturn(Optional.of(role));
         when(userRoles.findByUserIdAndRoleId(userId, role.getId())).thenReturn(Optional.empty());
 
@@ -246,7 +253,7 @@ class IdentitySessionServiceTest {
     @Test
     void revokingARoleNotHeldEndsNothing() {
         var role = new RoleJpaEntity(UUID.randomUUID(), "SALES_STAFF", "Sales", null);
-        when(users.existsById(new UserId(userId))).thenReturn(true);
+        when(userRows.findById(userId)).thenReturn(Optional.of(staffRow()));
         when(roles.findByCode("SALES_STAFF")).thenReturn(Optional.of(role));
         when(userRoles.findByUserIdAndRoleId(userId, role.getId())).thenReturn(Optional.empty());
 
@@ -261,7 +268,14 @@ class IdentitySessionServiceTest {
             assertThatThrownBy(() -> new IdentityServiceImpl(roles, mock(PermissionJpaRepository.class),
                     mock(RolePermissionJpaRepository.class), userRoles, users, mock(PermissionCatalog.class),
                     encoder, jwtEncoder, clock, sessions, mock(RoleAuthorizationCache.class),
-                    () -> java.util.Optional.of("test"), bad)).isInstanceOf(IllegalArgumentException.class);
+                    () -> java.util.Optional.of("test"), mock(UserJpaRepository.class), mock(PrivilegeGuard.class),
+                    loginAttempts, mock(UserWarehouseJpaRepository.class),
+                    mock(com.stockflow.warehouse.api.WarehouseService.class), bad)).isInstanceOf(IllegalArgumentException.class);
         }
+    }
+
+    private UserJpaEntity staffRow() {
+        return new UserJpaEntity(userId, "jane", "jane@example.com", "{bcrypt}hash", "Jane",
+                UserStatus.ACTIVE, null);
     }
 }

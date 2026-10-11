@@ -5,6 +5,7 @@ import com.stockflow.common.domain.Sku;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -27,6 +28,12 @@ public interface InventoryService {
      * because stock leaves the {@code available} bucket the moment it is allocated.
      */
     int availableToPromise(Sku sku);
+
+    /** Batch availability; missing keys mean zero. Never authorizes a checkout without reserve(). */
+    default java.util.Map<String, Long> availableQuantities(java.util.Set<String> skus) {
+        return skus.stream().collect(java.util.stream.Collectors.toMap(
+                code -> code, code -> (long) availableToPromise(new Sku(code))));
+    }
 
     /**
      * {@link #availableToPromise(Sku)} for several SKUs in one query: every SKU asked for is a key,
@@ -65,9 +72,32 @@ public interface InventoryService {
      * @throws com.stockflow.common.error.BusinessException when ATP is below the requested quantity
      */
     ReserveStockResult reserve(ReserveStockCommand command);
+    /** Acquire policy locks and all stock rows in global order before reserving any basket line.
+     * Must join the same transaction as every subsequent reserve call. */
+    void prepareReservation(java.util.Set<Sku> skus);
 
     /** Release a reservation — order cancelled, payment failed, or the hold expired. */
     void release(UUID reservationId, String reason);
+
+    /**
+     * Stop the holds of an order from expiring: the order no longer waits for payment (paid, or
+     * released on its deposit), so its stock stays held until it is consumed or the order releases
+     * it (kltn-docs 14 BR-07, SCRUM-465). Joins the caller's transaction, like {@link #reserve}, so
+     * the order's new status and the pinned holds commit together and the expiry sweep cannot slip
+     * in between. Idempotent.
+     *
+     * @return how many holds were pinned by this call
+     */
+    int pinReservations(UUID orderId);
+
+    /**
+     * The order waits for payment again (SCRUM-427: credit refused, switched to prepaid or deposit):
+     * its pinned holds get the checkout deadline from now (kltn-docs 14 BR-07). Joins the caller's
+     * transaction. Idempotent.
+     *
+     * @return how many holds got a deadline
+     */
+    int rearmReservations(UUID orderId);
 
     /**
      * Move unreserved stock between two locations, writing one ledger line (SCRUM-424). Joins the
@@ -79,6 +109,32 @@ public interface InventoryService {
      *         asked), {@code STOCK_STATUS_MISMATCH} (the destination holds the lot in another status)
      */
     StockMove move(MoveStockCommand command);
+
+    /**
+     * Count received goods in at a receiving location as INBOUND stock, writing a RECEIPT ledger line
+     * (SCRUM-435, docs 03 step 6). Joins the caller's transaction: the receipt and the stock it
+     * creates commit or roll back together. Merges into INBOUND stock of the same SKU and lot already
+     * at that location.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code LOCATION_NOT_FOUND},
+     *         {@code STOCK_STATUS_MISMATCH} (the location holds the lot in a status other than INBOUND)
+     */
+    StockMove receive(ReceiveStockCommand command);
+
+    /**
+     * Move units and change their status in one step (QC decision, putaway); see
+     * {@link ReclassifyStockCommand}. Same locking and errors as {@link #move}.
+     */
+    StockMove reclassify(ReclassifyStockCommand command);
+
+    /** The receiving policy of an inventory item, empty when no such item exists. */
+    Optional<InventoryItemPolicy> itemPolicy(UUID inventoryItemId);
+
+    /** The same, by SKU: the inventory item a variant has, empty when it has none yet. */
+    Optional<InventoryItemPolicy> itemPolicy(Sku sku);
+
+    /** The SKU of each inventory item that exists, for a list of purchase order lines in one query. */
+    java.util.Map<UUID, String> skusOf(java.util.Collection<UUID> inventoryItemIds);
 
     /**
      * Ask for a stock correction with a reason (SCRUM-145). The stock does not change until a
