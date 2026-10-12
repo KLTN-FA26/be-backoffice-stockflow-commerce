@@ -58,8 +58,8 @@ Writes are audited (`customer-price` CREATE/UPDATE/DELETE).
 
 ## Gaps
 
-P1–P7 in the plan. Not covered by an automated test: the quote default's `PRICE_NOT_AVAILABLE` → 400 branch (no
-Segment rules have no management API (P7).
+P1–P7 in the plan. The quote default's `PRICE_NOT_AVAILABLE` → 400 branch is covered by IT
+`aQuoteLineWithoutTiersForAnUnpricedBlankAsksSalesToEnterThem`. Segment rules have no management API (P7).
 
 ## Verification (2026-10-12, Java 21.0.9, Maven 3.9.9 offline, Docker 28.5.1; no full suite - lane A runs one)
 
