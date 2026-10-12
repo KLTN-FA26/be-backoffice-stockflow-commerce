@@ -64,7 +64,7 @@ server {
     # Swagger UI for the frontend team: https://api.${DOMAIN}/swagger-ui.html (anonymous).
 
     location / {
-        set $app_upstream http://app:8080;
+        set $app_upstream http://stockflow-app-1:8080;
         proxy_pass $app_upstream;
         include /etc/nginx/snippets/proxy-headers.conf;
     }
