@@ -5,6 +5,12 @@ on `SCRUM-428-customer-pricing` from `4a389a6`. Migrations `V20261014000500` (st
 (customer prices). Details, API and test evidence: `docs/handoffs/SCRUM-428.md`. Still open: P1–P7 and T1 below;
 discount policy (P2) not implemented.
 
+**Decision P2 (user, 2026-10-12):** SALES_STAFF may discount up to 5% below the customer's price list on their own;
+above 5% needs approval by ECOMMERCE_ADMIN or SYSTEM_ADMIN **before the quote is sent**. No new role: a separate
+discount-approval permission on existing roles, distinct from the CUSTOMER's quote acceptance. Approval is bound to the
+quote revision and its reference prices; any change to prices/lines voids it. **Still open:** P1 (admin-only edits vs
+Sales proposes/admin approves), P2a (5% per line/tier vs whole quote), P2b (may the approver be the quote's author?).
+
 Branch `SCRUM-428-customer-pricing`, worktree `orca/workspaces/.../SCRUM-428-customer-pricing`, from the
 integration checkpoint `4a389a6` (`SCRUM-394-395-production-foundation`: develop `74d624d` + 394/395 + 448 +
 429). Migration range reserved for this lane: `V20261014000500` … `V20261014000599` (lane A: `…000400–000499`).
