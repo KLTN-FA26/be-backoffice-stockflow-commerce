@@ -341,9 +341,14 @@ class PurchaseOrderRepositoryAdapter
     public Optional<PurchaseOrderSummary> summary(PurchaseOrderId id, boolean possibleDuplicate) {
         return jpa.findWithLinesById(id.value()).map(entity -> {
             var order = toDomain(entity);
-            var lines = order.lines().stream().map(l -> new POLineSummary(l.id(), l.lineNo(), l.inventoryItemId(),
-                    l.sku().code(), l.description(), l.uom(), l.quantityOrdered(), l.quantityReceived(),
-                    l.unitPrice().amount(), l.taxRate(), l.total(), l.status().name())).toList();
+            var policies = inventory.itemPolicies(order.lines().stream().map(PoLine::inventoryItemId).toList());
+            var lines = order.lines().stream().map(l -> {
+                var policy = policies.get(l.inventoryItemId());
+                return new POLineSummary(l.id(), l.lineNo(), l.inventoryItemId(), l.sku().code(), l.description(),
+                        l.uom(), l.quantityOrdered(), l.quantityReceived(), l.unitPrice().amount(), l.taxRate(),
+                        l.total(), l.status().name(), policy != null && policy.lotTracked(),
+                        policy != null && policy.expiryTracked(), policy != null && policy.qcRequired());
+            }).toList();
             return summary(entity, suppliers.findById(entity.getSupplierId()).orElse(null),
                     warehouses.findWarehouse(entity.getWarehouseId()).orElse(null), lines, possibleDuplicate);
         });
@@ -363,7 +368,9 @@ class PurchaseOrderRepositoryAdapter
                 e.getConfirmedAt(), e.getClosedAt(), e.getCloseKind() == null ? null : e.getCloseKind().name(),
                 e.getCloseReason(), e.getCancelReason(), e.getPaymentTermDays(), e.getLeadTimeDays(),
                 e.getConfirmedAt(), e.getSupplierConfirmationStatus().name(), e.getSupplierRespondedAt(),
-                e.getSupplierReference(), e.getSupplierResponseNote(), e.getVersion());
+                e.getSupplierReference(), e.getSupplierResponseNote(), e.getVersion(),
+                supplier == null || supplier.getOverReceiptTolerancePercent() == null ? BigDecimal.ZERO
+                        : supplier.getOverReceiptTolerancePercent());
     }
 
     // ------------------------------------------------------------------ reports

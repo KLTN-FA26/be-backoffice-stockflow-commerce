@@ -122,7 +122,12 @@ public class GlobalExceptionHandler {
         String message = serverFault || ex.getMessage() == null || ex.getMessage().isBlank()
                 ? messages.forCode(ex.errorCode())
                 : ex.getMessage();
-        return respond(ex.errorCode(), message, null);
+        // Fields a business rule pointed at (SCRUM-464): each message translated by its own code.
+        List<FieldError> fields = ex.fieldErrors().isEmpty() ? null : ex.fieldErrors().stream()
+                .map(f -> new FieldError(f.field(),
+                        f.code() == null ? f.message() : messages.get("error." + f.code(), f.message()), f.code()))
+                .toList();
+        return respond(ex.errorCode(), message, fields);
     }
 
     /**

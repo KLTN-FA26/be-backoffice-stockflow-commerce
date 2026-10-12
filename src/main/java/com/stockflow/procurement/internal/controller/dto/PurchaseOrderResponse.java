@@ -76,4 +76,7 @@ public record PurchaseOrderResponse(
         @Schema(description = "Non-blocking business warnings, e.g. DELIVERY_DATE_IN_PAST (BR-06)")
                 List<String> warnings,
         @Schema(description = "Send it back when editing the draft; a changed draft answers 409 OPTIMISTIC_LOCK")
-                long version) {}
+                long version,
+        @Schema(description = "The supplier's over-receipt tolerance in percent (BR-02): a line may be received up to"
+                + " ordered x (1 + tolerance / 100); 0 when none is set")
+                BigDecimal tolerancePercent) {}
