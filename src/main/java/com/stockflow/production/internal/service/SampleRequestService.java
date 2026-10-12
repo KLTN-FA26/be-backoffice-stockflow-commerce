@@ -21,6 +21,7 @@ import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.ReserveProductionStockCommand;
 import com.stockflow.order.api.QuoteDirectory;
 import com.stockflow.production.internal.domain.ProductionOrder;
+import com.stockflow.production.internal.domain.SampleStatus;
 import com.stockflow.production.internal.domain.ProductionOrderRepository;
 import com.stockflow.production.internal.domain.SampleEvent;
 import com.stockflow.production.internal.domain.SampleRequest;
@@ -242,7 +243,12 @@ class SampleRequestService implements SampleRequests {
         }
         SampleSpecification spec = draft == null ? previous.specification() : verified(previous.customerId(), draft);
         requireQuoteCovers(previous.quoteId(), previous.customerId(), spec);
-        SampleRequest next = previous.nextRound(Identifiers.newId(), samples.nextNumber(today()), spec);
+        // Decision Q5: a round whose production order was cancelled may be started again too.
+        boolean productionCancelled = previous.status() == SampleStatus.CANCELLED
+                && productionOrders.findBySource(ProductionOrder.Type.SAMPLE, previous.id())
+                .map(order -> order.status() == ProductionOrder.Status.CANCELLED).orElse(false);
+        SampleRequest next = previous.nextRound(Identifiers.newId(), samples.nextNumber(today()), spec,
+                productionCancelled);
         try {
             samples.save(next);
         } catch (DataIntegrityViolationException raced) {

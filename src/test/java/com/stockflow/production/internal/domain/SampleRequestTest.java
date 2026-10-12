@@ -224,4 +224,29 @@ class SampleRequestTest {
         assertThatThrownBy(cancelled::productionStarted).extracting(SampleRequestTest::code)
                 .isEqualTo(ErrorCode.INVALID_SAMPLE_REQUEST_TRANSITION);
     }
+
+    @Test
+    void aRoundWhoseProductionWasCancelledEndsCancelledAndMayStartAgainWithoutAnAnswer() {
+        SampleRequest drafted = draft();
+        assertThatThrownBy(() -> drafted.productionCancelled("LSX cancelled")).as("never reached the workshop")
+                .extracting(SampleRequestTest::code).isEqualTo(ErrorCode.INVALID_SAMPLE_REQUEST_TRANSITION);
+        drafted.submit();
+        drafted.productionStarted();
+        assertThat(drafted.productionCancelled("Production order LSX-1 cancelled: no ink")).isTrue();
+        assertThat(drafted.status()).isEqualTo(SampleStatus.CANCELLED);
+        assertThat(drafted.productionCancelled("again")).as("a retry").isFalse();
+        assertThat(drafted.cancellationReason()).contains("no ink");
+        assertThatThrownBy(() -> drafted.nextRound(UUID.randomUUID(), "SR-2", spec)).as("not without the production")
+                .extracting(SampleRequestTest::code).isEqualTo(ErrorCode.INVALID_SAMPLE_REQUEST_TRANSITION);
+        SampleRequest next = drafted.nextRound(UUID.randomUUID(), "SR-2", spec, true);
+        assertThat(next.status()).isEqualTo(SampleStatus.DRAFT);
+        assertThat(next.round()).isEqualTo(2);
+        assertThat(next.respondedBy()).isNull();
+
+        SampleRequest ready = draft();
+        ready.submit();
+        ready.productionCompleted();
+        assertThatThrownBy(() -> ready.productionCancelled("too late")).as("made already")
+                .extracting(SampleRequestTest::code).isEqualTo(ErrorCode.INVALID_SAMPLE_REQUEST_TRANSITION);
+    }
 }

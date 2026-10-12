@@ -48,6 +48,12 @@ class SampleProductionProgressService implements SampleProductionProgress {
         report(productionOrderId, SampleRequest::productionCompleted, "ready to send");
     }
 
+    @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "sample-request", resourceId = "#productionOrderId")
+    public void productionCancelled(UUID productionOrderId, String reason) {
+        report(productionOrderId, sample -> sample.productionCancelled(reason), "cancelled");
+    }
+
     private void report(UUID productionOrderId, Predicate<SampleRequest> move, String outcome) {
         ProductionOrder order = productionOrders.findById(Objects.requireNonNull(productionOrderId, "productionOrderId"))
                 .orElseThrow(() -> new NotFoundException("production-order", productionOrderId));

@@ -93,7 +93,19 @@ public final class SampleRequest extends AggregateRoot {
      * otherwise this round's own.
      */
     public SampleRequest nextRound(UUID nextId, String nextNumber, SampleSpecification nextSpecification) {
-        if (status != SampleStatus.CHANGES_REQUESTED) {
+        return nextRound(nextId, nextNumber, nextSpecification, false);
+    }
+
+    /**
+     * The same, also after a round whose production order the warehouse manager cancelled
+     * ({@code productionCancelled}, decision Q5 2026-10-12): the customer still wants a sample, so a new round
+     * starts as a DRAFT — its blanks are held again when it is submitted, and it carries no answer of the
+     * customer's. A round cancelled as a draft never reached the workshop and has no next round.
+     */
+    public SampleRequest nextRound(UUID nextId, String nextNumber, SampleSpecification nextSpecification,
+                                   boolean productionCancelled) {
+        boolean cancelledInProduction = status == SampleStatus.CANCELLED && productionCancelled;
+        if (status != SampleStatus.CHANGES_REQUESTED && !cancelledInProduction) {
             throw transition("start the next round of", SampleStatus.DRAFT);
         }
         return new SampleRequest(nextId, nextNumber, customerId, quoteId, id, Math.incrementExact(round),
@@ -196,7 +208,30 @@ public final class SampleRequest extends AggregateRoot {
         customerFeedback = text;
     }
 
-    /** Only a draft can be cancelled: once submitted the workshop has a production order for it. */
+    /**
+     * The round's production order was cancelled or stopped by the warehouse manager (decision Q5, 2026-10-12):
+     * the round ends CANCELLED with the reason, its history kept. A round already READY was made; the workshop
+     * cannot cancel it any more.
+     *
+     * @return whether the round moved (false when it was cancelled already: a retry)
+     */
+    public boolean productionCancelled(String reason) {
+        if (status == SampleStatus.CANCELLED) {
+            return false;
+        }
+        if (status != SampleStatus.SUBMITTED && status != SampleStatus.IN_PRODUCTION) {
+            throw transition("cancel the production of", SampleStatus.CANCELLED);
+        }
+        String text = reason == null ? "" : reason.strip();
+        if (text.isEmpty()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A cancellation must say why");
+        }
+        status = SampleStatus.CANCELLED;
+        cancellationReason = text.length() > MAX_CANCELLATION_REASON ? text.substring(0, MAX_CANCELLATION_REASON) : text;
+        return true;
+    }
+
+    /** Only a draft can be cancelled by Sales: once submitted the workshop has a production order for it. */
     public void cancel(String reason) {
         String text = reason == null ? "" : reason.strip();
         if (text.isEmpty() || text.length() > MAX_CANCELLATION_REASON) {

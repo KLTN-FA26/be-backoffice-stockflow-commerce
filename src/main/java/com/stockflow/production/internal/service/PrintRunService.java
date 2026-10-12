@@ -193,6 +193,7 @@ class PrintRunService implements PrintRuns {
         stock.releaseUnissued(order);
         orders.save(order);
         orders.recordTransition(order.id(), cancelled, now, by);
+        sampleRoundCancelled(order);
         log.info("Production order {} cancelled: {}", order.orderNumber(), order.cancellationReason());
     }
 
@@ -219,6 +220,7 @@ class PrintRunService implements PrintRuns {
         orders.recordTransition(order.id(), new ProductionOrder.Transition(from, ProductionOrder.Status.CANCELLED,
                 "Stopped after printing %d: %s".formatted(order.printed(), order.cancellationReason())), now,
                 user.userId());
+        sampleRoundCancelled(order);
         log.info("Production order {} stopped: printed {}, of which {} good written off", order.orderNumber(),
                 order.printed(), unsold);
         return reads.get(user, order.id());
@@ -260,6 +262,14 @@ class PrintRunService implements PrintRuns {
     public List<ProductionRecords.QcRound> qcRoundsOf(CurrentUser user, UUID productionOrderId) {
         reads.get(user, productionOrderId);
         return records.qcRoundsOf(productionOrderId);
+    }
+
+    /** Decision Q5: a SAMPLE production order cancelled or stopped ends its round, which may be started again. */
+    private void sampleRoundCancelled(ProductionOrder order) {
+        if (order.type() == ProductionOrder.Type.SAMPLE) {
+            samples.productionCancelled(order.id(), "Production order %s cancelled: %s".formatted(order.orderNumber(),
+                    order.cancellationReason()));
+        }
     }
 
     private void held(ProductionOrder order, ProductionOrder.Transition held, UUID by, Instant now) {

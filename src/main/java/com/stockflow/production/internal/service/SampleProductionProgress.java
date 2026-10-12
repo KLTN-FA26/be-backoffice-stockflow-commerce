@@ -26,4 +26,10 @@ public interface SampleProductionProgress {
 
     /** Same refusals as {@link #productionStarted}; the round becomes READY for Sales to send. */
     void productionCompleted(UUID productionOrderId);
+
+    /**
+     * The warehouse manager cancelled or stopped the round's production order (decision Q5): the round is
+     * CANCELLED with {@code reason}; a retry changes nothing. Same refusals as {@link #productionStarted}.
+     */
+    void productionCancelled(UUID productionOrderId, String reason);
 }

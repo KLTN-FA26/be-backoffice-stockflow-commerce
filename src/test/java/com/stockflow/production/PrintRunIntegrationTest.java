@@ -454,10 +454,10 @@ class PrintRunIntegrationTest {
         assertThat(done.summary().status()).isEqualTo(ProductionOrder.Status.COMPLETED);
         assertThat(samples.get(sales, draft.id()).status()).isEqualTo(SampleStatus.READY);
         assertThat(inventory.productionHolds(lsx)).isEmpty();
-        assertThat(jdbc.queryForList("""
-                SELECT quantity_delta FROM inventory.stock_adjustment WHERE reason_code = 'SAMPLE'
+        assertThat(jdbc.queryForObject("""
+                SELECT SUM(quantity_delta) FROM inventory.stock_adjustment WHERE reason_code = 'SAMPLE'
                    AND status = 'PENDING_APPROVAL' AND note LIKE ?""", Integer.class, done.summary().orderNumber() + "%"))
-                .containsExactly(-2);
+                .as("one write-off per layer the 2 came from").isEqualTo(-2);
         assertThat(recorded.ofType(ProductionCompleted.class)).isEmpty();
     }
 
@@ -726,5 +726,78 @@ class PrintRunIntegrationTest {
                 split(1, ProductionOrder.SubcontractMethod.FULL_SERVICE, printSubcontractor())))
                 .as("MATERIAL_ISSUED is not split").extracting(PrintRunIntegrationTest::code)
                 .isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
+    }
+
+    private SampleRequests.Sample submittedSample(int quantity) throws Exception {
+        ProductionFixtures.Design design = fixtures.confirmedDesign();
+        SampleRequests.Sample draft = samples.create(sales, new SampleRequests.Create(DemoData.CUSTOMER_ID, null,
+                new SampleRequests.Draft(design.snapshotId(), ProductionFixtures.BLANK, quantity, null)));
+        return samples.submit(sales, draft.id(), hcm);
+    }
+
+    @Test
+    @DisplayName("Q5: a SAMPLE production order cancelled before printing cancels its round (history kept), lets its blanks go, and a new round holds blanks again with no answer of the customer's")
+    void sampleCancelledBeforePrinting() throws Exception {
+        int atp = inventory.availableToPromise(BLANK);
+        SampleRequests.Sample round = submittedSample(2);
+        UUID lsx = round.productionOrder().id();
+        workflow.prepress(printer, lsx, true, null);
+        issueAll(lsx);
+        assertThat(inventory.availableToPromise(BLANK)).isEqualTo(atp - 2);
+
+        runs.cancel(manager, lsx, "Customer withdrew the sample");
+
+        SampleRequests.Sample cancelled = samples.get(sales, round.id());
+        assertThat(cancelled.status()).isEqualTo(SampleStatus.CANCELLED);
+        assertThat(cancelled.cancellationReason()).contains(round.productionOrder().orderNumber())
+                .contains("Customer withdrew the sample");
+        assertThat(inventory.availableToPromise(BLANK)).as("unprinted blanks back, free").isEqualTo(atp);
+        assertThat(inventory.productionHolds(lsx)).isEmpty();
+        progress.productionCancelled(lsx, "retried");
+        assertThat(samples.get(sales, round.id()).cancellationReason()).as("a retry changes nothing")
+                .contains("Customer withdrew the sample");
+        Await.until("audited", ASYNC, () -> jdbc.queryForObject("""
+                SELECT count(*) FROM platform.audit_log WHERE resource_type = 'sample-request' AND resource_id = ?
+                   AND outcome = 'SUCCESS'""", Integer.class, lsx.toString()) >= 1);
+
+        SampleRequests.Sample next = samples.startNextRound(sales, round.id(), null);
+        assertThat(next.status()).isEqualTo(SampleStatus.DRAFT);
+        assertThat(next.round()).isEqualTo(2);
+        assertThat(next.previousRoundId()).isEqualTo(round.id());
+        assertThat(next.respondedBy()).as("no answer inherited").isNull();
+        assertThat(next.productionOrder()).isNull();
+        assertThatThrownBy(() -> samples.startNextRound(sales, round.id(), null))
+                .extracting(PrintRunIntegrationTest::code).isEqualTo(ErrorCode.SAMPLE_NEXT_ROUND_EXISTS);
+        SampleRequests.Sample resubmitted = samples.submit(sales, next.id(), hcm);
+        assertThat(inventory.availableToPromise(BLANK)).as("held again for the new round").isEqualTo(atp - 2);
+        assertThat(resubmitted.productionOrder().status()).isEqualTo(ProductionOrder.Status.PENDING_PREPRESS);
+        assertThat(samples.get(sales, next.id()).rounds()).hasSize(2);
+    }
+
+    @Test
+    @DisplayName("Q5: stopped on the press, the printed sample units stay written off (not blanks again), the unprinted come back, the round is cancelled and may start again; a draft cancelled by Sales may not")
+    void sampleStoppedAfterPrinting() throws Exception {
+        int atp = inventory.availableToPromise(BLANK);
+        SampleRequests.Sample round = submittedSample(3);
+        UUID lsx = round.productionOrder().id();
+        workflow.prepress(printer, lsx, true, null);
+        issueAll(lsx);
+        runs.startPrinting(printer, lsx);
+
+        runs.stop(manager, lsx, 2, List.of(), "Customer cancelled the quote");
+
+        assertThat(samples.get(sales, round.id()).status()).isEqualTo(SampleStatus.CANCELLED);
+        assertThat(detail(lsx).printedQuantity()).isEqualTo(2);
+        assertThat(writeOffs(lsx).stream().mapToInt(row -> ((Number) row.get("quantity_delta")).intValue()).sum())
+                .as("the 2 printed are written off").isEqualTo(-2);
+        assertThat(inventory.availableToPromise(BLANK)).as("only the unprinted blank is free again").isEqualTo(atp - 2);
+        assertThat(samples.startNextRound(sales, round.id(), null).round()).isEqualTo(2);
+
+        ProductionFixtures.Design design = fixtures.confirmedDesign();
+        SampleRequests.Sample draft = samples.create(sales, new SampleRequests.Create(DemoData.CUSTOMER_ID, null,
+                new SampleRequests.Draft(design.snapshotId(), ProductionFixtures.BLANK, 1, null)));
+        samples.cancel(sales, draft.id(), "Not needed");
+        assertThatThrownBy(() -> samples.startNextRound(sales, draft.id(), null))
+                .extracting(PrintRunIntegrationTest::code).isEqualTo(ErrorCode.INVALID_SAMPLE_REQUEST_TRANSITION);
     }
 }
