@@ -227,4 +227,44 @@ class ProductionSecurityIntegrationTest {
         send(post(SAMPLES + "/" + sample + "/approval"), sales, null).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("APPROVED"));
     }
+
+    @Test
+    @DisplayName("SCRUM-397: the warehouse issues blanks (production-material-issues:CREATE); the print shop may only read them")
+    void materialIssueOverHttp() throws Exception {
+        com.stockflow.support.ConfirmedDesigns.stockBlanks(jdbc, tx, 10);
+        String sales = staff("SALES_STAFF");
+        UUID id = createDraft(sales, DemoData.CUSTOMER_ID, fixtures.confirmedDesign());
+        String order = data(send(post(SAMPLES + "/" + id + "/submission"), sales,
+                java.util.Map.of("warehouseId", hcm))).path("productionOrder").path("id").asText();
+        UUID printerId = fixtures.user();
+        assign(printerId, hcm);
+        String printer = token(printerId, "PRODUCTION_STAFF");
+        send(post(ORDERS + "/" + order + "/prepress"), printer, java.util.Map.of("decision", "PASS"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.summary.status").value("READY"));
+        String issues = ORDERS + "/" + order + "/material-issues";
+
+        send(post(issues), printer, java.util.Map.of("requestId", UUID.randomUUID(), "toLocation", "HCM-PRD01"))
+                .andExpect(status().isForbidden());
+        send(post(issues), staff("WAREHOUSE_STAFF"), java.util.Map.of("requestId", UUID.randomUUID(),
+                "toLocation", "HCM-PRD01")).andExpect(status().isForbidden());   // not assigned to HCM
+        UUID storekeeperId = fixtures.user();
+        assign(storekeeperId, hcm);
+        String storekeeper = token(storekeeperId, "WAREHOUSE_STAFF");
+        send(post(issues), storekeeper, java.util.Map.of("toLocation", "HCM-PRD01"))
+                .andExpect(status().isBadRequest());
+
+        String state = "READY";
+        for (int scans = 0; scans < 5 && "READY".equals(state); scans++) {
+            state = data(send(post(issues), storekeeper, java.util.Map.of("requestId", UUID.randomUUID(),
+                    "toLocation", "HCM-PRD01")).andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.issue.toLocation").value("HCM-PRD01")))
+                    .path("order").path("summary").path("status").asText();
+        }
+        org.assertj.core.api.Assertions.assertThat(state).isEqualTo("MATERIAL_ISSUED");
+        send(get(issues), printer, null).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].sku").value(ProductionFixtures.BLANK));
+        send(post(issues), storekeeper, java.util.Map.of("requestId", UUID.randomUUID(), "toLocation", "HCM-PRD01"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("INVALID_PRODUCTION_TRANSITION"));
+    }
 }

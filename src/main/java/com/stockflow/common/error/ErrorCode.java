@@ -163,6 +163,10 @@ public enum ErrorCode {
     INVALID_PRODUCTION_TRANSITION("This production order cannot move to that status right now", 409),
     /** BR-PRD-02: the print file no longer matches the design the order locked. */
     PRINT_FILE_MISMATCH("The print file does not match the locked design", 409),
+    /** SCRUM-397: a hold issued to production is live, its owner's, and no longer waits for payment. */
+    RESERVATION_NOT_ISSUABLE("This stock hold cannot be issued", 409),
+    /** BR-PRD-03: never more blanks than the production order still needs. */
+    ISSUE_EXCEEDS_REQUIREMENT("More blanks than the production order still needs", 409),
     /** BR-PRD-01: a source already has a production order, and it describes different work. */
     PRODUCTION_SOURCE_CONFLICT("A production order already exists for this source with different content", 409),
     /** SCRUM-448: a quote moves only along 03-state-machines §18. */

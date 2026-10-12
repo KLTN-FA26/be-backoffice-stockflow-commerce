@@ -157,4 +157,11 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
 
     @Query("select r.stockItem.id from ReservationJpaEntity r where r.id = :reservationId")
     Optional<UUID> findStockItemIdByReservationId(@Param("reservationId") UUID reservationId);
+
+    @Query("""
+            select distinct r.stockItem.id from ReservationJpaEntity r
+            where r.productionOrderId = :productionOrderId
+              and r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
+            """)
+    List<UUID> findStockItemIdsHoldingProductionOrder(@Param("productionOrderId") UUID productionOrderId);
 }

@@ -10,6 +10,8 @@ import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.SortWhitelist;
+import com.stockflow.inventory.api.IssueReservedStockCommand;
+import com.stockflow.inventory.api.IssueReservedStockResult;
 import com.stockflow.inventory.api.MoveStockCommand;
 import com.stockflow.inventory.api.ReclassifyStockCommand;
 import com.stockflow.inventory.api.ReceiveStockCommand;
@@ -23,6 +25,8 @@ import com.stockflow.inventory.internal.domain.AdjustmentStatus;
 import com.stockflow.inventory.internal.domain.LocationDirectory;
 import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.Quantity;
+import com.stockflow.inventory.internal.domain.Reservation;
+import com.stockflow.inventory.internal.domain.ReservationId;
 import com.stockflow.inventory.internal.domain.StockAdjustment;
 import com.stockflow.inventory.internal.domain.StockAdjustmentRepository;
 import com.stockflow.inventory.internal.domain.StockItem;
@@ -210,6 +214,136 @@ class StockOperationsServiceImpl implements StockOperations {
         log.info("Moved {} x {}{} from {} to {} ({} -> {})", quantity, sku, lotSuffix(lotNumber), from, to,
                 before, arriving);
         return toMove(line);
+    }
+
+    // ------------------------------------------------------------------ issue held goods
+
+    /**
+     * The hold moves whole, with its goods, under the same locks a move takes: the SKU lock first, then
+     * both stock rows in id order. Only this method changes which stock row a hold is on, and it runs under
+     * the SKU lock, so once the lock is held the hold's row read next is current. Nothing is released and
+     * reserved again: the units are never free, so no checkout can take them on the way and
+     * available-to-promise does not move.
+     *
+     * <p>A hold already at the destination is answered as it stands, without a second ledger line — the
+     * replay of a scan whose first attempt committed.</p>
+     */
+    @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "stock-move", resourceId = "#command.reservationId()")
+    public IssueReservedStockResult issueReserved(IssueReservedStockCommand command) {
+        return moveHold(command, StockStatus.AVAILABLE, StockStatus.IN_PRODUCTION);
+    }
+
+    /**
+     * A hold and its goods from where they are to {@code command.toLocation()}, arriving as {@code arriving};
+     * the goods must be {@code expected} now. Shared by the issue to the print shop and the hand-over of
+     * finished goods to packing, which differ only in the two statuses.
+     */
+    private IssueReservedStockResult moveHold(IssueReservedStockCommand command, StockStatus expected,
+                                              StockStatus arriving) {
+        ReservationId reservationId = ReservationId.of(command.reservationId());
+        StockItem first = holder(reservationId);
+        WarehouseScope.requireLocation(command.toLocation());
+        policies.lock(first.sku().code());
+
+        // Current under the SKU lock: a concurrent issue of this hold has committed or not started.
+        StockItem sourceView = holder(reservationId);
+        WarehouseScope.requireLocation(sourceView.location().code());
+        LocationId from = sourceView.location();
+        LocationId to = new LocationId(command.toLocation());
+        if (from.equals(to)) {
+            StockItem here = stockItems.findByIdForUpdate(sourceView.id()).orElseThrow();
+            Reservation hold = issuable(here, reservationId, command);
+            return new IssueReservedStockResult(hold.id().value(), here.id().value(), here.sku().code(),
+                    here.lotNumber(), to.code(), to.code(), hold.quantity().value(), false, null, clock.instant());
+        }
+        if (!from.warehouseCode().equals(to.warehouseCode())) {
+            throw new BusinessException(ErrorCode.MOVE_ACROSS_WAREHOUSES,
+                    "%s and %s are in different warehouses; use a transfer order".formatted(from, to));
+        }
+        switch (locations.stateOf(to)) {
+            case UNKNOWN -> throw new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + to);
+            case UNUSABLE -> throw new BusinessException(ErrorCode.LOCATION_NOT_USABLE,
+                    "%s cannot take stock now: it, its shelf or its warehouse is not active".formatted(to));
+            case USABLE -> { }
+        }
+        Optional<StockItem> destinationView = stockItems.findBySkuAndLocation(sourceView.sku(), to).stream()
+                .filter(item -> Objects.equals(item.lotNumber(), sourceView.lotNumber())
+                        && Objects.equals(item.receivedAt(), sourceView.receivedAt())
+                        && Objects.equals(item.serialNumber(), sourceView.serialNumber()))
+                .findFirst();
+
+        List<StockItem> toLock = destinationView.isPresent()
+                ? List.of(sourceView, destinationView.get()) : List.of(sourceView);
+        StockItem source = null;
+        StockItem destination = null;
+        for (StockItem view : toLock.stream()
+                .sorted(Comparator.comparing(item -> item.id().value().toString())).toList()) {
+            StockItem locked = stockItems.findByIdForUpdate(view.id()).orElseThrow(() ->
+                    new IllegalStateException("Stock item %s vanished mid-issue".formatted(view.id())));
+            if (locked.id().equals(sourceView.id())) {
+                source = locked;
+            } else {
+                destination = locked;
+            }
+        }
+        Objects.requireNonNull(source, "source");
+        Reservation hold = issuable(source, reservationId, command);
+        if (source.status() != expected) {
+            throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH, "%s%s at %s is %s; this step takes %s stock"
+                    .formatted(source.sku(), lotSuffix(source.lotNumber()), from, source.status(), expected));
+        }
+        if (destination != null && destination.status() != arriving) {
+            throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH, "%s holds %s%s as %s; this stock arrives as %s"
+                    .formatted(to, source.sku(), lotSuffix(source.lotNumber()), destination.status(), arriving));
+        }
+        if (destination == null) {
+            destination = StockItem.emptyLayerOf(source, to, arriving);
+        }
+        source.handOverReservation(reservationId);
+        destination.takeOverReservation(source, hold);
+        stockItems.saveHandOver(source, destination, reservationId);
+
+        Instant now = clock.instant();
+        StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.MOVE,
+                source.sku(), source.lotNumber(), from, to, hold.quantity().value(), expected, arriving,
+                StockMovement.ReferenceType.PRODUCTION_ORDER, command.productionOrderId(),
+                "Hold " + hold.id().value(), command.actorId(), now);
+        ledger.append(line);
+        log.info("Issued hold {} ({} x {}{}) from {} to {} for production order {}", hold.id().value(),
+                hold.quantity(), source.sku(), lotSuffix(source.lotNumber()), from, to, command.productionOrderId());
+        return new IssueReservedStockResult(hold.id().value(), destination.id().value(), source.sku().code(),
+                source.lotNumber(), from.code(), to.code(), hold.quantity().value(), true, line.id(), now);
+    }
+
+    private StockItem holder(ReservationId reservationId) {
+        return stockItems.findIdByReservationId(reservationId)
+                .flatMap(stockItems::findById)
+                .orElseThrow(() -> new BusinessException(ErrorCode.RESERVATION_NOT_FOUND,
+                        "No reservation with id " + reservationId.value()));
+    }
+
+    /**
+     * A hold may be issued when it is live, belongs to the owner named, and no longer waits for payment: an
+     * order's hold that could still expire would let the sweeper free goods already on the press.
+     */
+    private static Reservation issuable(StockItem item, ReservationId reservationId, IssueReservedStockCommand command) {
+        Reservation hold = item.findReservation(reservationId).orElseThrow(() -> new BusinessException(
+                ErrorCode.RESERVATION_NOT_FOUND, "No reservation with id " + reservationId.value()));
+        if (!hold.status().isActive()) {
+            throw new BusinessException(ErrorCode.RESERVATION_NOT_ISSUABLE,
+                    "Hold %s is %s".formatted(reservationId.value(), hold.status()));
+        }
+        if (!hold.isHeldFor(command.orderId(), command.orderId() == null ? command.productionOrderId() : null)) {
+            throw new BusinessException(ErrorCode.RESERVATION_NOT_ISSUABLE,
+                    "Hold %s does not belong to this %s".formatted(reservationId.value(),
+                            command.orderId() != null ? "order" : "production order"));
+        }
+        if (!hold.isPinned()) {
+            throw new BusinessException(ErrorCode.RESERVATION_NOT_ISSUABLE,
+                    "Hold %s still waits for its order's payment".formatted(reservationId.value()));
+        }
+        return hold;
     }
 
     // ------------------------------------------------------------------ receipt

@@ -49,12 +49,15 @@ public class ReservationJpaEntity {
     private StockItemJpaEntity stockItem;
 
     /**
-     * Reference to an order in another module's schema. A plain UUID column with no foreign key —
-     * cross-schema FKs would couple the two modules' migrations and make it impossible to ever
-     * move one out. Referential integrity across modules is the application's job.
+     * The order holding the stock (a foreign key into {@code ordering} since V20260928004000, ADR-0007);
+     * null for a production hold.
      */
-    @Column(name = "order_id", nullable = false)
+    @Column(name = "order_id")
     private UUID orderId;
+
+    /** The production order holding blanks (V20261014000400); exactly one of the two owners is set. */
+    @Column(name = "production_order_id", updatable = false)
+    private UUID productionOrderId;
 
     /**
      * The caller's own idempotency key. Indexed but NOT unique: one reservation call can produce
@@ -94,8 +97,16 @@ public class ReservationJpaEntity {
     public ReservationJpaEntity(UUID id, UUID orderId, UUID rootRequestId, UUID requestId, int quantity,
                          Instant reservedAt, Instant expiresAt, ReservationStatus status,
                          ReleaseReason releaseReason, Instant closedAt) {
+        this(id, orderId, null, rootRequestId, requestId, quantity, reservedAt, expiresAt, status, releaseReason,
+                closedAt);
+    }
+
+    public ReservationJpaEntity(UUID id, UUID orderId, UUID productionOrderId, UUID rootRequestId, UUID requestId,
+                         int quantity, Instant reservedAt, Instant expiresAt, ReservationStatus status,
+                         ReleaseReason releaseReason, Instant closedAt) {
         this.id = id;
         this.orderId = orderId;
+        this.productionOrderId = productionOrderId;
         this.rootRequestId = rootRequestId;
         this.requestId = requestId;
         this.quantity = quantity;
@@ -112,6 +123,7 @@ public class ReservationJpaEntity {
 
     public UUID getId() { return id; }
     public UUID getOrderId() { return orderId; }
+    public UUID getProductionOrderId() { return productionOrderId; }
     public UUID getRootRequestId() { return rootRequestId; }
     public UUID getRequestId() { return requestId; }
     public int getQuantity() { return quantity; }

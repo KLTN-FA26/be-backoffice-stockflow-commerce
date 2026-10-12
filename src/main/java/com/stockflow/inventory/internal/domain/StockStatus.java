@@ -13,6 +13,10 @@ package com.stockflow.inventory.internal.domain;
  *      ├──QC: quarantine──▶ QUARANTINE ──accepted──▶ (putaway) AVAILABLE
  *      │                        └──rejected──▶ BLOCKED   └──expiryReached──▶ EXPIRED
  *      └──QC: rejected──▶ BLOCKED ──returned to supplier──▶ (leaves stock)
+ *
+ *   AVAILABLE ──issued to the print shop, held──▶ IN_PRODUCTION ──finished──▶ AVAILABLE (PACKING, held)
+ *                                                      ├──unprinted, returned──▶ AVAILABLE
+ *                                                      └──scrapped──▶ DAMAGED ──approved write-off──▶ (leaves)
  * </pre>
  *
  * <p>{@link StockItem#receive} still creates {@link #QUARANTINE} stock; the receipt flow that
@@ -36,7 +40,16 @@ public enum StockStatus {
     DAMAGED,
 
     /** Past its expiry date. Kept as a row so the loss stays traceable, never sold. */
-    EXPIRED;
+    EXPIRED,
+
+    /**
+     * Issued to the print shop (SCRUM-397): in a PRODUCTION area, held for its order or production order.
+     * Never sellable, <b>whatever happens to the hold</b> — an order cancelled after its blanks were issued
+     * releases its holds, and printed cups must not come back as blanks another order can buy. They leave
+     * this status only by an explicit step: finished goods to PACKING, unprinted blanks back to storage,
+     * scrap to DAMAGED.
+     */
+    IN_PRODUCTION;
 
     /**
      * Exhaustive switch expression rather than {@code this == AVAILABLE}: when someone adds a
@@ -46,14 +59,14 @@ public enum StockStatus {
     public boolean isReservable() {
         return switch (this) {
             case AVAILABLE -> true;
-            case INBOUND, QUARANTINE, BLOCKED, DAMAGED, EXPIRED -> false;
+            case INBOUND, QUARANTINE, BLOCKED, DAMAGED, EXPIRED, IN_PRODUCTION -> false;
         };
     }
 
     /** Whether stock in this status still counts as company property on the balance sheet. */
     public boolean isOnBalanceSheet() {
         return switch (this) {
-            case INBOUND, AVAILABLE, QUARANTINE, BLOCKED, DAMAGED -> true;
+            case INBOUND, AVAILABLE, QUARANTINE, BLOCKED, DAMAGED, IN_PRODUCTION -> true;
             case EXPIRED -> false;
         };
     }

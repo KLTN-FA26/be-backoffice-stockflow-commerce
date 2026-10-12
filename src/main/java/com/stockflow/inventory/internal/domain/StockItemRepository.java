@@ -90,5 +90,18 @@ public interface StockItemRepository {
      */
     List<StockItem> findWithReservationsForOrder(java.util.UUID orderId);
 
+    /** The same for a production order's live holds, locked in id order. */
+    List<StockItem> findWithReservationsForProductionOrder(java.util.UUID productionOrderId);
+
+    /** The stock item a reservation is on, without locking it — so it can be locked in id order with another. */
+    Optional<StockItemId> findIdByReservationId(ReservationId reservationId);
+
+    /**
+     * Persist a {@link StockItem#handOverReservation hand-over}: {@code from} gave up the hold {@code moved}
+     * and {@code to} (new or existing) took it over. The reservation row keeps its id and changes parent;
+     * it is never deleted and inserted again — order lines and fulfilment lines reference it.
+     */
+    void saveHandOver(StockItem from, StockItem to, ReservationId moved);
+
     StockItem save(StockItem stockItem);
 }

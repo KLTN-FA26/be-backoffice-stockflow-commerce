@@ -14,7 +14,9 @@ public enum ReleaseReason {
     ORDER_CANCELLED,
     PAYMENT_FAILED,
     RESERVATION_EXPIRED,
-    MANUAL_OVERRIDE;
+    MANUAL_OVERRIDE,
+    /** A production order no longer needs the blanks it held (cancelled before using them). */
+    PRODUCTION_CANCELLED;
 
     public com.stockflow.contracts.ReleaseReason toContract() {
         return switch (this) {
@@ -22,6 +24,8 @@ public enum ReleaseReason {
             case PAYMENT_FAILED -> com.stockflow.contracts.ReleaseReason.PAYMENT_FAILED;
             case RESERVATION_EXPIRED -> com.stockflow.contracts.ReleaseReason.RESERVATION_EXPIRED;
             case MANUAL_OVERRIDE -> com.stockflow.contracts.ReleaseReason.MANUAL_OVERRIDE;
+            // Never published: a production hold announces nothing to order (StockItem#releaseReservation).
+            case PRODUCTION_CANCELLED -> com.stockflow.contracts.ReleaseReason.MANUAL_OVERRIDE;
         };
     }
 }

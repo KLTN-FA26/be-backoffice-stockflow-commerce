@@ -80,6 +80,39 @@ public interface InventoryService {
     void release(UUID reservationId, String reason);
 
     /**
+     * Hold blanks for a production order (see {@link ReserveProductionStockCommand}). Joins the caller's
+     * transaction, like {@link #reserve}: a sample submission that fails afterwards leaves no hold behind.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code INSUFFICIENT_STOCK} when the warehouse
+     *         holds fewer free units than asked
+     */
+    ReserveStockResult reserveForProduction(ReserveProductionStockCommand command);
+
+    /**
+     * Release every live hold of a production order (cancelled before its blanks were used). Joins the
+     * caller's transaction. Idempotent: closed holds are left as they are.
+     *
+     * @return the units released
+     */
+    int releaseProductionHolds(UUID productionOrderId);
+
+    /** The live holds of a production order, wherever their goods are now; in stock item id order. */
+    List<StockReservation> productionHolds(UUID productionOrderId);
+
+    /**
+     * Move one live hold together with its goods (see {@link IssueReservedStockCommand}), writing one MOVE
+     * ledger line with reference {@code PRODUCTION_ORDER}. The units are held for their owner the whole
+     * time: available-to-promise does not change, and no other order can take them on the way. Joins the
+     * caller's transaction; locks both stock rows in id order.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code RESERVATION_NOT_FOUND},
+     *         {@code RESERVATION_NOT_ISSUABLE} (closed, another owner's, or still waiting for payment),
+     *         {@code LOCATION_NOT_FOUND}, {@code LOCATION_NOT_USABLE}, {@code MOVE_ACROSS_WAREHOUSES},
+     *         {@code STOCK_STATUS_MISMATCH}
+     */
+    IssueReservedStockResult issueReserved(IssueReservedStockCommand command);
+
+    /**
      * Stop the holds of an order from expiring: the order no longer waits for payment (paid, or
      * released on its deposit), so its stock stays held until it is consumed or the order releases
      * it (kltn-docs 14 BR-07, SCRUM-465). Joins the caller's transaction, like {@link #reserve}, so

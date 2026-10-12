@@ -1,6 +1,8 @@
 package com.stockflow.inventory.internal.service;
 
 import com.stockflow.common.api.PageResponse;
+import com.stockflow.inventory.api.IssueReservedStockCommand;
+import com.stockflow.inventory.api.IssueReservedStockResult;
 import com.stockflow.inventory.api.MoveStockCommand;
 import com.stockflow.inventory.api.ReceiveStockCommand;
 import com.stockflow.inventory.api.ReclassifyStockCommand;
@@ -23,6 +25,9 @@ public interface StockOperations {
     StockMove move(MoveStockCommand command);
 
     StockMove receive(ReceiveStockCommand command);
+
+    /** See {@code InventoryService#issueReserved}. */
+    IssueReservedStockResult issueReserved(IssueReservedStockCommand command);
 
     StockMove reclassify(ReclassifyStockCommand command);
 

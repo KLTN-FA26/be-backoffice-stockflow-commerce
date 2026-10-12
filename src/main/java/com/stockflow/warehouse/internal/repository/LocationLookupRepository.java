@@ -31,6 +31,6 @@ public interface LocationLookupRepository {
      */
     record LocationRow(UUID id, StorageLocationKind kind, UUID warehouseId, String locationCode,
                        StorageClass storageClass, LocationStatus status, WarehouseStatus warehouseStatus,
-                       LocationStatus shelfStatus) {
+                       LocationStatus shelfStatus, com.stockflow.warehouse.internal.domain.AreaType areaType) {
     }
 }

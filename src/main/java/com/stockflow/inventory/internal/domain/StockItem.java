@@ -287,7 +287,7 @@ public final class StockItem extends AggregateRoot {
     public int rearmReservationsOf(UUID orderId, Instant deadline) {
         int rearmed = 0;
         for (Reservation reservation : reservations) {
-            if (reservation.orderId().equals(orderId) && reservation.rearm(deadline)) {
+            if (orderId.equals(reservation.orderId()) && reservation.rearm(deadline)) {
                 rearmed++;
             }
         }
@@ -297,7 +297,7 @@ public final class StockItem extends AggregateRoot {
     public int pinReservationsOf(UUID orderId) {
         int pinned = 0;
         for (Reservation reservation : reservations) {
-            if (reservation.orderId().equals(orderId) && reservation.pin()) {
+            if (orderId.equals(reservation.orderId()) && reservation.pin()) {
                 pinned++;
             }
         }
@@ -329,18 +329,7 @@ public final class StockItem extends AggregateRoot {
         if (alreadyServed.isPresent()) {
             return alreadyServed.get();
         }
-        if (expiryDate != null && expiryDate.isBefore(BusinessCalendar.date(now))) {
-            throw new BusinessException(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT);
-        }
-        if (!status.isReservable()) {
-            throw new IllegalStateException(
-                    "Stock in status %s cannot be reserved for order %s"
-                            .formatted(status, orderId));
-        }
-        if (available().isLessThan(quantity)) {
-            throw new InsufficientStockException(sku.code(), quantity.value(), available().value());
-        }
-
+        requireHoldable(quantity, now, "order " + orderId);
         Reservation reservation =
                 Reservation.open(orderId, rootRequestId, requestId, quantity, now, ttl);
         reservations.add(reservation);
@@ -354,6 +343,38 @@ public final class StockItem extends AggregateRoot {
                                 quantity.value(),
                                 reservation.expiresAt())));
         return reservation;
+    }
+
+    /**
+     * Hold blanks for a production order rather than an order (a sample round from its submission,
+     * decision Q1 2026-10-12; a reprint round). The same checks as {@link #reserve}; the hold is pinned
+     * from the start and announces nothing to {@code order}, which has no stake in it.
+     */
+    public Reservation reserveForProduction(UUID productionOrderId, UUID rootRequestId, UUID requestId,
+                                            Quantity quantity, Instant now) {
+        Optional<Reservation> alreadyServed = findByRequestId(requestId);
+        if (alreadyServed.isPresent()) {
+            return alreadyServed.get();
+        }
+        requireHoldable(quantity, now, "production order " + productionOrderId);
+        Reservation reservation =
+                Reservation.openForProduction(productionOrderId, rootRequestId, requestId, quantity, now);
+        reservations.add(reservation);
+        checkInvariants();
+        return reservation;
+    }
+
+    private void requireHoldable(Quantity quantity, Instant now, String holder) {
+        if (expiryDate != null && expiryDate.isBefore(BusinessCalendar.date(now))) {
+            throw new BusinessException(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT);
+        }
+        if (!status.isReservable()) {
+            throw new IllegalStateException(
+                    "Stock in status %s cannot be reserved for %s".formatted(status, holder));
+        }
+        if (available().isLessThan(quantity)) {
+            throw new InsufficientStockException(sku.code(), quantity.value(), available().value());
+        }
     }
 
     /**
@@ -376,6 +397,9 @@ public final class StockItem extends AggregateRoot {
         }
         reservation.release(reason, now);
         checkInvariants();
+        if (reservation.orderId() == null) {
+            return;     // a production hold: order has no stake in it
+        }
         registerEvent(
                 new StockEvent.Released(
                         new StockReservationReleased(
@@ -414,6 +438,9 @@ public final class StockItem extends AggregateRoot {
         reservation.consume(now);
         this.onHand = this.onHand.minus(reservation.quantity());
         checkInvariants();
+        if (reservation.orderId() == null) {
+            return;
+        }
         registerEvent(
                 new StockEvent.Deducted(
                         new StockDeducted(
@@ -476,6 +503,63 @@ public final class StockItem extends AggregateRoot {
         requirePositive(quantity);
         this.onHand = onHand.plus(quantity);
         checkInvariants();
+    }
+
+    /**
+     * The source side of issuing held goods (SCRUM-397): one live hold leaves this stock item
+     * <b>together with</b> the units it holds. Unlike {@link #moveOut}, which refuses held units, the
+     * promise travels with the goods, so there is never a moment in which they are unheld — no
+     * release-then-move window in which another order's checkout could take them. The hold keeps its id,
+     * so whoever stored it (an order line, a production order) still finds it.
+     *
+     * @throws IllegalArgumentException when the hold is not on this stock item
+     * @throws IllegalStateException when the hold is closed
+     */
+    public Reservation handOverReservation(ReservationId reservationId) {
+        Reservation reservation = findReservation(reservationId).orElseThrow(() -> new IllegalArgumentException(
+                "Reservation %s does not belong to stock item %s".formatted(reservationId, id)));
+        if (reservation.status().isTerminal()) {
+            throw new IllegalStateException("Reservation %s is %s; only a live hold is handed over"
+                    .formatted(reservationId, reservation.status()));
+        }
+        reservations.remove(reservation);
+        this.onHand = onHand.minus(reservation.quantity());
+        checkInvariants();
+        return reservation;
+    }
+
+    /**
+     * The destination side of {@link #handOverReservation}: the hold and its units arrive here, in this
+     * layer's status (issued blanks become {@link StockStatus#IN_PRODUCTION}, finished goods
+     * {@link StockStatus#AVAILABLE} again).
+     */
+    public void takeOverReservation(StockItem from, Reservation reservation) {
+        if (!sku.equals(from.sku) || !Objects.equals(lotNumber, from.lotNumber)
+                || !Objects.equals(serialNumber, from.serialNumber) || !Objects.equals(expiryDate, from.expiryDate)) {
+            throw new IllegalArgumentException(
+                    "Stock item %s cannot take a hold of stock item %s: other goods".formatted(id, from.id));
+        }
+        if (findReservation(reservation.id()).isPresent()) {
+            throw new IllegalStateException("Stock item %s already carries reservation %s"
+                    .formatted(id, reservation.id()));
+        }
+        reservations.add(reservation);
+        this.onHand = onHand.plus(reservation.quantity());
+        checkInvariants();
+    }
+
+    /**
+     * An empty layer of {@code source}'s goods at {@code destination} in {@code status} — the same SKU, lot,
+     * expiry and receipt time — for {@link #takeOverReservation} to fill. Kept apart from {@link #arrivedAs},
+     * which arrives with unheld units.
+     */
+    public static StockItem emptyLayerOf(StockItem source, LocationId destination, StockStatus status) {
+        if (source.location.equals(destination)) {
+            throw new IllegalArgumentException("A move needs two different locations");
+        }
+        return new StockItem(StockItemId.newId(), source.sku, destination, source.lotNumber, source.expiryDate,
+                Quantity.ZERO, Objects.requireNonNull(status, "status"), List.of(), 0L, source.receivedAt,
+                source.serialNumber);
     }
 
     /**

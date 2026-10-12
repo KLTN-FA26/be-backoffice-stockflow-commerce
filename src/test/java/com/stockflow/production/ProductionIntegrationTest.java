@@ -89,6 +89,8 @@ class ProductionIntegrationTest {
     void setUp() {
         fixtures = new ProductionFixtures(storage, jdbc, tx, entityManager, progress);
         hcm = jdbc.queryForObject("SELECT id FROM warehouse.warehouse WHERE prefix = 'HCM'", UUID.class);
+        // A sample's blanks are held from submission (Q1): bring this test's own, not the shared demo stock.
+        com.stockflow.support.ConfirmedDesigns.stockBlanks(jdbc, tx, 30);
         UUID salesUser = tx.execute(s -> ReferenceRows.user(entityManager));
         sales = new CurrentUser(salesUser, "sales-" + salesUser, Set.of(Role.SALES_STAFF), Set.of(), DataScope.ALL,
                 Set.of(), Set.of());

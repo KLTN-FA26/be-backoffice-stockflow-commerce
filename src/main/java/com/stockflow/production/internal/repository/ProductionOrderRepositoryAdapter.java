@@ -38,7 +38,7 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
 
     @Override
     public Optional<ProductionOrder> findById(UUID id) {
-        return jpa.findById(id).map(ProductionOrderRepositoryAdapter::toDomain);
+        return jpa.findById(id).map(this::toDomain);
     }
 
     @Override
@@ -71,7 +71,7 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
 
     @Override
     public Optional<ProductionOrder> findBySource(ProductionOrder.Type type, UUID sourceId) {
-        return findEntity(type, sourceId).map(ProductionOrderRepositoryAdapter::toDomain);
+        return findEntity(type, sourceId).map(this::toDomain);
     }
 
     /**
@@ -178,13 +178,25 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
         return type == ProductionOrder.Type.SAMPLE ? jpa.findForSample(sourceId) : jpa.findRootForLine(sourceId);
     }
 
-    static ProductionOrder toDomain(ProductionOrderJpaEntity e) {
+    private ProductionOrder toDomain(ProductionOrderJpaEntity e) {
         return ProductionOrder.restore(e.getId(), e.getOrderNumber(), e.getType(), e.getStatus(),
                 e.getSampleRequestId(), e.getSalesOrderId(), e.getSalesOrderLineId(), e.getApprovedSampleId(),
                 new ProductionOrder.Work(e.getWarehouseId(), new Sku(e.getBlankSku()), e.getDesignSnapshotId(),
                         e.getDesignChecksum(), e.getPlannedQuantity(), e.getDueDate()))
                 .withWorkflow(e.getStatusBeforeHold(), e.getHoldReason(), e.getHoldNote(), e.getPrepressCheckedBy(),
-                        e.getPrepressCheckedAt());
+                        e.getPrepressCheckedAt())
+                .withProgress(e.getIssuedQuantity(), e.getPrintedQuantity(), e.getGoodQuantity(), e.getScrapQuantity(),
+                        passedOf(e.getId()), e.getCompletedAt(), e.getCancelledAt(), e.getCancellationReason());
+    }
+
+    /** Good units through QC so far: the sum of the QC rounds, which are the record of it. */
+    private int passedOf(UUID productionOrderId) {
+        Number passed = (Number) entityManager.createNativeQuery(
+                        "SELECT COALESCE(SUM(passed_quantity), 0) FROM production.production_qc_result "
+                                + "WHERE production_order_id = :id")
+                .setParameter("id", productionOrderId)
+                .getSingleResult();
+        return passed.intValue();
     }
 
     private static Row toRow(ProductionOrderJpaEntity e) {

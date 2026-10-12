@@ -69,6 +69,8 @@ class ProductionWorkflowIntegrationTest {
     @BeforeEach
     void setUp() {
         hcm = jdbc.queryForObject("SELECT id FROM warehouse.warehouse WHERE prefix = 'HCM'", UUID.class);
+        // A sample's blanks are held from submission (Q1): bring this test's own, not the shared demo stock.
+        com.stockflow.support.ConfirmedDesigns.stockBlanks(jdbc, tx, 30);
         sales = user(Role.SALES_STAFF, DataScope.ALL, Set.of());
         printer = user(Role.PRODUCTION_STAFF, DataScope.WAREHOUSE, Set.of(hcm));
         manager = user(Role.WAREHOUSE_MANAGER, DataScope.WAREHOUSE, Set.of(hcm));

@@ -18,6 +18,7 @@ import com.stockflow.customer.api.CustomerService;
 import com.stockflow.design.api.ConfirmedDesign;
 import com.stockflow.design.api.DesignService;
 import com.stockflow.inventory.api.InventoryService;
+import com.stockflow.inventory.api.ReserveProductionStockCommand;
 import com.stockflow.order.api.QuoteDirectory;
 import com.stockflow.production.internal.domain.ProductionOrder;
 import com.stockflow.production.internal.domain.ProductionOrderRepository;
@@ -37,6 +38,7 @@ import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -167,8 +169,9 @@ class SampleRequestService implements SampleRequests {
         WarehouseScope.requireWarehouse(warehouseId);
         SampleSpecification spec = sample.specification();
         // 03 §17: submit needs a confirmed design snapshot — re-read now, so a draft whose snapshot no
-        // longer verifies does not reach the workshop — and blanks to make it from. This is a check, not
-        // a hold: issuing the blanks to the PRODUCTION area is the workshop's step (SCRUM-397).
+        // longer verifies does not reach the workshop — and blanks to make it from, held for the sample's
+        // production order from now on (decision Q1, 2026-10-12): no other order can take them before the
+        // workshop issues them. The count first, for a clear refusal; the hold re-checks under the locks.
         ConfirmedDesign design = designs.verifySnapshotForSku(spec.designSnapshotId(), sample.customerId(),
                 spec.blankSku().code());
         int available = inventory.availableToPromise(spec.blankSku(), warehouse.prefix());
@@ -184,6 +187,10 @@ class SampleRequestService implements SampleRequests {
                         spec.blankSku(), design.snapshotId(), design.checksum(), spec.quantity(), spec.dueDate()));
         ProductionOrder created = productionOrders.createIfAbsent(requested, user.userId(), now);
         created.requireSameWorkAs(requested);
+        // Same transaction: a submit that fails after this holds nothing; a retry holds nothing twice.
+        inventory.reserveForProduction(new ReserveProductionStockCommand(
+                UUID.nameUUIDFromBytes(("sample-blanks:" + created.id()).getBytes(StandardCharsets.UTF_8)),
+                spec.blankSku(), spec.quantity(), created.id(), warehouse.prefix()));
         samples.save(sample);
         log.info("Sample request {} submitted: production order {} in {}", sample.requestNumber(),
                 created.orderNumber(), warehouse.prefix());

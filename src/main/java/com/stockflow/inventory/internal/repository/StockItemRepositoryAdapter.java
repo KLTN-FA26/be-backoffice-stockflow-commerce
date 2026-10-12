@@ -176,6 +176,52 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     }
 
     @Override
+    public List<StockItem> findWithReservationsForProductionOrder(UUID productionOrderId) {
+        return jpa.findStockItemIdsHoldingProductionOrder(productionOrderId).stream()
+                .sorted(java.util.Comparator.comparing(UUID::toString))
+                .map(id -> findByIdForUpdate(new StockItemId(id)))
+                .flatMap(Optional::stream)
+                .toList();
+    }
+
+    @Override
+    public Optional<StockItemId> findIdByReservationId(ReservationId reservationId) {
+        return jpa.findStockItemIdByReservationId(reservationId.value()).map(StockItemId::new);
+    }
+
+    /**
+     * The hold changes parent by an UPDATE of its {@code stock_item_id}. Going through the two collections
+     * would have {@code orphanRemoval} delete the row under the source while the destination inserted it
+     * again — a primary-key clash at best, and a DELETE the foreign keys from
+     * {@code ordering.order_line_reservation} and fulfilment rightly refuse. Both parents are refreshed after
+     * the UPDATE so their collections match the rows, then saved as usual for {@code on_hand} and
+     * {@code reserved}.
+     */
+    @Override
+    public void saveHandOver(StockItem from, StockItem to, ReservationId moved) {
+        if (!jpa.existsById(to.id().value())) {
+            StockItemJpaEntity fresh = StockItemPersistenceMapper.toNewEntity(to);
+            fresh.getReservations().removeIf(r -> r.getId().equals(moved.value()));
+            jpa.save(fresh);
+        }
+        entityManager.flush();
+        int updated = entityManager.createNativeQuery(
+                        "update inventory.stock_reservation set stock_item_id = :to where id = :id and stock_item_id = :from")
+                .setParameter("to", to.id().value())
+                .setParameter("id", moved.value())
+                .setParameter("from", from.id().value())
+                .executeUpdate();
+        if (updated != 1) {
+            throw new IllegalStateException("Reservation %s is no longer on stock item %s".formatted(moved, from.id()));
+        }
+        for (StockItem item : List.of(from, to)) {
+            jpa.findByIdWithReservations(item.id().value()).ifPresent(entityManager::refresh);
+        }
+        save(from);
+        save(to);
+    }
+
+    @Override
     public List<StockItem> findWithReservationsForOrder(UUID orderId) {
         return jpa.findStockItemIdsHoldingOrder(orderId).stream()
                 .map(id -> findByIdForUpdate(new StockItemId(id)))

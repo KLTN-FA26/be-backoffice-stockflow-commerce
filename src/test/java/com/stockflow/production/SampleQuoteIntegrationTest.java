@@ -84,6 +84,8 @@ class SampleQuoteIntegrationTest {
     @BeforeEach
     void setUp() {
         hcm = jdbc.queryForObject("SELECT id FROM warehouse.warehouse WHERE prefix = 'HCM'", UUID.class);
+        // A sample's blanks are held from submission (Q1): bring this test's own, not the shared demo stock.
+        com.stockflow.support.ConfirmedDesigns.stockBlanks(jdbc, tx, 30);
         UUID salesId = tx.execute(s -> ReferenceRows.user(entityManager));
         sales = new CurrentUser(salesId, "sales-" + salesId, Set.of(Role.SALES_STAFF), Set.of(), DataScope.ALL,
                 Set.of(), Set.of());

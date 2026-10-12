@@ -51,6 +51,7 @@ final class StockItemPersistenceMapper {
         return new Reservation(
                 new ReservationId(entity.getId()),
                 entity.getOrderId(),
+                entity.getProductionOrderId(),
                 entity.getRootRequestId(),
                 entity.getRequestId(),
                 Quantity.of(entity.getQuantity()),
@@ -92,6 +93,7 @@ final class StockItemPersistenceMapper {
                 .map(r -> new ReservationJpaEntity(
                         r.id().value(),
                         r.orderId(),
+                        r.productionOrderId(),
                         r.rootRequestId(),
                         r.requestId(),
                         r.quantity().value(),

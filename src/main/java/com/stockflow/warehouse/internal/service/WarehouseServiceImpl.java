@@ -72,6 +72,7 @@ class WarehouseServiceImpl implements WarehouseService {
                 row.warehouseId(), row.locationCode(),
                 StorageLocationView.StorageClass.valueOf(row.storageClass().name()),
                 StorageLocationView.Status.valueOf(row.status().name()),
-                StorageLocationView.Status.valueOf(effective.name()), EffectiveStatus.isUsable(effective));
+                StorageLocationView.Status.valueOf(effective.name()), EffectiveStatus.isUsable(effective),
+                row.areaType() == null ? null : StorageLocationView.AreaType.valueOf(row.areaType().name()));
     }
 }

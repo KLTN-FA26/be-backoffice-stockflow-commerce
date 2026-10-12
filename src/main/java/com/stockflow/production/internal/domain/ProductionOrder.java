@@ -6,17 +6,25 @@ import com.stockflow.common.error.ErrorCode;
 
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
- * A production order (LSX) as it is born (SCRUM-395, 03-state-machines §16): from a submitted sample
- * round ({@code SAMPLE}) or from one released order line ({@code ORDER}), always in house and in
- * {@code PENDING_PREPRESS}.
+ * A production order (LSX, 03-state-machines §16): born from a submitted sample round ({@code SAMPLE}) or
+ * one released order line ({@code ORDER}), always in house and in {@code PENDING_PREPRESS} (SCRUM-395),
+ * then taken through the workshop (SCRUM-396..401): prepress, blanks issued, printing, QC, completion or
+ * a reprint round, holds, cancellation.
  *
- * <p>What happens to it afterwards — prepress, blanks, printing, QC, hold, split for subcontracting —
- * belongs to SCRUM-396 onwards and is deliberately not modelled here: this class holds exactly what
- * creation decides and what a replay must agree with.</p>
+ * <p><b>Quantities</b> ({@code ck_production_order_quantities}): {@code issued} blanks reached the print
+ * shop; {@code printed} of them were printed, each either {@code good} or {@code scrap} (BR-PRD-04);
+ * {@code passed} of the good ones passed QC. A unit QC fails moves from good to scrap. The blanks still
+ * needed (BR-PRD-03) are the good units planned, less the good units made, less the blanks issued and not
+ * yet printed — so a reprint round asks for exactly the shortfall.</p>
+ *
+ * <p>Subcontracting (433/441) is not modelled here yet.</p>
  *
  * <p><b>One per source (BR-PRD-01).</b> The source is the sample request or the order line, never the
  * event that announced it: a redelivered release names the same line and must find the order already
@@ -73,6 +81,14 @@ public final class ProductionOrder {
     private final UUID salesOrderLineId;
     private final UUID approvedSampleId;
     private final Work work;
+    private int issued;
+    private int printed;
+    private int good;
+    private int scrap;
+    private int passed;
+    private Instant completedAt;
+    private Instant cancelledAt;
+    private String cancellationReason;
 
     private ProductionOrder(UUID id, String orderNumber, Type type, Status status, UUID sampleRequestId,
                             UUID salesOrderId, UUID salesOrderLineId, UUID approvedSampleId, Work work) {
@@ -130,6 +146,20 @@ public final class ProductionOrder {
         return this;
     }
 
+    /** Rehydration of the quantities and the end states, after {@link #restore}. */
+    public ProductionOrder withProgress(int issued, int printed, int good, int scrap, int passed, Instant completedAt,
+                                        Instant cancelledAt, String cancellationReason) {
+        this.issued = issued;
+        this.printed = printed;
+        this.good = good;
+        this.scrap = scrap;
+        this.passed = passed;
+        this.completedAt = completedAt;
+        this.cancelledAt = cancelledAt;
+        this.cancellationReason = cancellationReason;
+        return this;
+    }
+
     /**
      * Prepress passed (BR-PRD-02): the print file was checked against the locked design. The caller verifies
      * the checksum before calling; this records who checked it and when, which every later state requires
@@ -168,6 +198,191 @@ public final class ProductionOrder {
         holdNote = text;
         status = Status.ON_HOLD;
         return new Transition(from, Status.ON_HOLD, reason + (text == null ? "" : ": " + text));
+    }
+
+    // ------------------------------------------------------------------ blanks, printing, QC (SCRUM-397..399)
+
+    /** Blanks the order still needs on the press (BR-PRD-03): planned − good − issued-but-unprinted. */
+    public int outstandingBlanks() {
+        return Math.max(0, work.plannedQuantity() - good - unprintedBlanks());
+    }
+
+    /** Blanks in the print shop not printed yet. */
+    public int unprintedBlanks() {
+        return issued - printed;
+    }
+
+    /** Good units printed and not yet through QC. */
+    public int awaitingQc() {
+        return good - passed;
+    }
+
+    /**
+     * Blanks reached the print shop (SCRUM-397). Never more than still needed (BR-PRD-03). READY becomes
+     * MATERIAL_ISSUED once nothing more is needed; until then the order stays READY for the next scan.
+     */
+    public Optional<Transition> issueBlanks(int quantity) {
+        requireStatus(Status.READY, "issue blanks to");
+        if (quantity < 1) {
+            throw new IllegalArgumentException("An issue moves at least one blank");
+        }
+        if (quantity > outstandingBlanks()) {
+            throw new BusinessException(ErrorCode.ISSUE_EXCEEDS_REQUIREMENT,
+                    "Production order %s needs %d more blank(s); %d were offered (BR-PRD-03)"
+                            .formatted(orderNumber, outstandingBlanks(), quantity));
+        }
+        issued += quantity;
+        if (outstandingBlanks() > 0) {
+            return Optional.empty();
+        }
+        status = Status.MATERIAL_ISSUED;
+        return Optional.of(new Transition(Status.READY, Status.MATERIAL_ISSUED,
+                "Blanks issued: %d unprinted in the print shop".formatted(unprintedBlanks())));
+    }
+
+    /** Printing starts (SCRUM-398). From here the design cannot change (BR-PRD-07). */
+    public Transition startPrinting() {
+        requireStatus(Status.MATERIAL_ISSUED, "start printing");
+        status = Status.PRINTING;
+        return new Transition(Status.MATERIAL_ISSUED, Status.PRINTING, "Printing started");
+    }
+
+    /**
+     * The run's output (SCRUM-398, BR-PRD-04): {@code printedNow} units printed from the issued blanks, of
+     * which {@code scrapNow} were spoilt; the rest go to QC. Blanks left unprinted stay issued for the next
+     * round. A run whose every unit was spoilt has nothing for QC and goes straight back to READY.
+     */
+    public List<Transition> recordOutput(int printedNow, int scrapNow) {
+        requireStatus(Status.PRINTING, "record the output of");
+        if (printedNow < 1 || scrapNow < 0 || scrapNow > printedNow) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "A run prints at least one unit, and spoils no more than it printed");
+        }
+        if (printedNow > unprintedBlanks()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "Only %d issued blank(s) are unprinted; %d cannot have been printed"
+                            .formatted(unprintedBlanks(), printedNow));
+        }
+        printed += printedNow;
+        scrap += scrapNow;
+        good += printedNow - scrapNow;
+        status = Status.QC;
+        List<Transition> transitions = new ArrayList<>();
+        transitions.add(new Transition(Status.PRINTING, Status.QC,
+                "Printed %d, scrap %d".formatted(printedNow, scrapNow)));
+        if (awaitingQc() == 0) {
+            status = Status.READY;
+            transitions.add(new Transition(Status.QC, Status.READY, "Nothing to inspect: every unit was spoilt"));
+        }
+        return transitions;
+    }
+
+    /**
+     * A QC round (SCRUM-399, BR-PRD-05) inspects every good unit awaiting it. Failed units become scrap.
+     * Enough good units: COMPLETED; short: READY for a reprint round. The only way out of QC.
+     */
+    public Transition recordQc(int passedNow, int failedNow, Instant at) {
+        Objects.requireNonNull(at, "at");
+        requireStatus(Status.QC, "record QC of");
+        if (passedNow < 0 || failedNow < 0 || passedNow + failedNow != awaitingQc()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "QC inspects every printed unit awaiting it: %d, not %d".formatted(awaitingQc(),
+                            passedNow + failedNow));
+        }
+        good -= failedNow;
+        scrap += failedNow;
+        passed += passedNow;
+        if (good >= work.plannedQuantity()) {
+            status = Status.COMPLETED;
+            completedAt = at;
+            return new Transition(Status.QC, Status.COMPLETED,
+                    "QC passed %d, failed %d; %d good".formatted(passedNow, failedNow, good));
+        }
+        status = Status.READY;
+        return new Transition(Status.QC, Status.READY, "QC passed %d, failed %d; %d more good unit(s) needed"
+                .formatted(passedNow, failedNow, work.plannedQuantity() - good));
+    }
+
+    // ------------------------------------------------------------------ cancel and stop (SCRUM-401)
+
+    private static final java.util.EnumSet<Status> CANCELLABLE =
+            java.util.EnumSet.of(Status.PENDING_PREPRESS, Status.READY, Status.MATERIAL_ISSUED);
+
+    /** The status that decides what may happen to a held order: the one the hold interrupted. */
+    public Status effectiveStatus() {
+        return status == Status.ON_HOLD ? statusBeforeHold : status;
+    }
+
+    /**
+     * Cancel before printing (03 §16: PENDING_PREPRESS, READY, MATERIAL_ISSUED; also ON_HOLD from one of
+     * those, stopped where it was). The caller puts the issued blanks back into stock.
+     */
+    public Transition cancel(String reason, Instant at) {
+        String text = requireReason(reason);
+        Objects.requireNonNull(at, "at");
+        if (!CANCELLABLE.contains(effectiveStatus())) {
+            throw transition("cancel", Status.CANCELLED);
+        }
+        return end(text, at);
+    }
+
+    /**
+     * Stop once printing has started (decision Q2, 2026-10-12, BR-PRD-10): the unprinted part is not
+     * printed; what was printed stays on the record. {@code printedNow}/{@code scrapNow} is the output of the
+     * run being stopped, if any. Goods printed for a stopped order are sold to nobody else (Q3): the good
+     * ones become scrap here, and the caller writes them off through an approved adjustment. A charge the
+     * customer agreed to is Sales' business on the order, not the LSX's.
+     *
+     * @return the good units this stop turned into scrap
+     */
+    public int stop(int printedNow, int scrapNow, String reason, Instant at) {
+        String text = requireReason(reason);
+        Objects.requireNonNull(at, "at");
+        Status effective = effectiveStatus();
+        if (effective != Status.PRINTING && effective != Status.QC) {
+            throw transition("stop", Status.CANCELLED);
+        }
+        if (printedNow != 0 || scrapNow != 0) {
+            if (effective != Status.PRINTING) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Only a run in progress has output to record");
+            }
+            if (printedNow < 0 || scrapNow < 0 || scrapNow > printedNow || printedNow > unprintedBlanks()) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                        "The stopped run printed between 0 and %d unit(s) and spoilt no more than it printed"
+                                .formatted(unprintedBlanks()));
+            }
+            printed += printedNow;
+            scrap += scrapNow;
+            good += printedNow - scrapNow;
+        }
+        int unsold = good;
+        scrap += good;
+        good = 0;
+        passed = 0;
+        end(text, at);
+        return unsold;
+    }
+
+    private Transition end(String reason, Instant at) {
+        Status from = status;
+        status = Status.CANCELLED;
+        statusBeforeHold = null;
+        holdReason = null;
+        holdNote = null;
+        cancelledAt = at;
+        cancellationReason = reason;
+        return new Transition(from, Status.CANCELLED, reason);
+    }
+
+    private static String requireReason(String reason) {
+        if (reason == null || reason.isBlank()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A cancellation says why");
+        }
+        String text = reason.strip();
+        if (text.length() > 500) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A cancellation reason is at most 500 characters");
+        }
+        return text;
     }
 
     /** Back to the state the hold interrupted (Jira 396: "resuming returns to the previous state"). */
@@ -223,6 +438,14 @@ public final class ProductionOrder {
     public String holdNote() { return holdNote; }
     public UUID prepressCheckedBy() { return prepressCheckedBy; }
     public Instant prepressCheckedAt() { return prepressCheckedAt; }
+    public int issued() { return issued; }
+    public int printed() { return printed; }
+    public int good() { return good; }
+    public int scrap() { return scrap; }
+    public int passed() { return passed; }
+    public Instant completedAt() { return completedAt; }
+    public Instant cancelledAt() { return cancelledAt; }
+    public String cancellationReason() { return cancellationReason; }
 
     /** The id the uniqueness of this order hangs on: the sample request or the order line. */
     public UUID sourceId() {

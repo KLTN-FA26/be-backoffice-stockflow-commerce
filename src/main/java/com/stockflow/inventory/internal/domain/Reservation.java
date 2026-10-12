@@ -4,7 +4,7 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * One hold on stock, held by one order line, inside one {@link StockItem}.
+ * One hold on stock, held by one order line — or by one production order — inside one {@link StockItem}.
  *
  * <p><b>Why this class exists.</b> The first cut of this model kept {@code reserved} as a single
  * integer on the stock item. That number cannot answer three questions the business asks every
@@ -24,7 +24,15 @@ import java.util.UUID;
 public final class Reservation {
 
     private final ReservationId id;
+    /** The order line's order, for a checkout hold; null for a production hold. */
     private final UUID orderId;
+    /**
+     * The production order, for blanks held by the workshop rather than by an order (a sample round
+     * from its submission, docs decision Q1 2026-10-12; a reprint round). Exactly one of this and
+     * {@link #orderId} is set: a production hold never invents an order id. A production hold does not
+     * expire — there is no payment to wait for — so it is opened pinned.
+     */
+    private final UUID productionOrderId;
     /**
      * The caller's own idempotency key, shared by every hold this one reservation call produced.
      *
@@ -45,12 +53,27 @@ public final class Reservation {
     private ReleaseReason releaseReason;
     private Instant closedAt;
 
-    /** Full constructor, used by the persistence mapper when rehydrating a stored row. */
+    /** An order's hold, as stored. */
     public Reservation(ReservationId id, UUID orderId, UUID rootRequestId, UUID requestId,
                        Quantity quantity, Instant reservedAt, Instant expiresAt,
                        ReservationStatus status, ReleaseReason releaseReason, Instant closedAt) {
+        this(id, java.util.Objects.requireNonNull(orderId, "orderId"), null, rootRequestId, requestId, quantity,
+                reservedAt, expiresAt, status, releaseReason, closedAt);
+    }
+
+    /** Full constructor, used by the persistence mapper when rehydrating a stored row. */
+    public Reservation(ReservationId id, UUID orderId, UUID productionOrderId, UUID rootRequestId, UUID requestId,
+                       Quantity quantity, Instant reservedAt, Instant expiresAt,
+                       ReservationStatus status, ReleaseReason releaseReason, Instant closedAt) {
         this.id = java.util.Objects.requireNonNull(id, "id");
-        this.orderId = java.util.Objects.requireNonNull(orderId, "orderId");
+        if ((orderId == null) == (productionOrderId == null)) {
+            throw new IllegalArgumentException("A hold belongs to exactly one order or one production order");
+        }
+        if (productionOrderId != null && expiresAt != null) {
+            throw new IllegalArgumentException("A production hold does not expire");
+        }
+        this.orderId = orderId;
+        this.productionOrderId = productionOrderId;
         this.rootRequestId = java.util.Objects.requireNonNull(rootRequestId, "rootRequestId");
         this.requestId = java.util.Objects.requireNonNull(requestId, "requestId");
         this.quantity = java.util.Objects.requireNonNull(quantity, "quantity");
@@ -69,6 +92,20 @@ public final class Reservation {
                             Instant now, java.time.Duration ttl) {
         return new Reservation(ReservationId.newId(), orderId, rootRequestId, requestId, quantity,
                 now, now.plus(ttl), ReservationStatus.HELD, null, null);
+    }
+
+    /** A production order's hold: pinned from the start. Package-private, like {@link #open}. */
+    static Reservation openForProduction(UUID productionOrderId, UUID rootRequestId, UUID requestId,
+                                         Quantity quantity, Instant now) {
+        return new Reservation(ReservationId.newId(), null,
+                java.util.Objects.requireNonNull(productionOrderId, "productionOrderId"), rootRequestId, requestId,
+                quantity, now, null, ReservationStatus.HELD, null, null);
+    }
+
+    /** Whether this hold belongs to the order or production order named. */
+    public boolean isHeldFor(UUID orderId, UUID productionOrderId) {
+        return orderId != null ? orderId.equals(this.orderId)
+                : productionOrderId != null && productionOrderId.equals(this.productionOrderId);
     }
 
     /** True once {@code expiresAt} has passed and nobody has consumed or released the hold. */
@@ -97,7 +134,7 @@ public final class Reservation {
      * @return true if this call gave an active pinned hold its deadline
      */
     boolean rearm(Instant deadline) {
-        if (!status.isActive() || expiresAt != null) {
+        if (!status.isActive() || expiresAt != null || productionOrderId != null) {
             return false;
         }
         this.expiresAt = java.util.Objects.requireNonNull(deadline, "deadline");
@@ -132,6 +169,7 @@ public final class Reservation {
 
     public ReservationId id() { return id; }
     public UUID orderId() { return orderId; }
+    public UUID productionOrderId() { return productionOrderId; }
     public UUID rootRequestId() { return rootRequestId; }
     public UUID requestId() { return requestId; }
     public Quantity quantity() { return quantity; }

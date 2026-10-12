@@ -15,11 +15,10 @@ import java.util.UUID;
 /**
  * {@code production.production_order} (V20261010000200), as far as creating and reading an order needs.
  *
- * <p>Prepress and hold columns are written through {@link #applyWorkflow}. The columns the later
- * workshop steps own — quantities beyond the plan, completion, cancellation, mode — are mapped read-only ({@code insertable = false,
- * updatable = false}): a new row takes the table's defaults ({@code IN_HOUSE}, zero quantities), and
- * nothing in this story can overwrite what a later step wrote. The subcontracting columns
- * (SCRUM-433/434) are not mapped at all; that work maps them when it owns them.</p>
+ * <p>The workflow columns — status, hold, prepress, quantities, completion, cancellation — are written
+ * through {@link #applyWorkflow} (SCRUM-396..401); a new row takes the table's defaults for them
+ * ({@code insertable = false}: zero quantities). {@code mode} and {@code parent_id} stay read-only, and the
+ * subcontracting columns (SCRUM-433/434) are not mapped at all; that work maps them when it owns them.</p>
  */
 @Entity
 @Table(name = "production_order", schema = "production")
@@ -86,28 +85,28 @@ public class ProductionOrderJpaEntity extends BaseEntity {
     @Column(name = "planned_quantity", nullable = false, updatable = false)
     private int plannedQuantity;
 
-    @Column(name = "issued_quantity", insertable = false, updatable = false)
+    @Column(name = "issued_quantity", insertable = false)
     private int issuedQuantity;
 
-    @Column(name = "printed_quantity", insertable = false, updatable = false)
+    @Column(name = "printed_quantity", insertable = false)
     private int printedQuantity;
 
-    @Column(name = "good_quantity", insertable = false, updatable = false)
+    @Column(name = "good_quantity", insertable = false)
     private int goodQuantity;
 
-    @Column(name = "scrap_quantity", insertable = false, updatable = false)
+    @Column(name = "scrap_quantity", insertable = false)
     private int scrapQuantity;
 
     @Column(name = "prepress_checked_at")
     private Instant prepressCheckedAt;
 
-    @Column(name = "completed_at", insertable = false, updatable = false)
+    @Column(name = "completed_at", insertable = false)
     private Instant completedAt;
 
-    @Column(name = "cancelled_at", insertable = false, updatable = false)
+    @Column(name = "cancelled_at", insertable = false)
     private Instant cancelledAt;
 
-    @Column(name = "cancellation_reason", insertable = false, updatable = false)
+    @Column(name = "cancellation_reason", insertable = false)
     private String cancellationReason;
 
     protected ProductionOrderJpaEntity() {
@@ -138,6 +137,13 @@ public class ProductionOrderJpaEntity extends BaseEntity {
         this.holdNote = order.holdNote();
         this.prepressCheckedBy = order.prepressCheckedBy();
         this.prepressCheckedAt = order.prepressCheckedAt();
+        this.issuedQuantity = order.issued();
+        this.printedQuantity = order.printed();
+        this.goodQuantity = order.good();
+        this.scrapQuantity = order.scrap();
+        this.completedAt = order.completedAt();
+        this.cancelledAt = order.cancelledAt();
+        this.cancellationReason = order.cancellationReason();
     }
 
     public String getOrderNumber() { return orderNumber; }

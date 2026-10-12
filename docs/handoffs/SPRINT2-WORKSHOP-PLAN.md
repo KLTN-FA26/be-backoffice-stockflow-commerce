@@ -1,7 +1,7 @@
 # Sprint 2 lane A — production workshop flow (SCRUM-396..401; BE 407, 409, 411, 418, 420, 413)
 
-Status 2026-10-12: **plan + contracts published; implementation in progress, sequential 407 → 409 → 411 →
-418 → 420 → 413.** Not done. This file is the contract lane C (441/415) builds on and the resume point.
+Status 2026-10-12: **407 and 409 done (BE); 411 → 418 → 420 → 413 in progress, then 441/415.** Not done.
+This file is the contract lane C (441/415) builds on and the resume point.
 
 ## Where
 
@@ -56,35 +56,69 @@ Events (to `contracts/`, new unless noted):
   new; notification listens (Sales on FILE_REJECTED / WAITING_CUSTOMER, purchasing on BLANKS_SHORT).
 - SAMPLE completion calls `SampleProductionProgress.productionCompleted` in the same transaction (exists).
 
-Inventory (module owner: inventory; additions are narrow and listed for review):
-- **Issue of reserved order blanks — atomic**: a new `InventoryService.issueReserved(...)` moves units of
-  the order's existing reservations from their storage rows to the `PRODUCTION` area under the same row
-  locks `reserve` uses (id order), carrying the hold with the units (no release-then-move window, no second
-  decrement), one ledger line per lot with reference `PRODUCTION_ORDER` (allowed by
-  `ck_stock_movement_reference` since V20261010000200). Idempotent on a request id per scan.
-- **SAMPLE blanks**: `ReserveStockCommand` needs an order id, so nothing reserves blanks for a sample today
-  (the foundation only checks ATP at submit). See Q1.
-- **Scrap**: `requestAdjustment(reason SCRAP)` from the PRODUCTION-area location; stock leaves only when a
-  different person approves (SCRUM-145) — the LSX records the adjustment id on `production_scrap`; it is not
-  bypassed.
-- **Completion**: ORDER good units PRODUCTION → PACKING keeping the order's hold (same mechanism as issue).
+Inventory (module owner: inventory; additions are narrow and listed for review). **Built in 409
+(V20261014000400):**
+- **Owner of a hold**: `stock_reservation` belongs to an order (`order_id`, as before) **or** to a production
+  order (`production_order_id`, new, FK) — `ck_stock_reservation_owner`, exactly one. A production hold never
+  expires (`ck_stock_reservation_production_pinned`) and announces nothing to `order` (no
+  `StockReserved/Released/Deducted` with a null order id). No order id is invented.
+- **Stock status `IN_PRODUCTION`** (new): issued blanks and the cups printed from them, in a PRODUCTION area.
+  Not reservable → never in ATP, **whatever happens to the hold**. Why: an order cancelled after the issue
+  releases its holds in the order's own transaction (`OrderServiceImpl.cancelLoaded`), before production can
+  react; with AVAILABLE status those units would be free blanks for any checkout for that moment (or for
+  ever if the production listener failed). ATP is still "AVAILABLE − held" — no system-wide rule changed.
+  Leaves the status only by an explicit step: finished → PACKING (AVAILABLE, held), unprinted → back to
+  storage, scrap → written off by an approved adjustment.
+- `InventoryService.reserveForProduction(ReserveProductionStockCommand)` — same algorithm as `reserve`
+  (replay first, plan, lock in id order, re-check), restricted to the production order's warehouse; joins
+  the caller's transaction. Used at sample submit (Q1) and for a reprint round.
+- `InventoryService.issueReserved(IssueReservedStockCommand)` → `IssueReservedStockResult` — the **whole
+  hold moves with its goods** AVAILABLE → IN_PRODUCTION: SKU lock, then source and destination rows in id
+  order; the reservation row is re-parented by `UPDATE stock_item_id` (same id — the order line and
+  fulfilment FKs still find it; never deleted/re-inserted), one MOVE ledger line `PRODUCTION_ORDER`. Refuses
+  a hold that is closed, another owner's, or not pinned (an order still waiting for payment —
+  `RESERVATION_NOT_ISSUABLE`). Hold already at the destination → answered without a second ledger line.
+- `releaseProductionHolds(productionOrderId)`, `productionHolds(productionOrderId)`.
+- **Scrap** (411, Q4 decided): the scrapped units leave their hold and stay IN_PRODUCTION (unusable at once),
+  a SCRAP adjustment is requested; approval deducts once, rejection leaves them IN_PRODUCTION (never
+  sellable). Not bypassed.
+- **Completion** (420): finished goods IN_PRODUCTION → PACKING as AVAILABLE, hold kept (same mechanism).
 
-## Questions not answered by Jira/docs (sent to the coordinator; work continues around them)
+Warehouse: `AreaType.PRODUCTION` added to the Java enum (the DB has allowed it since V20261010000200; a
+PRODUCTION area could not be loaded before), `StorageLocationView.areaType` (null for a bin; old 8-argument
+constructor kept). Demo seed `V20261014000410`: area `HCM-PRD01` (Xưởng in).
 
-- **Q1 (409, SAMPLE blanks)** — docs say "blanks reserved for the sample request", but reservations need an
-  order. Options: (a) issue unreserved stock directly at issue time with movement reference
-  `PRODUCTION_ORDER` and adjustment reason `SAMPLE` for the cost (risk: ATP can drop between submit and
-  issue); (b) extend inventory holds to production orders (inventory schema change). Recommended: (a) for
-  Sprint 2, (b) later.
-- **Q2 (413, cancel while PRINTING, BR-PRD-10)** — "refuse, or cancel with a production fee". Options:
-  (a) refuse once PRINTING (simplest, no money flow); (b) allow with a fee — needs the fee amount/rule and
-  who records it on the order/payment side. Recommended: (a) until a fee rule exists.
-- **Q3 (420, finished goods SKU)** — printed cups stay under the blank's SKU (order lines use the blank SKU +
-  design snapshot). They must not become sellable blanks: keep them held for the order when moved to PACKING
-  (planned), confirm PACKING is never counted as free ATP for others.
-- **Q4 (411, scrap of blanks still awaiting adjustment approval)** — until the SCRAP adjustment is approved the
-  units stay on hand at PRODUCTION. Planned behaviour: the LSX does not wait for the approval (quantities on
-  the LSX are the workshop's truth; stock follows on approval). Confirm.
+Identity: resource `production-material-issues` (READ, CREATE): WAREHOUSE_STAFF and WAREHOUSE_MANAGER
+READ+CREATE, PRODUCTION_STAFF READ, SYSTEM_ADMIN all; role versions advanced. Separate from
+`production-orders:UPDATE`, which would also let the warehouse pass prepress or record output.
+
+## Decisions (user, 2026-10-12) and remaining questions
+
+- **Q1 decided — built in 409**: a sample's blanks are held at submit, for its production order (owner model
+  above); too few in the warehouse refuses the submit and rolls back the production order. Not "issue
+  unreserved stock".
+- **Q2 decided**: once printing started, the unprinted part may still be stopped; printed quantity and the
+  cost incurred are kept. Sales enters the amount agreed with the customer (reason + detail mandatory), no
+  formula, recording it is not a payment and charges nothing. To build in 413 on the existing
+  order/payment/receivable contracts; open: deposit/refund handling where docs are silent (ask, don't invent).
+- **Q3 resolved technically**: printed goods stay held for their order and are `IN_PRODUCTION` (never ATP)
+  until they reach PACKING, where they are AVAILABLE and still held.
+- **Q4 decided**: production continues (good units, reprint) without waiting for the scrap approval; the
+  scrapped units are unusable at once (out of the hold, IN_PRODUCTION); approval deducts once, rejection does
+  not make them sellable.
+- **Q5 (open)**: a SAMPLE production order cancelled by the manager — `SampleStatus` has no transition out of
+  SUBMITTED/IN_PRODUCTION except READY, so the round would stay SUBMITTED. Should the round become CANCELLED
+  (needs a new transition in 03 §17)? Not built until answered.
+
+Known limitations found (existing inventory rules, not changed):
+- `inventory.enforce_sku_policy` refuses raising `on_hand` of an existing layer for a FIFO SKU. Issuing a
+  second hold drawn from the same receipt layer into the print shop (same layer identity there) is refused by
+  the database for FIFO SKUs — the same holds for a plain `move` today. Non-FIFO SKUs are unaffected.
+- Stock adjustments pick their layer by (SKU, location, lot) and refuse when several layers match
+  (`INVENTORY_POLICY_STOCK_CONFLICT`); scrap write-offs at the print shop need a layer selector (411).
+- After scrap and reprints an ORDER's finished goods may be held under more than the ids stored on the order
+  line (reprint holds belong to the production order). Fulfilment (not built) must take the order's goods
+  from inventory, not only from the ids stored at checkout.
 
 ## Lane C (441/415) collaboration plan
 
@@ -99,7 +133,7 @@ tables, can start in parallel on read models only). If the coordinator prefers, 
 | BE | State | Commit | Tests |
 |---|---|---|---|
 | 407 | **done (BE)**: `GET …/{id}/print-file` (READ), `POST …/{id}/prepress {decision PASS\|FAIL, note}` (UPDATE; PASS re-hashes the stored file, 409 `PRINT_FILE_MISMATCH`; FAIL → ON_HOLD `FILE_REJECTED` + `ProductionOrderHeld`), `POST …/{id}/hold {reason, note}` (UPDATE), `POST …/{id}/resume` (APPROVE, Warehouse Manager). Lock-before-load on the order row. Not yet: notification delivery to Sales (event published; listener not written) | see git log | `ProductionOrderTest` 8, `ProductionWorkflowIntegrationTest` 3 (real file re-hash, tampered file, concurrent holds) |
-| 409 | blocked in part by Q1 (ORDER path planned) | — | — |
+| 409 | **done (BE)**: `POST /api/v1/production/orders/{id}/material-issues {requestId, toLocation, reservationId?}` (production-material-issues:CREATE), `GET` same (READ). One scan = one whole hold to a PRODUCTION area of the LSX's warehouse; ORDER holds = the order line's, SAMPLE/reprint holds = the LSX's; reprint/resumed round holds the shortfall at scan time (too few → 409 `INSUFFICIENT_STOCK`, nothing held). BR-PRD-03 cap (`ISSUE_EXCEEDS_REQUIREMENT`), READY → MATERIAL_ISSUED when nothing more is needed. Sample blanks held at submit (Q1) | see git log | `MaterialIssueIntegrationTest` 6 (ORDER multi-hold, same ids still HELD, ATP unchanged, ledger; Q3 release-after-issue stays unsellable; replay; refusals: other order's hold, unpinned, non-PRODUCTION area, before prepress; SAMPLE hold at submit + rollback when short; concurrent scans and twin replays), `ProductionSecurityIntegrationTest.materialIssueOverHttp` |
 | 411 | planned (Q4) | — | — |
 | 418 | planned | — | — |
 | 420 | planned (Q3) | — | — |

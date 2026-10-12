@@ -3,6 +3,9 @@ package com.stockflow.inventory.internal.service;
 import com.stockflow.common.logging.LogSafe;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.InventoryItemPolicy;
+import com.stockflow.inventory.api.IssueReservedStockCommand;
+import com.stockflow.inventory.api.IssueReservedStockResult;
+import com.stockflow.inventory.api.ReserveProductionStockCommand;
 import com.stockflow.inventory.api.MoveStockCommand;
 import com.stockflow.inventory.api.ReceiveStockCommand;
 import com.stockflow.inventory.api.ReclassifyStockCommand;
@@ -286,7 +289,7 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
         //    replanned retry would pick DIFFERENT lots, derive different per-item keys, and hold
         //    the stock a second time - or throw "insufficient stock" for a request that already
         //    succeeded. Answering from the existing holds sidesteps both.
-        Optional<ReserveStockResult> alreadyServed = replayOf(command);
+        Optional<ReserveStockResult> alreadyServed = replayOf(command.requestId(), command.sku(), command.orderId());
         if (alreadyServed.isPresent()) {
             log.info("Request {} was already served; returning the original {} hold(s)",
                     command.requestId(), alreadyServed.get().reservations().size());
@@ -347,14 +350,92 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
     }
 
     /**
+     * {@inheritDoc}
+     *
+     * <p>The steps of {@link #reserve}: replay first, plan over a projection, lock in id order, re-check
+     * under the lock. The plan draws only on the production order's warehouse.</p>
+     */
+    @Override
+    @Transactional(propagation = Propagation.REQUIRED)
+    public ReserveStockResult reserveForProduction(ReserveProductionStockCommand command) {
+        Instant now = clock.instant();
+        String warehouse = new LocationId(command.warehouseCode()).code();
+        Optional<ReserveStockResult> alreadyServed = replayOf(command.requestId(), command.sku(), null);
+        if (alreadyServed.isPresent()) {
+            return alreadyServed.get();
+        }
+        List<StockAllocator.Candidate> candidates = repository.findAvailabilityBySku(command.sku()).stream()
+                .filter(candidate -> candidate.location().warehouseCode().equals(warehouse))
+                .toList();
+        List<StockAllocator.AllocationLine> ordered = StockAllocator.plan(
+                        command.sku().code(), candidates, Quantity.of(command.quantity()),
+                        controls.policy(command.sku()).removalStrategy(), BusinessCalendar.date(now))
+                .stream()
+                .sorted(Comparator.comparing(line -> line.stockItemId().value().toString()))
+                .toList();
+        List<StockReservation> reservations = new ArrayList<>();
+        for (StockAllocator.AllocationLine line : ordered) {
+            StockItem locked = repository.findByIdForUpdate(line.stockItemId()).orElseThrow(() ->
+                    new IllegalStateException("Stock item %s vanished mid-reservation".formatted(line.stockItemId())));
+            Reservation reservation = locked.reserveForProduction(command.productionOrderId(), command.requestId(),
+                    perStockItemRequestId(command.requestId(), line.stockItemId()), line.quantity(), now);
+            repository.save(locked);
+            reservations.add(toApiReservation(locked, reservation));
+        }
+        log.info("Held {} units of {} in {} for production order {} across {} stock item(s)", command.quantity(),
+                command.sku(), warehouse, command.productionOrderId(), reservations.size());
+        return new ReserveStockResult(null, reservations, command.quantity(),
+                availableToPromise(command.sku(), warehouse), now);
+    }
+
+    @Override
+    public int releaseProductionHolds(UUID productionOrderId) {
+        Instant now = clock.instant();
+        int released = 0;
+        for (StockItem item : repository.findWithReservationsForProductionOrder(productionOrderId)) {
+            List<Reservation> live = item.reservations().stream()
+                    .filter(r -> r.status().isActive() && productionOrderId.equals(r.productionOrderId()))
+                    .toList();
+            for (Reservation hold : live) {
+                item.releaseReservation(hold.id(), ReleaseReason.PRODUCTION_CANCELLED, now);
+                released += hold.quantity().value();
+            }
+            if (!live.isEmpty()) {
+                repository.save(item);
+            }
+        }
+        if (released > 0) {
+            log.info("Released {} unit(s) held for production order {}", released, productionOrderId);
+        }
+        return released;
+    }
+
+    @Override
+    public List<StockReservation> productionHolds(UUID productionOrderId) {
+        List<StockReservation> holds = new ArrayList<>();
+        for (StockItem item : repository.findWithReservationsForProductionOrder(productionOrderId)) {
+            item.reservations().stream()
+                    .filter(r -> r.status().isActive() && productionOrderId.equals(r.productionOrderId()))
+                    .forEach(r -> holds.add(toApiReservation(item, r)));
+        }
+        return holds;
+    }
+
+    /** Delegated: the hold moves with its goods and the ledger records it, see {@link StockOperations}. */
+    @Override
+    public IssueReservedStockResult issueReserved(IssueReservedStockCommand command) {
+        return operations.issueReserved(command);
+    }
+
+    /**
      * Rebuilds the original result when this request has already been served.
      *
      * <p>Reads the quantities from the stored reservations rather than from the command, so a
      * partially-applied earlier attempt reports what is actually held rather than what was asked
      * for.</p>
      */
-    private Optional<ReserveStockResult> replayOf(ReserveStockCommand command) {
-        List<StockItem> holders = repository.findWithReservationsForRequest(command.requestId())
+    private Optional<ReserveStockResult> replayOf(UUID requestId, Sku sku, UUID orderId) {
+        List<StockItem> holders = repository.findWithReservationsForRequest(requestId)
                 .stream()
                 // Same id ordering as the reserve loop. These loads take write locks too, and two
                 // replays of different requests touching the same pair of stock items in opposite
@@ -368,7 +449,7 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
         List<StockReservation> reservations = new ArrayList<>();
         Instant earliest = null;
         for (StockItem item : holders) {
-            for (Reservation reservation : item.activeReservationsFor(command.requestId())) {
+            for (Reservation reservation : item.activeReservationsFor(requestId)) {
                 reservations.add(toApiReservation(item, reservation));
                 if (earliest == null || reservation.reservedAt().isBefore(earliest)) {
                     earliest = reservation.reservedAt();
@@ -380,8 +461,8 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
         }
 
         int quantityHeld = reservations.stream().mapToInt(StockReservation::quantity).sum();
-        return Optional.of(new ReserveStockResult(command.orderId(), reservations, quantityHeld,
-                availableToPromise(command.sku()), earliest));
+        return Optional.of(new ReserveStockResult(orderId, reservations, quantityHeld,
+                availableToPromise(sku), earliest));
     }
 
     private static StockReservation toApiReservation(StockItem item, Reservation reservation) {
