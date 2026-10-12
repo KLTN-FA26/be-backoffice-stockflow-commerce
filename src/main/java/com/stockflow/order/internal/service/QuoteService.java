@@ -29,6 +29,11 @@ import com.stockflow.order.internal.domain.QuoteRepository;
 import com.stockflow.order.internal.domain.QuoteStatus;
 import com.stockflow.order.internal.repository.QuoteSearch;
 import com.stockflow.catalog.api.CatalogService;
+import com.stockflow.contracts.CustomerActedOnQuote;
+import com.stockflow.customer.api.CustomerSummary;
+import com.stockflow.identity.api.IdentityService;
+import com.stockflow.identity.api.StaffUser;
+import org.springframework.context.ApplicationEventPublisher;
 import com.stockflow.catalog.api.PriceSchedule;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -87,10 +92,14 @@ class QuoteService implements Quotes {
     private final OrderService orders;
     private final ObjectMapper json;
     private final Clock clock;
+    private final IdentityService identity;
+    private final ApplicationEventPublisher events;
 
     QuoteService(QuoteRepository quotes, QuoteSearch search, ProductionRecords production, CustomerService customers,
                  DesignService designs, QuotedOrders quotedOrders, OrderService orders, ObjectMapper json, Clock clock,
-                 CatalogService catalog) {
+                 CatalogService catalog, IdentityService identity, ApplicationEventPublisher events) {
+        this.identity = identity;
+        this.events = events;
         this.catalog = catalog;
         this.quotes = quotes;
         this.search = search;
@@ -203,6 +212,7 @@ class QuoteService implements Quotes {
         quotes.save(quote);
         quotes.recordTransition(quote.id(), quote.revision(), from, QuoteStatus.ACCEPTED, null, null, now,
                 user.userId());
+        notifySales(quote, CustomerActedOnQuote.Action.ACCEPTED, null, quote.sentBy(), now);
         log.info("Quote {} accepted", quote.quoteNumber());
         return view(quote);
     }
@@ -217,6 +227,8 @@ class QuoteService implements Quotes {
         quotes.save(quote);
         quotes.recordTransition(quote.id(), quote.revision(), from, QuoteStatus.CHANGES_REQUESTED,
                 quote.customerFeedback(), null, quote.respondedAt(), user.userId());
+        notifySales(quote, CustomerActedOnQuote.Action.CHANGES_REQUESTED, quote.customerFeedback(), quote.sentBy(),
+                quote.respondedAt());
         return view(quote);
     }
 
@@ -302,6 +314,10 @@ class QuoteService implements Quotes {
         quotes.save(quote);
         quotes.recordTransition(quote.id(), 1, null, QuoteStatus.DRAFT, "Reorder of order " + order.orderNumber(),
                 null, now, user.userId());
+        if (own.isPresent()) {
+            // The customer asked: the draft waits for the Sales user who negotiated the order's quote.
+            notifySales(quote, CustomerActedOnQuote.Action.REORDER_REQUESTED, order.orderNumber(), source.sentBy(), now);
+        }
         log.info("Quote {} drafted to reorder order {} (from quote {})", quote.quoteNumber(), order.orderNumber(),
                 source.quoteNumber());
         return view(quote);
@@ -459,6 +475,31 @@ class QuoteService implements Quotes {
         }
         return schedule.tiers().stream()
                 .map(t -> PriceTier.of(t.minQuantity(), t.unitPrice().amount())).toList();
+    }
+
+    /**
+     * Tells Sales that the customer's step made the next one theirs. Published in this transaction and
+     * delivered after commit; the recipient is the Sales account that sent the quote, and none - reported, not
+     * replaced - when that account is gone, inactive or has no e-mail.
+     */
+    private void notifySales(Quote quote, CustomerActedOnQuote.Action action, String detail, UUID salesUserId,
+                             Instant at) {
+        String email = null;
+        if (salesUserId != null) {
+            try {
+                StaffUser sales = identity.user(salesUserId);
+                if (sales != null && "ACTIVE".equals(sales.status()) && sales.email() != null
+                        && !sales.email().isBlank()) {
+                    email = sales.email();
+                }
+            } catch (BusinessException gone) {
+                log.warn("Quote {}: Sales user {} cannot be notified ({})", quote.quoteNumber(), salesUserId,
+                        gone.errorCode());
+            }
+        }
+        String customerName = customers.findById(quote.customerId()).map(CustomerSummary::fullName).orElse(null);
+        events.publishEvent(new CustomerActedOnQuote(quote.id(), quote.quoteNumber(), quote.customerId(), customerName,
+                action, detail, salesUserId, email, at));
     }
 
     private Quotes.SampleGate gate(UUID customerId, QuoteLine line) {

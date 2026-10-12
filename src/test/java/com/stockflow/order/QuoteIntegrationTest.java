@@ -39,6 +39,10 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.mail.SimpleMailMessage;
+import org.springframework.mail.javamail.JavaMailSenderImpl;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import com.stockflow.contracts.CustomerActedOnQuote;
 
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -56,6 +60,9 @@ import java.util.concurrent.Future;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.timeout;
+import static org.mockito.Mockito.verify;
 
 /**
  * SCRUM-448 against a real PostgreSQL with every migration, the real design verification, real stock and
@@ -89,6 +96,8 @@ class QuoteIntegrationTest {
     @Autowired RecordedEvents.Recorder recorded;
     @Autowired CustomerPriceService prices;
     @Autowired com.stockflow.order.internal.service.OrderReleases releases;
+    /** Sales notices are captured, never sent: no SMTP server is reached from a test. */
+    @MockitoBean JavaMailSenderImpl mail;   // the concrete type: the actuator's mail health check needs it
 
     private UUID hcm;
     private CurrentUser sales;
@@ -164,6 +173,20 @@ class QuoteIntegrationTest {
     private int ordersOf(UUID customer) {
         return jdbc.queryForObject("SELECT count(*) FROM ordering.customer_order WHERE customer_id = ?", Integer.class,
                 customer);
+    }
+
+    private String emailOf(CurrentUser user) {
+        return jdbc.queryForObject("SELECT email FROM identity.app_user WHERE id = ?", String.class, user.userId());
+    }
+
+    private List<CustomerActedOnQuote> noticesOf(UUID quoteId, CustomerActedOnQuote.Action action) {
+        return recorded.matching(CustomerActedOnQuote.class, e -> e.quoteId().equals(quoteId) && e.action() == action);
+    }
+
+    /** The Sales notice reached the mail transport (a mock here), addressed to that Sales user. */
+    private void mailedTo(String email, String quoteNumber) {
+        verify(mail, timeout(15_000).atLeastOnce()).send(argThat((SimpleMailMessage m) -> m.getTo() != null
+                && m.getTo().length == 1 && email.equals(m.getTo()[0]) && m.getText().contains(quoteNumber)));
     }
 
     private static ErrorCode code(Throwable e) {
@@ -294,6 +317,14 @@ class QuoteIntegrationTest {
                 assertThat(t.reason()).startsWith("Reorder of order "));
         assertThat(quotes.reorder(portal, new Quotes.Reorder(requestId, orderId)).id()).as("a retried click")
                 .isEqualTo(reorder.id());
+        String orderNumber = orders.findById(orderId).orElseThrow().orderNumber();
+        assertThat(noticesOf(reorder.id(), CustomerActedOnQuote.Action.REORDER_REQUESTED)).as("once, not per click")
+                .singleElement().satisfies(e -> {
+                    assertThat(e.detail()).isEqualTo(orderNumber);
+                    assertThat(e.salesUserId()).as("who negotiated the order's quote").isEqualTo(sales.userId());
+                    assertThat(e.salesEmail()).isEqualTo(emailOf(sales));
+                });
+        mailedTo(emailOf(sales), reorder.quoteNumber());
         assertThat(ordersOf(customerId)).as("nothing payable was created").isEqualTo(ordersBefore);
         assertThatThrownBy(() -> quotes.get(portal, reorder.id())).as("Sales' draft until sent")
                 .isInstanceOf(NotFoundException.class);
@@ -368,6 +399,12 @@ class QuoteIntegrationTest {
         // A revision makes the customer accept again, and only what they saw last.
         long firstVersion = quotes.get(portal, first.id()).version();
         Quotes.QuoteView changed = quotes.requestChanges(portal, first.id(), firstVersion, "2,200?");
+        assertThat(noticesOf(first.id(), CustomerActedOnQuote.Action.CHANGES_REQUESTED)).singleElement().satisfies(e -> {
+            assertThat(e.detail()).isEqualTo("2,200?");
+            assertThat(e.salesUserId()).isEqualTo(sales.userId());
+            assertThat(e.salesEmail()).isEqualTo(emailOf(sales));
+            assertThat(e.customerName()).isEqualTo("Cong ty In Ly A");
+        });
         Quotes.QuoteView reopened = quotes.reopen(sales, first.id(), changed.version());
         Quotes.QuoteView edited = quotes.edit(sales, first.id(), reopened.version(),
                 new Quotes.Draft(PaymentTerm.PREPAID, null, Instant.now().plus(Duration.ofDays(7)), null,
@@ -381,6 +418,9 @@ class QuoteIntegrationTest {
         Quotes.QuoteView accepted = quotes.accept(portal, first.id(), new Quotes.Acceptance(
                 quotes.get(portal, first.id()).version(), Map.of()));
         assertThat(accepted.revision()).isEqualTo(2);
+        assertThat(noticesOf(first.id(), CustomerActedOnQuote.Action.ACCEPTED)).singleElement()
+                .satisfies(e -> assertThat(e.salesEmail()).isEqualTo(emailOf(sales)));
+        mailedTo(emailOf(sales), accepted.quoteNumber());
         assertThat(accepted.lines().getFirst().acceptedQuantity()).isEqualTo(4);
         assertThat(accepted.lines().getFirst().acceptedUnitPrice()).isEqualByComparingTo("2200");
         assertThat(accepted.acceptedTotal()).isEqualByComparingTo("8800");
@@ -437,6 +477,19 @@ class QuoteIntegrationTest {
         assertThat(jdbc.queryForList("SELECT accepted_unit_price FROM ordering.quote_line WHERE quote_id = ? ORDER BY line_no",
                 BigDecimal.class, sent.id())).usingElementComparator(BigDecimal::compareTo)
                 .containsExactly(new BigDecimal("2500"), new BigDecimal("2500"));
+    }
+
+    @Test
+    @DisplayName("a customer's answer to a quote whose Sales account is disabled names nobody; nobody is guessed")
+    void aDisabledSalesAccountIsNotMailed() throws Exception {
+        Quotes.QuoteView sent = sentQuote(design());
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE identity.app_user SET status = 'DISABLED' WHERE id = ?",
+                sales.userId()));
+        quotes.requestChanges(portal, sent.id(), sent.version(), "Another colour?");
+        assertThat(noticesOf(sent.id(), CustomerActedOnQuote.Action.CHANGES_REQUESTED)).singleElement().satisfies(e -> {
+            assertThat(e.salesUserId()).isEqualTo(sales.userId());
+            assertThat(e.salesEmail()).isNull();
+        });
     }
 
     @Test
