@@ -1,7 +1,7 @@
 # Sprint 2 lane A — production workshop flow (SCRUM-396..401; BE 407, 409, 411, 418, 420, 413)
 
-Status 2026-10-12: **407, 409, 411, 418, 420, 413 done (BE)** except the Q2 money entry (Sales' agreed amount,
-in progress) and Q5 (open); then 441/415. Not 100%: see "Open" at the end.
+Status 2026-10-12: **407, 409, 411, 418, 420, 413 done (BE)**, Q2 money entry included; Q5, Q6 open; then
+441/415. Not 100%: see the questions and known limitations below.
 This file is the contract lane C (441/415) builds on and the resume point.
 
 ## Where
@@ -112,10 +112,20 @@ READ+CREATE, PRODUCTION_STAFF READ, SYSTEM_ADMIN all; role versions advanced. Se
 - **Q1 decided — built in 409**: a sample's blanks are held at submit, for its production order (owner model
   above); too few in the warehouse refuses the submit and rolls back the production order. Not "issue
   unreserved stock".
-- **Q2 decided**: once printing started, the unprinted part may still be stopped; printed quantity and the
-  cost incurred are kept. Sales enters the amount agreed with the customer (reason + detail mandatory), no
-  formula, recording it is not a payment and charges nothing. To build in 413 on the existing
-  order/payment/receivable contracts; open: deposit/refund handling where docs are silent (ask, don't invent).
+- **Q2 decided — built**: once printing started, the unprinted part is stopped (`…/stop`), printed quantity
+  kept on the LSX. Money: Sales enters the **amount agreed** with the customer on the existing cancellation
+  (`POST /api/v1/orders/{id}/admin-cancellation` or the request approval, `sales-order-cancellations:UPDATE`,
+  body `agreedFee {amount, reason, detail}` instead of `retainedPercent`; V20261014000430). Nothing computes
+  it; whole VND, > 0, ≤ what was paid (15 BR-05, `ck_order_cancellation_retained`), reason and detail
+  required (`ck_order_cancellation_fee`). It reuses `cancellation_retained_amount`, so
+  `OrderCancelled.refundableAmount = paid − agreed` and payment raises PENDING refunds for the rest exactly
+  as for a percentage — nothing counted twice, nothing charged, captured payments untouched. The internal
+  side (units printed, written off) stays on the LSX; no money is put on the LSX.
+- **Q6 (open, Q2 money)**: (a) an agreed amount above what the customer paid (a deposit order cancelled
+  after printing) is refused today — 15 BR-05 caps the amount kept at the money received, and docs say
+  nothing about invoicing the difference (a receivable). Should the excess become a receivable? (b) the
+  rest of a deposit is refunded (existing behaviour of every cancellation); docs do not say a deposit is
+  forfeited. Confirm.
 - **Q3 resolved technically**: printed goods stay held for their order and are `IN_PRODUCTION` (never ATP)
   until they reach PACKING, where they are AVAILABLE and still held.
 - **Q4 decided**: production continues (good units, reprint) without waiting for the scrap approval; the
@@ -125,7 +135,11 @@ READ+CREATE, PRODUCTION_STAFF READ, SYSTEM_ADMIN all; role versions advanced. Se
   SUBMITTED/IN_PRODUCTION except READY, so the round would stay SUBMITTED. Should the round become CANCELLED
   (needs a new transition in 03 §17)? Not built until answered.
 
-Known limitations found (existing inventory rules, not changed):
+Known limitations found (existing rules, not changed):
+- Two back-office cancellations of one order at once: one cancels; the other fails with 409 from the
+  optimistic lock (`OrderServiceImpl.cancel` loads in scope, then locks, and the lock does not refresh the
+  entity already loaded), not with `ORDER_NOT_CANCELLABLE`. No double refund (tested). A lock-before-load
+  in the order repository would give the clean code; not changed here (order module, every order flow).
 - `inventory.enforce_sku_policy` refuses raising `on_hand` of an existing layer for a FIFO SKU. Issuing a
   second hold drawn from the same receipt layer into the print shop (same layer identity there) is refused by
   the database for FIFO SKUs — the same holds for a plain `move` today. Non-FIFO SKUs are unaffected.

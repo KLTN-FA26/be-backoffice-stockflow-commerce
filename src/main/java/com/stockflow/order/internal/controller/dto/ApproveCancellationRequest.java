@@ -16,6 +16,10 @@ public record ApproveCancellationRequest(
         BigDecimal retainedPercent,
 
         @Size(max = 1000, message = "note is at most 1000 characters")
-        String note
+        String note,
+
+        @Schema(description = "Instead of retainedPercent: an amount agreed with the customer (decision Q2)")
+        @jakarta.validation.Valid
+        CancellationFeeRequest agreedFee
 ) {
 }

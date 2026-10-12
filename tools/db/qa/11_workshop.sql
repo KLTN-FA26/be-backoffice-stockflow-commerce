@@ -1,0 +1,147 @@
+-- =============================================================================
+-- Adversarial checks: the print shop (SCRUM-396..401, lane A) - who owns a stock hold, the IN_PRODUCTION
+-- status, blanks issued, a write-off's layer, an agreed cancellation fee, and who does which workshop step
+-- (V20261014000400 / 000420 / 000430). Needs the demo seed. Rolled back at the end.
+-- =============================================================================
+\set ON_ERROR_STOP on
+BEGIN;
+CREATE FUNCTION pg_temp.expect_fail(label TEXT, stmt TEXT) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+    BEGIN
+        EXECUTE stmt;
+        SET CONSTRAINTS ALL IMMEDIATE;
+        SET CONSTRAINTS ALL DEFERRED;
+    EXCEPTION WHEN OTHERS THEN
+        RAISE NOTICE 'ok    %  [%]', label, left(SQLERRM, 110);
+        RETURN;
+    END;
+    RAISE EXCEPTION 'FAIL  %: the database accepted it', label;
+END $$;
+
+CREATE FUNCTION pg_temp.expect_ok(label TEXT, stmt TEXT) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+    EXECUTE stmt;
+    SET CONSTRAINTS ALL IMMEDIATE;
+    SET CONSTRAINTS ALL DEFERRED;
+    RAISE NOTICE 'ok    %', label;
+EXCEPTION WHEN OTHERS THEN
+    RAISE EXCEPTION 'FAIL  %: %', label, SQLERRM;
+END $$;
+
+CREATE FUNCTION pg_temp.expect_true(label TEXT, condition BOOLEAN) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+    IF condition THEN
+        RAISE NOTICE 'ok    %', label;
+    ELSE
+        RAISE EXCEPTION 'FAIL  %', label;
+    END IF;
+END $$;
+
+CREATE FUNCTION pg_temp.grants(role_code TEXT, permission_code TEXT) RETURNS BOOLEAN LANGUAGE sql AS $$
+    SELECT EXISTS (SELECT 1 FROM identity.role_permission rp
+                     JOIN identity.app_role r ON r.id = rp.role_id
+                     JOIN identity.permission p ON p.id = rp.permission_id
+                    WHERE r.code = role_code AND p.code = permission_code)
+$$;
+
+-- Fixtures: a paid order of the first customer, and a stock layer to hold.
+INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency,
+                                     placed_at, version, created_at, paid_amount, paid_in_full_at)
+SELECT md5('qa11:order')::uuid, 'SO-QA-11', c.id, gen_random_uuid(), 'CONFIRMED', 20000, 'VND', NOW(), 0, NOW(),
+       20000, NOW() FROM customer.customer c ORDER BY c.id LIMIT 1;
+INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version, created_at, received_at)
+VALUES (md5('qa11:layer')::uuid, 'SOFA-3S-GREY', 'HCM-PRD01', 5, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '9 days');
+
+\echo '--- who owns a hold (V20261014000400)'
+SELECT pg_temp.expect_ok('WK1 an order hold, as before', $q$
+    INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity,
+        reserved_at, expires_at, status)
+    VALUES (md5('qa11:hold')::uuid, md5('qa11:layer')::uuid, md5('qa11:order')::uuid, gen_random_uuid(),
+        gen_random_uuid(), 2, NOW(), NOW() + interval '30 minutes', 'HELD') $q$);
+SELECT pg_temp.expect_fail('WK2 a hold with no owner', $q$
+    INSERT INTO inventory.stock_reservation (id, stock_item_id, root_request_id, request_id, quantity, reserved_at,
+        status) VALUES (gen_random_uuid(), md5('qa11:layer')::uuid, gen_random_uuid(), gen_random_uuid(), 1, NOW(),
+        'HELD') $q$);
+SELECT pg_temp.expect_fail('WK3 a hold with two owners', $q$
+    UPDATE inventory.stock_reservation SET production_order_id = gen_random_uuid()
+     WHERE id = md5('qa11:hold')::uuid $q$);
+SELECT pg_temp.expect_fail('WK4 a production hold with a deadline', $q$
+    INSERT INTO inventory.stock_reservation (id, stock_item_id, production_order_id, root_request_id, request_id,
+        quantity, reserved_at, expires_at, status)
+    VALUES (gen_random_uuid(), md5('qa11:layer')::uuid, gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 1,
+        NOW(), NOW() + interval '1 hour', 'HELD') $q$);
+SELECT pg_temp.expect_fail('WK5 a production hold of a production order that does not exist', $q$
+    INSERT INTO inventory.stock_reservation (id, stock_item_id, production_order_id, root_request_id, request_id,
+        quantity, reserved_at, status)
+    VALUES (gen_random_uuid(), md5('qa11:layer')::uuid, gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 1,
+        NOW(), 'HELD') $q$);
+
+\echo '--- IN_PRODUCTION (V20261014000400)'
+SELECT pg_temp.expect_ok('WK6 stock in the print shop', $q$
+    UPDATE inventory.stock_item SET status = 'IN_PRODUCTION' WHERE id = md5('qa11:layer')::uuid $q$);
+SELECT pg_temp.expect_fail('WK7 a status nobody knows', $q$
+    UPDATE inventory.stock_item SET status = 'PRINTED' WHERE id = md5('qa11:layer')::uuid $q$);
+SELECT pg_temp.expect_fail('WK8 a ledger line to a status nobody knows', $q$
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity,
+        from_status, to_status, reference_type, reference_id, occurred_at)
+    VALUES (gen_random_uuid(), 'MOVE', 'SOFA-3S-GREY', 'HCM-A01-2-B', 'HCM-PRD01', 1, 'AVAILABLE', 'PRINTED',
+        'PRODUCTION_ORDER', gen_random_uuid(), NOW()) $q$);
+
+\echo '--- blanks issued (V20261014000400)'
+SELECT pg_temp.expect_fail('WK9 an issue of no blanks', $q$
+    INSERT INTO production.production_material_issue (id, production_order_id, request_id, reservation_id, sku,
+        from_location, to_location, quantity, issued_at, issued_by)
+    VALUES (gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), md5('qa11:hold')::uuid, 'SOFA-3S-GREY',
+        'HCM-A01-2-B', 'HCM-PRD01', 0, NOW(), gen_random_uuid()) $q$);
+SELECT pg_temp.expect_fail('WK10 an issue that goes nowhere', $q$
+    INSERT INTO production.production_material_issue (id, production_order_id, request_id, reservation_id, sku,
+        from_location, to_location, quantity, issued_at, issued_by)
+    VALUES (gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), md5('qa11:hold')::uuid, 'SOFA-3S-GREY',
+        'HCM-PRD01', 'HCM-PRD01', 1, NOW(), gen_random_uuid()) $q$);
+SELECT pg_temp.expect_fail('WK11 an issue for a production order that does not exist', $q$
+    INSERT INTO production.production_material_issue (id, production_order_id, request_id, reservation_id, sku,
+        from_location, to_location, quantity, issued_at, issued_by)
+    SELECT gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), md5('qa11:hold')::uuid, 'SOFA-3S-GREY',
+        'HCM-A01-2-B', 'HCM-PRD01', 1, NOW(), u.id FROM identity.app_user u LIMIT 1 $q$);
+
+\echo '--- a write-off names its layer (V20261014000420)'
+SELECT pg_temp.expect_true('WK12 stock_adjustment.received_at exists and may be empty',
+    EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'inventory'
+             AND table_name = 'stock_adjustment' AND column_name = 'received_at' AND is_nullable = 'YES'));
+
+\echo '--- an agreed cancellation fee (V20261014000430)'
+SELECT pg_temp.expect_fail('WK13 fee terms on an order that is not cancelled', $q$
+    UPDATE ordering.customer_order SET cancellation_fee_reason = 'r', cancellation_fee_detail = 'd'
+     WHERE id = md5('qa11:order')::uuid $q$);
+SELECT pg_temp.expect_fail('WK14 a fee reason without its detail', $q$
+    UPDATE ordering.customer_order SET status = 'CANCELLED', cancellation_reason_code = 'CUSTOMER_REQUEST', cancellation_reason = 'CUSTOMER_REQUEST',
+        cancellation_retained_amount = 5000, cancellation_fee_reason = 'r'
+     WHERE id = md5('qa11:order')::uuid $q$);
+SELECT pg_temp.expect_fail('WK15 fee terms with nothing kept', $q$
+    UPDATE ordering.customer_order SET status = 'CANCELLED', cancellation_reason_code = 'CUSTOMER_REQUEST', cancellation_reason = 'CUSTOMER_REQUEST',
+        cancellation_retained_amount = 0, cancellation_fee_reason = 'r', cancellation_fee_detail = 'd'
+     WHERE id = md5('qa11:order')::uuid $q$);
+SELECT pg_temp.expect_fail('WK16 more kept than was paid (15 BR-05)', $q$
+    UPDATE ordering.customer_order SET status = 'CANCELLED', cancellation_reason_code = 'CUSTOMER_REQUEST', cancellation_reason = 'CUSTOMER_REQUEST',
+        cancellation_retained_amount = 20001, cancellation_fee_reason = 'r', cancellation_fee_detail = 'd'
+     WHERE id = md5('qa11:order')::uuid $q$);
+SELECT pg_temp.expect_ok('WK17 an agreed amount kept, with its terms', $q$
+    UPDATE ordering.customer_order SET status = 'CANCELLED', cancellation_reason_code = 'CUSTOMER_REQUEST', cancellation_reason = 'CUSTOMER_REQUEST',
+        cancellation_retained_amount = 12000, cancellation_fee_reason = 'Printing had started',
+        cancellation_fee_detail = 'Agreed with the buyer' WHERE id = md5('qa11:order')::uuid $q$);
+
+\echo '--- who does which workshop step (V20261014000400 / 000420)'
+SELECT pg_temp.expect_true('GR5 the warehouse issues blanks; the print shop reads them',
+    pg_temp.grants('WAREHOUSE_STAFF', 'production-material-issues:CREATE')
+    AND pg_temp.grants('WAREHOUSE_MANAGER', 'production-material-issues:CREATE')
+    AND pg_temp.grants('PRODUCTION_STAFF', 'production-material-issues:READ')
+    AND NOT pg_temp.grants('PRODUCTION_STAFF', 'production-material-issues:CREATE')
+    AND NOT pg_temp.grants('WAREHOUSE_STAFF', 'production-orders:UPDATE'));
+SELECT pg_temp.expect_true('GR6 QC records QC and nothing else in the print shop',
+    pg_temp.grants('QC_STAFF', 'production-qc-results:CREATE')
+    AND NOT pg_temp.grants('QC_STAFF', 'production-orders:UPDATE')
+    AND pg_temp.grants('QC_STAFF', 'production-orders:READ')
+    AND NOT pg_temp.grants('PRODUCTION_STAFF', 'production-qc-results:CREATE')
+    AND pg_temp.grants('WAREHOUSE_MANAGER', 'production-qc-results:CREATE'));
+
+ROLLBACK;

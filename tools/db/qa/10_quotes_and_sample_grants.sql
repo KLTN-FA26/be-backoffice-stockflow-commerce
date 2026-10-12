@@ -117,11 +117,11 @@ SELECT pg_temp.expect_true('GR1 the customer reads and answers samples',
     pg_temp.grants('CUSTOMER', 'production-sample-requests:READ')
     AND pg_temp.grants('CUSTOMER', 'production-sample-requests:APPROVE')
     AND NOT pg_temp.grants('CUSTOMER', 'production-sample-requests:UPDATE'));
+-- QC's own step is production-qc-results since V20261014000420 (11_workshop.sql checks it).
 SELECT pg_temp.expect_true('GR2 Sales records a sample answer; QC does not handle rounds',
     pg_temp.grants('SALES_STAFF', 'production-sample-requests:APPROVE')
     AND NOT pg_temp.grants('QC_STAFF', 'production-sample-requests:UPDATE')
-    AND pg_temp.grants('QC_STAFF', 'production-sample-requests:READ')
-    AND pg_temp.grants('QC_STAFF', 'production-orders:UPDATE'));
+    AND pg_temp.grants('QC_STAFF', 'production-sample-requests:READ'));
 SELECT pg_temp.expect_true('GR3 only the customer answers a quote; Sales drafts and converts',
     pg_temp.grants('CUSTOMER', 'sales-quotes:APPROVE')
     AND NOT pg_temp.grants('SALES_STAFF', 'sales-quotes:APPROVE')

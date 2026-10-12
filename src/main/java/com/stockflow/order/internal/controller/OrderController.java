@@ -192,11 +192,11 @@ class OrderController {
         CancelOrderCommand command;
         if (request.reasonCode() != null) {
             command = new CancelOrderCommand(request.reasonCode(), request.note(), request.retainedPercent(),
-                    user.userId());
+                    user.userId(), OrderWebMapper.toFee(request.agreedFee()));
         } else if (request.reason() != null && !request.reason().isBlank()) {
             CancelOrderCommand legacy = CancelOrderCommand.fromText(request.reason(), user.userId());
             command = new CancelOrderCommand(legacy.reasonCode(), legacy.note(), request.retainedPercent(),
-                    user.userId());
+                    user.userId(), OrderWebMapper.toFee(request.agreedFee()));
         } else {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "reasonCode is required");
         }

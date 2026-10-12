@@ -321,4 +321,48 @@ class ProductionSecurityIntegrationTest {
         assign(userId, hcm);
         return token(userId, role);
     }
+
+    @Test
+    @DisplayName("Q2 over HTTP: Sales keeps an agreed amount on cancellation (sales-order-cancellations:UPDATE), validated and audited; the print shop cannot")
+    void agreedFeeOverHttp() throws Exception {
+        UUID orderId = Identifiers.newId();
+        tx.executeWithoutResult(s -> {
+            jdbc.update("""
+                    INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
+                        currency, placed_at, version, created_at, paid_amount, paid_in_full_at, warehouse_id,
+                        released_at, released_by)
+                    VALUES (?, ?, ?, ?, 'IN_PRODUCTION', 20000, 'VND', NOW(), 0, NOW(), 20000, NOW(), ?, NOW(), ?)""",
+                    orderId, "SO-20991227-%06d".formatted(java.util.concurrent.ThreadLocalRandom.current()
+                            .nextInt(1_000_000)), DemoData.CUSTOMER_ID, UUID.randomUUID(), hcm, fixtures.user());
+            jdbc.update("""
+                    INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
+                    VALUES (?, ?, ?, 1, 20000, 'VND')""", Identifiers.newId(), orderId, ProductionFixtures.BLANK);
+        });
+        String path = "/api/v1/orders/" + orderId + "/admin-cancellation";
+        java.util.Map<String, Object> fee = java.util.Map.of("amount", 12000, "reason", "Printing had started",
+                "detail", "Agreed with the buyer: setup and 6 printed cups");
+
+        send(post(path), assigned("PRODUCTION_STAFF"), java.util.Map.of("reasonCode", "CUSTOMER_REQUEST",
+                "agreedFee", fee)).andExpect(status().isForbidden());
+        String sales = staff("SALES_STAFF");
+        send(post(path), sales, java.util.Map.of("reasonCode", "CUSTOMER_REQUEST", "agreedFee",
+                java.util.Map.of("amount", 12000, "reason", "Printing had started")))
+                .andExpect(status().isBadRequest());
+        send(post(path), sales, java.util.Map.of("reasonCode", "CUSTOMER_REQUEST", "agreedFee",
+                java.util.Map.of("amount", 25000, "reason", "r", "detail", "d")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
+        send(post(path), sales, java.util.Map.of("reasonCode", "CUSTOMER_REQUEST", "agreedFee", fee))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("CANCELLED"))
+                .andExpect(jsonPath("$.data.cancellation.retainedAmount").value(12000))
+                .andExpect(jsonPath("$.data.cancellation.feeReason").value("Printing had started"))
+                .andExpect(jsonPath("$.data.cancellation.feeDetail").value("Agreed with the buyer: setup and 6 printed cups"));
+        send(post(path), sales, java.util.Map.of("reasonCode", "CUSTOMER_REQUEST", "agreedFee", fee))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("ORDER_NOT_CANCELLABLE"));
+        com.stockflow.support.Await.until("audited", java.time.Duration.ofSeconds(10), () -> jdbc.queryForObject("""
+                SELECT count(*) FROM platform.audit_log WHERE resource_type = 'order' AND resource_id = ?
+                   AND outcome = 'SUCCESS'""", Integer.class, orderId.toString()) >= 1);
+    }
 }

@@ -398,7 +398,8 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
      */
     Order cancelLoaded(Order order, CancelOrderCommand command) {
         boolean wasHoldingStock = order.status().holdsStock();
-        order.cancel(command.reasonCode(), command.note(), command.retainedPercent(), command.cancelledBy(),
+        order.cancel(command.reasonCode(), command.note(), command.retainedPercent(), command.agreedFee(),
+                command.cancelledBy(),
                 clock.instant());
 
         if (wasHoldingStock) {
@@ -624,7 +625,8 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                         order.paidInFullAt(), order.paymentStatus(), order.creditTermDays()),
                 order.status() == OrderStatus.CANCELLED
                         ? new OrderSummary.Cancellation(order.cancellationReasonCode(), order.cancellationReason(),
-                                order.cancellationRetainedAmount())
+                                order.cancellationRetainedAmount(), order.cancellationFeeReason(),
+                                order.cancellationFeeDetail())
                         : null);
     }
 

@@ -16,6 +16,7 @@ import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.api.ReserveStockResult;
 import com.stockflow.inventory.internal.service.StockOperations;
 import com.stockflow.order.api.CancelOrderCommand;
+import com.stockflow.order.api.CancellationFee;
 import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.production.internal.domain.ProductionOrder;
@@ -47,6 +48,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.math.BigDecimal;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -491,5 +493,71 @@ class PrintRunIntegrationTest {
         } finally {
             pool.shutdownNow();
         }
+    }
+
+    private void cancelWithFee(UUID orderId, BigDecimal percent, CancellationFee fee) {
+        WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> salesOrders.cancel(orderId, new CancelOrderCommand(
+                CancellationReasonCode.CUSTOMER_REQUEST, "Customer cancelled while printing", percent, sales.userId(),
+                fee)));
+    }
+
+    @Test
+    @DisplayName("Q2: Sales keeps the amount agreed with the customer (reason and detail required, at most what was paid); the rest is asked back, nothing is charged, the payment is untouched, the job keeps only quantities")
+    void agreedFeeOnAJobOnThePress() throws Exception {
+        Line line = released(10);
+        issueAll(line.productionOrderId());
+        runs.startPrinting(printer, line.productionOrderId());
+        UUID payment = Identifiers.newId();
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO payment.payment (id, order_id, amount, currency, method, status, captured_at, created_at)
+                VALUES (?, ?, 20000, 'VND', 'BANK_TRANSFER', 'CAPTURED', NOW(), NOW())""", payment, line.orderId()));
+        CancellationFee agreed = new CancellationFee(new BigDecimal("12000"), "Printing had started",
+                "Agreed by phone with the buyer on 2026-10-12: 6 cups printed and the setup");
+
+        for (Object[] wrong : List.<Object[]>of(
+                new Object[] {null, new CancellationFee(new BigDecimal("20001"), "r", "d"), "more than was paid"},
+                new Object[] {null, new CancellationFee(new BigDecimal("1500.5"), "r", "d"), "not whole VND"},
+                new Object[] {null, new CancellationFee(BigDecimal.ZERO, "r", "d"), "zero"},
+                new Object[] {null, new CancellationFee(new BigDecimal("12000"), "r", " "), "no detail"},
+                new Object[] {null, new CancellationFee(new BigDecimal("12000"), null, "d"), "no reason"},
+                new Object[] {new BigDecimal("10"), agreed, "a percentage and an amount"})) {
+            assertThatThrownBy(() -> cancelWithFee(line.orderId(), (BigDecimal) wrong[0], (CancellationFee) wrong[1]))
+                    .as((String) wrong[2]).extracting(PrintRunIntegrationTest::code)
+                    .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        }
+        assertThat(salesOrders.findById(line.orderId()).orElseThrow().status().name()).isEqualTo("IN_PRODUCTION");
+
+        List<Object> outcomes = race(List.of(() -> {
+            cancelWithFee(line.orderId(), null, agreed);
+            return "cancelled";
+        }, () -> {
+            cancelWithFee(line.orderId(), null, agreed);
+            return "cancelled";
+        }));
+        assertThat(outcomes).filteredOn("cancelled"::equals).hasSize(1);
+        // The loser fails as the order module fails a concurrent cancel today (refused for the state, or for the
+        // version it read); either way it changes nothing — one cancellation, one refund below.
+        assertThat(outcomes).filteredOn(Exception.class::isInstance).hasSize(1);
+
+        var cancellation = salesOrders.findById(line.orderId()).orElseThrow().cancellation();
+        assertThat(cancellation.retainedAmount()).isEqualByComparingTo("12000");
+        assertThat(cancellation.feeReason()).isEqualTo("Printing had started");
+        assertThat(cancellation.feeDetail()).startsWith("Agreed by phone");
+        Await.until("the rest is asked back", ASYNC, () -> jdbc.queryForObject("""
+                SELECT count(*) FROM payment.refund WHERE order_id = ? AND status = 'PENDING' AND amount = 8000""",
+                Integer.class, line.orderId()) == 1);
+        Thread.sleep(300);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM payment.refund WHERE order_id = ?", Integer.class,
+                line.orderId())).as("asked once").isEqualTo(1);
+        assertThat(jdbc.queryForMap("SELECT status, amount FROM payment.payment WHERE id = ?", payment))
+                .as("the payment received is history, not changed").containsEntry("status", "CAPTURED")
+                .satisfies(row -> assertThat((BigDecimal) row.get("amount")).isEqualByComparingTo("20000"));
+
+        Await.until("the job waits for its stop", ASYNC,
+                () -> detail(line.productionOrderId()).summary().status() == ProductionOrder.Status.ON_HOLD);
+        ProductionOrders.Detail stopped = runs.stop(manager, line.productionOrderId(), 6, List.of(), "Customer cancelled");
+        assertThat(stopped.printedQuantity()).isEqualTo(6);
+        assertThat(salesOrders.findById(line.orderId()).orElseThrow().cancellation().retainedAmount())
+                .as("the job's count does not change the agreed amount").isEqualByComparingTo("12000");
     }
 }

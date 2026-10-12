@@ -112,7 +112,8 @@ final class OrderWebMapper {
                 summary.payment() == null ? null : summary.payment().creditTermDays(),
                 summary.cancellation() == null ? null : new OrderResponse.Cancellation(
                         summary.cancellation().reasonCode() == null ? null : summary.cancellation().reasonCode().name(),
-                        summary.cancellation().reason(), summary.cancellation().retainedAmount()));
+                        summary.cancellation().reason(), summary.cancellation().retainedAmount(),
+                        summary.cancellation().feeReason(), summary.cancellation().feeDetail()));
     }
 
     private static PlaceGuestOrderCommand.Address toCommand(
@@ -143,5 +144,11 @@ final class OrderWebMapper {
                 address.provinceName(),
                 address.countryCode(),
                 address.postalCode());
+    }
+
+    static com.stockflow.order.api.CancellationFee toFee(
+            com.stockflow.order.internal.controller.dto.CancellationFeeRequest request) {
+        return request == null ? null
+                : new com.stockflow.order.api.CancellationFee(request.amount(), request.reason(), request.detail());
     }
 }

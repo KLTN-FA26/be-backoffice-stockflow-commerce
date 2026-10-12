@@ -63,7 +63,12 @@ public record OrderSummary(
     }
 
     /** Why and on what terms a cancelled order was cancelled; null while it is not. */
-    public record Cancellation(CancellationReasonCode reasonCode, String reason, BigDecimal retainedAmount) {
+    public record Cancellation(CancellationReasonCode reasonCode, String reason, BigDecimal retainedAmount,
+                               String feeReason, String feeDetail) {
+
+        public Cancellation(CancellationReasonCode reasonCode, String reason, BigDecimal retainedAmount) {
+            this(reasonCode, reason, retainedAmount, null, null);
+        }
     }
 
     public OrderSummary(UUID orderId, String orderNumber, UUID customerId, OrderStatus status,
