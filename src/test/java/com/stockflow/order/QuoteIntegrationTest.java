@@ -88,6 +88,7 @@ class QuoteIntegrationTest {
     @Autowired TransactionTemplate tx;
     @Autowired RecordedEvents.Recorder recorded;
     @Autowired CustomerPriceService prices;
+    @Autowired com.stockflow.order.internal.service.OrderReleases releases;
 
     private UUID hcm;
     private CurrentUser sales;
@@ -318,6 +319,124 @@ class QuoteIntegrationTest {
         assertThat(first.lines()).singleElement().satisfies(line ->
                 assertThat(line.unitPrice().amount()).isEqualByComparingTo("2500"));
         assertThat(first.total().amount()).isEqualByComparingTo("12500");
+    }
+
+    @Test
+    @DisplayName("below the list's first tier: Sales quotes the actual quantity at the agreed price, the customer accepts the latest revision, one order, no production before payment")
+    void belowTheListTierSalesQuotesTheActualQuantity() throws Exception {
+        // The customer's list starts at 10 units. The customer wants 4.
+        prices.create(customerId, BLANK, List.of(new CustomerPriceService.TierInput(10, new BigDecimal("2000"))), null);
+        ConfirmedDesigns.Design design = design();
+
+        // Direct checkout does not fall back to another price: it says a quote is needed.
+        assertThatThrownBy(() -> orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), customerId, null, null,
+                true, List.of(new PlaceOrderCommand.Line(new Sku(BLANK), 4, Money.vnd(2000), null)))))
+                .extracting(QuoteIntegrationTest::code).isEqualTo(ErrorCode.CUSTOMER_PRICE_BELOW_MOQ);
+        // A quote line left to the list is refused rather than priced at the 1,000-unit tier.
+        assertThatThrownBy(() -> quotes.create(sales, new Quotes.Create(UUID.randomUUID(), customerId,
+                new Quotes.Draft(PaymentTerm.PREPAID, null, Instant.now().plus(Duration.ofDays(7)), null,
+                        List.of(new Quotes.Line(BLANK, design.snapshotId(), "Logo", 4, null))))))
+                .isInstanceOfSatisfying(BusinessException.class, e -> {
+                    assertThat(e.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+                    assertThat(e.getMessage()).contains("enter the negotiated price");
+                });
+
+        // Sales enters the actual quantity and the agreed price.
+        Quotes.QuoteView draft = quotes.create(sales, new Quotes.Create(UUID.randomUUID(), customerId,
+                new Quotes.Draft(PaymentTerm.PREPAID, null, Instant.now().plus(Duration.ofDays(7)), null,
+                        List.of(new Quotes.Line(BLANK, design.snapshotId(), "Logo", 4,
+                                List.of(new Quotes.Tier(4, new BigDecimal("2300"))))))));
+        assertThat(draft.lines()).singleElement().satisfies(line -> {
+            assertThat(line.moq()).isEqualTo(4);
+            assertThat(line.proposedUnitPrice()).isEqualByComparingTo("2300");
+            assertThat(line.proposedLineTotal()).isEqualByComparingTo("9200");
+        });
+        assertThat(draft.proposedTotal()).isEqualByComparingTo("9200");
+        Quotes.QuoteView first = quotes.send(sales, draft.id(), draft.version());
+        approvedSample(design);
+
+        // Only this customer answers.
+        assertThatThrownBy(() -> quotes.accept(sales, first.id(), new Quotes.Acceptance(first.version(), Map.of())))
+                .extracting(QuoteIntegrationTest::code).isEqualTo(ErrorCode.FORBIDDEN);
+        UUID strangerUser = tx.execute(s -> ReferenceRows.user(entityManager));
+        customerWithPortal(strangerUser);
+        CurrentUser stranger = new CurrentUser(strangerUser, "stranger", Set.of(Role.CUSTOMER), Set.of(),
+                DataScope.ALL, Set.of(), Set.of());
+        assertThatThrownBy(() -> quotes.accept(stranger, first.id(), new Quotes.Acceptance(first.version(), Map.of())))
+                .isInstanceOf(NotFoundException.class);
+
+        // A revision makes the customer accept again, and only what they saw last.
+        long firstVersion = quotes.get(portal, first.id()).version();
+        Quotes.QuoteView changed = quotes.requestChanges(portal, first.id(), firstVersion, "2,200?");
+        Quotes.QuoteView reopened = quotes.reopen(sales, first.id(), changed.version());
+        Quotes.QuoteView edited = quotes.edit(sales, first.id(), reopened.version(),
+                new Quotes.Draft(PaymentTerm.PREPAID, null, Instant.now().plus(Duration.ofDays(7)), null,
+                        List.of(new Quotes.Line(BLANK, design.snapshotId(), "Logo", 4,
+                                List.of(new Quotes.Tier(4, new BigDecimal("2200")))))));
+        Quotes.QuoteView second = quotes.send(sales, first.id(), edited.version());
+        assertThat(second.revision()).isEqualTo(2);
+        assertThatThrownBy(() -> quotes.accept(portal, first.id(), new Quotes.Acceptance(firstVersion, Map.of())))
+                .as("the revision-1 version").extracting(QuoteIntegrationTest::code)
+                .isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
+        Quotes.QuoteView accepted = quotes.accept(portal, first.id(), new Quotes.Acceptance(
+                quotes.get(portal, first.id()).version(), Map.of()));
+        assertThat(accepted.revision()).isEqualTo(2);
+        assertThat(accepted.lines().getFirst().acceptedQuantity()).isEqualTo(4);
+        assertThat(accepted.lines().getFirst().acceptedUnitPrice()).isEqualByComparingTo("2200");
+        assertThat(accepted.acceptedTotal()).isEqualByComparingTo("8800");
+
+        // Converted exactly once, at the accepted quantity and price.
+        int before = ordersOf(customerId);
+        UUID orderId = quotes.convert(sales, accepted.id(), new Quotes.Conversion(accepted.version(), null, null))
+                .convertedOrder().orderId();
+        assertThat(quotes.convert(sales, accepted.id(), new Quotes.Conversion(accepted.version(), null, null))
+                .convertedOrder().orderId()).isEqualTo(orderId);
+        assertThat(ordersOf(customerId)).isEqualTo(before + 1);
+        OrderSummary order = orders.findById(orderId).orElseThrow();
+        assertThat(order.lines()).singleElement().satisfies(line -> {
+            assertThat(line.quantity()).isEqualTo(4);
+            assertThat(line.unitPrice().amount()).isEqualByComparingTo("2200");
+        });
+        assertThat(order.total().amount()).isEqualByComparingTo("8800");
+
+        // Prepaid and not paid: nothing goes to production.
+        assertThat(order.status()).isEqualTo(OrderStatus.PENDING_PAYMENT);
+        assertThatThrownBy(() -> releases.release(orderId, hcm, sales.userId())).isInstanceOf(RuntimeException.class);
+        assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.PENDING_PAYMENT);
+        assertThat(recorded.matching(com.stockflow.contracts.OrderLinesReleasedForProduction.class,
+                e -> e.orderId().equals(orderId))).isEmpty();
+    }
+
+    @Test
+    @DisplayName("two designs on one blank pick the price break together; the stored acceptance is not recomputed")
+    void designsOnOneBlankPickTheBreakTogether() throws Exception {
+        ConfirmedDesigns.Design logoA = design();
+        ConfirmedDesigns.Design logoB = design();
+        List<Quotes.Tier> tiers = List.of(new Quotes.Tier(2, new BigDecimal("3000")),
+                new Quotes.Tier(5, new BigDecimal("2500")));
+        // 3 + 2 = 5 blanks: the 5-unit break for both lines, though neither reaches it alone.
+        Quotes.QuoteView draft = quotes.create(sales, new Quotes.Create(UUID.randomUUID(), customerId,
+                new Quotes.Draft(PaymentTerm.PREPAID, null, Instant.now().plus(Duration.ofDays(7)), null, List.of(
+                        new Quotes.Line(BLANK, logoA.snapshotId(), "Logo A", 3, tiers),
+                        new Quotes.Line(BLANK, logoB.snapshotId(), "Logo B, 1 colour", 2, tiers)))));
+        assertThat(draft.lines()).extracting(Quotes.LineView::proposedUnitPrice)
+                .usingElementComparator(BigDecimal::compareTo)
+                .containsExactly(new BigDecimal("2500"), new BigDecimal("2500"));
+        assertThat(draft.proposedTotal()).isEqualByComparingTo("12500");
+
+        Quotes.QuoteView sent = quotes.send(sales, draft.id(), draft.version());
+        approvedSample(logoA);
+        approvedSample(logoB);
+        Quotes.QuoteView accepted = quotes.accept(portal, sent.id(), new Quotes.Acceptance(
+                quotes.get(portal, sent.id()).version(), Map.of()));
+        assertThat(accepted.lines()).extracting(Quotes.LineView::acceptedUnitPrice)
+                .usingElementComparator(BigDecimal::compareTo)
+                .containsExactly(new BigDecimal("2500"), new BigDecimal("2500"));
+        assertThat(accepted.acceptedTotal()).isEqualByComparingTo("12500");
+        // What was accepted is read back as stored, not recomputed from the tiers.
+        assertThat(jdbc.queryForList("SELECT accepted_unit_price FROM ordering.quote_line WHERE quote_id = ? ORDER BY line_no",
+                BigDecimal.class, sent.id())).usingElementComparator(BigDecimal::compareTo)
+                .containsExactly(new BigDecimal("2500"), new BigDecimal("2500"));
     }
 
     @Test

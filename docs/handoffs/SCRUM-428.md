@@ -15,9 +15,9 @@ pushed, not merged, no Jira change. The SCRUM-429 follow-up is its own commit on
   refused). No order between tier prices is imposed (the documents give none).
 - **Resolution** `PriceResolver`: own tier → active rule of the customer's segment (`pricing_rule.segment_id`,
   existing, previously unread) → base price `BASE:<sku>`; group/base apply from 1 unit. Below the first own tier:
-  `CUSTOMER_PRICE_BELOW_MOQ` (open question P4).
+  `CUSTOMER_PRICE_BELOW_MOQ` "ask Sales for a quote" — no fall back (P4, decided: Sales quotes it).
 - **Checkout**: `OrderServiceImpl.place` prices account orders with `CatalogService.checkoutPrices(customerId,
-  quantities)` — tier chosen by the order's **total** of each SKU (P5); the client's price is still only what it
+  quantities)` — tier chosen by the order's **total** of each SKU (P5, decided: every design together, never across SKUs); the client's price is still only what it
   expects (`CHECKOUT_PRICE_CHANGED`), the server price is locked into the order line (14 BR-03). Products are locked
   first, as before; customer-price edits take the same product lock, so an order is priced wholly before or after.
 - **Quotes** (SCRUM-448 integration): a quote line created **without tiers** starts from the customer's schedule for
@@ -33,6 +33,15 @@ pushed, not merged, no Jira change. The SCRUM-429 follow-up is its own commit on
   published SKUs only.
 
 ## API for FE (`ApiResponse` envelope)
+
+Units (P6, decided): every `quantity` / `minQuantity` is **pieces (cái)**, a whole number ≥ 1; every `unitPrice` is
+**whole VND per piece**. No carton or conversion in this batch.
+
+Quote form fields (SCRUM-448 schema, unchanged): `blankSku`, `designSnapshotId`, `printSpec`, `quantity`,
+`tiers[{minQuantity, unitPrice}]` (optional: from the list), `paymentTerm`, `depositPercent`, `validUntil`, `terms`.
+Totals come from the server: `lines[].proposedUnitPrice`, `lines[].proposedLineTotal`, `proposedTotal`, and after
+acceptance `acceptedUnitPrice`, `acceptedLineTotal`, `acceptedTotal`. Delivery is chosen at conversion
+(`shippingAddressId`, `billingAddressId`); the quote has no delivery fields. The FE form is not built in this batch.
 
 | Method / path | Permission | Body / params → result |
 |---|---|---|
@@ -64,12 +73,16 @@ Writes are audited (`customer-price` CREATE/UPDATE/DELETE).
 | Sales sends a negotiated price (> 5 % below the list) without approval; invalid price refused on the server; warehouse cannot send; Sales cannot accept; another customer gets 404 on read/accept; the customer sees the price SENT; quote audited; a later list edit does not move the quote | existing `QuoteService` validation, `QuoteController` permissions, quote price snapshot | IT `salesSendsANegotiatedPriceWithoutApprovalAndOnlyTheCustomerAccepts` (list 10,000,000 → sent 8,000,000; 0 / 10.5 / -5 → `VALIDATION_FAILED`) | PASS |
 | A placed order is not changed by a later price-list edit (14 BR-03) | order line snapshot | IT `checkoutCharges…` (edit and delete after placing) | PASS |
 | Reorder of a negotiated order: same blank, design, print spec and quantity; today's list price, not the deal; no order created; retried click → same draft; Sales renegotiates and sends; only the customer's acceptance fixes the new price, and it is not converted on its own; the approved design needs no new sample; the first order keeps its price after a list change | `QuoteService.reorder`, `OrderController.reorder` | IT `QuoteIntegrationTest.reorderStartsANewQuoteAtTodaysPrice` (list 3,000/2,800, deal 2,500, renegotiated 2,700) | PASS |
+| P4: below the list's first tier, direct checkout 409 `CUSTOMER_PRICE_BELOW_MOQ`; a quote line left to the list refused ("enter the negotiated price"), never priced at the higher tier; Sales quotes the actual quantity at the agreed price; Sales cannot accept (403/FORBIDDEN), another customer 404; a revision makes the customer accept again and the revision-1 version is refused (`OPTIMISTIC_LOCK`); converted once at the accepted quantity and price; prepaid and unpaid → `PENDING_PAYMENT`, release refused, no production event | `QuoteService.defaultTiers`, `ErrorCode.CUSTOMER_PRICE_BELOW_MOQ`, existing release gate | IT `QuoteIntegrationTest.belowTheListTierSalesQuotesTheActualQuantity` | PASS |
+| P5: two designs on one blank pick the break together (3 + 2 = 5 → 2,500 for both); MOQ checked on the blank's total; other SKUs never added in; the stored acceptance is not recomputed | `Quote.Offer`, `Quote.accept`, `QuoteLine` | `QuoteTest.designsOnTheSameBlankAreCountedTogetherOtherBlanksAreNot`, `sendThenAccept…` (now 1,800 for both lines), IT `designsOnOneBlankPickTheBreakTogether`; checkout's sum by SKU: IT `checkoutCharges…` | PASS |
+| Server totals for the FE form; a line without `tiers` over HTTP (was a 500 in the mapper) | `QuoteWebMapper`, `QuoteResponse` | `QuoteSecurityIntegrationTest.whoMayDoWhat` | PASS |
 | Reorder access: another customer 404 (service and HTTP), anonymous 401, warehouse 403, missing `requestId` 400; a price-list order 409 `ORDER_NOT_QUOTED` for the customer and for Sales; an unknown order 404 | same | IT `QuoteIntegrationTest.aPriceListOrderIsNotRequoted`, `QuoteSecurityIntegrationTest.whoMayReorder` | PASS |
-| Sales units (13/14 BR-11) | — | — | **NOT DONE — P6 (no sales-unit model exists)** |
+| Sales units (13/14 BR-11) | pieces only (P6, decided by the user: no carton / conversion in this batch) | — | scope chosen |
 
 ## Gaps
 
-P3–P7, T1 and R1 in the plan (P1 and P2 are decided by the user). No notification tells Sales that a reorder
+No business question blocks Sprint 2 BE. Open with a working default: P3, P7, T1, R1 in the plan (P1, P2, P4, P5,
+P6 are decided by the user). No notification tells Sales that a reorder
 draft is waiting; it appears in the quote list as a DRAFT. FE is not part of this batch. The quote default's `PRICE_NOT_AVAILABLE` → 400 branch is covered by IT
 `aQuoteLineWithoutTiersForAnUnpricedBlankAsksSalesToEnterThem`. Segment rules have no management API (P7).
 
@@ -78,6 +91,7 @@ draft is waiting; it appears in the quote list as a DRAFT. FE is not part of thi
 | Run | Result |
 |---|---|
 | `CustomerPricingIntegrationTest` (security on, real PostgreSQL) | 7/7 (after the P2 override) |
+| After P4/P5: `QuoteTest` 10, `QuoteIntegrationTest` 11, `QuoteSecurityIntegrationTest` 2, `CustomerPricingIntegrationTest` 7, `CustomerPriceTest` 4, `PlaceOrderIntegrationTest` 7, `CreditCheckoutIntegrationTest` 4, `QuoteMigrationUpgradeTest` 1, `InventoryCatalogMigrationUpgradeTest` 5 (every `tools/db/qa` script), `ArchitectureTest`, `ModularityTest`, `MessageBundleTest`; `tools/verify.py` | 77/77, pass |
 | After the reorder: `QuoteIntegrationTest` 9/9, `QuoteSecurityIntegrationTest` 2/2; `ArchitectureTest`, `ModularityTest`, `MessageBundleTest`, `CustomerPricingIntegrationTest`, `PlaceOrderIntegrationTest`, `CreditCheckoutIntegrationTest`, `QuoteMigrationUpgradeTest` 45/45; `tools/verify.py` | pass |
 | After the override: `QuoteIntegrationTest`, `QuoteSecurityIntegrationTest`, `ArchitectureTest`, `ModularityTest`, `tools/verify.py` | 29/29, static checks pass |
 | `CustomerPriceTest`, `CustomerPriceMigrationUpgradeTest` (from `V20261014000500` with demo data and an existing customer), `CustomerStatusHistoryMigrationUpgradeTest` | 4 + 1 + 1 |

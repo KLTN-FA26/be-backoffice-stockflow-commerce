@@ -118,8 +118,16 @@ class QuoteSecurityIntegrationTest {
 
         send(post(QUOTES), a, createBody(customerA, design)).andExpect(status().isForbidden());
         send(post(QUOTES), sales, Map.of("customerId", customerA)).andExpect(status().isBadRequest());
-        JsonNode draft = data(send(post(QUOTES), sales, createBody(customerA, design)).andExpect(status().isCreated()));
+        JsonNode draft = data(send(post(QUOTES), sales, createBody(customerA, design)).andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.lines[0].proposedUnitPrice").value(3000))
+                .andExpect(jsonPath("$.data.lines[0].proposedLineTotal").value(9000))
+                .andExpect(jsonPath("$.data.proposedTotal").value(9000)));
         String id = draft.path("id").asText();
+        // A line without tiers is read from the price list over HTTP too (it was a 500).
+        send(post(QUOTES), sales, Map.of("requestId", UUID.randomUUID(), "customerId", customerA,
+                "paymentTerm", "PREPAID", "validUntil", Instant.now().plus(Duration.ofDays(7)).toString(),
+                "lines", List.of(Map.of("blankSku", ConfirmedDesigns.BLANK, "designSnapshotId", design, "quantity", 3))))
+                .andExpect(status().isCreated()).andExpect(jsonPath("$.data.lines[0].tiers.length()").value(1));
 
         send(get(QUOTES + "/" + id), a, null).andExpect(status().isNotFound());   // a draft is not shown
         JsonNode sent = data(send(post(QUOTES + "/" + id + "/sending"), sales,

@@ -2,8 +2,8 @@
 
 **Checkpoint 2026-10-12:** `8ae1c00` (this plan) → `aca7f05` (SCRUM-429 follow-up) → `2c190ff` (SCRUM-428),
 on `SCRUM-428-customer-pricing` from `4a389a6`. Migrations `V20261014000500` (status history) and `…000510`
-(customer prices). Details, API and test evidence: `docs/handoffs/SCRUM-428.md`. Decided by the user: P1, P2.
-Still open: P3–P7, T1 and R1 below.
+(customer prices). Details, API and test evidence: `docs/handoffs/SCRUM-428.md`. Decided by the user: P1, P2, P4, P5, P6.
+**No business question blocks Sprint 2 BE.** Open, each with a working default: P3, P7, T1, R1 below.
 
 **User decision 2026-10-12 — overrides kltn-docs 14 BR-10 and an earlier same-day P2 answer (5 % limit + admin
 approval), which is withdrawn:** there is **no discount limit and no internal discount approval**. Sales negotiates,
@@ -22,6 +22,20 @@ a negotiated order** reuses its blanks, designs, print specifications and quanti
 never creates a payable order by itself: Sales quotes again and the customer accepts. Reusing an approved design
 needs no new sample (plan D4). Ordering at the price list (portal quick order, SCRUM-190) is not affected. The
 validity question for deal prices is void, as deals are not stored.
+
+**User decisions 2026-10-12 on P4, P5, P6 (final):**
+- **P4** — below the lowest tier of the customer's list, Sales negotiates and enters a quote at the actual quantity
+  and the agreed price; the customer sees and accepts it; it converts once; production follows the existing
+  payment / credit / release gates. The 1,000 tier is never applied to 500. Direct checkout below the list minimum
+  fails with `CUSTOMER_PRICE_BELOW_MOQ` ("ask Sales for a quote"), never a silent fall back. The list minimum is a
+  pricing minimum only: no hard production minimum exists in the documents or the schema (the supplier MOQ,
+  BR-PO-001, is procurement's), so none was removed or added.
+- **P5** — the price break of a blank is chosen by the **total of that SKU in one order or quote of one customer**,
+  every design together (600 logo A + 400 logo B = 1,000). Never across SKUs, customers or orders. Each quote line
+  keeps its own tiers, so a different print can still be priced differently; no surcharge is added.
+- **P6** — quantities are **pieces (cái)**, whole and ≥ 1, across quote / order / inventory / production; prices are
+  VND per piece. No carton / box / pallet unit, conversion or packaging schema in this batch. A chosen scope, not a
+  gap.
 
 Branch `SCRUM-428-customer-pricing`, worktree `orca/workspaces/.../SCRUM-428-customer-pricing`, from the
 integration checkpoint `4a389a6` (`SCRUM-394-395-production-foundation`: develop `74d624d` + 394/395 + 448 +
@@ -48,9 +62,6 @@ Develop checked 2026-10-12: still `74d624d`, newest migration `V20261013000600`.
 | # | Question | Why it matters | Default used until answered |
 |---|---|---|---|
 | P3 | Does an admin-managed customer price list have **validity dates** (from/until), or is the current list simply the price? (Not about deals: they are not stored.) | effective-dated history | no dates: the current list applies; every change is versioned and audited |
-| P4 | **Below the lowest tier** of a customer's list: refuse (the list's first tier is that customer's MOQ, BR-05) or fall back to the group/base price? | small orders | refuse with `CUSTOMER_PRICE_BELOW_MOQ` — the same rule quotes use |
-| P5 | Tier when one order has **several lines of the same SKU**: by line or by the SKU's total? | tier choice | by the SKU's total in the order |
-| P6 | **Sales units** (thùng = 1,000 cái, 13/14 BR-11, marked ⚠️ assumption): needed now? | price per unit | prices are per SKU unit (no sales-unit model exists anywhere yet) |
 | P7 | **Group (segment) prices**: who manages them? There is no screen/API for segment rules. | fallback source | resolution reads an active segment rule if one exists; no management API in this lane |
 | R1 | **Reorder that today's price list cannot price**: the blank has no list price, the old quantity is below the customer's list MOQ, or the old payment term is no longer allowed. Should the reorder still reach Sales as an unpriced request? | reorder of rare blanks | refused with `PRICE_NOT_AVAILABLE` / `QUOTE_BELOW_MOQ` / `PAYMENT_TERM_NOT_ALLOWED`; Sales can always draft the quote by hand (`POST /api/v1/quotes`) |
 | T1 | A household business that later supplies a **12-digit personal ID** as its tax identifier: accept it? The company's tax-code rule is unchanged (10 or 10-3). | onboarding follow-up | identifier stays optional; when given, the existing 10 / 10-3 rule applies (a 12-digit value is refused) |
@@ -77,6 +88,9 @@ Develop checked 2026-10-12: still `74d624d`, newest migration `V20261013000600`.
 - Quotes: back-office lookup of the default tiers for a quote line; a quote line created without tiers starts from
   the customer's list (14 step 2), snapshotted into the quote (BR-03). Sales may type any valid price (user
   override of BR-10 above); the customer accepts.
+- P4/P5 in quotes: a line left to the list is refused below the list minimum ("enter the negotiated price"); MOQ
+  and break are read at the quote's total of each blank; responses carry `proposedUnitPrice`, `proposedLineTotal`,
+  `proposedTotal`, computed on the server.
 - Reorder (P1 decision): `POST /api/v1/orders/{orderId}/reorder` turns an order converted from a quote into a new
   DRAFT quote at today's price list; an order bought at the price list answers `ORDER_NOT_QUOTED`.
 

@@ -30,7 +30,8 @@ public enum ErrorCode {
     PRODUCT_NOT_PURCHASABLE("This product is not currently available for purchase", 409),
     PRICE_NOT_AVAILABLE("No selling price is available for this SKU", 409),
     /** kltn-docs 13 BR-05: the first tier of a customer's own price is its minimum order quantity. */
-    CUSTOMER_PRICE_BELOW_MOQ("The quantity is below this customer's minimum order quantity for the SKU", 409),
+    /** Direct checkout never falls back to another price below the list's first tier (P4): Sales quotes it. */
+    CUSTOMER_PRICE_BELOW_MOQ("The quantity is below this customer's price list minimum for the SKU; ask Sales for a quote", 409),
     CUSTOMER_PRICE_NOT_FOUND("This customer has no own price for the SKU", 404),
     CATALOG_PRICE_AMBIGUOUS("More than one selling price has the same priority", 409),
     MALFORMED_REQUEST("The request body could not be read", 400),

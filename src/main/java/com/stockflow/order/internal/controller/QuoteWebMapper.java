@@ -15,8 +15,9 @@ final class QuoteWebMapper {
 
     static List<Quotes.Line> lines(List<QuoteRequests.Line> lines) {
         return lines.stream().map(line -> new Quotes.Line(line.blankSku(), line.designSnapshotId(), line.printSpec(),
-                line.quantity(), line.tiers().stream().map(t -> new Quotes.Tier(t.minQuantity(), t.unitPrice()))
-                .toList())).toList();
+                line.quantity(), line.tiers() == null ? null
+                        : line.tiers().stream().map(t -> new Quotes.Tier(t.minQuantity(), t.unitPrice())).toList()))
+                .toList();
     }
 
     static QuoteResponse toResponse(Quotes.QuoteView q) {
@@ -25,10 +26,10 @@ final class QuoteWebMapper {
                 q.lines().stream().map(l -> new QuoteResponse.Line(l.id(), l.lineNo(), l.blankSku(), l.designSnapshotId(),
                         l.printSpec(), l.quantity(), l.moq(),
                         l.tiers().stream().map(t -> new QuoteResponse.Tier(t.minQuantity(), t.unitPrice())).toList(),
-                        l.acceptedQuantity(), l.acceptedUnitPrice(), l.acceptedLineTotal(),
+                        l.proposedUnitPrice(), l.proposedLineTotal(), l.acceptedQuantity(), l.acceptedUnitPrice(), l.acceptedLineTotal(),
                         new QuoteResponse.Sample(l.sample().satisfied(), l.sample().approvedSampleId(),
                                 l.sample().reorder()))).toList(),
-                q.acceptedTotal(), q.sentAt(), q.sentBy(), q.respondedAt(), q.respondedBy(), q.customerFeedback(),
+                q.proposedTotal(), q.acceptedTotal(), q.sentAt(), q.sentBy(), q.respondedAt(), q.respondedBy(), q.customerFeedback(),
                 q.cancellationReason(),
                 q.convertedOrder() == null ? null : new QuoteResponse.Order(q.convertedOrder().orderId(),
                         q.convertedOrder().orderNumber(), q.convertedOrder().status().name(), q.convertedOrder().total()),

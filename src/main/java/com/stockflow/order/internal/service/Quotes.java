@@ -46,9 +46,14 @@ public interface Quotes {
     record SampleGate(boolean satisfied, UUID approvedSampleId, boolean reorder) {
     }
 
+    /**
+     * @param proposedUnitPrice the tier price of the proposed {@code quantity}, computed on the server
+     * @param proposedLineTotal {@code quantity} x {@code proposedUnitPrice}
+     */
     record LineView(UUID id, int lineNo, String blankSku, UUID designSnapshotId, String printSpec, int quantity,
-                    int moq, List<Tier> tiers, Integer acceptedQuantity, BigDecimal acceptedUnitPrice,
-                    BigDecimal acceptedLineTotal, SampleGate sample) {
+                    int moq, List<Tier> tiers, BigDecimal proposedUnitPrice, BigDecimal proposedLineTotal,
+                    Integer acceptedQuantity, BigDecimal acceptedUnitPrice, BigDecimal acceptedLineTotal,
+                    SampleGate sample) {
     }
 
     record Transition(int revision, QuoteStatus fromStatus, QuoteStatus toStatus, String reason, Instant changedAt,
@@ -64,7 +69,7 @@ public interface Quotes {
      */
     record QuoteView(UUID id, String quoteNumber, UUID customerId, QuoteStatus status, int revision,
                      PaymentTerm paymentTerm, BigDecimal depositPercent, Instant validUntil, String terms,
-                     List<LineView> lines, BigDecimal acceptedTotal, Instant sentAt, UUID sentBy, Instant respondedAt,
+                     List<LineView> lines, BigDecimal proposedTotal, BigDecimal acceptedTotal, Instant sentAt, UUID sentBy, Instant respondedAt,
                      UUID respondedBy, String customerFeedback, String cancellationReason,
                      ConvertedOrder convertedOrder, Instant convertedAt, List<Transition> history,
                      Instant createdAt, String createdBy, long version) {

@@ -69,6 +69,10 @@ VIEW_PAGE, READ, UPDATE · CUSTOMER VIEW_PAGE, READ, APPROVE · SYSTEM_ADMIN all
 | `POST …/{id}/conversion` | UPDATE | back office | `{version, shippingAddressId?, billingAddressId?}` ACCEPTED → CONVERTED + the order; a repeat returns the same order |
 | `POST /api/v1/orders/{orderId}/reorder` | `sales-orders:CREATE` | portal customer (own orders), back office | `{requestId}` → a new DRAFT quote for the order's lines at today's price list, never the old deal (SCRUM-428 lane, user decision 2026-10-12); `ORDER_NOT_QUOTED` for a price-list order |
 
+Pricing (user decisions 2026-10-12): a line's break and MOQ are read at the quote's total of its blank, every
+design together (P5); quantities are pieces and prices VND per piece (P6); responses carry server-computed
+`proposedUnitPrice`, `proposedLineTotal`, `proposedTotal`. Details: `SCRUM-428.md`.
+
 Statuses: DRAFT, SENT, CHANGES_REQUESTED, ACCEPTED, EXPIRED, CANCELLED, CONVERTED (a SENT quote past
 `validUntil` reads EXPIRED at once). The portal never sees DRAFT or CANCELLED quotes (also not while a
 quote is being revised).
