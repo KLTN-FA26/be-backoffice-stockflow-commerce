@@ -4,8 +4,9 @@
 -- identifies a business), BR-01a (only Sales creates; only ACTIVE sees prices, quotes and orders).
 --
 -- customer.customer
---   tax_code            the business's tax code, normalised: 10 digits, or 10-3 for a dependent unit
---                       (Thông tư 105/2020/TT-BTC). NULL for every customer created before this
+--   tax_code            the business's tax code, normalised: 10 digits for an enterprise, 10-3 for a
+--                       dependent unit (Law 38/2019/QH14 art. 30(2), Circular 86/2024/TT-BTC art. 5 as
+--                       quoted by secondary sources). NULL for every customer created before this
 --                       migration: no code is invented for them; Sales adds the real one.
 --   PENDING_ACTIVATION  Sales created the customer, its contact has not activated the portal account.
 --                       Lifecycle mapping of kltn-docs 18 §5 (a decision of this change, to be confirmed
@@ -28,6 +29,9 @@
 -- Carry-over: the SCRUM-429 branch kept an open invitation as '{portal-invitation}<issued>:<expires>:<digest>'
 -- in password_hash. Such rows move here with their digest and dates, so a link already e-mailed keeps
 -- working; their customers become PENDING_ACTIVATION. Every other INACTIVE customer stays INACTIVE.
+--
+-- Sign-in: the contact accounts (CUSTOMER role only) of BLOCKED and INACTIVE customers are disabled and
+-- their live sessions ended, matching what the application now does on every status change.
 --
 -- customer-customers:CREATE  Sales and the e-commerce admin onboard customers (SYSTEM_ADMIN gets every
 --                       permission). Roles whose grants change advance app_role.version.
@@ -112,6 +116,31 @@ WHERE c.user_id = u.id AND c.status = 'INACTIVE' AND u.password_hash LIKE '{port
 UPDATE identity.app_user
 SET password_hash = NULL, last_modified_at = NOW(), last_modified_by = 'flyway'
 WHERE password_hash LIKE '{portal-invitation}%';
+
+-- ---- sign-in follows the customer's status ------------------------------------------
+-- kltn-docs 18 §5: a Suspended (BLOCKED) customer may not sign in; a Closed (INACTIVE) one closed its account.
+-- From now on the application disables the contact's account when staff block or close a customer
+-- and enables it again when they reactivate it; this brings the rows that predate that rule in line.
+-- Only accounts holding CUSTOMER and nothing else: a staff login is never taken away through a
+-- customer profile. Live sessions of those accounts end, as a block would end them.
+CREATE TEMPORARY TABLE barred_customer_account ON COMMIT DROP AS
+SELECT u.id
+FROM identity.app_user u
+JOIN customer.customer c ON c.user_id = u.id
+WHERE c.status IN ('BLOCKED', 'INACTIVE')
+  AND u.status = 'ACTIVE'
+  AND EXISTS (SELECT 1 FROM identity.user_role ur JOIN identity.app_role r ON r.id = ur.role_id
+              WHERE ur.user_id = u.id AND r.code = 'CUSTOMER')
+  AND NOT EXISTS (SELECT 1 FROM identity.user_role ur JOIN identity.app_role r ON r.id = ur.role_id
+                  WHERE ur.user_id = u.id AND r.code <> 'CUSTOMER');
+
+UPDATE identity.app_user
+SET status = 'DISABLED', last_modified_at = NOW(), last_modified_by = 'flyway'
+WHERE id IN (SELECT id FROM barred_customer_account);
+
+UPDATE identity.user_session
+SET revoked_at = NOW(), revoked_reason = 'ACCOUNT_DISABLED', last_modified_at = NOW(), last_modified_by = 'flyway'
+WHERE revoked_at IS NULL AND user_id IN (SELECT id FROM barred_customer_account);
 
 -- A pending customer always has the account its contact will activate.
 ALTER TABLE customer.customer

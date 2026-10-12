@@ -14,7 +14,7 @@ AC riêng ngoài mô tả.
 | Thay đổi | Chi tiết |
 | --- | --- |
 | `tax_code VARCHAR(14)` | NULL cho mọi khách tạo trước migration — **không bịa, không backfill**. Khách mới bắt buộc có MST (service + `@NotBlank`). Sale bổ sung/sửa MST qua `PUT /api/v1/customers/{id}`. |
-| `ck_customer_tax_code` | `^[0-9]{10}(-[0-9]{3})?$`. Chuẩn hoá ở `TaxCode`: bỏ khoảng trắng/dấu chấm, 13 số liền → `10-3` (Thông tư 105/2020/TT-BTC). Không kiểm chữ số kiểm tra (tài liệu không nêu). |
+| `ck_customer_tax_code` | `^[0-9]{10}(-[0-9]{3})?$`. Chuẩn hoá ở `TaxCode`: bỏ khoảng trắng/dấu chấm, 13 số liền → `10-3` (Luật Quản lý thuế 38/2019/QH14 Điều 30 khoản 2; Thông tư 86/2024/TT-BTC Điều 5, hiệu lực 06/02/2025, thay Thông tư 105/2020 — đối chiếu qua nguồn thứ cấp luatvietnam.vn, chưa lấy được văn bản gốc). Không kiểm chữ số kiểm tra (tài liệu không nêu). |
 | `uk_customer_tax_code_live` | Unique `tax_code` **chỉ** với `PENDING_ACTIVATION` và `ACTIVE`. BR-01 nói "hai hồ sơ Active"; §4.1 yêu cầu kiểm trùng khi Sale tạo (lúc đó hồ sơ là pending) nên pending được tính để hai lần tạo đồng thời không cùng lọt. `INACTIVE`/`BLOCKED` không bị ràng buộc — không siết hơn tài liệu. |
 | `ck_customer_status` | Thêm `PENDING_ACTIVATION`. |
 | `ck_customer_pending_has_account` | Khách pending luôn có `user_id` (tài khoản sẽ được kích hoạt). |
@@ -39,6 +39,12 @@ Lý do chuyển từ `password_hash` sang bảng: quy tắc repo "mỗi bất bi
 làm được trong một chuỗi; cần lưu kết quả gửi mail để lỗi "nhìn thấy được"; và cột mật khẩu không còn
 mang credential khác loại.
 
+## 2b. Đăng nhập theo trạng thái khách (§5)
+
+`Suspended` "không đăng nhập", `Closed` là tài khoản đã đóng. Migration đưa tài khoản **chỉ có role CUSTOMER**
+của khách `BLOCKED`/`INACTIVE` về `DISABLED` và thu hồi phiên đang sống (`ACCOUNT_DISABLED`); tài khoản staff gắn
+hồ sơ khách giữ nguyên. Từ đó ứng dụng tự làm việc này mỗi lần đổi trạng thái khách, và bật lại khi khách `ACTIVE`.
+
 ## 3. Quyền
 
 `customer-customers:CREATE` cho `SALES_STAFF`, `ECOMMERCE_ADMIN`, `SYSTEM_ADMIN`; tăng `app_role.version`
@@ -53,4 +59,4 @@ CUSTOMER bị từ chối kể cả khi có quyền.
 ## 5. Còn chờ quyết định (không tự coi là đã duyệt)
 
 TTL lời mời 72 giờ, cooldown gửi lại 1 phút, route FE `/portal/activate` (chỉ là mặc định profile local),
-ánh xạ Suspended/Closed ở §1, và việc MST của hồ sơ `BLOCKED` có nên chặn tạo mới hay không.
+ánh xạ Suspended/Closed ở §1, việc MST của hồ sơ `BLOCKED` có nên chặn tạo mới hay không, khách `Closed` có được mở lại không (§5 nói không; quy tắc staff hiện tại cho phép), và hộ kinh doanh (MST = số định danh 12 số) có là khách không.

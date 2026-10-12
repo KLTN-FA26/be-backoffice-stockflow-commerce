@@ -12,12 +12,15 @@ import com.stockflow.identity.internal.domain.PasswordPolicy;
 import com.stockflow.identity.internal.domain.PortalInvitation;
 import com.stockflow.identity.internal.domain.PortalInvitationRepository;
 import com.stockflow.identity.internal.domain.PortalInvitationToken;
+import com.stockflow.identity.internal.domain.SessionEndReason;
 import com.stockflow.identity.internal.domain.User;
 import com.stockflow.identity.internal.domain.UserId;
 import com.stockflow.identity.internal.domain.UserRepository;
+import com.stockflow.identity.internal.domain.UserStatus;
 import com.stockflow.identity.internal.entity.UserRoleJpaEntity;
 import com.stockflow.identity.internal.repository.RoleJpaRepository;
 import com.stockflow.identity.internal.repository.UserRoleJpaRepository;
+import com.stockflow.identity.internal.repository.UserSessionJpaRepository;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -45,6 +48,7 @@ class PortalAccountServiceImpl implements PortalAccountService {
     private final PortalInvitationRepository invitations;
     private final UserRoleJpaRepository userRoles;
     private final RoleJpaRepository roles;
+    private final UserSessionJpaRepository sessions;
     private final PasswordEncoder passwordEncoder;
     private final Clock clock;
     private final Duration lifetime;
@@ -52,7 +56,7 @@ class PortalAccountServiceImpl implements PortalAccountService {
 
     PortalAccountServiceImpl(UserRepository users, PortalInvitationRepository invitations,
                              UserRoleJpaRepository userRoles, RoleJpaRepository roles,
-                             PasswordEncoder passwordEncoder, Clock clock,
+                             UserSessionJpaRepository sessions, PasswordEncoder passwordEncoder, Clock clock,
                              @Value("${stockflow.identity.portal-invitation.lifetime:PT72H}") Duration lifetime,
                              @Value("${stockflow.identity.portal-invitation.resend-cooldown:PT1M}") Duration resendCooldown) {
         if (lifetime.compareTo(Duration.ofMinutes(1)) < 0 || lifetime.compareTo(Duration.ofDays(30)) > 0) {
@@ -67,6 +71,7 @@ class PortalAccountServiceImpl implements PortalAccountService {
         this.invitations = invitations;
         this.userRoles = userRoles;
         this.roles = roles;
+        this.sessions = sessions;
         this.passwordEncoder = passwordEncoder;
         this.clock = clock;
         this.lifetime = lifetime;
@@ -150,6 +155,41 @@ class PortalAccountServiceImpl implements PortalAccountService {
                     clock.instant());
             invitations.save(invitation);
         });
+    }
+
+    @Override
+    public boolean suspend(UUID userId) {
+        Optional<User> found = users.findByIdForUpdate(new UserId(userId));
+        if (found.isEmpty() || !customerOnly(userId)) return false;
+        User user = found.get();
+        // Only an ACTIVE account is disabled. A LOCKED one already cannot sign in and stays LOCKED, so a
+        // later reinstate (DISABLED -> ACTIVE) can never lift a lock someone else set. Sessions end either way.
+        if (user.status() == UserStatus.ACTIVE) {
+            user.disable();
+            users.save(user);
+        }
+        sessions.revokeLive(userId, null, clock.instant(), SessionEndReason.ACCOUNT_DISABLED);
+        return true;
+    }
+
+    @Override
+    public boolean reinstate(UUID userId) {
+        Optional<User> found = users.findByIdForUpdate(new UserId(userId));
+        if (found.isEmpty() || !customerOnly(userId)) return false;
+        User user = found.get();
+        if (user.status() == UserStatus.DISABLED) {
+            user.enable();
+            users.save(user);
+        }
+        return true;
+    }
+
+    /** Holds CUSTOMER and nothing else - the only accounts a customer's status may switch off. */
+    private boolean customerOnly(UUID userId) {
+        var held = userRoles.findByUserId(userId);
+        if (held.isEmpty()) return false;
+        var customerRole = roles.findByCode(Roles.CUSTOMER).orElseThrow();
+        return held.stream().allMatch(row -> row.getRoleId().equals(customerRole.getId()));
     }
 
     private PortalInvitationLink issue(User user, UUID issuedBy) {

@@ -6,7 +6,7 @@ import com.stockflow.customer.api.RegisterCustomerCommand;
 import com.stockflow.customer.internal.domain.Customer;
 import com.stockflow.customer.internal.domain.CustomerRepository;
 import com.stockflow.customer.internal.repository.CustomerSearchRepository;
-import com.stockflow.identity.api.IdentityService;
+import com.stockflow.identity.api.PortalAccountService;
 import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
@@ -24,7 +24,7 @@ class CustomerServiceImplTest {
     void selfRegistrationIsRefusedBeforeReadingOrCreatingAnyAccount() {
         CustomerRepository customers = mock(CustomerRepository.class);
         CustomerSearchRepository search = mock(CustomerSearchRepository.class);
-        IdentityService identities = mock(IdentityService.class);
+        PortalAccountService identities = mock(PortalAccountService.class);
         var service = new CustomerServiceImpl(customers, search, identities,
                 mock(com.stockflow.customer.internal.domain.CreditProfileRepository.class), java.time.Clock.systemUTC());
 
@@ -45,7 +45,7 @@ class CustomerServiceImplTest {
     private CustomerServiceImpl serviceWith(Customer customer) {
         CustomerRepository customers = mock(CustomerRepository.class);
         when(customers.findById(customer.id())).thenReturn(Optional.of(customer));
-        return new CustomerServiceImpl(customers, mock(CustomerSearchRepository.class), mock(IdentityService.class),
+        return new CustomerServiceImpl(customers, mock(CustomerSearchRepository.class), mock(PortalAccountService.class),
                 mock(com.stockflow.customer.internal.domain.CreditProfileRepository.class), java.time.Clock.systemUTC());
     }
 

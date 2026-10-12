@@ -25,7 +25,7 @@ import com.stockflow.customer.internal.domain.CustomerAddress;
 import com.stockflow.customer.internal.domain.CustomerRepository;
 import com.stockflow.customer.internal.domain.CustomerStatus;
 import com.stockflow.customer.internal.repository.CustomerSearchRepository;
-import com.stockflow.identity.api.IdentityService;
+import com.stockflow.identity.api.PortalAccountService;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -46,15 +46,15 @@ class CustomerServiceImpl implements CustomerService {
 
     private final CustomerRepository customers;
     private final CustomerSearchRepository search;
-    private final IdentityService identities;
+    private final PortalAccountService accounts;
     private final CreditProfileRepository creditProfiles;
     private final java.time.Clock clock;
 
     CustomerServiceImpl(CustomerRepository customers, CustomerSearchRepository search,
-                        IdentityService identities, CreditProfileRepository creditProfiles, java.time.Clock clock) {
+                        PortalAccountService accounts, CreditProfileRepository creditProfiles, java.time.Clock clock) {
         this.customers = customers;
         this.search = search;
-        this.identities = identities;
+        this.accounts = accounts;
         this.creditProfiles = creditProfiles;
         this.clock = clock;
     }
@@ -171,7 +171,25 @@ class CustomerServiceImpl implements CustomerService {
             throw new BusinessException(ErrorCode.INVALID_CUSTOMER_STATUS_TRANSITION, refused.getMessage());
         }
         requireTaxCodeFree(customer);
-        return saveGuardingTaxCode(customer);
+        CustomerSummary saved = saveGuardingTaxCode(customer);
+        syncPortalAccess(customer);
+        return saved;
+    }
+
+    /**
+     * kltn-docs 18 §5: a Suspended (BLOCKED) customer may not sign in, and a Closed (INACTIVE) one has
+     * closed its account; an ACTIVE one may. The contact's account follows in this transaction - the
+     * customer row is locked first, the account second, the order resend and activation use too - so
+     * a block ends every live session at commit and a lifted block lets the same password in again.
+     * A pending customer's account has no password, so nothing to switch until activation.
+     */
+    private void syncPortalAccess(Customer customer) {
+        if (customer.userId() == null) return;
+        switch (customer.status()) {
+            case BLOCKED, INACTIVE -> accounts.suspend(customer.userId());
+            case ACTIVE -> accounts.reinstate(customer.userId());
+            case PENDING_ACTIVATION -> { }
+        }
     }
 
     /**

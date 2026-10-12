@@ -58,4 +58,22 @@ public interface PortalAccountService {
      * in its own transaction, so Sales can see a failed delivery and resend.
      */
     void recordDelivery(UUID invitationId, boolean delivered);
+
+    /**
+     * The customer behind this account was suspended or closed (kltn-docs 18 §5: no sign-in): the
+     * account is disabled and every live session ends now, so a token already issued stops working
+     * on its next request. Joins the caller's transaction. Idempotent.
+     *
+     * @return false, changing nothing, for an account holding any role besides CUSTOMER - a staff
+     *         login is never taken away through a customer profile
+     */
+    boolean suspend(UUID userId);
+
+    /**
+     * The customer is active again: a disabled customer account may sign in with its own password.
+     * Idempotent; an account that was never disabled is left as it is.
+     *
+     * @return false, changing nothing, for an account holding any role besides CUSTOMER
+     */
+    boolean reinstate(UUID userId);
 }

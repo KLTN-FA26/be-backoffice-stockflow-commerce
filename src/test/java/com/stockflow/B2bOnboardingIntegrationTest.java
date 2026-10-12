@@ -542,7 +542,86 @@ class B2bOnboardingIntegrationTest {
         login(closedEmail, PASSWORD).andExpect(status().isUnauthorized());
     }
 
+    @Test
+    void blockingEndsTheSessionAndSignInAndLiftingTheBlockRestoresSignIn() throws Exception {
+        String email = unique("suspend");
+        UUID customerId = createdCustomer(email);
+        activate(onlyLinkSentTo(email), PASSWORD).andExpect(status().isOk());
+        String before = loginToken(email, PASSWORD);
+        me(before).andExpect(status().isOk());
+
+        // kltn-docs 18 §5: Suspended = no sign-in. The token issued before the block stops at once.
+        changeStatus(customerId, "BLOCKED").andExpect(status().isOk());
+        me(before).andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/v1/catalog/products/availability").param("sku", "TABLE-OAK")
+                .header("Authorization", "Bearer " + before)).andExpect(status().isUnauthorized());
+        login(email, PASSWORD).andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.errorCode").value("ACCOUNT_NOT_ACTIVE"));
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM identity.user_session s JOIN identity.app_user u ON u.id = s.user_id
+                WHERE lower(u.email) = ? AND s.revoked_at IS NULL""", Long.class, email)).isZero();
+        assertThat(jdbc.queryForObject("""
+                SELECT revoked_reason FROM identity.user_session s JOIN identity.app_user u ON u.id = s.user_id
+                WHERE lower(u.email) = ? ORDER BY s.issued_at DESC LIMIT 1""", String.class, email))
+                .isEqualTo("ACCOUNT_DISABLED");
+
+        // Suspended -> Active is allowed (§5). The same password works again; the old session does not.
+        changeStatus(customerId, "ACTIVE").andExpect(status().isOk());
+        me(before).andExpect(status().isUnauthorized());
+        String after = loginToken(email, PASSWORD);
+        me(after).andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("ACTIVE"));
+
+        // Closed (INACTIVE) is a closed account: sign-in ends the same way.
+        changeStatus(customerId, "INACTIVE").andExpect(status().isOk());
+        me(after).andExpect(status().isUnauthorized());
+        login(email, PASSWORD).andExpect(status().isForbidden());
+        // Reopening a closed customer is the existing staff rule (not in §5, which ends Closed at
+        // Anonymized); while it exists, the account follows it.
+        changeStatus(customerId, "ACTIVE").andExpect(status().isOk());
+        me(loginToken(email, PASSWORD)).andExpect(status().isOk());
+    }
+
+    @Test
+    void aStaffLoginIsNeverTakenAwayThroughACustomerProfile() throws Exception {
+        String staffName = "staff-linked-" + UUID.randomUUID();
+        UUID staffId = Identifiers.newId();
+        UUID customerId = Identifiers.newId();
+        new TransactionTemplate(transactions).executeWithoutResult(tx -> {
+            jdbc.update("""
+                    INSERT INTO identity.app_user(id, username, email, password_hash, full_name, status, version, created_at)
+                    VALUES (?, ?, ?, ?, 'Linked staff', 'ACTIVE', 0, now())""",
+                    staffId, staffName, staffName + "@example.test", passwordEncoder.encode(PASSWORD));
+            jdbc.update("""
+                    INSERT INTO identity.user_role(id, user_id, role_id, version, created_at)
+                    SELECT ?, ?, id, 0, now() FROM identity.app_role WHERE code = 'SALES_STAFF'""",
+                    Identifiers.newId(), staffId);
+            jdbc.update("""
+                    INSERT INTO customer.customer(id, user_id, full_name, email, status, tax_code, version, created_at)
+                    VALUES (?, ?, 'Linked Co', ?, 'ACTIVE', ?, 0, now())""",
+                    customerId, staffId, staffName + "@example.test", mst());
+        });
+        String staff = identities.login(new LoginCommand(staffName, PASSWORD, null, "scrum450-test")).accessToken();
+
+        changeStatus(customerId, "BLOCKED").andExpect(status().isOk());
+        assertThat(customerStatus(customerId)).isEqualTo("BLOCKED");
+        mvc.perform(get("/api/v1/customers").header("Authorization", "Bearer " + staff)).andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("SELECT status FROM identity.app_user WHERE id=?", String.class, staffId))
+                .isEqualTo("ACTIVE");
+        login(staffName, PASSWORD).andExpect(status().isOk());
+        // And the unlinked staff used throughout this class still works.
+        mvc.perform(get("/api/v1/customers").header("Authorization", "Bearer " + sales)).andExpect(status().isOk());
+    }
+
     // ---------------------------------------------------------------- helpers
+
+    private ResultActions me(String bearer) throws Exception {
+        return mvc.perform(get("/api/v1/customers/me").header("Authorization", "Bearer " + bearer));
+    }
+
+    private String loginToken(String username, String password) throws Exception {
+        return mapper.readTree(login(username, password).andExpect(status().isOk()).andReturn().getResponse()
+                .getContentAsString()).at("/data/accessToken").asText();
+    }
 
     private ResultActions changeStatus(UUID customerId, String target) throws Exception {
         return mvc.perform(post("/api/v1/customers/" + customerId + "/status")

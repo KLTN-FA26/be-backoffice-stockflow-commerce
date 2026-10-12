@@ -1,6 +1,6 @@
 # SCRUM-429 / SCRUM-450 backend handoff
 
-Status: **backend acceptance of SCRUM-450 implemented and tested, including the schema.** Not Done
+Status: **backend acceptance of SCRUM-450 implemented and tested, including the schema and sign-in suspension of blocked/closed customers.** Not Done
 as a story: FE SCRUM-451, independent QA, CI on a pushed branch and the business owner's confirmation
 of the defaults listed under "Decisions" are outstanding. Nothing pushed, merged, deployed or changed in Jira.
 
@@ -48,7 +48,30 @@ tables develop had added without regenerating: SCRUM-427/431/453/457/460). New Q
 | `GET /api/v1/customers/{id}/portal-invitation` | `READ` + Sales/e-commerce admin | `{state PENDING\|EXPIRED\|ACTIVATED\|NO_ACCOUNT, issuedAt, expiresAt, delivery}` |
 | `POST /api/v1/customers/portal-activation` | anonymous, POST only | `{token, password}` → password set, invitation consumed, customer ACTIVE, one transaction. 200 `{email}`. 400 `PORTAL_INVITATION_INVALID` alike for malformed/unknown/replaced/expired/used links and for customers no longer pending; 400 `VALIDATION_FAILED` for a weak password (link stays usable). 10/min/IP. Audited. |
 | `PUT /api/v1/customers/{id}` (staff) | unchanged | now also `taxCode` (normalised, uniqueness-checked); `PUT /customers/me` ignores it. |
-| `POST /api/v1/customers/{id}/status` (e-commerce admin) | unchanged | lifecycle enforced: nobody sets PENDING_ACTIVATION; pending → only INACTIVE; reviving a closed customer whose code another live customer holds → 409 `CUSTOMER_TAX_CODE_ALREADY_EXISTS`; others → 409 `INVALID_CUSTOMER_STATUS_TRANSITION`. |
+| `POST /api/v1/customers/{id}/status` (e-commerce admin) | unchanged | lifecycle enforced: nobody sets PENDING_ACTIVATION; pending → only INACTIVE; reviving a closed customer whose code another live customer holds → 409 `CUSTOMER_TAX_CODE_ALREADY_EXISTS`; others → 409 `INVALID_CUSTOMER_STATUS_TRANSITION`. **Sign-in follows the status** (next section). |
+
+## Suspended and closed customers cannot sign in
+
+kltn-docs 18 §5 (main `84b8b54`): Suspended "Tạm khoá — không đăng nhập/mua", → Active or Closed;
+Closed "Khách yêu cầu đóng tài khoản", → Anonymized only; edge case "nghi bị chiếm → thu hồi phiên, tạm
+Suspended". Before this change a BLOCKED customer could still sign in (only ordering/availability were refused).
+
+- `CustomerServiceImpl.changeStatus` calls `PortalAccountService.suspend` (BLOCKED, INACTIVE) or `reinstate`
+  (ACTIVE) in the same transaction, after locking the customer row - the lock order resend/activation use.
+  customer → identity is the existing allowed dependency; `ModularityTest` passes (no cycle).
+- `suspend`: ACTIVE account → DISABLED, and **every live session revoked** (`ACCOUNT_DISABLED`). Sessions are
+  checked per request without a cache (`SessionGuard`), so the token already issued gets 401 on its next request.
+  There is no refresh token in this system: a new token needs a login, which answers 403 `ACCOUNT_NOT_ACTIVE`.
+- `reinstate`: DISABLED → ACTIVE, the same password signs in again; old sessions stay ended. A LOCKED account is
+  never disabled, so reinstating can never lift someone else's lock.
+- Only accounts holding **CUSTOMER and nothing else** are touched; a staff login linked to a customer profile is
+  kept (and customer accounts are already outside user management, `STAFF_ACCOUNT_REQUIRED`).
+- Migration `V20261014000100` brings existing rows in line: CUSTOMER-only accounts of BLOCKED/INACTIVE customers
+  → DISABLED, their live sessions revoked. Edited in place because the file was never pushed and only ever ran
+  in throwaway test containers.
+- Closed: the current staff rule still allows INACTIVE → ACTIVE (§5 has no such transition, Closed ends at
+  Anonymized). This branch did not remove that existing rule; while it exists the account follows it. Whether to
+  forbid reopening is the business owner's call.
 
 Unchanged and regression-tested: login, retired registration/guest checkout (denied with security on/off
 and for cached replays), availability (ACTIVE linked customer only), profile/address ownership,
@@ -59,7 +82,7 @@ credit-profile API (terms are set only by the approver, BR-02; no row = prepaid 
 | Topic | Default | Basis |
 |---|---|---|
 | Lifecycle mapping | Pending Activation=PENDING_ACTIVATION, Active=ACTIVE, Suspended=BLOCKED, Closed=INACTIVE | kltn-docs 18 §5 vs existing statuses |
-| Tax code format | 10 digits or 10-3; no check-digit validation | Thông tư 105/2020/TT-BTC; check digit not in the documents |
+| Tax code format | 10 digits (enterprise) or 10-3 (dependent unit); no check-digit validation; 12-digit personal IDs (household businesses) refused | kltn-docs 18 says the customers are enterprises. Law 38/2019/QH14 art. 30(2) and Circular 86/2024/TT-BTC art. 5 (in force 2025-02-06, replaces 105/2020, which the previous commit wrongly cited) as quoted by secondary sources (luatvietnam.vn; thuvienphapluat.vn returned 403, caselaw.vn showed only the table of contents) - **official text not retrieved**. If household businesses are to be customers, the business owner must say so and the format must accept their 12-digit number. |
 | Tax code uniqueness | live = pending + active | BR-01 + §4.1 duplicate check |
 | Invitation lifetime / resend cooldown | 72 h / 1 min (`PORTAL_INVITATION_LIFETIME`, `PORTAL_INVITATION_RESEND_COOLDOWN`) | none in the documents |
 | Activation URL | blank = invitations off (503); `local` profile `http://localhost:3000/portal/activate`; token as `#token=` fragment | FE route not built (SCRUM-451) |
@@ -85,11 +108,14 @@ Also added: `mail.from` and optional `MAIL_SMTP_LOCALHOST` mail properties. Meas
 | A10 | No token leak | digest only; redacted `toString`s | IT asserts DB, audit log, idempotency store; log grep `#token=` 0 (tests and real jar) | PASS |
 | A11 | Pending / blocked / closed access | login 401 without password; activation only from pending; availability/checkout ACTIVE only | IT lifecycle + blocked; `StorefrontAvailabilityServiceTest` (pending/inactive/blocked) | PASS |
 | A12 | Self-registration removed, guest checkout disabled, availability needs login | security deny + fail-closed services | `B2bAccessIntegrationTest` (5), `B2bUnsecuredAccessIntegrationTest` (1), HTTP smoke | PASS |
+| A14 | Suspended/closed customers cannot sign in; existing sessions end; unblocking restores sign-in; staff untouched | `CustomerServiceImpl.syncPortalAccess`, `PortalAccountService.suspend/reinstate`, migration sync | IT `blockingEndsTheSession…` (token before block → 401, login → 403, unblock → login again, close → 401), `aStaffLoginIsNeverTakenAway…`; upgrade test (pre-existing blocked account disabled + session revoked, linked staff kept); real jar smoke 18/18 | PASS |
 | A13 | Migration fresh + upgrade with data | `V20261014000100` | every integration test (fresh), `B2bOnboardingMigrationUpgradeTest`, real jar boot on a fresh DB | PASS |
 
 ## Verification (2026-10-12; Java 21.0.9, Maven 3.9.9 offline, Docker 28.5.1, PostgreSQL 16 / Redis 7 / Mailpit)
 
-**`mvn -o clean test`: 944 tests, 0 failures, 0 errors, 0 skipped, BUILD SUCCESS** (10 min 27 s, finished 2026-10-12 13:06 +07, `final3-scrum450.log`; SMTP pointed at a lane Mailpit). Also executed in this round:
+**Latest, after the suspension change: `mvn -o clean test` 946 tests, 0 failures, 0 errors, 0 skipped, BUILD SUCCESS** (10 min 36 s, finished 2026-10-12 13:31 +07, `final4-scrum450.log`); `tools/verify.py` all checks passed; real jar smoke for onboarding + block/unblock/close 18/18 (`http-smoke2-scrum450.log`, script kept outside the repo); no `#token=` in the server log.
+
+Previous round (before suspension): 944 tests, 0 failures (`final3-scrum450.log`). Also executed in that round:
 - unit + `ArchitectureTest` + `ModularityTest` + `MessageBundleTest` + related: 52 passed;
 - B2B integration (`B2bOnboardingIntegrationTest` 12, `B2bAccessIntegrationTest` 5, `B2bUnsecured…` 1): passed;
 - `B2bOnboardingMigrationUpgradeTest`: passed;
@@ -107,5 +133,6 @@ throwaway Mailpit containers; containers stopped afterwards; no shared or produc
 |---|---|
 | Confirm the defaults in "Decisions" | business owner (+ Tu for schema conventions) |
 | FE: back-office create/resend/status screens, portal page reading `#token` and posting it | SCRUM-451 |
-| Login suspension of BLOCKED customers' accounts (doc §5 "không đăng nhập") - pre-existing behaviour, outside 429/450 | customer/identity owners |
+| Whether a Closed (INACTIVE) customer may be reopened (§5 says no; current staff rule says yes) | business owner |
+| Whether household businesses (12-digit personal ID as tax code) are customers | business owner |
 | Independent QA and CI on the pushed branch | QA / repository process |

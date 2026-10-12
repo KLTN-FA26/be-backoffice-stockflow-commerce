@@ -41,6 +41,17 @@ class B2bOnboardingMigrationUpgradeTest {
                 UUID closedCustomer = customer(sql, oldUser, "old@example.test", "INACTIVE");
                 UUID unlinkedCustomer = customer(sql, null, "unlinked@example.test", "INACTIVE");
                 UUID activeCustomer = customer(sql, activeUser, "active@example.test", "ACTIVE");
+                // Blocked before this rule existed: a CUSTOMER account with a live session, and a staff
+                // account that happens to be linked to a blocked profile.
+                UUID blockedUser = user(sql, "blocked@example.test", "'{bcrypt}$2a$10$blocked'");
+                role(sql, blockedUser, "CUSTOMER");
+                customer(sql, blockedUser, "blocked@example.test", "BLOCKED");
+                UUID liveSession = session(sql, blockedUser);
+                role(sql, oldUser, "CUSTOMER");
+                UUID linkedStaff = user(sql, "linked-staff@example.test", "'{bcrypt}$2a$10$staff'");
+                role(sql, linkedStaff, "SALES_STAFF");
+                customer(sql, linkedStaff, "linked-staff@example.test", "BLOCKED");
+                UUID staffSession = session(sql, linkedStaff);
                 long salesVersion = roleVersion(sql, "SALES_STAFF");
                 long customerRoleVersion = roleVersion(sql, "CUSTOMER");
 
@@ -58,6 +69,20 @@ class B2bOnboardingMigrationUpgradeTest {
                 assertThat(text(sql, "select status from customer.customer where id='" + activeCustomer + "'"))
                         .isEqualTo("ACTIVE");
                 assertThat(number(sql, "select count(*) from customer.customer where tax_code is not null")).isZero();
+
+                // Suspended and closed customers' CUSTOMER accounts no longer sign in; staff keep theirs.
+                assertThat(text(sql, "select status from identity.app_user where id='" + blockedUser + "'"))
+                        .isEqualTo("DISABLED");
+                assertThat(text(sql, "select status from identity.app_user where id='" + oldUser + "'"))
+                        .isEqualTo("DISABLED");
+                assertThat(text(sql, "select revoked_reason from identity.user_session where id='" + liveSession + "'"))
+                        .isEqualTo("ACCOUNT_DISABLED");
+                assertThat(text(sql, "select status from identity.app_user where id='" + linkedStaff + "'"))
+                        .isEqualTo("ACTIVE");
+                assertThat(text(sql, "select coalesce(revoked_reason,'live') from identity.user_session where id='"
+                        + staffSession + "'")).isEqualTo("live");
+                assertThat(text(sql, "select status from identity.app_user where id='" + activeUser + "'"))
+                        .isEqualTo("ACTIVE");
 
                 assertThat(text(sql, "select coalesce(password_hash,'<null>') from identity.app_user where id='" + invitedUser + "'"))
                         .isEqualTo("<null>");
@@ -137,6 +162,18 @@ class B2bOnboardingMigrationUpgradeTest {
         UUID id = UUID.randomUUID();
         sql.executeUpdate("insert into identity.app_user(id,username,email,password_hash,status,version,created_at)"
                 + " values ('" + id + "','" + email + "','" + email + "'," + passwordHashLiteral + ",'ACTIVE',0,now())");
+        return id;
+    }
+
+    private static void role(Statement sql, UUID userId, String code) throws SQLException {
+        sql.executeUpdate("insert into identity.user_role(id,user_id,role_id,version,created_at) select gen_random_uuid(),'"
+                + userId + "',id,0,now() from identity.app_role where code='" + code + "'");
+    }
+
+    private static UUID session(Statement sql, UUID userId) throws SQLException {
+        UUID id = UUID.randomUUID();
+        sql.executeUpdate("insert into identity.user_session(id,user_id,issued_at,expires_at,version,created_at) values ('"
+                + id + "','" + userId + "',now(),now()+interval '8 hours',0,now())");
         return id;
     }
 
