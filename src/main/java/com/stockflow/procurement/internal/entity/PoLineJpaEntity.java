@@ -23,8 +23,9 @@ import java.util.UUID;
  * <p>What is ordered never changes once the order is submitted: an approved order is changed by an
  * amendment, which is a new revision, not an edit of this row. Afterwards only {@code status} moves
  * (receiving, closing, cancelling). The one exception is a SUBCONTRACT draft, whose single line is
- * resized before any revision exists ({@link #reviseDraftQuantity}); quantity and amounts are
- * updatable for that and nothing else writes them. {@code po_revision_id} is written by the revision snapshot with native SQL and is not
+ * resized before any revision exists ({@link #reviseDraftQuantity}), and a standard draft's lines are
+ * edited by the buyer ({@link #reviseDraft}, SCRUM-462); {@code tg_purchase_order_lines_draft_content}
+ * refuses either once the order has left DRAFT. {@code po_revision_id} is written by the revision snapshot with native SQL and is not
  * mapped. The amounts satisfy {@code ck_purchase_order_lines_amounts}: no line discount, so net is
  * the subtotal.</p>
  */
@@ -48,10 +49,10 @@ public class PoLineJpaEntity extends BaseEntity {
     @Column(name = "ordered_qty", nullable = false, precision = 18, scale = 3)
     private BigDecimal orderedQuantity;
 
-    @Column(name = "unit_price", nullable = false, precision = 18, scale = 2, updatable = false)
+    @Column(name = "unit_price", nullable = false, precision = 18, scale = 2)
     private BigDecimal unitPrice;
 
-    @Column(name = "tax_rate", nullable = false, precision = 5, scale = 2, updatable = false)
+    @Column(name = "tax_rate", nullable = false, precision = 5, scale = 2)
     private BigDecimal taxRate;
 
     @Column(name = "discount_rate", nullable = false, precision = 5, scale = 2, updatable = false)
@@ -76,7 +77,7 @@ public class PoLineJpaEntity extends BaseEntity {
     @Column(name = "status", nullable = false, length = 20)
     private PoLineStatus status;
 
-    @Column(name = "note", length = 255, updatable = false)
+    @Column(name = "note", length = 255)
     private String description;
 
     protected PoLineJpaEntity() {
@@ -108,10 +109,7 @@ public class PoLineJpaEntity extends BaseEntity {
      * the approver approves, and a changed line would no longer match it.
      */
     public void reviseDraftQuantity(int quantity) {
-        if (purchaseOrder.getStatus() != PurchaseOrderStatus.DRAFT) {
-            throw new IllegalStateException("Line " + lineNo + " of " + purchaseOrder.getPoNumber() + " is frozen: the order is "
-                    + purchaseOrder.getStatus());
-        }
+        requireDraft();
         if (quantity <= 0) {
             throw new IllegalArgumentException("quantity must be positive");
         }
@@ -120,6 +118,28 @@ public class PoLineJpaEntity extends BaseEntity {
         this.net = subtotal;
         this.tax = subtotal.multiply(taxRate).divide(BigDecimal.valueOf(100), 2, RoundingMode.HALF_UP);
         this.total = subtotal.add(tax);
+    }
+
+    /** The buyer's new quantity, price, tax and description for a line of a DRAFT order (SCRUM-462). */
+    public void reviseDraft(PoLine line) {
+        requireDraft();
+        this.unitPrice = line.unitPrice().amount();
+        this.taxRate = line.taxRate();
+        this.description = line.description();
+        reviseDraftQuantity(line.quantityOrdered());
+    }
+
+    /** Taken off a draft after a revision froze it: the row stays for that revision ({@code ck_purchase_order_lines_withdrawn}). */
+    public void withdraw() {
+        requireDraft();
+        this.status = PoLineStatus.WITHDRAWN;
+    }
+
+    private void requireDraft() {
+        if (purchaseOrder.getStatus() != PurchaseOrderStatus.DRAFT) {
+            throw new IllegalStateException("Line " + lineNo + " of " + purchaseOrder.getPoNumber() + " is frozen: the order is "
+                    + purchaseOrder.getStatus());
+        }
     }
 
     public void setStatus(PoLineStatus status) {

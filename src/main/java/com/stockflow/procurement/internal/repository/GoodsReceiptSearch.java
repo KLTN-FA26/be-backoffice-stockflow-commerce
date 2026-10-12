@@ -16,8 +16,16 @@ public interface GoodsReceiptSearch {
     }
 
     record Row(UUID id, String number, UUID purchaseOrderId, UUID warehouseId, GoodsReceiptStatus status,
-               String deliveryNote, Instant receivedAt, UUID receivedBy, Instant confirmedAt, Instant closedAt) {
+               String deliveryNote, Instant receivedAt, UUID receivedBy, Instant confirmedAt, UUID confirmedBy,
+               Instant closedAt) {
+    }
+
+    /** What a receipt shows of its purchase order: number and supplier (SCRUM-464). */
+    record OrderLabel(String purchaseOrderNumber, UUID supplierId, String supplierName) {
     }
 
     Page<Row> search(Criteria criteria, Pageable pageable);
+
+    /** One query for a page of receipts: purchase order id → number and supplier. */
+    java.util.Map<UUID, OrderLabel> orderLabels(java.util.Collection<UUID> purchaseOrderIds);
 }

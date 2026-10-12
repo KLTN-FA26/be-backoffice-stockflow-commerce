@@ -14,7 +14,8 @@ import java.util.UUID;
  * RECEIVED, CLOSED, CANCELLED (decision D4). {@code sentAt} is {@code confirmedAt}: confirming an
  * order is sending it (plan Q1), and the field keeps its old name for the supplier-communication
  * screens. A short close is {@code CLOSED} with {@code closeKind = SHORT_CLOSE} and its reason in
- * {@code closeReason}.</p>
+ * {@code closeReason}. {@code version} is what an edit of the draft sends back (SCRUM-462).
+ * {@code tolerancePercent} is the supplier's over-receipt tolerance (BR-02), 0 when none is set.</p>
  */
 public record PurchaseOrderSummary(
         UUID purchaseOrderId,
@@ -58,7 +59,9 @@ public record PurchaseOrderSummary(
         String supplierConfirmationStatus,
         Instant supplierRespondedAt,
         String supplierReference,
-        String supplierResponseNote) {
+        String supplierResponseNote,
+        long version,
+        BigDecimal tolerancePercent) {
 
     public PurchaseOrderSummary {
         lines = lines == null ? List.of() : List.copyOf(lines);

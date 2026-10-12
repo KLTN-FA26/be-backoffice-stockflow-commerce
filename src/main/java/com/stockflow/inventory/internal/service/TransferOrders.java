@@ -12,7 +12,7 @@ import java.util.UUID;
 
 /**
  * Inter-warehouse transfer orders (SCRUM-326/327): create with an availability check at the source,
- * submit (self-approved at or under the threshold), approve or reject, pick, dispatch, cancel.
+ * edit while DRAFT (SCRUM-462), submit (self-approved at or under the threshold), approve or reject, pick, dispatch, cancel.
  * Receiving at the destination is SCRUM-328.
  */
 public interface TransferOrders {
@@ -22,6 +22,11 @@ public interface TransferOrders {
 
     record Create(UUID fromWarehouseId, UUID toWarehouseId, TransferReason reason, LocalDate expectedDate,
                   List<NewLine> lines) {
+    }
+
+    /** The whole DRAFT as the planner now wants it; {@code version} is the one they read. */
+    record Revise(long version, UUID fromWarehouseId, UUID toWarehouseId, TransferReason reason,
+                  LocalDate expectedDate, List<NewLine> lines) {
     }
 
     record Line(UUID lineId, int lineNo, String sku, String lotNumber, int requested, int shipped) {
@@ -40,6 +45,12 @@ public interface TransferOrders {
     Transfer create(Create command);
 
     Transfer get(UUID transferId);
+
+    /**
+     * Changes a DRAFT (new, or rejected back to DRAFT) and checks it as {@link #create} does
+     * (SCRUM-462). Anything else is TRANSFER_ORDER_NOT_EDITABLE; a stale version OPTIMISTIC_LOCK.
+     */
+    Transfer reviseDraft(UUID transferId, Revise command);
 
     PageResponse<Row> list(List<TransferStatus> statuses, UUID fromWarehouseId, UUID toWarehouseId, String number,
                            int page, int size);

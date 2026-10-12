@@ -44,6 +44,23 @@ class InventoryItemDirectoryAdapter implements InventoryItemDirectory {
     }
 
     @Override
+    public java.util.Map<UUID, InventoryItemPolicy> policiesOf(java.util.Collection<UUID> inventoryItemIds) {
+        if (inventoryItemIds.isEmpty()) {
+            return java.util.Map.of();
+        }
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = entityManager.createNativeQuery("""
+                        SELECT id, sku, lot_tracked, expiry_tracked, qc_required
+                          FROM inventory.inventory_items WHERE id IN (:ids)""")
+                .setParameter("ids", java.util.Set.copyOf(inventoryItemIds))
+                .getResultList();
+        var policies = new java.util.HashMap<UUID, InventoryItemPolicy>();
+        rows.forEach(row -> policies.put((UUID) row[0], new InventoryItemPolicy((UUID) row[0], (String) row[1],
+                (Boolean) row[2], (Boolean) row[3], (Boolean) row[4])));
+        return policies;
+    }
+
+    @Override
     public java.util.Map<UUID, String> skusOf(java.util.Collection<UUID> inventoryItemIds) {
         if (inventoryItemIds.isEmpty()) {
             return java.util.Map.of();

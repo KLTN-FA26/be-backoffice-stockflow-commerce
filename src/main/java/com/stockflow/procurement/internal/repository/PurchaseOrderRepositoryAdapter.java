@@ -10,6 +10,7 @@ import com.stockflow.procurement.api.PurchaseOrderStatusCount;
 import com.stockflow.procurement.api.PurchaseOrderSummary;
 import com.stockflow.procurement.api.SupplierSpendSummary;
 import com.stockflow.procurement.internal.domain.PoLine;
+import com.stockflow.procurement.internal.domain.PoLineStatus;
 import com.stockflow.procurement.internal.domain.PurchaseOrder;
 import com.stockflow.procurement.internal.domain.PurchaseOrderId;
 import com.stockflow.procurement.internal.domain.PurchaseOrderRepository;
@@ -39,9 +40,11 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Currency;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -129,8 +132,10 @@ class PurchaseOrderRepositoryAdapter
     }
 
     /**
-     * Insert or update. A new order is inserted with its lines; afterwards only the header and the
-     * line statuses change — what was ordered is changed by a new revision, not in place.
+     * Insert or update. A new order is inserted with its lines. Afterwards the header and the line
+     * statuses change; what was ordered changes in place only while the order is a DRAFT (SCRUM-462)
+     * and from then on by a new revision. A line the draft no longer has is deleted, or kept as
+     * WITHDRAWN when a revision already froze it — deleting it would take that revision's copy with it.
      */
     @Override
     public PurchaseOrder save(PurchaseOrder order) {
@@ -139,11 +144,36 @@ class PurchaseOrderRepositoryAdapter
         if (existing.isPresent()) {
             entity = existing.get();
             Map<UUID, PoLine> byId = order.lines().stream().collect(Collectors.toMap(PoLine::id, Function.identity()));
-            for (PoLineJpaEntity line : entity.getLines()) {
+            boolean draft = order.status() == PurchaseOrderStatus.DRAFT && entity.getStatus() == PurchaseOrderStatus.DRAFT;
+            if (draft) {
+                // Lines are rows of their own: an edit that touches only them would leave the order's
+                // version where it was, and the next stale edit would pass the version check.
+                entityManager.lock(entity, LockModeType.PESSIMISTIC_FORCE_INCREMENT);
+            }
+            Set<UUID> frozen = draft ? frozenLines(order.id().value()) : Set.of();
+            Set<UUID> stored = new HashSet<>();
+            for (PoLineJpaEntity line : List.copyOf(entity.getLines())) {
+                if (line.getStatus() == PoLineStatus.WITHDRAWN) {
+                    continue;
+                }
+                stored.add(line.getId());
                 PoLine current = byId.get(line.getId());
-                if (current != null) {
+                if (current == null && draft) {
+                    if (frozen.contains(line.getId())) {
+                        line.withdraw();
+                    } else {
+                        entity.removeLine(line);
+                    }
+                } else if (current != null) {
+                    if (draft) {
+                        line.reviseDraft(current);
+                    }
                     line.setStatus(current.status());
                 }
+            }
+            if (draft) {
+                order.lines().stream().filter(line -> !stored.contains(line.id()))
+                        .forEach(line -> entity.addLine(new PoLineJpaEntity(line)));
             }
         } else {
             entity = new PurchaseOrderJpaEntity(order);
@@ -155,6 +185,24 @@ class PurchaseOrderRepositoryAdapter
         // saveAndFlush, not save: the audit columns are set at flush time, and a revision snapshot
         // taken right after needs the lines in the database.
         return toDomain(jpa.saveAndFlush(entity));
+    }
+
+    @Override
+    public int nextLineNo(PurchaseOrderId id) {
+        return ((Number) entityManager.createNativeQuery("""
+                        SELECT COALESCE(MAX(line_no), 0) + 1 FROM procurement.purchase_order_lines WHERE po_id = :po""")
+                .setParameter("po", id.value())
+                .getSingleResult()).intValue();
+    }
+
+    /** Lines a revision has frozen ({@code po_revision_id}, written by {@link #recordRevision}, not mapped). */
+    private Set<UUID> frozenLines(UUID purchaseOrderId) {
+        @SuppressWarnings("unchecked")
+        List<UUID> ids = entityManager.createNativeQuery("""
+                        SELECT id FROM procurement.purchase_order_lines WHERE po_id = :po AND po_revision_id IS NOT NULL""")
+                .setParameter("po", purchaseOrderId)
+                .getResultList();
+        return new HashSet<>(ids);
     }
 
     @Override
@@ -230,7 +278,8 @@ class PurchaseOrderRepositoryAdapter
                     .executeUpdate();
         }
         entityManager.createNativeQuery("""
-                        UPDATE procurement.purchase_order_lines SET po_revision_id = :revision WHERE po_id = :po""")
+                        UPDATE procurement.purchase_order_lines SET po_revision_id = :revision
+                         WHERE po_id = :po AND status <> 'WITHDRAWN'""")
                 .setParameter("revision", revisionId)
                 .setParameter("po", order.id().value())
                 .executeUpdate();
@@ -257,8 +306,14 @@ class PurchaseOrderRepositoryAdapter
     @Override
     public void recordEvent(PurchaseOrderId id, UUID revisionId, String action, UUID actorId, PurchaseOrderStatus from,
                             PurchaseOrderStatus to, String reason) {
+        recordEvent(id, revisionId, action, actorId, from, to, reason, null);
+    }
+
+    @Override
+    public void recordEvent(PurchaseOrderId id, UUID revisionId, String action, UUID actorId, PurchaseOrderStatus from,
+                            PurchaseOrderStatus to, String reason, Map<String, String> payload) {
         events.record(id.value(), revisionId, action, actorId, from == null ? null : from.name(),
-                to == null ? null : to.name(), reason, null, "procurement");
+                to == null ? null : to.name(), reason, payload, "procurement");
     }
 
     // ------------------------------------------------------------------ search
@@ -286,9 +341,14 @@ class PurchaseOrderRepositoryAdapter
     public Optional<PurchaseOrderSummary> summary(PurchaseOrderId id, boolean possibleDuplicate) {
         return jpa.findWithLinesById(id.value()).map(entity -> {
             var order = toDomain(entity);
-            var lines = order.lines().stream().map(l -> new POLineSummary(l.id(), l.lineNo(), l.inventoryItemId(),
-                    l.sku().code(), l.description(), l.uom(), l.quantityOrdered(), l.quantityReceived(),
-                    l.unitPrice().amount(), l.taxRate(), l.total(), l.status().name())).toList();
+            var policies = inventory.itemPolicies(order.lines().stream().map(PoLine::inventoryItemId).toList());
+            var lines = order.lines().stream().map(l -> {
+                var policy = policies.get(l.inventoryItemId());
+                return new POLineSummary(l.id(), l.lineNo(), l.inventoryItemId(), l.sku().code(), l.description(),
+                        l.uom(), l.quantityOrdered(), l.quantityReceived(), l.unitPrice().amount(), l.taxRate(),
+                        l.total(), l.status().name(), policy != null && policy.lotTracked(),
+                        policy != null && policy.expiryTracked(), policy != null && policy.qcRequired());
+            }).toList();
             return summary(entity, suppliers.findById(entity.getSupplierId()).orElse(null),
                     warehouses.findWarehouse(entity.getWarehouseId()).orElse(null), lines, possibleDuplicate);
         });
@@ -308,7 +368,9 @@ class PurchaseOrderRepositoryAdapter
                 e.getConfirmedAt(), e.getClosedAt(), e.getCloseKind() == null ? null : e.getCloseKind().name(),
                 e.getCloseReason(), e.getCancelReason(), e.getPaymentTermDays(), e.getLeadTimeDays(),
                 e.getConfirmedAt(), e.getSupplierConfirmationStatus().name(), e.getSupplierRespondedAt(),
-                e.getSupplierReference(), e.getSupplierResponseNote());
+                e.getSupplierReference(), e.getSupplierResponseNote(), e.getVersion(),
+                supplier == null || supplier.getOverReceiptTolerancePercent() == null ? BigDecimal.ZERO
+                        : supplier.getOverReceiptTolerancePercent());
     }
 
     // ------------------------------------------------------------------ reports
@@ -389,7 +451,8 @@ class PurchaseOrderRepositoryAdapter
         Map<UUID, String> skus = inventory.skusOf(e.getLines().stream().map(PoLineJpaEntity::getInventoryItemId)
                 .collect(Collectors.toSet()));
         Map<UUID, Integer> received = receivedByLine(e.getId());
-        List<PoLine> lines = e.getLines().stream().map(l -> new PoLine(l.getId(), l.getLineNo(), l.getInventoryItemId(),
+        List<PoLine> lines = e.getLines().stream().filter(l -> l.getStatus() != PoLineStatus.WITHDRAWN)
+                .map(l -> new PoLine(l.getId(), l.getLineNo(), l.getInventoryItemId(),
                 new Sku(skus.getOrDefault(l.getInventoryItemId(), "UNKNOWN")), l.getUom(), l.getDescription(),
                 l.getOrderedQuantity().intValueExact(), received.getOrDefault(l.getId(), 0),
                 new Money(l.getUnitPrice(), currency), l.getTaxRate(), l.getStatus())).toList();

@@ -1,6 +1,7 @@
 package com.stockflow.procurement.internal.service;
 
 import com.stockflow.common.api.PageResponse;
+import com.stockflow.common.api.FieldError;
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.domain.Sku;
@@ -10,6 +11,7 @@ import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.SortWhitelist;
 import com.stockflow.contracts.GoodsReceiptConfirmed;
+import com.stockflow.identity.api.IdentityService;
 import com.stockflow.contracts.ReceiptStockReadyForPutaway;
 import com.stockflow.inventory.api.InventoryItemPolicy;
 import com.stockflow.inventory.api.InventoryService;
@@ -29,6 +31,8 @@ import com.stockflow.procurement.internal.domain.ReceivingLocations;
 import com.stockflow.procurement.internal.domain.ReceivingPurchaseOrder;
 import com.stockflow.procurement.internal.domain.ReceivingPurchaseOrders;
 import com.stockflow.procurement.internal.repository.GoodsReceiptSearch;
+import com.stockflow.warehouse.api.WarehouseService;
+import com.stockflow.warehouse.api.WarehouseView;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
@@ -46,6 +50,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -79,17 +84,21 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
     private final ReceivingPurchaseOrders orders;
     private final ReceivingLocations locations;
     private final InventoryService inventory;
+    private final WarehouseService warehouses;
+    private final IdentityService identity;
     private final ApplicationEventPublisher events;
     private final Clock clock;
 
     GoodsReceiptServiceImpl(GoodsReceiptRepository receipts, GoodsReceiptSearch search, ReceivingPurchaseOrders orders,
-                            ReceivingLocations locations, InventoryService inventory, ApplicationEventPublisher events,
-                            Clock clock) {
+                            ReceivingLocations locations, InventoryService inventory, WarehouseService warehouses,
+                            IdentityService identity, ApplicationEventPublisher events, Clock clock) {
         this.receipts = receipts;
         this.search = search;
         this.orders = orders;
         this.locations = locations;
         this.inventory = inventory;
+        this.warehouses = warehouses;
+        this.identity = identity;
         this.events = events;
         this.clock = clock;
     }
@@ -111,6 +120,14 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         return view(receipts.save(receipt), order);
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Every line is checked before anything is refused (SCRUM-464): the form gets one answer
+     * naming each field at fault — {@code lines[i].purchaseOrderLineId}, {@code .locationCode},
+     * {@code .lotNumber}, {@code .expiryDate}, {@code .quantity} — and the top-level error code is the
+     * first one found, line by line. {@code check_goods_receipt_line} checks the same again.</p>
+     */
     @Override
     @Auditable(action = AuditAction.UPDATE, resourceType = "goods-receipt", resourceId = "#receiptId")
     public ReceiptView replaceLines(UUID receiptId, List<NewLine> newLines) {
@@ -118,27 +135,101 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         ReceivingPurchaseOrder order = orderOf(receipt);
         LocalDate receivedOn = LocalDate.ofInstant(receipt.receivedAt(), BUSINESS_ZONE);
 
+        LineErrors errors = new LineErrors();
         List<ReceiptLine> counted = new ArrayList<>();
         Map<UUID, Integer> perPoLine = new LinkedHashMap<>();
-        for (NewLine in : newLines) {
-            ReceivingPurchaseOrder.Line poLine = order.line(in.purchaseOrderLineId()).orElseThrow(() ->
-                    new BusinessException(ErrorCode.VALIDATION_FAILED,
-                            "Line %s is not a line of %s".formatted(in.purchaseOrderLineId(), order.number())));
+        Map<UUID, List<Integer>> indexesOf = new LinkedHashMap<>();
+        Set<String> seen = new HashSet<>();
+        for (int i = 0; i < newLines.size(); i++) {
+            NewLine in = newLines.get(i);
+            Optional<ReceivingPurchaseOrder.Line> found = order.line(in.purchaseOrderLineId());
+            if (found.isEmpty()) {
+                errors.add(i, "purchaseOrderLineId", ErrorCode.RECEIPT_LINE_NOT_ON_PO,
+                        "Line %s is not a line of %s".formatted(in.purchaseOrderLineId(), order.number()));
+                continue;
+            }
+            ReceivingPurchaseOrder.Line poLine = found.get();
             if (!poLine.open()) {
-                throw new BusinessException(ErrorCode.PURCHASE_ORDER_NOT_RECEIVABLE,
+                errors.add(i, "purchaseOrderLineId", ErrorCode.PO_LINE_NOT_OPEN,
                         "Line %d of %s is %s".formatted(poLine.lineNo(), order.number(), poLine.status()));
+                continue;
             }
             InventoryItemPolicy item = policy(poLine.inventoryItemId());
-            ReceivingLocation location = area(in.locationCode(), RECEIVING, receipt.warehouseId());
             String lot = blankToNull(in.lotNumber());
-            checkLotData(item, lot, in.expiryDate(), receivedOn);
-            counted.add(ReceiptLine.counted(Identifiers.newId(), poLine.id(), poLine.inventoryItemId(), location.id(),
-                    in.quantity(), lot, in.expiryDate(), blankToNull(in.note()), item.qcRequired()));
+            int before = errors.size();
+            ReceivingLocation location = errors.area(i, in.locationCode(), RECEIVING, receipt.warehouseId());
+            checkLotData(errors, i, item, lot, in.expiryDate(), receivedOn);
+            if (!seen.add(poLine.id() + "|" + Objects.toString(lot, ""))) {
+                errors.add(i, "lotNumber", ErrorCode.DUPLICATE_RECEIPT_LINE,
+                        "Line %d of %s with this lot is already counted above; put the whole quantity of a lot on one line"
+                                .formatted(poLine.lineNo(), order.number()));
+            }
             perPoLine.merge(poLine.id(), in.quantity(), Integer::sum);
+            indexesOf.computeIfAbsent(poLine.id(), id -> new ArrayList<>()).add(i);
+            if (errors.size() == before) {
+                counted.add(ReceiptLine.counted(Identifiers.newId(), poLine.id(), poLine.inventoryItemId(),
+                        location.id(), in.quantity(), lot, in.expiryDate(), blankToNull(in.note()),
+                        item.qcRequired()));
+            }
         }
-        checkTolerance(order, receipt.id(), perPoLine);
+        for (var over : overTolerance(order, receipt.id(), perPoLine)) {
+            for (int i : indexesOf.get(over.poLineId())) {
+                errors.add(i, "quantity", ErrorCode.OVER_RECEIPT_TOLERANCE, over.message());
+            }
+        }
+        errors.throwIfAny();
         receipt.replaceLines(counted);
         return view(receipts.save(receipt), order);
+    }
+
+    /**
+     * The refusals of one request, by line: thrown once, as one {@link BusinessException} whose code
+     * is the first refusal's and whose {@code fieldErrors} name every field.
+     */
+    private final class LineErrors {
+
+        /** Kept in line order, whatever order the checks ran in. */
+        private final java.util.TreeMap<Integer, List<FieldError>> byLine = new java.util.TreeMap<>();
+        private final Map<Integer, ErrorCode> codeByLine = new HashMap<>();
+        private final Map<Integer, String> messageByLine = new HashMap<>();
+        private int count;
+
+        void add(int index, String field, ErrorCode code, String message) {
+            add(index, field, code, code.name(), message);
+        }
+
+        void add(int index, String field, ErrorCode code, String fieldCode, String message) {
+            byLine.computeIfAbsent(index, i -> new ArrayList<>())
+                    .add(new FieldError("lines[%d].%s".formatted(index, field), message, fieldCode));
+            codeByLine.putIfAbsent(index, code);
+            messageByLine.putIfAbsent(index, message);
+            count++;
+        }
+
+        int size() {
+            return count;
+        }
+
+        /** The area, or null with the refusal recorded: LOCATION_NOT_FOUND or LOCATION_AREA_MISMATCH. */
+        ReceivingLocation area(int index, String code, String type, UUID warehouseId) {
+            try {
+                return GoodsReceiptServiceImpl.this.area(code, type, warehouseId);
+            } catch (BusinessException refused) {
+                add(index, "locationCode", refused.errorCode(), refused.getMessage());
+                return null;
+            }
+        }
+
+        void throwIfAny() {
+            if (byLine.isEmpty()) {
+                return;
+            }
+            int firstLine = byLine.firstKey();
+            List<FieldError> all = byLine.values().stream().flatMap(List::stream).toList();
+            throw new BusinessException(codeByLine.get(firstLine),
+                    "Receipt line %d: %s".formatted(firstLine + 1, messageByLine.get(firstLine))
+                            + (all.size() > 1 ? " (and %d more)".formatted(all.size() - 1) : ""), all);
+        }
     }
 
     @Override
@@ -152,11 +243,13 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         requireReceivable(order);
         Map<UUID, Integer> perPoLine = new LinkedHashMap<>();
         receipt.lines().forEach(l -> perPoLine.merge(l.poLineId(), l.receivedQuantity(), Integer::sum));
-        checkTolerance(order, receipt.id(), perPoLine);
+        overTolerance(order, receipt.id(), perPoLine).stream().findFirst().ifPresent(over -> {
+            throw new BusinessException(ErrorCode.OVER_RECEIPT_TOLERANCE, over.message());
+        });
         if (receipt.lines().stream().anyMatch(ReceiptLine::qcRequired)
                 && !locations.hasArea(receipt.warehouseId(), QUALITY_CONTROL)) {
             // Docs 03 edge case: the 3-step flow has nowhere to go.
-            throw new BusinessException(ErrorCode.LOCATION_AREA_MISMATCH,
+            throw new BusinessException(ErrorCode.QC_AREA_MISSING,
                     "This receipt has items that need QC, and the warehouse has no QUALITY_CONTROL area yet");
         }
 
@@ -234,15 +327,16 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
     public ReceiptView inspect(UUID receiptId, UUID lineId, Decision decision, UUID userId) {
         GoodsReceipt receipt = load(receiptId);
         Instant now = clock.instant();
-        ReceivingLocation quarantineTo = decision.quarantined() == null ? null
-                : area(decision.quarantined().locationCode(), QUARANTINE, receipt.warehouseId());
-        ReceivingLocation rejectTo = decision.rejected() == null ? null
-                : area(decision.rejected().locationCode(), QUARANTINE, receipt.warehouseId());
+        ReceivingLocation quarantineTo = quarantineArea(decision.quarantined(), "quarantined", receipt.warehouseId());
+        ReceivingLocation rejectTo = quarantineArea(decision.rejected(), "rejected", receipt.warehouseId());
         if (quarantineTo != null && rejectTo != null && quarantineTo.id().equals(rejectTo.id())) {
             // One stock row per SKU, location and lot: the same lot cannot be QUARANTINE and BLOCKED
             // in one place.
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "Quarantined and rejected goods go to two different quarantine locations");
+            throw new BusinessException(ErrorCode.QC_LOCATIONS_MUST_DIFFER,
+                    "Quarantined and rejected goods go to two different quarantine locations",
+                    List.of(new FieldError("rejected.locationCode",
+                            "Quarantined and rejected goods go to two different quarantine locations",
+                            ErrorCode.QC_LOCATIONS_MUST_DIFFER.name())));
         }
 
         List<QcInspection> decided = new ArrayList<>();
@@ -298,9 +392,22 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                                   String sort) {
         var criteria = new GoodsReceiptSearch.Criteria(statuses, purchaseOrderId, warehouseId, blankToNull(text),
                 receivedFrom, receivedTo);
-        return Pages.toResponse(search.search(criteria, Pages.of(page, size, SORT.parse(sort)))
-                .map(r -> new Row(r.id(), r.number(), r.purchaseOrderId(), r.warehouseId(), r.status(),
-                        r.deliveryNote(), r.receivedAt(), r.receivedBy(), r.confirmedAt(), r.closedAt())));
+        var rows = search.search(criteria, Pages.of(page, size, SORT.parse(sort)));
+        // SCRUM-464: one query each for the orders, the people and the warehouses of the page.
+        var labels = search.orderLabels(rows.stream().map(GoodsReceiptSearch.Row::purchaseOrderId).toList());
+        var names = identity.displayNames(rows.stream()
+                .flatMap(r -> java.util.stream.Stream.of(r.receivedBy(), r.confirmedBy())).toList());
+        Map<UUID, Optional<WarehouseView>> where = new HashMap<>();
+        return Pages.toResponse(rows.map(r -> {
+            var label = labels.get(r.purchaseOrderId());
+            var warehouse = where.computeIfAbsent(r.warehouseId(), warehouses::findWarehouse);
+            return new Row(r.id(), r.number(), r.purchaseOrderId(), label == null ? null : label.purchaseOrderNumber(),
+                    label == null ? null : label.supplierId(), label == null ? null : label.supplierName(),
+                    r.warehouseId(), warehouse.map(WarehouseView::prefix).orElse(null),
+                    warehouse.map(WarehouseView::name).orElse(null), r.status(), r.deliveryNote(), r.receivedAt(),
+                    r.receivedBy(), names.get(r.receivedBy()), r.confirmedAt(), r.confirmedBy(),
+                    names.get(r.confirmedBy()), r.closedAt());
+        }));
     }
 
     // ------------------------------------------------------------------ rules the aggregate cannot see
@@ -313,43 +420,57 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         }
     }
 
+    private record OverTolerance(UUID poLineId, String message) {
+    }
+
     /** BR-02, counted the way {@code check_goods_receipt_line} counts it: every receipt not cancelled. */
-    private void checkTolerance(ReceivingPurchaseOrder order, UUID receiptId, Map<UUID, Integer> perPoLine) {
+    private List<OverTolerance> overTolerance(ReceivingPurchaseOrder order, UUID receiptId,
+                                              Map<UUID, Integer> perPoLine) {
+        if (perPoLine.isEmpty()) {
+            return List.of();
+        }
         Map<UUID, Integer> elsewhere = receipts.receivedOnOtherReceipts(perPoLine.keySet(), receiptId);
+        List<OverTolerance> over = new ArrayList<>();
         for (Map.Entry<UUID, Integer> entry : perPoLine.entrySet()) {
             ReceivingPurchaseOrder.Line line = order.line(entry.getKey()).orElseThrow();
             int limit = line.receivableLimit(order.tolerancePercent());
             int total = elsewhere.getOrDefault(entry.getKey(), 0) + entry.getValue();
             if (total > limit) {
-                throw new BusinessException(ErrorCode.OVER_RECEIPT_TOLERANCE,
+                over.add(new OverTolerance(line.id(),
                         "Line %d of %s would be received %d of %s ordered; at most %d with the supplier's %s%% tolerance (BR-02)"
                                 .formatted(line.lineNo(), order.number(), total,
                                         line.orderedQuantity().stripTrailingZeros().toPlainString(), limit,
-                                        order.tolerancePercent().stripTrailingZeros().toPlainString()));
+                                        order.tolerancePercent().stripTrailingZeros().toPlainString())));
             }
         }
+        return over;
     }
 
-    /** BR-03 and BR-06. */
-    private static void checkLotData(InventoryItemPolicy item, String lot, LocalDate expiry, LocalDate receivedOn) {
+    /**
+     * BR-03 and BR-06, each refusal on its own field with its own code ({@code LOT_REQUIRED},
+     * {@code EXPIRY_NOT_AFTER_RECEIPT}…) under RECEIPT_LOT_DATA_INVALID.
+     */
+    private static void checkLotData(LineErrors errors, int index, InventoryItemPolicy item, String lot,
+                                     LocalDate expiry, LocalDate receivedOn) {
+        ErrorCode code = ErrorCode.RECEIPT_LOT_DATA_INVALID;
         if (item.lotTracked() && lot == null) {
-            throw new BusinessException(ErrorCode.RECEIPT_LOT_DATA_INVALID,
+            errors.add(index, "lotNumber", code, "LOT_REQUIRED",
                     "%s is lot-tracked: each line needs a lot number (BR-03)".formatted(item.sku()));
         }
         if (!item.lotTracked() && lot != null) {
-            throw new BusinessException(ErrorCode.RECEIPT_LOT_DATA_INVALID,
+            errors.add(index, "lotNumber", code, "LOT_NOT_ALLOWED",
                     "%s is not lot-tracked; leave the lot number empty".formatted(item.sku()));
         }
         if (item.expiryTracked() && expiry == null) {
-            throw new BusinessException(ErrorCode.RECEIPT_LOT_DATA_INVALID,
+            errors.add(index, "expiryDate", code, "EXPIRY_REQUIRED",
                     "%s is expiry-tracked: each line needs an expiry date (BR-03)".formatted(item.sku()));
         }
         if (!item.expiryTracked() && expiry != null) {
-            throw new BusinessException(ErrorCode.RECEIPT_LOT_DATA_INVALID,
+            errors.add(index, "expiryDate", code, "EXPIRY_NOT_ALLOWED",
                     "%s is not expiry-tracked; leave the expiry date empty".formatted(item.sku()));
         }
         if (expiry != null && !expiry.isAfter(receivedOn)) {
-            throw new BusinessException(ErrorCode.RECEIPT_LOT_DATA_INVALID,
+            errors.add(index, "expiryDate", code, "EXPIRY_NOT_AFTER_RECEIPT",
                     "Expiry date %s must be after the receiving date %s (BR-06)".formatted(expiry, receivedOn));
         }
     }
@@ -363,6 +484,33 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                     "%s is not a %s area of this receipt's warehouse".formatted(trimmed, type));
         }
         return location;
+    }
+
+    /**
+     * Where a quarantined or rejected part goes. A part of no units needs no area (it is not
+     * recorded), so an empty or stale location code on it is ignored. A part with units needs a
+     * reason and a QUARANTINE area of this warehouse, each refused on its own field.
+     */
+    private ReceivingLocation quarantineArea(Part part, String field, UUID warehouseId) {
+        if (part == null || part.quantity() <= 0) {
+            return null;
+        }
+        if (part.reason() == null || part.reason().isBlank()) {
+            throw new BusinessException(ErrorCode.QC_REASON_REQUIRED, "A %s part needs a reason (BR-08)".formatted(field),
+                    List.of(new FieldError(field + ".reason", "A reason is required", ErrorCode.QC_REASON_REQUIRED.name())));
+        }
+        if (part.locationCode() == null || part.locationCode().isBlank()) {
+            throw new BusinessException(ErrorCode.QC_TARGET_LOCATION_REQUIRED,
+                    "A %s part needs the quarantine area it goes to".formatted(field),
+                    List.of(new FieldError(field + ".locationCode", "A quarantine area is required",
+                            ErrorCode.QC_TARGET_LOCATION_REQUIRED.name())));
+        }
+        try {
+            return area(part.locationCode(), QUARANTINE, warehouseId);
+        } catch (BusinessException refused) {
+            throw new BusinessException(refused.errorCode(), refused.getMessage(),
+                    List.of(new FieldError(field + ".locationCode", refused.getMessage(), refused.errorCode().name())));
+        }
     }
 
     private static QcInspection part(Part part, QcOutcome outcome, ReceivingLocation to, UUID userId, Instant now) {
@@ -401,21 +549,34 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
             line.inspections().forEach(i -> Optional.ofNullable(i.targetLocationId()).ifPresent(locationIds::add));
         }
         Map<UUID, ReceivingLocation> where = locations.byIds(locationIds);
-        Map<UUID, String> skus = new HashMap<>();
-        List<LineView> lines = receipt.lines().stream().map(line -> new LineView(line.id(), line.poLineId(),
-                order.line(line.poLineId()).map(ReceivingPurchaseOrder.Line::lineNo).orElse(null),
-                line.inventoryItemId(),
-                skus.computeIfAbsent(line.inventoryItemId(), id -> inventory.itemPolicy(id)
-                        .map(InventoryItemPolicy::sku).orElse(null)),
-                line.receivedQuantity(), line.lotNumber(), line.expiryDate(), code(where, line.locationId()),
-                line.note(), line.qcRequired(), progress(line), code(where, line.qcLocationId()), line.movedToQcAt(),
-                line.qcRequired() && !line.inspected() ? 0 : line.quantityForPutaway(),
-                line.inspections().stream().map(i -> new InspectionView(i.id(), i.outcome(), i.quantity(),
-                        code(where, i.targetLocationId()), i.reason(), i.inspectedBy(), i.inspectedAt())).toList()))
-                .toList();
+        Map<UUID, InventoryItemPolicy> items = inventory.itemPolicies(
+                receipt.lines().stream().map(ReceiptLine::inventoryItemId).toList());
+        Set<UUID> people = new HashSet<>();
+        Optional.ofNullable(receipt.receivedBy()).ifPresent(people::add);
+        Optional.ofNullable(receipt.confirmedBy()).ifPresent(people::add);
+        receipt.lines().forEach(l -> l.inspections().forEach(i -> Optional.ofNullable(i.inspectedBy()).ifPresent(people::add)));
+        Map<UUID, String> names = identity.displayNames(people);
+        List<LineView> lines = receipt.lines().stream().map(line -> {
+            InventoryItemPolicy item = items.get(line.inventoryItemId());
+            return new LineView(line.id(), line.poLineId(),
+                    order.line(line.poLineId()).map(ReceivingPurchaseOrder.Line::lineNo).orElse(null),
+                    line.inventoryItemId(), item == null ? null : item.sku(), line.receivedQuantity(),
+                    line.lotNumber(), line.expiryDate(), code(where, line.locationId()), line.note(),
+                    line.qcRequired(), item != null && item.lotTracked(), item != null && item.expiryTracked(),
+                    progress(line), code(where, line.qcLocationId()), line.movedToQcAt(),
+                    line.qcRequired() && !line.inspected() ? 0 : line.quantityForPutaway(),
+                    line.inspections().stream().map(i -> new InspectionView(i.id(), i.outcome(), i.quantity(),
+                            code(where, i.targetLocationId()), i.reason(), i.inspectedBy(), names.get(i.inspectedBy()),
+                            i.inspectedAt())).toList());
+        }).toList();
+        var label = search.orderLabels(List.of(receipt.purchaseOrderId())).get(receipt.purchaseOrderId());
+        var warehouse = warehouses.findWarehouse(receipt.warehouseId());
         return new ReceiptView(receipt.id(), receipt.number(), receipt.purchaseOrderId(), order.number(),
-                receipt.warehouseId(), receipt.status(), receipt.deliveryNote(), receipt.note(), receipt.receivedAt(),
-                receipt.receivedBy(), receipt.confirmedAt(), receipt.confirmedBy(), receipt.closedAt(), lines);
+                order.supplierId(), label == null ? null : label.supplierName(), receipt.warehouseId(),
+                warehouse.map(WarehouseView::prefix).orElse(null), warehouse.map(WarehouseView::name).orElse(null),
+                receipt.status(), receipt.deliveryNote(), receipt.note(), receipt.receivedAt(), receipt.receivedBy(),
+                names.get(receipt.receivedBy()), receipt.confirmedAt(), receipt.confirmedBy(),
+                names.get(receipt.confirmedBy()), receipt.closedAt(), lines);
     }
 
     private static QcProgress progress(ReceiptLine line) {

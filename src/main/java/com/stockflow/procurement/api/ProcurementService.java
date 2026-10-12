@@ -23,6 +23,13 @@ public interface ProcurementService {
     /** Paginated, filterable list; {@code lines} is empty on every row. */
     PageResponse<PurchaseOrderSummary> list(ListPurchaseOrdersQuery query);
 
+    /**
+     * Changes a DRAFT standard order — warehouse, delivery date, note, lines — in place (SCRUM-462,
+     * kltn-docs 02 §5). Anything else is PURCHASE_ORDER_NOT_EDITABLE; a stale {@code version} is
+     * OPTIMISTIC_LOCK.
+     */
+    PurchaseOrderSummary reviseDraft(UUID purchaseOrderId, RevisePurchaseOrderCommand command);
+
     /** DRAFT → PENDING_APPROVAL, freezing the order as a revision (SCRUM-114). */
     PurchaseOrderSummary submit(UUID purchaseOrderId, UUID submittedBy);
 

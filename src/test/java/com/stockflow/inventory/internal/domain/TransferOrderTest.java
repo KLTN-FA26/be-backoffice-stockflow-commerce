@@ -127,4 +127,34 @@ class TransferOrderTest {
                 List.of(line(1, "CUP-PP-500", 1), line(2, "CUP-PP-500", 2)), NOW))
                 .extracting(TransferOrderTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
     }
+
+    @Test
+    @DisplayName("SCRUM-462: a DRAFT is changed whole; a rejected one is back in DRAFT for that; outside DRAFT it is refused")
+    void reviseDraft() {
+        TransferOrder order = draft(101);
+        order.reviseDraft(HN, HCM, TransferReason.DEMAND, java.time.LocalDate.of(2026, 10, 20),
+                List.of(line(1, "CUP-PP-700", 5), line(2, "CUP-PP-800", 6)));
+        assertThat(order.fromWarehouseId()).isEqualTo(HN);
+        assertThat(order.toWarehouseId()).isEqualTo(HCM);
+        assertThat(order.reason()).isEqualTo(TransferReason.DEMAND);
+        assertThat(order.totalRequested()).isEqualTo(11);
+
+        assertThatThrownBy(() -> order.reviseDraft(HCM, HCM, null, null, List.of(line(1, "CUP-PP-700", 1))))
+                .extracting(TransferOrderTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThatThrownBy(() -> order.reviseDraft(HCM, HN, null, null,
+                List.of(line(1, "CUP-PP-700", 1), line(2, "CUP-PP-700", 2))))
+                .extracting(TransferOrderTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThatThrownBy(() -> order.reviseDraft(HCM, HN, null, null, List.of()))
+                .extracting(TransferOrderTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(order.fromWarehouseId()).isEqualTo(HN);
+
+        TransferOrder big = draft(101);
+        big.submit(PLANNER, 100, NOW);
+        assertThatThrownBy(() -> big.reviseDraft(HCM, HN, null, null, List.of(line(1, "CUP-PP-700", 1))))
+                .extracting(TransferOrderTest::code).isEqualTo(ErrorCode.TRANSFER_ORDER_NOT_EDITABLE);
+        big.reject(MANAGER);
+        big.reviseDraft(HCM, HN, null, null, List.of(line(1, "CUP-PP-700", 60)));
+        big.submit(PLANNER, 100, NOW);
+        assertThat(big.status()).isEqualTo(TransferStatus.APPROVED);
+    }
 }
