@@ -5,13 +5,12 @@ import java.util.regex.Pattern;
 /**
  * A Vietnamese business tax code, the identity of a B2B customer (kltn-docs 18 BR-01).
  *
- * <p>The customers are enterprises that contacted Sales first (kltn-docs 18, introduction). The Law on
- * Tax Administration 38/2019/QH14 art. 30(2) and Circular 86/2024/TT-BTC art. 5 (in force since 2025-02-06, replacing 105/2020) give
- * an enterprise or other legal entity 10 digits and a dependent unit those 10, a hyphen and 3 more -
- * as quoted by secondary legal sources; the official text was not retrieved. Individuals and household
- * businesses use the 12-digit personal identification number since 2025-07-01 and are refused here:
- * whether household businesses are customers is the business owner's decision (see the SCRUM-429
- * handoff). The canonical form is exactly 10 or 10-3, so
+ * <p>Optional on a customer: household businesses and small shops are customers too and may have none
+ * yet (decision 2026-10-12). When one is given it follows the company's existing rule, unchanged by that
+ * decision: 10 digits for an enterprise, 10-3 for a dependent unit (Law on Tax Administration
+ * 38/2019/QH14 art. 30(2), Circular 86/2024/TT-BTC art. 5, as quoted by secondary sources; the official
+ * text was not retrieved). A 12-digit personal identification number is refused - whether to accept it
+ * is open question T1 in docs/handoffs/SPRINT2-PRICING-PLAN.md. The canonical form is exactly 10 or 10-3, so
  * "0123456789001", "0123 456 789-001" and "0123456789-001" are one customer and the unique index can
  * compare plain strings. The check digit is not verified: the rule for it is not in the documents
  * this system follows, and refusing a real code would be worse than accepting a mistyped one that

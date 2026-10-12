@@ -42,14 +42,15 @@ class CustomerOnboardingTest {
     }
 
     @Test
-    void aPendingCustomerCanBeClosedButNotRevivedAndATaxCodeIsRequired() {
+    void aPendingCustomerCanBeClosedButNotActivatedAndAGivenTaxCodeMustBeWellFormed() {
         Customer customer = pending();
         customer.changeStatus(CustomerStatus.INACTIVE);
         assertThatThrownBy(customer::activatePortal).isInstanceOf(IllegalStateException.class);
         assertThatThrownBy(() -> customer.changeStatus(CustomerStatus.PENDING_ACTIVATION))
                 .isInstanceOf(IllegalStateException.class);
+        // Optional since 2026-10-12 (household businesses), but never malformed when given.
         assertThatThrownBy(() -> Customer.onboard(UUID.randomUUID(), UUID.randomUUID(), "Co", "a@example.test",
-                null, null)).isInstanceOf(IllegalArgumentException.class);
+                null, "12345")).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> Customer.onboard(UUID.randomUUID(), null, "Co", "a@example.test",
                 null, "0312345678")).isInstanceOf(NullPointerException.class);
     }
@@ -61,6 +62,31 @@ class CustomerOnboardingTest {
         legacy.changeTaxCode("0109876543");
         assertThat(legacy.taxCode()).isEqualTo("0109876543");
         assertThatThrownBy(() -> legacy.changeTaxCode(null)).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void aShopMayHaveNoTaxCodeAndAClosedCustomerReopensOnlyWithAReason() {
+        Customer shop = Customer.onboard(UUID.randomUUID(), UUID.randomUUID(), "Quan nho", "shop@example.test",
+                null, "  ");
+        assertThat(shop.taxCode()).isNull();
+        assertThat(shop.status()).isEqualTo(CustomerStatus.PENDING_ACTIVATION);
+        shop.changeStatus(CustomerStatus.INACTIVE);
+        assertThatThrownBy(() -> shop.changeStatus(CustomerStatus.ACTIVE)).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> shop.changeStatus(CustomerStatus.BLOCKED)).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> shop.reopen(" ", false)).isInstanceOf(IllegalArgumentException.class);
+        shop.reopen("came back", false);
+        assertThat(shop.status()).isEqualTo(CustomerStatus.PENDING_ACTIVATION);
+        assertThatThrownBy(() -> shop.reopen("again", false)).isInstanceOf(IllegalStateException.class);
+
+        Customer activated = pending();
+        activated.activatePortal();
+        activated.changeStatus(CustomerStatus.INACTIVE);
+        activated.reopen("came back", true);
+        assertThat(activated.status()).isEqualTo(CustomerStatus.ACTIVE);
+
+        assertThatThrownBy(() -> new CustomerStatusChange(UUID.randomUUID(), UUID.randomUUID(),
+                CustomerStatus.INACTIVE, CustomerStatus.ACTIVE, " ", null, java.time.Instant.now()))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     private static Customer pending() {

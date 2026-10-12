@@ -11,7 +11,9 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.common.security.Role;
+import com.stockflow.customer.api.ChangeCustomerStatusCommand;
 import com.stockflow.customer.api.CustomerService;
+import com.stockflow.customer.api.CustomerStatusEntry;
 import com.stockflow.customer.api.ListCustomersQuery;
 import com.stockflow.customer.api.UpdateCustomerCommand;
 import com.stockflow.customer.internal.controller.dto.ChangeCustomerStatusRequest;
@@ -27,6 +29,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
 import java.util.UUID;
 
 @RestController
@@ -102,7 +105,16 @@ class CustomerController {
                                                       @AuthenticatedUser CurrentUser user,
                                                       @Valid @RequestBody ChangeCustomerStatusRequest request) {
         if (!user.hasRole(Role.ECOMMERCE_ADMIN)) throw new BusinessException(ErrorCode.FORBIDDEN);
-        return ApiResponse.ok(CustomerWebMapper.toResponse(customers.changeStatus(customerId, request.status())));
+        return ApiResponse.ok(CustomerWebMapper.toResponse(customers.changeStatus(new ChangeCustomerStatusCommand(
+                customerId, request.status(), request.reason(), user.userId()))));
+    }
+
+    @GetMapping("/{customerId}/status-history")
+    @RequiresPermission(resource = CustomerResources.CUSTOMERS, action = Action.READ)
+    public ApiResponse<List<CustomerStatusEntry>> statusHistory(@PathVariable UUID customerId,
+                                                                @AuthenticatedUser CurrentUser user) {
+        requireStaff(user);
+        return ApiResponse.ok(customers.statusHistory(customerId));
     }
 
     private static void requireStaff(CurrentUser user) {

@@ -76,4 +76,7 @@ public interface PortalAccountService {
      * @return false, changing nothing, for an account holding any role besides CUSTOMER
      */
     boolean reinstate(UUID userId);
+
+    /** The account has no password yet: its contact never activated it. False for an unknown account. */
+    boolean awaitingActivation(UUID userId);
 }
