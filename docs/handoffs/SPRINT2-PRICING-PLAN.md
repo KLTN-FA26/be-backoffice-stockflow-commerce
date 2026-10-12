@@ -1,5 +1,10 @@
 # Sprint 2 lane B — customer pricing (SCRUM-428) + quote integration + SCRUM-429 follow-up
 
+**Checkpoint 2026-10-12:** `8ae1c00` (this plan) → `aca7f05` (SCRUM-429 follow-up) → `2c190ff` (SCRUM-428),
+on `SCRUM-428-customer-pricing` from `4a389a6`. Migrations `V20261014000500` (status history) and `…000510`
+(customer prices). Details, API and test evidence: `docs/handoffs/SCRUM-428.md`. Still open: P1–P7 and T1 below;
+discount policy (P2) not implemented.
+
 Branch `SCRUM-428-customer-pricing`, worktree `orca/workspaces/.../SCRUM-428-customer-pricing`, from the
 integration checkpoint `4a389a6` (`SCRUM-394-395-production-foundation`: develop `74d624d` + 394/395 + 448 +
 429). Migration range reserved for this lane: `V20261014000500` … `V20261014000599` (lane A: `…000400–000499`).
@@ -54,3 +59,12 @@ Develop checked 2026-10-12: still `74d624d`, newest migration `V20261013000600`.
 - Back office: list / read / replace / delete a customer's price for a SKU, optimistic version, audited.
 - Quotes: back-office lookup of the default tiers for a quote line; a quote line created without tiers starts from
   the customer's list (14 step 2), snapshotted into the quote (BR-03). No discount concept until P2 is answered.
+
+## SCRUM-429 follow-up — evidence (commit `aca7f05`)
+
+| Decision | Code | Test |
+|---|---|---|
+| no tax code needed to create, activate, order | `CreateBusinessCustomerRequest`, `Customer.onboard`, `CustomerOnboardingService.create` | IT `aShopWithoutATaxCodeIsOnboardedActivatesAndOrdersOnItsOwn` (real HTTP order, MST added later) |
+| reopen a closed customer only with a reason, audited, history | `Customer.reopen`, `CustomerServiceImpl.changeStatus`, `customer_status_history`, `GET /customers/{id}/status-history` | IT `aManagerReopens…` (no/blank reason 400, Sales 403, history 4 rows, audit), domain test, `CustomerStatusHistoryMigrationUpgradeTest`, QA H1–H4 |
+| old sessions stay invalid | sessions revoked on closure, never restored | IT: token from before closure 401 after reopening |
+| never-activated customer reopens to PENDING_ACTIVATION | `Customer.reopen(reason, portalActivated)` + `PortalAccountService.awaitingActivation` | IT `aClosedCustomerThatNeverActivatedReopensPending…` (resend, old link dead, activation) |
