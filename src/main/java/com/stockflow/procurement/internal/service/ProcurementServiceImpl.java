@@ -27,6 +27,7 @@ import com.stockflow.procurement.api.PurchaseOrderStatusCount;
 import com.stockflow.procurement.api.PurchaseOrderSummary;
 import com.stockflow.procurement.api.RecordSupplierConfirmationCommand;
 import com.stockflow.procurement.api.RecoverPurchaseOrderDeliveryCommand;
+import com.stockflow.procurement.api.RevisePurchaseOrderCommand;
 import com.stockflow.procurement.api.SendPurchaseOrderCommand;
 import com.stockflow.procurement.api.SupplierSpendReportQuery;
 import com.stockflow.procurement.api.SupplierSpendSummary;
@@ -59,8 +60,10 @@ import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Currency;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -141,22 +144,14 @@ class ProcurementServiceImpl implements ProcurementService {
             throw new BusinessException(ErrorCode.SUPPLIER_INACTIVE,
                     "Supplier " + command.supplierId() + " is " + supplier.status());
         }
-        var warehouse = warehouses.findWarehouse(command.warehouseId())
-                .orElseThrow(() -> new BusinessException(ErrorCode.WAREHOUSE_NOT_FOUND,
-                        "No warehouse with id " + command.warehouseId()));
-        WarehouseScope.requireWarehouse(command.warehouseId());
-        if (!warehouse.active()) {
-            throw new BusinessException(ErrorCode.CONFLICT, "Warehouse " + warehouse.prefix() + " is not active");
-        }
+        requireReceivingWarehouse(command.warehouseId());
         Currency currency;
         try {
             currency = Currency.getInstance(command.currency());
         } catch (IllegalArgumentException | NullPointerException invalid) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Unsupported purchase order currency");
         }
-        if (command.note() != null && command.note().length() > 2000) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "note must be at most 2000 characters");
-        }
+        String note = note(command.note());
         List<PoLine> lines = toLines(command.lines(), currency);
 
         // Purchasing calendar dates use the same Vietnam zone as supplier delivery KPIs.
@@ -165,8 +160,7 @@ class ProcurementServiceImpl implements ProcurementService {
                 : command.expectedAt();
         PurchaseOrder order = PurchaseOrder.draft(purchaseOrders.nextPoNumber(today), command.supplierId(),
                 command.warehouseId(), currency, lines, today, expectedAt,
-                command.note() == null || command.note().isBlank() ? null : command.note().trim(),
-                supplier.paymentTermDays(), supplier.leadTimeDays());
+                note, supplier.paymentTermDays(), supplier.leadTimeDays());
 
         boolean possibleDuplicate = isPossibleDuplicate(order);
         purchaseOrders.save(order);
@@ -198,6 +192,104 @@ class ProcurementServiceImpl implements ProcurementService {
         var criteria = new PurchaseOrderSearchCriteria(query.supplierId(), query.warehouseId(), statuses,
                 query.search());
         return Pages.toResponse(search.search(criteria, pageable));
+    }
+
+    // ------------------------------------------------------------------ editing a draft (SCRUM-462)
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The draft is locked, then checked the way {@link #createPurchaseOrder} checks a new one:
+     * the receiving warehouse exists, is the caller's (BR-SEC-002) and is ACTIVE; each SKU has an
+     * inventory item (BR-01). The caller must be allowed both the old warehouse and the new one. What
+     * changed goes on the order's timeline as REVISED; the revision history is untouched until the
+     * draft is submitted again.</p>
+     */
+    @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
+    public PurchaseOrderSummary reviseDraft(UUID purchaseOrderId, RevisePurchaseOrderCommand command) {
+        PurchaseOrder order = loadForUpdate(purchaseOrderId);
+        if (order.status() != PurchaseOrderStatus.DRAFT || order.type() != PurchaseOrder.Type.STANDARD) {
+            throw new BusinessException(ErrorCode.PURCHASE_ORDER_NOT_EDITABLE,
+                    "Purchase order %s is %s %s".formatted(order.poNumber(), order.status(), order.type()));
+        }
+        if (command.version() != order.version()) {
+            throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK,
+                    "Purchase order " + order.poNumber() + " changed since it was read; reload it");
+        }
+        requireReceivingWarehouse(command.warehouseId());
+        String note = note(command.note());
+        if (command.lines() == null || command.lines().isEmpty()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A purchase order must have at least one line");
+        }
+        List<CheckedLine> checked = checkLines(command.lines().stream()
+                .map(l -> l == null ? null : new LineInput(l.sku(), l.description(), l.quantityOrdered(),
+                        l.unitPrice(), l.taxRate()))
+                .toList(), order.currency());
+        List<PurchaseOrder.DraftLine> wanted = new ArrayList<>();
+        for (int i = 0; i < checked.size(); i++) {
+            CheckedLine line = checked.get(i);
+            wanted.add(new PurchaseOrder.DraftLine(command.lines().get(i).lineId(), line.inventoryItemId(), line.sku(),
+                    line.uom(), line.description(), line.quantity(), line.unitPrice(), line.taxRate()));
+        }
+
+        Map<String, String> before = timelineFacts(order);
+        order.reviseDraft(command.warehouseId(), command.expectedAt(), note, wanted,
+                purchaseOrders.nextLineNo(order.id()));
+        boolean possibleDuplicate = isPossibleDuplicate(order);
+        purchaseOrders.save(order);
+        purchaseOrders.recordEvent(order.id(), null, "REVISED", actor(), PurchaseOrderStatus.DRAFT,
+                PurchaseOrderStatus.DRAFT, null, changes(before, timelineFacts(order)));
+        return summaryOf(order, possibleDuplicate);
+    }
+
+    /** What the timeline says about a draft edit: the facts that changed, before and after. */
+    private static Map<String, String> timelineFacts(PurchaseOrder order) {
+        Map<String, String> facts = new LinkedHashMap<>();
+        facts.put("warehouseId", order.warehouseId().toString());
+        facts.put("expectedAt", String.valueOf(order.expectedAt()));
+        facts.put("lineCount", String.valueOf(order.lines().size()));
+        facts.put("totalAmount", order.totalAmount().amount().toPlainString());
+        facts.put("lines", order.lines().stream()
+                .map(l -> l.sku().code() + "x" + l.quantityOrdered() + "@" + l.unitPrice().amount().toPlainString())
+                .reduce((a, b) -> a + "," + b).orElse(""));
+        return facts;
+    }
+
+    private static Map<String, String> changes(Map<String, String> before, Map<String, String> after) {
+        Map<String, String> changed = new LinkedHashMap<>();
+        after.forEach((key, value) -> {
+            if (!value.equals(before.get(key))) {
+                changed.put(key + "Before", truncate(before.get(key)));
+                changed.put(key + "After", truncate(value));
+            }
+        });
+        return changed;
+    }
+
+    private static String truncate(String value) {
+        return value == null || value.length() <= 1000 ? value : value.substring(0, 1000) + "…";
+    }
+
+    /**
+     * SCRUM-390: the warehouse the goods are received into exists (404), is one the caller works for
+     * (BR-SEC-002, 403), and is ACTIVE (409 WAREHOUSE_INACTIVE).
+     */
+    private void requireReceivingWarehouse(UUID warehouseId) {
+        var warehouse = warehouses.findWarehouse(warehouseId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.WAREHOUSE_NOT_FOUND,
+                        "No warehouse with id " + warehouseId));
+        WarehouseScope.requireWarehouse(warehouseId);
+        if (!warehouse.active()) {
+            throw new BusinessException(ErrorCode.WAREHOUSE_INACTIVE, "Warehouse " + warehouse.prefix() + " is not active");
+        }
+    }
+
+    private static String note(String note) {
+        if (note != null && note.length() > 2000) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "note must be at most 2000 characters");
+        }
+        return note == null || note.isBlank() ? null : note.trim();
     }
 
     // ------------------------------------------------------------------ approval
@@ -465,6 +557,7 @@ class ProcurementServiceImpl implements ProcurementService {
         }
         Set<UUID> items = new HashSet<>(order.lines().stream().map(PoLine::inventoryItemId).toList());
         return purchaseOrders.findOpenBySupplierAndExpectedAt(order.supplierId(), order.expectedAt()).stream()
+                .filter(other -> !other.id().equals(order.id()))
                 .anyMatch(other -> other.lines().stream().map(PoLine::inventoryItemId).anyMatch(items::contains));
     }
 
@@ -472,12 +565,34 @@ class ProcurementServiceImpl implements ProcurementService {
         if (commands == null || commands.isEmpty()) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A purchase order must have at least one line");
         }
+        List<CheckedLine> checked = checkLines(commands.stream()
+                .map(c -> c == null ? null : new LineInput(c.sku(), c.description(), c.quantityOrdered(), c.unitPrice(),
+                        c.taxRate()))
+                .toList(), currency);
+        List<PoLine> lines = new ArrayList<>();
+        for (CheckedLine c : checked) {
+            lines.add(PurchaseOrder.line(lines.size() + 1, c.inventoryItemId(), c.sku(), c.uom(), c.description(),
+                    c.quantity(), c.unitPrice(), c.taxRate()));
+        }
+        return lines;
+    }
+
+    /** One requested line, as created or as edited. */
+    private record LineInput(String sku, String description, int quantity, BigDecimal unitPrice, BigDecimal taxRate) {
+    }
+
+    /** A requested line once its SKU is resolved to an inventory item (BR-01) and its amounts checked. */
+    private record CheckedLine(UUID inventoryItemId, Sku sku, String uom, String description, int quantity,
+                               Money unitPrice, BigDecimal taxRate) {
+    }
+
+    private List<CheckedLine> checkLines(List<LineInput> inputs, Currency currency) {
         if (currency.getDefaultFractionDigits() < 0) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Unsupported purchase order currency");
         }
         BigDecimal total = BigDecimal.ZERO;
-        for (var c : commands) {
-            if (c == null || c.quantityOrdered() <= 0 || c.quantityOrdered() > 1_000_000 || c.unitPrice() == null
+        for (var c : inputs) {
+            if (c == null || c.quantity() <= 0 || c.quantity() > 1_000_000 || c.unitPrice() == null
                     || c.unitPrice().signum() <= 0 || c.unitPrice().compareTo(MAX_AMOUNT) > 0
                     || c.unitPrice().stripTrailingZeros().scale() > Math.min(2, currency.getDefaultFractionDigits())
                     || c.taxRate() != null && (c.taxRate().signum() < 0
@@ -485,14 +600,14 @@ class ProcurementServiceImpl implements ProcurementService {
                 throw new BusinessException(ErrorCode.VALIDATION_FAILED,
                         "Invalid purchase order quantity, unit price or tax rate");
             }
-            total = total.add(c.unitPrice().multiply(BigDecimal.valueOf(c.quantityOrdered())));
+            total = total.add(c.unitPrice().multiply(BigDecimal.valueOf(c.quantity())));
         }
         if (total.compareTo(MAX_AMOUNT) > 0) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Purchase order total exceeds the supported limit");
         }
-        List<PoLine> lines = new ArrayList<>();
+        List<CheckedLine> lines = new ArrayList<>();
         Set<UUID> seen = new HashSet<>();
-        for (var c : commands) {
+        for (var c : inputs) {
             var sku = new Sku(c.sku());
             InventoryItemPolicy item = inventory.itemPolicy(sku)
                     .orElseThrow(() -> new BusinessException(ErrorCode.INVENTORY_ITEM_NOT_FOUND,
@@ -510,8 +625,8 @@ class ProcurementServiceImpl implements ProcurementService {
                         "Product description must not exceed 255 characters");
             }
             String uom = inventoryControl.item(sku).unitOfMeasure();
-            lines.add(PurchaseOrder.line(lines.size() + 1, item.inventoryItemId(), sku, uom, description,
-                    c.quantityOrdered(), new Money(c.unitPrice(), currency), c.taxRate()));
+            lines.add(new CheckedLine(item.inventoryItemId(), sku, uom, description, c.quantity(),
+                    new Money(c.unitPrice(), currency), c.taxRate()));
         }
         return lines;
     }

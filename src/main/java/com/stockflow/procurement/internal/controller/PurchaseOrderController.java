@@ -28,6 +28,7 @@ import com.stockflow.procurement.internal.controller.dto.RecoverPurchaseOrderDel
 import com.stockflow.procurement.internal.controller.dto.SendPurchaseOrderRequest;
 import com.stockflow.procurement.internal.controller.dto.SupplierConfirmationRequest;
 import com.stockflow.procurement.internal.controller.dto.SupplierSpendResponse;
+import com.stockflow.procurement.internal.controller.dto.UpdatePurchaseOrderRequest;
 
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -39,6 +40,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -52,7 +54,7 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * HTTP entry point for purchase orders (SCRUM-113/114/115/116/390): create, submit, approve or
+ * HTTP entry point for purchase orders (SCRUM-113/114/115/116/390/462): create, edit a draft, submit, approve or
  * reject, confirm (= send to the supplier), record the supplier's answer, cancel, close. Receiving is
  * {@code /api/v1/goods-receipts}.
  *
@@ -103,6 +105,20 @@ class PurchaseOrderController {
             @Valid @RequestBody CreatePurchaseOrderRequest request) {
         return ApiResponse.ok(
                 toResponse(procurementService.createPurchaseOrder(mapper.toCommand(request))));
+    }
+
+    @PutMapping("/{purchaseOrderId}")
+    @Operation(
+            summary = "Edit a DRAFT standard purchase order: warehouse, delivery date, note, lines",
+            description =
+                    "Send the whole draft with the version you read. Lines not listed leave the order;"
+                        + " a listed lineId keeps its SKU. 409 PURCHASE_ORDER_NOT_EDITABLE once it left"
+                        + " DRAFT or for a SUBCONTRACT order; 409 OPTIMISTIC_LOCK when it changed since.")
+    @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.UPDATE)
+    public ApiResponse<PurchaseOrderResponse> update(
+            @PathVariable UUID purchaseOrderId, @Valid @RequestBody UpdatePurchaseOrderRequest request) {
+        return ApiResponse.ok(
+                toResponse(procurementService.reviseDraft(purchaseOrderId, mapper.toCommand(request))));
     }
 
     @GetMapping("/{purchaseOrderId}")

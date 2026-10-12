@@ -74,4 +74,6 @@ public record PurchaseOrderResponse(
                                     + " RETRYING, FAILED, DELIVERED")
                 String cancellationDeliveryStatus,
         @Schema(description = "Non-blocking business warnings, e.g. DELIVERY_DATE_IN_PAST (BR-06)")
-                List<String> warnings) {}
+                List<String> warnings,
+        @Schema(description = "Send it back when editing the draft; a changed draft answers 409 OPTIMISTIC_LOCK")
+                long version) {}
