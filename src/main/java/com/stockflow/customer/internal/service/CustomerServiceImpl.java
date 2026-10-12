@@ -25,8 +25,7 @@ import com.stockflow.customer.internal.domain.CustomerAddress;
 import com.stockflow.customer.internal.domain.CustomerRepository;
 import com.stockflow.customer.internal.domain.CustomerStatus;
 import com.stockflow.customer.internal.repository.CustomerSearchRepository;
-import com.stockflow.identity.api.IdentityService;
-import com.stockflow.identity.api.RegisterAccountCommand;
+import com.stockflow.identity.api.PortalAccountService;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -47,15 +46,15 @@ class CustomerServiceImpl implements CustomerService {
 
     private final CustomerRepository customers;
     private final CustomerSearchRepository search;
-    private final IdentityService identities;
+    private final PortalAccountService accounts;
     private final CreditProfileRepository creditProfiles;
     private final java.time.Clock clock;
 
     CustomerServiceImpl(CustomerRepository customers, CustomerSearchRepository search,
-                        IdentityService identities, CreditProfileRepository creditProfiles, java.time.Clock clock) {
+                        PortalAccountService accounts, CreditProfileRepository creditProfiles, java.time.Clock clock) {
         this.customers = customers;
         this.search = search;
-        this.identities = identities;
+        this.accounts = accounts;
         this.creditProfiles = creditProfiles;
         this.clock = clock;
     }
@@ -115,16 +114,7 @@ class CustomerServiceImpl implements CustomerService {
 
     @Override
     public CustomerRegistration register(RegisterCustomerCommand command) {
-        String email = command.email().trim().toLowerCase(Locale.ROOT);
-        if (customers.findByEmail(email).isPresent()) {
-            throw new BusinessException(ErrorCode.CUSTOMER_EMAIL_ALREADY_EXISTS);
-        }
-        var account = identities.registerCustomer(new RegisterAccountCommand(
-                email, command.password(), command.fullName()));
-        Customer saved = customers.save(Customer.register(Identifiers.newId(), account.userId(),
-                command.fullName(), email, command.phone()));
-        return new CustomerRegistration(toSummary(saved), account.token().accessToken(),
-                account.token().tokenType(), account.token().expiresInSeconds());
+        throw new BusinessException(ErrorCode.CUSTOMER_REGISTRATION_DISABLED);
     }
 
     @Override
@@ -155,18 +145,74 @@ class CustomerServiceImpl implements CustomerService {
         } catch (IllegalStateException stale) {
             throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK, stale.getMessage());
         }
-        return toSummary(customers.save(customer));
+        if (command.privileged() && command.taxCode() != null) {
+            try {
+                customer.changeTaxCode(command.taxCode());
+            } catch (IllegalArgumentException invalid) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, invalid.getMessage());
+            }
+            requireTaxCodeFree(customer);
+        }
+        return saveGuardingTaxCode(customer);
     }
 
     @Override
     public CustomerSummary changeStatus(UUID customerId, String status) {
         Customer customer = requireForUpdate(customerId);
+        CustomerStatus target;
         try {
-            customer.changeStatus(CustomerStatus.valueOf(status.trim().toUpperCase(Locale.ROOT)));
+            target = CustomerStatus.valueOf(status.trim().toUpperCase(Locale.ROOT));
         } catch (IllegalArgumentException invalid) {
             throw new BusinessException(ErrorCode.UNSUPPORTED_PARAMETER, "Unknown customer status " + status);
         }
-        return toSummary(customers.save(customer));
+        try {
+            customer.changeStatus(target);
+        } catch (IllegalStateException refused) {
+            throw new BusinessException(ErrorCode.INVALID_CUSTOMER_STATUS_TRANSITION, refused.getMessage());
+        }
+        requireTaxCodeFree(customer);
+        CustomerSummary saved = saveGuardingTaxCode(customer);
+        syncPortalAccess(customer);
+        return saved;
+    }
+
+    /**
+     * kltn-docs 18 §5: a Suspended (BLOCKED) customer may not sign in, and a Closed (INACTIVE) one has
+     * closed its account; an ACTIVE one may. The contact's account follows in this transaction - the
+     * customer row is locked first, the account second, the order resend and activation use too - so
+     * a block ends every live session at commit and a lifted block lets the same password in again.
+     * A pending customer's account has no password, so nothing to switch until activation.
+     */
+    private void syncPortalAccess(Customer customer) {
+        if (customer.userId() == null) return;
+        switch (customer.status()) {
+            case BLOCKED, INACTIVE -> accounts.suspend(customer.userId());
+            case ACTIVE -> accounts.reinstate(customer.userId());
+            case PENDING_ACTIVATION -> { }
+        }
+    }
+
+    /**
+     * BR-01: one live (pending or active) customer per tax code. Checked first for a clear 409, and
+     * enforced by uk_customer_tax_code_live for the writer that races past the check.
+     */
+    private void requireTaxCodeFree(Customer customer) {
+        boolean live = customer.status() == CustomerStatus.ACTIVE
+                || customer.status() == CustomerStatus.PENDING_ACTIVATION;
+        if (live && customer.taxCode() != null && customers.isTaxCodeLive(customer.taxCode(), customer.id())) {
+            throw new BusinessException(ErrorCode.CUSTOMER_TAX_CODE_ALREADY_EXISTS);
+        }
+    }
+
+    private CustomerSummary saveGuardingTaxCode(Customer customer) {
+        try {
+            return toSummary(customers.save(customer));
+        } catch (org.springframework.dao.DataIntegrityViolationException race) {
+            if (CustomerConstraints.isTaxCodeTaken(race)) {
+                throw new BusinessException(ErrorCode.CUSTOMER_TAX_CODE_ALREADY_EXISTS);
+            }
+            throw race;
+        }
     }
 
     @Override
@@ -287,9 +333,9 @@ class CustomerServiceImpl implements CustomerService {
         }
     }
 
-    private static CustomerSummary toSummary(Customer customer) {
+    static CustomerSummary toSummary(Customer customer) {
         return new CustomerSummary(customer.id(), customer.userId(), customer.fullName(), customer.email(),
-                customer.phone(), customer.segmentId(), customer.status().name(), customer.version(),
+                customer.phone(), customer.taxCode(), customer.segmentId(), customer.status().name(), customer.version(),
                 customer.createdAt());
     }
 

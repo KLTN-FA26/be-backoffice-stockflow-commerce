@@ -33,7 +33,7 @@ import java.util.UUID;
 @RequestMapping("/api/v1/customers")
 @PermissionResource(code = CustomerResources.CUSTOMERS, group = "Customer", label = "Customers",
         route = "/admin/customers", apiPath = "/api/v1/customers",
-        actions = {Action.VIEW_PAGE, Action.READ, Action.UPDATE, Action.APPROVE})
+        actions = {Action.VIEW_PAGE, Action.READ, Action.CREATE, Action.UPDATE, Action.APPROVE})
 class CustomerController {
 
     private final CustomerService customers;
@@ -92,7 +92,8 @@ class CustomerController {
                                                 @Valid @RequestBody UpdateCustomerRequest request) {
         requireStaff(user);
         return ApiResponse.ok(CustomerWebMapper.toResponse(customers.update(new UpdateCustomerCommand(
-                customerId, user.userId(), true, request.fullName(), request.phone(), request.version()))));
+                customerId, user.userId(), true, request.fullName(), request.phone(), request.version(),
+                request.taxCode()))));
     }
 
     @PostMapping("/{customerId}/status")

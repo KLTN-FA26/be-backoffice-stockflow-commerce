@@ -28,7 +28,7 @@ final class CustomerWebMapper {
 
     static CustomerResponse toResponse(CustomerSummary summary) {
         return new CustomerResponse(summary.customerId(), summary.userId(), summary.fullName(),
-                summary.email(), summary.phone(), summary.segmentId(), summary.status(),
+                summary.email(), summary.phone(), summary.taxCode(), summary.segmentId(), summary.status(),
                 summary.version(), summary.createdAt());
     }
 

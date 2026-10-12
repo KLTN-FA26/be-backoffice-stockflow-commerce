@@ -23,6 +23,7 @@ import java.util.UUID;
  */
 public interface CustomerService {
 
+    /** Retained for caller compatibility; always refuses self-registration under the B2B policy. */
     CustomerRegistration register(RegisterCustomerCommand command);
 
     Optional<CustomerSummary> findById(UUID customerId);

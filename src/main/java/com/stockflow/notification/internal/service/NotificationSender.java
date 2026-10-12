@@ -2,6 +2,7 @@ package com.stockflow.notification.internal.service;
 
 import com.stockflow.common.http.RestClientFactory;
 import com.stockflow.contracts.PurchaseOrderSent;
+import com.stockflow.notification.api.PortalInvitationMail;
 import com.stockflow.notification.internal.domain.SupplierEndpointPolicy;
 
 import org.slf4j.Logger;
@@ -14,6 +15,8 @@ import org.springframework.web.client.RestClientResponseException;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Locale;
 import java.util.ResourceBundle;
@@ -28,6 +31,10 @@ import java.util.stream.Collectors;
  */
 @Component
 class NotificationSender {
+    /** The business runs in Vietnam; the customer reads the deadline in its local time. */
+    private static final DateTimeFormatter INVITATION_EXPIRY =
+            DateTimeFormatter.ofPattern("HH:mm dd/MM/yyyy").withZone(ZoneId.of("Asia/Ho_Chi_Minh"));
+
     private final JavaMailSender mail;
     private final RestClientFactory clients;
     private final String mailFrom;
@@ -42,6 +49,22 @@ class NotificationSender {
         this.clients = clients;
         this.mailFrom = mailFrom;
         this.policy = new SupplierEndpointPolicy(allowedHosts);
+    }
+
+    /** The portal invitation, in Vietnamese like the purchase-order mail. Never logs the link. */
+    void sendPortalInvitation(PortalInvitationMail invitation) {
+        var messages = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
+        var message = new SimpleMailMessage();
+        message.setFrom(mailFrom);
+        message.setTo(invitation.recipient());
+        message.setSubject(messages.getString("portal.invitation.mail.subject")
+                .formatted(invitation.companyName()));
+        message.setText(messages.getString("portal.invitation.mail.body").formatted(
+                invitation.contactName() == null ? "" : invitation.contactName(),
+                invitation.companyName(),
+                invitation.activationUrl(),
+                INVITATION_EXPIRY.format(invitation.expiresAt())));
+        mail.send(message);
     }
 
     /**

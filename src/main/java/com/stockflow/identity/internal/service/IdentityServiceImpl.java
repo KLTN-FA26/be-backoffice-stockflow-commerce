@@ -873,9 +873,13 @@ class IdentityServiceImpl implements IdentityService {
     public TokenResponse login(LoginCommand command) {
         String loginName = command.username() == null ? "" : command.username().trim();
         Optional<User> found = userRepository.findByUsername(loginName);
-        String hashToCheck = found.map(User::passwordHash).orElse(dummyPasswordHash);
+        // An invited account has no password yet (SCRUM-450): it costs the same bcrypt work as an
+        // unknown name and gets the same answer. Its invitation credential must never reach the
+        // encoder: no delegate is registered for that prefix, so matching it would throw.
+        Optional<User> withPassword = found.filter(user -> !user.awaitingActivation());
+        String hashToCheck = withPassword.map(User::passwordHash).orElse(dummyPasswordHash);
         boolean passwordMatches = passwordEncoder.matches(command.password(), hashToCheck);
-        if (found.isEmpty()) {
+        if (withPassword.isEmpty()) {
             throw new BusinessException(ErrorCode.UNAUTHORIZED, "Invalid username or password");
         }
         User user = found.get();
@@ -949,7 +953,8 @@ class IdentityServiceImpl implements IdentityService {
         if (user.status() != com.stockflow.identity.internal.domain.UserStatus.ACTIVE) {
             throw new BusinessException(ErrorCode.ACCOUNT_NOT_ACTIVE);
         }
-        if (!passwordEncoder.matches(command.currentPassword(), user.passwordHash())) {
+        if (user.awaitingActivation()
+                || !passwordEncoder.matches(command.currentPassword(), user.passwordHash())) {
             throw new BusinessException(ErrorCode.INVALID_CURRENT_PASSWORD);
         }
         PasswordPolicy.violation(command.newPassword()).ifPresent(reason -> {

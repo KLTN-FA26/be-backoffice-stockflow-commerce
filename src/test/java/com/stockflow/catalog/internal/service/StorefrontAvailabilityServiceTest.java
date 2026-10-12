@@ -7,6 +7,11 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.inventory.api.InventoryService;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
+import com.stockflow.customer.api.CustomerService;
+import com.stockflow.customer.api.CustomerSummary;
+import java.util.Optional;
+import java.util.UUID;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -29,16 +34,24 @@ class StorefrontAvailabilityServiceTest {
     private static final Sku TABLE = new Sku("TABLE-OAK-160");
     private static final Sku CHAIR = new Sku("CHAIR-01");
 
+    private final UUID userId = UUID.randomUUID();
+    private final CustomerService customers = mock(CustomerService.class);
     private final InventoryService inventory = mock(InventoryService.class);
     private final StorefrontAvailabilityService service =
-            new StorefrontAvailabilityService(inventory, new AvailabilityProperties(5, 3));
+            new StorefrontAvailabilityService(inventory, new AvailabilityProperties(5, 3), customers);
+
+    @BeforeEach
+    void activeCustomer() {
+        when(customers.findByUserId(userId)).thenReturn(Optional.of(new CustomerSummary(
+                UUID.randomUUID(), userId, "Customer", "customer@example.test", null, null, null, "ACTIVE", 0, null)));
+    }
 
     @Test
     void oneAnswerPerDistinctSkuInTheOrderAsked() {
         when(inventory.availableToPromise(any(Collection.class)))
                 .thenReturn(Map.of(SOFA, 33, TABLE, 4, CHAIR, 0));
 
-        List<SkuAvailability> result = service.availabilityOf(
+        List<SkuAvailability> result = service.availabilityOf(userId,
                 List.of("table-oak-160", "SOFA-3S-GREY", " CHAIR-01 ", "TABLE-OAK-160"));
 
         assertThat(result).containsExactly(
@@ -53,7 +66,7 @@ class StorefrontAvailabilityServiceTest {
     void aSkuInventoryDoesNotMentionIsOutOfStock() {
         when(inventory.availableToPromise(any(Collection.class))).thenReturn(Map.of());
 
-        assertThat(service.availabilityOf(List.of("SOFA-3S-GREY")))
+        assertThat(service.availabilityOf(userId, List.of("SOFA-3S-GREY")))
                 .containsExactly(new SkuAvailability(SOFA, Availability.OUT_OF_STOCK));
     }
 
@@ -62,11 +75,35 @@ class StorefrontAvailabilityServiceTest {
         List<String> tooMany = new ArrayList<>(IntStream.rangeClosed(1, 4).mapToObj(i -> "SKU-00" + i).toList());
 
         for (List<String> bad : List.of(List.<String>of(), List.of("bad sku!"), tooMany)) {
-            assertThatThrownBy(() -> service.availabilityOf(bad))
+            assertThatThrownBy(() -> service.availabilityOf(userId, bad))
                     .isInstanceOfSatisfying(BusinessException.class,
                             ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED));
         }
-        assertThatThrownBy(() -> service.availabilityOf(null)).isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> service.availabilityOf(userId, null)).isInstanceOf(BusinessException.class);
         verifyNoInteractions(inventory);
     }
+    @Test
+    void missingOrBlockedCustomerCannotQueryInventory() {
+        when(customers.findByUserId(userId)).thenReturn(Optional.empty());
+        assertThatThrownBy(() -> service.availabilityOf(userId, List.of("TABLE-OAK-160")))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.FORBIDDEN));
+        for (String status : List.of("PENDING_ACTIVATION", "INACTIVE", "BLOCKED")) {
+            when(customers.findByUserId(userId)).thenReturn(Optional.of(new CustomerSummary(
+                    UUID.randomUUID(), userId, "Customer", "customer@example.test", null, null, null, status, 0, null)));
+            assertThatThrownBy(() -> service.availabilityOf(userId, List.of("TABLE-OAK-160")))
+                    .isInstanceOfSatisfying(BusinessException.class,
+                            ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.FORBIDDEN));
+        }
+        verifyNoInteractions(inventory);
+    }
+
+    @Test
+    void nullSubjectCannotQueryInventory() {
+        assertThatThrownBy(() -> service.availabilityOf(null, List.of("TABLE-OAK-160")))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.UNAUTHORIZED));
+        verifyNoInteractions(inventory);
+    }
+
 }

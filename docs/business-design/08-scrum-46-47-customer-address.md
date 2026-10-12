@@ -22,6 +22,12 @@ immutable order-snapshot rules.
 
 ## Public account and checkout APIs
 
+> **Superseded for B2B (SCRUM-429/450, 2026-10-12).** Public registration and guest checkout are
+> retired: both paths are denied by the security chain (401/403) and their handlers are gone. Sales
+> onboards customers instead — `POST /api/v1/customers`, `POST|GET /api/v1/customers/{id}/portal-invitation`,
+> and the anonymous `POST /api/v1/customers/portal-activation`. See `docs/handoffs/SCRUM-429.md`.
+> The table below records the B2C behaviour as it was.
+
 | API | Behaviour |
 | --- | --- |
 | `POST /api/v1/customers/registrations` | Creates the Identity account with `CUSTOMER`, creates its linked profile and returns the first JWT. Rate-limited by IP. |

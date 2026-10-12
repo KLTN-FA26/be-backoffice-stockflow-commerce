@@ -46,6 +46,16 @@ class CustomerRepositoryAdapter implements CustomerRepository, CustomerSearchRep
     }
 
     @Override
+    public Optional<Customer> findByUserIdForUpdate(UUID userId) {
+        return customers.lockByUserId(userId).map(this::withAddresses);
+    }
+
+    @Override
+    public boolean isTaxCodeLive(String taxCode, UUID exceptCustomerId) {
+        return customers.existsLiveTaxCode(taxCode, exceptCustomerId);
+    }
+
+    @Override
     public Optional<Customer> findByEmail(String email) {
         return customers.findByEmailIgnoreCase(email).map(this::withAddresses);
     }
@@ -93,7 +103,8 @@ class CustomerRepositoryAdapter implements CustomerRepository, CustomerSearchRep
         Specification<CustomerJpaEntity> specification = Specification
                 .<CustomerJpaEntity>where(Specs.contains("fullName", search))
                 .or(Specs.contains("email", search))
-                .or(Specs.contains("phone", search));
+                .or(Specs.contains("phone", search))
+                .or(Specs.contains("taxCode", search));
         if (status != null && !status.isBlank()) {
             try {
                 specification = specification.and(Specs.eq("status",

@@ -26,6 +26,12 @@ spring:
       mail.smtp.connectiontimeout: 5000
       mail.smtp.timeout: 10000
       mail.smtp.writetimeout: 10000
+      # JavaMail otherwise derives the Message-ID and the EHLO name from this machine's canonical host
+      # name, a reverse DNS lookup that took ~10 s per e-mail on a developer laptop. mail.from covers
+      # the Message-ID (the sender header is still set per message); MAIL_SMTP_LOCALHOST names the
+      # host in EHLO when the deployment's DNS is slow. Blank keeps JavaMail's own lookup.
+      mail.from: ${MAIL_FROM:noreply@stockflow.local}
+      mail.smtp.localhost: ${MAIL_SMTP_LOCALHOST:}
 
   # ---------------------------------------------------------------------------
   # ONE datasource. This single block is what replaced fourteen of them.
@@ -383,10 +389,18 @@ stockflow:
   inventory:
     # How often the sweeper looks for holds that outlived their expiry. ISO-8601 duration.
     reservation-sweep-interval: PT1M
-  checkout:
-    # Public checkout without an account. Server-side catalog pricing is enforced. Keep OFF until
-    # published data and deployment checkout UAT are verified. Local enables it for development.
-    guest-enabled: false
+
+  customer:
+    # Where the portal invitation e-mail sends the customer's contact (SCRUM-450); the token is
+    # appended as a URL fragment, which browsers never send to a server. Blank switches invitations
+    # off (503 PORTAL_INVITATION_UNAVAILABLE) rather than failing startup. Set it per deployment.
+    portal-activation-url: ${PORTAL_ACTIVATION_URL:}
+
+  identity:
+    portal-invitation:
+      # How long an invitation link works, and how soon Sales may replace an open one.
+      lifetime: ${PORTAL_INVITATION_LIFETIME:PT72H}
+      resend-cooldown: ${PORTAL_INVITATION_RESEND_COOLDOWN:PT1M}
 
   security:
     # Turns on the resource-server filter chain AND RequiresPermissionAspect. Both are behind the
