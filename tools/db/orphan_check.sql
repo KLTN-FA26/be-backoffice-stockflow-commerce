@@ -77,6 +77,8 @@ WITH checks(step, reference, orphans) AS (
         (SELECT count(*) FROM warehouse.warehouse WHERE prefix IS NULL OR address IS NULL OR map_unit IS NULL)),
     ('C2', 'inventory.stock_item.location_code -> warehouse.storage_location',
         (SELECT count(*) FROM inventory.stock_item c WHERE NOT EXISTS (SELECT 1 FROM warehouse.storage_location p WHERE p.location_code = c.location_code))),
+    ('live', 'production.sample_request.quote_id -> ordering.quote',
+        (SELECT count(*) FROM production.sample_request c WHERE c.quote_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ordering.quote p WHERE p.id = c.quote_id))),
     ('C2', 'warehouse.putaway_task.target_location_id -> warehouse.storage_location',
         (SELECT count(*) FROM warehouse.putaway_task c WHERE c.target_location_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM warehouse.storage_location p WHERE p.id = c.target_location_id))),
     ('C3', 'inventory.stock_item.sku -> inventory.inventory_items',

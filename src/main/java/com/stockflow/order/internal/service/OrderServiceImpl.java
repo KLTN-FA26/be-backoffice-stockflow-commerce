@@ -96,7 +96,7 @@ import java.util.stream.Collectors;
  */
 @Service
 @Transactional
-class OrderServiceImpl implements OrderService {
+class OrderServiceImpl implements OrderService, QuotedOrders {
 
     private static final Logger log = LoggerFactory.getLogger(OrderServiceImpl.class);
 
@@ -155,6 +155,23 @@ class OrderServiceImpl implements OrderService {
      */
     @Override
     public OrderSummary placeOrder(PlaceOrderCommand command) {
+        return place(command, false);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The same transaction and steps as {@link #placeOrder}; only the price source differs. Every line
+     * — design lines included — is placed at the price on the command, which the quote service computed
+     * from the accepted quote. This is why the method is on an internal interface and not on
+     * {@code OrderService}: a client-supplied price never reaches it.</p>
+     */
+    @Override
+    public OrderSummary placeQuotedOrder(PlaceOrderCommand command) {
+        return place(command, true);
+    }
+
+    private OrderSummary place(PlaceOrderCommand command, boolean quotePriced) {
         // Idempotency first. A double-clicked "Place order" must not create two orders, and this
         // check is cheap compared to discovering the duplicate after the customer has paid twice.
         Optional<Order> alreadyPlaced = repository.findByRequestId(command.requestId());
@@ -167,13 +184,14 @@ class OrderServiceImpl implements OrderService {
             return toSummary(alreadyPlaced.get());
         }
 
-        // SCRUM-298 is a separate integration: never fall back to a client-supplied design price.
-        if (command.snapshotCustomer()
+        // SCRUM-298 is a separate integration: never fall back to a client-supplied design price. A
+        // design line is priced by an accepted quote (SCRUM-448), which arrives through placeQuotedOrder.
+        if (!quotePriced && command.snapshotCustomer()
                 && command.lines().stream().anyMatch(line -> line.designSnapshotId() != null)) {
             throw new BusinessException(ErrorCode.DESIGN_QUOTE_REQUIRED);
         }
         var sellingPrices =
-                command.snapshotCustomer()
+                command.snapshotCustomer() && !quotePriced
                         ? catalog.checkoutPrices(
                                 command.lines().stream()
                                         .filter(line -> line.designSnapshotId() == null)
@@ -192,7 +210,7 @@ class OrderServiceImpl implements OrderService {
             PlaceOrderCommand.Line line = command.lines().get(index);
             var orderLine = Order.line(deterministicLineId(command.requestId(), index),
                     line.sku(), line.quantity(),
-                            command.snapshotCustomer()
+                            command.snapshotCustomer() && !quotePriced
                                     ? agreedPrice(
                                             line.sku().code(), line.unitPrice(), sellingPrices)
                                     : line.unitPrice(), line.designSnapshotId());
