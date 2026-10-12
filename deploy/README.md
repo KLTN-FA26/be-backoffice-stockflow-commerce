@@ -15,9 +15,10 @@ browser ── Cloudflare Free (DNS, CDN, WAF, TLS "Full (strict)")
                          ├─ s3.<domain>      → minio:9000      (presigned downloads, app uploads)
                          ├─ media.<domain>   → minio:9000/<bucket>/product-images/ only
                          ├─ jaeger.<domain>  → jaeger:16686    (basic auth)
-                         └─ mail.<domain>    → mailpit:8025    (basic auth)
+                         ├─ mail.<domain>    → mailpit:8025    (basic auth)
+                         └─ logs.<domain>    → dozzle:8080     (basic auth)
                   internal network, no public ports:
-                  app · postgres · redis · minio · jaeger · mailpit
+                  app · postgres · redis · minio · jaeger · mailpit · dozzle
                   (postgres also on 127.0.0.1:5432 of the VPS, for SSH tunnels)
 ```
 
@@ -27,13 +28,14 @@ browser ── Cloudflare Free (DNS, CDN, WAF, TLS "Full (strict)")
 | `https://api.<domain>/api/v1/...` | the API |
 | `https://jaeger.<domain>` | traces of every request (team password) |
 | `https://mail.<domain>` | every email the application sent - none reach a real inbox (team password) |
+| `https://logs.<domain>` | live logs of every container in this stack, the application's first (team password) |
 
 | File | Purpose |
 |---|---|
 | `docker-compose.yml` | the whole stack; only nginx publishes public ports (Postgres: loopback only); a memory limit on everything |
 | `.env.example` | every variable; copied to `.env` on the server, never committed |
 | `nginx/nginx.conf` | real client IP from Cloudflare, origin lock, per-request DNS |
-| `nginx/templates/stockflow.conf.template` | the five sites |
+| `nginx/templates/stockflow.conf.template` | the six sites |
 | `nginx/snippets/` | TLS, proxy headers, Cloudflare ranges (generated) |
 | `scripts/deploy.sh` | pull, replace, wait for health, roll back on failure |
 | `scripts/refresh-cloudflare-ips.sh` | regenerates the Cloudflare range lists |
@@ -49,6 +51,7 @@ browser ── Cloudflare Free (DNS, CDN, WAF, TLS "Full (strict)")
 | redis | 192 MB | 128 MB of cache, LRU |
 | nginx | 64 MB | |
 | mailpit | 64 MB | at most 1,000 messages, kept on a volume |
+| dozzle | 64 MB | stores nothing; reads the rotated json-file logs through the Docker socket |
 | **total** | **~3.4 GB** | leaves ~400 MB for the OS - **add the 2 GB swap below** |
 
 Not here, on purpose: **ClamAV** (~1.2 GB; upload scanning is off and the application logs a
@@ -105,7 +108,7 @@ ssh-keygen -t ed25519 -C "github-actions-deploy" -f ./stockflow_deploy -N ""
 ssh-keyscan -H <vps-ip>          # output -> secret VPS_SSH_KNOWN_HOSTS
 ```
 
-**Jaeger / Mailpit password** - one file guards both (on the VPS, as `deploy`; one line per team
+**Jaeger / Mailpit / Dozzle password** - one file guards all three (on the VPS, as `deploy`; one line per team
 member if you like):
 
 ```bash
@@ -115,7 +118,7 @@ htpasswd -cB /opt/stockflow/auth/htpasswd team      # -c only the first time
 ## 2. One-time: Cloudflare (Free plan is enough)
 
 1. Add the domain to Cloudflare and point its nameservers there.
-2. DNS: `A` records for `api`, `s3`, `media`, `jaeger`, `mail` → VPS IPv4, **proxied** (orange cloud).
+2. DNS: `A` records for `api`, `s3`, `media`, `jaeger`, `mail`, `logs` → VPS IPv4, **proxied** (orange cloud).
    **No `AAAA` records.** Docker does not publish IPv6 natively; it hands IPv6 connections to a
    userland proxy that replaces the source address, so nginx would see an internal address
    instead of Cloudflare's and drop every IPv6 request.
@@ -124,7 +127,7 @@ htpasswd -cB /opt/stockflow/auth/htpasswd team      # -c only the first time
    on the VPS as `/opt/stockflow/certs/origin.pem` and `/opt/stockflow/certs/origin.key`
    (`chmod 600 origin.key`).
 5. Caching → Cache Rules:
-   - `api.<domain>`, `s3.<domain>`, `jaeger.<domain>`, `mail.<domain>` → **Bypass cache**.
+   - `api.<domain>`, `s3.<domain>`, `jaeger.<domain>`, `mail.<domain>`, `logs.<domain>` → **Bypass cache**.
    - `media.<domain>` → Eligible for cache, Edge TTL "use cache-control header" (a year for 200s).
 6. Security → Bots: leave **Bot Fight Mode off**. It would challenge the application's own S3
    calls to `s3.<domain>`, which are not a browser.
@@ -194,6 +197,7 @@ curl -sI https://media.<domain>/product-images/x.jpg         # 403/404 from MinI
 curl -sI https://media.<domain>/design-renders/x             # 404 from nginx
 curl -sI https://jaeger.<domain>                             # 401 without the password
 curl -sI https://mail.<domain>                               # 401 without the password
+curl -sI https://logs.<domain>                               # 401 without the password
 curl -sk --resolve api.<domain>:443:<vps-ip> https://api.<domain>/   # "Empty reply": origin lock works
 ```
 
@@ -204,7 +208,7 @@ All from `/opt/stockflow`.
 ```bash
 docker compose ps
 docker stats --no-stream                   # memory per container against its limit
-docker compose logs -f --tail=200 app
+docker compose logs -f --tail=200 app     # or, without SSH: https://logs.<domain>
 bash scripts/deploy.sh sha-1a2b3c4         # roll back / forward to any pushed tag
 bash scripts/deploy.sh                     # re-apply the running tag, e.g. after editing .env
 grep ^IMAGE_TAG= .env                      # what is running
