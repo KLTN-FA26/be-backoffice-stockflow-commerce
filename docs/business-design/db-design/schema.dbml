@@ -111,6 +111,7 @@ Enum inventory.stock_item_status {
   BLOCKED
   DAMAGED
   EXPIRED
+  IN_PRODUCTION
 }
 
 Enum inventory.stock_movement_movement_type {
@@ -1208,6 +1209,7 @@ Table inventory.stock_adjustment [headercolor: #3E7C4A] {
   last_modified_at    timestamptz
   last_modified_by    varchar(100)
   withdrawn_at        timestamptz
+  received_at         timestamptz
 }
 
 Table inventory.stock_item [headercolor: #3E7C4A] {
@@ -1251,17 +1253,18 @@ Table inventory.stock_movement [headercolor: #3E7C4A] {
 }
 
 Table inventory.stock_reservation [headercolor: #3E7C4A] {
-  id              uuid [pk]
-  stock_item_id   uuid [not null]
-  order_id        uuid [not null]
-  root_request_id uuid [not null]
-  request_id      uuid [not null, unique]
-  quantity        int [not null]
-  reserved_at     timestamptz [not null]
-  expires_at      timestamptz
-  status          inventory.stock_reservation_status [not null]
-  release_reason  varchar(32)
-  closed_at       timestamptz
+  id                  uuid [pk]
+  stock_item_id       uuid [not null]
+  order_id            uuid
+  root_request_id     uuid [not null]
+  request_id          uuid [not null, unique]
+  quantity            int [not null]
+  reserved_at         timestamptz [not null]
+  expires_at          timestamptz
+  status              inventory.stock_reservation_status [not null]
+  release_reason      varchar(32)
+  closed_at           timestamptz
+  production_order_id uuid
 }
 
 Table inventory.transfer_order [headercolor: #3E7C4A] {
@@ -1993,6 +1996,21 @@ Table procurement.suppliers [headercolor: #7D5BA6] {
 // SCHEMA: production
 // =============================================================================
 
+Table production.production_material_issue [headercolor: #E67E22] {
+  id                  uuid [pk]
+  production_order_id uuid [not null]
+  request_id          uuid [not null, unique]
+  reservation_id      uuid [not null, unique]
+  sku                 varchar(64) [not null]
+  lot_number          varchar(64)
+  from_location       varchar(64) [not null]
+  to_location         varchar(64) [not null]
+  quantity            int [not null]
+  stock_movement_id   uuid
+  issued_at           timestamptz [not null]
+  issued_by           uuid [not null]
+}
+
 Table production.production_order [headercolor: #E67E22] {
   id                     uuid [pk]
   order_number           varchar(30) [not null, unique]
@@ -2067,6 +2085,13 @@ Table production.production_scrap [headercolor: #E67E22] {
   stock_adjustment_id uuid
   recorded_at         timestamptz [not null]
   recorded_by         uuid [not null]
+}
+
+Table production.production_subcontract_receipt [headercolor: #E67E22] {
+  receipt_id          uuid [pk]
+  production_order_id uuid [not null]
+  quantity            int [not null]
+  received_at         timestamptz [not null]
 }
 
 Table production.sample_request [headercolor: #E67E22] {
@@ -2186,6 +2211,8 @@ Table ordering.customer_order [headercolor: #C0392B] {
   cancellation_reason_code     ordering.customer_order_cancellation_reason_code
   cancellation_retained_amount decimal(19,4)
   credit_term_days             int
+  cancellation_fee_reason      varchar(500)
+  cancellation_fee_detail      varchar(2000)
 }
 
 Table ordering.order_cancellation_request [headercolor: #C0392B] {
@@ -3283,6 +3310,7 @@ Ref: inventory.stock_movement.from_location_code > warehouse.storage_location.lo
 Ref: inventory.stock_movement.sku > inventory.inventory_items.sku [delete: restrict]
 Ref: inventory.stock_movement.to_location_code > warehouse.storage_location.location_code [delete: restrict]
 Ref: inventory.stock_reservation.order_id > ordering.customer_order.id [delete: restrict]
+Ref: inventory.stock_reservation.production_order_id > production.production_order.id [delete: restrict]
 Ref: inventory.stock_reservation.stock_item_id > inventory.stock_item.id [delete: cascade]
 Ref: inventory.transfer_order.approved_by > identity.app_user.id
 Ref: inventory.transfer_order.dispatched_by > identity.app_user.id
@@ -3375,6 +3403,10 @@ Ref: procurement.supplier_invoices.supplier_id > procurement.suppliers.id [delet
 Ref: procurement.supplier_item_prices.supplier_item_id > procurement.supplier_items.id [delete: cascade]
 Ref: procurement.supplier_items.inventory_item_id > inventory.inventory_items.id [delete: restrict]
 Ref: procurement.supplier_items.supplier_id > procurement.suppliers.id [delete: cascade]
+Ref: production.production_material_issue.issued_by > identity.app_user.id
+Ref: production.production_material_issue.production_order_id > production.production_order.id [delete: cascade]
+Ref: production.production_material_issue.reservation_id > inventory.stock_reservation.id [delete: restrict]
+Ref: production.production_material_issue.stock_movement_id > inventory.stock_movement.id [delete: restrict]
 Ref: production.production_order.approved_sample_id > production.sample_request.id [delete: restrict]
 Ref: production.production_order.design_snapshot_id > design.design_snapshot.id [delete: restrict]
 Ref: production.production_order.parent_id > production.production_order.id [delete: restrict]
@@ -3392,6 +3424,8 @@ Ref: production.production_qc_result.production_order_id > production.production
 Ref: production.production_scrap.production_order_id > production.production_order.id [delete: cascade]
 Ref: production.production_scrap.recorded_by > identity.app_user.id
 Ref: production.production_scrap.stock_adjustment_id > inventory.stock_adjustment.id [delete: restrict]
+Ref: production.production_subcontract_receipt.production_order_id > production.production_order.id [delete: cascade]
+Ref: production.production_subcontract_receipt.receipt_id > procurement.goods_receipts.id [delete: restrict]
 Ref: production.sample_request.customer_id > customer.customer.id [delete: restrict]
 Ref: production.sample_request.design_snapshot_id > design.design_snapshot.id [delete: restrict]
 Ref: production.sample_request.previous_round_id > production.sample_request.id [delete: restrict]
@@ -3591,10 +3625,12 @@ TableGroup procurement_group [color: #7D5BA6] {
 }
 
 TableGroup production_group [color: #E67E22] {
+  production.production_material_issue
   production.production_order
   production.production_order_status_history
   production.production_qc_result
   production.production_scrap
+  production.production_subcontract_receipt
   production.sample_request
 }
 
