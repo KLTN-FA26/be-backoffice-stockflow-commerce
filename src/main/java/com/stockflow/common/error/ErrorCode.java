@@ -33,6 +33,9 @@ public enum ErrorCode {
     /** Direct checkout never falls back to another price below the list's first tier (P4): Sales quotes it. */
     CUSTOMER_PRICE_BELOW_MOQ("The quantity is below this customer's price list minimum for the SKU; ask Sales for a quote", 409),
     CUSTOMER_PRICE_NOT_FOUND("This customer has no own price for the SKU", 404),
+    /** P7: a customer group (customer.segment) that does not exist. */
+    SEGMENT_NOT_FOUND("Customer group not found", 404),
+    SEGMENT_PRICE_NOT_FOUND("This customer group has no price for the SKU", 404),
     CATALOG_PRICE_AMBIGUOUS("More than one selling price has the same priority", 409),
     MALFORMED_REQUEST("The request body could not be read", 400),
     UNSUPPORTED_PARAMETER("Unsupported parameter value", 400),

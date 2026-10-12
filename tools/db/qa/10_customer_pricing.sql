@@ -1,5 +1,5 @@
 -- =============================================================================
--- Customer prices (SCRUM-428, V20261014000510) and the customer status history (SCRUM-429 follow-up,
+-- Customer prices (SCRUM-428, V20261014000510), customer-group prices (P7, V20261014000530) and the customer status history (SCRUM-429 follow-up,
 -- V20261014000500). Needs the demo seed. Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
@@ -81,6 +81,27 @@ SELECT pg_temp.expect_ok('H4 a reopening with its reason', $q$
     INSERT INTO customer.customer_status_history (id, customer_id, from_status, to_status, reason, changed_at)
     VALUES (gen_random_uuid(), 'c0000000-0000-4000-8000-000000000001', 'INACTIVE', 'ACTIVE', 'came back', NOW()) $q$);
 
+\echo '--- customer-group prices (catalog.pricing_rule with a segment, V20261014000530)'
+INSERT INTO customer.segment (id, code, name, version, created_at)
+VALUES (md5('qa:seg530')::uuid, 'QA-SEG-530', 'QA group', 0, NOW());
+SELECT pg_temp.expect_ok('G1 a group price for a SKU', $q$
+    INSERT INTO catalog.pricing_rule (id, name, sku, segment_id, price, currency, created_at)
+    VALUES (gen_random_uuid(), 'SEGMENT:qa:1', 'SOFA-3S-GREY', md5('qa:seg530')::uuid, 11000000, 'VND', NOW()) $q$);
+SELECT pg_temp.expect_fail('G2 a second price for the same group and SKU', $q$
+    INSERT INTO catalog.pricing_rule (id, name, sku, segment_id, price, currency, created_at)
+    VALUES (gen_random_uuid(), 'SEGMENT:qa:2', 'SOFA-3S-GREY', md5('qa:seg530')::uuid, 10000000, 'VND', NOW()) $q$);
+SELECT pg_temp.expect_fail('G3 a free group price', $q$
+    INSERT INTO catalog.pricing_rule (id, name, sku, segment_id, price, currency, created_at)
+    SELECT gen_random_uuid(), 'SEGMENT:qa:3', sku, md5('qa:seg530')::uuid, 0, 'VND', NOW()
+    FROM product.variants WHERE sku <> 'SOFA-3S-GREY' LIMIT 1 $q$);
+SELECT pg_temp.expect_fail('G4 a fraction of a dong', $q$
+    INSERT INTO catalog.pricing_rule (id, name, sku, segment_id, price, currency, created_at)
+    SELECT gen_random_uuid(), 'SEGMENT:qa:4', sku, md5('qa:seg530')::uuid, 1000.5, 'VND', NOW()
+    FROM product.variants WHERE sku <> 'SOFA-3S-GREY' LIMIT 1 $q$);
+SELECT pg_temp.expect_fail('G5 a group that does not exist', $q$
+    INSERT INTO catalog.pricing_rule (id, name, sku, segment_id, price, currency, created_at)
+    VALUES (gen_random_uuid(), 'SEGMENT:qa:5', 'SOFA-3S-GREY', gen_random_uuid(), 11000000, 'VND', NOW()) $q$);
+
 \echo '--- grants'
 SELECT pg_temp.expect_ok('P12 catalog-customer-prices: E-commerce Admin edits, Sales and Coordinator read, Customer nothing', $q$
     DO $d$ BEGIN
@@ -90,6 +111,20 @@ SELECT pg_temp.expect_ok('P12 catalog-customer-prices: E-commerce Admin edits, S
                      AND (r.code IN ('CUSTOMER', 'WAREHOUSE_STAFF')
                           OR (r.code IN ('SALES_STAFF', 'ORDER_COORDINATOR') AND p.action NOT IN ('READ', 'VIEW_PAGE'))))
         THEN RAISE EXCEPTION 'unexpected grant'; END IF;
+    END $d$ $q$);
+SELECT pg_temp.expect_ok('G6 catalog-segment-prices: E-commerce and System Admin edit, Sales and Coordinator read, Customer nothing', $q$
+    DO $d$ BEGIN
+        IF EXISTS (SELECT 1 FROM identity.role_permission rp JOIN identity.app_role r ON r.id = rp.role_id
+                   JOIN identity.permission p ON p.id = rp.permission_id
+                   WHERE p.resource = 'catalog-segment-prices'
+                     AND (r.code IN ('CUSTOMER', 'WAREHOUSE_STAFF')
+                          OR (r.code IN ('SALES_STAFF', 'ORDER_COORDINATOR') AND p.action NOT IN ('READ', 'VIEW_PAGE'))))
+        THEN RAISE EXCEPTION 'unexpected grant'; END IF;
+        IF (SELECT count(*) FROM identity.role_permission rp JOIN identity.app_role r ON r.id = rp.role_id
+            JOIN identity.permission p ON p.id = rp.permission_id
+            WHERE p.resource = 'catalog-segment-prices' AND p.action = 'UPDATE'
+              AND r.code IN ('ECOMMERCE_ADMIN', 'SYSTEM_ADMIN')) <> 2
+        THEN RAISE EXCEPTION 'an administrator cannot edit group prices'; END IF;
     END $d$ $q$);
 
 ROLLBACK;

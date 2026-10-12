@@ -28,6 +28,9 @@ public interface CustomerService {
 
     Optional<CustomerSummary> findById(UUID customerId);
 
+    /** Whether this customer group ({@code customer.segment}) exists: catalog prices groups (P7). */
+    boolean segmentExists(UUID segmentId);
+
     Optional<CustomerSummary> findByUserId(UUID userId);
 
     PageResponse<CustomerSummary> list(ListCustomersQuery query);

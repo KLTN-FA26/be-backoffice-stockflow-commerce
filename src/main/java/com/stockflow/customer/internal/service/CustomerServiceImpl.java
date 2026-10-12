@@ -132,6 +132,12 @@ class CustomerServiceImpl implements CustomerService {
 
     @Override
     @Transactional(readOnly = true)
+    public boolean segmentExists(UUID segmentId) {
+        return customers.segmentExists(segmentId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public Optional<CustomerSummary> findByUserId(UUID userId) {
         return customers.findByUserId(userId).map(CustomerServiceImpl::toSummary);
     }
