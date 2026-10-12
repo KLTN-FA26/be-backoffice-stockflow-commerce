@@ -5,10 +5,17 @@ import com.stockflow.inventory.api.ReserveStockResult;
 import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.internal.service.StockConsumption;
 import com.stockflow.inventory.internal.controller.dto.ReservationResponse;
+import com.stockflow.inventory.internal.controller.dto.ReservationRowResponse;
+import com.stockflow.inventory.internal.controller.dto.WarehouseStockItemResponse;
+import com.stockflow.inventory.internal.domain.ReservationStatus;
+import com.stockflow.inventory.internal.domain.StockStatus;
+import com.stockflow.inventory.internal.service.StockBrowsing;
 import com.stockflow.inventory.internal.controller.dto.ReserveStockRequest;
 import com.stockflow.inventory.internal.controller.dto.StockItemResponse;
 import com.stockflow.inventory.internal.controller.dto.StockLevelResponse;
 import com.stockflow.common.api.ApiResponse;
+import com.stockflow.common.api.PageResponse;
+import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.DataScope;
@@ -66,12 +73,14 @@ class InventoryController {
 
     private final InventoryService inventoryService;
     private final StockConsumption stockConsumption;
+    private final StockBrowsing browsing;
     private final InventoryWebMapper mapper;
 
     InventoryController(InventoryService inventoryService, StockConsumption stockConsumption,
-                        InventoryWebMapper mapper) {
+                        StockBrowsing browsing, InventoryWebMapper mapper) {
         this.inventoryService = inventoryService;
         this.stockConsumption = stockConsumption;
+        this.browsing = browsing;
         this.mapper = mapper;
     }
 
@@ -81,6 +90,28 @@ class InventoryController {
             action = Action.READ, scope = DataScope.WAREHOUSE)
     public ApiResponse<List<StockItemResponse>> stockItems(@RequestParam("sku") String sku) {
         return ApiResponse.ok(mapper.toResponses(inventoryService.availabilityOf(new Sku(sku))));
+    }
+
+    @GetMapping("/warehouses/{warehouseId}/stock-items")
+    @Operation(summary = "Every stock row of one warehouse, in any status, page by page (SCRUM-462)",
+            description = "location narrows to a location code prefix inside the warehouse (HCM-A01); rows with"
+                    + " nothing on hand are left out unless includeEmpty=true. Sort: locationCode (default), sku,"
+                    + " lotNumber, expiryDate, onHand, receivedAt.")
+    @RequiresPermission(resource = InventoryResources.STOCK_ITEMS,
+            action = Action.READ, scope = DataScope.WAREHOUSE)
+    public ApiResponse<PageResponse<WarehouseStockItemResponse>> warehouseStock(
+            @PathVariable UUID warehouseId,
+            @RequestParam(required = false) String location,
+            @RequestParam(required = false) String sku,
+            @RequestParam(name = "lot", required = false) String lotNumber,
+            @RequestParam(name = "status", required = false) List<StockStatus> statuses,
+            @RequestParam(defaultValue = "false") boolean includeEmpty,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(required = false) Integer size,
+            @RequestParam(required = false) String sort) {
+        return ApiResponse.ok(browsing.warehouseStock(warehouseId, new StockBrowsing.StockQuery(location, sku,
+                lotNumber, statuses, includeEmpty, page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort))
+                .map(mapper::toResponse));
     }
 
     @GetMapping("/stock-levels")
@@ -117,6 +148,29 @@ class InventoryController {
         ReserveStockResult result = inventoryService.reserve(new ReserveStockCommand(
                 request.requestId(), new Sku(request.sku()), request.quantity(), request.orderId()));
         return ApiResponse.ok(mapper.toResponse(result));
+    }
+
+    @GetMapping("/reservations")
+    @Operation(summary = "Holds, newest first: by order, SKU, status or warehouse (SCRUM-462)")
+    @RequiresPermission(resource = InventoryResources.RESERVATIONS,
+            action = Action.READ, scope = DataScope.WAREHOUSE)
+    public ApiResponse<PageResponse<ReservationRowResponse>> reservations(
+            @RequestParam(required = false) UUID orderId,
+            @RequestParam(required = false) String sku,
+            @RequestParam(name = "status", required = false) List<ReservationStatus> statuses,
+            @RequestParam(required = false) String warehouse,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(required = false) Integer size) {
+        return ApiResponse.ok(browsing.reservations(new StockBrowsing.ReservationQuery(orderId, sku, statuses,
+                warehouse, page, size == null ? Pages.DEFAULT_PAGE_SIZE : size)).map(mapper::toResponse));
+    }
+
+    @GetMapping("/reservations/{reservationId}")
+    @Operation(summary = "One hold")
+    @RequiresPermission(resource = InventoryResources.RESERVATIONS,
+            action = Action.READ, scope = DataScope.WAREHOUSE)
+    public ApiResponse<ReservationRowResponse> reservation(@PathVariable UUID reservationId) {
+        return ApiResponse.ok(mapper.toResponse(browsing.reservation(reservationId)));
     }
 
     /**

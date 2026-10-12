@@ -38,23 +38,29 @@ public interface GoodsReceipts {
     enum QcProgress { NOT_REQUIRED, AWAITING_MOVE_TO_QC, IN_QC_AREA, INSPECTED }
 
     record InspectionView(UUID id, QcOutcome outcome, int quantity, String locationCode, String reason,
-                          UUID inspectedBy, Instant inspectedAt) {
+                          UUID inspectedBy, String inspectedByName, Instant inspectedAt) {
     }
 
     record LineView(UUID id, UUID purchaseOrderLineId, Integer purchaseOrderLineNo, UUID inventoryItemId, String sku,
                     int quantity, String lotNumber, LocalDate expiryDate, String locationCode, String note,
-                    boolean qcRequired, QcProgress qcProgress, String qcLocationCode, Instant movedToQcAt,
-                    int quantityForPutaway, List<InspectionView> inspections) {
+                    boolean qcRequired, boolean lotTracked, boolean expiryTracked, QcProgress qcProgress,
+                    String qcLocationCode, Instant movedToQcAt, int quantityForPutaway,
+                    List<InspectionView> inspections) {
     }
 
-    record ReceiptView(UUID id, String number, UUID purchaseOrderId, String purchaseOrderNumber, UUID warehouseId,
+    /** The names next to the ids are for display (SCRUM-464); a name is null when its row is gone. */
+    record ReceiptView(UUID id, String number, UUID purchaseOrderId, String purchaseOrderNumber, UUID supplierId,
+                       String supplierName, UUID warehouseId, String warehouseCode, String warehouseName,
                        GoodsReceiptStatus status, String deliveryNote, String note, Instant receivedAt,
-                       UUID receivedBy, Instant confirmedAt, UUID confirmedBy, Instant closedAt,
-                       List<LineView> lines) {
+                       UUID receivedBy, String receivedByName, Instant confirmedAt, UUID confirmedBy,
+                       String confirmedByName, Instant closedAt, List<LineView> lines) {
     }
 
-    record Row(UUID id, String number, UUID purchaseOrderId, UUID warehouseId, GoodsReceiptStatus status,
-               String deliveryNote, Instant receivedAt, UUID receivedBy, Instant confirmedAt, Instant closedAt) {
+    record Row(UUID id, String number, UUID purchaseOrderId, String purchaseOrderNumber, UUID supplierId,
+               String supplierName, UUID warehouseId, String warehouseCode, String warehouseName,
+               GoodsReceiptStatus status, String deliveryNote, Instant receivedAt, UUID receivedBy,
+               String receivedByName, Instant confirmedAt, UUID confirmedBy, String confirmedByName,
+               Instant closedAt) {
     }
 
     /** A DRAFT receipt for a CONFIRMED or PARTIALLY_RECEIVED order (BR-01), into the order's warehouse. */

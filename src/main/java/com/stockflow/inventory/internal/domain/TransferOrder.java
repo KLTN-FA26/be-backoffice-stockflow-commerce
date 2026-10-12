@@ -22,6 +22,10 @@ import java.util.UUID;
  * self-approved transfer records that person as the approver and no separate submitter — the
  * table's four-eyes check compares two different people, and one person did both.</p>
  *
+ * <p>While DRAFT — new, or sent back by a rejection — the planner may change everything: warehouses,
+ * reason, date and lines ({@link #reviseDraft}, SCRUM-462, kltn-docs 10 §5).
+ * {@code tg_transfer_order_draft_header} and {@code tg_transfer_order_line_draft_content} say it again.</p>
+ *
  * <p>Dispatch is the point of no return: the stock leaves the source and is owned by the transfer
  * until the destination counts it in. Before dispatch it can be cancelled; after, only closed.</p>
  */
@@ -29,10 +33,10 @@ public final class TransferOrder extends AggregateRoot {
 
     private final UUID id;
     private final String number;
-    private final UUID fromWarehouseId;
-    private final UUID toWarehouseId;
-    private final TransferReason reason;
-    private final LocalDate expectedDate;
+    private UUID fromWarehouseId;
+    private UUID toWarehouseId;
+    private TransferReason reason;
+    private LocalDate expectedDate;
     private final String note;
     private final List<TransferLine> lines;
 
@@ -69,22 +73,49 @@ public final class TransferOrder extends AggregateRoot {
         this.cancelReason = cancelReason;
         this.version = version;
         this.createdAt = createdAt;
+        requireValid(fromWarehouseId, toWarehouseId, this.lines);
+    }
+
+    private static void requireValid(UUID fromWarehouseId, UUID toWarehouseId, List<TransferLine> lines) {
         if (fromWarehouseId.equals(toWarehouseId)) {
             // BR-01: inside one warehouse it is a move, not a transfer.
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
                     "Source and destination warehouse must differ; within one warehouse, move the stock instead");
         }
-        if (this.lines.isEmpty()) {
+        if (lines.isEmpty()) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A transfer order needs at least one line");
         }
         Set<String> keys = new HashSet<>();
-        for (TransferLine line : this.lines) {
+        for (TransferLine line : lines) {
             if (!keys.add(line.sku().code() + "|" + Objects.toString(line.lotNumber(), ""))) {
                 throw new BusinessException(ErrorCode.VALIDATION_FAILED,
                         "%s%s appears twice; put the whole quantity on one line".formatted(
                                 line.sku(), line.lotNumber() == null ? "" : " lot " + line.lotNumber()));
             }
         }
+    }
+
+    /**
+     * The planner's new version of a DRAFT: warehouses, reason, date and lines all replaced, checked
+     * as a new transfer is (BR-01, one line per SKU and lot). Anything but DRAFT is
+     * TRANSFER_ORDER_NOT_EDITABLE.
+     */
+    public void reviseDraft(UUID fromWarehouseId, UUID toWarehouseId, TransferReason reason, LocalDate expectedDate,
+                            List<TransferLine> lines) {
+        if (status != TransferStatus.DRAFT) {
+            throw new BusinessException(ErrorCode.TRANSFER_ORDER_NOT_EDITABLE,
+                    "Transfer %s is %s".formatted(number, status));
+        }
+        Objects.requireNonNull(fromWarehouseId, "fromWarehouseId");
+        Objects.requireNonNull(toWarehouseId, "toWarehouseId");
+        List<TransferLine> replacement = List.copyOf(Objects.requireNonNull(lines, "lines"));
+        requireValid(fromWarehouseId, toWarehouseId, replacement);
+        this.fromWarehouseId = fromWarehouseId;
+        this.toWarehouseId = toWarehouseId;
+        this.reason = reason;
+        this.expectedDate = expectedDate;
+        this.lines.clear();
+        this.lines.addAll(replacement);
     }
 
     public static TransferOrder draft(UUID id, String number, UUID fromWarehouseId, UUID toWarehouseId,

@@ -295,4 +295,102 @@ FROM inventory.stock_movement WHERE movement_type = 'TRANSFER_OUT' AND reference
                 .extracting(TransferOrders.Row::transferId)
                 .containsExactly(created.transferId());
     }
+
+    @Test
+    @DisplayName(
+            "SCRUM-462: a rejected transfer is changed in DRAFT and submitted again; the lines are replaced,"
+                    + " a stale version, missing stock or a closed warehouse is refused, and nothing past DRAFT")
+    void draftEdits() {
+        tx.executeWithoutResult(
+                s ->
+                        jdbc.update(
+                                "INSERT INTO inventory.stock_item (id, sku, location_code, lot_number,"
+                                        + " expiry_date, on_hand, reserved, status, version, created_at)"
+                                        + " VALUES (?, ?, 'HCM-A01-2-B', ?, CURRENT_DATE + 90, 200, 0,"
+                                        + " 'AVAILABLE', 0, NOW())",
+                                Identifiers.newId(),
+                                sku,
+                                lot));
+        UUID approver = tx.execute(s -> ReferenceRows.user(entityManager));
+        TransferOrders.Transfer created = create(150);
+        assertThat(transfers.submit(created.transferId(), planner).status())
+                .isEqualTo(TransferStatus.PENDING_APPROVAL);
+        TransferOrders.Transfer rejected =
+                transfers.reject(created.transferId(), approver, "Fewer, and to another date");
+        assertThat(rejected.status()).isEqualTo(TransferStatus.DRAFT);
+
+        java.time.LocalDate date = java.time.LocalDate.now().plusDays(5);
+        TransferOrders.Transfer revised =
+                transfers.reviseDraft(
+                        created.transferId(),
+                        new TransferOrders.Revise(
+                                rejected.version(),
+                                hcm,
+                                other,
+                                TransferReason.DEMAND,
+                                date,
+                                List.of(
+                                        new TransferOrders.NewLine(sku, lot, 20),
+                                        new TransferOrders.NewLine(sku, null, 1))));
+        assertThat(revised.reason()).isEqualTo(TransferReason.DEMAND);
+        assertThat(revised.expectedDate()).isEqualTo(date);
+        assertThat(revised.lines())
+                .extracting(TransferOrders.Line::lineNo, TransferOrders.Line::requested)
+                .containsExactly(
+                        org.assertj.core.groups.Tuple.tuple(1, 20),
+                        org.assertj.core.groups.Tuple.tuple(2, 1));
+        assertThat(revised.version()).isGreaterThan(rejected.version());
+        assertThat(
+                        jdbc.queryForObject(
+                                "SELECT count(*) FROM inventory.transfer_order_line WHERE transfer_order_id = ?",
+                                Integer.class,
+                                created.transferId()))
+                .isEqualTo(2);
+
+        var stale =
+                new TransferOrders.Revise(
+                        rejected.version(), hcm, other, null, null,
+                        List.of(new TransferOrders.NewLine(sku, lot, 5)));
+        assertThatThrownBy(() -> transfers.reviseDraft(created.transferId(), stale))
+                .extracting(e -> ((BusinessException) e).errorCode())
+                .isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
+        assertThatThrownBy(
+                        () ->
+                                transfers.reviseDraft(
+                                        created.transferId(),
+                                        new TransferOrders.Revise(
+                                                revised.version(), hcm, other, null, null,
+                                                List.of(new TransferOrders.NewLine(sku, lot, 999)))))
+                .extracting(e -> ((BusinessException) e).errorCode())
+                .isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
+        tx.executeWithoutResult(
+                s -> jdbc.update("UPDATE warehouse.warehouse SET status = 'INACTIVE' WHERE id = ?", other));
+        assertThatThrownBy(
+                        () ->
+                                transfers.reviseDraft(
+                                        created.transferId(),
+                                        new TransferOrders.Revise(
+                                                revised.version(), hcm, other, null, null,
+                                                List.of(new TransferOrders.NewLine(sku, lot, 5)))))
+                .extracting(e -> ((BusinessException) e).errorCode())
+                .isEqualTo(ErrorCode.WAREHOUSE_INACTIVE);
+        tx.executeWithoutResult(
+                s -> jdbc.update("UPDATE warehouse.warehouse SET status = 'ACTIVE' WHERE id = ?", other));
+        // The refusals changed nothing.
+        assertThat(transfers.get(created.transferId()).lines())
+                .extracting(TransferOrders.Line::requested)
+                .containsExactly(20, 1);
+
+        TransferOrders.Transfer approved = transfers.submit(created.transferId(), planner);
+        assertThat(approved.status()).isEqualTo(TransferStatus.APPROVED);
+        assertThatThrownBy(
+                        () ->
+                                transfers.reviseDraft(
+                                        created.transferId(),
+                                        new TransferOrders.Revise(
+                                                approved.version(), hcm, other, null, null,
+                                                List.of(new TransferOrders.NewLine(sku, lot, 5)))))
+                .extracting(e -> ((BusinessException) e).errorCode())
+                .isEqualTo(ErrorCode.TRANSFER_ORDER_NOT_EDITABLE);
+    }
 }

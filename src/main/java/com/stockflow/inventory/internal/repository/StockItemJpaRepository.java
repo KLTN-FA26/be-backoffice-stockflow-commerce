@@ -3,6 +3,7 @@ package com.stockflow.inventory.internal.repository;
 import com.stockflow.inventory.internal.entity.StockItemJpaEntity;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -27,7 +28,8 @@ import java.util.UUID;
  * past two conditions ({@code findByStatusAndReservationsStatusAndReservationsExpiresAtBefore}),
  * and cannot express the fetch joins and lock modes these need.</p>
  */
-interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID> {
+interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>,
+        JpaSpecificationExecutor<StockItemJpaEntity> {
 
     interface AvailableTotal {
         String getSku();

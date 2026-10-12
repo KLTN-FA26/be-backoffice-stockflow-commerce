@@ -14,5 +14,6 @@
  *       you reaching in; {@code ModularityTest} will.</li>
  * </ul>
  */
-@org.springframework.modulith.ApplicationModule(allowedDependencies = {"product :: api", "inventory :: api", "warehouse :: api", "notification :: api"})
+@org.springframework.modulith.ApplicationModule(allowedDependencies = {"product :: api", "inventory :: api", "warehouse :: api", "notification :: api",
+        "identity :: api"})
 package com.stockflow.procurement;

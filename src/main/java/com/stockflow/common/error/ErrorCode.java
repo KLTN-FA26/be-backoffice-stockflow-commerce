@@ -133,6 +133,18 @@ public enum ErrorCode {
     RECEIPT_LOT_DATA_INVALID("Lot or expiry data does not match how the item is tracked", 409),
     /** BR-08: accepted + quarantined + rejected must add up to what was moved to the QC area. */
     QC_QUANTITY_MISMATCH("The QC quantities do not add up to the quantity inspected", 409),
+    /** A line needs QC and the warehouse has no QUALITY_CONTROL area to send it to (docs 03 edge case). */
+    QC_AREA_MISSING("This warehouse has no QC area yet for the items that need QC", 409),
+    /** Two receipt lines for the same PO line and lot (uk_goods_receipt_lines_lot). */
+    DUPLICATE_RECEIPT_LINE("The same purchase order line and lot appear twice on this receipt", 409),
+    RECEIPT_LINE_NOT_ON_PO("This line is not a line of the receipt's purchase order", 409),
+    /** The PO line is closed, cancelled or fully received: nothing more is received against it. */
+    PO_LINE_NOT_OPEN("This purchase order line is no longer open for receiving", 409),
+    /** One stock row per SKU, location and lot: quarantined and rejected goods need two areas. */
+    QC_LOCATIONS_MUST_DIFFER("Quarantined and rejected goods go to two different quarantine areas", 409),
+    QC_REASON_REQUIRED("Quarantined or rejected goods need a reason (BR-08)", 400),
+    QC_TARGET_LOCATION_REQUIRED("Quarantined or rejected goods need the quarantine area they go to", 400),
+    RECEIPT_LINE_NOT_FOUND("This receipt has no such line", 404),
     /** SCRUM-434: a SUBCONTRACT purchase order goes only to a supplier flagged print subcontractor. */
     SUPPLIER_NOT_SUBCONTRACTOR("This supplier is not a print subcontractor", 409),
     /** BR-PRD-08: a new design goes to print only after the customer approved its sample. */
@@ -184,6 +196,12 @@ public enum ErrorCode {
     /** Deployment rollout gate for guest checkout; see application.yml. */
     GUEST_CHECKOUT_DISABLED("Guest checkout is not available", 403),
     INVALID_PURCHASE_ORDER_TRANSITION("This purchase order cannot move to that status right now", 409),
+    /** Only a DRAFT standard order is edited in place; afterwards changes go through a revision (BR-02, BR-10). */
+    PURCHASE_ORDER_NOT_EDITABLE("Only a draft standard purchase order can be edited", 409),
+    /** Only a DRAFT transfer is edited; a rejected one is back in DRAFT for that (docs 10 §5). */
+    TRANSFER_ORDER_NOT_EDITABLE("Only a draft transfer order can be edited", 409),
+    /** The warehouse exists but is not ACTIVE: nothing new is received into or sent from it (SCRUM-390). */
+    WAREHOUSE_INACTIVE("This warehouse is not active", 409),
     /** The prefix starts every location code of the warehouse, so it is unique system-wide. */
     WAREHOUSE_PREFIX_ALREADY_EXISTS("A warehouse with this prefix already exists", 409),
     ZONE_NAME_ALREADY_EXISTS("This warehouse already has a zone with this name", 409),

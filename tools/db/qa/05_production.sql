@@ -205,5 +205,12 @@ SELECT pg_temp.expect_ok('PR29 PRODUCTION_STAFF exists; WAREHOUSE_MANAGER reads 
         END IF;
     END $d$ $q$);
 
+\echo '--- a SUBCONTRACT draft keeps its warehouse (SCRUM-462, BR-10)'
+SELECT pg_temp.expect_ok('PR36 a second warehouse to move to', $q$
+    INSERT INTO warehouse.warehouse (id, name, status, prefix, address, map_unit, map_width, map_height, created_at)
+    VALUES (md5('qa:wh:SC')::uuid, 'QASC', 'ACTIVE', 'QASC', 'QA', 'M', 10, 10, NOW()) $q$);
+SELECT pg_temp.expect_fail('PR37 the warehouse of a SUBCONTRACT draft', $q$
+    UPDATE procurement.purchase_orders SET warehouse_id = md5('qa:wh:SC')::uuid WHERE id = md5('qa:po:sc')::uuid $q$);
+
 ROLLBACK;
 \echo 'PASS 05_production'
