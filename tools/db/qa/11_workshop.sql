@@ -117,18 +117,22 @@ SELECT pg_temp.expect_fail('WK14 a fee reason without its detail', $q$
     UPDATE ordering.customer_order SET status = 'CANCELLED', cancellation_reason_code = 'CUSTOMER_REQUEST', cancellation_reason = 'CUSTOMER_REQUEST',
         cancellation_retained_amount = 5000, cancellation_fee_reason = 'r'
      WHERE id = md5('qa11:order')::uuid $q$);
-SELECT pg_temp.expect_fail('WK15 fee terms with nothing kept', $q$
+SELECT pg_temp.expect_fail('WK15 an agreed amount without its terms', $q$
     UPDATE ordering.customer_order SET status = 'CANCELLED', cancellation_reason_code = 'CUSTOMER_REQUEST', cancellation_reason = 'CUSTOMER_REQUEST',
-        cancellation_retained_amount = 0, cancellation_fee_reason = 'r', cancellation_fee_detail = 'd'
+        cancellation_retained_amount = 12000, cancellation_fee_amount = 12000
      WHERE id = md5('qa11:order')::uuid $q$);
-SELECT pg_temp.expect_fail('WK16 more kept than was paid (15 BR-05)', $q$
+SELECT pg_temp.expect_fail('WK16 kept is not what the money received covers of the agreed amount (Q6a/Q6b)', $q$
     UPDATE ordering.customer_order SET status = 'CANCELLED', cancellation_reason_code = 'CUSTOMER_REQUEST', cancellation_reason = 'CUSTOMER_REQUEST',
-        cancellation_retained_amount = 20001, cancellation_fee_reason = 'r', cancellation_fee_detail = 'd'
-     WHERE id = md5('qa11:order')::uuid $q$);
-SELECT pg_temp.expect_ok('WK17 an agreed amount kept, with its terms', $q$
+        cancellation_retained_amount = 12000, cancellation_fee_amount = 30000, cancellation_fee_reason = 'r',
+        cancellation_fee_detail = 'd' WHERE id = md5('qa11:order')::uuid $q$);
+SELECT pg_temp.expect_ok('WK17 an agreed amount above the 20,000 paid keeps all of it; the rest is owed elsewhere', $q$
     UPDATE ordering.customer_order SET status = 'CANCELLED', cancellation_reason_code = 'CUSTOMER_REQUEST', cancellation_reason = 'CUSTOMER_REQUEST',
-        cancellation_retained_amount = 12000, cancellation_fee_reason = 'Printing had started',
+        cancellation_retained_amount = 20000, cancellation_fee_amount = 30000, cancellation_fee_reason = 'Printing had started',
         cancellation_fee_detail = 'Agreed with the buyer' WHERE id = md5('qa11:order')::uuid $q$);
+SELECT pg_temp.expect_ok('WK18 a cancellation fee receivable', $q$
+    INSERT INTO payment.receivable (id, order_id, customer_id, kind, amount, currency, issued_at, due_date)
+    SELECT gen_random_uuid(), o.id, o.customer_id, 'CANCELLATION_FEE', 10000, 'VND', NOW(), CURRENT_DATE
+      FROM ordering.customer_order o WHERE o.id = md5('qa11:order')::uuid $q$);
 
 \echo '--- who does which workshop step (V20261014000400 / 000420)'
 SELECT pg_temp.expect_true('GR5 the warehouse issues blanks; the print shop reads them',

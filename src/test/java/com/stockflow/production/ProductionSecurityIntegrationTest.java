@@ -349,7 +349,7 @@ class ProductionSecurityIntegrationTest {
                 java.util.Map.of("amount", 12000, "reason", "Printing had started")))
                 .andExpect(status().isBadRequest());
         send(post(path), sales, java.util.Map.of("reasonCode", "CUSTOMER_REQUEST", "agreedFee",
-                java.util.Map.of("amount", 25000, "reason", "r", "detail", "d")))
+                java.util.Map.of("amount", new java.math.BigDecimal("12000.5"), "reason", "r", "detail", "d")))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
         send(post(path), sales, java.util.Map.of("reasonCode", "CUSTOMER_REQUEST", "agreedFee", fee))

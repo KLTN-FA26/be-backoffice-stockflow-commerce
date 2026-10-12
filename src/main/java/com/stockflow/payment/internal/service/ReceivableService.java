@@ -7,6 +7,7 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.SortWhitelist;
+import com.stockflow.contracts.OrderCancelled;
 import com.stockflow.contracts.OrderDelivered;
 import com.stockflow.contracts.PaymentCaptured;
 import com.stockflow.contracts.PaymentMethod;
@@ -30,6 +31,7 @@ import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -79,6 +81,32 @@ public class ReceivableService {
         this.search = search;
         this.events = events;
         this.clock = clock;
+    }
+
+    /**
+     * Decision Q6a: the agreed cancellation amount the money received did not cover is owed, due from the
+     * cancellation day. One receivable per order ({@code uk_receivable_order}): a cancelled order is never
+     * delivered, so no CREDIT_ORDER receivable exists or follows for it — the sale is not billed as well — and a
+     * redelivered event finds this one open. Nothing is allocated or collected here.
+     */
+    public void cancellationOwed(OrderCancelled event) {
+        BigDecimal owed = event.owedAmount() == null ? BigDecimal.ZERO : event.owedAmount();
+        if (owed.signum() <= 0 || event.customerId() == null) {
+            return;
+        }
+        Optional<Receivable> existing = book.findReceivableOfOrder(event.orderId());
+        if (existing.isPresent()) {
+            if (!"CANCELLATION_FEE".equals(existing.get().kind())) {
+                throw new IllegalStateException("Order %s already has a %s receivable; its cancellation fee needs the "
+                        + "accountant".formatted(event.orderNumber(), existing.get().kind()));
+            }
+            return;
+        }
+        LocalDate due = LocalDate.ofInstant(event.cancelledAt(), BUSINESS_ZONE);
+        Receivable receivable = book.save(Receivable.openCancellationFee(event.orderId(), event.customerId(), owed,
+                event.currency(), event.cancelledAt(), due));
+        log.info("Receivable {} opened for the cancellation fee of order {}: {} {} owed", receivable.id(),
+                event.orderNumber(), owed, event.currency());
     }
 
     /** Idempotent: a redelivered event finds the receivable already open. */

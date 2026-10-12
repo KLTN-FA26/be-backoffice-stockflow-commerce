@@ -63,6 +63,8 @@ public final class Order extends AggregateRoot {
     private BigDecimal cancellationRetainedAmount;
     /** Decision Q2: why and on what terms an agreed amount was kept; null when a percentage (or nothing) was. */
     private String cancellationFeeReason;
+    /** Decision Q6a: the whole agreed amount; above {@code paidAmount} the rest is owed (a receivable). */
+    private BigDecimal cancellationFeeAmount;
     private String cancellationFeeDetail;
     private PaymentTerm paymentTerm = PaymentTerm.PREPAID;
     private java.math.BigDecimal depositRequired;
@@ -529,8 +531,9 @@ public final class Order extends AggregateRoot {
 
     /**
      * The same, keeping either a percentage or an amount agreed with the customer (decision Q2: Sales enters it,
-     * nothing computes it). The amount is whole units of the currency, more than zero and at most what was paid
-     * (15 BR-05, {@code ck_order_cancellation_retained}); it needs its reason and detail.
+     * nothing computes it), whole units of the currency, more than zero, with its reason and detail. The money
+     * received pays it first: what is left of it is refunded (Q6b), and what it does not cover is owed — the
+     * cancellation announces it and payment records a receivable (Q6a). Nothing is collected or marked paid.
      */
     public void cancel(CancellationReasonCode code, String note, BigDecimal retainedPercent,
                        com.stockflow.order.api.CancellationFee agreedFee, UUID by, Instant now) {
@@ -552,9 +555,12 @@ public final class Order extends AggregateRoot {
         }
         OrderStatus previous = status;
         int scale = total().currency().getDefaultFractionDigits();
-        BigDecimal retained = agreedFee != null ? agreedFee.amount().setScale(scale)
+        BigDecimal agreed = agreedFee == null ? null : agreedFee.amount().setScale(scale);
+        // Q6a/Q6b: what was received pays the agreed amount first; the rest is refunded, a shortfall is owed.
+        BigDecimal retained = agreed != null ? agreed.min(paidAmount)
                 : retainedPercent == null ? BigDecimal.ZERO
                 : paidAmount.multiply(retainedPercent).divide(HUNDRED, scale, RoundingMode.HALF_UP);
+        this.cancellationFeeAmount = agreed;
         this.cancellationFeeReason = agreedFee == null ? null : agreedFee.reason();
         this.cancellationFeeDetail = agreedFee == null ? null : agreedFee.detail();
         this.status = OrderStatus.CANCELLED;
@@ -564,7 +570,8 @@ public final class Order extends AggregateRoot {
         this.cancellationRetainedAmount = retained;
         registerEvent(new OrderEvent.Cancelled(new OrderCancelled(id.value(), orderNumber.value(), customerId,
                 previous.name(), code.name(), trimmed, paidAmount, paidAmount.subtract(retained),
-                total().currency().getCurrencyCode(), by, now)));
+                total().currency().getCurrencyCode(), by, now,
+                agreed == null ? BigDecimal.ZERO : agreed.subtract(retained))));
     }
 
     private void requireAgreedFee(com.stockflow.order.api.CancellationFee fee, BigDecimal retainedPercent) {
@@ -575,11 +582,6 @@ public final class Order extends AggregateRoot {
         if (fee.amount().signum() <= 0 || fee.amount().stripTrailingZeros().scale() > digits) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The agreed amount is more than zero, in whole %s"
                     .formatted(digits == 0 ? total().currency().getCurrencyCode() : "units of " + total().currency()));
-        }
-        if (fee.amount().compareTo(paidAmount) > 0) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "The agreed amount %s is more than the %s paid; only money received can be kept (15 BR-05)"
-                            .formatted(fee.amount().toPlainString(), paidAmount.toPlainString()));
         }
         if (fee.reason() == null || fee.reason().isEmpty() || fee.reason().length() > 500
                 || fee.detail() == null || fee.detail().isEmpty() || fee.detail().length() > 2000) {
@@ -632,10 +634,12 @@ public final class Order extends AggregateRoot {
     public CancellationReasonCode cancellationReasonCode() { return cancellationReasonCode; }
     public BigDecimal cancellationRetainedAmount() { return cancellationRetainedAmount; }
     public String cancellationFeeReason() { return cancellationFeeReason; }
+    public BigDecimal cancellationFeeAmount() { return cancellationFeeAmount; }
     public String cancellationFeeDetail() { return cancellationFeeDetail; }
 
     /** Rehydration of the agreed amount's terms. */
-    public void restoreCancellationFee(String reason, String detail) {
+    public void restoreCancellationFee(BigDecimal amount, String reason, String detail) {
+        this.cancellationFeeAmount = amount;
         this.cancellationFeeReason = reason;
         this.cancellationFeeDetail = detail;
     }

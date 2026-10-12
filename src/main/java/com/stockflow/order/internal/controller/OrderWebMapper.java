@@ -113,7 +113,8 @@ final class OrderWebMapper {
                 summary.cancellation() == null ? null : new OrderResponse.Cancellation(
                         summary.cancellation().reasonCode() == null ? null : summary.cancellation().reasonCode().name(),
                         summary.cancellation().reason(), summary.cancellation().retainedAmount(),
-                        summary.cancellation().feeReason(), summary.cancellation().feeDetail()));
+                        summary.cancellation().feeReason(), summary.cancellation().feeDetail(),
+                        summary.cancellation().feeAmount()));
     }
 
     private static PlaceGuestOrderCommand.Address toCommand(

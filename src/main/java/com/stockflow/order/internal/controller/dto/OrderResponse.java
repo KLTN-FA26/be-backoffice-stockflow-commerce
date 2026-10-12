@@ -78,7 +78,9 @@ public record OrderResponse(
             String reason,
             @Schema(description = "Kept from the money received for work already done") BigDecimal retainedAmount,
             @Schema(description = "Why an agreed amount was kept (decision Q2)") String feeReason,
-            @Schema(description = "What was agreed") String feeDetail) {
+            @Schema(description = "What was agreed") String feeDetail,
+            @Schema(description = "The agreed amount; above retainedAmount the rest is owed as a receivable")
+            BigDecimal feeAmount) {
     }
 
     public record Address(String recipientName, String phone, String line1, String line2,

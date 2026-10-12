@@ -537,7 +537,6 @@ class PrintRunIntegrationTest {
                 "Agreed by phone with the buyer on 2026-10-12: 6 cups printed and the setup");
 
         for (Object[] wrong : List.<Object[]>of(
-                new Object[] {null, new CancellationFee(new BigDecimal("20001"), "r", "d"), "more than was paid"},
                 new Object[] {null, new CancellationFee(new BigDecimal("1500.5"), "r", "d"), "not whole VND"},
                 new Object[] {null, new CancellationFee(BigDecimal.ZERO, "r", "d"), "zero"},
                 new Object[] {null, new CancellationFee(new BigDecimal("12000"), "r", " "), "no detail"},
@@ -811,5 +810,51 @@ class PrintRunIntegrationTest {
         samples.cancel(sales, draft.id(), "Not needed");
         assertThatThrownBy(() -> samples.startNextRound(sales, draft.id(), null))
                 .extracting(PrintRunIntegrationTest::code).isEqualTo(ErrorCode.INVALID_SAMPLE_REQUEST_TRANSITION);
+    }
+
+    /** A released order of 10 with a captured payment of 20,000 and its job stopped on the press. */
+    private Line paidJobOnThePress() throws Exception {
+        Line line = released(10);
+        issueAll(line.productionOrderId());
+        runs.startPrinting(printer, line.productionOrderId());
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO payment.payment (id, order_id, amount, currency, method, status, captured_at, created_at)
+                VALUES (?, ?, 20000, 'VND', 'BANK_TRANSFER', 'CAPTURED', NOW(), NOW())""", Identifiers.newId(),
+                line.orderId()));
+        return line;
+    }
+
+    @Test
+    @DisplayName("Q6a: an agreed 30,000 above the 20,000 paid keeps all of it, refunds nothing and owes 10,000 as one receivable, once; an agreed 20,000 owes and refunds nothing")
+    void agreedFeeAboveWhatWasPaid() throws Exception {
+        Line above = paidJobOnThePress();
+        UUID customer = salesOrders.findById(above.orderId()).orElseThrow().customerId();
+        cancelWithFee(above.orderId(), null, new CancellationFee(new BigDecimal("30000"), "Printing finished",
+                "Agreed with the buyer: 10 cups printed and the plates"));
+
+        var cancellation = salesOrders.findById(above.orderId()).orElseThrow().cancellation();
+        assertThat(cancellation.retainedAmount()).isEqualByComparingTo("20000");
+        assertThat(cancellation.feeAmount()).isEqualByComparingTo("30000");
+        Await.until("the shortfall is owed", ASYNC, () -> jdbc.queryForObject("""
+                SELECT count(*) FROM payment.receivable WHERE order_id = ? AND kind = 'CANCELLATION_FEE'
+                   AND amount = 10000 AND paid_amount = 0 AND status = 'OPEN'""", Integer.class, above.orderId()) == 1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM payment.refund WHERE order_id = ?", Integer.class,
+                above.orderId())).as("nothing to refund").isZero();
+        var redelivered = new com.stockflow.contracts.OrderCancelled(above.orderId(), "SO-IT", customer, "IN_PRODUCTION",
+                "CUSTOMER_REQUEST", null, new BigDecimal("20000"), BigDecimal.ZERO, "VND", sales.userId(),
+                java.time.Instant.now(), new BigDecimal("10000"));
+        tx.executeWithoutResult(s -> publisher.publishEvent(redelivered));
+        Thread.sleep(500);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM payment.receivable WHERE order_id = ?", Integer.class,
+                above.orderId())).as("owed once").isEqualTo(1);
+
+        Line equal = paidJobOnThePress();
+        cancelWithFee(equal.orderId(), null, new CancellationFee(new BigDecimal("20000"), "Printing finished",
+                "Agreed with the buyer: what was paid"));
+        Thread.sleep(800);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM payment.refund WHERE order_id = ?", Integer.class,
+                equal.orderId())).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM payment.receivable WHERE order_id = ?", Integer.class,
+                equal.orderId())).isZero();
     }
 }

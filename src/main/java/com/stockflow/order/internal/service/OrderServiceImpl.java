@@ -626,7 +626,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                 order.status() == OrderStatus.CANCELLED
                         ? new OrderSummary.Cancellation(order.cancellationReasonCode(), order.cancellationReason(),
                                 order.cancellationRetainedAmount(), order.cancellationFeeReason(),
-                                order.cancellationFeeDetail())
+                                order.cancellationFeeDetail(), order.cancellationFeeAmount())
                         : null);
     }
 

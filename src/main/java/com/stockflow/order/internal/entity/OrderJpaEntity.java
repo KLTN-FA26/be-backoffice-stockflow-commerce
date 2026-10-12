@@ -162,6 +162,9 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     private java.math.BigDecimal cancellationRetainedAmount;
 
     /** V20261014000430, decision Q2: the terms of an agreed amount kept on cancellation. */
+    @Column(name = "cancellation_fee_amount", precision = 19, scale = 4)
+    private java.math.BigDecimal cancellationFeeAmount;
+
     @Column(name = "cancellation_fee_reason", length = 500)
     private String cancellationFeeReason;
 
@@ -269,9 +272,11 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     public com.stockflow.order.api.CancellationReasonCode getCancellationReasonCode() { return cancellationReasonCode; }
     public java.math.BigDecimal getCancellationRetainedAmount() { return cancellationRetainedAmount; }
     public String getCancellationFeeReason() { return cancellationFeeReason; }
+    public java.math.BigDecimal getCancellationFeeAmount() { return cancellationFeeAmount; }
     public String getCancellationFeeDetail() { return cancellationFeeDetail; }
 
-    public void applyCancellationFee(String reason, String detail) {
+    public void applyCancellationFee(java.math.BigDecimal amount, String reason, String detail) {
+        this.cancellationFeeAmount = amount;
         this.cancellationFeeReason = reason;
         this.cancellationFeeDetail = detail;
     }
