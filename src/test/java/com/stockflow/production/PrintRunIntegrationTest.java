@@ -24,6 +24,7 @@ import com.stockflow.production.internal.domain.ProductionRecords;
 import com.stockflow.production.internal.service.MaterialIssues;
 import com.stockflow.production.internal.service.OrderProductionService;
 import com.stockflow.production.internal.service.PrintRuns;
+import com.stockflow.production.internal.service.ProductionDashboard;
 import com.stockflow.production.internal.service.ProductionOrders;
 import com.stockflow.production.internal.service.ProductionWorkflow;
 import com.stockflow.production.internal.service.SampleProductionProgress;
@@ -50,6 +51,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.time.Duration;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -83,6 +85,7 @@ class PrintRunIntegrationTest {
     private static final Duration ASYNC = Duration.ofSeconds(15);
 
     @Autowired PrintRuns runs;
+    @Autowired ProductionDashboard dashboard;
     @Autowired MaterialIssues issues;
     @Autowired ProductionWorkflow workflow;
     @Autowired ProductionOrders productionOrders;
@@ -559,5 +562,46 @@ class PrintRunIntegrationTest {
         assertThat(stopped.printedQuantity()).isEqualTo(6);
         assertThat(salesOrders.findById(line.orderId()).orElseThrow().cancellation().retainedAmount())
                 .as("the job's count does not change the agreed amount").isEqualByComparingTo("12000");
+    }
+
+    @Test
+    @DisplayName("SCRUM-415: the dashboard counts open orders by status, the overdue ones, the scrap rate of a period and the samples waiting for the customer")
+    void dashboard() throws Exception {
+        ProductionDashboard.Summary before = dashboard.summary(manager, null, null);
+        Line line = released(4);
+        issueAll(line.productionOrderId());
+        runs.startPrinting(printer, line.productionOrderId());
+        runs.recordOutput(printer, line.productionOrderId(), 4,
+                List.of(new PrintRuns.ScrapLine(ProductionRecords.ScrapReason.PRINT_DEFECT, 1, null)));
+        ProductionFixtures.Design design = fixtures.confirmedDesign();
+        SampleRequests.Sample draft = samples.create(sales, new SampleRequests.Create(DemoData.CUSTOMER_ID, null,
+                new SampleRequests.Draft(design.snapshotId(), ProductionFixtures.BLANK, 1, null)));
+        samples.submit(sales, draft.id(), hcm);
+        fixtures.workshopFinished(draft.id());
+        samples.markSent(sales, draft.id());
+
+        ProductionDashboard.Summary after = dashboard.summary(manager, null, null);
+        assertThat(after.openByStatus().getOrDefault("QC", 0L)).isEqualTo(before.openByStatus().getOrDefault("QC", 0L) + 1);
+        assertThat(after.printed()).isEqualTo(before.printed() + 4);
+        assertThat(after.scrap()).isEqualTo(before.scrap() + 1);
+        assertThat(after.scrapRate()).isEqualByComparingTo(java.math.BigDecimal.valueOf(after.scrap())
+                .divide(java.math.BigDecimal.valueOf(after.printed()), 4, java.math.RoundingMode.HALF_UP));
+        assertThat(after.samplesAwaitingApproval()).isEqualTo(before.samplesAwaitingApproval() + 1);
+        assertThat(dashboard.samplesAwaitingApproval(manager, 0, 200).items())
+                .extracting(SampleRequests.Row::id).contains(draft.id());
+
+        // An order due yesterday is overdue; its count and its row agree.
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE production.production_order SET due_date = ? WHERE id = ?",
+                after.today().minusDays(1), line.productionOrderId()));
+        assertThat(dashboard.summary(manager, null, null).overdue()).isEqualTo(after.overdue() + 1);
+        assertThat(dashboard.overdue(manager, 0, 200).items()).extracting(ProductionOrders.Row::id)
+                .contains(line.productionOrderId());
+
+        LocalDate tomorrow = after.today().plusDays(1);
+        ProductionDashboard.Summary empty = dashboard.summary(manager, tomorrow, tomorrow);
+        assertThat(empty.printed()).as("nothing created tomorrow").isZero();
+        assertThat(empty.scrapRate()).isNull();
+        assertThatThrownBy(() -> dashboard.summary(manager, tomorrow, after.today()))
+                .extracting(PrintRunIntegrationTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
     }
 }

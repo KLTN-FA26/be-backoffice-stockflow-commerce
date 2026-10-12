@@ -365,4 +365,19 @@ class ProductionSecurityIntegrationTest {
                 SELECT count(*) FROM platform.audit_log WHERE resource_type = 'order' AND resource_id = ?
                    AND outcome = 'SUCCESS'""", Integer.class, orderId.toString()) >= 1);
     }
+
+    @Test
+    @DisplayName("SCRUM-415: the dashboard needs production-orders:READ and counts only the caller's warehouses")
+    void dashboardOverHttp() throws Exception {
+        send(get("/api/v1/production/dashboard"), staff("CUSTOMER"), null).andExpect(status().isForbidden());
+        send(get("/api/v1/production/dashboard"), staff("PRODUCTION_STAFF"), null).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.overdue").value(0))
+                .andExpect(jsonPath("$.data.samplesAwaitingApproval").value(0));
+        send(get("/api/v1/production/dashboard").param("from", "2026-10-12").param("to", "2026-10-01"),
+                assigned("WAREHOUSE_MANAGER"), null).andExpect(status().isBadRequest());
+        send(get("/api/v1/production/dashboard/overdue"), assigned("PRODUCTION_STAFF"), null).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items").isArray());
+        send(get("/api/v1/production/dashboard/samples-awaiting-approval"), assigned("SALES_STAFF"), null)
+                .andExpect(status().isOk());
+    }
 }
