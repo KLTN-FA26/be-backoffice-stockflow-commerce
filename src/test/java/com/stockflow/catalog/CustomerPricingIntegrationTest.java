@@ -317,6 +317,30 @@ class CustomerPricingIntegrationTest {
         assertThat(typed.lines().getFirst().tiers()).extracting(t -> t.unitPrice().longValue()).containsExactly(12_000_000L);
     }
 
+    @Test
+    void aQuoteLineWithoutTiersForAnUnpricedBlankAsksSalesToEnterThem() throws Exception {
+        Buyer buyer = buyer("ACTIVE");
+        ConfirmedDesigns.Design design = ConfirmedDesigns.confirmed(storage, jdbc, tx, entityManager, buyer.customerId());
+        CurrentUser salesUser = new CurrentUser(salesId, "sales", Set.of(Role.SALES_STAFF), Set.of(), DataScope.ALL,
+                Set.of(), Set.of());
+        // No own price, no group, and - for this test only - no active base price either.
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE catalog.pricing_rule SET active=false WHERE name=?", "BASE:" + SKU));
+        try {
+            Quotes.Create create = new Quotes.Create(UUID.randomUUID(), buyer.customerId(),
+                    new Quotes.Draft(PaymentTerm.PREPAID, null, Instant.now().plus(Duration.ofDays(7)), null,
+                            List.of(new Quotes.Line(SKU, design.snapshotId(), "Logo", 5, null))));
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> quotes.create(salesUser, create))
+                    .isInstanceOfSatisfying(BusinessException.class, e -> {
+                        assertThat(e.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+                        assertThat(e.errorCode().httpStatus()).isEqualTo(400);
+                    });
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.quote WHERE customer_id=?", Long.class,
+                    buyer.customerId())).isZero();
+        } finally {
+            tx.executeWithoutResult(s -> jdbc.update("UPDATE catalog.pricing_rule SET active=true WHERE name=?", "BASE:" + SKU));
+        }
+    }
+
     // ---------------------------------------------------------------- fixtures
 
     private record Buyer(UUID customerId, String token) {
