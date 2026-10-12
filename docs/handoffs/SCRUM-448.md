@@ -1,6 +1,6 @@
 # SCRUM-448 — B2B quotes: tiers, acceptance and conversion to an order (backend)
 
-Status 2026-10-12: **READY_FOR_INTEGRATION** — implemented, tested against real PostgreSQL with security
+Status 2026-10-12: **READY_FOR_INTEGRATION**, integrated locally into `SCRUM-394-395-production-foundation` (`ab02d7a`, see `SCRUM-394-395.md` phase C) — implemented, tested against real PostgreSQL with security
 on and off, committed locally; not pushed, not merged.
 
 ## Where
@@ -114,8 +114,9 @@ so it was **not** changed here — align it during the 394/395 integration step.
      price (that is SCRUM-428's list) nor any defined limit, approver or ticket. No rule was invented. Safe
      behaviour today: no discount concept; every send records who sent which offer (JSON on the SENT history
      row, plus the audit log), so a limit can be enforced on that data once it is decided.
-2. The sample → quote link (`sample_request.quote_id`) has its FK and `QuoteDirectory`; production still
-   refuses a `quoteId` until the integration step wires `QuoteDirectory` into `SampleRequestService.create`.
+2. The sample → quote link: wired in the 394/395 integration (`cd4ac69` on
+   `SCRUM-394-395-production-foundation`): `SampleRequestService` checks `QuoteDirectory` (open quote, same
+   customer, same design on the same blank) on create, edit and next round.
 3. Blanks are held when the order is placed (conversion), not at acceptance (F-CART 05 order of steps is
    kept as "acceptance → order with holds"); an accepted quote does not reserve stock by itself.
 4. Acceptance needs the customer on the portal (03 §18). Sales cannot accept on a customer's behalf; if the
