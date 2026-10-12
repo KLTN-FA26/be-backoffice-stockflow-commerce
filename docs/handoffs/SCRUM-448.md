@@ -67,6 +67,7 @@ VIEW_PAGE, READ, UPDATE · CUSTOMER VIEW_PAGE, READ, APPROVE · SYSTEM_ADMIN all
 | `POST …/{id}/revision` | UPDATE | back office | `{version}` CHANGES_REQUESTED → DRAFT, revision + 1 |
 | `POST …/{id}/cancellation` | UPDATE | back office | `{version, reason}` DRAFT → CANCELLED |
 | `POST …/{id}/conversion` | UPDATE | back office | `{version, shippingAddressId?, billingAddressId?}` ACCEPTED → CONVERTED + the order; a repeat returns the same order |
+| `POST /api/v1/orders/{orderId}/reorder` | `sales-orders:CREATE` | portal customer (own orders), back office | `{requestId}` → a new DRAFT quote for the order's lines at today's price list, never the old deal (SCRUM-428 lane, user decision 2026-10-12); `ORDER_NOT_QUOTED` for a price-list order |
 
 Statuses: DRAFT, SENT, CHANGES_REQUESTED, ACCEPTED, EXPIRED, CANCELLED, CONVERTED (a SENT quote past
 `validUntil` reads EXPIRED at once). The portal never sees DRAFT or CANCELLED quotes (also not while a

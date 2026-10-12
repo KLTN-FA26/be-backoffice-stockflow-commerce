@@ -2,8 +2,12 @@ package com.stockflow.order;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.stockflow.common.domain.Money;
+import com.stockflow.common.domain.Sku;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.storage.FileStorage;
+import com.stockflow.order.api.OrderService;
+import com.stockflow.order.api.PlaceOrderCommand;
 import com.stockflow.support.ConfirmedDesigns;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -57,6 +61,7 @@ class QuoteSecurityIntegrationTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
+    @Autowired OrderService orders;
 
     private String token(UUID userId, String role) {
         String value = UUID.randomUUID().toString();
@@ -147,5 +152,29 @@ class QuoteSecurityIntegrationTest {
         send(post(QUOTES + "/" + id + "/conversion"), coordinator, Map.of("version", version + 1))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("INVALID_QUOTE_TRANSITION"));
+    }
+
+    @Test
+    @DisplayName("reorder: the order verb; anonymous 401, warehouse 403, another customer 404, a price-list order 409")
+    void whoMayReorder() throws Exception {
+        UUID userA = user();
+        UUID userB = user();
+        UUID customerA = customerOf(userA);
+        customerOf(userB);
+        UUID orderId = orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), customerA,
+                List.of(new PlaceOrderCommand.Line(new Sku(ConfirmedDesigns.BLANK), 1, Money.vnd(3000), null))))
+                .orderId();
+        String reorder = "/api/v1/orders/" + orderId + "/reorder";
+        Map<String, Object> body = Map.of("requestId", UUID.randomUUID());
+
+        mvc.perform(post(reorder).contentType("application/json").content(json.writeValueAsString(body)))
+                .andExpect(status().isUnauthorized());
+        send(post(reorder), token(user(), "WAREHOUSE_STAFF"), body).andExpect(status().isForbidden());
+        send(post(reorder), token(userB, "CUSTOMER"), body).andExpect(status().isNotFound());
+        send(post(reorder), token(userA, "CUSTOMER"), Map.of()).andExpect(status().isBadRequest());
+        send(post(reorder), token(userA, "CUSTOMER"), body).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("ORDER_NOT_QUOTED"));
+        send(post(reorder), token(user(), "SALES_STAFF"), body).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("ORDER_NOT_QUOTED"));
     }
 }

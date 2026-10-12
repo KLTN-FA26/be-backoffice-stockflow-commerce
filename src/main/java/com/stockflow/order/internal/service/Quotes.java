@@ -85,6 +85,10 @@ public interface Quotes {
     record Conversion(long version, UUID shippingAddressId, UUID billingAddressId) {
     }
 
+    /** Ordering again what {@code orderId} - an order converted from a quote - bought. */
+    record Reorder(UUID requestId, UUID orderId) {
+    }
+
     /** Idempotent on {@code requestId}: a retry returns the quote the first call created. */
     QuoteView create(CurrentUser user, Create command);
 
@@ -111,6 +115,20 @@ public interface Quotes {
      * the quote ACCEPTED and creates nothing.
      */
     QuoteView convert(CurrentUser user, UUID quoteId, Conversion conversion);
+
+    /**
+     * A new DRAFT quote for the same blanks, designs, print specifications and quantities as the order,
+     * priced from the customer's current price list - never at the old negotiated price (user decision
+     * 2026-10-12: a deal applies to its own quote and order only). Nothing is payable until Sales sends it
+     * and the customer accepts; the draft is Sales' to negotiate and the customer sees it once sent.
+     * Idempotent on {@code requestId}. A portal customer reorders only their own orders (404 otherwise).
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code ORDER_NOT_QUOTED} for an order bought at the
+     *         price list (place it again instead), {@code PRICE_NOT_AVAILABLE} when a blank has no list price
+     *         now, {@code QUOTE_BELOW_MOQ} when the old quantity is below the customer's list MOQ,
+     *         {@code CUSTOMER_NOT_ACTIVE}, {@code PAYMENT_TERM_NOT_ALLOWED}
+     */
+    QuoteView reorder(CurrentUser user, Reorder command);
 
     /** Writes EXPIRED on sent quotes past their validity, at most {@code limit}; returns how many. */
     int expireDue(int limit);

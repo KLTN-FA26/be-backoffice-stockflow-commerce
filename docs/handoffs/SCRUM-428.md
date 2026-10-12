@@ -24,6 +24,11 @@ pushed, not merged, no Jira change. The SCRUM-429 follow-up is its own commit on
   the blank (14 step 2), copied into the quote — a later price-list change does not move it; typed tiers win.
   **No discount limit and no internal approval** (user decision 2026-10-12, overriding kltn-docs 14 BR-10): Sales
   negotiates and sends any valid price (whole VND > 0, validated on the server); the customer still has to accept.
+  A deal is **never saved as the customer's price** (user decision P1, 2026-10-12).
+- **Reorder of a negotiated order** (P1 decision): `POST /api/v1/orders/{orderId}/reorder` creates a new DRAFT quote
+  with the order's blanks, designs, print specifications and quantities, priced from **today's** price list — not
+  the old deal. Nothing is payable until Sales sends it and the customer accepts; conversion stays Sales' explicit
+  step. An approved design needs no new sample. The draft's history says which order it reorders.
 - **Portal display**: the logged-in ACTIVE customer's own/group/base prices with tiers and MOQ (13 BR-02, BR-05),
   published SKUs only.
 
@@ -40,6 +45,7 @@ pushed, not merged, no Jira change. The SCRUM-429 follow-up is its own commit on
 | `GET /api/v1/catalog/products/prices?sku=…` (≤ 50) | CUSTOMER role, ACTIVE linked customer | `[{sku, source, moq, currency, tiers}]` for published, priced SKUs; 403 otherwise, 401 anonymous |
 | `POST /api/v1/orders` (existing) | unchanged | lines priced by the customer's tier; 409 `CUSTOMER_PRICE_BELOW_MOQ`, `CHECKOUT_PRICE_CHANGED` |
 | `POST /api/v1/quotes` (existing) | unchanged | a line's `tiers` may now be omitted → copied from `…/schedule` |
+| `POST /api/v1/orders/{orderId}/reorder` | `sales-orders:CREATE` (the verb that places an order: CUSTOMER, SALES_STAFF, …) | `{requestId}` → 201, a DRAFT quote (`QuoteResponse`); same `requestId` → same quote. Portal: own orders only (404 otherwise), and the draft is visible to the customer once Sales sends it. 409 `ORDER_NOT_QUOTED` for an order bought at the price list (place it again with `POST /orders`); `PRICE_NOT_AVAILABLE`, `QUOTE_BELOW_MOQ`, `PAYMENT_TERM_NOT_ALLOWED`, `CUSTOMER_NOT_ACTIVE` (R1) |
 
 Writes are audited (`customer-price` CREATE/UPDATE/DELETE).
 
@@ -48,7 +54,7 @@ Writes are audited (`customer-price` CREATE/UPDATE/DELETE).
 | Requirement (Jira 428 + kltn-docs) | Code | Test | Result |
 |---|---|---|---|
 | Own price per customer, SKU and quantity tier (428; 13 §3; D14) | migration 000510, `CustomerPrice`, `CustomerPriceService`, `CustomerPriceController` | `CustomerPriceTest` (4), IT `onlyTheEcommerceAdminEdits…`, `CustomerPriceMigrationUpgradeTest`, QA `10_customer_pricing.sql` P1–P11 | PASS |
-| E-commerce Admin configures; others read (13 §2, 14 §2) | grants + `@RequiresPermission` | IT: anonymous 401, Sales/warehouse/customer write 403, warehouse/customer read 403, Sales read 200; upgrade test grant list; QA P12 | PASS (P1 open: may Sales edit?) |
+| E-commerce Admin configures; others read (13 §2, 14 §2) | grants + `@RequiresPermission` | IT: anonymous 401, Sales/warehouse/customer write 403, warehouse/customer read 403, Sales read 200; upgrade test grant list; QA P12 | PASS (P1 decided: admin edits, Sales reads, deals are not saved) |
 | No own price → group price, else base (13 §3) | `PriceResolver` | IT portal: CUSTOMER / SEGMENT / BASE | PASS |
 | Portal shows the logged-in customer's price, tiers, MOQ (172; 13 BR-02/05) | `StorefrontPriceService`, `GET /catalog/products/prices` | IT incl. BLOCKED 403, staff 403, anonymous 401 | PASS |
 | Portal ordering at the customer's price (190); MOQ (BR-05); locked into the order (14 BR-03); changed price confirmed (14 edge case) | `checkoutPrices(customerId, …)`, `OrderServiceImpl.place` | IT `checkoutCharges…`: below MOQ 409, stale expected price 409, two lines summed to a tier, later price change leaves the order, delete → base | PASS |
@@ -57,18 +63,22 @@ Writes are audited (`customer-price` CREATE/UPDATE/DELETE).
 | Discount within a limit or approved (14 BR-10) | **overridden by the user 2026-10-12**: no limit, no approval step, no new role | — | not applicable |
 | Sales sends a negotiated price (> 5 % below the list) without approval; invalid price refused on the server; warehouse cannot send; Sales cannot accept; another customer gets 404 on read/accept; the customer sees the price SENT; quote audited; a later list edit does not move the quote | existing `QuoteService` validation, `QuoteController` permissions, quote price snapshot | IT `salesSendsANegotiatedPriceWithoutApprovalAndOnlyTheCustomerAccepts` (list 10,000,000 → sent 8,000,000; 0 / 10.5 / -5 → `VALIDATION_FAILED`) | PASS |
 | A placed order is not changed by a later price-list edit (14 BR-03) | order line snapshot | IT `checkoutCharges…` (edit and delete after placing) | PASS |
+| Reorder of a negotiated order: same blank, design, print spec and quantity; today's list price, not the deal; no order created; retried click → same draft; Sales renegotiates and sends; only the customer's acceptance fixes the new price, and it is not converted on its own; the approved design needs no new sample; the first order keeps its price after a list change | `QuoteService.reorder`, `OrderController.reorder` | IT `QuoteIntegrationTest.reorderStartsANewQuoteAtTodaysPrice` (list 3,000/2,800, deal 2,500, renegotiated 2,700) | PASS |
+| Reorder access: another customer 404 (service and HTTP), anonymous 401, warehouse 403, missing `requestId` 400; a price-list order 409 `ORDER_NOT_QUOTED` for the customer and for Sales; an unknown order 404 | same | IT `QuoteIntegrationTest.aPriceListOrderIsNotRequoted`, `QuoteSecurityIntegrationTest.whoMayReorder` | PASS |
 | Sales units (13/14 BR-11) | — | — | **NOT DONE — P6 (no sales-unit model exists)** |
 
 ## Gaps
 
-P1, P3–P7 and T1 in the plan (P2 is closed by the user override). The quote default's `PRICE_NOT_AVAILABLE` → 400 branch is covered by IT
+P3–P7, T1 and R1 in the plan (P1 and P2 are decided by the user). No notification tells Sales that a reorder
+draft is waiting; it appears in the quote list as a DRAFT. FE is not part of this batch. The quote default's `PRICE_NOT_AVAILABLE` → 400 branch is covered by IT
 `aQuoteLineWithoutTiersForAnUnpricedBlankAsksSalesToEnterThem`. Segment rules have no management API (P7).
 
-## Verification (2026-10-12, Java 21.0.9, Maven 3.9.9 offline, Docker 28.5.1; no full suite - lane A runs one)
+## Verification (2026-10-12, Java 21.0.9, Maven 3.9.9 offline, Docker 28.5.1; targeted tests only - the full suite runs at final integration)
 
 | Run | Result |
 |---|---|
 | `CustomerPricingIntegrationTest` (security on, real PostgreSQL) | 7/7 (after the P2 override) |
+| After the reorder: `QuoteIntegrationTest` 9/9, `QuoteSecurityIntegrationTest` 2/2; `ArchitectureTest`, `ModularityTest`, `MessageBundleTest`, `CustomerPricingIntegrationTest`, `PlaceOrderIntegrationTest`, `CreditCheckoutIntegrationTest`, `QuoteMigrationUpgradeTest` 45/45; `tools/verify.py` | pass |
 | After the override: `QuoteIntegrationTest`, `QuoteSecurityIntegrationTest`, `ArchitectureTest`, `ModularityTest`, `tools/verify.py` | 29/29, static checks pass |
 | `CustomerPriceTest`, `CustomerPriceMigrationUpgradeTest` (from `V20261014000500` with demo data and an existing customer), `CustomerStatusHistoryMigrationUpgradeTest` | 4 + 1 + 1 |
 | Regression: `InventoryCatalogMigrationUpgradeTest` (fresh DB + every `tools/db/qa` script + orphan check), `DemoCatalogPriceSeedTest`, `QuoteIntegrationTest`, `QuoteSecurityIntegrationTest`, `QuoteMigrationUpgradeTest`, `PlaceOrderIntegrationTest`, `CreditCheckoutIntegrationTest`, `InventoryCatalog(Security)IntegrationTest`, `ProductionGrantsMigrationUpgradeTest`, B2B onboarding/access, availability, invitation | 111 run, 1 failure → fixed (below), rerun green |

@@ -12,6 +12,9 @@ import com.stockflow.order.internal.controller.dto.CancelOrderRequest;
 import com.stockflow.order.internal.controller.dto.CancellationResultResponse;
 import com.stockflow.order.internal.controller.dto.OrderResponse;
 import com.stockflow.order.internal.controller.dto.PlaceOrderRequest;
+import com.stockflow.order.internal.controller.dto.QuoteRequests;
+import com.stockflow.order.internal.controller.dto.QuoteResponse;
+import com.stockflow.order.internal.service.Quotes;
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.audit.AuditAction;
@@ -65,10 +68,12 @@ class OrderController {
 
     private final OrderService orderService;
     private final CustomerService customerService;
+    private final Quotes quotes;
 
-    OrderController(OrderService orderService, CustomerService customerService) {
+    OrderController(OrderService orderService, CustomerService customerService, Quotes quotes) {
         this.orderService = orderService;
         this.customerService = customerService;
+        this.quotes = quotes;
     }
 
     /**
@@ -104,6 +109,24 @@ class OrderController {
                     command.lines(), command.paymentTerm(), null);
         }
         return ApiResponse.ok(OrderWebMapper.toResponse(orderService.placeOrder(command)));
+    }
+
+    /**
+     * Order again what a negotiated order bought (user decision 2026-10-12): a new DRAFT quote with the same
+     * blanks, designs, print specifications and quantities, priced from today's price list - the old deal is
+     * not reused and nothing is payable until Sales sends the quote and the customer accepts it. An order
+     * bought at the price list is not re-quoted ({@code ORDER_NOT_QUOTED}): it is placed again directly.
+     * The same verb as placing an order, so the customer and Sales may both start it.
+     */
+    @PostMapping("/{orderId}/reorder")
+    @ResponseStatus(HttpStatus.CREATED)
+    @Operation(summary = "Reorder a quoted order: a new draft quote for Sales at today's price list, never the old deal")
+    @RequiresPermission(resource = OrderResources.ORDERS, action = Action.CREATE, scope = DataScope.OWN)
+    public ApiResponse<QuoteResponse> reorder(@PathVariable UUID orderId,
+                                              @Valid @RequestBody QuoteRequests.Reorder request,
+                                              @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(QuoteWebMapper.toResponse(quotes.reorder(user,
+                new Quotes.Reorder(request.requestId(), orderId))));
     }
 
     @GetMapping("/{orderId}")

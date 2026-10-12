@@ -170,6 +170,8 @@ public enum ErrorCode {
     QUOTE_EXPIRED("This quote is no longer valid", 409),
     /** BR-ORD-007: a quoted line is ordered at or above its minimum order quantity. */
     QUOTE_BELOW_MOQ("The quantity is below the minimum order quantity of the quote", 409),
+    /** Reorder: only an order placed from a quote is re-quoted; a price-list order is simply placed again. */
+    ORDER_NOT_QUOTED("This order was not placed from a quote; order it again at the current price", 409),
     /** BR-PRD-09: a deposit order goes to production only once the deposit has arrived. */
     ORDER_DEPOSIT_NOT_RECEIVED("The deposit for this order has not arrived yet", 409),
     /** SCRUM-460: from IN_PRODUCTION on, a customer asks and Sales or the coordinator decides. */

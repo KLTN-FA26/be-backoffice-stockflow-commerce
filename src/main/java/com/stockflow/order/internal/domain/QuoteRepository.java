@@ -19,6 +19,9 @@ public interface QuoteRepository {
 
     Optional<Quote> findByRequestId(UUID requestId);
 
+    /** The quote an order was converted from; empty for an order placed at the price list. */
+    Optional<Quote> findByConvertedOrderId(UUID orderId);
+
     /**
      * Serialises creators of the same request id for the rest of the transaction, so a retried
      * "create" finds the first one's quote instead of racing it into the unique index.

@@ -264,6 +264,50 @@ class QuoteService implements Quotes {
     }
 
     @Override
+    @Auditable(action = AuditAction.CREATE, resourceType = "quote", resourceId = "#result?.id()")
+    public QuoteView reorder(CurrentUser user, Reorder command) {
+        UUID requestId = Objects.requireNonNull(command.requestId(), "requestId");
+        UUID orderId = Objects.requireNonNull(command.orderId(), "orderId");
+        Optional<UUID> own = portalCustomer(user);
+        OrderSummary order = orders.findById(orderId)
+                .filter(o -> own.isEmpty() || own.get().equals(o.customerId()))
+                .orElseThrow(() -> new NotFoundException("order", orderId));
+        quotes.lockRequest(requestId);
+        Optional<Quote> earlier = quotes.findByRequestId(requestId);
+        if (earlier.isPresent()) {
+            if (!earlier.get().customerId().equals(order.customerId())) {
+                throw new BusinessException(ErrorCode.IDEMPOTENCY_KEY_REUSED);
+            }
+            return view(earlier.get());
+        }
+        Quote source = quotes.findByConvertedOrderId(orderId).orElseThrow(() -> new BusinessException(
+                ErrorCode.ORDER_NOT_QUOTED, "Order %s was bought at the price list".formatted(order.orderNumber())));
+        UUID customerId = source.customerId();
+        requireNewWorkFor(customerId);
+        Quote.Offer old = source.offer();
+        Instant now = clock.instant();
+        // The deal stays with its own quote and order: every line starts again from today's price list.
+        List<Line> lines = old.lines().stream()
+                .map(line -> new Line(line.blankSku().code(), line.designSnapshotId(), line.printSpec(),
+                        line.acceptedQuantity() == null ? line.quantity() : line.acceptedQuantity(),
+                        catalog.priceSchedule(customerId, line.blankSku().code()).tiers().stream()
+                                .map(t -> new Tier(t.minQuantity(), t.unitPrice().amount())).toList()))
+                .toList();
+        // The source quote's validity window, counted from now; Sales sets the real one before sending.
+        Instant validUntil = now.plus(java.time.Duration.between(source.sentAt(), old.validUntil()));
+        Quote.Offer offer = offer(customerId, new Draft(old.paymentTerm(), old.depositPercent(), validUntil,
+                old.terms(), lines));
+        requireTermAllowed(customerId, offer);
+        Quote quote = Quote.draft(Identifiers.newId(), quotes.nextNumber(today()), requestId, customerId, offer);
+        quotes.save(quote);
+        quotes.recordTransition(quote.id(), 1, null, QuoteStatus.DRAFT, "Reorder of order " + order.orderNumber(),
+                null, now, user.userId());
+        log.info("Quote {} drafted to reorder order {} (from quote {})", quote.quoteNumber(), order.orderNumber(),
+                source.quoteNumber());
+        return view(quote);
+    }
+
+    @Override
     public int expireDue(int limit) {
         Instant now = clock.instant();
         int expired = 0;
@@ -388,8 +432,9 @@ class QuoteService implements Quotes {
     /**
      * kltn-docs 14 step 2: a quote's price starts from the customer's price list - its own tiers for the
      * blank, else its group's or the base price (SCRUM-428). Copied into the quote, so a later price-list
-     * change does not move a quote while it is valid (14 BR-03). Sales may enter tiers instead; no discount
-     * rule applies to that until one is decided (14 BR-10, open question P2).
+     * change does not move a quote while it is valid (14 BR-03). Sales may enter any valid tiers instead: no
+     * discount limit and no internal approval (user decision 2026-10-12, overriding 14 BR-10); the customer
+     * accepts.
      */
     private List<PriceTier> defaultTiers(UUID customerId, Sku blank) {
         PriceSchedule schedule;

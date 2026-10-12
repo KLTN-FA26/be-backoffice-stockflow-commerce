@@ -74,6 +74,11 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
     }
 
     @Override
+    public Optional<Quote> findByConvertedOrderId(UUID orderId) {
+        return jpa.findIdByConvertedOrderId(orderId).flatMap(this::findById);
+    }
+
+    @Override
     public void lockRequest(UUID requestId) {
         entityManager.createNativeQuery("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))")
                 .setParameter("key", "quote-request:" + requestId)
