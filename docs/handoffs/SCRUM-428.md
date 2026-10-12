@@ -29,6 +29,17 @@ pushed, not merged, no Jira change. The SCRUM-429 follow-up is its own commit on
   with the order's blanks, designs, print specifications and quantities, priced from **today's** price list — not
   the old deal. Nothing is payable until Sales sends it and the customer accepts; conversion stays Sales' explicit
   step. An approved design needs no new sample. The draft's history says which order it reorders.
+  A line the list cannot price (no list price, or the blank's total below the list's first tier) is left
+  **explicitly unpriced** (R1): `priced: false`, no tiers, MOQ and totals null; `QUOTE_NOT_PRICED` refuses sending
+  until Sales prices it, so it cannot be accepted or converted either. The old payment-term guard is kept.
+- **Sales notice**: a customer's acceptance, change request or reorder publishes `CustomerActedOnQuote` naming the
+  Sales account that sent the quote (for a reorder, the order's quote); the notification module e-mails it after
+  commit through the configured SMTP server. No active account with an e-mail → a WARN log, nobody guessed (N1).
+- **Group prices** (P7): `V20261014000530` (one price per group and SKU, positive whole VND, grants);
+  `SegmentPrice`, `SegmentPriceService`, `/api/v1/catalog/segment-prices`; product lock, CAS version, audited
+  `segment-price`. Resolution unchanged. Groups and assignment have no API (customer module, see Gaps).
+- **Household identifier** (T1, from official texts): the 12-digit personal ID is accepted next to 10 and 10-3
+  (`TaxCode`, `V20261014000540` widens `ck_customer_tax_code`).
 - **Portal display**: the logged-in ACTIVE customer's own/group/base prices with tiers and MOQ (13 BR-02, BR-05),
   published SKUs only.
 
@@ -54,9 +65,16 @@ acceptance `acceptedUnitPrice`, `acceptedLineTotal`, `acceptedTotal`. Delivery i
 | `GET /api/v1/catalog/products/prices?sku=…` (≤ 50) | CUSTOMER role, ACTIVE linked customer | `[{sku, source, moq, currency, tiers}]` for published, priced SKUs; 403 otherwise, 401 anonymous |
 | `POST /api/v1/orders` (existing) | unchanged | lines priced by the customer's tier; 409 `CUSTOMER_PRICE_BELOW_MOQ`, `CHECKOUT_PRICE_CHANGED` |
 | `POST /api/v1/quotes` (existing) | unchanged | a line's `tiers` may now be omitted → copied from `…/schedule` |
-| `POST /api/v1/orders/{orderId}/reorder` | `sales-orders:CREATE` (the verb that places an order: CUSTOMER, SALES_STAFF, …) | `{requestId}` → 201, a DRAFT quote (`QuoteResponse`); same `requestId` → same quote. Portal: own orders only (404 otherwise), and the draft is visible to the customer once Sales sends it. 409 `ORDER_NOT_QUOTED` for an order bought at the price list (place it again with `POST /orders`); `PRICE_NOT_AVAILABLE`, `QUOTE_BELOW_MOQ`, `PAYMENT_TERM_NOT_ALLOWED`, `CUSTOMER_NOT_ACTIVE` (R1) |
+| `POST /api/v1/orders/{orderId}/reorder` | `sales-orders:CREATE` (the verb that places an order: CUSTOMER, SALES_STAFF, …) | `{requestId}` → 201, a DRAFT quote (`QuoteResponse`); same `requestId` → same quote. Portal: own orders only (404 otherwise), and the draft is visible to the customer once Sales sends it. Unpriced lines where today's list cannot price them (R1). 409 `ORDER_NOT_QUOTED` for an order bought at the price list (place it again with `POST /orders`); `PAYMENT_TERM_NOT_ALLOWED`, `CUSTOMER_NOT_ACTIVE` |
+| `POST /api/v1/quotes/{id}/sending` (existing) | unchanged | 409 `QUOTE_NOT_PRICED` while a line has no price |
+| Quote responses (existing) | — | new: `priced` (quote and line), `moq` nullable for an unpriced line |
+| `GET /api/v1/catalog/segment-prices?segmentId=&sku=…` | `catalog-segment-prices:READ` (E-commerce Admin, System Admin, Sales, Order Coordinator) | the group's prices |
+| `GET …/segment-prices/{segmentId}/{sku}` | READ | `{segmentId, sku, price, currency, version}`; 404 `SEGMENT_PRICE_NOT_FOUND` |
+| `POST …/segment-prices/{segmentId}/{sku}` | CREATE (E-commerce Admin, System Admin) | `{price}` → 201; 409 `CONFLICT`; 404 `SEGMENT_NOT_FOUND` / `VARIANT_NOT_FOUND`; 400 for 0, fractions, negatives, missing |
+| `PUT …/segment-prices/{segmentId}/{sku}` | UPDATE (same) | `{price, version}` → version + 1; 409 `OPTIMISTIC_LOCK`; 400 without version |
+| `DELETE …/segment-prices/{segmentId}/{sku}?version=` | DELETE (same) | removed: the group's customers fall back to their own or the base price |
 
-Writes are audited (`customer-price` CREATE/UPDATE/DELETE).
+Writes are audited (`customer-price`, `segment-price` CREATE/UPDATE/DELETE; `quote` on every quote step).
 
 ## Acceptance → code → test
 
@@ -78,18 +96,34 @@ Writes are audited (`customer-price` CREATE/UPDATE/DELETE).
 | Server totals for the FE form; a line without `tiers` over HTTP (was a 500 in the mapper) | `QuoteWebMapper`, `QuoteResponse` | `QuoteSecurityIntegrationTest.whoMayDoWhat` | PASS |
 | Reorder access: another customer 404 (service and HTTP), anonymous 401, warehouse 403, missing `requestId` 400; a price-list order 409 `ORDER_NOT_QUOTED` for the customer and for Sales; an unknown order 404 | same | IT `QuoteIntegrationTest.aPriceListOrderIsNotRequoted`, `QuoteSecurityIntegrationTest.whoMayReorder` | PASS |
 | Sales units (13/14 BR-11) | pieces only (P6, decided by the user: no carton / conversion in this batch) | — | scope chosen |
+| Sales is told when a customer accepts, asks for changes or reorders; nobody guessed without an active Sales account; no real mail in tests | `CustomerActedOnQuote`, `QuoteService.notifySales`, `QuoteNotificationListener`, `NotificationSender.sendQuoteNotice` | `QuoteNotificationListenerTest` (4); IT: events with the right Sales e-mail for CHANGES_REQUESTED / ACCEPTED / REORDER_REQUESTED (once per click), mail captured by a mocked `JavaMailSenderImpl`, disabled Sales → `salesEmail` null | PASS |
+| R1: a reorder the list cannot price reaches Sales unpriced; cannot be sent / accepted / converted until priced; then the normal flow | `QuoteLine.priced`, `Quote.send`, `QuoteService.listTiers` | `QuoteTest.anUnpricedLineIsExplicitAndCannotBeSent`, `QuoteServiceTest.aReorderOfABlankWithoutAListPrice…` (no list price), IT `aReorderTheListCannotPriceWaitsForSales` (below the 1,000 tier) | PASS |
+| P7: group prices by the admins, read by Sales / coordinator; validation, version, concurrency, audit; resolution own → group → base | `SegmentPriceController`, `SegmentPriceService`, `SegmentPriceRepositoryAdapter`, `V20261014000530` | IT `groupPricesAreTheAdminsAndResolveBetweenOwnAndBase` (401/403/400/404/409, System Admin edits, 2 audit rows, own wins, delete → BASE, 2 racing creates / edits); QA G1–G6 | PASS |
+| T1: 12-digit household identifier accepted, company rule unchanged | `TaxCode`, `V20261014000540` | `CustomerOnboardingTest`, QA B5a/B5b, onboarding ITs | PASS |
 
 ## Gaps
 
-No business question blocks Sprint 2 BE. Open with a working default: P3, P7, T1, R1 in the plan (P1, P2, P4, P5,
-P6 are decided by the user). No notification tells Sales that a reorder
-draft is waiting; it appears in the quote list as a DRAFT. FE is not part of this batch. The quote default's `PRICE_NOT_AVAILABLE` → 400 branch is covered by IT
-`aQuoteLineWithoutTiersForAnUnpricedBlankAsksSalesToEnterThem`. Segment rules have no management API (P7).
+No business question blocks Sprint 2 BE. Still open, not blocking: **N1** (who is told when the quote's Sales
+account is disabled) and **R1b** (reorder when the old payment term is no longer allowed) - concrete cases in the plan.
+
+- **E-mail delivery needs external configuration**: `MAIL_HOST`, `MAIL_PORT`, `MAIL_USERNAME`, `MAIL_PASSWORD`,
+  `MAIL_FROM`, `MAIL_SMTP_AUTH`, `MAIL_SMTP_STARTTLS` of a real SMTP relay. The repository has only `localhost:1025`
+  (Mailpit, which captures and never delivers); the prod profile adds nothing. No delivery has been observed.
+- **Customer groups have no API**: creating `customer.segment` rows and assigning a customer's `segment_id` belong
+  to the customer module (kltn-docs 18 §4.3 step 10) and are not built; tests insert them. Without them the group
+  price API has no groups to price from the back office.
+- Group prices are one price from the first piece, as `pricing_rule` holds; kltn-docs 13 §54 mentions tiers for
+  groups too - not asked for in P7 ("theo catalog hiện có"), so not built.
+- FE is not part of this batch. The quote default's `PRICE_NOT_AVAILABLE` → 400 branch is covered by IT
+  `aQuoteLineWithoutTiersForAnUnpricedBlankAsksSalesToEnterThem`.
 
 ## Verification (2026-10-12, Java 21.0.9, Maven 3.9.9 offline, Docker 28.5.1; targeted tests only - the full suite runs at final integration)
 
 | Run | Result |
 |---|---|
+| T1: `CustomerOnboardingTest` 5, `B2bOnboardingIntegrationTest` 17, `B2bOnboardingMigrationUpgradeTest` 1, `CustomerStatusHistoryMigrationUpgradeTest` 1, `InventoryCatalogMigrationUpgradeTest` 5 (every QA script incl. B5a/B5b) | 29/29 |
+| Sales notice + R1: `QuoteTest` 11, `QuoteServiceTest` 6, `QuoteNotificationListenerTest` 4, `QuoteIntegrationTest` 13, `QuoteSecurityIntegrationTest` 2 | 36/36 |
+| P7: `CustomerPricingIntegrationTest` 8, `ArchitectureTest` 18, `ModularityTest` 3, `MessageBundleTest` 5; then `InventoryCatalogMigrationUpgradeTest` 5 (fresh DB + every `tools/db/qa` script incl. G1–G6), `CustomerPriceMigrationUpgradeTest`, `CustomerStatusHistoryMigrationUpgradeTest`, `QuoteMigrationUpgradeTest`, `ProductionGrantsMigrationUpgradeTest`; `tools/verify.py` | 34/34, 9/9 (first attempt hit a Docker `ryuk` start failure - environment, rerun green), pass |
 | `CustomerPricingIntegrationTest` (security on, real PostgreSQL) | 7/7 (after the P2 override) |
 | After P4/P5: `QuoteTest` 10, `QuoteIntegrationTest` 11, `QuoteSecurityIntegrationTest` 2, `CustomerPricingIntegrationTest` 7, `CustomerPriceTest` 4, `PlaceOrderIntegrationTest` 7, `CreditCheckoutIntegrationTest` 4, `QuoteMigrationUpgradeTest` 1, `InventoryCatalogMigrationUpgradeTest` 5 (every `tools/db/qa` script), `ArchitectureTest`, `ModularityTest`, `MessageBundleTest`; `tools/verify.py` | 77/77, pass |
 | After the reorder: `QuoteIntegrationTest` 9/9, `QuoteSecurityIntegrationTest` 2/2; `ArchitectureTest`, `ModularityTest`, `MessageBundleTest`, `CustomerPricingIntegrationTest`, `PlaceOrderIntegrationTest`, `CreditCheckoutIntegrationTest`, `QuoteMigrationUpgradeTest` 45/45; `tools/verify.py` | pass |

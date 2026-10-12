@@ -1,9 +1,12 @@
 # Sprint 2 lane B — customer pricing (SCRUM-428) + quote integration + SCRUM-429 follow-up
 
-**Checkpoint 2026-10-12:** `8ae1c00` (this plan) → `aca7f05` (SCRUM-429 follow-up) → `2c190ff` (SCRUM-428),
-on `SCRUM-428-customer-pricing` from `4a389a6`. Migrations `V20261014000500` (status history) and `…000510`
-(customer prices). Details, API and test evidence: `docs/handoffs/SCRUM-428.md`. Decided by the user: P1, P2, P4, P5, P6.
-**No business question blocks Sprint 2 BE.** Open, each with a working default: P3, P7, T1, R1 below.
+**Checkpoint 2026-10-12** on `SCRUM-428-customer-pricing` from `4a389a6`: `aca7f05` SCRUM-429 follow-up → `2c190ff`
+SCRUM-428 → `0081cfa` reorder → `ed3107e` P4/P5 → `425f27d` Sales notice → `2b3c4bf` R1 → `272f347` P7 group prices
+→ T1 (household identifier). Migrations `V20261014000500` (status history), `…000510` (customer prices), `…000530`
+(group prices), `…000540` (12-digit identifier). Details, API and evidence: `docs/handoffs/SCRUM-428.md`.
+
+**All lane-B business questions are decided** (P1–P7, R1 by the user; T1 from the official texts). Two narrow
+questions remain and neither blocks Sprint 2 BE - see "Still open" below.
 
 **User decision 2026-10-12 — overrides kltn-docs 14 BR-10 and an earlier same-day P2 answer (5 % limit + admin
 approval), which is withdrawn:** there is **no discount limit and no internal discount approval**. Sales negotiates,
@@ -22,6 +25,23 @@ a negotiated order** reuses its blanks, designs, print specifications and quanti
 never creates a payable order by itself: Sales quotes again and the customer accepts. Reusing an approved design
 needs no new sample (plan D4). Ordering at the price list (portal quick order, SCRUM-190) is not affected. The
 validity question for deal prices is void, as deals are not stored.
+
+**User decisions 2026-10-12 on P3, P7, R1 (final):**
+- **P3** — an admin-managed customer price list applies until the admin edits it; no start / end dates. Versions,
+  audit and the quote / order snapshots stay; a quote keeps its own validity. Nothing in the code had to change.
+- **P7** — E-commerce Admin and System Admin manage customer-group prices; Sales and the Order Coordinator read
+  them, and Sales negotiates per quote. Resolution unchanged: own tiers → group price → base price.
+- **R1** — a customer's reorder of a negotiated order whose blank has no current list price, or whose quantity is
+  below the list's first tier, still becomes a request for Sales: a DRAFT quote whose line is explicitly unpriced
+  (no tiers, `priced: false`), never the old deal or a zero. It cannot be sent - so not accepted or converted - until
+  Sales prices it. The payment-term guard is kept (see "Still open").
+
+**T1, settled from official sources (not a business choice):** since 01/07/2025 the representative's 12-digit
+personal identification number is the tax identifier of a household business (Thông tư 86/2024/TT-BTC art. 5(5),
+art. 38(2); Luật Quản lý thuế 38/2019/QH14 art. 35(7); 12 digits: Luật Căn cước 26/2023/QH15 art. 12(1)). Accepted
+next to the unchanged company rule (10, or 10-3). Official pages read: xaydungchinhsach.chinhphu.vn (Bộ Tài chính
+guidance quoting the Circular), congbao.chinhphu.vn (the Circular, in force 06/02/2025), datafiles.chinhphu.vn
+(Law 26/2023/QH15 gazette text).
 
 **User decisions 2026-10-12 on P4, P5, P6 (final):**
 - **P4** — below the lowest tier of the customer's list, Sales negotiates and enters a quote at the actual quantity
@@ -57,14 +77,26 @@ Develop checked 2026-10-12: still `74d624d`, newest migration `V20261013000600`.
 - Code: `catalog.pricing_rule` holds one `BASE:<sku>` price per SKU used by checkout and the storefront;
   `segment_id` exists but is never read; no customer key, no tiers, no sales units anywhere in orders/quotes.
 
-## Questions without an answer in the documents
+## Still open (not blocking)
 
-| # | Question | Why it matters | Default used until answered |
+| # | Question, with a concrete case | Today |
+|---|---|---|
+| N1 | **Who is told when the Sales account that handled a quote is disabled or gone?** Example: Sales A sent QT-…-0007 and left; the customer accepts (or reorders SO-…-0003). There is no customer → Sales owner in the data. Options: a shared Sales mailbox (configured address), every active Sales user, or nobody (Sales watch the DRAFT / ACCEPTED lists). | nobody is e-mailed; a WARN log says so; the quote itself is in the lists |
+| R1b | **Reorder when the old payment term is no longer allowed.** Example: the deal was CREDIT; the customer's terms are now PREPAID only. Refuse the reorder as now, or still create the request and let Sales choose a term? | refused `PAYMENT_TERM_NOT_ALLOWED` (guard kept, as instructed) |
+
+External configuration, not a question: real e-mail delivery needs `MAIL_HOST` / `MAIL_PORT` / `MAIL_USERNAME` /
+`MAIL_PASSWORD` / `MAIL_FROM` (and `MAIL_SMTP_AUTH`, `MAIL_SMTP_STARTTLS`) of a real SMTP relay in the deployed
+environment. The repository configures only `localhost:1025` (Mailpit in `docker compose`), which captures mail and
+delivers nothing.
+
+## Former questions (decided; kept for the record)
+
+| # | Question | Why it matters | Decision |
 |---|---|---|---|
-| P3 | Does an admin-managed customer price list have **validity dates** (from/until), or is the current list simply the price? (Not about deals: they are not stored.) | effective-dated history | no dates: the current list applies; every change is versioned and audited |
-| P7 | **Group (segment) prices**: who manages them? There is no screen/API for segment rules. | fallback source | resolution reads an active segment rule if one exists; no management API in this lane |
-| R1 | **Reorder that today's price list cannot price**: the blank has no list price, the old quantity is below the customer's list MOQ, or the old payment term is no longer allowed. Should the reorder still reach Sales as an unpriced request? | reorder of rare blanks | refused with `PRICE_NOT_AVAILABLE` / `QUOTE_BELOW_MOQ` / `PAYMENT_TERM_NOT_ALLOWED`; Sales can always draft the quote by hand (`POST /api/v1/quotes`) |
-| T1 | A household business that later supplies a **12-digit personal ID** as its tax identifier: accept it? The company's tax-code rule is unchanged (10 or 10-3). | onboarding follow-up | identifier stays optional; when given, the existing 10 / 10-3 rule applies (a 12-digit value is refused) |
+| P3 | Validity dates on an admin price list? | effective-dated history | **no dates** (user) |
+| P7 | Who manages group (segment) prices? | fallback source | **E-commerce Admin + System Admin; Sales reads** (user); API built |
+| R1 | Reorder the price list cannot price? | reorder of rare blanks | **request reaches Sales unpriced** (user); payment term: R1b |
+| T1 | 12-digit personal ID of a household business? | onboarding | **accepted** - the law since 01/07/2025 (official texts) |
 
 ## SCRUM-429 follow-up (separate commit) — decisions confirmed by the user
 
@@ -92,7 +124,11 @@ Develop checked 2026-10-12: still `74d624d`, newest migration `V20261013000600`.
   and break are read at the quote's total of each blank; responses carry `proposedUnitPrice`, `proposedLineTotal`,
   `proposedTotal`, computed on the server.
 - Reorder (P1 decision): `POST /api/v1/orders/{orderId}/reorder` turns an order converted from a quote into a new
-  DRAFT quote at today's price list; an order bought at the price list answers `ORDER_NOT_QUOTED`.
+  DRAFT quote at today's price list (unpriced lines where the list cannot price, R1); an order bought at the price
+  list answers `ORDER_NOT_QUOTED`.
+- Sales notice: a customer's acceptance, change request or reorder e-mails the Sales account that handled the quote.
+- Group prices (P7): `/api/v1/catalog/segment-prices`.
+- Household identifier (T1): 12 digits accepted.
 
 ## SCRUM-429 follow-up — evidence (commit `aca7f05`)
 
