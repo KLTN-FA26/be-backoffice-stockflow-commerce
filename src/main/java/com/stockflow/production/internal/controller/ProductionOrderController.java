@@ -8,10 +8,16 @@ import com.stockflow.common.security.AuthenticatedUser;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
+import com.stockflow.production.internal.controller.dto.HoldRequest;
+import com.stockflow.production.internal.controller.dto.PrepressRequest;
 import com.stockflow.production.internal.controller.dto.ProductionOrderResponse;
 import com.stockflow.production.internal.controller.dto.ProductionOrderRowResponse;
 import com.stockflow.production.internal.domain.ProductionOrder;
 import com.stockflow.production.internal.service.ProductionOrders;
+import com.stockflow.production.internal.service.ProductionWorkflow;
+import jakarta.validation.Valid;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -44,10 +50,12 @@ import java.util.UUID;
 class ProductionOrderController {
 
     private final ProductionOrders orders;
+    private final ProductionWorkflow workflow;
     private final ProductionWebMapper mapper;
 
-    ProductionOrderController(ProductionOrders orders, ProductionWebMapper mapper) {
+    ProductionOrderController(ProductionOrders orders, ProductionWorkflow workflow, ProductionWebMapper mapper) {
         this.orders = orders;
+        this.workflow = workflow;
         this.mapper = mapper;
     }
 
@@ -79,5 +87,41 @@ class ProductionOrderController {
     public ApiResponse<ProductionOrderResponse> get(@PathVariable UUID productionOrderId,
                                                     @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(mapper.toResponse(orders.get(user, productionOrderId)));
+    }
+
+    @GetMapping("/{productionOrderId}/print-file")
+    @Operation(summary = "A short-lived link to the PRINT_READY file of the locked design, verified on the way")
+    @RequiresPermission(resource = ProductionResources.PRODUCTION_ORDERS, action = Action.READ)
+    public ApiResponse<ProductionWorkflow.PrintFile> printFile(@PathVariable UUID productionOrderId,
+                                                               @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(workflow.printFile(user, productionOrderId));
+    }
+
+    @PostMapping("/{productionOrderId}/prepress")
+    @Operation(summary = "Prepress verdict: PASS -> READY (checksum re-verified, BR-PRD-02); FAIL -> ON_HOLD FILE_REJECTED, Sales notified")
+    @RequiresPermission(resource = ProductionResources.PRODUCTION_ORDERS, action = Action.UPDATE)
+    public ApiResponse<ProductionOrderResponse> prepress(@PathVariable UUID productionOrderId,
+                                                         @Valid @RequestBody PrepressRequest request,
+                                                         @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(mapper.toResponse(workflow.prepress(user, productionOrderId,
+                request.decision() == PrepressRequest.Decision.PASS, request.note())));
+    }
+
+    @PostMapping("/{productionOrderId}/hold")
+    @Operation(summary = "Stop work with a reason (bad file, blanks short, machine down, waiting for the customer)")
+    @RequiresPermission(resource = ProductionResources.PRODUCTION_ORDERS, action = Action.UPDATE)
+    public ApiResponse<ProductionOrderResponse> hold(@PathVariable UUID productionOrderId,
+                                                     @Valid @RequestBody HoldRequest request,
+                                                     @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(mapper.toResponse(workflow.hold(user, productionOrderId, request.reason(), request.note())));
+    }
+
+    /** The Warehouse Manager resolves a hold (Jira 401): APPROVE, which the print shop does not hold. */
+    @PostMapping("/{productionOrderId}/resume")
+    @Operation(summary = "Resume a held order to the state it was in")
+    @RequiresPermission(resource = ProductionResources.PRODUCTION_ORDERS, action = Action.APPROVE)
+    public ApiResponse<ProductionOrderResponse> resume(@PathVariable UUID productionOrderId,
+                                                       @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(mapper.toResponse(workflow.resume(user, productionOrderId)));
     }
 }

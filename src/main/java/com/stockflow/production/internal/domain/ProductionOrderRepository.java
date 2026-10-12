@@ -10,6 +10,18 @@ public interface ProductionOrderRepository {
 
     Optional<ProductionOrder> findById(UUID id);
 
+    /**
+     * Locks the row, then loads it: under contention the waiting caller sees the winner's committed state
+     * instead of failing on the version it had read (the defect SCRUM-448 found in load-then-lock).
+     */
+    Optional<ProductionOrder> findByIdForUpdate(UUID id);
+
+    /** Writes the workflow columns of an existing order; flushed, so a CHECK fails here. */
+    void save(ProductionOrder order);
+
+    /** One immutable status-history row. */
+    void recordTransition(UUID productionOrderId, ProductionOrder.Transition transition, Instant at, UUID by);
+
     /** The root production order of a sample request or an order line (subcontracted children excluded). */
     Optional<ProductionOrder> findBySource(ProductionOrder.Type type, UUID sourceId);
 

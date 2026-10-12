@@ -94,4 +94,52 @@ class ProductionOrderTest {
         assertThatThrownBy(() -> new ProductionOrder.Work(warehouse, new Sku("CUP-PP-500"), UUID.randomUUID(),
                 " ", 1, null)).isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    void prepressPassRecordsWhoCheckedAndMovesToReady() {
+        ProductionOrder order = forLine(sample, work);
+        UUID staff = UUID.randomUUID();
+        java.time.Instant at = java.time.Instant.parse("2026-10-14T03:00:00Z");
+        ProductionOrder.Transition t = order.passPrepress(staff, at);
+        assertThat(t).isEqualTo(new ProductionOrder.Transition(ProductionOrder.Status.PENDING_PREPRESS,
+                ProductionOrder.Status.READY, "Prepress passed"));
+        assertThat(order.status()).isEqualTo(ProductionOrder.Status.READY);
+        assertThat(order.prepressCheckedBy()).isEqualTo(staff);
+        assertThatThrownBy(() -> order.passPrepress(staff, at)).as("once")
+                .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
+    }
+
+    @Test
+    void holdRemembersTheStateAndResumeReturnsToIt() {
+        java.time.Instant at = java.time.Instant.parse("2026-10-14T03:00:00Z");
+        ProductionOrder order = forLine(sample, work);
+        order.passPrepress(UUID.randomUUID(), at);
+        order.hold(ProductionOrder.HoldReason.MACHINE_DOWN, " press 2 ", at);
+        assertThat(order.status()).isEqualTo(ProductionOrder.Status.ON_HOLD);
+        assertThat(order.statusBeforeHold()).isEqualTo(ProductionOrder.Status.READY);
+        assertThat(order.holdNote()).isEqualTo("press 2");
+        assertThatThrownBy(() -> order.hold(ProductionOrder.HoldReason.MACHINE_DOWN, null, at)).as("already held")
+                .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
+
+        assertThat(order.resume().to()).isEqualTo(ProductionOrder.Status.READY);
+        assertThat(order.statusBeforeHold()).isNull();
+        assertThat(order.holdReason()).isNull();
+        assertThatThrownBy(order::resume).as("not held")
+                .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
+        assertThatThrownBy(() -> order.hold(ProductionOrder.HoldReason.OTHER, " ", at)).as("OTHER says what")
+                .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(order.status()).isEqualTo(ProductionOrder.Status.READY);
+    }
+
+    @Test
+    void finishedOrQcOrdersCannotBeHeld() {
+        java.time.Instant at = java.time.Instant.parse("2026-10-14T03:00:00Z");
+        for (ProductionOrder.Status status : List.of(ProductionOrder.Status.QC, ProductionOrder.Status.COMPLETED,
+                ProductionOrder.Status.CANCELLED, ProductionOrder.Status.ON_HOLD)) {
+            ProductionOrder stopped = ProductionOrder.restore(UUID.randomUUID(), "LSX-1", ProductionOrder.Type.ORDER,
+                    status, null, order, line, sample, work);
+            assertThatThrownBy(() -> stopped.hold(ProductionOrder.HoldReason.MACHINE_DOWN, null, at)).as(status.name())
+                    .isInstanceOf(BusinessException.class);
+        }
+    }
 }

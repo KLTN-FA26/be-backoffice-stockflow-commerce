@@ -42,6 +42,34 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
     }
 
     @Override
+    public Optional<ProductionOrder> findByIdForUpdate(UUID id) {
+        if (entityManager.createNativeQuery("SELECT id FROM production.production_order WHERE id = :id FOR UPDATE")
+                .setParameter("id", id).getResultList().isEmpty()) {
+            return Optional.empty();
+        }
+        return jpa.findById(id).map(entity -> {
+            entityManager.refresh(entity);
+            return toDomain(entity);
+        });
+    }
+
+    @Override
+    public void save(ProductionOrder order) {
+        ProductionOrderJpaEntity entity = jpa.findById(order.id())
+                .orElseThrow(() -> new IllegalStateException("No production order " + order.id()));
+        entity.applyWorkflow(order);
+        jpa.saveAndFlush(entity);
+    }
+
+    @Override
+    public void recordTransition(UUID productionOrderId, ProductionOrder.Transition transition, Instant at, UUID by) {
+        entityManager.persist(new ProductionOrderStatusHistoryJpaEntity(Identifiers.newId(), productionOrderId,
+                transition.from() == null ? null : transition.from().name(), transition.to().name(),
+                transition.reason(), at, by));
+        entityManager.flush();
+    }
+
+    @Override
     public Optional<ProductionOrder> findBySource(ProductionOrder.Type type, UUID sourceId) {
         return findEntity(type, sourceId).map(ProductionOrderRepositoryAdapter::toDomain);
     }
@@ -154,11 +182,14 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
         return ProductionOrder.restore(e.getId(), e.getOrderNumber(), e.getType(), e.getStatus(),
                 e.getSampleRequestId(), e.getSalesOrderId(), e.getSalesOrderLineId(), e.getApprovedSampleId(),
                 new ProductionOrder.Work(e.getWarehouseId(), new Sku(e.getBlankSku()), e.getDesignSnapshotId(),
-                        e.getDesignChecksum(), e.getPlannedQuantity(), e.getDueDate()));
+                        e.getDesignChecksum(), e.getPlannedQuantity(), e.getDueDate()))
+                .withWorkflow(e.getStatusBeforeHold(), e.getHoldReason(), e.getHoldNote(), e.getPrepressCheckedBy(),
+                        e.getPrepressCheckedAt());
     }
 
     private static Row toRow(ProductionOrderJpaEntity e) {
-        return new Row(e.getId(), e.getOrderNumber(), e.getType(), e.getMode(), e.getStatus(), e.getHoldReason(),
+        return new Row(e.getId(), e.getOrderNumber(), e.getType(), e.getMode(), e.getStatus(),
+                e.getHoldReason() == null ? null : e.getHoldReason().name(),
                 e.getWarehouseId(), e.getBlankSku(), e.getDesignSnapshotId(), e.getPlannedQuantity(),
                 e.getGoodQuantity(), e.getDueDate(), e.getSampleRequestId(), e.getSalesOrderId(),
                 e.getSalesOrderLineId(), e.getParentId(), e.getCreatedAt());

@@ -159,6 +159,10 @@ public enum ErrorCode {
     QUOTE_NOT_OPEN("The quote is no longer open", 409),
     /** SCRUM-394: a round that ended in CHANGES_REQUESTED is followed by exactly one next round. */
     SAMPLE_NEXT_ROUND_EXISTS("The next round of this sample request has already been started", 409),
+    /** SCRUM-396..401: a production order moves only along 03-state-machines §16. */
+    INVALID_PRODUCTION_TRANSITION("This production order cannot move to that status right now", 409),
+    /** BR-PRD-02: the print file no longer matches the design the order locked. */
+    PRINT_FILE_MISMATCH("The print file does not match the locked design", 409),
     /** BR-PRD-01: a source already has a production order, and it describes different work. */
     PRODUCTION_SOURCE_CONFLICT("A production order already exists for this source with different content", 409),
     /** SCRUM-448: a quote moves only along 03-state-machines §18. */

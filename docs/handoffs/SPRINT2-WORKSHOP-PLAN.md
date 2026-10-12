@@ -98,7 +98,7 @@ tables, can start in parallel on read models only). If the coordinator prefers, 
 
 | BE | State | Commit | Tests |
 |---|---|---|---|
-| 407 | in progress | — | — |
+| 407 | **done (BE)**: `GET …/{id}/print-file` (READ), `POST …/{id}/prepress {decision PASS\|FAIL, note}` (UPDATE; PASS re-hashes the stored file, 409 `PRINT_FILE_MISMATCH`; FAIL → ON_HOLD `FILE_REJECTED` + `ProductionOrderHeld`), `POST …/{id}/hold {reason, note}` (UPDATE), `POST …/{id}/resume` (APPROVE, Warehouse Manager). Lock-before-load on the order row. Not yet: notification delivery to Sales (event published; listener not written) | see git log | `ProductionOrderTest` 8, `ProductionWorkflowIntegrationTest` 3 (real file re-hash, tampered file, concurrent holds) |
 | 409 | blocked in part by Q1 (ORDER path planned) | — | — |
 | 411 | planned (Q4) | — | — |
 | 418 | planned | — | — |

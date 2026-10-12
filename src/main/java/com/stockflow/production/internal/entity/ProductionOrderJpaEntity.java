@@ -15,8 +15,8 @@ import java.util.UUID;
 /**
  * {@code production.production_order} (V20261010000200), as far as creating and reading an order needs.
  *
- * <p>The columns written by the workshop steps that come later — quantities beyond the plan, hold,
- * prepress, completion, cancellation, mode — are mapped read-only ({@code insertable = false,
+ * <p>Prepress and hold columns are written through {@link #applyWorkflow}. The columns the later
+ * workshop steps own — quantities beyond the plan, completion, cancellation, mode — are mapped read-only ({@code insertable = false,
  * updatable = false}): a new row takes the table's defaults ({@code IN_HOUSE}, zero quantities), and
  * nothing in this story can overwrite what a later step wrote. The subcontracting columns
  * (SCRUM-433/434) are not mapped at all; that work maps them when it owns them.</p>
@@ -39,8 +39,19 @@ public class ProductionOrderJpaEntity extends BaseEntity {
     @Column(name = "status", nullable = false, length = 32)
     private ProductionOrder.Status status;
 
-    @Column(name = "hold_reason", insertable = false, updatable = false)
-    private String holdReason;
+    @Enumerated(EnumType.STRING)
+    @Column(name = "status_before_hold", length = 32)
+    private ProductionOrder.Status statusBeforeHold;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "hold_reason", length = 32)
+    private ProductionOrder.HoldReason holdReason;
+
+    @Column(name = "hold_note", length = 1000)
+    private String holdNote;
+
+    @Column(name = "prepress_checked_by")
+    private UUID prepressCheckedBy;
 
     @Column(name = "sample_request_id", updatable = false)
     private UUID sampleRequestId;
@@ -87,7 +98,7 @@ public class ProductionOrderJpaEntity extends BaseEntity {
     @Column(name = "scrap_quantity", insertable = false, updatable = false)
     private int scrapQuantity;
 
-    @Column(name = "prepress_checked_at", insertable = false, updatable = false)
+    @Column(name = "prepress_checked_at")
     private Instant prepressCheckedAt;
 
     @Column(name = "completed_at", insertable = false, updatable = false)
@@ -119,11 +130,24 @@ public class ProductionOrderJpaEntity extends BaseEntity {
         this.plannedQuantity = order.work().plannedQuantity();
     }
 
+    /** The workflow columns the aggregate owns (SCRUM-396 onwards). */
+    public void applyWorkflow(ProductionOrder order) {
+        this.status = order.status();
+        this.statusBeforeHold = order.statusBeforeHold();
+        this.holdReason = order.holdReason();
+        this.holdNote = order.holdNote();
+        this.prepressCheckedBy = order.prepressCheckedBy();
+        this.prepressCheckedAt = order.prepressCheckedAt();
+    }
+
     public String getOrderNumber() { return orderNumber; }
     public ProductionOrder.Type getType() { return type; }
     public String getMode() { return mode; }
     public ProductionOrder.Status getStatus() { return status; }
-    public String getHoldReason() { return holdReason; }
+    public ProductionOrder.HoldReason getHoldReason() { return holdReason; }
+    public ProductionOrder.Status getStatusBeforeHold() { return statusBeforeHold; }
+    public String getHoldNote() { return holdNote; }
+    public UUID getPrepressCheckedBy() { return prepressCheckedBy; }
     public UUID getSampleRequestId() { return sampleRequestId; }
     public UUID getSalesOrderId() { return salesOrderId; }
     public UUID getSalesOrderLineId() { return salesOrderLineId; }
