@@ -28,6 +28,8 @@ import com.stockflow.order.internal.domain.QuoteLine;
 import com.stockflow.order.internal.domain.QuoteRepository;
 import com.stockflow.order.internal.domain.QuoteStatus;
 import com.stockflow.order.internal.repository.QuoteSearch;
+import com.stockflow.catalog.api.CatalogService;
+import com.stockflow.catalog.api.PriceSchedule;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Sort;
@@ -75,6 +77,7 @@ class QuoteService implements Quotes {
             .of("createdAt", "validUntil", "quoteNumber", "status")
             .withDefault("createdAt", Sort.Direction.DESC);
 
+    private final CatalogService catalog;
     private final QuoteRepository quotes;
     private final QuoteSearch search;
     private final ProductionRecords production;
@@ -86,7 +89,9 @@ class QuoteService implements Quotes {
     private final Clock clock;
 
     QuoteService(QuoteRepository quotes, QuoteSearch search, ProductionRecords production, CustomerService customers,
-                 DesignService designs, QuotedOrders quotedOrders, OrderService orders, ObjectMapper json, Clock clock) {
+                 DesignService designs, QuotedOrders quotedOrders, OrderService orders, ObjectMapper json, Clock clock,
+                 CatalogService catalog) {
+        this.catalog = catalog;
         this.quotes = quotes;
         this.search = search;
         this.production = production;
@@ -370,13 +375,33 @@ class QuoteService implements Quotes {
         for (Line line : draft.lines()) {
             Sku blank = new Sku(line.blankSku());
             designs.verifySnapshotForSku(line.designSnapshotId(), customerId, blank.code());
-            List<PriceTier> tiers = line.tiers() == null ? List.of() : line.tiers().stream()
-                    .map(t -> PriceTier.of(t.minQuantity(), t.unitPrice())).toList();
+            List<PriceTier> tiers = line.tiers() == null || line.tiers().isEmpty()
+                    ? defaultTiers(customerId, blank)
+                    : line.tiers().stream().map(t -> PriceTier.of(t.minQuantity(), t.unitPrice())).toList();
             lines.add(new QuoteLine(Identifiers.newId(), lineNo++, blank, line.designSnapshotId(), line.printSpec(),
                     line.quantity(), tiers, null, null));
         }
         return new Quote.Offer(draft.paymentTerm(), draft.depositPercent(),
                 draft.validUntil().truncatedTo(java.time.temporal.ChronoUnit.MICROS), draft.terms(), lines);
+    }
+
+    /**
+     * kltn-docs 14 step 2: a quote's price starts from the customer's price list - its own tiers for the
+     * blank, else its group's or the base price (SCRUM-428). Copied into the quote, so a later price-list
+     * change does not move a quote while it is valid (14 BR-03). Sales may enter tiers instead; no discount
+     * rule applies to that until one is decided (14 BR-10, open question P2).
+     */
+    private List<PriceTier> defaultTiers(UUID customerId, Sku blank) {
+        PriceSchedule schedule;
+        try {
+            schedule = catalog.priceSchedule(customerId, blank.code());
+        } catch (BusinessException noPrice) {
+            if (noPrice.errorCode() != ErrorCode.PRICE_NOT_AVAILABLE) throw noPrice;
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "No price list price for " + blank.code() + "; enter the line's price tiers");
+        }
+        return schedule.tiers().stream()
+                .map(t -> PriceTier.of(t.minQuantity(), t.unitPrice().amount())).toList();
     }
 
     private Quotes.SampleGate gate(UUID customerId, QuoteLine line) {

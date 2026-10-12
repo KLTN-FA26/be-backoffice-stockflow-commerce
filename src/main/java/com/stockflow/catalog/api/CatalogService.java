@@ -15,6 +15,28 @@ package com.stockflow.catalog.api;
  */
 public interface CatalogService {
 
-    /** Current published prices, locked for the caller's checkout transaction. */
+    /** Current published base prices, locked for the caller's checkout transaction. No customer. */
     java.util.Map<String, com.stockflow.common.domain.Money> checkoutPrices(java.util.Set<String> skus);
+
+    /**
+     * The unit prices of an account order, locked for the caller's checkout transaction like
+     * {@link #checkoutPrices(java.util.Set)}: for each SKU the customer's own tier for the order's total
+     * quantity of that SKU, else its group's price, else the base price (kltn-docs 13 §3; locked into
+     * the order by the caller, 14 BR-03).
+     *
+     * @param quantities units per SKU, summed over the order's lines
+     * @throws com.stockflow.common.error.BusinessException {@code PRODUCT_NOT_PURCHASABLE},
+     *         {@code PRICE_NOT_AVAILABLE}, {@code CUSTOMER_PRICE_BELOW_MOQ}, {@code CUSTOMER_NOT_FOUND}
+     */
+    java.util.Map<String, com.stockflow.common.domain.Money> checkoutPrices(
+            java.util.UUID customerId, java.util.Map<String, Integer> quantities);
+
+    /**
+     * The prices this customer gets for a SKU, as tiers - what a quote line starts from (14 step 2).
+     * Reads only; takes no lock.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code PRICE_NOT_AVAILABLE},
+     *         {@code CUSTOMER_NOT_FOUND}
+     */
+    PriceSchedule priceSchedule(java.util.UUID customerId, String sku);
 }

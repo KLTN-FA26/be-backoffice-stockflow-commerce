@@ -63,8 +63,9 @@ class QuoteServiceTest {
     private final DesignService designs = mock(DesignService.class);
     private final QuotedOrders quotedOrders = mock(QuotedOrders.class);
     private final OrderService orders = mock(OrderService.class);
+    private final com.stockflow.catalog.api.CatalogService catalog = mock(com.stockflow.catalog.api.CatalogService.class);
     private final QuoteService service = new QuoteService(quotes, search, production, customers, designs, quotedOrders,
-            orders, new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC));
+            orders, new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC), catalog);
 
     private final UUID customer = UUID.randomUUID();
     private final UUID portalUser = UUID.randomUUID();

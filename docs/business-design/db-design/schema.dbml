@@ -599,6 +599,20 @@ Enum customer.customer_status {
   BLOCKED
 }
 
+Enum customer.customer_status_history_from_status {
+  PENDING_ACTIVATION
+  ACTIVE
+  INACTIVE
+  BLOCKED
+}
+
+Enum customer.customer_status_history_to_status {
+  PENDING_ACTIVATION
+  ACTIVE
+  INACTIVE
+  BLOCKED
+}
+
 Enum payment.cod_remittance_status {
   PENDING
   RECEIVED
@@ -2457,6 +2471,21 @@ Table customer.customer [headercolor: #D68910] {
   tax_code         varchar(14)
 }
 
+Table customer.customer_status_history [headercolor: #D68910] {
+  id               uuid [pk]
+  customer_id      uuid [not null]
+  from_status      customer.customer_status_history_from_status
+  to_status        customer.customer_status_history_to_status [not null]
+  reason           varchar(1000)
+  changed_by       uuid
+  changed_at       timestamptz [not null]
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+}
+
 Table customer.segment [headercolor: #D68910] {
   id               uuid [pk]
   code             varchar(64) [not null, unique]
@@ -2856,6 +2885,37 @@ Table catalog.catalog_entry [headercolor: #1B998B] {
   last_modified_by varchar(100)
   product_id       uuid
   source_revision  bigint
+}
+
+Table catalog.customer_price [headercolor: #1B998B] {
+  id               uuid [pk]
+  customer_id      uuid [not null]
+  sku              varchar(64) [not null]
+  currency         varchar(3) [not null, default: 'VND']
+  note             varchar(500)
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+  indexes {
+    (customer_id, sku) [unique]
+  }
+}
+
+Table catalog.customer_price_tier [headercolor: #1B998B] {
+  id                uuid [pk]
+  customer_price_id uuid [not null]
+  min_quantity      int [not null]
+  unit_price        decimal(18,2) [not null]
+  version           bigint [not null, default: 0]
+  created_at        timestamptz [not null]
+  created_by        varchar(100)
+  last_modified_at  timestamptz
+  last_modified_by  varchar(100)
+  indexes {
+    (customer_price_id, min_quantity) [unique]
+  }
 }
 
 Table catalog.pricing_rule [headercolor: #1B998B] {
@@ -3447,6 +3507,8 @@ Ref: customer.credit_profile.approved_by > identity.app_user.id
 Ref: customer.credit_profile.customer_id > customer.customer.id [delete: cascade]
 Ref: customer.customer.segment_id > customer.segment.id
 Ref: customer.customer.user_id > identity.app_user.id [delete: restrict]
+Ref: customer.customer_status_history.changed_by > identity.app_user.id
+Ref: customer.customer_status_history.customer_id > customer.customer.id [delete: cascade]
 Ref: payment.cod_remittance.reconciled_by > identity.app_user.id
 Ref: payment.cod_remittance_line.payment_id > payment.payment.id [delete: restrict]
 Ref: payment.cod_remittance_line.remittance_id > payment.cod_remittance.id [delete: cascade]
@@ -3501,6 +3563,9 @@ Ref: fulfillment.shipment.order_id > ordering.customer_order.id [delete: restric
 Ref: fulfillment.shipment.pack_id > fulfillment.pack.id
 Ref: fulfillment.shipment_event.shipment_id > fulfillment.shipment.id [delete: cascade]
 Ref: catalog.catalog_entry.sku > product.variants.sku [delete: restrict]
+Ref: catalog.customer_price.customer_id > customer.customer.id [delete: cascade]
+Ref: catalog.customer_price.sku > product.variants.sku [delete: restrict]
+Ref: catalog.customer_price_tier.customer_price_id > catalog.customer_price.id [delete: cascade]
 Ref: catalog.pricing_rule.segment_id > customer.segment.id [delete: restrict]
 Ref: catalog.pricing_rule.sku > product.variants.sku [delete: restrict]
 Ref: catalog.product_listing.product_id > product.products.id
@@ -3624,6 +3689,7 @@ TableGroup customer_group [color: #D68910] {
   customer.address
   customer.credit_profile
   customer.customer
+  customer.customer_status_history
   customer.segment
 }
 
@@ -3658,6 +3724,8 @@ TableGroup fulfillment_group [color: #2C7873] {
 
 TableGroup catalog_group [color: #1B998B] {
   catalog.catalog_entry
+  catalog.customer_price
+  catalog.customer_price_tier
   catalog.pricing_rule
   catalog.product_listing
   catalog.promotion

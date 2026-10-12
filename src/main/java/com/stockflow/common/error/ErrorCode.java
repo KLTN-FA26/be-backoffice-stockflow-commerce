@@ -29,6 +29,9 @@ public enum ErrorCode {
     PRODUCT_GALLERY_REQUIRED("An approved non-empty product gallery is required", 409),
     PRODUCT_NOT_PURCHASABLE("This product is not currently available for purchase", 409),
     PRICE_NOT_AVAILABLE("No selling price is available for this SKU", 409),
+    /** kltn-docs 13 BR-05: the first tier of a customer's own price is its minimum order quantity. */
+    CUSTOMER_PRICE_BELOW_MOQ("The quantity is below this customer's minimum order quantity for the SKU", 409),
+    CUSTOMER_PRICE_NOT_FOUND("This customer has no own price for the SKU", 404),
     CATALOG_PRICE_AMBIGUOUS("More than one selling price has the same priority", 409),
     MALFORMED_REQUEST("The request body could not be read", 400),
     UNSUPPORTED_PARAMETER("Unsupported parameter value", 400),

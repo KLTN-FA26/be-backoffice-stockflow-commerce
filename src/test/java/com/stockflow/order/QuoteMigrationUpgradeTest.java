@@ -44,7 +44,9 @@ class QuoteMigrationUpgradeTest {
                 Map<String, Long> versionsBefore = versions(db);
                 List<String> salesBefore = grants(db, "SALES_STAFF");
 
-                var result = flyway(postgres, null).migrate();
+                // Exactly this migration: later ones (V20261014000510, catalog-customer-prices) advance the
+                // same role versions, and this test is about what V20261014000300 does.
+                var result = flyway(postgres, MIGRATION).migrate();
                 assertThat(result.migrations).extracting(m -> m.version).contains(MIGRATION);
 
                 assertThat(grants(db, "SALES_STAFF")).containsAll(salesBefore)

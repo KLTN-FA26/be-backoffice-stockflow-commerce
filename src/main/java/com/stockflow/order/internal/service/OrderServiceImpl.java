@@ -189,13 +189,15 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                 && command.lines().stream().anyMatch(line -> line.designSnapshotId() != null)) {
             throw new BusinessException(ErrorCode.DESIGN_QUOTE_REQUIRED);
         }
+        // SCRUM-428: the customer's own tier for the order's total of each SKU, else its group's or the
+        // base price (kltn-docs 13 §3); the client's price is only what it expects to pay (agreedPrice).
         var sellingPrices =
                 command.snapshotCustomer() && !quotePriced
-                        ? catalog.checkoutPrices(
+                        ? catalog.checkoutPrices(command.customerId(),
                                 command.lines().stream()
                                         .filter(line -> line.designSnapshotId() == null)
-                                        .map(line -> line.sku().code())
-                                        .collect(Collectors.toSet()))
+                                        .collect(Collectors.toMap(line -> line.sku().code(),
+                                                PlaceOrderCommand.Line::quantity, Integer::sum)))
                         : Map.<String, Money>of();
         LocalDate today = LocalDate.ofInstant(clock.instant(), ZoneOffset.UTC);
         OrderNumber orderNumber = repository.nextOrderNumber(today);
