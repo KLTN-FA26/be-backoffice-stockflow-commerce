@@ -197,9 +197,33 @@ class StockItemRepositoryAdapter implements StockItemRepository {
      * the UPDATE so their collections match the rows, then saved as usual for {@code on_hand} and
      * {@code reserved}.
      */
+    /**
+     * The marker is a transaction-local setting naming the row ({@code inventory.enforce_sku_policy},
+     * V20261014000450); it is set just before this row's UPDATE is flushed and cleared right after, so no other
+     * row and no later statement of the transaction is covered by it.
+     */
+    @Override
+    public StockItem saveMerged(StockItem stockItem) {
+        entityManager.flush();
+        mergeMarker(stockItem.id().value().toString());
+        try {
+            StockItem saved = save(stockItem);
+            entityManager.flush();
+            return saved;
+        } finally {
+            mergeMarker("");
+        }
+    }
+
+    private void mergeMarker(String value) {
+        entityManager.createNativeQuery("SELECT set_config('stockflow.same_receipt_merge', :value, true)")
+                .setParameter("value", value).getSingleResult();
+    }
+
     @Override
     public void saveHandOver(StockItem from, StockItem to, ReservationId moved) {
-        if (!jpa.existsById(to.id().value())) {
+        boolean merged = jpa.existsById(to.id().value());
+        if (!merged) {
             StockItemJpaEntity fresh = StockItemPersistenceMapper.toNewEntity(to);
             fresh.getReservations().removeIf(r -> r.getId().equals(moved.value()));
             jpa.save(fresh);
@@ -218,7 +242,11 @@ class StockItemRepositoryAdapter implements StockItemRepository {
             jpa.findByIdWithReservations(item.id().value()).ifPresent(entityManager::refresh);
         }
         save(from);
-        save(to);
+        if (merged) {
+            saveMerged(to);
+        } else {
+            save(to);
+        }
     }
 
     @Override

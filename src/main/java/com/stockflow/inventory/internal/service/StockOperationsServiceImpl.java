@@ -199,13 +199,13 @@ class StockOperationsServiceImpl implements StockOperations {
 
         StockStatus before = source.status();
         source.moveOut(quantity);
+        stockItems.save(source);
         if (destination == null) {
-            destination = StockItem.arrivedAs(source, to, quantity, arriving);
+            stockItems.save(StockItem.arrivedAs(source, to, quantity, arriving));
         } else {
             destination.moveIn(quantity);
+            stockItems.saveMerged(destination);
         }
-        stockItems.save(source);
-        stockItems.save(destination);
 
         Instant now = clock.instant();
         StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.MOVE,
@@ -397,13 +397,13 @@ class StockOperationsServiceImpl implements StockOperations {
         Instant now = clock.instant();
         takeFromHold(source, hold, quantity, ReleaseReason.RETURNED_FROM_PRODUCTION, now);
         source.moveOut(quantity);
+        stockItems.save(source);
         if (destination == null) {
-            destination = StockItem.arrivedAs(source, to, quantity, StockStatus.AVAILABLE);
+            stockItems.save(StockItem.arrivedAs(source, to, quantity, StockStatus.AVAILABLE));
         } else {
             destination.moveIn(quantity);
+            stockItems.saveMerged(destination);
         }
-        stockItems.save(source);
-        stockItems.save(destination);
         StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.MOVE, source.sku(),
                 source.lotNumber(), from, to, quantity.value(), StockStatus.IN_PRODUCTION, StockStatus.AVAILABLE,
                 StockMovement.ReferenceType.PRODUCTION_ORDER, command.productionOrderId(),

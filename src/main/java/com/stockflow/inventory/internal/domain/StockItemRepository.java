@@ -104,4 +104,13 @@ public interface StockItemRepository {
     void saveHandOver(StockItem from, StockItem to, ReservationId moved);
 
     StockItem save(StockItem stockItem);
+
+    /**
+     * Save a layer that has just taken units of <b>its own receipt</b> from another location (a move, a hold
+     * handed over). The database refuses to raise an existing FIFO layer's {@code on_hand} — replenishment
+     * must be a new layer, or FIFO loses the age of the incoming units — and this tells it, for this row and
+     * this statement only, that nothing new is entering: the units carry the same receipt time, lot, expiry
+     * and serial, which the database checks as before.
+     */
+    StockItem saveMerged(StockItem stockItem);
 }

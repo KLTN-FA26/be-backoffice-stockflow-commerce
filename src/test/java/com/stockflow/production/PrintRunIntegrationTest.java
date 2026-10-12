@@ -707,7 +707,8 @@ class PrintRunIntegrationTest {
                 split(3, ProductionOrder.SubcontractMethod.SUPPLIED_BLANKS, printSubcontractor()));
 
         assertThat(inventory.availableToPromise(BLANK)).as("moved, not freed").isEqualTo(atp);
-        assertThat(inventory.productionHolds(child.summary().id())).extracting(h -> h.quantity()).containsExactly(3);
+        assertThat(inventory.productionHolds(child.summary().id()).stream().mapToInt(h -> h.quantity()).sum())
+                .as("3 held for the child, from however many layers").isEqualTo(3);
         assertThatThrownBy(() -> issues.issue(storekeeper, child.summary().id(),
                 new MaterialIssues.Issue(UUID.randomUUID(), PRINT_SHOP, null))).as("not printed here")
                 .extracting(PrintRunIntegrationTest::code).isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
