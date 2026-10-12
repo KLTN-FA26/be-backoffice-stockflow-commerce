@@ -2,14 +2,17 @@
 
 **Checkpoint 2026-10-12:** `8ae1c00` (this plan) → `aca7f05` (SCRUM-429 follow-up) → `2c190ff` (SCRUM-428),
 on `SCRUM-428-customer-pricing` from `4a389a6`. Migrations `V20261014000500` (status history) and `…000510`
-(customer prices). Details, API and test evidence: `docs/handoffs/SCRUM-428.md`. Still open: P1–P7 and T1 below;
-discount policy (P2) not implemented.
+(customer prices). Details, API and test evidence: `docs/handoffs/SCRUM-428.md`. Still open: P1, P3–P7 and T1
+below.
 
-**Decision P2 (user, 2026-10-12):** SALES_STAFF may discount up to 5% below the customer's price list on their own;
-above 5% needs approval by ECOMMERCE_ADMIN or SYSTEM_ADMIN **before the quote is sent**. No new role: a separate
-discount-approval permission on existing roles, distinct from the CUSTOMER's quote acceptance. Approval is bound to the
-quote revision and its reference prices; any change to prices/lines voids it. **Still open:** P1 (admin-only edits vs
-Sales proposes/admin approves), P2a (5% per line/tier vs whole quote), P2b (may the approver be the quote's author?).
+**User decision 2026-10-12 — overrides kltn-docs 14 BR-10 and an earlier same-day P2 answer (5 % limit + admin
+approval), which is withdrawn:** there is **no discount limit and no internal discount approval**. Sales negotiates,
+decides any valid selling price and sends the quote; no ECOMMERCE_ADMIN / SYSTEM_ADMIN approval, no new role. The
+**customer still has to accept** the quote. Kept: server-side price validation and totals, audit of Sales' quote
+edits, the price snapshot on quote and order, existing permissions. No floor (e.g. cost) and no other ceiling is
+invented. The approval code drafted for the withdrawn answer (migration `…000520`, `QuoteDiscountApproval*`) was
+never committed and never ran outside throwaway Testcontainers databases; it was deleted from the working tree.
+P1 is unaffected: this does not let Sales edit a customer's price list.
 
 Branch `SCRUM-428-customer-pricing`, worktree `orca/workspaces/.../SCRUM-428-customer-pricing`, from the
 integration checkpoint `4a389a6` (`SCRUM-394-395-production-foundation`: develop `74d624d` + 394/395 + 448 +
@@ -25,7 +28,7 @@ Develop checked 2026-10-12: still `74d624d`, newest migration `V20261013000600`.
   13 §3 (customer price list by sales unit and tier; **no own list → customer-group price**), 13 BR-02 (the
   logged-in customer's own price), 13 BR-05 (show MOQ and tiers, no order below MOQ), 14 step 2 (quote price
   defaults from the customer's list), 14 BR-03 (price locked into the order; a quote keeps its price while
-  valid), 14 BR-10 (discount beyond a limit needs approval), 14 edge case (price changed between view and order →
+  valid), 14 BR-10 (discount beyond a limit needs approval — overridden by the user, see above), 14 edge case (price changed between view and order →
   show the difference, customer confirms), 18 §3 input table ("bảng giá riêng" — source "Sale + người duyệt hạn
   mức"), open question D14 (proposal: per-customer list + tiers; quote overrides).
 - Code: `catalog.pricing_rule` holds one `BASE:<sku>` price per SKU used by checkout and the storefront;
@@ -36,7 +39,6 @@ Develop checked 2026-10-12: still `74d624d`, newest migration `V20261013000600`.
 | # | Question | Why it matters | Default used until answered |
 |---|---|---|---|
 | P1 | **Who edits a customer's price list?** 13/14 say E-commerce Admin; 18's input table names "Sale + người duyệt hạn mức". Sales alone, Sales with an approver, or admin only? | write permission | E-commerce Admin (and System Admin) write; Sales Staff and Order Coordinator read |
-| P2 | **Discount limits / approver** (14 BR-10) | quote send guard | *already asked by the coordinator — not implemented, no threshold invented* |
 | P3 | Does a customer price list have **validity dates** (from/until), or is the current list simply the price? | effective-dated history | no dates: the current list applies; every change is versioned and audited |
 | P4 | **Below the lowest tier** of a customer's list: refuse (the list's first tier is that customer's MOQ, BR-05) or fall back to the group/base price? | small orders | refuse with `CUSTOMER_PRICE_BELOW_MOQ` — the same rule quotes use |
 | P5 | Tier when one order has **several lines of the same SKU**: by line or by the SKU's total? | tier choice | by the SKU's total in the order |
@@ -64,7 +66,8 @@ Develop checked 2026-10-12: still `74d624d`, newest migration `V20261013000600`.
 - Portal: `GET` the logged-in ACTIVE customer's own prices, tiers and MOQ (BR-02, BR-05).
 - Back office: list / read / replace / delete a customer's price for a SKU, optimistic version, audited.
 - Quotes: back-office lookup of the default tiers for a quote line; a quote line created without tiers starts from
-  the customer's list (14 step 2), snapshotted into the quote (BR-03). No discount concept until P2 is answered.
+  the customer's list (14 step 2), snapshotted into the quote (BR-03). Sales may type any valid price (user
+  override of BR-10 above); the customer accepts.
 
 ## SCRUM-429 follow-up — evidence (commit `aca7f05`)
 

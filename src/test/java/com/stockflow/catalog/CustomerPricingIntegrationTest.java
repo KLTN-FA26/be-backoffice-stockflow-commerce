@@ -341,6 +341,66 @@ class CustomerPricingIntegrationTest {
         }
     }
 
+    /**
+     * User decision of 2026-10-12, overriding kltn-docs 14 BR-10: no discount limit and no internal approval -
+     * Sales negotiates and sends any valid price. Server-side validation, the quote's price snapshot, audit and
+     * the customer's own acceptance all stay.
+     */
+    @Test
+    void salesSendsANegotiatedPriceWithoutApprovalAndOnlyTheCustomerAccepts() throws Exception {
+        Buyer buyer = buyer("ACTIVE");
+        createPrice(buyer.customerId(), tiers(Map.of(1, 10_000_000L))).andExpect(status().isCreated());
+        ConfirmedDesigns.Design design = ConfirmedDesigns.confirmed(storage, jdbc, tx, entityManager, buyer.customerId());
+        CurrentUser salesUser = new CurrentUser(salesId, "sales", Set.of(Role.SALES_STAFF), Set.of(), DataScope.ALL,
+                Set.of(), Set.of());
+
+        // Invalid prices are refused on the server, whoever negotiated them.
+        for (String invalid : List.of("0", "10.5", "-5")) {
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> quotes.create(salesUser, quote(buyer, design, invalid)))
+                    .isInstanceOfSatisfying(BusinessException.class,
+                            e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED));
+        }
+
+        // 20% below the customer's list: created and sent at once, by Sales alone.
+        Quotes.QuoteView created = quotes.create(salesUser, quote(buyer, design, "8000000"));
+        assertThat(created.lines().getFirst().tiers()).extracting(t -> t.unitPrice().longValue()).containsExactly(8_000_000L);
+        mvc.perform(post("/api/v1/quotes/" + created.id() + "/sending").header("Authorization", "Bearer " + warehouse)
+                        .contentType("application/json").content("{\"version\":" + created.version() + "}"))
+                .andExpect(status().isForbidden());
+        mvc.perform(post("/api/v1/quotes/" + created.id() + "/sending").header("Authorization", "Bearer " + sales)
+                        .contentType("application/json").content("{\"version\":" + created.version() + "}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("SENT"));
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM platform.audit_log WHERE resource_type='quote' AND resource_id=? AND outcome='SUCCESS'""",
+                Long.class, created.id().toString())).isGreaterThanOrEqualTo(1);
+
+        // Acceptance is still the customer's: not Sales, not another customer.
+        long version = quotes.get(salesUser, created.id()).version();
+        String acceptance = "{\"version\":" + version + "}";
+        mvc.perform(post("/api/v1/quotes/" + created.id() + "/acceptance").header("Authorization", "Bearer " + sales)
+                .contentType("application/json").content(acceptance)).andExpect(status().isForbidden());
+        Buyer other = buyer("ACTIVE");
+        mvc.perform(get("/api/v1/quotes/" + created.id()).header("Authorization", "Bearer " + other.token()))
+                .andExpect(status().isNotFound());
+        mvc.perform(post("/api/v1/quotes/" + created.id() + "/acceptance").header("Authorization", "Bearer " + other.token())
+                .contentType("application/json").content(acceptance)).andExpect(status().isNotFound());
+        mvc.perform(get("/api/v1/quotes/" + created.id()).header("Authorization", "Bearer " + buyer.token()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("SENT"))
+                .andExpect(jsonPath("$.data.lines[0].tiers[0].unitPrice").value(8_000_000));
+
+        // The quote keeps its negotiated price when the list changes (14 BR-03).
+        prices.replace(buyer.customerId(), SKU, List.of(tier(1, 9_000_000L)), null, 0);
+        assertThat(quotes.get(salesUser, created.id()).lines().getFirst().tiers())
+                .extracting(t -> t.unitPrice().longValue()).containsExactly(8_000_000L);
+    }
+
+    private static Quotes.Create quote(Buyer buyer, ConfirmedDesigns.Design design, String unitPrice) {
+        return new Quotes.Create(UUID.randomUUID(), buyer.customerId(),
+                new Quotes.Draft(PaymentTerm.PREPAID, null, Instant.now().plus(Duration.ofDays(7)), null,
+                        List.of(new Quotes.Line(SKU, design.snapshotId(), "Logo", 1,
+                                List.of(new Quotes.Tier(1, new BigDecimal(unitPrice)))))));
+    }
+
     // ---------------------------------------------------------------- fixtures
 
     private record Buyer(UUID customerId, String token) {

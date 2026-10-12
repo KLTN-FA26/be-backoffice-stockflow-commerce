@@ -21,8 +21,9 @@ pushed, not merged, no Jira change. The SCRUM-429 follow-up is its own commit on
   expects (`CHECKOUT_PRICE_CHANGED`), the server price is locked into the order line (14 BR-03). Products are locked
   first, as before; customer-price edits take the same product lock, so an order is priced wholly before or after.
 - **Quotes** (SCRUM-448 integration): a quote line created **without tiers** starts from the customer's schedule for
-  the blank (14 step 2), copied into the quote — a later price-list change does not move it; typed tiers win. No
-  discount rule (P2 pending).
+  the blank (14 step 2), copied into the quote — a later price-list change does not move it; typed tiers win.
+  **No discount limit and no internal approval** (user decision 2026-10-12, overriding kltn-docs 14 BR-10): Sales
+  negotiates and sends any valid price (whole VND > 0, validated on the server); the customer still has to accept.
 - **Portal display**: the logged-in ACTIVE customer's own/group/base prices with tiers and MOQ (13 BR-02, BR-05),
   published SKUs only.
 
@@ -53,19 +54,22 @@ Writes are audited (`customer-price` CREATE/UPDATE/DELETE).
 | Portal ordering at the customer's price (190); MOQ (BR-05); locked into the order (14 BR-03); changed price confirmed (14 edge case) | `checkoutPrices(customerId, …)`, `OrderServiceImpl.place` | IT `checkoutCharges…`: below MOQ 409, stale expected price 409, two lines summed to a tier, later price change leaves the order, delete → base | PASS |
 | Edits vs checkout / concurrent editors | product lock, CAS on version, unique key | IT `concurrentEditorsAndCheckoutAreSerialised`: 2 creates → 1 + CONFLICT, 2 replaces → 1 + OPTIMISTIC_LOCK, edit waits for a held product lock | PASS |
 | Quote price defaults from the customer's list (14 step 2), quote keeps it (BR-03) | `QuoteService.defaultTiers` | IT `aQuoteStartsFromTheCustomersPriceAndKeepsIt` (real quote with a confirmed design) | PASS |
-| Discount within a limit or approved (14 BR-10) | — | — | **NOT DONE — decision P2 pending** |
+| Discount within a limit or approved (14 BR-10) | **overridden by the user 2026-10-12**: no limit, no approval step, no new role | — | not applicable |
+| Sales sends a negotiated price (> 5 % below the list) without approval; invalid price refused on the server; warehouse cannot send; Sales cannot accept; another customer gets 404 on read/accept; the customer sees the price SENT; quote audited; a later list edit does not move the quote | existing `QuoteService` validation, `QuoteController` permissions, quote price snapshot | IT `salesSendsANegotiatedPriceWithoutApprovalAndOnlyTheCustomerAccepts` (list 10,000,000 → sent 8,000,000; 0 / 10.5 / -5 → `VALIDATION_FAILED`) | PASS |
+| A placed order is not changed by a later price-list edit (14 BR-03) | order line snapshot | IT `checkoutCharges…` (edit and delete after placing) | PASS |
 | Sales units (13/14 BR-11) | — | — | **NOT DONE — P6 (no sales-unit model exists)** |
 
 ## Gaps
 
-P1–P7 in the plan. The quote default's `PRICE_NOT_AVAILABLE` → 400 branch is covered by IT
+P1, P3–P7 and T1 in the plan (P2 is closed by the user override). The quote default's `PRICE_NOT_AVAILABLE` → 400 branch is covered by IT
 `aQuoteLineWithoutTiersForAnUnpricedBlankAsksSalesToEnterThem`. Segment rules have no management API (P7).
 
 ## Verification (2026-10-12, Java 21.0.9, Maven 3.9.9 offline, Docker 28.5.1; no full suite - lane A runs one)
 
 | Run | Result |
 |---|---|
-| `CustomerPricingIntegrationTest` (security on, real PostgreSQL) | 5/5 |
+| `CustomerPricingIntegrationTest` (security on, real PostgreSQL) | 7/7 (after the P2 override) |
+| After the override: `QuoteIntegrationTest`, `QuoteSecurityIntegrationTest`, `ArchitectureTest`, `ModularityTest`, `tools/verify.py` | 29/29, static checks pass |
 | `CustomerPriceTest`, `CustomerPriceMigrationUpgradeTest` (from `V20261014000500` with demo data and an existing customer), `CustomerStatusHistoryMigrationUpgradeTest` | 4 + 1 + 1 |
 | Regression: `InventoryCatalogMigrationUpgradeTest` (fresh DB + every `tools/db/qa` script + orphan check), `DemoCatalogPriceSeedTest`, `QuoteIntegrationTest`, `QuoteSecurityIntegrationTest`, `QuoteMigrationUpgradeTest`, `PlaceOrderIntegrationTest`, `CreditCheckoutIntegrationTest`, `InventoryCatalog(Security)IntegrationTest`, `ProductionGrantsMigrationUpgradeTest`, B2B onboarding/access, availability, invitation | 111 run, 1 failure → fixed (below), rerun green |
 | identity + common.security tests, `CatalogProjectionStartupIntegrationTest`, `ProcurementMigrationUpgradeTest` | 122/122 |
