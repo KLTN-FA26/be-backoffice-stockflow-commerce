@@ -1,6 +1,7 @@
 # Sprint 2 lane A — production workshop flow (SCRUM-396..401; BE 407, 409, 411, 418, 420, 413)
 
-Status 2026-10-12: **407 and 409 done (BE); 411 → 418 → 420 → 413 in progress, then 441/415.** Not done.
+Status 2026-10-12: **407, 409, 411, 418, 420, 413 done (BE)** except the Q2 money entry (Sales' agreed amount,
+in progress) and Q5 (open); then 441/415. Not 100%: see "Open" at the end.
 This file is the contract lane C (441/415) builds on and the resume point.
 
 ## Where
@@ -79,10 +80,24 @@ Inventory (module owner: inventory; additions are narrow and listed for review).
   a hold that is closed, another owner's, or not pinned (an order still waiting for payment —
   `RESERVATION_NOT_ISSUABLE`). Hold already at the destination → answered without a second ledger line.
 - `releaseProductionHolds(productionOrderId)`, `productionHolds(productionOrderId)`.
-- **Scrap** (411, Q4 decided): the scrapped units leave their hold and stay IN_PRODUCTION (unusable at once),
-  a SCRAP adjustment is requested; approval deducts once, rejection leaves them IN_PRODUCTION (never
-  sellable). Not bypassed.
-- **Completion** (420): finished goods IN_PRODUCTION → PACKING as AVAILABLE, hold kept (same mechanism).
+- **A hold in the print shop is closed only by production** (411..413): `InventoryService.release` is a
+  no-op for an IN_PRODUCTION hold (an order cancelled after the issue does not free it), the expiry sweep and
+  `rearmReservations` skip it. So a hold's quantity is always the job's own count of units still there, and
+  printed cups are never mistaken for blanks.
+- `writeOffHeld(WriteOffHeldStockCommand)` (411/418, Q4 decided): units leave the hold at once (quantity
+  reduced, same id; closed when all) and stay IN_PRODUCTION; a SCRAP (or SAMPLE, 420) adjustment of **that
+  layer** is requested (`stock_adjustment.received_at`, V20261014000420). Approval deducts once (second
+  approval `INVALID_ADJUSTMENT_TRANSITION`); rejection leaves them IN_PRODUCTION, never sellable. The LSX
+  does not wait for the approval.
+- `returnHeld(ReturnHeldStockCommand)`: unprinted blanks leave the hold and go back, free and AVAILABLE, to
+  where they were issued from; one MOVE line IN_PRODUCTION → AVAILABLE.
+- `unissueHeld` / `finishHeld` (`IssueReservedStockCommand`): a whole hold with its goods IN_PRODUCTION →
+  AVAILABLE, still held — back to storage for an order that still wants them (cancel before printing), or to
+  PACKING (completion).
+- `liveHolds(ids)`: the live holds among ids with their current quantity and place.
+
+Warehouse (420): `WarehouseService.areasOf(warehouseId, areaType)` — completion uses the warehouse's only
+usable PACKING area unless QC names one.
 
 Warehouse: `AreaType.PRODUCTION` added to the Java enum (the DB has allowed it since V20261010000200; a
 PRODUCTION area could not be loaded before), `StorageLocationView.areaType` (null for a bin; old 8-argument
@@ -120,6 +135,24 @@ Known limitations found (existing inventory rules, not changed):
   line (reprint holds belong to the production order). Fulfilment (not built) must take the order's goods
   from inventory, not only from the ids stored at checkout.
 
+## Workshop API (BE 411/418/420/413, built)
+
+| Step | Endpoint | Permission | Effect |
+|---|---|---|---|
+| start | `POST /api/v1/production/orders/{id}/printing` | production-orders:UPDATE | MATERIAL_ISSUED → PRINTING; SAMPLE round → IN_PRODUCTION |
+| output | `POST …/{id}/output {printed, scrap:[{reason, quantity, note}]}` | production-orders:UPDATE | PRINTING → QC (all spoilt: → READY); scrap out of the holds + SCRAP write-off per line and layer (`production_scrap.stock_adjustment_id`) |
+| scrap list | `GET …/{id}/scrap` | production-orders:READ | the scrap rows with their write-offs |
+| QC | `POST …/{id}/qc-results {passed, failed, note, packingLocation?}` | **production-qc-results:CREATE** (QC_STAFF, WAREHOUSE_MANAGER) | every unit awaiting QC; failed → scrap/write-off; good ≥ planned → COMPLETED (ORDER: unprinted leftovers back free, goods → PACKING still held, `ProductionCompleted` once; SAMPLE: SAMPLE write-off, round READY); short → READY + reprint blanks held now, or ON_HOLD BLANKS_SHORT + `ProductionOrderHeld` (nothing held). Refused for a cancelled sales order |
+| QC list | `GET …/{id}/qc-results` | production-qc-results:READ | rounds |
+| cancel | `POST …/{id}/cancellation {reason}` | production-orders:APPROVE (manager) | PENDING_PREPRESS/READY/MATERIAL_ISSUED (or ON_HOLD from them) → CANCELLED; issued blanks back to their origin — still held if the sales order still wants them, free otherwise; unissued production holds released |
+| stop (Q2) | `POST …/{id}/stop {printed, scrap[], reason}` | production-orders:APPROVE | PRINTING/QC (or ON_HOLD from PRINTING) → CANCELLED; the stopped run's output recorded; printed count kept; good printed units → scrap (OTHER, "printed for a stopped job") and written off; unprinted blanks back |
+| order cancelled | `OrderCancelled` listener | — | before printing: cancel as above; PRINTING: ON_HOLD (OTHER) for the manager to stop with the real count; QC: waits for the stop |
+
+QC_STAFF lost production-orders:UPDATE (V20261014000420): 03 §16 gives prepress, start, output and holds to
+Production staff; QC holds exactly its own resource. Queue order (Jira 398): list with
+`sort=dueDate,asc;createdAt,asc` (no new endpoint). BR-PRD-07 (no design change once printing): no endpoint
+changes an LSX's design snapshot/checksum (columns are not updatable) — nothing to block.
+
 ## Lane C (441/415) collaboration plan
 
 Lane C should start only after this branch has the workflow aggregate (after 418/420), because 433/441
@@ -134,7 +167,7 @@ tables, can start in parallel on read models only). If the coordinator prefers, 
 |---|---|---|---|
 | 407 | **done (BE)**: `GET …/{id}/print-file` (READ), `POST …/{id}/prepress {decision PASS\|FAIL, note}` (UPDATE; PASS re-hashes the stored file, 409 `PRINT_FILE_MISMATCH`; FAIL → ON_HOLD `FILE_REJECTED` + `ProductionOrderHeld`), `POST …/{id}/hold {reason, note}` (UPDATE), `POST …/{id}/resume` (APPROVE, Warehouse Manager). Lock-before-load on the order row. Not yet: notification delivery to Sales (event published; listener not written) | see git log | `ProductionOrderTest` 8, `ProductionWorkflowIntegrationTest` 3 (real file re-hash, tampered file, concurrent holds) |
 | 409 | **done (BE)**: `POST /api/v1/production/orders/{id}/material-issues {requestId, toLocation, reservationId?}` (production-material-issues:CREATE), `GET` same (READ). One scan = one whole hold to a PRODUCTION area of the LSX's warehouse; ORDER holds = the order line's, SAMPLE/reprint holds = the LSX's; reprint/resumed round holds the shortfall at scan time (too few → 409 `INSUFFICIENT_STOCK`, nothing held). BR-PRD-03 cap (`ISSUE_EXCEEDS_REQUIREMENT`), READY → MATERIAL_ISSUED when nothing more is needed. Sample blanks held at submit (Q1) | see git log | `MaterialIssueIntegrationTest` 6 (ORDER multi-hold, same ids still HELD, ATP unchanged, ledger; Q3 release-after-issue stays unsellable; replay; refusals: other order's hold, unpinned, non-PRODUCTION area, before prepress; SAMPLE hold at submit + rollback when short; concurrent scans and twin replays), `ProductionSecurityIntegrationTest.materialIssueOverHttp` |
-| 411 | planned (Q4) | — | — |
-| 418 | planned | — | — |
-| 420 | planned (Q3) | — | — |
-| 413 | planned (Q2) | — | — |
+| 411 | **done (BE)**: start, output with scrap reasons, write-off without waiting (Q4), reprint hold / BLANKS_SHORT | see git log | `PrintRunIntegrationTest` (orderFromPressToPacking, rejectedWriteOffNeverSells, blanksShort), `ProductionOrderTest` +4 |
+| 418 | **done (BE)**: QC rounds, single exit owner, QC resource | see git log | `PrintRunIntegrationTest` (QC fail → reprint, concurrentQc), HTTP `printShopStepsOverHttp` |
+| 420 | **done (BE)**: ORDER → PACKING held + `ProductionCompleted` once; SAMPLE → SAMPLE write-off + round READY | see git log | `orderFromPressToPacking`, `sampleCompletes`, `concurrentQc` |
+| 413 | **done (BE) except Q2 money**: cancel before printing, stop on the press (Q2 quantities), `OrderCancelled` listener | see git log | `cancelBeforePrinting`, `orderCancelledUnderTheJob`, `stopOnThePress` |

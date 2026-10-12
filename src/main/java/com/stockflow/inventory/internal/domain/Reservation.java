@@ -44,7 +44,8 @@ public final class Reservation {
      */
     private final UUID rootRequestId;
     private final UUID requestId;
-    private final Quantity quantity;
+    /** Fixed when the hold is made; lowered only for units the print shop spoilt or did not use (SCRUM-398). */
+    private Quantity quantity;
     private final Instant reservedAt;
     /** Null once pinned: the order left PENDING_PAYMENT and the hold no longer expires (SCRUM-465). */
     private Instant expiresAt;
@@ -102,10 +103,13 @@ public final class Reservation {
                 quantity, now, null, ReservationStatus.HELD, null, null);
     }
 
-    /** Whether this hold belongs to the order or production order named. */
+    /**
+     * Whether this hold belongs to the order or to the production order named — the two owners a production
+     * order's goods can have: its order's checkout holds, its own (sample, reprint) holds.
+     */
     public boolean isHeldFor(UUID orderId, UUID productionOrderId) {
-        return orderId != null ? orderId.equals(this.orderId)
-                : productionOrderId != null && productionOrderId.equals(this.productionOrderId);
+        return orderId != null && orderId.equals(this.orderId)
+                || productionOrderId != null && productionOrderId.equals(this.productionOrderId);
     }
 
     /** True once {@code expiresAt} has passed and nobody has consumed or released the hold. */
@@ -158,6 +162,15 @@ public final class Reservation {
                 : ReservationStatus.RELEASED;
         this.releaseReason = reason;
         this.closedAt = now;
+    }
+
+    /** The hold covers {@code by} fewer units, keeping its id; a hold of zero is a release, not this. */
+    void reduceBy(Quantity by) {
+        requireActive("reduce");
+        if (by.isZero() || !by.isLessThan(quantity)) {
+            throw new IllegalArgumentException("A hold of %s cannot be reduced by %s".formatted(quantity, by));
+        }
+        this.quantity = quantity.minus(by);
     }
 
     private void requireActive(String operation) {

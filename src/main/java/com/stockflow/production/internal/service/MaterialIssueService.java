@@ -73,10 +73,6 @@ class MaterialIssueService implements MaterialIssues {
         this.clock = clock;
     }
 
-    /** A hold that may be issued for this order, and whether the sales order owns it (else the LSX does). */
-    private record Candidate(UUID reservationId, boolean orderOwned) {
-    }
-
     @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "production-material-issue", resourceId = "#productionOrderId")
     public Result issue(CurrentUser user, UUID productionOrderId, Issue issue) {
@@ -103,9 +99,9 @@ class MaterialIssueService implements MaterialIssues {
         }
         StorageLocationView to = productionArea(order, issue.toLocation());
 
-        Candidate chosen = choose(order, issue);
-        IssueReservedStockResult moved = inventory.issueReserved(new IssueReservedStockCommand(chosen.reservationId(),
-                chosen.orderOwned() ? order.salesOrderId() : null, order.id(), to.locationCode(), user.userId()));
+        UUID chosen = choose(order, issue);
+        IssueReservedStockResult moved = inventory.issueReserved(new IssueReservedStockCommand(chosen,
+                order.salesOrderId(), order.id(), to.locationCode(), user.userId()));
         if (!moved.moved()) {
             // Only this service moves a hold into the print shop, and it writes the row below in the same
             // transaction; a hold already there without a row means something else moved it.
@@ -165,23 +161,22 @@ class MaterialIssueService implements MaterialIssues {
      * and blanks are still needed — a reprint round, or a round resumed after BLANKS_SHORT — they are held now
      * for the production order, in its warehouse; too few in stock refuses the scan and holds nothing.
      */
-    private Candidate choose(ProductionOrder order, Issue issue) {
+    private UUID choose(ProductionOrder order, Issue issue) {
         Set<UUID> issued = records.issuesOf(order.id()).stream()
                 .map(ProductionRecords.MaterialIssue::reservationId).collect(Collectors.toSet());
-        List<Candidate> candidates = new ArrayList<>();
+        List<UUID> candidates = new ArrayList<>();
         if (order.type() == ProductionOrder.Type.ORDER) {
             OrderSummary sales = salesOrders.findById(order.salesOrderId()).orElseThrow(() -> new BusinessException(
                     ErrorCode.NOT_FOUND, "Sales order of production order %s not found".formatted(order.orderNumber())));
             sales.lines().stream().filter(line -> line.lineId().equals(order.salesOrderLineId()))
                     .flatMap(line -> line.reservationIds().stream())
-                    .forEach(id -> candidates.add(new Candidate(id, true)));
+                    .forEach(candidates::add);
         }
-        inventory.productionHolds(order.id()).stream().map(StockReservation::reservationId)
-                .forEach(id -> candidates.add(new Candidate(id, false)));
-        candidates.removeIf(candidate -> issued.contains(candidate.reservationId()));
+        inventory.productionHolds(order.id()).stream().map(StockReservation::reservationId).forEach(candidates::add);
+        candidates.removeIf(issued::contains);
 
         if (issue.reservationId() != null) {
-            return candidates.stream().filter(c -> c.reservationId().equals(issue.reservationId())).findFirst()
+            return candidates.stream().filter(issue.reservationId()::equals).findFirst()
                     .orElseThrow(() -> new BusinessException(ErrorCode.RESERVATION_NOT_ISSUABLE,
                             "Hold %s is not a hold of production order %s waiting to be issued"
                                     .formatted(issue.reservationId(), order.orderNumber())));
@@ -200,7 +195,7 @@ class MaterialIssueService implements MaterialIssues {
                 order.work().blankSku(), needed, order.id(), warehouse)).reservations();
         log.info("Held {} more blank(s) of {} for production order {}", needed, order.work().blankSku(),
                 order.orderNumber());
-        return new Candidate(held.get(0).reservationId(), false);
+        return held.get(0).reservationId();
     }
 
     private static Issued view(ProductionRecords.MaterialIssue row) {

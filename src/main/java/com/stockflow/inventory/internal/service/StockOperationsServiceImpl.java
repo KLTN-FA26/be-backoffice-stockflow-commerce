@@ -25,6 +25,7 @@ import com.stockflow.inventory.internal.domain.AdjustmentStatus;
 import com.stockflow.inventory.internal.domain.LocationDirectory;
 import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.Quantity;
+import com.stockflow.inventory.internal.domain.ReleaseReason;
 import com.stockflow.inventory.internal.domain.Reservation;
 import com.stockflow.inventory.internal.domain.ReservationId;
 import com.stockflow.inventory.internal.domain.StockAdjustment;
@@ -316,6 +317,162 @@ class StockOperationsServiceImpl implements StockOperations {
                 source.lotNumber(), from.code(), to.code(), hold.quantity().value(), true, line.id(), now);
     }
 
+    /** The same hand-over the other way: finished goods, still held, from the print shop to packing. */
+    @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "stock-move", resourceId = "#command.reservationId()")
+    public IssueReservedStockResult finishHeld(IssueReservedStockCommand command) {
+        return moveHold(command, StockStatus.IN_PRODUCTION, StockStatus.AVAILABLE);
+    }
+
+    /** Unprinted goods of a cancelled print job, still held for their order, back to storage with the hold. */
+    @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "stock-move", resourceId = "#command.reservationId()")
+    public IssueReservedStockResult unissueHeld(IssueReservedStockCommand command) {
+        return moveHold(command, StockStatus.IN_PRODUCTION, StockStatus.AVAILABLE);
+    }
+
+    /**
+     * The units leave the hold in the same transaction that asks for their write-off, under the SKU lock
+     * and the row lock: between the two nobody could have used them, and after it they are covered by no hold
+     * and not sellable (IN_PRODUCTION), so the approval later finds them, deducts them once, and a rejection
+     * puts nothing back on sale.
+     */
+    @Override
+    @Auditable(action = AuditAction.CREATE, resourceType = "stock-adjustment", resourceId = "#result?.adjustmentId()")
+    public StockAdjustmentSummary writeOffHeld(com.stockflow.inventory.api.WriteOffHeldStockCommand command) {
+        ReservationId reservationId = ReservationId.of(command.reservationId());
+        policies.lock(holder(reservationId).sku().code());
+        StockItem view = holder(reservationId);
+        WarehouseScope.requireLocation(view.location().code());
+        StockItem item = stockItems.findByIdForUpdate(view.id()).orElseThrow();
+        Reservation hold = owned(item, reservationId, command.orderId(), command.productionOrderId());
+        requireInPrintShop(item);
+        Quantity quantity = Quantity.of(command.quantity());
+        Instant now = clock.instant();
+        takeFromHold(item, hold, quantity, ReleaseReason.SCRAPPED, now);
+        stockItems.save(item);
+        StockAdjustment adjustment = StockAdjustment.request(adjustments.nextNumber(LocalDate.ofInstant(now, BUSINESS_ZONE)),
+                        item.location(), item.sku(), item.lotNumber(), -quantity.value(),
+                        AdjustmentReason.valueOf(command.reason().name()), command.note(), command.requestedBy(), now)
+                .atLayer(item.receivedAt());
+        log.info("{} x {} in {} out of hold {}; {} write-off {} asked for", quantity, item.sku(), item.location(),
+                hold.id().value(), command.reason(), adjustment.number());
+        return toSummary(adjustments.save(adjustment));
+    }
+
+    @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "stock-move", resourceId = "#command.reservationId()")
+    public StockMove returnHeld(com.stockflow.inventory.api.ReturnHeldStockCommand command) {
+        ReservationId reservationId = ReservationId.of(command.reservationId());
+        WarehouseScope.requireLocation(command.toLocation());
+        policies.lock(holder(reservationId).sku().code());
+        StockItem sourceView = holder(reservationId);
+        WarehouseScope.requireLocation(sourceView.location().code());
+        LocationId from = sourceView.location();
+        LocationId to = new LocationId(command.toLocation());
+        if (from.equals(to)) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A move needs two different locations");
+        }
+        if (!from.warehouseCode().equals(to.warehouseCode())) {
+            throw new BusinessException(ErrorCode.MOVE_ACROSS_WAREHOUSES,
+                    "%s and %s are in different warehouses; use a transfer order".formatted(from, to));
+        }
+        switch (locations.stateOf(to)) {
+            case UNKNOWN -> throw new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + to);
+            case UNUSABLE -> throw new BusinessException(ErrorCode.LOCATION_NOT_USABLE,
+                    "%s cannot take stock now: it, its shelf or its warehouse is not active".formatted(to));
+            case USABLE -> { }
+        }
+        Optional<StockItem> destinationView = sameLayerAt(sourceView, to);
+        StockItem[] locked = lockPair(sourceView, destinationView);
+        StockItem source = locked[0];
+        StockItem destination = locked[1];
+        Reservation hold = owned(source, reservationId, command.orderId(), command.productionOrderId());
+        requireInPrintShop(source);
+        if (destination != null && destination.status() != StockStatus.AVAILABLE) {
+            throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH, "%s holds %s%s as %s; blanks come back AVAILABLE"
+                    .formatted(to, source.sku(), lotSuffix(source.lotNumber()), destination.status()));
+        }
+        Quantity quantity = Quantity.of(command.quantity());
+        Instant now = clock.instant();
+        takeFromHold(source, hold, quantity, ReleaseReason.RETURNED_FROM_PRODUCTION, now);
+        source.moveOut(quantity);
+        if (destination == null) {
+            destination = StockItem.arrivedAs(source, to, quantity, StockStatus.AVAILABLE);
+        } else {
+            destination.moveIn(quantity);
+        }
+        stockItems.save(source);
+        stockItems.save(destination);
+        StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.MOVE, source.sku(),
+                source.lotNumber(), from, to, quantity.value(), StockStatus.IN_PRODUCTION, StockStatus.AVAILABLE,
+                StockMovement.ReferenceType.PRODUCTION_ORDER, command.productionOrderId(),
+                "Unprinted, from hold " + hold.id().value(), command.actorId(), now);
+        ledger.append(line);
+        log.info("Returned {} unprinted x {} from {} to {} (hold {})", quantity, source.sku(), from, to,
+                hold.id().value());
+        return toMove(line);
+    }
+
+    /** The layer of the same goods (SKU, lot, receipt, serial) at {@code location}, if there is one. */
+    private Optional<StockItem> sameLayerAt(StockItem source, LocationId location) {
+        return stockItems.findBySkuAndLocation(source.sku(), location).stream()
+                .filter(item -> Objects.equals(item.lotNumber(), source.lotNumber())
+                        && Objects.equals(item.receivedAt(), source.receivedAt())
+                        && Objects.equals(item.serialNumber(), source.serialNumber()))
+                .findFirst();
+    }
+
+    /** Locks the source and, if any, the destination in id order; returns {source, destination-or-null}. */
+    private StockItem[] lockPair(StockItem sourceView, Optional<StockItem> destinationView) {
+        List<StockItem> toLock = destinationView.isPresent()
+                ? List.of(sourceView, destinationView.get()) : List.of(sourceView);
+        StockItem[] locked = new StockItem[2];
+        for (StockItem view : toLock.stream()
+                .sorted(Comparator.comparing(item -> item.id().value().toString())).toList()) {
+            StockItem item = stockItems.findByIdForUpdate(view.id()).orElseThrow(() ->
+                    new IllegalStateException("Stock item %s vanished mid-move".formatted(view.id())));
+            locked[item.id().equals(sourceView.id()) ? 0 : 1] = item;
+        }
+        return locked;
+    }
+
+    /** The hold, whatever its status, provided it belongs to the owner named. */
+    private static Reservation owned(StockItem item, ReservationId reservationId, UUID orderId, UUID productionOrderId) {
+        Reservation hold = item.findReservation(reservationId).orElseThrow(() -> new BusinessException(
+                ErrorCode.RESERVATION_NOT_FOUND, "No reservation with id " + reservationId.value()));
+        if (!hold.isHeldFor(orderId, productionOrderId)) {
+            throw new BusinessException(ErrorCode.RESERVATION_NOT_ISSUABLE,
+                    "Hold %s belongs neither to this order nor to this production order".formatted(reservationId.value()));
+        }
+        return hold;
+    }
+
+    private static void requireInPrintShop(StockItem item) {
+        if (item.status() != StockStatus.IN_PRODUCTION) {
+            throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH,
+                    "%s at %s is %s, not in the print shop".formatted(item.sku(), item.location(), item.status()));
+        }
+    }
+
+    /**
+     * {@code quantity} units out of a live hold in the print shop. A hold there is closed only by these steps
+     * (an order's cancellation does not release it, see {@code InventoryServiceImpl#release}), so the hold always
+     * says exactly how many of the layer's units are still this job's.
+     */
+    private static void takeFromHold(StockItem item, Reservation hold, Quantity quantity, ReleaseReason reason,
+                                     Instant now) {
+        if (!hold.status().isActive()) {
+            throw new BusinessException(ErrorCode.RESERVATION_NOT_ISSUABLE,
+                    "Hold %s is %s".formatted(hold.id().value(), hold.status()));
+        }
+        if (hold.quantity().isLessThan(quantity)) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Hold %s covers %s unit(s), not %s"
+                    .formatted(hold.id().value(), hold.quantity(), quantity));
+        }
+        item.takeFromHold(hold.id(), quantity, reason, now);
+    }
+
     private StockItem holder(ReservationId reservationId) {
         return stockItems.findIdByReservationId(reservationId)
                 .flatMap(stockItems::findById)
@@ -334,10 +491,9 @@ class StockOperationsServiceImpl implements StockOperations {
             throw new BusinessException(ErrorCode.RESERVATION_NOT_ISSUABLE,
                     "Hold %s is %s".formatted(reservationId.value(), hold.status()));
         }
-        if (!hold.isHeldFor(command.orderId(), command.orderId() == null ? command.productionOrderId() : null)) {
+        if (!hold.isHeldFor(command.orderId(), command.productionOrderId())) {
             throw new BusinessException(ErrorCode.RESERVATION_NOT_ISSUABLE,
-                    "Hold %s does not belong to this %s".formatted(reservationId.value(),
-                            command.orderId() != null ? "order" : "production order"));
+                    "Hold %s belongs neither to this order nor to this production order".formatted(reservationId.value()));
         }
         if (!hold.isPinned()) {
             throw new BusinessException(ErrorCode.RESERVATION_NOT_ISSUABLE,
@@ -391,14 +547,15 @@ class StockOperationsServiceImpl implements StockOperations {
         WarehouseScope.requireLocation(command.locationCode());
         LocationId location = new LocationId(command.locationCode());
         // The stock item must exist now; FOUND stock adds to a lot already recorded at the location.
-        findOne(command.sku(), location, command.lotNumber())
+        findLayer(command.sku(), location, command.lotNumber(), command.receivedAt())
                 .orElseThrow(() -> new BusinessException(ErrorCode.STOCK_ITEM_NOT_FOUND,
                         "No %s%s at %s".formatted(command.sku(), lotSuffix(command.lotNumber()), location)));
         Instant now = clock.instant();
         StockAdjustment adjustment = StockAdjustment.request(
                 adjustments.nextNumber(LocalDate.ofInstant(now, BUSINESS_ZONE)), location, command.sku(),
                 blankToNull(command.lotNumber()), command.quantityDelta(),
-                AdjustmentReason.valueOf(command.reason().name()), command.note(), command.requestedBy(), now);
+                AdjustmentReason.valueOf(command.reason().name()), command.note(), command.requestedBy(), now)
+                .atLayer(command.receivedAt());
         return toSummary(adjustments.save(adjustment));
     }
 
@@ -407,7 +564,8 @@ class StockOperationsServiceImpl implements StockOperations {
     public StockAdjustmentSummary approve(UUID adjustmentId, UUID approverId) {
         StockAdjustment adjustment = load(adjustmentId);
         policies.lock(adjustment.sku().code());
-        StockItem view = findOne(adjustment.sku(), adjustment.location(), adjustment.lotNumber())
+        StockItem view = findLayer(adjustment.sku(), adjustment.location(), adjustment.lotNumber(),
+                        adjustment.receivedAt())
                 .orElseThrow(() -> new BusinessException(ErrorCode.STOCK_ITEM_NOT_FOUND,
                         "The stock of adjustment %s no longer exists".formatted(adjustment.number())));
         StockItem item = stockItems.findByIdForUpdate(view.id()).orElseThrow();

@@ -108,6 +108,11 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
     }
 
     @Override
+    public List<UUID> idsOfSalesOrder(UUID salesOrderId) {
+        return jpa.findIdsBySalesOrder(salesOrderId);
+    }
+
+    @Override
     public boolean completedForAnotherOrder(UUID designSnapshotId, UUID excludingSalesOrderId) {
         return jpa.existsCompletedForAnotherOrder(designSnapshotId, excludingSalesOrderId);
     }

@@ -285,6 +285,9 @@ public final class StockItem extends AggregateRoot {
      */
     /** Gives the order's pinned holds here a deadline again; see {@link Reservation#rearm}. */
     public int rearmReservationsOf(UUID orderId, Instant deadline) {
+        if (status == StockStatus.IN_PRODUCTION) {
+            return 0;   // goods on the press do not go back to waiting for payment
+        }
         int rearmed = 0;
         for (Reservation reservation : reservations) {
             if (orderId.equals(reservation.orderId()) && reservation.rearm(deadline)) {
@@ -409,8 +412,14 @@ public final class StockItem extends AggregateRoot {
                                 reason.toContract())));
     }
 
-    /** Release every live hold that has outlived its {@code expiresAt}. Called by the sweeper. */
+    /**
+     * Release every live hold that has outlived its {@code expiresAt}. Called by the sweeper. Never in the print
+     * shop: see {@link StockStatus#IN_PRODUCTION}.
+     */
     public int releaseExpired(Instant now) {
+        if (status == StockStatus.IN_PRODUCTION) {
+            return 0;   // holds in the print shop are closed only by production (they are pinned anyway)
+        }
         List<ReservationId> expired =
                 reservations.stream().filter(r -> r.isExpiredAt(now)).map(Reservation::id).toList();
         expired.forEach(rid -> releaseReservation(rid, ReleaseReason.RESERVATION_EXPIRED, now));
@@ -545,6 +554,37 @@ public final class StockItem extends AggregateRoot {
         }
         reservations.add(reservation);
         this.onHand = onHand.plus(reservation.quantity());
+        checkInvariants();
+    }
+
+    /**
+     * Units leave a hold in the print shop without leaving the layer (SCRUM-398..401): spoilt units waiting
+     * for their write-off, unprinted blanks about to go back to storage. The hold keeps its id and covers
+     * {@code quantity} fewer units, or closes with {@code reason} when that is all of it. {@code onHand} does not
+     * change, and the units stay {@link StockStatus#IN_PRODUCTION}: freed from the hold, they are still not
+     * sellable — whatever comes next is an explicit step (an approved adjustment, a return).
+     *
+     * @throws IllegalStateException when the stock is not in the print shop or the hold is closed
+     * @throws IllegalArgumentException when the hold covers fewer units, or is not on this stock item
+     */
+    public void takeFromHold(ReservationId reservationId, Quantity quantity, ReleaseReason reason, Instant now) {
+        if (status != StockStatus.IN_PRODUCTION) {
+            throw new IllegalStateException("Stock item %s is %s, not in the print shop".formatted(id, status));
+        }
+        Reservation reservation = findReservation(reservationId).orElseThrow(() -> new IllegalArgumentException(
+                "Reservation %s does not belong to stock item %s".formatted(reservationId, id)));
+        if (reservation.status().isTerminal()) {
+            throw new IllegalStateException("Reservation %s is %s".formatted(reservationId, reservation.status()));
+        }
+        if (quantity.isZero() || reservation.quantity().isLessThan(quantity)) {
+            throw new IllegalArgumentException("Reservation %s holds %s, not %s".formatted(reservationId,
+                    reservation.quantity(), quantity));
+        }
+        if (quantity.equals(reservation.quantity())) {
+            reservation.release(reason, now);
+        } else {
+            reservation.reduceBy(quantity);
+        }
         checkInvariants();
     }
 

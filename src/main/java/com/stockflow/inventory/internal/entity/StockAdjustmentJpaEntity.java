@@ -65,8 +65,19 @@ public class StockAdjustmentJpaEntity extends BaseEntity {
     @Column(name = "withdrawn_at")
     private Instant withdrawnAt;
 
+    /** V20261014000420: the receipt layer, when the location holds several layers of the lot. */
+    @Column(name = "received_at", updatable = false)
+    private Instant receivedAt;
+
     protected StockAdjustmentJpaEntity() {
     }
+
+    public StockAdjustmentJpaEntity atLayer(Instant receivedAt) {
+        this.receivedAt = receivedAt;
+        return this;
+    }
+
+    public Instant getReceivedAt() { return receivedAt; }
 
     public StockAdjustmentJpaEntity(UUID id, String adjustmentNumber, String locationCode, String sku,
                                     String lotNumber, int quantityDelta, AdjustmentReason reasonCode,

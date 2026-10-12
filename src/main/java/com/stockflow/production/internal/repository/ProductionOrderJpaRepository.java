@@ -34,6 +34,9 @@ interface ProductionOrderJpaRepository extends BaseJpaRepository<ProductionOrder
                and p.status = com.stockflow.production.internal.domain.ProductionOrder.Status.COMPLETED""")
     boolean existsCompletedForAnotherOrder(@Param("design") UUID designSnapshotId, @Param("order") UUID salesOrderId);
 
+    @Query("select p.id from ProductionOrderJpaEntity p where p.salesOrderId = :order order by p.id")
+    List<UUID> findIdsBySalesOrder(@Param("order") UUID salesOrderId);
+
     List<ProductionOrderJpaEntity> findByTypeAndSampleRequestIdIn(ProductionOrder.Type type,
                                                                   Collection<UUID> sampleRequestIds);
 }

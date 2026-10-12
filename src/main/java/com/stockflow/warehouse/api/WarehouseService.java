@@ -33,6 +33,9 @@ public interface WarehouseService {
     /** @return empty when no location has this id */
     Optional<StorageLocationView> findLocation(UUID locationId);
 
+    /** The storage areas of {@code type} in a warehouse, by location code (the print shop finds its packing area). */
+    java.util.List<StorageLocationView> areasOf(UUID warehouseId, StorageLocationView.AreaType type);
+
     /** @return empty when no warehouse has this id; a purchase order receives into one (SCRUM-390) */
     Optional<WarehouseView> findWarehouse(UUID warehouseId);
 }

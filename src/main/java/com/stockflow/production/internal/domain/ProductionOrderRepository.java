@@ -2,6 +2,7 @@ package com.stockflow.production.internal.domain;
 
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -21,6 +22,9 @@ public interface ProductionOrderRepository {
 
     /** One immutable status-history row. */
     void recordTransition(UUID productionOrderId, ProductionOrder.Transition transition, Instant at, UUID by);
+
+    /** The production orders of a sales order, in id order (the order their locks are taken in). */
+    List<UUID> idsOfSalesOrder(UUID salesOrderId);
 
     /** The root production order of a sample request or an order line (subcontracted children excluded). */
     Optional<ProductionOrder> findBySource(ProductionOrder.Type type, UUID sourceId);

@@ -393,6 +393,9 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
         Instant now = clock.instant();
         int released = 0;
         for (StockItem item : repository.findWithReservationsForProductionOrder(productionOrderId)) {
+            if (item.status() == StockStatus.IN_PRODUCTION) {
+                continue;   // issued: production returns or writes them off, unit by unit
+            }
             List<Reservation> live = item.reservations().stream()
                     .filter(r -> r.status().isActive() && productionOrderId.equals(r.productionOrderId()))
                     .toList();
@@ -425,6 +428,37 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
     @Override
     public IssueReservedStockResult issueReserved(IssueReservedStockCommand command) {
         return operations.issueReserved(command);
+    }
+
+    @Override
+    public IssueReservedStockResult unissueHeld(IssueReservedStockCommand command) {
+        return operations.unissueHeld(command);
+    }
+
+    @Override
+    public IssueReservedStockResult finishHeld(IssueReservedStockCommand command) {
+        return operations.finishHeld(command);
+    }
+
+    @Override
+    public StockAdjustmentSummary writeOffHeld(com.stockflow.inventory.api.WriteOffHeldStockCommand command) {
+        return operations.writeOffHeld(command);
+    }
+
+    @Override
+    public StockMove returnHeld(com.stockflow.inventory.api.ReturnHeldStockCommand command) {
+        return operations.returnHeld(command);
+    }
+
+    @Override
+    public List<StockReservation> liveHolds(Collection<UUID> reservationIds) {
+        List<StockReservation> live = new ArrayList<>();
+        for (UUID id : new java.util.LinkedHashSet<>(reservationIds)) {
+            repository.findIdByReservationId(ReservationId.of(id)).flatMap(repository::findById).ifPresent(item ->
+                    item.findReservation(ReservationId.of(id)).filter(r -> r.status().isActive())
+                            .ifPresent(r -> live.add(toApiReservation(item, r))));
+        }
+        return live;
     }
 
     /**
@@ -514,10 +548,24 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
         return rearmed;
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>A hold whose goods are in the print shop is <b>not</b> released here (SCRUM-401, Q3): an order cancelled
+     * after its blanks were issued releases its holds in its own transaction, before production knows. The goods
+     * stay held, unsellable, until production stops the job and decides unit by unit — printed goods written
+     * off, unprinted blanks returned ({@link #returnHeld}). Releasing here would leave production unable to tell
+     * the printed units from the blank ones.</p>
+     */
     @Override
     public void release(UUID reservationId, String reason) {
         ReleaseReason releaseReason = parseReason(reason);
         StockItem item = holderOf(ReservationId.of(reservationId));
+        if (item.status() == StockStatus.IN_PRODUCTION) {
+            log.info("Hold {} is in the print shop; production closes it, not a {} release", reservationId,
+                    releaseReason);
+            return;
+        }
 
         item.releaseReservation(ReservationId.of(reservationId), releaseReason, clock.instant());
         repository.save(item);

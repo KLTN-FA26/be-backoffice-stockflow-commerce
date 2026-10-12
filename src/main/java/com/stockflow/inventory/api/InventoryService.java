@@ -89,8 +89,9 @@ public interface InventoryService {
     ReserveStockResult reserveForProduction(ReserveProductionStockCommand command);
 
     /**
-     * Release every live hold of a production order (cancelled before its blanks were used). Joins the
-     * caller's transaction. Idempotent: closed holds are left as they are.
+     * Release every live hold of a production order whose goods are still in storage (cancelled before they
+     * were issued; issued ones go back through {@link #returnHeld}). Joins the caller's transaction.
+     * Idempotent: closed holds are left as they are.
      *
      * @return the units released
      */
@@ -111,6 +112,28 @@ public interface InventoryService {
      *         {@code STOCK_STATUS_MISMATCH}
      */
     IssueReservedStockResult issueReserved(IssueReservedStockCommand command);
+
+    /**
+     * The hand-over of finished goods (SCRUM-400): a hold and its goods from the print shop to a PACKING area,
+     * IN_PRODUCTION → AVAILABLE, still held for its owner. Same locks, ledger and refusals as
+     * {@link #issueReserved}.
+     */
+    IssueReservedStockResult finishHeld(IssueReservedStockCommand command);
+
+    /**
+     * Unprinted goods of a stopped print job, still held for their order, back to storage with the hold
+     * (SCRUM-401): IN_PRODUCTION → AVAILABLE, same locks and ledger as {@link #issueReserved}.
+     */
+    IssueReservedStockResult unissueHeld(IssueReservedStockCommand command);
+
+    /** See {@link WriteOffHeldStockCommand}. Joins the caller's transaction. @return the write-off asked for */
+    StockAdjustmentSummary writeOffHeld(WriteOffHeldStockCommand command);
+
+    /** See {@link ReturnHeldStockCommand}. Joins the caller's transaction. */
+    StockMove returnHeld(ReturnHeldStockCommand command);
+
+    /** The holds among {@code reservationIds} that are still live, with what they hold now and where. */
+    List<StockReservation> liveHolds(Collection<UUID> reservationIds);
 
     /**
      * Stop the holds of an order from expiring: the order no longer waits for payment (paid, or

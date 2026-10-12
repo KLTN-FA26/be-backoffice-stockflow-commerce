@@ -56,6 +56,15 @@ class WarehouseServiceImpl implements WarehouseService {
     }
 
     @Override
+    public java.util.List<StorageLocationView> areasOf(UUID warehouseId, StorageLocationView.AreaType type) {
+        if (warehouseId == null || type == null) {
+            return java.util.List.of();
+        }
+        return locations.findAreas(warehouseId, com.stockflow.warehouse.internal.domain.AreaType.valueOf(type.name()))
+                .stream().map(WarehouseServiceImpl::toView).toList();
+    }
+
+    @Override
     public Optional<WarehouseView> findWarehouse(UUID warehouseId) {
         if (warehouseId == null) {
             return Optional.empty();

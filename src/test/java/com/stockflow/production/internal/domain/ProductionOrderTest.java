@@ -5,6 +5,7 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
@@ -141,5 +142,96 @@ class ProductionOrderTest {
             assertThatThrownBy(() -> stopped.hold(ProductionOrder.HoldReason.MACHINE_DOWN, null, at)).as(status.name())
                     .isInstanceOf(BusinessException.class);
         }
+    }
+
+    private ProductionOrder ready() {
+        ProductionOrder ready = forLine(sample, work);
+        ready.passPrepress(UUID.randomUUID(), Instant.parse("2026-10-12T01:00:00Z"));
+        return ready;
+    }
+
+    private static ErrorCode code(Throwable e) {
+        return ((BusinessException) e).errorCode();
+    }
+
+    @Test
+    void blanksAreIssuedUpToWhatIsStillNeededThenTheOrderIsMaterialIssued() {
+        ProductionOrder order = ready();
+        assertThat(order.issueBlanks(6)).isEmpty();
+        assertThat(order.status()).isEqualTo(ProductionOrder.Status.READY);
+        assertThat(order.outstandingBlanks()).isEqualTo(4);
+        assertThatThrownBy(() -> order.issueBlanks(5)).as("BR-PRD-03")
+                .extracting(ProductionOrderTest::code).isEqualTo(ErrorCode.ISSUE_EXCEEDS_REQUIREMENT);
+        assertThat(order.issueBlanks(4)).get().extracting(ProductionOrder.Transition::to)
+                .isEqualTo(ProductionOrder.Status.MATERIAL_ISSUED);
+        assertThatThrownBy(() -> order.issueBlanks(1)).extracting(ProductionOrderTest::code)
+                .isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
+    }
+
+    @Test
+    void outputKeepsGoodPlusScrapEqualToPrintedAndQcDecidesCompletionOrAReprint() {
+        ProductionOrder order = ready();
+        order.issueBlanks(10);
+        order.startPrinting();
+        assertThatThrownBy(() -> order.recordOutput(11, 0)).extracting(ProductionOrderTest::code)
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThatThrownBy(() -> order.recordOutput(3, 4)).extracting(ProductionOrderTest::code)
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(order.recordOutput(9, 1)).extracting(ProductionOrder.Transition::to)
+                .containsExactly(ProductionOrder.Status.QC);
+        assertThat(order.good() + order.scrap()).isEqualTo(order.printed()).isEqualTo(9);
+        assertThat(order.unprintedBlanks()).isEqualTo(1);
+
+        assertThatThrownBy(() -> order.recordQc(5, 2, Instant.now())).as("every waiting unit is inspected")
+                .extracting(ProductionOrderTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(order.recordQc(7, 1, Instant.now()).to()).isEqualTo(ProductionOrder.Status.READY);
+        assertThat(order.good()).isEqualTo(7);
+        assertThat(order.scrap()).isEqualTo(2);
+        assertThat(order.outstandingBlanks()).as("10 - 7 good - 1 unprinted").isEqualTo(2);
+
+        order.issueBlanks(2);
+        order.startPrinting();
+        order.recordOutput(3, 0);
+        assertThat(order.recordQc(3, 0, Instant.parse("2026-10-13T00:00:00Z")).to())
+                .isEqualTo(ProductionOrder.Status.COMPLETED);
+        assertThat(order.good()).isEqualTo(10);
+        assertThat(order.completedAt()).isNotNull();
+    }
+
+    @Test
+    void aRunWhollySpoiltSkipsQcAndGoesBackToReady() {
+        ProductionOrder order = ready();
+        order.issueBlanks(10);
+        order.startPrinting();
+        assertThat(order.recordOutput(2, 2)).extracting(ProductionOrder.Transition::to)
+                .containsExactly(ProductionOrder.Status.QC, ProductionOrder.Status.READY);
+        assertThat(order.outstandingBlanks()).as("10 good needed, 8 unprinted blanks left: 2 more").isEqualTo(2);
+    }
+
+    @Test
+    void cancelOnlyBeforePrintingAndStopKeepsWhatWasPrinted() {
+        ProductionOrder held = ready();
+        held.hold(ProductionOrder.HoldReason.WAITING_CUSTOMER, null, Instant.now());
+        assertThat(held.cancel("Customer withdrew", Instant.now()).to()).isEqualTo(ProductionOrder.Status.CANCELLED);
+        assertThat(held.holdReason()).isNull();
+
+        ProductionOrder printing = ready();
+        printing.issueBlanks(10);
+        printing.startPrinting();
+        assertThatThrownBy(() -> printing.cancel("late", Instant.now())).extracting(ProductionOrderTest::code)
+                .isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
+        assertThatThrownBy(() -> printing.stop(0, 0, " ", Instant.now())).extracting(ProductionOrderTest::code)
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(printing.stop(4, 1, "Customer cancelled", Instant.now())).as("good units sold to nobody")
+                .isEqualTo(3);
+        assertThat(printing.status()).isEqualTo(ProductionOrder.Status.CANCELLED);
+        assertThat(printing.printed()).isEqualTo(4);
+        assertThat(printing.scrap()).isEqualTo(4);
+        assertThat(printing.good()).isZero();
+        assertThat(printing.unprintedBlanks()).isEqualTo(6);
+
+        ProductionOrder fresh = ready();
+        assertThatThrownBy(() -> fresh.stop(0, 0, "nothing printed", Instant.now())).as("cancel, not stop")
+                .extracting(ProductionOrderTest::code).isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
     }
 }

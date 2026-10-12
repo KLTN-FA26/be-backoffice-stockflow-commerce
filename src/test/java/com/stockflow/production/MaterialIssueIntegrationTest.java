@@ -226,7 +226,7 @@ class MaterialIssueIntegrationTest {
     }
 
     @Test
-    @DisplayName("Q3: an order released (cancelled) after the issue frees its holds, but the units in the print shop stay unsellable")
+    @DisplayName("Q3: an order cancelled after the issue does not free the goods in the print shop: still held, never available to promise")
     void issuedGoodsAreNeverResold() throws Exception {
         OrderLine line = releasedLine(4, true);
         for (UUID ignored : line.holds()) {
@@ -236,8 +236,9 @@ class MaterialIssueIntegrationTest {
 
         tx.executeWithoutResult(s -> line.holds().forEach(id -> inventory.release(id, "ORDER_CANCELLED")));
 
-        assertThat(line.holds()).allSatisfy(id -> assertThat(hold(id)).containsEntry("status", "RELEASED")
-                .containsEntry("stock_status", "IN_PRODUCTION"));
+        assertThat(line.holds()).as("production closes them when it stops the job, unit by unit")
+                .allSatisfy(id -> assertThat(hold(id)).containsEntry("status", "HELD")
+                        .containsEntry("stock_status", "IN_PRODUCTION"));
         assertThat(inventory.availableToPromise(BLANK)).as("IN_PRODUCTION is never available to promise")
                 .isEqualTo(atpBefore);
         assertThatThrownBy(() -> tx.executeWithoutResult(s -> inventory.reserve(new ReserveStockCommand(

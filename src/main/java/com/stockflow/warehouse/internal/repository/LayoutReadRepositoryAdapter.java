@@ -144,6 +144,25 @@ class LayoutReadRepositoryAdapter implements LayoutReadRepository, LocationLooku
         return findLocation("loc.id = :key", locationId);
     }
 
+    @Override
+    public java.util.List<LocationRow> findAreas(UUID warehouseId, com.stockflow.warehouse.internal.domain.AreaType type) {
+        return entityManager.createQuery("""
+                        select loc.id, loc.kind, loc.warehouseId, loc.locationCode, loc.storageClass,
+                               loc.status, w.status, s.status, a.type
+                        from AreaJpaEntity a
+                        join a.location loc
+                        join WarehouseJpaEntity w on w.id = loc.warehouseId
+                        left join BinJpaEntity b on b.location = loc
+                        left join b.level l
+                        left join l.shelf s
+                        where loc.warehouseId = :warehouseId and a.type = :type
+                        order by loc.locationCode
+                        """, LocationRow.class)
+                .setParameter("warehouseId", warehouseId)
+                .setParameter("type", type)
+                .getResultList();
+    }
+
     /**
      * The location, its warehouse and - for a bin - its shelf, in one query. An area is not joined:
      * its status and its location's are always written together (issue #18 D8), so the location's

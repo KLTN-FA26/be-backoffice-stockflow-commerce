@@ -16,7 +16,7 @@ package com.stockflow.inventory.internal.domain;
  *
  *   AVAILABLE ──issued to the print shop, held──▶ IN_PRODUCTION ──finished──▶ AVAILABLE (PACKING, held)
  *                                                      ├──unprinted, returned──▶ AVAILABLE
- *                                                      └──scrapped──▶ DAMAGED ──approved write-off──▶ (leaves)
+ *                                                      └──spoilt, out of the hold──approved write-off──▶ (leaves)
  * </pre>
  *
  * <p>{@link StockItem#receive} still creates {@link #QUARANTINE} stock; the receipt flow that
@@ -44,10 +44,11 @@ public enum StockStatus {
 
     /**
      * Issued to the print shop (SCRUM-397): in a PRODUCTION area, held for its order or production order.
-     * Never sellable, <b>whatever happens to the hold</b> — an order cancelled after its blanks were issued
-     * releases its holds, and printed cups must not come back as blanks another order can buy. They leave
-     * this status only by an explicit step: finished goods to PACKING, unprinted blanks back to storage,
-     * scrap to DAMAGED.
+     * Never sellable, whatever happens to the hold, and the hold itself is closed only by production: an order
+     * cancelled after its blanks were issued does not release it, so printed cups never come back as blanks
+     * another order can buy and production can still tell printed from unprinted. The goods leave this status
+     * only by an explicit step: finished goods to PACKING, unprinted blanks back to storage, spoilt units
+     * written off by an approved adjustment.
      */
     IN_PRODUCTION;
 

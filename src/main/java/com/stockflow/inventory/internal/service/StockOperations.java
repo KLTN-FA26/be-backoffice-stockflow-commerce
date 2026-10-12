@@ -29,6 +29,18 @@ public interface StockOperations {
     /** See {@code InventoryService#issueReserved}. */
     IssueReservedStockResult issueReserved(IssueReservedStockCommand command);
 
+    /** See {@code InventoryService#unissueHeld}. */
+    IssueReservedStockResult unissueHeld(IssueReservedStockCommand command);
+
+    /** See {@code InventoryService#finishHeld}. */
+    IssueReservedStockResult finishHeld(IssueReservedStockCommand command);
+
+    /** See {@code InventoryService#writeOffHeld}. */
+    StockAdjustmentSummary writeOffHeld(com.stockflow.inventory.api.WriteOffHeldStockCommand command);
+
+    /** See {@code InventoryService#returnHeld}. */
+    StockMove returnHeld(com.stockflow.inventory.api.ReturnHeldStockCommand command);
+
     StockMove reclassify(ReclassifyStockCommand command);
 
     StockAdjustmentSummary requestAdjustment(RequestAdjustmentCommand command);

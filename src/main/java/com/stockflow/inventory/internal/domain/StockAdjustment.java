@@ -42,6 +42,8 @@ public final class StockAdjustment extends AggregateRoot {
     private Instant postedAt;
     private Instant withdrawnAt;
     private final long version;
+    /** The receipt layer, when the location holds several layers of the lot; null picks the only one. */
+    private Instant receivedAt;
 
     public StockAdjustment(UUID id, String number, LocationId location, Sku sku, String lotNumber,
                            int quantityDelta, AdjustmentReason reason, String note, UUID requestedBy,
@@ -77,6 +79,14 @@ public final class StockAdjustment extends AggregateRoot {
                     "An adjustment with reason %s can only reduce stock".formatted(this.reason));
         }
     }
+
+    /** The adjustment names one receipt layer of the lot at its location (set once, when asked for). */
+    public StockAdjustment atLayer(Instant receivedAt) {
+        this.receivedAt = receivedAt;
+        return this;
+    }
+
+    public Instant receivedAt() { return receivedAt; }
 
     public static StockAdjustment request(String number, LocationId location, Sku sku, String lotNumber,
                                           int quantityDelta, AdjustmentReason reason, String note,

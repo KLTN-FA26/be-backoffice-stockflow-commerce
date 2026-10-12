@@ -16,7 +16,11 @@ public enum ReleaseReason {
     RESERVATION_EXPIRED,
     MANUAL_OVERRIDE,
     /** A production order no longer needs the blanks it held (cancelled before using them). */
-    PRODUCTION_CANCELLED;
+    PRODUCTION_CANCELLED,
+    /** Spoilt in the print shop: the units are written off by an approved SCRAP adjustment (SCRUM-398). */
+    SCRAPPED,
+    /** Issued to the print shop and not printed: back to storage, free (SCRUM-400/401). */
+    RETURNED_FROM_PRODUCTION;
 
     public com.stockflow.contracts.ReleaseReason toContract() {
         return switch (this) {
@@ -25,7 +29,8 @@ public enum ReleaseReason {
             case RESERVATION_EXPIRED -> com.stockflow.contracts.ReleaseReason.RESERVATION_EXPIRED;
             case MANUAL_OVERRIDE -> com.stockflow.contracts.ReleaseReason.MANUAL_OVERRIDE;
             // Never published: a production hold announces nothing to order (StockItem#releaseReservation).
-            case PRODUCTION_CANCELLED -> com.stockflow.contracts.ReleaseReason.MANUAL_OVERRIDE;
+            case PRODUCTION_CANCELLED, SCRAPPED, RETURNED_FROM_PRODUCTION ->
+                    com.stockflow.contracts.ReleaseReason.MANUAL_OVERRIDE;
         };
     }
 }

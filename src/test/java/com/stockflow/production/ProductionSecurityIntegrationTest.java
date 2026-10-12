@@ -267,4 +267,58 @@ class ProductionSecurityIntegrationTest {
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("INVALID_PRODUCTION_TRANSITION"));
     }
+
+    @Test
+    @DisplayName("SCRUM-398..401: the print shop prints and records output, QC alone records QC (no longer production-orders:UPDATE), the manager alone cancels")
+    void printShopStepsOverHttp() throws Exception {
+        com.stockflow.support.ConfirmedDesigns.stockBlanks(jdbc, tx, 10);
+        String sales = staff("SALES_STAFF");
+        UUID id = createDraft(sales, DemoData.CUSTOMER_ID, fixtures.confirmedDesign());
+        String order = data(send(post(SAMPLES + "/" + id + "/submission"), sales,
+                java.util.Map.of("warehouseId", hcm))).path("productionOrder").path("id").asText();
+        String printer = assigned("PRODUCTION_STAFF");
+        String storekeeper = assigned("WAREHOUSE_STAFF");
+        String inspector = assigned("QC_STAFF");
+        String manager = assigned("WAREHOUSE_MANAGER");
+        send(post(ORDERS + "/" + order + "/prepress"), inspector, java.util.Map.of("decision", "PASS"))
+                .andExpect(status().isForbidden());
+        send(post(ORDERS + "/" + order + "/prepress"), printer, java.util.Map.of("decision", "PASS"))
+                .andExpect(status().isOk());
+        String state = "READY";
+        for (int scans = 0; scans < 5 && "READY".equals(state); scans++) {
+            state = data(send(post(ORDERS + "/" + order + "/material-issues"), storekeeper,
+                    java.util.Map.of("requestId", UUID.randomUUID(), "toLocation", "HCM-PRD01")))
+                    .path("order").path("summary").path("status").asText();
+        }
+
+        send(post(ORDERS + "/" + order + "/printing"), inspector, null).andExpect(status().isForbidden());
+        send(post(ORDERS + "/" + order + "/printing"), printer, null).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.summary.status").value("PRINTING"));
+        send(post(ORDERS + "/" + order + "/output"), printer, java.util.Map.of("printed", 0))
+                .andExpect(status().isBadRequest());
+        send(post(ORDERS + "/" + order + "/output"), printer, java.util.Map.of("printed", 2,
+                "scrap", List.of(java.util.Map.of("reason", "OTHER", "quantity", 1))))
+                .andExpect(status().isBadRequest());   // OTHER says what
+        send(post(ORDERS + "/" + order + "/output"), printer, java.util.Map.of("printed", 2))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.summary.status").value("QC"));
+
+        String qc = ORDERS + "/" + order + "/qc-results";
+        send(post(qc), printer, java.util.Map.of("passed", 2, "failed", 0)).andExpect(status().isForbidden());
+        send(post(ORDERS + "/" + order + "/cancellation"), printer, java.util.Map.of("reason", "no"))
+                .andExpect(status().isForbidden());
+        send(post(qc), inspector, java.util.Map.of("passed", 2, "failed", 0)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.summary.status").value("COMPLETED"));
+        send(get(qc), sales, null).andExpect(status().isOk()).andExpect(jsonPath("$.data[0].passed").value(2));
+        send(get(ORDERS + "/" + order + "/scrap"), printer, null).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(0));
+        send(post(ORDERS + "/" + order + "/cancellation"), manager, java.util.Map.of("reason", "too late"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("INVALID_PRODUCTION_TRANSITION"));
+    }
+
+    private String assigned(String role) {
+        UUID userId = fixtures.user();
+        assign(userId, hcm);
+        return token(userId, role);
+    }
 }
