@@ -1,134 +1,111 @@
 # SCRUM-429 / SCRUM-450 backend handoff
 
-Status: **onboarding runtime implemented and tested end to end on the current develop schema;
-tax code, the PENDING_ACTIVATION status and a CREATE grant remain schema-owner items.** Not Done:
-FE SCRUM-451, owner review and CI are outstanding. Nothing pushed, merged, deployed or changed in Jira.
+Status: **backend acceptance of SCRUM-450 implemented and tested, including the schema.** Not Done
+as a story: FE SCRUM-451, independent QA, CI on a pushed branch and the business owner's confirmation
+of the defaults listed under "Decisions" are outstanding. Nothing pushed, merged, deployed or changed in Jira.
 
 ## Resume checkpoint (2026-10-12)
 
-- Branch `SCRUM-429-b2b-onboarding`, worktree `orca/workspaces/.../SCRUM-429-b2b-onboarding` only.
-- `origin/develop` used: **`1de8f42612be534539d98bbcf105d8b39c6d74a3`** (fetched 2026-10-12), merged by
-  merge commit `d15ff67` (conflicts resolved by intent; see its message). The implementation commit
-  follows it; recover with `git log -2 --format=%H`.
-- Previous lane snapshot: `896deb5` (code) / `f4a9a6e` (docs); its closure work is preserved.
-- Business source: kltn-docs `ecommerce/18-customer-information` on `main` (`84b8b54`, merged
-  2026-10-10) - §4.1, §5, BR-01, BR-01a, BR-02. Jira: snapshot `SPRINT2-JIRA-SNAPSHOT.md` (2026-10-08)
-  and `JIRA-BE-FE-SNAPSHOT-2026-10-09.json` (issues last updated 2026-10-08, no comments, no separate AC
-  field). The Atlassian connector was **not loaded in this session**, so Jira was not re-read live.
+- Branch `SCRUM-429-b2b-onboarding`, this worktree only. The production 394/395 worktree was read
+  (migration numbers) and never modified.
+- `origin/develop` integrated: **`74d624d2c99e527550f66d0b6e5a58cadfcb76d0`** (merge `60da3e8`; the earlier
+  `1de8f42` merge is `d15ff67`). Newest develop migration then: `V20261013000600`; production worktree had
+  nothing newer. This branch adds **`V20261014000100`** (B2B suffix `00100`; production keeps `00200`+).
+  At commit time the production worktree holds `V20261014000200__production_sample_answer_grants.sql`
+  (uncommitted there). **Merge order matters:** if that reaches develop first, rename this file above it
+  before merging - Flyway does not run out of order (CLAUDE.md §7).
+- Jira read live through the Atlassian connector on 2026-10-12: SCRUM-429 and SCRUM-450 unchanged since
+  2026-10-08, 0 comments, no separate acceptance field. Acceptance below = Jira description + kltn-docs
+  `ecommerce/18-customer-information` (main `84b8b54`, 2026-10-10) §4.1, §5, BR-01, BR-01a, BR-02.
+- The repository owner authorised this branch to write its own migration and local commits (2026-10-12).
+- Implementation commit follows the merge; recover with `git log -3 --format='%H %s'`.
 
-## What develop gave us, and what it did not
+## Schema - `V20261014000100__customer_b2b_onboarding.sql`
 
-Checked in every migration on `1de8f42` and every remote branch:
+| Change | Detail |
+|---|---|
+| `customer.customer.tax_code VARCHAR(14)` | NULL for every pre-existing customer: no invented or back-filled codes. Required for new customers. `ck_customer_tax_code` `^[0-9]{10}(-[0-9]{3})?$`. |
+| `uk_customer_tax_code_live` | unique over `PENDING_ACTIVATION` + `ACTIVE` only. BR-01 forbids two Active customers per code; §4.1 checks duplicates at creation, when the customer is pending, so pending is included to stop two creates racing. INACTIVE (closed) and BLOCKED rows are not constrained - the documents do not ask for it. |
+| `ck_customer_status` + `PENDING_ACTIVATION`; `ck_customer_pending_has_account` | Pending always has the account its contact activates. |
+| `identity.app_user.password_hash` nullable | NULL = invited, no password yet. |
+| `identity.portal_invitation` | one row per invitation e-mail, SHA-256 digest only; consumed XOR revoked; lifetime/consumption/delivery CHECKs; `uk_portal_invitation_open` (one open per account); `uk_portal_invitation_digest`; FK to the account `DEFERRABLE INITIALLY DEFERRED` (Hibernate flush order). |
+| carry-over | branch-era `{portal-invitation}<issued>:<expires>:<digest>` credentials become `portal_invitation` rows with the same digest and dates (links already e-mailed keep working); only their customers move INACTIVE → PENDING_ACTIVATION; every other INACTIVE customer is untouched. |
+| `customer-customers:CREATE` | granted to SALES_STAFF, ECOMMERCE_ADMIN, SYSTEM_ADMIN; those three `app_role.version` + 1 in the same migration. |
 
-| Needed | On develop | Used as |
-|---|---|---|
-| Company + contact | `customer.customer` (full_name, email, phone, user_id), `identity.app_user.full_name` | company name on the customer, contact name on the account |
-| Allowed payment terms | `customer.credit_profile` + `customer-credit-profiles:APPROVE` (SCRUM-427) | untouched by onboarding: BR-02 says only the credit approver sets terms; no row = prepaid only |
-| Invitation storage | **none** | one-time credential in `app_user.password_hash` (below) |
-| Pending Activation | **not in `ck_customer_status`** | `INACTIVE` + account with an open invitation |
-| Tax code | **no column** | not accepted by the API (blocker) |
-| `customer-customers:CREATE` | **not seeded** | `UPDATE` + Sales/e-commerce-admin role check, the existing staff-edit pattern |
-
-The schema request for Tu is `docs/business-design/db-design/SCRUM-429-schema-change-request.md`.
-No migration, pending migration or parallel table was added.
+Why the invitation left `password_hash` (the previous commit's design): the repository rule "state every
+invariant twice - aggregate and CHECK" cannot hold for a string in a password column, the e-mail outcome
+has to be stored so a failure is visible, and the credential column should hold only passwords.
+`schema.dbml` regenerated with `tools/db/gen_dbml.py` from a fully migrated database (it also catches up
+tables develop had added without regenerating: SCRUM-427/431/453/457/460). New QA script
+`tools/db/qa/09_customer_onboarding.sql`.
 
 ## API
 
-| Endpoint | Who | Behaviour |
+| Endpoint | Authorisation | Behaviour |
 |---|---|---|
-| `POST /api/v1/customers` | `customer-customers:UPDATE` + SALES_STAFF / ECOMMERCE_ADMIN (SYSTEM_ADMIN passes every role check) | Body `companyName, contactName, email, phone?`. Creates an `INACTIVE` customer and a CUSTOMER account that has no password, commits, then e-mails the invitation. **201** `{customer, invitation:{issuedAt, expiresAt, delivery: SENT|FAILED}}`. Never returns the link. 409 `CUSTOMER_EMAIL_ALREADY_EXISTS` / `USER_EMAIL_ALREADY_EXISTS` (case-insensitive; never attaches to an existing account). 503 `PORTAL_INVITATION_UNAVAILABLE` if no activation URL is configured, before any write. Rate limit 30/min/user. Audited `CREATE customer`. |
-| `POST /api/v1/customers/{id}/portal-invitation` | same | New link, old one dead on commit. 200 same shape. 404, 409 `CONFLICT` (no account / BLOCKED), 409 `PORTAL_ACCOUNT_ALREADY_ACTIVE`, 429 `RATE_LIMITED` within the cooldown. 10/min/user. Audited. |
-| `GET /api/v1/customers/{id}/portal-invitation` | `READ` + same roles | `{state: PENDING|EXPIRED|ACTIVATED|NO_ACCOUNT, issuedAt, expiresAt}` |
-| `POST /api/v1/customers/portal-activation` | anonymous, POST only | Body `{token, password}`. Sets the password and makes the customer `ACTIVE` in one transaction. 200 `{email}` (then sign in normally). 400 `PORTAL_INVITATION_INVALID` for malformed/unknown/replaced/expired/used links and BLOCKED customers alike; 400 `VALIDATION_FAILED` for a weak password (link stays usable). 10/min/IP. Audited. |
+| `POST /api/v1/customers` | `customer-customers:CREATE`; CUSTOMER role holders refused | Body `companyName, taxCode, contactName, email, phone?`. Normalises the tax code; creates a `PENDING_ACTIVATION` customer and a passwordless CUSTOMER account, commits, then e-mails the link. 201 `{customer{…taxCode, status}, invitation{issuedAt, expiresAt, delivery SENT\|FAILED}}`, never the link. 409 `CUSTOMER_TAX_CODE_ALREADY_EXISTS` / `CUSTOMER_EMAIL_ALREADY_EXISTS` / `USER_EMAIL_ALREADY_EXISTS`; 400 `VALIDATION_FAILED`; 503 `PORTAL_INVITATION_UNAVAILABLE` (no activation URL) before any write. 30/min/user. Audited. |
+| `POST /api/v1/customers/{id}/portal-invitation` | same | Revokes the open invitation, issues a new one, e-mails it after commit. 409 `PORTAL_ACCOUNT_ALREADY_ACTIVE`, 409 `CONFLICT` (not pending: blocked/closed/legacy), 429 `RATE_LIMITED` within the cooldown (an expired invitation is replaced at once), 404. Audited. |
+| `GET /api/v1/customers/{id}/portal-invitation` | `READ` + Sales/e-commerce admin | `{state PENDING\|EXPIRED\|ACTIVATED\|NO_ACCOUNT, issuedAt, expiresAt, delivery}` |
+| `POST /api/v1/customers/portal-activation` | anonymous, POST only | `{token, password}` → password set, invitation consumed, customer ACTIVE, one transaction. 200 `{email}`. 400 `PORTAL_INVITATION_INVALID` alike for malformed/unknown/replaced/expired/used links and for customers no longer pending; 400 `VALIDATION_FAILED` for a weak password (link stays usable). 10/min/IP. Audited. |
+| `PUT /api/v1/customers/{id}` (staff) | unchanged | now also `taxCode` (normalised, uniqueness-checked); `PUT /customers/me` ignores it. |
+| `POST /api/v1/customers/{id}/status` (e-commerce admin) | unchanged | lifecycle enforced: nobody sets PENDING_ACTIVATION; pending → only INACTIVE; reviving a closed customer whose code another live customer holds → 409 `CUSTOMER_TAX_CODE_ALREADY_EXISTS`; others → 409 `INVALID_CUSTOMER_STATUS_TRANSITION`. |
 
-Unchanged: login, retired registration/guest routes (denied, also with security off and for
-cached replays), availability (`ACTIVE` linked customer only - now backed by BR-01a), profile/address
-ownership, credit-profile API.
+Unchanged and regression-tested: login, retired registration/guest checkout (denied with security on/off
+and for cached replays), availability (ACTIVE linked customer only), profile/address ownership,
+credit-profile API (terms are set only by the approver, BR-02; no row = prepaid only).
 
-Configuration: `PORTAL_ACTIVATION_URL` (blank = invitations off, no startup failure; `local` profile
-defaults to `http://localhost:3000/portal/activate`), `PORTAL_INVITATION_LIFETIME` (PT72H),
-`PORTAL_INVITATION_RESEND_COOLDOWN` (PT1M). The token travels as a URL fragment (`#token=`), which
-browsers do not send to servers or in `Referer`. **The FE route and the TTL/cooldown values are
-proposals, not owner-approved.**
+## Decisions (defaults chosen here, not approved by anyone else)
 
-## Design decisions to review
+| Topic | Default | Basis |
+|---|---|---|
+| Lifecycle mapping | Pending Activation=PENDING_ACTIVATION, Active=ACTIVE, Suspended=BLOCKED, Closed=INACTIVE | kltn-docs 18 §5 vs existing statuses |
+| Tax code format | 10 digits or 10-3; no check-digit validation | Thông tư 105/2020/TT-BTC; check digit not in the documents |
+| Tax code uniqueness | live = pending + active | BR-01 + §4.1 duplicate check |
+| Invitation lifetime / resend cooldown | 72 h / 1 min (`PORTAL_INVITATION_LIFETIME`, `PORTAL_INVITATION_RESEND_COOLDOWN`) | none in the documents |
+| Activation URL | blank = invitations off (503); `local` profile `http://localhost:3000/portal/activate`; token as `#token=` fragment | FE route not built (SCRUM-451) |
+| E-mail retry | after-commit send, outcome stored; recovery by resend (new secret), no automatic retry | the mail holds the only copy of the secret |
 
-1. **Invitation as a credential on the account.** `{portal-invitation}<issued>:<expires>:<sha256(token)>`
-   in `password_hash`. The token is `base64url(userId ‖ 256 random bits)`; only its digest is stored.
-   Activation writes a bcrypt hash (link consumed), resend writes a new value (old link dead), all under
-   the account row lock. Login treats such an account like an unknown user (same bcrypt cost, 401, no
-   lockout counting); `changePassword` refuses it. `PortalInvitation`'s javadoc explains why; §2.4 of the
-   schema request describes the table alternative, which would only change the adapter.
-2. **E-mail after commit, not via an event.** The mail carries the only copy of the secret; an event
-   payload is persisted in `event_publication`. So the service commits, then calls
-   `NotificationService.sendPortalInvitation` (SMTP transport of the notification module) outside any
-   transaction, and reports `SENT`/`FAILED`. Recovery is a Sales resend (new secret). Durable automatic
-   retry is deliberately not implemented.
-3. **Lock order** customer row → account row for resend and activation (activation reads the account id
-   from the token's shape first), so they cannot deadlock; races resolve to one outcome.
-4. **Duplicate races** end at the unique indexes (`uk_customer_email_normalized`,
-   `uk_app_user_email_normalized`/`username`) and are translated to 409.
-5. Removed the superseded, never-wired `BusinessCustomerProfile` (terms now belong to `credit_profile`)
-   and the `PortalInvitationRepository` port.
+Also added: `mail.from` and optional `MAIL_SMTP_LOCALHOST` mail properties. Measured on the real jar:
+201 for create went from ~10 s to 0.66 s on this laptop, whose reverse DNS takes 9.6 s
+(`InetAddress.getCanonicalHostName`). Blank keeps JavaMail's default EHLO behaviour.
 
-## Acceptance mapping
+## Acceptance checklist
 
-| Criterion (Jira 429/450 + kltn-docs 18) | Code / API | Tests | Result |
-|---|---|---|---|
-| Sales creates the business customer: company, contacts | `CustomerOnboardingController.create`, `CustomerOnboardingService.create`, `Customer.onboard` | `B2bOnboardingIntegrationTest.salesCreates…`, `onlySales…`, `anExisting…` | **PASS** |
-| … tax code | - | - | **MISSING - schema** (§2.1 of request) |
-| … allowed payment terms | existing `PUT /customers/{id}/credit-profile` (approver only, BR-02) | existing SCRUM-427 tests | **PASS by existing API**, not part of the create call by design |
-| Duplicate check (email; MST) | service check + unique indexes | duplicate + 4-thread race tests | **PASS email**; MST blocked |
-| Send portal activation invite | `PortalAccountService.invite`, `NotificationSender.sendPortalInvitation` | Mailpit end-to-end (link read from the delivered mail) | **PASS** |
-| Resend invalidates old link, cooldown | `User.reissueInvitation` | `resendWaits…`, `PortalInvitationTest` | **PASS** |
-| Token secure, expires, single use | `PortalInvitationToken`, `PortalInvitation`, `User.activate` | `PortalInvitationTest` (8), `anExpiredLink…`, `concurrentActivations…` (4 threads, exactly one) | **PASS** |
-| Activation → Active, atomic | `CustomerOnboardingService.activate` | end-to-end + rollback test, BLOCKED test, resend-vs-activate race | **PASS** (Active represented as ACTIVE; Pending as INACTIVE - see §2.2) |
-| Mail only after commit, failure visible/recoverable | `deliver` after `TransactionTemplate` | `aMailFailure…` (Mailpit paused → FAILED, customer kept, resend → SENT) | **PASS** |
-| No token in logs/responses/audit/idempotency store | redacted `toString`s, log statements | asserted against `platform.audit_log` and `platform.idempotency_record`; full log grep `#token=` = 0 | **PASS** (Hibernate logs the *digest* in the failed INSERT of a duplicate race) |
-| Sales-only RBAC | `requireSales` + `UPDATE` | anonymous 401, warehouse 403, customer 403, sales/e-com admin 201 | **PASS**; dedicated CREATE grant pending |
-| Remove public self-registration | security deny + fail-closed service | `B2bAccessIntegrationTest`, `B2bUnsecuredAccessIntegrationTest` | **PASS** (regression re-run after merge) |
-| Disable guest checkout | same; develop's re-added controller kept deleted | same + adapted `InventoryCatalogIntegrationTest` | **PASS** |
-| Availability needs customer login | unchanged | `B2bAccessIntegrationTest`, adapted `InventoryCatalogSecurityIntegrationTest` | **PASS** |
+| # | Criterion | Code | Tests (all executed) | Result |
+|---|---|---|---|---|
+| A1 | Sales creates company customer: company, tax code, contact | `CustomerOnboardingController.create`, `CustomerOnboardingService.create`, `Customer.onboard`, `TaxCode` | IT `salesCreates…`, `onlySales…`; `CustomerOnboardingTest`; HTTP smoke | PASS |
+| A2 | Allowed payment terms | existing credit-profile API (approver, BR-02) | SCRUM-427 suite | PASS (by design not in the create call) |
+| A3 | Duplicate check MST/email, normalised, races | pre-check + `uk_customer_tax_code_live`, email indexes, `CustomerConstraints` | IT `aTaxCodeBelongs…` (spellings, 10-3, closed reuse, revive 409, 4-thread race), `anExisting…`, `concurrentCreates…`; QA B1–B8 | PASS |
+| A4 | Legacy customers without MST | nullable column, no backfill, staff `PUT` sets it | upgrade test; `CustomerOnboardingTest`; IT lifecycle | PASS |
+| A5 | PENDING_ACTIVATION, sensible data move | migration + `Customer.changeStatus/activatePortal` | upgrade test (only branch-invited INACTIVE moved); IT lifecycle | PASS |
+| A6 | CREATE grant, version bump, RBAC | migration + `Action.CREATE` | IT (anonymous 401, warehouse/customer 403, sales/e-com/system admin 201, grant rows), upgrade test (versions), QA B18, HTTP smoke | PASS |
+| A7 | Invitation sent after commit, secure token, single use, expiry | `PortalInvitationToken`, `PortalInvitation`, `PortalAccountServiceImpl` | `PortalInvitationTest` (6); IT end to end through Mailpit, expired, 4-thread activation; QA B9–B17; HTTP smoke | PASS |
+| A8 | Resend invalidates old link, cooldown, races | `revokeForResend` + open index | IT `resendWaits…`, resend-vs-activation race | PASS |
+| A9 | Mail failure visible and recoverable | `deliver` + `recordDelivery` | IT `aMailFailure…` (paused SMTP → FAILED stored, resend → SENT) | PASS |
+| A10 | No token leak | digest only; redacted `toString`s | IT asserts DB, audit log, idempotency store; log grep `#token=` 0 (tests and real jar) | PASS |
+| A11 | Pending / blocked / closed access | login 401 without password; activation only from pending; availability/checkout ACTIVE only | IT lifecycle + blocked; `StorefrontAvailabilityServiceTest` (pending/inactive/blocked) | PASS |
+| A12 | Self-registration removed, guest checkout disabled, availability needs login | security deny + fail-closed services | `B2bAccessIntegrationTest` (5), `B2bUnsecuredAccessIntegrationTest` (1), HTTP smoke | PASS |
+| A13 | Migration fresh + upgrade with data | `V20261014000100` | every integration test (fresh), `B2bOnboardingMigrationUpgradeTest`, real jar boot on a fresh DB | PASS |
 
-## Merge notes
+## Verification (2026-10-12; Java 21.0.9, Maven 3.9.9 offline, Docker 28.5.1, PostgreSQL 16 / Redis 7 / Mailpit)
 
-- develop re-modified `GuestCheckoutController` (server prices) → kept deleted; `placeGuestOrder` still
-  refuses, but the shared `agreedPrice` helper that account checkout uses was kept.
-- Two develop tests encoded B2C behaviour and were adapted, not deleted:
-  `InventoryCatalogIntegrationTest.guestCheckout…` now proves the same price/replay guarantees through
-  account checkout (with `snapshotCustomer=true`, the HTTP path) and that guest checkout reserves
-  nothing; `InventoryCatalogSecurityIntegrationTest` now expects 403 for a non-customer on availability.
-- `B2bAccessIntegrationTest` seeded staff by converting a customer account; SCRUM-453 forbids that, so
-  staff are now seeded directly into the tables.
+**`mvn -o clean test`: 944 tests, 0 failures, 0 errors, 0 skipped, BUILD SUCCESS** (10 min 27 s, finished 2026-10-12 13:06 +07, `final3-scrum450.log`; SMTP pointed at a lane Mailpit). Also executed in this round:
+- unit + `ArchitectureTest` + `ModularityTest` + `MessageBundleTest` + related: 52 passed;
+- B2B integration (`B2bOnboardingIntegrationTest` 12, `B2bAccessIntegrationTest` 5, `B2bUnsecured…` 1): passed;
+- `B2bOnboardingMigrationUpgradeTest`: passed;
+- real jar (`java -jar`, `local` profile, **security on**, idempotency on) against lane-only Postgres/Redis/Mailpit containers on port 18450: 105 migrations applied; `target/scrum450-http-smoke.sh` 23/23 checks twice (`http-smoke-scrum450.log`);
+- `tools/db/qa/run.sh` on that database: all scripts pass, 09 = 18 checks (`qa-scrum450.log`);
+- `tools/verify.py`: all static checks passed.
+- A first full run failed 2 tests on the login rate limit (5/min per IP, all MockMvc calls from 127.0.0.1); the test now gives each login/activation call its own `X-Forwarded-For`, the limit itself unchanged.
 
-## Verification (2026-10-12, Java 21.0.9, Maven 3.9.9 offline, Docker Desktop 28.5.1)
+Not done: CI (nothing pushed), FE, load or multi-instance tests. Only `@example.test` recipients, all mail into
+throwaway Mailpit containers; containers stopped afterwards; no shared or production database touched.
 
-| Run | Result |
-|---|---|
-| `mvn -o clean test` (SMTP → local `scrum450-mailpit`, storage `target/scrum429-storage`) | **921 tests, 0 failures, 0 errors, 0 skipped, BUILD SUCCESS**, 9 m 30 s, finished 2026-10-12 02:56 +07 (`final-scrum450.log`) |
-| of which `B2bOnboardingIntegrationTest` / `B2bAccessIntegrationTest` / `B2bUnsecuredAccessIntegrationTest` | 10 / 5 / 1 passed |
-| of which `PortalInvitationTest`, `ArchitectureTest`, `ModularityTest`, adapted `InventoryCatalog*` | 8, 18, 3, 32 + 9 passed |
-| first full run before adapting the two develop tests | 921 tests, 2 failures - exactly those B2C expectations (`full-scrum450.log`) |
-| `PYTHONUTF8=1 python tools/verify.py` | all static checks passed (the earlier 36 Windows false positives are gone on develop) |
-| `git diff --check` | clean |
-| lane Mailpit after the full run | 0 messages; onboarding mail went only to its own Testcontainers Mailpit |
-
-Logs are ignored and not committed (`*.log`).
-
-- Integration tests use fresh Testcontainers PostgreSQL 16 / Redis 7 and, for onboarding, a throwaway
-  `axllent/mailpit` container. Every recipient is `@example.test`. The rest of the suite pointed SMTP at a
-  lane-labelled local Mailpit (`scrum450-mailpit`). No real mail, no shared database, no production.
-- `ArchitectureTest`, `ModularityTest` (customer now also depends on `notification :: api`),
-  `MessageBundleTest`, `tools/verify.py` are part of the run.
-- Not done: CI (nothing pushed), HTTP tests through a real servlet container (MockMvc is used), load or
-  multi-instance tests. On this machine `localhost` takes ~2 s to resolve; the test uses `127.0.0.1`.
-
-## Open items and owners
+## Open items
 
 | Item | Owner |
 |---|---|
-| `customer.customer.tax_code` + uniqueness rule; `PENDING_ACTIVATION` status; `customer-customers:CREATE` seed | **Tu** (request doc) |
-| Confirm TTL 72 h / cooldown 1 min, portal activation route, Suspended/Closed mapping | business owner + Tu |
-| Add `taxCode` to the create API and switch to `Action.CREATE` once the schema lands | this lane |
-| FE: back-office create/resend screens, portal activation page reading `#token` | SCRUM-451 |
+| Confirm the defaults in "Decisions" | business owner (+ Tu for schema conventions) |
+| FE: back-office create/resend/status screens, portal page reading `#token` and posting it | SCRUM-451 |
+| Login suspension of BLOCKED customers' accounts (doc §5 "không đăng nhập") - pre-existing behaviour, outside 429/450 | customer/identity owners |
 | Independent QA and CI on the pushed branch | QA / repository process |

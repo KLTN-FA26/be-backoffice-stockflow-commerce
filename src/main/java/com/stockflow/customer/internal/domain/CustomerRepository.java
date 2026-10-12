@@ -11,4 +11,6 @@ public interface CustomerRepository extends AggregateRepository<Customer, UUID> 
     /** The customer linked to an account, under a row lock held to the end of the transaction. */
     Optional<Customer> findByUserIdForUpdate(UUID userId);
     Optional<Customer> findByEmail(String email);
+    /** Whether a PENDING_ACTIVATION or ACTIVE customer other than {@code exceptCustomerId} has this code. */
+    boolean isTaxCodeLive(String taxCode, UUID exceptCustomerId);
 }

@@ -43,7 +43,7 @@ class StorefrontAvailabilityServiceTest {
     @BeforeEach
     void activeCustomer() {
         when(customers.findByUserId(userId)).thenReturn(Optional.of(new CustomerSummary(
-                UUID.randomUUID(), userId, "Customer", "customer@example.test", null, null, "ACTIVE", 0, null)));
+                UUID.randomUUID(), userId, "Customer", "customer@example.test", null, null, null, "ACTIVE", 0, null)));
     }
 
     @Test
@@ -88,9 +88,9 @@ class StorefrontAvailabilityServiceTest {
         assertThatThrownBy(() -> service.availabilityOf(userId, List.of("TABLE-OAK-160")))
                 .isInstanceOfSatisfying(BusinessException.class,
                         ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.FORBIDDEN));
-        for (String status : List.of("INACTIVE", "BLOCKED")) {
+        for (String status : List.of("PENDING_ACTIVATION", "INACTIVE", "BLOCKED")) {
             when(customers.findByUserId(userId)).thenReturn(Optional.of(new CustomerSummary(
-                    UUID.randomUUID(), userId, "Customer", "customer@example.test", null, null, status, 0, null)));
+                    UUID.randomUUID(), userId, "Customer", "customer@example.test", null, null, null, status, 0, null)));
             assertThatThrownBy(() -> service.availabilityOf(userId, List.of("TABLE-OAK-160")))
                     .isInstanceOfSatisfying(BusinessException.class,
                             ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.FORBIDDEN));

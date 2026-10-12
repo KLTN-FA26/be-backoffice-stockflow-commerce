@@ -12,7 +12,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** Invitation rules on the account. Row locking and races are proved against PostgreSQL in B2bOnboardingIntegrationTest. */
+/** Invitation and invited-account rules. Locking and races are proved against PostgreSQL in B2bOnboardingIntegrationTest. */
 class PortalInvitationTest {
 
     private static final Instant NOW = Instant.parse("2026-10-12T03:00:00Z");
@@ -22,9 +22,8 @@ class PortalInvitationTest {
 
     private final UUID userId = UUID.randomUUID();
 
-    private User invited(PortalInvitationToken token) {
-        return User.inviteCustomer(userId, " Buyer@Example.TEST ", "Buyer",
-                PortalInvitation.issue(token, NOW, LIFETIME));
+    private PortalInvitation issued(PortalInvitationToken token, Instant at) {
+        return PortalInvitation.issue(UUID.randomUUID(), token, null, at, LIFETIME);
     }
 
     @Test
@@ -46,100 +45,85 @@ class PortalInvitationTest {
     }
 
     @Test
-    void anInvitedAccountStoresOnlyTheDigestAndCannotBeMatchedAsAPassword() {
+    void anInvitationKeepsOnlyTheDigestAndWorksOnceWithinItsLifetime() {
         var token = PortalInvitationToken.generate(userId);
-        User user = invited(token);
-        assertThat(user.awaitingActivation()).isTrue();
-        assertThat(user.username()).isEqualTo("buyer@example.test");
-        assertThat(user.passwordHash()).startsWith("{portal-invitation}")
-                .contains(token.digest()).doesNotContain(token.value());
-        assertThat(user.pendingInvitation().orElseThrow().expiresAt()).isEqualTo(NOW.plus(LIFETIME));
-        assertThat(user.status()).isEqualTo(UserStatus.ACTIVE);
-    }
+        PortalInvitation invitation = issued(token, NOW);
+        assertThat(invitation.tokenDigest()).isEqualTo(token.digest()).isNotEqualTo(token.value());
+        assertThat(invitation.toString()).doesNotContain(token.value()).doesNotContain(token.digest());
+        assertThat(invitation.expiresAt()).isEqualTo(NOW.plus(LIFETIME));
 
-    @Test
-    void activationWorksOnceWithinTheLifetimeAndClearsTheInvitation() {
-        var token = PortalInvitationToken.generate(userId);
-        User user = invited(token);
-        user.activate(token, HASH, NOW.plusSeconds(10));
-        assertThat(user.awaitingActivation()).isFalse();
-        assertThat(user.pendingInvitation()).isEmpty();
-        assertThat(user.passwordHash()).isEqualTo(HASH);
-        assertThat(user.mustChangePassword()).isFalse();
-        expect(ErrorCode.PORTAL_INVITATION_INVALID, () -> user.activate(token, HASH, NOW.plusSeconds(11)));
+        invitation.consume(token, NOW.plusSeconds(10));
+        assertThat(invitation.isOpen()).isFalse();
+        expect(ErrorCode.PORTAL_INVITATION_INVALID, () -> invitation.consume(token, NOW.plusSeconds(11)));
     }
 
     @Test
     void expiryIsExclusiveAndAWrongOrForeignTokenFailsAlike() {
         var token = PortalInvitationToken.generate(userId);
         for (Instant at : new Instant[]{NOW.minusSeconds(1), NOW.plus(LIFETIME), NOW.plus(LIFETIME).plusSeconds(1)}) {
-            User user = invited(token);
-            expect(ErrorCode.PORTAL_INVITATION_INVALID, () -> user.activate(token, HASH, at));
-            assertThat(user.awaitingActivation()).isTrue();
+            PortalInvitation invitation = issued(token, NOW);
+            expect(ErrorCode.PORTAL_INVITATION_INVALID, () -> invitation.consume(token, at));
+            assertThat(invitation.isOpen()).isTrue();
         }
-        User user = invited(token);
+        PortalInvitation invitation = issued(token, NOW);
         expect(ErrorCode.PORTAL_INVITATION_INVALID,
-                () -> user.activate(PortalInvitationToken.generate(userId), HASH, NOW.plusSeconds(1)));
+                () -> invitation.consume(PortalInvitationToken.generate(userId), NOW.plusSeconds(1)));
         expect(ErrorCode.PORTAL_INVITATION_INVALID,
-                () -> user.activate(PortalInvitationToken.generate(UUID.randomUUID()), HASH, NOW.plusSeconds(1)));
-        user.activate(token, HASH, NOW.plus(LIFETIME).minusSeconds(1));
+                () -> invitation.consume(PortalInvitationToken.generate(UUID.randomUUID()), NOW.plusSeconds(1)));
+        invitation.consume(token, NOW.plus(LIFETIME).minusSeconds(1));
     }
 
     @Test
-    void aLockedOrDisabledAccountCannotBeActivated() {
+    void resendWaitsForTheCooldownUnlessTheInvitationExpiredAndARevokedOneNeverRedeems() {
         var token = PortalInvitationToken.generate(userId);
-        User locked = invited(token);
-        locked.lock();
-        expect(ErrorCode.PORTAL_INVITATION_INVALID, () -> locked.activate(token, HASH, NOW.plusSeconds(1)));
-        User disabled = invited(token);
-        disabled.disable();
-        expect(ErrorCode.PORTAL_INVITATION_INVALID, () -> disabled.activate(token, HASH, NOW.plusSeconds(1)));
-    }
-
-    @Test
-    void resendRespectsTheCooldownThenKillsThePreviousLink() {
-        var first = PortalInvitationToken.generate(userId);
-        User user = invited(first);
-        var tooSoon = PortalInvitationToken.generate(userId);
-        expect(ErrorCode.RATE_LIMITED, () -> user.reissueInvitation(
-                PortalInvitation.issue(tooSoon, NOW.plusSeconds(30), LIFETIME), COOLDOWN));
-
-        var second = PortalInvitationToken.generate(userId);
-        Instant later = NOW.plus(COOLDOWN);
-        user.reissueInvitation(PortalInvitation.issue(second, later, LIFETIME), COOLDOWN);
-        expect(ErrorCode.PORTAL_INVITATION_INVALID, () -> user.activate(first, HASH, later.plusSeconds(1)));
-        expect(ErrorCode.PORTAL_INVITATION_INVALID, () -> user.activate(tooSoon, HASH, later.plusSeconds(1)));
-        user.activate(second, HASH, later.plusSeconds(1));
-    }
-
-    @Test
-    void anExpiredInvitationIsReplacedAtOnceButAnActivatedAccountNeverIs() {
-        var first = PortalInvitationToken.generate(userId);
-        User user = invited(first);
-        var expiredLong = Duration.ofHours(72);
-        Instant afterExpiry = NOW.plus(expiredLong);
-        var second = PortalInvitationToken.generate(userId);
-        user.reissueInvitation(PortalInvitation.issue(second, afterExpiry, LIFETIME), Duration.ofDays(10));
-        user.activate(second, HASH, afterExpiry.plusSeconds(1));
-
-        expect(ErrorCode.PORTAL_ACCOUNT_ALREADY_ACTIVE, () -> user.reissueInvitation(
-                PortalInvitation.issue(PortalInvitationToken.generate(userId), afterExpiry.plus(COOLDOWN), LIFETIME),
-                COOLDOWN));
-        assertThat(user.passwordHash()).isEqualTo(HASH);
-    }
-
-    @Test
-    void anOrdinaryPasswordHashIsNoInvitationAndACorruptOneFailsLoudly() {
-        assertThat(PortalInvitation.fromCredential(HASH)).isEmpty();
-        assertThat(PortalInvitation.fromCredential(null)).isEmpty();
-        assertThatThrownBy(() -> PortalInvitation.fromCredential("{portal-invitation}garbage"))
+        PortalInvitation open = issued(token, NOW);
+        expect(ErrorCode.RATE_LIMITED, () -> open.revokeForResend(NOW.plusSeconds(30), COOLDOWN));
+        assertThat(open.isOpen()).isTrue();
+        open.revokeForResend(NOW.plus(COOLDOWN), COOLDOWN);
+        assertThat(open.revokedAt()).isEqualTo(NOW.plus(COOLDOWN));
+        expect(ErrorCode.PORTAL_INVITATION_INVALID, () -> open.consume(token, NOW.plus(COOLDOWN).plusSeconds(1)));
+        assertThatThrownBy(() -> open.revokeForResend(NOW.plus(LIFETIME), COOLDOWN))
                 .isInstanceOf(IllegalStateException.class);
-        var invitation = PortalInvitation.issue(PortalInvitationToken.generate(userId), NOW, LIFETIME);
-        var decoded = PortalInvitation.fromCredential(invitation.toCredential()).orElseThrow();
-        assertThat(decoded.issuedAt()).isEqualTo(invitation.issuedAt());
-        assertThat(decoded.expiresAt()).isEqualTo(invitation.expiresAt());
-        assertThat(invitation.toString()).doesNotContain(invitation.toCredential());
-        assertThat(invitation.toCredential().length()).isLessThanOrEqualTo(200); // app_user.password_hash
+
+        PortalInvitation expired = issued(PortalInvitationToken.generate(userId), NOW);
+        expired.revokeForResend(NOW.plus(LIFETIME), Duration.ofDays(10));
+        assertThat(expired.isOpen()).isFalse();
+    }
+
+    @Test
+    void reconstructionEnforcesTheSameRulesAsTheTable() {
+        UUID id = UUID.randomUUID();
+        String digest = "a".repeat(64);
+        assertThatThrownBy(() -> new PortalInvitation(id, userId, "nothex", NOW, NOW.plusSeconds(60), null,
+                null, null, null, null, 0)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new PortalInvitation(id, userId, digest, NOW, NOW, null,
+                null, null, null, null, 0)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new PortalInvitation(id, userId, digest, NOW, NOW.plusSeconds(60), null,
+                NOW, NOW, null, null, 0)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new PortalInvitation(id, userId, digest, NOW, NOW.plusSeconds(60), null,
+                null, null, PortalInvitation.Delivery.SENT, null, 0)).isInstanceOf(IllegalArgumentException.class);
+        var recorded = new PortalInvitation(id, userId, digest, NOW, NOW.plusSeconds(60), null, null, null, null, null, 0);
+        recorded.recordDelivery(PortalInvitation.Delivery.FAILED, NOW.plusSeconds(1));
+        assertThat(recorded.delivery()).isEqualTo(PortalInvitation.Delivery.FAILED);
+    }
+
+    @Test
+    void anInvitedAccountHasNoPasswordAndActivatesOnceUnlessAnAdministratorLockedIt() {
+        User user = User.inviteCustomer(userId, " Buyer@Example.TEST ", "Buyer");
+        assertThat(user.awaitingActivation()).isTrue();
+        assertThat(user.passwordHash()).isNull();
+        assertThat(user.username()).isEqualTo("buyer@example.test");
+        user.activate(HASH);
+        assertThat(user.awaitingActivation()).isFalse();
+        assertThat(user.passwordHash()).isEqualTo(HASH);
+        expect(ErrorCode.PORTAL_INVITATION_INVALID, () -> user.activate(HASH));
+
+        User locked = User.inviteCustomer(UUID.randomUUID(), "locked@example.test", "L");
+        locked.lock();
+        expect(ErrorCode.PORTAL_INVITATION_INVALID, () -> locked.activate(HASH));
+        User disabled = User.inviteCustomer(UUID.randomUUID(), "disabled@example.test", "D");
+        disabled.disable();
+        expect(ErrorCode.PORTAL_INVITATION_INVALID, () -> disabled.activate(HASH));
     }
 
     private static void expect(ErrorCode code, Runnable action) {

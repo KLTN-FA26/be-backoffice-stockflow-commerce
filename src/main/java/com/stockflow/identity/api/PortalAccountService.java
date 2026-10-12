@@ -31,7 +31,7 @@ public interface PortalAccountService {
      * @throws com.stockflow.common.error.BusinessException {@code USER_NOT_FOUND};
      *         {@code PORTAL_ACCOUNT_ALREADY_ACTIVE}; {@code RATE_LIMITED} within the resend cooldown
      */
-    PortalInvitationLink reissue(UUID userId);
+    PortalInvitationLink reissue(UUID userId, UUID issuedBy);
 
     /**
      * The account a token names, judged by its shape alone - nothing is looked up or verified. It
@@ -50,6 +50,12 @@ public interface PortalAccountService {
      */
     UUID activate(String token, String password);
 
-    /** The open invitation of an account; empty once the account is activated. */
+    /** The open invitation of an account, expired or not; empty once the account is activated. */
     Optional<PortalInvitationStatus> invitation(UUID userId);
+
+    /**
+     * Records whether the e-mail of an invitation went out. Called after the invitation committed,
+     * in its own transaction, so Sales can see a failed delivery and resend.
+     */
+    void recordDelivery(UUID invitationId, boolean delivered);
 }

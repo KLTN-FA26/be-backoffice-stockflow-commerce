@@ -183,6 +183,10 @@ public enum ErrorCode {
     INVALID_PRODUCT_STATUS_TRANSITION("This product cannot move to that status right now", 409),
     SELF_APPROVAL_NOT_ALLOWED("A product cannot be approved by the person who submitted it", 409),
     CUSTOMER_EMAIL_ALREADY_EXISTS("A customer account with this email already exists", 409),
+    /** kltn-docs 18 BR-01: one pending or active customer per tax code. */
+    CUSTOMER_TAX_CODE_ALREADY_EXISTS("A customer with this tax code already exists", 409),
+    /** kltn-docs 18 §5: only onboarding enters PENDING_ACTIVATION, only activation leaves it for ACTIVE. */
+    INVALID_CUSTOMER_STATUS_TRANSITION("This customer cannot move to that status", 409),
 
     /** Checkout needs somewhere to deliver: no shipping address was chosen and none is the default. */
     SHIPPING_ADDRESS_REQUIRED("Add a shipping address before placing an order", 409),

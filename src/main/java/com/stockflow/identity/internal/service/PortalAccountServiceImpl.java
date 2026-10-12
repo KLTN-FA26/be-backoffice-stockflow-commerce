@@ -10,6 +10,7 @@ import com.stockflow.identity.api.PortalInvitationLink;
 import com.stockflow.identity.api.PortalInvitationStatus;
 import com.stockflow.identity.internal.domain.PasswordPolicy;
 import com.stockflow.identity.internal.domain.PortalInvitation;
+import com.stockflow.identity.internal.domain.PortalInvitationRepository;
 import com.stockflow.identity.internal.domain.PortalInvitationToken;
 import com.stockflow.identity.internal.domain.User;
 import com.stockflow.identity.internal.domain.UserId;
@@ -30,14 +31,18 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Invited customer accounts: issue, replace, redeem. The invitation itself is a credential on the
- * account ({@link PortalInvitation} explains why), so every transition is a write to one locked row.
+ * Invited customer accounts: issue, replace, redeem (SCRUM-450).
+ *
+ * <p>Every change to one account's invitations first takes that account's row lock, so a resend and
+ * an activation of the same account are serialised and one of them sees the other's result. The
+ * account has no password ({@code password_hash} null) until the contact redeems an invitation.</p>
  */
 @Service
 @Transactional
 class PortalAccountServiceImpl implements PortalAccountService {
 
     private final UserRepository users;
+    private final PortalInvitationRepository invitations;
     private final UserRoleJpaRepository userRoles;
     private final RoleJpaRepository roles;
     private final PasswordEncoder passwordEncoder;
@@ -45,7 +50,8 @@ class PortalAccountServiceImpl implements PortalAccountService {
     private final Duration lifetime;
     private final Duration resendCooldown;
 
-    PortalAccountServiceImpl(UserRepository users, UserRoleJpaRepository userRoles, RoleJpaRepository roles,
+    PortalAccountServiceImpl(UserRepository users, PortalInvitationRepository invitations,
+                             UserRoleJpaRepository userRoles, RoleJpaRepository roles,
                              PasswordEncoder passwordEncoder, Clock clock,
                              @Value("${stockflow.identity.portal-invitation.lifetime:PT72H}") Duration lifetime,
                              @Value("${stockflow.identity.portal-invitation.resend-cooldown:PT1M}") Duration resendCooldown) {
@@ -58,6 +64,7 @@ class PortalAccountServiceImpl implements PortalAccountService {
                     "stockflow.identity.portal-invitation.resend-cooldown must be shorter than the lifetime");
         }
         this.users = users;
+        this.invitations = invitations;
         this.userRoles = userRoles;
         this.roles = roles;
         this.passwordEncoder = passwordEncoder;
@@ -76,23 +83,27 @@ class PortalAccountServiceImpl implements PortalAccountService {
                     "An account already signs in with this e-mail");
         }
         UUID userId = Identifiers.newId();
-        PortalInvitationToken token = PortalInvitationToken.generate(userId);
-        PortalInvitation invitation = PortalInvitation.issue(token, clock.instant(), lifetime);
-        User invited = users.save(User.inviteCustomer(userId, email, command.fullName(), invitation));
+        User invited = users.save(User.inviteCustomer(userId, email, command.fullName()));
         var customerRole = roles.findByCode(Roles.CUSTOMER).orElseThrow(() ->
                 new IllegalStateException("The CUSTOMER role is seeded by migration and must exist"));
         userRoles.save(new UserRoleJpaEntity(Identifiers.newId(), userId, customerRole.getId()));
-        return link(invited, token, invitation);
+        return issue(invited, command.issuedBy());
     }
 
     @Override
-    public PortalInvitationLink reissue(UUID userId) {
+    public PortalInvitationLink reissue(UUID userId, UUID issuedBy) {
         User user = users.findByIdForUpdate(new UserId(userId)).orElseThrow(() ->
                 new BusinessException(ErrorCode.USER_NOT_FOUND));
-        PortalInvitationToken token = PortalInvitationToken.generate(userId);
-        PortalInvitation invitation = PortalInvitation.issue(token, clock.instant(), lifetime);
-        user.reissueInvitation(invitation, resendCooldown);
-        return link(users.save(user), token, invitation);
+        if (!user.awaitingActivation()) {
+            throw new BusinessException(ErrorCode.PORTAL_ACCOUNT_ALREADY_ACTIVE,
+                    "Account %s has already been activated".formatted(userId));
+        }
+        Instant now = clock.instant();
+        invitations.findOpenByUserId(userId).ifPresent(open -> {
+            open.revokeForResend(now, resendCooldown);
+            invitations.save(open);
+        });
+        return issue(user, issuedBy);
     }
 
     @Override
@@ -110,13 +121,15 @@ class PortalAccountServiceImpl implements PortalAccountService {
         Instant now = clock.instant();
         // Judge the link before the password, so a weak password never tells anyone a link is live;
         // and refuse a weak password without consuming the link, so the contact can try again.
-        if (user.pendingInvitation().filter(open -> open.redeemableBy(parsed, now)).isEmpty()) {
-            throw new BusinessException(ErrorCode.PORTAL_INVITATION_INVALID);
-        }
+        PortalInvitation open = invitations.findOpenByUserId(parsed.userId())
+                .filter(found -> found.redeemableBy(parsed, now))
+                .orElseThrow(() -> new BusinessException(ErrorCode.PORTAL_INVITATION_INVALID));
         PasswordPolicy.violation(password).ifPresent(reason -> {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, reason);
         });
-        user.activate(parsed, passwordEncoder.encode(password), now);
+        open.consume(parsed, now);
+        user.activate(passwordEncoder.encode(password));
+        invitations.save(open);
         users.save(user);
         return user.id().value();
     }
@@ -124,12 +137,26 @@ class PortalAccountServiceImpl implements PortalAccountService {
     @Override
     @Transactional(readOnly = true)
     public Optional<PortalInvitationStatus> invitation(UUID userId) {
-        return users.findById(new UserId(userId)).flatMap(User::pendingInvitation)
-                .map(open -> new PortalInvitationStatus(open.issuedAt(), open.expiresAt()));
+        return users.findById(new UserId(userId)).filter(User::awaitingActivation)
+                .flatMap(user -> invitations.findOpenByUserId(userId))
+                .map(open -> new PortalInvitationStatus(open.issuedAt(), open.expiresAt(),
+                        open.delivery() == null ? null : open.delivery().name()));
     }
 
-    private static PortalInvitationLink link(User user, PortalInvitationToken token, PortalInvitation invitation) {
-        return new PortalInvitationLink(user.id().value(), user.email(), user.fullName(), token.value(),
-                invitation.issuedAt(), invitation.expiresAt());
+    @Override
+    public void recordDelivery(UUID invitationId, boolean delivered) {
+        invitations.findById(invitationId).ifPresent(invitation -> {
+            invitation.recordDelivery(delivered ? PortalInvitation.Delivery.SENT : PortalInvitation.Delivery.FAILED,
+                    clock.instant());
+            invitations.save(invitation);
+        });
+    }
+
+    private PortalInvitationLink issue(User user, UUID issuedBy) {
+        PortalInvitationToken token = PortalInvitationToken.generate(user.id().value());
+        PortalInvitation invitation = invitations.save(
+                PortalInvitation.issue(Identifiers.newId(), token, issuedBy, clock.instant(), lifetime));
+        return new PortalInvitationLink(invitation.id(), user.id().value(), user.email(), user.fullName(),
+                token.value(), invitation.issuedAt(), invitation.expiresAt());
     }
 }

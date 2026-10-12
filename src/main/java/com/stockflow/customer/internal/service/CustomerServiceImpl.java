@@ -145,18 +145,56 @@ class CustomerServiceImpl implements CustomerService {
         } catch (IllegalStateException stale) {
             throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK, stale.getMessage());
         }
-        return toSummary(customers.save(customer));
+        if (command.privileged() && command.taxCode() != null) {
+            try {
+                customer.changeTaxCode(command.taxCode());
+            } catch (IllegalArgumentException invalid) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, invalid.getMessage());
+            }
+            requireTaxCodeFree(customer);
+        }
+        return saveGuardingTaxCode(customer);
     }
 
     @Override
     public CustomerSummary changeStatus(UUID customerId, String status) {
         Customer customer = requireForUpdate(customerId);
+        CustomerStatus target;
         try {
-            customer.changeStatus(CustomerStatus.valueOf(status.trim().toUpperCase(Locale.ROOT)));
+            target = CustomerStatus.valueOf(status.trim().toUpperCase(Locale.ROOT));
         } catch (IllegalArgumentException invalid) {
             throw new BusinessException(ErrorCode.UNSUPPORTED_PARAMETER, "Unknown customer status " + status);
         }
-        return toSummary(customers.save(customer));
+        try {
+            customer.changeStatus(target);
+        } catch (IllegalStateException refused) {
+            throw new BusinessException(ErrorCode.INVALID_CUSTOMER_STATUS_TRANSITION, refused.getMessage());
+        }
+        requireTaxCodeFree(customer);
+        return saveGuardingTaxCode(customer);
+    }
+
+    /**
+     * BR-01: one live (pending or active) customer per tax code. Checked first for a clear 409, and
+     * enforced by uk_customer_tax_code_live for the writer that races past the check.
+     */
+    private void requireTaxCodeFree(Customer customer) {
+        boolean live = customer.status() == CustomerStatus.ACTIVE
+                || customer.status() == CustomerStatus.PENDING_ACTIVATION;
+        if (live && customer.taxCode() != null && customers.isTaxCodeLive(customer.taxCode(), customer.id())) {
+            throw new BusinessException(ErrorCode.CUSTOMER_TAX_CODE_ALREADY_EXISTS);
+        }
+    }
+
+    private CustomerSummary saveGuardingTaxCode(Customer customer) {
+        try {
+            return toSummary(customers.save(customer));
+        } catch (org.springframework.dao.DataIntegrityViolationException race) {
+            if (CustomerConstraints.isTaxCodeTaken(race)) {
+                throw new BusinessException(ErrorCode.CUSTOMER_TAX_CODE_ALREADY_EXISTS);
+            }
+            throw race;
+        }
     }
 
     @Override
@@ -279,7 +317,7 @@ class CustomerServiceImpl implements CustomerService {
 
     static CustomerSummary toSummary(Customer customer) {
         return new CustomerSummary(customer.id(), customer.userId(), customer.fullName(), customer.email(),
-                customer.phone(), customer.segmentId(), customer.status().name(), customer.version(),
+                customer.phone(), customer.taxCode(), customer.segmentId(), customer.status().name(), customer.version(),
                 customer.createdAt());
     }
 

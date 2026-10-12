@@ -8,7 +8,6 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Locale;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -54,7 +53,8 @@ public final class User extends AggregateRoot {
         this.id = Objects.requireNonNull(id, "id");
         this.username = requireNonBlank(username, "username");
         this.email = requireNonBlank(email, "email");
-        this.passwordHash = requireNonBlank(passwordHash, "passwordHash");
+        // Null only for an invited account that has not been activated (inviteCustomer).
+        this.passwordHash = passwordHash == null ? null : requireNonBlank(passwordHash, "passwordHash");
         this.fullName = fullName;
         this.status = Objects.requireNonNull(status, "status");
         this.lastLoginAt = lastLoginAt;
@@ -87,55 +87,32 @@ public final class User extends AggregateRoot {
 
     /**
      * A customer contact that Sales onboarded (SCRUM-450): signs in with the e-mail address, but has
-     * no password until they redeem the invitation. Until then the account cannot authenticate -
-     * nobody, including Sales, knows a password for it.
+     * no password - {@code passwordHash} is null - until they redeem their {@link PortalInvitation}.
+     * Until then nothing can authenticate as this account, Sales included.
      */
-    public static User inviteCustomer(UUID id, String email, String fullName, PortalInvitation invitation) {
+    public static User inviteCustomer(UUID id, String email, String fullName) {
         String normalisedEmail = normaliseEmail(email);
-        return new User(new UserId(id), normalisedEmail, normalisedEmail,
-                Objects.requireNonNull(invitation, "invitation").toCredential(), fullName,
+        return new User(new UserId(id), normalisedEmail, normalisedEmail, null, fullName,
                 UserStatus.ACTIVE, null, false, 0, null, 0L, null, null);
     }
 
-    /** The open invitation, if this account has never been activated. */
-    public Optional<PortalInvitation> pendingInvitation() {
-        return PortalInvitation.fromCredential(passwordHash);
-    }
-
+    /** No password has been chosen yet: the account of a contact who has not activated. */
     public boolean awaitingActivation() {
-        return passwordHash.startsWith(PortalInvitation.PREFIX);
+        return passwordHash == null;
     }
 
     /**
-     * Replaces the invitation, which is what makes the previous link stop working. An expired
-     * invitation can be replaced at once; an open one only after {@code cooldown}.
-     *
-     * @throws BusinessException {@code PORTAL_ACCOUNT_ALREADY_ACTIVE} once the account has a password;
-     *         {@code RATE_LIMITED} within the cooldown
-     */
-    public void reissueInvitation(PortalInvitation next, Duration cooldown) {
-        PortalInvitation current = pendingInvitation().orElseThrow(() ->
-                new BusinessException(ErrorCode.PORTAL_ACCOUNT_ALREADY_ACTIVE,
-                        "Account %s has already been activated".formatted(id)));
-        if (!current.expiredAt(next.issuedAt())) current.requireReplaceableAt(next.issuedAt(), cooldown);
-        this.passwordHash = next.toCredential();
-    }
-
-    /**
-     * Redeems the invitation: the contact chose a password. Writing the hash is what consumes the
-     * link, so a second redemption - concurrent or later - finds no invitation to match. Every
-     * failure looks the same to the caller, so a link cannot be probed for why it failed.
+     * The contact redeemed an invitation and chose this password. Only an account that never had a
+     * password, and that no administrator locked or disabled, can be activated; every refusal looks
+     * the same to the caller, so a link cannot be probed for why it failed.
      *
      * @throws BusinessException {@code PORTAL_INVITATION_INVALID}
      */
-    public void activate(PortalInvitationToken token, String newPasswordHash, Instant now) {
-        boolean redeemable = status == UserStatus.ACTIVE && token.userId().equals(id.value())
-                && pendingInvitation().filter(open -> open.redeemableBy(token, now)).isPresent();
-        if (!redeemable) throw new BusinessException(ErrorCode.PORTAL_INVITATION_INVALID);
-        if (requireNonBlank(newPasswordHash, "passwordHash").startsWith(PortalInvitation.PREFIX)) {
-            throw new IllegalArgumentException("A password hash is required");
+    public void activate(String newPasswordHash) {
+        if (!awaitingActivation() || status != UserStatus.ACTIVE) {
+            throw new BusinessException(ErrorCode.PORTAL_INVITATION_INVALID);
         }
-        this.passwordHash = newPasswordHash;
+        this.passwordHash = requireNonBlank(newPasswordHash, "passwordHash");
         this.mustChangePassword = false;
         this.failedLoginCount = 0;
         this.lockedUntil = null;

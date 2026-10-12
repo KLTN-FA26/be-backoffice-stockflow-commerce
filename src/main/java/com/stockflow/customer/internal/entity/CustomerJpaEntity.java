@@ -38,6 +38,10 @@ public class CustomerJpaEntity extends BaseEntity {
     @Column(name = "phone", length = 32)
     private String phone;
 
+    /** Normalised tax code; null only for customers created before SCRUM-450. */
+    @Column(name = "tax_code", length = 14)
+    private String taxCode;
+
     /** Same-schema reference to {@code customer.segment}. Nullable: not every customer is segmented. */
     @Column(name = "segment_id")
     private UUID segmentId;
@@ -51,19 +55,21 @@ public class CustomerJpaEntity extends BaseEntity {
     }
 
     public CustomerJpaEntity(UUID id, UUID userId, String fullName, String email, String phone,
-                             UUID segmentId, CustomerStatus status) {
+                             String taxCode, UUID segmentId, CustomerStatus status) {
         super(id);
         this.userId = userId;
         this.fullName = fullName;
         this.email = email;
         this.phone = phone;
+        this.taxCode = taxCode;
         this.segmentId = segmentId;
         this.status = status;
     }
 
-    public void apply(String fullName, String phone, CustomerStatus status) {
+    public void apply(String fullName, String phone, String taxCode, CustomerStatus status) {
         this.fullName = fullName;
         this.phone = phone;
+        this.taxCode = taxCode;
         this.status = status;
     }
 
@@ -71,9 +77,10 @@ public class CustomerJpaEntity extends BaseEntity {
     public String getFullName() { return fullName; }
     public String getEmail() { return email; }
     public String getPhone() { return phone; }
+    public String getTaxCode() { return taxCode; }
     public UUID getSegmentId() { return segmentId; }
     public CustomerStatus getStatus() { return status; }
 
-    // TODO: loyalty points, tax id, default-address pointer, marketing-consent flags — add when the
+    // TODO: loyalty points, default-address pointer, marketing-consent flags — add when the
     //       corresponding use cases are specified. See docs/business-design for the field list.
 }

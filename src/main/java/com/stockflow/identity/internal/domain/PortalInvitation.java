@@ -9,91 +9,131 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.Objects;
-import java.util.Optional;
-import java.util.regex.Pattern;
+import java.util.UUID;
 
 /**
- * The one-time credential of a customer account that Sales created and nobody has activated yet.
+ * One portal invitation e-mail to the contact of a Sales-created customer (SCRUM-450).
  *
- * <h2>Why it lives in {@code app_user.password_hash}</h2>
+ * <p>It ends exactly one way: <b>consumed</b> when the contact activates the account, or
+ * <b>revoked</b> when Sales sends a newer one - which is how a resend kills the previous link. Only
+ * the digest of the token is kept, so a database read never yields a working link. The same rules
+ * are CHECK constraints on {@code identity.portal_invitation}, and "one open invitation per account"
+ * is its partial unique index.</p>
  *
- * <p>An invited account has no password: its only credential is the link in the invitation e-mail.
- * The schema has no invitation table, and the database owner's schema is not ours to extend, so
- * the account stores that credential where every other account stores its own - as a value
- * {@code PasswordEncoder} can never match ({@code {portal-invitation}} is no encoder id). That one
- * column then carries the whole lifecycle under the account's own row lock: issue writes it,
- * resend replaces it (so the previous link stops working), activation replaces it with a real
- * password hash (so the link works once). There is no second row that could drift from the account.
- * Only the digest of the token is stored.</p>
- *
- * <p>Instants are kept to the second: the encoding is text, and nothing here needs more.</p>
+ * <p>Instants are kept to the second; nothing here needs more.</p>
  */
 public final class PortalInvitation {
 
-    static final String PREFIX = "{portal-invitation}";
-    private static final Pattern ENCODED = Pattern.compile(
-            Pattern.quote(PREFIX) + "(\\d{1,19}):(\\d{1,19}):([0-9a-f]{64})");
+    public enum Delivery { SENT, FAILED }
 
+    private final UUID id;
+    private final UUID userId;
+    private final String tokenDigest;
     private final Instant issuedAt;
     private final Instant expiresAt;
-    private final String tokenDigest;
+    private final UUID issuedBy;
+    private Instant consumedAt;
+    private Instant revokedAt;
+    private Delivery delivery;
+    private Instant deliveryAttemptedAt;
+    private final long version;
 
-    private PortalInvitation(Instant issuedAt, Instant expiresAt, String tokenDigest) {
-        if (!expiresAt.isAfter(issuedAt)) throw new IllegalArgumentException("expiresAt must be after issuedAt");
+    public PortalInvitation(UUID id, UUID userId, String tokenDigest, Instant issuedAt, Instant expiresAt,
+                            UUID issuedBy, Instant consumedAt, Instant revokedAt, Delivery delivery,
+                            Instant deliveryAttemptedAt, long version) {
+        this.id = Objects.requireNonNull(id, "id");
+        this.userId = Objects.requireNonNull(userId, "userId");
+        if (tokenDigest == null || !tokenDigest.matches("[0-9a-f]{64}")) {
+            throw new IllegalArgumentException("A SHA-256 token digest is required");
+        }
+        if (issuedAt == null || expiresAt == null || !expiresAt.isAfter(issuedAt)) {
+            throw new IllegalArgumentException("expiresAt must be after issuedAt");
+        }
+        if (consumedAt != null && revokedAt != null) {
+            throw new IllegalArgumentException("An invitation is either consumed or revoked");
+        }
+        if ((delivery == null) != (deliveryAttemptedAt == null)) {
+            throw new IllegalArgumentException("A delivery outcome needs its time, and only then");
+        }
+        this.tokenDigest = tokenDigest;
         this.issuedAt = issuedAt;
         this.expiresAt = expiresAt;
-        this.tokenDigest = tokenDigest;
+        this.issuedBy = issuedBy;
+        this.consumedAt = consumedAt;
+        this.revokedAt = revokedAt;
+        this.delivery = delivery;
+        this.deliveryAttemptedAt = deliveryAttemptedAt;
+        this.version = version;
     }
 
-    public static PortalInvitation issue(PortalInvitationToken token, Instant now, Duration lifetime) {
+    public static PortalInvitation issue(UUID id, PortalInvitationToken token, UUID issuedBy,
+                                         Instant now, Duration lifetime) {
         Objects.requireNonNull(token, "token");
         if (lifetime == null || lifetime.compareTo(Duration.ofMinutes(1)) < 0) {
             throw new IllegalArgumentException("An invitation must live at least a minute");
         }
         Instant issued = now.truncatedTo(ChronoUnit.SECONDS);
-        return new PortalInvitation(issued, issued.plus(lifetime), token.digest());
+        return new PortalInvitation(id, token.userId(), token.digest(), issued, issued.plus(lifetime), issuedBy,
+                null, null, null, null, 0L);
     }
 
-    /**
-     * Empty when the stored value is an ordinary password hash. A value carrying the prefix but not
-     * the format is corrupt data, not a password, so it fails loudly instead of being matched.
-     */
-    public static Optional<PortalInvitation> fromCredential(String credential) {
-        if (credential == null || !credential.startsWith(PREFIX)) return Optional.empty();
-        var matcher = ENCODED.matcher(credential);
-        if (!matcher.matches()) throw new IllegalStateException("Malformed portal invitation credential");
-        return Optional.of(new PortalInvitation(Instant.ofEpochSecond(Long.parseLong(matcher.group(1))),
-                Instant.ofEpochSecond(Long.parseLong(matcher.group(2))), matcher.group(3)));
-    }
-
-    public String toCredential() {
-        return PREFIX + issuedAt.getEpochSecond() + ":" + expiresAt.getEpochSecond() + ":" + tokenDigest;
-    }
-
-    /** The exact expiry instant is already too late. Compared in constant time. */
-    public boolean redeemableBy(PortalInvitationToken token, Instant now) {
-        return !now.isBefore(issuedAt) && now.isBefore(expiresAt)
-                && MessageDigest.isEqual(tokenDigest.getBytes(StandardCharsets.US_ASCII),
-                        token.digest().getBytes(StandardCharsets.US_ASCII));
+    public boolean isOpen() {
+        return consumedAt == null && revokedAt == null;
     }
 
     public boolean expiredAt(Instant now) {
         return !now.isBefore(expiresAt);
     }
 
-    /** A resend within the cooldown would let one click-happy screen flood the customer's inbox. */
-    void requireReplaceableAt(Instant now, Duration cooldown) {
-        if (now.isBefore(issuedAt.plus(cooldown))) {
+    /** Open, within its lifetime (the expiry instant is already too late), and this token. Constant time. */
+    public boolean redeemableBy(PortalInvitationToken token, Instant now) {
+        return isOpen() && token.userId().equals(userId) && !now.isBefore(issuedAt) && now.isBefore(expiresAt)
+                && MessageDigest.isEqual(tokenDigest.getBytes(StandardCharsets.US_ASCII),
+                        token.digest().getBytes(StandardCharsets.US_ASCII));
+    }
+
+    /** @throws BusinessException {@code PORTAL_INVITATION_INVALID}, alike for every reason */
+    public void consume(PortalInvitationToken token, Instant now) {
+        if (!redeemableBy(token, now)) throw new BusinessException(ErrorCode.PORTAL_INVITATION_INVALID);
+        consumedAt = now;
+    }
+
+    /**
+     * Replaced by a newer invitation. An expired one may be replaced at once; an open one only after
+     * {@code cooldown}, so one impatient screen cannot flood the customer's inbox.
+     *
+     * @throws BusinessException {@code RATE_LIMITED} within the cooldown
+     */
+    public void revokeForResend(Instant now, Duration cooldown) {
+        if (!isOpen()) throw new IllegalStateException("Only an open invitation can be replaced");
+        if (!expiredAt(now) && now.isBefore(issuedAt.plus(cooldown))) {
             throw new BusinessException(ErrorCode.RATE_LIMITED,
                     "The previous invitation was sent less than %s ago".formatted(cooldown));
         }
+        revokedAt = now.isBefore(issuedAt) ? issuedAt : now;
     }
 
+    /** The outcome of the e-mail, recorded after the commit that issued the invitation. */
+    public void recordDelivery(Delivery outcome, Instant at) {
+        this.delivery = Objects.requireNonNull(outcome, "outcome");
+        this.deliveryAttemptedAt = Objects.requireNonNull(at, "at");
+    }
+
+    public UUID id() { return id; }
+    public UUID userId() { return userId; }
+    public String tokenDigest() { return tokenDigest; }
     public Instant issuedAt() { return issuedAt; }
     public Instant expiresAt() { return expiresAt; }
+    public UUID issuedBy() { return issuedBy; }
+    public Instant consumedAt() { return consumedAt; }
+    public Instant revokedAt() { return revokedAt; }
+    public Delivery delivery() { return delivery; }
+    public Instant deliveryAttemptedAt() { return deliveryAttemptedAt; }
+    public long version() { return version; }
 
     @Override
     public String toString() {
-        return "PortalInvitation[issuedAt=" + issuedAt + ", expiresAt=" + expiresAt + "]";
+        return "PortalInvitation[id=" + id + ", userId=" + userId + ", issuedAt=" + issuedAt
+                + ", expiresAt=" + expiresAt + "]";
     }
 }

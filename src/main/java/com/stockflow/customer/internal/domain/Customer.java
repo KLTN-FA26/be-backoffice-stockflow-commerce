@@ -19,6 +19,7 @@ public final class Customer extends AggregateRoot {
     private String fullName;
     private final String email;
     private String phone;
+    private String taxCode;
     private final UUID segmentId;
     private CustomerStatus status;
     private final List<CustomerAddress> addresses;
@@ -28,11 +29,19 @@ public final class Customer extends AggregateRoot {
     public Customer(UUID id, UUID userId, String fullName, String email, String phone,
                     UUID segmentId, CustomerStatus status, List<CustomerAddress> addresses,
                     long version, Instant createdAt) {
+        this(id, userId, fullName, email, phone, null, segmentId, status, addresses, version, createdAt);
+    }
+
+    /** @param taxCode null only for a customer created before tax codes were recorded */
+    public Customer(UUID id, UUID userId, String fullName, String email, String phone, String taxCode,
+                    UUID segmentId, CustomerStatus status, List<CustomerAddress> addresses,
+                    long version, Instant createdAt) {
         this.id = Objects.requireNonNull(id, "id");
         this.userId = userId;
         this.fullName = requireNonBlank(fullName, "fullName");
         this.email = normaliseEmail(email);
         this.phone = normaliseOptional(phone);
+        this.taxCode = taxCode == null ? null : TaxCode.normalise(taxCode);
         this.segmentId = segmentId;
         this.status = Objects.requireNonNull(status, "status");
         this.addresses = new ArrayList<>(addresses == null ? List.of() : addresses);
@@ -47,31 +56,38 @@ public final class Customer extends AggregateRoot {
     }
 
     /**
-     * A business customer Sales onboarded (SCRUM-450), linked to the contact's invited account.
-     *
-     * <p>The business lifecycle starts at Pending Activation (kltn-docs 18 §5), which
-     * {@code ck_customer_status} does not have yet. Until the schema owner adds it, a pending
-     * customer is {@code INACTIVE} with an account whose invitation is open: it can neither sign in
-     * nor order, which is what Pending Activation means, and activation is the one way out.</p>
+     * A business customer Sales onboarded (SCRUM-450, kltn-docs 18 §4.1), linked to the account its
+     * contact will activate. It cannot sign in, see prices or order until then.
      *
      * @param companyName the business name; the contact's own name stays on their account
+     * @param taxCode     required for every new customer (BR-01); normalised by {@link TaxCode}
      */
-    public static Customer onboard(UUID id, UUID userId, String companyName, String email, String phone) {
+    public static Customer onboard(UUID id, UUID userId, String companyName, String email, String phone,
+                                   String taxCode) {
         return new Customer(id, Objects.requireNonNull(userId, "userId"), companyName, email, phone,
-                null, CustomerStatus.INACTIVE, List.of(), 0L, null);
+                TaxCode.normalise(taxCode), null, CustomerStatus.PENDING_ACTIVATION, List.of(), 0L, null);
     }
 
     /**
-     * The contact redeemed the invitation. A customer someone made ACTIVE meanwhile stays so; a
-     * BLOCKED one stays blocked - activating an account must not lift a block.
+     * The contact redeemed the invitation. Only a pending customer activates: a blocked or closed
+     * one stays as it is - activating an account must not lift a staff decision.
      *
-     * @throws IllegalStateException for a BLOCKED customer
+     * @throws IllegalStateException for any other status
      */
     public void activatePortal() {
-        if (status == CustomerStatus.BLOCKED) {
-            throw new IllegalStateException("A blocked customer cannot activate its portal account");
+        if (status != CustomerStatus.PENDING_ACTIVATION) {
+            throw new IllegalStateException("Only a customer pending activation can activate, not " + status);
         }
         this.status = CustomerStatus.ACTIVE;
+    }
+
+    /**
+     * Sales records or corrects the tax code. It is never cleared: a customer that has one keeps one.
+     *
+     * @throws IllegalArgumentException for a malformed code
+     */
+    public void changeTaxCode(String taxCode) {
+        this.taxCode = TaxCode.normalise(taxCode);
     }
 
     public void updateProfile(String fullName, String phone, long expectedVersion) {
@@ -82,8 +98,20 @@ public final class Customer extends AggregateRoot {
         this.phone = normaliseOptional(phone);
     }
 
+    /**
+     * A staff status change. PENDING_ACTIVATION is entered only by onboarding and left for ACTIVE only
+     * by activation (kltn-docs 18 §5): staff may close a pending customer (INACTIVE), nothing else.
+     *
+     * @throws IllegalStateException for a transition the lifecycle does not have
+     */
     public void changeStatus(CustomerStatus target) {
-        this.status = Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(target, "target");
+        if (target == status) return;
+        if (target == CustomerStatus.PENDING_ACTIVATION
+                || (status == CustomerStatus.PENDING_ACTIVATION && target != CustomerStatus.INACTIVE)) {
+            throw new IllegalStateException("A customer cannot go from %s to %s".formatted(status, target));
+        }
+        this.status = target;
     }
 
     public CustomerAddress addAddress(CustomerAddress address) {
@@ -197,6 +225,7 @@ public final class Customer extends AggregateRoot {
     public String fullName() { return fullName; }
     public String email() { return email; }
     public String phone() { return phone; }
+    public String taxCode() { return taxCode; }
     public UUID segmentId() { return segmentId; }
     public CustomerStatus status() { return status; }
     public List<CustomerAddress> addresses() { return List.copyOf(addresses); }

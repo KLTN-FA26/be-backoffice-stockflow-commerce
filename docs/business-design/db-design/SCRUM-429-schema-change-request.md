@@ -1,62 +1,56 @@
-# Yêu cầu schema — SCRUM-429 / SCRUM-450 (onboarding khách B2B)
+# Thay đổi schema — SCRUM-429 / SCRUM-450 (onboarding khách B2B)
 
-Ngày đề xuất: 12/10/2026. Người xử lý schema: **Tú**. Đây là **đề xuất**, không phải migration đã
-viết hay đã duyệt. Nhánh `SCRUM-429-b2b-onboarding` **không thêm file nào vào `db/migration`**.
+> **Cập nhật 12/10/2026:** chủ repo cho phép nhánh tự viết migration cho phạm vi này. Đề xuất cũ đã
+> được hiện thực trong `V20261014000100__customer_b2b_onboarding.sql` (hậu tố `00100` của ngày
+> 20261014 dành cho nhánh B2B; nhánh production dùng `00200` trở lên). Tài liệu này giờ mô tả
+> **cái đã làm** và **các quyết định mặc định chưa được chủ nghiệp vụ duyệt**.
 
-Nguồn nghiệp vụ: kltn-docs `ecommerce/18-customer-information` (bản `main` merge 10/10/2026,
-commit `84b8b54`): §4.1 tạo & kích hoạt hồ sơ, §5 vòng đời, BR-01, BR-01a, BR-02.
-Schema được kiểm ở `origin/develop` = `1de8f42` (12/10/2026).
+Nguồn nghiệp vụ: kltn-docs `ecommerce/18-customer-information` (main, `84b8b54`, 10/10/2026):
+§4.1, §5, BR-01, BR-01a, BR-02. Jira SCRUM-429/450 đọc trực tiếp 12/10/2026: không comment, không
+AC riêng ngoài mô tả.
 
-## 1. Đã có trên develop và đang được dùng
+## 1. `customer.customer`
 
-| Nhu cầu | Bảng/cột hiện có | Cách nhánh dùng |
-| --- | --- | --- |
-| Hồ sơ công ty | `customer.customer.full_name` | Tên công ty do Sale nhập |
-| Email/điện thoại người liên hệ | `customer.customer.email`, `phone`; `uk_customer_email_normalized` | Email đăng nhập của người liên hệ, kiểm trùng không phân biệt hoa thường |
-| Tài khoản cổng | `identity.app_user` (`full_name` = tên người liên hệ), `identity.user_role` CUSTOMER, `customer.customer.user_id` + `uk_customer_user` | Sale tạo tài khoản chưa có mật khẩu, gắn với hồ sơ |
-| Điều khoản thanh toán | `customer.credit_profile` (SCRUM-427), quyền `customer-credit-profiles:APPROVE` | Không ghi khi tạo khách; người duyệt hạn mức đặt qua API sẵn có (BR-02). Chưa có dòng = chỉ trả trước |
-| Lời mời một lần | `identity.app_user.password_hash` | Tài khoản chờ kích hoạt lưu `{portal-invitation}<issued>:<expires>:<sha256>` thay cho hash mật khẩu. Kích hoạt ghi hash bcrypt (lời mời hết hiệu lực), gửi lại ghi giá trị mới (link cũ hết hiệu lực). Chỉ lưu digest |
-| Pending Activation | `customer.customer.status = 'INACTIVE'` + tài khoản còn lời mời | Biểu diễn tạm, xem §2.2 |
-
-## 2. Còn thiếu — đề nghị Tú bổ sung
-
-### 2.1 Mã số thuế (BR-01) — **chặn tiêu chí "tax code"**
-
-`customer.customer` không có cột MST. Nhánh **không nhận** MST trong API để không giả là đã lưu.
-
-| Đề xuất | Ràng buộc |
+| Thay đổi | Chi tiết |
 | --- | --- |
-| `customer.customer.tax_code VARCHAR(32)` | Nullable cho hồ sơ cũ; khách tạo mới bắt buộc ở tầng service |
-| Định dạng | Cùng quy ước NCC: `^[0-9A-Za-z][0-9A-Za-z-]{6,30}[0-9A-Za-z]$` và có chữ số (`V20260930000200`) — Tú xác nhận có dùng chung không |
-| Uniqueness | BR-01 nói "không cho hai hồ sơ **Active** trùng MST". Cần chốt: unique toàn bảng hay partial index chỉ trên `ACTIVE`/`PENDING_ACTIVATION`. Đề xuất tối thiểu: `CREATE UNIQUE INDEX ... (upper(tax_code)) WHERE tax_code IS NOT NULL`; nếu chỉ chặn hồ sơ còn hiệu lực thì thêm điều kiện trạng thái sau khi chốt §2.2 |
+| `tax_code VARCHAR(14)` | NULL cho mọi khách tạo trước migration — **không bịa, không backfill**. Khách mới bắt buộc có MST (service + `@NotBlank`). Sale bổ sung/sửa MST qua `PUT /api/v1/customers/{id}`. |
+| `ck_customer_tax_code` | `^[0-9]{10}(-[0-9]{3})?$`. Chuẩn hoá ở `TaxCode`: bỏ khoảng trắng/dấu chấm, 13 số liền → `10-3` (Thông tư 105/2020/TT-BTC). Không kiểm chữ số kiểm tra (tài liệu không nêu). |
+| `uk_customer_tax_code_live` | Unique `tax_code` **chỉ** với `PENDING_ACTIVATION` và `ACTIVE`. BR-01 nói "hai hồ sơ Active"; §4.1 yêu cầu kiểm trùng khi Sale tạo (lúc đó hồ sơ là pending) nên pending được tính để hai lần tạo đồng thời không cùng lọt. `INACTIVE`/`BLOCKED` không bị ràng buộc — không siết hơn tài liệu. |
+| `ck_customer_status` | Thêm `PENDING_ACTIVATION`. |
+| `ck_customer_pending_has_account` | Khách pending luôn có `user_id` (tài khoản sẽ được kích hoạt). |
 
-Khi có cột: thêm `taxCode` vào `CreateBusinessCustomerRequest`, kiểm trùng trước rồi để index chặn race (giống email).
+Ánh xạ vòng đời §5 (**quyết định mặc định của nhánh, chờ chủ nghiệp vụ xác nhận**): Pending Activation
+= `PENDING_ACTIVATION`, Active = `ACTIVE`, Suspended = `BLOCKED`, Closed = `INACTIVE`. Chuyển trạng thái do
+staff: không ai đặt `PENDING_ACTIVATION` thủ công; từ pending chỉ được đóng (`INACTIVE`); `PENDING → ACTIVE`
+chỉ qua kích hoạt.
 
-### 2.2 Trạng thái `PENDING_ACTIVATION` (kltn-docs 18 §5)
+Chuyển dữ liệu: chỉ những khách `INACTIVE` có tài khoản mang lời mời kiểu cũ của nhánh
+(`{portal-invitation}…` trong `password_hash`) mới thành `PENDING_ACTIVATION`. Mọi `INACTIVE` khác giữ nguyên.
 
-`ck_customer_status` chỉ có `ACTIVE/INACTIVE/BLOCKED`. Tài liệu có `Pending Activation`, `Suspended`, `Closed`, `Anonymized`, `Merged`.
-Hiện nhánh dùng `INACTIVE` cho khách chờ kích hoạt — đúng hành vi BR-01a (không đăng nhập, không
-xem giá/đặt hàng vì mọi kiểm tra đều đòi `ACTIVE`), nhưng **không phân biệt được** với khách đã đóng.
+## 2. `identity`
 
-Đề xuất: thêm `PENDING_ACTIVATION` vào `ck_customer_status`, kèm `UPDATE customer.customer SET status='PENDING_ACTIVATION' WHERE status='INACTIVE' AND user_id IN (SELECT id FROM identity.app_user WHERE password_hash LIKE '{portal-invitation}%')`.
-Ánh xạ `Suspended`→`BLOCKED`, `Closed`→`INACTIVE` cần Tú/chủ nghiệp vụ chốt; nhánh không tự đổi.
+| Thay đổi | Chi tiết |
+| --- | --- |
+| `app_user.password_hash` nullable | NULL = tài khoản chưa đặt mật khẩu (người liên hệ chưa kích hoạt). Login trả 401 như tài khoản không tồn tại. |
+| `identity.portal_invitation` | Mỗi email mời một dòng; chỉ lưu `token_digest` (SHA-256). Kết thúc đúng một cách: `consumed_at` (kích hoạt) hoặc `revoked_at` (gửi lại). CHECK: digest hex, `expires_at > issued_at`, không vừa consumed vừa revoked, consumed trong thời hạn, cặp `delivery_status`/`delivery_attempted_at`. `uk_portal_invitation_open`: một lời mời mở mỗi tài khoản. FK `user_id` DEFERRABLE (thứ tự flush Hibernate). |
+| Chuyển lời mời cũ | Dòng `{portal-invitation}<issued>:<expires>:<digest>` → một dòng `portal_invitation` cùng digest và thời hạn, rồi `password_hash = NULL`. Link đã gửi vẫn dùng được. |
 
-### 2.3 Quyền `customer-customers:CREATE`
+Lý do chuyển từ `password_hash` sang bảng: quy tắc repo "mỗi bất biến hai lần (aggregate + CHECK)" không
+làm được trong một chuỗi; cần lưu kết quả gửi mail để lỗi "nhìn thấy được"; và cột mật khẩu không còn
+mang credential khác loại.
 
-Chưa được khai báo/seed. Nhánh gác tạo/gửi lại bằng `customer-customers:UPDATE` **cộng** kiểm tra role
-`SALES_STAFF`/`ECOMMERCE_ADMIN` — cùng mẫu với `PUT /api/v1/customers/{id}` sẵn có (role CUSTOMER cũng có UPDATE nhưng bị chặn bởi kiểm tra role).
-Đề xuất migration: khai báo `customer-customers:CREATE`, cấp cho `SALES_STAFF`, `ECOMMERCE_ADMIN`
-(`SYSTEM_ADMIN` nhận qua cross join như các migration khác), và `UPDATE identity.app_role SET version = version + 1`
-cho các role đổi quyền. Sau đó đổi annotation sang `Action.CREATE` và thêm `CREATE` vào `@PermissionResource`.
+## 3. Quyền
 
-### 2.4 Bảng lời mời riêng (không bắt buộc)
+`customer-customers:CREATE` cho `SALES_STAFF`, `ECOMMERCE_ADMIN`, `SYSTEM_ADMIN`; tăng `app_role.version`
+của ba role này trong cùng migration. Tạo khách và gửi lại lời mời yêu cầu quyền này; người giữ role
+CUSTOMER bị từ chối kể cả khi có quyền.
 
-Nếu Tú muốn lịch sử lời mời (ai gửi, bao nhiêu lần, trạng thái gửi mail) thay vì một credential trên
-tài khoản: `identity.portal_invitation(id, user_id FK, token_digest CHAR(64) UNIQUE, issued_at, expires_at,
-consumed_at, issued_by, version, audit)`, `CHECK (expires_at > issued_at)`, partial unique một lời mời mở mỗi user.
-Code hiện tại gói toàn bộ quy tắc trong `User`/`PortalInvitation`, nên chuyển sang bảng chỉ đổi adapter.
+## 4. Kiểm chứng
 
-## 3. Không làm
+- `tools/db/qa/09_customer_onboarding.sql` (18 kiểm tra), `B2bOnboardingMigrationUpgradeTest` (nâng cấp
+  từ `V20261013000600` có dữ liệu cũ), `schema.dbml` sinh lại bằng `tools/db/gen_dbml.py`.
 
-- Không tạo bảng/cột song song, không sửa migration đã áp dụng, không dùng `user_session`/audit/Redis làm kho lời mời.
-- Không ghi `credit_profile` khi Sale tạo khách (BR-02: chỉ người duyệt).
+## 5. Còn chờ quyết định (không tự coi là đã duyệt)
+
+TTL lời mời 72 giờ, cooldown gửi lại 1 phút, route FE `/portal/activate` (chỉ là mặc định profile local),
+ánh xạ Suspended/Closed ở §1, và việc MST của hồ sơ `BLOCKED` có nên chặn tạo mới hay không.

@@ -101,6 +101,7 @@ Enum inventory.stock_adjustment_status {
   APPROVED
   REJECTED
   POSTED
+  WITHDRAWN
 }
 
 Enum inventory.stock_item_status {
@@ -332,6 +333,7 @@ Enum procurement.purchase_order_lines_status {
   RECEIVED
   CLOSED
   CANCELLED
+  WITHDRAWN
 }
 
 Enum procurement.purchase_order_revisions_kind {
@@ -477,6 +479,18 @@ Enum ordering.cart_status {
   MERGED
 }
 
+Enum ordering.customer_order_cancellation_reason_code {
+  CUSTOMER_REQUEST
+  PAYMENT_NOT_RECEIVED
+  PAYMENT_FAILED
+  OUT_OF_STOCK
+  SUSPECTED_FRAUD
+  CREDIT_REJECTED
+  DUPLICATE_ORDER
+  PRODUCTION_ISSUE
+  OTHER
+}
+
 Enum ordering.customer_order_payment_term {
   PREPAID
   DEPOSIT
@@ -486,7 +500,7 @@ Enum ordering.customer_order_payment_term {
 Enum ordering.customer_order_status {
   DRAFT
   PENDING_PAYMENT
-  PAID
+  CONFIRMED
   IN_PRODUCTION
   READY_TO_FULFILL
   IN_FULFILMENT
@@ -496,6 +510,32 @@ Enum ordering.customer_order_status {
   COMPLETED
   CANCELLED
   RETURNED
+}
+
+Enum ordering.order_cancellation_request_reason_code {
+  CUSTOMER_REQUEST
+  PAYMENT_NOT_RECEIVED
+  PAYMENT_FAILED
+  OUT_OF_STOCK
+  SUSPECTED_FRAUD
+  CREDIT_REJECTED
+  DUPLICATE_ORDER
+  PRODUCTION_ISSUE
+  OTHER
+}
+
+Enum ordering.order_cancellation_request_status {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+Enum ordering.order_credit_check_outcome {
+  WITHIN_LIMIT
+  OVER_LIMIT
+  OVERDUE
+  APPROVED
+  REJECTED
 }
 
 Enum ordering.return_request_reason_code {
@@ -537,6 +577,7 @@ Enum customer.address_type {
 }
 
 Enum customer.customer_status {
+  PENDING_ACTIVATION
   ACTIVE
   INACTIVE
   BLOCKED
@@ -569,6 +610,20 @@ Enum payment.payment_status {
   CAPTURED
   FAILED
   REFUNDED
+  CANCELLED
+}
+
+Enum payment.receivable_status {
+  OPEN
+  PARTIALLY_PAID
+  OVERDUE
+  PAID
+}
+
+Enum payment.refund_source {
+  ORDER_CANCELLED
+  RETURN
+  MANUAL
 }
 
 Enum payment.refund_status {
@@ -601,6 +656,7 @@ Enum fulfillment.pack_status {
   PACKING
   ON_HOLD
   PACKED
+  CANCELLED
 }
 
 Enum fulfillment.package_status {
@@ -614,6 +670,7 @@ Enum fulfillment.pick_status {
   PICKING
   PICKED
   SHORT
+  CANCELLED
 }
 
 Enum fulfillment.pick_line_status {
@@ -698,6 +755,12 @@ Enum notification.template_channel {
   PUSH
 }
 
+Enum identity.app_role_data_scope {
+  OWN
+  WAREHOUSE
+  ALL
+}
+
 Enum identity.app_user_status {
   ACTIVE
   DISABLED
@@ -709,6 +772,9 @@ Enum identity.user_session_revoked_reason {
   LOGOUT_OTHERS
   PASSWORD_CHANGED
   ROLE_CHANGED
+  ACCOUNT_LOCKED
+  ACCOUNT_DISABLED
+  PASSWORD_RESET
 }
 
 Enum platform.audit_log_action {
@@ -1125,6 +1191,7 @@ Table inventory.stock_adjustment [headercolor: #3E7C4A] {
   created_by          varchar(100)
   last_modified_at    timestamptz
   last_modified_by    varchar(100)
+  withdrawn_at        timestamptz
 }
 
 Table inventory.stock_item [headercolor: #3E7C4A] {
@@ -1175,7 +1242,7 @@ Table inventory.stock_reservation [headercolor: #3E7C4A] {
   request_id      uuid [not null, unique]
   quantity        int [not null]
   reserved_at     timestamptz [not null]
-  expires_at      timestamptz [not null]
+  expires_at      timestamptz
   status          inventory.stock_reservation_status [not null]
   release_reason  varchar(32)
   closed_at       timestamptz
@@ -2055,49 +2122,91 @@ Table ordering.cart_line [headercolor: #C0392B] {
 }
 
 Table ordering.customer_order [headercolor: #C0392B] {
-  id                      uuid [pk]
-  order_number            varchar(32) [not null, unique]
-  customer_id             uuid
-  request_id              uuid [not null, unique]
-  status                  ordering.customer_order_status [not null]
-  total_amount            decimal(19,4) [not null]
-  currency                varchar(3) [not null]
-  placed_at               timestamptz [not null]
-  cancellation_reason     varchar(500)
-  version                 bigint [not null, default: 0]
-  created_at              timestamptz [not null]
-  created_by              varchar(100)
-  last_modified_at        timestamptz
-  last_modified_by        varchar(100)
-  contact_name            varchar(200)
-  contact_email           varchar(320)
-  contact_phone           varchar(32)
-  shipping_recipient_name varchar(200)
-  shipping_phone          varchar(32)
-  shipping_line1          varchar(255)
-  shipping_line2          varchar(255)
-  shipping_ward_code      varchar(20)
-  shipping_ward_name      varchar(120)
-  shipping_province_code  varchar(20)
-  shipping_province_name  varchar(120)
-  shipping_country_code   varchar(2)
-  shipping_postal_code    varchar(20)
-  billing_recipient_name  varchar(200)
-  billing_phone           varchar(32)
-  billing_line1           varchar(255)
-  billing_line2           varchar(255)
-  billing_ward_code       varchar(20)
-  billing_ward_name       varchar(120)
-  billing_province_code   varchar(20)
-  billing_province_name   varchar(120)
-  billing_country_code    varchar(2)
-  billing_postal_code     varchar(20)
-  payment_term            ordering.customer_order_payment_term [not null, default: 'PREPAID']
-  deposit_required        decimal(19,4)
-  deposit_received_at     timestamptz
-  warehouse_id            uuid
-  released_at             timestamptz
-  released_by             uuid
+  id                           uuid [pk]
+  order_number                 varchar(32) [not null, unique]
+  customer_id                  uuid
+  request_id                   uuid [not null, unique]
+  status                       ordering.customer_order_status [not null]
+  total_amount                 decimal(19,4) [not null]
+  currency                     varchar(3) [not null]
+  placed_at                    timestamptz [not null]
+  cancellation_reason          varchar(500)
+  version                      bigint [not null, default: 0]
+  created_at                   timestamptz [not null]
+  created_by                   varchar(100)
+  last_modified_at             timestamptz
+  last_modified_by             varchar(100)
+  contact_name                 varchar(200)
+  contact_email                varchar(320)
+  contact_phone                varchar(32)
+  shipping_recipient_name      varchar(200)
+  shipping_phone               varchar(32)
+  shipping_line1               varchar(255)
+  shipping_line2               varchar(255)
+  shipping_ward_code           varchar(20)
+  shipping_ward_name           varchar(120)
+  shipping_province_code       varchar(20)
+  shipping_province_name       varchar(120)
+  shipping_country_code        varchar(2)
+  shipping_postal_code         varchar(20)
+  billing_recipient_name       varchar(200)
+  billing_phone                varchar(32)
+  billing_line1                varchar(255)
+  billing_line2                varchar(255)
+  billing_ward_code            varchar(20)
+  billing_ward_name            varchar(120)
+  billing_province_code        varchar(20)
+  billing_province_name        varchar(120)
+  billing_country_code         varchar(2)
+  billing_postal_code          varchar(20)
+  payment_term                 ordering.customer_order_payment_term [not null, default: 'PREPAID']
+  deposit_required             decimal(19,4)
+  deposit_received_at          timestamptz
+  warehouse_id                 uuid
+  released_at                  timestamptz
+  released_by                  uuid
+  paid_amount                  decimal(19,4) [not null, default: 0]
+  paid_in_full_at              timestamptz
+  cancellation_reason_code     ordering.customer_order_cancellation_reason_code
+  cancellation_retained_amount decimal(19,4)
+  credit_term_days             int
+}
+
+Table ordering.order_cancellation_request [headercolor: #C0392B] {
+  id               uuid [pk]
+  order_id         uuid [not null]
+  requested_by     uuid
+  reason_code      ordering.order_cancellation_request_reason_code [not null]
+  note             varchar(1000)
+  requested_at     timestamptz [not null]
+  status           ordering.order_cancellation_request_status [not null, default: 'PENDING']
+  decided_by       uuid
+  decided_at       timestamptz
+  decision_note    varchar(1000)
+  retained_percent decimal(5,2)
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+}
+
+Table ordering.order_credit_check [headercolor: #C0392B] {
+  id               uuid [pk]
+  order_id         uuid [not null]
+  checked_at       timestamptz [not null]
+  credit_limit     decimal(19,4) [not null]
+  exposure         decimal(19,4) [not null]
+  order_amount     decimal(19,4) [not null]
+  outcome          ordering.order_credit_check_outcome [not null]
+  decided_by       uuid
+  decided_at       timestamptz
+  note             varchar(1000)
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
 }
 
 Table ordering.order_hold [headercolor: #C0392B] {
@@ -2144,6 +2253,14 @@ Table ordering.order_line_reservation [headercolor: #C0392B] {
 Table ordering.order_number_sequence [headercolor: #C0392B] {
   sequence_date date [pk]
   last_value    bigint [not null, default: 0]
+}
+
+Table ordering.order_payment [headercolor: #C0392B] {
+  payment_id  uuid [pk]
+  order_id    uuid [not null]
+  amount      decimal(19,4) [not null]
+  currency    varchar(3) [not null]
+  captured_at timestamptz [not null]
 }
 
 Table ordering.order_status_history [headercolor: #C0392B] {
@@ -2225,6 +2342,27 @@ Table customer.address [headercolor: #D68910] {
   province_code    varchar(20)
 }
 
+Table customer.credit_profile [headercolor: #D68910] {
+  id                   uuid [pk]
+  customer_id          uuid [not null, unique]
+  allow_prepaid        boolean [not null, default: true]
+  allow_deposit        boolean [not null, default: false]
+  allow_credit         boolean [not null, default: false]
+  default_payment_term varchar(16) [not null, default: 'PREPAID']
+  deposit_percent      decimal(5,2)
+  credit_limit         decimal(19,4)
+  credit_term_days     int
+  currency             varchar(3) [not null, default: 'VND']
+  approved_by          uuid [not null]
+  approved_at          timestamptz [not null]
+  note                 varchar(1000)
+  version              bigint [not null, default: 0]
+  created_at           timestamptz [not null, default: `now()`]
+  created_by           varchar(100)
+  last_modified_at     timestamptz
+  last_modified_by     varchar(100)
+}
+
 Table customer.customer [headercolor: #D68910] {
   id               uuid [pk]
   full_name        varchar(200) [not null]
@@ -2238,6 +2376,7 @@ Table customer.customer [headercolor: #D68910] {
   last_modified_at timestamptz
   last_modified_by varchar(100)
   user_id          uuid
+  tax_code         varchar(14)
 }
 
 Table customer.segment [headercolor: #D68910] {
@@ -2295,6 +2434,24 @@ Table payment.cod_remittance_line [headercolor: #B8860B] {
   last_modified_by varchar(100)
 }
 
+Table payment.customer_transfer [headercolor: #B8860B] {
+  id                 uuid [pk]
+  customer_id        uuid [not null]
+  reference          varchar(100) [not null, unique]
+  amount             decimal(19,4) [not null]
+  unallocated_amount decimal(19,4) [not null]
+  currency           varchar(3) [not null]
+  received_on        date [not null]
+  recorded_by        uuid [not null]
+  recorded_at        timestamptz [not null]
+  note               varchar(1000)
+  version            bigint [not null, default: 0]
+  created_at         timestamptz [not null, default: `now()`]
+  created_by         varchar(100)
+  last_modified_at   timestamptz
+  last_modified_by   varchar(100)
+}
+
 Table payment.payment [headercolor: #B8860B] {
   id               uuid [pk]
   order_id         uuid [not null]
@@ -2306,6 +2463,25 @@ Table payment.payment [headercolor: #B8860B] {
   captured_at      timestamptz
   version          bigint [not null, default: 0]
   created_at       timestamptz [not null]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+}
+
+Table payment.receivable [headercolor: #B8860B] {
+  id               uuid [pk]
+  order_id         uuid [not null, unique]
+  customer_id      uuid [not null]
+  kind             varchar(16) [not null, default: 'CREDIT_ORDER']
+  amount           decimal(19,4) [not null]
+  paid_amount      decimal(19,4) [not null, default: 0]
+  currency         varchar(3) [not null]
+  issued_at        timestamptz [not null]
+  due_date         date [not null]
+  status           payment.receivable_status [not null, default: 'OPEN']
+  settled_at       timestamptz
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
   created_by       varchar(100)
   last_modified_at timestamptz
   last_modified_by varchar(100)
@@ -2324,6 +2500,20 @@ Table payment.refund [headercolor: #B8860B] {
   created_by       varchar(100)
   last_modified_at timestamptz
   last_modified_by varchar(100)
+  order_id         uuid
+  source           payment.refund_source
+}
+
+Table payment.transfer_allocation [headercolor: #B8860B] {
+  id            uuid [pk]
+  transfer_id   uuid [not null]
+  receivable_id uuid [not null]
+  amount        decimal(19,4) [not null]
+  allocated_at  timestamptz [not null]
+  allocated_by  uuid
+  indexes {
+    (transfer_id, receivable_id) [unique]
+  }
 }
 
 // =============================================================================
@@ -2496,6 +2686,7 @@ Table fulfillment.pick [headercolor: #2C7873] {
   assigned_at      timestamptz
   started_at       timestamptz
   picked_at        timestamptz
+  needs_put_back   boolean [not null, default: false]
 }
 
 Table fulfillment.pick_line [headercolor: #2C7873] {
@@ -2785,21 +2976,26 @@ Table identity.app_role [headercolor: #5A6ACF] {
   created_by       varchar(100)
   last_modified_at timestamptz
   last_modified_by varchar(100)
+  is_system        boolean [not null, default: false]
+  data_scope       identity.app_role_data_scope [not null, default: 'ALL']
 }
 
 Table identity.app_user [headercolor: #5A6ACF] {
-  id               uuid [pk]
-  username         varchar(320) [not null, unique]
-  email            varchar(320) [not null, unique]
-  password_hash    varchar(200) [not null]
-  full_name        varchar(200)
-  status           identity.app_user_status [not null]
-  last_login_at    timestamptz
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
+  id                   uuid [pk]
+  username             varchar(320) [not null, unique]
+  email                varchar(320) [not null, unique]
+  password_hash        varchar(200)
+  full_name            varchar(200)
+  status               identity.app_user_status [not null]
+  last_login_at        timestamptz
+  version              bigint [not null, default: 0]
+  created_at           timestamptz [not null]
+  created_by           varchar(100)
+  last_modified_at     timestamptz
+  last_modified_by     varchar(100)
+  must_change_password boolean [not null, default: false]
+  failed_login_count   int [not null, default: 0]
+  locked_until         timestamptz
 }
 
 Table identity.permission [headercolor: #5A6ACF] {
@@ -2813,6 +3009,24 @@ Table identity.permission [headercolor: #5A6ACF] {
   created_by       varchar(100)
   last_modified_at timestamptz
   last_modified_by varchar(100)
+}
+
+Table identity.portal_invitation [headercolor: #5A6ACF] {
+  id                    uuid [pk]
+  user_id               uuid [not null]
+  token_digest          character(64) [not null, unique]
+  issued_at             timestamptz [not null]
+  expires_at            timestamptz [not null]
+  consumed_at           timestamptz
+  revoked_at            timestamptz
+  issued_by             uuid
+  delivery_status       varchar(16)
+  delivery_attempted_at timestamptz
+  version               bigint [not null, default: 0]
+  created_at            timestamptz [not null, default: `now()`]
+  created_by            varchar(100)
+  last_modified_at      timestamptz
+  last_modified_by      varchar(100)
 }
 
 Table identity.role_permission [headercolor: #5A6ACF] {
@@ -2857,6 +3071,20 @@ Table identity.user_session [headercolor: #5A6ACF] {
   created_by       varchar(100)
   last_modified_at timestamptz
   last_modified_by varchar(100)
+}
+
+Table identity.user_warehouse [headercolor: #5A6ACF] {
+  id               uuid [pk]
+  user_id          uuid [not null]
+  warehouse_id     uuid [not null]
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+  indexes {
+    (user_id, warehouse_id) [unique]
+  }
 }
 
 // =============================================================================
@@ -3102,6 +3330,11 @@ Ref: ordering.cart_line.sku > product.variants.sku [delete: restrict]
 Ref: ordering.customer_order.customer_id > customer.customer.id [delete: restrict]
 Ref: ordering.customer_order.released_by > identity.app_user.id
 Ref: ordering.customer_order.warehouse_id > warehouse.warehouse.id [delete: restrict]
+Ref: ordering.order_cancellation_request.decided_by > identity.app_user.id
+Ref: ordering.order_cancellation_request.order_id > ordering.customer_order.id [delete: cascade]
+Ref: ordering.order_cancellation_request.requested_by > identity.app_user.id
+Ref: ordering.order_credit_check.decided_by > identity.app_user.id
+Ref: ordering.order_credit_check.order_id > ordering.customer_order.id [delete: cascade]
 Ref: ordering.order_hold.order_id > ordering.customer_order.id
 Ref: ordering.order_hold.resolved_by > identity.app_user.id
 Ref: ordering.order_line.design_snapshot_id > design.design_snapshot.id [delete: restrict]
@@ -3111,6 +3344,7 @@ Ref: ordering.order_line_production.order_line_id > ordering.order_line.id [dele
 Ref: ordering.order_line_production.production_order_id > production.production_order.id [delete: restrict]
 Ref: ordering.order_line_reservation.order_line_id > ordering.order_line.id [delete: cascade]
 Ref: ordering.order_line_reservation.reservation_id > inventory.stock_reservation.id [delete: restrict]
+Ref: ordering.order_payment.order_id > ordering.customer_order.id [delete: restrict]
 Ref: ordering.order_status_history.actor_id > identity.app_user.id
 Ref: ordering.order_status_history.order_id > ordering.customer_order.id [delete: cascade]
 Ref: ordering.return_request.customer_id > customer.customer.id [delete: restrict]
@@ -3120,14 +3354,24 @@ Ref: ordering.return_request.refund_id > payment.refund.id [delete: restrict]
 Ref: ordering.return_request_line.order_line_id > ordering.order_line.id [delete: restrict]
 Ref: ordering.return_request_line.return_request_id > ordering.return_request.id [delete: cascade]
 Ref: customer.address.customer_id > customer.customer.id [delete: cascade]
+Ref: customer.credit_profile.approved_by > identity.app_user.id
+Ref: customer.credit_profile.customer_id > customer.customer.id [delete: cascade]
 Ref: customer.customer.segment_id > customer.segment.id
 Ref: customer.customer.user_id > identity.app_user.id [delete: restrict]
 Ref: payment.cod_remittance.reconciled_by > identity.app_user.id
 Ref: payment.cod_remittance_line.payment_id > payment.payment.id [delete: restrict]
 Ref: payment.cod_remittance_line.remittance_id > payment.cod_remittance.id [delete: cascade]
 Ref: payment.cod_remittance_line.shipment_id > fulfillment.shipment.id [delete: restrict]
+Ref: payment.customer_transfer.customer_id > customer.customer.id [delete: restrict]
+Ref: payment.customer_transfer.recorded_by > identity.app_user.id
 Ref: payment.payment.order_id > ordering.customer_order.id [delete: restrict]
+Ref: payment.receivable.customer_id > customer.customer.id [delete: restrict]
+Ref: payment.receivable.order_id > ordering.customer_order.id [delete: restrict]
+Ref: payment.refund.order_id > ordering.customer_order.id [delete: restrict]
 Ref: payment.refund.payment_id > payment.payment.id
+Ref: payment.transfer_allocation.allocated_by > identity.app_user.id
+Ref: payment.transfer_allocation.receivable_id > payment.receivable.id [delete: restrict]
+Ref: payment.transfer_allocation.transfer_id > payment.customer_transfer.id [delete: restrict]
 Ref: design.design_artifact.draft_id > design.design_draft.id
 Ref: design.design_decision.actor_id > identity.app_user.id
 Ref: design.design_decision.draft_id > design.design_draft.id
@@ -3178,11 +3422,15 @@ Ref: chat.message.conversation_id > chat.conversation.id [delete: cascade]
 Ref: notification.po_delivery_control.purchase_order_id > procurement.purchase_orders.id [delete: cascade]
 Ref: notification.preference.user_id > identity.app_user.id [delete: cascade]
 Ref: reporting.product_sales_summary.sku > product.variants.sku [delete: restrict]
+Ref: identity.portal_invitation.issued_by > identity.app_user.id
+Ref: identity.portal_invitation.user_id > identity.app_user.id [delete: cascade]
 Ref: identity.role_permission.permission_id > identity.permission.id [delete: cascade]
 Ref: identity.role_permission.role_id > identity.app_role.id [delete: cascade]
 Ref: identity.user_role.role_id > identity.app_role.id [delete: cascade]
 Ref: identity.user_role.user_id > identity.app_user.id [delete: cascade]
 Ref: identity.user_session.user_id > identity.app_user.id
+Ref: identity.user_warehouse.user_id > identity.app_user.id
+Ref: identity.user_warehouse.warehouse_id > warehouse.warehouse.id
 
 TableGroup product_group [color: #2E86AB] {
   product.attribute_values
@@ -3266,11 +3514,14 @@ TableGroup ordering_group [color: #C0392B] {
   ordering.cart
   ordering.cart_line
   ordering.customer_order
+  ordering.order_cancellation_request
+  ordering.order_credit_check
   ordering.order_hold
   ordering.order_line
   ordering.order_line_production
   ordering.order_line_reservation
   ordering.order_number_sequence
+  ordering.order_payment
   ordering.order_status_history
   ordering.return_request
   ordering.return_request_line
@@ -3278,6 +3529,7 @@ TableGroup ordering_group [color: #C0392B] {
 
 TableGroup customer_group [color: #D68910] {
   customer.address
+  customer.credit_profile
   customer.customer
   customer.segment
 }
@@ -3285,8 +3537,11 @@ TableGroup customer_group [color: #D68910] {
 TableGroup payment_group [color: #B8860B] {
   payment.cod_remittance
   payment.cod_remittance_line
+  payment.customer_transfer
   payment.payment
+  payment.receivable
   payment.refund
+  payment.transfer_allocation
 }
 
 TableGroup design_group [color: #AA4A9E] {
@@ -3337,9 +3592,11 @@ TableGroup identity_group [color: #5A6ACF] {
   identity.app_role
   identity.app_user
   identity.permission
+  identity.portal_invitation
   identity.role_permission
   identity.user_role
   identity.user_session
+  identity.user_warehouse
 }
 
 TableGroup platform_group [color: #616161] {

@@ -31,11 +31,12 @@ import java.util.UUID;
  * B2B onboarding over HTTP (SCRUM-450): Sales creates the customer and (re)sends the portal
  * invitation; the contact activates the account from the link.
  *
- * <p>Sales actions use {@code customer-customers:UPDATE} plus the Sales/e-commerce-admin role check,
- * exactly like the existing staff edit of a customer. No {@code customer-customers:CREATE} permission
- * is seeded to require instead; that grant is the schema owner's to add, and the role check keeps
- * the CUSTOMER role - which also holds UPDATE, for its own profile - out meanwhile. SYSTEM_ADMIN
- * passes the role check, as it does everywhere ({@code CurrentUser.hasAnyRole}).</p>
+ * <p>Creating a customer and (re)sending its invitation need {@code customer-customers:CREATE}, seeded
+ * for SALES_STAFF, ECOMMERCE_ADMIN and SYSTEM_ADMIN by V20261014000100 - a permission rather than a role
+ * check, so a custom role an administrator grants it to works too (SCRUM-453). A caller holding the
+ * CUSTOMER role is refused regardless: no customer onboards another (BR-01a). Reading the invitation
+ * state keeps the Sales/e-commerce-admin check of the other staff reads in this module, because
+ * CUSTOMER holds {@code READ} for its own profile.</p>
  *
  * <p>Activation is anonymous by nature (the contact has no password yet) and is opened for POST alone
  * in the security configuration. The token is the authorisation; the rate limit is per address.</p>
@@ -52,22 +53,23 @@ class CustomerOnboardingController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    @RequiresPermission(resource = CustomerResources.CUSTOMERS, action = Action.UPDATE)
+    @RequiresPermission(resource = CustomerResources.CUSTOMERS, action = Action.CREATE)
     @RateLimit(limit = 30, perSeconds = 60)
     public ApiResponse<InvitedCustomerResponse> create(@AuthenticatedUser CurrentUser user,
                                                        @Valid @RequestBody CreateBusinessCustomerRequest request) {
-        requireSales(user);
+        refuseCustomers(user);
         return ApiResponse.ok(toResponse(onboarding.create(new CustomerOnboardingService.CreateBusinessCustomer(
-                request.companyName(), request.contactName(), request.email(), request.phone()))));
+                request.companyName(), request.taxCode(), request.contactName(), request.email(), request.phone(),
+                user.userId()))));
     }
 
     @PostMapping("/{customerId}/portal-invitation")
-    @RequiresPermission(resource = CustomerResources.CUSTOMERS, action = Action.UPDATE)
+    @RequiresPermission(resource = CustomerResources.CUSTOMERS, action = Action.CREATE)
     @RateLimit(limit = 10, perSeconds = 60)
     public ApiResponse<InvitedCustomerResponse> resend(@PathVariable UUID customerId,
                                                        @AuthenticatedUser CurrentUser user) {
-        requireSales(user);
-        return ApiResponse.ok(toResponse(onboarding.resendInvitation(customerId)));
+        refuseCustomers(user);
+        return ApiResponse.ok(toResponse(onboarding.resendInvitation(customerId, user.userId())));
     }
 
     @GetMapping("/{customerId}/portal-invitation")
@@ -77,13 +79,17 @@ class CustomerOnboardingController {
         requireSales(user);
         var view = onboarding.invitation(customerId);
         return ApiResponse.ok(new PortalInvitationResponse(view.customerId(), view.state().name(),
-                view.issuedAt(), view.expiresAt()));
+                view.issuedAt(), view.expiresAt(), view.delivery()));
     }
 
     @PostMapping("/portal-activation")
     @RateLimit(limit = 10, perSeconds = 60, key = RateLimit.Key.IP)
     public ApiResponse<PortalActivationResponse> activate(@Valid @RequestBody ActivatePortalAccountRequest request) {
         return ApiResponse.ok(new PortalActivationResponse(onboarding.activate(request.token(), request.password())));
+    }
+
+    private static void refuseCustomers(CurrentUser user) {
+        if (user.roles().contains(Role.CUSTOMER)) throw new BusinessException(ErrorCode.FORBIDDEN);
     }
 
     private static void requireSales(CurrentUser user) {

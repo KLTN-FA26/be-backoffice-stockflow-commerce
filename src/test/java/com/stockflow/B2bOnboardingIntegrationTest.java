@@ -149,16 +149,18 @@ class B2bOnboardingIntegrationTest {
     @Test
     void salesCreatesTheCustomerAndTheContactActivatesOnceFromTheEmailedLink() throws Exception {
         String email = unique("buyer");
+        String mst = mst();
         long users = count("identity.app_user");
-        String body = json(Map.of("companyName", "Cong ty TNHH Ly Giay Sai Gon", "contactName", "Nguyen Van An",
-                "email", email.toUpperCase(), "phone", "0901234567"));
+        String body = json(Map.of("companyName", "Cong ty TNHH Ly Giay Sai Gon", "taxCode", mst + "001",
+                "contactName", "Nguyen Van An", "email", email.toUpperCase(), "phone", "0901234567"));
         String key = "create-" + UUID.randomUUID();
 
         String created = create(sales, body, key)
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.customer.fullName").value("Cong ty TNHH Ly Giay Sai Gon"))
                 .andExpect(jsonPath("$.data.customer.email").value(email))
-                .andExpect(jsonPath("$.data.customer.status").value("INACTIVE"))
+                .andExpect(jsonPath("$.data.customer.taxCode").value(mst + "-001"))
+                .andExpect(jsonPath("$.data.customer.status").value("PENDING_ACTIVATION"))
                 .andExpect(jsonPath("$.data.invitation.delivery").value("SENT"))
                 .andExpect(jsonPath("$.data.invitation.expiresAt").isNotEmpty())
                 .andReturn().getResponse().getContentAsString();
@@ -173,13 +175,18 @@ class B2bOnboardingIntegrationTest {
 
         String token = onlyLinkSentTo(email);
         assertThat(created).doesNotContain(token);
-        String stored = jdbc.queryForObject("SELECT password_hash FROM identity.app_user WHERE id=?",
-                String.class, userId);
-        assertThat(stored).startsWith("{portal-invitation}").doesNotContain(token);
+        assertThat(jdbc.queryForObject("SELECT password_hash FROM identity.app_user WHERE id=?",
+                String.class, userId)).isNull();
+        assertThat(jdbc.queryForObject("""
+                SELECT token_digest FROM identity.portal_invitation
+                WHERE user_id=? AND consumed_at IS NULL AND revoked_at IS NULL AND delivery_status='SENT'
+                  AND issued_by IS NOT NULL""", String.class, userId))
+                .isEqualTo(sha256(token)).isNotEqualTo(token);
         assertThat(jdbc.queryForObject("""
                 SELECT r.code FROM identity.user_role ur JOIN identity.app_role r ON r.id = ur.role_id
                 WHERE ur.user_id = ?""", String.class, userId)).isEqualTo("CUSTOMER");
-        invitationState(customerId).andExpect(jsonPath("$.data.state").value("PENDING"));
+        invitationState(customerId).andExpect(jsonPath("$.data.state").value("PENDING"))
+                .andExpect(jsonPath("$.data.delivery").value("SENT"));
 
         // No password exists before activation, so nothing - not even a guessed one - signs in.
         login(email, PASSWORD).andExpect(status().isUnauthorized());
@@ -187,12 +194,15 @@ class B2bOnboardingIntegrationTest {
         activate(token, "short").andExpect(status().isBadRequest());
         activate(token, "weakpassword1").andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
-        assertThat(customerStatus(customerId)).isEqualTo("INACTIVE");
+        assertThat(customerStatus(customerId)).isEqualTo("PENDING_ACTIVATION");
 
         activate(token, PASSWORD).andExpect(status().isOk()).andExpect(jsonPath("$.data.email").value(email));
         assertThat(customerStatus(customerId)).isEqualTo("ACTIVE");
         assertThat(jdbc.queryForObject("SELECT password_hash FROM identity.app_user WHERE id=?",
                 String.class, userId)).startsWith("{bcrypt}");
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM identity.portal_invitation WHERE user_id=? AND consumed_at IS NOT NULL""",
+                Long.class, userId)).isEqualTo(1);
 
         activate(token, PASSWORD + "2").andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("PORTAL_INVITATION_INVALID"));
@@ -220,13 +230,14 @@ class B2bOnboardingIntegrationTest {
         resend(sales, customerId).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("PORTAL_ACCOUNT_ALREADY_ACTIVE"));
         // The activated customer is now a CUSTOMER caller: it cannot onboard anyone.
-        create(customerToken, json(Map.of("companyName", "X", "contactName", "Y",
+        create(customerToken, json(Map.of("companyName", "X", "taxCode", mst(), "contactName", "Y",
                 "email", unique("by-customer"))), null).andExpect(status().isForbidden());
     }
 
     @Test
     void onlySalesAndTheEcommerceAdminOnboardAndInputIsValidated() throws Exception {
-        String body = json(Map.of("companyName", "Cong ty A", "contactName", "B", "email", unique("perm")));
+        String body = json(Map.of("companyName", "Cong ty A", "taxCode", mst(), "contactName", "B",
+                "email", unique("perm")));
         long customers = count("customer.customer");
         mvc.perform(post("/api/v1/customers").contentType("application/json").content(body))
                 .andExpect(status().isUnauthorized());
@@ -235,14 +246,27 @@ class B2bOnboardingIntegrationTest {
 
         create(ecommerceAdmin, body, null).andExpect(status().isCreated());
         // SYSTEM_ADMIN passes every role check (CurrentUser.hasAnyRole), here as everywhere else.
-        create(systemAdmin, json(Map.of("companyName", "Cong ty B", "contactName", "C",
+        // customer-customers:CREATE is seeded for SYSTEM_ADMIN too.
+        create(systemAdmin, json(Map.of("companyName", "Cong ty B", "taxCode", mst(), "contactName", "C",
                 "email", unique("perm-admin"))), null).andExpect(status().isCreated());
         for (String invalid : List.of(
-                json(Map.of("contactName", "B", "email", unique("v1"))),
-                json(Map.of("companyName", "A", "contactName", "B", "email", "not-an-email")),
-                json(Map.of("companyName", "A", "contactName", "B", "email", unique("v2"), "phone", "12")))) {
+                json(Map.of("taxCode", mst(), "contactName", "B", "email", unique("v1"))),
+                json(Map.of("companyName", "A", "contactName", "B", "email", unique("v-no-mst"))),
+                json(Map.of("companyName", "A", "taxCode", "12345", "contactName", "B", "email", unique("v-mst"))),
+                json(Map.of("companyName", "A", "taxCode", mst(), "contactName", "B", "email", "not-an-email")),
+                json(Map.of("companyName", "A", "taxCode", mst(), "contactName", "B", "email", unique("v2"),
+                        "phone", "12")))) {
             create(sales, invalid, null).andExpect(status().isBadRequest());
         }
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM identity.role_permission rp
+                JOIN identity.app_role r ON r.id = rp.role_id JOIN identity.permission p ON p.id = rp.permission_id
+                WHERE p.code = 'customer-customers:CREATE'
+                  AND r.code IN ('SALES_STAFF','ECOMMERCE_ADMIN','SYSTEM_ADMIN')""", Long.class)).isEqualTo(3);
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM identity.role_permission rp
+                JOIN identity.app_role r ON r.id = rp.role_id JOIN identity.permission p ON p.id = rp.permission_id
+                WHERE p.code = 'customer-customers:CREATE' AND r.code = 'CUSTOMER'""", Long.class)).isZero();
         mvc.perform(get("/api/v1/customers/portal-activation")).andExpect(status().isUnauthorized());
         mvc.perform(get("/api/v1/customers/" + UUID.randomUUID() + "/portal-invitation")
                         .header("Authorization", "Bearer " + warehouse))
@@ -253,24 +277,25 @@ class B2bOnboardingIntegrationTest {
     @Test
     void anExistingCustomerOrStaffAddressIsNeverReusedAndNothingIsLeftBehind() throws Exception {
         String email = unique("dup");
-        create(sales, json(Map.of("companyName", "A", "contactName", "B", "email", email)), null)
+        create(sales, json(Map.of("companyName", "A", "taxCode", mst(), "contactName", "B", "email", email)), null)
                 .andExpect(status().isCreated());
         long users = count("identity.app_user");
         long customers = count("customer.customer");
 
-        create(sales, json(Map.of("companyName", "Other", "contactName", "C", "email", email.toUpperCase())), null)
+        create(sales, json(Map.of("companyName", "Other", "taxCode", mst(), "contactName", "C",
+                "email", email.toUpperCase())), null)
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("CUSTOMER_EMAIL_ALREADY_EXISTS"));
         String staffEmail = jdbc.queryForObject(
                 "SELECT email FROM identity.app_user WHERE username LIKE 'staff-sales_staff-%' LIMIT 1", String.class);
-        create(sales, json(Map.of("companyName", "A", "contactName", "B", "email", staffEmail)), null)
+        create(sales, json(Map.of("companyName", "A", "taxCode", mst(), "contactName", "B", "email", staffEmail)), null)
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("USER_EMAIL_ALREADY_EXISTS"));
 
         // A failure after the account is written rolls the account back with the customer.
         String rolledBack = unique("rollback");
         assertThatCode(() -> onboarding.create(new CustomerOnboardingService.CreateBusinessCustomer(
-                "A", "B", rolledBack, "12")), ErrorCode.VALIDATION_FAILED);
+                "A", mst(), "B", rolledBack, "12", null)), ErrorCode.VALIDATION_FAILED);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM identity.app_user WHERE email=?",
                 Long.class, rolledBack)).isZero();
         assertThat(count("identity.app_user")).isEqualTo(users);
@@ -284,8 +309,9 @@ class B2bOnboardingIntegrationTest {
         List<Callable<Object>> attempts = new ArrayList<>();
         for (int i = 0; i < 4; i++) {
             String spelling = i % 2 == 0 ? email : email.toUpperCase();
+            String code = mst();
             attempts.add(() -> onboarding.create(new CustomerOnboardingService.CreateBusinessCustomer(
-                    "Race Co", "Racer", spelling, null)));
+                    "Race Co", code, "Racer", spelling, null, null)));
         }
         List<Object> outcomes = race(attempts);
         assertThat(outcomes.stream().filter(CustomerOnboardingService.Invited.class::isInstance)).hasSize(1);
@@ -366,7 +392,7 @@ class B2bOnboardingIntegrationTest {
 
         List<Object> outcomes = race(List.of(
                 () -> onboarding.activate(token, PASSWORD),
-                () -> onboarding.resendInvitation(customerId)));
+                () -> onboarding.resendInvitation(customerId, null)));
         boolean activated = outcomes.get(0) instanceof String;
         if (activated) {
             assertThat(outcomes.get(1)).isInstanceOfSatisfying(BusinessException.class,
@@ -376,7 +402,7 @@ class B2bOnboardingIntegrationTest {
             assertThat(outcomes.get(0)).isInstanceOfSatisfying(BusinessException.class,
                     e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.PORTAL_INVITATION_INVALID));
             assertThat(outcomes.get(1)).isInstanceOf(CustomerOnboardingService.Invited.class);
-            assertThat(customerStatus(customerId)).isEqualTo("INACTIVE");
+            assertThat(customerStatus(customerId)).isEqualTo("PENDING_ACTIVATION");
             activate(token, PASSWORD).andExpect(status().isBadRequest());
         }
     }
@@ -392,7 +418,7 @@ class B2bOnboardingIntegrationTest {
         activate(token, PASSWORD).andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("PORTAL_INVITATION_INVALID"));
         assertThat(jdbc.queryForObject("SELECT password_hash FROM identity.app_user WHERE lower(email)=?",
-                String.class, email)).startsWith("{portal-invitation}");
+                String.class, email)).isNull();
         backdateInvitation(email, 120, 3600);
         resend(sales, customerId).andExpect(status().isConflict());
         assertThat(customerStatus(customerId)).isEqualTo("BLOCKED");
@@ -405,7 +431,8 @@ class B2bOnboardingIntegrationTest {
         docker.pauseContainerCmd(MAILPIT.getContainerId()).exec();
         String created;
         try {
-            created = create(sales, json(Map.of("companyName", "Mail Down Co", "contactName", "M", "email", email)), null)
+            created = create(sales, json(Map.of("companyName", "Mail Down Co", "taxCode", mst(), "contactName", "M",
+                    "email", email)), null)
                     .andExpect(status().isCreated())
                     .andExpect(jsonPath("$.data.invitation.delivery").value("FAILED"))
                     .andReturn().getResponse().getContentAsString();
@@ -413,20 +440,131 @@ class B2bOnboardingIntegrationTest {
             docker.unpauseContainerCmd(MAILPIT.getContainerId()).exec();
         }
         UUID customerId = UUID.fromString(mapper.readTree(created).at("/data/customer/customerId").asText());
-        assertThat(customerStatus(customerId)).isEqualTo("INACTIVE");
+        assertThat(customerStatus(customerId)).isEqualTo("PENDING_ACTIVATION");
         assertThat(linksSentTo(email)).isEmpty();
+        invitationState(customerId).andExpect(jsonPath("$.data.delivery").value("FAILED"));
 
         backdateInvitation(email, 120, 3600);
         resend(sales, customerId).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.invitation.delivery").value("SENT"));
+        invitationState(customerId).andExpect(jsonPath("$.data.delivery").value("SENT"));
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM identity.portal_invitation i JOIN identity.app_user u ON u.id = i.user_id
+                WHERE lower(u.email) = ? AND i.revoked_at IS NOT NULL AND i.delivery_status = 'FAILED'""",
+                Long.class, email)).isEqualTo(1);
         activate(onlyLinkSentTo(email), PASSWORD).andExpect(status().isOk());
+    }
+
+    @Test
+    void aTaxCodeBelongsToOneLiveCustomerInAnySpellingAndRacesEndInOneWinner() throws Exception {
+        String mst = mst();
+        String created = create(sales, json(Map.of("companyName", "First", "taxCode", mst, "contactName", "A",
+                "email", unique("mst-1"))), null).andExpect(status().isCreated()).andReturn().getResponse()
+                .getContentAsString();
+        UUID first = UUID.fromString(mapper.readTree(created).at("/data/customer/customerId").asText());
+        for (String spelling : List.of(mst, " " + mst.substring(0, 4) + " " + mst.substring(4))) {
+            create(sales, json(Map.of("companyName", "Copy", "taxCode", spelling, "contactName", "B",
+                    "email", unique("mst-dup"))), null)
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.errorCode").value("CUSTOMER_TAX_CODE_ALREADY_EXISTS"));
+        }
+        // A dependent unit is another customer: 10-3 differs from the parent's 10 digits.
+        create(sales, json(Map.of("companyName", "Branch", "taxCode", mst + "-002", "contactName", "C",
+                "email", unique("mst-branch"))), null).andExpect(status().isCreated());
+
+        // BR-01 covers live customers only: once the first is closed, the code may be onboarded again,
+        // and the closed one cannot come back while the new one holds it.
+        changeStatus(first, "INACTIVE").andExpect(status().isOk());
+        String again = create(sales, json(Map.of("companyName", "Again", "taxCode", mst, "contactName", "D",
+                "email", unique("mst-again"))), null).andExpect(status().isCreated()).andReturn().getResponse()
+                .getContentAsString();
+        changeStatus(first, "ACTIVE").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("CUSTOMER_TAX_CODE_ALREADY_EXISTS"));
+        assertThat(customerStatus(first)).isEqualTo("INACTIVE");
+        assertThat(mapper.readTree(again).at("/data/customer/taxCode").asText()).isEqualTo(mst);
+
+        String raced = mst();
+        List<Callable<Object>> attempts = new ArrayList<>();
+        for (int i = 0; i < 4; i++) {
+            String email = unique("mst-race-" + i);
+            attempts.add(() -> onboarding.create(new CustomerOnboardingService.CreateBusinessCustomer(
+                    "Race Co", raced, "Racer", email, null, null)));
+        }
+        List<Object> outcomes = race(attempts);
+        assertThat(outcomes.stream().filter(CustomerOnboardingService.Invited.class::isInstance)).hasSize(1);
+        assertThat(outcomes.stream().filter(BusinessException.class::isInstance)
+                .map(e -> ((BusinessException) e).errorCode()))
+                .hasSize(3).allMatch(code -> code == ErrorCode.CUSTOMER_TAX_CODE_ALREADY_EXISTS);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM customer.customer WHERE tax_code=?", Long.class, raced))
+                .isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM identity.app_user u WHERE lower(u.email) LIKE 'mst-race-%'
+                  AND NOT EXISTS (SELECT 1 FROM customer.customer c WHERE c.user_id = u.id)""",
+                Long.class)).as("no orphan account from a losing writer").isZero();
+    }
+
+    @Test
+    void onlyActivationLeavesPendingForActiveAndStaffManageTheTaxCode() throws Exception {
+        String email = unique("lifecycle");
+        UUID customerId = createdCustomer(email);
+        String token = onlyLinkSentTo(email);
+        changeStatus(customerId, "ACTIVE").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("INVALID_CUSTOMER_STATUS_TRANSITION"));
+        changeStatus(customerId, "BLOCKED").andExpect(status().isConflict());
+        assertThat(customerStatus(customerId)).isEqualTo("PENDING_ACTIVATION");
+
+        // Sales corrects the tax code of a pending customer; a malformed one is refused.
+        String corrected = mst();
+        staffUpdate(customerId, Map.of("fullName", "Renamed Co", "version", version(customerId), "taxCode", corrected))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.taxCode").value(corrected));
+        staffUpdate(customerId, Map.of("fullName", "Renamed Co", "version", version(customerId), "taxCode", "12"))
+                .andExpect(status().isBadRequest());
+
+        activate(token, PASSWORD).andExpect(status().isOk());
+        String customerToken = mapper.readTree(login(email, PASSWORD).andReturn().getResponse().getContentAsString())
+                .at("/data/accessToken").asText();
+        // The customer edits its own profile, but its business identity stays with Sales.
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/v1/customers/me")
+                        .header("Authorization", "Bearer " + customerToken).contentType("application/json")
+                        .content(json(Map.of("fullName", "Self Renamed", "version", version(customerId),
+                                "taxCode", mst()))))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.taxCode").value(corrected));
+        changeStatus(customerId, "PENDING_ACTIVATION").andExpect(status().isConflict());
+
+        // A pending customer that Sales closes cannot be activated from its old link any more.
+        String closedEmail = unique("closed");
+        UUID closed = createdCustomer(closedEmail);
+        String closedLink = onlyLinkSentTo(closedEmail);
+        changeStatus(closed, "INACTIVE").andExpect(status().isOk());
+        activate(closedLink, PASSWORD).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("PORTAL_INVITATION_INVALID"));
+        resend(sales, closed).andExpect(status().isConflict());
+        login(closedEmail, PASSWORD).andExpect(status().isUnauthorized());
     }
 
     // ---------------------------------------------------------------- helpers
 
+    private ResultActions changeStatus(UUID customerId, String target) throws Exception {
+        return mvc.perform(post("/api/v1/customers/" + customerId + "/status")
+                .header("Authorization", "Bearer " + ecommerceAdmin).contentType("application/json")
+                .content(json(Map.of("status", target))));
+    }
+
+    private ResultActions staffUpdate(UUID customerId, Map<String, ?> body) throws Exception {
+        return mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .put("/api/v1/customers/" + customerId).header("Authorization", "Bearer " + sales)
+                .contentType("application/json").content(json(body)));
+    }
+
+    private long version(UUID customerId) {
+        return jdbc.queryForObject("SELECT version FROM customer.customer WHERE id=?", Long.class, customerId);
+    }
+
+
     private UUID createdCustomer(String email) throws Exception {
-        String created = create(sales, json(Map.of("companyName", "Co " + email, "contactName", "Contact",
-                "email", email)), null).andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
+        String created = create(sales, json(Map.of("companyName", "Co " + email, "taxCode", mst(),
+                "contactName", "Contact", "email", email)), null)
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
         return UUID.fromString(mapper.readTree(created).at("/data/customer/customerId").asText());
     }
 
@@ -449,12 +587,24 @@ class B2bOnboardingIntegrationTest {
 
     private ResultActions activate(String token, String password) throws Exception {
         return mvc.perform(post("/api/v1/customers/portal-activation").contentType("application/json")
+                .header("X-Forwarded-For", anotherClient())
                 .content(json(Map.of("token", token, "password", password))));
     }
 
     private ResultActions login(String username, String password) throws Exception {
         return mvc.perform(post("/api/v1/identity/auth/login").contentType("application/json")
+                .header("X-Forwarded-For", anotherClient())
                 .content(json(Map.of("username", username, "password", password))));
+    }
+
+    /**
+     * Login and activation are rate-limited per client address, and every MockMvc request comes from
+     * 127.0.0.1. Each call here is a different client behind the proxy, so the limit stays real but
+     * the tests in this class do not share one bucket.
+     */
+    private static String anotherClient() {
+        var random = java.util.concurrent.ThreadLocalRandom.current();
+        return "10." + random.nextInt(256) + "." + random.nextInt(256) + "." + random.nextInt(1, 255);
     }
 
     /**
@@ -463,13 +613,13 @@ class B2bOnboardingIntegrationTest {
      * Only the two instants change; the digest - and so the link - stays the same.
      */
     private void backdateInvitation(String email, long issuedSecondsAgo, long expiresInSeconds) {
-        long now = Instant.now().getEpochSecond();
+        Instant now = Instant.now();
         new TransactionTemplate(transactions).executeWithoutResult(tx -> assertThat(jdbc.update("""
-                UPDATE identity.app_user
-                SET password_hash = regexp_replace(password_hash, '^\\{portal-invitation\\}\\d+:\\d+:',
-                                                   '{portal-invitation}' || ? || ':' || ? || ':')
-                WHERE lower(email) = ? AND password_hash LIKE '{portal-invitation}%'
-                """, now - issuedSecondsAgo, now + expiresInSeconds, email)).isEqualTo(1));
+                UPDATE identity.portal_invitation SET issued_at = ?, expires_at = ?
+                WHERE consumed_at IS NULL AND revoked_at IS NULL
+                  AND user_id = (SELECT id FROM identity.app_user WHERE lower(email) = ?)
+                """, java.sql.Timestamp.from(now.minusSeconds(issuedSecondsAgo)),
+                java.sql.Timestamp.from(now.plusSeconds(expiresInSeconds)), email)).isEqualTo(1));
     }
 
     private String onlyLinkSentTo(String email) throws Exception {
@@ -566,6 +716,17 @@ class B2bOnboardingIntegrationTest {
 
     private String json(Map<String, ?> body) throws Exception {
         return mapper.writeValueAsString(body);
+    }
+
+    /** A fresh 10-digit tax code, so tests never collide on uk_customer_tax_code_live. */
+    private static String mst() {
+        return String.format("%010d",
+                java.util.concurrent.ThreadLocalRandom.current().nextLong(1_000_000_000L, 9_999_999_999L));
+    }
+
+    private static String sha256(String value) throws Exception {
+        return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                .digest(value.getBytes(java.nio.charset.StandardCharsets.US_ASCII)));
     }
 
     private static String unique(String label) {
