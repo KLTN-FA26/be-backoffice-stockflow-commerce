@@ -18,6 +18,7 @@ import com.stockflow.customer.api.CustomerService;
 import com.stockflow.design.api.ConfirmedDesign;
 import com.stockflow.design.api.DesignService;
 import com.stockflow.inventory.api.InventoryService;
+import com.stockflow.order.api.QuoteDirectory;
 import com.stockflow.production.internal.domain.ProductionOrder;
 import com.stockflow.production.internal.domain.ProductionOrderRepository;
 import com.stockflow.production.internal.domain.SampleEvent;
@@ -66,6 +67,8 @@ class SampleRequestService implements SampleRequests {
 
     private static final Logger log = LoggerFactory.getLogger(SampleRequestService.class);
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
+    private static final java.util.Set<String> OPEN_QUOTE_STATUSES = java.util.Set.of("DRAFT", "SENT",
+            "CHANGES_REQUESTED");
     private static final SortWhitelist SORT = SortWhitelist
             .of("createdAt", "dueDate", "requestNumber", "status")
             .withDefault("createdAt", Sort.Direction.DESC);
@@ -78,13 +81,15 @@ class SampleRequestService implements SampleRequests {
     private final DesignService designs;
     private final WarehouseService warehouses;
     private final InventoryService inventory;
+    private final QuoteDirectory quoteDirectory;
     private final ApplicationEventPublisher events;
     private final Clock clock;
 
     SampleRequestService(SampleRequestRepository samples, SampleRequestSearch sampleSearch,
                          ProductionOrderRepository productionOrders, ProductionOrderSearch productionSearch,
                          CustomerService customers, DesignService designs, WarehouseService warehouses,
-                         InventoryService inventory, ApplicationEventPublisher events, Clock clock) {
+                         InventoryService inventory, QuoteDirectory quoteDirectory, ApplicationEventPublisher events,
+                         Clock clock) {
         this.samples = samples;
         this.sampleSearch = sampleSearch;
         this.productionOrders = productionOrders;
@@ -93,6 +98,7 @@ class SampleRequestService implements SampleRequests {
         this.designs = designs;
         this.warehouses = warehouses;
         this.inventory = inventory;
+        this.quoteDirectory = quoteDirectory;
         this.events = events;
         this.clock = clock;
     }
@@ -103,15 +109,10 @@ class SampleRequestService implements SampleRequests {
         ScopeGuards.requireBackOffice(user);
         UUID customerId = Objects.requireNonNull(command.customerId(), "customerId");
         requireActiveCustomer(customerId);
-        // quote_id has no foreign key until the quote table arrives (SCRUM-448), and no module can say
-        // whose a quote is: storing an id nothing can check would be trusting the client.
-        if (command.quoteId() != null) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "A sample cannot be linked to a quote yet: quotes arrive with SCRUM-448");
-        }
         SampleSpecification spec = verified(customerId, command.draft());
+        requireQuoteCovers(command.quoteId(), customerId, spec);
         SampleRequest sample = SampleRequest.draft(Identifiers.newId(), samples.nextNumber(today()), customerId,
-                null, spec);
+                command.quoteId(), spec);
         samples.save(sample);
         log.info("Sample request {} drafted for customer {}", sample.requestNumber(), customerId);
         return view(sample.id());
@@ -145,7 +146,11 @@ class SampleRequestService implements SampleRequests {
     @Override
     @Auditable(action = AuditAction.UPDATE, resourceType = "sample-request", resourceId = "#sampleRequestId")
     public Sample edit(CurrentUser user, UUID sampleRequestId, Draft draft) {
-        return backOffice(user, sampleRequestId, sample -> sample.edit(verified(sample.customerId(), draft)));
+        return backOffice(user, sampleRequestId, sample -> {
+            SampleSpecification spec = verified(sample.customerId(), draft);
+            requireQuoteCovers(sample.quoteId(), sample.customerId(), spec);
+            sample.edit(spec);
+        });
     }
 
     @Override
@@ -229,6 +234,7 @@ class SampleRequestService implements SampleRequests {
                     "Sample request %s already has a next round".formatted(previous.requestNumber()));
         }
         SampleSpecification spec = draft == null ? previous.specification() : verified(previous.customerId(), draft);
+        requireQuoteCovers(previous.quoteId(), previous.customerId(), spec);
         SampleRequest next = previous.nextRound(Identifiers.newId(), samples.nextNumber(today()), spec);
         try {
             samples.save(next);
@@ -294,6 +300,36 @@ class SampleRequestService implements SampleRequests {
         if (!"ACTIVE".equals(status)) {
             throw new BusinessException(ErrorCode.CUSTOMER_NOT_ACTIVE,
                     "Customer " + customerId + " is " + status + "; only an ACTIVE customer gets new sample work");
+        }
+    }
+
+    /**
+     * A sample linked to a quote (SCRUM-394 "linked quote") must be for that quote's customer and print one
+     * of its lines' design on that line's blank — that is what makes its approval count for the quote's
+     * acceptance (BR-ORD-008). The quote must still be under negotiation: DRAFT, SENT or CHANGES_REQUESTED.
+     * Once accepted it needs no sample; expired, cancelled or converted it takes no new work. A next round
+     * with a new design therefore needs the quote revised to that design first, which keeps the quote and
+     * its samples about the same artwork. Read through {@code order :: api}, never the {@code ordering}
+     * schema; checked again on every edit and next round, because the specification or the quote may
+     * have moved since.
+     */
+    private void requireQuoteCovers(UUID quoteId, UUID customerId, SampleSpecification spec) {
+        if (quoteId == null) {
+            return;
+        }
+        QuoteDirectory.QuoteReference quote = quoteDirectory.findQuote(quoteId)
+                .orElseThrow(() -> new NotFoundException("quote", quoteId));
+        if (!OPEN_QUOTE_STATUSES.contains(quote.status())) {
+            throw new BusinessException(ErrorCode.QUOTE_NOT_OPEN,
+                    "Quote %s is %s; a sample is linked only to a quote still being negotiated"
+                            .formatted(quote.quoteNumber(), quote.status()));
+        }
+        boolean covered = quote.customerId().equals(customerId) && quote.designs().contains(
+                new QuoteDirectory.QuotedDesign(spec.designSnapshotId(), spec.blankSku().code()));
+        if (!covered) {
+            throw new BusinessException(ErrorCode.SAMPLE_QUOTE_MISMATCH,
+                    "Quote %s does not quote design %s on %s for this customer"
+                            .formatted(quote.quoteNumber(), spec.designSnapshotId(), spec.blankSku().code()));
         }
     }
 

@@ -13,7 +13,7 @@ import java.util.UUID;
 @Schema(description = "A first sample round for a customer, drafted by Sales")
 public record CreateSampleRequestRequest(
         @NotNull(message = "customerId is required") UUID customerId,
-        @Schema(description = "Not accepted yet: quotes arrive with SCRUM-448") UUID quoteId,
+        @Schema(description = "Optional: an open quote (DRAFT, SENT, CHANGES_REQUESTED) of this customer that quotes this design on this blank") UUID quoteId,
         @NotNull(message = "designSnapshotId is required") UUID designSnapshotId,
         @Schema(example = "CUP-PP-500")
         @NotBlank(message = "blankSku is required") @ValidSku String blankSku,

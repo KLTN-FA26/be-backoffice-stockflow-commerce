@@ -13,6 +13,7 @@ import com.stockflow.customer.api.CustomerSummary;
 import com.stockflow.design.api.ConfirmedDesign;
 import com.stockflow.design.api.DesignService;
 import com.stockflow.inventory.api.InventoryService;
+import com.stockflow.order.api.QuoteDirectory;
 import com.stockflow.production.internal.domain.ProductionOrder;
 import com.stockflow.production.internal.domain.ProductionOrderRepository;
 import com.stockflow.production.internal.domain.SampleRequest;
@@ -70,8 +71,9 @@ class SampleRequestServiceTest {
     private final WarehouseService warehouses = mock(WarehouseService.class);
     private final InventoryService inventory = mock(InventoryService.class);
     private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
+    private final QuoteDirectory quotes = mock(QuoteDirectory.class);
     private final SampleRequestService service = new SampleRequestService(samples, sampleSearch, productionOrders,
-            productionSearch, customers, designs, warehouses, inventory, events, Clock.fixed(NOW, ZoneOffset.UTC));
+            productionSearch, customers, designs, warehouses, inventory, quotes, events, Clock.fixed(NOW, ZoneOffset.UTC));
 
     private final UUID customer = UUID.randomUUID();
     private final UUID snapshot = UUID.randomUUID();
@@ -134,8 +136,7 @@ class SampleRequestServiceTest {
 
         when(customers.findById(customer)).thenReturn(Optional.of(customerWith("ACTIVE")));
         assertThatThrownBy(() -> service.create(sales, new SampleRequests.Create(customer, UUID.randomUUID(), draft)))
-                .as("no quote can be verified before SCRUM-448").extracting(SampleRequestServiceTest::code)
-                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+                .as("an unknown quote").isInstanceOf(NotFoundException.class);
         assertThatThrownBy(() -> service.create(user(Role.CUSTOMER), new SampleRequests.Create(customer, null, draft)))
                 .extracting(SampleRequestServiceTest::code).isEqualTo(ErrorCode.FORBIDDEN);
         verify(samples, never()).save(any());
@@ -276,5 +277,34 @@ class SampleRequestServiceTest {
             assertThat(cancellable.status()).isEqualTo(SampleStatus.CANCELLED);
         }
         verify(productionOrders, never()).createIfAbsent(any(), any(), any());
+    }
+
+    @Test
+    void aLinkedQuoteMustBeOpenAndQuoteThisCustomersDesignOnThisBlank() {
+        var draft = new SampleRequests.Draft(snapshot, "CUP-PP-500", 5, null);
+        UUID quote = UUID.randomUUID();
+        var quoted = new QuoteDirectory.QuotedDesign(snapshot, "CUP-PP-500");
+        when(quotes.findQuote(quote)).thenReturn(java.util.Optional.of(
+                new QuoteDirectory.QuoteReference(quote, "QT-1", customer, "SENT", List.of(quoted))));
+        service.create(sales, new SampleRequests.Create(customer, quote, draft));
+        verify(samples).save(org.mockito.ArgumentMatchers.argThat(sample -> quote.equals(sample.quoteId())));
+
+        for (var wrong : List.of(
+                new QuoteDirectory.QuoteReference(quote, "QT-1", UUID.randomUUID(), "SENT", List.of(quoted)),
+                new QuoteDirectory.QuoteReference(quote, "QT-1", customer, "SENT",
+                        List.of(new QuoteDirectory.QuotedDesign(UUID.randomUUID(), "CUP-PP-500"))),
+                new QuoteDirectory.QuoteReference(quote, "QT-1", customer, "SENT",
+                        List.of(new QuoteDirectory.QuotedDesign(snapshot, "BOX-KRAFT-01"))))) {
+            when(quotes.findQuote(quote)).thenReturn(java.util.Optional.of(wrong));
+            assertThatThrownBy(() -> service.create(sales, new SampleRequests.Create(customer, quote, draft)))
+                    .extracting(SampleRequestServiceTest::code).isEqualTo(ErrorCode.SAMPLE_QUOTE_MISMATCH);
+        }
+        for (String closed : List.of("ACCEPTED", "EXPIRED", "CANCELLED", "CONVERTED")) {
+            when(quotes.findQuote(quote)).thenReturn(java.util.Optional.of(
+                    new QuoteDirectory.QuoteReference(quote, "QT-1", customer, closed, List.of(quoted))));
+            assertThatThrownBy(() -> service.create(sales, new SampleRequests.Create(customer, quote, draft)))
+                    .as(closed).extracting(SampleRequestServiceTest::code).isEqualTo(ErrorCode.QUOTE_NOT_OPEN);
+        }
+        verify(samples, org.mockito.Mockito.times(1)).save(any());
     }
 }

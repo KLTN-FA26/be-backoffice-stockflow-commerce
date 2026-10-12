@@ -153,6 +153,10 @@ public enum ErrorCode {
     INVALID_SAMPLE_REQUEST_TRANSITION("This sample request cannot move to that status right now", 409),
     /** BR-ORD-007 / BR-CUS-003: new work (a sample round, a quote, an order) is only for an ACTIVE customer. */
     CUSTOMER_NOT_ACTIVE("This customer is not active and cannot take on new work", 409),
+    /** SCRUM-394: a sample linked to a quote prints a design and blank of that quote, for its customer. */
+    SAMPLE_QUOTE_MISMATCH("The quote is not for this customer, design and blank", 409),
+    /** SCRUM-394: a sample is linked only to a quote still being negotiated. */
+    QUOTE_NOT_OPEN("The quote is no longer open", 409),
     /** SCRUM-394: a round that ended in CHANGES_REQUESTED is followed by exactly one next round. */
     SAMPLE_NEXT_ROUND_EXISTS("The next round of this sample request has already been started", 409),
     /** BR-PRD-01: a source already has a production order, and it describes different work. */
