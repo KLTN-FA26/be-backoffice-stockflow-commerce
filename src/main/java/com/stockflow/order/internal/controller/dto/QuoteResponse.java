@@ -14,7 +14,8 @@ import java.util.UUID;
  */
 public record QuoteResponse(UUID id, String quoteNumber, UUID customerId, String status, int revision,
                             String paymentTerm, BigDecimal depositPercent, Instant validUntil, String terms,
-                            List<Line> lines, BigDecimal proposedTotal, BigDecimal acceptedTotal, Instant sentAt,
+                            List<Line> lines, boolean priced, BigDecimal proposedTotal, BigDecimal acceptedTotal,
+                            Instant sentAt,
                             UUID sentBy,
                             Instant respondedAt, UUID respondedBy, String customerFeedback, String cancellationReason,
                             Order convertedOrder, Instant convertedAt, List<Transition> history, Instant createdAt,
@@ -25,7 +26,8 @@ public record QuoteResponse(UUID id, String quoteNumber, UUID customerId, String
      * @param sample whether acceptance passes the sample rule for this line, and why
      */
     public record Line(UUID id, int lineNo, String blankSku, UUID designSnapshotId, String printSpec, int quantity,
-                       int moq, List<Tier> tiers, BigDecimal proposedUnitPrice, BigDecimal proposedLineTotal,
+                       boolean priced, Integer moq, List<Tier> tiers, BigDecimal proposedUnitPrice,
+                       BigDecimal proposedLineTotal,
                        Integer acceptedQuantity, BigDecimal acceptedUnitPrice, BigDecimal acceptedLineTotal,
                        Sample sample) {
     }

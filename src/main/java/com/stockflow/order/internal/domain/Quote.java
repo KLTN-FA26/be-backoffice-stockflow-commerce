@@ -67,12 +67,17 @@ public final class Quote {
             Map<String, Integer> blanks = unitsByBlank(lines, line -> line.quantity());
             for (QuoteLine line : lines) {
                 int units = blanks.get(line.blankSku().code());
-                if (units < line.moq()) {
+                if (line.priced() && units < line.moq()) {
                     throw new BusinessException(ErrorCode.QUOTE_BELOW_MOQ,
                             "Line %d: %d units of %s on this quote, below its MOQ of %d".formatted(line.lineNo(), units,
                                     line.blankSku().code(), line.moq()));
                 }
             }
+        }
+
+        /** Whether every line has its price: what a quote needs before it is sent (R1). */
+        public boolean priced() {
+            return lines.stream().allMatch(QuoteLine::priced);
         }
 
         /** The proposed units of this blank over every line (P5): what picks each line's price break. */
@@ -161,6 +166,13 @@ public final class Quote {
     public void send(UUID by, Instant now) {
         Objects.requireNonNull(by, "by");
         requireStatus(QuoteStatus.DRAFT, "send");
+        for (QuoteLine line : offer.lines()) {
+            if (!line.priced()) {
+                throw new BusinessException(ErrorCode.QUOTE_NOT_PRICED,
+                        "Quote %s line %d has no price yet; enter its tiers before sending".formatted(quoteNumber,
+                                line.lineNo()));
+            }
+        }
         if (!offer.validUntil().isAfter(now)) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Quote " + quoteNumber + " would be sent expired");
         }

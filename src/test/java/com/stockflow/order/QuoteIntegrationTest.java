@@ -480,6 +480,62 @@ class QuoteIntegrationTest {
     }
 
     @Test
+    @DisplayName("R1: a reorder below today's list tier reaches Sales unpriced; nothing is sent, accepted or ordered until Sales prices it")
+    void aReorderTheListCannotPriceWaitsForSales() throws Exception {
+        ConfirmedDesigns.Design design = design();
+        Quotes.QuoteView created = quotes.create(sales, new Quotes.Create(UUID.randomUUID(), customerId,
+                new Quotes.Draft(PaymentTerm.PREPAID, null, Instant.now().plus(Duration.ofDays(7)), null,
+                        List.of(new Quotes.Line(BLANK, design.snapshotId(), "Logo", 2,
+                                List.of(new Quotes.Tier(2, new BigDecimal("3000"))))))));
+        Quotes.QuoteView sent = quotes.send(sales, created.id(), created.version());
+        approvedSample(design);
+        Quotes.QuoteView accepted = quotes.accept(portal, sent.id(), new Quotes.Acceptance(
+                quotes.get(portal, sent.id()).version(), Map.of()));
+        UUID orderId = quotes.convert(sales, accepted.id(), new Quotes.Conversion(accepted.version(), null, null))
+                .convertedOrder().orderId();
+        // Today the customer's list starts at 1,000 units.
+        prices.create(customerId, BLANK, List.of(new CustomerPriceService.TierInput(1000, new BigDecimal("2000"))), null);
+        int ordersBefore = ordersOf(customerId);
+
+        Quotes.QuoteView request = quotes.reorder(portal, new Quotes.Reorder(UUID.randomUUID(), orderId));
+        assertThat(request.status()).isEqualTo(QuoteStatus.DRAFT);
+        assertThat(request.priced()).isFalse();
+        assertThat(request.proposedTotal()).isNull();
+        assertThat(request.lines()).singleElement().satisfies(line -> {
+            assertThat(line.priced()).isFalse();
+            assertThat(line.tiers()).as("neither the 3,000 deal nor the 1,000-unit tier").isEmpty();
+            assertThat(line.moq()).isNull();
+            assertThat(line.quantity()).isEqualTo(2);
+            assertThat(line.designSnapshotId()).isEqualTo(design.snapshotId());
+            assertThat(line.sample().satisfied()).isTrue();
+        });
+        assertThat(noticesOf(request.id(), CustomerActedOnQuote.Action.REORDER_REQUESTED)).hasSize(1);
+        assertThat(ordersOf(customerId)).isEqualTo(ordersBefore);
+
+        assertThatThrownBy(() -> quotes.send(sales, request.id(), request.version()))
+                .extracting(QuoteIntegrationTest::code).isEqualTo(ErrorCode.QUOTE_NOT_PRICED);
+        assertThat(quotes.get(sales, request.id()).status()).isEqualTo(QuoteStatus.DRAFT);
+        assertThatThrownBy(() -> quotes.accept(portal, request.id(), new Quotes.Acceptance(request.version(), Map.of())))
+                .as("an unsent draft is not the customer's to see").isInstanceOf(NotFoundException.class);
+
+        // Sales prices the actual quantity (P4), sends; only the customer's acceptance fixes it.
+        Quotes.QuoteView priced = quotes.edit(sales, request.id(), request.version(),
+                new Quotes.Draft(PaymentTerm.PREPAID, null, Instant.now().plus(Duration.ofDays(7)), null,
+                        List.of(new Quotes.Line(BLANK, design.snapshotId(), "Logo", 2,
+                                List.of(new Quotes.Tier(2, new BigDecimal("2900")))))));
+        assertThat(priced.priced()).isTrue();
+        assertThat(priced.proposedTotal()).isEqualByComparingTo("5800");
+        Quotes.QuoteView resent = quotes.send(sales, priced.id(), priced.version());
+        Quotes.QuoteView reaccepted = quotes.accept(portal, resent.id(), new Quotes.Acceptance(
+                quotes.get(portal, resent.id()).version(), Map.of()));
+        assertThat(reaccepted.status()).isEqualTo(QuoteStatus.ACCEPTED);
+        assertThat(reaccepted.lines().getFirst().acceptedUnitPrice()).isEqualByComparingTo("2900");
+        assertThat(ordersOf(customerId)).isEqualTo(ordersBefore);
+        assertThat(orders.findById(orderId).orElseThrow().lines().getFirst().unitPrice().amount())
+                .isEqualByComparingTo("3000");
+    }
+
+    @Test
     @DisplayName("a customer's answer to a quote whose Sales account is disabled names nobody; nobody is guessed")
     void aDisabledSalesAccountIsNotMailed() throws Exception {
         Quotes.QuoteView sent = sentQuote(design());

@@ -105,6 +105,28 @@ class QuoteTest {
     }
 
     @Test
+    void anUnpricedLineIsExplicitAndCannotBeSent() {
+        QuoteLine unpriced = new QuoteLine(UUID.randomUUID(), 1, new Sku("CUP-PP-500"), UUID.randomUUID(), null, 500,
+                List.of(), null, null);
+        assertThat(unpriced.priced()).isFalse();
+        assertThatThrownBy(() -> unpriced.priceFor(500)).extracting(QuoteTest::code)
+                .isEqualTo(ErrorCode.QUOTE_NOT_PRICED);
+        assertThatThrownBy(unpriced::moq).extracting(QuoteTest::code).isEqualTo(ErrorCode.QUOTE_NOT_PRICED);
+
+        // Below a priced line's MOQ is still refused; the unpriced line is not held to one.
+        Quote.Offer offer = offer(unpriced);
+        assertThat(offer.priced()).isFalse();
+        Quote quote = Quote.draft(UUID.randomUUID(), "QT-4", UUID.randomUUID(), UUID.randomUUID(), offer);
+        assertThatThrownBy(() -> quote.send(sales, NOW)).extracting(QuoteTest::code)
+                .isEqualTo(ErrorCode.QUOTE_NOT_PRICED);
+        assertThat(quote.status()).isEqualTo(QuoteStatus.DRAFT);
+
+        quote.revise(offer(line(1, 2000)));
+        quote.send(sales, NOW);
+        assertThat(quote.status()).isEqualTo(QuoteStatus.SENT);
+    }
+
+    @Test
     void sendThenAcceptFixesQuantitiesAndPricesFromTheTiers() {
         QuoteLine first = line(1, 2000);
         QuoteLine second = line(2, 1000);

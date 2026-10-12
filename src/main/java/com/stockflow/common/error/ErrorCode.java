@@ -172,6 +172,8 @@ public enum ErrorCode {
     /** BR-ORD-007: a quoted line is ordered at or above its minimum order quantity. */
     QUOTE_BELOW_MOQ("The quantity is below the minimum order quantity of the quote", 409),
     /** Reorder: only an order placed from a quote is re-quoted; a price-list order is simply placed again. */
+    /** R1: a reorder line the price list cannot price waits for Sales; nothing is sent or accepted unpriced. */
+    QUOTE_NOT_PRICED("A line of this quote has no price yet; Sales enters it before the quote is sent", 409),
     ORDER_NOT_QUOTED("This order was not placed from a quote; order it again at the current price", 409),
     /** BR-PRD-09: a deposit order goes to production only once the deposit has arrived. */
     ORDER_DEPOSIT_NOT_RECEIVED("The deposit for this order has not arrived yet", 409),

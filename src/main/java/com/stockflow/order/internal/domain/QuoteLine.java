@@ -52,9 +52,9 @@ public final class QuoteLine {
                     "A print specification is at most " + MAX_PRINT_SPEC + " characters");
         }
         this.printSpec = spec;
-        if (tiers == null || tiers.isEmpty()) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Line " + lineNo + " needs at least one price tier");
-        }
+        // No tiers = not priced yet: only a reorder the price list cannot price makes one (user decision R1),
+        // and the quote refuses to be sent - so accepted or converted - until Sales has priced every line.
+        tiers = tiers == null ? List.of() : tiers;
         var seen = new HashSet<Integer>();
         for (PriceTier tier : tiers) {
             if (!seen.add(tier.minQuantity())) {
@@ -74,8 +74,14 @@ public final class QuoteLine {
         this.acceptedUnitPrice = acceptedUnitPrice;
     }
 
+    /** Whether Sales has priced the line; a reorder the price list could not price starts without (R1). */
+    public boolean priced() {
+        return !tiers.isEmpty();
+    }
+
     /** The minimum order quantity: where the lowest price break starts. */
     public int moq() {
+        requirePriced();
         return tiers.getFirst().minQuantity();
     }
 
@@ -84,6 +90,7 @@ public final class QuoteLine {
      * a price sent by a client is never used.
      */
     public Money priceFor(int units) {
+        requirePriced();
         if (units < moq() || units > MAX_QUANTITY) {
             throw new BusinessException(ErrorCode.QUOTE_BELOW_MOQ,
                     "Line %d: %d units is below its MOQ of %d".formatted(lineNo, units, moq()));
@@ -102,6 +109,12 @@ public final class QuoteLine {
         Money price = priceFor(blankUnits);
         acceptedQuantity = units;
         acceptedUnitPrice = price;
+    }
+
+    private void requirePriced() {
+        if (tiers.isEmpty()) {
+            throw new BusinessException(ErrorCode.QUOTE_NOT_PRICED, "Line " + lineNo + " has no price yet");
+        }
     }
 
     void clearAcceptance() {

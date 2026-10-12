@@ -298,17 +298,19 @@ class QuoteService implements Quotes {
         requireNewWorkFor(customerId);
         Quote.Offer old = source.offer();
         Instant now = clock.instant();
-        // The deal stays with its own quote and order: every line starts again from today's price list.
+        // The deal stays with its own quote and order: every line starts again from today's price list, and a
+        // line the list cannot price is left unpriced for Sales (R1) - never the old price, never a zero.
+        Map<String, Integer> blankUnits = new java.util.HashMap<>();
+        old.lines().forEach(line -> blankUnits.merge(line.blankSku().code(), reorderedUnits(line), Integer::sum));
         List<Line> lines = old.lines().stream()
                 .map(line -> new Line(line.blankSku().code(), line.designSnapshotId(), line.printSpec(),
-                        line.acceptedQuantity() == null ? line.quantity() : line.acceptedQuantity(),
-                        catalog.priceSchedule(customerId, line.blankSku().code()).tiers().stream()
-                                .map(t -> new Tier(t.minQuantity(), t.unitPrice().amount())).toList()))
+                        reorderedUnits(line), listTiers(customerId, line.blankSku().code(),
+                        blankUnits.get(line.blankSku().code()))))
                 .toList();
         // The source quote's validity window, counted from now; Sales sets the real one before sending.
         Instant validUntil = now.plus(java.time.Duration.between(source.sentAt(), old.validUntil()));
         Quote.Offer offer = offer(customerId, new Draft(old.paymentTerm(), old.depositPercent(), validUntil,
-                old.terms(), lines));
+                old.terms(), lines), true);
         requireTermAllowed(customerId, offer);
         Quote quote = Quote.draft(Identifiers.newId(), quotes.nextNumber(today()), requestId, customerId, offer);
         quotes.save(quote);
@@ -422,7 +424,37 @@ class QuoteService implements Quotes {
      * Builds and verifies the offer: every design must be a snapshot this customer confirmed, for the
      * product the blank belongs to. An edit replaces the lines (new ids); nothing was accepted on a draft.
      */
+    private static int reorderedUnits(QuoteLine line) {
+        return line.acceptedQuantity() == null ? line.quantity() : line.acceptedQuantity();
+    }
+
+    /**
+     * Today's list tiers of a blank for a reorder of {@code units} (the blank's total, P5), or none when the
+     * list has no price for it or starts above it (R1): Sales prices that line.
+     */
+    private List<Tier> listTiers(UUID customerId, String blank, int units) {
+        PriceSchedule schedule;
+        try {
+            schedule = catalog.priceSchedule(customerId, blank);
+        } catch (BusinessException noPrice) {
+            if (noPrice.errorCode() != ErrorCode.PRICE_NOT_AVAILABLE) throw noPrice;
+            return List.of();
+        }
+        if (units < schedule.moq()) {
+            return List.of();
+        }
+        return schedule.tiers().stream().map(t -> new Tier(t.minQuantity(), t.unitPrice().amount())).toList();
+    }
+
     private Quote.Offer offer(UUID customerId, Draft draft) {
+        return offer(customerId, draft, false);
+    }
+
+    /**
+     * @param asGiven take each line's tiers as they are, none meaning not priced yet (a reorder, R1), instead
+     *                of filling omitted tiers from the price list
+     */
+    private Quote.Offer offer(UUID customerId, Draft draft, boolean asGiven) {
         Objects.requireNonNull(draft, "draft");
         if (draft.lines() == null || draft.lines().isEmpty()) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A quote needs at least one line");
@@ -437,7 +469,7 @@ class QuoteService implements Quotes {
         for (Line line : draft.lines()) {
             Sku blank = new Sku(line.blankSku());
             designs.verifySnapshotForSku(line.designSnapshotId(), customerId, blank.code());
-            List<PriceTier> tiers = line.tiers() == null || line.tiers().isEmpty()
+            List<PriceTier> tiers = !asGiven && (line.tiers() == null || line.tiers().isEmpty())
                     ? defaultTiers(customerId, blank, blankUnits.get(blank.code()))
                     : line.tiers().stream().map(t -> PriceTier.of(t.minQuantity(), t.unitPrice())).toList();
             lines.add(new QuoteLine(Identifiers.newId(), lineNo++, blank, line.designSnapshotId(), line.printSpec(),
@@ -547,7 +579,8 @@ class QuoteService implements Quotes {
         Instant now = clock.instant();
         QuoteSearch.Row row = search.findRow(quote.id()).orElseThrow();
         BigDecimal acceptedTotal = null;
-        BigDecimal proposedTotal = BigDecimal.ZERO;
+        boolean priced = quote.offer().priced();
+        BigDecimal proposedTotal = priced ? BigDecimal.ZERO : null;
         List<LineView> lines = new ArrayList<>();
         for (QuoteLine line : quote.offer().lines()) {
             BigDecimal lineTotal = line.acceptedQuantity() == null ? null
@@ -555,11 +588,15 @@ class QuoteService implements Quotes {
             if (lineTotal != null) {
                 acceptedTotal = acceptedTotal == null ? lineTotal : acceptedTotal.add(lineTotal);
             }
-            BigDecimal proposedPrice = line.priceFor(quote.offer().proposedUnits(line.blankSku().code())).amount();
-            BigDecimal proposedLineTotal = proposedPrice.multiply(BigDecimal.valueOf(line.quantity()));
-            proposedTotal = proposedTotal.add(proposedLineTotal);
+            BigDecimal proposedPrice = !line.priced() ? null
+                    : line.priceFor(quote.offer().proposedUnits(line.blankSku().code())).amount();
+            BigDecimal proposedLineTotal = proposedPrice == null ? null
+                    : proposedPrice.multiply(BigDecimal.valueOf(line.quantity()));
+            if (priced) {
+                proposedTotal = proposedTotal.add(proposedLineTotal);
+            }
             lines.add(new LineView(line.id(), line.lineNo(), line.blankSku().code(), line.designSnapshotId(),
-                    line.printSpec(), line.quantity(), line.moq(),
+                    line.printSpec(), line.quantity(), line.priced(), line.priced() ? line.moq() : null,
                     line.tiers().stream().map(t -> new Tier(t.minQuantity(), t.unitPrice().amount())).toList(),
                     proposedPrice, proposedLineTotal,
                     line.acceptedQuantity(), line.acceptedUnitPrice() == null ? null : line.acceptedUnitPrice().amount(),
@@ -574,7 +611,8 @@ class QuoteService implements Quotes {
                 .toList();
         Quote.Offer offer = quote.offer();
         return new QuoteView(quote.id(), quote.quoteNumber(), quote.customerId(), quote.statusAt(now), quote.revision(),
-                offer.paymentTerm(), offer.depositPercent(), offer.validUntil(), offer.terms(), lines, proposedTotal,
+                offer.paymentTerm(), offer.depositPercent(), offer.validUntil(), offer.terms(), lines, priced,
+                proposedTotal,
                 acceptedTotal,
                 quote.sentAt(), quote.sentBy(), quote.respondedAt(), quote.respondedBy(), quote.customerFeedback(),
                 quote.cancellationReason(), converted, quote.convertedAt(), history, row.createdAt(), row.createdBy(),
