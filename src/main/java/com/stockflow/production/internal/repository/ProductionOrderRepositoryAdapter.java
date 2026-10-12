@@ -108,6 +108,29 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
     }
 
     @Override
+    public void createChild(ProductionOrder child, UUID createdBy, Instant at) {
+        ProductionOrderJpaEntity entity = new ProductionOrderJpaEntity(child);
+        entity.applyWorkflow(child);   // the inherited prepress result: READY needs it (ck_production_order_prepress)
+        entityManager.persist(entity);
+        entityManager.persist(new ProductionOrderStatusHistoryJpaEntity(Identifiers.newId(), child.id(), null,
+                child.status().name(), "Split off for subcontracting", at, createdBy));
+        entityManager.flush();
+    }
+
+    @Override
+    public Optional<UUID> idOfPurchaseOrder(UUID purchaseOrderId) {
+        return jpa.findIdByPurchaseOrder(purchaseOrderId);
+    }
+
+    @Override
+    public int splitOffOf(UUID parentId) {
+        Number total = (Number) entityManager.createNativeQuery(
+                        "SELECT COALESCE(SUM(planned_quantity), 0) FROM production.production_order WHERE parent_id = :id")
+                .setParameter("id", parentId).getSingleResult();
+        return total.intValue();
+    }
+
+    @Override
     public List<UUID> idsOfSalesOrder(UUID salesOrderId) {
         return jpa.findIdsBySalesOrder(salesOrderId);
     }
@@ -190,6 +213,11 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
                         e.getDesignChecksum(), e.getPlannedQuantity(), e.getDueDate()))
                 .withWorkflow(e.getStatusBeforeHold(), e.getHoldReason(), e.getHoldNote(), e.getPrepressCheckedBy(),
                         e.getPrepressCheckedAt())
+                .withSubcontract(ProductionOrder.Mode.valueOf(e.getMode()), e.getParentId(),
+                        e.getSubcontractMethod() == null ? null : new ProductionOrder.Subcontract(
+                                ProductionOrder.SubcontractMethod.valueOf(e.getSubcontractMethod()),
+                                e.getSubcontractorId(), e.getSubcontractUnitPrice(), e.getSubcontractCurrency(),
+                                e.getPurchaseOrderId()))
                 .withProgress(e.getIssuedQuantity(), e.getPrintedQuantity(), e.getGoodQuantity(), e.getScrapQuantity(),
                         passedOf(e.getId()), e.getCompletedAt(), e.getCancelledAt(), e.getCancellationReason());
     }

@@ -107,6 +107,12 @@ class PrintRunService implements PrintRuns {
                                             String note, String packingLocation) {
         String text = optionalNote(note);
         ProductionOrder order = lock(user, productionOrderId);
+        if (order.mode() == ProductionOrder.Mode.SUBCONTRACTED) {
+            // The goods arrive through a goods receipt as free INBOUND stock, which the receiving flow would put
+            // away for sale; until they are held for the order (open question Q8) completing would sell them.
+            throw new BusinessException(ErrorCode.INVALID_PRODUCTION_TRANSITION,
+                    "QC of subcontracted goods waits for how received goods stay the order's (open question Q8)");
+        }
         if (order.type() == ProductionOrder.Type.ORDER && salesOrderCancelled(order)) {
             throw new BusinessException(ErrorCode.INVALID_PRODUCTION_TRANSITION,
                     "The order of production order %s is cancelled; stop the job instead".formatted(order.orderNumber()));
@@ -159,6 +165,9 @@ class PrintRunService implements PrintRuns {
      * the order goes ON_HOLD (BLANKS_SHORT) and purchasing hears of it — nothing is held then.
      */
     private void reprint(ProductionOrder order, UUID by, Instant now) {
+        if (order.mode() == ProductionOrder.Mode.SUBCONTRACTED) {
+            return;   // a subcontractor's shortfall is sent again or split in house, not reprinted here
+        }
         int needed = order.outstandingBlanks();
         if (needed == 0 || stock.holdForReprint(order, needed)) {
             return;

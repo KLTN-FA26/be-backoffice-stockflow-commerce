@@ -17,8 +17,9 @@ import java.util.UUID;
  *
  * <p>The workflow columns — status, hold, prepress, quantities, completion, cancellation — are written
  * through {@link #applyWorkflow} (SCRUM-396..401); a new row takes the table's defaults for them
- * ({@code insertable = false}: zero quantities). {@code mode} and {@code parent_id} stay read-only, and the
- * subcontracting columns (SCRUM-433/434) are not mapped at all; that work maps them when it owns them.</p>
+ * ({@code insertable = false}: zero quantities). The subcontracting columns (SCRUM-441) are written when a
+ * child is created; of them only {@code purchase_order_id} changes later, and {@code planned_quantity} changes
+ * on the parent of a split.</p>
  */
 @Entity
 @Table(name = "production_order", schema = "production")
@@ -31,8 +32,23 @@ public class ProductionOrderJpaEntity extends BaseEntity {
     @Column(name = "type", nullable = false, length = 16, updatable = false)
     private ProductionOrder.Type type;
 
-    @Column(name = "mode", insertable = false, updatable = false)
+    @Column(name = "mode", nullable = false, length = 16, updatable = false)
     private String mode;
+
+    @Column(name = "subcontract_method", length = 20, updatable = false)
+    private String subcontractMethod;
+
+    @Column(name = "subcontractor_id", updatable = false)
+    private UUID subcontractorId;
+
+    @Column(name = "subcontract_unit_price", precision = 19, scale = 4, updatable = false)
+    private java.math.BigDecimal subcontractUnitPrice;
+
+    @Column(name = "subcontract_currency", length = 3, updatable = false)
+    private String subcontractCurrency;
+
+    @Column(name = "purchase_order_id")
+    private UUID purchaseOrderId;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 32)
@@ -61,7 +77,7 @@ public class ProductionOrderJpaEntity extends BaseEntity {
     @Column(name = "sales_order_line_id", updatable = false)
     private UUID salesOrderLineId;
 
-    @Column(name = "parent_id", insertable = false, updatable = false)
+    @Column(name = "parent_id", updatable = false)
     private UUID parentId;
 
     @Column(name = "approved_sample_id", updatable = false)
@@ -82,7 +98,7 @@ public class ProductionOrderJpaEntity extends BaseEntity {
     @Column(name = "due_date", updatable = false)
     private LocalDate dueDate;
 
-    @Column(name = "planned_quantity", nullable = false, updatable = false)
+    @Column(name = "planned_quantity", nullable = false)
     private int plannedQuantity;
 
     @Column(name = "issued_quantity", insertable = false)
@@ -127,6 +143,15 @@ public class ProductionOrderJpaEntity extends BaseEntity {
         this.designChecksum = order.work().designChecksum();
         this.dueDate = order.work().dueDate();
         this.plannedQuantity = order.work().plannedQuantity();
+        this.mode = order.mode().name();
+        this.parentId = order.parentId();
+        if (order.subcontract() != null) {
+            this.subcontractMethod = order.subcontract().method().name();
+            this.subcontractorId = order.subcontract().subcontractorId();
+            this.subcontractUnitPrice = order.subcontract().unitPrice();
+            this.subcontractCurrency = order.subcontract().currency();
+            this.purchaseOrderId = order.subcontract().purchaseOrderId();
+        }
     }
 
     /** The workflow columns the aggregate owns (SCRUM-396 onwards). */
@@ -137,6 +162,8 @@ public class ProductionOrderJpaEntity extends BaseEntity {
         this.holdNote = order.holdNote();
         this.prepressCheckedBy = order.prepressCheckedBy();
         this.prepressCheckedAt = order.prepressCheckedAt();
+        this.plannedQuantity = order.work().plannedQuantity();
+        this.purchaseOrderId = order.subcontract() == null ? null : order.subcontract().purchaseOrderId();
         this.issuedQuantity = order.issued();
         this.printedQuantity = order.printed();
         this.goodQuantity = order.good();
@@ -158,6 +185,11 @@ public class ProductionOrderJpaEntity extends BaseEntity {
     public UUID getSalesOrderId() { return salesOrderId; }
     public UUID getSalesOrderLineId() { return salesOrderLineId; }
     public UUID getParentId() { return parentId; }
+    public String getSubcontractMethod() { return subcontractMethod; }
+    public UUID getSubcontractorId() { return subcontractorId; }
+    public java.math.BigDecimal getSubcontractUnitPrice() { return subcontractUnitPrice; }
+    public String getSubcontractCurrency() { return subcontractCurrency; }
+    public UUID getPurchaseOrderId() { return purchaseOrderId; }
     public UUID getApprovedSampleId() { return approvedSampleId; }
     public UUID getWarehouseId() { return warehouseId; }
     public String getBlankSku() { return blankSku; }

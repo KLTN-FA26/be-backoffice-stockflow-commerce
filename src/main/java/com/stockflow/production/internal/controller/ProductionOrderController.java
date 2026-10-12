@@ -15,6 +15,8 @@ import com.stockflow.production.internal.controller.dto.ScrapLineRequest;
 import com.stockflow.production.internal.controller.dto.StopProductionRequest;
 import com.stockflow.production.internal.domain.ProductionRecords;
 import com.stockflow.production.internal.service.PrintRuns;
+import com.stockflow.production.internal.service.Subcontracting;
+import com.stockflow.production.internal.controller.dto.SubcontractSplitRequest;
 import com.stockflow.production.internal.controller.dto.PrepressRequest;
 import com.stockflow.production.internal.controller.dto.ProductionOrderResponse;
 import com.stockflow.production.internal.controller.dto.ProductionOrderRowResponse;
@@ -59,13 +61,15 @@ class ProductionOrderController {
     private final ProductionOrders orders;
     private final ProductionWorkflow workflow;
     private final PrintRuns runs;
+    private final Subcontracting subcontracts;
     private final ProductionWebMapper mapper;
 
     ProductionOrderController(ProductionOrders orders, ProductionWorkflow workflow, PrintRuns runs,
-                              ProductionWebMapper mapper) {
+                              Subcontracting subcontracts, ProductionWebMapper mapper) {
         this.orders = orders;
         this.workflow = workflow;
         this.runs = runs;
+        this.subcontracts = subcontracts;
         this.mapper = mapper;
     }
 
@@ -150,6 +154,27 @@ class ProductionOrderController {
     public ApiResponse<List<ProductionRecords.Scrap>> scrap(@PathVariable UUID productionOrderId,
                                                             @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(runs.scrapOf(user, productionOrderId));
+    }
+
+    /** Splitting for subcontracting is the Warehouse Manager's (03 §16): APPROVE. */
+    @PostMapping("/{productionOrderId}/subcontract-split")
+    @Operation(summary = "Split unissued quantity to a subcontracted child with its SUBCONTRACT PO (SCRUM-441, BR-PRD-11..13)")
+    @RequiresPermission(resource = ProductionResources.PRODUCTION_ORDERS, action = Action.APPROVE)
+    public ApiResponse<ProductionOrderResponse> split(@PathVariable UUID productionOrderId,
+                                                      @Valid @RequestBody SubcontractSplitRequest request,
+                                                      @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(mapper.toResponse(subcontracts.split(user, productionOrderId, new Subcontracting.Split(
+                request.quantity(), request.subcontractorId(), request.method(), request.unitPrice(), request.currency(),
+                request.dueDate()))));
+    }
+
+    /** Sending out is the warehouse's (03 §16 actor Warehouse staff), as issuing blanks is. */
+    @PostMapping("/{productionOrderId}/subcontract-dispatch")
+    @Operation(summary = "Send a subcontracted child out once its PO is approved: READY -> SUBCONTRACTED (BR-PRD-13)")
+    @RequiresPermission(resource = ProductionResources.MATERIAL_ISSUES, action = Action.CREATE)
+    public ApiResponse<ProductionOrderResponse> sendOut(@PathVariable UUID productionOrderId,
+                                                        @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(mapper.toResponse(subcontracts.sendOut(user, productionOrderId)));
     }
 
     /** Cancelling is the Warehouse Manager's (03 §16): APPROVE. */

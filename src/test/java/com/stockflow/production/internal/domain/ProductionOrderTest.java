@@ -234,4 +234,43 @@ class ProductionOrderTest {
         assertThatThrownBy(() -> fresh.stop(0, 0, "nothing printed", Instant.now())).as("cancel, not stop")
                 .extracting(ProductionOrderTest::code).isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
     }
+
+    @Test
+    void aSplitTakesUnissuedUnitsFromAnInHouseOrderAndTheChildInheritsItsPrepress() {
+        ProductionOrder parent = ready();
+        ProductionOrder sampleOrder = ProductionOrder.forSample(UUID.randomUUID(), "LSX-S", sample, work);
+        assertThatThrownBy(() -> sampleOrder.splitOff(2, "LSX-C")).as("BR-PRD-11")
+                .extracting(ProductionOrderTest::code).isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
+        assertThatThrownBy(() -> parent.splitOff(10, "LSX-C")).as("everything: a conversion, not a split")
+                .extracting(ProductionOrderTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThatThrownBy(() -> parent.splitOff(0, "LSX-C")).extracting(ProductionOrderTest::code)
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+
+        ProductionOrder.Transition split = parent.splitOff(4, "LSX-C");
+        assertThat(split.from()).isEqualTo(split.to()).isEqualTo(ProductionOrder.Status.READY);
+        assertThat(parent.work().plannedQuantity()).isEqualTo(6);
+        ProductionOrder child = ProductionOrder.subcontractedChild(UUID.randomUUID(), "LSX-C", parent, 4, null,
+                new ProductionOrder.Subcontract(ProductionOrder.SubcontractMethod.FULL_SERVICE, UUID.randomUUID(),
+                        java.math.BigDecimal.valueOf(1500), "VND", null));
+        assertThat(child.status()).isEqualTo(ProductionOrder.Status.READY);
+        assertThat(child.mode()).isEqualTo(ProductionOrder.Mode.SUBCONTRACTED);
+        assertThat(child.parentId()).isEqualTo(parent.id());
+        assertThat(child.prepressCheckedAt()).isEqualTo(parent.prepressCheckedAt());
+        assertThat(child.salesOrderLineId()).isEqualTo(parent.salesOrderLineId());
+        assertThatThrownBy(() -> child.splitOff(1, "LSX-D")).extracting(ProductionOrderTest::code)
+                .isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
+        assertThatThrownBy(() -> child.issueBlanks(1)).as("its blanks go out with it")
+                .extracting(ProductionOrderTest::code).isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
+
+        assertThat(child.sendToSubcontractor().to()).isEqualTo(ProductionOrder.Status.SUBCONTRACTED);
+        assertThat(child.receivedFromSubcontractor(3).to()).isEqualTo(ProductionOrder.Status.QC);
+        child.receivedFromSubcontractor(1);
+        assertThat(child.awaitingQc()).isEqualTo(4);
+
+        ProductionOrder replay = forLine(sample, work);
+        assertThatThrownBy(() -> parent.requireSameWorkAs(replay)).as("6 is not what the line asked for")
+                .extracting(ProductionOrderTest::code).isEqualTo(ErrorCode.PRODUCTION_SOURCE_CONFLICT);
+        assertThatCode(() -> parent.requireSameWorkAs(replay, 4)).as("6 + 4 split off is")
+                .doesNotThrowAnyException();
+    }
 }

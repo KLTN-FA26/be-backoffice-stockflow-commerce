@@ -589,6 +589,30 @@ public final class StockItem extends AggregateRoot {
     }
 
     /**
+     * A hold in storage covers {@code quantity} fewer units, which become free again (SCRUM-441: the part of an
+     * order a subcontractor makes with its own blanks). The hold keeps its id, or closes with {@code reason}
+     * when that is all of it. Not in the print shop: there, units leave a hold only through
+     * {@link #takeFromHold}, which keeps them out of sale.
+     */
+    public void reduceHold(ReservationId reservationId, Quantity quantity, ReleaseReason reason, Instant now) {
+        if (status == StockStatus.IN_PRODUCTION) {
+            throw new IllegalStateException("Stock item %s is in the print shop".formatted(id));
+        }
+        Reservation reservation = findReservation(reservationId).orElseThrow(() -> new IllegalArgumentException(
+                "Reservation %s does not belong to stock item %s".formatted(reservationId, id)));
+        if (reservation.status().isTerminal() || quantity.isZero() || reservation.quantity().isLessThan(quantity)) {
+            throw new IllegalArgumentException("Reservation %s (%s, %s) cannot give up %s".formatted(reservationId,
+                    reservation.status(), reservation.quantity(), quantity));
+        }
+        if (quantity.equals(reservation.quantity())) {
+            reservation.release(reason, now);
+        } else {
+            reservation.reduceBy(quantity);
+        }
+        checkInvariants();
+    }
+
+    /**
      * An empty layer of {@code source}'s goods at {@code destination} in {@code status} — the same SKU, lot,
      * expiry and receipt time — for {@link #takeOverReservation} to fill. Kept apart from {@link #arrivedAs},
      * which arrives with unheld units.

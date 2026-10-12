@@ -24,7 +24,9 @@ import java.util.UUID;
  * needed (BR-PRD-03) are the good units planned, less the good units made, less the blanks issued and not
  * yet printed — so a reprint round asks for exactly the shortfall.</p>
  *
- * <p>Subcontracting (433/441) is not modelled here yet.</p>
+ * <p><b>Subcontracting</b> (SCRUM-433/441, 03 §16): part of an ORDER's unissued quantity is split off into a
+ * child (mode SUBCONTRACTED, {@code parentId}) printed by an outside print shop; the parent keeps its status
+ * and loses the quantity. The child goes READY → SUBCONTRACTED (sent) → QC (received back).</p>
  *
  * <p><b>One per source (BR-PRD-01).</b> The source is the sample request or the order line, never the
  * event that announced it: a redelivered release names the same line and must find the order already
@@ -38,6 +40,32 @@ public final class ProductionOrder {
     /** {@code ck_production_order_status}; every value is readable even though only the first is created here. */
     public enum Status {
         PENDING_PREPRESS, READY, MATERIAL_ISSUED, PRINTING, SUBCONTRACTED, QC, ON_HOLD, COMPLETED, CANCELLED
+    }
+
+    /** {@code ck_production_order_mode}: printed in the shop, or by a subcontractor. */
+    public enum Mode { IN_HOUSE, SUBCONTRACTED }
+
+    /** We send the blanks, or the subcontractor sources them and we buy finished goods (433). */
+    public enum SubcontractMethod { SUPPLIED_BLANKS, FULL_SERVICE }
+
+    /** The terms of a subcontracted child ({@code ck_production_order_subcontract_fields}). */
+    public record Subcontract(SubcontractMethod method, UUID subcontractorId, java.math.BigDecimal unitPrice,
+                              String currency, UUID purchaseOrderId) {
+        public Subcontract {
+            Objects.requireNonNull(method, "method");
+            Objects.requireNonNull(subcontractorId, "subcontractorId");
+            Objects.requireNonNull(unitPrice, "unitPrice");
+            if (unitPrice.signum() < 0) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A subcontract price is not negative");
+            }
+            if (currency == null || !currency.matches("[A-Z]{3}")) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A subcontract price names its currency");
+            }
+        }
+
+        public Subcontract withPurchaseOrder(UUID purchaseOrderId) {
+            return new Subcontract(method, subcontractorId, unitPrice, currency, purchaseOrderId);
+        }
     }
 
     /** {@code ck_production_order_hold_reason}: why work stopped (Jira 396, 401). */
@@ -80,7 +108,10 @@ public final class ProductionOrder {
     private final UUID salesOrderId;
     private final UUID salesOrderLineId;
     private final UUID approvedSampleId;
-    private final Work work;
+    private Work work;
+    private Mode mode = Mode.IN_HOUSE;
+    private UUID parentId;
+    private Subcontract subcontract;
     private int issued;
     private int printed;
     private int good;
@@ -144,6 +175,112 @@ public final class ProductionOrder {
         this.prepressCheckedBy = checkedBy;
         this.prepressCheckedAt = checkedAt;
         return this;
+    }
+
+    /** Rehydration of the subcontracting columns, after {@link #restore}. */
+    public ProductionOrder withSubcontract(Mode mode, UUID parentId, Subcontract subcontract) {
+        this.mode = Objects.requireNonNull(mode, "mode");
+        this.parentId = parentId;
+        this.subcontract = subcontract;
+        return this;
+    }
+
+    // ------------------------------------------------------------------ subcontracting (SCRUM-441)
+
+    /** The parent states a split is taken from (03 §16; BR-PRD-12). */
+    private static final java.util.EnumSet<Status> SPLITTABLE =
+            java.util.EnumSet.of(Status.PENDING_PREPRESS, Status.READY, Status.ON_HOLD);
+
+    /** Units planned and not yet issued to the print shop: what a split may take (BR-PRD-12). */
+    public int unissued() {
+        return Math.max(0, work.plannedQuantity() - issued);
+    }
+
+    /**
+     * The parent's side of a split (BR-PRD-11, 12): an in-house ORDER in PENDING_PREPRESS, READY or ON_HOLD
+     * gives up {@code quantity} of the units it has not issued yet, keeping its status. Splitting everything
+     * would convert the order itself, which this does not do.
+     */
+    public Transition splitOff(int quantity, String childNumber) {
+        if (type != Type.ORDER) {
+            throw new BusinessException(ErrorCode.INVALID_PRODUCTION_TRANSITION,
+                    "A sample is always printed in house (BR-PRD-11)");
+        }
+        if (mode != Mode.IN_HOUSE || parentId != null) {
+            throw new BusinessException(ErrorCode.INVALID_PRODUCTION_TRANSITION,
+                    "Production order %s is already subcontracted".formatted(orderNumber));
+        }
+        if (!SPLITTABLE.contains(status)) {
+            throw transition("split", status);
+        }
+        if (quantity < 1 || quantity >= unissued()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "A split takes more than 0 and fewer than the %d unit(s) not issued yet (BR-PRD-12)"
+                            .formatted(unissued()));
+        }
+        work = new Work(work.warehouseId(), work.blankSku(), work.designSnapshotId(), work.designChecksum(),
+                work.plannedQuantity() - quantity, work.dueDate());
+        return new Transition(status, status, "Split %d to %s for subcontracting".formatted(quantity, childNumber));
+    }
+
+    /**
+     * The child of a split: the same order line, design, approved sample and prepress result as its parent
+     * (03 §16 "the child inherits the parent's prepress result"), {@code quantity} planned, its own due date.
+     */
+    public static ProductionOrder subcontractedChild(UUID id, String orderNumber, ProductionOrder parent, int quantity,
+                                                     LocalDate dueDate, Subcontract terms) {
+        Work w = new Work(parent.work.warehouseId(), parent.work.blankSku(), parent.work.designSnapshotId(),
+                parent.work.designChecksum(), quantity, dueDate);
+        boolean checked = parent.prepressCheckedAt != null;
+        ProductionOrder child = new ProductionOrder(id, orderNumber, Type.ORDER,
+                checked ? Status.READY : Status.PENDING_PREPRESS, null, parent.salesOrderId, parent.salesOrderLineId,
+                parent.approvedSampleId, w);
+        child.mode = Mode.SUBCONTRACTED;
+        child.parentId = parent.id;
+        child.subcontract = Objects.requireNonNull(terms, "terms");
+        child.prepressCheckedBy = parent.prepressCheckedBy;
+        child.prepressCheckedAt = parent.prepressCheckedAt;
+        return child;
+    }
+
+    /** The subcontract PO raised for this child (SCRUM-434). */
+    public void attachPurchaseOrder(UUID purchaseOrderId) {
+        requireSubcontracted();
+        subcontract = subcontract.withPurchaseOrder(Objects.requireNonNull(purchaseOrderId, "purchaseOrderId"));
+    }
+
+    /** READY → SUBCONTRACTED; the caller checked the PO is approved (BR-PRD-13). The design is locked from here. */
+    public Transition sendToSubcontractor() {
+        requireSubcontracted();
+        requireStatus(Status.READY, "send out");
+        status = Status.SUBCONTRACTED;
+        return new Transition(Status.READY, Status.SUBCONTRACTED, "Sent to the subcontractor");
+    }
+
+    /**
+     * The subcontractor's goods were received (G9): SUBCONTRACTED → QC with {@code quantity} more to inspect. A
+     * further part of the same PO received while QC has not finished adds to what waits for it.
+     */
+    public Transition receivedFromSubcontractor(int quantity) {
+        requireSubcontracted();
+        if (status != Status.SUBCONTRACTED && status != Status.QC) {
+            throw transition("receive the subcontracted goods of", Status.QC);
+        }
+        if (quantity < 1) {
+            throw new IllegalArgumentException("A receipt counts at least one unit");
+        }
+        Status from = status;
+        printed += quantity;
+        good += quantity;
+        status = Status.QC;
+        return new Transition(from, Status.QC, "Received %d from the subcontractor".formatted(quantity));
+    }
+
+    private void requireSubcontracted() {
+        if (mode != Mode.SUBCONTRACTED) {
+            throw new BusinessException(ErrorCode.INVALID_PRODUCTION_TRANSITION,
+                    "Production order %s is printed in house".formatted(orderNumber));
+        }
     }
 
     /** Rehydration of the quantities and the end states, after {@link #restore}. */
@@ -223,6 +360,10 @@ public final class ProductionOrder {
      */
     public Optional<Transition> issueBlanks(int quantity) {
         requireStatus(Status.READY, "issue blanks to");
+        if (mode == Mode.SUBCONTRACTED) {
+            throw new BusinessException(ErrorCode.INVALID_PRODUCTION_TRANSITION,
+                    "Production order %s is printed by a subcontractor; its blanks go out with it".formatted(orderNumber));
+        }
         if (quantity < 1) {
             throw new IllegalArgumentException("An issue moves at least one blank");
         }
@@ -412,12 +553,23 @@ public final class ProductionOrder {
      * arrives after the order was printed must leave it as it is, not reset it.
      */
     public void requireSameWorkAs(ProductionOrder requested) {
+        requireSameWorkAs(requested, 0);
+    }
+
+    /**
+     * The same, for a parent that gave {@code splitOff} units to subcontracted children since it was created:
+     * its plan plus theirs is what the source asked for.
+     */
+    public void requireSameWorkAs(ProductionOrder requested, int splitOff) {
+        Work asked = requested.work;
+        Work original = new Work(work.warehouseId(), work.blankSku(), work.designSnapshotId(), work.designChecksum(),
+                work.plannedQuantity() + splitOff, work.dueDate());
         if (type != requested.type
                 || !Objects.equals(sampleRequestId, requested.sampleRequestId)
                 || !Objects.equals(salesOrderId, requested.salesOrderId)
                 || !Objects.equals(salesOrderLineId, requested.salesOrderLineId)
                 || !Objects.equals(approvedSampleId, requested.approvedSampleId)
-                || !work.equals(requested.work)) {
+                || !original.equals(asked)) {
             throw new BusinessException(ErrorCode.PRODUCTION_SOURCE_CONFLICT,
                     "Production order %s already exists for this %s with different content"
                             .formatted(orderNumber, type == Type.SAMPLE ? "sample request" : "order line"));
@@ -444,6 +596,9 @@ public final class ProductionOrder {
     public int scrap() { return scrap; }
     public int passed() { return passed; }
     public Instant completedAt() { return completedAt; }
+    public Mode mode() { return mode; }
+    public UUID parentId() { return parentId; }
+    public Subcontract subcontract() { return subcontract; }
     public Instant cancelledAt() { return cancelledAt; }
     public String cancellationReason() { return cancellationReason; }
 

@@ -24,6 +24,7 @@ import com.stockflow.production.internal.domain.ProductionRecords;
 import com.stockflow.production.internal.service.MaterialIssues;
 import com.stockflow.production.internal.service.OrderProductionService;
 import com.stockflow.production.internal.service.PrintRuns;
+import com.stockflow.production.internal.service.Subcontracting;
 import com.stockflow.production.internal.service.ProductionDashboard;
 import com.stockflow.production.internal.service.ProductionOrders;
 import com.stockflow.production.internal.service.ProductionWorkflow;
@@ -63,6 +64,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
@@ -76,7 +78,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 @IntegrationTest
 @Import({PostgresContainer.class, RecordedEvents.class})
-@TestPropertySource(properties = "stockflow.upload-inspection.enabled=false")
+// The buyer's details: sending the SUBCONTRACT PO to the subcontractor needs them (procurement, SCRUM-434).
+@TestPropertySource(properties = {"stockflow.upload-inspection.enabled=false", "PO_BUYER_COMPANY_NAME=Buyer test",
+        "PO_BUYER_COMPANY_ADDRESS=Company test address", "PO_BUYER_CONTACT_NAME=Buyer contact",
+        "PO_BUYER_PHONE=0901234567", "PO_BUYER_EMAIL=buyer@example.com", "PO_RECEIVING_ADDRESS=Test warehouse"})
 class PrintRunIntegrationTest {
 
     private static final String PRINT_SHOP = "HCM-PRD01";
@@ -85,6 +90,9 @@ class PrintRunIntegrationTest {
     private static final Duration ASYNC = Duration.ofSeconds(15);
 
     @Autowired PrintRuns runs;
+    @Autowired Subcontracting subcontracts;
+    @Autowired com.stockflow.procurement.api.ProcurementService procurement;
+    @Autowired org.springframework.context.ApplicationEventPublisher publisher;
     @Autowired ProductionDashboard dashboard;
     @Autowired MaterialIssues issues;
     @Autowired ProductionWorkflow workflow;
@@ -603,5 +611,120 @@ class PrintRunIntegrationTest {
         assertThat(empty.scrapRate()).isNull();
         assertThatThrownBy(() -> dashboard.summary(manager, tomorrow, after.today()))
                 .extracting(PrintRunIntegrationTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
+    }
+
+    /** The demo print subcontractor (V20261010000510). */
+    private UUID printSubcontractor() {
+        return jdbc.queryForObject("SELECT id FROM procurement.suppliers WHERE code = 'INNHANH'", UUID.class);
+    }
+
+    private Subcontracting.Split split(int quantity, ProductionOrder.SubcontractMethod method, UUID supplier) {
+        return new Subcontracting.Split(quantity, supplier, method, new BigDecimal("1500"), "VND", null);
+    }
+
+    @Test
+    @DisplayName("SCRUM-441 FULL_SERVICE: the split child gets its DRAFT SUBCONTRACT PO, the order lets 4 blanks go, goes out only once the PO is approved, and each receipt is counted once")
+    void subcontractFullService() throws Exception {
+        Line line = released(10);
+        int atp = inventory.availableToPromise(BLANK);
+        assertThatThrownBy(() -> subcontracts.split(manager, line.productionOrderId(),
+                split(4, ProductionOrder.SubcontractMethod.FULL_SERVICE, sales.userId())))
+                .as("not a supplier at all").extracting(PrintRunIntegrationTest::code)
+                .isEqualTo(ErrorCode.SUPPLIER_NOT_FOUND);
+        assertThat(detail(line.productionOrderId()).summary().plannedQuantity()).as("nothing split").isEqualTo(10);
+
+        ProductionOrders.Detail child = subcontracts.split(manager, line.productionOrderId(),
+                split(4, ProductionOrder.SubcontractMethod.FULL_SERVICE, printSubcontractor()));
+
+        assertThat(child.summary().status()).as("inherits the prepress result").isEqualTo(ProductionOrder.Status.READY);
+        assertThat(child.summary().mode()).isEqualTo("SUBCONTRACTED");
+        assertThat(child.summary().parentId()).isEqualTo(line.productionOrderId());
+        assertThat(child.summary().plannedQuantity()).isEqualTo(4);
+        ProductionOrders.Detail parent = detail(line.productionOrderId());
+        assertThat(parent.summary().plannedQuantity()).isEqualTo(6);
+        assertThat(parent.summary().status()).isEqualTo(ProductionOrder.Status.READY);
+        assertThat(parent.history()).extracting(ProductionOrders.StatusChange::reason)
+                .anySatisfy(reason -> assertThat(reason).startsWith("Split 4 to " + child.summary().orderNumber()));
+        Map<String, Object> po = jdbc.queryForMap("""
+                SELECT id, po_type, status, production_order_id FROM procurement.purchase_orders
+                 WHERE production_order_id = ?""", child.summary().id());
+        assertThat(po).containsEntry("po_type", "SUBCONTRACT").containsEntry("status", "DRAFT");
+        assertThat(inventory.availableToPromise(BLANK)).as("the subcontractor brings its own blanks").isEqualTo(atp + 4);
+        assertThat(jdbc.queryForObject("""
+                SELECT COALESCE(SUM(quantity), 0) FROM inventory.stock_reservation
+                 WHERE status = 'HELD' AND order_id = ?""", Integer.class, line.orderId()))
+                .as("the order still holds what its parent prints").isEqualTo(6);
+
+        assertThatThrownBy(() -> subcontracts.sendOut(storekeeper, child.summary().id())).as("BR-PRD-13: PO not approved")
+                .extracting(PrintRunIntegrationTest::code).isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
+        UUID poId = (UUID) po.get("id");
+        WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> {
+            procurement.submit(poId, manager.userId());
+            procurement.approve(poId, approver.userId());
+        });
+        assertThat(subcontracts.sendOut(storekeeper, child.summary().id()).summary().status())
+                .isEqualTo(ProductionOrder.Status.SUBCONTRACTED);
+        WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> procurement.confirm(poId, manager.userId(),
+                new com.stockflow.procurement.api.SendPurchaseOrderCommand(java.time.LocalDate.now().plusDays(7), null)));
+
+        UUID receipt = Identifiers.newId();
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO procurement.goods_receipts (id, receipt_number, po_id, po_revision_id, warehouse_id,
+                    received_at, received_by)
+                SELECT ?, ?, ?, r.id, ?, NOW(), ? FROM procurement.purchase_order_revisions r WHERE r.po_id = ?
+                 ORDER BY r.revision_no DESC LIMIT 1""", receipt, "GR-QA-" + receipt.toString().substring(0, 8), poId,
+                hcm, storekeeper.userId(), poId));
+        var event = new com.stockflow.contracts.GoodsReceiptConfirmed(receipt, "GR-1", poId, hcm, List.of(
+                new com.stockflow.contracts.GoodsReceiptConfirmed.Line(Identifiers.newId(), Identifiers.newId(),
+                        BLANK.code(), null, 3, false)));
+        tx.executeWithoutResult(s -> publisher.publishEvent(event));
+        Await.until("received for QC", ASYNC,
+                () -> detail(child.summary().id()).summary().status() == ProductionOrder.Status.QC);
+        tx.executeWithoutResult(s -> publisher.publishEvent(event));
+        Thread.sleep(500);
+        assertThat(detail(child.summary().id()).printedQuantity()).as("counted once").isEqualTo(3);
+        assertThatThrownBy(() -> runs.recordQc(inspector, child.summary().id(), 3, 0, null, null))
+                .as("open question Q8").extracting(PrintRunIntegrationTest::code)
+                .isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
+
+        // A redelivered release of the line still agrees with the parent: 6 + 4 split off = 10.
+        assertThatCode(() -> orderProduction.createFor(new OrderLinesReleasedForProduction(line.orderId(), "SO-IT",
+                hcm, List.of(new OrderLinesReleasedForProduction.Line(parent.summary().salesOrderLineId(),
+                        ProductionFixtures.BLANK, 10, parent.summary().designSnapshotId(), parent.designChecksum(),
+                        parent.approvedSampleId(), null))))).doesNotThrowAnyException();
+    }
+
+    @Test
+    @DisplayName("SCRUM-441 SUPPLIED_BLANKS: the order's blanks are held for the child instead (ATP unchanged); sending them out waits for the subcontractor location (Q7); guards")
+    void subcontractSuppliedBlanks() throws Exception {
+        Line line = released(8);
+        int atp = inventory.availableToPromise(BLANK);
+        assertThatThrownBy(() -> subcontracts.split(manager, line.productionOrderId(),
+                split(8, ProductionOrder.SubcontractMethod.SUPPLIED_BLANKS, printSubcontractor())))
+                .as("all of it is a conversion").extracting(PrintRunIntegrationTest::code)
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        ProductionOrders.Detail child = subcontracts.split(manager, line.productionOrderId(),
+                split(3, ProductionOrder.SubcontractMethod.SUPPLIED_BLANKS, printSubcontractor()));
+
+        assertThat(inventory.availableToPromise(BLANK)).as("moved, not freed").isEqualTo(atp);
+        assertThat(inventory.productionHolds(child.summary().id())).extracting(h -> h.quantity()).containsExactly(3);
+        assertThatThrownBy(() -> issues.issue(storekeeper, child.summary().id(),
+                new MaterialIssues.Issue(UUID.randomUUID(), PRINT_SHOP, null))).as("not printed here")
+                .extracting(PrintRunIntegrationTest::code).isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
+        UUID poId = jdbc.queryForObject("SELECT id FROM procurement.purchase_orders WHERE production_order_id = ?",
+                UUID.class, child.summary().id());
+        WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> {
+            procurement.submit(poId, manager.userId());
+            procurement.approve(poId, approver.userId());
+        });
+        assertThatThrownBy(() -> subcontracts.sendOut(storekeeper, child.summary().id())).as("Q7")
+                .extracting(PrintRunIntegrationTest::code).isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
+
+        issueAll(line.productionOrderId());
+        assertThat(detail(line.productionOrderId()).issuedQuantity()).as("the parent issues its 5").isEqualTo(5);
+        assertThatThrownBy(() -> subcontracts.split(manager, line.productionOrderId(),
+                split(1, ProductionOrder.SubcontractMethod.FULL_SERVICE, printSubcontractor())))
+                .as("MATERIAL_ISSUED is not split").extracting(PrintRunIntegrationTest::code)
+                .isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
     }
 }

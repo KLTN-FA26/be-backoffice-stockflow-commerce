@@ -118,7 +118,7 @@ public class OrderProductionService {
                     existing.map(ProductionOrder::orderNumber).orElseGet(() -> productionOrders.nextNumber(today())),
                     order.orderId(), plan.lineId(), plan.approvedSampleId(), plan.work());
             ProductionOrder stored = existing.orElseGet(() -> productionOrders.createIfAbsent(requested, null, now));
-            stored.requireSameWorkAs(requested);
+            stored.requireSameWorkAs(requested, productionOrders.splitOffOf(stored.id()));
             created.add(stored);
         }
         log.info("Order {} released from {}: {} production order(s)", order.orderNumber(), release.warehouseId(),

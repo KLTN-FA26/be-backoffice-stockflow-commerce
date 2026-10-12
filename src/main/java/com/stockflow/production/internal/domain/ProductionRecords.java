@@ -48,4 +48,7 @@ public interface ProductionRecords {
     List<Scrap> scrapOf(UUID productionOrderId);
 
     void recordScrap(Scrap scrap);
+
+    /** Counts a goods receipt of a subcontracted child once: false when this receipt was counted before. */
+    boolean recordSubcontractReceipt(UUID receiptId, UUID productionOrderId, int quantity, Instant at);
 }

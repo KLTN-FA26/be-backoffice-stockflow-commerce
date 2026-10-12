@@ -100,6 +100,15 @@ class ProductionRecordsAdapter implements ProductionRecords {
                 scrap.stockAdjustmentId(), Timestamp.from(scrap.recordedAt()), scrap.recordedBy());
     }
 
+    @Override
+    public boolean recordSubcontractReceipt(UUID receiptId, UUID productionOrderId, int quantity, java.time.Instant at) {
+        entityManager.flush();
+        return jdbc.update("""
+                        INSERT INTO production.production_subcontract_receipt (receipt_id, production_order_id, quantity,
+                            received_at) VALUES (?, ?, ?, ?) ON CONFLICT (receipt_id) DO NOTHING""",
+                receiptId, productionOrderId, quantity, Timestamp.from(at)) == 1;
+    }
+
     private static MaterialIssue issue(ResultSet rs, int row) throws SQLException {
         return new MaterialIssue(rs.getObject(1, UUID.class), rs.getObject(2, UUID.class), rs.getObject(3, UUID.class),
                 rs.getObject(4, UUID.class), rs.getString(5), rs.getString(6), rs.getString(7), rs.getString(8),

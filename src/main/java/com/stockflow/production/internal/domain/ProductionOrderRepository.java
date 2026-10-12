@@ -23,6 +23,15 @@ public interface ProductionOrderRepository {
     /** One immutable status-history row. */
     void recordTransition(UUID productionOrderId, ProductionOrder.Transition transition, Instant at, UUID by);
 
+    /** A subcontracted child of a split, with its first history row; flushed, so a CHECK fails here. */
+    void createChild(ProductionOrder child, UUID createdBy, Instant at);
+
+    /** The subcontracted child a SUBCONTRACT purchase order pays for. */
+    Optional<UUID> idOfPurchaseOrder(UUID purchaseOrderId);
+
+    /** Units split off {@code parentId} to its subcontracted children, every one of them. */
+    int splitOffOf(UUID parentId);
+
     /** The production orders of a sales order, in id order (the order their locks are taken in). */
     List<UUID> idsOfSalesOrder(UUID salesOrderId);
 

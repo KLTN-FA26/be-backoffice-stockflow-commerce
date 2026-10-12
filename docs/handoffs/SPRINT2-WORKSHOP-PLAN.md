@@ -121,6 +121,19 @@ READ+CREATE, PRODUCTION_STAFF READ, SYSTEM_ADMIN all; role versions advanced. Se
   `OrderCancelled.refundableAmount = paid − agreed` and payment raises PENDING refunds for the rest exactly
   as for a percentage — nothing counted twice, nothing charged, captured payments untouched. The internal
   side (units printed, written off) stays on the LSX; no money is put on the LSX.
+- **Q7 (open, 441 SUPPLIED_BLANKS)**: BR-PRD-15 sends blanks to "a virtual location of the subcontractor,
+  outside ATP"; no such location exists (warehouse map, T2/SCRUM-422). One per subcontractor or one per
+  warehouse? Who creates it? Until then a SUPPLIED_BLANKS child is split (its blanks held for it, ATP
+  unchanged) but `subcontract-dispatch` refuses to send it.
+- **Q8 (open, 441 receive back)**: a subcontractor's goods arrive through a goods receipt (SCRUM-435) as free
+  INBOUND stock at receiving, which the receiving flow (QC area, putaway) makes AVAILABLE — sellable as blanks
+  (they are under the blank SKU). Q3 needs them held for the order. Should the receipt of a SUBCONTRACT PO
+  skip putaway and go to a hold for the child (procurement/receiving change), or should production move them
+  into a hold when they are received? Until decided, the child moves to QC with the received count, and
+  recording its QC is refused (no completion that would sell them).
+- **Q9 (open, 441 reconciliation)**: G7/G8, BR-PRD-16/17 — the blanks the subcontractor used for good units,
+  spoilt and returned: which reason takes them out of the subcontractor location (only `SUBCONTRACT_LOSS` is
+  named, for loss), and where is the reconciliation entered (procurement receipt or production)?
 - **Q6 (open, Q2 money)**: (a) an agreed amount above what the customer paid (a deposit order cancelled
   after printing) is refused today — 15 BR-05 caps the amount kept at the money received, and docs say
   nothing about invoicing the difference (a receivable). Should the excess become a receivable? (b) the
@@ -167,6 +180,19 @@ Production staff; QC holds exactly its own resource. Queue order (Jira 398): lis
 `sort=dueDate,asc;createdAt,asc` (no new endpoint). BR-PRD-07 (no design change once printing): no endpoint
 changes an LSX's design snapshot/checksum (columns are not updatable) — nothing to block.
 
+## Subcontracting (BE 441, built in part)
+
+| Step | Endpoint | Permission | Effect |
+|---|---|---|---|
+| split (G1–G3) | `POST …/{id}/subcontract-split {quantity, subcontractorId, method, unitPrice, currency?, dueDate?}` | production-orders:APPROVE (manager) | BR-PRD-11/12: ORDER, in house, PENDING_PREPRESS/READY/ON_HOLD, 0 < quantity < unissued. Parent keeps its status, planned −quantity (history row). Child: mode SUBCONTRACTED, parent_id, same line/design/approved sample/prepress, READY or PENDING_PREPRESS. SUBCONTRACT PO DRAFT via `procurement :: api` (supplier must be a print subcontractor, else nothing is split). Holds: FULL_SERVICE — the order's unissued holds give up the quantity (`InventoryService.reduceHold`, ATP +q); SUPPLIED_BLANKS — the same, and q held for the child instead (ATP unchanged) |
+| send out (G6) | `POST …/{id}/subcontract-dispatch` | production-material-issues:CREATE (warehouse) | BR-PRD-13: only with the PO approved; FULL_SERVICE READY → SUBCONTRACTED; SUPPLIED_BLANKS refused until Q7 |
+| receive back (G9) | `GoodsReceiptConfirmed` listener | — | receipt of the child's PO → QC with the received count, once per receipt (`production_subcontract_receipt`, V20261014000440) |
+| QC / complete | — | — | refused for a subcontracted child until Q8 |
+
+Not built: converting a whole LSX (split = everything), cancelling a SUBCONTRACTED child (recall, PO cancel),
+resend with PO supplement, SUBCONTRACTOR_LATE warnings on the dashboard. A redelivered release of the line
+still matches the parent (planned + split off).
+
 ## Lane C (441/415) collaboration plan
 
 Lane C should start only after this branch has the workflow aggregate (after 418/420), because 433/441
@@ -186,4 +212,5 @@ tables, can start in parallel on read models only). If the coordinator prefers, 
 | 420 | **done (BE)**: ORDER → PACKING held + `ProductionCompleted` once; SAMPLE → SAMPLE write-off + round READY | see git log | `orderFromPressToPacking`, `sampleCompletes`, `concurrentQc` |
 | 413 | **done (BE)** (Q2 money: agreed fee on the order cancellation): cancel before printing, stop on the press (Q2 quantities), `OrderCancelled` listener | see git log | `cancelBeforePrinting`, `orderCancelledUnderTheJob`, `stopOnThePress` |
 | 415 | **done (BE)**: `GET /api/v1/production/dashboard?from&to` (open by status, overdue, printed/scrap/scrap rate of LSX created in the period, samples awaiting the customer), `GET …/dashboard/overdue`, `GET …/dashboard/samples-awaiting-approval` (paginated, through the existing lists, same warehouse scope); production-orders:READ. Permission resources of 415 already existed (V20261010000500 + this lane's two) | see git log | `PrintRunIntegrationTest.dashboard`, HTTP `dashboardOverHttp` |
+| 441 | **partly done (BE)**: split + PO + holds, send out (FULL_SERVICE), receipt → QC; blocked: Q7, Q8, Q9 | see git log | `ProductionOrderTest` (split/child/send/receive/replay), `PrintRunIntegrationTest.subcontractFullService`, `subcontractSuppliedBlanks` |
 | notification | **done (BE, log transport like every non-PO template)**: `ProductionOrderHeld` → Sales (FILE_REJECTED, WAITING_CUSTOMER), purchasing (BLANKS_SHORT), workshop (others) | see git log | `ProductionNotificationListenerTest` 3 |

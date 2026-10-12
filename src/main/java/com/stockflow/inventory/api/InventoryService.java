@@ -132,6 +132,16 @@ public interface InventoryService {
     /** See {@link ReturnHeldStockCommand}. Joins the caller's transaction. */
     StockMove returnHeld(ReturnHeldStockCommand command);
 
+    /**
+     * A hold in storage gives up {@code quantity} units, free again (SCRUM-441: part of a production order goes to
+     * a subcontractor who sources the blanks). The hold must belong to {@code orderId} or {@code productionOrderId}.
+     * Joins the caller's transaction.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code RESERVATION_NOT_FOUND},
+     *         {@code RESERVATION_NOT_ISSUABLE} (another owner's, closed, in the print shop, or fewer units)
+     */
+    void reduceHold(UUID reservationId, UUID orderId, UUID productionOrderId, int quantity);
+
     /** The holds among {@code reservationIds} that are still live, with what they hold now and where. */
     List<StockReservation> liveHolds(Collection<UUID> reservationIds);
 

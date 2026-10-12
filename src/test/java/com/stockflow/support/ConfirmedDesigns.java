@@ -35,17 +35,25 @@ public final class ConfirmedDesigns {
     }
 
     /**
-     * A fresh layer of {@code units} sellable {@link #BLANK} in HCM, received a while ago. A sample's blanks
-     * are held from its submission (decision Q1), so a test that submits samples brings its own blanks
-     * instead of eating the 33 demo units the checkout tests count on.
+     * At least {@code units} sellable {@link #BLANK} free in HCM, topped up with a fresh layer received a while ago
+     * when there are fewer. A sample's blanks are held from its submission (decision Q1), so a test that submits
+     * samples brings its own blanks instead of eating the 33 demo units the checkout tests count on — and only
+     * up to {@code units}, so the free stock stays small enough for a test to ask for more than there is.
      */
     public static void stockBlanks(JdbcTemplate jdbc, TransactionTemplate tx, int units) {
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version, created_at,
-                    received_at)
-                VALUES (?, ?, 'HCM-A02-1-A', ?, 0, 'AVAILABLE', 0, NOW(),
-                    clock_timestamp() - interval '2 days' - random() * interval '300 days')""",
-                Identifiers.newId(), BLANK, units));
+        tx.executeWithoutResult(s -> {
+            Integer free = jdbc.queryForObject("""
+                    SELECT COALESCE(SUM(on_hand - reserved), 0)::int FROM inventory.stock_item
+                     WHERE sku = ? AND status = 'AVAILABLE' AND location_code LIKE 'HCM-%'""", Integer.class, BLANK);
+            if (free < units) {
+                jdbc.update("""
+                        INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version,
+                            created_at, received_at)
+                        VALUES (?, ?, 'HCM-A02-1-A', ?, 0, 'AVAILABLE', 0, NOW(),
+                            clock_timestamp() - interval '2 days' - random() * interval '300 days')""",
+                        Identifiers.newId(), BLANK, units - free);
+            }
+        });
     }
 
     public static Design confirmed(FileStorage storage, JdbcTemplate jdbc, TransactionTemplate tx, EntityManager em,

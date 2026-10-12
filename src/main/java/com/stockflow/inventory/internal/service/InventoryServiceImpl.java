@@ -451,6 +451,22 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
     }
 
     @Override
+    public void reduceHold(UUID reservationId, UUID orderId, UUID productionOrderId, int quantity) {
+        ReservationId id = ReservationId.of(reservationId);
+        StockItem item = holderOf(id);
+        Reservation hold = item.findReservation(id).orElseThrow();
+        if (!hold.isHeldFor(orderId, productionOrderId) || !hold.status().isActive()
+                || item.status() == StockStatus.IN_PRODUCTION || quantity < 1
+                || hold.quantity().value() < quantity) {
+            throw new BusinessException(ErrorCode.RESERVATION_NOT_ISSUABLE,
+                    "Hold %s cannot give up %d unit(s) here".formatted(reservationId, quantity));
+        }
+        item.reduceHold(id, Quantity.of(quantity), ReleaseReason.SUBCONTRACTED, clock.instant());
+        repository.save(item);
+        log.info("Hold {} gave up {} unit(s) for subcontracting", reservationId, quantity);
+    }
+
+    @Override
     public List<StockReservation> liveHolds(Collection<UUID> reservationIds) {
         List<StockReservation> live = new ArrayList<>();
         for (UUID id : new java.util.LinkedHashSet<>(reservationIds)) {
