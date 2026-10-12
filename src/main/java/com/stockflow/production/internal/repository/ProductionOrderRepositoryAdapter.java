@@ -37,6 +37,11 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
     }
 
     @Override
+    public Optional<ProductionOrder> findById(UUID id) {
+        return jpa.findById(id).map(ProductionOrderRepositoryAdapter::toDomain);
+    }
+
+    @Override
     public Optional<ProductionOrder> findBySource(ProductionOrder.Type type, UUID sourceId) {
         return findEntity(type, sourceId).map(ProductionOrderRepositoryAdapter::toDomain);
     }

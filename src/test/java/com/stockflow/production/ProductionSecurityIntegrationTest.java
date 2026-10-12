@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.storage.FileStorage;
+import com.stockflow.production.internal.service.SampleProductionProgress;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -15,7 +16,6 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
@@ -36,12 +36,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * SCRUM-394/395 over HTTP with security ON: the real filter chain, the permission aspect, the grants
- * Tu seeded in V20261010000500 (resolved per request from the {@code roles} claim, ADR-0008) and the
- * warehouse data scope of SCRUM-457. Only token decoding is stubbed.
- *
- * <p>The CUSTOMER role has no {@code production-sample-requests} grant in the seed; one test pins that
- * a portal customer is refused today, and another grants it for its own duration to prove the
- * ownership rules the portal will rely on once the grant exists.</p>
+ * seeded by V20261010000500 and V20261014000200 (resolved per request from the {@code roles} claim,
+ * ADR-0008) and the warehouse data scope of SCRUM-457. Only token decoding is stubbed.
  */
 @IntegrationTest
 @Import({PostgresContainer.class, RedisContainer.class})
@@ -56,8 +52,8 @@ class ProductionSecurityIntegrationTest {
     @MockitoBean JwtDecoder decoder;
     @Autowired ObjectMapper json;
     @Autowired FileStorage storage;
+    @Autowired SampleProductionProgress progress;
     @Autowired JdbcTemplate jdbc;
-    @Autowired StringRedisTemplate redis;
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
 
@@ -66,7 +62,7 @@ class ProductionSecurityIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        fixtures = new ProductionFixtures(storage, jdbc, tx, entityManager);
+        fixtures = new ProductionFixtures(storage, jdbc, tx, entityManager, progress);
         hcm = jdbc.queryForObject("SELECT id FROM warehouse.warehouse WHERE prefix = 'HCM'", UUID.class);
     }
 
@@ -114,8 +110,7 @@ class ProductionSecurityIntegrationTest {
         mvc.perform(get(SAMPLES)).andExpect(status().isUnauthorized());
         mvc.perform(get(ORDERS)).andExpect(status().isUnauthorized());
         send(get(SAMPLES), staff("WAREHOUSE_STAFF"), null).andExpect(status().isForbidden());
-        send(get(SAMPLES), staff("CUSTOMER"), null) // no CUSTOMER grant in V20261010000500
-                .andExpect(status().isForbidden());
+        send(get(ORDERS), staff("CUSTOMER"), null).andExpect(status().isForbidden());
     }
 
     @Test
@@ -176,68 +171,60 @@ class ProductionSecurityIntegrationTest {
     }
 
     @Test
-    @DisplayName("with the portal grant, a customer answers only their own samples and cannot use back-office verbs")
+    @DisplayName("a portal customer reads and answers only their own samples and cannot use back-office verbs")
     void portalCustomerOwnership() throws Exception {
-        portalGrant(true);
-        try {
-            UUID userA = fixtures.user();
-            UUID userB = fixtures.user();
-            UUID customerA = fixtures.customerOf(userA);
-            fixtures.customerOf(userB);
-            String sales = staff("SALES_STAFF");
-            UUID sample = createDraft(sales, customerA, fixtures.confirmedDesign(customerA));
-            send(post(SAMPLES + "/" + sample + "/submission"), sales, java.util.Map.of("warehouseId", hcm))
-                    .andExpect(status().isOk());
-            fixtures.workshopFinished(sample);
-            send(post(SAMPLES + "/" + sample + "/sending"), sales, null).andExpect(status().isOk());
+        UUID userA = fixtures.user();
+        UUID userB = fixtures.user();
+        UUID customerA = fixtures.customerOf(userA);
+        fixtures.customerOf(userB);
+        String sales = staff("SALES_STAFF");
+        UUID sample = createDraft(sales, customerA, fixtures.confirmedDesign(customerA));
+        send(post(SAMPLES + "/" + sample + "/submission"), sales, java.util.Map.of("warehouseId", hcm))
+                .andExpect(status().isOk());
+        fixtures.workshopFinished(sample);
+        send(post(SAMPLES + "/" + sample + "/sending"), sales, null).andExpect(status().isOk());
 
-            String a = token(userA, "CUSTOMER");
-            String b = token(userB, "CUSTOMER");
-            send(get(SAMPLES + "/" + sample), b, null).andExpect(status().isNotFound());
-            send(post(SAMPLES + "/" + sample + "/approval"), b, null).andExpect(status().isNotFound());
-            send(get(SAMPLES).param("customerId", customerA.toString()), b, null).andExpect(status().isOk())
-                    .andExpect(jsonPath("$.data.items.length()").value(0));
-            send(post(SAMPLES + "/" + sample + "/sending"), a, null).andExpect(status().isForbidden());
+        String a = token(userA, "CUSTOMER");
+        String b = token(userB, "CUSTOMER");
+        send(get(SAMPLES + "/" + sample), b, null).andExpect(status().isNotFound());
+        send(post(SAMPLES + "/" + sample + "/approval"), b, null).andExpect(status().isNotFound());
+        send(get(SAMPLES).param("customerId", customerA.toString()), b, null).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items.length()").value(0));
+        // No UPDATE or CREATE for CUSTOMER: the permission refuses before the service is reached.
+        send(post(SAMPLES + "/" + sample + "/sending"), a, null).andExpect(status().isForbidden());
+        send(post(SAMPLES + "/" + sample + "/next-round"), a, null).andExpect(status().isForbidden());
 
-            send(get(SAMPLES), a, null).andExpect(status().isOk())
-                    .andExpect(jsonPath("$.data.items.length()").value(1));
-            send(post(SAMPLES + "/" + sample + "/change-request"), a, java.util.Map.of("feedback", "Darker blue"))
-                    .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.data.status").value("CHANGES_REQUESTED"))
-                    .andExpect(jsonPath("$.data.respondedBy").value(userA.toString()));
-        } finally {
-            portalGrant(false);
-        }
-        send(get(SAMPLES), token(fixtures.user(), "CUSTOMER"), null).andExpect(status().isForbidden());
+        send(get(SAMPLES), a, null).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items.length()").value(1));
+        send(post(SAMPLES + "/" + sample + "/change-request"), a, java.util.Map.of("feedback", "Darker blue"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("CHANGES_REQUESTED"))
+                .andExpect(jsonPath("$.data.respondedBy").value(userA.toString()));
     }
 
-    /**
-     * CUSTOMER is a system role whose grants only migrations change, so the test writes the rows the
-     * missing migration would, on its own Testcontainers database — and advances {@code app_role.version}
-     * in the same transaction, as ADR-0008 requires.
-     */
-    private void portalGrant(boolean on) {
-        tx.executeWithoutResult(s -> {
-            if (on) {
-                jdbc.update("""
-                        INSERT INTO identity.role_permission (id, role_id, permission_id, version, created_at, created_by)
-                        SELECT gen_random_uuid(), r.id, p.id, 0, NOW(), 'test'
-                          FROM identity.app_role r JOIN identity.permission p
-                            ON p.resource = 'production-sample-requests' AND p.action IN ('VIEW_PAGE', 'READ', 'UPDATE')
-                         WHERE r.code = 'CUSTOMER'
-                        ON CONFLICT (role_id, permission_id) DO NOTHING""");
-            } else {
-                jdbc.update("""
-                        DELETE FROM identity.role_permission rp USING identity.app_role r, identity.permission p
-                         WHERE rp.role_id = r.id AND rp.permission_id = p.id AND r.code = 'CUSTOMER'
-                           AND p.resource = 'production-sample-requests'""");
-            }
-            jdbc.update("UPDATE identity.app_role SET version = version + 1 WHERE code = 'CUSTOMER'");
-        });
-        // After the commit, move the cached version pointer as RoleAuthorizationCache.publishVersion does
-        // for a grant change made through the identity service. Moving it is the invalidation; nothing
-        // is deleted.
-        Long version = jdbc.queryForObject("SELECT version FROM identity.app_role WHERE code = 'CUSTOMER'", Long.class);
-        redis.opsForHash().put("stockflow:v1:authz:role-versions", "CUSTOMER", String.valueOf(version));
+    @Test
+    @DisplayName("QC and the print shop read the samples their warehouse makes but cannot answer for the customer")
+    void onlyTheCustomerOrSalesAnswer() throws Exception {
+        String sales = staff("SALES_STAFF");
+        UUID sample = createDraft(sales, DemoData.CUSTOMER_ID, fixtures.confirmedDesign());
+        send(post(SAMPLES + "/" + sample + "/submission"), sales, java.util.Map.of("warehouseId", hcm))
+                .andExpect(status().isOk());
+        fixtures.workshopFinished(sample);
+        send(post(SAMPLES + "/" + sample + "/sending"), sales, null).andExpect(status().isOk());
+
+        for (String role : List.of("QC_STAFF", "PRODUCTION_STAFF", "WAREHOUSE_MANAGER")) {
+            UUID user = fixtures.user();
+            assign(user, hcm);
+            String inHcm = token(user, role);
+            send(get(SAMPLES + "/" + sample), inHcm, null).andExpect(status().isOk());
+            send(post(SAMPLES + "/" + sample + "/approval"), inHcm, null).andExpect(status().isForbidden());
+            send(post(SAMPLES + "/" + sample + "/change-request"), inHcm, java.util.Map.of("feedback", "x"))
+                    .andExpect(status().isForbidden());
+            send(post(SAMPLES + "/" + sample + "/cancellation"), inHcm, java.util.Map.of("reason", "x"))
+                    .andExpect(status().isForbidden());
+        }
+        send(get(SAMPLES + "/" + sample), sales, null).andExpect(jsonPath("$.data.status").value("SENT_TO_CUSTOMER"));
+        send(post(SAMPLES + "/" + sample + "/approval"), sales, null).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("APPROVED"));
     }
 }

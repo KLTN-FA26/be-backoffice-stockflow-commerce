@@ -114,14 +114,46 @@ public final class SampleRequest extends AggregateRoot {
         move(SampleStatus.SUBMITTED);
     }
 
-    /** The workshop started the sample production order (SCRUM-396 onwards calls this). */
-    public void startProduction() {
+    /**
+     * The workshop started this round's SAMPLE production order. Reported by the production order's own
+     * workflow (SCRUM-396 onwards), which may report it again on a retry: a round already past
+     * SUBMITTED is left as it is.
+     *
+     * @return whether the round moved
+     */
+    public boolean productionStarted() {
+        requireMadeRound(SampleStatus.IN_PRODUCTION);
+        if (status != SampleStatus.SUBMITTED) {
+            return false;
+        }
         move(SampleStatus.IN_PRODUCTION);
+        return true;
     }
 
-    /** The sample production order completed QC (SCRUM-400/401 calls this). */
-    public void markReady() {
+    /**
+     * The SAMPLE production order completed, QC passed (SCRUM-400): the round is READY to be sent. A
+     * completion implies a start, so a round still SUBMITTED passes through IN_PRODUCTION; a round
+     * already READY or beyond is left as it is.
+     *
+     * @return whether the round moved
+     */
+    public boolean productionCompleted() {
+        requireMadeRound(SampleStatus.READY);
+        if (status == SampleStatus.SUBMITTED) {
+            move(SampleStatus.IN_PRODUCTION);
+        }
+        if (status != SampleStatus.IN_PRODUCTION) {
+            return false;
+        }
         move(SampleStatus.READY);
+        return true;
+    }
+
+    /** Only a submitted round has a SAMPLE production order to report on. */
+    private void requireMadeRound(SampleStatus target) {
+        if (status == SampleStatus.DRAFT || status == SampleStatus.CANCELLED) {
+            throw transition("report production of", target);
+        }
     }
 
     /** Handed over or couriered outside the system; the system only records that it happened. */

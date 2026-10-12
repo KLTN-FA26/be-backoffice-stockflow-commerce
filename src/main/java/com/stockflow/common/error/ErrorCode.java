@@ -151,6 +151,8 @@ public enum ErrorCode {
     DESIGN_SAMPLE_NOT_APPROVED("A design on this order has no approved sample yet", 409),
     /** SCRUM-394: a sample round moves only along 03-state-machines §17. */
     INVALID_SAMPLE_REQUEST_TRANSITION("This sample request cannot move to that status right now", 409),
+    /** BR-ORD-007 / BR-CUS-003: new work (a sample round, a quote, an order) is only for an ACTIVE customer. */
+    CUSTOMER_NOT_ACTIVE("This customer is not active and cannot take on new work", 409),
     /** SCRUM-394: a round that ended in CHANGES_REQUESTED is followed by exactly one next round. */
     SAMPLE_NEXT_ROUND_EXISTS("The next round of this sample request has already been started", 409),
     /** BR-PRD-01: a source already has a production order, and it describes different work. */

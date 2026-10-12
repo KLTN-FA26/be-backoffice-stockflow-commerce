@@ -38,10 +38,12 @@ import java.util.UUID;
  * Sample requests (SCRUM-394/403): Sales drafts a round, sends it to the workshop, records that the
  * sample went out, and the customer approves it or asks for changes.
  *
- * <p>Permissions follow the grants of V20261010000500: Sales holds CREATE and UPDATE — it "asks for
- * samples, sends them, records the customer's answer" — so recording an answer is UPDATE, not APPROVE,
- * which no business role holds. A portal customer uses the same read and answer endpoints and is held to
- * their own rounds by the service; the back-office verbs refuse a caller who is only a customer.</p>
+ * <p>Two kinds of write, two actions. UPDATE is Sales handling the round — edit, submit, record sending,
+ * cancel. APPROVE is the customer's answer — approve or ask for changes — given on the portal or recorded
+ * by Sales on their behalf (V20261014000200 grants it to CUSTOMER and SALES_STAFF only). Keeping the answer
+ * off UPDATE is what stops anyone who merely works on a round, a QC inspector say, from approving a design
+ * for mass print in the customer's place (BR-PRD-08). A portal customer is held to their own rounds by
+ * the service, and the back-office verbs refuse a caller who is only a customer.</p>
  *
  * <p>Every endpoint keeps the default scope ALL on purpose. Declaring OWN would narrow the scope below
  * WAREHOUSE and so switch off the warehouse restriction of a workshop user; ownership is enforced in the
@@ -131,7 +133,7 @@ class SampleRequestController {
 
     @PostMapping("/{sampleRequestId}/approval")
     @Operation(summary = "The customer approves the sample: locks design + blank, announces SampleApproved")
-    @RequiresPermission(resource = ProductionResources.SAMPLE_REQUESTS, action = Action.UPDATE)
+    @RequiresPermission(resource = ProductionResources.SAMPLE_REQUESTS, action = Action.APPROVE)
     public ApiResponse<SampleRequestResponse> approve(@PathVariable UUID sampleRequestId,
                                                       @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(mapper.toResponse(samples.approve(user, sampleRequestId)));
@@ -139,7 +141,7 @@ class SampleRequestController {
 
     @PostMapping("/{sampleRequestId}/change-request")
     @Operation(summary = "The customer asks for changes; the feedback stays on this round")
-    @RequiresPermission(resource = ProductionResources.SAMPLE_REQUESTS, action = Action.UPDATE)
+    @RequiresPermission(resource = ProductionResources.SAMPLE_REQUESTS, action = Action.APPROVE)
     public ApiResponse<SampleRequestResponse> requestChanges(@PathVariable UUID sampleRequestId,
                                                              @Valid @RequestBody SampleFeedbackRequest request,
                                                              @AuthenticatedUser CurrentUser user) {

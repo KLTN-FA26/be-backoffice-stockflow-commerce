@@ -92,9 +92,14 @@ class SampleRequestServiceTest {
         when(sampleSearch.rounds(any())).thenReturn(List.of());
         when(productionSearch.forSamples(anyCollection())).thenReturn(Map.of());
         when(samples.nextNumber(any())).thenReturn("SR-20261012-0001");
+        when(customers.findById(customer)).thenReturn(Optional.of(customerWith("ACTIVE")));
         when(productionOrders.nextNumber(any())).thenReturn("LSX-20261012-0001");
         when(designs.verifySnapshotForSku(eq(snapshot), eq(customer), anyString()))
                 .thenReturn(new ConfirmedDesign(snapshot, UUID.randomUUID(), CHECKSUM));
+    }
+
+    private CustomerSummary customerWith(String status) {
+        return new CustomerSummary(customer, null, "Customer", "c@x.vn", null, null, status, 0, NOW);
     }
 
     private SampleRequest stored(SampleStatus status) {
@@ -111,7 +116,7 @@ class SampleRequestServiceTest {
 
     @Test
     void createVerifiesTheCustomerAndTheirConfirmedDesignBeforeWriting() {
-        when(customers.findById(customer)).thenReturn(Optional.of(mock(CustomerSummary.class)));
+        when(customers.findById(customer)).thenReturn(Optional.of(customerWith("ACTIVE")));
 
         service.create(sales, new SampleRequests.Create(customer, null,
                 new SampleRequests.Draft(snapshot, "CUP-PP-500", 5, LocalDate.of(2026, 10, 30))));
@@ -127,7 +132,7 @@ class SampleRequestServiceTest {
         assertThatThrownBy(() -> service.create(sales, new SampleRequests.Create(customer, null, draft)))
                 .extracting(SampleRequestServiceTest::code).isEqualTo(ErrorCode.CUSTOMER_NOT_FOUND);
 
-        when(customers.findById(customer)).thenReturn(Optional.of(mock(CustomerSummary.class)));
+        when(customers.findById(customer)).thenReturn(Optional.of(customerWith("ACTIVE")));
         assertThatThrownBy(() -> service.create(sales, new SampleRequests.Create(customer, UUID.randomUUID(), draft)))
                 .as("no quote can be verified before SCRUM-448").extracting(SampleRequestServiceTest::code)
                 .isEqualTo(ErrorCode.VALIDATION_FAILED);
@@ -242,5 +247,34 @@ class SampleRequestServiceTest {
         when(samples.nextRoundOf(previous.id())).thenReturn(Optional.of(UUID.randomUUID()));
         assertThatThrownBy(() -> service.startNextRound(sales, previous.id(), null))
                 .extracting(SampleRequestServiceTest::code).isEqualTo(ErrorCode.SAMPLE_NEXT_ROUND_EXISTS);
+    }
+
+    @Test
+    void onlyAnActiveCustomerGetsNewSampleWorkButWorkUnderWayContinues() {
+        for (String status : List.of("INACTIVE", "BLOCKED")) {
+            when(customers.findById(customer)).thenReturn(Optional.of(customerWith(status)));
+            assertThatThrownBy(() -> service.create(sales, new SampleRequests.Create(customer, null,
+                    new SampleRequests.Draft(snapshot, "CUP-PP-500", 5, null))))
+                    .extracting(SampleRequestServiceTest::code).isEqualTo(ErrorCode.CUSTOMER_NOT_ACTIVE);
+
+            SampleRequest draft = stored(SampleStatus.DRAFT);
+            assertThatThrownBy(() -> service.submit(sales, draft.id(), warehouse))
+                    .extracting(SampleRequestServiceTest::code).isEqualTo(ErrorCode.CUSTOMER_NOT_ACTIVE);
+            assertThat(draft.status()).isEqualTo(SampleStatus.DRAFT);
+
+            SampleRequest changed = stored(SampleStatus.CHANGES_REQUESTED);
+            when(samples.nextRoundOf(changed.id())).thenReturn(Optional.empty());
+            assertThatThrownBy(() -> service.startNextRound(sales, changed.id(), null))
+                    .extracting(SampleRequestServiceTest::code).isEqualTo(ErrorCode.CUSTOMER_NOT_ACTIVE);
+
+            SampleRequest sent = stored(SampleStatus.SENT_TO_CUSTOMER);
+            service.approve(sales, sent.id());
+            assertThat(sent.status()).as("an answer to a sample already sent is still recorded")
+                    .isEqualTo(SampleStatus.APPROVED);
+            SampleRequest cancellable = stored(SampleStatus.DRAFT);
+            service.cancel(sales, cancellable.id(), "customer blocked");
+            assertThat(cancellable.status()).isEqualTo(SampleStatus.CANCELLED);
+        }
+        verify(productionOrders, never()).createIfAbsent(any(), any(), any());
     }
 }

@@ -8,6 +8,8 @@ import java.util.UUID;
 /** Persistence port of production orders ({@code production.production_order}). */
 public interface ProductionOrderRepository {
 
+    Optional<ProductionOrder> findById(UUID id);
+
     /** The root production order of a sample request or an order line (subcontracted children excluded). */
     Optional<ProductionOrder> findBySource(ProductionOrder.Type type, UUID sourceId);
 

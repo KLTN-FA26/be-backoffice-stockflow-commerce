@@ -16,6 +16,7 @@ import com.stockflow.production.internal.domain.SampleStatus;
 import com.stockflow.production.internal.service.OrderProductionService;
 import com.stockflow.production.internal.service.ProductionOrders;
 import com.stockflow.production.internal.service.SampleRequests;
+import com.stockflow.production.internal.service.SampleProductionProgress;
 import com.stockflow.support.Await;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
@@ -53,9 +54,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>Security is off in this context (the {@code test} profile): who may call what is covered over HTTP
  * by {@code ProductionSecurityIntegrationTest}. Here the caller is passed in, as the controller does.</p>
  *
- * <p>The workshop moves a submitted round to IN_PRODUCTION and READY through its production order; those
- * steps are SCRUM-396..401 and have no endpoint yet, so the tests set READY on the row, the way
- * {@code OrderReleaseIntegrationTest} inserts an order already CONFIRMED.</p>
+ * <p>The workshop moves a submitted round to IN_PRODUCTION and READY through {@link SampleProductionProgress},
+ * the contract its production-order workflow (SCRUM-396..400) calls. That workflow does not exist yet, so the
+ * tests call the contract directly: the round's transitions are real, the production order's own prepress,
+ * printing and QC are not exercised here.</p>
  */
 @IntegrationTest
 @Import({PostgresContainer.class, RecordedEvents.class})
@@ -72,6 +74,7 @@ class ProductionIntegrationTest {
     @Autowired OrderProductionService orderProduction;
     @Autowired OrderReleases releases;
     @Autowired FileStorage storage;
+    @Autowired SampleProductionProgress progress;
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager entityManager;
     @Autowired TransactionTemplate tx;
@@ -84,7 +87,7 @@ class ProductionIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        fixtures = new ProductionFixtures(storage, jdbc, tx, entityManager);
+        fixtures = new ProductionFixtures(storage, jdbc, tx, entityManager, progress);
         hcm = jdbc.queryForObject("SELECT id FROM warehouse.warehouse WHERE prefix = 'HCM'", UUID.class);
         UUID salesUser = tx.execute(s -> ReferenceRows.user(entityManager));
         sales = new CurrentUser(salesUser, "sales-" + salesUser, Set.of(Role.SALES_STAFF), Set.of(), DataScope.ALL,
@@ -176,7 +179,12 @@ class ProductionIntegrationTest {
 
         assertThatThrownBy(() -> samples.markSent(sales, draft.id())).as("not made yet")
                 .extracting(ProductionIntegrationTest::code).isEqualTo(ErrorCode.INVALID_SAMPLE_REQUEST_TRANSITION);
-        fixtures.workshopFinished(draft.id());
+        UUID sampleOrderId = submitted.productionOrder().id();
+        progress.productionStarted(sampleOrderId);
+        assertThat(samples.get(sales, draft.id()).status()).isEqualTo(SampleStatus.IN_PRODUCTION);
+        progress.productionStarted(sampleOrderId);   // reported twice: no change
+        progress.productionCompleted(sampleOrderId);
+        assertThat(samples.get(sales, draft.id()).status()).isEqualTo(SampleStatus.READY);
         SampleRequests.Sample sent = samples.markSent(sales, draft.id());
         assertThat(sent.status()).isEqualTo(SampleStatus.SENT_TO_CUSTOMER);
         assertThat(sent.sentAt()).isNotNull();
@@ -369,6 +377,56 @@ class ProductionIntegrationTest {
         assertThatThrownBy(() -> orderProduction.createFor(new OrderLinesReleasedForProduction(order, "SO-IT", hcm,
                 lines))).extracting(ProductionIntegrationTest::code).isEqualTo(ErrorCode.DESIGN_SAMPLE_NOT_APPROVED);
         assertThat(productionOrdersOf(order)).isZero();
+    }
+
+    @Test
+    @DisplayName("the workshop contract refuses an ORDER production order and a round that was never submitted")
+    void workshopContractRefusals() throws Exception {
+        ProductionFixtures.Design design = fixtures.confirmedDesign();
+        SampleRequests.Sample sample = sentSample(design);
+        samples.approve(sales, sample.id());
+        UUID order = confirmedOrder(Identifiers.newId(), "IN_PRODUCTION", design);
+        List<ProductionOrder> created = orderProduction.createFor(
+                new OrderLinesReleasedForProduction(order, "SO-IT", hcm, printLines(order, sample.id())));
+
+        assertThatThrownBy(() -> progress.productionCompleted(created.getFirst().id()))
+                .extracting(ProductionIntegrationTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThatThrownBy(() -> progress.productionStarted(UUID.randomUUID()))
+                .extracting(ProductionIntegrationTest::code).isEqualTo(ErrorCode.NOT_FOUND);
+        assertThat(samples.get(sales, sample.id()).status()).as("an approved round is left alone")
+                .isEqualTo(SampleStatus.APPROVED);
+        progress.productionCompleted(fixtures.sampleProductionOrder(sample.id()));
+        assertThat(samples.get(sales, sample.id()).status()).isEqualTo(SampleStatus.APPROVED);
+    }
+
+    @Test
+    @DisplayName("only an ACTIVE customer gets new sample work; a draft of a customer blocked since is cancelled, not submitted")
+    void customerEligibility() throws Exception {
+        UUID customer = fixtures.customerOf(fixtures.user());
+        ProductionFixtures.Design design = fixtures.confirmedDesign(customer);
+        SampleRequests.Sample draft = samples.create(sales, new SampleRequests.Create(customer, null,
+                new SampleRequests.Draft(design.snapshotId(), BLANK, 2, null)));
+        SampleRequests.Sample sent = samples.submit(sales, samples.create(sales, new SampleRequests.Create(customer,
+                null, new SampleRequests.Draft(design.snapshotId(), BLANK, 2, null))).id(), hcm);
+        fixtures.workshopFinished(sent.id());
+        samples.markSent(sales, sent.id());
+
+        for (String status : List.of("BLOCKED", "INACTIVE")) {
+            tx.executeWithoutResult(s -> jdbc.update("UPDATE customer.customer SET status = ? WHERE id = ?", status,
+                    customer));
+            assertThatThrownBy(() -> samples.create(sales, new SampleRequests.Create(customer, null,
+                    new SampleRequests.Draft(design.snapshotId(), BLANK, 2, null))))
+                    .extracting(ProductionIntegrationTest::code).isEqualTo(ErrorCode.CUSTOMER_NOT_ACTIVE);
+            assertThatThrownBy(() -> samples.submit(sales, draft.id(), hcm))
+                    .extracting(ProductionIntegrationTest::code).isEqualTo(ErrorCode.CUSTOMER_NOT_ACTIVE);
+        }
+        assertThat(samples.requestChanges(sales, sent.id(), "Brighter red").status())
+                .as("the answer to a sample already sent is still recorded").isEqualTo(SampleStatus.CHANGES_REQUESTED);
+        assertThatThrownBy(() -> samples.startNextRound(sales, sent.id(), null))
+                .extracting(ProductionIntegrationTest::code).isEqualTo(ErrorCode.CUSTOMER_NOT_ACTIVE);
+        assertThat(samples.cancel(sales, draft.id(), "Customer is inactive").status()).isEqualTo(SampleStatus.CANCELLED);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM production.production_order WHERE sample_request_id = ?",
+                Integer.class, draft.id())).isZero();
     }
 
     /** Starts {@code callers} copies of {@code work} at the same moment; each result or exception, in order. */

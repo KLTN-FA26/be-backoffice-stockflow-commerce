@@ -35,8 +35,8 @@ class SampleRequestTest {
     private SampleRequest sent() {
         SampleRequest sample = draft();
         sample.submit();
-        sample.startProduction();
-        sample.markReady();
+        sample.productionStarted();
+        sample.productionCompleted();
         sample.markSent(NOW);
         return sample;
     }
@@ -172,8 +172,8 @@ class SampleRequestTest {
         SampleRequest sample = draft();
         assertThatThrownBy(() -> sample.markSent(NOW)).extracting(SampleRequestTest::code)
                 .isEqualTo(ErrorCode.INVALID_SAMPLE_REQUEST_TRANSITION);
-        assertThatThrownBy(sample::markReady).extracting(SampleRequestTest::code)
-                .isEqualTo(ErrorCode.INVALID_SAMPLE_REQUEST_TRANSITION);
+        assertThatThrownBy(sample::productionCompleted).as("a draft has no production order")
+                .extracting(SampleRequestTest::code).isEqualTo(ErrorCode.INVALID_SAMPLE_REQUEST_TRANSITION);
         sample.submit();
         assertThatThrownBy(() -> sample.approve(actor, NOW)).extracting(SampleRequestTest::code)
                 .isEqualTo(ErrorCode.INVALID_SAMPLE_REQUEST_TRANSITION);
@@ -195,5 +195,33 @@ class SampleRequestTest {
                 .as("ck_sample_request_quantity").isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new SampleSpecification(UUID.randomUUID(), new Sku("CUP-PP-500"),
                 SampleSpecification.MAX_QUANTITY + 1, null)).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void workshopReportsAreIdempotentAndACompletionImpliesTheStart() {
+        SampleRequest twice = draft();
+        twice.submit();
+        assertThat(twice.productionStarted()).isTrue();
+        assertThat(twice.productionStarted()).as("reported again").isFalse();
+        assertThat(twice.status()).isEqualTo(SampleStatus.IN_PRODUCTION);
+        assertThat(twice.productionCompleted()).isTrue();
+        assertThat(twice.productionCompleted()).isFalse();
+        assertThat(twice.productionStarted()).as("a late start report does not go back").isFalse();
+        assertThat(twice.status()).isEqualTo(SampleStatus.READY);
+
+        SampleRequest direct = draft();
+        direct.submit();
+        assertThat(direct.productionCompleted()).isTrue();
+        assertThat(direct.status()).isEqualTo(SampleStatus.READY);
+
+        SampleRequest answered = sent();
+        answered.approve(actor, NOW);
+        assertThat(answered.productionCompleted()).isFalse();
+        assertThat(answered.status()).isEqualTo(SampleStatus.APPROVED);
+
+        SampleRequest cancelled = draft();
+        cancelled.cancel("not needed");
+        assertThatThrownBy(cancelled::productionStarted).extracting(SampleRequestTest::code)
+                .isEqualTo(ErrorCode.INVALID_SAMPLE_REQUEST_TRANSITION);
     }
 }

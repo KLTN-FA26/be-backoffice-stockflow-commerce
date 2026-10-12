@@ -102,7 +102,7 @@ class SampleRequestService implements SampleRequests {
     public Sample create(CurrentUser user, Create command) {
         ScopeGuards.requireBackOffice(user);
         UUID customerId = Objects.requireNonNull(command.customerId(), "customerId");
-        customers.findById(customerId).orElseThrow(() -> new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND));
+        requireActiveCustomer(customerId);
         // quote_id has no foreign key until the quote table arrives (SCRUM-448), and no module can say
         // whose a quote is: storing an id nothing can check would be trusting the client.
         if (command.quoteId() != null) {
@@ -153,6 +153,7 @@ class SampleRequestService implements SampleRequests {
     public Sample submit(CurrentUser user, UUID sampleRequestId, UUID warehouseId) {
         ScopeGuards.requireBackOffice(user);
         SampleRequest sample = lockVisible(user, sampleRequestId);
+        requireActiveCustomer(sample.customerId());
         WarehouseView warehouse = warehouses.findWarehouse(Objects.requireNonNull(warehouseId, "warehouseId"))
                 .orElseThrow(() -> new BusinessException(ErrorCode.WAREHOUSE_NOT_FOUND, "No warehouse " + warehouseId));
         if (!warehouse.active()) {
@@ -222,6 +223,7 @@ class SampleRequestService implements SampleRequests {
     public Sample startNextRound(CurrentUser user, UUID sampleRequestId, Draft draft) {
         ScopeGuards.requireBackOffice(user);
         SampleRequest previous = lockVisible(user, sampleRequestId);
+        requireActiveCustomer(previous.customerId());
         if (samples.nextRoundOf(previous.id()).isPresent()) {
             throw new BusinessException(ErrorCode.SAMPLE_NEXT_ROUND_EXISTS,
                     "Sample request %s already has a next round".formatted(previous.requestNumber()));
@@ -273,6 +275,25 @@ class SampleRequestService implements SampleRequests {
             UUID madeIn = productionOrders.findBySource(ProductionOrder.Type.SAMPLE, sample.id())
                     .map(order -> order.work().warehouseId()).orElse(null);
             WarehouseScope.requireWarehouse(madeIn);
+        }
+    }
+
+    /**
+     * Eligibility for new work. BR-ORD-007 gives quotes and orders only to an ACTIVE B2B customer and
+     * BR-CUS-003 keeps a blocked customer from starting new business while leaving what exists alone. A
+     * sample round is the first step of a quote, so drafting one, starting the next round and sending a
+     * round to the workshop (which spends blanks and press time) require ACTIVE: INACTIVE — which is also
+     * how a Sales-created customer who has not activated the portal is stored until a dedicated status
+     * exists (SCRUM-429) — and BLOCKED are refused. Work already under way is not undone: editing or
+     * cancelling a draft, recording that a sample went out and recording the customer's answer stay
+     * possible, as BR-CUS-003 leaves existing orders unaffected.
+     */
+    private void requireActiveCustomer(UUID customerId) {
+        String status = customers.findById(customerId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND)).status();
+        if (!"ACTIVE".equals(status)) {
+            throw new BusinessException(ErrorCode.CUSTOMER_NOT_ACTIVE,
+                    "Customer " + customerId + " is " + status + "; only an ACTIVE customer gets new sample work");
         }
     }
 
