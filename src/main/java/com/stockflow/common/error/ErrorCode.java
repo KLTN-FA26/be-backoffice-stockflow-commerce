@@ -137,6 +137,12 @@ public enum ErrorCode {
     SUPPLIER_NOT_SUBCONTRACTOR("This supplier is not a print subcontractor", 409),
     /** BR-PRD-08: a new design goes to print only after the customer approved its sample. */
     DESIGN_SAMPLE_NOT_APPROVED("A design on this order has no approved sample yet", 409),
+    /** SCRUM-394: a sample round moves only along 03-state-machines §17. */
+    INVALID_SAMPLE_REQUEST_TRANSITION("This sample request cannot move to that status right now", 409),
+    /** SCRUM-394: a round that ended in CHANGES_REQUESTED is followed by exactly one next round. */
+    SAMPLE_NEXT_ROUND_EXISTS("The next round of this sample request has already been started", 409),
+    /** BR-PRD-01: a source already has a production order, and it describes different work. */
+    PRODUCTION_SOURCE_CONFLICT("A production order already exists for this source with different content", 409),
     /** BR-PRD-09: a deposit order goes to production only once the deposit has arrived. */
     ORDER_DEPOSIT_NOT_RECEIVED("The deposit for this order has not arrived yet", 409),
     /** SCRUM-460: from IN_PRODUCTION on, a customer asks and Sales or the coordinator decides. */

@@ -1,23 +1,28 @@
 package com.stockflow.production.internal.service;
 
-import com.fasterxml.jackson.databind.json.JsonMapper;
+import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
-import com.stockflow.common.error.ConflictException;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
 import com.stockflow.contracts.OrderLinesReleasedForProduction;
-import com.stockflow.design.api.ConfirmedDesign;
-import com.stockflow.design.api.DesignService;
-import com.stockflow.production.internal.domain.ApprovedSample;
-import com.stockflow.production.internal.domain.ApprovedSampleRepository;
+import com.stockflow.order.api.OrderService;
+import com.stockflow.order.api.OrderStatus;
+import com.stockflow.order.api.OrderSummary;
 import com.stockflow.production.internal.domain.ProductionOrder;
 import com.stockflow.production.internal.domain.ProductionOrderRepository;
+import com.stockflow.production.internal.domain.SampleRequest;
+import com.stockflow.production.internal.domain.SampleRequestRepository;
 import com.stockflow.production.internal.domain.SampleSpecification;
+import com.stockflow.production.internal.domain.SampleStatus;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.ArgumentCaptor;
 
-import java.time.LocalDate;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -25,221 +30,219 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.*;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
+/**
+ * The release listener's decisions with its collaborators mocked: the event read back against the order,
+ * BR-PRD-08 from this module's sample rounds, BR-PRD-01 on replay, and nothing written when any line is
+ * refused. Real concurrency and rollback are in {@code ProductionIntegrationTest}.
+ */
 class OrderProductionServiceTest {
-    private final UUID customerId = UUID.randomUUID();
+
+    private static final Instant NOW = Instant.parse("2026-10-12T03:00:00Z");
+    private static final String CHECKSUM = "a".repeat(64);
+
+    private final ProductionOrderRepository productionOrders = mock(ProductionOrderRepository.class);
+    private final SampleRequestRepository samples = mock(SampleRequestRepository.class);
+    private final OrderService orders = mock(OrderService.class);
+    private final OrderProductionService service = new OrderProductionService(productionOrders, samples, orders,
+            Clock.fixed(NOW, ZoneOffset.UTC));
+
+    private final UUID customer = UUID.randomUUID();
     private final UUID orderId = UUID.randomUUID();
-    private final UUID warehouseId = UUID.randomUUID();
-    private final UUID snapshotId = UUID.randomUUID();
-    private final UUID sampleId = UUID.randomUUID();
-    private final UUID lineId = UUID.randomUUID();
-    private final ProductionOrderRepository repository = mock(ProductionOrderRepository.class);
-    private final ApprovedSampleRepository approvals = mock(ApprovedSampleRepository.class);
-    private final ReleasedOrderLookup releases = mock(ReleasedOrderLookup.class);
-    private final DesignService designs = mock(DesignService.class);
-    private final OrderProductionService service = new OrderProductionService(repository, approvals, releases, designs);
+    private final UUID warehouse = UUID.randomUUID();
+    private final UUID design = UUID.randomUUID();
+    private final UUID lineA = UUID.fromString("00000000-0000-7000-8000-00000000000a");
+    private final UUID lineB = UUID.fromString("00000000-0000-7000-8000-00000000000b");
+    private SampleRequest approved;
 
     @BeforeEach
-    void references() {
-        when(releases.requireCustomer(orderId, warehouseId)).thenReturn(customerId);
-        when(approvals.findById(sampleId)).thenReturn(Optional.of(approved(customerId, "CUP-001", "a".repeat(64))));
-        when(approvals.findForDesign(customerId, snapshotId, new Sku("CUP-001")))
-                .thenReturn(Optional.of(approved(customerId, "CUP-001", "a".repeat(64))));
-        when(designs.verifySnapshotForSku(snapshotId, customerId, "CUP-001"))
-                .thenReturn(new ConfirmedDesign(snapshotId, UUID.randomUUID(), "a".repeat(64)));
-        when(repository.insertOrGet(any())).thenAnswer(call -> call.getArgument(0));
+    void setUp() {
+        approved = sample(customer, design, "CUP-PP-500", SampleStatus.APPROVED);
+        when(productionOrders.nextNumber(any())).thenReturn("LSX-20261012-0001", "LSX-20261012-0002");
+        when(productionOrders.findBySource(eq(ProductionOrder.Type.ORDER), any())).thenReturn(Optional.empty());
+        when(productionOrders.createIfAbsent(any(), any(), any())).thenAnswer(call -> call.getArgument(0));
+        released(OrderStatus.IN_PRODUCTION, warehouse, line(lineB), line(lineA));
+    }
+
+    private SampleRequest sample(UUID owner, UUID snapshot, String blank, SampleStatus status) {
+        SampleRequest sample = SampleRequest.restore(UUID.randomUUID(), "SR-1", owner, null, null, 1,
+                new SampleSpecification(snapshot, new Sku(blank), 3, null), status, NOW, NOW, UUID.randomUUID(), null,
+                null);
+        when(samples.findById(sample.id())).thenReturn(Optional.of(sample));
+        return sample;
+    }
+
+    private OrderSummary.LineSummary line(UUID id) {
+        return new OrderSummary.LineSummary(id, "CUP-PP-500", 10, Money.vnd(2000),
+                Money.vnd(20000), List.of(), design, CHECKSUM);
+    }
+
+    private void released(OrderStatus status, UUID from, OrderSummary.LineSummary... lines) {
+        when(orders.findById(orderId)).thenReturn(Optional.of(new OrderSummary(orderId, "SO-1", customer, status,
+                Money.vnd(40000), List.of(lines), NOW, null, null, null, null, null, null, null,
+                null, null, from, from == null ? null : NOW)));
+    }
+
+    private OrderLinesReleasedForProduction.Line event(UUID line, UUID approvedSample) {
+        return new OrderLinesReleasedForProduction.Line(line, "CUP-PP-500", 10, design, CHECKSUM, approvedSample, null);
+    }
+
+    private OrderLinesReleasedForProduction release(OrderLinesReleasedForProduction.Line... lines) {
+        return new OrderLinesReleasedForProduction(orderId, "SO-1", warehouse, List.of(lines));
+    }
+
+    private static ErrorCode code(Throwable e) {
+        return ((BusinessException) e).errorCode();
     }
 
     @Test
-    void consumesTheExistingSerializedContractAndCreatesOneOrderPerLine() throws Exception {
-        var mapper = JsonMapper.builder().findAndAddModules().build();
-        var event = event(line(lineId, 100, sampleId), line(UUID.randomUUID(), 50, sampleId));
-        var decoded = mapper.readValue(mapper.writeValueAsString(event), OrderLinesReleasedForProduction.class);
-        assertThat(service.receive(decoded)).hasSize(2).doesNotHaveDuplicates();
-        var captured = org.mockito.ArgumentCaptor.forClass(ProductionOrder.class);
-        verify(repository, times(2)).insertOrGet(captured.capture());
-        assertThat(captured.getAllValues()).allSatisfy(order -> {
+    void createsOnePendingOrderPerLineInLineIdOrderAgainstTheApprovedSample() {
+        List<ProductionOrder> created = service.createFor(release(event(lineB, approved.id()), event(lineA, approved.id())));
+
+        assertThat(created).extracting(ProductionOrder::salesOrderLineId).containsExactly(lineA, lineB);
+        assertThat(created).allSatisfy(order -> {
+            assertThat(order.type()).isEqualTo(ProductionOrder.Type.ORDER);
             assertThat(order.status()).isEqualTo(ProductionOrder.Status.PENDING_PREPRESS);
-            assertThat(order.source().type()).isEqualTo(ProductionOrder.Type.ORDER);
-            assertThat(order.specification().customerId()).isEqualTo(customerId);
-            assertThat(order.specification().warehouseId()).isEqualTo(warehouseId);
-            assertThat(order.specification().approvedSampleId()).isEqualTo(sampleId);
+            assertThat(order.salesOrderId()).isEqualTo(orderId);
+            assertThat(order.approvedSampleId()).isEqualTo(approved.id());
+            assertThat(order.work().warehouseId()).isEqualTo(warehouse);
+            assertThat(order.work().plannedQuantity()).isEqualTo(10);
+            assertThat(order.work().designChecksum()).isEqualTo(CHECKSUM);
         });
+        verify(productionOrders, times(2)).createIfAbsent(any(), eq(null), eq(NOW));
     }
 
     @Test
-    void duplicateDeliveryReturnsPersistedIdsWithoutRecheckingExternalArtifacts() {
-        var existing = existing(lineId, 100, warehouseId);
-        when(repository.findBySource(existing.source())).thenReturn(Optional.of(existing));
-        when(repository.insertOrGet(any())).thenReturn(existing);
-        assertThat(service.receive(event(line(lineId, 100, sampleId)))).containsExactly(existing.id());
-        verifyNoInteractions(designs);
-        verify(approvals, never()).findById(any());
+    void aSampleThatIsNotAnApprovedRoundOfThisCustomerDesignAndBlankIsRefused() {
+        List<SampleRequest> wrong = List.of(
+                sample(UUID.randomUUID(), design, "CUP-PP-500", SampleStatus.APPROVED),
+                sample(customer, UUID.randomUUID(), "CUP-PP-500", SampleStatus.APPROVED),
+                sample(customer, design, "BOX-KRAFT-01", SampleStatus.APPROVED),
+                sample(customer, design, "CUP-PP-500", SampleStatus.SENT_TO_CUSTOMER));
+        for (SampleRequest sample : wrong) {
+            assertThatThrownBy(() -> service.createFor(release(event(lineA, sample.id()))))
+                    .extracting(OrderProductionServiceTest::code).isEqualTo(ErrorCode.DESIGN_SAMPLE_NOT_APPROVED);
+        }
+        assertThatThrownBy(() -> service.createFor(release(event(lineA, UUID.randomUUID()))))
+                .as("unknown sample").extracting(OrderProductionServiceTest::code)
+                .isEqualTo(ErrorCode.DESIGN_SAMPLE_NOT_APPROVED);
+        verify(productionOrders, never()).createIfAbsent(any(), any(), any());
     }
 
     @Test
-    void replayOfCompletedOrderKeepsItsIdAndDoesNotResetWorkflowState() {
-        var created = existing(lineId, 100, warehouseId);
-        var completed = ProductionOrder.restore(created.id(), created.specification(), ProductionOrder.Status.COMPLETED);
-        when(repository.findBySource(completed.source())).thenReturn(Optional.of(completed));
-        when(repository.insertOrGet(any())).thenReturn(completed);
-        assertThat(service.receive(event(line(lineId, 100, sampleId)))).containsExactly(completed.id());
-        assertThat(completed.status()).isEqualTo(ProductionOrder.Status.COMPLETED);
-        verifyNoInteractions(designs);
+    void aRepeatDesignNeedsACompletedOrderOfItAndKeepsTheLatestApprovalAsReference() {
+        when(samples.latestApproved(design, new Sku("CUP-PP-500"))).thenReturn(Optional.empty());
+        when(productionOrders.completedForAnotherOrder(design, orderId)).thenReturn(false);
+        assertThatThrownBy(() -> service.createFor(release(event(lineA, null))))
+                .extracting(OrderProductionServiceTest::code).isEqualTo(ErrorCode.DESIGN_SAMPLE_NOT_APPROVED);
+
+        when(productionOrders.completedForAnotherOrder(design, orderId)).thenReturn(true);
+        assertThat(service.createFor(release(event(lineA, null)))).singleElement()
+                .satisfies(order -> assertThat(order.approvedSampleId()).isNull());
+
+        when(samples.latestApproved(design, new Sku("CUP-PP-500"))).thenReturn(Optional.of(approved));
+        assertThat(service.createFor(release(event(lineA, null)))).singleElement()
+                .satisfies(order -> assertThat(order.approvedSampleId()).isEqualTo(approved.id()));
     }
 
     @Test
-    void concurrentInsertLoserUsesTheAtomicRepositoryWinner() {
-        // Models the port's winner result only; real SQL uniqueness/races are blocked by SCRUM-422.
-        var winner = existing(lineId, 100, warehouseId);
-        when(repository.insertOrGet(any())).thenReturn(winner);
-        assertThat(service.receive(event(line(lineId, 100, sampleId)))).containsExactly(winner.id());
+    void theEventIsReadBackAgainstTheOrderBeforeAnythingIsCreated() {
+        assertThatThrownBy(() -> service.createFor(release(event(UUID.randomUUID(), approved.id()))))
+                .as("a line of another order").extracting(OrderProductionServiceTest::code).isEqualTo(ErrorCode.CONFLICT);
+        assertThatThrownBy(() -> service.createFor(release(new OrderLinesReleasedForProduction.Line(lineA,
+                "CUP-PP-500", 11, design, CHECKSUM, approved.id(), null))))
+                .as("another quantity").extracting(OrderProductionServiceTest::code).isEqualTo(ErrorCode.CONFLICT);
+        assertThatThrownBy(() -> service.createFor(release(new OrderLinesReleasedForProduction.Line(lineA,
+                "CUP-PP-500", 10, design, "b".repeat(64), approved.id(), null))))
+                .as("another checksum").extracting(OrderProductionServiceTest::code).isEqualTo(ErrorCode.CONFLICT);
+
+        released(OrderStatus.IN_PRODUCTION, UUID.randomUUID(), line(lineA));
+        assertThatThrownBy(() -> service.createFor(release(event(lineA, approved.id()))))
+                .as("released from another warehouse").extracting(OrderProductionServiceTest::code)
+                .isEqualTo(ErrorCode.CONFLICT);
+        released(OrderStatus.CONFIRMED, null, line(lineA));
+        assertThatThrownBy(() -> service.createFor(release(event(lineA, approved.id()))))
+                .as("never released").extracting(OrderProductionServiceTest::code).isEqualTo(ErrorCode.CONFLICT);
+
+        when(orders.findById(orderId)).thenReturn(Optional.empty());
+        assertThatThrownBy(() -> service.createFor(release(event(lineA, approved.id()))))
+                .extracting(OrderProductionServiceTest::code).isEqualTo(ErrorCode.NOT_FOUND);
+        verify(productionOrders, never()).createIfAbsent(any(), any(), any());
     }
 
     @Test
-    void concurrentInsertWithDifferentContentFailsInsteadOfAcknowledgingReplay() {
-        when(repository.insertOrGet(any())).thenReturn(existing(lineId, 99, warehouseId));
-        assertThatThrownBy(() -> service.receive(event(line(lineId, 100, sampleId))))
-                .isInstanceOf(ConflictException.class);
+    void malformedReleasesAreRefused() {
+        assertThatThrownBy(() -> service.createFor(release())).extracting(OrderProductionServiceTest::code)
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThatThrownBy(() -> service.createFor(release(event(lineA, approved.id()), event(lineA, approved.id()))))
+                .as("the same line twice").extracting(OrderProductionServiceTest::code)
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        verify(orders, never()).findById(any());
     }
 
     @Test
-    void replayWithDifferentQuantityFailsBeforeWriting() {
-        var original = existing(lineId, 99, warehouseId);
-        when(repository.findBySource(original.source())).thenReturn(Optional.of(original));
-        assertThatThrownBy(() -> service.receive(event(line(lineId, 100, sampleId))))
-                .isInstanceOf(ConflictException.class);
-        verify(repository, never()).insertOrGet(any());
+    void aRefusedLastLineLeavesNoFirstLineBehind() {
+        SampleRequest notYet = sample(customer, design, "CUP-PP-500", SampleStatus.SENT_TO_CUSTOMER);
+        assertThatThrownBy(() -> service.createFor(release(event(lineA, approved.id()), event(lineB, notYet.id()))))
+                .extracting(OrderProductionServiceTest::code).isEqualTo(ErrorCode.DESIGN_SAMPLE_NOT_APPROVED);
+        verify(productionOrders, never()).createIfAbsent(any(), any(), any());
+        verify(productionOrders, never()).nextNumber(any());
     }
 
     @Test
-    void replayWithDifferentWarehouseFailsBeforeWriting() {
-        var original = existing(lineId, 100, UUID.randomUUID());
-        when(repository.findBySource(original.source())).thenReturn(Optional.of(original));
-        assertThatThrownBy(() -> service.receive(event(line(lineId, 100, sampleId))))
-                .isInstanceOf(ConflictException.class);
-        verify(repository, never()).insertOrGet(any());
-    }
-
-    @ParameterizedTest
-    @ValueSource(strings = {"customer", "order", "orderNumber", "snapshot", "checksum", "blank", "approval", "dueDate"})
-    void replayCannotReplaceOwnershipOrLockedSourceContent(String changed) {
-        var original = existing(lineId, 100, warehouseId);
-        when(repository.findBySource(original.source())).thenReturn(Optional.of(original));
-        UUID incomingOrder = changed.equals("order") ? UUID.randomUUID() : orderId;
-        UUID incomingCustomer = changed.equals("customer") ? UUID.randomUUID() : customerId;
-        when(releases.requireCustomer(incomingOrder, warehouseId)).thenReturn(incomingCustomer);
-        var incomingLine = new OrderLinesReleasedForProduction.Line(lineId,
-                changed.equals("blank") ? "BOX-001" : "CUP-001", 100,
-                changed.equals("snapshot") ? UUID.randomUUID() : snapshotId,
-                changed.equals("checksum") ? "b".repeat(64) : "a".repeat(64),
-                changed.equals("approval") ? UUID.randomUUID() : sampleId,
-                LocalDate.of(2026, 10, changed.equals("dueDate") ? 21 : 20));
-        var incoming = new OrderLinesReleasedForProduction(incomingOrder,
-                changed.equals("orderNumber") ? "SO-2" : "SO-1", warehouseId, List.of(incomingLine));
-
-        assertThatThrownBy(() -> service.receive(incoming)).isInstanceOf(ConflictException.class);
-        verify(repository, never()).insertOrGet(any());
-        verifyNoInteractions(designs);
+    void aCancelledOrderGetsNoProductionOrders() {
+        released(OrderStatus.CANCELLED, warehouse, line(lineA));
+        assertThat(service.createFor(release(event(lineA, approved.id())))).isEmpty();
+        verify(productionOrders, never()).createIfAbsent(any(), any(), any());
     }
 
     @Test
-    void repeatedDesignResolvesItsExistingApprovalInsteadOfBypassingSampleGate() {
-        service.receive(event(line(lineId, 100, null)));
-        verify(approvals).findForDesign(customerId, snapshotId, new Sku("CUP-001"));
-        when(approvals.findForDesign(customerId, snapshotId, new Sku("CUP-001"))).thenReturn(Optional.empty());
-        assertThatThrownBy(() -> service.receive(event(line(UUID.randomUUID(), 100, null))))
-                .isInstanceOf(ConflictException.class);
-        verify(repository, times(1)).insertOrGet(any());
+    void aRedeliveryCreatesNothingAndLeavesAPrintedOrderAsItIs() {
+        ProductionOrder printed = ProductionOrder.restore(UUID.randomUUID(), "LSX-OLD", ProductionOrder.Type.ORDER,
+                ProductionOrder.Status.PRINTING, null, orderId, lineA, approved.id(),
+                new ProductionOrder.Work(warehouse, new Sku("CUP-PP-500"), design, CHECKSUM, 10, null));
+        when(productionOrders.findBySource(ProductionOrder.Type.ORDER, lineA)).thenReturn(Optional.of(printed));
+        when(samples.latestApproved(any(), any())).thenThrow(new AssertionError("a replay re-decides nothing"));
+
+        assertThat(service.createFor(release(event(lineA, null)))).containsExactly(printed);
+        assertThat(service.createFor(release(event(lineA, approved.id())))).containsExactly(printed);
+        verify(productionOrders, never()).createIfAbsent(any(), any(), any());
+        verify(productionOrders, never()).nextNumber(any());
     }
 
     @Test
-    void repeatReplayUsesOriginalApprovalEvenIfANewerApprovalExists() {
-        var original = existing(lineId, 100, warehouseId);
-        when(repository.findBySource(original.source())).thenReturn(Optional.of(original));
-        when(repository.insertOrGet(any())).thenReturn(original);
-        assertThat(service.receive(event(line(lineId, 100, null)))).containsExactly(original.id());
-        verify(approvals, never()).findForDesign(any(), any(), any());
+    void aRedeliveryThatDisagreesWithWhatWasCreatedIsRefused() {
+        ProductionOrder stored = ProductionOrder.restore(UUID.randomUUID(), "LSX-OLD", ProductionOrder.Type.ORDER,
+                ProductionOrder.Status.PENDING_PREPRESS, null, orderId, lineA, approved.id(),
+                new ProductionOrder.Work(UUID.randomUUID(), new Sku("CUP-PP-500"), design, CHECKSUM, 10, null));
+        when(productionOrders.findBySource(ProductionOrder.Type.ORDER, lineA)).thenReturn(Optional.of(stored));
+
+        assertThatThrownBy(() -> service.createFor(release(event(lineA, approved.id()))))
+                .extracting(OrderProductionServiceTest::code).isEqualTo(ErrorCode.PRODUCTION_SOURCE_CONFLICT);
     }
 
     @Test
-    void rejectsAnApprovalForAnotherCustomer() {
-        when(approvals.findById(sampleId)).thenReturn(Optional.of(approved(UUID.randomUUID(), "CUP-001", "a".repeat(64))));
-        assertThatThrownBy(() -> service.receive(event(line(lineId, 100, sampleId))))
-                .isInstanceOf(ConflictException.class);
-        verify(repository, never()).insertOrGet(any());
-    }
+    void aConcurrentWinnerReturnedByTheRepositoryIsComparedNotDuplicated() {
+        ArgumentCaptor<ProductionOrder> asked = ArgumentCaptor.forClass(ProductionOrder.class);
+        List<ProductionOrder> winners = new ArrayList<>();
+        when(productionOrders.createIfAbsent(asked.capture(), any(), any())).thenAnswer(call -> {
+            ProductionOrder mine = call.getArgument(0);
+            ProductionOrder winner = ProductionOrder.restore(UUID.randomUUID(), "LSX-WINNER",
+                    ProductionOrder.Type.ORDER, ProductionOrder.Status.PENDING_PREPRESS, null, orderId,
+                    mine.salesOrderLineId(), mine.approvedSampleId(), mine.work());
+            winners.add(winner);
+            return winner;
+        });
 
-    @Test
-    void rejectsAnotherBlankOrChecksum() {
-        when(approvals.findById(sampleId)).thenReturn(Optional.of(approved(customerId, "BOX-001", "a".repeat(64))));
-        assertThatThrownBy(() -> service.receive(event(line(lineId, 100, sampleId))))
-                .isInstanceOf(ConflictException.class);
-        when(approvals.findById(sampleId)).thenReturn(Optional.of(approved(customerId, "CUP-001", "b".repeat(64))));
-        assertThatThrownBy(() -> service.receive(event(line(lineId, 100, sampleId))))
-                .isInstanceOf(ConflictException.class);
-        verify(repository, never()).insertOrGet(any());
-    }
+        List<ProductionOrder> created = service.createFor(release(event(lineA, approved.id()), event(lineB, approved.id())));
 
-    @Test
-    void rejectsSnapshotBytesThatChangedSinceOrderAcceptance() {
-        when(designs.verifySnapshotForSku(snapshotId, customerId, "CUP-001"))
-                .thenReturn(new ConfirmedDesign(snapshotId, UUID.randomUUID(), "b".repeat(64)));
-        assertThatThrownBy(() -> service.receive(event(line(lineId, 100, sampleId))))
-                .isInstanceOf(ConflictException.class);
-        verify(repository, never()).insertOrGet(any());
-    }
-
-    @Test
-    void rejectsDuplicateLineIdsEvenWhenContentIsIdentical() {
-        var line = line(lineId, 100, sampleId);
-        assertThatThrownBy(() -> service.receive(event(line, line))).isInstanceOf(ConflictException.class);
-        verifyNoInteractions(repository, releases);
-    }
-
-    @ParameterizedTest
-    @ValueSource(ints = {0, -10})
-    void validatesTheEntireBatchBeforeWritingAnyLine(int invalidQuantity) {
-        assertThatThrownBy(() -> service.receive(event(line(lineId, 100, sampleId),
-                line(UUID.randomUUID(), invalidQuantity, sampleId)))).isInstanceOf(IllegalArgumentException.class);
-        verifyNoInteractions(repository, releases);
-    }
-
-    @Test
-    void missingApprovalOnLastLineDoesNotWriteFirstLine() {
-        assertThatThrownBy(() -> service.receive(event(line(lineId, 100, sampleId),
-                line(UUID.randomUUID(), 100, UUID.randomUUID())))).isInstanceOf(ConflictException.class);
-        verify(repository, never()).insertOrGet(any());
-    }
-
-    @Test
-    void emptyOrNullContainingBatchesAreRejected() {
-        assertThatThrownBy(() -> service.receive(event())).isInstanceOf(IllegalArgumentException.class);
-        var lines = new ArrayList<OrderLinesReleasedForProduction.Line>();
-        lines.add(null);
-        assertThatThrownBy(() -> service.receive(new OrderLinesReleasedForProduction(orderId, "SO-1", warehouseId, lines)))
-                .isInstanceOf(NullPointerException.class);
-        verifyNoInteractions(repository, releases);
-    }
-
-    private ApprovedSample approved(UUID customer, String sku, String checksum) {
-        return new ApprovedSample(sampleId, customer, new SampleSpecification(snapshotId, checksum, new Sku(sku), 2, null));
-    }
-
-    private OrderLinesReleasedForProduction.Line line(UUID id, int quantity, UUID approval) {
-        return new OrderLinesReleasedForProduction.Line(id, "CUP-001", quantity, snapshotId,
-                "a".repeat(64), approval, LocalDate.of(2026, 10, 20));
-    }
-
-    private OrderLinesReleasedForProduction event(OrderLinesReleasedForProduction.Line... lines) {
-        return new OrderLinesReleasedForProduction(orderId, "SO-1", warehouseId, List.of(lines));
-    }
-
-    private ProductionOrder existing(UUID source, int quantity, UUID warehouse) {
-        return ProductionOrder.pending(new ProductionOrder.Specification(
-                new ProductionOrder.Source(ProductionOrder.Type.ORDER, source), customerId, warehouse, orderId, "SO-1",
-                new SampleSpecification(snapshotId, "a".repeat(64), new Sku("CUP-001"), quantity,
-                        LocalDate.of(2026, 10, 20)), sampleId));
+        assertThat(created).containsExactlyElementsOf(winners);
+        assertThat(asked.getAllValues()).isSortedAccordingTo(Comparator.comparing(ProductionOrder::sourceId));
     }
 }

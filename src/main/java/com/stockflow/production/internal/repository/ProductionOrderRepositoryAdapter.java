@@ -1,0 +1,161 @@
+package com.stockflow.production.internal.repository;
+
+import com.stockflow.common.domain.Sku;
+import com.stockflow.common.id.Identifiers;
+import com.stockflow.common.persistence.Specs;
+import com.stockflow.common.security.WarehouseScope;
+import com.stockflow.production.internal.domain.ProductionOrder;
+import com.stockflow.production.internal.domain.ProductionOrderRepository;
+import com.stockflow.production.internal.entity.ProductionOrderJpaEntity;
+import com.stockflow.production.internal.entity.ProductionOrderStatusHistoryJpaEntity;
+import jakarta.persistence.EntityManager;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.domain.Specification;
+import org.springframework.stereotype.Repository;
+
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.util.Collection;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+
+@Repository
+class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, ProductionOrderSearch {
+
+    private final ProductionOrderJpaRepository jpa;
+    private final EntityManager entityManager;
+
+    ProductionOrderRepositoryAdapter(ProductionOrderJpaRepository jpa, EntityManager entityManager) {
+        this.jpa = jpa;
+        this.entityManager = entityManager;
+    }
+
+    @Override
+    public Optional<ProductionOrder> findBySource(ProductionOrder.Type type, UUID sourceId) {
+        return findEntity(type, sourceId).map(ProductionOrderRepositoryAdapter::toDomain);
+    }
+
+    /**
+     * BR-PRD-01 under concurrency. A transaction-scoped advisory lock on the source serialises two
+     * creators of the same source: the second waits until the first commits or rolls back, then its
+     * lookup — a new statement, so a new READ COMMITTED snapshot — sees the winner and returns it. A
+     * plain find-then-insert would let both insert and the loser would fail on the unique index with
+     * its transaction aborted; catching that error is not possible in PostgreSQL without a savepoint.
+     * The unique indexes ({@code uk_production_order_line}, {@code uk_production_order_sample_request})
+     * stay the backstop for any writer that does not come through here.
+     */
+    @Override
+    public ProductionOrder createIfAbsent(ProductionOrder candidate, UUID createdBy, Instant at) {
+        entityManager.createNativeQuery("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))")
+                .setParameter("key", "production-source:" + candidate.sourceId())
+                .getSingleResult();
+        Optional<ProductionOrderJpaEntity> existing = findEntity(candidate.type(), candidate.sourceId());
+        if (existing.isPresent()) {
+            return toDomain(existing.get());
+        }
+        ProductionOrderJpaEntity entity = new ProductionOrderJpaEntity(candidate);
+        entityManager.persist(entity);
+        entityManager.persist(new ProductionOrderStatusHistoryJpaEntity(Identifiers.newId(), candidate.id(), null,
+                candidate.status().name(), creationReason(candidate), at, createdBy));
+        entityManager.flush();
+        // Read back the columns the table defaults (mode, zero quantities) so a reader in this
+        // transaction sees the row as stored.
+        entityManager.refresh(entity);
+        return toDomain(entity);
+    }
+
+    private static String creationReason(ProductionOrder order) {
+        return order.type() == ProductionOrder.Type.SAMPLE ? "Sample request submitted" : "Order line released";
+    }
+
+    @Override
+    public boolean completedForAnotherOrder(UUID designSnapshotId, UUID excludingSalesOrderId) {
+        return jpa.existsCompletedForAnotherOrder(designSnapshotId, excludingSalesOrderId);
+    }
+
+    /** Same counter table and upsert as TO-/ADJ-/GR- numbers; a rollback leaves a gap, never a duplicate. */
+    @Override
+    public String nextNumber(LocalDate day) {
+        Number value = (Number) entityManager.createNativeQuery("""
+                        INSERT INTO platform.document_sequence (document_type, sequence_date, last_value)
+                        VALUES ('LSX', :day, 1)
+                        ON CONFLICT (document_type, sequence_date)
+                        DO UPDATE SET last_value = platform.document_sequence.last_value + 1
+                        RETURNING last_value""")
+                .setParameter("day", day)
+                .getSingleResult();
+        return "LSX-%s-%04d".formatted(day.format(DateTimeFormatter.BASIC_ISO_DATE), value.longValue());
+    }
+
+    @Override
+    public Page<Row> search(Criteria criteria, Pageable pageable) {
+        Specification<ProductionOrderJpaEntity> spec = Specification
+                .<ProductionOrderJpaEntity>where(Specs.eq("warehouseId", criteria.warehouseId()))
+                .and(Specs.eq("sampleRequestId", criteria.sampleRequestId()))
+                .and(Specs.eq("salesOrderId", criteria.salesOrderId()))
+                .and(Specs.contains("orderNumber", criteria.number()))
+                .and(criteria.types() == null || criteria.types().isEmpty() ? null : Specs.in("type", criteria.types()))
+                .and(criteria.statuses() == null || criteria.statuses().isEmpty()
+                        ? null : Specs.in("status", criteria.statuses()))
+                .and(criteria.dueFrom() == null ? null
+                        : (root, query, cb) -> cb.greaterThanOrEqualTo(root.get("dueDate"), criteria.dueFrom()))
+                .and(criteria.dueTo() == null ? null
+                        : (root, query, cb) -> cb.lessThanOrEqualTo(root.get("dueDate"), criteria.dueTo()))
+                .and(WarehouseScope.warehousesIn("warehouseId"));
+        return jpa.findAll(spec, pageable).map(ProductionOrderRepositoryAdapter::toRow);
+    }
+
+    @Override
+    public Optional<Detail> detail(UUID id) {
+        return jpa.findById(id).map(e -> new Detail(toRow(e), e.getApprovedSampleId(), e.getDesignChecksum(),
+                e.getIssuedQuantity(), e.getPrintedQuantity(), e.getScrapQuantity(), e.getPrepressCheckedAt(),
+                e.getCompletedAt(), e.getCancelledAt(), e.getCancellationReason(), e.getCreatedBy(),
+                e.getLastModifiedAt(), e.getVersion(), history(id)));
+    }
+
+    private List<HistoryEntry> history(UUID productionOrderId) {
+        return entityManager.createQuery("""
+                        select h from ProductionOrderStatusHistoryJpaEntity h
+                         where h.productionOrderId = :id order by h.changedAt, h.id""",
+                        ProductionOrderStatusHistoryJpaEntity.class)
+                .setParameter("id", productionOrderId)
+                .getResultStream()
+                .map(h -> new HistoryEntry(h.getFromStatus(), h.getToStatus(), h.getReason(), h.getChangedAt(),
+                        h.getChangedBy()))
+                .toList();
+    }
+
+    @Override
+    public Map<UUID, Row> forSamples(Collection<UUID> sampleRequestIds) {
+        if (sampleRequestIds.isEmpty()) {
+            return Map.of();
+        }
+        return jpa.findByTypeAndSampleRequestIdIn(ProductionOrder.Type.SAMPLE, sampleRequestIds).stream()
+                .map(ProductionOrderRepositoryAdapter::toRow)
+                .collect(Collectors.toMap(Row::sampleRequestId, Function.identity()));
+    }
+
+    private Optional<ProductionOrderJpaEntity> findEntity(ProductionOrder.Type type, UUID sourceId) {
+        return type == ProductionOrder.Type.SAMPLE ? jpa.findForSample(sourceId) : jpa.findRootForLine(sourceId);
+    }
+
+    static ProductionOrder toDomain(ProductionOrderJpaEntity e) {
+        return ProductionOrder.restore(e.getId(), e.getOrderNumber(), e.getType(), e.getStatus(),
+                e.getSampleRequestId(), e.getSalesOrderId(), e.getSalesOrderLineId(), e.getApprovedSampleId(),
+                new ProductionOrder.Work(e.getWarehouseId(), new Sku(e.getBlankSku()), e.getDesignSnapshotId(),
+                        e.getDesignChecksum(), e.getPlannedQuantity(), e.getDueDate()));
+    }
+
+    private static Row toRow(ProductionOrderJpaEntity e) {
+        return new Row(e.getId(), e.getOrderNumber(), e.getType(), e.getMode(), e.getStatus(), e.getHoldReason(),
+                e.getWarehouseId(), e.getBlankSku(), e.getDesignSnapshotId(), e.getPlannedQuantity(),
+                e.getGoodQuantity(), e.getDueDate(), e.getSampleRequestId(), e.getSalesOrderId(),
+                e.getSalesOrderLineId(), e.getParentId(), e.getCreatedAt());
+    }
+}

@@ -1,186 +1,204 @@
 package com.stockflow.production.internal.domain;
 
 import com.stockflow.common.domain.AggregateRoot;
-import com.stockflow.common.error.ConflictException;
+import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.contracts.SampleApproved;
-import com.stockflow.production.api.SampleStatus;
 
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 
 /**
- * A customer's sample approval journey. Only drafts can change specifications; each decision
- * retains the exact design, checksum and blank the customer saw. Methods validate before mutation.
+ * One round of making a sample of a new design for a customer (SCRUM-394, 03-state-machines §17).
+ *
+ * <p><b>One row per round.</b> When the customer asks for changes this round ends in
+ * {@code CHANGES_REQUESTED} and stays so; the next round is a new request with {@code round + 1}
+ * pointing back at it ({@link #nextRound}). The schema states the same thing twice:
+ * {@code ck_sample_request_round_chain} and the unique {@code uk_sample_request_next_round}. Keeping the
+ * old row intact is what preserves the history the customer reviewed, and is why the SAMPLE production
+ * order can be "one per sample request" (BR-PRD-01) without ever being reopened.</p>
+ *
+ * <p>Only a draft's specification can change. From submission on the design and blank are the ones the
+ * workshop prints, the customer holds and, once approved, the QC reference for order production
+ * (BR-PRD-05/08) — approval locks them by making the row terminal.</p>
+ *
+ * <p>Every method checks before it changes anything, so a refused call leaves the aggregate as it was.
+ * The CHECK constraints of {@code production.sample_request} mirror each invariant here.</p>
  */
 public final class SampleRequest extends AggregateRoot {
+
+    /** {@code customer_feedback VARCHAR(2000)}. */
+    public static final int MAX_FEEDBACK = 2000;
+    /** {@code cancellation_reason VARCHAR(500)}. */
+    public static final int MAX_CANCELLATION_REASON = 500;
+
     private final UUID id;
+    private final String requestNumber;
     private final UUID customerId;
     private final UUID quoteId;
-    private final UUID createdBy;
-    private final List<SampleReview> reviews = new ArrayList<>();
+    private final UUID previousRoundId;
+    private final int round;
     private SampleSpecification specification;
-    private SampleStatus status = SampleStatus.DRAFT;
-    private int round = 1;
-    private long version;
-    private UUID warehouseId;
+    private SampleStatus status;
+    private Instant sentAt;
+    private Instant respondedAt;
+    private UUID respondedBy;
+    private String customerFeedback;
+    private String cancellationReason;
 
-    private SampleRequest(UUID id, UUID customerId, UUID quoteId, UUID createdBy,
-                          SampleSpecification specification) {
+    private SampleRequest(UUID id, String requestNumber, UUID customerId, UUID quoteId, UUID previousRoundId,
+                          int round, SampleSpecification specification, SampleStatus status) {
         this.id = Objects.requireNonNull(id, "id");
+        if (requestNumber == null || requestNumber.isBlank()) {
+            throw new IllegalArgumentException("A sample request needs a number");
+        }
+        this.requestNumber = requestNumber;
         this.customerId = Objects.requireNonNull(customerId, "customerId");
         this.quoteId = quoteId;
-        this.createdBy = Objects.requireNonNull(createdBy, "createdBy");
+        if (round < 1 || (round == 1) != (previousRoundId == null)) {
+            throw new IllegalArgumentException("Only the first round has no previous round");
+        }
+        this.previousRoundId = previousRoundId;
+        this.round = round;
         this.specification = Objects.requireNonNull(specification, "specification");
+        this.status = Objects.requireNonNull(status, "status");
     }
 
-    public static SampleRequest draft(UUID customerId, UUID quoteId, UUID createdBy,
+    /** The first round, as Sales drafts it. */
+    public static SampleRequest draft(UUID id, String requestNumber, UUID customerId, UUID quoteId,
                                       SampleSpecification specification) {
-        return new SampleRequest(Identifiers.newId(), customerId, quoteId, createdBy, specification);
+        return new SampleRequest(id, requestNumber, customerId, quoteId, null, 1, specification, SampleStatus.DRAFT);
     }
 
-    /** Rehydrate under the repository lock without replaying decisions or raising new events. */
-    public static SampleRequest restore(UUID id, UUID customerId, UUID quoteId, UUID createdBy,
-                                        SampleSpecification specification, SampleStatus status,
-                                        int round, long version, UUID warehouseId, List<SampleReview> reviews) {
-        Objects.requireNonNull(status, "status");
-        List<SampleReview> history = List.copyOf(reviews);
-        if (round < 1 || version < 0) {
-            throw new IllegalArgumentException("Invalid sample round or version");
-        }
-        boolean reviewed = status == SampleStatus.APPROVED || status == SampleStatus.CHANGES_REQUESTED;
-        int expectedReviews = reviewed ? round : round - 1;
-        if (history.size() != expectedReviews) {
-            throw new IllegalArgumentException("Review history must cover every previous round");
-        }
-        for (int index = 0; index < history.size(); index++) {
-            var review = history.get(index);
-            var expectedDecision = status == SampleStatus.APPROVED && index == round - 1
-                    ? SampleReview.Decision.APPROVED : SampleReview.Decision.CHANGES_REQUESTED;
-            if (review.round() != index + 1 || review.decision() != expectedDecision) {
-                throw new IllegalArgumentException("Review history is out of order or has a premature approval");
-            }
-        }
-        if (reviewed && !history.getLast().specification().equals(specification)) {
-            throw new IllegalArgumentException("Reviewed specification cannot change");
-        }
-        boolean needsWarehouse = status != SampleStatus.DRAFT && status != SampleStatus.CANCELLED;
-        if (needsWarehouse != (warehouseId != null)) {
-            throw new IllegalArgumentException("Only a submitted round carries a selected warehouse");
-        }
-        var sample = new SampleRequest(id, customerId, quoteId, createdBy, specification);
-        sample.status = status;
-        sample.round = round;
-        sample.version = version;
-        sample.warehouseId = warehouseId;
-        sample.reviews.addAll(history);
+    /** Rehydration from the row: no transition is replayed and no event is raised. */
+    public static SampleRequest restore(UUID id, String requestNumber, UUID customerId, UUID quoteId,
+                                        UUID previousRoundId, int round, SampleSpecification specification,
+                                        SampleStatus status, Instant sentAt, Instant respondedAt, UUID respondedBy,
+                                        String customerFeedback, String cancellationReason) {
+        SampleRequest sample = new SampleRequest(id, requestNumber, customerId, quoteId, previousRoundId, round,
+                specification, status);
+        sample.sentAt = sentAt;
+        sample.respondedAt = respondedAt;
+        sample.respondedBy = respondedBy;
+        sample.customerFeedback = customerFeedback;
+        sample.cancellationReason = cancellationReason;
         return sample;
     }
 
-    public void requireRevision(int expectedRound, long expectedVersion) {
-        if (expectedRound != round || expectedVersion != version) {
-            throw new ConflictException(ErrorCode.OPTIMISTIC_LOCK, "The sample round or version has changed");
+    /**
+     * The round after this one, a new DRAFT request for the same customer and quote. The caller
+     * supplies the specification: usually a new design snapshot made from the customer's feedback,
+     * otherwise this round's own.
+     */
+    public SampleRequest nextRound(UUID nextId, String nextNumber, SampleSpecification nextSpecification) {
+        if (status != SampleStatus.CHANGES_REQUESTED) {
+            throw transition("start the next round of", SampleStatus.DRAFT);
         }
+        return new SampleRequest(nextId, nextNumber, customerId, quoteId, id, Math.incrementExact(round),
+                nextSpecification, SampleStatus.DRAFT);
     }
 
     public void edit(SampleSpecification replacement) {
-        requireStatus(SampleStatus.DRAFT);
-        specification = Objects.requireNonNull(replacement, "replacement");
-        version++;
+        Objects.requireNonNull(replacement, "replacement");
+        if (status != SampleStatus.DRAFT) {
+            throw new BusinessException(ErrorCode.INVALID_SAMPLE_REQUEST_TRANSITION,
+                    "Sample request %s is %s; only a draft can be edited".formatted(requestNumber, status));
+        }
+        specification = replacement;
     }
 
-    public void submit(UUID selectedWarehouseId) {
-        requireTransition(SampleStatus.SUBMITTED);
-        warehouseId = Objects.requireNonNull(selectedWarehouseId, "warehouseId");
-        status = SampleStatus.SUBMITTED;
-        version++;
+    /** Sent to the workshop; the SAMPLE production order is created in the same transaction. */
+    public void submit() {
+        move(SampleStatus.SUBMITTED);
     }
 
-    /** Called by the production workflow after work on this exact round begins. */
-    public void startProduction(int productionRound) {
-        requireRound(productionRound);
-        transition(SampleStatus.IN_PRODUCTION);
+    /** The workshop started the sample production order (SCRUM-396 onwards calls this). */
+    public void startProduction() {
+        move(SampleStatus.IN_PRODUCTION);
     }
 
-    /** Called only after the sample production order has completed QC (SCRUM-400). */
-    public void markReady(int productionRound) {
-        requireRound(productionRound);
-        transition(SampleStatus.READY);
+    /** The sample production order completed QC (SCRUM-400/401 calls this). */
+    public void markReady() {
+        move(SampleStatus.READY);
     }
 
-    public void sendToCustomer() {
-        transition(SampleStatus.SENT_TO_CUSTOMER);
+    /** Handed over or couriered outside the system; the system only records that it happened. */
+    public void markSent(Instant now) {
+        Objects.requireNonNull(now, "now");
+        move(SampleStatus.SENT_TO_CUSTOMER);
+        sentAt = now;
     }
 
-    public void requestChanges(String feedback, UUID actorId, Instant now) {
-        requireTransition(SampleStatus.CHANGES_REQUESTED);
-        SampleReview review = new SampleReview(round, specification,
-                SampleReview.Decision.CHANGES_REQUESTED, feedback, actorId, now);
-        reviews.add(review);
+    /**
+     * The customer approved what they hold. Locks the design on this blank as the QC reference for
+     * order production and announces it, so the order module can release lines of this design
+     * (BR-PRD-08).
+     */
+    public void approve(UUID by, Instant now) {
+        Objects.requireNonNull(by, "by");
+        Objects.requireNonNull(now, "now");
+        move(SampleStatus.APPROVED);
+        respondedAt = now;
+        respondedBy = by;
+        registerEvent(new SampleEvent(Identifiers.newId(), now, new SampleApproved(id, customerId,
+                specification.designSnapshotId(), specification.blankSku().code())));
+    }
+
+    /** The customer asked for changes; what they said is kept on this round for good. */
+    public void requestChanges(String feedback, UUID by, Instant now) {
+        Objects.requireNonNull(by, "by");
+        Objects.requireNonNull(now, "now");
+        String text = feedback == null ? "" : feedback.strip();
+        if (text.isEmpty() || text.length() > MAX_FEEDBACK) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "Asking for changes must say what to change, in at most " + MAX_FEEDBACK + " characters");
+        }
+        if (!status.canTransitionTo(SampleStatus.CHANGES_REQUESTED)) {
+            throw transition("ask for changes on", SampleStatus.CHANGES_REQUESTED);
+        }
         status = SampleStatus.CHANGES_REQUESTED;
-        version++;
+        respondedAt = now;
+        respondedBy = by;
+        customerFeedback = text;
     }
 
-    public void revise() {
-        requireTransition(SampleStatus.DRAFT);
-        int nextRound = Math.incrementExact(round);
-        status = SampleStatus.DRAFT;
-        round = nextRound;
-        warehouseId = null;
-        version++;
+    /** Only a draft can be cancelled: once submitted the workshop has a production order for it. */
+    public void cancel(String reason) {
+        String text = reason == null ? "" : reason.strip();
+        if (text.isEmpty() || text.length() > MAX_CANCELLATION_REASON) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "A cancellation must say why, in at most " + MAX_CANCELLATION_REASON + " characters");
+        }
+        move(SampleStatus.CANCELLED);
+        cancellationReason = text;
     }
 
-    public void approve(UUID actorId, Instant now) {
-        requireTransition(SampleStatus.APPROVED);
-        SampleReview review = new SampleReview(round, specification,
-                SampleReview.Decision.APPROVED, null, actorId, now);
-        reviews.add(review);
-        status = SampleStatus.APPROVED;
-        version++;
-        registerEvent(new SampleEvent(Identifiers.newId(), now, new SampleApproved(
-                id, customerId, specification.designSnapshotId(), specification.blankSku().code())));
-    }
-
-    public void cancel() {
-        transition(SampleStatus.CANCELLED);
-    }
-
-    private void transition(SampleStatus target) {
-        requireTransition(target);
-        status = target;
-        version++;
-    }
-
-    private void requireTransition(SampleStatus target) {
+    private void move(SampleStatus target) {
         if (!status.canTransitionTo(target)) {
-            throw new ConflictException("Sample cannot move from " + status + " to " + target);
+            throw transition("move", target);
         }
+        status = target;
     }
 
-    private void requireStatus(SampleStatus expected) {
-        if (status != expected) {
-            throw new ConflictException("Sample must be " + expected);
-        }
-    }
-
-    private void requireRound(int productionRound) {
-        if (productionRound != round) {
-            throw new ConflictException("Production callback belongs to a different sample round");
-        }
+    private BusinessException transition(String verb, SampleStatus target) {
+        return new BusinessException(ErrorCode.INVALID_SAMPLE_REQUEST_TRANSITION,
+                "Cannot %s sample request %s: it is %s, not a state that leads to %s"
+                        .formatted(verb, requestNumber, status, target));
     }
 
     public UUID id() { return id; }
+    public String requestNumber() { return requestNumber; }
     public UUID customerId() { return customerId; }
     public UUID quoteId() { return quoteId; }
-    public UUID createdBy() { return createdBy; }
+    public UUID previousRoundId() { return previousRoundId; }
+    public int round() { return round; }
     public SampleSpecification specification() { return specification; }
     public SampleStatus status() { return status; }
-    public int round() { return round; }
-    public long version() { return version; }
-    public UUID warehouseId() { return warehouseId; }
-    public List<SampleReview> reviews() { return List.copyOf(reviews); }
+    public Instant sentAt() { return sentAt; }
+    public Instant respondedAt() { return respondedAt; }
+    public UUID respondedBy() { return respondedBy; }
+    public String customerFeedback() { return customerFeedback; }
+    public String cancellationReason() { return cancellationReason; }
 }
