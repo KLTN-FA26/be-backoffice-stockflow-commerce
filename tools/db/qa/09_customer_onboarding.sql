@@ -50,6 +50,12 @@ SELECT pg_temp.expect_ok('B4 a dependent unit 10-3 is a different code', $q$
 SELECT pg_temp.expect_fail('B5 a tax code in another spelling', $q$
     INSERT INTO customer.customer (id, full_name, email, status, tax_code, version, created_at)
     VALUES (gen_random_uuid(), 'QA Spelling', 'qa.spelling@example.test', 'ACTIVE', '0312345678001', 0, NOW()) $q$);
+SELECT pg_temp.expect_ok('B5a a household business: its representative''s 12-digit personal ID (V20261014000540)', $q$
+    INSERT INTO customer.customer (id, full_name, email, status, tax_code, version, created_at)
+    VALUES (gen_random_uuid(), 'QA Household', 'qa.household@example.test', 'ACTIVE', '079085012345', 0, NOW()) $q$);
+SELECT pg_temp.expect_fail('B5b eleven digits are neither', $q$
+    INSERT INTO customer.customer (id, full_name, email, status, tax_code, version, created_at)
+    VALUES (gen_random_uuid(), 'QA Eleven', 'qa.eleven@example.test', 'ACTIVE', '07908501234', 0, NOW()) $q$);
 SELECT pg_temp.expect_fail('B6 a pending customer without an account to activate', $q$
     INSERT INTO customer.customer (id, full_name, email, status, version, created_at)
     VALUES (gen_random_uuid(), 'QA None', 'qa.none@example.test', 'PENDING_ACTIVATION', 0, NOW()) $q$);

@@ -17,8 +17,11 @@ class CustomerOnboardingTest {
         assertThat(TaxCode.normalise("0312345678-001")).isEqualTo("0312345678-001");
         assertThat(TaxCode.normalise("0312345678001")).isEqualTo("0312345678-001");
         assertThat(TaxCode.normalise("0312.345.678-001")).isEqualTo("0312345678-001");
+        // A household business: its representative's personal identification number (T1, Circular 86/2024 art. 5(5)).
+        assertThat(TaxCode.normalise("079085012345")).isEqualTo("079085012345");
+        assertThat(TaxCode.normalise("079 085 012 345")).isEqualTo("079085012345");
         for (String bad : new String[]{null, " ", "031234567", "03123456789", "0312345678-01", "ABC1234567",
-                "0312345678-0012", "0312345678_001"}) {
+                "0312345678-0012", "0312345678_001", "07908501234", "0790850123456-1", "079085012345-001"}) {
             assertThatThrownBy(() -> TaxCode.normalise(bad)).isInstanceOf(IllegalArgumentException.class);
         }
     }
