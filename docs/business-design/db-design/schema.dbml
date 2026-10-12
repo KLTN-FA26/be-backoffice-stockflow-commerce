@@ -538,6 +538,22 @@ Enum ordering.order_credit_check_outcome {
   REJECTED
 }
 
+Enum ordering.quote_payment_term {
+  PREPAID
+  DEPOSIT
+  CREDIT
+}
+
+Enum ordering.quote_status {
+  DRAFT
+  SENT
+  CHANGES_REQUESTED
+  ACCEPTED
+  EXPIRED
+  CANCELLED
+  CONVERTED
+}
+
 Enum ordering.return_request_reason_code {
   DEFECTIVE
   DAMAGED_IN_TRANSIT
@@ -2278,6 +2294,68 @@ Table ordering.order_status_history [headercolor: #C0392B] {
   last_modified_by varchar(100)
 }
 
+Table ordering.quote [headercolor: #C0392B] {
+  id                  uuid [pk]
+  quote_number        varchar(30) [not null, unique]
+  request_id          uuid [not null, unique]
+  customer_id         uuid [not null]
+  status              ordering.quote_status [not null]
+  revision            int [not null, default: 1]
+  payment_term        ordering.quote_payment_term [not null]
+  deposit_percent     decimal(5,2)
+  valid_until         timestamptz [not null]
+  terms               varchar(2000)
+  sent_at             timestamptz
+  sent_by             uuid
+  responded_at        timestamptz
+  responded_by        uuid
+  customer_feedback   varchar(2000)
+  cancellation_reason varchar(500)
+  converted_order_id  uuid [unique]
+  converted_at        timestamptz
+  version             bigint [not null, default: 0]
+  created_at          timestamptz [not null, default: `now()`]
+  created_by          varchar(100)
+  last_modified_at    timestamptz
+  last_modified_by    varchar(100)
+}
+
+Table ordering.quote_line [headercolor: #C0392B] {
+  id                  uuid [pk]
+  quote_id            uuid [not null]
+  line_no             int [not null]
+  blank_sku           varchar(64) [not null]
+  design_snapshot_id  uuid [not null]
+  print_spec          varchar(2000)
+  quantity            int [not null]
+  accepted_quantity   int
+  accepted_unit_price decimal(19,4)
+  indexes {
+    (quote_id, line_no) [unique]
+  }
+}
+
+Table ordering.quote_price_tier [headercolor: #C0392B] {
+  quote_line_id uuid [not null]
+  min_quantity  int [not null]
+  unit_price    decimal(19,4) [not null]
+  indexes {
+    (quote_line_id, min_quantity) [pk]
+  }
+}
+
+Table ordering.quote_status_history [headercolor: #C0392B] {
+  id          uuid [pk]
+  quote_id    uuid [not null]
+  revision    int [not null]
+  from_status varchar(20)
+  to_status   varchar(20) [not null]
+  reason      varchar(2000)
+  offer       jsonb
+  changed_at  timestamptz [not null]
+  changed_by  uuid
+}
+
 Table ordering.return_request [headercolor: #C0392B] {
   id               uuid [pk]
   rma_number       varchar(30) [not null, unique]
@@ -3317,6 +3395,7 @@ Ref: production.production_scrap.stock_adjustment_id > inventory.stock_adjustmen
 Ref: production.sample_request.customer_id > customer.customer.id [delete: restrict]
 Ref: production.sample_request.design_snapshot_id > design.design_snapshot.id [delete: restrict]
 Ref: production.sample_request.previous_round_id > production.sample_request.id [delete: restrict]
+Ref: production.sample_request.quote_id > ordering.quote.id [delete: restrict]
 Ref: production.sample_request.responded_by > identity.app_user.id
 Ref: ordering.approved_sample.customer_id > customer.customer.id [delete: restrict]
 Ref: ordering.approved_sample.design_snapshot_id > design.design_snapshot.id [delete: restrict]
@@ -3347,6 +3426,16 @@ Ref: ordering.order_line_reservation.reservation_id > inventory.stock_reservatio
 Ref: ordering.order_payment.order_id > ordering.customer_order.id [delete: restrict]
 Ref: ordering.order_status_history.actor_id > identity.app_user.id
 Ref: ordering.order_status_history.order_id > ordering.customer_order.id [delete: cascade]
+Ref: ordering.quote.converted_order_id > ordering.customer_order.id [delete: restrict]
+Ref: ordering.quote.customer_id > customer.customer.id [delete: restrict]
+Ref: ordering.quote.responded_by > identity.app_user.id
+Ref: ordering.quote.sent_by > identity.app_user.id
+Ref: ordering.quote_line.blank_sku > product.variants.sku [delete: restrict]
+Ref: ordering.quote_line.design_snapshot_id > design.design_snapshot.id [delete: restrict]
+Ref: ordering.quote_line.quote_id > ordering.quote.id [delete: cascade]
+Ref: ordering.quote_price_tier.quote_line_id > ordering.quote_line.id [delete: cascade]
+Ref: ordering.quote_status_history.changed_by > identity.app_user.id
+Ref: ordering.quote_status_history.quote_id > ordering.quote.id [delete: cascade]
 Ref: ordering.return_request.customer_id > customer.customer.id [delete: restrict]
 Ref: ordering.return_request.decided_by > identity.app_user.id
 Ref: ordering.return_request.order_id > ordering.customer_order.id [delete: restrict]
@@ -3523,6 +3612,10 @@ TableGroup ordering_group [color: #C0392B] {
   ordering.order_number_sequence
   ordering.order_payment
   ordering.order_status_history
+  ordering.quote
+  ordering.quote_line
+  ordering.quote_price_tier
+  ordering.quote_status_history
   ordering.return_request
   ordering.return_request_line
 }

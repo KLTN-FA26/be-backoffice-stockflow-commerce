@@ -55,8 +55,10 @@ class B2bOnboardingMigrationUpgradeTest {
                 long salesVersion = roleVersion(sql, "SALES_STAFF");
                 long customerRoleVersion = roleVersion(sql, "CUSTOMER");
 
+                // Up to this migration only: later ones (V20261014000200/0300, production grants and quotes)
+                // move some of the same role versions again, and this test is about what 000100 does.
                 var migrated = Flyway.configure().dataSource(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword())
-                        .locations("classpath:db/migration").load();
+                        .locations("classpath:db/migration").target("20261014000100").load();
                 assertThat(migrated.migrate().migrations).extracting(m -> m.version).contains("20261014000100");
                 migrated.validate();
 

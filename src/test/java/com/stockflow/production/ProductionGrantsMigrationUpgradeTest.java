@@ -16,14 +16,14 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * V20261014000200 on the real upgrade path: a database migrated to develop's last migration
- * (V20261013000600), carrying rows the application and an administrator wrote, then upgraded.
+ * V20261014000200 on the real upgrade path: a database migrated to the migration before it
+ * (V20261014000100, SCRUM-429), carrying rows the application and an administrator wrote, then upgraded.
  * Proves the grant change lands, every changed role's version moves (ADR-0008) and nothing else is
  * touched: an administrator's own extra grant on QC_STAFF, a QC user's role, the other roles' versions.
  */
 class ProductionGrantsMigrationUpgradeTest {
 
-    private static final String BEFORE = "20261013000600";
+    private static final String BEFORE = "20261014000100";
     private static final String MIGRATION = "20261014000200";
 
     @Test

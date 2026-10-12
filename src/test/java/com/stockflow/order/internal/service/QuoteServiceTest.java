@@ -77,9 +77,9 @@ class QuoteServiceTest {
     @BeforeEach
     void stubs() {
         when(customers.findById(customer)).thenReturn(Optional.of(new CustomerSummary(customer, portalUser, "A", "a@x.vn",
-                null, null, "ACTIVE", 0, NOW)));
+                null, null, null, "ACTIVE", 0, NOW)));
         when(customers.findByUserId(portalUser)).thenReturn(Optional.of(new CustomerSummary(customer, portalUser, "A",
-                "a@x.vn", null, null, "ACTIVE", 0, NOW)));
+                "a@x.vn", null, null, null, "ACTIVE", 0, NOW)));
         when(customers.creditTerms(customer)).thenReturn(new CreditTerms(customer, true, true, true, false,
                 com.stockflow.customer.api.CommercialTerm.DEPOSIT, new BigDecimal("30"), null, null, "VND", null, null,
                 null, 1));

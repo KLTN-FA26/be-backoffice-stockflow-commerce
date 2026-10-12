@@ -101,7 +101,7 @@ class SampleRequestServiceTest {
     }
 
     private CustomerSummary customerWith(String status) {
-        return new CustomerSummary(customer, null, "Customer", "c@x.vn", null, null, status, 0, NOW);
+        return new CustomerSummary(customer, null, "Customer", "c@x.vn", null, null, null, status, 0, NOW);
     }
 
     private SampleRequest stored(SampleStatus status) {
@@ -208,7 +208,7 @@ class SampleRequestServiceTest {
     void aPortalCustomerAnswersOnlyTheirOwnRoundsAndAnotherCustomersLooksAbsent() {
         CurrentUser portal = user(Role.CUSTOMER);
         SampleRequest sample = stored(SampleStatus.SENT_TO_CUSTOMER);
-        CustomerSummary other = new CustomerSummary(UUID.randomUUID(), portal.userId(), "Other", "o@x.vn", null, null,
+        CustomerSummary other = new CustomerSummary(UUID.randomUUID(), portal.userId(), "Other", "o@x.vn", null, null, null,
                 "ACTIVE", 0, NOW);
         when(customers.findByUserId(portal.userId())).thenReturn(Optional.of(other));
 
@@ -216,7 +216,7 @@ class SampleRequestServiceTest {
         assertThatThrownBy(() -> service.get(portal, sample.id())).isInstanceOf(NotFoundException.class);
         assertThat(sample.status()).isEqualTo(SampleStatus.SENT_TO_CUSTOMER);
 
-        CustomerSummary own = new CustomerSummary(customer, portal.userId(), "Own", "c@x.vn", null, null, "ACTIVE", 0, NOW);
+        CustomerSummary own = new CustomerSummary(customer, portal.userId(), "Own", "c@x.vn", null, null, null, "ACTIVE", 0, NOW);
         when(customers.findByUserId(portal.userId())).thenReturn(Optional.of(own));
         service.requestChanges(portal, sample.id(), "Darker blue");
         assertThat(sample.status()).isEqualTo(SampleStatus.CHANGES_REQUESTED);
@@ -252,7 +252,7 @@ class SampleRequestServiceTest {
 
     @Test
     void onlyAnActiveCustomerGetsNewSampleWorkButWorkUnderWayContinues() {
-        for (String status : List.of("INACTIVE", "BLOCKED")) {
+        for (String status : List.of("INACTIVE", "BLOCKED", "PENDING_ACTIVATION")) {
             when(customers.findById(customer)).thenReturn(Optional.of(customerWith(status)));
             assertThatThrownBy(() -> service.create(sales, new SampleRequests.Create(customer, null,
                     new SampleRequests.Draft(snapshot, "CUP-PP-500", 5, null))))

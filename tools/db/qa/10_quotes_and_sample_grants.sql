@@ -38,13 +38,13 @@ END $$;
 
 -- Fixtures: a confirmed design of the first customer, a draft quote with one line and one tier.
 INSERT INTO design.design_draft (id, customer_id, product_id, status, created_at, current_artifacts)
-SELECT md5('qa9:draft')::uuid, id, (SELECT p.id FROM product.products p ORDER BY p.code LIMIT 1), 'DRAFT', NOW(),
-       '{}'::jsonb FROM customer.customer ORDER BY id LIMIT 1;
+SELECT md5('qa9:draft')::uuid, c.id, (SELECT p.id FROM product.products p ORDER BY p.code LIMIT 1), 'DRAFT', NOW(),
+       '{}'::jsonb FROM customer.customer c ORDER BY c.id LIMIT 1;
 INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at, artifact_manifest)
 VALUES (md5('qa9:snap')::uuid, md5('qa9:draft')::uuid, repeat('b', 64), 'https://example.com/b.pdf', NOW(), NOW(), '[]'::jsonb);
 INSERT INTO ordering.quote (id, quote_number, request_id, customer_id, status, payment_term, valid_until)
-SELECT md5('qa9:quote')::uuid, 'QT-QA-1', gen_random_uuid(), id, 'DRAFT', 'PREPAID', NOW() + interval '7 days'
-  FROM customer.customer ORDER BY id LIMIT 1;
+SELECT md5('qa9:quote')::uuid, 'QT-QA-1', gen_random_uuid(), c.id, 'DRAFT', 'PREPAID', NOW() + interval '7 days'
+  FROM customer.customer c ORDER BY c.id LIMIT 1;
 INSERT INTO ordering.quote_line (id, quote_id, line_no, blank_sku, design_snapshot_id, quantity)
 VALUES (md5('qa9:line')::uuid, md5('qa9:quote')::uuid, 1, 'SOFA-3S-GREY', md5('qa9:snap')::uuid, 500);
 INSERT INTO ordering.quote_price_tier (quote_line_id, min_quantity, unit_price)
