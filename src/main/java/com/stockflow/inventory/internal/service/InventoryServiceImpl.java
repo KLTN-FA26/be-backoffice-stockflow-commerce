@@ -144,6 +144,12 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
 
     @Override
     @Transactional(readOnly = true)
+    public java.util.Map<UUID, InventoryItemPolicy> itemPolicies(java.util.Collection<UUID> inventoryItemIds) {
+        return items.policiesOf(inventoryItemIds);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public java.util.Map<UUID, String> skusOf(java.util.Collection<UUID> inventoryItemIds) {
         return items.skusOf(inventoryItemIds);
     }

@@ -77,7 +77,7 @@ class GoodsReceiptTest {
         ReceiptLine b = new ReceiptLine(UUID.randomUUID(), a.poLineId(), a.inventoryItemId(), a.locationId(), 1,
                 a.lotNumber(), null, null, true, null, null, null, List.of());
         assertThatThrownBy(() -> draft().replaceLines(List.of(a, b))).extracting(GoodsReceiptTest::code)
-                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+                .isEqualTo(ErrorCode.DUPLICATE_RECEIPT_LINE);
     }
 
     @Test
@@ -101,7 +101,7 @@ class GoodsReceiptTest {
                 .extracting(GoodsReceiptTest::code).isEqualTo(ErrorCode.QC_QUANTITY_MISMATCH);
         assertThatThrownBy(() -> receipt.inspect(qcLine.id(), List.of(decision(QcOutcome.ACCEPTED, 5, null),
                 decision(QcOutcome.REJECTED, 1, " ")), NOW))
-                .extracting(GoodsReceiptTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
+                .extracting(GoodsReceiptTest::code).isEqualTo(ErrorCode.QC_REASON_REQUIRED);
 
         receipt.inspect(qcLine.id(), List.of(decision(QcOutcome.ACCEPTED, 5, null),
                 decision(QcOutcome.REJECTED, 1, "cracked")), NOW);
@@ -142,5 +142,16 @@ class GoodsReceiptTest {
                 .isEqualTo(ReceivingPurchaseOrder.Status.PARTIALLY_RECEIVED);
         assertThat(order.statusAfter(Map.of(line.id(), ReceivingPurchaseOrder.LineStatus.RECEIVED)))
                 .isEqualTo(ReceivingPurchaseOrder.Status.RECEIVED);
+    }
+
+    @Test
+    @DisplayName("SCRUM-464: a line the receipt does not have is RECEIPT_LINE_NOT_FOUND, not the receipt itself")
+    void unknownLine() {
+        GoodsReceipt receipt = draft();
+        ReceiptLine qcLine = line(2, true);
+        receipt.replaceLines(List.of(qcLine));
+        receipt.confirm(USER, NOW);
+        assertThatThrownBy(() -> receipt.moveToQc(UUID.randomUUID(), UUID.randomUUID(), USER, NOW))
+                .extracting(GoodsReceiptTest::code).isEqualTo(ErrorCode.RECEIPT_LINE_NOT_FOUND);
     }
 }

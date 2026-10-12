@@ -597,6 +597,19 @@ class IdentityServiceImpl implements IdentityService {
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public java.util.Map<UUID, String> displayNames(java.util.Collection<UUID> userIds) {
+        var ids = userIds.stream().filter(java.util.Objects::nonNull).distinct().toList();
+        if (ids.isEmpty()) {
+            return java.util.Map.of();
+        }
+        var names = new java.util.HashMap<UUID, String>();
+        users.findAllById(ids).forEach(user -> names.put(user.getId(),
+                user.getFullName() == null || user.getFullName().isBlank() ? user.getUsername() : user.getFullName()));
+        return names;
+    }
+
+    @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "user", resourceId = "#result?.user()?.userId()")
     public CreatedStaffUser createStaffUser(CreateStaffUserCommand command) {
         String username = command.username().trim();

@@ -84,6 +84,14 @@ public interface IdentityService {
     StaffUser user(UUID userId);
 
     /**
+     * The name to show for each user that exists — full name, or the username when none was given —
+     * in one query (SCRUM-464). For screens that show who did something; it reveals nothing a
+     * user's own id does not, so it needs no admin permission, unlike {@link #user}. Locked and
+     * disabled users keep their name.
+     */
+    java.util.Map<UUID, String> displayNames(java.util.Collection<UUID> userIds);
+
+    /**
      * Create a staff account with its roles. The password is temporary: the user must change it.
      *
      * @throws com.stockflow.common.error.BusinessException {@code USERNAME_ALREADY_EXISTS},

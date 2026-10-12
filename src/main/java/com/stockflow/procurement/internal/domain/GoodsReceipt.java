@@ -155,11 +155,11 @@ public final class GoodsReceipt extends AggregateRoot {
         for (QcInspection decision : decisions) {
             if (decision.outcome() != QcOutcome.ACCEPTED
                     && (decision.reason() == null || decision.reason().isBlank())) {
-                throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                throw new BusinessException(ErrorCode.QC_REASON_REQUIRED,
                         "A %s decision needs a reason".formatted(decision.outcome()));
             }
             if (decision.outcome() != QcOutcome.ACCEPTED && decision.targetLocationId() == null) {
-                throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                throw new BusinessException(ErrorCode.QC_TARGET_LOCATION_REQUIRED,
                         "A %s decision needs the quarantine location the goods go to".formatted(decision.outcome()));
             }
         }
@@ -178,7 +178,7 @@ public final class GoodsReceipt extends AggregateRoot {
     // ------------------------------------------------------------------ queries
 
     public ReceiptLine line(UUID lineId) {
-        return findLine(lineId).orElseThrow(() -> new BusinessException(ErrorCode.GOODS_RECEIPT_NOT_FOUND,
+        return findLine(lineId).orElseThrow(() -> new BusinessException(ErrorCode.RECEIPT_LINE_NOT_FOUND,
                 "Receipt %s has no line %s".formatted(number, lineId)));
     }
 
@@ -203,7 +203,7 @@ public final class GoodsReceipt extends AggregateRoot {
         Set<String> keys = new HashSet<>();
         for (ReceiptLine line : candidate) {
             if (!keys.add(line.poLineId() + "|" + Objects.toString(line.lotNumber(), ""))) {
-                throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                throw new BusinessException(ErrorCode.DUPLICATE_RECEIPT_LINE,
                         "PO line %s%s appears twice; put the whole quantity of a lot on one line".formatted(
                                 line.poLineId(), line.lotNumber() == null ? "" : " lot " + line.lotNumber()));
             }

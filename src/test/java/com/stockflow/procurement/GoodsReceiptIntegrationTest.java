@@ -182,6 +182,18 @@ class GoodsReceiptIntegrationTest {
                 new GoodsReceipts.Part(2, "HCM-QC01", "scratched"), null), qc))
                 .extracting(GoodsReceiptIntegrationTest::code).isEqualTo(ErrorCode.QC_QUANTITY_MISMATCH);
 
+        // SCRUM-464: each missing piece of a part with units is named; same area twice is its own code.
+        assertThat(fields(org.assertj.core.api.Assertions.catchThrowable(() -> receipts.inspect(draft.id(), tableLine,
+                new GoodsReceipts.Decision(4, new GoodsReceipts.Part(2, "HCM-QC01", " "), null), qc))))
+                .containsExactly("quarantined.reason:QC_REASON_REQUIRED");
+        assertThat(fields(org.assertj.core.api.Assertions.catchThrowable(() -> receipts.inspect(draft.id(), tableLine,
+                new GoodsReceipts.Decision(4, null, new GoodsReceipts.Part(2, null, "cracked")), qc))))
+                .containsExactly("rejected.locationCode:QC_TARGET_LOCATION_REQUIRED");
+        assertThat(fields(org.assertj.core.api.Assertions.catchThrowable(() -> receipts.inspect(draft.id(), tableLine,
+                new GoodsReceipts.Decision(4, new GoodsReceipts.Part(1, "HCM-QC01", "dent"),
+                        new GoodsReceipts.Part(1, "HCM-QC01", "crack")), qc))))
+                .containsExactly("rejected.locationCode:QC_LOCATIONS_MUST_DIFFER");
+
         GoodsReceipts.ReceiptView decided = receipts.inspect(draft.id(), tableLine, new GoodsReceipts.Decision(3,
                 new GoodsReceipts.Part(2, "HCM-QC01", "scratched top"),
                 new GoodsReceipts.Part(1, "HCM-RTV01", "cracked leg")), qc);
@@ -291,5 +303,91 @@ class GoodsReceiptIntegrationTest {
         assertThat(poStatus(po)).isEqualTo("PARTIALLY_RECEIVED");
         assertThat(receipts.list(List.of(GoodsReceiptStatus.CANCELLED), po, null, null, null, null, 0, 20, null)
                 .items()).extracting(GoodsReceipts.Row::id).containsExactly(other);
+    }
+
+    private static List<String> fields(Throwable thrown) {
+        return ((BusinessException) thrown).fieldErrors().stream().map(f -> f.field() + ":" + f.code()).toList();
+    }
+
+    @Test
+    @DisplayName("SCRUM-464: every line is checked, and each refusal names its field and its own code")
+    void refusalsNameTheirFields() {
+        UUID po = confirmedOrder(SOFA, 2, TABLE, 2);
+        UUID receiptId = receipts.create(new GoodsReceipts.Create(po, null, null), clerk).id();
+        UUID sofa = poLine(po, SOFA);
+        UUID table = poLine(po, TABLE);
+
+        Throwable thrown = org.assertj.core.api.Assertions.catchThrowable(() -> receipts.replaceLines(receiptId, List.of(
+                new GoodsReceipts.NewLine(sofa, 1, null, null, "HCM-RCV01", null),
+                new GoodsReceipts.NewLine(table, 1, null, null, "HCM-RCV01", null),
+                new GoodsReceipts.NewLine(UUID.randomUUID(), 1, null, null, "HCM-RCV01", null),
+                new GoodsReceipts.NewLine(sofa, 9, null, null, "HCM-A01-1-A", null))));
+
+        // Line 0 is fine on its own; with line 3 the sofa goes past floor(2 x 1.05) = 2 (BR-02).
+        assertThat(code(thrown)).isEqualTo(ErrorCode.OVER_RECEIPT_TOLERANCE);
+        assertThat(fields(thrown)).containsExactly(
+                "lines[0].quantity:OVER_RECEIPT_TOLERANCE",
+                "lines[1].lotNumber:LOT_REQUIRED",
+                "lines[1].expiryDate:EXPIRY_REQUIRED",
+                "lines[2].purchaseOrderLineId:RECEIPT_LINE_NOT_ON_PO",
+                "lines[3].locationCode:LOCATION_AREA_MISMATCH",
+                "lines[3].lotNumber:DUPLICATE_RECEIPT_LINE",
+                "lines[3].quantity:OVER_RECEIPT_TOLERANCE");
+        assertThat(receipts.get(receiptId).lines()).as("nothing was saved").isEmpty();
+
+        // The first line at fault decides the top-level code.
+        Throwable lotOnly = org.assertj.core.api.Assertions.catchThrowable(() -> receipts.replaceLines(receiptId,
+                List.of(new GoodsReceipts.NewLine(sofa, 1, null, null, "HCM-RCV01", null),
+                        new GoodsReceipts.NewLine(table, 1, lot, LocalDate.now().minusDays(1), "HCM-RCV01", null))));
+        assertThat(code(lotOnly)).isEqualTo(ErrorCode.RECEIPT_LOT_DATA_INVALID);
+        assertThat(fields(lotOnly)).containsExactly("lines[1].expiryDate:EXPIRY_NOT_AFTER_RECEIPT");
+    }
+
+    @Test
+    @DisplayName("SCRUM-464: a QC line in a warehouse with no QC area is QC_AREA_MISSING; display names and flags")
+    void qcAreaMissingAndDisplayFields() {
+        UUID po = confirmedOrder(TABLE, 2);
+        UUID receiptId = receipts.create(new GoodsReceipts.Create(po, "DN-464", null), clerk).id();
+        GoodsReceipts.ReceiptView counted = receipts.replaceLines(receiptId, List.of(new GoodsReceipts.NewLine(
+                poLine(po, TABLE), 2, lot, LocalDate.now().plusYears(1), "HCM-RCV01", null)));
+        assertThat(counted.lines()).singleElement().satisfies(l -> {
+            assertThat(l.lotTracked()).isTrue();
+            assertThat(l.expiryTracked()).isTrue();
+            assertThat(l.qcRequired()).isTrue();
+        });
+        assertThat(counted.warehouseCode()).isEqualTo("HCM");
+        assertThat(counted.supplierName()).isNotBlank();
+        assertThat(counted.receivedByName()).isNotBlank();
+
+        List<UUID> qcAreas = jdbc.queryForList("""
+                SELECT id FROM warehouse.area WHERE warehouse_id = (SELECT warehouse_id FROM procurement.goods_receipts
+                 WHERE id = ?) AND type = 'QUALITY_CONTROL' AND status = 'ACTIVE'""", UUID.class, receiptId);
+        tx.executeWithoutResult(s -> qcAreas.forEach(id ->
+                jdbc.update("UPDATE warehouse.area SET status = 'INACTIVE' WHERE id = ?", id)));
+        try {
+            assertThatThrownBy(() -> receipts.confirm(receiptId, clerk))
+                    .extracting(GoodsReceiptIntegrationTest::code).isEqualTo(ErrorCode.QC_AREA_MISSING);
+        } finally {
+            tx.executeWithoutResult(s -> qcAreas.forEach(id ->
+                    jdbc.update("UPDATE warehouse.area SET status = 'ACTIVE' WHERE id = ?", id)));
+        }
+
+        GoodsReceipts.ReceiptView confirmed = receipts.confirm(receiptId, clerk);
+        assertThat(confirmed.confirmedByName()).isNotBlank();
+        // A part of 0 units goes nowhere: its area is not looked up, even a stale code (SCRUM-464).
+        UUID tableLine = confirmed.lines().get(0).id();
+        receipts.moveToQc(receiptId, tableLine, "HCM-QCA01", clerk);
+        GoodsReceipts.ReceiptView inspected = receipts.inspect(receiptId, tableLine,
+                new GoodsReceipts.Decision(2, null, new GoodsReceipts.Part(0, "NO-SUCH-AREA", null)), qc);
+        assertThat(inspected.lines().get(0).inspections()).singleElement()
+                .satisfies(i -> assertThat(i.inspectedByName()).isNotBlank());
+        var row = receipts.list(null, po, null, null, null, null, 0, 20, null).items();
+        assertThat(row).singleElement().satisfies(r -> {
+            assertThat(r.purchaseOrderNumber()).startsWith("PO-");
+            assertThat(r.supplierName()).isEqualTo(confirmed.supplierName());
+            assertThat(r.warehouseName()).isNotBlank();
+            assertThat(r.receivedByName()).isEqualTo(confirmed.receivedByName());
+            assertThat(r.confirmedByName()).isEqualTo(confirmed.confirmedByName());
+        });
     }
 }

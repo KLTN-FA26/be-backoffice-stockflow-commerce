@@ -1,5 +1,9 @@
 package com.stockflow.common.error;
 
+import com.stockflow.common.api.FieldError;
+
+import java.util.List;
+
 /**
  * Business exception. Breaking a domain invariant throws this class (or a subclass);
  * it never returns null and never throws a bare RuntimeException.
@@ -11,13 +15,25 @@ public class BusinessException extends RuntimeException {
 
     private final ErrorCode errorCode;
 
+    /**
+     * The request fields this refusal is about ({@code lines[1].quantity}), when a business rule can
+     * point at them the way Bean Validation does (SCRUM-464). Empty for most refusals.
+     */
+    private final transient List<FieldError> fieldErrors;
+
     public BusinessException(ErrorCode errorCode) {
         this(errorCode, errorCode.defaultMessage());
     }
 
     public BusinessException(ErrorCode errorCode, String message) {
+        this(errorCode, message, List.of());
+    }
+
+    /** One refusal naming the request fields at fault; {@code fieldErrors[].code} says what is wrong with each. */
+    public BusinessException(ErrorCode errorCode, String message, List<FieldError> fieldErrors) {
         super(message);
         this.errorCode = errorCode;
+        this.fieldErrors = List.copyOf(fieldErrors);
     }
 
     /**
@@ -30,9 +46,14 @@ public class BusinessException extends RuntimeException {
     public BusinessException(ErrorCode errorCode, String message, Throwable cause) {
         super(message, cause);
         this.errorCode = errorCode;
+        this.fieldErrors = List.of();
     }
 
     public ErrorCode errorCode() {
         return errorCode;
+    }
+
+    public List<FieldError> fieldErrors() {
+        return fieldErrors == null ? List.of() : fieldErrors;
     }
 }
