@@ -25,14 +25,14 @@ public final class Reservation {
 
     private final ReservationId id;
     /** The order line's order, for a checkout hold; null for a production hold. */
-    private final UUID orderId;
+    private UUID orderId;
     /**
      * The production order, for blanks held by the workshop rather than by an order (a sample round
      * from its submission, docs decision Q1 2026-10-12; a reprint round). Exactly one of this and
      * {@link #orderId} is set: a production hold never invents an order id. A production hold does not
      * expire — there is no payment to wait for — so it is opened pinned.
      */
-    private final UUID productionOrderId;
+    private UUID productionOrderId;
     /**
      * The caller's own idempotency key, shared by every hold this one reservation call produced.
      *
@@ -101,6 +101,20 @@ public final class Reservation {
         return new Reservation(ReservationId.newId(), null,
                 java.util.Objects.requireNonNull(productionOrderId, "productionOrderId"), rootRequestId, requestId,
                 quantity, now, null, ReservationStatus.HELD, null, null);
+    }
+
+    /**
+     * A production order's hold becomes its sales order's (SCRUM-400): the finished goods of a reprint round or a
+     * subcontracted child, held by the production order while they were made, are the order's to ship. Same id,
+     * still pinned — one owner replaces the other, nothing is released.
+     */
+    void handToOrder(UUID orderId) {
+        requireActive("hand to an order");
+        if (productionOrderId == null) {
+            throw new IllegalStateException("Reservation %s already belongs to an order".formatted(id));
+        }
+        this.orderId = java.util.Objects.requireNonNull(orderId, "orderId");
+        this.productionOrderId = null;
     }
 
     /**

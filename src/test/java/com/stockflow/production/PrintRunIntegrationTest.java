@@ -303,6 +303,17 @@ class PrintRunIntegrationTest {
                         done.summary().salesOrderLineId(), line.productionOrderId(), 10));
         assertThat(runs.qcRoundsOf(manager, line.productionOrderId())).extracting(ProductionRecords.QcRound::round)
                 .containsExactly(1, 2);
+        // Fulfilment sees every good unit: the reprint hold is the order's now, and on its line.
+        List<UUID> held = jdbc.queryForList("""
+                SELECT r.id FROM inventory.stock_reservation r JOIN inventory.stock_item s ON s.id = r.stock_item_id
+                 WHERE r.status = 'HELD' AND s.location_code = ? AND r.order_id = ?""", UUID.class, PACKING,
+                line.orderId());
+        assertThat(jdbc.queryForObject("SELECT COALESCE(SUM(quantity), 0) FROM inventory.stock_reservation WHERE id IN ("
+                + String.join(",", java.util.Collections.nCopies(held.size(), "?")) + ")", Integer.class,
+                held.toArray())).isEqualTo(10);
+        assertThat(inventory.productionHolds(line.productionOrderId())).as("nothing left the LSX's own").isEmpty();
+        assertThat(salesOrders.findById(line.orderId()).orElseThrow().lines()).singleElement()
+                .satisfies(l -> assertThat(l.reservationIds()).containsAll(held));
         assertThat(done.history()).extracting(ProductionOrders.StatusChange::toStatus).containsExactly(
                 "PENDING_PREPRESS", "READY", "MATERIAL_ISSUED", "PRINTING", "QC", "READY", "MATERIAL_ISSUED",
                 "PRINTING", "QC", "COMPLETED");

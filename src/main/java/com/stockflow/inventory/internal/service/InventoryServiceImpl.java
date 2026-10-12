@@ -451,6 +451,23 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
     }
 
     @Override
+    public void handHoldToOrder(UUID reservationId, UUID productionOrderId, UUID orderId) {
+        ReservationId id = ReservationId.of(reservationId);
+        StockItem item = holderOf(id);
+        Reservation hold = item.findReservation(id).orElseThrow();
+        if (hold.status().isActive() && orderId.equals(hold.orderId())) {
+            return;
+        }
+        if (!hold.status().isActive() || !productionOrderId.equals(hold.productionOrderId())) {
+            throw new BusinessException(ErrorCode.RESERVATION_NOT_ISSUABLE,
+                    "Hold %s is not a live hold of production order %s".formatted(reservationId, productionOrderId));
+        }
+        item.handHoldToOrder(id, productionOrderId, orderId);
+        repository.save(item);
+        log.info("Hold {} of production order {} is now order {}'s", reservationId, productionOrderId, orderId);
+    }
+
+    @Override
     public void reduceHold(UUID reservationId, UUID orderId, UUID productionOrderId, int quantity) {
         ReservationId id = ReservationId.of(reservationId);
         StockItem item = holderOf(id);

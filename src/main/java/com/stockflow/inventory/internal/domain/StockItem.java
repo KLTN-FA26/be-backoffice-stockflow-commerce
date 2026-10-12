@@ -612,6 +612,18 @@ public final class StockItem extends AggregateRoot {
         checkInvariants();
     }
 
+    /** See {@link Reservation#handToOrder}: the hold must be the production order's own. */
+    public void handHoldToOrder(ReservationId reservationId, UUID productionOrderId, UUID orderId) {
+        Reservation reservation = findReservation(reservationId).orElseThrow(() -> new IllegalArgumentException(
+                "Reservation %s does not belong to stock item %s".formatted(reservationId, id)));
+        if (!Objects.equals(productionOrderId, reservation.productionOrderId())) {
+            throw new IllegalArgumentException("Reservation %s is not production order %s's".formatted(reservationId,
+                    productionOrderId));
+        }
+        reservation.handToOrder(orderId);
+        checkInvariants();
+    }
+
     /**
      * An empty layer of {@code source}'s goods at {@code destination} in {@code status} — the same SKU, lot,
      * expiry and receipt time — for {@link #takeOverReservation} to fill. Kept apart from {@link #arrivedAs},

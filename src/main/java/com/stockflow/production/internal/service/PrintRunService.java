@@ -52,12 +52,15 @@ class PrintRunService implements PrintRuns {
     private final WorkshopStock stock;
     private final SampleProductionProgress samples;
     private final OrderService salesOrders;
+    private final com.stockflow.order.api.OrderReservations orderReservations;
     private final ApplicationEventPublisher events;
     private final Clock clock;
 
     PrintRunService(ProductionOrderRepository orders, ProductionRecords records, ProductionOrders reads,
                     WorkshopStock stock, SampleProductionProgress samples, OrderService salesOrders,
-                    ApplicationEventPublisher events, Clock clock) {
+                    com.stockflow.order.api.OrderReservations orderReservations, ApplicationEventPublisher events,
+                    Clock clock) {
+        this.orderReservations = orderReservations;
         this.orders = orders;
         this.records = records;
         this.reads = reads;
@@ -154,6 +157,9 @@ class PrintRunService implements PrintRuns {
             samples.productionCompleted(order.id());
         } else {
             String packing = stock.finishToPacking(order, packingLocation, by);
+            // Every good unit is the order's to ship: reprint holds join the line's checkout holds.
+            orderReservations.addProductionHolds(order.salesOrderId(), order.salesOrderLineId(),
+                    stock.handFinishedGoodsToOrder(order));
             events.publishEvent(new ProductionCompleted(order.salesOrderId(), order.salesOrderLineId(), order.id(),
                     order.good()));
             log.info("Production order {} completed: {} good unit(s) to {}", order.orderNumber(), order.good(), packing);

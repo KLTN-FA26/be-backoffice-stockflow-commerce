@@ -142,6 +142,16 @@ public interface InventoryService {
      */
     void reduceHold(UUID reservationId, UUID orderId, UUID productionOrderId, int quantity);
 
+    /**
+     * A production order's live hold becomes its sales order's, same id, still pinned (SCRUM-400: finished goods
+     * of a reprint round or a subcontracted child are the order's to ship). Joins the caller's transaction;
+     * idempotent — a hold already the order's is left as it is.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code RESERVATION_NOT_FOUND},
+     *         {@code RESERVATION_NOT_ISSUABLE} (another production order's, another order's, or closed)
+     */
+    void handHoldToOrder(UUID reservationId, UUID productionOrderId, UUID orderId);
+
     /** The holds among {@code reservationIds} that are still live, with what they hold now and where. */
     List<StockReservation> liveHolds(Collection<UUID> reservationIds);
 

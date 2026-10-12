@@ -170,6 +170,17 @@ class WorkshopStock {
         return packing;
     }
 
+    /**
+     * The finished goods this production order held itself (a reprint round, a subcontracted child) become the
+     * sales order's, same holds: returns their ids for the order line. The order's own checkout holds already are.
+     * Only this production order's holds move, and only to its own sales order — never another's.
+     */
+    List<UUID> handFinishedGoodsToOrder(ProductionOrder order) {
+        List<UUID> own = inventory.productionHolds(order.id()).stream().map(StockReservation::reservationId).toList();
+        own.forEach(id -> inventory.handHoldToOrder(id, order.id(), order.salesOrderId()));
+        return own;
+    }
+
     /** The PACKING area named, or the warehouse's only usable one. */
     private String packingArea(ProductionOrder order, String requested) {
         if (requested != null && !requested.isBlank()) {

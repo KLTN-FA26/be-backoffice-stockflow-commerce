@@ -193,6 +193,21 @@ public final class Order extends AggregateRoot {
     }
 
     /**
+     * Holds production hands to a line after checkout (reprints, subcontracted children); see
+     * {@code OrderReservations}. Idempotent.
+     *
+     * @return whether a hold was added
+     */
+    public boolean addProductionHolds(UUID lineId, List<UUID> reservationIds) {
+        boolean known = lines.stream().anyMatch(line -> line.id().equals(lineId));
+        if (!known) {
+            throw new BusinessException(ErrorCode.NOT_FOUND,
+                    "Line %s does not belong to order %s".formatted(lineId, orderNumber));
+        }
+        return lineOf(lineId).addHolds(reservationIds);
+    }
+
+    /**
      * Submit the order for payment.
      *
      * <p>Refuses unless every line holds a reservation. The application service calls this only
