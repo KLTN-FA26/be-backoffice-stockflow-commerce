@@ -22,4 +22,9 @@ class WarehouseDirectoryAdapter implements WarehouseDirectory {
     public Optional<String> prefixOf(UUID warehouseId) {
         return warehouses.findWarehouse(warehouseId).map(WarehouseView::prefix);
     }
+
+    @Override
+    public boolean isActive(UUID warehouseId) {
+        return warehouses.findWarehouse(warehouseId).map(WarehouseView::active).orElse(false);
+    }
 }

@@ -21,7 +21,8 @@ import java.util.UUID;
 
 /**
  * {@code inventory.transfer_order}. Carrier, tracking number and shipping cost are left unmapped:
- * since 2026-10-06 the journey is not tracked (SCRUM-327), and the columns stay null.
+ * since 2026-10-06 the journey is not tracked (SCRUM-327), and the columns stay null. Warehouses,
+ * reason and date change only while DRAFT ({@link #reviseDraft}, {@code tg_transfer_order_draft_header}).
  */
 @Entity
 @Table(name = "transfer_order", schema = "inventory")
@@ -30,10 +31,10 @@ public class TransferOrderJpaEntity extends BaseEntity {
     @Column(name = "transfer_number", nullable = false, length = 30, updatable = false)
     private String transferNumber;
 
-    @Column(name = "from_warehouse_id", nullable = false, updatable = false)
+    @Column(name = "from_warehouse_id", nullable = false)
     private UUID fromWarehouseId;
 
-    @Column(name = "to_warehouse_id", nullable = false, updatable = false)
+    @Column(name = "to_warehouse_id", nullable = false)
     private UUID toWarehouseId;
 
     @Enumerated(EnumType.STRING)
@@ -41,10 +42,10 @@ public class TransferOrderJpaEntity extends BaseEntity {
     private TransferStatus status;
 
     @Enumerated(EnumType.STRING)
-    @Column(name = "reason", length = 16, updatable = false)
+    @Column(name = "reason", length = 16)
     private TransferReason reason;
 
-    @Column(name = "expected_date", updatable = false)
+    @Column(name = "expected_date")
     private LocalDate expectedDate;
 
     @Column(name = "submitted_by")
@@ -96,6 +97,17 @@ public class TransferOrderJpaEntity extends BaseEntity {
         this.dispatchedBy = dispatchedBy;
         this.dispatchedAt = dispatchedAt;
         this.cancelReason = cancelReason;
+    }
+
+    /** A DRAFT's new header (SCRUM-462); the lines are replaced by the repository. */
+    public void reviseDraft(UUID fromWarehouseId, UUID toWarehouseId, TransferReason reason, LocalDate expectedDate) {
+        if (status != TransferStatus.DRAFT) {
+            throw new IllegalStateException("Transfer " + transferNumber + " is " + status + ", not DRAFT");
+        }
+        this.fromWarehouseId = fromWarehouseId;
+        this.toWarehouseId = toWarehouseId;
+        this.reason = reason;
+        this.expectedDate = expectedDate;
     }
 
     public void addLine(TransferOrderLineJpaEntity line) {

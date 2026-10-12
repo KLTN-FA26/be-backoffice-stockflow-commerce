@@ -6,7 +6,10 @@ import com.stockflow.inventory.api.StockLevel;
 import com.stockflow.inventory.internal.controller.dto.StockLevelResponse;
 import com.stockflow.inventory.api.StockReservation;
 import com.stockflow.inventory.internal.controller.dto.ReservationResponse;
+import com.stockflow.inventory.internal.controller.dto.ReservationRowResponse;
 import com.stockflow.inventory.internal.controller.dto.StockItemResponse;
+import com.stockflow.inventory.internal.controller.dto.WarehouseStockItemResponse;
+import com.stockflow.inventory.internal.service.StockBrowsing;
 import org.mapstruct.Mapper;
 import org.mapstruct.Mapping;
 import org.mapstruct.ReportingPolicy;
@@ -48,4 +51,8 @@ interface InventoryWebMapper {
      * than pointing at the enclosing method.</p>
      */
     ReservationResponse.Hold toHold(StockReservation hold);
+
+    ReservationRowResponse toResponse(StockBrowsing.Reservation reservation);
+
+    WarehouseStockItemResponse toResponse(StockBrowsing.StockRow row);
 }

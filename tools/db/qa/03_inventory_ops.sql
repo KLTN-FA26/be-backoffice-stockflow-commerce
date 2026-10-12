@@ -212,5 +212,19 @@ SELECT pg_temp.expect_fail('I46 a pending adjustment that says it was withdrawn'
     INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by, withdrawn_at)
     VALUES (gen_random_uuid(), 'ADJ-QA-S3', 'HCM-A01-2-B', 'SOFA-3S-GREY', -1, 'DAMAGED', md5('demo:user:editor')::uuid, NOW()) $q$);
 
+\echo '--- editing a draft transfer (SCRUM-462, V20261013000600)'
+INSERT INTO inventory.transfer_order (id, transfer_number, from_warehouse_id, to_warehouse_id, reason)
+VALUES (md5('qa:to:2')::uuid, 'TO-QA-2', md5('demo:wh:HCM')::uuid, md5('qa:wh:HN')::uuid, 'REBALANCING');
+INSERT INTO inventory.transfer_order_line (id, transfer_order_id, line_no, sku, requested_qty)
+VALUES (md5('qa:tol:2')::uuid, md5('qa:to:2')::uuid, 1, 'SOFA-3S-GREY', 5);
+SELECT pg_temp.expect_ok('I47 a DRAFT transfer turned around, with a new date, reason and quantity', $q$
+    UPDATE inventory.transfer_order SET from_warehouse_id = md5('qa:wh:HN')::uuid, to_warehouse_id = md5('demo:wh:HCM')::uuid,
+           reason = 'DEMAND', expected_date = CURRENT_DATE + 3 WHERE id = md5('qa:to:2')::uuid;
+    UPDATE inventory.transfer_order_line SET requested_qty = 3 WHERE id = md5('qa:tol:2')::uuid $q$);
+SELECT pg_temp.expect_fail('I48 the date of a transfer past DRAFT', $q$
+    UPDATE inventory.transfer_order SET expected_date = CURRENT_DATE + 9 WHERE id = md5('qa:to:1')::uuid $q$);
+SELECT pg_temp.expect_fail('I49 the requested quantity of a transfer past DRAFT', $q$
+    UPDATE inventory.transfer_order_line SET requested_qty = 9 WHERE id = md5('qa:tol:1')::uuid $q$);
+
 ROLLBACK;
 \echo 'PASS 03_inventory_ops'

@@ -85,26 +85,12 @@ class TransferOrderServiceImpl implements TransferOrders {
     public Transfer create(Create command) {
         // BR-SEC-002: a warehouse-bound caller raises transfers into or out of their own warehouses.
         com.stockflow.common.security.WarehouseScope.requireEither(command.fromWarehouseId(), command.toWarehouseId());
-        String sourcePrefix = prefixOf(command.fromWarehouseId());
-        prefixOf(command.toWarehouseId());
+        String sourcePrefix = activePrefixOf(command.fromWarehouseId());
+        activePrefixOf(command.toWarehouseId());
         Instant now = clock.instant();
-        List<TransferLine> lines = new ArrayList<>();
-        int lineNo = 1;
-        for (NewLine line : command.lines()) {
-            lines.add(new TransferLine(Identifiers.newId(), lineNo++, new Sku(line.sku()), line.lotNumber(),
-                    line.quantity(), 0));
-        }
         TransferOrder order = TransferOrder.draft(Identifiers.newId(), "TO-pending", command.fromWarehouseId(),
-                command.toWarehouseId(), command.reason(), command.expectedDate(), null, lines, now);
-        // SCRUM-330: every line must be coverable from sellable, unreserved stock at the source now.
-        // Checked again, under lock, at dispatch — this only stops a transfer nobody can fill.
-        for (TransferLine line : order.lines()) {
-            StockAllocator.plan(line.sku().code(),
-                    candidates(line, sourcePrefix),
-                    Quantity.of(line.requested()),
-                    controls.policy(line.sku()).removalStrategy(),
-                    BusinessCalendar.date(now));
-        }
+                command.toWarehouseId(), command.reason(), command.expectedDate(), null, newLines(command.lines()), now);
+        requireCoverable(order, sourcePrefix, now);
         TransferOrder numbered = TransferOrder.draft(order.id(),
                 transfers.nextNumber(LocalDate.ofInstant(now, BUSINESS_ZONE)), order.fromWarehouseId(),
                 order.toWarehouseId(), order.reason(), order.expectedDate(), null, order.lines(), now);
@@ -115,6 +101,56 @@ class TransferOrderServiceImpl implements TransferOrders {
     @Transactional(readOnly = true)
     public Transfer get(UUID transferId) {
         return toView(load(transferId));
+    }
+
+    /**
+     * kltn-docs 10 §5: a rejected transfer is back in DRAFT "for the planner to change". The caller
+     * must be allowed the transfer as it was and as it will be (BR-SEC-002), both warehouses must be
+     * ACTIVE, and every line coverable at the (new) source now, as at creation.
+     */
+    @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "transfer-order", resourceId = "#transferId")
+    public Transfer reviseDraft(UUID transferId, Revise command) {
+        TransferOrder order = load(transferId);
+        if (order.status() != TransferStatus.DRAFT) {
+            throw new BusinessException(ErrorCode.TRANSFER_ORDER_NOT_EDITABLE,
+                    "Transfer %s is %s".formatted(order.number(), order.status()));
+        }
+        if (command.version() != order.version()) {
+            throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK,
+                    "Transfer " + order.number() + " changed since it was read; reload it");
+        }
+        com.stockflow.common.security.WarehouseScope.requireEither(command.fromWarehouseId(), command.toWarehouseId());
+        String sourcePrefix = activePrefixOf(command.fromWarehouseId());
+        activePrefixOf(command.toWarehouseId());
+        order.reviseDraft(command.fromWarehouseId(), command.toWarehouseId(), command.reason(),
+                command.expectedDate(), newLines(command.lines()));
+        requireCoverable(order, sourcePrefix, clock.instant());
+        return toView(transfers.save(order));
+    }
+
+    private static List<TransferLine> newLines(List<NewLine> requested) {
+        List<TransferLine> lines = new ArrayList<>();
+        int lineNo = 1;
+        for (NewLine line : requested) {
+            lines.add(new TransferLine(Identifiers.newId(), lineNo++, new Sku(line.sku()), line.lotNumber(),
+                    line.quantity(), 0));
+        }
+        return lines;
+    }
+
+    /**
+     * SCRUM-330: every line must be coverable from sellable, unreserved stock at the source now.
+     * Checked again, under lock, at dispatch — this only stops a transfer nobody can fill.
+     */
+    private void requireCoverable(TransferOrder order, String sourcePrefix, Instant now) {
+        for (TransferLine line : order.lines()) {
+            StockAllocator.plan(line.sku().code(),
+                    candidates(line, sourcePrefix),
+                    Quantity.of(line.requested()),
+                    controls.policy(line.sku()).removalStrategy(),
+                    BusinessCalendar.date(now));
+        }
     }
 
     @Override
@@ -246,6 +282,15 @@ class TransferOrderServiceImpl implements TransferOrders {
     private String prefixOf(UUID warehouseId) {
         return warehouses.prefixOf(Objects.requireNonNull(warehouseId, "warehouseId")).orElseThrow(() ->
                 new BusinessException(ErrorCode.WAREHOUSE_NOT_FOUND, "No warehouse " + warehouseId));
+    }
+
+    /** A transfer is raised only between ACTIVE warehouses (SCRUM-462): nothing ships from or to a closed one. */
+    private String activePrefixOf(UUID warehouseId) {
+        String prefix = prefixOf(warehouseId);
+        if (!warehouses.isActive(warehouseId)) {
+            throw new BusinessException(ErrorCode.WAREHOUSE_INACTIVE, "Warehouse " + prefix + " is not active");
+        }
+        return prefix;
     }
 
     /** The order, if the caller is assigned to one of its two warehouses (BR-SEC-002). */
