@@ -157,6 +157,12 @@ public enum ErrorCode {
     SAMPLE_NEXT_ROUND_EXISTS("The next round of this sample request has already been started", 409),
     /** BR-PRD-01: a source already has a production order, and it describes different work. */
     PRODUCTION_SOURCE_CONFLICT("A production order already exists for this source with different content", 409),
+    /** SCRUM-448: a quote moves only along 03-state-machines §18. */
+    INVALID_QUOTE_TRANSITION("This quote cannot move to that status right now", 409),
+    /** BR-ORD-008: a quote is answered only within its validity. */
+    QUOTE_EXPIRED("This quote is no longer valid", 409),
+    /** BR-ORD-007: a quoted line is ordered at or above its minimum order quantity. */
+    QUOTE_BELOW_MOQ("The quantity is below the minimum order quantity of the quote", 409),
     /** BR-PRD-09: a deposit order goes to production only once the deposit has arrived. */
     ORDER_DEPOSIT_NOT_RECEIVED("The deposit for this order has not arrived yet", 409),
     /** SCRUM-460: from IN_PRODUCTION on, a customer asks and Sales or the coordinator decides. */

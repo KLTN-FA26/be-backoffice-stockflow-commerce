@@ -52,7 +52,9 @@ class ProductionGrantsMigrationUpgradeTest {
                 List<String> salesBefore = grants(db, "SALES_STAFF");
                 List<String> productionStaffBefore = grants(db, "PRODUCTION_STAFF");
 
-                var result = flyway(postgres, null).migrate();
+                // Up to this migration only: later ones (V20261014000300 quotes) move some of the same role
+                // versions again, and this test is about what V20261014000200 does.
+                var result = flyway(postgres, MIGRATION).migrate();
                 assertThat(result.migrations).extracting(m -> m.version).contains(MIGRATION);
 
                 assertThat(grants(db, "CUSTOMER")).filteredOn(g -> g.startsWith("production-"))

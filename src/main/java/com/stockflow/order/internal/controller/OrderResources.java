@@ -16,6 +16,9 @@ public final class OrderResources {
     /** Orders over their customer's credit limit, waiting for whoever approves credit (SCRUM-427). */
     public static final String CREDIT_HOLDS = "sales-order-credit-holds";
 
+    /** B2B quotes (SCRUM-448), seeded by V20261014000300. */
+    public static final String QUOTES = "sales-quotes";
+
     private OrderResources() {
     }
 }

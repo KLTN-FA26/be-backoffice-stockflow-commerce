@@ -1,20 +1,15 @@
 package com.stockflow.production;
 
 import com.stockflow.common.id.Identifiers;
-import com.stockflow.common.storage.FileCategory;
 import com.stockflow.common.storage.FileStorage;
-import com.stockflow.common.storage.StoredFile;
 import com.stockflow.production.internal.service.SampleProductionProgress;
+import com.stockflow.support.ConfirmedDesigns;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.ReferenceRows;
 import jakarta.persistence.EntityManager;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.io.ByteArrayInputStream;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.util.HexFormat;
 import java.util.UUID;
 
 /**
@@ -25,7 +20,7 @@ import java.util.UUID;
 final class ProductionFixtures {
 
     /** A demo SKU of {@code DemoData.PRODUCT_SOFA} with sellable stock in HCM. */
-    static final String BLANK = "SOFA-3S-GREY";
+    static final String BLANK = ConfirmedDesigns.BLANK;
 
     record Design(UUID snapshotId, String checksum) {
     }
@@ -45,32 +40,10 @@ final class ProductionFixtures {
         this.progress = progress;
     }
 
-    /** A design of the sofa product that {@code customerId} confirmed. */
+    /** A design of the sofa product that {@code customerId} confirmed (see {@link ConfirmedDesigns}). */
     Design confirmedDesign(UUID customerId) throws Exception {
-        byte[] bytes = ("%PDF-1.4\n% sample art " + UUID.randomUUID()).getBytes(StandardCharsets.US_ASCII);
-        String checksum = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
-        StoredFile file = storage.store(FileCategory.DESIGN_RENDER, "art.pdf", "application/pdf", bytes.length,
-                new ByteArrayInputStream(bytes));
-        UUID draft = Identifiers.newId();
-        UUID artifact = Identifiers.newId();
-        UUID snapshot = Identifiers.newId();
-        UUID designer = user();
-        tx.executeWithoutResult(s -> {
-            jdbc.update("""
-                    INSERT INTO design.design_draft (id, customer_id, product_id, status, created_at, current_artifacts)
-                    VALUES (?, ?, ?, 'DRAFT', NOW(), '{}'::jsonb)""", draft, customerId, DemoData.PRODUCT_SOFA);
-            jdbc.update("""
-                    INSERT INTO design.design_artifact (id, draft_id, storage_key, original_name, content_type,
-                        size_bytes, stored_at, checksum, created_at, artifact_role)
-                    VALUES (?, ?, ?, 'art.pdf', 'application/pdf', ?, NOW(), ?, NOW(), 'PRINT_READY')""",
-                    artifact, draft, file.key(), bytes.length, checksum);
-            jdbc.update("""
-                    INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at,
-                        artifact_manifest, artifact_id, confirmed_by, reviewed_by, spec)
-                    VALUES (?, ?, ?, ?, NOW(), NOW(), '[]'::jsonb, ?, ?, ?, 'Logo front, 2 colours')""",
-                    snapshot, draft, checksum, file.key(), artifact, designer, designer);
-        });
-        return new Design(snapshot, checksum);
+        ConfirmedDesigns.Design design = ConfirmedDesigns.confirmed(storage, jdbc, tx, entityManager, customerId);
+        return new Design(design.snapshotId(), design.checksum());
     }
 
     Design confirmedDesign() throws Exception {
