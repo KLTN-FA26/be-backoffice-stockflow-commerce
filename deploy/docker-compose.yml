@@ -309,6 +309,32 @@ services:
       timeout: 3s
       retries: 5
 
+  # Live container logs in the browser, so reading the application's log no longer needs SSH and
+  # `docker compose logs`. Reads the json-file logs through the Docker socket and stores nothing
+  # itself, so it shows exactly what the rotation above keeps (5 x 20 MB per container).
+  #
+  # The socket is root on the host: `:ro` only stops the socket FILE being replaced, not API calls.
+  # What keeps this read-only is that container actions and shell stay at Dozzle's default (off) -
+  # never set DOZZLE_ENABLE_ACTIONS or DOZZLE_ENABLE_SHELL here. The UI is served at logs.<domain>
+  # behind the same basic auth as Jaeger: the dev profile logs SQL text, user ids and emails.
+  dozzle:
+    image: amir20/dozzle:v11.3.1
+    <<: [*restart, *logging]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      # This stack only. The VPS runs other compose projects (Sales Radar) whose logs are not ours
+      # to read.
+      DOZZLE_FILTER: label=com.docker.compose.project=stockflow
+      DOZZLE_NO_ANALYTICS: "true"
+    mem_limit: 64m
+    healthcheck:
+      test: ["CMD", "/dozzle", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
 volumes:
   postgres-data:
   minio-data:
