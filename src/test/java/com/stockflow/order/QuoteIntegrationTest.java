@@ -564,6 +564,69 @@ class QuoteIntegrationTest {
                 .isInstanceOf(BusinessException.class);
     }
 
+    /** Sets the customer's terms as the credit approver would (kltn-docs 18 BR-02). */
+    private void terms(boolean prepaid, boolean deposit, PaymentTerm defaultTerm) {
+        var current = customers.creditTerms(customerId);
+        customers.saveCreditTerms(new com.stockflow.customer.api.SaveCreditTermsCommand(customerId, prepaid, deposit,
+                false, com.stockflow.customer.api.CommercialTerm.valueOf(defaultTerm.name()),
+                deposit ? new BigDecimal("30") : null, null, null, "R1b test", sales.userId(),
+                current.configured() ? current.version() : null));
+    }
+
+    private Quotes.Draft twoUnits(ConfirmedDesigns.Design design, PaymentTerm term) {
+        return new Quotes.Draft(term, null, Instant.now().plus(Duration.ofDays(7)), null,
+                List.of(new Quotes.Line(BLANK, design.snapshotId(), "Logo", 2,
+                        List.of(new Quotes.Tier(2, new BigDecimal("3000"))))));
+    }
+
+    @Test
+    @DisplayName("R1b: a reorder whose payment term was withdrawn reaches Sales on a term allowed today; a change while a quote is out is caught at acceptance and at conversion")
+    void aWithdrawnPaymentTermIsNeverRestoredAndIsCheckedAgainAtEachStep() throws Exception {
+        terms(true, true, PaymentTerm.DEPOSIT);
+        ConfirmedDesigns.Design design = design();
+        Quotes.QuoteView created = quotes.create(sales, new Quotes.Create(UUID.randomUUID(), customerId,
+                twoUnits(design, PaymentTerm.DEPOSIT)));
+        Quotes.QuoteView sent = quotes.send(sales, created.id(), created.version());
+        approvedSample(design);
+        Quotes.QuoteView accepted = quotes.accept(portal, sent.id(), new Quotes.Acceptance(
+                quotes.get(portal, sent.id()).version(), Map.of()));
+        UUID orderId = quotes.convert(sales, accepted.id(), new Quotes.Conversion(accepted.version(), null, null))
+                .convertedOrder().orderId();
+        assertThat(orders.findById(orderId).orElseThrow().paymentTerm()).isEqualTo(PaymentTerm.DEPOSIT);
+
+        // The approver withdraws deposits; the customer reorders: a request for Sales on today's term.
+        terms(true, false, PaymentTerm.PREPAID);
+        int ordersBefore = ordersOf(customerId);
+        Quotes.QuoteView request = quotes.reorder(portal, new Quotes.Reorder(UUID.randomUUID(), orderId));
+        assertThat(request.status()).isEqualTo(QuoteStatus.DRAFT);
+        assertThat(request.paymentTerm()).as("not the withdrawn DEPOSIT").isEqualTo(PaymentTerm.PREPAID);
+        assertThat(request.depositPercent()).isNull();
+        assertThat(request.history()).singleElement().satisfies(t ->
+                assertThat(t.reason()).contains("DEPOSIT is no longer allowed, drafted as PREPAID"));
+        assertThat(ordersOf(customerId)).as("nothing payable before acceptance").isEqualTo(ordersBefore);
+        assertThat(orders.findById(orderId).orElseThrow().paymentTerm()).as("the old order keeps its terms")
+                .isEqualTo(PaymentTerm.DEPOSIT);
+
+        // Terms change while the quote is out: acceptance checks them again.
+        Quotes.QuoteView priced = quotes.edit(sales, request.id(), request.version(), twoUnits(design, PaymentTerm.PREPAID));
+        Quotes.QuoteView resent = quotes.send(sales, priced.id(), priced.version());
+        terms(false, true, PaymentTerm.DEPOSIT);
+        long seen = quotes.get(portal, resent.id()).version();
+        assertThatThrownBy(() -> quotes.accept(portal, resent.id(), new Quotes.Acceptance(seen, Map.of())))
+                .extracting(QuoteIntegrationTest::code).isEqualTo(ErrorCode.PAYMENT_TERM_NOT_ALLOWED);
+        assertThat(quotes.get(sales, resent.id()).status()).isEqualTo(QuoteStatus.SENT);
+
+        // Allowed again and accepted, then withdrawn before conversion: conversion checks them again too.
+        terms(true, true, PaymentTerm.PREPAID);
+        Quotes.QuoteView reaccepted = quotes.accept(portal, resent.id(), new Quotes.Acceptance(
+                quotes.get(portal, resent.id()).version(), Map.of()));
+        terms(false, true, PaymentTerm.DEPOSIT);
+        assertThatThrownBy(() -> quotes.convert(sales, reaccepted.id(), new Quotes.Conversion(reaccepted.version(),
+                null, null))).extracting(QuoteIntegrationTest::code).isEqualTo(ErrorCode.PAYMENT_TERM_NOT_ALLOWED);
+        assertThat(quotes.get(sales, reaccepted.id()).status()).isEqualTo(QuoteStatus.ACCEPTED);
+        assertThat(ordersOf(customerId)).isEqualTo(ordersBefore);
+    }
+
     @Test
     @DisplayName("an order bought at the price list is not re-quoted: it is simply placed again")
     void aPriceListOrderIsNotRequoted() {

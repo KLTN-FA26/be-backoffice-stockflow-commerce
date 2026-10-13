@@ -34,7 +34,7 @@ validity question for deal prices is void, as deals are not stored.
 - **R1** — a customer's reorder of a negotiated order whose blank has no current list price, or whose quantity is
   below the list's first tier, still becomes a request for Sales: a DRAFT quote whose line is explicitly unpriced
   (no tiers, `priced: false`), never the old deal or a zero. It cannot be sent - so not accepted or converted - until
-  Sales prices it. The payment-term guard is kept (see "Still open").
+  Sales prices it. Payment term: R1b below (decided 2026-10-13).
 
 **T1, settled from official sources (not a business choice):** since 01/07/2025 the representative's 12-digit
 personal identification number is the tax identifier of a household business (Thông tư 86/2024/TT-BTC art. 5(5),
@@ -82,7 +82,7 @@ Develop checked 2026-10-12: still `74d624d`, newest migration `V20261013000600`.
 | # | Question, with a concrete case | Today |
 |---|---|---|
 | N1 | ~~Who is told when the Sales account that handled a quote is disabled or gone?~~ **Decided 2026-10-13:** every active Sales account, marked as a hand-over, each address once; no change to who may read or answer the quote. | every active Sales account e-mailed (`QuoteNotificationListener`) |
-| R1b | **Reorder when the old payment term is no longer allowed.** Example: the deal was CREDIT; the customer's terms are now PREPAID only. Refuse the reorder as now, or still create the request and let Sales choose a term? | refused `PAYMENT_TERM_NOT_ALLOWED` (guard kept, as instructed) |
+| R1b | ~~Reorder when the old payment term is no longer allowed~~ **Decided 2026-10-13:** the request is still created, on a term the customer may use today (the old one while allowed, otherwise the current default); a withdrawn credit is never restored; send, acceptance and conversion check again; the old order keeps its snapshot. | `QuoteService.reorder`; IT `aWithdrawnPaymentTermIsNeverRestoredAndIsCheckedAgainAtEachStep`, `QuoteServiceTest.aReorderWhoseCreditWasWithdrawn…` |
 
 External configuration, not a question: real e-mail delivery needs `MAIL_HOST` / `MAIL_PORT` / `MAIL_USERNAME` /
 `MAIL_PASSWORD` / `MAIL_FROM` (and `MAIL_SMTP_AUTH`, `MAIL_SMTP_STARTTLS`) of a real SMTP relay in the deployed
@@ -95,7 +95,7 @@ delivers nothing.
 |---|---|---|---|
 | P3 | Validity dates on an admin price list? | effective-dated history | **no dates** (user) |
 | P7 | Who manages group (segment) prices? | fallback source | **E-commerce Admin + System Admin; Sales reads** (user); API built |
-| R1 | Reorder the price list cannot price? | reorder of rare blanks | **request reaches Sales unpriced** (user); payment term: R1b |
+| R1 | Reorder the price list cannot price? | reorder of rare blanks | **request reaches Sales unpriced** (user); payment term: R1b (decided) |
 | T1 | 12-digit personal ID of a household business? | onboarding | **accepted** - the law since 01/07/2025 (official texts) |
 
 ## SCRUM-429 follow-up (separate commit) — decisions confirmed by the user

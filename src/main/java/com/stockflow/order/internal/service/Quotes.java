@@ -133,10 +133,11 @@ public interface Quotes {
      * decision R1); the quote cannot be sent until Sales prices it. Nothing is payable until Sales sends it
      * and the customer accepts; the draft is Sales' to negotiate and the customer sees it once sent.
      * Idempotent on {@code requestId}. A portal customer reorders only their own orders (404 otherwise).
+     * The payment term is the old one while the customer may still use it; otherwise the customer's current
+     * default, never a restored credit (user decision R1b, 2026-10-13) - the history says so.
      *
      * @throws com.stockflow.common.error.BusinessException {@code ORDER_NOT_QUOTED} for an order bought at the
-     *         price list (place it again instead), {@code CUSTOMER_NOT_ACTIVE}, {@code PAYMENT_TERM_NOT_ALLOWED}
-     *         (the old term is no longer allowed: kept as a guard, not decided otherwise)
+     *         price list (place it again instead), {@code CUSTOMER_NOT_ACTIVE}
      */
     QuoteView reorder(CurrentUser user, Reorder command);
 
