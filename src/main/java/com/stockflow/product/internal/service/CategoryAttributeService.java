@@ -63,8 +63,8 @@ public class CategoryAttributeService {
     }
 
     public record CategoryAttributeView(UUID attributeId, String attributeCode, String attributeName,
-                                        AttributeDataType dataType, AttributeRole defaultRole, boolean required,
-                                        int sortOrder) {
+                                        AttributeDataType dataType, boolean attributeActive,
+                                        AttributeRole defaultRole, boolean required, int sortOrder) {
     }
 
     @Transactional(readOnly = true)
@@ -141,7 +141,7 @@ public class CategoryAttributeService {
                 .map(row -> {
                     AttributeJpaEntity a = byId.get(row.getAttributeId());
                     return new CategoryAttributeView(a.getId(), a.getCode(), a.getName(), a.getDataType(),
-                            row.getDefaultRole(), row.isRequired(), row.getSortOrder());
+                            a.isActive(), row.getDefaultRole(), row.isRequired(), row.getSortOrder());
                 })
                 .sorted(Comparator.comparingInt(CategoryAttributeView::sortOrder)
                         .thenComparing(CategoryAttributeView::attributeCode))

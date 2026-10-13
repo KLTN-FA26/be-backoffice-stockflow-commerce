@@ -4,8 +4,10 @@ import org.springframework.dao.DataIntegrityViolationException;
 
 /**
  * Tells which constraint a {@link DataIntegrityViolationException} came from, so an adapter can turn
- * the one it expects into a precise error code instead of the generic {@code 409 DUPLICATE_KEY}
- * (logged at ERROR) that {@code GlobalExceptionHandler} answers for anything unrecognised.
+ * the one it expects into a precise error code. Anything unrecognised reaches
+ * {@code GlobalExceptionHandler}, which logs at ERROR and picks the code by SQLSTATE: {@code 23505}
+ * is {@code DUPLICATE_KEY}, class {@code 22} and {@code 23502} are {@code VALIDATION_FAILED}, and the
+ * rest (foreign key, check) is {@code CONFLICT}.
  *
  * <p>The services check uniqueness before writing, which gives the user a good message in the
  * ordinary case; this is the net for two requests racing past that check.</p>

@@ -72,6 +72,14 @@ class AttributeControllerHttpTest {
     }
 
     @Test
+    void aValueNumberBeyondTheColumnPrecisionIsABadRequest() throws Exception {
+        mvc.perform(post("/api/v1/attributes/{id}/values", ATTRIBUTE).contentType("application/json").content("""
+                        {"code":"BIG","label":"Big","valueNumber":123456789012345.5}"""))
+                .andExpect(status().isBadRequest());
+        verifyNoInteractions(service);
+    }
+
+    @Test
     void updateWithoutAVersionIsABadRequest() throws Exception {
         mvc.perform(put("/api/v1/attributes/{id}", ATTRIBUTE).contentType("application/json").content("""
                         {"name":"Dung tích","active":true}"""))
