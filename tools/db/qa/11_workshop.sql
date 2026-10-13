@@ -1,8 +1,8 @@
 -- =============================================================================
 -- Adversarial checks: the print shop (SCRUM-396..401, lane A) - who owns a stock hold, the IN_PRODUCTION
 -- status, blanks issued, a write-off's layer, an agreed cancellation fee, and who does which workshop step
--- (V20261014000400 / 000420 / 000430), blanks at a subcontractor (000470). Needs the demo seed. Rolled back at
--- the end.
+-- (V20261014000400 / 000420 / 000430), blanks at a subcontractor (000470), hold from QC, child origin, recall,
+-- subcontract settlement and PO amendment (000700 / 000710). Needs the demo seed. Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;
@@ -187,6 +187,31 @@ SELECT pg_temp.expect_true('WK27 spoilt blanks have their own adjustment reason,
         LIKE '%SUBCONTRACT_LOSS%'
     AND pg_get_constraintdef((SELECT oid FROM pg_constraint WHERE conname = 'ck_production_subcontract_receipt_used'))
         LIKE '%used_blanks = quantity%');
+
+\echo '--- lane A finishing pass (V20261014000700 / 000710)'
+SELECT pg_temp.expect_true('WK28 a hold may interrupt QC and remember it',
+    pg_get_constraintdef((SELECT oid FROM pg_constraint WHERE conname = 'ck_production_order_status_before_hold'))
+        LIKE '%QC%');
+SELECT pg_temp.expect_true('WK29 a child says why it exists: SPLIT, SHORTFALL or REPLACEMENT; a root has no origin',
+    pg_get_constraintdef((SELECT oid FROM pg_constraint WHERE conname = 'ck_production_order_origin'))
+        LIKE '%SHORTFALL%REPLACEMENT%'
+    AND NOT EXISTS (SELECT 1 FROM production.production_order WHERE (parent_id IS NULL) <> (origin IS NULL))
+    AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ck_production_order_child_subcontracted'));
+SELECT pg_temp.expect_true('WK30 a recall brings back at least one blank, none negative',
+    pg_get_constraintdef((SELECT oid FROM pg_constraint WHERE conname = 'ck_production_subcontract_recall_quantities'))
+        LIKE '%returned_blanks + spoilt_blanks) > 0%');
+SELECT pg_temp.expect_true('WK31 a settlement pays QC-passed units only and deducts only an approved excess loss',
+    pg_get_constraintdef((SELECT oid FROM pg_constraint WHERE conname = 'ck_subcontract_settlement_amounts'))
+        LIKE '%payable_amount = %passed_quantity%unit_price%'
+    AND pg_get_constraintdef((SELECT oid FROM pg_constraint WHERE conname = 'ck_subcontract_settlement_approval'))
+        LIKE '%AWAITING_APPROVAL%');
+SELECT pg_temp.expect_fail('WK32 an approved PO line resized in place, without an AMENDMENT revision', $q$
+    UPDATE procurement.purchase_order_lines l SET ordered_qty = ordered_qty + 1
+      FROM procurement.purchase_orders p
+     WHERE p.id = l.po_id AND p.status NOT IN ('DRAFT') AND l.id = (
+           SELECT l2.id FROM procurement.purchase_order_lines l2
+             JOIN procurement.purchase_orders p2 ON p2.id = l2.po_id
+            WHERE p2.status <> 'DRAFT' ORDER BY l2.id LIMIT 1) $q$);
 
 \echo '--- who does which workshop step (V20261014000400 / 000420)'
 SELECT pg_temp.expect_true('GR5 the warehouse issues blanks; the print shop reads them',
