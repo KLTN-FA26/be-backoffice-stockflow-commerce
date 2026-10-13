@@ -9,7 +9,6 @@ import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.ScopeGuards;
 import com.stockflow.common.security.WarehouseScope;
-import com.stockflow.contracts.ProductionCompleted;
 import com.stockflow.contracts.ProductionOrderHeld;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
@@ -52,21 +51,23 @@ class PrintRunService implements PrintRuns {
     private final WorkshopStock stock;
     private final SampleProductionProgress samples;
     private final OrderService salesOrders;
-    private final com.stockflow.order.api.OrderReservations orderReservations;
+    private final ProductionCompletion completion;
+    private final Subcontracting subcontracts;
     private final ApplicationEventPublisher events;
     private final Clock clock;
 
     PrintRunService(ProductionOrderRepository orders, ProductionRecords records, ProductionOrders reads,
                     WorkshopStock stock, SampleProductionProgress samples, OrderService salesOrders,
-                    com.stockflow.order.api.OrderReservations orderReservations, ApplicationEventPublisher events,
+                    ProductionCompletion completion, Subcontracting subcontracts, ApplicationEventPublisher events,
                     Clock clock) {
-        this.orderReservations = orderReservations;
         this.orders = orders;
         this.records = records;
         this.reads = reads;
         this.stock = stock;
         this.samples = samples;
         this.salesOrders = salesOrders;
+        this.completion = completion;
+        this.subcontracts = subcontracts;
         this.events = events;
         this.clock = clock;
     }
@@ -134,39 +135,13 @@ class PrintRunService implements PrintRuns {
         orders.save(order);
         orders.recordTransition(order.id(), decided, now, user.userId());
         if (order.status() == ProductionOrder.Status.COMPLETED) {
-            complete(order, packingLocation, user.userId());
+            completion.complete(order, packingLocation, user.userId());
         } else {
             reprint(order, user.userId(), now);
         }
         log.info("Production order {} QC round {}: passed {}, failed {} -> {}", order.orderNumber(), round, passed,
                 failed, order.status());
         return reads.get(user, order.id());
-    }
-
-    /**
-     * The hand-over (SCRUM-400). Blanks issued and never printed go back to storage, free: the order has its
-     * good units. Then an ORDER's goods, still held for it, go to packing and the order is told once; a SAMPLE's
-     * are written off as SAMPLE and its round becomes READY.
-     */
-    private void complete(ProductionOrder order, String packingLocation, UUID by) {
-        if (order.unprintedBlanks() > 0) {
-            stock.returnUnprinted(order, order.unprintedBlanks(), false, by);
-        }
-        // Before the hand-over: a production hold that reached packing is finished goods, not a spare blank.
-        stock.releaseUnissued(order);
-        if (order.type() == ProductionOrder.Type.SAMPLE) {
-            stock.writeOffSample(order, order.good(), by);
-            samples.productionCompleted(order.id());
-        } else {
-            List<UUID> finished = stock.finishToPacking(order, packingLocation, by);
-            // Every good unit is the order's to ship: reprint holds and a subcontractor's goods join the line's
-            // checkout holds.
-            orderReservations.addProductionHolds(order.salesOrderId(), order.salesOrderLineId(),
-                    stock.handFinishedGoodsToOrder(order, finished));
-            events.publishEvent(new ProductionCompleted(order.salesOrderId(), order.salesOrderLineId(), order.id(),
-                    order.good()));
-            log.info("Production order {} completed: {} good unit(s) to packing", order.orderNumber(), order.good());
-        }
     }
 
     /**
@@ -188,7 +163,22 @@ class PrintRunService implements PrintRuns {
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "production-order", resourceId = "#productionOrderId")
     public ProductionOrders.Detail cancel(CurrentUser user, UUID productionOrderId, String reason) {
+        return cancel(user, productionOrderId, reason, null, null);
+    }
+
+    @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "production-order", resourceId = "#productionOrderId")
+    public ProductionOrders.Detail cancel(CurrentUser user, UUID productionOrderId, String reason,
+                                          java.math.BigDecimal subcontractorFee, String subcontractorFeeReason) {
         ProductionOrder order = lock(user, productionOrderId);
+        if (order.mode() == ProductionOrder.Mode.SUBCONTRACTED) {
+            // Its PO, its blanks at the subcontractor and its settlement go with it (03 §16).
+            return subcontracts.cancel(user, order.id(), reason, subcontractorFee, subcontractorFeeReason);
+        }
+        if (subcontractorFee != null && subcontractorFee.signum() != 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "Production order %s is printed in house: no subcontractor fee".formatted(order.orderNumber()));
+        }
         cancelLocked(order, reason, user.userId());
         return reads.get(user, order.id());
     }
@@ -240,12 +230,24 @@ class PrintRunService implements PrintRuns {
      * job is cancelled and the blanks go back. A job on the press is put ON_HOLD instead — only the print shop
      * knows how many it printed, and a stop with a guessed count could return printed cups as blanks; the
      * manager stops it with the real count. A job in QC waits for the same stop (QC refuses a cancelled order).
+     * A subcontracted job is put ON_HOLD too: the manager recalls its blanks and cancels it with its PO.
      */
     public void onOrderCancelled(UUID salesOrderId, String orderNumber) {
         for (UUID id : orders.idsOfSalesOrder(salesOrderId)) {
             ProductionOrder order = orders.findByIdForUpdate(id).orElseThrow();
             Instant now = now();
             ProductionOrder.Status effective = order.effectiveStatus();
+            if (order.mode() == ProductionOrder.Mode.SUBCONTRACTED) {
+                // Its PO and its blanks at the subcontractor are the manager's to settle, with a real person on the
+                // record and a fee the subcontractor may claim: held, and the hold tells them.
+                if (order.status() != ProductionOrder.Status.ON_HOLD && order.status() != ProductionOrder.Status.COMPLETED
+                        && order.status() != ProductionOrder.Status.CANCELLED) {
+                    held(order, order.hold(ProductionOrder.HoldReason.OTHER,
+                            "Order %s cancelled: recall the blanks and cancel the subcontract".formatted(orderNumber),
+                            now), null, now);
+                }
+                continue;
+            }
             if (effective == ProductionOrder.Status.PENDING_PREPRESS || effective == ProductionOrder.Status.READY
                     || effective == ProductionOrder.Status.MATERIAL_ISSUED) {
                 cancelLocked(order, "Order %s cancelled".formatted(orderNumber), null);

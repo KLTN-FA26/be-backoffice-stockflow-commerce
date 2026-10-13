@@ -8,8 +8,11 @@ import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.api.InventoryItemPolicy;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.procurement.api.CreateSubcontractOrderCommand;
+import com.stockflow.procurement.api.ProcurementService;
+import com.stockflow.procurement.api.SettleSubcontractCommand;
 import com.stockflow.procurement.api.SubcontractOrder;
 import com.stockflow.procurement.api.SubcontractPurchasing;
+import com.stockflow.procurement.api.SubcontractSettlement;
 import com.stockflow.procurement.api.SubcontractorTerms;
 import com.stockflow.procurement.internal.repository.SubcontractOrderStore;
 import org.slf4j.Logger;
@@ -17,9 +20,13 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
+import java.time.temporal.ChronoUnit;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -27,11 +34,12 @@ import java.util.UUID;
 /**
  * SUBCONTRACT purchase orders (SCRUM-434). The checks a caller can act on are made here, with a real
  * error code; the database states them again ({@code check_subcontract_po}: print subcontractor,
- * SUBCONTRACTED production order of the same warehouse, one line, one live PO per production order).
+ * SUBCONTRACTED production order of the same warehouse, one line, one live PO per production order;
+ * {@code ck_subcontract_settlement_*} for the settlement).
  */
 @Service
 @Transactional
-class SubcontractPurchasingImpl implements SubcontractPurchasing {
+class SubcontractPurchasingImpl implements SubcontractPurchasing, SubcontractAmendments {
 
     private static final Logger log = LoggerFactory.getLogger(SubcontractPurchasingImpl.class);
 
@@ -48,16 +56,21 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing {
      */
     private static final String EDITABLE = "DRAFT";
 
+    /** An approved order still open to receiving gets more quantity through an amendment approved again (BR-02). */
+    private static final Set<String> AMENDABLE = Set.of("APPROVED", "CONFIRMED", "PARTIALLY_RECEIVED", "RECEIVED");
+
     private final SubcontractOrderStore store;
     private final InventoryService inventory;
     private final InventoryControlService inventoryControl;
+    private final ProcurementService procurement;
     private final Clock clock;
 
     SubcontractPurchasingImpl(SubcontractOrderStore store, InventoryService inventory,
-                              InventoryControlService inventoryControl, Clock clock) {
+                              InventoryControlService inventoryControl, ProcurementService procurement, Clock clock) {
         this.store = store;
         this.inventory = inventory;
         this.inventoryControl = inventoryControl;
+        this.procurement = procurement;
         this.clock = clock;
     }
 
@@ -123,19 +136,152 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing {
         if (reason == null || reason.isBlank()) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A supplement needs a reason");
         }
-        SubcontractOrderStore.Row order = store.findById(purchaseOrderId, true).orElseThrow(() ->
-                new BusinessException(ErrorCode.PURCHASE_ORDER_NOT_FOUND, "No subcontract order " + purchaseOrderId));
-        if (!EDITABLE.equals(order.status())) {
+        SubcontractOrderStore.Row order = lock(purchaseOrderId);
+        int newQuantity = order.quantity().intValueExact() + additionalQuantity;
+        if (EDITABLE.equals(order.status())) {
+            store.changeQuantity(order, newQuantity, reason.trim(), actorId);
+            log.info("Supplemented {} by {} to {}: {}", order.poNumber(), additionalQuantity, newQuantity, reason);
+            return toOrder(store.findById(purchaseOrderId, false).orElseThrow());
+        }
+        if (!AMENDABLE.contains(order.status())) {
             throw new BusinessException(ErrorCode.INVALID_PURCHASE_ORDER_TRANSITION,
                     ("PENDING_APPROVAL".equals(order.status())
                             ? "%s is awaiting approval of its submitted quantity: reject it back to DRAFT first"
-                            : "%s is %s: an approved order is changed by an amendment (SCRUM-117), not in place")
-                            .formatted(order.poNumber(), order.status()));
+                            : "%s is %s: it takes no more quantity").formatted(order.poNumber(), order.status()));
         }
-        int newQuantity = order.quantity().intValueExact() + additionalQuantity;
-        store.changeQuantity(order, newQuantity, reason.trim(), actorId);
-        log.info("Supplemented {} by {} to {}: {}", order.poNumber(), additionalQuantity, newQuantity, reason);
+        store.pendingAmendment(purchaseOrderId).ifPresent(waiting -> {
+            throw new BusinessException(ErrorCode.CONFLICT, "%s already has an amendment to %d waiting for approval"
+                    .formatted(order.poNumber(), waiting.quantity()));
+        });
+        store.requestAmendment(order, newQuantity, reason.trim(), actorId);
+        log.info("Amendment of {} to {} (+{}) asked for: {}", order.poNumber(), newQuantity, additionalQuantity, reason);
         return toOrder(store.findById(purchaseOrderId, false).orElseThrow());
+    }
+
+    @Override
+    @Auditable(action = AuditAction.APPROVE, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
+    public SubcontractOrder approveAmendment(UUID purchaseOrderId, UUID approverId) {
+        SubcontractOrderStore.Row order = lock(purchaseOrderId);
+        SubcontractOrderStore.Amendment amendment = store.pendingAmendment(purchaseOrderId).orElseThrow(() ->
+                new BusinessException(ErrorCode.CONFLICT, "%s has no amendment waiting".formatted(order.poNumber())));
+        if (amendment.requestedBy() != null && amendment.requestedBy().equals(approverId)) {
+            throw new BusinessException(ErrorCode.SELF_APPROVAL_NOT_ALLOWED,
+                    "An amendment is approved by someone other than who asked for it");
+        }
+        store.approveAmendment(order, amendment, approverId);
+        log.info("Amendment of {} to {} approved", order.poNumber(), amendment.quantity());
+        return toOrder(store.findById(purchaseOrderId, false).orElseThrow());
+    }
+
+    @Override
+    @Auditable(action = AuditAction.REJECT, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
+    public SubcontractOrder rejectAmendment(UUID purchaseOrderId, UUID approverId, String reason) {
+        if (reason == null || reason.isBlank()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A rejected amendment says why");
+        }
+        SubcontractOrderStore.Row order = lock(purchaseOrderId);
+        SubcontractOrderStore.Amendment amendment = store.pendingAmendment(purchaseOrderId).orElseThrow(() ->
+                new BusinessException(ErrorCode.CONFLICT, "%s has no amendment waiting".formatted(order.poNumber())));
+        store.dropAmendment(order, amendment, approverId, "REJECTED", reason.trim());
+        return toOrder(store.findById(purchaseOrderId, false).orElseThrow());
+    }
+
+    @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "subcontract-purchase-order", resourceId = "#purchaseOrderId")
+    public SubcontractOrder closeForProduction(UUID purchaseOrderId, String reason, UUID actorId) {
+        SubcontractOrderStore.Row order = lock(purchaseOrderId);
+        store.pendingAmendment(purchaseOrderId).ifPresent(waiting ->
+                store.dropAmendment(order, waiting, actorId, "WITHDRAWN", reason));
+        int received = store.receivedQuantity(purchaseOrderId);
+        switch (order.status()) {
+            case "DRAFT", "PENDING_APPROVAL", "APPROVED", "CONFIRMED" -> {
+                if (received == 0) {
+                    procurement.cancel(purchaseOrderId, actorId, reason);
+                }
+            }
+            case "PARTIALLY_RECEIVED" -> procurement.closeShort(purchaseOrderId, actorId, reason);
+            default -> { }   // RECEIVED, CLOSED, CANCELLED: nothing open is left
+        }
+        SubcontractOrder after = toOrder(store.findById(purchaseOrderId, false).orElseThrow());
+        log.info("{} closed for production: {} -> {} ({} received): {}", order.poNumber(), order.status(),
+                after.status(), received, reason);
+        return after;
+    }
+
+    @Override
+    @Auditable(action = AuditAction.CREATE, resourceType = "subcontract-settlement", resourceId = "#command.purchaseOrderId()")
+    public SubcontractSettlement settle(SettleSubcontractCommand command) {
+        SubcontractOrderStore.Row order = lock(command.purchaseOrderId());
+        Optional<SubcontractSettlement> done = store.settlement(command.purchaseOrderId(), true);
+        if (done.isPresent()) {
+            return done.get();
+        }
+        if (!order.productionOrderId().equals(command.productionOrderId())) {
+            throw new BusinessException(ErrorCode.CONFLICT, "%s does not pay for production order %s"
+                    .formatted(order.poNumber(), command.productionOrderId()));
+        }
+        BigDecimal fee = command.cancellationFee();
+        String feeReason = command.cancellationFeeReason() == null || command.cancellationFeeReason().isBlank()
+                ? null : command.cancellationFeeReason().strip();
+        if (fee.signum() < 0 || fee.signum() > 0 && feeReason == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A cancellation fee is not negative and says why");
+        }
+        BigDecimal tolerancePercent = store.supplier(order.supplierId())
+                .map(SubcontractOrderStore.Supplier::lossTolerancePercent).orElse(BigDecimal.ZERO);
+        // BR-PRD-17: blanks lost within the subcontractor's tolerance are ours to bear; above it, theirs.
+        int toleranceBlanks = BigDecimal.valueOf(command.blanksSent()).multiply(tolerancePercent)
+                .movePointLeft(2).setScale(0, RoundingMode.FLOOR).intValueExact();
+        int excess = Math.max(0, command.blanksLost() - toleranceBlanks);
+        BigDecimal unitPrice = order.unitPrice().setScale(2, RoundingMode.HALF_UP);
+        BigDecimal payable = unitPrice.multiply(BigDecimal.valueOf(command.passedQuantity()));
+        Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
+        SubcontractSettlement settlement = new SubcontractSettlement(order.id(), command.productionOrderId(),
+                excess > 0 ? "AWAITING_APPROVAL" : "FINAL", order.currency(), unitPrice, command.receivedQuantity(),
+                command.passedQuantity(), command.failedQuantity(), payable, command.blanksSent(), command.blanksUsed(),
+                command.blanksReturned(), command.blanksLost(), tolerancePercent, toleranceBlanks, excess, null,
+                BigDecimal.ZERO, fee, feeReason, payable.add(fee), now, command.settledBy(), null, null, null);
+        store.insertSettlement(settlement);
+        log.info("{} settled: {} passed x {} = {}, {} failed not paid, {} blank(s) lost ({} tolerated), fee {}; {}",
+                order.poNumber(), command.passedQuantity(), unitPrice, payable, command.failedQuantity(),
+                command.blanksLost(), toleranceBlanks, fee, settlement.status());
+        return store.settlement(order.id(), false).orElseThrow();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<SubcontractSettlement> settlement(UUID purchaseOrderId) {
+        return store.settlement(purchaseOrderId, false);
+    }
+
+    @Override
+    @Auditable(action = AuditAction.APPROVE, resourceType = "subcontract-settlement", resourceId = "#purchaseOrderId")
+    public SubcontractSettlement approveLoss(UUID purchaseOrderId, BigDecimal deductionPerBlank, String note,
+                                             UUID approverId) {
+        if (deductionPerBlank == null || deductionPerBlank.signum() < 0 || deductionPerBlank.scale() > 2
+                && deductionPerBlank.stripTrailingZeros().scale() > 2) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "The deduction per lost blank is an amount of at most 2 decimals, not negative");
+        }
+        lock(purchaseOrderId);
+        SubcontractSettlement settlement = store.settlement(purchaseOrderId, true).orElseThrow(() ->
+                new BusinessException(ErrorCode.NOT_FOUND, "Purchase order %s is not settled yet".formatted(purchaseOrderId)));
+        BigDecimal perBlank = deductionPerBlank.setScale(2, RoundingMode.UNNECESSARY);
+        if ("FINAL".equals(settlement.status())) {
+            if (settlement.deductionPerBlank() != null && settlement.deductionPerBlank().compareTo(perBlank) == 0) {
+                return settlement;   // a replay of the same approval
+            }
+            throw new BusinessException(ErrorCode.CONFLICT, settlement.excessLoss() == 0
+                    ? "No blank was lost above the subcontractor's tolerance: nothing to approve"
+                    : "The loss was approved already, at %s per blank".formatted(settlement.deductionPerBlank()));
+        }
+        BigDecimal deduction = perBlank.multiply(BigDecimal.valueOf(settlement.excessLoss()));
+        String text = note == null || note.isBlank() ? null : note.strip();
+        store.approveSettlement(purchaseOrderId, perBlank, deduction,
+                settlement.payableAmount().subtract(deduction).add(settlement.cancellationFee()), text, approverId,
+                clock.instant().truncatedTo(ChronoUnit.MICROS));
+        log.info("Loss of {} blank(s) above tolerance on {} approved: {} deducted", settlement.excessLoss(),
+                purchaseOrderId, deduction);
+        return store.settlement(purchaseOrderId, false).orElseThrow();
     }
 
     @Override
@@ -145,10 +291,17 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing {
                 s.printSubcontractor(), s.lossTolerancePercent()));
     }
 
+    private SubcontractOrderStore.Row lock(UUID purchaseOrderId) {
+        return store.findById(purchaseOrderId, true).orElseThrow(() ->
+                new BusinessException(ErrorCode.PURCHASE_ORDER_NOT_FOUND, "No subcontract order " + purchaseOrderId));
+    }
+
     private SubcontractOrder toOrder(SubcontractOrderStore.Row row) {
         String sku = inventory.itemPolicy(row.inventoryItemId()).map(InventoryItemPolicy::sku).orElse(null);
         return new SubcontractOrder(row.id(), row.poNumber(), row.productionOrderId(), row.supplierId(),
                 row.warehouseId(), row.status(), APPROVED.contains(row.status()), sku,
-                row.quantity().intValueExact(), row.unitPrice(), row.currency(), row.totalAmount(), row.expectedDate());
+                row.quantity().intValueExact(), row.unitPrice(), row.currency(), row.totalAmount(), row.expectedDate(),
+                store.receivedQuantity(row.id()),
+                store.pendingAmendment(row.id()).map(SubcontractOrderStore.Amendment::quantity).orElse(null));
     }
 }

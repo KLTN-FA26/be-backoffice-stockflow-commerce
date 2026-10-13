@@ -47,6 +47,14 @@ public interface PrintRuns {
     ProductionOrders.Detail cancel(CurrentUser user, UUID productionOrderId, String reason);
 
     /**
+     * The same, for any production order: a subcontracted one is cancelled with its purchase order
+     * ({@link Subcontracting#cancel}), where {@code subcontractorFee} is an amount agreed with the subcontractor for
+     * work done after it was sent out (with its reason); an in-house one takes no fee.
+     */
+    ProductionOrders.Detail cancel(CurrentUser user, UUID productionOrderId, String reason,
+                                   java.math.BigDecimal subcontractorFee, String subcontractorFeeReason);
+
+    /**
      * SCRUM-401, decision Q2. Stop once printing started (PRINTING, QC, or ON_HOLD from PRINTING): the run's
      * output so far is recorded, the printed goods are kept on the record and written off (sold to nobody else),
      * the unprinted blanks go back. An amount the customer agreed to pay is Sales' to enter on the order.

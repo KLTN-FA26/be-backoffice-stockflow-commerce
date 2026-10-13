@@ -113,7 +113,11 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
         entity.applyWorkflow(child);   // the inherited prepress result: READY needs it (ck_production_order_prepress)
         entityManager.persist(entity);
         entityManager.persist(new ProductionOrderStatusHistoryJpaEntity(Identifiers.newId(), child.id(), null,
-                child.status().name(), "Split off for subcontracting", at, createdBy));
+                child.status().name(), switch (child.origin()) {
+                    case SPLIT -> "Split off for subcontracting";
+                    case SHORTFALL -> "A subcontractor's shortfall, printed in house";
+                    case REPLACEMENT -> "Replaces a cancelled subcontracted order, printed in house";
+                }, at, createdBy));
         entityManager.flush();
     }
 
@@ -122,10 +126,24 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
         return jpa.findIdByPurchaseOrder(purchaseOrderId);
     }
 
+    /**
+     * The line's units over the whole tree, less the root's own plan. Every order counts its plan - a SHORTFALL took
+     * its units off the order it came from - except one cancelled and REPLACED in house, the root included, whose
+     * replacement carries the same units. Negative when the root itself was replaced.
+     */
     @Override
     public int splitOffOf(UUID parentId) {
-        Number total = (Number) entityManager.createNativeQuery(
-                        "SELECT COALESCE(SUM(planned_quantity), 0) FROM production.production_order WHERE parent_id = :id")
+        Number total = (Number) entityManager.createNativeQuery("""
+                        WITH RECURSIVE tree AS (
+                            SELECT id, planned_quantity, status FROM production.production_order WHERE id = :id
+                            UNION ALL
+                            SELECT c.id, c.planned_quantity, c.status FROM production.production_order c
+                              JOIN tree t ON c.parent_id = t.id)
+                        SELECT COALESCE(SUM(planned_quantity), 0) FROM tree t
+                         WHERE NOT (t.status = 'CANCELLED' AND EXISTS (
+                               SELECT 1 FROM production.production_order r
+                                WHERE r.parent_id = t.id AND r.origin = 'REPLACEMENT'))
+                          - (SELECT planned_quantity FROM production.production_order WHERE id = :id)""")
                 .setParameter("id", parentId).getSingleResult();
         return total.intValue();
     }
@@ -177,7 +195,10 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
         return jpa.findById(id).map(e -> new Detail(toRow(e), e.getApprovedSampleId(), e.getDesignChecksum(),
                 e.getIssuedQuantity(), e.getPrintedQuantity(), e.getScrapQuantity(), e.getPrepressCheckedAt(),
                 e.getCompletedAt(), e.getCancelledAt(), e.getCancellationReason(), e.getCreatedBy(),
-                e.getLastModifiedAt(), e.getVersion(), history(id)));
+                e.getLastModifiedAt(), e.getVersion(), history(id), e.getOrigin(),
+                e.getSubcontractMethod() == null ? null : new Subcontract(e.getSubcontractMethod(),
+                        e.getSubcontractorId(), e.getSubcontractUnitPrice(), e.getSubcontractCurrency(),
+                        e.getPurchaseOrderId())));
     }
 
     private List<HistoryEntry> history(UUID productionOrderId) {
@@ -214,6 +235,7 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
                 .withWorkflow(e.getStatusBeforeHold(), e.getHoldReason(), e.getHoldNote(), e.getPrepressCheckedBy(),
                         e.getPrepressCheckedAt())
                 .withSubcontract(ProductionOrder.Mode.valueOf(e.getMode()), e.getParentId(),
+                        e.getOrigin() == null ? null : ProductionOrder.Origin.valueOf(e.getOrigin()),
                         e.getSubcontractMethod() == null ? null : new ProductionOrder.Subcontract(
                                 ProductionOrder.SubcontractMethod.valueOf(e.getSubcontractMethod()),
                                 e.getSubcontractorId(), e.getSubcontractUnitPrice(), e.getSubcontractCurrency(),

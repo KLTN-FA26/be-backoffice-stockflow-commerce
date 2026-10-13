@@ -10,23 +10,30 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.ScopeGuards;
 import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.contracts.GoodsReceiptConfirmed;
+import com.stockflow.contracts.ProductionOrderHeld;
 import com.stockflow.inventory.api.HoldReceivedStockCommand;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.ReserveProductionStockCommand;
 import com.stockflow.inventory.api.StockReservation;
 import com.stockflow.order.api.OrderService;
+import com.stockflow.order.api.OrderStatus;
+import com.stockflow.order.api.OrderSummary;
 import com.stockflow.procurement.api.CreateSubcontractOrderCommand;
 import com.stockflow.procurement.api.SubcontractOrder;
 import com.stockflow.procurement.api.SubcontractPurchasing;
+import com.stockflow.procurement.api.SubcontractSettlement;
 import com.stockflow.production.internal.domain.ProductionOrder;
 import com.stockflow.production.internal.domain.ProductionOrderRepository;
 import com.stockflow.production.internal.domain.ProductionRecords;
+import com.stockflow.warehouse.api.StorageLocationView;
 import com.stockflow.warehouse.api.WarehouseService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
@@ -44,7 +51,9 @@ import java.util.stream.Collectors;
 /**
  * {@link Subcontracting} on the parent's or the child's row lock. The split, the child, its SUBCONTRACT PO and
  * the blanks' holds commit together: a PO the procurement module refuses (not a print subcontractor) leaves no
- * child behind, and no blank is let go for a split that did not happen.
+ * child behind, and no blank is let go for a split that did not happen. Every end of a subcontracted order — its
+ * completion, its cancellation, its replacement in house — closes its PO for production and settles it in the same
+ * transaction ({@link SubcontractSettling}).
  */
 @Service
 @Transactional
@@ -61,11 +70,17 @@ class SubcontractService implements Subcontracting {
     private final OrderService salesOrders;
     private final WarehouseService warehouses;
     private final WorkshopStock stock;
+    private final ProductionCompletion completion;
+    private final SubcontractSettling settling;
+    private final ProductionWorkflow workflow;
+    private final ApplicationEventPublisher events;
     private final Clock clock;
 
     SubcontractService(ProductionOrderRepository orders, ProductionRecords records, ProductionOrders reads,
                        SubcontractPurchasing purchasing, InventoryService inventory, OrderService salesOrders,
-                       WarehouseService warehouses, WorkshopStock stock, Clock clock) {
+                       WarehouseService warehouses, WorkshopStock stock, ProductionCompletion completion,
+                       SubcontractSettling settling, ProductionWorkflow workflow, ApplicationEventPublisher events,
+                       Clock clock) {
         this.stock = stock;
         this.orders = orders;
         this.records = records;
@@ -74,6 +89,10 @@ class SubcontractService implements Subcontracting {
         this.inventory = inventory;
         this.salesOrders = salesOrders;
         this.warehouses = warehouses;
+        this.completion = completion;
+        this.settling = settling;
+        this.workflow = workflow;
+        this.events = events;
         this.clock = clock;
     }
 
@@ -93,6 +112,9 @@ class SubcontractService implements Subcontracting {
                     "%s does not print for us".formatted(terms.name()));
         }
         Instant now = now();
+        if (parent.wholeOrder(split.quantity())) {
+            return convert(user, parent, split, now);
+        }
         String childNumber = orders.nextNumber(LocalDate.ofInstant(now, BUSINESS_ZONE));
         ProductionOrder.Transition splitOff = parent.splitOff(split.quantity(), childNumber);
         ProductionOrder child = ProductionOrder.subcontractedChild(Identifiers.newId(), childNumber, parent,
@@ -114,6 +136,29 @@ class SubcontractService implements Subcontracting {
     }
 
     /**
+     * BR-PRD-12, the whole order: it becomes subcontracted itself (same row and number, no child), gets its DRAFT
+     * SUBCONTRACT PO, and its blanks are let go or held for it as a split's would be — in one transaction.
+     */
+    private ProductionOrders.Detail convert(CurrentUser user, ProductionOrder order, Split split, Instant now) {
+        ProductionOrder.Transition converted = order.convertToSubcontract(new ProductionOrder.Subcontract(
+                split.method(), split.subcontractorId(), split.unitPrice(),
+                split.currency() == null ? "VND" : split.currency(), null));
+        // Saved before the PO: check_subcontract_po wants a SUBCONTRACTED production order to point at.
+        orders.save(order);
+        orders.recordTransition(order.id(), converted, now, user.userId());
+        SubcontractOrder po = purchasing.create(new CreateSubcontractOrderCommand(order.id(), split.subcontractorId(),
+                order.work().warehouseId(), order.work().blankSku(), split.quantity(), split.unitPrice(),
+                order.subcontract().currency(), split.dueDate() != null ? split.dueDate() : order.work().dueDate(),
+                user.userId()));
+        order.attachPurchaseOrder(po.purchaseOrderId());
+        orders.save(order);
+        moveHolds(order, order, split.quantity());
+        log.info("Production order {} converted whole to subcontracting ({}, {}), PO {}", order.orderNumber(),
+                split.method(), split.subcontractorId(), po.poNumber());
+        return reads.get(user, order.id());
+    }
+
+    /**
      * G3: the order's blanks for the split quantity, taken from its holds not issued yet (latest first), are let
      * go — FULL_SERVICE, the subcontractor brings its own — or, SUPPLIED_BLANKS, held for the child in their
      * place, in the same transaction, so the order's total held never drops for a moment.
@@ -121,7 +166,9 @@ class SubcontractService implements Subcontracting {
     private void moveHolds(ProductionOrder parent, ProductionOrder child, int quantity) {
         Set<UUID> issued = records.issuesOf(parent.id()).stream()
                 .map(ProductionRecords.MaterialIssue::reservationId).collect(Collectors.toSet());
-        List<UUID> lineHolds = salesOrders.findById(parent.salesOrderId()).orElseThrow().lines().stream()
+        // The line's checkout holds are the root order's; a child of the line works on its own holds only.
+        List<UUID> lineHolds = parent.parentId() != null ? new ArrayList<>()
+                : salesOrders.findById(parent.salesOrderId()).orElseThrow().lines().stream()
                 .filter(line -> line.lineId().equals(parent.salesOrderLineId()))
                 .flatMap(line -> line.reservationIds().stream())
                 .filter(id -> !issued.contains(id)).collect(Collectors.toCollection(ArrayList::new));
@@ -150,15 +197,24 @@ class SubcontractService implements Subcontracting {
     @Auditable(action = AuditAction.TRANSITION, resourceType = "production-order", resourceId = "#childId")
     public ProductionOrders.Detail sendOut(CurrentUser user, UUID childId) {
         ProductionOrder child = lock(user, childId);
-        if (child.mode() != ProductionOrder.Mode.SUBCONTRACTED) {
-            throw new BusinessException(ErrorCode.INVALID_PRODUCTION_TRANSITION,
-                    "Production order %s is printed in house".formatted(child.orderNumber()));
-        }
+        requireSubcontracted(child);
         SubcontractOrder po = purchasing.findById(child.subcontract().purchaseOrderId()).orElseThrow();
         if (!po.approved()) {
             throw new BusinessException(ErrorCode.INVALID_PRODUCTION_TRANSITION,
                     "Subcontract PO %s is %s; the work goes out once it is approved (BR-PRD-13)"
                             .formatted(po.poNumber(), po.status()));
+        }
+        if (po.pendingQuantity() != null) {
+            throw new BusinessException(ErrorCode.INVALID_PRODUCTION_TRANSITION,
+                    "Subcontract PO %s has an amendment to %d waiting for approval; the work goes out once it is decided"
+                            .formatted(po.poNumber(), po.pendingQuantity()));
+        }
+        if (po.openQuantity() < child.stillOwed()) {
+            // 03 §16 "PO supplement": a resend after a QC shortfall the approved order does not cover.
+            throw new BusinessException(ErrorCode.INVALID_PRODUCTION_TRANSITION,
+                    "Subcontract PO %s allows %d more unit(s) to be received and %d are owed: supplement it by %d first"
+                            .formatted(po.poNumber(), po.openQuantity(), child.stillOwed(),
+                                    child.stillOwed() - po.openQuantity()));
         }
         Instant now = now();
         // The transition first: it refuses a child that is not READY, so a second dispatch sends nothing.
@@ -208,9 +264,10 @@ class SubcontractService implements Subcontracting {
      * redelivered event, a second part of the same PO). Receipts of other purchase orders are not this module's.
      *
      * <p>In the receipt's own transaction (decision Q8): each line's goods are held for the child the moment they
-     * are counted and handed to the print shop for QC, so they are never free stock a putaway could sell; for
-     * SUPPLIED_BLANKS the blanks they were printed on leave the subcontractor's location (decision Q9). A failure
-     * here fails the confirmation.</p>
+     * are counted and wait in the QUALITY_CONTROL area for the one production QC (user decision 2026-10-13: no
+     * receiving QC of the same goods), so they are never free stock a putaway could sell; for SUPPLIED_BLANKS the
+     * blanks they were printed on leave the subcontractor's location (decision Q9). A failure here fails the
+     * confirmation.</p>
      */
     public void onReceipt(GoodsReceiptConfirmed receipt) {
         if (receipt.purchaseOrderId() == null) {
@@ -239,7 +296,7 @@ class SubcontractService implements Subcontracting {
                         child.id(), child.work().blankSku(), line.lotNumber(), line.locationCode(),
                         receipt.confirmedAt(), line.quantity()));
                 records.recordSubcontractHold(hold.reservationId(), receipt.receiptId(), line.receiptLineId(), child.id());
-                stock.handReceivedToPrintShop(child, hold.reservationId(), null);
+                stock.holdForProductionQc(child, hold.reservationId(), null);
             }
             ProductionOrder.Transition received = child.receivedFromSubcontractor(quantity);
             orders.save(child);
@@ -258,11 +315,7 @@ class SubcontractService implements Subcontracting {
                     "A reconciliation names its receipt; spoilt and returned cannot be negative");
         }
         ProductionOrder child = lock(user, childId);
-        if (child.mode() != ProductionOrder.Mode.SUBCONTRACTED
-                || child.subcontract().method() != ProductionOrder.SubcontractMethod.SUPPLIED_BLANKS) {
-            throw new BusinessException(ErrorCode.INVALID_PRODUCTION_TRANSITION,
-                    "Production order %s sent no blanks to a subcontractor".formatted(child.orderNumber()));
-        }
+        requireSuppliedBlanks(child);
         ProductionRecords.SubcontractReceipt receipt = records.findSubcontractReceiptForUpdate(receiptId)
                 .filter(found -> found.productionOrderId().equals(child.id()))
                 .orElseThrow(() -> new NotFoundException("production-subcontract-receipt", receiptId));
@@ -273,16 +326,9 @@ class SubcontractService implements Subcontracting {
             throw new BusinessException(ErrorCode.CONFLICT, "Receipt %s was reconciled already: %d spoilt, %d returned"
                     .formatted(receiptId, receipt.spoiltBlanks(), receipt.returnedBlanks()));
         }
-        if (returned > 0 && returnLocation != null && !returnLocation.isBlank()) {
-            warehouses.findLocation(returnLocation)
-                    .filter(location -> location.warehouseId().equals(child.work().warehouseId()))
-                    .filter(location -> location.kind() != com.stockflow.warehouse.api.StorageLocationView.Kind.SUBCONTRACTOR)
-                    .orElseThrow(() -> new BusinessException(ErrorCode.LOCATION_NOT_FOUND,
-                            "No storage location %s in the warehouse of production order %s".formatted(returnLocation,
-                                    child.orderNumber())));
-        }
+        requireReturnLocation(child, returned, returnLocation);
         Instant now = now();
-        stock.reconcile(child, spoilt, returned, returnLocation, receiptId.toString(), user.userId());
+        stock.reconcile(child, spoilt, returned, returnLocation, "receipt " + receiptId, user.userId());
         records.reconcileSubcontractReceipt(receiptId, spoilt, returned, now, user.userId());
         log.info("Production order {}: receipt {} reconciled, {} received, {} spoilt, {} returned, {} still at the "
                         + "subcontractor", child.orderNumber(), receiptId, receipt.quantity(), spoilt, returned,
@@ -295,6 +341,249 @@ class SubcontractService implements Subcontracting {
     public List<ProductionRecords.SubcontractReceipt> receipts(CurrentUser user, UUID childId) {
         reads.get(user, childId);   // 404 and warehouse scope, as for the order itself
         return records.subcontractReceiptsOf(childId);
+    }
+
+    @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "production-order", resourceId = "#childId")
+    public ProductionOrders.Detail recall(CurrentUser user, UUID childId, Recall recall) {
+        if (recall == null || recall.requestId() == null || recall.returned() < 0 || recall.spoilt() < 0
+                || recall.returned() + recall.spoilt() < 1) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "A recall names its request id and brings back at least one blank, returned or spoilt");
+        }
+        if (replayedRecall(childId, recall)) {
+            return reads.get(user, childId);
+        }
+        ProductionOrder child = lock(user, childId);
+        if (replayedRecall(childId, recall)) {
+            return reads.get(user, childId);   // the first attempt committed while this one waited for the lock
+        }
+        requireSuppliedBlanks(child);
+        requireReturnLocation(child, recall.returned(), recall.returnLocation());
+        String note = blankToNull(recall.note());
+        if (note != null && note.length() > 1000) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A note is at most 1000 characters");
+        }
+        Instant now = now();
+        stock.reconcile(child, recall.spoilt(), recall.returned(), recall.returnLocation(),
+                "recall " + recall.requestId(), user.userId());
+        records.recordRecall(new ProductionRecords.SubcontractRecall(Identifiers.newId(), child.id(), recall.requestId(),
+                recall.returned(), recall.spoilt(), blankToNull(recall.returnLocation()), note, now, user.userId()));
+        log.info("Production order {}: {} blank(s) recalled from the subcontractor, {} spoilt; {} still there",
+                child.orderNumber(), recall.returned(), recall.spoilt(), stock.blanksAtSubcontractor(child));
+        return reads.get(user, child.id());
+    }
+
+    private boolean replayedRecall(UUID childId, Recall recall) {
+        return records.findRecall(recall.requestId()).map(done -> {
+            if (!done.productionOrderId().equals(childId) || done.returned() != recall.returned()
+                    || done.spoilt() != recall.spoilt()) {
+                throw new BusinessException(ErrorCode.CONFLICT,
+                        "Request %s already recalled %d returned and %d spoilt blank(s) for production order %s"
+                                .formatted(recall.requestId(), done.returned(), done.spoilt(), done.productionOrderId()));
+            }
+            return true;
+        }).orElse(false);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<ProductionRecords.SubcontractRecall> recalls(CurrentUser user, UUID childId) {
+        reads.get(user, childId);
+        return records.recallsOf(childId);
+    }
+
+    @Override
+    @Auditable(action = AuditAction.CREATE, resourceType = "production-order", resourceId = "#childId")
+    public ProductionOrders.Detail takeInHouse(CurrentUser user, UUID childId, int quantity, String reason,
+                                               String packingLocation) {
+        ProductionOrder child = lock(user, childId);
+        requireSubcontracted(child);
+        String text = requireReason(reason);
+        ProductionOrder inHouse = takeInHouseLocked(child, quantity, text, packingLocation, null, null, user.userId());
+        return reads.get(user, inHouse.id());
+    }
+
+    /**
+     * The in-house order is created READY (or PENDING_PREPRESS) with its blanks held now; too few in the warehouse
+     * and it goes ON_HOLD (BLANKS_SHORT) and purchasing hears of it, as for a reprint.
+     */
+    private ProductionOrder takeInHouseLocked(ProductionOrder child, int quantity, String reason, String packingLocation,
+                                              BigDecimal fee, String feeReason, UUID by) {
+        boolean replaced = quantity == child.work().plannedQuantity();
+        boolean ending = replaced || quantity == child.stillOwed() && child.awaitingQc() == 0;
+        if (ending) {
+            settling.requireBlanksAccountedFor(child);
+        }
+        Instant now = now();
+        String number = orders.nextNumber(LocalDate.ofInstant(now, BUSINESS_ZONE));
+        ProductionOrder.Transition given = child.giveBackToPrintShop(quantity, number, now);
+        ProductionOrder inHouse = ProductionOrder.inHouseFor(Identifiers.newId(), number, child, quantity,
+                child.status() == ProductionOrder.Status.CANCELLED ? ProductionOrder.Origin.REPLACEMENT
+                        : ProductionOrder.Origin.SHORTFALL);
+        orders.save(child);
+        orders.recordTransition(child.id(), given, now, by);
+        orders.createChild(inHouse, by, now);
+        if (child.status() == ProductionOrder.Status.CANCELLED) {
+            stock.releaseUnissued(child);
+            settling.settle(child, "%s: %s".formatted(given.reason(), reason), fee, feeReason, by);
+        } else if (child.status() == ProductionOrder.Status.COMPLETED) {
+            completion.complete(child, packingLocation, by);
+        }
+        if (!stock.holdForReprint(inHouse, quantity)) {
+            ProductionOrder.Transition held = inHouse.hold(ProductionOrder.HoldReason.BLANKS_SHORT,
+                    "%d blank(s) of %s needed for work taken back from a subcontractor".formatted(quantity,
+                            inHouse.work().blankSku()), now);
+            orders.save(inHouse);
+            orders.recordTransition(inHouse.id(), held, now, by);
+            events.publishEvent(new ProductionOrderHeld(inHouse.id(), inHouse.orderNumber(),
+                    inHouse.holdReason().name(), inHouse.holdNote(), null, inHouse.salesOrderId()));
+        }
+        log.info("Production order {}: {} unit(s) taken back to the print shop as {} ({}); it is now {}",
+                child.orderNumber(), quantity, inHouse.orderNumber(), reason, child.status());
+        return inHouse;
+    }
+
+    @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "production-order", resourceId = "#productionOrderId")
+    public ProductionOrders.Detail cancel(CurrentUser user, UUID productionOrderId, String reason, BigDecimal fee,
+                                          String feeReason) {
+        ProductionOrder order = lock(user, productionOrderId);
+        requireSubcontracted(order);
+        String text = requireReason(reason);
+        BigDecimal agreed = fee == null ? BigDecimal.ZERO : fee;
+        String agreedWhy = blankToNull(feeReason);
+        if (agreed.signum() < 0 || agreed.stripTrailingZeros().scale() > 2 || agreed.signum() > 0 && agreedWhy == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "A subcontractor fee is an amount of at most 2 decimals, not negative, and says why");
+        }
+        if (!salesOrderCancelled(order)) {
+            if (order.good() > 0) {
+                throw new BusinessException(ErrorCode.INVALID_PRODUCTION_TRANSITION,
+                        ("Production order %s has %d good unit(s) for its order: take the %d the subcontractor still "
+                                + "owes in house instead").formatted(order.orderNumber(), order.good(), order.stillOwed()));
+            }
+            takeInHouseLocked(order, order.work().plannedQuantity(), text, null, agreed, agreedWhy, user.userId());
+            return reads.get(user, order.id());
+        }
+        settling.requireBlanksAccountedFor(order);
+        Instant now = now();
+        ProductionOrder.Status from = order.status();
+        int unsold = order.cancelSubcontracted(text, now);
+        if (unsold > 0) {
+            stock.writeOff(order, List.of(new WorkshopStock.Spoilt(ProductionRecords.ScrapReason.OTHER, unsold,
+                    "Delivered for a cancelled order: " + text)), user.userId(), now);
+        }
+        stock.releaseUnissued(order);
+        orders.save(order);
+        orders.recordTransition(order.id(), new ProductionOrder.Transition(from, ProductionOrder.Status.CANCELLED, text),
+                now, user.userId());
+        settling.settle(order, text, agreed, agreedWhy, user.userId());
+        log.info("Subcontracted production order {} cancelled: {}; {} good unit(s) written off, fee {}",
+                order.orderNumber(), text, unsold, agreed);
+        return reads.get(user, order.id());
+    }
+
+    @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "production-order", resourceId = "#childId")
+    public ProductionOrders.Detail supplement(CurrentUser user, UUID childId, int quantity, String reason) {
+        ProductionOrder child = lock(user, childId);
+        requireSubcontracted(child);
+        if (child.status() == ProductionOrder.Status.COMPLETED || child.status() == ProductionOrder.Status.CANCELLED) {
+            throw new BusinessException(ErrorCode.INVALID_PRODUCTION_TRANSITION,
+                    "Production order %s is %s".formatted(child.orderNumber(), child.status()));
+        }
+        SubcontractOrder po = purchasing.supplement(child.subcontract().purchaseOrderId(), quantity,
+                requireReason(reason), user.userId());
+        log.info("Production order {}: PO {} supplemented by {} ({})", child.orderNumber(), po.poNumber(), quantity,
+                po.pendingQuantity() == null ? "resized" : "amendment waiting for approval");
+        return reads.get(user, child.id());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public SubcontractSettlement settlement(CurrentUser user, UUID productionOrderId) {
+        reads.get(user, productionOrderId);
+        ProductionOrder order = orders.findById(productionOrderId).orElseThrow();
+        requireSubcontracted(order);
+        return purchasing.settlement(order.subcontract().purchaseOrderId()).orElseThrow(() ->
+                new NotFoundException("subcontract-settlement", productionOrderId));
+    }
+
+    @Override
+    @Auditable(action = AuditAction.APPROVE, resourceType = "production-order", resourceId = "#productionOrderId")
+    public SubcontractSettlement approveLoss(CurrentUser user, UUID productionOrderId, BigDecimal deductionPerBlank,
+                                             String note) {
+        ProductionOrder order = lock(user, productionOrderId);
+        requireSubcontracted(order);
+        return purchasing.approveLoss(order.subcontract().purchaseOrderId(), deductionPerBlank, note, user.userId());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public DispatchNote dispatchNote(CurrentUser user, UUID childId) {
+        reads.get(user, childId);
+        ProductionOrder child = orders.findById(childId).orElseThrow();
+        requireSubcontracted(child);
+        if (child.prepressCheckedAt() == null) {
+            // BR-PRD-14: what goes out is the prepress-checked file.
+            throw new BusinessException(ErrorCode.INVALID_PRODUCTION_TRANSITION,
+                    "Production order %s has not passed prepress".formatted(child.orderNumber()));
+        }
+        SubcontractOrder po = purchasing.findById(child.subcontract().purchaseOrderId()).orElseThrow();
+        var terms = purchasing.subcontractorTerms(child.subcontract().subcontractorId()).orElseThrow();
+        List<SentBlanks> blanks = records.issuesOf(child.id()).stream()
+                .map(issue -> new SentBlanks(issue.sku(), issue.lotNumber(), issue.fromLocation(), issue.toLocation(),
+                        issue.quantity(), issue.issuedAt()))
+                .toList();
+        return new DispatchNote(child.id(), child.orderNumber(), child.status(), child.subcontract().method().name(),
+                po.purchaseOrderId(), po.poNumber(), po.status(), terms.supplierId(), terms.code(), terms.name(),
+                child.work().blankSku().code(), child.work().plannedQuantity(), child.work().dueDate(),
+                po.expectedDate(), child.work().designSnapshotId(), child.work().designChecksum(),
+                workflow.printFile(user, child.id()), child.approvedSampleId(), child.prepressCheckedAt(), blanks);
+    }
+
+    private void requireReturnLocation(ProductionOrder child, int returned, String returnLocation) {
+        if (returned > 0 && returnLocation != null && !returnLocation.isBlank()) {
+            warehouses.findLocation(returnLocation)
+                    .filter(location -> location.warehouseId().equals(child.work().warehouseId()))
+                    .filter(location -> location.kind() != StorageLocationView.Kind.SUBCONTRACTOR)
+                    .orElseThrow(() -> new BusinessException(ErrorCode.LOCATION_NOT_FOUND,
+                            "No storage location %s in the warehouse of production order %s".formatted(returnLocation,
+                                    child.orderNumber())));
+        }
+    }
+
+    private static void requireSubcontracted(ProductionOrder order) {
+        if (order.mode() != ProductionOrder.Mode.SUBCONTRACTED) {
+            throw new BusinessException(ErrorCode.INVALID_PRODUCTION_TRANSITION,
+                    "Production order %s is printed in house".formatted(order.orderNumber()));
+        }
+    }
+
+    private static void requireSuppliedBlanks(ProductionOrder order) {
+        if (order.mode() != ProductionOrder.Mode.SUBCONTRACTED
+                || order.subcontract().method() != ProductionOrder.SubcontractMethod.SUPPLIED_BLANKS) {
+            throw new BusinessException(ErrorCode.INVALID_PRODUCTION_TRANSITION,
+                    "Production order %s sent no blanks to a subcontractor".formatted(order.orderNumber()));
+        }
+    }
+
+    private static String requireReason(String reason) {
+        String text = blankToNull(reason);
+        if (text == null || text.length() > 500) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A reason is required, at most 500 characters");
+        }
+        return text;
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.strip();
+    }
+
+    private boolean salesOrderCancelled(ProductionOrder order) {
+        return salesOrders.findById(order.salesOrderId()).map(OrderSummary::status)
+                .map(status -> status == OrderStatus.CANCELLED).orElse(true);
     }
 
     private ProductionOrder lock(CurrentUser user, UUID productionOrderId) {

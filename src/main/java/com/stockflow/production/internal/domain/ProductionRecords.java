@@ -83,4 +83,18 @@ public interface ProductionRecords {
 
     /** The holds of the child's received goods, in receipt order. */
     List<UUID> subcontractHoldsOf(UUID productionOrderId);
+
+    /**
+     * Blanks brought back from a subcontractor without a goods receipt (BR-PRD-15): {@code returned} back to stock,
+     * {@code spoilt} written off as SUBCONTRACT_LOSS. One row per request.
+     */
+    record SubcontractRecall(UUID id, UUID productionOrderId, UUID requestId, int returned, int spoilt,
+                             String returnLocation, String note, Instant recordedAt, UUID recordedBy) {
+    }
+
+    Optional<SubcontractRecall> findRecall(UUID requestId);
+
+    void recordRecall(SubcontractRecall recall);
+
+    List<SubcontractRecall> recallsOf(UUID productionOrderId);
 }

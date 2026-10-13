@@ -45,6 +45,13 @@ public final class ProductionOrder {
     /** {@code ck_production_order_mode}: printed in the shop, or by a subcontractor. */
     public enum Mode { IN_HOUSE, SUBCONTRACTED }
 
+    /**
+     * Why a child exists ({@code ck_production_order_origin}): SPLIT - part of an order sent out (BR-PRD-12);
+     * SHORTFALL - part of what a subcontractor owed, taken back to the print shop (03 §16); REPLACEMENT - the
+     * in-house replacement of a subcontracted order cancelled while its sales order still wants the goods.
+     */
+    public enum Origin { SPLIT, SHORTFALL, REPLACEMENT }
+
     /** We send the blanks, or the subcontractor sources them and we buy finished goods (433). */
     public enum SubcontractMethod { SUPPLIED_BLANKS, FULL_SERVICE }
 
@@ -71,9 +78,13 @@ public final class ProductionOrder {
     /** {@code ck_production_order_hold_reason}: why work stopped (Jira 396, 401). */
     public enum HoldReason { FILE_REJECTED, BLANKS_SHORT, MACHINE_DOWN, WAITING_CUSTOMER, SUBCONTRACTOR_LATE, OTHER }
 
-    /** The states a hold can interrupt and a resume returns to ({@code ck_production_order_status_before_hold}). */
+    /**
+     * The states a hold can interrupt and a resume returns to ({@code ck_production_order_status_before_hold}):
+     * every one before COMPLETED (Jira 396), QC included since V20261014000700 — an inspection waiting for the
+     * customer's word on a borderline unit is stopped, not decided.
+     */
     private static final java.util.EnumSet<Status> HOLDABLE = java.util.EnumSet.of(Status.PENDING_PREPRESS,
-            Status.READY, Status.MATERIAL_ISSUED, Status.PRINTING, Status.SUBCONTRACTED);
+            Status.READY, Status.MATERIAL_ISSUED, Status.PRINTING, Status.SUBCONTRACTED, Status.QC);
 
     /** A status change the service records on {@code production_order_status_history}. */
     public record Transition(Status from, Status to, String reason) {
@@ -111,6 +122,7 @@ public final class ProductionOrder {
     private Work work;
     private Mode mode = Mode.IN_HOUSE;
     private UUID parentId;
+    private Origin origin;
     private Subcontract subcontract;
     private int issued;
     private int printed;
@@ -179,8 +191,13 @@ public final class ProductionOrder {
 
     /** Rehydration of the subcontracting columns, after {@link #restore}. */
     public ProductionOrder withSubcontract(Mode mode, UUID parentId, Subcontract subcontract) {
+        return withSubcontract(mode, parentId, parentId == null ? null : Origin.SPLIT, subcontract);
+    }
+
+    public ProductionOrder withSubcontract(Mode mode, UUID parentId, Origin origin, Subcontract subcontract) {
         this.mode = Objects.requireNonNull(mode, "mode");
         this.parentId = parentId;
+        this.origin = origin;
         this.subcontract = subcontract;
         return this;
     }
@@ -224,6 +241,44 @@ public final class ProductionOrder {
     }
 
     /**
+     * Whether sending {@code quantity} out takes the whole order (BR-PRD-12: "sending everything converts the order
+     * itself instead of creating a child"): all of its plan, nothing issued to the print shop or printed yet.
+     */
+    public boolean wholeOrder(int quantity) {
+        return quantity == work.plannedQuantity() && issued == 0 && printed == 0;
+    }
+
+    /**
+     * BR-PRD-12, the whole order: an in-house ORDER in PENDING_PREPRESS, READY or ON_HOLD from one of those, nothing
+     * issued or printed yet, becomes subcontracted itself — same row, same number, same plan and status, no parent
+     * ({@code ck_production_order_child_subcontracted}). From here it runs the child's branch: READY →
+     * SUBCONTRACTED → QC.
+     */
+    public Transition convertToSubcontract(Subcontract terms) {
+        Objects.requireNonNull(terms, "terms");
+        if (type != Type.ORDER) {
+            throw new BusinessException(ErrorCode.INVALID_PRODUCTION_TRANSITION,
+                    "A sample is always printed in house (BR-PRD-11)");
+        }
+        if (mode != Mode.IN_HOUSE) {
+            throw new BusinessException(ErrorCode.INVALID_PRODUCTION_TRANSITION,
+                    "Production order %s is already subcontracted".formatted(orderNumber));
+        }
+        Status working = effectiveStatus();
+        if (!SPLITTABLE.contains(status) || working != Status.PENDING_PREPRESS && working != Status.READY) {
+            throw transition("subcontract", status);
+        }
+        if (issued > 0 || printed > 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "Production order %s has blanks in the print shop; only its %d unissued unit(s) can be split off"
+                            .formatted(orderNumber, unissued()));
+        }
+        mode = Mode.SUBCONTRACTED;
+        subcontract = terms;
+        return new Transition(status, status, "Whole order converted to subcontracting (%s)".formatted(terms.method()));
+    }
+
+    /**
      * The child of a split: the same order line, design, approved sample and prepress result as its parent
      * (03 §16 "the child inherits the parent's prepress result"), {@code quantity} planned, its own due date.
      */
@@ -237,6 +292,7 @@ public final class ProductionOrder {
                 parent.approvedSampleId, w);
         child.mode = Mode.SUBCONTRACTED;
         child.parentId = parent.id;
+        child.origin = Origin.SPLIT;
         child.subcontract = Objects.requireNonNull(terms, "terms");
         child.prepressCheckedBy = parent.prepressCheckedBy;
         child.prepressCheckedAt = parent.prepressCheckedAt;
@@ -264,7 +320,8 @@ public final class ProductionOrder {
      */
     public Transition receivedFromSubcontractor(int quantity) {
         requireSubcontracted();
-        if (status != Status.SUBCONTRACTED && status != Status.QC && !(status == Status.READY && printed > 0)) {
+        Status working = effectiveStatus();
+        if (working != Status.SUBCONTRACTED && working != Status.QC && !(working == Status.READY && printed > 0)) {
             throw transition("receive the subcontracted goods of", Status.QC);
         }
         if (quantity < 1) {
@@ -273,8 +330,117 @@ public final class ProductionOrder {
         Status from = status;
         printed += quantity;
         good += quantity;
+        String text = "Received %d from the subcontractor".formatted(quantity);
+        if (status == Status.ON_HOLD && holdReason != HoldReason.SUBCONTRACTOR_LATE) {
+            // Goods that arrive do not lift a hold for another reason (waiting for the customer, say): they wait
+            // for QC behind it, and the resume finds them there.
+            statusBeforeHold = Status.QC;
+            return new Transition(from, Status.ON_HOLD, text + "; still on hold, QC after the resume");
+        }
+        // The goods the subcontractor was late with have come: that hold is over.
+        statusBeforeHold = null;
+        holdReason = null;
+        holdNote = null;
         status = Status.QC;
-        return new Transition(from, Status.QC, "Received %d from the subcontractor".formatted(quantity));
+        return new Transition(from, Status.QC, text);
+    }
+
+    /** What the subcontractor still owes: planned less the good units received (inspected or waiting for QC). */
+    public int stillOwed() {
+        return Math.max(0, work.plannedQuantity() - good);
+    }
+
+    /** The states the rest of a subcontractor's quantity can be taken back to the print shop from. */
+    private static final java.util.EnumSet<Status> GIVE_BACK_FROM =
+            java.util.EnumSet.of(Status.PENDING_PREPRESS, Status.READY, Status.SUBCONTRACTED, Status.QC);
+
+    /**
+     * 03 §16, G9: {@code quantity} of what the subcontractor still owes goes to a new in-house order of the same
+     * line (the caller creates it with {@link #inHouseFor}). The plan shrinks by it; then
+     * <ul>
+     *   <li>nothing received at all and everything given back: this order is CANCELLED - the in-house one
+     *       {@link Origin#REPLACEMENT replaces} it;</li>
+     *   <li>nothing more owed and nothing waiting for QC: COMPLETED with the good units it has (the caller hands
+     *       them over);</li>
+     *   <li>otherwise the status stays: more to come from the subcontractor, or a QC round to record.</li>
+     * </ul>
+     * A held order (subcontractor late, say) is decided on the state its hold interrupted; ending it ends the hold.
+     */
+    public Transition giveBackToPrintShop(int quantity, String newOrderNumber, Instant at) {
+        Objects.requireNonNull(at, "at");
+        requireSubcontracted();
+        if (!GIVE_BACK_FROM.contains(effectiveStatus())) {
+            throw transition("take work back from the subcontractor of", status);
+        }
+        if (quantity < 1 || quantity > stillOwed()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "The subcontractor still owes %d unit(s) of production order %s; %d cannot be taken back"
+                            .formatted(stillOwed(), orderNumber, quantity));
+        }
+        Status from = status;
+        if (quantity == work.plannedQuantity()) {
+            String reason = "Replaced in house by %s".formatted(newOrderNumber);
+            end(reason, at);
+            return new Transition(from, Status.CANCELLED, reason);
+        }
+        work = new Work(work.warehouseId(), work.blankSku(), work.designSnapshotId(), work.designChecksum(),
+                work.plannedQuantity() - quantity, work.dueDate());
+        String reason = "%d unit(s) taken back to the print shop as %s".formatted(quantity, newOrderNumber);
+        if (stillOwed() == 0 && awaitingQc() == 0) {
+            status = Status.COMPLETED;
+            statusBeforeHold = null;
+            holdReason = null;
+            holdNote = null;
+            completedAt = at;
+            return new Transition(from, Status.COMPLETED, reason + "; %d good".formatted(good));
+        }
+        return new Transition(from, status, reason);
+    }
+
+    /**
+     * The in-house order a subcontracted one gives work back to: the same line, design, approved sample and prepress
+     * result, {@code quantity} planned, printed in house ({@link #giveBackToPrintShop}).
+     */
+    public static ProductionOrder inHouseFor(UUID id, String orderNumber, ProductionOrder subcontracted, int quantity,
+                                             Origin origin) {
+        if (origin == Origin.SPLIT) {
+            throw new IllegalArgumentException("An in-house order is a shortfall or a replacement");
+        }
+        Work w = new Work(subcontracted.work.warehouseId(), subcontracted.work.blankSku(),
+                subcontracted.work.designSnapshotId(), subcontracted.work.designChecksum(), quantity,
+                subcontracted.work.dueDate());
+        boolean checked = subcontracted.prepressCheckedAt != null;
+        ProductionOrder order = new ProductionOrder(id, orderNumber, Type.ORDER,
+                checked ? Status.READY : Status.PENDING_PREPRESS, null, subcontracted.salesOrderId,
+                subcontracted.salesOrderLineId, subcontracted.approvedSampleId, w);
+        order.parentId = subcontracted.id;
+        order.origin = Objects.requireNonNull(origin, "origin");
+        order.prepressCheckedBy = subcontracted.prepressCheckedBy;
+        order.prepressCheckedAt = subcontracted.prepressCheckedAt;
+        return order;
+    }
+
+    /**
+     * A subcontracted order its sales order no longer wants (03 §16 SUBCONTRACTED -> CANCELLED; or before it was
+     * sent, or after a QC round), with no QC round waiting. Good units it already has are sold to nobody else (Q3)
+     * and become scrap; the caller writes them off, has the blanks recalled first and closes the PO.
+     *
+     * @return the good units this cancellation turned into scrap
+     */
+    public int cancelSubcontracted(String reason, Instant at) {
+        String text = requireReason(reason);
+        Objects.requireNonNull(at, "at");
+        requireSubcontracted();
+        Status working = effectiveStatus();
+        if (working != Status.PENDING_PREPRESS && working != Status.READY && working != Status.SUBCONTRACTED) {
+            throw transition("cancel", Status.CANCELLED);
+        }
+        int unsold = good;
+        scrap += good;
+        good = 0;
+        passed = 0;
+        end(text, at);
+        return unsold;
     }
 
     private void requireSubcontracted() {
@@ -314,8 +480,8 @@ public final class ProductionOrder {
     }
 
     /**
-     * Stop work, saying why. Allowed from every state before COMPLETED that the schema lets a hold remember;
-     * QC is left by recording its result, not by a hold.
+     * Stop work, saying why. Allowed from every live state before COMPLETED (Jira 396). A held QC records no
+     * result until it is resumed: {@link #recordQc} wants QC, not ON_HOLD.
      */
     public Transition hold(HoldReason reason, String note, Instant at) {
         Objects.requireNonNull(reason, "reason");
@@ -462,6 +628,11 @@ public final class ProductionOrder {
     public Transition cancel(String reason, Instant at) {
         String text = requireReason(reason);
         Objects.requireNonNull(at, "at");
+        if (mode == Mode.SUBCONTRACTED) {
+            // Its PO, its blanks at the subcontractor and its settlement go with it: cancelSubcontracted.
+            throw new BusinessException(ErrorCode.INVALID_PRODUCTION_TRANSITION,
+                    "Production order %s is subcontracted; it is cancelled with its purchase order".formatted(orderNumber));
+        }
         if (!CANCELLABLE.contains(effectiveStatus())) {
             throw transition("cancel", Status.CANCELLED);
         }
@@ -599,6 +770,7 @@ public final class ProductionOrder {
     public Instant completedAt() { return completedAt; }
     public Mode mode() { return mode; }
     public UUID parentId() { return parentId; }
+    public Origin origin() { return origin; }
     public Subcontract subcontract() { return subcontract; }
     public Instant cancelledAt() { return cancelledAt; }
     public String cancellationReason() { return cancellationReason; }

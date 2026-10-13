@@ -156,7 +156,7 @@ class MaterialIssueService implements MaterialIssues {
     }
 
     /**
-     * The hold scanned, or else the next one not issued yet: the sales order's own holds first (an ORDER's
+     * The hold scanned, or else the next one not issued yet: the sales order's own holds first (a root ORDER's
      * blanks were held at checkout), then the production order's (a sample's, a reprint's). When none is left
      * and blanks are still needed — a reprint round, or a round resumed after BLANKS_SHORT — they are held now
      * for the production order, in its warehouse; too few in stock refuses the scan and holds nothing.
@@ -165,7 +165,9 @@ class MaterialIssueService implements MaterialIssues {
         Set<UUID> issued = records.issuesOf(order.id()).stream()
                 .map(ProductionRecords.MaterialIssue::reservationId).collect(Collectors.toSet());
         List<UUID> candidates = new ArrayList<>();
-        if (order.type() == ProductionOrder.Type.ORDER) {
+        // The line's checkout holds are its root order's: an in-house order made for a subcontractor's shortfall
+        // works on the holds of its own.
+        if (order.type() == ProductionOrder.Type.ORDER && order.parentId() == null) {
             OrderSummary sales = salesOrders.findById(order.salesOrderId()).orElseThrow(() -> new BusinessException(
                     ErrorCode.NOT_FOUND, "Sales order of production order %s not found".formatted(order.orderNumber())));
             sales.lines().stream().filter(line -> line.lineId().equals(order.salesOrderLineId()))

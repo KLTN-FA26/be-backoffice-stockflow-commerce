@@ -133,15 +133,48 @@ class ProductionOrderTest {
     }
 
     @Test
-    void finishedOrQcOrdersCannotBeHeld() {
+    void finishedOrdersCannotBeHeld() {
         java.time.Instant at = java.time.Instant.parse("2026-10-14T03:00:00Z");
-        for (ProductionOrder.Status status : List.of(ProductionOrder.Status.QC, ProductionOrder.Status.COMPLETED,
+        for (ProductionOrder.Status status : List.of(ProductionOrder.Status.COMPLETED,
                 ProductionOrder.Status.CANCELLED, ProductionOrder.Status.ON_HOLD)) {
             ProductionOrder stopped = ProductionOrder.restore(UUID.randomUUID(), "LSX-1", ProductionOrder.Type.ORDER,
                     status, null, order, line, sample, work);
             assertThatThrownBy(() -> stopped.hold(ProductionOrder.HoldReason.MACHINE_DOWN, null, at)).as(status.name())
                     .isInstanceOf(BusinessException.class);
         }
+    }
+
+    @Test
+    void qcCanBeHeldAndResumedAndRecordsNoResultWhileHeld() {
+        Instant at = Instant.parse("2026-10-14T03:00:00Z");
+        ProductionOrder order = ready();
+        order.issueBlanks(10);
+        order.startPrinting();
+        order.recordOutput(10, 0);
+        ProductionOrder.Transition held = order.hold(ProductionOrder.HoldReason.WAITING_CUSTOMER, "colour check", at);
+        assertThat(held.from()).isEqualTo(ProductionOrder.Status.QC);
+        assertThat(order.statusBeforeHold()).isEqualTo(ProductionOrder.Status.QC);
+        assertThatThrownBy(() -> order.recordQc(10, 0, at)).as("no result while held")
+                .extracting(ProductionOrderTest::code).isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
+        assertThatThrownBy(() -> order.cancel("customer gone", at)).as("printed: a stop, not a cancel")
+                .extracting(ProductionOrderTest::code).isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
+
+        assertThat(order.resume().to()).isEqualTo(ProductionOrder.Status.QC);
+        assertThat(order.recordQc(10, 0, at).to()).isEqualTo(ProductionOrder.Status.COMPLETED);
+    }
+
+    @Test
+    void aHeldQcCanStillBeStoppedAndItsGoodUnitsBecomeScrap() {
+        Instant at = Instant.parse("2026-10-14T03:00:00Z");
+        ProductionOrder order = ready();
+        order.issueBlanks(10);
+        order.startPrinting();
+        order.recordOutput(8, 1);
+        order.hold(ProductionOrder.HoldReason.MACHINE_DOWN, null, at);
+        assertThat(order.stop(0, 0, "order cancelled", at)).isEqualTo(7);
+        assertThat(order.status()).isEqualTo(ProductionOrder.Status.CANCELLED);
+        assertThat(order.scrap()).isEqualTo(8);
+        assertThat(order.statusBeforeHold()).isNull();
     }
 
     private ProductionOrder ready() {

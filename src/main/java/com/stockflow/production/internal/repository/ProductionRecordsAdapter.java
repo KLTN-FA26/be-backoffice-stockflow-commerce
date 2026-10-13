@@ -154,6 +154,36 @@ class ProductionRecordsAdapter implements ProductionRecords {
                 (rs, n) -> rs.getObject(1, UUID.class), productionOrderId);
     }
 
+    private static final String RECALL_COLUMNS = "id, production_order_id, request_id, returned_blanks, spoilt_blanks, "
+            + "return_location, note, recorded_at, recorded_by";
+
+    @Override
+    public Optional<SubcontractRecall> findRecall(UUID requestId) {
+        return jdbc.query("SELECT " + RECALL_COLUMNS + " FROM production.production_subcontract_recall WHERE request_id = ?",
+                ProductionRecordsAdapter::recall, requestId).stream().findFirst();
+    }
+
+    @Override
+    public void recordRecall(SubcontractRecall recall) {
+        entityManager.flush();
+        jdbc.update("INSERT INTO production.production_subcontract_recall (" + RECALL_COLUMNS
+                        + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", recall.id(), recall.productionOrderId(),
+                recall.requestId(), recall.returned(), recall.spoilt(), recall.returnLocation(), recall.note(),
+                Timestamp.from(recall.recordedAt()), recall.recordedBy());
+    }
+
+    @Override
+    public List<SubcontractRecall> recallsOf(UUID productionOrderId) {
+        return jdbc.query("SELECT " + RECALL_COLUMNS + " FROM production.production_subcontract_recall "
+                + "WHERE production_order_id = ? ORDER BY recorded_at, id", ProductionRecordsAdapter::recall, productionOrderId);
+    }
+
+    private static SubcontractRecall recall(ResultSet rs, int row) throws SQLException {
+        return new SubcontractRecall(rs.getObject(1, UUID.class), rs.getObject(2, UUID.class), rs.getObject(3, UUID.class),
+                rs.getInt(4), rs.getInt(5), rs.getString(6), rs.getString(7), rs.getTimestamp(8).toInstant(),
+                rs.getObject(9, UUID.class));
+    }
+
     private static SubcontractReceipt receipt(ResultSet rs, int row) throws SQLException {
         Timestamp reconciledAt = rs.getTimestamp(8);
         return new SubcontractReceipt(rs.getObject(1, UUID.class), rs.getObject(2, UUID.class), rs.getInt(3),

@@ -1,6 +1,7 @@
 package com.stockflow.procurement.internal.repository;
 
 import com.stockflow.common.domain.Money;
+import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.procurement.internal.domain.PoLine;
 import com.stockflow.procurement.internal.domain.PurchaseOrder;
@@ -106,6 +107,242 @@ class SubcontractOrderStoreAdapter implements SubcontractOrderStore {
         orders.saveAndFlush(order);
         events.record(order.getId(), null, "REVISED", actorId, row.status(), row.status(), reason, null,
                 "subcontracting");
+    }
+
+    @Override
+    public int receivedQuantity(UUID purchaseOrderId) {
+        Number received = (Number) entityManager.createNativeQuery("""
+                        SELECT COALESCE(SUM(l.received_qty), 0) FROM procurement.goods_receipt_lines l
+                          JOIN procurement.goods_receipts r ON r.id = l.receipt_id
+                          JOIN procurement.purchase_order_lines pl ON pl.id = l.po_line_id
+                         WHERE pl.po_id = :po AND r.status NOT IN ('DRAFT', 'CANCELLED')""")
+                .setParameter("po", purchaseOrderId).getSingleResult();
+        return received.intValue();
+    }
+
+    @Override
+    public Optional<Amendment> pendingAmendment(UUID purchaseOrderId) {
+        @SuppressWarnings("unchecked")
+        java.util.List<Object[]> rows = entityManager.createNativeQuery("""
+                        SELECT r.id, r.revision_no, lr.ordered_qty, r.changed_by, r.change_summary
+                          FROM procurement.purchase_orders p
+                          JOIN procurement.purchase_order_revisions r ON r.id = p.pending_revision_id
+                          JOIN procurement.purchase_order_line_revisions lr ON lr.po_revision_id = r.id
+                         WHERE p.id = :po AND r.kind = 'AMENDMENT' AND p.status <> 'PENDING_APPROVAL'""")
+                .setParameter("po", purchaseOrderId).getResultList();
+        return rows.stream().findFirst().map(row -> new Amendment((UUID) row[0], ((Number) row[1]).longValue(),
+                ((BigDecimal) row[2]).intValueExact(), (UUID) row[3], (String) row[4]));
+    }
+
+    @Override
+    public void requestAmendment(Row row, int newQuantity, String reason, UUID actorId) {
+        entityManager.flush();
+        UUID revisionId = Identifiers.newId();
+        entityManager.createNativeQuery("""
+                        INSERT INTO procurement.purchase_order_revisions
+                               (id, po_id, revision_no, kind, snapshot_header, change_summary, changed_at, changed_by,
+                                created_at, created_by)
+                        SELECT :id, p.id,
+                               (SELECT COALESCE(MAX(revision_no), 0) + 1 FROM procurement.purchase_order_revisions
+                                 WHERE po_id = p.id),
+                               'AMENDMENT',
+                               jsonb_build_object('supplierId', CAST(p.supplier_id AS text),
+                                                  'warehouseId', CAST(p.warehouse_id AS text), 'currency', p.currency,
+                                                  'orderDate', CAST(p.order_date AS text),
+                                                  'expectedDate', CAST(p.expected_date AS text),
+                                                  'paymentTermDays', p.payment_term_days, 'note', p.note,
+                                                  'quantity', CAST(:qty AS integer),
+                                                  'previousQuantity', CAST(:previous AS integer),
+                                                  'subtotal', ROUND(CAST(:qty AS numeric) * l.unit_price, 2),
+                                                  'taxTotal', ROUND(ROUND(CAST(:qty AS numeric) * l.unit_price, 2)
+                                                                    * l.tax_rate / 100, 2)),
+                               :reason, NOW(), :actor, NOW(), 'subcontracting'
+                          FROM procurement.purchase_orders p
+                          JOIN procurement.purchase_order_lines l ON l.po_id = p.id
+                         WHERE p.id = :po""")
+                .setParameter("id", revisionId)
+                .setParameter("po", row.id())
+                .setParameter("qty", newQuantity)
+                .setParameter("previous", row.quantity().intValueExact())
+                .setParameter("reason", reason.length() > 500 ? reason.substring(0, 500) : reason)
+                .setParameter("actor", actorId)
+                .executeUpdate();
+        entityManager.createNativeQuery("""
+                        INSERT INTO procurement.purchase_order_line_revisions
+                               (id, po_line_id, po_revision_id, inventory_item_id, uom, ordered_qty, unit_price,
+                                tax_rate, discount_rate, line_subtotal, line_discount_amount, line_net, line_tax,
+                                line_total, note)
+                        SELECT :id, l.id, :revision, l.inventory_item_id, l.uom, :qty, l.unit_price, l.tax_rate, 0,
+                               s.subtotal, 0, s.subtotal, s.tax, s.subtotal + s.tax, l.note
+                          FROM procurement.purchase_order_lines l
+                         CROSS JOIN LATERAL (SELECT ROUND(CAST(:qty AS numeric) * l.unit_price, 2) AS subtotal) b
+                         CROSS JOIN LATERAL (SELECT b.subtotal, ROUND(b.subtotal * l.tax_rate / 100, 2) AS tax) s
+                         WHERE l.po_id = :po""")
+                .setParameter("id", Identifiers.newId())
+                .setParameter("revision", revisionId)
+                .setParameter("qty", newQuantity)
+                .setParameter("po", row.id())
+                .executeUpdate();
+        entityManager.createNativeQuery("""
+                        UPDATE procurement.purchase_orders SET pending_revision_id = :revision, version = version + 1,
+                               last_modified_at = NOW() WHERE id = :po""")
+                .setParameter("revision", revisionId).setParameter("po", row.id()).executeUpdate();
+        events.record(row.id(), revisionId, "REVISED", actorId, row.status(), row.status(), reason,
+                java.util.Map.of("quantity", Integer.toString(newQuantity),
+                        "previousQuantity", row.quantity().toBigInteger().toString()), "subcontracting");
+        refresh(row.id());
+    }
+
+    @Override
+    public void approveAmendment(Row row, Amendment amendment, UUID approverId) {
+        entityManager.flush();
+        entityManager.createNativeQuery("""
+                        UPDATE procurement.purchase_order_lines l
+                           SET ordered_qty = lr.ordered_qty, line_subtotal = lr.line_subtotal, line_net = lr.line_net,
+                               line_tax = lr.line_tax, line_total = lr.line_total, po_revision_id = lr.po_revision_id,
+                               status = CASE WHEN l.status = 'RECEIVED' THEN 'PARTIALLY_RECEIVED' ELSE l.status END,
+                               version = l.version + 1, last_modified_at = NOW()
+                          FROM procurement.purchase_order_line_revisions lr
+                         WHERE lr.po_revision_id = :revision AND lr.po_line_id = l.id""")
+                .setParameter("revision", amendment.revisionId()).executeUpdate();
+        entityManager.createNativeQuery("""
+                        UPDATE procurement.purchase_orders p
+                           SET active_revision_id = :revision, pending_revision_id = NULL, revision_no = :no,
+                               subtotal = t.subtotal, tax_total = t.tax,
+                               total_amount = t.subtotal - p.discount_total + t.tax + p.shipping_fee,
+                               status = CASE WHEN p.status = 'RECEIVED' THEN 'PARTIALLY_RECEIVED' ELSE p.status END,
+                               version = p.version + 1, last_modified_at = NOW()
+                          FROM (SELECT SUM(line_subtotal) AS subtotal, SUM(line_tax) AS tax
+                                  FROM procurement.purchase_order_lines WHERE po_id = :po AND status <> 'WITHDRAWN') t
+                         WHERE p.id = :po""")
+                .setParameter("revision", amendment.revisionId()).setParameter("no", amendment.revisionNo())
+                .setParameter("po", row.id()).executeUpdate();
+        approval(amendment.revisionId(), approverId, "APPROVED", null);
+        String to = "RECEIVED".equals(row.status()) ? "PARTIALLY_RECEIVED" : row.status();
+        events.record(row.id(), amendment.revisionId(), "APPROVED", approverId, row.status(), to,
+                amendment.reason(), java.util.Map.of("quantity", Integer.toString(amendment.quantity())),
+                "subcontracting");
+        refresh(row.id());
+    }
+
+    @Override
+    public void dropAmendment(Row row, Amendment amendment, UUID actorId, String decision, String reason) {
+        entityManager.flush();
+        entityManager.createNativeQuery("""
+                        UPDATE procurement.purchase_orders SET pending_revision_id = NULL, version = version + 1,
+                               last_modified_at = NOW() WHERE id = :po""")
+                .setParameter("po", row.id()).executeUpdate();
+        approval(amendment.revisionId(), actorId, decision, reason);
+        events.record(row.id(), amendment.revisionId(), decision, actorId, row.status(), row.status(),
+                reason, null, "subcontracting");
+        refresh(row.id());
+    }
+
+    private void approval(UUID revisionId, UUID approverId, String decision, String reason) {
+        entityManager.createNativeQuery("""
+                        INSERT INTO procurement.purchase_order_approvals
+                               (id, po_revision_id, step_no, approver_id, decision, decision_at, reason, created_at, created_by)
+                        VALUES (:id, :revision,
+                                (SELECT COALESCE(MAX(step_no), 0) + 1 FROM procurement.purchase_order_approvals
+                                  WHERE po_revision_id = :revision),
+                                :approver, :decision, NOW(), :reason, NOW(), 'subcontracting')""")
+                .setParameter("id", Identifiers.newId())
+                .setParameter("revision", revisionId)
+                .setParameter("approver", approverId)
+                .setParameter("decision", decision)
+                .setParameter("reason", reason == null ? null : reason.length() > 500 ? reason.substring(0, 500) : reason)
+                .executeUpdate();
+    }
+
+    /** The order and its lines as SQL left them, for whoever reads them through JPA later in the transaction. */
+    private void refresh(UUID purchaseOrderId) {
+        orders.findById(purchaseOrderId).ifPresent(order -> {
+            entityManager.refresh(order);
+            order.getLines().forEach(entityManager::refresh);
+        });
+    }
+
+    private static final String SETTLEMENT_COLUMNS = """
+            po_id, production_order_id, status, currency, unit_price, received_quantity, passed_quantity,
+            failed_quantity, payable_amount, blanks_sent, blanks_used, blanks_returned, blanks_lost, tolerance_percent,
+            tolerance_blanks, excess_loss, deduction_per_blank, deduction_amount, cancellation_fee,
+            cancellation_fee_reason, net_payable, settled_at, settled_by, approved_at, approved_by, approval_note""";
+
+    @Override
+    public Optional<com.stockflow.procurement.api.SubcontractSettlement> settlement(UUID purchaseOrderId,
+                                                                                   boolean forUpdate) {
+        entityManager.flush();
+        @SuppressWarnings("unchecked")
+        java.util.List<Object[]> rows = entityManager.createNativeQuery("SELECT " + SETTLEMENT_COLUMNS
+                        + " FROM procurement.subcontract_settlement WHERE po_id = :po" + (forUpdate ? " FOR UPDATE" : ""))
+                .setParameter("po", purchaseOrderId).getResultList();
+        return rows.stream().findFirst().map(r -> new com.stockflow.procurement.api.SubcontractSettlement(
+                (UUID) r[0], (UUID) r[1], (String) r[2], (String) r[3], (BigDecimal) r[4], ((Number) r[5]).intValue(),
+                ((Number) r[6]).intValue(), ((Number) r[7]).intValue(), (BigDecimal) r[8], ((Number) r[9]).intValue(),
+                ((Number) r[10]).intValue(), ((Number) r[11]).intValue(), ((Number) r[12]).intValue(),
+                (BigDecimal) r[13], ((Number) r[14]).intValue(), ((Number) r[15]).intValue(), (BigDecimal) r[16],
+                (BigDecimal) r[17], (BigDecimal) r[18], (String) r[19], (BigDecimal) r[20], instant(r[21]),
+                (UUID) r[22], instant(r[23]), (UUID) r[24], (String) r[25]));
+    }
+
+    private static java.time.Instant instant(Object value) {
+        return switch (value) {
+            case null -> null;
+            case java.time.Instant i -> i;
+            case java.time.OffsetDateTime o -> o.toInstant();
+            case java.sql.Timestamp t -> t.toInstant();
+            default -> throw new IllegalStateException("Not a timestamp: " + value.getClass());
+        };
+    }
+
+    @Override
+    public void insertSettlement(com.stockflow.procurement.api.SubcontractSettlement s) {
+        entityManager.flush();
+        entityManager.createNativeQuery("INSERT INTO procurement.subcontract_settlement (" + SETTLEMENT_COLUMNS + """
+                        ) VALUES (:po, :production, :status, :currency, :price, :received, :passed, :failed, :payable,
+                                  :sent, :used, :returned, :lost, :tolerancePercent, :toleranceBlanks, :excess, NULL, 0,
+                                  :fee, :feeReason, :net, :at, :by, NULL, NULL, NULL)""")
+                .setParameter("po", s.purchaseOrderId())
+                .setParameter("production", s.productionOrderId())
+                .setParameter("status", s.status())
+                .setParameter("currency", s.currency())
+                .setParameter("price", s.unitPrice())
+                .setParameter("received", s.receivedQuantity())
+                .setParameter("passed", s.passedQuantity())
+                .setParameter("failed", s.failedQuantity())
+                .setParameter("payable", s.payableAmount())
+                .setParameter("sent", s.blanksSent())
+                .setParameter("used", s.blanksUsed())
+                .setParameter("returned", s.blanksReturned())
+                .setParameter("lost", s.blanksLost())
+                .setParameter("tolerancePercent", s.tolerancePercent())
+                .setParameter("toleranceBlanks", s.toleranceBlanks())
+                .setParameter("excess", s.excessLoss())
+                .setParameter("fee", s.cancellationFee())
+                .setParameter("feeReason", s.cancellationFeeReason())
+                .setParameter("net", s.netPayable())
+                .setParameter("at", s.settledAt())
+                .setParameter("by", s.settledBy())
+                .executeUpdate();
+    }
+
+    @Override
+    public void approveSettlement(UUID purchaseOrderId, BigDecimal deductionPerBlank, BigDecimal deductionAmount,
+                                  BigDecimal netPayable, String note, UUID approverId, java.time.Instant at) {
+        entityManager.createNativeQuery("""
+                        UPDATE procurement.subcontract_settlement
+                           SET status = 'FINAL', deduction_per_blank = :perBlank, deduction_amount = :amount,
+                               net_payable = :net, approval_note = :note, approved_by = :approver, approved_at = :at,
+                               version = version + 1
+                         WHERE po_id = :po AND status = 'AWAITING_APPROVAL'""")
+                .setParameter("perBlank", deductionPerBlank)
+                .setParameter("amount", deductionAmount)
+                .setParameter("net", netPayable)
+                .setParameter("note", note)
+                .setParameter("approver", approverId)
+                .setParameter("at", at)
+                .setParameter("po", purchaseOrderId)
+                .executeUpdate();
     }
 
     private static Row toRow(PurchaseOrderJpaEntity order) {

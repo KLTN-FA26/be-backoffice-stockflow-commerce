@@ -96,6 +96,15 @@ public final class GoodsReceipt extends AggregateRoot {
      * putaway otherwise. The caller counts the goods in as INBOUND stock in the same transaction.
      */
     public void confirm(UUID userId, Instant now) {
+        confirm(userId, now, false);
+    }
+
+    /**
+     * {@code handedToProduction}: the receipt of a SUBCONTRACT order, whose goods the production module takes over
+     * in the same transaction for its single QC against the approved sample (user decision 2026-10-13). Receiving
+     * has nothing left to do with them — no QC, no putaway — so the receipt is CLOSED as it is confirmed.
+     */
+    public void confirm(UUID userId, Instant now, boolean handedToProduction) {
         requireStatus(GoodsReceiptStatus.DRAFT, "confirm");
         if (lines.isEmpty()) {
             throw new BusinessException(ErrorCode.INVALID_RECEIPT_TRANSITION,
@@ -103,6 +112,14 @@ public final class GoodsReceipt extends AggregateRoot {
         }
         this.confirmedBy = Objects.requireNonNull(userId, "userId");
         this.confirmedAt = Objects.requireNonNull(now, "now");
+        if (handedToProduction) {
+            if (lines.stream().anyMatch(ReceiptLine::qcRequired)) {
+                throw new IllegalStateException("A receipt handed to production has no receiving QC of its own");
+            }
+            this.status = GoodsReceiptStatus.CLOSED;
+            this.closedAt = now;
+            return;
+        }
         this.status = lines.stream().anyMatch(ReceiptLine::qcRequired)
                 ? GoodsReceiptStatus.IN_QC : GoodsReceiptStatus.IN_PUTAWAY;
     }

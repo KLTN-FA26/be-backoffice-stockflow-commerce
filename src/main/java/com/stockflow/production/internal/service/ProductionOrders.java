@@ -33,7 +33,15 @@ public interface ProductionOrders {
     record Detail(Row summary, UUID approvedSampleId, String designChecksum, int issuedQuantity, int printedQuantity,
                   int scrapQuantity, Instant prepressCheckedAt, Instant completedAt, Instant cancelledAt,
                   String cancellationReason, String createdBy, Instant lastModifiedAt, long version,
-                  List<StatusChange> history) {
+                  List<StatusChange> history, String origin, Subcontract subcontract) {
+    }
+
+    /**
+     * A subcontracted order's terms (SCRUM-441): SUPPLIED_BLANKS or FULL_SERVICE, the subcontractor, the price per good
+     * unit and the SUBCONTRACT purchase order. Null on an order printed in house.
+     */
+    record Subcontract(String method, UUID subcontractorId, java.math.BigDecimal unitPrice, String currency,
+                       UUID purchaseOrderId) {
     }
 
     PageResponse<Row> list(CurrentUser user, Criteria criteria);

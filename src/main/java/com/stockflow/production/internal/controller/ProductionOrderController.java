@@ -16,7 +16,11 @@ import com.stockflow.production.internal.controller.dto.StopProductionRequest;
 import com.stockflow.production.internal.domain.ProductionRecords;
 import com.stockflow.production.internal.service.PrintRuns;
 import com.stockflow.production.internal.service.Subcontracting;
+import com.stockflow.production.internal.controller.dto.SubcontractInHouseRequest;
+import com.stockflow.production.internal.controller.dto.SubcontractLossApprovalRequest;
+import com.stockflow.production.internal.controller.dto.SubcontractRecallRequest;
 import com.stockflow.production.internal.controller.dto.SubcontractReconciliationRequest;
+import com.stockflow.production.internal.controller.dto.SubcontractSupplementRequest;
 import com.stockflow.production.internal.controller.dto.SubcontractSplitRequest;
 import com.stockflow.production.internal.controller.dto.PrepressRequest;
 import com.stockflow.production.internal.controller.dto.ProductionOrderResponse;
@@ -193,6 +197,73 @@ class ProductionOrderController {
                 request.spoilt(), request.returned(), request.returnLocation())));
     }
 
+    /** BR-PRD-15: blanks back from the subcontractor without a receipt are the warehouse's to record, as Q9. */
+    @PostMapping("/{productionOrderId}/subcontract-recall")
+    @Operation(summary = "Recall blanks from the subcontractor: returned to stock, spoilt written off as SUBCONTRACT_LOSS")
+    @RequiresPermission(resource = ProductionResources.MATERIAL_ISSUES, action = Action.CREATE)
+    public ApiResponse<ProductionOrderResponse> recall(@PathVariable UUID productionOrderId,
+                                                      @Valid @RequestBody SubcontractRecallRequest request,
+                                                      @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(mapper.toResponse(subcontracts.recall(user, productionOrderId, new Subcontracting.Recall(
+                request.requestId(), request.returned(), request.spoilt(), request.returnLocation(), request.note()))));
+    }
+
+    @GetMapping("/{productionOrderId}/subcontract-recalls")
+    @Operation(summary = "The blanks recalled from a subcontractor without a receipt")
+    @RequiresPermission(resource = ProductionResources.MATERIAL_ISSUES, action = Action.READ)
+    public ApiResponse<List<ProductionRecords.SubcontractRecall>> recalls(@PathVariable UUID productionOrderId,
+                                                                         @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(subcontracts.recalls(user, productionOrderId));
+    }
+
+    /** Deciding where the work is printed is the Warehouse Manager's (03 §16), as the split is: APPROVE. */
+    @PostMapping("/{productionOrderId}/subcontract-in-house")
+    @Operation(summary = "Take what a subcontractor still owes back to the print shop as a new in-house order (03 §16 G9)")
+    @RequiresPermission(resource = ProductionResources.PRODUCTION_ORDERS, action = Action.APPROVE)
+    public ApiResponse<ProductionOrderResponse> takeInHouse(@PathVariable UUID productionOrderId,
+                                                           @Valid @RequestBody SubcontractInHouseRequest request,
+                                                           @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(mapper.toResponse(subcontracts.takeInHouse(user, productionOrderId, request.quantity(),
+                request.reason(), request.packingLocation())));
+    }
+
+    @PostMapping("/{productionOrderId}/subcontract-supplement")
+    @Operation(summary = "Add quantity to the SUBCONTRACT PO for a resend: a draft is resized, an approved PO gets an amendment approved again")
+    @RequiresPermission(resource = ProductionResources.PRODUCTION_ORDERS, action = Action.APPROVE)
+    public ApiResponse<ProductionOrderResponse> supplement(@PathVariable UUID productionOrderId,
+                                                          @Valid @RequestBody SubcontractSupplementRequest request,
+                                                          @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(mapper.toResponse(subcontracts.supplement(user, productionOrderId, request.quantity(),
+                request.reason())));
+    }
+
+    @GetMapping("/{productionOrderId}/subcontract-settlement")
+    @Operation(summary = "The settlement of the order's SUBCONTRACT PO: QC-passed units paid, failed not, excess loss deducted (BR-PRD-17)")
+    @RequiresPermission(resource = ProductionResources.PRODUCTION_ORDERS, action = Action.READ)
+    public ApiResponse<com.stockflow.procurement.api.SubcontractSettlement> settlement(
+            @PathVariable UUID productionOrderId, @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(subcontracts.settlement(user, productionOrderId));
+    }
+
+    /** BR-PRD-17: a loss above the subcontractor's tolerance is the Warehouse Manager's to approve: APPROVE. */
+    @PostMapping("/{productionOrderId}/subcontract-settlement/loss-approval")
+    @Operation(summary = "Approve blanks lost above the subcontractor's tolerance, with the agreed deduction per blank")
+    @RequiresPermission(resource = ProductionResources.PRODUCTION_ORDERS, action = Action.APPROVE)
+    public ApiResponse<com.stockflow.procurement.api.SubcontractSettlement> approveLoss(
+            @PathVariable UUID productionOrderId, @Valid @RequestBody SubcontractLossApprovalRequest request,
+            @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(subcontracts.approveLoss(user, productionOrderId, request.deductionPerBlank(),
+                request.note()));
+    }
+
+    @GetMapping("/{productionOrderId}/subcontract-dispatch-note")
+    @Operation(summary = "What goes out with the work: PO, subcontractor, prepress-checked PRINT_READY file, approved sample, blanks sent (BR-PRD-14, 15)")
+    @RequiresPermission(resource = ProductionResources.MATERIAL_ISSUES, action = Action.READ)
+    public ApiResponse<Subcontracting.DispatchNote> dispatchNote(@PathVariable UUID productionOrderId,
+                                                                 @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(subcontracts.dispatchNote(user, productionOrderId));
+    }
+
     @GetMapping("/{productionOrderId}/subcontract-receipts")
     @Operation(summary = "The goods receipts of a subcontracted child, with their blank reconciliation")
     @RequiresPermission(resource = ProductionResources.MATERIAL_ISSUES, action = Action.READ)
@@ -203,12 +274,15 @@ class ProductionOrderController {
 
     /** Cancelling is the Warehouse Manager's (03 §16): APPROVE. */
     @PostMapping("/{productionOrderId}/cancellation")
-    @Operation(summary = "Cancel before printing; issued blanks go back to stock (SCRUM-401)")
+    @Operation(summary = "Cancel before printing; issued blanks go back to stock (SCRUM-401). A subcontracted order is "
+            + "cancelled with its PO and settled, with an optional fee agreed with the subcontractor; while its sales "
+            + "order is live it is replaced in house (03 §16)")
     @RequiresPermission(resource = ProductionResources.PRODUCTION_ORDERS, action = Action.APPROVE)
     public ApiResponse<ProductionOrderResponse> cancel(@PathVariable UUID productionOrderId,
                                                        @Valid @RequestBody CancelProductionRequest request,
                                                        @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(mapper.toResponse(runs.cancel(user, productionOrderId, request.reason())));
+        return ApiResponse.ok(mapper.toResponse(runs.cancel(user, productionOrderId, request.reason(),
+                request.subcontractorFee(), request.subcontractorFeeReason())));
     }
 
     @PostMapping("/{productionOrderId}/stop")

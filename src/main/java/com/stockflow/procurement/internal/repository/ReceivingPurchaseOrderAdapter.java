@@ -102,6 +102,7 @@ class ReceivingPurchaseOrderAdapter implements ReceivingPurchaseOrders {
                         .map(line -> new ReceivingPurchaseOrder.Line(line.getId(), line.getLineNo(),
                                 line.getInventoryItemId(), line.getOrderedQuantity(),
                                 ReceivingPurchaseOrder.LineStatus.valueOf(line.getStatus().name())))
-                        .toList());
+                        .toList(),
+                order.getType() == com.stockflow.procurement.internal.domain.PurchaseOrder.Type.SUBCONTRACT);
     }
 }

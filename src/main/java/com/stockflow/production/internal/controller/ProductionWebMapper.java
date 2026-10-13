@@ -27,4 +27,6 @@ interface ProductionWebMapper {
     ProductionOrderResponse toResponse(ProductionOrders.Detail detail);
 
     ProductionOrderResponse.StatusChange toResponse(ProductionOrders.StatusChange change);
+
+    ProductionOrderResponse.Subcontract toResponse(ProductionOrders.Subcontract subcontract);
 }

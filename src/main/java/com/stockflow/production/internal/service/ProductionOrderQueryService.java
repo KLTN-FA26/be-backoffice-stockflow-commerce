@@ -50,7 +50,10 @@ class ProductionOrderQueryService implements ProductionOrders {
                 detail.completedAt(), detail.cancelledAt(), detail.cancellationReason(), detail.createdBy(),
                 detail.lastModifiedAt(), detail.version(), detail.history().stream()
                 .map(h -> new StatusChange(h.fromStatus(), h.toStatus(), h.reason(), h.changedAt(), h.changedBy()))
-                .toList());
+                .toList(), detail.origin(), detail.subcontract() == null ? null : new Subcontract(
+                        detail.subcontract().method(), detail.subcontract().subcontractorId(),
+                        detail.subcontract().unitPrice(), detail.subcontract().currency(),
+                        detail.subcontract().purchaseOrderId()));
     }
 
     private static Row toRow(ProductionOrderSearch.Row r) {

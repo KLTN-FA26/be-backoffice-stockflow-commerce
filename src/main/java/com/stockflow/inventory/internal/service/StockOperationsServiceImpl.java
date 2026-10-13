@@ -233,7 +233,7 @@ class StockOperationsServiceImpl implements StockOperations {
     @Auditable(action = AuditAction.UPDATE, resourceType = "stock-move", resourceId = "#command.reservationId()")
     public IssueReservedStockResult issueReserved(IssueReservedStockCommand command) {
         // INBOUND: a subcontractor's goods, held for the child the moment they were counted in (holdReceived),
-        // go on to the print shop for QC. Only a production hold can be on an INBOUND layer.
+        // go on to the QUALITY_CONTROL area for production QC. Only a production hold can be on an INBOUND layer.
         return moveHold(command, java.util.EnumSet.of(StockStatus.AVAILABLE, StockStatus.INBOUND),
                 StockStatus.IN_PRODUCTION);
     }

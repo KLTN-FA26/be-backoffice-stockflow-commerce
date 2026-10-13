@@ -64,8 +64,8 @@ class WorkshopStock {
 
     /**
      * The goods this job works on: in house, the holds it issued to the print shop; for a subcontracted child, the
-     * finished goods held for it on receipt (SCRUM-441, decision Q8) — its blanks at the subcontractor are not its
-     * goods but its supplies ({@link #blanksAtSubcontractor}).
+     * finished goods held for it on receipt and waiting in QC (SCRUM-441, decision Q8) — its blanks at the
+     * subcontractor are not its goods but its supplies ({@link #blanksAtSubcontractor}).
      */
     private List<Held> held(ProductionOrder order) {
         if (order.mode() == ProductionOrder.Mode.SUBCONTRACTED) {
@@ -123,27 +123,27 @@ class WorkshopStock {
      * the stock.
      */
     void consumeAtSubcontractor(ProductionOrder order, int used, String receipt, UUID by) {
-        takeFromSubcontractor(order, used, receipt, hold -> take -> inventory.consumeHeld(new ConsumeHeldStockCommand(
+        takeFromSubcontractor(order, used, "receipt " + receipt, hold -> take -> inventory.consumeHeld(new ConsumeHeldStockCommand(
                 hold.reservationId(), order.salesOrderId(), order.id(), take, "Printed into receipt " + receipt, by)));
     }
 
     /**
-     * Decision Q9, one receipt reconciled by the warehouse: {@code spoilt} blanks are written off as
-     * SUBCONTRACT_LOSS through the adjustment approval (G8), {@code returned} come back free — to
-     * {@code returnLocation}, or where each was sent from. Whatever is left stays held at the subcontractor: not
-     * received yet is not lost.
+     * Decision Q9, one receipt reconciled by the warehouse, or blanks recalled without a receipt ({@code source}
+     * says which): {@code spoilt} blanks are written off as SUBCONTRACT_LOSS through the adjustment approval (G8),
+     * {@code returned} come back free — to {@code returnLocation}, or where each was sent from. Whatever is left
+     * stays held at the subcontractor: not received yet is not lost.
      */
-    void reconcile(ProductionOrder order, int spoilt, int returned, String returnLocation, String receipt, UUID by) {
-        takeFromSubcontractor(order, spoilt, receipt, hold -> take -> inventory.writeOffHeld(new WriteOffHeldStockCommand(
+    void reconcile(ProductionOrder order, int spoilt, int returned, String returnLocation, String source, UUID by) {
+        takeFromSubcontractor(order, spoilt, source, hold -> take -> inventory.writeOffHeld(new WriteOffHeldStockCommand(
                 hold.reservationId(), order.salesOrderId(), order.id(), take, StockAdjustmentReason.SUBCONTRACT_LOSS,
-                "%s spoilt at the subcontractor (receipt %s)".formatted(order.orderNumber(), receipt), by)));
-        takeFromSubcontractor(order, returned, receipt, hold -> take -> inventory.returnHeld(new ReturnHeldStockCommand(
+                "%s spoilt at the subcontractor (%s)".formatted(order.orderNumber(), source), by)));
+        takeFromSubcontractor(order, returned, source, hold -> take -> inventory.returnHeld(new ReturnHeldStockCommand(
                 hold.reservationId(), order.salesOrderId(), order.id(), take,
                 returnLocation == null || returnLocation.isBlank() ? hold.fromLocation() : returnLocation, by)));
     }
 
     /** {@code quantity} blanks out of the child's holds at the subcontractor, in the order they were sent. */
-    private void takeFromSubcontractor(ProductionOrder order, int quantity, String receipt,
+    private void takeFromSubcontractor(ProductionOrder order, int quantity, String source,
                                        Function<Held, java.util.function.IntConsumer> step) {
         int remaining = quantity;
         for (Held held : issued(order)) {
@@ -156,40 +156,32 @@ class WorkshopStock {
         }
         if (remaining > 0) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "Receipt %s accounts for %d blank(s) more than the subcontractor holds for production order %s"
-                            .formatted(receipt, remaining, order.orderNumber()));
+                    "The %s accounts for %d blank(s) more than the subcontractor holds for production order %s"
+                            .formatted(source, remaining, order.orderNumber()));
         }
     }
 
     /**
-     * Decision Q8: a received line's goods, held for the child on their INBOUND layer, go to the print shop for
-     * QC as IN_PRODUCTION — never sellable, and a cup failing QC is scrapped as a cup (SCRAP), never put back as
-     * a blank. The print shop is the PRODUCTION area the parent's blanks went to, else the warehouse's only
-     * usable one, else the first by location code.
+     * Decision Q8 and the user's QC decision of 2026-10-13: a received line's goods, held for the child on their
+     * INBOUND layer, go to the warehouse's QUALITY_CONTROL area — where received goods wait for inspection — as
+     * IN_PRODUCTION: still the child's, never sellable, and a cup failing the one production QC is scrapped as a cup
+     * (SCRAP), never put back as a blank. They do not pass through the print shop: they were printed elsewhere.
+     * The area is the warehouse's first usable QUALITY_CONTROL area by location code (receiving already refused the
+     * receipt of a warehouse without one).
      */
-    void handReceivedToPrintShop(ProductionOrder child, UUID hold, UUID by) {
-        inventory.issueReserved(new IssueReservedStockCommand(hold, null, child.id(), printShop(child), by));
+    void holdForProductionQc(ProductionOrder child, UUID hold, UUID by) {
+        inventory.issueReserved(new IssueReservedStockCommand(hold, null, child.id(), qcArea(child), by));
     }
 
-    private String printShop(ProductionOrder child) {
-        List<StorageLocationView> areas = warehouses.areasOf(child.work().warehouseId(),
-                StorageLocationView.AreaType.PRODUCTION).stream().filter(StorageLocationView::usable)
-                .sorted(java.util.Comparator.comparing(StorageLocationView::locationCode)).toList();
-        if (areas.isEmpty()) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "The warehouse of production order %s has no usable PRODUCTION area for QC of the received goods"
-                            .formatted(child.orderNumber()));
-        }
-        java.util.Set<String> usable = areas.stream().map(StorageLocationView::locationCode)
-                .collect(Collectors.toSet());
-        List<ProductionRecords.MaterialIssue> parentIssues = child.parentId() == null ? List.of()
-                : records.issuesOf(child.parentId());
-        for (int i = parentIssues.size() - 1; i >= 0; i--) {
-            if (usable.contains(parentIssues.get(i).toLocation())) {
-                return parentIssues.get(i).toLocation();
-            }
-        }
-        return areas.get(0).locationCode();
+    private String qcArea(ProductionOrder child) {
+        return warehouses.areasOf(child.work().warehouseId(), StorageLocationView.AreaType.QUALITY_CONTROL).stream()
+                .filter(StorageLocationView::usable)
+                .map(StorageLocationView::locationCode)
+                .sorted()
+                .findFirst()
+                .orElseThrow(() -> new BusinessException(ErrorCode.QC_AREA_MISSING,
+                        "The warehouse of production order %s has no usable QUALITY_CONTROL area for the received goods"
+                                .formatted(child.orderNumber())));
     }
 
     /** Units held in the print shop for this order, printed or not. */

@@ -18,8 +18,8 @@ import java.util.UUID;
  * <p>The workflow columns — status, hold, prepress, quantities, completion, cancellation — are written
  * through {@link #applyWorkflow} (SCRUM-396..401); a new row takes the table's defaults for them
  * ({@code insertable = false}: zero quantities). The subcontracting columns (SCRUM-441) are written when a
- * child is created; of them only {@code purchase_order_id} changes later, and {@code planned_quantity} changes
- * on the parent of a split.</p>
+ * child is created, and when a whole order is converted (BR-PRD-12); {@code planned_quantity} changes on the
+ * parent of a split and on a child whose shortfall went to the print shop.</p>
  */
 @Entity
 @Table(name = "production_order", schema = "production")
@@ -32,19 +32,19 @@ public class ProductionOrderJpaEntity extends BaseEntity {
     @Column(name = "type", nullable = false, length = 16, updatable = false)
     private ProductionOrder.Type type;
 
-    @Column(name = "mode", nullable = false, length = 16, updatable = false)
+    @Column(name = "mode", nullable = false, length = 16)
     private String mode;
 
-    @Column(name = "subcontract_method", length = 20, updatable = false)
+    @Column(name = "subcontract_method", length = 20)
     private String subcontractMethod;
 
-    @Column(name = "subcontractor_id", updatable = false)
+    @Column(name = "subcontractor_id")
     private UUID subcontractorId;
 
-    @Column(name = "subcontract_unit_price", precision = 19, scale = 4, updatable = false)
+    @Column(name = "subcontract_unit_price", precision = 19, scale = 4)
     private java.math.BigDecimal subcontractUnitPrice;
 
-    @Column(name = "subcontract_currency", length = 3, updatable = false)
+    @Column(name = "subcontract_currency", length = 3)
     private String subcontractCurrency;
 
     @Column(name = "purchase_order_id")
@@ -76,6 +76,9 @@ public class ProductionOrderJpaEntity extends BaseEntity {
 
     @Column(name = "sales_order_line_id", updatable = false)
     private UUID salesOrderLineId;
+
+    @Column(name = "origin", length = 16, updatable = false)
+    private String origin;
 
     @Column(name = "parent_id", updatable = false)
     private UUID parentId;
@@ -145,6 +148,7 @@ public class ProductionOrderJpaEntity extends BaseEntity {
         this.plannedQuantity = order.work().plannedQuantity();
         this.mode = order.mode().name();
         this.parentId = order.parentId();
+        this.origin = order.origin() == null ? null : order.origin().name();
         if (order.subcontract() != null) {
             this.subcontractMethod = order.subcontract().method().name();
             this.subcontractorId = order.subcontract().subcontractorId();
@@ -163,7 +167,14 @@ public class ProductionOrderJpaEntity extends BaseEntity {
         this.prepressCheckedBy = order.prepressCheckedBy();
         this.prepressCheckedAt = order.prepressCheckedAt();
         this.plannedQuantity = order.work().plannedQuantity();
-        this.purchaseOrderId = order.subcontract() == null ? null : order.subcontract().purchaseOrderId();
+        // A whole order converted to subcontracting (BR-PRD-12) changes its own mode and terms.
+        this.mode = order.mode().name();
+        ProductionOrder.Subcontract terms = order.subcontract();
+        this.subcontractMethod = terms == null ? null : terms.method().name();
+        this.subcontractorId = terms == null ? null : terms.subcontractorId();
+        this.subcontractUnitPrice = terms == null ? null : terms.unitPrice();
+        this.subcontractCurrency = terms == null ? null : terms.currency();
+        this.purchaseOrderId = terms == null ? null : terms.purchaseOrderId();
         this.issuedQuantity = order.issued();
         this.printedQuantity = order.printed();
         this.goodQuantity = order.good();
@@ -184,6 +195,7 @@ public class ProductionOrderJpaEntity extends BaseEntity {
     public UUID getSampleRequestId() { return sampleRequestId; }
     public UUID getSalesOrderId() { return salesOrderId; }
     public UUID getSalesOrderLineId() { return salesOrderLineId; }
+    public String getOrigin() { return origin; }
     public UUID getParentId() { return parentId; }
     public String getSubcontractMethod() { return subcontractMethod; }
     public UUID getSubcontractorId() { return subcontractorId; }

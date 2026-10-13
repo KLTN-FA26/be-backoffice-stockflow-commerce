@@ -43,7 +43,9 @@ public enum StockStatus {
     EXPIRED,
 
     /**
-     * Issued to the print shop (SCRUM-397): in a PRODUCTION area, held for its order or production order.
+     * Issued to the print shop (SCRUM-397): in a PRODUCTION area, held for its order or production order. Also
+     * blanks at a subcontractor's location (SCRUM-441) and a subcontractor's finished goods waiting for production
+     * QC in a QUALITY_CONTROL area: production's goods, wherever they are.
      * Never sellable, whatever happens to the hold, and the hold itself is closed only by production: an order
      * cancelled after its blanks were issued does not release it, so printed cups never come back as blanks
      * another order can buy and production can still tell printed from unprinted. The goods leave this status

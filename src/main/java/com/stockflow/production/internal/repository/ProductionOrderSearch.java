@@ -35,7 +35,12 @@ public interface ProductionOrderSearch {
     record Detail(Row row, UUID approvedSampleId, String designChecksum, int issuedQuantity, int printedQuantity,
                   int scrapQuantity, Instant prepressCheckedAt, Instant completedAt, Instant cancelledAt,
                   String cancellationReason, String createdBy, Instant lastModifiedAt, long version,
-                  List<HistoryEntry> history) {
+                  List<HistoryEntry> history, String origin, Subcontract subcontract) {
+    }
+
+    /** The terms of a subcontracted order; null on one printed in house. */
+    record Subcontract(String method, UUID subcontractorId, java.math.BigDecimal unitPrice, String currency,
+                       UUID purchaseOrderId) {
     }
 
     Page<Row> search(Criteria criteria, Pageable pageable);
