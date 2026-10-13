@@ -65,10 +65,17 @@ import java.util.stream.Collectors;
  * caller's, or {@link SkuCodeRule} builds it, and its alphabet is {@link Sku}'s.</p>
  *
  * <p>The default variant takes the first combination (spec D1): a product is born with one variant
- * whose signature is {@code DEFAULT}, and the first combination any create path produces becomes
- * that variant instead of a second row, keeping its SKU, which is the product's code. Otherwise every
- * product with axes would carry a variant that matches no combination, and its SKU would be sold
- * beside the one that does. A SKU the caller sends with that first combination is therefore not used.</p>
+ * whose signature is {@code DEFAULT}, and the matrix-first combination (the first option, in dictionary
+ * order, of every axis) becomes that variant instead of a second row. Its SKU is the product's code
+ * unless the caller sends one, which is applied as a rename. Otherwise every product with axes would
+ * carry a variant that matches no combination, and its SKU would be sold beside the one that does. The
+ * transform happens only while the default variant is DRAFT, for the reason a SKU is frozen after
+ * that: a SKU on a stock card must not silently start to mean another combination. Any other
+ * combination, and every combination once the default has left DRAFT, is a row of its own.</p>
+ *
+ * <p>An update is partial: a null {@code optionValueIds} keeps the options, a blank sku or name keeps
+ * the current one. A generation creates at most {@link VariantMatrix#MAX_PER_CALL} combinations, and
+ * the one that goes to the default variant counts toward that limit.</p>
  *
  * <p>Every write takes the product lock first ({@link #requireChangeable}), then reads the axes and
  * the dictionary, and only then the variants, so two writers of one product serialise before either
@@ -203,11 +210,17 @@ public class ProductVariantService {
         }
         String name = command.name() == null || command.name().isBlank()
                 ? catalog.defaultName(combination) : requireName(command.name());
+        Sku requested = command.sku() == null || command.sku().isBlank() ? null : sku(command.sku());
         VariantJpaEntity defaultVariant = variants.findByProductIdAndDefaultVariantTrue(productId).orElse(null);
-        if (isUnassigned(defaultVariant)) {
-            return takeFirstCombination(defaultVariant, combination, signature, name, catalog);
+        if (isUnassigned(defaultVariant) && catalog.isMatrixFirst(combination)) {
+            if (requested != null && !requested.code().equals(defaultVariant.getSku())) {
+                requireSkuFree(requested);
+            } else {
+                requested = null;
+            }
+            return takeFirstCombination(defaultVariant, combination, signature, name, requested, catalog);
         }
-        Sku sku = command.sku() == null || command.sku().isBlank() ? catalog.skuFor(combination) : sku(command.sku());
+        Sku sku = requested != null ? requested : catalog.skuFor(combination);
         requireSkuFree(sku);
         int position = command.position() == null ? variants.nextPosition(productId) : command.position();
         var variant = new VariantJpaEntity(Identifiers.newId(), productId, sku.code(), name, signature.value(),
@@ -258,17 +271,27 @@ public class ProductVariantService {
         int skipped = all.size() - missing.size();
 
         VariantJpaEntity defaultVariant = variants.findByProductIdAndDefaultVariantTrue(productId).orElse(null);
-        boolean defaultIsFree = isUnassigned(defaultVariant) && !missing.isEmpty();
-        List<Combination> toInsert = defaultIsFree ? missing.subList(1, missing.size()) : missing;
+        // The default takes the matrix-first combination only if this call creates it; a restricted
+        // matrix that leaves it out leaves the default as it is.
+        Combination forDefault = isUnassigned(defaultVariant)
+                ? missing.stream().filter(c -> catalog.isMatrixFirst(c.options())).findFirst().orElse(null) : null;
+        List<Combination> toInsert = missing.stream().filter(c -> c != forDefault).toList();
 
-        // Every SKU is decided and checked before the first row is written.
+        // Every SKU is decided and checked, against the database and against each other, before the
+        // first row is written. Value codes may contain '-', so two combinations can build one SKU.
         List<Sku> skus = toInsert.stream().map(c -> catalog.skuFor(c.options())).toList();
+        Set<Sku> distinct = new HashSet<>();
         for (Sku sku : skus) {
+            if (!distinct.add(sku)) {
+                throw new BusinessException(ErrorCode.VARIANT_SKU_ALREADY_EXISTS,
+                        "Two combinations would both get SKU " + sku + "; supply SKUs by hand");
+            }
             requireSkuFree(sku);
         }
-        if (defaultIsFree) {
-            List<AxisOption> first = missing.getFirst().options();
-            takeFirstCombination(defaultVariant, first, catalog.signature(first), catalog.defaultName(first), catalog);
+        if (forDefault != null) {
+            List<AxisOption> first = forDefault.options();
+            takeFirstCombination(defaultVariant, first, catalog.signature(first), catalog.defaultName(first), null,
+                    catalog);
         }
         int position = variants.nextPosition(productId);
         List<VariantView> created = new ArrayList<>();
@@ -293,8 +316,8 @@ public class ProductVariantService {
         var variant = requireVariant(productId, variantId);
 
         String sku = variant.getSku();
-        if (command.sku() != null && !command.sku().isBlank() && !sku(command.sku()).code().equals(sku)) {
-            Sku requested = sku(command.sku());
+        Sku requested = command.sku() == null || command.sku().isBlank() ? null : sku(command.sku());
+        if (requested != null && !requested.code().equals(sku)) {
             if (variant.getStatus() != VariantStatus.DRAFT) {
                 throw new BusinessException(ErrorCode.INVALID_VARIANT_TRANSITION,
                         "The SKU of a variant is fixed once it has left DRAFT");
@@ -350,7 +373,7 @@ public class ProductVariantService {
                 insertOptions(variant.getId(), newCombination);
             }
         } catch (DataIntegrityViolationException e) {
-            throw raced();
+            throw translate(e);
         }
         if (!changed.isEmpty()) {
             history.record(productId, ProductChangeType.VARIANT_UPDATED, variant.getId(), null, null, null, changed);
@@ -422,21 +445,21 @@ public class ProductVariantService {
                 .orElseThrow(() -> new BusinessException(ErrorCode.PRODUCT_NOT_FOUND, "No product with id " + productId));
     }
 
-    /** Whether the default variant still waits for its combination (its signature is still {@code DEFAULT}). */
+    /** Whether the default variant still waits for its combination: signature {@code DEFAULT} and still DRAFT. */
     private static boolean isUnassigned(VariantJpaEntity defaultVariant) {
-        return defaultVariant != null
+        return defaultVariant != null && defaultVariant.getStatus() == VariantStatus.DRAFT
                 && VariantSignature.defaultSignature().value().equals(defaultVariant.getAttributeSignature());
     }
 
-    /** The default variant becomes the first combination; its SKU, the product's code, stays. */
+    /** The default variant becomes the first combination; it keeps its SKU unless {@code rename} is given. */
     private VariantView takeFirstCombination(VariantJpaEntity defaultVariant, List<AxisOption> combination,
-                                             VariantSignature signature, String name, Catalog catalog) {
-        defaultVariant.setDetails(defaultVariant.getSku(), name, signature.value(), defaultVariant.getPosition());
+                                             VariantSignature signature, String name, Sku rename, Catalog catalog) {
+        defaultVariant.setDetails(rename == null ? defaultVariant.getSku() : rename.code(), name, signature.value(), defaultVariant.getPosition());
         try {
             variants.saveAndFlush(defaultVariant);
             insertOptions(defaultVariant.getId(), combination);
         } catch (DataIntegrityViolationException e) {
-            throw raced();
+            throw translate(e);
         }
         return view(defaultVariant, catalog.optionViews(combination));
     }
@@ -452,7 +475,7 @@ public class ProductVariantService {
             insertOptions(saved.getId(), combination);
             return saved;
         } catch (DataIntegrityViolationException e) {
-            throw raced();
+            throw translate(e);
         }
     }
 
@@ -481,9 +504,33 @@ public class ProductVariantService {
                 "This product already has a variant for " + signature.value());
     }
 
-    private static BusinessException raced() {
-        return new BusinessException(ErrorCode.VARIANT_SKU_ALREADY_EXISTS,
-                "A variant with this SKU or combination was created meanwhile");
+    /**
+     * What a failed flush means. Only the two unique indexes are a request that raced past the checks;
+     * the inventory rename guard (a DRAFT SKU that something already references) is a refused
+     * transition; anything else is not ours to explain and goes to the global handler unchanged.
+     */
+    private static RuntimeException translate(DataIntegrityViolationException e) {
+        if (violates(e, "uk_variants_sku") || violates(e, "uk_variants_combination")) {
+            return new BusinessException(ErrorCode.VARIANT_SKU_ALREADY_EXISTS,
+                    "A variant with this SKU or combination was created meanwhile");
+        }
+        String message = e.getMostSpecificCause().getMessage();
+        if (message != null && message.contains("Only an unused DRAFT variant can rename")) {
+            return new BusinessException(ErrorCode.INVALID_VARIANT_TRANSITION,
+                    "This SKU is referenced and can no longer be renamed");
+        }
+        return e;
+    }
+
+    private static boolean violates(DataIntegrityViolationException e, String constraint) {
+        for (Throwable cause = e; cause != null; cause = cause.getCause()) {
+            if (cause instanceof org.hibernate.exception.ConstraintViolationException v
+                    && constraint.equalsIgnoreCase(v.getConstraintName())) {
+                return true;
+            }
+        }
+        String message = e.getMostSpecificCause().getMessage();
+        return message != null && message.contains("\"" + constraint + "\"");
     }
 
     private static Sku sku(String raw) {
@@ -596,6 +643,16 @@ public class ProductVariantService {
                 }
             }
             return List.of(chosen);
+        }
+
+        /** The first option, in dictionary order, of every axis: the combination the default variant becomes. */
+        boolean isMatrixFirst(List<AxisOption> combination) {
+            for (int i = 0; i < axes.size(); i++) {
+                if (!axes.get(i).options().getFirst().id().equals(combination.get(i).id())) {
+                    return false;
+                }
+            }
+            return true;
         }
 
         /** The options per axis a generation uses: all of them, or those named for the axis. */
