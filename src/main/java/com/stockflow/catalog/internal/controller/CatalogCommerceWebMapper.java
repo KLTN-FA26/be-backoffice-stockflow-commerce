@@ -4,6 +4,7 @@ import com.stockflow.catalog.internal.controller.dto.*;
 import com.stockflow.catalog.internal.domain.Listing;
 import com.stockflow.catalog.internal.domain.SellingPrice;
 import com.stockflow.catalog.internal.service.CatalogCommerceService;
+import com.stockflow.catalog.internal.service.CatalogSearchService;
 import com.stockflow.product.api.PublishedProductImage;
 
 import org.springframework.stereotype.Component;
@@ -40,6 +41,10 @@ public class CatalogCommerceWebMapper {
 
     public CatalogCardResponse toResponse(CatalogCommerceService.Card c) {
         return new CatalogCardResponse(c.productId(), c.slug(), c.title(), c.seoTitle());
+    }
+
+    public SearchSuggestionResponse toResponse(CatalogSearchService.Suggestion s) {
+        return new SearchSuggestionResponse(s.title(), s.slug(), s.sku());
     }
 
     public CatalogProductResponse toResponse(CatalogCommerceService.PublicView v) {

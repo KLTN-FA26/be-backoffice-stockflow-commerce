@@ -147,6 +147,19 @@ class NotificationSender {
 
     private static final Logger log = LoggerFactory.getLogger(NotificationSender.class);
 
+    /**
+     * Sends one plain e-mail with a system-generated subject and body (the inventory alert digest). Throws when the
+     * mail server refuses; the caller decides whether that matters. Neither the subject nor the body is logged.
+     */
+    void sendInventoryAlertEmail(String toEmail, String subject, String body) {
+        var message = new SimpleMailMessage();
+        message.setFrom(mailFrom);
+        message.setTo(toEmail);
+        message.setSubject(subject);
+        message.setText(body);
+        mail.send(message);
+    }
+
     /** Internal recovery generations must not change the supplier's idempotent PO payload. */
     private record SupplierPurchaseOrderMessage(
             UUID purchaseOrderId,

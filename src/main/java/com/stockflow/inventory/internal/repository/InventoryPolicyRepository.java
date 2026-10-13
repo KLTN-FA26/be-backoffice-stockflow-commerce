@@ -139,17 +139,96 @@ where sku=? and version=?
                 == 1;
     }
 
+    /**
+     * What counts as usable stock, in one place: AVAILABLE and not expired on the business date. Reservations are
+     * not subtracted (this is not ATP). {@code usableOnHand}, {@code thresholds} and {@code thresholdPage} all read
+     * through it, so the alert evaluator, the reconcile and the dashboard cannot drift apart (plan A8).
+     */
+    private static final String USABLE =
+            " status = 'AVAILABLE' AND (expiry_date IS NULL OR expiry_date >= ?) ";
+
     public long usableOnHand(String sku, LocalDate today) {
         Long quantity =
                 jdbc.queryForObject(
-                        """
-                        select coalesce(sum(on_hand),0) from inventory.stock_item where sku=?
-                        and status='AVAILABLE' and (expiry_date is null or expiry_date >= ?)
-                        """,
+                        "select coalesce(sum(on_hand),0) from inventory.stock_item where sku=? and" + USABLE,
                         Long.class,
                         sku,
                         today);
         return quantity == null ? 0 : quantity;
+    }
+
+    /** A SKU's thresholds next to its usable on-hand; the input of every comparison in {@code StockThresholds}. */
+    public record ThresholdRow(String sku, long usableOnHand, Integer reorderPoint, Integer safetyStock) {
+    }
+
+    /** The row of each of these SKUs that has an inventory item, thresholds set or not. */
+    public java.util.List<ThresholdRow> thresholds(java.util.Collection<String> skus, LocalDate today) {
+        if (skus == null || skus.isEmpty()) {
+            return java.util.List.of();
+        }
+        return jdbc.query("""
+                SELECT i.sku, coalesce(u.qty, 0) AS qty, i.reorder_point, i.safety_stock
+                FROM inventory.inventory_items i
+                LEFT JOIN (SELECT sku, sum(on_hand) AS qty FROM inventory.stock_item
+                           WHERE sku = ANY (?) AND """ + USABLE + """
+                           GROUP BY sku) u ON u.sku = i.sku
+                WHERE i.sku = ANY (?)""",
+                ps -> {
+                    java.sql.Array array = ps.getConnection().createArrayOf("varchar", skus.toArray());
+                    ps.setArray(1, array);
+                    ps.setObject(2, today);
+                    ps.setArray(3, array);
+                }, (rs, n) -> thresholdRow(rs));
+    }
+
+    /**
+     * The next {@code limit} SKUs after {@code afterSku}, in SKU order, that have a reorder point or a safety stock,
+     * with their usable on-hand: one page of the scan {@code InventoryService.lowStockBatch} and the nightly
+     * reconcile walk. Keyset paging, so a page costs the same however far in it is.
+     */
+    public java.util.List<ThresholdRow> thresholdPage(String afterSku, int limit, LocalDate today) {
+        return jdbc.query("""
+                WITH page AS (
+                    SELECT sku, reorder_point, safety_stock FROM inventory.inventory_items
+                    WHERE sku > ? AND (reorder_point IS NOT NULL OR safety_stock IS NOT NULL)
+                    ORDER BY sku LIMIT ?)
+                SELECT p.sku, coalesce(u.qty, 0) AS qty, p.reorder_point, p.safety_stock
+                FROM page p
+                LEFT JOIN (SELECT sku, sum(on_hand) AS qty FROM inventory.stock_item
+                           WHERE sku IN (SELECT sku FROM page) AND """ + USABLE + """
+                           GROUP BY sku) u ON u.sku = p.sku
+                ORDER BY p.sku""", (rs, n) -> thresholdRow(rs), afterSku == null ? "" : afterSku, limit, today);
+    }
+
+    private static ThresholdRow thresholdRow(java.sql.ResultSet rs) throws java.sql.SQLException {
+        return new ThresholdRow(rs.getString("sku"), rs.getLong("qty"), rs.getObject("reorder_point", Integer.class),
+                rs.getObject("safety_stock", Integer.class));
+    }
+
+    /** One SKU with stock that no alert can ever be raised for, because it has no reorder point. */
+    public record UnconfiguredRow(String sku, long usableOnHand, Integer safetyStock) {
+    }
+
+    /** SKUs that hold usable stock but have no reorder point, in SKU order (the planner's "set a threshold" tab). */
+    public java.util.List<UnconfiguredRow> unconfigured(int limit, long offset, LocalDate today) {
+        return jdbc.query("""
+                SELECT i.sku, u.qty, i.safety_stock FROM inventory.inventory_items i
+                JOIN (SELECT sku, sum(on_hand) AS qty FROM inventory.stock_item
+                      WHERE """ + USABLE + """
+                      GROUP BY sku HAVING sum(on_hand) > 0) u ON u.sku = i.sku
+                WHERE i.reorder_point IS NULL
+                ORDER BY i.sku LIMIT ? OFFSET ?""",
+                (rs, n) -> new UnconfiguredRow(rs.getString("sku"), rs.getLong("qty"),
+                        rs.getObject("safety_stock", Integer.class)), today, limit, offset);
+    }
+
+    public long countUnconfigured(LocalDate today) {
+        Long count = jdbc.queryForObject("""
+                SELECT count(*) FROM inventory.inventory_items i
+                WHERE i.reorder_point IS NULL AND EXISTS (
+                    SELECT 1 FROM inventory.stock_item WHERE sku = i.sku AND """ + USABLE + """
+                    GROUP BY sku HAVING sum(on_hand) > 0)""", Long.class, today);
+        return count == null ? 0 : count;
     }
 
     public Optional<InventoryItemLogistics> findLogistics(String sku) {
