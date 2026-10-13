@@ -803,7 +803,7 @@ MOVES = []
 # "No enum constant". So rows are written the way the application writes them: a putaway is a MOVE,
 # receiving a transfer or a return is a RECEIPT, a count correction or a scrap is an ADJUSTMENT, and a
 # confirmed pick line writes one PICK row naming the line (reference PICK_LINE, SCRUM-267), as the
-# application does since V20261014000500. The ledger reconciles to stock on hand.
+# application does since V20261014001000. The ledger reconciles to stock on hand.
 APP_KIND = {"PUTAWAY": "MOVE", "COUNT_CORRECTION": "ADJUSTMENT", "SCRAP": "ADJUSTMENT", "TRANSFER_IN": "RECEIPT",
             "RETURN_IN": "RECEIPT"}
 

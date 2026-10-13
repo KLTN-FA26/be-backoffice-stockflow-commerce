@@ -1,7 +1,7 @@
 -- =============================================================================
 -- Outbound fulfillment: the order number and warehouse a task carries (SCRUM-466,
 -- V20261014000100; kltn-docs 07 §4, BR-SEC-002); pick confirmation, deduction and put-back
--- (SCRUM-267/274/275, V20261014000500; docs 07 step 6, BR-04, BR-05). Needs the demo seed.
+-- (SCRUM-267/274/275, V20261014001000; docs 07 step 6, BR-04, BR-05). Needs the demo seed.
 -- Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on

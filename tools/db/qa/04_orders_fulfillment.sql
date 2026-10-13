@@ -74,7 +74,7 @@ SELECT pg_temp.expect_fail('O9 picking more than allocated (BR-04)', $q$
 SELECT pg_temp.expect_fail('O10 PICKED with a partial quantity', $q$
     UPDATE fulfillment.pick_line SET status = 'PICKED', picked_qty = 1, picked_by = md5('demo:user:editor')::uuid, picked_at = NOW()
      WHERE id = md5('qa:pl:1')::uuid $q$);
--- consumed_at since V20261014000500: a picked line with a hold has deducted it (09_outbound F5).
+-- consumed_at since V20261014001000: a picked line with a hold has deducted it (09_outbound F5).
 SELECT pg_temp.expect_ok('O11 picked in full', $q$
     UPDATE fulfillment.pick_line SET status = 'PICKED', picked_qty = 2, picked_by = md5('demo:user:editor')::uuid, picked_at = NOW(),
            consumed_at = NOW()

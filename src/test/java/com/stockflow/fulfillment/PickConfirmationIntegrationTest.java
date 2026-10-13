@@ -598,7 +598,7 @@ class PickConfirmationIntegrationTest {
         UUID task = UUID.fromString(body(call(post("/api/v1/fulfillment/tasks")
                 .header("Authorization", token(coordinator, "ORDER_COORDINATOR"))
                 .contentType("application/json").content(body)).andReturn()).path("taskId").asText());
-        // As it was before V20261014000500: a task, already picking, without a single line.
+        // As it was before V20261014001000: a task, already picking, without a single line.
         tx.executeWithoutResult(s -> {
             jdbc.update("DELETE FROM fulfillment.pick_line WHERE pick_id = ?", task);
             jdbc.update("UPDATE fulfillment.pick SET status = 'PICKING', started_at = NOW() WHERE id = ?", task);
