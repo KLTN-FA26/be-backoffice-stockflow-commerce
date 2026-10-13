@@ -46,12 +46,12 @@ class ProductAttributeSetTest {
     private final UUID STRAW = value(FEATURES, "STRAW");
 
     @Test
-    void aDraftProductGetsItsAxesWithOptionsInOrder() {
+    void aDraftProductGetsItsAxesAndOptions() {
         var set = draft();
         set.replaceAxes(List.of(new AxisSpec(CAPACITY.id(), 0, List.of(OZ12, OZ16)),
                 new AxisSpec(COLOR.id(), 1, List.of(CLEAR))), dictionary(), Set.of(), ids());
         assertThat(set.axes()).extracting(ProductAxis::attributeId).containsExactly(CAPACITY.id(), COLOR.id());
-        assertThat(set.axes().getFirst().options()).extracting(AxisOption::valueId).containsExactly(OZ12, OZ16);
+        assertThat(set.axes().getFirst().options()).extracting(AxisOption::valueId).containsExactlyInAnyOrder(OZ12, OZ16);
     }
 
     @Test
@@ -86,6 +86,14 @@ class ProductAttributeSetTest {
                     INVALID_PRODUCT_STATUS_TRANSITION);
             assertCode(() -> set.replaceDescriptives(List.of(), dictionary(), ids()), INVALID_PRODUCT_STATUS_TRANSITION);
         }
+    }
+
+    @Test
+    void removingAWholeAxisWhoseOptionAVariantUsesIsRefused() {
+        var set = draft(axis(CAPACITY, OZ12));
+        assertCode(() -> set.replaceAxes(List.of(), dictionary(), Set.of(OZ12), ids()), ATTRIBUTE_IN_USE);
+        assertThat(set.axes()).singleElement().satisfies(a ->
+                assertThat(a.options()).extracting(AxisOption::valueId).containsExactly(OZ12));
     }
 
     @Test

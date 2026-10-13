@@ -23,6 +23,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -39,6 +40,9 @@ import java.util.stream.Collectors;
  * overlapping replacements would otherwise each diff against the same committed rows and end in a
  * constraint or optimistic-lock error instead of one waiting for the other. The product row is the
  * natural lock because axes also depend on its status, which the lock keeps from changing underneath.</p>
+ *
+ * <p>An axis's options are shown in dictionary order (the value's sort order, then its code); the
+ * order they were requested in is not stored.</p>
  *
  * <p>Every view, the read's and the writes', is built by {@link #view} from the aggregate plus the
  * dictionary: one path from storage to what the caller sees.</p>
@@ -136,11 +140,13 @@ public class ProductAttributeService {
 
     private static AxisView axisView(ProductAxis axis, Attribute attribute, Set<UUID> usedByVariants) {
         Map<UUID, AttributeValue> values = byId(attribute);
-        List<OptionView> options = axis.options().stream().map(o -> {
-            AttributeValue v = values.get(o.valueId());
-            return new OptionView(v.id(), v.code(), v.details().label(), v.details().hexColor(),
-                    v.details().valueNumber(), v.active(), usedByVariants.contains(v.id()));
-        }).toList();
+        // The dictionary decides the order; the stored rows have none (see AxisSpec).
+        List<OptionView> options = axis.options().stream().map(o -> values.get(o.valueId()))
+                .sorted(Comparator.<AttributeValue>comparingInt(v -> v.details().sortOrder())
+                        .thenComparing(AttributeValue::code))
+                .map(v -> new OptionView(v.id(), v.code(), v.details().label(), v.details().hexColor(),
+                        v.details().valueNumber(), v.active(), usedByVariants.contains(v.id())))
+                .toList();
         return new AxisView(attribute.id(), attribute.code(), attribute.details().name(), attribute.dataType(),
                 axis.sortOrder(), options);
     }

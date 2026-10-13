@@ -101,6 +101,30 @@ class ProductAttributeIntegrationTest {
                 .stream().filter(v -> v.code().equals("BLUE")).findFirst().orElseThrow().id();
     }
 
+    private UUID addColor(String code, int sortOrder) {
+        return dictionary.addValue(COLOR, code, new AttributeValueDetails(code, null, "#0000FF", sortOrder)).values()
+                .stream().filter(v -> v.code().equals(code)).findFirst().orElseThrow().id();
+    }
+
+    @Test
+    void optionsComeBackInDictionaryOrderWhateverTheRequestOrder() {
+        UUID product = draftProduct();
+        UUID late = addColor("ZZ_LATE", 90);
+        UUID early = addColor("ZZ_EARLY", 80);
+        UUID tieB = addColor("ZZ_TIE_B", 85);
+        UUID tieA = addColor("ZZ_TIE_A", 85);
+
+        ProductAttributesView asked = service.replaceAxes(product, List.of(axis(COLOR, 0, late, tieB, early, tieA)));
+        assertThat(asked.axes().getFirst().options()).extracting(OptionView::code)
+                .containsExactly("ZZ_EARLY", "ZZ_TIE_A", "ZZ_TIE_B", "ZZ_LATE");
+
+        service.replaceAxes(product, List.of(axis(COLOR, 0, early, tieA, tieB, late)));
+        entityManager.flush();
+        entityManager.clear();
+        assertThat(service.get(product).axes().getFirst().options()).extracting(OptionView::code)
+                .containsExactly("ZZ_EARLY", "ZZ_TIE_A", "ZZ_TIE_B", "ZZ_LATE");
+    }
+
     @Test
     void getShowsTheDemoSofa() {
         ProductAttributesView view = service.get(PRODUCT_SOFA);

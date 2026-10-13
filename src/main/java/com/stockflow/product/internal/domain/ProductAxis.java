@@ -6,7 +6,11 @@ import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 
-/** One axis along which a product's variants differ, with the options on offer. Owned by {@link ProductAttributeSet}. */
+/**
+ * One axis along which a product's variants differ, with the options on offer. Owned by
+ * {@link ProductAttributeSet}. The order of the options here is not meaningful; consumers order them
+ * by the dictionary (the value's sort order, then its code).
+ */
 public final class ProductAxis {
 
     private final UUID id;
