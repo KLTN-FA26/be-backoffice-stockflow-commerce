@@ -225,7 +225,7 @@ public final class Product extends AggregateRoot {
         this.discontinueReason = requireReason(reason);
         this.status = ProductStatus.DISCONTINUED;
         this.discontinuedAt = Objects.requireNonNull(now, "now");
-        registerEvent(new ProductEvent.Discontinued(new ProductDiscontinued(id.value(), now, discontinueReason)));
+        registerEvent(new ProductEvent.Discontinued(new ProductDiscontinued(id.value(), now)));
     }
 
     /**

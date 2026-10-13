@@ -334,7 +334,6 @@ class ProductTest {
             ProductEvent.Discontinued discontinued = (ProductEvent.Discontinued) events.get(0);
             assertThat(discontinued.payload().productId()).isEqualTo(product.id().value());
             assertThat(discontinued.payload().discontinuedAt()).isEqualTo(NOW);
-            assertThat(discontinued.payload().reason()).isEqualTo("Hết dòng sản phẩm");
         }
 
         @ParameterizedTest(name = "from {0}")

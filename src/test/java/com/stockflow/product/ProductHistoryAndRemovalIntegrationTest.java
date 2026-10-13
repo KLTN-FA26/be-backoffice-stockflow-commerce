@@ -384,7 +384,7 @@ class ProductHistoryAndRemovalIntegrationTest {
     }
 
     @Test
-    @DisplayName("events: discontinuing publishes ProductDiscontinued with the reason; suspending and resuming wake the catalog")
+    @DisplayName("events: discontinuing publishes ProductDiscontinued (no free text); suspending and resuming wake the catalog")
     void eventsOtherModulesListenTo() {
         ProductSummary approved = approved();
         UUID id = approved.productId();
@@ -398,7 +398,6 @@ class ProductHistoryAndRemovalIntegrationTest {
                 .containsExactly(id, id);
         assertThat(recorded.ofType(ProductDiscontinued.class)).singleElement().satisfies(e -> {
             assertThat(e.productId()).isEqualTo(id);
-            assertThat(e.reason()).isEqualTo("end of line");
             assertThat(e.discontinuedAt()).isNotNull();
         });
     }
