@@ -21,13 +21,13 @@ import java.util.stream.Collectors;
  * cascade inserts it, and one missing from the aggregate is removed from the collection so
  * orphan removal deletes it.</p>
  */
-final class AttributePersistenceMapper {
+public final class AttributePersistenceMapper {
 
     private AttributePersistenceMapper() {
     }
 
     /** Through the rehydration constructor, so a stored row that breaks a rule fails on load. */
-    static Attribute toDomain(AttributeJpaEntity row) {
+    public static Attribute toDomain(AttributeJpaEntity row) {
         return new Attribute(row.getId(), row.getCode(), row.getDataType(),
                 new AttributeDetails(row.getName(), row.getUnit(), row.isFilterable(), row.isSearchable(),
                         row.getSortOrder()),
