@@ -69,9 +69,8 @@ public class AttributeDictionaryService {
     @Transactional(readOnly = true)
     public PageResponse<AttributeView> list(String search, AttributeDataType dataType, Boolean active,
                                             int page, int size, String sort) {
-        Specification<AttributeJpaEntity> spec = Specification
-                .<AttributeJpaEntity>where(Specs.<AttributeJpaEntity>contains("code", search)
-                        .or(Specs.contains("name", search)))
+        Specification<AttributeJpaEntity> spec = Specs.<AttributeJpaEntity>contains("code", search)
+                .or(Specs.contains("name", search))
                 .and(Specs.eq("dataType", dataType))
                 .and(Specs.eq("active", active));
         var found = rows.findAll(spec, Pages.of(page, size, SORT.parse(sort)));
