@@ -158,7 +158,8 @@ class PrintRunService implements PrintRuns {
             return;
         }
         held(order, order.hold(ProductionOrder.HoldReason.BLANKS_SHORT,
-                "%d blank(s) of %s needed for a reprint".formatted(needed, order.work().blankSku()), now), by, now);
+                "%d blank(s) of %s needed for a reprint".formatted(needed, order.work().blankSku()), now), by, now,
+                needed);
     }
 
     @Override
@@ -257,7 +258,7 @@ class PrintRunService implements PrintRuns {
                         && order.status() != ProductionOrder.Status.CANCELLED) {
                     held(order, order.hold(ProductionOrder.HoldReason.OTHER,
                             "Order %s cancelled: recall the blanks and cancel the subcontract".formatted(orderNumber),
-                            now), null, now);
+                            now), null, now, null);
                 }
                 continue;
             }
@@ -266,7 +267,8 @@ class PrintRunService implements PrintRuns {
                 cancelLocked(order, "Order %s cancelled".formatted(orderNumber), null);
             } else if (order.status() == ProductionOrder.Status.PRINTING) {
                 held(order, order.hold(ProductionOrder.HoldReason.OTHER,
-                        "Order %s cancelled: stop the job with the printed count".formatted(orderNumber), now), null, now);
+                        "Order %s cancelled: stop the job with the printed count".formatted(orderNumber), now), null, now,
+                        null);
             } else {
                 log.info("Production order {} is {}: order {} cancelled, the job waits for its stop",
                         order.orderNumber(), order.status(), orderNumber);
@@ -296,11 +298,13 @@ class PrintRunService implements PrintRuns {
         }
     }
 
-    private void held(ProductionOrder order, ProductionOrder.Transition held, UUID by, Instant now) {
+    private void held(ProductionOrder order, ProductionOrder.Transition held, UUID by, Instant now,
+                      Integer blanksNeeded) {
         orders.save(order);
         orders.recordTransition(order.id(), held, now, by);
         events.publishEvent(new ProductionOrderHeld(order.id(), order.orderNumber(), order.holdReason().name(),
-                order.holdNote(), order.sampleRequestId(), order.salesOrderId()));
+                order.sampleRequestId(), order.salesOrderId(), order.work().warehouseId(),
+                order.work().blankSku().code(), blanksNeeded));
         log.info("Production order {} on hold: {}", order.orderNumber(), order.holdReason());
     }
 

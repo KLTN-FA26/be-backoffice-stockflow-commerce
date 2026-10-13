@@ -22,7 +22,7 @@ import java.util.regex.Pattern;
  * "0123456789-001" are one customer and the unique index can compare plain strings. No check digit is
  * verified: the rules for it are not in the documents this system follows, and refusing a real code
  * would be worse than accepting a mistyped one. The same shape is {@code ck_customer_tax_code}
- * (V20261014000540).</p>
+ * (V20261015000540).</p>
  */
 public final class TaxCode {
 

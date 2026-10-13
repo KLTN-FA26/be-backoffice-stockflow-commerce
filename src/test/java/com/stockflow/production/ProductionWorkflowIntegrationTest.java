@@ -109,7 +109,7 @@ class ProductionWorkflowIntegrationTest {
         assertThat(held.summary().status()).isEqualTo(ProductionOrder.Status.ON_HOLD);
         assertThat(held.summary().holdReason()).isEqualTo("MACHINE_DOWN");
         assertThat(recorded.matching(ProductionOrderHeld.class, e -> e.productionOrderId().equals(order)))
-                .singleElement().satisfies(e -> assertThat(e.reason()).isEqualTo("MACHINE_DOWN"));
+                .singleElement().satisfies(e -> assertThat(e.reasonCode()).isEqualTo("MACHINE_DOWN"));
 
         ProductionOrders.Detail resumed = workflow.resume(manager, order);
         assertThat(resumed.summary().status()).isEqualTo(ProductionOrder.Status.READY);
@@ -130,8 +130,9 @@ class ProductionWorkflowIntegrationTest {
         assertThat(held.summary().holdReason()).isEqualTo("FILE_REJECTED");
         assertThat(recorded.matching(ProductionOrderHeld.class, e -> e.productionOrderId().equals(rejected)))
                 .singleElement().satisfies(e -> {
-                    assertThat(e.reason()).isEqualTo("FILE_REJECTED");
-                    assertThat(e.note()).isEqualTo("Bleed missing on the left edge");
+                    assertThat(e.reasonCode()).isEqualTo("FILE_REJECTED");
+                    assertThat(e.warehouseId()).isNotNull();
+                    assertThat(e.blanksNeeded()).isNull();
                     assertThat(e.sampleRequestId()).isNotNull();
                 });
 

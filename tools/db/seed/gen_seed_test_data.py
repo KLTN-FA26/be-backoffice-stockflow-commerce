@@ -1590,8 +1590,8 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
                 released_at=at(t_pick.date(), 7, 30), created_at=at(t_pick.date(), 7))
         pick_id = uid(f"pick:{key}")
         pick_done = picked_state == "PICKED"
-        add("fulfillment.pick", id=pick_id, wave_id=wave_id, order_id=oid, status=picked_state,
-            assigned_user_id=U[staff], assigned_at=t_pick, started_at=t_pick + timedelta(minutes=20),
+        add("fulfillment.pick", id=pick_id, wave_id=wave_id, order_id=oid, order_number=number,
+            warehouse_id=WH[p], status=picked_state, assigned_user_id=U[staff], assigned_at=t_pick, started_at=t_pick + timedelta(minutes=20),
             picked_at=t_pick + timedelta(hours=2) if pick_done else None, needs_put_back=False, created_at=t_pick)
         for k, r in enumerate(res_rows):
             done = r["status"] == "CONSUMED"

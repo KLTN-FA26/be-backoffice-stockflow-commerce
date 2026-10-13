@@ -15,13 +15,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * V20261014000100 on a database that already holds customers: the develop schema before SCRUM-450,
+ * V20261015000100 on a database that already holds customers: the develop schema before SCRUM-450,
  * populated with a legacy INACTIVE customer, an ACTIVE one, and the open invitation the SCRUM-429
  * branch kept in {@code password_hash}. Then the constraints the migration adds, on real PostgreSQL.
  */
 class B2bOnboardingMigrationUpgradeTest {
 
-    private static final String BEFORE = "20261013000600";
+    /**
+     * The newest migration on develop when this branch was merged with it (2d44ec1): the real upgrade path, and a window
+     * holding only this migration - develop's inbox and stock-alert migrations (V20261014000400/0900) move role
+     * versions of their own and must not count here.
+     */
+    private static final String BEFORE = "20261014000900";
     private static final String DIGEST = "0123456789abcdef".repeat(4);
 
     @Test
@@ -55,11 +60,11 @@ class B2bOnboardingMigrationUpgradeTest {
                 long salesVersion = roleVersion(sql, "SALES_STAFF");
                 long customerRoleVersion = roleVersion(sql, "CUSTOMER");
 
-                // Up to this migration only: later ones (V20261014000200/0300, production grants and quotes)
+                // Up to this migration only: later ones (V20261015000200/0300, production grants and quotes)
                 // move some of the same role versions again, and this test is about what 000100 does.
                 var migrated = Flyway.configure().dataSource(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword())
-                        .locations("classpath:db/migration").target("20261014000100").load();
-                assertThat(migrated.migrate().migrations).extracting(m -> m.version).contains("20261014000100");
+                        .locations("classpath:db/migration").target("20261015000100").load();
+                assertThat(migrated.migrate().migrations).extracting(m -> m.version).contains("20261015000100");
                 migrated.validate();
 
                 assertThat(text(sql, "select status from customer.customer where id='" + invitedCustomer + "'"))
@@ -109,7 +114,7 @@ class B2bOnboardingMigrationUpgradeTest {
         }
     }
 
-    /** Every rule V20261014000100 states, refused or accepted by the database itself. */
+    /** Every rule V20261015000100 states, refused or accepted by the database itself. */
     private static void assertConstraints(Statement sql, UUID invitedUser, UUID activeUser) throws SQLException {
         sql.executeUpdate("update customer.customer set tax_code='0312345678' where email='active@example.test'");
         refused(sql, "a second ACTIVE customer with the tax code",

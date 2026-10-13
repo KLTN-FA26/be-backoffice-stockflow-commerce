@@ -33,8 +33,8 @@ path that consumed a quote per cart line, `checkout_request`.
 
 ## What was built
 
-- **Migration `V20261014000300__order_quotes.sql`** (after develop's `V20261013000600`, the foundation's
-  `V20261014000200` and SCRUM-429's planned `V20261014000100`): `ordering.quote`, `quote_line`,
+- **Migration `V20261015000300__order_quotes.sql`** (after develop's `V20261013000600`, the foundation's
+  `V20261015000200` and SCRUM-429's planned `V20261015000100`): `ordering.quote`, `quote_line`,
   `quote_price_tier`, `quote_status_history` with CHECKs mirroring the aggregate; `fk_sample_request_quote`
   (NOT VALID); permission resource `sales-quotes` and grants; role versions advanced.
 - **Domain** `Quote`, `QuoteLine`, `PriceTier`, `QuoteStatus`, port `QuoteRepository`.
@@ -97,7 +97,7 @@ order's own (`INSUFFICIENT_STOCK`, `SHIPPING_ADDRESS_REQUIRED`, credit holds as 
 | server-authoritative price | no price in accept/convert bodies; tiers resolved server-side; `placeQuotedOrder` internal | IT/unit | PASS |
 | permissions staff / customer own | grants + `ScopeGuards` + portal checks | HTTP: 401, 403 (warehouse staff, customer create, Sales/coordinator accept, customer convert), 404 another customer, own list | PASS |
 | BR-ORD-007 ACTIVE customer only | `requireNewWorkFor` | IT BLOCKED → create/send refused, draft still cancellable | PASS |
-| DB upgrade | migration | `QuoteMigrationUpgradeTest` from V20261014000200 with earlier rows | PASS |
+| DB upgrade | migration | `QuoteMigrationUpgradeTest` from V20261015000200 with earlier rows | PASS |
 
 ## Defect found and fixed during the work
 
@@ -127,7 +127,7 @@ so it was **not** changed here — align it during the 394/395 integration step.
 4. Acceptance needs the customer on the portal (03 §18). Sales cannot accept on a customer's behalf; if the
    business wants that, grant APPROVE to SALES_STAFF and drop the portal check in `requireCustomerAnswer`.
 5. Portal hides a quote while Sales revises it (DRAFT revision > 1); the FE may want "being revised".
-6. Flyway: `V20261014000100` (SCRUM-429), `…000200` (foundation), `…000300` (here) must merge in that
+6. Flyway: `V20261015000100` (SCRUM-429), `…000200` (foundation), `…000300` (here) must merge in that
    order, or be renumbered above whatever an environment has already applied.
 
 ## Tests run (2026-10-12, Java 21.0.9, Maven 3.9.9 offline, Docker 28.5.1, Testcontainers)
@@ -143,7 +143,7 @@ so it was **not** changed here — align it during the 394/395 integration step.
     the migration validates the key when no sample names a quote (always, on a real database) and
     `tools/db/orphan_check.sql` gains the `sample_request.quote_id -> ordering.quote` check.
   - `ProductionGrantsMigrationUpgradeTest` — **caused here**: it upgraded to the latest migration, which now
-    includes V20261014000300 moving the same role versions. Fixed: it upgrades exactly to V20261014000200.
+    includes V20261015000300 moving the same role versions. Fixed: it upgrades exactly to V20261015000200.
   - Both reran green, with `QuoteMigrationUpgradeTest`, `QuoteIntegrationTest` 7, `QuoteSecurityIntegrationTest`,
     `ProductionIntegrationTest` 10 and `tools/verify.py`.
   - 4 errors: `GoodsReceiptIntegrationTest` (3) and `SupplierProcurementIntegrationTest` (1) with

@@ -16,15 +16,15 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * V20261014000200 on the real upgrade path: a database migrated to the migration before it
- * (V20261014000100, SCRUM-429), carrying rows the application and an administrator wrote, then upgraded.
+ * V20261015000200 on the real upgrade path: a database migrated to the migration before it
+ * (V20261015000100, SCRUM-429), carrying rows the application and an administrator wrote, then upgraded.
  * Proves the grant change lands, every changed role's version moves (ADR-0008) and nothing else is
  * touched: an administrator's own extra grant on QC_STAFF, a QC user's role, the other roles' versions.
  */
 class ProductionGrantsMigrationUpgradeTest {
 
-    private static final String BEFORE = "20261014000100";
-    private static final String MIGRATION = "20261014000200";
+    private static final String BEFORE = "20261015000100";
+    private static final String MIGRATION = "20261015000200";
 
     @Test
     void upgradeMovesTheAnswerToApproveAndKeepsEverythingElse() throws Exception {
@@ -52,8 +52,8 @@ class ProductionGrantsMigrationUpgradeTest {
                 List<String> salesBefore = grants(db, "SALES_STAFF");
                 List<String> productionStaffBefore = grants(db, "PRODUCTION_STAFF");
 
-                // Up to this migration only: later ones (V20261014000300 quotes) move some of the same role
-                // versions again, and this test is about what V20261014000200 does.
+                // Up to this migration only: later ones (V20261015000300 quotes) move some of the same role
+                // versions again, and this test is about what V20261015000200 does.
                 var result = flyway(postgres, MIGRATION).migrate();
                 assertThat(result.migrations).extracting(m -> m.version).contains(MIGRATION);
 

@@ -458,7 +458,8 @@ class SubcontractService implements Subcontracting {
             orders.save(inHouse);
             orders.recordTransition(inHouse.id(), held, now, by);
             events.publishEvent(new ProductionOrderHeld(inHouse.id(), inHouse.orderNumber(),
-                    inHouse.holdReason().name(), inHouse.holdNote(), null, inHouse.salesOrderId()));
+                    inHouse.holdReason().name(), null, inHouse.salesOrderId(), inHouse.work().warehouseId(),
+                    inHouse.work().blankSku().code(), quantity));
         }
         log.info("Production order {}: {} unit(s) taken back to the print shop as {} ({}); it is now {}",
                 child.orderNumber(), quantity, inHouse.orderNumber(), reason, child.status());

@@ -2,9 +2,11 @@ package com.stockflow.design.internal.service;
 
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
+import com.stockflow.common.api.FieldError;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.customer.api.CustomerService;
 import com.stockflow.design.api.DesignService;
 import com.stockflow.design.internal.domain.DesignReview;
 import com.stockflow.design.internal.domain.DesignStatus;
@@ -39,15 +41,17 @@ public class DesignWorkflowService {
     private final DesignDecisionJpaRepository decisions;
     private final DesignService designs;
     private final IdentityService identities;
+    private final CustomerService customers;
 
     public DesignWorkflowService(DesignDraftJpaRepository drafts, DesignArtifactJpaRepository artifacts,
             DesignSnapshotJpaRepository snapshots, ProductService products, Clock clock,
             DesignDecisionJpaRepository decisions,
-            DesignService designs, IdentityService identities) {
+            DesignService designs, IdentityService identities, CustomerService customers) {
         this.drafts = drafts; this.artifacts = artifacts; this.snapshots = snapshots;
         this.products = products; this.clock = clock;
         this.decisions = decisions; this.designs = designs;
         this.identities = identities;
+        this.customers = customers;
     }
 
     public record DraftView(UUID id, UUID customerId, UUID productId, UUID ownerUserId,
@@ -86,6 +90,7 @@ public class DesignWorkflowService {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Assign a customer and an independent reviewer");
         }
         requireAssignmentRoles(owner, designer, reviewer);
+        requireOwnerBelongsToCustomer(owner, customerId);
         products.findById(productId).orElseThrow(() -> new BusinessException(ErrorCode.PRODUCT_NOT_FOUND));
         var draft = new DesignDraftJpaEntity(Identifiers.newId(), customerId, productId, name, spec, DesignStatus.DRAFT);
         draft.assign(owner, designer, reviewer);
@@ -233,6 +238,21 @@ public class DesignWorkflowService {
     }
     private static void forbidden() { throw new BusinessException(ErrorCode.FORBIDDEN); }
     private static void conflict(String reason) { throw new BusinessException(ErrorCode.CONFLICT, reason); }
+    /**
+     * The owner confirms the design and the order later verifies it against {@code customerId}, so the two
+     * must name the same company. A customer has exactly one login ({@code customer.customer.user_id} is
+     * unique), hence the owner's own profile has to be the customer the request names.
+     */
+    private void requireOwnerBelongsToCustomer(UUID owner, UUID customerId) {
+        boolean belongs = customerId != null
+                && customers.findByUserId(owner).filter(c -> customerId.equals(c.customerId())).isPresent();
+        if (!belongs) {
+            throw new BusinessException(ErrorCode.DESIGN_OWNER_CUSTOMER_MISMATCH,
+                    ErrorCode.DESIGN_OWNER_CUSTOMER_MISMATCH.defaultMessage(),
+                    java.util.List.of(new FieldError("ownerUserId", ErrorCode.DESIGN_OWNER_CUSTOMER_MISMATCH.defaultMessage(),
+                            ErrorCode.DESIGN_OWNER_CUSTOMER_MISMATCH.name())));
+        }
+    }
     private void requireAssignmentRoles(UUID owner, UUID designer, UUID reviewer) {
         if (!identities.isActiveUserWithAnyRole(owner, Role.CUSTOMER.authority())) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,

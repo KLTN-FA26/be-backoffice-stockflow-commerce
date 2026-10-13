@@ -1,5 +1,5 @@
 -- =============================================================================
--- B2B customer onboarding (SCRUM-429/450, V20261014000100; kltn-docs 18 §4.1, §5, BR-01).
+-- B2B customer onboarding (SCRUM-429/450, V20261015000100; kltn-docs 18 §4.1, §5, BR-01).
 -- Needs the demo seed. Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
@@ -50,7 +50,7 @@ SELECT pg_temp.expect_ok('B4 a dependent unit 10-3 is a different code', $q$
 SELECT pg_temp.expect_fail('B5 a tax code in another spelling', $q$
     INSERT INTO customer.customer (id, full_name, email, status, tax_code, version, created_at)
     VALUES (gen_random_uuid(), 'QA Spelling', 'qa.spelling@example.test', 'ACTIVE', '0312345678001', 0, NOW()) $q$);
-SELECT pg_temp.expect_ok('B5a a household business: its representative''s 12-digit personal ID (V20261014000540)', $q$
+SELECT pg_temp.expect_ok('B5a a household business: its representative''s 12-digit personal ID (V20261015000540)', $q$
     INSERT INTO customer.customer (id, full_name, email, status, tax_code, version, created_at)
     VALUES (gen_random_uuid(), 'QA Household', 'qa.household@example.test', 'ACTIVE', '079085012345', 0, NOW()) $q$);
 SELECT pg_temp.expect_fail('B5b eleven digits are neither', $q$

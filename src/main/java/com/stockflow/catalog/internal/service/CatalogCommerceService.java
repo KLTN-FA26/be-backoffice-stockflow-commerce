@@ -3,12 +3,10 @@ package com.stockflow.catalog.internal.service;
 import com.stockflow.catalog.internal.domain.Listing;
 import com.stockflow.catalog.internal.domain.SellingPrice;
 import com.stockflow.catalog.internal.repository.ListingRepository;
-import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.common.persistence.Pages;
 import com.stockflow.contracts.CatalogListingChanged;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.product.api.ProductPublication;
@@ -212,32 +210,5 @@ public class CatalogCommerceService {
         var listing =
                 listings.bySlug(slug).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         return products.publishedImages(listing.productId());
-    }
-
-    /**
-     * Counts are projection counts and may briefly lag a discontinuation; live guards never expose
-     * it.
-     */
-    @Transactional(readOnly = true)
-    public PageResponse<Card> list(int page, int size) {
-        var paging = Pages.of(page, size);
-        var rows = listings.page(paging.getOffset(), paging.getPageSize());
-        var visible =
-                products.published(
-                        rows.stream().map(Listing::productId).collect(Collectors.toSet()));
-        return PageResponse.of(
-                rows.stream()
-                        .filter(l -> visible.contains(l.productId()))
-                        .map(
-                                l ->
-                                        new Card(
-                                                l.productId(),
-                                                l.slug(),
-                                                l.publishedTitle(),
-                                                l.publishedSeoTitle()))
-                        .toList(),
-                page,
-                size,
-                listings.count());
     }
 }

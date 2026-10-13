@@ -183,6 +183,12 @@ public interface InventoryService {
     int rearmReservations(UUID orderId);
 
     /**
+     * Where an order's stock is held right now (SCRUM-466): one row per live (HELD) hold, by SKU and
+     * location, in SKU order. Read-only; empty once the holds were consumed or released.
+     */
+    List<OrderHold> holdsOf(UUID orderId);
+
+    /**
      * Move unreserved stock between two locations, writing one ledger line (SCRUM-424). Joins the
      * caller's transaction, like {@link #reserve}. Locks the source and destination rows in id
      * order, as {@code reserve} does, so two moves crossing the same pair cannot deadlock.
@@ -221,6 +227,16 @@ public interface InventoryService {
 
     /** The SKU of each inventory item that exists, for a list of purchase order lines in one query. */
     java.util.Map<UUID, String> skusOf(java.util.Collection<UUID> inventoryItemIds);
+
+    /**
+     * SKUs that are low on stock, in SKU order, the {@code limit} after {@code afterSku} ({@code null} or empty for
+     * the first page): pass the last SKU returned to get the next page; fewer than {@code limit} back means the end.
+     *
+     * <p>The one definition of "low stock" (plan A8): usable on-hand at or below the reorder point, or below the
+     * safety stock; a threshold that is not set never makes a SKU low. The stock alerts and the dashboard read it
+     * from here, so they cannot disagree about which SKUs are low.</p>
+     */
+    java.util.List<LowStockItem> lowStockBatch(String afterSku, int limit);
 
     /**
      * Ask for a stock correction with a reason (SCRUM-145). The stock does not change until a

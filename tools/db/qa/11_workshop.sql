@@ -1,7 +1,7 @@
 -- =============================================================================
 -- Adversarial checks: the print shop (SCRUM-396..401, lane A) - who owns a stock hold, the IN_PRODUCTION
 -- status, blanks issued, a write-off's layer, an agreed cancellation fee, and who does which workshop step
--- (V20261014000400 / 000420 / 000430), blanks at a subcontractor (000470), hold from QC, child origin, recall,
+-- (V20261015000400 / 000420 / 000430), blanks at a subcontractor (000470), hold from QC, child origin, recall,
 -- subcontract settlement and PO amendment (000700 / 000710). Needs the demo seed. Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
@@ -53,7 +53,7 @@ SELECT md5('qa11:order')::uuid, 'SO-QA-11', c.id, gen_random_uuid(), 'CONFIRMED'
 INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version, created_at, received_at)
 VALUES (md5('qa11:layer')::uuid, 'SOFA-3S-GREY', 'HCM-PRD01', 5, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '9 days');
 
-\echo '--- who owns a hold (V20261014000400)'
+\echo '--- who owns a hold (V20261015000400)'
 SELECT pg_temp.expect_ok('WK1 an order hold, as before', $q$
     INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity,
         reserved_at, expires_at, status)
@@ -77,7 +77,7 @@ SELECT pg_temp.expect_fail('WK5 a production hold of a production order that doe
     VALUES (gen_random_uuid(), md5('qa11:layer')::uuid, gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 1,
         NOW(), 'HELD') $q$);
 
-\echo '--- IN_PRODUCTION (V20261014000400)'
+\echo '--- IN_PRODUCTION (V20261015000400)'
 SELECT pg_temp.expect_ok('WK6 stock in the print shop', $q$
     UPDATE inventory.stock_item SET status = 'IN_PRODUCTION' WHERE id = md5('qa11:layer')::uuid $q$);
 SELECT pg_temp.expect_fail('WK7 a status nobody knows', $q$
@@ -88,7 +88,7 @@ SELECT pg_temp.expect_fail('WK8 a ledger line to a status nobody knows', $q$
     VALUES (gen_random_uuid(), 'MOVE', 'SOFA-3S-GREY', 'HCM-A01-2-B', 'HCM-PRD01', 1, 'AVAILABLE', 'PRINTED',
         'PRODUCTION_ORDER', gen_random_uuid(), NOW()) $q$);
 
-\echo '--- blanks issued (V20261014000400)'
+\echo '--- blanks issued (V20261015000400)'
 SELECT pg_temp.expect_fail('WK9 an issue of no blanks', $q$
     INSERT INTO production.production_material_issue (id, production_order_id, request_id, reservation_id, sku,
         from_location, to_location, quantity, issued_at, issued_by)
@@ -105,12 +105,12 @@ SELECT pg_temp.expect_fail('WK11 an issue for a production order that does not e
     SELECT gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), md5('qa11:hold')::uuid, 'SOFA-3S-GREY',
         'HCM-A01-2-B', 'HCM-PRD01', 1, NOW(), u.id FROM identity.app_user u LIMIT 1 $q$);
 
-\echo '--- a write-off names its layer (V20261014000420)'
+\echo '--- a write-off names its layer (V20261015000420)'
 SELECT pg_temp.expect_true('WK12 stock_adjustment.received_at exists and may be empty',
     EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'inventory'
              AND table_name = 'stock_adjustment' AND column_name = 'received_at' AND is_nullable = 'YES'));
 
-\echo '--- an agreed cancellation fee (V20261014000430)'
+\echo '--- an agreed cancellation fee (V20261015000430)'
 SELECT pg_temp.expect_fail('WK13 fee terms on an order that is not cancelled', $q$
     UPDATE ordering.customer_order SET cancellation_fee_reason = 'r', cancellation_fee_detail = 'd'
      WHERE id = md5('qa11:order')::uuid $q$);
@@ -135,7 +135,7 @@ SELECT pg_temp.expect_ok('WK18 a cancellation fee receivable', $q$
     SELECT gen_random_uuid(), o.id, o.customer_id, 'CANCELLATION_FEE', 10000, 'VND', NOW(), CURRENT_DATE
       FROM ordering.customer_order o WHERE o.id = md5('qa11:order')::uuid $q$);
 
-\echo '--- blanks at a subcontractor, per subcontractor and sending warehouse (V20261014000470, Q7/Q9)'
+\echo '--- blanks at a subcontractor, per subcontractor and sending warehouse (V20261015000470, Q7/Q9)'
 SELECT pg_temp.expect_fail('WK19 a SUBCONTRACTOR location owned by no site', $q$
     INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class, is_pickable,
         is_putaway_target, status)
@@ -188,7 +188,7 @@ SELECT pg_temp.expect_true('WK27 spoilt blanks have their own adjustment reason,
     AND pg_get_constraintdef((SELECT oid FROM pg_constraint WHERE conname = 'ck_production_subcontract_receipt_used'))
         LIKE '%used_blanks = quantity%');
 
-\echo '--- lane A finishing pass (V20261014000700 / 000710)'
+\echo '--- lane A finishing pass (V20261015000700 / 000710)'
 SELECT pg_temp.expect_true('WK28 a hold may interrupt QC and remember it',
     pg_get_constraintdef((SELECT oid FROM pg_constraint WHERE conname = 'ck_production_order_status_before_hold'))
         LIKE '%QC%');
@@ -213,7 +213,7 @@ SELECT pg_temp.expect_fail('WK32 an approved PO line resized in place, without a
              JOIN procurement.purchase_orders p2 ON p2.id = l2.po_id
             WHERE p2.status <> 'DRAFT' ORDER BY l2.id LIMIT 1) $q$);
 
-\echo '--- who does which workshop step (V20261014000400 / 000420)'
+\echo '--- who does which workshop step (V20261015000400 / 000420)'
 SELECT pg_temp.expect_true('GR5 the warehouse issues blanks; the print shop reads them',
     pg_temp.grants('WAREHOUSE_STAFF', 'production-material-issues:CREATE')
     AND pg_temp.grants('WAREHOUSE_MANAGER', 'production-material-issues:CREATE')

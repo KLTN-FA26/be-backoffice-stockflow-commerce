@@ -369,7 +369,11 @@ class PrintRunIntegrationTest {
         assertThat(held.summary().holdReason()).isEqualTo("BLANKS_SHORT");
         assertThat(inventory.productionHolds(line.productionOrderId())).isEmpty();
         assertThat(recorded.matching(ProductionOrderHeld.class, e -> e.productionOrderId().equals(line.productionOrderId())))
-                .singleElement().satisfies(e -> assertThat(e.reason()).isEqualTo("BLANKS_SHORT"));
+                .singleElement().satisfies(e -> {
+                    assertThat(e.reasonCode()).isEqualTo("BLANKS_SHORT");
+                    assertThat(e.blankSku()).isEqualTo(BLANK.code());
+                    assertThat(e.blanksNeeded()).as("purchasing reads how many").isPositive();
+                });
 
         tx.executeWithoutResult(s -> drained.forEach(id -> inventory.release(id, "ORDER_CANCELLED")));
         assertThat(workflow.resume(manager, line.productionOrderId()).summary().status())

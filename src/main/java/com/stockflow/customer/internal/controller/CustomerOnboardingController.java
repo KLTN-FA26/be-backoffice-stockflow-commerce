@@ -32,7 +32,7 @@ import java.util.UUID;
  * invitation; the contact activates the account from the link.
  *
  * <p>Creating a customer and (re)sending its invitation need {@code customer-customers:CREATE}, seeded
- * for SALES_STAFF, ECOMMERCE_ADMIN and SYSTEM_ADMIN by V20261014000100 - a permission rather than a role
+ * for SALES_STAFF, ECOMMERCE_ADMIN and SYSTEM_ADMIN by V20261015000100 - a permission rather than a role
  * check, so a custom role an administrator grants it to works too (SCRUM-453). A caller holding the
  * CUSTOMER role is refused regardless: no customer onboards another (BR-01a). Reading the invitation
  * state keeps the Sales/e-commerce-admin check of the other staff reads in this module, because

@@ -1,15 +1,19 @@
 package com.stockflow.fulfillment.internal.service;
 
+import com.stockflow.common.api.FieldError;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.Role;
+import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.design.api.DesignArtifactRole;
 import com.stockflow.design.api.DesignService;
 import com.stockflow.fulfillment.api.FulfillmentArtifactAccess;
+import com.stockflow.fulfillment.api.FulfillmentAssignee;
 import com.stockflow.fulfillment.api.FulfillmentService;
 import com.stockflow.fulfillment.api.FulfillmentTask;
+import com.stockflow.fulfillment.api.FulfillmentTaskQuery;
 import com.stockflow.fulfillment.internal.domain.DesignVerificationResult;
 import com.stockflow.fulfillment.internal.domain.PackStatus;
 import com.stockflow.fulfillment.internal.domain.PickStatus;
@@ -23,11 +27,24 @@ import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.identity.api.IdentityService;
+import com.stockflow.inventory.api.InventoryService;
+import com.stockflow.inventory.api.OrderHold;
+import com.stockflow.warehouse.api.StorageLocationView;
+import com.stockflow.warehouse.api.WarehouseService;
 import java.time.Clock;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.persistence.Pages;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -36,6 +53,10 @@ import org.springframework.transaction.annotation.Transactional;
 @Transactional
 class FulfillmentServiceImpl implements FulfillmentService {
 
+    /** Who a pick can be given to: the two warehouse roles that work orders. */
+    private static final Set<String> ASSIGNEE_ROLES = Set.of(
+            Role.WAREHOUSE_STAFF.authority(), Role.WAREHOUSE_MANAGER.authority());
+
     private final PickJpaRepository picks;
     private final PackJpaRepository packs;
     private final DesignVerificationJpaRepository verifications;
@@ -43,26 +64,32 @@ class FulfillmentServiceImpl implements FulfillmentService {
     private final DesignService designs;
     private final Clock clock;
     private final IdentityService identities;
+    private final InventoryService inventory;
+    private final WarehouseService warehouses;
 
     FulfillmentServiceImpl(PickJpaRepository picks, PackJpaRepository packs,
             DesignVerificationJpaRepository verifications, OrderService orders,
-            DesignService designs, IdentityService identities, Clock clock) {
+            DesignService designs, IdentityService identities, InventoryService inventory,
+            WarehouseService warehouses, Clock clock) {
         this.picks = picks;
         this.packs = packs;
         this.verifications = verifications;
         this.orders = orders;
         this.designs = designs;
         this.identities = identities;
+        this.inventory = inventory;
+        this.warehouses = warehouses;
         this.clock = clock;
     }
 
     @Override
     public FulfillmentTask createTask(UUID orderId, UUID assignedUserId, CurrentUser actor) {
         requireRole(actor, Role.ORDER_COORDINATOR, Role.WAREHOUSE_MANAGER);
-        requireWarehouseAssignee(assignedUserId);
         var existing = picks.findByOrderId(orderId);
         if (existing.isPresent()) {
-            return visible(existing.get(), actor);
+            requireWarehouseAssignee(assignedUserId, existing.get().getWarehouseId());
+            requireVisible(existing.get(), actor);
+            return toTask(existing.get());
         }
         OrderSummary order = requireOrder(orderId);
         // READY_TO_FULFILL: released, and production (if any) delivered (SCRUM-423). CONFIRMED: a stock-only
@@ -70,38 +97,81 @@ class FulfillmentServiceImpl implements FulfillmentService {
         if (order.status() != OrderStatus.CONFIRMED && order.status() != OrderStatus.READY_TO_FULFILL) {
             throw new BusinessException(ErrorCode.CONFLICT, "Only a confirmed or released order can enter fulfillment");
         }
+        UUID warehouseId = pickingWarehouse(order);
+        WarehouseScope.requireWarehouse(warehouseId);
+        requireWarehouseAssignee(assignedUserId, warehouseId);
         orders.releaseToFulfillment(orderId);
         var now = clock.instant();
-        var pick = new PickJpaEntity(Identifiers.newId(), null, orderId, PickStatus.PENDING);
+        var pick = new PickJpaEntity(Identifiers.newId(), null, orderId, order.orderNumber(), warehouseId,
+                PickStatus.PENDING);
         pick.assign(assignedUserId, now);
         picks.save(pick);
         packs.save(new PackJpaEntity(Identifiers.newId(), pick.getId(), PackStatus.PENDING, null));
-        return toTask(pick);
+        return toTask(pick, nameOf(assignedUserId), null);
     }
 
     @Override
     @Transactional(readOnly = true)
-    public PageResponse<FulfillmentTask> listTasks(CurrentUser actor, int page, int size) {
-        var newestFirst = org.springframework.data.domain.Sort.by(
-                org.springframework.data.domain.Sort.Direction.DESC, "createdAt", "id");
-        Page<PickJpaEntity> selected;
+    public PageResponse<FulfillmentTask> listTasks(CurrentUser actor, FulfillmentTaskQuery query) {
+        if (query.warehouseId() != null) {
+            WarehouseScope.requireWarehouse(query.warehouseId());
+        }
+        var filters = new ArrayList<Specification<PickJpaEntity>>();
+        filters.add(WarehouseScope.warehousesIn("warehouseId"));
+        PickStatus status = parseStatus(query.status());
+        if (status != null) {
+            filters.add((root, q, cb) -> cb.equal(root.get("status"), status));
+        }
+        if (query.warehouseId() != null) {
+            filters.add((root, q, cb) -> cb.equal(root.get("warehouseId"), query.warehouseId()));
+        }
+        if (query.assignedUserId() != null) {
+            filters.add((root, q, cb) -> cb.equal(root.get("assignedUserId"), query.assignedUserId()));
+        }
+        // The role decides whose tasks: managers and coordinators all of them, QC those on a design hold,
+        // a picker their own.
         if (actor.hasAnyRole(Role.WAREHOUSE_MANAGER, Role.ORDER_COORDINATOR)) {
-            selected = picks.findAll(Pages.of(page, size, newestFirst));
+            // no further filter
         } else if (actor.hasRole(Role.QC_STAFF)) {
-            selected = picks.findByPackStatus(PackStatus.ON_HOLD, Pages.of(page, size));
+            filters.add((root, q, cb) -> {
+                var held = q.subquery(UUID.class);
+                var pack = held.from(PackJpaEntity.class);
+                held.select(pack.get("pickId")).where(cb.equal(pack.get("pickId"), root.get("id")),
+                        cb.equal(pack.get("status"), PackStatus.ON_HOLD));
+                return cb.exists(held);
+            });
         } else if (actor.hasRole(Role.WAREHOUSE_STAFF)) {
-            selected = picks.findByAssignedUserId(actor.userId(), Pages.of(page, size, newestFirst));
+            filters.add((root, q, cb) -> cb.equal(root.get("assignedUserId"), actor.userId()));
         } else {
             throw new BusinessException(ErrorCode.FORBIDDEN);
         }
-        return Pages.toResponse(selected, this::toTask);
+        var newestFirst = Sort.by(Sort.Direction.DESC, "createdAt", "id");
+        Page<PickJpaEntity> selected = picks.findAll(Specification.allOf(filters),
+                Pages.of(query.page(), query.size(), newestFirst));
+        Map<UUID, String> names = identities.displayNames(selected.getContent().stream()
+                .map(PickJpaEntity::getAssignedUserId).toList());
+        return Pages.toResponse(selected, pick -> toTask(pick, names.get(pick.getAssignedUserId()), null));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<FulfillmentAssignee> assignees(UUID warehouseId, CurrentUser actor) {
+        requireRole(actor, Role.ORDER_COORDINATOR, Role.WAREHOUSE_MANAGER);
+        WarehouseScope.requireWarehouse(warehouseId);
+        if (warehouses.findWarehouse(warehouseId).isEmpty()) {
+            throw new BusinessException(ErrorCode.WAREHOUSE_NOT_FOUND);
+        }
+        return identities.assignableUsers(ASSIGNEE_ROLES, warehouseId).stream()
+                .map(user -> new FulfillmentAssignee(user.userId(), user.displayName(), user.roles()))
+                .toList();
     }
 
     @Override
     public FulfillmentTask assign(UUID taskId, UUID assignedUserId, CurrentUser actor) {
         requireRole(actor, Role.ORDER_COORDINATOR, Role.WAREHOUSE_MANAGER);
-        requireWarehouseAssignee(assignedUserId);
         var pick = lockPick(taskId);
+        WarehouseScope.requireWarehouse(pick.getWarehouseId());
+        requireWarehouseAssignee(assignedUserId, pick.getWarehouseId());
         pick.assign(assignedUserId, clock.instant());
         return toTask(picks.save(pick));
     }
@@ -109,7 +179,9 @@ class FulfillmentServiceImpl implements FulfillmentService {
     @Override
     @Transactional(readOnly = true)
     public FulfillmentTask findTask(UUID taskId, CurrentUser actor) {
-        return visible(requirePick(taskId), actor);
+        var pick = requirePick(taskId);
+        requireVisible(pick, actor);
+        return toTask(pick, nameOf(pick.getAssignedUserId()), linesOf(requireOrder(pick.getOrderId())));
     }
 
     @Override
@@ -213,12 +285,18 @@ class FulfillmentServiceImpl implements FulfillmentService {
         return allMatch;
     }
 
-    private FulfillmentTask visible(PickJpaEntity pick, CurrentUser actor) {
-        if (!java.util.Objects.equals(pick.getAssignedUserId(), actor.userId())
-                && !actor.hasAnyRole(Role.WAREHOUSE_MANAGER, Role.QC_STAFF, Role.ORDER_COORDINATOR)) {
+    /**
+     * The assignee sees the task; managers, QC and coordinators see the tasks of the warehouses they are
+     * assigned to (BR-SEC-002: a coordinator is not limited, as their scope is ALL).
+     */
+    private void requireVisible(PickJpaEntity pick, CurrentUser actor) {
+        if (java.util.Objects.equals(pick.getAssignedUserId(), actor.userId())) {
+            return;
+        }
+        if (!actor.hasAnyRole(Role.WAREHOUSE_MANAGER, Role.QC_STAFF, Role.ORDER_COORDINATOR)) {
             throw new BusinessException(ErrorCode.NOT_FOUND);
         }
-        return toTask(pick);
+        WarehouseScope.requireWarehouse(pick.getWarehouseId());
     }
 
     private void requireArtifactAccess(PickJpaEntity pick, CurrentUser actor) {
@@ -229,15 +307,45 @@ class FulfillmentServiceImpl implements FulfillmentService {
     }
 
     private FulfillmentTask toTask(PickJpaEntity pick) {
+        return toTask(pick, nameOf(pick.getAssignedUserId()), null);
+    }
+
+    private FulfillmentTask toTask(PickJpaEntity pick, String assignedUserName,
+                                   List<FulfillmentTask.Line> lines) {
         var pack = requirePack(pick.getId());
         var evidence = verifications.findByPackIdOrderByVerifiedAtDesc(pack.getId()).stream()
                 .map(value -> new FulfillmentTask.IntegrityEvidence(value.getOrderLineId(), value.getSnapshotId(),
                         value.getExpectedChecksum(), value.getActualChecksum(),
                         value.getResult() == DesignVerificationResult.MATCH, value.getVerifiedAt()))
                 .toList();
-        return new FulfillmentTask(pick.getId(), pick.getOrderId(), pick.getAssignedUserId(),
-                pick.getStatus().name(), pack.getStatus().name(), pick.getAssignedAt(), pick.getStartedAt(),
-                pick.getPickedAt(), pack.getPackedAt(), evidence);
+        return new FulfillmentTask(pick.getId(), pick.getOrderId(), pick.getOrderNumber(), pick.getWarehouseId(),
+                pick.getAssignedUserId(), assignedUserName, pick.getStatus().name(), pack.getStatus().name(),
+                pick.getAssignedAt(), pick.getStartedAt(), pick.getPickedAt(), pack.getPackedAt(), evidence, lines);
+    }
+
+    private String nameOf(UUID userId) {
+        return userId == null ? null : identities.displayNames(List.of(userId)).get(userId);
+    }
+
+    private static List<FulfillmentTask.Line> linesOf(OrderSummary order) {
+        return order.lines().stream()
+                .map(line -> new FulfillmentTask.Line(line.lineId(), line.sku(), line.quantity(),
+                        line.designSnapshotId(), line.designSnapshotId() != null))
+                .toList();
+    }
+
+    private static PickStatus parseStatus(String status) {
+        if (status == null || status.isBlank()) {
+            return null;
+        }
+        try {
+            return PickStatus.valueOf(status.trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException ex) {
+            throw new BusinessException(ErrorCode.UNSUPPORTED_PARAMETER, "Unknown pick status",
+                    List.of(FieldError.of("status", "must be one of "
+                            + java.util.Arrays.stream(PickStatus.values()).map(Enum::name)
+                            .collect(Collectors.joining(", ")))));
+        }
     }
 
     private PickJpaEntity requirePick(UUID taskId) {
@@ -276,11 +384,63 @@ class FulfillmentServiceImpl implements FulfillmentService {
         }
     }
 
-    private void requireWarehouseAssignee(UUID userId) {
-        if (!identities.isActiveUserWithAnyRole(userId,
-                Role.WAREHOUSE_STAFF.authority(), Role.WAREHOUSE_MANAGER.authority())) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "Assignee must be an active warehouse staff member or warehouse manager");
+    /**
+     * BR-SEC-002: work goes to an active warehouse staff member or manager who is assigned to the
+     * task's warehouse; anyone else is a 400 on the request's {@code assignedUserId}.
+     */
+    private void requireWarehouseAssignee(UUID userId, UUID warehouseId) {
+        boolean eligible = userId != null && identities.assignableUsers(ASSIGNEE_ROLES, warehouseId).stream()
+                .anyMatch(user -> user.userId().equals(userId));
+        if (!eligible) {
+            String message = "Assignee must be an active warehouse staff member or warehouse manager "
+                    + "assigned to this warehouse";
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, message,
+                    List.of(new FieldError("assignedUserId", message, "NotAssignable")));
         }
+    }
+
+    /**
+     * The warehouse a new task is picked in: the order's own once it is released; for a stock-only
+     * order picked straight from CONFIRMED, where its holds are. Release does not check where the holds
+     * sit, so they are checked here: stock in two warehouses, or outside the order's, cannot be picked as
+     * one task (the goods would have to be moved by a transfer order first, docs 11 BR-01).
+     */
+    private UUID pickingWarehouse(OrderSummary order) {
+        List<OrderHold> holds = inventory.holdsOf(order.orderId());
+        Map<UUID, Set<String>> skusByWarehouse = new java.util.LinkedHashMap<>();
+        for (OrderHold hold : holds) {
+            UUID where = warehouses.findLocation(hold.locationCode()).map(StorageLocationView::warehouseId)
+                    .orElseThrow(() -> new BusinessException(ErrorCode.LOCATION_NOT_FOUND,
+                            "Stock held for the order sits at an unknown location"));
+            skusByWarehouse.computeIfAbsent(where, key -> new TreeSet<>()).add(hold.sku());
+        }
+        UUID released = order.warehouseId();
+        if (released != null) {
+            Set<String> elsewhere = new TreeSet<>();
+            skusByWarehouse.forEach((where, skus) -> {
+                if (!where.equals(released)) {
+                    elsewhere.addAll(skus);
+                }
+            });
+            if (!elsewhere.isEmpty()) {
+                throw new BusinessException(ErrorCode.FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE,
+                        "Order %s ships from warehouse %s but stock for %s is held in another warehouse"
+                                .formatted(order.orderNumber(), released, String.join(", ", elsewhere)));
+            }
+            return released;
+        }
+        if (skusByWarehouse.size() > 1) {
+            Set<String> all = new TreeSet<>();
+            skusByWarehouse.values().forEach(all::addAll);
+            throw new BusinessException(ErrorCode.FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE,
+                    "Stock for order %s (%s) is held in %d warehouses; it cannot be picked as one task"
+                            .formatted(order.orderNumber(), String.join(", ", all), skusByWarehouse.size()));
+        }
+        if (skusByWarehouse.isEmpty()) {
+            throw new BusinessException(ErrorCode.CONFLICT,
+                    "Order %s has no stock held and no release warehouse, so its warehouse is unknown"
+                            .formatted(order.orderNumber()));
+        }
+        return skusByWarehouse.keySet().iterator().next();
     }
 }

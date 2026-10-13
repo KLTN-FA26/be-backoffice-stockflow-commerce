@@ -13,15 +13,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Lane A's finishing migrations (V20261014000700 hold from QC, 000710 subcontract shortfall, recall, settlement and
+ * Lane A's finishing migrations (V20261015000700 hold from QC, 000710 subcontract shortfall, recall, settlement and
  * PO amendment, 000720 print runs for the activity dashboard) on the real upgrade path: a database with the demo seed and a split production order (an in-house
  * root and its SUBCONTRACTED child) written before them, upgraded. The child becomes a SPLIT, the root stays a root,
  * a hold may now remember QC, an in-house child is allowed only with an origin, and the new constraints are valid.
  */
 class SubcontractMigrationUpgradeTest {
 
-    private static final String BEFORE = "20261014000540";
-    private static final String LAST = "20261014000720";
+    private static final String BEFORE = "20261015000540";
+    private static final String LAST = "20261015000720";
 
     @Test
     void upgradeKeepsExistingChildrenAndOpensTheNewPaths() throws Exception {
@@ -43,7 +43,7 @@ class SubcontractMigrationUpgradeTest {
 
                 var result = flyway(postgres, LAST).migrate();
                 assertThat(result.migrations).extracting(m -> m.version)
-                        .contains("20261014000700", "20261014000710", LAST);
+                        .contains("20261015000700", "20261015000710", LAST);
                 assertThat(text(db, "SELECT printed_quantity || '/' || scrap_quantity FROM production.production_print_run "
                         + "WHERE production_order_id = '" + root + "'")).as("QA3 backfill from the run's history row")
                         .isEqualTo("5/1");

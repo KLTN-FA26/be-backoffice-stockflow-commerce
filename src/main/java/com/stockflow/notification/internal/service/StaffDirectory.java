@@ -3,6 +3,7 @@ package com.stockflow.notification.internal.service;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.security.Role;
 import com.stockflow.identity.api.IdentityService;
+import com.stockflow.identity.api.StaffContact;
 import com.stockflow.identity.api.ListUsersQuery;
 import com.stockflow.identity.api.StaffUser;
 import org.springframework.stereotype.Component;
@@ -26,6 +27,21 @@ class StaffDirectory {
 
     StaffDirectory(IdentityService identity) {
         this.identity = identity;
+    }
+
+    /**
+     * The addresses of the ACTIVE staff holding {@code role} who can see {@code warehouseId} - those with an ALL
+     * scope and those assigned to it - through {@code identity :: api}'s recipient rule (SCRUM-147); never a
+     * customer. A notice about one warehouse's work goes to the people who can open it.
+     */
+    List<String> activeEmails(Role role, java.util.UUID warehouseId) {
+        Set<String> emails = new LinkedHashSet<>();
+        for (StaffContact contact : identity.notificationRecipients(Set.of(role.name()), warehouseId)) {
+            if (contact.email() != null && !contact.email().isBlank()) {
+                emails.add(contact.email().strip());
+            }
+        }
+        return new ArrayList<>(emails);
     }
 
     /** Distinct, non-blank addresses of ACTIVE accounts holding {@code role}, in the identity module's order. */

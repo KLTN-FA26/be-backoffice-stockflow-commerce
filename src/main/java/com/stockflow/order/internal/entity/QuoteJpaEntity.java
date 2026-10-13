@@ -19,7 +19,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
-/** {@code ordering.quote} (V20261014000300) with its lines. */
+/** {@code ordering.quote} (V20261015000300) with its lines. */
 @Entity
 @Table(name = "quote", schema = "ordering")
 public class QuoteJpaEntity extends BaseEntity {

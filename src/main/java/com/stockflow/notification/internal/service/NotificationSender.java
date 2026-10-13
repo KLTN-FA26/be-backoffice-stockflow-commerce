@@ -3,6 +3,7 @@ package com.stockflow.notification.internal.service;
 import com.stockflow.contracts.CustomerActedOnQuote;
 import com.stockflow.contracts.ProductionOrderHeld;
 import com.stockflow.common.http.RestClientFactory;
+import com.stockflow.common.logging.LogSafe;
 import com.stockflow.contracts.PurchaseOrderSent;
 import com.stockflow.notification.api.PortalInvitationMail;
 import com.stockflow.notification.internal.domain.SupplierEndpointPolicy;
@@ -97,13 +98,14 @@ class NotificationSender {
     void sendProductionHold(ProductionOrderHeld event, com.stockflow.common.security.Role audience,
                             List<String> recipients) {
         var messages = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
-        String reason = messages.containsKey("production.hold.reason." + event.reason())
-                ? messages.getString("production.hold.reason." + event.reason()) : event.reason();
+        String reason = messages.containsKey("production.hold.reason." + event.reasonCode())
+                ? messages.getString("production.hold.reason." + event.reasonCode()) : event.reasonCode();
         String source = event.sampleRequestId() != null
                 ? messages.getString("production.hold.source.sample").formatted(event.sampleRequestId())
                 : messages.getString("production.hold.source.order").formatted(event.salesOrderId());
-        String note = event.note() == null || event.note().isBlank() ? ""
-                : messages.getString("production.hold.note").formatted(event.note().strip());
+        // Facts only: the note the workshop typed stays on the production order, which the reader opens.
+        String note = event.blanksNeeded() == null || event.blankSku() == null ? ""
+                : messages.getString("production.hold.blanks").formatted(event.blanksNeeded(), event.blankSku());
         var message = new SimpleMailMessage();
         message.setFrom(mailFrom);
         message.setTo(recipients.toArray(String[]::new));
@@ -215,6 +217,19 @@ class NotificationSender {
 
     private static final Logger log = LoggerFactory.getLogger(NotificationSender.class);
 
+    /**
+     * Sends one plain e-mail with a system-generated subject and body (the inventory alert digest). Throws when the
+     * mail server refuses; the caller decides whether that matters. Neither the subject nor the body is logged.
+     */
+    void sendInventoryAlertEmail(String toEmail, String subject, String body) {
+        var message = new SimpleMailMessage();
+        message.setFrom(mailFrom);
+        message.setTo(toEmail);
+        message.setSubject(subject);
+        message.setText(body);
+        mail.send(message);
+    }
+
     /** Internal recovery generations must not change the supplier's idempotent PO payload. */
     private record SupplierPurchaseOrderMessage(
             UUID purchaseOrderId,
@@ -241,13 +256,16 @@ class NotificationSender {
             String templateCode,
             String subject,
             String body) {
+        // Subject and body can carry what a customer or an operator typed (names, notes, a payment
+        // provider's failure text), so they are never logged: the recipient id or the fact that a
+        // guest e-mail is present, the template and the sizes are enough to trace a delivery.
         log.info(
-                "NOTIFY recipient={} template={} subject='{}' body='{}'",
+                "NOTIFY recipient={} template={} subjectLength={} bodyLength={}",
                 recipientId == null
                         ? "guest-email-present=" + (recipientEmail != null)
                         : recipientId,
-                templateCode,
-                subject,
-                body);
+                LogSafe.text(templateCode),
+                subject == null ? 0 : subject.length(),
+                body == null ? 0 : body.length());
     }
 }

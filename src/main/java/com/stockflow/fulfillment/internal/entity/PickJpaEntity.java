@@ -22,6 +22,14 @@ public class PickJpaEntity extends BaseEntity {
     @Column(name = "order_id", nullable = false)
     private UUID orderId;
 
+    /** The order's number when the task was opened, so a pick list needs no call to the orders module (SCRUM-466). */
+    @Column(name = "order_number", nullable = false, length = 32)
+    private String orderNumber;
+
+    /** The warehouse the goods are picked from; the assignee must work there (BR-SEC-002, SCRUM-466). */
+    @Column(name = "warehouse_id", nullable = false)
+    private UUID warehouseId;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 32)
     private PickStatus status;
@@ -35,10 +43,13 @@ public class PickJpaEntity extends BaseEntity {
     protected PickJpaEntity() {
     }
 
-    public PickJpaEntity(UUID id, UUID waveId, UUID orderId, PickStatus status) {
+    public PickJpaEntity(UUID id, UUID waveId, UUID orderId, String orderNumber, UUID warehouseId,
+                         PickStatus status) {
         super(id);
         this.waveId = waveId;
         this.orderId = orderId;
+        this.orderNumber = java.util.Objects.requireNonNull(orderNumber, "orderNumber");
+        this.warehouseId = java.util.Objects.requireNonNull(warehouseId, "warehouseId");
         this.status = status;
     }
     public void assign(UUID userId, Instant now) {
@@ -82,6 +93,8 @@ public class PickJpaEntity extends BaseEntity {
 
     public UUID getWaveId() { return waveId; }
     public UUID getOrderId() { return orderId; }
+    public String getOrderNumber() { return orderNumber; }
+    public UUID getWarehouseId() { return warehouseId; }
     public PickStatus getStatus() { return status; }
     public UUID getAssignedUserId() { return assignedUserId; }
     public Instant getAssignedAt() { return assignedAt; }

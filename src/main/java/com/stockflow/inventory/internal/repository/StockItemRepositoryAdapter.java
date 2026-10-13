@@ -199,7 +199,7 @@ class StockItemRepositoryAdapter implements StockItemRepository {
      */
     /**
      * The marker is a transaction-local setting naming the row ({@code inventory.enforce_sku_policy},
-     * V20261014000450); it is set just before this row's UPDATE is flushed and cleared right after, so no other
+     * V20261015000450); it is set just before this row's UPDATE is flushed and cleared right after, so no other
      * row and no later statement of the transaction is covered by it.
      */
     @Override
@@ -247,6 +247,11 @@ class StockItemRepositoryAdapter implements StockItemRepository {
         } else {
             save(to);
         }
+    }
+
+    @Override
+    public List<com.stockflow.inventory.internal.domain.HeldStock> findHeldForOrder(UUID orderId) {
+        return jpa.findHeldForOrder(orderId);
     }
 
     @Override

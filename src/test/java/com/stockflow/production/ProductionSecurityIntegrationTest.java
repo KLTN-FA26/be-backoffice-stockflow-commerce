@@ -36,7 +36,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * SCRUM-394/395 over HTTP with security ON: the real filter chain, the permission aspect, the grants
- * seeded by V20261010000500 and V20261014000200 (resolved per request from the {@code roles} claim,
+ * seeded by V20261010000500 and V20261015000200 (resolved per request from the {@code roles} claim,
  * ADR-0008) and the warehouse data scope of SCRUM-457. Only token decoding is stubbed.
  */
 @IntegrationTest

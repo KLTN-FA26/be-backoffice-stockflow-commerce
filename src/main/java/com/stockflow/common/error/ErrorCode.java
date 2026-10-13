@@ -65,6 +65,10 @@ public enum ErrorCode {
     ADDRESS_NOT_FOUND("Address not found", 404),
     WAREHOUSE_NOT_FOUND("Warehouse not found", 404),
     GOODS_RECEIPT_NOT_FOUND("Goods receipt not found", 404),
+    /** Also the answer for a message of another user: an inbox id is only meaningful to its recipient. */
+    NOTIFICATION_NOT_FOUND("Notification not found", 404),
+    /** An alert of a warehouse outside the caller's scope is {@code OUT_OF_DATA_SCOPE}, not this. */
+    ALERT_NOT_FOUND("Stock alert not found", 404),
     /** Also the answer for a zone of another warehouse: a zone id is only meaningful in its own. */
     ZONE_NOT_FOUND("Zone not found", 404),
     SHELF_NOT_FOUND("Shelf not found", 404),
@@ -107,6 +111,8 @@ public enum ErrorCode {
     PASSWORD_UNCHANGED("The new password must differ from the current one", 400),
     /** SCRUM-427: commercial terms that contradict themselves (kltn-docs 18 §3). */
     CREDIT_PROFILE_INVALID("These commercial terms are inconsistent", 400),
+    /** An assisted design names a customer and an owner account; the owner must be that customer's own login. */
+    DESIGN_OWNER_CUSTOMER_MISMATCH("The design owner does not belong to this customer", 400),
 
     // ---- 409: the request is fine, the current state is not
     PO_COMMUNICATION_NOT_CONFIGURED("Buyer contact and receiving address must be configured before sending", 409),
@@ -200,6 +206,8 @@ public enum ErrorCode {
     ALLOCATION_CUSTOMER_MISMATCH("This receivable belongs to another customer", 409),
     /** SCRUM-431, kltn-docs 15 §4.3 step 4: an overdue customer gets no new credit until they pay. */
     CUSTOMER_CREDIT_OVERDUE("The customer has overdue receivables", 409),
+    /** SCRUM-466: a task is picked in one warehouse; the order's stock is held in more than one, or elsewhere. */
+    FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE("Stock held for this order is in another warehouse", 409),
     OPTIMISTIC_LOCK("The record changed meanwhile, please retry", 409),
     /** Two writers reached the same row; the loser waited for the lock and gave up. Retryable. */
     LOCK_TIMEOUT("The record is busy, please retry", 409),
@@ -281,6 +289,7 @@ public enum ErrorCode {
     /** CUSTOMER belongs to customer accounts only, and staff roles to staff accounts only. */
     ROLE_NOT_ASSIGNABLE("This role cannot be assigned to this account", 409),
     INVALID_USER_STATUS_TRANSITION("This account cannot move to that status", 409),
+    INVALID_ALERT_TRANSITION("This alert cannot be acknowledged in its current state", 409),
     /** User management acts on staff accounts; customer accounts belong to the customer screens. */
     STAFF_ACCOUNT_REQUIRED("Customer accounts are managed from the customer screens", 409),
 

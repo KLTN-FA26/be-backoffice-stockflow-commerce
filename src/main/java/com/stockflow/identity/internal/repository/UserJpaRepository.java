@@ -10,6 +10,8 @@ import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -46,4 +48,44 @@ public interface UserJpaRepository extends BaseJpaRepository<UserJpaEntity> {
     Page<UserJpaEntity> search(@Param("pattern") String pattern, @Param("status") UserStatus status,
                                @Param("roleId") UUID roleId, @Param("excludedRoleId") UUID excludedRoleId,
                                Pageable pageable);
+
+    /**
+     * The ACTIVE accounts assigned to a warehouse that hold at least one of the roles, by name
+     * (SCRUM-466). Bounded by the staff of one warehouse, so it is not paged.
+     */
+    @Query("""
+            select u from UserJpaEntity u
+            where u.status = com.stockflow.identity.internal.domain.UserStatus.ACTIVE
+              and exists (select 1 from UserWarehouseJpaEntity w
+                          where w.userId = u.id and w.warehouseId = :warehouseId)
+              and exists (select 1 from UserRoleJpaEntity ur, RoleJpaEntity r
+                          where ur.userId = u.id and r.id = ur.roleId and r.code in :roleCodes)
+            order by lower(coalesce(u.fullName, u.username)), u.id
+            """)
+    List<UserJpaEntity> findAssignable(@Param("warehouseId") UUID warehouseId,
+                                       @Param("roleCodes") Collection<String> roleCodes);
+
+    /**
+     * The ACTIVE staff who hold at least one of the roles and may see the data of {@code warehouseId} (SCRUM-147):
+     * those whose broadest role scope is ALL, and those assigned to the warehouse. With a {@code null} warehouse
+     * only the first group qualifies: system-wide data is for people who are not limited to warehouses. Anybody who
+     * also holds the CUSTOMER role is never returned: a customer is not told about internal stock.
+     */
+    @Query("""
+            select u from UserJpaEntity u
+            where u.status = com.stockflow.identity.internal.domain.UserStatus.ACTIVE
+              and exists (select 1 from UserRoleJpaEntity ur, RoleJpaEntity r
+                          where ur.userId = u.id and r.id = ur.roleId and r.code in :roleCodes)
+              and not exists (select 1 from UserRoleJpaEntity uc, RoleJpaEntity c
+                              where uc.userId = u.id and c.id = uc.roleId and c.code = 'CUSTOMER')
+              and (exists (select 1 from UserRoleJpaEntity us, RoleJpaEntity s
+                           where us.userId = u.id and s.id = us.roleId
+                             and s.dataScope = com.stockflow.common.security.DataScope.ALL)
+                   or (:warehouseId is not null
+                       and exists (select 1 from UserWarehouseJpaEntity w
+                                   where w.userId = u.id and w.warehouseId = :warehouseId)))
+            order by u.id
+            """)
+    List<UserJpaEntity> findStaffWithRolesFor(@Param("roleCodes") Collection<String> roleCodes,
+                                              @Param("warehouseId") UUID warehouseId);
 }

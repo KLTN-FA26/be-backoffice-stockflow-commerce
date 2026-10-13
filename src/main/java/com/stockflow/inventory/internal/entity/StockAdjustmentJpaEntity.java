@@ -65,7 +65,7 @@ public class StockAdjustmentJpaEntity extends BaseEntity {
     @Column(name = "withdrawn_at")
     private Instant withdrawnAt;
 
-    /** V20261014000420: the receipt layer, when the location holds several layers of the lot. */
+    /** V20261015000420: the receipt layer, when the location holds several layers of the lot. */
     @Column(name = "received_at", updatable = false)
     private Instant receivedAt;
 

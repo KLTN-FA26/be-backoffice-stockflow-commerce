@@ -124,8 +124,12 @@ class ProductionWorkflowService implements ProductionWorkflow {
                                          Instant now) {
         orders.save(order);
         orders.recordTransition(order.id(), held, now, user.userId());
+        // The note stays on the order (contracts carry codes, not typed text); a BLANKS_SHORT hold says how many.
+        Integer blanksNeeded = order.holdReason() == ProductionOrder.HoldReason.BLANKS_SHORT
+                && order.outstandingBlanks() > 0 ? order.outstandingBlanks() : null;
         events.publishEvent(new ProductionOrderHeld(order.id(), order.orderNumber(), order.holdReason().name(),
-                order.holdNote(), order.sampleRequestId(), order.salesOrderId()));
+                order.sampleRequestId(), order.salesOrderId(), order.work().warehouseId(),
+                order.work().blankSku().code(), blanksNeeded));
         log.info("Production order {} on hold: {}", order.orderNumber(), order.holdReason());
         return reads.get(user, order.id());
     }

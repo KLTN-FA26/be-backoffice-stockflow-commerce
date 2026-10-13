@@ -13,8 +13,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * V20261014000500 on a database that already holds customers in every status, at the integration
- * checkpoint's newest migration (V20261014000300): existing customers get no invented history, and the
+ * V20261015000500 on a database that already holds customers in every status, at the integration
+ * checkpoint's newest migration (V20261015000300): existing customers get no invented history, and the
  * table refuses a reopen without a reason.
  */
 class CustomerStatusHistoryMigrationUpgradeTest {
@@ -23,9 +23,9 @@ class CustomerStatusHistoryMigrationUpgradeTest {
     void upgradeKeepsExistingCustomersAndTheHistoryStatesTheReopenRule() throws Exception {
         try (var pg = new PostgreSQLContainer<>("postgres:16-alpine")) {
             pg.start();
-            // Everything before V20261014000500, whoever wrote it (lane A's 0004xx sit in between since the
+            // Everything before V20261015000500, whoever wrote it (lane A's 0004xx sit in between since the
             // integration), so the step below is exactly the migration under test.
-            var underTest = org.flywaydb.core.api.MigrationVersion.fromVersion("20261014000500");
+            var underTest = org.flywaydb.core.api.MigrationVersion.fromVersion("20261015000500");
             String before = java.util.Arrays.stream(Flyway.configure()
                             .dataSource(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword())
                             .locations("classpath:db/migration").load().info().all())
@@ -41,8 +41,8 @@ class CustomerStatusHistoryMigrationUpgradeTest {
                 customer(sql, "BLOCKED", null);
 
                 var migrated = Flyway.configure().dataSource(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword())
-                        .locations("classpath:db/migration").target("20261014000500").load();
-                assertThat(migrated.migrate().migrations).extracting(m -> m.version).containsExactly("20261014000500");
+                        .locations("classpath:db/migration").target("20261015000500").load();
+                assertThat(migrated.migrate().migrations).extracting(m -> m.version).containsExactly("20261015000500");
 
                 assertThat(count(sql, "select count(*) from customer.customer_status_history")).isZero();
                 assertThat(count(sql, "select count(*) from customer.customer")).isEqualTo(3);

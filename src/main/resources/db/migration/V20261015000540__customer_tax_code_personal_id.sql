@@ -6,7 +6,7 @@
 -- is used in place of the tax code of a household, a household business and an individual business
 -- (Thông tư 86/2024/TT-BTC art. 5(5) and art. 38(2); Luật Quản lý thuế 38/2019/QH14 art. 35(7)). The
 -- company rule is unchanged: 10 digits, or 10-3 for a dependent unit. Only the CHECK of
--- V20261014000100 is widened; every stored value already satisfies the new one.
+-- V20261015000100 is widened; every stored value already satisfies the new one.
 -- =============================================================================
 
 ALTER TABLE customer.customer DROP CONSTRAINT ck_customer_tax_code;

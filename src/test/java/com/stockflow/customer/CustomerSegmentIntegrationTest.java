@@ -51,7 +51,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * Customer groups from the back office (user decision P7) over HTTP with security ON: the real filter chain and
- * permission aspect, the grants seeded by V20261014000600 (resolved per request from the {@code roles} claim,
+ * permission aspect, the grants seeded by V20261015000600 (resolved per request from the {@code roles} claim,
  * ADR-0008). Only token decoding is stubbed. Then the group a customer is put in prices it: own → group → base.
  */
 @IntegrationTest

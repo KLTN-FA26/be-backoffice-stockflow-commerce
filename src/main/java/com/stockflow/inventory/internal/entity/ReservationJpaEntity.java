@@ -55,7 +55,7 @@ public class ReservationJpaEntity {
     @Column(name = "order_id")
     private UUID orderId;
 
-    /** The production order holding blanks (V20261014000400); exactly one of the two owners is set. */
+    /** The production order holding blanks (V20261015000400); exactly one of the two owners is set. */
     @Column(name = "production_order_id")
     private UUID productionOrderId;
 

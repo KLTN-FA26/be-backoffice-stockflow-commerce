@@ -38,8 +38,9 @@ class ProductionNotificationListenerTest {
             new NotificationSender(mail, mock(RestClientFactory.class), "noreply@stockflow.local", ""),
             new StaffDirectory(identity));
 
-    private static ProductionOrderHeld held(String reason, String note) {
-        return new ProductionOrderHeld(UUID.randomUUID(), "LSX-20261012-0001", reason, note, null, UUID.randomUUID());
+    private static ProductionOrderHeld held(String reason) {
+        return new ProductionOrderHeld(UUID.randomUUID(), "LSX-20261012-0001", reason, null, UUID.randomUUID(), null,
+                "SOFA-3S-GREY", null);
     }
 
     private static StaffUser user(String email, String status) {
@@ -63,19 +64,31 @@ class ProductionNotificationListenerTest {
     void aRejectedFileIsMailedToEveryActiveSalesAccount() {
         staff(Role.SALES_STAFF, user("sale1@example.com", "ACTIVE"), user("sale2@example.com", "ACTIVE"),
                 user("left@example.com", "DISABLED"), user(" ", "ACTIVE"));
-        listener.on(held("FILE_REJECTED", "Bleed missing"));
+        listener.on(held("FILE_REJECTED"));
         SimpleMailMessage message = sent();
         assertThat(message.getTo()).containsExactly("sale1@example.com", "sale2@example.com");
         assertThat(message.getFrom()).isEqualTo("noreply@stockflow.local");
         assertThat(message.getSubject()).contains("LSX-20261012-0001", "file in không đạt");
-        assertThat(message.getText()).contains("Bleed missing", "liên hệ khách hàng", "đơn bán");
+        assertThat(message.getText()).contains("liên hệ khách hàng", "đơn bán");
+    }
+
+    @Test
+    void theWarehouseManagerNoticeGoesToTheManagersWhoCanSeeTheWarehouse() {
+        UUID warehouse = UUID.randomUUID();
+        when(identity.notificationRecipients(java.util.Set.of("WAREHOUSE_MANAGER"), warehouse)).thenReturn(List.of(
+                new com.stockflow.identity.api.StaffContact(UUID.randomUUID(), "hcm-manager@example.com"),
+                new com.stockflow.identity.api.StaffContact(UUID.randomUUID(), " ")));
+        listener.on(new ProductionOrderHeld(UUID.randomUUID(), "LSX-20261012-0003", "MACHINE_DOWN", null,
+                UUID.randomUUID(), warehouse, "SOFA-3S-GREY", null));
+        assertThat(sent().getTo()).containsExactly("hcm-manager@example.com");
+        org.mockito.Mockito.verify(identity, org.mockito.Mockito.never()).listUsers(org.mockito.ArgumentMatchers.any());
     }
 
     @Test
     void waitingForTheCustomerAlsoGoesToSales() {
         staff(Role.SALES_STAFF, user("sale1@example.com", "ACTIVE"));
-        listener.on(new ProductionOrderHeld(UUID.randomUUID(), "LSX-20261012-0002", "WAITING_CUSTOMER", null,
-                UUID.randomUUID(), null));
+        listener.on(new ProductionOrderHeld(UUID.randomUUID(), "LSX-20261012-0002", "WAITING_CUSTOMER",
+                UUID.randomUUID(), null, null, "SOFA-3S-GREY", null));
         SimpleMailMessage message = sent();
         assertThat(message.getTo()).containsExactly("sale1@example.com");
         assertThat(message.getText()).contains("chờ khách hàng", "yêu cầu mẫu").doesNotContain("Ghi chú");
@@ -84,10 +97,11 @@ class ProductionNotificationListenerTest {
     @Test
     void blanksShortAlertPurchasing() {
         staff(Role.PROCUREMENT_STAFF, user("buyer@example.com", "ACTIVE"));
-        listener.on(held("BLANKS_SHORT", "3 blank(s) of SOFA-3S-GREY needed for a reprint"));
+        listener.on(new ProductionOrderHeld(UUID.randomUUID(), "LSX-20261012-0001", "BLANKS_SHORT", null,
+                UUID.randomUUID(), null, "SOFA-3S-GREY", 3));
         SimpleMailMessage message = sent();
         assertThat(message.getTo()).containsExactly("buyer@example.com");
-        assertThat(message.getText()).contains("thiếu phôi", "3 blank(s)", "bổ sung phôi");
+        assertThat(message.getText()).contains("thiếu phôi", "Cần thêm 3 phôi SOFA-3S-GREY", "bổ sung phôi");
     }
 
     @Test
@@ -96,7 +110,7 @@ class ProductionNotificationListenerTest {
         for (String reason : List.of("MACHINE_DOWN", "SUBCONTRACTOR_LATE", "OTHER")) {
             assertThat(ProductionNotificationListener.audience(reason)).isEqualTo(Role.WAREHOUSE_MANAGER);
         }
-        listener.on(held("MACHINE_DOWN", null));
+        listener.on(held("MACHINE_DOWN"));
         assertThat(sent().getTo()).containsExactly("manager@example.com");
     }
 
@@ -106,14 +120,14 @@ class ProductionNotificationListenerTest {
                 .thenReturn(PageResponse.of(List.of(user("a@example.com", "ACTIVE")), 0, 1, 2));
         when(identity.listUsers(argThat((ListUsersQuery q) -> q != null && q.page() == 1)))
                 .thenReturn(PageResponse.of(List.of(user("b@example.com", "ACTIVE")), 1, 1, 2));
-        listener.on(held("FILE_REJECTED", null));
+        listener.on(held("FILE_REJECTED"));
         assertThat(sent().getTo()).containsExactly("a@example.com", "b@example.com");
     }
 
     @Test
     void nobodyToWriteToSendsNothing() {
         staff(Role.SALES_STAFF);
-        listener.on(held("FILE_REJECTED", null));
+        listener.on(held("FILE_REJECTED"));
         verify(mail, never()).send(any(SimpleMailMessage.class));
     }
 
@@ -121,7 +135,7 @@ class ProductionNotificationListenerTest {
     void aRefusingMailServerFailsTheListenerSoTheEventIsRetried() {
         staff(Role.SALES_STAFF, user("sale1@example.com", "ACTIVE"));
         doThrow(new org.springframework.mail.MailSendException("refused")).when(mail).send(any(SimpleMailMessage.class));
-        assertThatThrownBy(() -> listener.on(held("FILE_REJECTED", null)))
+        assertThatThrownBy(() -> listener.on(held("FILE_REJECTED")))
                 .isInstanceOf(org.springframework.mail.MailException.class);
     }
 }

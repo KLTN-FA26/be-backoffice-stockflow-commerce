@@ -17,16 +17,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * The lane A workshop migrations (V20261014000400 holds and issue, 000420 adjustment layer and QC grants,
- * 000430 agreed cancellation fee) on the real upgrade path: a database at V20261014000300 with an administrator's
+ * The lane A workshop migrations (V20261015000400 holds and issue, 000420 adjustment layer and QC grants,
+ * 000430 agreed cancellation fee) on the real upgrade path: a database at V20261015000300 with an administrator's
  * own grant, upgraded. Proves the new resources reach exactly the roles named, QC loses
  * production-orders:UPDATE and nothing else it holds, every changed role's version moves (ADR-0008) and no other
  * does, and the new constraints are in force and valid.
  */
 class WorkshopMigrationUpgradeTest {
 
-    private static final String BEFORE = "20261014000300";
-    private static final String LAST = "20261014000430";
+    private static final String BEFORE = "20261015000300";
+    private static final String LAST = "20261015000430";
 
     @Test
     void upgradeGrantsTheWorkshopStepsAndKeepsEverythingElse() throws Exception {
@@ -47,7 +47,7 @@ class WorkshopMigrationUpgradeTest {
                 // Up to the last lane A migration only: anything later moves versions of its own.
                 var result = flyway(postgres, LAST).migrate();
                 assertThat(result.migrations).extracting(m -> m.version)
-                        .contains("20261014000400", "20261014000420", LAST);
+                        .contains("20261015000400", "20261015000420", LAST);
 
                 assertThat(grants(db, "WAREHOUSE_STAFF")).filteredOn(g -> g.startsWith("production-material-issues:"))
                         .containsExactlyInAnyOrder("production-material-issues:READ", "production-material-issues:CREATE");

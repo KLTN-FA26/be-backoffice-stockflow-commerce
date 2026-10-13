@@ -2,6 +2,8 @@ package com.stockflow.identity.internal.service;
 
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.persistence.Pages;
+import com.stockflow.identity.api.AssignableUser;
+import com.stockflow.identity.api.StaffContact;
 import com.stockflow.identity.api.ChangePasswordCommand;
 import com.stockflow.identity.api.CreateRoleCommand;
 import com.stockflow.identity.api.CreateStaffUserCommand;
@@ -842,6 +844,32 @@ class IdentityServiceImpl implements IdentityService {
                 .orElseThrow(() -> new BusinessException(ErrorCode.USER_NOT_FOUND, "No user with id " + userId));
         return new UserProfile(user.id().value(), user.username(), user.email(), user.fullName(),
                 user.status().name(), user.lastLoginAt(), user.mustChangePassword());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<AssignableUser> assignableUsers(java.util.Set<String> roleCodes, UUID warehouseId) {
+        if (roleCodes == null || roleCodes.isEmpty() || warehouseId == null) {
+            return List.of();
+        }
+        List<UserJpaEntity> found = users.findAssignable(warehouseId, roleCodes);
+        Map<UUID, List<String>> held = roleCodesOf(found.stream().map(UserJpaEntity::getId).toList());
+        return found.stream()
+                .map(user -> new AssignableUser(user.getId(),
+                        user.getFullName() == null || user.getFullName().isBlank()
+                                ? user.getUsername() : user.getFullName(),
+                        held.getOrDefault(user.getId(), List.of()).stream().filter(roleCodes::contains).toList()))
+                .toList();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<StaffContact> notificationRecipients(java.util.Set<String> roleCodes, UUID warehouseId) {
+        if (roleCodes == null || roleCodes.isEmpty()) {
+            return List.of();
+        }
+        return users.findStaffWithRolesFor(roleCodes, warehouseId).stream()
+                .map(user -> new StaffContact(user.getId(), user.getEmail())).toList();
     }
 
     @Override

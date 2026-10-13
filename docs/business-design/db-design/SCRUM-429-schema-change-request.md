@@ -1,7 +1,7 @@
 # Thay đổi schema — SCRUM-429 / SCRUM-450 (onboarding khách B2B)
 
 > **Cập nhật 12/10/2026:** chủ repo cho phép nhánh tự viết migration cho phạm vi này. Đề xuất cũ đã
-> được hiện thực trong `V20261014000100__customer_b2b_onboarding.sql` (hậu tố `00100` của ngày
+> được hiện thực trong `V20261015000100__customer_b2b_onboarding.sql` (hậu tố `00100` của ngày
 > 20261014 dành cho nhánh B2B; nhánh production dùng `00200` trở lên). Tài liệu này giờ mô tả
 > **cái đã làm** và **các quyết định mặc định chưa được chủ nghiệp vụ duyệt**.
 
