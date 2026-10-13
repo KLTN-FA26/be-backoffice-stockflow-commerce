@@ -10,8 +10,8 @@ import java.util.UUID;
  *
  * <p>The recipient is resolved by the publisher, which knows who handled the quote: the Sales account that
  * sent it - for a reorder, the one that sent the order's quote. {@code salesEmail} is null when that account
- * no longer exists, is not active, or has no e-mail; the listener then reports that nobody was told instead
- * of guessing another recipient.</p>
+ * no longer exists, is not active, or has no e-mail; the listener then hands the notice to every active Sales
+ * account to take over (user decision N1, 2026-10-13).</p>
  *
  * @param detail the customer's feedback for {@code CHANGES_REQUESTED}, the reordered order's number for
  *               {@code REORDER_REQUESTED}, null for {@code ACCEPTED}

@@ -20,8 +20,21 @@ import static org.mockito.Mockito.verify;
 class QuoteNotificationListenerTest {
 
     private final JavaMailSender mail = mock(JavaMailSender.class);
+    private final com.stockflow.identity.api.IdentityService identity =
+            mock(com.stockflow.identity.api.IdentityService.class);
     private final QuoteNotificationListener listener = new QuoteNotificationListener(
-            new NotificationSender(mail, mock(RestClientFactory.class), "noreply@stockflow.local", ""));
+            new NotificationSender(mail, mock(RestClientFactory.class), "noreply@stockflow.local", ""),
+            new StaffDirectory(identity));
+
+    private void activeSales(String... emails) {
+        var users = java.util.Arrays.stream(emails).map(email -> new com.stockflow.identity.api.StaffUser(UUID.randomUUID(),
+                email, email, "Sales", "ACTIVE", java.util.List.of("SALES_STAFF"), java.util.List.of(), false, null, null,
+                Instant.EPOCH, "admin", 0)).toList();
+        org.mockito.Mockito.when(identity.listUsers(org.mockito.ArgumentMatchers.argThat(
+                (com.stockflow.identity.api.ListUsersQuery q) -> q != null && "SALES_STAFF".equals(q.roleCode())
+                        && "ACTIVE".equals(q.status()) && q.page() == 0)))
+                .thenReturn(com.stockflow.common.api.PageResponse.of(users, 0, 100, users.size()));
+    }
 
     private static CustomerActedOnQuote event(CustomerActedOnQuote.Action action, String detail, String salesEmail) {
         return new CustomerActedOnQuote(UUID.randomUUID(), "QT-20261012-0007", UUID.randomUUID(), "Cong ty In Ly A",
@@ -60,9 +73,29 @@ class QuoteNotificationListenerTest {
     }
 
     @Test
-    void withoutARecipientNobodyIsMailed() {
+    void aGoneSalesAccountHandsTheCustomerToTheActiveSalesTeamOnceEach() {
+        // N1: the responsible account is locked or gone - salesEmail is null - so the team takes over.
+        activeSales("sale1@example.com", "sale2@example.com", "sale1@example.com");
         listener.on(event(CustomerActedOnQuote.Action.ACCEPTED, null, null));
-        listener.on(event(CustomerActedOnQuote.Action.ACCEPTED, null, " "));
+        SimpleMailMessage message = sent();
+        assertThat(message.getTo()).containsExactly("sale1@example.com", "sale2@example.com");
+        assertThat(message.getSubject()).startsWith("[Cần tiếp nhận]").contains("QT-20261012-0007", "Cong ty In Ly A");
+        assertThat(message.getText()).contains("không còn hoạt động", "tiếp nhận", "chuyển báo giá thành đơn hàng");
+    }
+
+    @Test
+    void aReorderOfAGoneSalesAccountAlsoReachesTheTeam() {
+        activeSales("sale2@example.com");
+        listener.on(event(CustomerActedOnQuote.Action.REORDER_REQUESTED, "SO-20261001-0003", " "));
+        SimpleMailMessage message = sent();
+        assertThat(message.getTo()).containsExactly("sale2@example.com");
+        assertThat(message.getText()).contains("SO-20261001-0003", "không dùng giá đã thương lượng");
+    }
+
+    @Test
+    void withNoActiveSalesAtAllNobodyIsMailedAndItIsLogged() {
+        activeSales();
+        listener.on(event(CustomerActedOnQuote.Action.ACCEPTED, null, null));
         verify(mail, never()).send(any(SimpleMailMessage.class));
     }
 }

@@ -81,7 +81,7 @@ Develop checked 2026-10-12: still `74d624d`, newest migration `V20261013000600`.
 
 | # | Question, with a concrete case | Today |
 |---|---|---|
-| N1 | **Who is told when the Sales account that handled a quote is disabled or gone?** Example: Sales A sent QT-…-0007 and left; the customer accepts (or reorders SO-…-0003). There is no customer → Sales owner in the data. Options: a shared Sales mailbox (configured address), every active Sales user, or nobody (Sales watch the DRAFT / ACCEPTED lists). | nobody is e-mailed; a WARN log says so; the quote itself is in the lists |
+| N1 | ~~Who is told when the Sales account that handled a quote is disabled or gone?~~ **Decided 2026-10-13:** every active Sales account, marked as a hand-over, each address once; no change to who may read or answer the quote. | every active Sales account e-mailed (`QuoteNotificationListener`) |
 | R1b | **Reorder when the old payment term is no longer allowed.** Example: the deal was CREDIT; the customer's terms are now PREPAID only. Refuse the reorder as now, or still create the request and let Sales choose a term? | refused `PAYMENT_TERM_NOT_ALLOWED` (guard kept, as instructed) |
 
 External configuration, not a question: real e-mail delivery needs `MAIL_HOST` / `MAIL_PORT` / `MAIL_USERNAME` /

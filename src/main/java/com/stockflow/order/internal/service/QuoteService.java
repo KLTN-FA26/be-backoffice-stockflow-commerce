@@ -511,8 +511,9 @@ class QuoteService implements Quotes {
 
     /**
      * Tells Sales that the customer's step made the next one theirs. Published in this transaction and
-     * delivered after commit; the recipient is the Sales account that sent the quote, and none - reported, not
-     * replaced - when that account is gone, inactive or has no e-mail.
+     * delivered after commit; the recipient is the Sales account that sent the quote. When that account is gone,
+     * inactive or has no e-mail the event carries no address and the notification module hands it to the active
+     * Sales team (N1).
      */
     private void notifySales(Quote quote, CustomerActedOnQuote.Action action, String detail, UUID salesUserId,
                              Instant at) {
