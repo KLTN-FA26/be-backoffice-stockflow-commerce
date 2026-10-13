@@ -165,22 +165,18 @@ class ProductVariantOptionsIntegrationTest {
         assertThat(count(product)).isEqualTo(4);
 
         UUID other = productWithAxes();
-        // 12 oz / Clear goes to the default variant, 16 oz / Red is then added by hand.
-        variants.add(other, new NewVariant(null, null, List.of(cap12, clear), null));
         variants.add(other, new NewVariant(null, null, List.of(cap16, red), null));
         Generated rest = variants.generate(other, null);
-        assertThat(rest.skipped()).isEqualTo(2);
+        assertThat(rest.skipped()).isEqualTo(1);
         assertThat(rest.created()).hasSize(2);
         assertThat(count(other)).isEqualTo(4);
+        assertThat(defaultOf(other).attributeSignature()).isEqualTo("CAPACITY=12OZ;COLOR=CLEAR");
     }
 
     @Test
     void addingFromOptionsDerivesSignatureSkuAndName() {
         UUID product = productWithAxes();
         String code = newCode;
-        // The first combination goes to the default variant (D1); the next one is a row of its own.
-        variants.add(product, new NewVariant(null, null, List.of(cap12, clear), null));
-
         VariantView added = variants.add(product, new NewVariant(null, null, List.of(red, cap16), null));
 
         assertThat(added.sku()).isEqualTo(code + "-16OZ-RED");
@@ -195,13 +191,94 @@ class ProductVariantOptionsIntegrationTest {
         entityManager.clear();
         assertThat(variants.get(product, added.id()).options()).extracting(VariantOption::valueCode)
                 .containsExactly("16OZ", "RED");
-        assertThat(defaultOf(product).name()).isEqualTo("Ly giay – 12 oz / Clear");
+        // Not the matrix-first combination: the default variant is left alone.
+        assertThat(count(product)).isEqualTo(2);
+        assertThat(defaultOf(product).attributeSignature()).isEqualTo("DEFAULT");
+        assertThat(defaultOf(product).sku()).isEqualTo(code);
+    }
+
+    @Test
+    void theMatrixFirstCombinationBecomesTheDefaultVariant() {
+        UUID product = productWithAxes();
+        String code = newCode;
+
+        VariantView first = variants.add(product, new NewVariant(null, null, List.of(clear, cap12), null));
+
+        assertThat(first.defaultVariant()).isTrue();
+        assertThat(first.sku()).isEqualTo(code);
+        assertThat(first.attributeSignature()).isEqualTo("CAPACITY=12OZ;COLOR=CLEAR");
+        assertThat(first.name()).isEqualTo("Ly giay \u2013 12 oz / Clear");
+        assertThat(first.options()).extracting(VariantOption::valueCode).containsExactly("12OZ", "CLEAR");
+        assertThat(count(product)).isEqualTo(1);
+    }
+
+    @Test
+    void aSkuSentWithTheMatrixFirstCombinationRenamesTheDraftDefault() {
+        UUID product = productWithAxes();
+
+        VariantView first = variants.add(product, new NewVariant(" cup-first ", null, List.of(cap12, clear), null));
+
+        assertThat(first.defaultVariant()).isTrue();
+        assertThat(first.sku()).isEqualTo("CUP-FIRST");
+        assertThat(count(product)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from inventory.inventory_items where sku = 'CUP-FIRST'",
+                Long.class)).isEqualTo(1);
+    }
+
+    @Test
+    void aRenameOfAReferencedSkuIsARefusedTransition() {
+        UUID product = productWithAxes();
+        jdbc.update("insert into catalog.pricing_rule(id, name, sku, price, currency, active, version, created_at) "
+                + "values (?, 'rule', ?, 1, 'VND', true, 0, now())", UUID.randomUUID(), newCode);
+
+        assertThat(errorOf(() -> variants.add(product, new NewVariant("CUP-RENAMED", null, List.of(cap12, clear), null))))
+                .isEqualTo(ErrorCode.INVALID_VARIANT_TRANSITION);
+    }
+
+    @Test
+    void aDefaultThatLeftDraftKeepsDefaultAndEveryCombinationIsARow() {
+        UUID product = productWithAxes();
+        products.submit(product, user);
+        products.approve(product, ReferenceRows.user(entityManager));
+        assertThat(defaultOf(product).status()).isEqualTo(VariantStatus.ACTIVE);
+
+        Generated generated = variants.generate(product, null);
+
+        assertThat(generated.created()).hasSize(4);
+        assertThat(defaultOf(product).attributeSignature()).isEqualTo("DEFAULT");
+        assertThat(count(product)).isEqualTo(5);
+    }
+
+    @Test
+    void aRestrictedMatrixWithoutTheFirstCombinationLeavesTheDefaultAlone() {
+        UUID product = productWithAxes();
+
+        Generated generated = variants.generate(product, Map.of(capacity, List.of(cap16)));
+
+        assertThat(generated.created()).hasSize(2);
+        assertThat(defaultOf(product).attributeSignature()).isEqualTo("DEFAULT");
+        assertThat(count(product)).isEqualTo(3);
+    }
+
+    @Test
+    void generatedSkusThatCollideAreRefusedBeforeWriting() {
+        UUID left = dictionary.create("LEFTX", AttributeDataType.SELECT, details("Left")).id();
+        UUID right = dictionary.create("RIGHTX", AttributeDataType.SELECT, details("Right")).id();
+        UUID a = value(left, "A", "A", 1, null);
+        UUID ab = value(left, "A-B", "AB", 2, null);
+        UUID c = value(right, "C", "C", 1, null);
+        UUID bc = value(right, "B-C", "BC", 2, null);
+        UUID product = product("CUP-" + UUID.randomUUID().toString().substring(0, 6).toUpperCase());
+        attributesOfProduct.replaceAxes(product, List.of(new AxisSpec(left, 0, List.of(a, ab)),
+                new AxisSpec(right, 1, List.of(c, bc))));
+
+        assertThat(errorOf(() -> variants.generate(product, null))).isEqualTo(ErrorCode.VARIANT_SKU_ALREADY_EXISTS);
+        assertThat(count(product)).isEqualTo(1);
     }
 
     @Test
     void aManualSkuOverridesTheRuleAndIsNormalised() {
         UUID product = productWithAxes();
-        variants.add(product, new NewVariant(null, null, List.of(cap12, clear), null));
 
         VariantView manual = variants.add(product, new NewVariant(" cup_x.1 ", null, List.of(cap16, red), null));
         assertThat(manual.sku()).isEqualTo("CUP_X.1");
