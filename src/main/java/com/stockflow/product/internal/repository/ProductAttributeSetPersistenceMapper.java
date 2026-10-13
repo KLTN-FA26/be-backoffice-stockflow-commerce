@@ -22,12 +22,15 @@ import java.util.stream.Collectors;
 /**
  * A product's attribute set to its rows and back.
  *
- * <p>Saving is two phases because Hibernate flushes inserts, then updates, then deletes, whatever
- * order the code touched them in. A removal and an addition that share a unique key (an option's
- * product attribute and value, a SELECT descriptive's single row) would therefore insert before the
- * old row is gone. {@link #removeDropped} runs first and is flushed on its own; {@link #applyKept}
- * then updates rows in place and appends new ones. Rows that did not change are not touched at all,
- * so they keep their version.</p>
+ * <p>Saving is two phases, as a defensive measure, because Hibernate flushes inserts, then updates,
+ * then deletes, whatever order the code touched them in. Rows that survive a replacement keep their
+ * ids, so an ordinary swap such as {A,B} to {B,C} never collides. The cases that could are an
+ * attribute leaving one role and entering the other in the same save (its new row would meet the old
+ * one at {@code uk_product_attributes_pair}) and a single descriptive value written as a new row
+ * (it would meet the old one at the scalar trigger or {@code uk_product_descriptive_values_scalar}).
+ * {@link #removeDropped} runs first and is flushed on its own; {@link #applyKept} then updates rows
+ * in place and appends new ones. Rows that did not change are not touched at all, so they keep
+ * their version.</p>
  */
 final class ProductAttributeSetPersistenceMapper {
 

@@ -248,6 +248,33 @@ class ProductAttributeSetRepositoryAdapterIntegrationTest {
     }
 
     @Test
+    void anOptionAVariantStartedUsingIsRefusedAsInUse() {
+        var size = attribute("SIZE", SELECT, "S", "M");
+        var dict = dictionaryOf(size);
+        var first = draftSet();
+        first.replaceAxes(List.of(new AxisSpec(size.id(), 0, List.of(value(size, "S"), value(size, "M")))), dict,
+                Set.of(), Identifiers::newId);
+        persisted(first);
+        UUID optionS = jdbc.queryForObject("select o.id from product.product_attribute_options o where o.attribute_value_id = ?"
+                + " and o.product_attribute_id in (select id from product.product_attributes where product_id = ?)",
+                UUID.class, value(size, "S"), productId);
+        UUID variant = Identifiers.newId();
+        jdbc.update("insert into product.variants (id, product_id, sku, name, attribute_signature) values (?, ?, ?, ?, ?)",
+                variant, productId, "V-" + suffix, "v", "SIG-" + suffix);
+        jdbc.update("insert into product.variant_attribute_values (id, variant_id, product_attribute_option_id)"
+                + " values (?, ?, ?)", Identifiers.newId(), variant, optionS);
+
+        // The service's used-values check ran before the variant existed: this is the race the FK nets.
+        var second = draftSet();
+        second.replaceAxes(List.of(new AxisSpec(size.id(), 0, List.of(value(size, "M")))), dict, Set.of(),
+                Identifiers::newId);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> repository.save(second))
+                .isInstanceOfSatisfying(com.stockflow.common.error.ConflictException.class,
+                        e -> assertThat(e.errorCode()).isEqualTo(com.stockflow.common.error.ErrorCode.ATTRIBUTE_IN_USE));
+    }
+
+    /** Regression guard: Hibernate flushes inserts before deletes, so a save must flush removals first. */
+    @Test
     void removalsAreFlushedBeforeInserts() {
         var capacity = attribute("CAPACITY", SELECT, "12OZ", "16OZ", "22OZ");
         var tags = attribute("TAGS", MULTISELECT, "A", "B", "C");

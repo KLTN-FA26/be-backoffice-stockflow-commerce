@@ -1,5 +1,6 @@
 package com.stockflow.product.internal.controller;
 
+import com.stockflow.common.security.Action;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.product.internal.domain.AxisSpec;
 import com.stockflow.product.internal.domain.DescriptiveSpec;
@@ -110,6 +111,8 @@ class ProductAttributeControllerHttpTest {
                 assertThat(p).as(m.getName()).isNotNull();
                 assertThat(p.resource()).as(m.getName())
                         .isEqualTo(m.getName().equals("replaceDescriptives") ? "product-products" : "product-variants");
+                assertThat(p.action()).as(m.getName() + " action")
+                        .isEqualTo(m.getName().equals("get") ? Action.READ : Action.UPDATE);
                 guarded++;
             }
         }

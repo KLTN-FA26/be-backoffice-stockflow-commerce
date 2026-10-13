@@ -9,7 +9,6 @@ import com.stockflow.product.internal.entity.ProductAttributeJpaEntity;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Repository;
 
-import java.sql.SQLException;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -19,15 +18,17 @@ import java.util.UUID;
  * then descriptive values) because two bags cannot be fetch-joined at once; both land on the same
  * managed rows, so the mapper sees them fully initialised.
  *
- * <p>Saving is in two flushed phases (see {@link ProductAttributeSetPersistenceMapper}): Hibernate
- * runs inserts before deletes, so a set that swaps {A,B} for {B,C} would otherwise insert C while
- * A's row still holds the unique key. Both flushes go through the Spring Data repository so a
- * database exception arrives translated.</p>
+ * <p>Saving is in two flushed phases (see {@link ProductAttributeSetPersistenceMapper}) as a
+ * defensive measure: Hibernate runs inserts before deletes, so a save in which an attribute leaves
+ * one role and enters the other would insert its new row while the old one still holds
+ * {@code uk_product_attributes_pair}, and a single descriptive value written as a new row would
+ * meet the old one at the scalar trigger / {@code uk_product_descriptive_values_scalar}. Both
+ * flushes go through the Spring Data repository so a database exception arrives translated.</p>
  */
 @Repository
 class ProductAttributeSetRepositoryAdapter implements ProductAttributeSetRepository {
 
-    private static final String FOREIGN_KEY_VIOLATION = "23503";
+    private static final String OPTION_IN_USE_CONSTRAINT = "fk_variant_attribute_values_option";
 
     private final ProductAttributeJpaRepository jpa;
 
@@ -64,28 +65,20 @@ class ProductAttributeSetRepositoryAdapter implements ProductAttributeSetReposit
     }
 
     /**
-     * A foreign-key violation here is an option a variant started using after the service checked
-     * (the variant row references the option, RESTRICT); the service's check is the ordinary path,
-     * this is the net for the race.
+     * A violation of {@code fk_variant_attribute_values_option} is an option a variant started using
+     * after the service checked (the variant row references the option, RESTRICT); the service's check
+     * is the ordinary path, this is the net for the race. Any other violation is not ours to name and
+     * reaches the global handler.
      */
     private void flush() {
         try {
             jpa.flush();
         } catch (DataIntegrityViolationException ex) {
-            if (isForeignKeyViolation(ex)) {
+            if (ConstraintViolations.isViolationOf(ex, OPTION_IN_USE_CONSTRAINT)) {
                 throw new ConflictException(ErrorCode.ATTRIBUTE_IN_USE,
                         "A variant of this product uses a value that was removed");
             }
             throw ex;
         }
-    }
-
-    private static boolean isForeignKeyViolation(DataIntegrityViolationException ex) {
-        for (Throwable cause = ex; cause != null; cause = cause.getCause()) {
-            if (cause instanceof SQLException sql && FOREIGN_KEY_VIOLATION.equals(sql.getSQLState())) {
-                return true;
-            }
-        }
-        return false;
     }
 }
