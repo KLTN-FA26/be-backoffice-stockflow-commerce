@@ -65,6 +65,11 @@ public final class ProductAttributeSet extends AggregateRoot {
      * Makes the axes exactly {@code specs}. Adding or removing an axis needs a DRAFT product; options
      * and order may change while the product accepts changes. Nothing is changed if any rule fails.
      *
+     * <p>Once any variant uses options ({@code valueIdsUsedByVariants} is not empty) an axis can no
+     * longer be added, even in DRAFT: {@code PRODUCT_AXES_LOCKED}, because every existing variant
+     * would lack a value on it. Removing an axis still needs DRAFT, and is {@code ATTRIBUTE_IN_USE}
+     * while a variant carries one of its values.</p>
+     *
      * @param valueIdsUsedByVariants values some variant of this product carries; their options must stay
      */
     public void replaceAxes(List<AxisSpec> specs, Map<UUID, Attribute> dictionary,
@@ -291,12 +296,6 @@ public final class ProductAttributeSet extends AggregateRoot {
 
     public List<ProductAxis> axes() {
         return Collections.unmodifiableList(axes);
-    }
-
-    /** The option of the axis on {@code attributeId} that offers {@code valueId}, if this product has one. */
-    public java.util.Optional<AxisOption> optionFor(UUID attributeId, UUID valueId) {
-        return axes.stream().filter(a -> a.attributeId().equals(attributeId))
-                .flatMap(a -> a.options().stream()).filter(o -> o.valueId().equals(valueId)).findFirst();
     }
 
     public List<DescriptiveAttribute> descriptives() {

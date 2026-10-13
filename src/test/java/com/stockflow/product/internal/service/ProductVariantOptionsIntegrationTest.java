@@ -376,6 +376,101 @@ class ProductVariantOptionsIntegrationTest {
         assertThat(defaultOf(product).attributeSignature()).isEqualTo("DEFAULT");
     }
 
+    private void deactivate(UUID attribute, UUID valueId) {
+        var view = dictionary.get(attribute);
+        var value = view.values().stream().filter(v -> v.id().equals(valueId)).findFirst().orElseThrow();
+        dictionary.updateValue(attribute, valueId, value.version(),
+                new AttributeValueDetails(value.label(), value.valueNumber(), value.hexColor(), value.sortOrder()),
+                false);
+    }
+
+    @Test
+    void generationSkipsADeactivatedValueAndCountsWhatItMakes() {
+        UUID product = productWithAxes();
+        deactivate(color, red);
+
+        Generated generated = variants.generate(product, null);
+
+        assertThat(variants.list(product, 0, 50).items()).flatExtracting(VariantView::options)
+                .extracting(VariantOption::valueCode).doesNotContain("RED");
+        assertThat(generated.created()).hasSize(1);
+        assertThat(generated.skipped()).isZero();
+        assertThat(count(product)).isEqualTo(2);
+        assertThat(errorOf(() -> variants.generate(product, Map.of(color, List.of(red)))))
+                .isEqualTo(ErrorCode.VARIANT_OPTIONS_INVALID);
+        assertThat(variants.generate(product, null).skipped()).isEqualTo(2);
+    }
+
+    @Test
+    void addingWithADeactivatedValueIsRefusedButAnUpdateMayKeepIt() {
+        UUID product = productWithAxes();
+        VariantView kept = variants.add(product, new NewVariant(null, null, List.of(cap16, red), null));
+        VariantView other = variants.add(product, new NewVariant(null, null, List.of(cap16, clear), null));
+        deactivate(color, red);
+
+        assertThat(errorOf(() -> variants.add(product, new NewVariant(null, null, List.of(cap12, red), null))))
+                .isEqualTo(ErrorCode.VARIANT_OPTIONS_INVALID);
+        VariantView renamed = variants.update(product, kept.id(),
+                new NewVariant(null, "Renamed", List.of(cap16, red), null));
+        assertThat(renamed.name()).isEqualTo("Renamed");
+        assertThat(errorOf(() -> variants.update(product, other.id(),
+                new NewVariant(null, null, List.of(cap16, red), null)))).isEqualTo(ErrorCode.VARIANT_OPTIONS_INVALID);
+    }
+
+    @Test
+    void theDefaultTakesTheFirstActiveCombination() {
+        UUID product = productWithAxes();
+        deactivate(capacity, cap12);
+
+        variants.generate(product, null);
+
+        assertThat(defaultOf(product).attributeSignature()).isEqualTo("CAPACITY=16OZ;COLOR=CLEAR");
+        assertThat(count(product)).isEqualTo(2);
+    }
+
+    @Test
+    void anAxisWithNoActiveOptionRefusesGenerationNamingTheAxis() {
+        UUID product = productWithAxes();
+        deactivate(color, clear);
+        deactivate(color, red);
+
+        BusinessException refused = org.junit.jupiter.api.Assertions.assertThrows(BusinessException.class,
+                () -> variants.generate(product, null));
+        assertThat(refused.errorCode()).isEqualTo(ErrorCode.VARIANT_OPTIONS_INVALID);
+        assertThat(refused.getMessage()).contains("COLOR");
+        assertThat(count(product)).isEqualTo(1);
+    }
+
+    @Test
+    void theDraftDefaultCanBeGivenACombinationByUpdate() {
+        UUID product = productWithAxes();
+        VariantView def = defaultOf(product);
+        assertThat(def.attributeSignature()).isEqualTo("DEFAULT");
+
+        VariantView assigned = variants.update(product, def.id(), new NewVariant(null, null, List.of(cap16, red), null));
+
+        assertThat(assigned.defaultVariant()).isTrue();
+        assertThat(assigned.attributeSignature()).isEqualTo("CAPACITY=16OZ;COLOR=RED");
+        assertThat(assigned.options()).extracting(VariantOption::valueCode).containsExactly("16OZ", "RED");
+        assertThat(assigned.sku()).isEqualTo(def.sku());
+    }
+
+    @Test
+    void aVariantWithoutOptionsIsRepairedByAnUpdateThatRederivesTheSignature() {
+        UUID product = product("CUP-" + UUID.randomUUID().toString().substring(0, 6).toUpperCase());
+        String sku = "X-" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
+        VariantView legacy = variants.add(product, new NewVariant(sku, "x", null, null));
+        assertThat(legacy.attributeSignature()).isEqualTo("SKU=" + sku);
+        attributesOfProduct.replaceAxes(product, List.of(new AxisSpec(capacity, 0, List.of(cap12, cap16)),
+                new AxisSpec(color, 1, List.of(clear, red))));
+
+        VariantView repaired = variants.update(product, legacy.id(), new NewVariant(null, null, List.of(cap16, red), null));
+
+        assertThat(repaired.attributeSignature()).isEqualTo("CAPACITY=16OZ;COLOR=RED");
+        assertThat(repaired.sku()).isEqualTo(sku);
+        assertThat(repaired.options()).extracting(VariantOption::valueCode).containsExactly("16OZ", "RED");
+    }
+
     @Test
     void aProductCodeWithUnderscoreWorksEndToEnd() {
         String code = "CUP_" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();

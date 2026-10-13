@@ -73,9 +73,29 @@ import java.util.stream.Collectors;
  * that: a SKU on a stock card must not silently start to mean another combination. Any other
  * combination, and every combination once the default has left DRAFT, is a row of its own.</p>
  *
+ * <p>On that transform path {@code add} answers 201 with the default variant itself: no row is created,
+ * {@code position} is ignored (the default keeps its own), and the audit entry is a CREATE of the
+ * default's id. The same holds for the matrix-first combination in a generation.</p>
+ *
+ * <p>A deactivated dictionary value ({@code AttributeValue.active() == false}; the attribute's own flag
+ * does not count) is no longer used to make NEW variants. Generation skips such options, both
+ * unrestricted and restricted; a restriction that names one, a manual {@code add} that names one, and
+ * an axis left with no active option are all 400 {@code VARIANT_OPTIONS_INVALID} (the last naming the
+ * axis). The matrix-first combination is computed over the active options only, so generation and
+ * {@code add} agree on it. Variants that already carry an inactive value are untouched, and an
+ * {@code update} may keep their current options: only newly chosen values must be active.</p>
+ *
  * <p>An update is partial: a null {@code optionValueIds} keeps the options, a blank sku or name keeps
  * the current one. A generation creates at most {@link VariantMatrix#MAX_PER_CALL} combinations, and
- * the one that goes to the default variant counts toward that limit.</p>
+ * the one that goes to the default variant counts toward that limit. The limit is checked from the axis
+ * sizes before the matrix is built ({@link VariantMatrix#requireWithinCap}).</p>
+ *
+ * <p>Variants that have no options, left from before the product got axes, are repaired with a PUT
+ * update carrying {@code optionValueIds} while they are DRAFT: the options differ from the (empty)
+ * current ones, so the signature is re-derived from them and the stale {@code SKU=...} signature goes.
+ * The SKU is kept. The default variant is the same case: while DRAFT, an update may assign it a
+ * combination, which is the way out when the matrix-first combination already exists as a row of its
+ * own and the transform therefore could not take it.</p>
  *
  * <p>Every write takes the product lock first ({@link #requireChangeable}), then reads the axes and
  * the dictionary, and only then the variants, so two writers of one product serialise before either
@@ -203,7 +223,7 @@ public class ProductVariantService {
         if (catalog.axes.isEmpty()) {
             return addWithoutAxes(productId, command);
         }
-        List<AxisOption> combination = catalog.resolve(command.optionValueIds());
+        List<AxisOption> combination = catalog.resolve(command.optionValueIds(), Set.of());
         VariantSignature signature = catalog.signature(combination);
         if (variants.existsByProductIdAndAttributeSignature(productId, signature.value())) {
             throw combinationTaken(signature);
@@ -264,9 +284,12 @@ public class ProductVariantService {
             throw new BusinessException(ErrorCode.VARIANT_OPTIONS_INVALID,
                     "This product has no axes to generate variants from");
         }
-        List<Combination> all = VariantMatrix.of(catalog.restrictedOptions(optionValueIds));
+        List<List<AxisOption>> options = catalog.restrictedOptions(optionValueIds);
         Set<VariantSignature> existing = variants.signaturesOf(productId).stream()
                 .map(VariantSignature::new).collect(Collectors.toSet());
+        // Refused from the sizes alone, before the matrix is built: see VariantMatrix.requireWithinCap.
+        VariantMatrix.requireWithinCap(options.stream().map(List::size).toList(), existing.size());
+        List<Combination> all = VariantMatrix.of(options);
         List<Combination> missing = VariantMatrix.missing(all, existing, c -> catalog.signature(c.options()));
         int skipped = all.size() - missing.size();
 
@@ -307,7 +330,8 @@ public class ProductVariantService {
     /**
      * The SKU may change only while the variant is DRAFT ({@code tg_variants_sku_frozen}), and so may
      * its options: a SKU already on a stock card and an order must not silently start to mean another
-     * combination. The signature follows the options; the SKU is not regenerated.
+     * combination. The signature follows the options; the SKU is not regenerated. Giving options to a
+     * variant that has none, or a combination to the DRAFT default, is a change like any other.
      */
     @Auditable(action = AuditAction.UPDATE, resourceType = "product-variant", resourceId = "#variantId")
     public VariantView update(UUID productId, UUID variantId, NewVariant command) {
@@ -338,9 +362,9 @@ public class ProductVariantService {
                 signature = VariantSignature.ofSku(new Sku(sku)).value();
             }
         } else if (command.optionValueIds() != null) {
-            List<AxisOption> combination = catalog.resolve(command.optionValueIds());
             Set<UUID> currentOptionIds = currentRows.stream()
                     .map(VariantAttributeValueJpaEntity::getProductAttributeOptionId).collect(Collectors.toSet());
+            List<AxisOption> combination = catalog.resolve(command.optionValueIds(), currentOptionIds);
             Set<UUID> requestedOptionIds = combination.stream().map(AxisOption::id).collect(Collectors.toSet());
             if (!currentOptionIds.equals(requestedOptionIds)) {
                 if (variant.getStatus() != VariantStatus.DRAFT) {
@@ -389,27 +413,28 @@ public class ProductVariantService {
             throw new BusinessException(ErrorCode.INVALID_VARIANT_TRANSITION,
                     "A variant goes on sale once its product is approved");
         }
-        return move(productId, variantId, VariantStatus.ACTIVE);
+        return move(product, variantId, VariantStatus.ACTIVE);
     }
 
     @Auditable(action = AuditAction.TRANSITION, resourceType = "product-variant", resourceId = "#variantId")
     public VariantView block(UUID productId, UUID variantId) {
-        requireChangeable(productId);
-        return move(productId, variantId, VariantStatus.BLOCKED);
+        return move(requireChangeable(productId), variantId, VariantStatus.BLOCKED);
     }
 
     /** Terminal. The default variant stays: it is the product's own SKU. */
     @Auditable(action = AuditAction.TRANSITION, resourceType = "product-variant", resourceId = "#variantId")
     public VariantView obsolete(UUID productId, UUID variantId) {
-        requireChangeable(productId);
+        Product product = requireChangeable(productId);
         if (requireVariant(productId, variantId).isDefaultVariant()) {
             throw new BusinessException(ErrorCode.INVALID_VARIANT_TRANSITION,
                     "The default variant cannot be made obsolete; discontinue the product instead");
         }
-        return move(productId, variantId, VariantStatus.OBSOLETE);
+        return move(product, variantId, VariantStatus.OBSOLETE);
     }
 
-    private VariantView move(UUID productId, UUID variantId, VariantStatus target) {
+    /** {@code product} is the one {@link #requireChangeable} already loaded and locked; it is not read again. */
+    private VariantView move(Product product, UUID variantId, VariantStatus target) {
+        UUID productId = product.id().value();
         var variant = requireVariant(productId, variantId);
         if (!variant.getStatus().canTransitionTo(target)) {
             throw new BusinessException(ErrorCode.INVALID_VARIANT_TRANSITION,
@@ -420,7 +445,7 @@ public class ProductVariantService {
         variants.saveAndFlush(variant);
         history.record(productId, ProductChangeType.VARIANT_STATUS, variant.getId(), from.name(), target.name(), null,
                 List.of());
-        return viewWithOptions(variant, catalog(requireProduct(productId)));
+        return viewWithOptions(variant, catalog(product));
     }
 
     public VariantJpaEntity requireVariant(UUID productId, UUID variantId) {
@@ -577,6 +602,11 @@ public class ProductVariantService {
         private record Axis(ProductAxis axis, Attribute attribute, Map<UUID, AttributeValue> values,
                              List<AxisOption> options) {
 
+            /** The options whose dictionary value is still active: the ones NEW variants may use. */
+            List<AxisOption> activeOptions() {
+                return options.stream().filter(o -> values.get(o.valueId()).active()).toList();
+            }
+
             VariantOption optionView(AxisOption option) {
                 AttributeValue value = values.get(option.valueId());
                 return new VariantOption(attribute.id(), attribute.code(), value.id(), value.code(),
@@ -611,8 +641,12 @@ public class ProductVariantService {
             }
         }
 
-        /** One option per axis, in axis order, from the values the caller named. */
-        List<AxisOption> resolve(List<UUID> valueIds) {
+        /**
+         * One option per axis, in axis order, from the values the caller named. A value that is
+         * deactivated in the dictionary is refused unless its option is in {@code keepable} (the options
+         * the variant being updated already carries).
+         */
+        List<AxisOption> resolve(List<UUID> valueIds, Set<UUID> keepable) {
             List<UUID> requested = valueIds == null ? List.of() : valueIds;
             AxisOption[] chosen = new AxisOption[axes.size()];
             for (UUID valueId : requested) {
@@ -630,6 +664,13 @@ public class ProductVariantService {
                     throw new BusinessException(ErrorCode.VARIANT_OPTIONS_INVALID,
                             "Value %s is not an option of this product".formatted(valueId));
                 }
+                if (!keepable.contains(option.id())
+                        && !axes.get(owner).values().get(valueId).active()) {
+                    throw new BusinessException(ErrorCode.VARIANT_OPTIONS_INVALID,
+                            "Value %s of axis %s is deactivated; new variants cannot use it"
+                                    .formatted(axes.get(owner).values().get(valueId).code(),
+                                            axes.get(owner).attribute().code()));
+                }
                 if (chosen[owner] != null) {
                     throw new BusinessException(ErrorCode.VARIANT_OPTIONS_INVALID,
                             "Axis %s has more than one value".formatted(axes.get(owner).attribute().code()));
@@ -645,17 +686,24 @@ public class ProductVariantService {
             return List.of(chosen);
         }
 
-        /** The first option, in dictionary order, of every axis: the combination the default variant becomes. */
+        /**
+         * The first ACTIVE option, in dictionary order, of every axis: the combination the default
+         * variant becomes. Over active options only, so generation and {@code add} agree on it.
+         */
         boolean isMatrixFirst(List<AxisOption> combination) {
             for (int i = 0; i < axes.size(); i++) {
-                if (!axes.get(i).options().getFirst().id().equals(combination.get(i).id())) {
+                List<AxisOption> active = axes.get(i).activeOptions();
+                if (active.isEmpty() || !active.getFirst().id().equals(combination.get(i).id())) {
                     return false;
                 }
             }
             return true;
         }
 
-        /** The options per axis a generation uses: all of them, or those named for the axis. */
+        /**
+         * The options per axis a generation uses: the active ones, or the named ones, which must all be
+         * active. An axis left with none is 400 naming it, so generation never silently makes nothing.
+         */
         List<List<AxisOption>> restrictedOptions(Map<UUID, List<UUID>> optionValueIds) {
             Map<UUID, List<UUID>> restriction = optionValueIds == null ? Map.of() : optionValueIds;
             Set<UUID> axisAttributes = axes.stream().map(a -> a.attribute().id()).collect(Collectors.toSet());
@@ -668,18 +716,23 @@ public class ProductVariantService {
             List<List<AxisOption>> result = new ArrayList<>();
             for (Axis axis : axes) {
                 List<UUID> wanted = restriction.get(axis.attribute().id());
+                List<AxisOption> active = axis.activeOptions();
+                if (active.isEmpty()) {
+                    throw new BusinessException(ErrorCode.VARIANT_OPTIONS_INVALID,
+                            "Axis %s has no active option to generate from".formatted(axis.attribute().code()));
+                }
                 if (wanted == null) {
-                    result.add(axis.options());
+                    result.add(active);
                     continue;
                 }
-                Set<UUID> offered = axis.options().stream().map(AxisOption::valueId).collect(Collectors.toSet());
+                Set<UUID> offered = active.stream().map(AxisOption::valueId).collect(Collectors.toSet());
                 if (wanted.isEmpty() || !offered.containsAll(wanted)) {
                     throw new BusinessException(ErrorCode.VARIANT_OPTIONS_INVALID,
-                            "Axis %s: every named value must be an option of this product"
+                            "Axis %s: every named value must be an active option of this product"
                                     .formatted(axis.attribute().code()));
                 }
                 Set<UUID> keep = new HashSet<>(wanted);
-                result.add(axis.options().stream().filter(o -> keep.contains(o.valueId())).toList());
+                result.add(active.stream().filter(o -> keep.contains(o.valueId())).toList());
             }
             return result;
         }
