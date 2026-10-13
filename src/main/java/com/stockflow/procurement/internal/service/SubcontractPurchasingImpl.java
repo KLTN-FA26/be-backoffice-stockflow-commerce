@@ -262,6 +262,12 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing, SubcontractAme
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
                     "The deduction per lost blank is an amount of at most 2 decimals, not negative");
         }
+        String text = note == null || note.isBlank() ? null : note.strip();
+        if (text == null || text.length() > 1000) {
+            // QA1: the deduction is the one agreed with the subcontractor, and the approver says so.
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "Approving a loss above tolerance needs a reason (at most 1000 characters)");
+        }
         lock(purchaseOrderId);
         SubcontractSettlement settlement = store.settlement(purchaseOrderId, true).orElseThrow(() ->
                 new BusinessException(ErrorCode.NOT_FOUND, "Purchase order %s is not settled yet".formatted(purchaseOrderId)));
@@ -275,7 +281,6 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing, SubcontractAme
                     : "The loss was approved already, at %s per blank".formatted(settlement.deductionPerBlank()));
         }
         BigDecimal deduction = perBlank.multiply(BigDecimal.valueOf(settlement.excessLoss()));
-        String text = note == null || note.isBlank() ? null : note.strip();
         store.approveSettlement(purchaseOrderId, perBlank, deduction,
                 settlement.payableAmount().subtract(deduction).add(settlement.cancellationFee()), text, approverId,
                 clock.instant().truncatedTo(ChronoUnit.MICROS));

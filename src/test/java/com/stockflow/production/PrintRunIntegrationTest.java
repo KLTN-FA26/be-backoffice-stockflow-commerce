@@ -620,12 +620,80 @@ class PrintRunIntegrationTest {
 
         LocalDate tomorrow = after.today().plusDays(1);
         ProductionDashboard.Summary empty = dashboard.summary(manager, tomorrow, tomorrow);
-        assertThat(empty.printed()).as("nothing created tomorrow").isZero();
-        assertThat(empty.periodBasis()).as("the period selects orders by creation day")
-                .isEqualTo(ProductionDashboard.CREATED_IN_PERIOD);
+        assertThat(empty.printed()).as("nothing printed tomorrow").isZero();
+        assertThat(empty.periodBasis()).as("QA3: the period selects what was printed and scrapped in it")
+                .isEqualTo(ProductionDashboard.ACTIVITY_IN_PERIOD);
+
+        // QA3: an order created last week and printed today counts today, not in last week's cohort.
+        ProductionDashboard.Summary activityBefore = dashboard.summary(manager, after.today(), after.today());
+        ProductionDashboard.Summary cohortBefore = dashboard.summary(manager, after.today(), after.today(),
+                ProductionDashboard.Basis.CREATED);
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE production.production_order SET created_at = NOW() - INTERVAL '7 days' "
+                + "WHERE id = ?", line.productionOrderId()));
+        LocalDate today = after.today();
+        ProductionDashboard.Summary activity = dashboard.summary(manager, today, today);
+        ProductionDashboard.Summary cohort = dashboard.summary(manager, today, today, ProductionDashboard.Basis.CREATED);
+        assertThat(activity.printed()).as("printed today").isGreaterThanOrEqualTo(4);
+        assertThat(activity.scrap()).isGreaterThanOrEqualTo(1);
+        assertThat(cohort.periodBasis()).isEqualTo(ProductionDashboard.CREATED_IN_PERIOD);
+        assertThat(activity.printed()).as("the creation day does not matter").isEqualTo(activityBefore.printed());
+        assertThat(cohort.printed()).as("no longer in today's cohort").isEqualTo(cohortBefore.printed() - 4);
+        assertThat(jdbc.queryForObject("SELECT COALESCE(SUM(printed_quantity), 0) FROM production.production_print_run "
+                + "WHERE production_order_id = ?", Integer.class, line.productionOrderId())).as("one run row").isEqualTo(4);
         assertThat(empty.scrapRate()).isNull();
         assertThatThrownBy(() -> dashboard.summary(manager, tomorrow, after.today()))
                 .extracting(PrintRunIntegrationTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
+    }
+
+    @Test
+    @DisplayName("QA3 no double counting: a unit spoilt on the press, one failed in QC, one written off when its job was stopped and the stopped run itself are each counted once in the period, the same as the orders' own totals; a subcontractor's receipt counts as printed; nothing of it falls in another period")
+    void dashboardActivityCountsEachUnitOnce() throws Exception {
+        LocalDate today = dashboard.summary(manager, null, null).today();
+        ProductionDashboard.Summary before = dashboard.summary(manager, today, today);
+        ProductionDashboard.Summary yesterdayBefore = dashboard.summary(manager, today.minusDays(1), today.minusDays(1));
+
+        // Order A: printed 4 (1 spoilt on the press), QC passes 2 and fails 1.
+        Line a = released(4);
+        issueAll(a.productionOrderId());
+        runs.startPrinting(printer, a.productionOrderId());
+        runs.recordOutput(printer, a.productionOrderId(), 4,
+                List.of(new PrintRuns.ScrapLine(ProductionRecords.ScrapReason.PRINT_DEFECT, 1, null)));
+        runs.recordQc(inspector, a.productionOrderId(), 2, 1, "smudge", PACKING);
+        // Order B: a run of 3 (1 spoilt) recorded by the stop itself; its 2 good units are written off with it.
+        Line b = released(3);
+        issueAll(b.productionOrderId());
+        runs.startPrinting(printer, b.productionOrderId());
+        runs.stop(manager, b.productionOrderId(), 3,
+                List.of(new PrintRuns.ScrapLine(ProductionRecords.ScrapReason.PRINT_DEFECT, 1, null)), "customer withdrew");
+        // Order C: 2 printed by a subcontractor, received today.
+        Line c = released(4);
+        UUID childId = subcontracts.split(manager, c.productionOrderId(),
+                split(2, ProductionOrder.SubcontractMethod.FULL_SERVICE, printSubcontractor())).summary().id();
+        UUID poId = purchaseOrderOf(childId);
+        approvePurchaseOrder(poId);
+        subcontracts.sendOut(storekeeper, childId);
+        sendPurchaseOrder(poId);
+        receiveSubcontracted(poId, 2);
+
+        ProductionDashboard.Summary after = dashboard.summary(manager, today, today);
+        Map<String, Object> totals = jdbc.queryForMap("""
+                SELECT SUM(printed_quantity) AS printed, SUM(scrap_quantity) AS scrap FROM production.production_order
+                 WHERE id IN (?, ?, ?)""", a.productionOrderId(), b.productionOrderId(), childId);
+        assertThat(((Number) totals.get("printed")).longValue()).as("4 + 3 + 2 received").isEqualTo(9);
+        assertThat(((Number) totals.get("scrap")).longValue()).as("1 press + 1 QC + 1 press + 2 stopped").isEqualTo(5);
+        assertThat(after.printed() - before.printed()).as("printed in the period = the orders' own totals")
+                .isEqualTo(9);
+        assertThat(after.scrap() - before.scrap()).as("each spoilt unit once").isEqualTo(5);
+        assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM production.production_print_run WHERE production_order_id IN (?, ?)""",
+                Integer.class, a.productionOrderId(), b.productionOrderId())).as("one row per recorded run").isEqualTo(2);
+
+        ProductionDashboard.Summary yesterday = dashboard.summary(manager, today.minusDays(1), today.minusDays(1));
+        assertThat(yesterday.printed()).as("today's activity is not yesterday's").isEqualTo(yesterdayBefore.printed());
+        assertThat(yesterday.scrap()).isEqualTo(yesterdayBefore.scrap());
+        assertThat(dashboard.summary(manager, null, null).printed() - dashboard.summary(manager, today, today).printed())
+                .as("open period = before today + today").isEqualTo(
+                        dashboard.summary(manager, null, today.minusDays(1)).printed());
     }
 
     /** The demo print subcontractor (V20261010000510). */
@@ -1114,6 +1182,26 @@ class PrintRunIntegrationTest {
     }
 
     @Test
+    @DisplayName("part of a SUPPLIED_BLANKS child taken back before it goes out: only the blanks still owed are sent, the surplus is let go")
+    void partTakenBackBeforeSending() throws Exception {
+        Line line = released(8);
+        UUID childId = subcontracts.split(manager, line.productionOrderId(),
+                split(4, ProductionOrder.SubcontractMethod.SUPPLIED_BLANKS, printSubcontractor())).summary().id();
+        UUID poId = purchaseOrderOf(childId);
+        approvePurchaseOrder(poId);
+        int atp = inventory.availableToPromise(BLANK);
+        UUID inHouse = subcontracts.takeInHouse(manager, childId, 1, "print shop has a free slot", null).summary().id();
+        assertThat(detail(childId).summary().plannedQuantity()).isEqualTo(3);
+        subcontracts.sendOut(storekeeper, childId);
+        assertThat(atSubcontractor(childId)).as("3 owed, 3 sent").isEqualTo(3);
+        assertThat(inventory.productionHolds(childId).stream().mapToInt(h -> h.quantity()).sum()).isEqualTo(3);
+        assertThat(inventory.availableToPromise(BLANK)).as("1 let go by the child, 1 held by the in-house order")
+                .isEqualTo(atp);
+        assertThat(inventory.productionHolds(inHouse).stream().mapToInt(h -> h.quantity()).sum()).isEqualTo(1);
+        releaseAgain(line, 8);
+    }
+
+    @Test
     @DisplayName("03 §16 SUBCONTRACTED -> CANCELLED while the order still wants the goods: blanks recalled first, the PO cancelled, the agreed fee settled, a REPLACEMENT in-house order holds the blanks; a fee needs its reason")
     void subcontractCancelledAndReplaced() throws Exception {
         Line line = released(6);
@@ -1154,7 +1242,7 @@ class PrintRunIntegrationTest {
     }
 
     @Test
-    @DisplayName("an order cancelled under a subcontracted order: it is held for the manager (who is told), then cancelled with its PO; an order with a good unit is not cancelled while the sales order is live")
+    @DisplayName("an order cancelled under a subcontracted order: it is held for the manager (who is told), then cancelled with its PO; its good unit is written off, but the subcontractor is paid for it")
     void subcontractedOrderOfACancelledOrder() throws Exception {
         Line line = released(5);
         UUID childId = subcontracts.split(manager, line.productionOrderId(),
@@ -1165,9 +1253,6 @@ class PrintRunIntegrationTest {
         sendPurchaseOrder(poId);
         receiveSubcontracted(poId, 1);
         runs.recordQc(inspector, childId, 1, 0, null, PACKING);
-        assertThatThrownBy(() -> runs.cancel(manager, childId, "too slow", null, null))
-                .as("its good unit is the live order's").extracting(PrintRunIntegrationTest::code)
-                .isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
 
         cancelOrder(line.orderId(), "customer withdrew");
         Await.until("held", ASYNC, () -> detail(childId).summary().status() == ProductionOrder.Status.ON_HOLD);
@@ -1183,6 +1268,42 @@ class PrintRunIntegrationTest {
         });
         assertThat(jdbc.queryForObject("SELECT count(*) FROM production.production_order WHERE parent_id = ?",
                 Integer.class, childId)).as("no replacement for a cancelled order").isZero();
+    }
+
+    @Test
+    @DisplayName("QA2: the subcontractor gives up after delivering 1 good of 3 while the order is live: the good unit stays the order's (completed, packed, announced), the 2 owed go to a new in-house order, the PO is closed short, the agreed fee settled; units waiting for QC are inspected first")
+    void subcontractorAbandonsWithGoodUnits() throws Exception {
+        Line line = released(7);
+        UUID childId = subcontracts.split(manager, line.productionOrderId(),
+                split(3, ProductionOrder.SubcontractMethod.FULL_SERVICE, printSubcontractor())).summary().id();
+        UUID poId = purchaseOrderOf(childId);
+        approvePurchaseOrder(poId);
+        subcontracts.sendOut(storekeeper, childId);
+        sendPurchaseOrder(poId);
+        receiveSubcontracted(poId, 1);
+        assertThatThrownBy(() -> runs.cancel(manager, childId, "subcontractor gave up", null, null))
+                .as("its received unit is inspected first").extracting(PrintRunIntegrationTest::code)
+                .isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
+        runs.recordQc(inspector, childId, 1, 0, null, PACKING);
+
+        ProductionOrders.Detail ended = runs.cancel(manager, childId, "subcontractor gave up", new BigDecimal("20000"),
+                "setup costs agreed");
+        assertThat(ended.summary().status()).as("its good unit is the order's").isEqualTo(ProductionOrder.Status.COMPLETED);
+        assertThat(ended.summary().plannedQuantity()).isEqualTo(1);
+        assertThat(recorded.matching(ProductionCompleted.class, e -> e.productionOrderId().equals(childId)))
+                .singleElement().extracting(ProductionCompleted::goodQuantity).isEqualTo(1);
+        ProductionOrders.Detail inHouse = detail(jdbc.queryForObject("""
+                SELECT id FROM production.production_order WHERE parent_id = ? AND origin = 'SHORTFALL'""",
+                UUID.class, childId));
+        assertThat(inHouse.summary().plannedQuantity()).isEqualTo(2);
+        assertThat(inHouse.summary().mode()).isEqualTo("IN_HOUSE");
+        assertThat(purchaseOrderStatus(poId)).isEqualTo("CLOSED");
+        assertThat(subcontracts.settlement(manager, childId)).satisfies(settled -> {
+            assertThat(settled.passedQuantity()).isEqualTo(1);
+            assertThat(settled.cancellationFee()).isEqualByComparingTo("20000");
+            assertThat(settled.netPayable()).isEqualByComparingTo("21500");
+        });
+        releaseAgain(line, 7);
     }
 
     @Test

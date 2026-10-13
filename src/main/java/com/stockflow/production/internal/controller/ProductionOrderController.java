@@ -282,7 +282,7 @@ class ProductionOrderController {
                                                        @Valid @RequestBody CancelProductionRequest request,
                                                        @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(mapper.toResponse(runs.cancel(user, productionOrderId, request.reason(),
-                request.subcontractorFee(), request.subcontractorFeeReason())));
+                request.subcontractorFee(), request.subcontractorFeeReason(), request.packingLocation())));
     }
 
     @PostMapping("/{productionOrderId}/stop")

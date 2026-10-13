@@ -95,6 +95,7 @@ class PrintRunService implements PrintRuns {
         ProductionOrder order = lock(user, productionOrderId);
         Instant now = now();
         List<ProductionOrder.Transition> moved = order.recordOutput(printed, total(spoilt));
+        records.recordPrintRun(order.id(), printed, total(spoilt), now, user.userId());
         stock.writeOff(order, spoilt, user.userId(), now);
         orders.save(order);
         moved.forEach(transition -> orders.recordTransition(order.id(), transition, now, user.userId()));
@@ -163,17 +164,26 @@ class PrintRunService implements PrintRuns {
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "production-order", resourceId = "#productionOrderId")
     public ProductionOrders.Detail cancel(CurrentUser user, UUID productionOrderId, String reason) {
-        return cancel(user, productionOrderId, reason, null, null);
+        return cancel(user, productionOrderId, reason, null, null, null);
     }
 
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "production-order", resourceId = "#productionOrderId")
     public ProductionOrders.Detail cancel(CurrentUser user, UUID productionOrderId, String reason,
                                           java.math.BigDecimal subcontractorFee, String subcontractorFeeReason) {
+        return cancel(user, productionOrderId, reason, subcontractorFee, subcontractorFeeReason, null);
+    }
+
+    @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "production-order", resourceId = "#productionOrderId")
+    public ProductionOrders.Detail cancel(CurrentUser user, UUID productionOrderId, String reason,
+                                          java.math.BigDecimal subcontractorFee, String subcontractorFeeReason,
+                                          String packingLocation) {
         ProductionOrder order = lock(user, productionOrderId);
         if (order.mode() == ProductionOrder.Mode.SUBCONTRACTED) {
             // Its PO, its blanks at the subcontractor and its settlement go with it (03 §16).
-            return subcontracts.cancel(user, order.id(), reason, subcontractorFee, subcontractorFeeReason);
+            return subcontracts.cancel(user, order.id(), reason, subcontractorFee, subcontractorFeeReason,
+                    packingLocation);
         }
         if (subcontractorFee != null && subcontractorFee.signum() != 0) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
@@ -205,6 +215,9 @@ class PrintRunService implements PrintRuns {
         Instant now = now();
         ProductionOrder.Status from = order.status();
         int unsold = order.stop(printed, total(spoilt), reason, now);
+        if (printed > 0) {
+            records.recordPrintRun(order.id(), printed, total(spoilt), now, user.userId());
+        }
         List<WorkshopStock.Spoilt> writeOff = new ArrayList<>(spoilt);
         if (unsold > 0) {
             writeOff.add(new WorkshopStock.Spoilt(ProductionRecords.ScrapReason.OTHER, unsold,

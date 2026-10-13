@@ -242,18 +242,22 @@ class SubcontractPurchasingIntegrationTest {
                 po.purchaseOrderId(), child, 1, 1, 0, 0, 0, 0, 0, null, null, manager)))
                 .as("settled once").isEqualTo(settled);
 
-        assertThatThrownBy(() -> subcontracting.approveLoss(po.purchaseOrderId(), new java.math.BigDecimal("-1"), null,
+        assertThatThrownBy(() -> subcontracting.approveLoss(po.purchaseOrderId(), new java.math.BigDecimal("-1"), "x",
                 approver)).extracting(SubcontractPurchasingIntegrationTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThatThrownBy(() -> subcontracting.approveLoss(po.purchaseOrderId(), new java.math.BigDecimal("1500"), " ",
+                approver)).as("QA1: the approver says why").extracting(SubcontractPurchasingIntegrationTest::code)
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
         var approved = subcontracting.approveLoss(po.purchaseOrderId(), new java.math.BigDecimal("1500"), "agreed",
                 approver);
         assertThat(approved.status()).isEqualTo("FINAL");
         assertThat(approved.deductionAmount()).isEqualByComparingTo("4500");
         assertThat(approved.netPayable()).isEqualByComparingTo("291500");
         assertThat(approved.approvedBy()).isEqualTo(approver);
-        assertThat(subcontracting.approveLoss(po.purchaseOrderId(), new java.math.BigDecimal("1500.00"), null, approver))
-                .as("a replay").isEqualTo(approved);
+        assertThat(subcontracting.approveLoss(po.purchaseOrderId(), new java.math.BigDecimal("1500.00"), "agreed",
+                approver)).as("a replay").isEqualTo(approved);
         assertThatThrownBy(() -> subcontracting.approveLoss(po.purchaseOrderId(), new java.math.BigDecimal("2000"),
-                null, approver)).extracting(SubcontractPurchasingIntegrationTest::code).isEqualTo(ErrorCode.CONFLICT);
+                "renegotiated", approver)).extracting(SubcontractPurchasingIntegrationTest::code)
+                .isEqualTo(ErrorCode.CONFLICT);
 
         // Nothing was received on the DRAFT order: production closing it cancels it.
         assertThat(subcontracting.closeForProduction(po.purchaseOrderId(), "Production order replaced in house",

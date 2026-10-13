@@ -101,6 +101,15 @@ class ProductionRecordsAdapter implements ProductionRecords {
     }
 
     @Override
+    public void recordPrintRun(UUID productionOrderId, int printed, int scrap, java.time.Instant at, UUID by) {
+        entityManager.flush();
+        jdbc.update("""
+                        INSERT INTO production.production_print_run (id, production_order_id, printed_quantity,
+                            scrap_quantity, recorded_at, recorded_by) VALUES (?, ?, ?, ?, ?, ?)""",
+                com.stockflow.common.id.Identifiers.newId(), productionOrderId, printed, scrap, Timestamp.from(at), by);
+    }
+
+    @Override
     public boolean recordSubcontractReceipt(UUID receiptId, UUID productionOrderId, int quantity, Integer usedBlanks,
                                             java.time.Instant at) {
         entityManager.flush();

@@ -47,6 +47,12 @@ public interface ProductionRecords {
 
     List<Scrap> scrapOf(UUID productionOrderId);
 
+    /**
+     * One run's output as it was recorded (or the run a stop recorded), with when: what the dashboard counts as
+     * printed in a period (QA3). The order's own counters stay the running totals.
+     */
+    void recordPrintRun(UUID productionOrderId, int printed, int scrap, Instant at, UUID by);
+
     void recordScrap(Scrap scrap);
 
     /**

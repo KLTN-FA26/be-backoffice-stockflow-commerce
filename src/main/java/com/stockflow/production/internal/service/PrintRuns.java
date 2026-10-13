@@ -51,8 +51,18 @@ public interface PrintRuns {
      * ({@link Subcontracting#cancel}), where {@code subcontractorFee} is an amount agreed with the subcontractor for
      * work done after it was sent out (with its reason); an in-house one takes no fee.
      */
+    default ProductionOrders.Detail cancel(CurrentUser user, UUID productionOrderId, String reason,
+                                           java.math.BigDecimal subcontractorFee, String subcontractorFeeReason) {
+        return cancel(user, productionOrderId, reason, subcontractorFee, subcontractorFeeReason, null);
+    }
+
+    /**
+     * {@code packingLocation}: where a subcontracted order's good units go if the cancellation completes it with them
+     * (decision QA2); empty for the warehouse's only PACKING area.
+     */
     ProductionOrders.Detail cancel(CurrentUser user, UUID productionOrderId, String reason,
-                                   java.math.BigDecimal subcontractorFee, String subcontractorFeeReason);
+                                   java.math.BigDecimal subcontractorFee, String subcontractorFeeReason,
+                                   String packingLocation);
 
     /**
      * SCRUM-401, decision Q2. Stop once printing started (PRINTING, QC, or ON_HOLD from PRINTING): the run's

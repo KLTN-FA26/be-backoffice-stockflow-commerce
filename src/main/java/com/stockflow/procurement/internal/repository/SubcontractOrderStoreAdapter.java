@@ -301,7 +301,7 @@ class SubcontractOrderStoreAdapter implements SubcontractOrderStore {
         entityManager.createNativeQuery("INSERT INTO procurement.subcontract_settlement (" + SETTLEMENT_COLUMNS + """
                         ) VALUES (:po, :production, :status, :currency, :price, :received, :passed, :failed, :payable,
                                   :sent, :used, :returned, :lost, :tolerancePercent, :toleranceBlanks, :excess, NULL, 0,
-                                  :fee, :feeReason, :net, :at, :by, NULL, NULL, NULL)""")
+                                  :fee, CAST(:feeReason AS varchar), :net, :at, CAST(:by AS uuid), NULL, NULL, NULL)""")
                 .setParameter("po", s.purchaseOrderId())
                 .setParameter("production", s.productionOrderId())
                 .setParameter("status", s.status())
@@ -332,7 +332,8 @@ class SubcontractOrderStoreAdapter implements SubcontractOrderStore {
         entityManager.createNativeQuery("""
                         UPDATE procurement.subcontract_settlement
                            SET status = 'FINAL', deduction_per_blank = :perBlank, deduction_amount = :amount,
-                               net_payable = :net, approval_note = :note, approved_by = :approver, approved_at = :at,
+                               net_payable = :net, approval_note = CAST(:note AS varchar), approved_by = :approver,
+                               approved_at = :at,
                                version = version + 1
                          WHERE po_id = :po AND status = 'AWAITING_APPROVAL'""")
                 .setParameter("perBlank", deductionPerBlank)

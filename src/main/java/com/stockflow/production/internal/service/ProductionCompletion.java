@@ -43,6 +43,14 @@ class ProductionCompletion {
      * becomes READY. A subcontracted order's PO is closed for production and settled (BR-PRD-17).
      */
     void complete(ProductionOrder order, String packingLocation, UUID by) {
+        complete(order, packingLocation, by, null, null);
+    }
+
+    /**
+     * The same, with a fee agreed with the subcontractor for work it gave up (decision QA2), added to its settlement.
+     */
+    void complete(ProductionOrder order, String packingLocation, UUID by, java.math.BigDecimal subcontractorFee,
+                  String feeReason) {
         if (order.status() != ProductionOrder.Status.COMPLETED) {
             throw new IllegalStateException("Production order %s is %s, not COMPLETED".formatted(order.orderNumber(),
                     order.status()));
@@ -66,7 +74,8 @@ class ProductionCompletion {
         events.publishEvent(new ProductionCompleted(order.salesOrderId(), order.salesOrderLineId(), order.id(),
                 order.good()));
         if (order.mode() == ProductionOrder.Mode.SUBCONTRACTED) {
-            settling.settle(order, "Production order %s completed".formatted(order.orderNumber()), null, null, by);
+            settling.settle(order, "Production order %s completed".formatted(order.orderNumber()), subcontractorFee,
+                    feeReason, by);
         }
         log.info("Production order {} completed: {} good unit(s) to packing", order.orderNumber(), order.good());
     }

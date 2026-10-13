@@ -195,29 +195,44 @@ Production staff; QC holds exactly its own resource. Queue order (Jira 398): lis
 `sort=dueDate,asc;createdAt,asc` (no new endpoint). BR-PRD-07 (no design change once printing): no endpoint
 changes an LSX's design snapshot/checksum (columns are not updatable) — nothing to block.
 
-## Subcontracting (BE 441, built)
+## Subcontracting (BE 441; finishing pass 2026-10-13, branch `SPRINT2-finish-lane-a`)
+
+User decision 2026-10-13 (supersedes the 3-step question below it in older versions of this file): a
+subcontractor's goods get **one** inspection, the production QC against the approved sample. The warehouse counts
+and reconciles them; receiving runs no QC on them and puts none away; they are held for their production order,
+outside ATP, IN_PRODUCTION in the warehouse's QUALITY_CONTROL area (not the print shop) until QC; good units go to
+PACKING, failed ones are scrapped as cups. Ordinary (STANDARD) receipts are unchanged.
 
 | Step | Endpoint | Permission | Effect |
 |---|---|---|---|
-| split (G1–G3) | `POST …/{id}/subcontract-split {quantity, subcontractorId, method, unitPrice, currency?, dueDate?}` | production-orders:APPROVE (manager) | BR-PRD-11/12: ORDER, in house, PENDING_PREPRESS/READY/ON_HOLD, 0 < quantity < unissued. Parent keeps its status, planned −quantity. Child SUBCONTRACTED-mode, READY or PENDING_PREPRESS; SUBCONTRACT PO DRAFT via `procurement :: api`. Holds: FULL_SERVICE — the order's unissued holds give up the quantity (ATP +q); SUPPLIED_BLANKS — q held for the child instead (ATP unchanged) |
-| send out (G5–G6) | `POST …/{id}/subcontract-dispatch` | production-material-issues:CREATE (warehouse) | BR-PRD-13: PO approved; READY → SUBCONTRACTED (a second dispatch is refused: not READY). SUPPLIED_BLANKS: the child's unsent holds go to `<prefix>-SUB-<supplier>` (Q7), one `production_material_issue` per hold; after a shortfall the missing blanks are held first (G9 "gửi bù") |
-| receive back (G7/G9) | goods receipt confirm (`GoodsReceiptConfirmed`, before commit) | goods-receipts (existing) | once per receipt (`production_subcontract_receipt`); each line held for the child and handed to PRODUCTION for QC (Q8); SUPPLIED_BLANKS: as many blanks consumed at the subcontractor (Q9); SUBCONTRACTED/QC → QC, or READY → QC for the rest after a short QC round |
-| reconcile (G8, Q9) | `POST …/{id}/subcontract-receipts/{receiptId}/reconciliation {spoilt, returned, returnLocation?}` | production-material-issues:CREATE | once per receipt (same answer = replay, different = 409); spoilt → `SUBCONTRACT_LOSS` adjustment (approval); returned → free; more than is there → 400; the rest stays |
-| receipts | `GET …/{id}/subcontract-receipts` | production-material-issues:READ | received, used, spoilt, returned, reconciled by/at |
-| QC / complete | `POST …/{id}/qc-results` | production-qc-results:CREATE | as in house; SUPPLIED_BLANKS refused until every receipt is reconciled (BR-PRD-16); COMPLETED → PACKING, held for the order, on its line, `ProductionCompleted` |
+| split (G1–G3) | `POST …/{id}/subcontract-split {quantity, subcontractorId, method, unitPrice, currency?, dueDate?}` | production-orders:APPROVE (manager) | BR-PRD-11/12: ORDER, in house, PENDING_PREPRESS/READY/ON_HOLD, 0 < quantity < unissued. Parent keeps its status, planned −quantity. Child SUBCONTRACTED-mode (origin SPLIT), READY or PENDING_PREPRESS; SUBCONTRACT PO DRAFT. Holds: FULL_SERVICE — given up (ATP +q); SUPPLIED_BLANKS — held for the child instead |
+| convert (BR-PRD-12) | same endpoint, `quantity` = the whole plan of an order with nothing issued/printed | production-orders:APPROVE | the order itself becomes SUBCONTRACTED (same row and number, no parent), own PO, blanks as for a split |
+| send out (G5–G6) | `POST …/{id}/subcontract-dispatch` | production-material-issues:CREATE | BR-PRD-13: PO approved, no amendment waiting, PO open quantity ≥ still owed; READY → SUBCONTRACTED; SUPPLIED_BLANKS: blanks to `<prefix>-SUB-<supplier>` (Q7), missing ones held first |
+| dispatch note (BR-PRD-14/15) | `GET …/{id}/subcontract-dispatch-note` | production-material-issues:READ | PO, subcontractor, plan, due/expected dates, prepress-checked PRINT_READY file (fresh link), approved sample id, blanks sent per lot |
+| receive back (G7/G9) | goods receipt confirm of the SUBCONTRACT PO | goods-receipts (existing) | receipt line `qc_required = false`, `qcProgress = PRODUCTION_QC`, nothing for putaway, receipt CLOSED; confirmation refused without a QUALITY_CONTROL area (`QC_AREA_MISSING`). Once per receipt: lines held for the child and moved to the QC area (IN_PRODUCTION); SUPPLIED_BLANKS: as many blanks consumed at the subcontractor (Q9). SUBCONTRACTED/QC → QC; a SUBCONTRACTOR_LATE hold ends; another hold stays, QC after the resume |
+| reconcile (G8, Q9) | `POST …/{id}/subcontract-receipts/{receiptId}/reconciliation {spoilt, returned, returnLocation?}` | production-material-issues:CREATE | once per receipt; spoilt → `SUBCONTRACT_LOSS` adjustment (approval); returned → free; the rest stays |
+| recall (BR-PRD-15) | `POST …/{id}/subcontract-recall {requestId, returned, spoilt, returnLocation?, note?}`, `GET …/subcontract-recalls` | production-material-issues:CREATE / READ | blanks back without a receipt (subcontractor gives the work back, cancellation): returned → free, spoilt → `SUBCONTRACT_LOSS`; idempotent on requestId (other numbers → 409) |
+| QC / complete | `POST …/{id}/qc-results` | production-qc-results:CREATE | the one QC against the approved sample; failed → SCRAP write-off; COMPLETED only with every receipt reconciled and no blank left at the subcontractor (BR-PRD-16) → PACKING, held for the order, `ProductionCompleted`, PO closed for production and settled |
+| shortfall: resend (G9 "gửi bù") | `POST …/{id}/subcontract-supplement {quantity, reason}` then `POST /api/v1/purchase-orders/{po}/amendment/approval` (or `/rejection {reason}`) | production-orders:APPROVE; purchase-orders:APPROVE, four eyes | DRAFT PO resized; approved PO gets an AMENDMENT revision (line revision, approval row) approved again by someone else; a fully received PO becomes PARTIALLY_RECEIVED so the resend can be received |
+| shortfall: in house (G9 "in bù nội bộ") | `POST …/{id}/subcontract-in-house {quantity, reason, packingLocation?}` | production-orders:APPROVE | `quantity` ≤ still owed goes to a new IN_HOUSE ORDER (origin SHORTFALL, parent = the subcontracted one, inherited prepress, blanks held now or ON_HOLD BLANKS_SHORT + `ProductionOrderHeld`); the subcontracted one completes if nothing more is owed (blanks accounted for first) |
+| cancel (03 §16, QA2) | `POST …/{id}/cancellation {reason, subcontractorFee?, subcontractorFeeReason?, packingLocation?}` | production-orders:APPROVE | blanks must be recalled first; sales order live: QC first if units wait for it, then what is still owed → new in-house order; with good units it COMPLETES with them (packed for the order), without any it is CANCELLED + in-house REPLACEMENT; sales order cancelled: good units written off; PO cancelled (nothing received) or closed short; settlement with the fee. When the sales order is cancelled the subcontracted LSX is put ON_HOLD (OTHER) for the manager |
+| settlement (BR-PRD-17, G10) | `GET …/{id}/subcontract-settlement`, `POST …/{id}/subcontract-settlement/loss-approval {deductionPerBlank, note}` (note required, QA1); `GET /api/v1/purchase-orders/{po}/subcontract-settlement` | production-orders:READ / APPROVE; purchase-orders:READ | one per SUBCONTRACT PO when its LSX ends: QC-passed units × unit price paid, failed not; blanks lost above the subcontractor's tolerance (% of blanks sent) → AWAITING_APPROVAL until the manager enters the agreed deduction per blank → FINAL; agreed cancellation fee added |
+| hold from QC | `POST …/{id}/hold` | production-orders:UPDATE | QC → ON_HOLD (V20261014000700); resume returns to QC |
 
-Remaining gaps (not built, need a decision or another lane):
-- A receipt line whose SKU requires receiving QC (3-step flow, `qc_required`): the goods are held and handed
-  to the print shop at confirmation, so the receiving `move-to-qc` step finds nothing free to move. The demo
-  blank SKU is 2-step. Should a SUBCONTRACT PO skip receiving QC (production QC replaces it, as Q9 says), or
-  go through both? — business question.
-- A receipt counting more SUPPLIED_BLANKS goods than blanks at the subcontractor is refused (the
-  confirmation fails with a clear message): goods printed on our blanks cannot exceed the blanks sent.
-- BR-PRD-17 tolerance (loss above the subcontractor's tolerance → invoice deduction) is not computed: every
-  SUBCONTRACT_LOSS goes through the adjustment approval (stricter), nothing is deducted from the invoice.
-- A shortfall beyond the PO quantity (QC failures) needs a PO supplement (procurement); the child then stays
-  READY. Cancelling a SUBCONTRACTED child (recall), converting a whole LSX, SUBCONTRACTOR_LATE warnings: not
-  built. Blanks still at the subcontractor when the child completes stay held for it there until reconciled.
+Decided by the user 2026-10-13 (coordinator file `SPRINT2-FINISH-DECISIONS.md`), implemented:
+- QA1: a blank lost above tolerance is deducted at the per-blank amount the warehouse manager enters, agreed with
+  the subcontractor, with a **required reason** (audited); never the supplier's current price or the purchase price;
+  recorded, not paid.
+- QA2: the subcontractor gives up while the order is live → blanks recalled/reconciled, what is still owed becomes a
+  new in-house order; QC-passed goods stay the order's (the subcontracted order completes with them); units waiting
+  for QC are inspected first; an agreed fee (with reason) is settled, nothing is paid automatically.
+- QA3: the dashboard period counts **activity** by default — units printed (`production_print_run`, a
+  subcontractor's goods received) and scrapped (`production_scrap`, each unit once) in the period, whenever the
+  order was created; `basis=CREATED` keeps the creation cohort. V20261014000720 backfills runs from history.
+- A receipt counting more SUPPLIED_BLANKS goods than blanks at the subcontractor is refused (goods printed on our
+  blanks cannot exceed the blanks sent) — unchanged.
+- Supplier invoices and the 3-way match itself are not implemented in this codebase (Jira 3.4.2, not Sprint 2):
+  `procurement.subcontract_settlement` is the basis it will match against.
 
 ## Lane C (441/415) collaboration plan
 
@@ -231,15 +246,15 @@ tables, can start in parallel on read models only). If the coordinator prefers, 
 
 | BE | State | Commit | Tests |
 |---|---|---|---|
-| 407 | **done (BE)**: `GET …/{id}/print-file` (READ), `POST …/{id}/prepress {decision PASS\|FAIL, note}` (UPDATE; PASS re-hashes the stored file, 409 `PRINT_FILE_MISMATCH`; FAIL → ON_HOLD `FILE_REJECTED` + `ProductionOrderHeld`), `POST …/{id}/hold {reason, note}` (UPDATE), `POST …/{id}/resume` (APPROVE, Warehouse Manager). Lock-before-load on the order row. Not yet: notification delivery to Sales (event published; listener not written) | see git log | `ProductionOrderTest` 8, `ProductionWorkflowIntegrationTest` 3 (real file re-hash, tampered file, concurrent holds) |
+| 407 | code complete: `GET …/{id}/print-file` (READ), `POST …/{id}/prepress {decision PASS\|FAIL, note}` (UPDATE; PASS re-hashes the stored file, 409 `PRINT_FILE_MISMATCH`; FAIL → ON_HOLD `FILE_REJECTED` + `ProductionOrderHeld`), `POST …/{id}/hold {reason, note}` (UPDATE) from every state before COMPLETED **including QC** (V20261014000700), `POST …/{id}/resume` (APPROVE). Sales/purchasing e-mail on a hold: lane B (`ProductionNotificationListener`, SMTP after commit) | `afb3a58` (QC hold) | `ProductionOrderTest` (QC hold/resume/stop), `PrintRunIntegrationTest.holdFromQc`*, `ProductionWorkflowIntegrationTest` 3 |
 | 409 | **done (BE)**: `POST /api/v1/production/orders/{id}/material-issues {requestId, toLocation, reservationId?}` (production-material-issues:CREATE), `GET` same (READ). One scan = one whole hold to a PRODUCTION area of the LSX's warehouse; ORDER holds = the order line's, SAMPLE/reprint holds = the LSX's; reprint/resumed round holds the shortfall at scan time (too few → 409 `INSUFFICIENT_STOCK`, nothing held). BR-PRD-03 cap (`ISSUE_EXCEEDS_REQUIREMENT`), READY → MATERIAL_ISSUED when nothing more is needed. Sample blanks held at submit (Q1) | see git log | `MaterialIssueIntegrationTest` 6 (ORDER multi-hold, same ids still HELD, ATP unchanged, ledger; Q3 release-after-issue stays unsellable; replay; refusals: other order's hold, unpinned, non-PRODUCTION area, before prepress; SAMPLE hold at submit + rollback when short; concurrent scans and twin replays), `ProductionSecurityIntegrationTest.materialIssueOverHttp` |
 | 411 | **done (BE)**: start, output with scrap reasons, write-off without waiting (Q4), reprint hold / BLANKS_SHORT | see git log | `PrintRunIntegrationTest` (orderFromPressToPacking, rejectedWriteOffNeverSells, blanksShort), `ProductionOrderTest` +4 |
 | 418 | **done (BE)**: QC rounds, single exit owner, QC resource | see git log | `PrintRunIntegrationTest` (QC fail → reprint, concurrentQc), HTTP `printShopStepsOverHttp` |
 | 420 | **done (BE)**: ORDER → PACKING held + `ProductionCompleted` once; SAMPLE → SAMPLE write-off + round READY | see git log | `orderFromPressToPacking`, `sampleCompletes`, `concurrentQc` |
 | 413 | **done (BE)** (Q2 money: agreed fee on the order cancellation): cancel before printing, stop on the press (Q2 quantities), `OrderCancelled` listener | see git log | `cancelBeforePrinting`, `orderCancelledUnderTheJob`, `stopOnThePress` |
-| 415 | **done (BE)**: `GET /api/v1/production/dashboard?from&to` (open by status, overdue, printed/scrap/scrap rate of LSX created in the period, samples awaiting the customer), `GET …/dashboard/overdue`, `GET …/dashboard/samples-awaiting-approval` (paginated, through the existing lists, same warehouse scope); production-orders:READ. Permission resources of 415 already existed (V20261010000500 + this lane's two) | see git log | `PrintRunIntegrationTest.dashboard`, HTTP `dashboardOverHttp` |
-| 441 | **done (BE)**: split + PO + holds, dispatch with blanks to the subcontractor location (Q7), receipt held for the child (Q8), consumption + reconciliation (Q9), QC, completion to the order; gaps above | see git log | `ProductionOrderTest`, `PrintRunIntegrationTest.subcontractFullService`, `subcontractSuppliedBlanks`, `subcontractReconciliationExample` |
-| notification | **done (BE, log transport like every non-PO template)**: `ProductionOrderHeld` → Sales (FILE_REJECTED, WAITING_CUSTOMER), purchasing (BLANKS_SHORT), workshop (others) | see git log | `ProductionNotificationListenerTest` 3 |
+| 415 | code complete: `GET /api/v1/production/dashboard?from&to&basis` (open by status, overdue, printed/scrap/scrap rate of the units printed and scrapped **in** the period — QA3, `basis=ACTIVITY` default; `basis=CREATED` for the creation cohort; the answer carries `periodBasis`, `periodFrom`, `periodTo`), V20261014000720, `GET …/dashboard/overdue`, `GET …/dashboard/samples-awaiting-approval` (paginated); production-orders:READ | `60ad09b` | `PrintRunIntegrationTest.dashboard`*, HTTP `dashboardOverHttp`* |
+| 441 | code complete (see Subcontracting above; QA1/QA2 defaults pending confirmation) | `afb3a58`, `60ad09b` | `ProductionOrderTest` (+5), `PrintRunIntegrationTest.subcontractFullService`*, `subcontractSuppliedBlanks`*, `subcontractReconciliationExample`*, `subcontractReceiptGetsOneQc`*, `wholeOrderConversion`*, `shortfallTakenInHouse`*, `subcontractCancelledAndReplaced`*, `subcontractedOrderOfACancelledOrder`*, `SubcontractPurchasingIntegrationTest`*, `SubcontractMigrationUpgradeTest`*, HTTP `subcontractEndpointsOverHttp`* |
+| notification | lane B (`56832ca`): `ProductionOrderHeld` → e-mail to active Sales (FILE_REJECTED, WAITING_CUSTOMER), procurement (BLANKS_SHORT), warehouse managers (others), SMTP after commit. Lane A publishes the event, contract unchanged | lane B | lane B `ProductionNotificationListenerTest` 7 |
 
 ## Acceptance → code → test (decisions of 2026-10-12)
 
@@ -252,5 +267,31 @@ tables, can start in parallel on read models only). If the coordinator prefers, 
 | Q6a fee > paid → receivable for the difference, once | `Order.cancel`, `ReceivableService.cancellationOwed`, V20261014000460 | `PrintRunIntegrationTest.agreedFeeAboveWhatWasPaid` |
 | Q6b paid > fee → refund request for the excess; equal → nothing | `Order.cancel` (refundable = paid − retained), payment refund flow | `agreedFeeAboveWhatWasPaid`, cancellation tests |
 | Q7 per subcontractor + warehouse, not ATP, traceable, no duplicate send | `SubcontractorSiteRepository`, `SubcontractService.sendBlanks`, `WorkshopStock.sendToSubcontractor` | `subcontractSuppliedBlanks` |
-| Q8 finished goods stay the child's/order's through receiving and QC | `SubcontractReceiptListener` (BEFORE_COMMIT), `holdReceived`, `handReceivedToPrintShop` | `subcontractFullService` (free at receiving = 0, counted once) |
+| Q8 finished goods stay the child's/order's through receiving and QC | `SubcontractReceiptListener` (BEFORE_COMMIT), `holdReceived`, `WorkshopStock.holdForProductionQc` (QC area) | `subcontractFullService`*, `subcontractReceiptGetsOneQc`* |
 | Q9 consumption, spoilt, returned, partial receipts, QC fail ≠ blank | `WorkshopStock.consumeAtSubcontractor/reconcile`, `SubcontractService.reconcile`, V20261014000470 | `subcontractSuppliedBlanks`, `subcontractReconciliationExample` |
+
+## Acceptance → code → test (SCRUM-433/441 finishing pass, 2026-10-13)
+
+`*` = Testcontainers test written; **not run yet** (Docker unavailable on this machine at the time of writing).
+Domain, architecture and modularity tests ran green on `60ad09b` (offline Maven on D:).
+
+| Jira 433 / 441 acceptance | Code | Test |
+|---|---|---|
+| ORDER only (BR-PRD-11) | `ProductionOrder.splitOff/convertToSubcontract` | `ProductionOrderTest.aSplitTakes…`, `theWholeOrderConverts…` |
+| partial split; whole LSX converts (BR-PRD-12) | `SubcontractService.split/convert`, `ProductionOrder.wholeOrder` | `wholeOrderConversion`*, `ProductionOrderTest.theWholeOrderConverts…` |
+| two modes, blanks moved/released | `SubcontractService.moveHolds` | `subcontractFullService`*, `subcontractSuppliedBlanks`*, `wholeOrderConversion`* |
+| SUBCONTRACT PO DRAFT, send only once approved (BR-PRD-13) | `SubcontractPurchasingImpl.create`, `SubcontractService.sendOut` | `subcontractFullService`* |
+| dispatch with PRINT_READY file + approved sample (BR-PRD-14/15), blanks to the subcontractor location outside ATP | `SubcontractService.sendBlanks/dispatchNote` | `shortfallTakenInHouse`*, `subcontractSuppliedBlanks`* |
+| back in → QC against the approved sample, one QC, no receiving QC (user decision) | `GoodsReceiptServiceImpl.replaceLines/confirm`, `GoodsReceipt.confirm(…, handedToProduction)`, `SubcontractService.onReceipt`, `WorkshopStock.holdForProductionQc` | `subcontractReceiptGetsOneQc`* (SKU with `qc_required`), `subcontractFullService`* |
+| partial receipts | `ProductionOrder.receivedFromSubcontractor` | `subcontractFullService`*, `subcontractSuppliedBlanks`* |
+| shortfall → resend with PO supplement (approved amendment) | `SubcontractPurchasingImpl.supplement/approveAmendment`, `SubcontractService.sendOut` (open quantity) | `subcontractSuppliedBlanks`*, `SubcontractPurchasingIntegrationTest.lifecycle`* |
+| shortfall → in-house child | `ProductionOrder.giveBackToPrintShop/inHouseFor`, `SubcontractService.takeInHouse` | `shortfallTakenInHouse`*, `ProductionOrderTest.aShortfallGoesInHouse…` |
+| QA2: subcontractor abandons, order live — good units kept, rest in house, fee | `SubcontractService.cancel/takeInHouseLocked`, `ProductionCompletion.complete(…, fee)` | `subcontractorAbandonsWithGoodUnits`*, `subcontractCancelledAndReplaced`* |
+| QA3: dashboard activity basis | `ProductionDashboardQueries.printedAndScrapInPeriod`, `production_print_run`, V20261014000720 | `PrintRunIntegrationTest.dashboard`*, `dashboardOverHttp`*, `SubcontractMigrationUpgradeTest`* |
+| ProductionCompleted per LSX; order waits for all (BR-PRD-06) | `ProductionCompletion.complete` | `subcontractFullService`*, `shortfallTakenInHouse`* |
+| SUBCONTRACTED → ON_HOLD (late) | `ProductionOrder.hold` | `subcontractReceiptGetsOneQc`*, `ProductionOrderTest.goodsReachingAHeldOrder…` |
+| SUBCONTRACTED → CANCELLED: recall blanks, PO cancelled, or fee | `SubcontractService.recall/cancel`, `SubcontractPurchasingImpl.closeForProduction` | `subcontractCancelledAndReplaced`*, `subcontractedOrderOfACancelledOrder`* |
+| reconciliation sent / good / scrap / unused / loss (422 comment) | `SubcontractService.reconcile/recall`, `SubcontractSettling.settle` | `subcontractReconciliationExample`*, `shortfallTakenInHouse`* |
+| loss > tolerance needs manager approval → deduction; QC-failed not paid (BR-PRD-17) | `SubcontractPurchasingImpl.settle/approveLoss`, `procurement.subcontract_settlement` | `SubcontractPurchasingIntegrationTest.settlement`*, `shortfallTakenInHouse`* |
+| permissions of the new steps | `ProductionOrderController`, `PurchaseOrderController` | `subcontractEndpointsOverHttp`* |
+| upgrade of existing rows | V20261014000700, V20261014000710 | `SubcontractMigrationUpgradeTest`* |

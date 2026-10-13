@@ -243,6 +243,24 @@ class SubcontractService implements Subcontracting {
         int missing = child.work().plannedQuantity() - child.good() - stock.blanksAtSubcontractor(child)
                 - unsent.stream().mapToInt(StockReservation::quantity).sum();
         List<UUID> holds = new ArrayList<>(unsent.stream().map(StockReservation::reservationId).toList());
+        if (missing < 0) {
+            // Part of the plan went back to the print shop before the blanks left: the surplus is let go, latest
+            // hold first, so only what the subcontractor still owes goes out.
+            int surplus = -missing;
+            List<StockReservation> latestFirst = new ArrayList<>(unsent);
+            Collections.reverse(latestFirst);
+            for (StockReservation hold : latestFirst) {
+                if (surplus == 0) {
+                    break;
+                }
+                int take = Math.min(hold.quantity(), surplus);
+                inventory.reduceHold(hold.reservationId(), null, child.id(), take);
+                if (take == hold.quantity()) {
+                    holds.remove(hold.reservationId());
+                }
+                surplus -= take;
+            }
+        }
         if (missing > 0) {
             String warehouse = warehouses.findWarehouse(child.work().warehouseId()).orElseThrow().prefix();
             int round = records.issuesOf(child.id()).size();
@@ -414,6 +432,9 @@ class SubcontractService implements Subcontracting {
         boolean ending = replaced || quantity == child.stillOwed() && child.awaitingQc() == 0;
         if (ending) {
             settling.requireBlanksAccountedFor(child);
+        } else if (fee != null && fee.signum() > 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "A subcontractor fee is settled when the subcontract ends, not on part of it");
         }
         Instant now = now();
         String number = orders.nextNumber(LocalDate.ofInstant(now, BUSINESS_ZONE));
@@ -428,7 +449,7 @@ class SubcontractService implements Subcontracting {
             stock.releaseUnissued(child);
             settling.settle(child, "%s: %s".formatted(given.reason(), reason), fee, feeReason, by);
         } else if (child.status() == ProductionOrder.Status.COMPLETED) {
-            completion.complete(child, packingLocation, by);
+            completion.complete(child, packingLocation, by, fee, feeReason);
         }
         if (!stock.holdForReprint(inHouse, quantity)) {
             ProductionOrder.Transition held = inHouse.hold(ProductionOrder.HoldReason.BLANKS_SHORT,
@@ -447,7 +468,7 @@ class SubcontractService implements Subcontracting {
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "production-order", resourceId = "#productionOrderId")
     public ProductionOrders.Detail cancel(CurrentUser user, UUID productionOrderId, String reason, BigDecimal fee,
-                                          String feeReason) {
+                                          String feeReason, String packingLocation) {
         ProductionOrder order = lock(user, productionOrderId);
         requireSubcontracted(order);
         String text = requireReason(reason);
@@ -458,12 +479,15 @@ class SubcontractService implements Subcontracting {
                     "A subcontractor fee is an amount of at most 2 decimals, not negative, and says why");
         }
         if (!salesOrderCancelled(order)) {
-            if (order.good() > 0) {
+            // Decision QA2: the subcontractor gave up and the customer still wants the goods. What still is owed goes
+            // to a new in-house order; good units it already delivered stay the order's — with none, this order is
+            // CANCELLED and replaced; with some, it completes with them. The fee, if any, is settled with it.
+            if (order.awaitingQc() > 0) {
                 throw new BusinessException(ErrorCode.INVALID_PRODUCTION_TRANSITION,
-                        ("Production order %s has %d good unit(s) for its order: take the %d the subcontractor still "
-                                + "owes in house instead").formatted(order.orderNumber(), order.good(), order.stillOwed()));
+                        "Production order %s has %d received unit(s) waiting for QC: record QC first"
+                                .formatted(order.orderNumber(), order.awaitingQc()));
             }
-            takeInHouseLocked(order, order.work().plannedQuantity(), text, null, agreed, agreedWhy, user.userId());
+            takeInHouseLocked(order, order.stillOwed(), text, packingLocation, agreed, agreedWhy, user.userId());
             return reads.get(user, order.id());
         }
         settling.requireBlanksAccountedFor(order);
