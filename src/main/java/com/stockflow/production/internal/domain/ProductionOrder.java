@@ -259,11 +259,12 @@ public final class ProductionOrder {
 
     /**
      * The subcontractor's goods were received (G9): SUBCONTRACTED → QC with {@code quantity} more to inspect. A
-     * further part of the same PO received while QC has not finished adds to what waits for it.
+     * further part of the same PO received while QC has not finished adds to what waits for it; one received after
+     * a QC round left the child short (READY, something received before) is the rest of the work arriving.
      */
     public Transition receivedFromSubcontractor(int quantity) {
         requireSubcontracted();
-        if (status != Status.SUBCONTRACTED && status != Status.QC) {
+        if (status != Status.SUBCONTRACTED && status != Status.QC && !(status == Status.READY && printed > 0)) {
             throw transition("receive the subcontracted goods of", Status.QC);
         }
         if (quantity < 1) {

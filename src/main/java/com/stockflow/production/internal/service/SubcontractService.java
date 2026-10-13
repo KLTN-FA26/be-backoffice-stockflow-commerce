@@ -10,6 +10,7 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.ScopeGuards;
 import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.contracts.GoodsReceiptConfirmed;
+import com.stockflow.inventory.api.HoldReceivedStockCommand;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.ReserveProductionStockCommand;
 import com.stockflow.inventory.api.StockReservation;
@@ -59,11 +60,13 @@ class SubcontractService implements Subcontracting {
     private final InventoryService inventory;
     private final OrderService salesOrders;
     private final WarehouseService warehouses;
+    private final WorkshopStock stock;
     private final Clock clock;
 
     SubcontractService(ProductionOrderRepository orders, ProductionRecords records, ProductionOrders reads,
                        SubcontractPurchasing purchasing, InventoryService inventory, OrderService salesOrders,
-                       WarehouseService warehouses, Clock clock) {
+                       WarehouseService warehouses, WorkshopStock stock, Clock clock) {
+        this.stock = stock;
         this.orders = orders;
         this.records = records;
         this.reads = reads;
@@ -157,14 +160,12 @@ class SubcontractService implements Subcontracting {
                     "Subcontract PO %s is %s; the work goes out once it is approved (BR-PRD-13)"
                             .formatted(po.poNumber(), po.status()));
         }
-        if (child.subcontract().method() == ProductionOrder.SubcontractMethod.SUPPLIED_BLANKS) {
-            // BR-PRD-15 wants the blanks at a virtual location of the subcontractor, outside ATP. No such location
-            // exists yet (open question Q7); the blanks stay held for the child in storage until it does.
-            throw new BusinessException(ErrorCode.INVALID_PRODUCTION_TRANSITION,
-                    "Sending blanks to a subcontractor needs its stock location, which is not set up yet");
-        }
         Instant now = now();
+        // The transition first: it refuses a child that is not READY, so a second dispatch sends nothing.
         ProductionOrder.Transition sent = child.sendToSubcontractor();
+        if (child.subcontract().method() == ProductionOrder.SubcontractMethod.SUPPLIED_BLANKS) {
+            sendBlanks(child, user.userId(), now);
+        }
         orders.save(child);
         orders.recordTransition(child.id(), sent, now, user.userId());
         log.info("Production order {} sent to subcontractor {} (PO {})", child.orderNumber(),
@@ -173,8 +174,43 @@ class SubcontractService implements Subcontracting {
     }
 
     /**
+     * G5, decision Q7: the blanks still missing at the subcontractor ({@code planned − good − already there}) are
+     * held for the child if its holds do not cover them, and every hold not sent yet goes to the subcontractor's
+     * location for the child's warehouse, created on first use.
+     */
+    private void sendBlanks(ProductionOrder child, UUID by, Instant now) {
+        Set<UUID> notFree = records.issuesOf(child.id()).stream().map(ProductionRecords.MaterialIssue::reservationId)
+                .collect(Collectors.toCollection(java.util.HashSet::new));
+        notFree.addAll(records.subcontractHoldsOf(child.id()));
+        List<StockReservation> unsent = inventory.productionHolds(child.id()).stream()
+                .filter(hold -> !notFree.contains(hold.reservationId())).toList();
+        int missing = child.work().plannedQuantity() - child.good() - stock.blanksAtSubcontractor(child)
+                - unsent.stream().mapToInt(StockReservation::quantity).sum();
+        List<UUID> holds = new ArrayList<>(unsent.stream().map(StockReservation::reservationId).toList());
+        if (missing > 0) {
+            String warehouse = warehouses.findWarehouse(child.work().warehouseId()).orElseThrow().prefix();
+            int round = records.issuesOf(child.id()).size();
+            inventory.reserveForProduction(new ReserveProductionStockCommand(
+                    UUID.nameUUIDFromBytes(("subcontract-blanks:" + child.id() + ":" + round)
+                            .getBytes(StandardCharsets.UTF_8)),
+                    child.work().blankSku(), missing, child.id(), warehouse)).reservations()
+                    .forEach(hold -> holds.add(hold.reservationId()));
+        }
+        var terms = purchasing.subcontractorTerms(child.subcontract().subcontractorId()).orElseThrow();
+        String location = warehouses.subcontractorLocation(child.work().warehouseId(), terms.supplierId(),
+                terms.code()).locationCode();
+        int sent = stock.sendToSubcontractor(child, location, holds, by, now);
+        log.info("Production order {}: {} blank(s) sent to {}", child.orderNumber(), sent, location);
+    }
+
+    /**
      * G9: a goods receipt of a child's SUBCONTRACT PO puts what it counted in front of QC, once per receipt (a
      * redelivered event, a second part of the same PO). Receipts of other purchase orders are not this module's.
+     *
+     * <p>In the receipt's own transaction (decision Q8): each line's goods are held for the child the moment they
+     * are counted and handed to the print shop for QC, so they are never free stock a putaway could sell; for
+     * SUPPLIED_BLANKS the blanks they were printed on leave the subcontractor's location (decision Q9). A failure
+     * here fails the confirmation.</p>
      */
     public void onReceipt(GoodsReceiptConfirmed receipt) {
         if (receipt.purchaseOrderId() == null) {
@@ -183,12 +219,27 @@ class SubcontractService implements Subcontracting {
         Objects.requireNonNull(receipt.receiptId(), "receiptId");
         orders.idOfPurchaseOrder(receipt.purchaseOrderId()).ifPresent(childId -> {
             ProductionOrder child = orders.findByIdForUpdate(childId).orElseThrow();
-            int quantity = receipt.lines().stream()
-                    .filter(line -> line.sku().equals(child.work().blankSku().code()))
-                    .mapToInt(GoodsReceiptConfirmed.Line::quantity).sum();
+            List<GoodsReceiptConfirmed.Line> lines = receipt.lines().stream()
+                    .filter(line -> line.sku().equals(child.work().blankSku().code())).toList();
+            int quantity = lines.stream().mapToInt(GoodsReceiptConfirmed.Line::quantity).sum();
+            boolean suppliedBlanks = child.subcontract().method() == ProductionOrder.SubcontractMethod.SUPPLIED_BLANKS;
             Instant now = now();
-            if (quantity < 1 || !records.recordSubcontractReceipt(receipt.receiptId(), child.id(), quantity, now)) {
+            if (quantity < 1 || !records.recordSubcontractReceipt(receipt.receiptId(), child.id(), quantity,
+                    suppliedBlanks ? quantity : null, now)) {
                 return;
+            }
+            Objects.requireNonNull(receipt.confirmedAt(), "confirmedAt");
+            if (suppliedBlanks) {
+                stock.consumeAtSubcontractor(child, quantity, receipt.receiptNumber(), null);
+            }
+            for (GoodsReceiptConfirmed.Line line : lines) {
+                StockReservation hold = inventory.holdReceived(new HoldReceivedStockCommand(
+                        UUID.nameUUIDFromBytes(("subcontract-receipt-line:" + line.receiptLineId())
+                                .getBytes(StandardCharsets.UTF_8)),
+                        child.id(), child.work().blankSku(), line.lotNumber(), line.locationCode(),
+                        receipt.confirmedAt(), line.quantity()));
+                records.recordSubcontractHold(hold.reservationId(), receipt.receiptId(), line.receiptLineId(), child.id());
+                stock.handReceivedToPrintShop(child, hold.reservationId(), null);
             }
             ProductionOrder.Transition received = child.receivedFromSubcontractor(quantity);
             orders.save(child);
@@ -196,6 +247,54 @@ class SubcontractService implements Subcontracting {
             log.info("Production order {}: {} received from the subcontractor on {}", child.orderNumber(), quantity,
                     receipt.receiptNumber());
         });
+    }
+
+    @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "production-subcontract-receipt", resourceId = "#receiptId")
+    public ProductionOrders.Detail reconcile(CurrentUser user, UUID childId, UUID receiptId, int spoilt, int returned,
+                                             String returnLocation) {
+        if (receiptId == null || spoilt < 0 || returned < 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "A reconciliation names its receipt; spoilt and returned cannot be negative");
+        }
+        ProductionOrder child = lock(user, childId);
+        if (child.mode() != ProductionOrder.Mode.SUBCONTRACTED
+                || child.subcontract().method() != ProductionOrder.SubcontractMethod.SUPPLIED_BLANKS) {
+            throw new BusinessException(ErrorCode.INVALID_PRODUCTION_TRANSITION,
+                    "Production order %s sent no blanks to a subcontractor".formatted(child.orderNumber()));
+        }
+        ProductionRecords.SubcontractReceipt receipt = records.findSubcontractReceiptForUpdate(receiptId)
+                .filter(found -> found.productionOrderId().equals(child.id()))
+                .orElseThrow(() -> new NotFoundException("production-subcontract-receipt", receiptId));
+        if (receipt.reconciled()) {
+            if (receipt.spoiltBlanks() == spoilt && receipt.returnedBlanks() == returned) {
+                return reads.get(user, child.id());   // a retry of the same reconciliation
+            }
+            throw new BusinessException(ErrorCode.CONFLICT, "Receipt %s was reconciled already: %d spoilt, %d returned"
+                    .formatted(receiptId, receipt.spoiltBlanks(), receipt.returnedBlanks()));
+        }
+        if (returned > 0 && returnLocation != null && !returnLocation.isBlank()) {
+            warehouses.findLocation(returnLocation)
+                    .filter(location -> location.warehouseId().equals(child.work().warehouseId()))
+                    .filter(location -> location.kind() != com.stockflow.warehouse.api.StorageLocationView.Kind.SUBCONTRACTOR)
+                    .orElseThrow(() -> new BusinessException(ErrorCode.LOCATION_NOT_FOUND,
+                            "No storage location %s in the warehouse of production order %s".formatted(returnLocation,
+                                    child.orderNumber())));
+        }
+        Instant now = now();
+        stock.reconcile(child, spoilt, returned, returnLocation, receiptId.toString(), user.userId());
+        records.reconcileSubcontractReceipt(receiptId, spoilt, returned, now, user.userId());
+        log.info("Production order {}: receipt {} reconciled, {} received, {} spoilt, {} returned, {} still at the "
+                        + "subcontractor", child.orderNumber(), receiptId, receipt.quantity(), spoilt, returned,
+                stock.blanksAtSubcontractor(child));
+        return reads.get(user, child.id());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<ProductionRecords.SubcontractReceipt> receipts(CurrentUser user, UUID childId) {
+        reads.get(user, childId);   // 404 and warehouse scope, as for the order itself
+        return records.subcontractReceiptsOf(childId);
     }
 
     private ProductionOrder lock(CurrentUser user, UUID productionOrderId) {

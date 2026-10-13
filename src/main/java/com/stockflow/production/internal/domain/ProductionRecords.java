@@ -49,6 +49,38 @@ public interface ProductionRecords {
 
     void recordScrap(Scrap scrap);
 
-    /** Counts a goods receipt of a subcontracted child once: false when this receipt was counted before. */
-    boolean recordSubcontractReceipt(UUID receiptId, UUID productionOrderId, int quantity, Instant at);
+    /**
+     * A goods receipt of a subcontracted child (G9) and, for SUPPLIED_BLANKS, its blank reconciliation (decision
+     * Q9): {@code usedBlanks} — the blanks the received goods were printed on — is written with the receipt;
+     * {@code spoiltBlanks} and {@code returnedBlanks} once the warehouse reconciles it.
+     */
+    record SubcontractReceipt(UUID receiptId, UUID productionOrderId, int quantity, Instant receivedAt,
+                              Integer usedBlanks, Integer spoiltBlanks, Integer returnedBlanks, Instant reconciledAt,
+                              UUID reconciledBy) {
+
+        public boolean reconciled() {
+            return reconciledAt != null;
+        }
+    }
+
+    /**
+     * Counts a goods receipt of a subcontracted child once: false when this receipt was counted before.
+     * {@code usedBlanks}: null for FULL_SERVICE, whose blanks are the subcontractor's.
+     */
+    boolean recordSubcontractReceipt(UUID receiptId, UUID productionOrderId, int quantity, Integer usedBlanks,
+                                     Instant at);
+
+    List<SubcontractReceipt> subcontractReceiptsOf(UUID productionOrderId);
+
+    /** Locks the row: two reconciliations of one receipt run one after the other. */
+    Optional<SubcontractReceipt> findSubcontractReceiptForUpdate(UUID receiptId);
+
+    /** Records the reconciliation once: false when the receipt was reconciled before. */
+    boolean reconcileSubcontractReceipt(UUID receiptId, int spoilt, int returned, Instant at, UUID by);
+
+    /** The hold a receipt line's goods were taken into for the child (decision Q8). */
+    void recordSubcontractHold(UUID reservationId, UUID receiptId, UUID receiptLineId, UUID productionOrderId);
+
+    /** The holds of the child's received goods, in receipt order. */
+    List<UUID> subcontractHoldsOf(UUID productionOrderId);
 }

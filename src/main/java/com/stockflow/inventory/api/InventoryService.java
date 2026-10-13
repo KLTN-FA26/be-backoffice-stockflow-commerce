@@ -101,7 +101,8 @@ public interface InventoryService {
     List<StockReservation> productionHolds(UUID productionOrderId);
 
     /**
-     * Move one live hold together with its goods (see {@link IssueReservedStockCommand}), writing one MOVE
+     * Move one live hold together with its goods (see {@link IssueReservedStockCommand}) - AVAILABLE from storage,
+     * or INBOUND when a subcontractor's goods were held on receipt (SCRUM-441) - writing one MOVE
      * ledger line with reference {@code PRODUCTION_ORDER}. The units are held for their owner the whole
      * time: available-to-promise does not change, and no other order can take them on the way. Joins the
      * caller's transaction; locks both stock rows in id order.
@@ -114,8 +115,8 @@ public interface InventoryService {
     IssueReservedStockResult issueReserved(IssueReservedStockCommand command);
 
     /**
-     * The hand-over of finished goods (SCRUM-400): a hold and its goods from the print shop to a PACKING area,
-     * IN_PRODUCTION → AVAILABLE, still held for its owner. Same locks, ledger and refusals as
+     * The hand-over of finished goods (SCRUM-400): a hold and its goods from the print shop (IN_PRODUCTION) to a
+     * PACKING area as AVAILABLE, still held for its owner. Same locks, ledger and refusals as
      * {@link #issueReserved}.
      */
     IssueReservedStockResult finishHeld(IssueReservedStockCommand command);
@@ -151,6 +152,12 @@ public interface InventoryService {
      *         {@code RESERVATION_NOT_ISSUABLE} (another production order's, another order's, or closed)
      */
     void handHoldToOrder(UUID reservationId, UUID productionOrderId, UUID orderId);
+
+    /** See {@link HoldReceivedStockCommand}. Joins the caller's transaction. */
+    StockReservation holdReceived(HoldReceivedStockCommand command);
+
+    /** See {@link ConsumeHeldStockCommand}. Joins the caller's transaction. */
+    StockMove consumeHeld(ConsumeHeldStockCommand command);
 
     /** The holds among {@code reservationIds} that are still live, with what they hold now and where. */
     List<StockReservation> liveHolds(Collection<UUID> reservationIds);

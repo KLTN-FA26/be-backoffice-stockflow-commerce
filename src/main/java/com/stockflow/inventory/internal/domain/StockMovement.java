@@ -49,7 +49,11 @@ public record StockMovement(
     }
 
     /** The subset of {@code ck_stock_movement_type} this module writes so far. */
-    public enum MovementType { RECEIPT, MOVE, ADJUSTMENT, TRANSFER_OUT }
+    public enum MovementType {
+        RECEIPT, MOVE, ADJUSTMENT, TRANSFER_OUT,
+        /** Held blanks a print subcontractor turned into goods received back (SCRUM-441, decision Q9). */
+        CONSUMPTION
+    }
 
     /** The subset of {@code ck_stock_movement_reference} this module writes so far. */
     public enum ReferenceType {

@@ -31,6 +31,23 @@ public interface Subcontracting {
      */
     ProductionOrders.Detail split(CurrentUser user, UUID parentId, Split split);
 
-    /** G6: READY → SUBCONTRACTED, only once the child's SUBCONTRACT PO is approved (BR-PRD-13). */
+    /**
+     * G5–G6: READY → SUBCONTRACTED, only once the child's SUBCONTRACT PO is approved (BR-PRD-13). SUPPLIED_BLANKS:
+     * the child's blanks go with it to the subcontractor's location for its warehouse (decision Q7) — after a
+     * shortfall (G9 "gửi bù"), what is still missing is held first.
+     */
     ProductionOrders.Detail sendOut(CurrentUser user, UUID childId);
+
+    /**
+     * Decision Q9, one goods receipt of a SUPPLIED_BLANKS child reconciled by the warehouse: {@code spoilt} blanks
+     * are written off (SUBCONTRACT_LOSS, the adjustment approval), {@code returned} come back free to
+     * {@code returnLocation} (empty: where each was sent from); the blanks the received goods were printed on left
+     * with the receipt. The rest stays at the subcontractor. Once per receipt; the same answer again is a replay.
+     */
+    ProductionOrders.Detail reconcile(CurrentUser user, UUID childId, UUID receiptId, int spoilt, int returned,
+                                      String returnLocation);
+
+    /** The child's goods receipts with their reconciliation. */
+    java.util.List<com.stockflow.production.internal.domain.ProductionRecords.SubcontractReceipt> receipts(
+            CurrentUser user, UUID childId);
 }

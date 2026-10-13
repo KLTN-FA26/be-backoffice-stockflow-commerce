@@ -270,7 +270,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
             inventory.receive(new ReceiveStockCommand(line.id(), new Sku(item.sku()), line.lotNumber(),
                     line.expiryDate(), locationCode, line.receivedQuantity(), userId, saved.confirmedAt()));
             confirmedLines.add(new GoodsReceiptConfirmed.Line(line.id(), line.poLineId(), item.sku(), line.lotNumber(),
-                    line.receivedQuantity(), line.qcRequired()));
+                    line.receivedQuantity(), line.qcRequired(), locationCode));
             if (!line.qcRequired()) {
                 readyLines.add(new ReceiptStockReadyForPutaway.Line(line.id(), item.sku(), line.lotNumber(),
                         locationCode, line.receivedQuantity()));
@@ -287,7 +287,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         orders.recordProgress(order, lineStatuses, orderStatus, userId, saved.id(), saved.number());
 
         events.publishEvent(new GoodsReceiptConfirmed(saved.id(), saved.number(), order.id(), saved.warehouseId(),
-                confirmedLines));
+                confirmedLines, saved.confirmedAt()));
         if (!readyLines.isEmpty()) {
             events.publishEvent(new ReceiptStockReadyForPutaway(saved.id(), saved.number(), saved.warehouseId(),
                     readyLines));

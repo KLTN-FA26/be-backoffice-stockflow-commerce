@@ -29,6 +29,12 @@ public interface StockOperations {
     /** See {@code InventoryService#issueReserved}. */
     IssueReservedStockResult issueReserved(IssueReservedStockCommand command);
 
+    /** See {@code InventoryService#holdReceived}. */
+    com.stockflow.inventory.api.StockReservation holdReceived(com.stockflow.inventory.api.HoldReceivedStockCommand command);
+
+    /** See {@code InventoryService#consumeHeld}. */
+    StockMove consumeHeld(com.stockflow.inventory.api.ConsumeHeldStockCommand command);
+
     /** See {@code InventoryService#unissueHeld}. */
     IssueReservedStockResult unissueHeld(IssueReservedStockCommand command);
 

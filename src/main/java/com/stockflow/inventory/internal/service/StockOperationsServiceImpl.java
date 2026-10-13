@@ -232,7 +232,10 @@ class StockOperationsServiceImpl implements StockOperations {
     @Override
     @Auditable(action = AuditAction.UPDATE, resourceType = "stock-move", resourceId = "#command.reservationId()")
     public IssueReservedStockResult issueReserved(IssueReservedStockCommand command) {
-        return moveHold(command, StockStatus.AVAILABLE, StockStatus.IN_PRODUCTION);
+        // INBOUND: a subcontractor's goods, held for the child the moment they were counted in (holdReceived),
+        // go on to the print shop for QC. Only a production hold can be on an INBOUND layer.
+        return moveHold(command, java.util.EnumSet.of(StockStatus.AVAILABLE, StockStatus.INBOUND),
+                StockStatus.IN_PRODUCTION);
     }
 
     /**
@@ -240,7 +243,7 @@ class StockOperationsServiceImpl implements StockOperations {
      * the goods must be {@code expected} now. Shared by the issue to the print shop and the hand-over of
      * finished goods to packing, which differ only in the two statuses.
      */
-    private IssueReservedStockResult moveHold(IssueReservedStockCommand command, StockStatus expected,
+    private IssueReservedStockResult moveHold(IssueReservedStockCommand command, java.util.Set<StockStatus> expected,
                                               StockStatus arriving) {
         ReservationId reservationId = ReservationId.of(command.reservationId());
         StockItem first = holder(reservationId);
@@ -290,7 +293,7 @@ class StockOperationsServiceImpl implements StockOperations {
         }
         Objects.requireNonNull(source, "source");
         Reservation hold = issuable(source, reservationId, command);
-        if (source.status() != expected) {
+        if (!expected.contains(source.status())) {
             throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH, "%s%s at %s is %s; this step takes %s stock"
                     .formatted(source.sku(), lotSuffix(source.lotNumber()), from, source.status(), expected));
         }
@@ -307,7 +310,7 @@ class StockOperationsServiceImpl implements StockOperations {
 
         Instant now = clock.instant();
         StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.MOVE,
-                source.sku(), source.lotNumber(), from, to, hold.quantity().value(), expected, arriving,
+                source.sku(), source.lotNumber(), from, to, hold.quantity().value(), source.status(), arriving,
                 StockMovement.ReferenceType.PRODUCTION_ORDER, command.productionOrderId(),
                 "Hold " + hold.id().value(), command.actorId(), now);
         ledger.append(line);
@@ -321,14 +324,68 @@ class StockOperationsServiceImpl implements StockOperations {
     @Override
     @Auditable(action = AuditAction.UPDATE, resourceType = "stock-move", resourceId = "#command.reservationId()")
     public IssueReservedStockResult finishHeld(IssueReservedStockCommand command) {
-        return moveHold(command, StockStatus.IN_PRODUCTION, StockStatus.AVAILABLE);
+        return moveHold(command, java.util.EnumSet.of(StockStatus.IN_PRODUCTION), StockStatus.AVAILABLE);
     }
 
     /** Unprinted goods of a cancelled print job, still held for their order, back to storage with the hold. */
     @Override
     @Auditable(action = AuditAction.UPDATE, resourceType = "stock-move", resourceId = "#command.reservationId()")
     public IssueReservedStockResult unissueHeld(IssueReservedStockCommand command) {
-        return moveHold(command, StockStatus.IN_PRODUCTION, StockStatus.AVAILABLE);
+        return moveHold(command, java.util.EnumSet.of(StockStatus.IN_PRODUCTION), StockStatus.AVAILABLE);
+    }
+
+    /**
+     * The receipt's own layer, found by its identity (SKU, location, lot, receipt time), locked after the SKU lock
+     * as a move takes it; the hold is pinned and named by the caller's request id, so a retried receipt event
+     * holds nothing twice.
+     */
+    @Override
+    public com.stockflow.inventory.api.StockReservation holdReceived(com.stockflow.inventory.api.HoldReceivedStockCommand command) {
+        policies.lock(command.sku().code());
+        LocationId location = new LocationId(command.locationCode());
+        String lot = blankToNull(command.lotNumber());
+        StockItem view = stockItems.findBySkuAndLocation(command.sku(), location).stream()
+                .filter(item -> Objects.equals(item.lotNumber(), lot)
+                        && command.receivedAt().equals(item.receivedAt()))
+                .findFirst()
+                .orElseThrow(() -> new BusinessException(ErrorCode.STOCK_ITEM_NOT_FOUND,
+                        "No %s%s received at %s at %s".formatted(command.sku(), lotSuffix(lot), location,
+                                command.receivedAt())));
+        StockItem item = stockItems.findByIdForUpdate(view.id()).orElseThrow();
+        Reservation hold = item.holdArrival(command.productionOrderId(), command.requestId(), command.requestId(),
+                Quantity.of(command.quantity()), clock.instant());
+        stockItems.save(item);
+        log.info("{} x {} received at {} held for production order {}", command.quantity(), command.sku(), location,
+                command.productionOrderId());
+        return new com.stockflow.inventory.api.StockReservation(hold.id().value(), item.id().value(),
+                item.location().code(), item.lotNumber(), hold.quantity().value());
+    }
+
+    @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "stock-move", resourceId = "#command.reservationId()")
+    public StockMove consumeHeld(com.stockflow.inventory.api.ConsumeHeldStockCommand command) {
+        ReservationId reservationId = ReservationId.of(command.reservationId());
+        policies.lock(holder(reservationId).sku().code());
+        StockItem view = holder(reservationId);
+        WarehouseScope.requireLocation(view.location().code());
+        StockItem item = stockItems.findByIdForUpdate(view.id()).orElseThrow();
+        Reservation hold = owned(item, reservationId, command.orderId(), command.productionOrderId());
+        if (!hold.status().isActive() || hold.quantity().isLessThan(Quantity.of(command.quantity()))) {
+            throw new BusinessException(ErrorCode.RESERVATION_NOT_ISSUABLE, "Hold %s (%s, %s) cannot give %d"
+                    .formatted(reservationId.value(), hold.status(), hold.quantity(), command.quantity()));
+        }
+        requireInPrintShop(item);
+        Instant now = clock.instant();
+        item.consumeFromHold(reservationId, Quantity.of(command.quantity()), now);
+        stockItems.save(item);
+        StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.CONSUMPTION, item.sku(),
+                item.lotNumber(), item.location(), null, command.quantity(), item.status(),
+                StockMovement.ReferenceType.PRODUCTION_ORDER, command.productionOrderId(),
+                command.note() == null ? "Used by the subcontractor" : command.note(), command.actorId(), now);
+        ledger.append(line);
+        log.info("{} x {} consumed at {} out of hold {}", command.quantity(), item.sku(), item.location(),
+                hold.id().value());
+        return toMove(line);
     }
 
     /**
@@ -346,7 +403,7 @@ class StockOperationsServiceImpl implements StockOperations {
         WarehouseScope.requireLocation(view.location().code());
         StockItem item = stockItems.findByIdForUpdate(view.id()).orElseThrow();
         Reservation hold = owned(item, reservationId, command.orderId(), command.productionOrderId());
-        requireInPrintShop(item);
+        requireHeldForProduction(item);
         Quantity quantity = Quantity.of(command.quantity());
         Instant now = clock.instant();
         takeFromHold(item, hold, quantity, ReleaseReason.SCRAPPED, now);
@@ -446,6 +503,17 @@ class StockOperationsServiceImpl implements StockOperations {
                     "Hold %s belongs neither to this order nor to this production order".formatted(reservationId.value()));
         }
         return hold;
+    }
+
+    /**
+     * In the print shop or at a subcontractor (IN_PRODUCTION): units leaving a hold there stay out of sale while
+     * their write-off waits for approval. Never INBOUND — free INBOUND units can be put away and sold.
+     */
+    private static void requireHeldForProduction(StockItem item) {
+        if (item.status() != StockStatus.IN_PRODUCTION) {
+            throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH,
+                    "%s at %s is %s, not held for production".formatted(item.sku(), item.location(), item.status()));
+        }
     }
 
     private static void requireInPrintShop(StockItem item) {

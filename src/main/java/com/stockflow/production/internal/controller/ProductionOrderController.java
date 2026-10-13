@@ -16,6 +16,7 @@ import com.stockflow.production.internal.controller.dto.StopProductionRequest;
 import com.stockflow.production.internal.domain.ProductionRecords;
 import com.stockflow.production.internal.service.PrintRuns;
 import com.stockflow.production.internal.service.Subcontracting;
+import com.stockflow.production.internal.controller.dto.SubcontractReconciliationRequest;
 import com.stockflow.production.internal.controller.dto.SubcontractSplitRequest;
 import com.stockflow.production.internal.controller.dto.PrepressRequest;
 import com.stockflow.production.internal.controller.dto.ProductionOrderResponse;
@@ -175,6 +176,29 @@ class ProductionOrderController {
     public ApiResponse<ProductionOrderResponse> sendOut(@PathVariable UUID productionOrderId,
                                                         @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(mapper.toResponse(subcontracts.sendOut(user, productionOrderId)));
+    }
+
+    /**
+     * Decision Q9: the warehouse staff enter the reconciliation with the receipt (the same permission that sends
+     * the blanks out); spoilt blanks still go through the adjustment approval. No new role.
+     */
+    @PostMapping("/{productionOrderId}/subcontract-receipts/{receiptId}/reconciliation")
+    @Operation(summary = "Reconcile a subcontract receipt (SUPPLIED_BLANKS): spoilt blanks written off as SUBCONTRACT_LOSS, surplus returned; the rest stays at the subcontractor (Q9)")
+    @RequiresPermission(resource = ProductionResources.MATERIAL_ISSUES, action = Action.CREATE)
+    public ApiResponse<ProductionOrderResponse> reconcile(@PathVariable UUID productionOrderId,
+                                                         @PathVariable UUID receiptId,
+                                                         @Valid @RequestBody SubcontractReconciliationRequest request,
+                                                         @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(mapper.toResponse(subcontracts.reconcile(user, productionOrderId, receiptId,
+                request.spoilt(), request.returned(), request.returnLocation())));
+    }
+
+    @GetMapping("/{productionOrderId}/subcontract-receipts")
+    @Operation(summary = "The goods receipts of a subcontracted child, with their blank reconciliation")
+    @RequiresPermission(resource = ProductionResources.MATERIAL_ISSUES, action = Action.READ)
+    public ApiResponse<List<ProductionRecords.SubcontractReceipt>> subcontractReceipts(
+            @PathVariable UUID productionOrderId, @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(subcontracts.receipts(user, productionOrderId));
     }
 
     /** Cancelling is the Warehouse Manager's (03 §16): APPROVE. */

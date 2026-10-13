@@ -612,6 +612,53 @@ public final class StockItem extends AggregateRoot {
         checkInvariants();
     }
 
+    /**
+     * Goods just received for a production order (a subcontractor's finished goods, SCRUM-441, decision Q8) are
+     * held for it at once, on their INBOUND layer: they never wait unheld for QC or putaway. Pinned, idempotent on
+     * {@code requestId}; refused for any other status, or for more than the layer has unheld.
+     */
+    public Reservation holdArrival(UUID productionOrderId, UUID rootRequestId, UUID requestId, Quantity quantity,
+                                   Instant now) {
+        Optional<Reservation> alreadyServed = findByRequestId(requestId);
+        if (alreadyServed.isPresent()) {
+            return alreadyServed.get();
+        }
+        if (status != StockStatus.INBOUND) {
+            throw new IllegalStateException("Stock item %s is %s, not just received".formatted(id, status));
+        }
+        if (movable().isLessThan(quantity)) {
+            throw new InsufficientStockException(sku.code(), quantity.value(), movable().value());
+        }
+        Reservation reservation = Reservation.openForProduction(productionOrderId, rootRequestId, requestId, quantity, now);
+        reservations.add(reservation);
+        checkInvariants();
+        return reservation;
+    }
+
+    /**
+     * Held blanks a subcontractor turned into the goods received back (SCRUM-441, decision Q9) leave stock: the
+     * hold covers {@code quantity} fewer units (consumed when that is all of it) and {@code onHand} falls by as
+     * many. Only in the print shop or at a subcontractor (IN_PRODUCTION).
+     */
+    public void consumeFromHold(ReservationId reservationId, Quantity quantity, Instant now) {
+        if (status != StockStatus.IN_PRODUCTION) {
+            throw new IllegalStateException("Stock item %s is %s, not issued to production".formatted(id, status));
+        }
+        Reservation reservation = findReservation(reservationId).orElseThrow(() -> new IllegalArgumentException(
+                "Reservation %s does not belong to stock item %s".formatted(reservationId, id)));
+        if (reservation.status().isTerminal() || quantity.isZero() || reservation.quantity().isLessThan(quantity)) {
+            throw new IllegalArgumentException("Reservation %s (%s, %s) cannot give %s".formatted(reservationId,
+                    reservation.status(), reservation.quantity(), quantity));
+        }
+        if (quantity.equals(reservation.quantity())) {
+            reservation.consume(now);
+        } else {
+            reservation.reduceBy(quantity);
+        }
+        this.onHand = onHand.minus(quantity);
+        checkInvariants();
+    }
+
     /** See {@link Reservation#handToOrder}: the hold must be the production order's own. */
     public void handHoldToOrder(ReservationId reservationId, UUID productionOrderId, UUID orderId) {
         Reservation reservation = findReservation(reservationId).orElseThrow(() -> new IllegalArgumentException(

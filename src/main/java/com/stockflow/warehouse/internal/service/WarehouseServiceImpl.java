@@ -32,9 +32,12 @@ import java.util.UUID;
 class WarehouseServiceImpl implements WarehouseService {
 
     private final LocationLookupRepository locations;
+    private final com.stockflow.warehouse.internal.repository.SubcontractorSiteRepository sites;
 
-    WarehouseServiceImpl(LocationLookupRepository locations) {
+    WarehouseServiceImpl(LocationLookupRepository locations,
+                         com.stockflow.warehouse.internal.repository.SubcontractorSiteRepository sites) {
         this.locations = locations;
+        this.sites = sites;
     }
 
     /** Upper-cased first: every part of a code is {@code [A-Z0-9]} (BR-10), and scanners and people disagree on case. */
@@ -62,6 +65,15 @@ class WarehouseServiceImpl implements WarehouseService {
         }
         return locations.findAreas(warehouseId, com.stockflow.warehouse.internal.domain.AreaType.valueOf(type.name()))
                 .stream().map(WarehouseServiceImpl::toView).toList();
+    }
+
+    @Override
+    @org.springframework.transaction.annotation.Transactional
+    public StorageLocationView subcontractorLocation(UUID warehouseId, UUID supplierId, String supplierCode) {
+        java.util.Objects.requireNonNull(warehouseId, "warehouseId");
+        java.util.Objects.requireNonNull(supplierId, "supplierId");
+        String code = sites.locationOf(warehouseId, supplierId, supplierCode);
+        return locations.findByLocationCode(code).map(WarehouseServiceImpl::toView).orElseThrow();
     }
 
     @Override

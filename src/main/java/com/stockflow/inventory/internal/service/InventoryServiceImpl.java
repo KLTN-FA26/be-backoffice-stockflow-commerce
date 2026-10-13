@@ -393,8 +393,8 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
         Instant now = clock.instant();
         int released = 0;
         for (StockItem item : repository.findWithReservationsForProductionOrder(productionOrderId)) {
-            if (item.status() == StockStatus.IN_PRODUCTION) {
-                continue;   // issued: production returns or writes them off, unit by unit
+            if (item.status() != StockStatus.AVAILABLE) {
+                continue;   // issued, received for production, or finished: production closes those itself
             }
             List<Reservation> live = item.reservations().stream()
                     .filter(r -> r.status().isActive() && productionOrderId.equals(r.productionOrderId()))
@@ -428,6 +428,16 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
     @Override
     public IssueReservedStockResult issueReserved(IssueReservedStockCommand command) {
         return operations.issueReserved(command);
+    }
+
+    @Override
+    public StockReservation holdReceived(com.stockflow.inventory.api.HoldReceivedStockCommand command) {
+        return operations.holdReceived(command);
+    }
+
+    @Override
+    public StockMove consumeHeld(com.stockflow.inventory.api.ConsumeHeldStockCommand command) {
+        return operations.consumeHeld(command);
     }
 
     @Override

@@ -110,11 +110,13 @@ class PrintRunService implements PrintRuns {
                                             String note, String packingLocation) {
         String text = optionalNote(note);
         ProductionOrder order = lock(user, productionOrderId);
-        if (order.mode() == ProductionOrder.Mode.SUBCONTRACTED) {
-            // The goods arrive through a goods receipt as free INBOUND stock, which the receiving flow would put
-            // away for sale; until they are held for the order (open question Q8) completing would sell them.
+        if (order.mode() == ProductionOrder.Mode.SUBCONTRACTED
+                && order.subcontract().method() == ProductionOrder.SubcontractMethod.SUPPLIED_BLANKS
+                && records.subcontractReceiptsOf(order.id()).stream().anyMatch(receipt -> !receipt.reconciled())) {
+            // BR-PRD-16, decision Q9: the warehouse reconciles the blanks of every receipt before QC decides on it.
             throw new BusinessException(ErrorCode.INVALID_PRODUCTION_TRANSITION,
-                    "QC of subcontracted goods waits for how received goods stay the order's (open question Q8)");
+                    "Production order %s has a goods receipt whose blanks are not reconciled yet (BR-PRD-16)"
+                            .formatted(order.orderNumber()));
         }
         if (order.type() == ProductionOrder.Type.ORDER && salesOrderCancelled(order)) {
             throw new BusinessException(ErrorCode.INVALID_PRODUCTION_TRANSITION,
@@ -156,13 +158,14 @@ class PrintRunService implements PrintRuns {
             stock.writeOffSample(order, order.good(), by);
             samples.productionCompleted(order.id());
         } else {
-            String packing = stock.finishToPacking(order, packingLocation, by);
-            // Every good unit is the order's to ship: reprint holds join the line's checkout holds.
+            List<UUID> finished = stock.finishToPacking(order, packingLocation, by);
+            // Every good unit is the order's to ship: reprint holds and a subcontractor's goods join the line's
+            // checkout holds.
             orderReservations.addProductionHolds(order.salesOrderId(), order.salesOrderLineId(),
-                    stock.handFinishedGoodsToOrder(order));
+                    stock.handFinishedGoodsToOrder(order, finished));
             events.publishEvent(new ProductionCompleted(order.salesOrderId(), order.salesOrderLineId(), order.id(),
                     order.good()));
-            log.info("Production order {} completed: {} good unit(s) to {}", order.orderNumber(), order.good(), packing);
+            log.info("Production order {} completed: {} good unit(s) to packing", order.orderNumber(), order.good());
         }
     }
 

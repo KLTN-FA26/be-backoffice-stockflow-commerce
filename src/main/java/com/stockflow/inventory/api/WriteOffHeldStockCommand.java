@@ -18,8 +18,9 @@ public record WriteOffHeldStockCommand(UUID reservationId, UUID orderId, UUID pr
         if (reservationId == null) throw new IllegalArgumentException("reservationId is required");
         if (productionOrderId == null) throw new IllegalArgumentException("productionOrderId is required");
         if (quantity < 1) throw new IllegalArgumentException("quantity must be at least 1");
-        if (reason != StockAdjustmentReason.SCRAP && reason != StockAdjustmentReason.SAMPLE) {
-            throw new IllegalArgumentException("Held goods are written off as SCRAP or SAMPLE");
+        if (reason != StockAdjustmentReason.SCRAP && reason != StockAdjustmentReason.SAMPLE
+                && reason != StockAdjustmentReason.SUBCONTRACT_LOSS) {
+            throw new IllegalArgumentException("Held goods are written off as SCRAP, SAMPLE or SUBCONTRACT_LOSS");
         }
         if (requestedBy == null) throw new IllegalArgumentException("requestedBy is required");
     }
