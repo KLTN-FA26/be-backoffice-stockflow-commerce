@@ -58,6 +58,8 @@ public enum ErrorCode {
     ADDRESS_NOT_FOUND("Address not found", 404),
     WAREHOUSE_NOT_FOUND("Warehouse not found", 404),
     GOODS_RECEIPT_NOT_FOUND("Goods receipt not found", 404),
+    /** Also the answer for a message of another user: an inbox id is only meaningful to its recipient. */
+    NOTIFICATION_NOT_FOUND("Notification not found", 404),
     /** Also the answer for a zone of another warehouse: a zone id is only meaningful in its own. */
     ZONE_NOT_FOUND("Zone not found", 404),
     SHELF_NOT_FOUND("Shelf not found", 404),

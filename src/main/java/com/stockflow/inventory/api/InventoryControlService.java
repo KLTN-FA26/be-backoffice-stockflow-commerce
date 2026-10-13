@@ -21,4 +21,11 @@ public interface InventoryControlService {
      * the old unit.
      */
     InventoryItemLogistics describe(Sku sku, long expectedVersion, ItemLogistics logistics);
+
+    /**
+     * How many days before its expiry date a lot counts as near expiry
+     * ({@code stockflow.inventory.expiry-warning-days}, 30 by default; docs 03 BR-06). A lot warns when
+     * {@code expiryDate - referenceDate <= expiryWarningDays()}; it only warns, nothing is blocked.
+     */
+    int expiryWarningDays();
 }

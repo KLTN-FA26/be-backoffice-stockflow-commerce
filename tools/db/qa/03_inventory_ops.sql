@@ -226,5 +226,30 @@ SELECT pg_temp.expect_fail('I48 the date of a transfer past DRAFT', $q$
 SELECT pg_temp.expect_fail('I49 the requested quantity of a transfer past DRAFT', $q$
     UPDATE inventory.transfer_order_line SET requested_qty = 9 WHERE id = md5('qa:tol:1')::uuid $q$);
 
+\echo '--- in-app inbox (SCRUM-147, V20261014000400); I50-I54 belong to the stock-alert migration'
+INSERT INTO notification.user_notification (id, recipient_id, category, severity, title, dedupe_key, created_at)
+VALUES (md5('qa:inbox:1')::uuid, md5('demo:user:editor')::uuid, 'QA', 'INFO', 'QA message', 'qa:key', NOW());
+SELECT pg_temp.expect_ok('I55 the same dedupe_key for another recipient', $q$
+    INSERT INTO notification.user_notification (id, recipient_id, category, severity, title, dedupe_key)
+    VALUES (md5('qa:inbox:other')::uuid, md5('demo:user:approver')::uuid, 'QA', 'WARN', 'QA message', 'qa:key') $q$);
+SELECT pg_temp.expect_fail('I55 the same dedupe_key twice for one recipient', $q$
+    INSERT INTO notification.user_notification (id, recipient_id, category, severity, title, dedupe_key)
+    VALUES (md5('qa:inbox:2')::uuid, md5('demo:user:editor')::uuid, 'QA', 'INFO', 'QA message again', 'qa:key') $q$);
+SELECT pg_temp.expect_fail('I56 a message read before it was created', $q$
+    UPDATE notification.user_notification SET read_at = created_at - INTERVAL '1 second'
+     WHERE id = md5('qa:inbox:1')::uuid $q$);
+SELECT pg_temp.expect_ok('I56 a message read after it was created', $q$
+    UPDATE notification.user_notification SET read_at = created_at + INTERVAL '1 second'
+     WHERE id = md5('qa:inbox:1')::uuid $q$);
+SELECT pg_temp.expect_fail('I56 a severity the bell does not know', $q$
+    INSERT INTO notification.user_notification (id, recipient_id, category, severity, title, dedupe_key)
+    VALUES (md5('qa:inbox:3')::uuid, md5('demo:user:editor')::uuid, 'QA', 'URGENT', 'QA message', 'qa:key3') $q$);
+SELECT pg_temp.expect_fail('I56 a link that leaves the application', $q$
+    INSERT INTO notification.user_notification (id, recipient_id, category, severity, title, link, dedupe_key)
+    VALUES (md5('qa:inbox:4')::uuid, md5('demo:user:editor')::uuid, 'QA', 'INFO', 'QA message', '//evil.example/x', 'qa:key4') $q$);
+SELECT pg_temp.expect_fail('I56 a message for a user that does not exist', $q$
+    INSERT INTO notification.user_notification (id, recipient_id, category, severity, title, dedupe_key)
+    VALUES (md5('qa:inbox:5')::uuid, md5('qa:no-such-user')::uuid, 'QA', 'INFO', 'QA message', 'qa:key5') $q$);
+
 ROLLBACK;
 \echo 'PASS 03_inventory_ops'
