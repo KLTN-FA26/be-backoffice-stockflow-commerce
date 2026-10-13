@@ -106,7 +106,7 @@ class GoodsReceiptExpiryWarningIntegrationTest {
                     INSERT INTO procurement.purchase_order_revisions (id, po_id, revision_no, kind, snapshot_header,
                         changed_by, version, created_at) VALUES (?, ?, 0, 'INITIAL', '{}'::jsonb, ?, 0, NOW())""",
                     revision, order, submitter);
-            for (int i = 0; i < skuAndQty.length; i += 2) {
+            for (int i = 0; i + 1 < skuAndQty.length; i += 2) {
                 jdbc.update("""
                         INSERT INTO procurement.purchase_order_lines (id, po_id, po_revision_id, line_no, inventory_item_id,
                             ordered_qty, unit_price, version, created_at)
