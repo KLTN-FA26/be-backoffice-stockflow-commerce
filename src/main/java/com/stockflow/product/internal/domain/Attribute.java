@@ -119,6 +119,11 @@ public final class Attribute extends AggregateRoot {
         values.sort(DISPLAY_ORDER);
     }
 
+    /** Throws unless the value exists and the caller's view of it is current; for a check ahead of a delete. */
+    public void requireValueVersion(UUID valueId, long expectedVersion) {
+        value(valueId).requireVersion(expectedVersion);
+    }
+
     /**
      * Whether the value is still used by a product is the service's question; this only checks the
      * caller's view of the value is current, since removing is final.
