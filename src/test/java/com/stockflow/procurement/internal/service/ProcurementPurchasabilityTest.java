@@ -116,7 +116,7 @@ class ProcurementPurchasabilityTest {
 
     private void verdicts(Object... skuAndVerdict) {
         var map = new java.util.HashMap<String, Purchasability>();
-        for (int i = 0; i < skuAndVerdict.length; i += 2) {
+        for (int i = 0; i + 1 < skuAndVerdict.length; i += 2) {
             map.put((String) skuAndVerdict[i], (Purchasability) skuAndVerdict[i + 1]);
         }
         when(products.purchasability(anyCollection())).thenReturn(map);
