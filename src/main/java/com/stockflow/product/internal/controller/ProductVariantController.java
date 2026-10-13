@@ -76,7 +76,10 @@ class ProductVariantController {
     @Operation(summary = "Add a DRAFT variant for one option per axis; it creates the SKU's inventory item",
             description = "Only the matrix-first combination (first option of each axis, axes in order) goes to "
                     + "the default variant, and only while it is DRAFT with signature DEFAULT; a SKU sent with it "
-                    + "renames that variant. Any other combination is a new row.")
+                    + "renames that variant; on that path the answer is 201 with the default variant, no row is "
+                    + "created, position is ignored and the audit entry is a CREATE of the default's id. Any "
+                    + "other combination is a new row. A value deactivated in the dictionary cannot be chosen: "
+                    + "400 VARIANT_OPTIONS_INVALID.")
     @RequiresPermission(resource = ProductResources.VARIANTS, action = Action.CREATE)
     public ApiResponse<VariantResponse> add(@PathVariable UUID productId, @Valid @RequestBody VariantRequest request) {
         return ApiResponse.ok(mapper.toResponse(variants.add(productId, command(request))));
@@ -89,7 +92,10 @@ class ProductVariantController {
                     + "axes it names. The default variant takes only the matrix-first combination while it is "
                     + "DRAFT with signature DEFAULT; every other combination is a new row. Combinations that "
                     + "already exist are skipped and counted. At most 100 combinations are processed per call, "
-                    + "the default's included, else 400 VARIANT_MATRIX_TOO_LARGE. Idempotent.")
+                    + "the default's included, else 400 VARIANT_MATRIX_TOO_LARGE (decided from the axis sizes, before "
+                    + "anything is built). Options whose dictionary value is deactivated are skipped; naming one "
+                    + "in optionValueIds, or an axis with no active option left, is 400 VARIANT_OPTIONS_INVALID. "
+                    + "Idempotent.")
     @RequiresPermission(resource = ProductResources.VARIANTS, action = Action.CREATE)
     public ApiResponse<GeneratedVariantsResponse> generate(
             @PathVariable UUID productId, @Valid @RequestBody(required = false) GenerateVariantsRequest request) {
@@ -100,7 +106,11 @@ class ProductVariantController {
     @PutMapping("/{variantId}")
     @Operation(summary = "Partial update: rename, reorder, and while DRAFT change the SKU or options",
             description = "A null optionValueIds keeps the options; a blank sku or name keeps the current value. "
-                    + "A rename refused because the SKU is referenced is 409 INVALID_VARIANT_TRANSITION.")
+                    + "A rename refused because the SKU is referenced is 409 INVALID_VARIANT_TRANSITION. A variant "
+                    + "without options (left from before the product got axes) is repaired here: send "
+                    + "optionValueIds while it is DRAFT and its signature is re-derived. The DRAFT default can "
+                    + "be given a combination the same way. A variant may keep an option whose value was "
+                    + "deactivated; only newly chosen values must be active.")
     @RequiresPermission(resource = ProductResources.VARIANTS, action = Action.UPDATE)
     public ApiResponse<VariantResponse> update(@PathVariable UUID productId, @PathVariable UUID variantId,
                                                @Valid @RequestBody VariantRequest request) {

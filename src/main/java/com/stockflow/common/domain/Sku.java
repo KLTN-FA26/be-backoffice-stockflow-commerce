@@ -13,7 +13,8 @@ import java.util.regex.Pattern;
  *
  * <p>The alphabet is exactly the database's {@code ck_variants_sku}, which is the single source of
  * what a SKU may be: product codes carry {@code _} and {@code .}, a SKU may be one character long,
- * and none may start with a separator. A narrower pattern here would refuse SKUs the database already
+ * and none may start with a separator. A product code may itself carry {@code _}, and legacy rows may
+ * carry {@code .}, so neither is rejected here although a generated variant SKU rarely contains them. A narrower pattern here would refuse SKUs the database already
  * holds; a wider one would accept what the insert then rejects.</p>
  */
 public record Sku(String code) {

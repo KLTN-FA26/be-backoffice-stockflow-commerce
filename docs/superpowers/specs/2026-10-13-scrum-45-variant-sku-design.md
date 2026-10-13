@@ -228,6 +228,8 @@ nothing is generated yet; the default transform (D1) happens at the next generat
 
 `name` defaults to `"<product name> – <label> / <label>"`.
 
+A dictionary value that is deactivated is no longer used to make new variants: generation skips it (naming it in a restriction, or leaving an axis with no active option, is 400 `VARIANT_OPTIONS_INVALID`), `add` refuses it, the matrix-first combination is taken over active options only, and existing variants that carry it are untouched.
+
 ### Products
 `POST /products` gains `axes?: [{attributeId, sortOrder?, optionValueIds[]}]` (D2). The response is
 unchanged; the variants are read from the variants endpoint.
