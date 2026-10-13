@@ -37,7 +37,13 @@ pushed, not merged, no Jira change. The SCRUM-429 follow-up is its own commit on
   commit through the configured SMTP server. No active account with an e-mail → a WARN log, nobody guessed (N1).
 - **Group prices** (P7): `V20261014000530` (one price per group and SKU, positive whole VND, grants);
   `SegmentPrice`, `SegmentPriceService`, `/api/v1/catalog/segment-prices`; product lock, CAS version, audited
-  `segment-price`. Resolution unchanged. Groups and assignment have no API (customer module, see Gaps).
+  `segment-price`. Resolution unchanged.
+- **Customer groups** (P7 completed 2026-10-13, branch `SPRINT2-finish-lane-b`): `V20261014000600` (resource
+  `customer-segments`; `ck_segment_code` upper-case code, `ck_segment_name`, both NOT VALID so older rows are never
+  rewritten); `CustomerSegment`, `CustomerSegmentService`, `CustomerSegmentController`. E-commerce Admin and System
+  Admin create / rename groups and assign or clear a customer's group (customer version read, row lock, audited
+  `customer-segment`, `customer-segment-assignment`); Sales and the Order Coordinator read. The code is fixed once
+  created. `GET /api/v1/customers?segmentId=` lists a group's customers.
 - **Household identifier** (T1, from official texts): the 12-digit personal ID is accepted next to 10 and 10-3
   (`TaxCode`, `V20261014000540` widens `ck_customer_tax_code`).
 - **Portal display**: the logged-in ACTIVE customer's own/group/base prices with tiers and MOQ (13 BR-02, BR-05),
@@ -68,6 +74,12 @@ acceptance `acceptedUnitPrice`, `acceptedLineTotal`, `acceptedTotal`. Delivery i
 | `POST /api/v1/orders/{orderId}/reorder` | `sales-orders:CREATE` (the verb that places an order: CUSTOMER, SALES_STAFF, …) | `{requestId}` → 201, a DRAFT quote (`QuoteResponse`); same `requestId` → same quote. Portal: own orders only (404 otherwise), and the draft is visible to the customer once Sales sends it. Unpriced lines where today's list cannot price them (R1). 409 `ORDER_NOT_QUOTED` for an order bought at the price list (place it again with `POST /orders`); `PAYMENT_TERM_NOT_ALLOWED`, `CUSTOMER_NOT_ACTIVE` |
 | `POST /api/v1/quotes/{id}/sending` (existing) | unchanged | 409 `QUOTE_NOT_PRICED` while a line has no price |
 | Quote responses (existing) | — | new: `priced` (quote and line), `moq` nullable for an unpriced line |
+| `GET /api/v1/customer-segments` | `customer-segments:READ` (E-commerce Admin, System Admin, Sales, Order Coordinator) | `[{id, code, name, description, customerCount, version}]` by code |
+| `GET /api/v1/customer-segments/{id}` | READ | one group; 404 `SEGMENT_NOT_FOUND` |
+| `POST /api/v1/customer-segments` | CREATE (E-commerce Admin, System Admin) | `{code, name, description?}` → 201, code trimmed + upper-cased; 409 `CONFLICT` for a code in use; 400 for a code outside `[A-Z0-9][A-Z0-9_-]{0,63}` or a blank name |
+| `PUT /api/v1/customer-segments/{id}` | UPDATE (same) | `{name, description?, version}` → version + 1; the code never changes; 409 `OPTIMISTIC_LOCK`; 404 |
+| `PUT /api/v1/customers/{customerId}/segment` | `customer-segments:UPDATE` (same) | `{segmentId \| null, version}` (the customer's version) → `CustomerResponse`; 404 `CUSTOMER_NOT_FOUND` / `SEGMENT_NOT_FOUND`; 409 `OPTIMISTIC_LOCK`. Later prices only: quotes and orders keep theirs |
+| `GET /api/v1/customers?segmentId=` (existing) | `customer-customers:READ` | new filter: the group's customers |
 | `GET /api/v1/catalog/segment-prices?segmentId=&sku=…` | `catalog-segment-prices:READ` (E-commerce Admin, System Admin, Sales, Order Coordinator) | the group's prices |
 | `GET …/segment-prices/{segmentId}/{sku}` | READ | `{segmentId, sku, price, currency, version}`; 404 `SEGMENT_PRICE_NOT_FOUND` |
 | `POST …/segment-prices/{segmentId}/{sku}` | CREATE (E-commerce Admin, System Admin) | `{price}` → 201; 409 `CONFLICT`; 404 `SEGMENT_NOT_FOUND` / `VARIANT_NOT_FOUND`; 400 for 0, fractions, negatives, missing |
@@ -109,13 +121,23 @@ account is disabled) and **R1b** (reorder when the old payment term is no longer
 - **E-mail delivery needs external configuration**: `MAIL_HOST`, `MAIL_PORT`, `MAIL_USERNAME`, `MAIL_PASSWORD`,
   `MAIL_FROM`, `MAIL_SMTP_AUTH`, `MAIL_SMTP_STARTTLS` of a real SMTP relay. The repository has only `localhost:1025`
   (Mailpit, which captures and never delivers); the prod profile adds nothing. No delivery has been observed.
-- **Customer groups have no API**: creating `customer.segment` rows and assigning a customer's `segment_id` belong
-  to the customer module (kltn-docs 18 §4.3 step 10) and are not built; tests insert them. Without them the group
-  price API has no groups to price from the back office.
+- ~~Customer groups have no API~~ - built 2026-10-13 (see "What was built"); no group delete (a group in use by
+  prices and customers is renamed, not removed - not asked for).
 - Group prices are one price from the first piece, as `pricing_rule` holds; kltn-docs 13 §54 mentions tiers for
   groups too - not asked for in P7 ("theo catalog hiện có"), so not built.
 - FE is not part of this batch. The quote default's `PRICE_NOT_AVAILABLE` → 400 branch is covered by IT
   `aQuoteLineWithoutTiersForAnUnpricedBlankAsksSalesToEnterThem`.
+
+## Also in lane B: production holds are e-mailed (SCRUM-396 / 398 / 401, 2026-10-13)
+
+`ProductionNotificationListener` turned the hold notice from a log line into e-mail: a rejected print file or a wait
+for the customer → every ACTIVE `SALES_STAFF` account (Jira 396 "Sales is notified"); blanks short → every ACTIVE
+`PROCUREMENT_STAFF` account (398 "alert purchasing"); machine down, subcontractor late, other → every ACTIVE
+`WAREHOUSE_MANAGER` account (401 "Warehouse Manager resolves"). Addresses from `identity :: api` (`StaffDirectory`),
+the notification module's only dependency; after commit, retried from the publication registry when the mail
+server refuses; nobody to write to → WARN log. It consumes the existing `ProductionOrderHeld` unchanged. Should one
+Sales person rather than the team receive it, `ProductionOrderHeld` would need the responsible user (a nullable
+field lane A fills) - not required by Jira. Tests: `ProductionNotificationListenerTest` (7, mocked transport).
 
 ## Verification (2026-10-12, Java 21.0.9, Maven 3.9.9 offline, Docker 28.5.1; targeted tests only - the full suite runs at final integration)
 

@@ -72,10 +72,11 @@ class CustomerController {
             @RequestParam(required = false) Integer size,
             @RequestParam(name = "q", required = false) String search,
             @RequestParam(required = false) String status,
-            @RequestParam(required = false) String sort) {
+            @RequestParam(required = false) String sort,
+            @RequestParam(required = false) UUID segmentId) {
         requireStaff(user);
         var query = new ListCustomersQuery(page, size == null ? Pages.DEFAULT_PAGE_SIZE : size,
-                search, status, sort);
+                search, status, sort, segmentId);
         return ApiResponse.ok(customers.list(query).map(CustomerWebMapper::toResponse));
     }
 

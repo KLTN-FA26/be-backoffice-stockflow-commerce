@@ -181,7 +181,7 @@ class CustomerPricingIntegrationTest {
         UUID segment = Identifiers.newId();
         tx.executeWithoutResult(s -> {
             jdbc.update("INSERT INTO customer.segment(id, code, name, version, created_at) VALUES (?, ?, 'Dai ly', 0, now())",
-                    segment, "SEG-" + segment);
+                    segment, ("SEG-" + segment).toUpperCase());
             jdbc.update("UPDATE customer.customer SET segment_id=? WHERE id=?", segment, grouped.customerId());
             jdbc.update("""
                     INSERT INTO catalog.pricing_rule(id, name, sku, segment_id, price, currency, priority, active, version, created_at)
@@ -412,7 +412,7 @@ class CustomerPricingIntegrationTest {
         Buyer grouped = buyer("ACTIVE");
         tx.executeWithoutResult(s -> {
             jdbc.update("INSERT INTO customer.segment(id, code, name, version, created_at) VALUES (?, ?, 'Nha phan phoi', 0, now())",
-                    segment, "SEG-" + segment);
+                    segment, ("SEG-" + segment).toUpperCase());
             jdbc.update("UPDATE customer.customer SET segment_id=? WHERE id=?", segment, grouped.customerId());
         });
         String path = "/api/v1/catalog/segment-prices/" + segment + "/" + SKU;

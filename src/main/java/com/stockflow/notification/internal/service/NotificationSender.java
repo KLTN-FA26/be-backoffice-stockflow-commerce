@@ -1,6 +1,7 @@
 package com.stockflow.notification.internal.service;
 
 import com.stockflow.contracts.CustomerActedOnQuote;
+import com.stockflow.contracts.ProductionOrderHeld;
 import com.stockflow.common.http.RestClientFactory;
 import com.stockflow.contracts.PurchaseOrderSent;
 import com.stockflow.notification.api.PortalInvitationMail;
@@ -83,6 +84,29 @@ class NotificationSender {
         message.setTo(event.salesEmail());
         message.setSubject(messages.getString(key + ".subject").formatted(customer, event.quoteNumber(), detail));
         message.setText(messages.getString(key + ".body").formatted(customer, event.quoteNumber(), detail));
+        mail.send(message);
+    }
+
+    /**
+     * Tells the staff who can unblock a held production order (Jira 396 / 398 / 401), in Vietnamese like the
+     * other staff mail. One message to every recipient: a refusal is retried as a whole from the event registry.
+     */
+    void sendProductionHold(ProductionOrderHeld event, com.stockflow.common.security.Role audience,
+                            List<String> recipients) {
+        var messages = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
+        String reason = messages.containsKey("production.hold.reason." + event.reason())
+                ? messages.getString("production.hold.reason." + event.reason()) : event.reason();
+        String source = event.sampleRequestId() != null
+                ? messages.getString("production.hold.source.sample").formatted(event.sampleRequestId())
+                : messages.getString("production.hold.source.order").formatted(event.salesOrderId());
+        String note = event.note() == null || event.note().isBlank() ? ""
+                : messages.getString("production.hold.note").formatted(event.note().strip());
+        var message = new SimpleMailMessage();
+        message.setFrom(mailFrom);
+        message.setTo(recipients.toArray(String[]::new));
+        message.setSubject(messages.getString("production.hold.mail.subject").formatted(event.orderNumber(), reason));
+        message.setText(messages.getString("production.hold.mail.body." + audience.name().toLowerCase(Locale.ROOT))
+                .formatted(event.orderNumber(), reason, source, note));
         mail.send(message);
     }
 
