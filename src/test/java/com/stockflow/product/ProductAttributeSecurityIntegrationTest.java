@@ -100,12 +100,23 @@ class ProductAttributeSecurityIntegrationTest {
     }
 
     @Test
+    void variantsUpdateOpensAxes() throws Exception {
+        String editor = token("product-variants:UPDATE");
+        MvcResult result = mvc.perform(put("/api/v1/products/{id}/axes", UUID.randomUUID())
+                        .header("Authorization", editor)
+                        .contentType("application/json").content("{\"axes\":[]}"))
+                .andReturn();
+        assertThat(result.getResponse().getStatus()).isNotIn(401, 403);
+    }
+
+    @Test
     void productsUpdateAloneDoesNotOpenAxesButOpensDescriptives() throws Exception {
         String editor = token("product-products:UPDATE");
         mvc.perform(put("/api/v1/products/{id}/axes", SOFA).header("Authorization", editor)
                         .contentType("application/json").content("{\"axes\":[]}"))
                 .andExpect(status().isForbidden());
-        MvcResult result = mvc.perform(put("/api/v1/products/{id}/descriptive-attributes", SOFA)
+        // A random id: 404 still proves the request got past security, and the shared demo SOFA is not committed to.
+        MvcResult result = mvc.perform(put("/api/v1/products/{id}/descriptive-attributes", UUID.randomUUID())
                         .header("Authorization", editor)
                         .contentType("application/json").content("{\"attributes\":[]}"))
                 .andReturn();

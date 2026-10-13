@@ -89,6 +89,13 @@ class ProductAttributeSetTest {
     }
 
     @Test
+    void theInUseMessageNamesTheValueByCode() {
+        var set = draft(axis(CAPACITY, OZ12, OZ16));
+        assertThatThrownBy(() -> set.replaceAxes(List.of(spec(CAPACITY, OZ16)), dictionary(), Set.of(OZ12), ids()))
+                .hasMessageContaining("12OZ").hasMessageNotContaining(OZ12.toString());
+    }
+
+    @Test
     void removingAWholeAxisWhoseOptionAVariantUsesIsRefused() {
         var set = draft(axis(CAPACITY, OZ12));
         assertCode(() -> set.replaceAxes(List.of(), dictionary(), Set.of(OZ12), ids()), ATTRIBUTE_IN_USE);

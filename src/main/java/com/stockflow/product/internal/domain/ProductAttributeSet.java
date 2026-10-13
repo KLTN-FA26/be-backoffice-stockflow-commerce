@@ -118,7 +118,8 @@ public final class ProductAttributeSet extends AggregateRoot {
             for (AxisOption option : before.options()) {
                 if (!kept.contains(option.valueId()) && valueIdsUsedByVariants.contains(option.valueId())) {
                     throw new BusinessException(ErrorCode.ATTRIBUTE_IN_USE,
-                            "A variant of this product uses value %s; it cannot be removed".formatted(option.valueId()));
+                            "A variant of this product uses value %s; it cannot be removed"
+                                    .formatted(valueCode(dictionary.get(before.attributeId()), option.valueId())));
                 }
             }
         }
@@ -235,6 +236,14 @@ public final class ProductAttributeSet extends AggregateRoot {
             throw invalid("Value %s of attribute %s is inactive and cannot be newly added"
                     .formatted(value.code(), attribute.code()));
         }
+    }
+
+    private static String valueCode(Attribute attribute, UUID valueId) {
+        if (attribute == null) {
+            return valueId.toString();
+        }
+        return attribute.values().stream().filter(v -> v.id().equals(valueId)).map(AttributeValue::code)
+                .findFirst().orElse(valueId.toString());
     }
 
     private static Attribute attribute(Map<UUID, Attribute> dictionary, UUID attributeId) {
