@@ -40,13 +40,15 @@ class ProductionDashboardController {
 
     @GetMapping
     @Operation(summary = "Open production orders by status, overdue count, samples awaiting the customer, and the scrap "
-            + "rate of the production orders CREATED from 'from' to 'to' (periodBasis in the answer says so)")
+            + "rate of the units printed and scrapped from 'from' to 'to' (basis=ACTIVITY, the default) or of the "
+            + "production orders created then (basis=CREATED); periodBasis in the answer says which")
     @RequiresPermission(resource = ProductionResources.PRODUCTION_ORDERS, action = Action.READ)
     public ApiResponse<ProductionDashboard.Summary> summary(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to,
+            @RequestParam(required = false) ProductionDashboard.Basis basis,
             @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(dashboard.summary(user, from, to));
+        return ApiResponse.ok(dashboard.summary(user, from, to, basis));
     }
 
     @GetMapping("/overdue")

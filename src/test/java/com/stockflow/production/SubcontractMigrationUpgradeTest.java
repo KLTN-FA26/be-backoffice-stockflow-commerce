@@ -14,14 +14,14 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Lane A's finishing migrations (V20261014000700 hold from QC, 000710 subcontract shortfall, recall, settlement and
- * PO amendment) on the real upgrade path: a database with the demo seed and a split production order (an in-house
+ * PO amendment, 000720 print runs for the activity dashboard) on the real upgrade path: a database with the demo seed and a split production order (an in-house
  * root and its SUBCONTRACTED child) written before them, upgraded. The child becomes a SPLIT, the root stays a root,
  * a hold may now remember QC, an in-house child is allowed only with an origin, and the new constraints are valid.
  */
 class SubcontractMigrationUpgradeTest {
 
     private static final String BEFORE = "20261014000540";
-    private static final String LAST = "20261014000710";
+    private static final String LAST = "20261014000720";
 
     @Test
     void upgradeKeepsExistingChildrenAndOpensTheNewPaths() throws Exception {
@@ -33,13 +33,20 @@ class SubcontractMigrationUpgradeTest {
                 UUID root = UUID.randomUUID();
                 UUID child = UUID.randomUUID();
                 splitOrder(db, root, child);
+                exec(db, "INSERT INTO production.production_order_status_history (id, production_order_id, from_status, "
+                        + "to_status, reason, changed_at) VALUES (gen_random_uuid(), '" + root + "', 'PRINTING', 'QC', "
+                        + "'Printed 5, scrap 1', NOW() - INTERVAL '2 days')");
                 assertThatThrownBy(() -> exec(db, "UPDATE production.production_order SET status = 'ON_HOLD', "
                         + "status_before_hold = 'QC', hold_reason = 'OTHER', prepress_checked_at = NOW(), "
                         + "prepress_checked_by = (SELECT id FROM identity.app_user LIMIT 1) WHERE id = '" + root + "'"))
                         .as("before the upgrade a hold could not remember QC").hasMessageContaining("status_before_hold");
 
                 var result = flyway(postgres, LAST).migrate();
-                assertThat(result.migrations).extracting(m -> m.version).contains("20261014000700", LAST);
+                assertThat(result.migrations).extracting(m -> m.version)
+                        .contains("20261014000700", "20261014000710", LAST);
+                assertThat(text(db, "SELECT printed_quantity || '/' || scrap_quantity FROM production.production_print_run "
+                        + "WHERE production_order_id = '" + root + "'")).as("QA3 backfill from the run's history row")
+                        .isEqualTo("5/1");
 
                 assertThat(text(db, "SELECT origin FROM production.production_order WHERE id = '" + child + "'"))
                         .isEqualTo("SPLIT");

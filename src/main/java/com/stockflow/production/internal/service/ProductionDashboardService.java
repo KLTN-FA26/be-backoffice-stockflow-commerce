@@ -54,6 +54,13 @@ class ProductionDashboardService implements ProductionDashboard {
 
     @Override
     public Summary summary(CurrentUser user, LocalDate from, LocalDate to) {
+        return summary(user, from, to, Basis.ACTIVITY);
+    }
+
+    @Override
+    public Summary summary(CurrentUser user, LocalDate from, LocalDate to, Basis basis) {
+        boolean activity = basis == null || basis == Basis.ACTIVITY;
+        String periodBasis = activity ? ACTIVITY_IN_PERIOD : CREATED_IN_PERIOD;
         ScopeGuards.requireBackOffice(user);
         if (from != null && to != null && to.isBefore(from)) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The period ends before it starts");
@@ -63,15 +70,15 @@ class ProductionDashboardService implements ProductionDashboard {
         Instant start = from == null ? null : from.atStartOfDay(BUSINESS_ZONE).toInstant();
         Instant end = to == null ? null : to.plusDays(1).atStartOfDay(BUSINESS_ZONE).toInstant();
         if (warehouses != null && warehouses.isEmpty()) {
-            return new Summary(java.util.Map.of(), 0, 0, 0, null, 0, today, CREATED_IN_PERIOD, from, to);
+            return new Summary(java.util.Map.of(), 0, 0, 0, null, 0, today, periodBasis, from, to);
         }
-        long[] printedAndScrap = queries.printedAndScrap(warehouses, start, end);
+        long[] printedAndScrap = activity ? queries.printedAndScrapInPeriod(warehouses, start, end)
+                : queries.printedAndScrap(warehouses, start, end);
         BigDecimal rate = printedAndScrap[0] == 0 ? null
                 : BigDecimal.valueOf(printedAndScrap[1]).divide(BigDecimal.valueOf(printedAndScrap[0]), 4,
                 RoundingMode.HALF_UP);
         return new Summary(queries.openByStatus(warehouses), queries.overdue(warehouses, today), printedAndScrap[0],
-                printedAndScrap[1], rate, queries.samplesAwaitingApproval(warehouses), today, CREATED_IN_PERIOD, from,
-                to);
+                printedAndScrap[1], rate, queries.samplesAwaitingApproval(warehouses), today, periodBasis, from, to);
     }
 
     @Override

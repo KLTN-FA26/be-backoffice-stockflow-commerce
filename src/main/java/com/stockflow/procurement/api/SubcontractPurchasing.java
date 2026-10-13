@@ -61,9 +61,10 @@ public interface SubcontractPurchasing {
     Optional<SubcontractSettlement> settlement(UUID purchaseOrderId);
 
     /**
-     * BR-PRD-17: the warehouse manager approves a loss above tolerance, with the deduction per lost blank agreed with
-     * the subcontractor (the system has no price of its own for a blank). The settlement becomes FINAL. Approving
-     * the same deduction again is a replay.
+     * BR-PRD-17, decision QA1: the warehouse manager approves a loss above tolerance, with the deduction per lost
+     * blank agreed with the subcontractor and the reason (required) — never the supplier's current price or the blanks'
+     * purchase price. The settlement becomes FINAL; the deduction is recorded, not paid or transferred. Approving the
+     * same deduction again is a replay.
      *
      * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}, {@code VALIDATION_FAILED},
      *         {@code CONFLICT} (nothing to approve, or approved with another deduction)

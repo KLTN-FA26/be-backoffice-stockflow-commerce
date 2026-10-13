@@ -82,14 +82,15 @@ public interface Subcontracting {
                                         String packingLocation);
 
     /**
-     * 03 §16 SUBCONTRACTED → CANCELLED (or from PENDING_PREPRESS / READY): while the sales order still wants the goods,
-     * the whole of it is replaced in house ({@link #takeInHouse}) — refused if it already has good units, which are
-     * the order's (take the rest in house instead); once the sales order is cancelled, good units it has are written
-     * off, sold to nobody else. Its blanks must be recalled first; its PO is cancelled (or closed short) and settled,
+     * 03 §16 SUBCONTRACTED → CANCELLED (or from PENDING_PREPRESS / READY): while the sales order still wants the goods
+     * (decision QA2), what the subcontractor still owes goes to a new in-house order ({@link #takeInHouse}) and the
+     * good units it delivered stay the order's — none: CANCELLED and replaced; some: COMPLETED with them; units still
+     * waiting for QC are inspected first. Once the sales order is cancelled, good units it has are written off, sold to
+     * nobody else. Its blanks must be recalled first; its PO is cancelled (or closed short) and settled,
      * with {@code fee} — an amount agreed with the subcontractor for work done, with its reason — added.
      */
     ProductionOrders.Detail cancel(CurrentUser user, UUID productionOrderId, String reason, BigDecimal fee,
-                                   String feeReason);
+                                   String feeReason, String packingLocation);
 
     /**
      * 03 §16 G9 "gửi bù": {@code quantity} more on the SUBCONTRACT PO for a resend after a QC shortfall. A draft PO is

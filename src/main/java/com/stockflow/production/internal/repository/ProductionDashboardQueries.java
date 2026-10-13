@@ -61,6 +61,44 @@ public class ProductionDashboardQueries {
                 (rs, n) -> new long[] {rs.getLong(1), rs.getLong(2)});
     }
 
+    /**
+     * QA3, the default: units printed and scrapped in [{@code from}, {@code to}), whenever their production order was
+     * created. Printed = the runs recorded in the period plus a subcontractor's goods received in it; scrap = the
+     * production_scrap rows recorded in it — each spoilt unit is one row once, whether spoilt on the press, failed in
+     * QC or written off when its job was stopped or cancelled, so nothing is counted twice. Null bounds are open.
+     */
+    public long[] printedAndScrapInPeriod(Collection<UUID> warehouses, Instant from, Instant to) {
+        MapSqlParameterSource params = params(warehouses);
+        String period = period(params, from, to);
+        String scope = warehouses == null ? "" : " AND o.warehouse_id IN (:warehouses)";
+        long printed = jdbc.queryForObject("""
+                SELECT COALESCE((SELECT SUM(r.printed_quantity) FROM production.production_print_run r
+                                   JOIN production.production_order o ON o.id = r.production_order_id
+                                  WHERE TRUE""" + period.replace("{at}", "r.recorded_at") + scope + "), 0)" + """
+                     + COALESCE((SELECT SUM(g.quantity) FROM production.production_subcontract_receipt g
+                                   JOIN production.production_order o ON o.id = g.production_order_id
+                                  WHERE TRUE""" + period.replace("{at}", "g.received_at") + scope + "), 0)",
+                params, Long.class);
+        long scrap = jdbc.queryForObject("""
+                SELECT COALESCE(SUM(s.quantity), 0) FROM production.production_scrap s
+                  JOIN production.production_order o ON o.id = s.production_order_id
+                 WHERE TRUE""" + period.replace("{at}", "s.recorded_at") + scope, params, Long.class);
+        return new long[] {printed, scrap};
+    }
+
+    private static String period(MapSqlParameterSource params, Instant from, Instant to) {
+        StringBuilder where = new StringBuilder();
+        if (from != null) {
+            where.append(" AND {at} >= :from");
+            params.addValue("from", java.sql.Timestamp.from(from));
+        }
+        if (to != null) {
+            where.append(" AND {at} < :to");
+            params.addValue("to", java.sql.Timestamp.from(to));
+        }
+        return where.toString();
+    }
+
     /** Sample rounds sent to the customer and not answered yet, made in the warehouses given. */
     public long samplesAwaitingApproval(Collection<UUID> warehouses) {
         String scope = warehouses == null ? "" : " AND EXISTS (SELECT 1 FROM production.production_order p "

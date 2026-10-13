@@ -15,7 +15,8 @@
 --    production order ends - the basis the subcontract invoice is matched against: units that passed QC are
 --    paid, units that failed it are not; blanks lost above the subcontractor's tolerance need the warehouse
 --    manager's approval and are deducted; a fee agreed for work cancelled after it was sent out is added.
---    The deduction per blank is entered by the approver (no price is invented by the system).
+--    The deduction per blank is entered by the approver with a reason (decision QA1: never the supplier's current
+--    price or the blanks' purchase price); it is recorded, not paid.
 -- 4. A SUBCONTRACT order already approved gets more quantity (a resend after a QC shortfall) through an
 --    AMENDMENT revision approved again (BR-02): the line's quantity may change when the line moves to an
 --    AMENDMENT revision of its own order, not otherwise.
@@ -114,7 +115,8 @@ CREATE TABLE procurement.subcontract_settlement
         (excess_loss = 0 AND status = 'FINAL' AND deduction_amount = 0 AND approved_by IS NULL)
         OR (excess_loss > 0 AND status = 'AWAITING_APPROVAL' AND approved_by IS NULL AND deduction_amount = 0)
         OR (excess_loss > 0 AND status = 'FINAL' AND approved_by IS NOT NULL AND approved_at IS NOT NULL
-            AND deduction_per_blank IS NOT NULL AND deduction_amount = excess_loss * deduction_per_blank)),
+            AND approval_note IS NOT NULL AND deduction_per_blank IS NOT NULL
+            AND deduction_amount = excess_loss * deduction_per_blank)),
     CONSTRAINT ck_subcontract_settlement_fee_reason CHECK (cancellation_fee = 0 OR cancellation_fee_reason IS NOT NULL),
     CONSTRAINT uk_subcontract_settlement_production_order UNIQUE (production_order_id)
 );

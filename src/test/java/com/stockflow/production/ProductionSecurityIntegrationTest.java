@@ -405,10 +405,12 @@ class ProductionSecurityIntegrationTest {
 
         send(get(order + "/subcontract-settlement"), customer, null).andExpect(status().isForbidden());
         send(get(order + "/subcontract-settlement"), manager, null).andExpect(status().isConflict());
-        var loss = java.util.Map.of("deductionPerBlank", 1000);
+        var loss = java.util.Map.of("deductionPerBlank", 1000, "note", "agreed with the subcontractor");
         send(post(order + "/subcontract-settlement/loss-approval"), storekeeper, loss).andExpect(status().isForbidden());
-        send(post(order + "/subcontract-settlement/loss-approval"), manager, java.util.Map.of("deductionPerBlank", -1))
-                .andExpect(status().isBadRequest());
+        send(post(order + "/subcontract-settlement/loss-approval"), manager,
+                java.util.Map.of("deductionPerBlank", -1, "note", "x")).andExpect(status().isBadRequest());
+        send(post(order + "/subcontract-settlement/loss-approval"), manager, java.util.Map.of("deductionPerBlank", 1000))
+                .andExpect(status().isBadRequest());   // QA1: the reason is required
         send(post(order + "/subcontract-settlement/loss-approval"), manager, loss).andExpect(status().isConflict());
 
         send(post(order + "/cancellation"), manager, java.util.Map.of("reason", "x", "subcontractorFee", 10))
@@ -427,7 +429,12 @@ class ProductionSecurityIntegrationTest {
         send(get("/api/v1/production/dashboard"), staff("PRODUCTION_STAFF"), null).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.overdue").value(0))
                 .andExpect(jsonPath("$.data.samplesAwaitingApproval").value(0))
+                .andExpect(jsonPath("$.data.periodBasis").value("UNITS_PRINTED_AND_SCRAPPED_IN_PERIOD"));
+        send(get("/api/v1/production/dashboard").param("basis", "CREATED"), staff("PRODUCTION_STAFF"), null)
+                .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.periodBasis").value("PRODUCTION_ORDERS_CREATED_IN_PERIOD"));
+        send(get("/api/v1/production/dashboard").param("basis", "NONSENSE"), staff("PRODUCTION_STAFF"), null)
+                .andExpect(status().isBadRequest());
         send(get("/api/v1/production/dashboard").param("from", "2026-10-12").param("to", "2026-10-01"),
                 assigned("WAREHOUSE_MANAGER"), null).andExpect(status().isBadRequest());
         send(get("/api/v1/production/dashboard/overdue"), assigned("PRODUCTION_STAFF"), null).andExpect(status().isOk())
