@@ -1,11 +1,11 @@
 package com.stockflow.inventory.internal.controller.dto;
 
+import com.stockflow.common.validation.ValidSku;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
-import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
 import java.util.UUID;
@@ -19,7 +19,7 @@ public record MoveStockRequest(
 
         @Schema(example = "CUP-PP-500")
         @NotBlank(message = "sku is required")
-        @Pattern(regexp = "[A-Za-z0-9\\-]{3,64}", message = "malformed SKU")
+        @ValidSku
         String sku,
 
         @Size(max = 64, message = "lotNumber is at most 64 characters")
