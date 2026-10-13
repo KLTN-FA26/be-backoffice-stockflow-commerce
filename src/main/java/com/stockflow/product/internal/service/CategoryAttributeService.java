@@ -12,7 +12,6 @@ import com.stockflow.product.internal.entity.CategoryAttributeJpaEntity;
 import com.stockflow.product.internal.repository.AttributeJpaRepository;
 import com.stockflow.product.internal.repository.CategoryAttributeJpaRepository;
 import com.stockflow.product.internal.repository.CategoryJpaRepository;
-import jakarta.persistence.EntityManager;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -38,6 +37,12 @@ import java.util.stream.Collectors;
  * the same (category, attribute) pair would hit {@code uk_category_attributes_pair} before the old row
  * went away. Updating keeps the row id stable as well. Rows that leave the set are deleted and flushed
  * before any new row is inserted, which keeps the ordering independent of that flush rule.</p>
+ *
+ * <p>{@link #replace} locks the category row first, so overlapping replacements of one category run
+ * one after the other and the later one starts from what the earlier committed. Without it both read
+ * the same set and the loser ends in a raw constraint or optimistic-lock exception, a 500. Flushing
+ * goes through the repository so a violation that still happens is a Spring
+ * {@code DataIntegrityViolationException}, which the exception handler maps.</p>
  */
 @Service
 @Transactional
@@ -46,14 +51,12 @@ public class CategoryAttributeService {
     private final CategoryJpaRepository categories;
     private final AttributeJpaRepository attributes;
     private final CategoryAttributeJpaRepository rows;
-    private final EntityManager entityManager;
 
     public CategoryAttributeService(CategoryJpaRepository categories, AttributeJpaRepository attributes,
-                                    CategoryAttributeJpaRepository rows, EntityManager entityManager) {
+                                    CategoryAttributeJpaRepository rows) {
         this.categories = categories;
         this.attributes = attributes;
         this.rows = rows;
-        this.entityManager = entityManager;
     }
 
     public record CategoryAttributeEntry(UUID attributeId, AttributeRole defaultRole, boolean required, int sortOrder) {
@@ -72,7 +75,8 @@ public class CategoryAttributeService {
 
     @Auditable(action = AuditAction.UPDATE, resourceType = "product-category-attributes", resourceId = "#categoryId")
     public List<CategoryAttributeView> replace(UUID categoryId, List<CategoryAttributeEntry> entries) {
-        requireCategory(categoryId);
+        categories.lockById(categoryId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.CATEGORY_NOT_FOUND, "No category " + categoryId));
         Set<UUID> requested = new HashSet<>();
         for (CategoryAttributeEntry entry : entries) {
             if (!requested.add(entry.attributeId())) {
@@ -106,7 +110,7 @@ public class CategoryAttributeService {
                 .filter(row -> !requested.contains(row.getAttributeId())).toList();
         if (!removed.isEmpty()) {
             rows.deleteAll(removed);
-            entityManager.flush();
+            rows.flush();
         }
         List<CategoryAttributeJpaEntity> added = new ArrayList<>();
         for (CategoryAttributeEntry entry : entries) {
@@ -118,7 +122,7 @@ public class CategoryAttributeService {
             row.apply(entry.defaultRole(), entry.required(), entry.sortOrder());
         }
         rows.saveAll(added);
-        entityManager.flush();
+        rows.flush();
         return views(rows.findByCategoryId(categoryId));
     }
 
