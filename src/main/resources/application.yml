@@ -374,6 +374,17 @@ stockflow:
       low-stock-threshold: ${CATALOG_LOW_STOCK_THRESHOLD:5}
       # SKUs one availability call may ask about: a page's worth, not the whole catalogue.
       max-skus-per-request: 50
+    search:
+      # Ranking weights (SCRUM-182): score = text-rank*w1 + title-similarity*w2 + exact-SKU*w3 + in-stock*w4.
+      # Text rank and similarity are 0..1, so an exact SKU always wins and stock only breaks near ties.
+      text-rank-weight: 1.0
+      similarity-weight: 1.0
+      exact-sku-weight: 10.0
+      in-stock-weight: 0.25
+      # Typo fallback when nothing matches exactly: minimum trigram similarity with the title.
+      fallback-similarity: 0.2
+      # Best matches that are ranked and pageable (stock is ranked in memory, over this many).
+      ranking-window: 500
 
   product-media:
     # Public CloudFront/custom-domain origin. Blank keeps private upload working but public gallery returns 503.

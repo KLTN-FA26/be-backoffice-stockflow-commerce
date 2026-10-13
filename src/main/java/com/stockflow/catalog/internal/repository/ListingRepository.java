@@ -232,24 +232,6 @@ where product_id=?
                 id);
     }
 
-    public List<Listing> page(long offset, int size) {
-        return jdbc.query(
-                """
-                select * from catalog.product_listing where enabled and published_title is not null
-                order by product_id limit ? offset ?
-                """,
-                ListingRepository::map,
-                size,
-                offset);
-    }
-
-    public long count() {
-        return jdbc.queryForObject(
-                "select count(*) from catalog.product_listing where enabled and published_title is"
-                        + " not null",
-                Long.class);
-    }
-
     public List<UUID> dirtyIds() {
         return jdbc.query(
                 """
