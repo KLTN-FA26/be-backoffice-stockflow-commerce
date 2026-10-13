@@ -209,6 +209,10 @@ variants keep it.
 | PUT | `/products/{productId}/axes` | `product-variants` UPDATE | replaces the set `[{attributeId, sortOrder, optionValueIds[]}]`; the diff is checked against D3 |
 | PUT | `/products/{productId}/descriptive-attributes` | `product-products` UPDATE | replaces the set `[{attributeId, valueIds[] | text | number | boolean}]` |
 
+The options of an axis are ordered by the dictionary (`attribute_values.sort_order`, then code); the
+order of `optionValueIds` in a request is not stored. PR 3's matrix order and "first combination"
+(D1/D2) follow this order, with axes ordered by `product_attributes.sort_order` and then attribute code.
+
 When `PUT /axes` gives a product its first axes and the default variant still has signature `DEFAULT`,
 nothing is generated yet; the default transform (D1) happens at the next generation call.
 

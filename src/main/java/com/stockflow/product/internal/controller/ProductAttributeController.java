@@ -48,7 +48,9 @@ class ProductAttributeController {
     }
 
     @GetMapping("/attributes")
-    @Operation(summary = "The axes of a product with their options, and its descriptive attributes")
+    @Operation(summary = "The axes of a product with their options, and its descriptive attributes",
+            description = "Axes are ordered by their sort order; the options of an axis follow the dictionary "
+                    + "(value sort order, then code).")
     @RequiresPermission(resource = ProductResources.VARIANTS, action = Action.READ)
     public ApiResponse<ProductAttributesResponse> get(@PathVariable UUID productId) {
         return ApiResponse.ok(mapper.toResponse(attributes.get(productId)));
@@ -56,7 +58,9 @@ class ProductAttributeController {
 
     @PutMapping("/axes")
     @Operation(summary = "Replace the variant axes of a product",
-            description = "The list is the whole set. Axes can only be added or removed while the product is a draft.")
+            description = "The list is the whole set. Axes can only be added or removed while the product is a draft. "
+                    + "The order of an axis's option values in the request is not stored; options are returned "
+                    + "in dictionary order (value sort order, then code).")
     @RequiresPermission(resource = ProductResources.VARIANTS, action = Action.UPDATE)
     public ApiResponse<ProductAttributesResponse> replaceAxes(@PathVariable UUID productId,
                                                               @Valid @RequestBody ReplaceAxesRequest r) {
