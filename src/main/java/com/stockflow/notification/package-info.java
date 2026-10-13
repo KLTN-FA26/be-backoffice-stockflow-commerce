@@ -3,8 +3,10 @@
  *
  * <p>WBS 3.19.2 · database schema {@code notification}</p>
  *
- * <p><b>May depend on:</b> none — this module calls no other business module. Plus {@code common} and {@code contracts}, which are
- * available to every module.</p>
+ * <p><b>May depend on:</b> {@code identity :: api} only, as the address book: a staff notice that names a team
+ * ("Sales is notified", "alert purchasing") is sent to the active accounts holding that role, and only identity
+ * knows them. The module still makes no business decision through another module and no other module calls it
+ * for one. Plus {@code common} and {@code contracts}, which are available to every module.</p>
  *
  * <p>The module has two packages and the split is the whole point:</p>
  * <ul>
@@ -14,5 +16,5 @@
  *       you reaching in; {@code ModularityTest} will.</li>
  * </ul>
  */
-@org.springframework.modulith.ApplicationModule(allowedDependencies = {})
+@org.springframework.modulith.ApplicationModule(allowedDependencies = {"identity :: api"})
 package com.stockflow.notification;
