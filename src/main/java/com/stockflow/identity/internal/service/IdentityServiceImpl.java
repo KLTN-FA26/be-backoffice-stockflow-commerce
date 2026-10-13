@@ -3,6 +3,7 @@ package com.stockflow.identity.internal.service;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.identity.api.AssignableUser;
+import com.stockflow.identity.api.StaffContact;
 import com.stockflow.identity.api.ChangePasswordCommand;
 import com.stockflow.identity.api.CreateRoleCommand;
 import com.stockflow.identity.api.CreateStaffUserCommand;
@@ -859,6 +860,16 @@ class IdentityServiceImpl implements IdentityService {
                                 ? user.getUsername() : user.getFullName(),
                         held.getOrDefault(user.getId(), List.of()).stream().filter(roleCodes::contains).toList()))
                 .toList();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<StaffContact> notificationRecipients(java.util.Set<String> roleCodes, UUID warehouseId) {
+        if (roleCodes == null || roleCodes.isEmpty()) {
+            return List.of();
+        }
+        return users.findStaffWithRolesFor(roleCodes, warehouseId).stream()
+                .map(user -> new StaffContact(user.getId(), user.getEmail())).toList();
     }
 
     @Override

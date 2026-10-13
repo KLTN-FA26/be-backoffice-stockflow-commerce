@@ -3,6 +3,8 @@ package com.stockflow.inventory.internal.service;
 import com.stockflow.common.logging.LogSafe;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.InventoryItemPolicy;
+import com.stockflow.inventory.api.LowStockItem;
+import com.stockflow.inventory.internal.domain.StockThresholds;
 import com.stockflow.inventory.api.MoveStockCommand;
 import com.stockflow.inventory.api.ReceiveStockCommand;
 import com.stockflow.inventory.api.OrderHold;
@@ -107,6 +109,36 @@ class InventoryServiceImpl implements InventoryService {
         this.clock = clock;
         this.controls = controls;
         this.policies = policies;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<LowStockItem> lowStockBatch(String afterSku, int limit) {
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be at least 1");
+        }
+        LocalDate today = BusinessCalendar.date(clock.instant());
+        List<LowStockItem> low = new ArrayList<>();
+        String cursor = afterSku == null ? "" : afterSku;
+        while (low.size() < limit) {
+            // A scan page is every SKU with a threshold, low or not, so keep reading until enough are low.
+            var page = policies.thresholdPage(cursor, Math.max(limit, 200), today);
+            for (var row : page) {
+                if (StockThresholds.isLow(row.usableOnHand(), row.reorderPoint(), row.safetyStock())) {
+                    low.add(new LowStockItem(row.sku(), row.usableOnHand(), row.reorderPoint(), row.safetyStock(),
+                            Boolean.TRUE.equals(StockThresholds.reorderRequired(row.usableOnHand(), row.reorderPoint())),
+                            Boolean.TRUE.equals(StockThresholds.belowSafetyStock(row.usableOnHand(), row.safetyStock()))));
+                    if (low.size() == limit) {
+                        return low;
+                    }
+                }
+                cursor = row.sku();
+            }
+            if (page.size() < Math.max(limit, 200)) {
+                break;
+            }
+        }
+        return low;
     }
 
     @Override

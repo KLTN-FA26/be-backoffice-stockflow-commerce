@@ -17,6 +17,7 @@ import com.stockflow.inventory.api.StockThresholdEvaluation;
 import com.stockflow.inventory.api.TrackingMode;
 import com.stockflow.inventory.internal.domain.ItemLogisticsRules;
 import com.stockflow.inventory.internal.domain.StockPolicy;
+import com.stockflow.inventory.internal.domain.StockThresholds;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
 
 import org.springframework.beans.factory.annotation.Value;
@@ -110,8 +111,8 @@ class InventoryControlServiceImpl implements InventoryControlService {
                 quantity,
                 p.reorderPoint(),
                 p.safetyStock(),
-                p.reorderPoint() == null ? null : quantity <= p.reorderPoint(),
-                p.safetyStock() == null ? null : quantity < p.safetyStock());
+                StockThresholds.reorderRequired(quantity, p.reorderPoint()),
+                StockThresholds.belowSafetyStock(quantity, p.safetyStock()));
     }
 
     @Override

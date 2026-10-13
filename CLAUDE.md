@@ -36,7 +36,7 @@ mvn test                                  # everything
 mvn test -Dtest=ModularityTest            # module boundaries only — run after ANY package change
 mvn test -Dtest=ArchitectureTest          # 18 layering/convention rules
 mvn verify                                # tests + JaCoCo
-docker compose up -d                      # postgres, redis, elasticsearch, minio, jaeger, mailpit
+docker compose up -d                      # postgres, redis, minio, jaeger, mailpit
 docker compose --profile app up           # the above plus the application container
 ```
 
