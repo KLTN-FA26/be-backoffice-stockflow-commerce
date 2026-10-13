@@ -1,6 +1,5 @@
 package com.stockflow;
 
-import static org.mockito.Mockito.when;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
@@ -8,19 +7,14 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.stockflow.common.security.RoleMatrixView;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.identity.api.UpdateRolePermissionsCommand;
-import com.stockflow.support.IntegrationTest;
-import com.stockflow.support.PostgresContainer;
-import com.stockflow.support.RedisContainer;
+import com.stockflow.support.SecuredIntegrationTest;
+import com.stockflow.support.TestTokens;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
-import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
-import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -31,10 +25,7 @@ import java.util.UUID;
  * Real filter chain, JWT authority converter and permission aspects; only token decoding is
  * stubbed.
  */
-@IntegrationTest
-@Import({PostgresContainer.class, RedisContainer.class})
-@AutoConfigureMockMvc
-@TestPropertySource(properties = {"stockflow.security.enabled=true", "stockflow.catalog.projection-retry-ms=3600000"})
+@SecuredIntegrationTest
 class InventoryCatalogSecurityIntegrationTest {
     @Autowired MockMvc mvc;
     @MockitoBean JwtDecoder decoder;
@@ -73,16 +64,7 @@ class InventoryCatalogSecurityIntegrationTest {
         identity.updateRolePermissions(
                 new UpdateRolePermissionsCommand(
                         TEST_ROLE, identity.roleMatrix(TEST_ROLE).version(), List.of(permission)));
-        String token = UUID.randomUUID().toString();
-        when(decoder.decode(token))
-                .thenReturn(
-                        Jwt.withTokenValue(token)
-                                .header("alg", "RS256")
-                                .subject(UUID.randomUUID().toString())
-                                .claim("scope_level", "ALL")
-                                .claim("roles", List.of(TEST_ROLE))
-                                .build());
-        return "Bearer " + token;
+        return TestTokens.bearer(decoder, UUID.randomUUID(), java.util.Map.of("scope_level", "ALL"), TEST_ROLE);
     }
 
     private UUID product() {
@@ -232,17 +214,11 @@ values (?,?,'Table',?,'DRAFT')
 
     @Test
     void systemAdminCanManageCatalogWithDatabasePermissions() throws Exception {
-        String token = UUID.randomUUID().toString();
-        when(decoder.decode(token))
-                .thenReturn(
-                        Jwt.withTokenValue(token)
-                                .header("alg", "RS256")
-                                .subject(UUID.randomUUID().toString())
-                                .claim("roles", List.of("SYSTEM_ADMIN"))
-                                .build());
+        String authorization = TestTokens.bearer(decoder, UUID.randomUUID(), "SYSTEM_ADMIN");
+        String token = authorization.substring("Bearer ".length());
         mvc.perform(
                         put("/api/v1/products/" + product() + "/ecommerce")
-                                .header("Authorization", "Bearer " + token)
+                                .header("Authorization", authorization)
                                 .contentType("application/json")
                                 .content("{\"revision\":0,\"slug\":\"admin-" + token + "\"}"))
                 .andExpect(status().isOk());
@@ -250,17 +226,12 @@ values (?,?,'Table',?,'DRAFT')
 
     @Test
     void obsoletePermissionClaimCannotGrantCatalogWriteAccess() throws Exception {
-        String token = UUID.randomUUID().toString();
-        when(decoder.decode(token))
-                .thenReturn(
-                        Jwt.withTokenValue(token)
-                                .header("alg", "RS256")
-                                .subject(UUID.randomUUID().toString())
-                                .claim("permissions", List.of("product-products:UPDATE"))
-                                .build());
+        String authorization = TestTokens.bearer(decoder, UUID.randomUUID(),
+                java.util.Map.of("permissions", List.of("product-products:UPDATE")));
+        String token = authorization.substring("Bearer ".length());
         mvc.perform(
                         put("/api/v1/products/" + product() + "/ecommerce")
-                                .header("Authorization", "Bearer " + token)
+                                .header("Authorization", authorization)
                                 .contentType("application/json")
                                 .content("{\"revision\":0,\"slug\":\"obsolete-" + token + "\"}"))
                 .andExpect(status().isForbidden());

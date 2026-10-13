@@ -1,9 +1,12 @@
 package com.stockflow.procurement;
 
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.procurement.api.CreatePOLineCommand;
 import com.stockflow.procurement.api.CreatePurchaseOrderCommand;
 import com.stockflow.procurement.api.ProcurementService;
+import com.stockflow.procurement.api.PurchaseOrderSummary;
 import com.stockflow.procurement.api.SupplierSpendReportQuery;
 import com.stockflow.procurement.api.SupplierSpendSummary;
 import com.stockflow.support.DemoData;
@@ -24,6 +27,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The spend report never adds amounts in different currencies. It used to: 64,000,000 VND plus
@@ -112,5 +116,50 @@ class SupplierSpendByCurrencyIntegrationTest {
             assertThat(row.currency()).isEqualTo("USD");
             assertThat(row.totalSpend()).isEqualByComparingTo("10");
         });
+    }
+
+    @Test
+    void aFilterThatMatchesNothingGivesAnEmptyPageNotAnError() {
+        UUID supplierId = supplier();
+        approvedOrder(supplierId, "VND", 1, "100000");
+
+        var page = procurement.supplierSpend(new SupplierSpendReportQuery(0, 20, supplierId, null,
+                LocalDate.now().plusYears(50), null));
+
+        assertThat(page.items()).isEmpty();
+        assertThat(page.totalElements()).isZero();
+    }
+
+    @Test
+    void anUnknownSupplierIsRefusedRatherThanReportedAsEmpty() {
+        assertThatThrownBy(() -> report(UUID.randomUUID(), null))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.SUPPLIER_NOT_FOUND));
+    }
+
+    @Test
+    void draftPendingAndCancelledOrdersAreNotSpend() {
+        UUID supplierId = supplier();
+        approvedOrder(supplierId, "VND", 1, "1000");
+        UUID draft = newOrder(supplierId, "VND", "900000").purchaseOrderId();
+        UUID pending = newOrder(supplierId, "VND", "800000").purchaseOrderId();
+        procurement.submit(pending, submitter);
+        UUID cancelled = newOrder(supplierId, "VND", "700000").purchaseOrderId();
+        procurement.cancel(cancelled, submitter, "spend test");
+
+        List<SupplierSpendSummary> rows = report(supplierId, null);
+
+        assertThat(draft).isNotNull();
+        assertThat(rows).singleElement().satisfies(row -> {
+            assertThat(row.totalSpend()).isEqualByComparingTo("1000");
+            assertThat(row.purchaseOrderCount()).isEqualTo(1);
+        });
+    }
+
+    private PurchaseOrderSummary newOrder(UUID supplierId, String currency,
+                                                                         String unitPrice) {
+        return procurement.createPurchaseOrder(new CreatePurchaseOrderCommand(supplierId, DemoData.WAREHOUSE_HCM,
+                currency, LocalDate.now().plusDays(10), null,
+                List.of(new CreatePOLineCommand("SOFA-3S-GREY", "spend test", 1, new BigDecimal(unitPrice)))));
     }
 }
