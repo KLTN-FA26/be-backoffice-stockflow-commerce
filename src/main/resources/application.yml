@@ -347,6 +347,16 @@ stockflow:
     # In-app inbox: read messages older than this are deleted by the nightly purge (unread ones are kept).
     inbox-retention-days: 90
     inbox-purge-cron: "0 45 3 * * *"
+    # Language of system-generated inbox messages (the bundle i18n/messages_<locale>.properties).
+    inbox-locale: vi
+    # Stock alerts: who is told, by staff role. The scope (all warehouses, or the ones a person is assigned to) and the
+    # exclusion of customers are applied by IdentityService.notificationRecipients.
+    inventory-alert:
+      stock-level-roles: INVENTORY_PLANNER,SYSTEM_ADMIN
+      expiry-roles: WAREHOUSE_MANAGER,INVENTORY_PLANNER,SYSTEM_ADMIN
+    # Open question Q3: also e-mail the same text to the people newly told in-app. Off until an SMTP server is configured.
+    inventory-alert-email:
+      enabled: false
 
   # ---------------------------------------------------------------------------
   # File storage. 's3' talks to MinIO locally and to S3 in a deployment - the same code path.
@@ -400,6 +410,14 @@ stockflow:
     # A lot that expires within this many days of the day it is received, or of today, is "near expiry"
     # (docs 03 BR-06; plan G5a-3 §6 #11): goods receipts warn, the expiry alerts use the same window.
     expiry-warning-days: 30
+    # Stock alerts (SCRUM-147). The drain evaluates the SKUs whose stock changed (a trigger on stock_item queues them).
+    alert-drain-interval: PT30S
+    alert-drain-initial-delay: PT30S
+    # A condition that clears and returns inside this window reopens its alert row but is not announced again.
+    alert-reopen-cooldown: PT6H
+    # Nightly net under the drain (01:30) and the expiry sweep that moves expired stock to EXPIRED (02:00), business time.
+    alert-reconcile-cron: "0 30 1 * * *"
+    expiry-sweep-cron: "0 0 2 * * *"
   checkout:
     # Public checkout without an account. Server-side catalog pricing is enforced. Keep OFF until
     # published data and deployment checkout UAT are verified. Local enables it for development.

@@ -60,6 +60,8 @@ public enum ErrorCode {
     GOODS_RECEIPT_NOT_FOUND("Goods receipt not found", 404),
     /** Also the answer for a message of another user: an inbox id is only meaningful to its recipient. */
     NOTIFICATION_NOT_FOUND("Notification not found", 404),
+    /** An alert of a warehouse outside the caller's scope is {@code OUT_OF_DATA_SCOPE}, not this. */
+    ALERT_NOT_FOUND("Stock alert not found", 404),
     /** Also the answer for a zone of another warehouse: a zone id is only meaningful in its own. */
     ZONE_NOT_FOUND("Zone not found", 404),
     SHELF_NOT_FOUND("Shelf not found", 404),
@@ -241,6 +243,7 @@ public enum ErrorCode {
     /** CUSTOMER belongs to customer accounts only, and staff roles to staff accounts only. */
     ROLE_NOT_ASSIGNABLE("This role cannot be assigned to this account", 409),
     INVALID_USER_STATUS_TRANSITION("This account cannot move to that status", 409),
+    INVALID_ALERT_TRANSITION("This alert cannot be acknowledged in its current state", 409),
     /** User management acts on staff accounts; customer accounts belong to the customer screens. */
     STAFF_ACCOUNT_REQUIRED("Customer accounts are managed from the customer screens", 409),
 
