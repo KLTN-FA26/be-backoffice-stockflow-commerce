@@ -1,5 +1,5 @@
 -- =============================================================================
--- Customer prices (SCRUM-428, V20261014000510), customer-group prices (P7, V20261014000530) and the customer status history (SCRUM-429 follow-up,
+-- Customer prices (SCRUM-428, V20261014000510), customer-group prices (P7, V20261014000530), customer groups (V20261014000600) and the customer status history (SCRUM-429 follow-up,
 -- V20261014000500). Needs the demo seed. Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
@@ -102,6 +102,17 @@ SELECT pg_temp.expect_fail('G5 a group that does not exist', $q$
     INSERT INTO catalog.pricing_rule (id, name, sku, segment_id, price, currency, created_at)
     VALUES (gen_random_uuid(), 'SEGMENT:qa:5', 'SOFA-3S-GREY', gen_random_uuid(), 11000000, 'VND', NOW()) $q$);
 
+\echo '--- customer groups (customer.segment, V20261014000600)'
+SELECT pg_temp.expect_fail('G7 a group code in lower case', $q$
+    INSERT INTO customer.segment (id, code, name, version, created_at)
+    VALUES (gen_random_uuid(), 'qa-lower', 'QA', 0, NOW()) $q$);
+SELECT pg_temp.expect_fail('G8 a group without a name', $q$
+    INSERT INTO customer.segment (id, code, name, version, created_at)
+    VALUES (gen_random_uuid(), 'QA-BLANK', '  ', 0, NOW()) $q$);
+SELECT pg_temp.expect_fail('G9 a second group with the same code', $q$
+    INSERT INTO customer.segment (id, code, name, version, created_at)
+    VALUES (gen_random_uuid(), 'QA-SEG-530', 'Again', 0, NOW()) $q$);
+
 \echo '--- grants'
 SELECT pg_temp.expect_ok('P12 catalog-customer-prices: E-commerce Admin edits, Sales and Coordinator read, Customer nothing', $q$
     DO $d$ BEGIN
@@ -125,6 +136,21 @@ SELECT pg_temp.expect_ok('G6 catalog-segment-prices: E-commerce and System Admin
             WHERE p.resource = 'catalog-segment-prices' AND p.action = 'UPDATE'
               AND r.code IN ('ECOMMERCE_ADMIN', 'SYSTEM_ADMIN')) <> 2
         THEN RAISE EXCEPTION 'an administrator cannot edit group prices'; END IF;
+    END $d$ $q$);
+
+SELECT pg_temp.expect_ok('G10 customer-segments: admins manage, Sales and Coordinator read, Customer and warehouse nothing', $q$
+    DO $d$ BEGIN
+        IF EXISTS (SELECT 1 FROM identity.role_permission rp JOIN identity.app_role r ON r.id = rp.role_id
+                   JOIN identity.permission p ON p.id = rp.permission_id
+                   WHERE p.resource = 'customer-segments'
+                     AND (r.code IN ('CUSTOMER', 'WAREHOUSE_STAFF')
+                          OR (r.code IN ('SALES_STAFF', 'ORDER_COORDINATOR') AND p.action NOT IN ('READ', 'VIEW_PAGE'))))
+        THEN RAISE EXCEPTION 'unexpected grant'; END IF;
+        IF (SELECT count(*) FROM identity.role_permission rp JOIN identity.app_role r ON r.id = rp.role_id
+            JOIN identity.permission p ON p.id = rp.permission_id
+            WHERE p.resource = 'customer-segments' AND p.action = 'UPDATE'
+              AND r.code IN ('ECOMMERCE_ADMIN', 'SYSTEM_ADMIN')) <> 2
+        THEN RAISE EXCEPTION 'an administrator cannot assign groups'; END IF;
     END $d$ $q$);
 
 ROLLBACK;

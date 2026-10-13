@@ -146,7 +146,7 @@ class CustomerServiceImpl implements CustomerService {
     @Transactional(readOnly = true)
     public PageResponse<CustomerSummary> list(ListCustomersQuery query) {
         var pageable = Pages.of(query.page(), query.size(), SORT.parse(query.sort()));
-        return Pages.toResponse(search.search(query.search(), query.status(), pageable));
+        return Pages.toResponse(search.search(query.search(), query.status(), query.segmentId(), pageable));
     }
 
     @Override

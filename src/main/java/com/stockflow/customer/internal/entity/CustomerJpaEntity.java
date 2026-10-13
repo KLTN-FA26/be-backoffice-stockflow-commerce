@@ -66,10 +66,11 @@ public class CustomerJpaEntity extends BaseEntity {
         this.status = status;
     }
 
-    public void apply(String fullName, String phone, String taxCode, CustomerStatus status) {
+    public void apply(String fullName, String phone, String taxCode, UUID segmentId, CustomerStatus status) {
         this.fullName = fullName;
         this.phone = phone;
         this.taxCode = taxCode;
+        this.segmentId = segmentId;
         this.status = status;
     }
 

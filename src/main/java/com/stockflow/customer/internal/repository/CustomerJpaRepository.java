@@ -36,6 +36,10 @@ interface CustomerJpaRepository extends BaseJpaRepository<CustomerJpaEntity> {
             """)
     boolean existsLiveTaxCode(@Param("taxCode") String taxCode, @Param("exceptId") UUID exceptId);
 
+    /** {@code [segmentId, count]} for every group that holds a customer. */
+    @Query("select c.segmentId, count(c) from CustomerJpaEntity c where c.segmentId is not null group by c.segmentId")
+    java.util.List<Object[]> countBySegment();
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select c from CustomerJpaEntity c where c.userId = :userId")
     Optional<CustomerJpaEntity> lockByUserId(@Param("userId") UUID userId);

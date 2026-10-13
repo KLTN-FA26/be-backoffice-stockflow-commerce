@@ -20,7 +20,7 @@ public final class Customer extends AggregateRoot {
     private final String email;
     private String phone;
     private String taxCode;
-    private final UUID segmentId;
+    private UUID segmentId;
     private CustomerStatus status;
     private final List<CustomerAddress> addresses;
     private final long version;
@@ -90,6 +90,20 @@ public final class Customer extends AggregateRoot {
      */
     public void changeTaxCode(String taxCode) {
         this.taxCode = TaxCode.normalise(taxCode);
+    }
+
+    /**
+     * Puts the customer in a group, or none (P7: the E-commerce Admin's decision). Prices already given - a
+     * quote, an order - keep theirs; only later pricing reads the new group.
+     *
+     * @param segmentId an existing group (the caller checks it), or null for none
+     * @throws IllegalStateException when the customer changed since {@code expectedVersion} was read
+     */
+    public void assignSegment(UUID segmentId, long expectedVersion) {
+        if (version != expectedVersion) {
+            throw new IllegalStateException("Customer changed meanwhile");
+        }
+        this.segmentId = segmentId;
     }
 
     public void updateProfile(String fullName, String phone, long expectedVersion) {

@@ -107,12 +107,15 @@ class CustomerRepositoryAdapter implements CustomerRepository, CustomerSearchRep
     }
 
     @Override
-    public Page<CustomerSummary> search(String search, String status, Pageable pageable) {
+    public Page<CustomerSummary> search(String search, String status, UUID segmentId, Pageable pageable) {
         Specification<CustomerJpaEntity> specification = Specification
                 .<CustomerJpaEntity>where(Specs.contains("fullName", search))
                 .or(Specs.contains("email", search))
                 .or(Specs.contains("phone", search))
                 .or(Specs.contains("taxCode", search));
+        if (segmentId != null) {
+            specification = specification.and(Specs.eq("segmentId", segmentId));
+        }
         if (status != null && !status.isBlank()) {
             try {
                 specification = specification.and(Specs.eq("status",

@@ -41,7 +41,8 @@ final class CustomerPersistenceMapper {
     }
 
     static void apply(Customer customer, CustomerJpaEntity entity) {
-        entity.apply(customer.fullName(), customer.phone(), customer.taxCode(), customer.status());
+        entity.apply(customer.fullName(), customer.phone(), customer.taxCode(), customer.segmentId(),
+                customer.status());
     }
 
     static void apply(CustomerAddress address, AddressJpaEntity entity) {
