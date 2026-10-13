@@ -60,12 +60,14 @@ public final class Customer extends AggregateRoot {
      * contact will activate. It cannot sign in, see prices or order until then.
      *
      * @param companyName the business name; the contact's own name stays on their account
-     * @param taxCode     required for every new customer (BR-01); normalised by {@link TaxCode}
+     * @param taxCode     optional: household businesses and small shops are customers too and may
+     *                    supply it later (decision 2026-10-12); normalised by {@link TaxCode} when given
      */
     public static Customer onboard(UUID id, UUID userId, String companyName, String email, String phone,
                                    String taxCode) {
         return new Customer(id, Objects.requireNonNull(userId, "userId"), companyName, email, phone,
-                TaxCode.normalise(taxCode), null, CustomerStatus.PENDING_ACTIVATION, List.of(), 0L, null);
+                taxCode == null || taxCode.isBlank() ? null : TaxCode.normalise(taxCode), null,
+                CustomerStatus.PENDING_ACTIVATION, List.of(), 0L, null);
     }
 
     /**
@@ -100,7 +102,8 @@ public final class Customer extends AggregateRoot {
 
     /**
      * A staff status change. PENDING_ACTIVATION is entered only by onboarding and left for ACTIVE only
-     * by activation (kltn-docs 18 §5): staff may close a pending customer (INACTIVE), nothing else.
+     * by activation (kltn-docs 18 §5): staff may close a pending customer (INACTIVE), nothing else. A
+     * closed customer leaves INACTIVE only through {@link #reopen}, which needs a reason.
      *
      * @throws IllegalStateException for a transition the lifecycle does not have
      */
@@ -108,10 +111,30 @@ public final class Customer extends AggregateRoot {
         Objects.requireNonNull(target, "target");
         if (target == status) return;
         if (target == CustomerStatus.PENDING_ACTIVATION
-                || (status == CustomerStatus.PENDING_ACTIVATION && target != CustomerStatus.INACTIVE)) {
+                || (status == CustomerStatus.PENDING_ACTIVATION && target != CustomerStatus.INACTIVE)
+                || status == CustomerStatus.INACTIVE) {
             throw new IllegalStateException("A customer cannot go from %s to %s".formatted(status, target));
         }
         this.status = target;
+    }
+
+    /**
+     * A manager reopens a closed customer (decision 2026-10-12; kltn-docs 18 §5 itself ends Closed at
+     * Anonymized). The customer returns to where its contact left off: ACTIVE if the portal account was
+     * activated (or there is none), PENDING_ACTIVATION if it never was, so Sales can invite again.
+     *
+     * @param portalActivated whether the contact's account has a password
+     * @throws IllegalStateException unless the customer is INACTIVE
+     * @throws IllegalArgumentException without a reason
+     */
+    public void reopen(String reason, boolean portalActivated) {
+        if (status != CustomerStatus.INACTIVE) {
+            throw new IllegalStateException("Only a closed customer can be reopened, not " + status);
+        }
+        if (reason == null || reason.isBlank()) {
+            throw new IllegalArgumentException("A reason is required to reopen a closed customer");
+        }
+        this.status = userId == null || portalActivated ? CustomerStatus.ACTIVE : CustomerStatus.PENDING_ACTIVATION;
     }
 
     public CustomerAddress addAddress(CustomerAddress address) {

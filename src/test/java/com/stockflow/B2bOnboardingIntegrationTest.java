@@ -251,7 +251,6 @@ class B2bOnboardingIntegrationTest {
                 "email", unique("perm-admin"))), null).andExpect(status().isCreated());
         for (String invalid : List.of(
                 json(Map.of("taxCode", mst(), "contactName", "B", "email", unique("v1"))),
-                json(Map.of("companyName", "A", "contactName", "B", "email", unique("v-no-mst"))),
                 json(Map.of("companyName", "A", "taxCode", "12345", "contactName", "B", "email", unique("v-mst"))),
                 json(Map.of("companyName", "A", "taxCode", mst(), "contactName", "B", "email", "not-an-email")),
                 json(Map.of("companyName", "A", "taxCode", mst(), "contactName", "B", "email", unique("v2"),
@@ -478,7 +477,7 @@ class B2bOnboardingIntegrationTest {
         String again = create(sales, json(Map.of("companyName", "Again", "taxCode", mst, "contactName", "D",
                 "email", unique("mst-again"))), null).andExpect(status().isCreated()).andReturn().getResponse()
                 .getContentAsString();
-        changeStatus(first, "ACTIVE").andExpect(status().isConflict())
+        reopen(first, "Back with the same tax code").andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("CUSTOMER_TAX_CODE_ALREADY_EXISTS"));
         assertThat(customerStatus(first)).isEqualTo("INACTIVE");
         assertThat(mapper.readTree(again).at("/data/customer/taxCode").asText()).isEqualTo(mst);
@@ -575,9 +574,9 @@ class B2bOnboardingIntegrationTest {
         changeStatus(customerId, "INACTIVE").andExpect(status().isOk());
         me(after).andExpect(status().isUnauthorized());
         login(email, PASSWORD).andExpect(status().isForbidden());
-        // Reopening a closed customer is the existing staff rule (not in §5, which ends Closed at
-        // Anonymized); while it exists, the account follows it.
-        changeStatus(customerId, "ACTIVE").andExpect(status().isOk());
+        // Reopening a closed customer is a manager decision with a reason (2026-10-12; §5 ends Closed at
+        // Anonymized); the account follows it, old sessions stay ended.
+        reopen(customerId, "Customer asked to resume").andExpect(status().isOk());
         me(loginToken(email, PASSWORD)).andExpect(status().isOk());
     }
 
@@ -610,6 +609,107 @@ class B2bOnboardingIntegrationTest {
         login(staffName, PASSWORD).andExpect(status().isOk());
         // And the unlinked staff used throughout this class still works.
         mvc.perform(get("/api/v1/customers").header("Authorization", "Bearer " + sales)).andExpect(status().isOk());
+    }
+
+    @Test
+    void aShopWithoutATaxCodeIsOnboardedActivatesAndOrdersOnItsOwn() throws Exception {
+        String email = unique("shop");
+        String created = create(sales, json(Map.of("companyName", "Quan ca phe Nho", "contactName", "Chu quan",
+                "email", email)), null)
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.customer.taxCode").doesNotExist())
+                .andExpect(jsonPath("$.data.customer.status").value("PENDING_ACTIVATION"))
+                .andReturn().getResponse().getContentAsString();
+        UUID customerId = UUID.fromString(mapper.readTree(created).at("/data/customer/customerId").asText());
+        activate(onlyLinkSentTo(email), PASSWORD).andExpect(status().isOk());
+        String shop = loginToken(email, PASSWORD);
+
+        String address = mvc.perform(post("/api/v1/customers/" + customerId + "/addresses")
+                        .header("Authorization", "Bearer " + shop).contentType("application/json").content("""
+                                {"type":"SHIPPING","recipientName":"Chu quan","phone":"0901234567",
+                                 "line1":"12 Nguyen Hue","wardCode":"26734","wardName":"Ben Nghe",
+                                 "provinceCode":"79","provinceName":"Ho Chi Minh","countryCode":"VN"}
+                                """))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
+        assertThat(address).contains("SHIPPING");
+        long price = jdbc.queryForObject(
+                "SELECT price FROM catalog.pricing_rule WHERE name='BASE:SOFA-3S-GREY' AND active", Long.class);
+        mvc.perform(post("/api/v1/orders").header("Authorization", "Bearer " + shop)
+                        .contentType("application/json").content(json(Map.of(
+                                "requestId", UUID.randomUUID(), "customerId", customerId,
+                                "lines", List.of(Map.of("sku", "SOFA-3S-GREY", "quantity", 1, "unitPrice", price))))))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.customerId").value(customerId.toString()));
+
+        // Supplied later by Sales, with the usual rules.
+        String code = mst();
+        staffUpdate(customerId, Map.of("fullName", "Quan ca phe Nho", "version", version(customerId), "taxCode", code))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.taxCode").value(code));
+    }
+
+    @Test
+    void aManagerReopensAClosedCustomerOnlyWithAReasonAndOldSessionsStayDead() throws Exception {
+        String email = unique("reopen");
+        UUID customerId = createdCustomer(email);
+        activate(onlyLinkSentTo(email), PASSWORD).andExpect(status().isOk());
+        String before = loginToken(email, PASSWORD);
+
+        changeStatus(customerId, "INACTIVE").andExpect(status().isOk());
+        changeStatus(customerId, "ACTIVE").andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
+        reopen(customerId, "   ").andExpect(status().isBadRequest());
+        changeStatus(customerId, "BLOCKED").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("INVALID_CUSTOMER_STATUS_TRANSITION"));
+        // Sales is not the manager (kltn-docs 18 §2: E-commerce Admin).
+        mvc.perform(post("/api/v1/customers/" + customerId + "/status").header("Authorization", "Bearer " + sales)
+                        .contentType("application/json").content(json(Map.of("status", "ACTIVE", "reason", "x"))))
+                .andExpect(status().isForbidden());
+        assertThat(customerStatus(customerId)).isEqualTo("INACTIVE");
+
+        reopen(customerId, "Khach xac nhan tiep tuc hop tac").andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("ACTIVE"));
+        me(before).andExpect(status().isUnauthorized());
+        me(loginToken(email, PASSWORD)).andExpect(status().isOk());
+
+        String history = mvc.perform(get("/api/v1/customers/" + customerId + "/status-history")
+                        .header("Authorization", "Bearer " + sales))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        var entries = mapper.readTree(history).get("data");
+        assertThat(entries).hasSize(4);
+        assertThat(entries.get(0).path("fromStatus").isMissingNode()).isTrue();
+        assertThat(entries.get(0).get("toStatus").asText()).isEqualTo("PENDING_ACTIVATION");
+        assertThat(entries.get(1).get("toStatus").asText()).isEqualTo("ACTIVE");
+        assertThat(entries.get(2).get("toStatus").asText()).isEqualTo("INACTIVE");
+        assertThat(entries.get(3).get("fromStatus").asText()).isEqualTo("INACTIVE");
+        assertThat(entries.get(3).get("reason").asText()).isEqualTo("Khach xac nhan tiep tuc hop tac");
+        assertThat(entries.get(3).get("changedBy").asText()).isNotBlank();
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM platform.audit_log WHERE resource_type='customer' AND resource_id=?
+                  AND action='TRANSITION'""", Long.class, customerId.toString())).isGreaterThanOrEqualTo(2);
+        mvc.perform(get("/api/v1/customers/" + customerId + "/status-history")
+                .header("Authorization", "Bearer " + warehouse)).andExpect(status().isForbidden());
+    }
+
+    @Test
+    void aClosedCustomerThatNeverActivatedReopensPendingAndCanBeInvitedAgain() throws Exception {
+        String email = unique("reopen-pending");
+        UUID customerId = createdCustomer(email);
+        String firstLink = onlyLinkSentTo(email);
+        changeStatus(customerId, "INACTIVE").andExpect(status().isOk());
+        reopen(customerId, "Khach doi y").andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("PENDING_ACTIVATION"));
+        backdateInvitation(email, 120, 3600);
+        resend(sales, customerId).andExpect(status().isOk());
+        activate(firstLink, PASSWORD).andExpect(status().isBadRequest());
+        String fresh = linksSentTo(email).stream().filter(link -> !link.equals(firstLink)).findFirst().orElseThrow();
+        activate(fresh, PASSWORD).andExpect(status().isOk());
+        assertThat(customerStatus(customerId)).isEqualTo("ACTIVE");
+    }
+
+    private ResultActions reopen(UUID customerId, String reason) throws Exception {
+        return mvc.perform(post("/api/v1/customers/" + customerId + "/status")
+                .header("Authorization", "Bearer " + ecommerceAdmin).contentType("application/json")
+                .content(json(Map.of("status", "ACTIVE", "reason", reason))));
     }
 
     // ---------------------------------------------------------------- helpers

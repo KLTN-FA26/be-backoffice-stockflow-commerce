@@ -60,6 +60,8 @@ class GuestCheckoutServiceTest {
     private static com.stockflow.catalog.api.CatalogService catalog() {
         var catalog = mock(com.stockflow.catalog.api.CatalogService.class);
         when(catalog.checkoutPrices(any())).thenReturn(java.util.Map.of("TABLE-OAK", Money.vnd(100)));
+        when(catalog.checkoutPrices(any(UUID.class), org.mockito.ArgumentMatchers.anyMap()))
+                .thenReturn(java.util.Map.of("TABLE-OAK", Money.vnd(100)));
         return catalog;
     }
 

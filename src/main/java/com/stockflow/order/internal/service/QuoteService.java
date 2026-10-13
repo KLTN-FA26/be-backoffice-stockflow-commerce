@@ -28,6 +28,13 @@ import com.stockflow.order.internal.domain.QuoteLine;
 import com.stockflow.order.internal.domain.QuoteRepository;
 import com.stockflow.order.internal.domain.QuoteStatus;
 import com.stockflow.order.internal.repository.QuoteSearch;
+import com.stockflow.catalog.api.CatalogService;
+import com.stockflow.contracts.CustomerActedOnQuote;
+import com.stockflow.customer.api.CustomerSummary;
+import com.stockflow.identity.api.IdentityService;
+import com.stockflow.identity.api.StaffUser;
+import org.springframework.context.ApplicationEventPublisher;
+import com.stockflow.catalog.api.PriceSchedule;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Sort;
@@ -75,6 +82,7 @@ class QuoteService implements Quotes {
             .of("createdAt", "validUntil", "quoteNumber", "status")
             .withDefault("createdAt", Sort.Direction.DESC);
 
+    private final CatalogService catalog;
     private final QuoteRepository quotes;
     private final QuoteSearch search;
     private final ProductionRecords production;
@@ -84,9 +92,15 @@ class QuoteService implements Quotes {
     private final OrderService orders;
     private final ObjectMapper json;
     private final Clock clock;
+    private final IdentityService identity;
+    private final ApplicationEventPublisher events;
 
     QuoteService(QuoteRepository quotes, QuoteSearch search, ProductionRecords production, CustomerService customers,
-                 DesignService designs, QuotedOrders quotedOrders, OrderService orders, ObjectMapper json, Clock clock) {
+                 DesignService designs, QuotedOrders quotedOrders, OrderService orders, ObjectMapper json, Clock clock,
+                 CatalogService catalog, IdentityService identity, ApplicationEventPublisher events) {
+        this.identity = identity;
+        this.events = events;
+        this.catalog = catalog;
         this.quotes = quotes;
         this.search = search;
         this.production = production;
@@ -198,6 +212,7 @@ class QuoteService implements Quotes {
         quotes.save(quote);
         quotes.recordTransition(quote.id(), quote.revision(), from, QuoteStatus.ACCEPTED, null, null, now,
                 user.userId());
+        notifySales(quote, CustomerActedOnQuote.Action.ACCEPTED, null, quote.sentBy(), now);
         log.info("Quote {} accepted", quote.quoteNumber());
         return view(quote);
     }
@@ -212,6 +227,8 @@ class QuoteService implements Quotes {
         quotes.save(quote);
         quotes.recordTransition(quote.id(), quote.revision(), from, QuoteStatus.CHANGES_REQUESTED,
                 quote.customerFeedback(), null, quote.respondedAt(), user.userId());
+        notifySales(quote, CustomerActedOnQuote.Action.CHANGES_REQUESTED, quote.customerFeedback(), quote.sentBy(),
+                quote.respondedAt());
         return view(quote);
     }
 
@@ -255,6 +272,56 @@ class QuoteService implements Quotes {
         quotes.recordTransition(quote.id(), quote.revision(), QuoteStatus.ACCEPTED, QuoteStatus.CONVERTED,
                 order.orderNumber(), null, now, user.userId());
         log.info("Quote {} converted into order {} ({})", quote.quoteNumber(), order.orderNumber(), order.status());
+        return view(quote);
+    }
+
+    @Override
+    @Auditable(action = AuditAction.CREATE, resourceType = "quote", resourceId = "#result?.id()")
+    public QuoteView reorder(CurrentUser user, Reorder command) {
+        UUID requestId = Objects.requireNonNull(command.requestId(), "requestId");
+        UUID orderId = Objects.requireNonNull(command.orderId(), "orderId");
+        Optional<UUID> own = portalCustomer(user);
+        OrderSummary order = orders.findById(orderId)
+                .filter(o -> own.isEmpty() || own.get().equals(o.customerId()))
+                .orElseThrow(() -> new NotFoundException("order", orderId));
+        quotes.lockRequest(requestId);
+        Optional<Quote> earlier = quotes.findByRequestId(requestId);
+        if (earlier.isPresent()) {
+            if (!earlier.get().customerId().equals(order.customerId())) {
+                throw new BusinessException(ErrorCode.IDEMPOTENCY_KEY_REUSED);
+            }
+            return view(earlier.get());
+        }
+        Quote source = quotes.findByConvertedOrderId(orderId).orElseThrow(() -> new BusinessException(
+                ErrorCode.ORDER_NOT_QUOTED, "Order %s was bought at the price list".formatted(order.orderNumber())));
+        UUID customerId = source.customerId();
+        requireNewWorkFor(customerId);
+        Quote.Offer old = source.offer();
+        Instant now = clock.instant();
+        // The deal stays with its own quote and order: every line starts again from today's price list, and a
+        // line the list cannot price is left unpriced for Sales (R1) - never the old price, never a zero.
+        Map<String, Integer> blankUnits = new java.util.HashMap<>();
+        old.lines().forEach(line -> blankUnits.merge(line.blankSku().code(), reorderedUnits(line), Integer::sum));
+        List<Line> lines = old.lines().stream()
+                .map(line -> new Line(line.blankSku().code(), line.designSnapshotId(), line.printSpec(),
+                        reorderedUnits(line), listTiers(customerId, line.blankSku().code(),
+                        blankUnits.get(line.blankSku().code()))))
+                .toList();
+        // The source quote's validity window, counted from now; Sales sets the real one before sending.
+        Instant validUntil = now.plus(java.time.Duration.between(source.sentAt(), old.validUntil()));
+        Quote.Offer offer = offer(customerId, new Draft(old.paymentTerm(), old.depositPercent(), validUntil,
+                old.terms(), lines), true);
+        requireTermAllowed(customerId, offer);
+        Quote quote = Quote.draft(Identifiers.newId(), quotes.nextNumber(today()), requestId, customerId, offer);
+        quotes.save(quote);
+        quotes.recordTransition(quote.id(), 1, null, QuoteStatus.DRAFT, "Reorder of order " + order.orderNumber(),
+                null, now, user.userId());
+        if (own.isPresent()) {
+            // The customer asked: the draft waits for the Sales user who negotiated the order's quote.
+            notifySales(quote, CustomerActedOnQuote.Action.REORDER_REQUESTED, order.orderNumber(), source.sentBy(), now);
+        }
+        log.info("Quote {} drafted to reorder order {} (from quote {})", quote.quoteNumber(), order.orderNumber(),
+                source.quoteNumber());
         return view(quote);
     }
 
@@ -357,7 +424,37 @@ class QuoteService implements Quotes {
      * Builds and verifies the offer: every design must be a snapshot this customer confirmed, for the
      * product the blank belongs to. An edit replaces the lines (new ids); nothing was accepted on a draft.
      */
+    private static int reorderedUnits(QuoteLine line) {
+        return line.acceptedQuantity() == null ? line.quantity() : line.acceptedQuantity();
+    }
+
+    /**
+     * Today's list tiers of a blank for a reorder of {@code units} (the blank's total, P5), or none when the
+     * list has no price for it or starts above it (R1): Sales prices that line.
+     */
+    private List<Tier> listTiers(UUID customerId, String blank, int units) {
+        PriceSchedule schedule;
+        try {
+            schedule = catalog.priceSchedule(customerId, blank);
+        } catch (BusinessException noPrice) {
+            if (noPrice.errorCode() != ErrorCode.PRICE_NOT_AVAILABLE) throw noPrice;
+            return List.of();
+        }
+        if (units < schedule.moq()) {
+            return List.of();
+        }
+        return schedule.tiers().stream().map(t -> new Tier(t.minQuantity(), t.unitPrice().amount())).toList();
+    }
+
     private Quote.Offer offer(UUID customerId, Draft draft) {
+        return offer(customerId, draft, false);
+    }
+
+    /**
+     * @param asGiven take each line's tiers as they are, none meaning not priced yet (a reorder, R1), instead
+     *                of filling omitted tiers from the price list
+     */
+    private Quote.Offer offer(UUID customerId, Draft draft, boolean asGiven) {
         Objects.requireNonNull(draft, "draft");
         if (draft.lines() == null || draft.lines().isEmpty()) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A quote needs at least one line");
@@ -366,17 +463,75 @@ class QuoteService implements Quotes {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A quote is valid until a moment still ahead");
         }
         List<QuoteLine> lines = new ArrayList<>();
+        Map<String, Integer> blankUnits = new java.util.HashMap<>();
+        draft.lines().forEach(line -> blankUnits.merge(new Sku(line.blankSku()).code(), line.quantity(), Integer::sum));
         int lineNo = 1;
         for (Line line : draft.lines()) {
             Sku blank = new Sku(line.blankSku());
             designs.verifySnapshotForSku(line.designSnapshotId(), customerId, blank.code());
-            List<PriceTier> tiers = line.tiers() == null ? List.of() : line.tiers().stream()
-                    .map(t -> PriceTier.of(t.minQuantity(), t.unitPrice())).toList();
+            List<PriceTier> tiers = !asGiven && (line.tiers() == null || line.tiers().isEmpty())
+                    ? defaultTiers(customerId, blank, blankUnits.get(blank.code()))
+                    : line.tiers().stream().map(t -> PriceTier.of(t.minQuantity(), t.unitPrice())).toList();
             lines.add(new QuoteLine(Identifiers.newId(), lineNo++, blank, line.designSnapshotId(), line.printSpec(),
                     line.quantity(), tiers, null, null));
         }
         return new Quote.Offer(draft.paymentTerm(), draft.depositPercent(),
                 draft.validUntil().truncatedTo(java.time.temporal.ChronoUnit.MICROS), draft.terms(), lines);
+    }
+
+    /**
+     * kltn-docs 14 step 2: a quote's price starts from the customer's price list - its own tiers for the
+     * blank, else its group's or the base price (SCRUM-428). Copied into the quote, so a later price-list
+     * change does not move a quote while it is valid (14 BR-03). Sales may enter any valid tiers instead: no
+     * discount limit and no internal approval (user decision 2026-10-12, overriding 14 BR-10); the customer
+     * accepts.
+     *
+     * <p>{@code quantity} is the draft's total of the blank, every design together (P5). Below the list's first
+     * tier the list has no price for the quantity (user decision P4, 2026-10-12):
+     * Sales negotiates and enters the line's tiers - the first tier's price is never applied to a smaller
+     * quantity, and the refusal says so instead of reading as a quote MOQ the customer never saw.</p>
+     */
+    private List<PriceTier> defaultTiers(UUID customerId, Sku blank, int quantity) {
+        PriceSchedule schedule;
+        try {
+            schedule = catalog.priceSchedule(customerId, blank.code());
+        } catch (BusinessException noPrice) {
+            if (noPrice.errorCode() != ErrorCode.PRICE_NOT_AVAILABLE) throw noPrice;
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "No price list price for " + blank.code() + "; enter the line's price tiers");
+        }
+        if (quantity < schedule.moq()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "%d units of %s is below the customer's price list minimum of %d; enter the negotiated price tiers"
+                            .formatted(quantity, blank.code(), schedule.moq()));
+        }
+        return schedule.tiers().stream()
+                .map(t -> PriceTier.of(t.minQuantity(), t.unitPrice().amount())).toList();
+    }
+
+    /**
+     * Tells Sales that the customer's step made the next one theirs. Published in this transaction and
+     * delivered after commit; the recipient is the Sales account that sent the quote, and none - reported, not
+     * replaced - when that account is gone, inactive or has no e-mail.
+     */
+    private void notifySales(Quote quote, CustomerActedOnQuote.Action action, String detail, UUID salesUserId,
+                             Instant at) {
+        String email = null;
+        if (salesUserId != null) {
+            try {
+                StaffUser sales = identity.user(salesUserId);
+                if (sales != null && "ACTIVE".equals(sales.status()) && sales.email() != null
+                        && !sales.email().isBlank()) {
+                    email = sales.email();
+                }
+            } catch (BusinessException gone) {
+                log.warn("Quote {}: Sales user {} cannot be notified ({})", quote.quoteNumber(), salesUserId,
+                        gone.errorCode());
+            }
+        }
+        String customerName = customers.findById(quote.customerId()).map(CustomerSummary::fullName).orElse(null);
+        events.publishEvent(new CustomerActedOnQuote(quote.id(), quote.quoteNumber(), quote.customerId(), customerName,
+                action, detail, salesUserId, email, at));
     }
 
     private Quotes.SampleGate gate(UUID customerId, QuoteLine line) {
@@ -424,6 +579,8 @@ class QuoteService implements Quotes {
         Instant now = clock.instant();
         QuoteSearch.Row row = search.findRow(quote.id()).orElseThrow();
         BigDecimal acceptedTotal = null;
+        boolean priced = quote.offer().priced();
+        BigDecimal proposedTotal = priced ? BigDecimal.ZERO : null;
         List<LineView> lines = new ArrayList<>();
         for (QuoteLine line : quote.offer().lines()) {
             BigDecimal lineTotal = line.acceptedQuantity() == null ? null
@@ -431,9 +588,17 @@ class QuoteService implements Quotes {
             if (lineTotal != null) {
                 acceptedTotal = acceptedTotal == null ? lineTotal : acceptedTotal.add(lineTotal);
             }
+            BigDecimal proposedPrice = !line.priced() ? null
+                    : line.priceFor(quote.offer().proposedUnits(line.blankSku().code())).amount();
+            BigDecimal proposedLineTotal = proposedPrice == null ? null
+                    : proposedPrice.multiply(BigDecimal.valueOf(line.quantity()));
+            if (priced) {
+                proposedTotal = proposedTotal.add(proposedLineTotal);
+            }
             lines.add(new LineView(line.id(), line.lineNo(), line.blankSku().code(), line.designSnapshotId(),
-                    line.printSpec(), line.quantity(), line.moq(),
+                    line.printSpec(), line.quantity(), line.priced(), line.priced() ? line.moq() : null,
                     line.tiers().stream().map(t -> new Tier(t.minQuantity(), t.unitPrice().amount())).toList(),
+                    proposedPrice, proposedLineTotal,
                     line.acceptedQuantity(), line.acceptedUnitPrice() == null ? null : line.acceptedUnitPrice().amount(),
                     lineTotal, gate(quote.customerId(), line)));
         }
@@ -446,7 +611,9 @@ class QuoteService implements Quotes {
                 .toList();
         Quote.Offer offer = quote.offer();
         return new QuoteView(quote.id(), quote.quoteNumber(), quote.customerId(), quote.statusAt(now), quote.revision(),
-                offer.paymentTerm(), offer.depositPercent(), offer.validUntil(), offer.terms(), lines, acceptedTotal,
+                offer.paymentTerm(), offer.depositPercent(), offer.validUntil(), offer.terms(), lines, priced,
+                proposedTotal,
+                acceptedTotal,
                 quote.sentAt(), quote.sentBy(), quote.respondedAt(), quote.respondedBy(), quote.customerFeedback(),
                 quote.cancellationReason(), converted, quote.convertedAt(), history, row.createdAt(), row.createdBy(),
                 row.version());

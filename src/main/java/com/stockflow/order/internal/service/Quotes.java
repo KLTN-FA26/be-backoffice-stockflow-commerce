@@ -46,9 +46,17 @@ public interface Quotes {
     record SampleGate(boolean satisfied, UUID approvedSampleId, boolean reorder) {
     }
 
+    /**
+     * @param priced            false for a reorder line the price list could not price (R1): no tiers, and
+     *                          {@code moq}, {@code proposedUnitPrice}, {@code proposedLineTotal} are null
+     * @param proposedUnitPrice the tier price of the proposed {@code quantity}, computed on the server
+     * @param proposedLineTotal {@code quantity} x {@code proposedUnitPrice}
+     */
     record LineView(UUID id, int lineNo, String blankSku, UUID designSnapshotId, String printSpec, int quantity,
-                    int moq, List<Tier> tiers, Integer acceptedQuantity, BigDecimal acceptedUnitPrice,
-                    BigDecimal acceptedLineTotal, SampleGate sample) {
+                    boolean priced, Integer moq, List<Tier> tiers, BigDecimal proposedUnitPrice,
+                    BigDecimal proposedLineTotal,
+                    Integer acceptedQuantity, BigDecimal acceptedUnitPrice, BigDecimal acceptedLineTotal,
+                    SampleGate sample) {
     }
 
     record Transition(int revision, QuoteStatus fromStatus, QuoteStatus toStatus, String reason, Instant changedAt,
@@ -64,7 +72,8 @@ public interface Quotes {
      */
     record QuoteView(UUID id, String quoteNumber, UUID customerId, QuoteStatus status, int revision,
                      PaymentTerm paymentTerm, BigDecimal depositPercent, Instant validUntil, String terms,
-                     List<LineView> lines, BigDecimal acceptedTotal, Instant sentAt, UUID sentBy, Instant respondedAt,
+                     List<LineView> lines, boolean priced, BigDecimal proposedTotal, BigDecimal acceptedTotal,
+                     Instant sentAt, UUID sentBy, Instant respondedAt,
                      UUID respondedBy, String customerFeedback, String cancellationReason,
                      ConvertedOrder convertedOrder, Instant convertedAt, List<Transition> history,
                      Instant createdAt, String createdBy, long version) {
@@ -83,6 +92,10 @@ public interface Quotes {
     }
 
     record Conversion(long version, UUID shippingAddressId, UUID billingAddressId) {
+    }
+
+    /** Ordering again what {@code orderId} - an order converted from a quote - bought. */
+    record Reorder(UUID requestId, UUID orderId) {
     }
 
     /** Idempotent on {@code requestId}: a retry returns the quote the first call created. */
@@ -111,6 +124,21 @@ public interface Quotes {
      * the quote ACCEPTED and creates nothing.
      */
     QuoteView convert(CurrentUser user, UUID quoteId, Conversion conversion);
+
+    /**
+     * A new DRAFT quote for the same blanks, designs, print specifications and quantities as the order,
+     * priced from the customer's current price list - never at the old negotiated price (user decision
+     * 2026-10-12: a deal applies to its own quote and order only). A line the list cannot price - no list
+     * price, or the blank's total below the list's first tier - is left explicitly unpriced for Sales (user
+     * decision R1); the quote cannot be sent until Sales prices it. Nothing is payable until Sales sends it
+     * and the customer accepts; the draft is Sales' to negotiate and the customer sees it once sent.
+     * Idempotent on {@code requestId}. A portal customer reorders only their own orders (404 otherwise).
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code ORDER_NOT_QUOTED} for an order bought at the
+     *         price list (place it again instead), {@code CUSTOMER_NOT_ACTIVE}, {@code PAYMENT_TERM_NOT_ALLOWED}
+     *         (the old term is no longer allowed: kept as a guard, not decided otherwise)
+     */
+    QuoteView reorder(CurrentUser user, Reorder command);
 
     /** Writes EXPIRED on sent quotes past their validity, at most {@code limit}; returns how many. */
     int expireDue(int limit);

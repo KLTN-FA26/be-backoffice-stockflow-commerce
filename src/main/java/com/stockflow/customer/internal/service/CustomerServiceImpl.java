@@ -6,7 +6,9 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.SortWhitelist;
+import com.stockflow.customer.api.ChangeCustomerStatusCommand;
 import com.stockflow.customer.api.CheckoutCustomer;
+import com.stockflow.customer.api.CustomerStatusEntry;
 import com.stockflow.customer.api.CreditTerms;
 import com.stockflow.customer.api.SaveCreditTermsCommand;
 import com.stockflow.customer.api.CustomerAddressSummary;
@@ -24,6 +26,8 @@ import com.stockflow.customer.internal.domain.Customer;
 import com.stockflow.customer.internal.domain.CustomerAddress;
 import com.stockflow.customer.internal.domain.CustomerRepository;
 import com.stockflow.customer.internal.domain.CustomerStatus;
+import com.stockflow.customer.internal.domain.CustomerStatusChange;
+import com.stockflow.customer.internal.domain.CustomerStatusHistory;
 import com.stockflow.customer.internal.repository.CustomerSearchRepository;
 import com.stockflow.identity.api.PortalAccountService;
 import org.springframework.data.domain.Sort;
@@ -48,14 +52,17 @@ class CustomerServiceImpl implements CustomerService {
     private final CustomerSearchRepository search;
     private final PortalAccountService accounts;
     private final CreditProfileRepository creditProfiles;
+    private final CustomerStatusHistory history;
     private final java.time.Clock clock;
 
     CustomerServiceImpl(CustomerRepository customers, CustomerSearchRepository search,
-                        PortalAccountService accounts, CreditProfileRepository creditProfiles, java.time.Clock clock) {
+                        PortalAccountService accounts, CreditProfileRepository creditProfiles,
+                        CustomerStatusHistory history, java.time.Clock clock) {
         this.customers = customers;
         this.search = search;
         this.accounts = accounts;
         this.creditProfiles = creditProfiles;
+        this.history = history;
         this.clock = clock;
     }
 
@@ -125,6 +132,12 @@ class CustomerServiceImpl implements CustomerService {
 
     @Override
     @Transactional(readOnly = true)
+    public boolean segmentExists(UUID segmentId) {
+        return customers.segmentExists(segmentId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public Optional<CustomerSummary> findByUserId(UUID userId) {
         return customers.findByUserId(userId).map(CustomerServiceImpl::toSummary);
     }
@@ -157,23 +170,47 @@ class CustomerServiceImpl implements CustomerService {
     }
 
     @Override
-    public CustomerSummary changeStatus(UUID customerId, String status) {
-        Customer customer = requireForUpdate(customerId);
+    @com.stockflow.common.audit.Auditable(action = com.stockflow.common.audit.AuditAction.TRANSITION,
+            resourceType = "customer", resourceId = "#command.customerId()")
+    public CustomerSummary changeStatus(ChangeCustomerStatusCommand command) {
+        Customer customer = requireForUpdate(command.customerId());
+        CustomerStatus from = customer.status();
         CustomerStatus target;
         try {
-            target = CustomerStatus.valueOf(status.trim().toUpperCase(Locale.ROOT));
+            target = CustomerStatus.valueOf(command.status().trim().toUpperCase(Locale.ROOT));
         } catch (IllegalArgumentException invalid) {
-            throw new BusinessException(ErrorCode.UNSUPPORTED_PARAMETER, "Unknown customer status " + status);
+            throw new BusinessException(ErrorCode.UNSUPPORTED_PARAMETER, "Unknown customer status " + command.status());
         }
         try {
-            customer.changeStatus(target);
+            if (from == CustomerStatus.INACTIVE && target == CustomerStatus.ACTIVE) {
+                boolean activated = customer.userId() == null || !accounts.awaitingActivation(customer.userId());
+                customer.reopen(command.reason(), activated);
+            } else {
+                customer.changeStatus(target);
+            }
         } catch (IllegalStateException refused) {
             throw new BusinessException(ErrorCode.INVALID_CUSTOMER_STATUS_TRANSITION, refused.getMessage());
+        } catch (IllegalArgumentException invalid) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, invalid.getMessage());
         }
         requireTaxCodeFree(customer);
         CustomerSummary saved = saveGuardingTaxCode(customer);
         syncPortalAccess(customer);
+        if (customer.status() != from) {
+            history.record(new CustomerStatusChange(Identifiers.newId(), customer.id(), from, customer.status(),
+                    command.reason(), command.actorUserId(), clock.instant()));
+        }
         return saved;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<CustomerStatusEntry> statusHistory(UUID customerId) {
+        if (!customers.existsById(customerId)) throw new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND);
+        return history.of(customerId).stream()
+                .map(change -> new CustomerStatusEntry(change.from() == null ? null : change.from().name(),
+                        change.to().name(), change.reason(), change.changedBy(), change.changedAt()))
+                .toList();
     }
 
     /**
@@ -181,14 +218,14 @@ class CustomerServiceImpl implements CustomerService {
      * closed its account; an ACTIVE one may. The contact's account follows in this transaction - the
      * customer row is locked first, the account second, the order resend and activation use too - so
      * a block ends every live session at commit and a lifted block lets the same password in again.
-     * A pending customer's account has no password, so nothing to switch until activation.
+     * Reinstating keeps no session: the ones a block or closure ended stay ended. A pending customer
+     * reopened after closure gets its (passwordless) account back so an invitation can be redeemed.
      */
     private void syncPortalAccess(Customer customer) {
         if (customer.userId() == null) return;
         switch (customer.status()) {
             case BLOCKED, INACTIVE -> accounts.suspend(customer.userId());
-            case ACTIVE -> accounts.reinstate(customer.userId());
-            case PENDING_ACTIVATION -> { }
+            case ACTIVE, PENDING_ACTIVATION -> accounts.reinstate(customer.userId());
         }
     }
 

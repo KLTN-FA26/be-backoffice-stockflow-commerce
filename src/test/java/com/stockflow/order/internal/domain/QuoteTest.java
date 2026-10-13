@@ -79,7 +79,7 @@ class QuoteTest {
         assertThat(line.priceFor(5000)).isEqualTo(Money.vnd(1800));
         assertThat(line.priceFor(25000)).isEqualTo(Money.vnd(1650));
         assertThatThrownBy(() -> line.priceFor(999)).extracting(QuoteTest::code).isEqualTo(ErrorCode.QUOTE_BELOW_MOQ);
-        assertThatThrownBy(() -> line(1, 500)).as("a proposal below its own MOQ")
+        assertThatThrownBy(() -> offer(line(1, 500))).as("a proposal below its own MOQ")
                 .extracting(QuoteTest::code).isEqualTo(ErrorCode.QUOTE_BELOW_MOQ);
     }
 
@@ -105,6 +105,28 @@ class QuoteTest {
     }
 
     @Test
+    void anUnpricedLineIsExplicitAndCannotBeSent() {
+        QuoteLine unpriced = new QuoteLine(UUID.randomUUID(), 1, new Sku("CUP-PP-500"), UUID.randomUUID(), null, 500,
+                List.of(), null, null);
+        assertThat(unpriced.priced()).isFalse();
+        assertThatThrownBy(() -> unpriced.priceFor(500)).extracting(QuoteTest::code)
+                .isEqualTo(ErrorCode.QUOTE_NOT_PRICED);
+        assertThatThrownBy(unpriced::moq).extracting(QuoteTest::code).isEqualTo(ErrorCode.QUOTE_NOT_PRICED);
+
+        // Below a priced line's MOQ is still refused; the unpriced line is not held to one.
+        Quote.Offer offer = offer(unpriced);
+        assertThat(offer.priced()).isFalse();
+        Quote quote = Quote.draft(UUID.randomUUID(), "QT-4", UUID.randomUUID(), UUID.randomUUID(), offer);
+        assertThatThrownBy(() -> quote.send(sales, NOW)).extracting(QuoteTest::code)
+                .isEqualTo(ErrorCode.QUOTE_NOT_PRICED);
+        assertThat(quote.status()).isEqualTo(QuoteStatus.DRAFT);
+
+        quote.revise(offer(line(1, 2000)));
+        quote.send(sales, NOW);
+        assertThat(quote.status()).isEqualTo(QuoteStatus.SENT);
+    }
+
+    @Test
     void sendThenAcceptFixesQuantitiesAndPricesFromTheTiers() {
         QuoteLine first = line(1, 2000);
         QuoteLine second = line(2, 1000);
@@ -117,10 +139,41 @@ class QuoteTest {
 
         assertThat(quote.status()).isEqualTo(QuoteStatus.ACCEPTED);
         assertThat(quote.respondedBy()).isEqualTo(customerUser);
+        // Two designs on one blank: 2,000 + 6,000 = 8,000 blanks pick the 5,000 break for both (P5).
         assertThat(first.acceptedQuantity()).isEqualTo(2000);
-        assertThat(first.acceptedUnitPrice()).isEqualTo(Money.vnd(2000));
+        assertThat(first.acceptedUnitPrice()).isEqualTo(Money.vnd(1800));
         assertThat(second.acceptedQuantity()).as("the customer picked a higher tier").isEqualTo(6000);
         assertThat(second.acceptedUnitPrice()).isEqualTo(Money.vnd(1800));
+    }
+
+    @Test
+    void designsOnTheSameBlankAreCountedTogetherOtherBlanksAreNot() {
+        // 600 with logo A + 400 with logo B = 1,000 blanks: at the MOQ, so the quote is valid.
+        QuoteLine logoA = line(1, 600);
+        QuoteLine logoB = line(2, 400);
+        Quote.Offer offer = offer(logoA, logoB);
+        assertThat(offer.proposedUnits("CUP-PP-500")).isEqualTo(1000);
+
+        Quote quote = Quote.draft(UUID.randomUUID(), "QT-2", UUID.randomUUID(), UUID.randomUUID(), offer);
+        quote.send(sales, NOW);
+        quote.accept(Map.of(logoA.id(), 3000, logoB.id(), 2000), customerUser, NOW.plusSeconds(60));
+        assertThat(logoA.acceptedUnitPrice()).as("5,000 blanks together").isEqualTo(Money.vnd(1800));
+        assertThat(logoB.acceptedUnitPrice()).isEqualTo(Money.vnd(1800));
+
+        // Another blank is not added in: 600 of one and 400 of another are each below 1,000.
+        QuoteLine otherBlank = new QuoteLine(UUID.randomUUID(), 2, new Sku("CUP-PP-700"), UUID.randomUUID(), null, 400,
+                logoA.tiers(), null, null);
+        assertThatThrownBy(() -> offer(line(1, 600), otherBlank)).extracting(QuoteTest::code)
+                .isEqualTo(ErrorCode.QUOTE_BELOW_MOQ);
+
+        // Accepting fewer than the MOQ in total is refused, whatever each line says.
+        Quote again = Quote.draft(UUID.randomUUID(), "QT-3", UUID.randomUUID(), UUID.randomUUID(),
+                offer(line(1, 600), line(2, 400)));
+        again.send(sales, NOW);
+        UUID first = again.offer().lines().getFirst().id();
+        assertThatThrownBy(() -> again.accept(Map.of(first, 500), customerUser, NOW.plusSeconds(60)))
+                .extracting(QuoteTest::code).isEqualTo(ErrorCode.QUOTE_BELOW_MOQ);
+        assertThat(again.status()).isEqualTo(QuoteStatus.SENT);
     }
 
     @Test

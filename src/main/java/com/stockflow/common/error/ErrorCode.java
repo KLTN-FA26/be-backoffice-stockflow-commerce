@@ -29,6 +29,13 @@ public enum ErrorCode {
     PRODUCT_GALLERY_REQUIRED("An approved non-empty product gallery is required", 409),
     PRODUCT_NOT_PURCHASABLE("This product is not currently available for purchase", 409),
     PRICE_NOT_AVAILABLE("No selling price is available for this SKU", 409),
+    /** kltn-docs 13 BR-05: the first tier of a customer's own price is its minimum order quantity. */
+    /** Direct checkout never falls back to another price below the list's first tier (P4): Sales quotes it. */
+    CUSTOMER_PRICE_BELOW_MOQ("The quantity is below this customer's price list minimum for the SKU; ask Sales for a quote", 409),
+    CUSTOMER_PRICE_NOT_FOUND("This customer has no own price for the SKU", 404),
+    /** P7: a customer group (customer.segment) that does not exist. */
+    SEGMENT_NOT_FOUND("Customer group not found", 404),
+    SEGMENT_PRICE_NOT_FOUND("This customer group has no price for the SKU", 404),
     CATALOG_PRICE_AMBIGUOUS("More than one selling price has the same priority", 409),
     MALFORMED_REQUEST("The request body could not be read", 400),
     UNSUPPORTED_PARAMETER("Unsupported parameter value", 400),
@@ -175,6 +182,10 @@ public enum ErrorCode {
     QUOTE_EXPIRED("This quote is no longer valid", 409),
     /** BR-ORD-007: a quoted line is ordered at or above its minimum order quantity. */
     QUOTE_BELOW_MOQ("The quantity is below the minimum order quantity of the quote", 409),
+    /** Reorder: only an order placed from a quote is re-quoted; a price-list order is simply placed again. */
+    /** R1: a reorder line the price list cannot price waits for Sales; nothing is sent or accepted unpriced. */
+    QUOTE_NOT_PRICED("A line of this quote has no price yet; Sales enters it before the quote is sent", 409),
+    ORDER_NOT_QUOTED("This order was not placed from a quote; order it again at the current price", 409),
     /** BR-PRD-09: a deposit order goes to production only once the deposit has arrived. */
     ORDER_DEPOSIT_NOT_RECEIVED("The deposit for this order has not arrived yet", 409),
     /** SCRUM-460: from IN_PRODUCTION on, a customer asks and Sales or the coordinator decides. */

@@ -19,6 +19,10 @@ interface QuoteJpaRepository extends BaseJpaRepository<QuoteJpaEntity> {
     @Query("select q.id from QuoteJpaEntity q where q.requestId = :requestId")
     Optional<UUID> findIdByRequestId(@Param("requestId") UUID requestId);
 
+    /** Served by {@code uk_quote_converted_order}. */
+    @Query("select q.id from QuoteJpaEntity q where q.convertedOrderId = :orderId")
+    Optional<UUID> findIdByConvertedOrderId(@Param("orderId") UUID orderId);
+
     /** Served by {@code ix_quote_sent_validity}. */
     @Query("""
             select q.id from QuoteJpaEntity q

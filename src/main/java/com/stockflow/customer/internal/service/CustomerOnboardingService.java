@@ -9,6 +9,8 @@ import com.stockflow.customer.api.CustomerSummary;
 import com.stockflow.customer.internal.domain.Customer;
 import com.stockflow.customer.internal.domain.CustomerRepository;
 import com.stockflow.customer.internal.domain.CustomerStatus;
+import com.stockflow.customer.internal.domain.CustomerStatusChange;
+import com.stockflow.customer.internal.domain.CustomerStatusHistory;
 import com.stockflow.customer.internal.domain.TaxCode;
 import com.stockflow.identity.api.InviteCustomerAccountCommand;
 import com.stockflow.identity.api.PortalAccountService;
@@ -60,17 +62,19 @@ public class CustomerOnboardingService {
     private static final Logger log = LoggerFactory.getLogger(CustomerOnboardingService.class);
 
     private final CustomerRepository customers;
+    private final CustomerStatusHistory history;
     private final PortalAccountService accounts;
     private final NotificationService notifications;
     private final TransactionTemplate transactions;
     private final Clock clock;
     private final String activationUrl;
 
-    CustomerOnboardingService(CustomerRepository customers, PortalAccountService accounts,
+    CustomerOnboardingService(CustomerRepository customers, CustomerStatusHistory history, PortalAccountService accounts,
                               NotificationService notifications, PlatformTransactionManager transactionManager,
                               Clock clock,
                               @Value("${stockflow.customer.portal-activation-url:}") String activationUrl) {
         this.customers = customers;
+        this.history = history;
         this.accounts = accounts;
         this.notifications = notifications;
         this.transactions = new TransactionTemplate(transactionManager);
@@ -79,9 +83,10 @@ public class CustomerOnboardingService {
     }
 
     /**
-     * What Sales enters. {@code companyName} names the customer, {@code taxCode} identifies it (BR-01),
+     * What Sales enters. {@code companyName} names the customer; {@code taxCode} identifies it (BR-01) but
+     * is optional - household businesses and small shops may supply it later (decision 2026-10-12);
      * {@code contactName} is the person invited; {@code actorUserId} is the Sales account, recorded on
-     * the invitation.
+     * the invitation and in the status history.
      */
     public record CreateBusinessCustomer(String companyName, String taxCode, String contactName, String email,
                                          String phone, UUID actorUserId) {
@@ -100,7 +105,7 @@ public class CustomerOnboardingService {
     }
 
     /**
-     * @throws BusinessException {@code VALIDATION_FAILED} (malformed tax code or phone);
+     * @throws BusinessException {@code VALIDATION_FAILED} (malformed tax code when one is given, or phone);
      *         {@code CUSTOMER_TAX_CODE_ALREADY_EXISTS} for a pending or active customer with this tax
      *         code; {@code CUSTOMER_EMAIL_ALREADY_EXISTS}; {@code USER_EMAIL_ALREADY_EXISTS} for any
      *         account - staff or customer - with this e-mail; {@code PORTAL_INVITATION_UNAVAILABLE} when
@@ -112,14 +117,15 @@ public class CustomerOnboardingService {
         String email = command.email().trim().toLowerCase(Locale.ROOT);
         String taxCode;
         try {
-            taxCode = TaxCode.normalise(command.taxCode());
+            taxCode = command.taxCode() == null || command.taxCode().isBlank()
+                    ? null : TaxCode.normalise(command.taxCode());
         } catch (IllegalArgumentException invalid) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, invalid.getMessage());
         }
         record Created(CustomerSummary customer, PortalInvitationLink link) {
         }
         Created created = writeRejectingDuplicates(() -> transactions.execute(status -> {
-            if (customers.isTaxCodeLive(taxCode, null)) {
+            if (taxCode != null && customers.isTaxCodeLive(taxCode, null)) {
                 throw new BusinessException(ErrorCode.CUSTOMER_TAX_CODE_ALREADY_EXISTS);
             }
             if (customers.findByEmail(email).isPresent()) {
@@ -134,7 +140,10 @@ public class CustomerOnboardingService {
             } catch (IllegalArgumentException invalid) {
                 throw new BusinessException(ErrorCode.VALIDATION_FAILED, invalid.getMessage());
             }
-            return new Created(CustomerServiceImpl.toSummary(customers.save(customer)), link);
+            CustomerSummary saved = CustomerServiceImpl.toSummary(customers.save(customer));
+            history.record(new CustomerStatusChange(Identifiers.newId(), customer.id(), null,
+                    CustomerStatus.PENDING_ACTIVATION, null, command.actorUserId(), clock.instant()));
+            return new Created(saved, link);
         }));
         return invited(created.customer(), created.link());
     }
@@ -187,7 +196,10 @@ public class CustomerOnboardingService {
                     .orElseThrow(() -> new BusinessException(ErrorCode.PORTAL_INVITATION_INVALID));
             accounts.activate(token, password);
             customer.activatePortal();
-            return customers.save(customer).email();
+            String email = customers.save(customer).email();
+            history.record(new CustomerStatusChange(Identifiers.newId(), customer.id(),
+                    CustomerStatus.PENDING_ACTIVATION, CustomerStatus.ACTIVE, null, userId, clock.instant()));
+            return email;
         }));
     }
 

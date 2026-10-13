@@ -63,8 +63,13 @@ class QuoteServiceTest {
     private final DesignService designs = mock(DesignService.class);
     private final QuotedOrders quotedOrders = mock(QuotedOrders.class);
     private final OrderService orders = mock(OrderService.class);
+    private final com.stockflow.catalog.api.CatalogService catalog = mock(com.stockflow.catalog.api.CatalogService.class);
+    private final com.stockflow.identity.api.IdentityService identity =
+            mock(com.stockflow.identity.api.IdentityService.class);
+    private final org.springframework.context.ApplicationEventPublisher events =
+            mock(org.springframework.context.ApplicationEventPublisher.class);
     private final QuoteService service = new QuoteService(quotes, search, production, customers, designs, quotedOrders,
-            orders, new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC));
+            orders, new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC), catalog, identity, events);
 
     private final UUID customer = UUID.randomUUID();
     private final UUID portalUser = UUID.randomUUID();
@@ -170,6 +175,45 @@ class QuoteServiceTest {
         assertThatThrownBy(() -> service.convert(sales, accepted.id(), new Quotes.Conversion(6, null, null)))
                 .as("a version not seen").extracting(QuoteServiceTest::code).isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
         verify(quotedOrders, never()).placeQuotedOrder(any());
+    }
+
+    @Test
+    void aReorderOfABlankWithoutAListPriceReachesSalesUnpricedNeverAtTheOldDeal() {
+        Quote source = stored(QuoteStatus.CONVERTED);
+        UUID orderId = source.convertedOrderId();
+        when(orders.findById(orderId)).thenReturn(Optional.of(new OrderSummary(orderId, "SO-1", customer,
+                OrderStatus.CONFIRMED, Money.vnd(9_000_000), List.of(), NOW)));
+        when(quotes.findByConvertedOrderId(orderId)).thenReturn(Optional.of(source));
+        when(quotes.findByRequestId(any())).thenReturn(Optional.empty());
+        when(quotes.nextNumber(any())).thenReturn("QT-2");
+        when(catalog.priceSchedule(customer, "CUP-PP-500"))
+                .thenThrow(new BusinessException(ErrorCode.PRICE_NOT_AVAILABLE));
+        when(identity.user(sales.userId())).thenReturn(new com.stockflow.identity.api.StaffUser(sales.userId(), "sales",
+                "sales@example.com", "Sales", "ACTIVE", List.of("SALES_STAFF"), List.of(), false, null, null, NOW,
+                "admin", 0));
+
+        Quotes.QuoteView draft = service.reorder(portal, new Quotes.Reorder(UUID.randomUUID(), orderId));
+
+        assertThat(draft.status()).isEqualTo(QuoteStatus.DRAFT);
+        assertThat(draft.priced()).isFalse();
+        assertThat(draft.proposedTotal()).isNull();
+        assertThat(draft.lines()).singleElement().satisfies(line -> {
+            assertThat(line.priced()).isFalse();
+            assertThat(line.tiers()).as("not the 1,800 deal, not a zero").isEmpty();
+            assertThat(line.moq()).isNull();
+            assertThat(line.proposedUnitPrice()).isNull();
+            assertThat(line.quantity()).as("what the order bought").isEqualTo(5000);
+            assertThat(line.designSnapshotId()).isEqualTo(design);
+        });
+        verify(quotedOrders, never()).placeQuotedOrder(any());
+        ArgumentCaptor<Object> published = ArgumentCaptor.forClass(Object.class);
+        verify(events).publishEvent(published.capture());
+        assertThat(published.getValue()).isInstanceOfSatisfying(com.stockflow.contracts.CustomerActedOnQuote.class,
+                e -> {
+                    assertThat(e.action()).isEqualTo(com.stockflow.contracts.CustomerActedOnQuote.Action.REORDER_REQUESTED);
+                    assertThat(e.detail()).isEqualTo("SO-1");
+                    assertThat(e.salesEmail()).isEqualTo("sales@example.com");
+                });
     }
 
     @Test

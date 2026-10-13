@@ -64,7 +64,36 @@ public final class Quote {
                 }
             }
             lines = List.copyOf(lines);
+            Map<String, Integer> blanks = unitsByBlank(lines, line -> line.quantity());
+            for (QuoteLine line : lines) {
+                int units = blanks.get(line.blankSku().code());
+                if (line.priced() && units < line.moq()) {
+                    throw new BusinessException(ErrorCode.QUOTE_BELOW_MOQ,
+                            "Line %d: %d units of %s on this quote, below its MOQ of %d".formatted(line.lineNo(), units,
+                                    line.blankSku().code(), line.moq()));
+                }
+            }
         }
+
+        /** Whether every line has its price: what a quote needs before it is sent (R1). */
+        public boolean priced() {
+            return lines.stream().allMatch(QuoteLine::priced);
+        }
+
+        /** The proposed units of this blank over every line (P5): what picks each line's price break. */
+        public int proposedUnits(String blankSku) {
+            return unitsByBlank(lines, QuoteLine::quantity).getOrDefault(blankSku, 0);
+        }
+    }
+
+    /** Units per blank SKU, every design on it together; never across SKUs (P5). */
+    private static Map<String, Integer> unitsByBlank(List<QuoteLine> lines,
+                                                     java.util.function.ToIntFunction<QuoteLine> units) {
+        Map<String, Integer> total = new HashMap<>();
+        for (QuoteLine line : lines) {
+            total.merge(line.blankSku().code(), units.applyAsInt(line), Math::addExact);
+        }
+        return total;
     }
 
     private final UUID id;
@@ -137,6 +166,13 @@ public final class Quote {
     public void send(UUID by, Instant now) {
         Objects.requireNonNull(by, "by");
         requireStatus(QuoteStatus.DRAFT, "send");
+        for (QuoteLine line : offer.lines()) {
+            if (!line.priced()) {
+                throw new BusinessException(ErrorCode.QUOTE_NOT_PRICED,
+                        "Quote %s line %d has no price yet; enter its tiers before sending".formatted(quoteNumber,
+                                line.lineNo()));
+            }
+        }
         if (!offer.validUntil().isAfter(now)) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Quote " + quoteNumber + " would be sent expired");
         }
@@ -147,7 +183,8 @@ public final class Quote {
 
     /**
      * SENT → ACCEPTED within the validity (BR-ORD-008). Each line is accepted at the quantity asked for —
-     * its proposed quantity when none is given — and at the price of that quantity's break.
+     * its proposed quantity when none is given — and at its own break for the accepted total of its blank
+     * (P5: every design on the same blank counted together, never across blanks).
      *
      * @param units per line id; a line not named is accepted at its proposed quantity
      */
@@ -165,10 +202,16 @@ public final class Quote {
         Map<UUID, Integer> chosen = new HashMap<>();
         for (QuoteLine line : offer.lines()) {
             int quantity = asked.getOrDefault(line.id(), line.quantity());
-            line.priceFor(quantity);   // refuses below the MOQ before anything changes
+            if (quantity < 1) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Line " + line.lineNo() + " needs at least 1 unit");
+            }
             chosen.put(line.id(), quantity);
         }
-        offer.lines().forEach(line -> line.accept(chosen.get(line.id())));
+        Map<String, Integer> blanks = unitsByBlank(offer.lines(), line -> chosen.get(line.id()));
+        for (QuoteLine line : offer.lines()) {
+            line.priceFor(blanks.get(line.blankSku().code()));   // refuses below the MOQ before anything changes
+        }
+        offer.lines().forEach(line -> line.accept(chosen.get(line.id()), blanks.get(line.blankSku().code())));
         status = QuoteStatus.ACCEPTED;
         respondedAt = now;
         respondedBy = by;

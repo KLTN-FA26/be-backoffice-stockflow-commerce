@@ -17,8 +17,11 @@ class CustomerOnboardingTest {
         assertThat(TaxCode.normalise("0312345678-001")).isEqualTo("0312345678-001");
         assertThat(TaxCode.normalise("0312345678001")).isEqualTo("0312345678-001");
         assertThat(TaxCode.normalise("0312.345.678-001")).isEqualTo("0312345678-001");
+        // A household business: its representative's personal identification number (T1, Circular 86/2024 art. 5(5)).
+        assertThat(TaxCode.normalise("079085012345")).isEqualTo("079085012345");
+        assertThat(TaxCode.normalise("079 085 012 345")).isEqualTo("079085012345");
         for (String bad : new String[]{null, " ", "031234567", "03123456789", "0312345678-01", "ABC1234567",
-                "0312345678-0012", "0312345678_001"}) {
+                "0312345678-0012", "0312345678_001", "07908501234", "0790850123456-1", "079085012345-001"}) {
             assertThatThrownBy(() -> TaxCode.normalise(bad)).isInstanceOf(IllegalArgumentException.class);
         }
     }
@@ -42,14 +45,15 @@ class CustomerOnboardingTest {
     }
 
     @Test
-    void aPendingCustomerCanBeClosedButNotRevivedAndATaxCodeIsRequired() {
+    void aPendingCustomerCanBeClosedButNotActivatedAndAGivenTaxCodeMustBeWellFormed() {
         Customer customer = pending();
         customer.changeStatus(CustomerStatus.INACTIVE);
         assertThatThrownBy(customer::activatePortal).isInstanceOf(IllegalStateException.class);
         assertThatThrownBy(() -> customer.changeStatus(CustomerStatus.PENDING_ACTIVATION))
                 .isInstanceOf(IllegalStateException.class);
+        // Optional since 2026-10-12 (household businesses), but never malformed when given.
         assertThatThrownBy(() -> Customer.onboard(UUID.randomUUID(), UUID.randomUUID(), "Co", "a@example.test",
-                null, null)).isInstanceOf(IllegalArgumentException.class);
+                null, "12345")).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> Customer.onboard(UUID.randomUUID(), null, "Co", "a@example.test",
                 null, "0312345678")).isInstanceOf(NullPointerException.class);
     }
@@ -61,6 +65,31 @@ class CustomerOnboardingTest {
         legacy.changeTaxCode("0109876543");
         assertThat(legacy.taxCode()).isEqualTo("0109876543");
         assertThatThrownBy(() -> legacy.changeTaxCode(null)).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void aShopMayHaveNoTaxCodeAndAClosedCustomerReopensOnlyWithAReason() {
+        Customer shop = Customer.onboard(UUID.randomUUID(), UUID.randomUUID(), "Quan nho", "shop@example.test",
+                null, "  ");
+        assertThat(shop.taxCode()).isNull();
+        assertThat(shop.status()).isEqualTo(CustomerStatus.PENDING_ACTIVATION);
+        shop.changeStatus(CustomerStatus.INACTIVE);
+        assertThatThrownBy(() -> shop.changeStatus(CustomerStatus.ACTIVE)).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> shop.changeStatus(CustomerStatus.BLOCKED)).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> shop.reopen(" ", false)).isInstanceOf(IllegalArgumentException.class);
+        shop.reopen("came back", false);
+        assertThat(shop.status()).isEqualTo(CustomerStatus.PENDING_ACTIVATION);
+        assertThatThrownBy(() -> shop.reopen("again", false)).isInstanceOf(IllegalStateException.class);
+
+        Customer activated = pending();
+        activated.activatePortal();
+        activated.changeStatus(CustomerStatus.INACTIVE);
+        activated.reopen("came back", true);
+        assertThat(activated.status()).isEqualTo(CustomerStatus.ACTIVE);
+
+        assertThatThrownBy(() -> new CustomerStatusChange(UUID.randomUUID(), UUID.randomUUID(),
+                CustomerStatus.INACTIVE, CustomerStatus.ACTIVE, " ", null, java.time.Instant.now()))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     private static Customer pending() {

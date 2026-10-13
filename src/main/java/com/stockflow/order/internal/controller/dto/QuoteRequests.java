@@ -36,7 +36,8 @@ public final class QuoteRequests {
             @NotNull(message = "designSnapshotId is required") UUID designSnapshotId,
             @Size(max = 2000, message = "printSpec is at most 2000 characters") String printSpec,
             @Min(value = 1, message = "quantity must be at least 1") int quantity,
-            @NotEmpty(message = "a line needs at least one price tier") @Size(max = 20, message = "at most 20 tiers")
+            @Schema(description = "Omit to start from the customer's price list for the blank (SCRUM-428)")
+            @Size(max = 20, message = "at most 20 tiers")
             List<@Valid Tier> tiers) {
     }
 
@@ -59,6 +60,10 @@ public final class QuoteRequests {
             @Size(max = 2000, message = "terms are at most 2000 characters") String terms,
             @NotEmpty(message = "a quote needs at least one line") @Size(max = 50, message = "at most 50 lines")
             List<@Valid Line> lines) {
+    }
+
+    /** Reorder of an order placed from a quote; {@code requestId} makes a retried click return the same draft. */
+    public record Reorder(@NotNull(message = "requestId is required") UUID requestId) {
     }
 
     public record Version(@NotNull(message = "version is required") Long version) {

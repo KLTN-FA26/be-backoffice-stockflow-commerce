@@ -184,6 +184,12 @@ class PortalAccountServiceImpl implements PortalAccountService {
         return true;
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public boolean awaitingActivation(UUID userId) {
+        return users.findById(new UserId(userId)).map(User::awaitingActivation).orElse(false);
+    }
+
     /** Holds CUSTOMER and nothing else - the only accounts a customer's status may switch off. */
     private boolean customerOnly(UUID userId) {
         var held = userRoles.findByUserId(userId);

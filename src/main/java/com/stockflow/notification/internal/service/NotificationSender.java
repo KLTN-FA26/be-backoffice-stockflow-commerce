@@ -1,5 +1,6 @@
 package com.stockflow.notification.internal.service;
 
+import com.stockflow.contracts.CustomerActedOnQuote;
 import com.stockflow.common.http.RestClientFactory;
 import com.stockflow.contracts.PurchaseOrderSent;
 import com.stockflow.notification.api.PortalInvitationMail;
@@ -64,6 +65,24 @@ class NotificationSender {
                 invitation.companyName(),
                 invitation.activationUrl(),
                 INVITATION_EXPIRY.format(invitation.expiresAt())));
+        mail.send(message);
+    }
+
+    /**
+     * Tells the Sales user that a customer's step on a quote is theirs to follow up (accepted, changes asked,
+     * reorder). Internal staff mail; the customer's own data stays in the back office, only the quote and
+     * order numbers and the customer's name are written.
+     */
+    void sendQuoteNotice(CustomerActedOnQuote event) {
+        var messages = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
+        String key = "quote.mail." + event.action().name().toLowerCase(Locale.ROOT);
+        String customer = event.customerName() == null ? "" : event.customerName();
+        String detail = event.detail() == null ? "" : event.detail();
+        var message = new SimpleMailMessage();
+        message.setFrom(mailFrom);
+        message.setTo(event.salesEmail());
+        message.setSubject(messages.getString(key + ".subject").formatted(customer, event.quoteNumber(), detail));
+        message.setText(messages.getString(key + ".body").formatted(customer, event.quoteNumber(), detail));
         mail.send(message);
     }
 

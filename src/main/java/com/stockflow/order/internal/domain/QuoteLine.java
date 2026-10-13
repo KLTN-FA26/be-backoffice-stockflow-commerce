@@ -13,7 +13,10 @@ import java.util.UUID;
 
 /**
  * One quoted line: a blank, the confirmed design printed on it, how it is printed, and its price breaks.
- * The lowest break is the minimum order quantity (BR-ORD-007). What the customer accepted — a quantity at
+ * The lowest break is the minimum order quantity (BR-ORD-007). Breaks are read at the quote's total of the
+ * blank, every design on it counted together (user decision P5, 2026-10-12): 600 cups with logo A and 400
+ * with logo B are 1,000 blanks. Each line keeps its own breaks, so differently printed lines may still be
+ * priced differently. What the customer accepted — a quantity at
  * or above the MOQ and the price of its break — is fixed on the line at acceptance and never recomputed:
  * the order is placed at that price even if the tiers were read differently later.
  */
@@ -49,9 +52,9 @@ public final class QuoteLine {
                     "A print specification is at most " + MAX_PRINT_SPEC + " characters");
         }
         this.printSpec = spec;
-        if (tiers == null || tiers.isEmpty()) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Line " + lineNo + " needs at least one price tier");
-        }
+        // No tiers = not priced yet: only a reorder the price list cannot price makes one (user decision R1),
+        // and the quote refuses to be sent - so accepted or converted - until Sales has priced every line.
+        tiers = tiers == null ? List.of() : tiers;
         var seen = new HashSet<Integer>();
         for (PriceTier tier : tiers) {
             if (!seen.add(tier.minQuantity())) {
@@ -63,10 +66,6 @@ public final class QuoteLine {
         if (quantity < 1 || quantity > MAX_QUANTITY) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Line " + lineNo + " quantity is out of range");
         }
-        if (quantity < moq()) {
-            throw new BusinessException(ErrorCode.QUOTE_BELOW_MOQ,
-                    "Line %d proposes %d units, below its MOQ of %d".formatted(lineNo, quantity, moq()));
-        }
         this.quantity = quantity;
         if ((acceptedQuantity == null) != (acceptedUnitPrice == null)) {
             throw new IllegalArgumentException("An accepted line has both its quantity and its price");
@@ -75,8 +74,14 @@ public final class QuoteLine {
         this.acceptedUnitPrice = acceptedUnitPrice;
     }
 
+    /** Whether Sales has priced the line; a reorder the price list could not price starts without (R1). */
+    public boolean priced() {
+        return !tiers.isEmpty();
+    }
+
     /** The minimum order quantity: where the lowest price break starts. */
     public int moq() {
+        requirePriced();
         return tiers.getFirst().minQuantity();
     }
 
@@ -85,6 +90,7 @@ public final class QuoteLine {
      * a price sent by a client is never used.
      */
     public Money priceFor(int units) {
+        requirePriced();
         if (units < moq() || units > MAX_QUANTITY) {
             throw new BusinessException(ErrorCode.QUOTE_BELOW_MOQ,
                     "Line %d: %d units is below its MOQ of %d".formatted(lineNo, units, moq()));
@@ -98,10 +104,17 @@ public final class QuoteLine {
         return price;
     }
 
-    void accept(int units) {
-        Money price = priceFor(units);
+    /** @param blankUnits the quote's accepted total of this line's blank, which picks the break */
+    void accept(int units, int blankUnits) {
+        Money price = priceFor(blankUnits);
         acceptedQuantity = units;
         acceptedUnitPrice = price;
+    }
+
+    private void requirePriced() {
+        if (tiers.isEmpty()) {
+            throw new BusinessException(ErrorCode.QUOTE_NOT_PRICED, "Line " + lineNo + " has no price yet");
+        }
     }
 
     void clearAcceptance() {

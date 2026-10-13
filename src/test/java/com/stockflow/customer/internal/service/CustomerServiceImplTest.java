@@ -26,7 +26,8 @@ class CustomerServiceImplTest {
         CustomerSearchRepository search = mock(CustomerSearchRepository.class);
         PortalAccountService identities = mock(PortalAccountService.class);
         var service = new CustomerServiceImpl(customers, search, identities,
-                mock(com.stockflow.customer.internal.domain.CreditProfileRepository.class), java.time.Clock.systemUTC());
+                mock(com.stockflow.customer.internal.domain.CreditProfileRepository.class),
+                mock(com.stockflow.customer.internal.domain.CustomerStatusHistory.class), java.time.Clock.systemUTC());
 
         assertThatThrownBy(() -> service.register(new RegisterCustomerCommand("Customer",
                 "Customer@Example.com", "0901234567", "StrongPass1")))
@@ -46,7 +47,8 @@ class CustomerServiceImplTest {
         CustomerRepository customers = mock(CustomerRepository.class);
         when(customers.findById(customer.id())).thenReturn(Optional.of(customer));
         return new CustomerServiceImpl(customers, mock(CustomerSearchRepository.class), mock(PortalAccountService.class),
-                mock(com.stockflow.customer.internal.domain.CreditProfileRepository.class), java.time.Clock.systemUTC());
+                mock(com.stockflow.customer.internal.domain.CreditProfileRepository.class),
+                mock(com.stockflow.customer.internal.domain.CustomerStatusHistory.class), java.time.Clock.systemUTC());
     }
 
     @Test
