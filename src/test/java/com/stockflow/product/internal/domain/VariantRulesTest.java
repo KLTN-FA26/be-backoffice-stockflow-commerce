@@ -60,6 +60,22 @@ class VariantRulesTest {
         assertCode(() -> VariantMatrix.missing(all, nineExisting, VariantRulesTest::sign), VARIANT_MATRIX_TOO_LARGE);
     }
 
+    /** Refused from the axis sizes alone: a 20^6 matrix is 64 million rows and must never be enumerated. */
+    @Test
+    void aHugeMatrixIsRefusedWithoutBeingBuilt() {
+        assertCode(() -> VariantMatrix.requireWithinCap(List.of(20, 20, 20, 20, 20, 20), 0), VARIANT_MATRIX_TOO_LARGE);
+        assertCode(() -> VariantMatrix.requireWithinCap(List.of(Integer.MAX_VALUE, Integer.MAX_VALUE,
+                Integer.MAX_VALUE), Integer.MAX_VALUE), VARIANT_MATRIX_TOO_LARGE);
+    }
+
+    @Test
+    void theCapCountsOnlyWhatTheProductDoesNotHaveYet() {
+        VariantMatrix.requireWithinCap(List.of(10, 10), 0);
+        VariantMatrix.requireWithinCap(List.of(11, 10), 10);
+        VariantMatrix.requireWithinCap(List.of(), 0);
+        assertCode(() -> VariantMatrix.requireWithinCap(List.of(11, 10), 9), VARIANT_MATRIX_TOO_LARGE);
+    }
+
     private static Set<VariantSignature> signatures(List<VariantMatrix.Combination> combinations) {
         Set<VariantSignature> result = new HashSet<>();
         combinations.forEach(c -> result.add(sign(c)));
