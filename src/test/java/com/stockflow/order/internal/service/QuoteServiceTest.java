@@ -217,6 +217,36 @@ class QuoteServiceTest {
     }
 
     @Test
+    void aReorderWhoseCreditWasWithdrawnReachesSalesOnTodaysTermsNeverTheOldCredit() {
+        // R1b: the deal was on credit; today the customer may only prepay.
+        QuoteLine line = new QuoteLine(UUID.randomUUID(), 1, new Sku("CUP-PP-500"), design, null, 1000,
+                List.of(PriceTier.of(1000, new BigDecimal("2000"))), 1000, Money.vnd(2000));
+        Quote source = Quote.restore(UUID.randomUUID(), "QT-1", UUID.randomUUID(), customer, QuoteStatus.CONVERTED, 1,
+                new Quote.Offer(PaymentTerm.CREDIT, null, NOW.plusSeconds(3600), null, List.of(line)), NOW,
+                sales.userId(), NOW, portalUser, null, null, UUID.randomUUID(), NOW);
+        UUID orderId = source.convertedOrderId();
+        when(customers.creditTerms(customer)).thenReturn(CreditTerms.prepaidOnly(customer));
+        when(orders.findById(orderId)).thenReturn(Optional.of(new OrderSummary(orderId, "SO-1", customer,
+                OrderStatus.CONFIRMED, Money.vnd(2_000_000), List.of(), NOW)));
+        when(quotes.findByConvertedOrderId(orderId)).thenReturn(Optional.of(source));
+        when(quotes.findByRequestId(any())).thenReturn(Optional.empty());
+        when(quotes.nextNumber(any())).thenReturn("QT-2");
+        when(catalog.priceSchedule(customer, "CUP-PP-500"))
+                .thenThrow(new BusinessException(ErrorCode.PRICE_NOT_AVAILABLE));
+
+        Quotes.QuoteView draft = service.reorder(portal, new Quotes.Reorder(UUID.randomUUID(), orderId));
+
+        assertThat(draft.status()).isEqualTo(QuoteStatus.DRAFT);
+        assertThat(draft.paymentTerm()).as("only a term allowed today").isEqualTo(PaymentTerm.PREPAID);
+        assertThat(draft.depositPercent()).isNull();
+        verify(quotedOrders, never()).placeQuotedOrder(any());
+        verify(quotes).recordTransition(any(), org.mockito.ArgumentMatchers.eq(1), org.mockito.ArgumentMatchers.isNull(),
+                org.mockito.ArgumentMatchers.eq(QuoteStatus.DRAFT),
+                org.mockito.ArgumentMatchers.contains("CREDIT is no longer allowed, drafted as PREPAID"),
+                org.mockito.ArgumentMatchers.isNull(), any(), any());
+    }
+
+    @Test
     void theConversionRequestIdIsStablePerQuoteAndDistinctAcrossQuotes() {
         UUID quote = UUID.randomUUID();
         assertThat(QuoteService.conversionRequestId(quote)).isEqualTo(QuoteService.conversionRequestId(quote));

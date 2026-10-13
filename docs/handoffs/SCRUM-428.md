@@ -31,7 +31,10 @@ pushed, not merged, no Jira change. The SCRUM-429 follow-up is its own commit on
   step. An approved design needs no new sample. The draft's history says which order it reorders.
   A line the list cannot price (no list price, or the blank's total below the list's first tier) is left
   **explicitly unpriced** (R1): `priced: false`, no tiers, MOQ and totals null; `QUOTE_NOT_PRICED` refuses sending
-  until Sales prices it, so it cannot be accepted or converted either. The old payment-term guard is kept.
+  until Sales prices it, so it cannot be accepted or converted either. **Payment term (R1b, 2026-10-13):** the old
+  term is kept while the customer may still use it; otherwise the request is still created, on the customer's
+  current default term with no deposit share carried over - a withdrawn credit or deposit is never restored, and the
+  draft's history says so. Send, acceptance and conversion check the term again; the old order keeps its terms.
 - **Sales notice**: a customer's acceptance, change request or reorder publishes `CustomerActedOnQuote` naming the
   Sales account that sent the quote (for a reorder, the order's quote); the notification module e-mails it after
   commit through the configured SMTP server. That account gone, locked or without an e-mail → every active Sales
@@ -73,7 +76,7 @@ acceptance `acceptedUnitPrice`, `acceptedLineTotal`, `acceptedTotal`. Delivery i
 | `GET /api/v1/catalog/products/prices?sku=…` (≤ 50) | CUSTOMER role, ACTIVE linked customer | `[{sku, source, moq, currency, tiers}]` for published, priced SKUs; 403 otherwise, 401 anonymous |
 | `POST /api/v1/orders` (existing) | unchanged | lines priced by the customer's tier; 409 `CUSTOMER_PRICE_BELOW_MOQ`, `CHECKOUT_PRICE_CHANGED` |
 | `POST /api/v1/quotes` (existing) | unchanged | a line's `tiers` may now be omitted → copied from `…/schedule` |
-| `POST /api/v1/orders/{orderId}/reorder` | `sales-orders:CREATE` (the verb that places an order: CUSTOMER, SALES_STAFF, …) | `{requestId}` → 201, a DRAFT quote (`QuoteResponse`); same `requestId` → same quote. Portal: own orders only (404 otherwise), and the draft is visible to the customer once Sales sends it. Unpriced lines where today's list cannot price them (R1). 409 `ORDER_NOT_QUOTED` for an order bought at the price list (place it again with `POST /orders`); `PAYMENT_TERM_NOT_ALLOWED`, `CUSTOMER_NOT_ACTIVE` |
+| `POST /api/v1/orders/{orderId}/reorder` | `sales-orders:CREATE` (the verb that places an order: CUSTOMER, SALES_STAFF, …) | `{requestId}` → 201, a DRAFT quote (`QuoteResponse`); same `requestId` → same quote. Portal: own orders only (404 otherwise), and the draft is visible to the customer once Sales sends it. Unpriced lines where today's list cannot price them (R1). 409 `ORDER_NOT_QUOTED` for an order bought at the price list (place it again with `POST /orders`); `CUSTOMER_NOT_ACTIVE`. A withdrawn payment term no longer refuses: the draft takes an allowed term (R1b) |
 | `POST /api/v1/quotes/{id}/sending` (existing) | unchanged | 409 `QUOTE_NOT_PRICED` while a line has no price |
 | Quote responses (existing) | — | new: `priced` (quote and line), `moq` nullable for an unpriced line |
 | `GET /api/v1/customer-segments` | `customer-segments:READ` (E-commerce Admin, System Admin, Sales, Order Coordinator) | `[{id, code, name, description, customerCount, version}]` by code |
@@ -117,9 +120,8 @@ Writes are audited (`customer-price`, `segment-price` CREATE/UPDATE/DELETE; `quo
 
 ## Gaps
 
-No business question blocks Sprint 2 BE. N1 is decided (2026-10-13: hand the notice to the active Sales team).
-Still open, not blocking: **R1b** (reorder when the old payment term is no longer allowed) - the guard stays until
-the user decides; concrete case in the plan.
+No business question is open in lane B. N1 (hand the notice to the active Sales team) and R1b (reorder on a term
+allowed today, checked again at each step) were decided on 2026-10-13.
 
 - **E-mail delivery needs external configuration**: `MAIL_HOST`, `MAIL_PORT`, `MAIL_USERNAME`, `MAIL_PASSWORD`,
   `MAIL_FROM`, `MAIL_SMTP_AUTH`, `MAIL_SMTP_STARTTLS` of a real SMTP relay. The repository has only `localhost:1025`

@@ -309,13 +309,22 @@ class QuoteService implements Quotes {
                 .toList();
         // The source quote's validity window, counted from now; Sales sets the real one before sending.
         Instant validUntil = now.plus(java.time.Duration.between(source.sentAt(), old.validUntil()));
-        Quote.Offer offer = offer(customerId, new Draft(old.paymentTerm(), old.depositPercent(), validUntil,
+        // R1b: a term the customer may use today. The old one is kept only while still allowed - never restored
+        // (a lost credit stays lost); otherwise the draft starts from the customer's default term, with no deposit
+        // share carried over. Send, acceptance and conversion check the term again.
+        com.stockflow.customer.api.CreditTerms current = customers.creditTerms(customerId);
+        boolean keepTerm = current.allows(CommercialTerm.valueOf(old.paymentTerm().name()));
+        com.stockflow.order.api.PaymentTerm term = keepTerm ? old.paymentTerm()
+                : com.stockflow.order.api.PaymentTerm.valueOf(current.defaultTerm().name());
+        Quote.Offer offer = offer(customerId, new Draft(term, keepTerm ? old.depositPercent() : null, validUntil,
                 old.terms(), lines), true);
         requireTermAllowed(customerId, offer);
         Quote quote = Quote.draft(Identifiers.newId(), quotes.nextNumber(today()), requestId, customerId, offer);
         quotes.save(quote);
-        quotes.recordTransition(quote.id(), 1, null, QuoteStatus.DRAFT, "Reorder of order " + order.orderNumber(),
-                null, now, user.userId());
+        String reason = keepTerm ? "Reorder of order " + order.orderNumber()
+                : "Reorder of order %s; its payment term %s is no longer allowed, drafted as %s"
+                        .formatted(order.orderNumber(), old.paymentTerm(), term);
+        quotes.recordTransition(quote.id(), 1, null, QuoteStatus.DRAFT, reason, null, now, user.userId());
         if (own.isPresent()) {
             // The customer asked: the draft waits for the Sales user who negotiated the order's quote.
             notifySales(quote, CustomerActedOnQuote.Action.REORDER_REQUESTED, order.orderNumber(), source.sentBy(), now);
