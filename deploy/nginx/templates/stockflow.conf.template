@@ -7,6 +7,7 @@
 #   media.${DOMAIN}  published product images only, cached by Cloudflare
 #   jaeger.${DOMAIN} trace UI, behind basic auth
 #   mail.${DOMAIN}   Mailpit, every email the application sent, behind basic auth
+#   logs.${DOMAIN}   Dozzle, live container logs of this stack, behind basic auth
 # =============================================================================
 
 # Mailpit's UI updates live over a WebSocket; the upgrade headers must be forwarded for it.
@@ -64,7 +65,7 @@ server {
     # Swagger UI for the frontend team: https://api.${DOMAIN}/swagger-ui.html (anonymous).
 
     location / {
-        set $app_upstream http://app:8080;
+        set $app_upstream http://stockflow-app-1:8080;
         proxy_pass $app_upstream;
         include /etc/nginx/snippets/proxy-headers.conf;
     }
@@ -211,6 +212,40 @@ server {
         proxy_set_header Host $host;
         proxy_set_header Authorization "";
         # Keep the live-update WebSocket open between messages.
+        proxy_read_timeout 1h;
+    }
+}
+
+# -----------------------------------------------------------------------------
+# Dozzle UI (container logs)
+#
+# Logs are streamed as server-sent events. Any buffering on the way makes them arrive in bursts or
+# not at all, so it is off here; Dozzle also sends X-Accel-Buffering: no, but saying it twice costs
+# nothing. A quiet container sends nothing for minutes, hence the long read timeout.
+# -----------------------------------------------------------------------------
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name logs.${DOMAIN};
+
+    include /etc/nginx/snippets/tls.conf;
+    include /etc/nginx/snippets/cloudflare-only.conf;
+
+    auth_basic           "StockFlow dev";
+    auth_basic_user_file /etc/nginx/auth/htpasswd;
+
+    add_header Cache-Control "private, no-store" always;
+
+    location / {
+        set $dozzle_upstream http://dozzle:8080;
+        proxy_pass $dozzle_upstream;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header Authorization "";
+        proxy_buffering off;
+        proxy_cache off;
+        chunked_transfer_encoding off;
         proxy_read_timeout 1h;
     }
 }
