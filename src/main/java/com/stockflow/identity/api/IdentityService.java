@@ -143,6 +143,15 @@ public interface IdentityService {
      */
     List<AssignableUser> assignableUsers(java.util.Set<String> roleCodes, UUID warehouseId);
 
+    /**
+     * The ACTIVE staff to notify about something in {@code warehouseId} (or system-wide when it is {@code null}),
+     * by role (SCRUM-147): holders of at least one of {@code roleCodes} whose data scope reaches it - everyone whose
+     * broadest role scope is ALL, plus, for a warehouse, those assigned to it. System-wide ({@code null}) means ALL only.
+     * Anybody who holds the CUSTOMER role is never returned, whatever {@code roleCodes} says. One query, not paged:
+     * bounded by the staff of the business.
+     */
+    java.util.List<StaffContact> notificationRecipients(java.util.Set<String> roleCodes, UUID warehouseId);
+
     /** Used by task assignment to reject inactive users and users outside an operational role. */
     boolean isActiveUserWithAnyRole(UUID userId, String... roleCodes);
 
