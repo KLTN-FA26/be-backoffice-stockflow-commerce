@@ -20,7 +20,7 @@ class AttributeWebMapper {
 
     CategoryAttributeResponse toResponse(CategoryAttributeView v) {
         return new CategoryAttributeResponse(v.attributeId(), v.attributeCode(), v.attributeName(),
-                v.dataType().name(), v.defaultRole().name(), v.required(), v.sortOrder());
+                v.dataType().name(), v.attributeActive(), v.defaultRole().name(), v.required(), v.sortOrder());
     }
 
     private AttributeValueResponse toResponse(AttributeValueView v) {

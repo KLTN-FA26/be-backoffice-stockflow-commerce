@@ -73,6 +73,10 @@ class AttributeRepositoryAdapter implements AttributeRepository {
                 throw new ConflictException(ErrorCode.ATTRIBUTE_CODE_ALREADY_EXISTS,
                         "Attribute %s: code already exists".formatted(attribute.code()));
             }
+            if (isForeignKeyViolation(ex)) {
+                throw new ConflictException(ErrorCode.ATTRIBUTE_IN_USE,
+                        "Attribute %s is still referenced".formatted(attribute.code()));
+            }
             throw ex;
         }
         return AttributePersistenceMapper.toDomain(row);

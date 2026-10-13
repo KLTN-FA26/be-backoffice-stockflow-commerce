@@ -111,7 +111,8 @@ class CategoryAttributeIntegrationTest {
 
         deactivate(COLOR);
         service.replace(SOFA, List.of(new CategoryAttributeEntry(COLOR, VARIANT_AXIS, true, 0)));
-        assertThat(service.list(SOFA)).extracting(CategoryAttributeView::attributeCode).containsExactly("COLOR");
+        assertThat(service.list(SOFA)).extracting(CategoryAttributeView::attributeCode, CategoryAttributeView::attributeActive)
+                .containsExactly(tuple("COLOR", false));
     }
 
     @Test

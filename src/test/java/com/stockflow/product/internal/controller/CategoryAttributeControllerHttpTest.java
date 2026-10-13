@@ -39,7 +39,7 @@ class CategoryAttributeControllerHttpTest {
             new CategoryAttributeController(service, new AttributeWebMapper())).build();
 
     private static List<CategoryAttributeView> views() {
-        return List.of(new CategoryAttributeView(ATTRIBUTE, "COLOR", "Màu sắc", COLOR, VARIANT_AXIS, true, 2));
+        return List.of(new CategoryAttributeView(ATTRIBUTE, "COLOR", "Màu sắc", COLOR, false, VARIANT_AXIS, true, 2));
     }
 
     @Test
@@ -53,6 +53,7 @@ class CategoryAttributeControllerHttpTest {
                 .andExpect(jsonPath("$.data[0].attributeId").value(ATTRIBUTE.toString()))
                 .andExpect(jsonPath("$.data[0].attributeCode").value("COLOR"))
                 .andExpect(jsonPath("$.data[0].dataType").value("COLOR"))
+                .andExpect(jsonPath("$.data[0].attributeActive").value(false))
                 .andExpect(jsonPath("$.data[0].defaultRole").value("VARIANT_AXIS"));
 
         @SuppressWarnings("unchecked")
