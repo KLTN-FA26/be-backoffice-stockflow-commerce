@@ -1,6 +1,8 @@
 package com.stockflow.fulfillment.internal.entity;
 
 import com.stockflow.fulfillment.internal.domain.PickStatus;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.BaseEntity;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -54,20 +56,34 @@ public class PickJpaEntity extends BaseEntity {
     }
     public void assign(UUID userId, Instant now) {
         if (status != PickStatus.PENDING) {
-            throw new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.CONFLICT,
-                    "A pick can only be assigned while pending");
+            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT, "A pick can only be assigned while pending");
         }
         assignedUserId = java.util.Objects.requireNonNull(userId);
         assignedAt = java.util.Objects.requireNonNull(now);
     }
+    /**
+     * The assignee starts walking. Starting a task that is already PICKING is answered, not refused: a
+     * scanner retrying the call, or a task opened before pick lines existed whose lines are generated
+     * now (SCRUM-267), both reach here.
+     */
     public void start(UUID actor, Instant now) {
         requireAssigned(actor);
-        if (status != PickStatus.PENDING) { throw new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.CONFLICT); }
+        if (status == PickStatus.PICKING) {
+            return;
+        }
+        if (status != PickStatus.PENDING) {
+            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT,
+                    "Picking starts from PENDING; the task is " + status);
+        }
         status = PickStatus.PICKING; startedAt = now;
     }
+    /** Lines are checked by {@code PickList.requireAllPicked} before this; the entity checks the status. */
     public void complete(UUID actor, Instant now) {
         requireAssigned(actor);
-        if (status != PickStatus.PICKING) { throw new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.CONFLICT); }
+        if (status != PickStatus.PICKING) {
+            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT,
+                    "Picking completes from PICKING; the task is " + status);
+        }
         status = PickStatus.PICKED; pickedAt = now;
     }
     /**
@@ -86,8 +102,7 @@ public class PickJpaEntity extends BaseEntity {
     }
     public void requireAssigned(UUID actor) {
         if (actor == null || !actor.equals(assignedUserId)) {
-            throw new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.NOT_FOUND,
-                    "Fulfillment task is not assigned to this user");
+            throw new BusinessException(ErrorCode.NOT_FOUND, "Fulfillment task is not assigned to this user");
         }
     }
 

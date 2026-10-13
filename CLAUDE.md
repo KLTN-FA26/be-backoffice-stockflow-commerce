@@ -207,14 +207,34 @@ listener failed to process stays in `event_publication` and is retried. That tab
 `ReservationSweeper.releaseExpiredReservations`, every minute, `@SchedulerLock` so it runs on one
 instance only. Bounded batches.
 
-### Pick confirmation
+### Pick confirmation — in-process, through `inventory :: consumption`
 
-`InventoryController.consume` — `POST /api/v1/inventory/reservations/{reservationId}/consumption`.
-Designed to be called by `fulfillment` over **HTTP** rather than as a Java call, and the controller
-javadoc explains why: unlike the checkout reservation, recording a pick that already happened
-physically does not need to be atomic with anything on the caller's side. Note that `fulfillment` is
-still a skeleton, so today this endpoint has no in-repo caller — the HTTP choice is design intent,
-not observed behaviour.
+`PickListService.confirm` (`fulfillment/internal/service/`), one `@Transactional` method (SCRUM-267/275):
+
+```
+1. lockPick           ← SELECT … FOR UPDATE on fulfillment.pick. ALWAYS first: pick, then stock row,
+                        never the reverse (cancelling an order locks stock rows in its own transaction
+                        and touches the pick only later, in the OrderCancelled listener)
+2. scope + assignee   ← WarehouseScope.requireWarehouse(pick.warehouseId), then only the assignee
+3. PickList.confirm   ← domain: location, SKU or barcode, exact allocation (BR-04); same scan again = done
+4. PickConsumption.consumeForPick(reservationId, pickLineId, actor)
+                      ← inventory, same transaction: locks the stock row, hold → CONSUMED, on_hand falls,
+                        one stock_movement(PICK, PICK_LINE) row, StockDeducted published.
+                        Idempotent per pick line: the ledger row is looked up first, and
+                        uk_stock_movement_pick_line is the last line of defence
+```
+
+`PickConsumption` lives in `inventory/consumption/`, a second named interface next to `api`. Only
+`fulfillment` lists `"inventory :: consumption"` in its `allowedDependencies`
+(`InventoryConsumptionBoundaryTest` pins that): deducting stock is not something any module may do.
+The same interface books put-backs — goods picked for an order cancelled afterwards go back onto a bin
+of the same warehouse as AVAILABLE stock, one `stock_movement(PUT_BACK, PICK_LINE)` row per line
+(`POST /fulfillment/tasks/{id}/pick-lines/{lineId}/put-back`, docs 07 BR-05).
+
+`POST /api/v1/inventory/reservations/{reservationId}/consumption` still exists for operations (closing a
+hold by hand) and runs the same implementation, writing a `PICK` ledger row that names the order. Nothing
+in the repo calls it; picking never goes over HTTP. (The original design did — "fulfillment calls the
+consumption endpoint over HTTP" — and was replaced so the pick line and the deduction commit together.)
 
 ---
 

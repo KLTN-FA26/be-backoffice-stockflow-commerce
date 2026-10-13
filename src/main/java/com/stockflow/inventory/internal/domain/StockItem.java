@@ -397,20 +397,35 @@ public final class StockItem extends AggregateRoot {
      * The goods have been picked: turn a hold into a real deduction (BRD 3.7 / 3.8).
      *
      * <p>This is the only method that lowers {@code onHand}, and it can only do so through a live
-     * reservation. Physical stock therefore never leaves the building without a promise behind it.
+     * reservation. Physical stock therefore never leaves the building without a promise behind it.</p>
+     *
+     * <p>The hold is checked before the stock: a hold that was released, expired or consumed already is
+     * {@code RESERVATION_NOT_ACTIVE} whatever happened to the lot since, so a picker is told the real
+     * reason (the order was cancelled) rather than a policy conflict. A HELD hold past its payment
+     * deadline counts as given up too, even before the sweeper closes it (kltn-docs 14 BR-07). Then the
+     * stock: blocked or expired stock cannot be shipped ({@code INVENTORY_POLICY_STOCK_CONFLICT}, docs 07
+     * BR-02), which is a short pick for the warehouse to resolve.</p>
      */
     public void consumeReservation(ReservationId reservationId, Instant now) {
-        if (!status.isReservable()
-                || expiryDate != null && expiryDate.isBefore(BusinessCalendar.date(now))) {
-            throw new BusinessException(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT);
-        }
         Reservation reservation =
                 findReservation(reservationId)
                         .orElseThrow(
                                 () ->
-                                        new IllegalArgumentException(
+                                        new BusinessException(ErrorCode.RESERVATION_NOT_FOUND,
                                                 "Reservation %s does not belong to stock item %s"
                                                         .formatted(reservationId, id)));
+        if (reservation.isExpiredAt(now)) {
+            throw new BusinessException(ErrorCode.RESERVATION_NOT_ACTIVE,
+                    "Reservation %s passed its deadline at %s".formatted(reservationId, reservation.expiresAt()));
+        }
+        if (reservation.status().isTerminal()) {
+            throw new BusinessException(ErrorCode.RESERVATION_NOT_ACTIVE,
+                    "Reservation %s is already %s".formatted(reservationId, reservation.status()));
+        }
+        if (!status.isReservable()
+                || expiryDate != null && expiryDate.isBefore(BusinessCalendar.date(now))) {
+            throw new BusinessException(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT);
+        }
         reservation.consume(now);
         this.onHand = this.onHand.minus(reservation.quantity());
         checkInvariants();
@@ -421,6 +436,19 @@ public final class StockItem extends AggregateRoot {
                                 sku.code(),
                                 location.code(),
                                 reservation.quantity().value())));
+    }
+
+    /**
+     * Goods picked for an order that was cancelled afterwards come back onto this stock item (docs 07
+     * BR-05, SCRUM-275): {@code onHand} grows by what the pick took. Only sellable stock takes them —
+     * a put-back is not how goods get into a quarantined or blocked lot.
+     */
+    public void putBack(Quantity quantity) {
+        if (status != StockStatus.AVAILABLE) {
+            throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH,
+                    "Stock item %s is %s; picked goods go back as AVAILABLE stock".formatted(id, status));
+        }
+        moveIn(quantity);
     }
 
     /**

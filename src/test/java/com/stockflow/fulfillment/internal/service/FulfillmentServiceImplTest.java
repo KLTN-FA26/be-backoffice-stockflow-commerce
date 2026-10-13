@@ -58,9 +58,10 @@ class FulfillmentServiceImplTest {
     private final IdentityService identities = mock(IdentityService.class);
     private final InventoryService inventory = mock(InventoryService.class);
     private final WarehouseService warehouses = mock(WarehouseService.class);
+    private final PickListService pickLists = mock(PickListService.class);
     private final Instant now = Instant.parse("2026-09-18T08:00:00Z");
     private final FulfillmentServiceImpl service = new FulfillmentServiceImpl(
-            picks, packs, evidence, orders, designs, identities, inventory, warehouses,
+            picks, packs, evidence, orders, designs, identities, inventory, warehouses, pickLists,
             Clock.fixed(now, ZoneOffset.UTC));
     private final List<DesignVerificationJpaEntity> recorded = new ArrayList<>();
 
@@ -235,9 +236,11 @@ class FulfillmentServiceImplTest {
         assertThat(task.lines()).isNull();
         verify(orders).releaseToFulfillment(order.orderId());
         org.mockito.ArgumentCaptor<PickJpaEntity> saved = org.mockito.ArgumentCaptor.forClass(PickJpaEntity.class);
-        verify(picks).save(saved.capture());
+        verify(picks).saveAndFlush(saved.capture());
         assertThat(saved.getValue().getOrderNumber()).isEqualTo("SO-20261014-0001");
         assertThat(saved.getValue().getWarehouseId()).isEqualTo(HN);
+        // SCRUM-267: the lines are planned with the task, from the order's holds.
+        verify(pickLists).planLines(saved.getValue(), order);
     }
 
     @Test
@@ -281,6 +284,7 @@ class FulfillmentServiceImplTest {
         assertThat(thrown.getMessage()).contains("SOFA-3S-GREY", "TABLE-OAK-160");
         verify(orders, never()).releaseToFulfillment(any());
         verify(picks, never()).save(any());
+        verify(picks, never()).saveAndFlush(any());
     }
 
     @Test
@@ -295,6 +299,7 @@ class FulfillmentServiceImplTest {
         assertThat(thrown.errorCode()).isEqualTo(ErrorCode.FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE);
         assertThat(thrown.getMessage()).contains("TABLE-OAK-160").doesNotContain("SOFA-3S-GREY");
         verify(picks, never()).save(any());
+        verify(picks, never()).saveAndFlush(any());
     }
 
     @Test
@@ -305,7 +310,7 @@ class FulfillmentServiceImplTest {
         when(picks.findByOrderId(order.orderId())).thenReturn(Optional.empty());
 
         assertThat(refusal(() -> service.createTask(order.orderId(), UUID.randomUUID(), coordinator())).errorCode())
-                .isEqualTo(ErrorCode.CONFLICT);
+                .isEqualTo(ErrorCode.PICK_TASK_STATE_CONFLICT);
     }
 
     @Test
@@ -326,6 +331,7 @@ class FulfillmentServiceImplTest {
         });
         verify(orders, never()).releaseToFulfillment(any());
         verify(picks, never()).save(any());
+        verify(picks, never()).saveAndFlush(any());
     }
 
     @Test
@@ -341,6 +347,7 @@ class FulfillmentServiceImplTest {
 
         assertThat(thrown.errorCode()).isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE);
         verify(picks, never()).save(any());
+        verify(picks, never()).saveAndFlush(any());
     }
 
     @Test
@@ -359,6 +366,7 @@ class FulfillmentServiceImplTest {
         assertThat(task.orderNumber()).isEqualTo("SO-OLD");
         verify(orders, never()).findById(any());
         verify(picks, never()).save(any());
+        verify(picks, never()).saveAndFlush(any());
     }
 
     @Test
@@ -465,6 +473,55 @@ class FulfillmentServiceImplTest {
                 .isEqualTo(ErrorCode.FORBIDDEN);
         assertThat(refusal(() -> service.assignees(UUID.randomUUID(), coordinator())).errorCode())
                 .isEqualTo(ErrorCode.WAREHOUSE_NOT_FOUND);
+    }
+
+    // ---- SCRUM-267: lines are planned at start and must all be picked to complete ----------------
+
+    @Test
+    void startingPlansTheLinesAndCompletingNeedsEveryLinePicked() {
+        UUID assigned = UUID.randomUUID();
+        var pick = new PickJpaEntity(UUID.randomUUID(), null, UUID.randomUUID(), "SO-TEST", HCM, PickStatus.PENDING);
+        pick.assign(assigned, now.minusSeconds(120));
+        var order = order(pick.getOrderId(), "e".repeat(64));
+        when(picks.lockById(pick.getId())).thenReturn(Optional.of(pick));
+        when(picks.save(any())).thenAnswer(call -> call.getArgument(0));
+        when(packs.findByPickId(pick.getId())).thenReturn(Optional.of(
+                new PackJpaEntity(UUID.randomUUID(), pick.getId(), PackStatus.PENDING, null)));
+        when(orders.findById(pick.getOrderId())).thenReturn(Optional.of(order));
+        var worker = user(assigned, Role.WAREHOUSE_STAFF);
+
+        assertThat(service.startPicking(pick.getId(), worker).pickStatus()).isEqualTo("PICKING");
+        verify(pickLists).planLines(pick, order);
+        // Starting again is answered: the task stays PICKING and its lines are planned if missing.
+        assertThat(service.startPicking(pick.getId(), worker).pickStatus()).isEqualTo("PICKING");
+
+        org.mockito.Mockito.doThrow(new BusinessException(ErrorCode.PICK_LINES_INCOMPLETE))
+                .when(pickLists).requireAllPicked(pick, order);
+        assertThat(refusal(() -> service.completePicking(pick.getId(), worker)).errorCode())
+                .isEqualTo(ErrorCode.PICK_LINES_INCOMPLETE);
+        assertThat(pick.getStatus()).isEqualTo(PickStatus.PICKING);
+
+        org.mockito.Mockito.doNothing().when(pickLists).requireAllPicked(pick, order);
+        assertThat(service.completePicking(pick.getId(), worker).pickStatus()).isEqualTo("PICKED");
+        // Completing twice is a state conflict, no longer the generic CONFLICT.
+        assertThat(refusal(() -> service.completePicking(pick.getId(), worker)).errorCode())
+                .isEqualTo(ErrorCode.PICK_TASK_STATE_CONFLICT);
+    }
+
+    @Test
+    void aCancelledOrdersTaskIsAStateConflict() {
+        UUID assigned = UUID.randomUUID();
+        var pick = new PickJpaEntity(UUID.randomUUID(), null, UUID.randomUUID(), "SO-TEST", HCM, PickStatus.PENDING);
+        pick.assign(assigned, now.minusSeconds(120));
+        var live = order(pick.getOrderId(), "f".repeat(64));
+        var cancelled = new OrderSummary(live.orderId(), live.orderNumber(), live.customerId(), OrderStatus.CANCELLED,
+                live.total(), live.lines(), live.placedAt(), null, null, null, null, null, null, null, null);
+        when(picks.lockById(pick.getId())).thenReturn(Optional.of(pick));
+        when(orders.findById(pick.getOrderId())).thenReturn(Optional.of(cancelled));
+
+        assertThat(refusal(() -> service.startPicking(pick.getId(), user(assigned, Role.WAREHOUSE_STAFF))).errorCode())
+                .isEqualTo(ErrorCode.PICK_TASK_STATE_CONFLICT);
+        verify(pickLists, never()).planLines(any(), any());
     }
 
     private PickJpaEntity pickedTask(UUID assigned) {
