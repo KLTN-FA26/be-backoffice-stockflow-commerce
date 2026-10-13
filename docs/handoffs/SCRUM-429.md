@@ -4,6 +4,18 @@ Status: **backend acceptance of SCRUM-450 implemented and tested, including the 
 as a story: FE SCRUM-451, independent QA, CI on a pushed branch and the business owner's confirmation
 of the defaults listed under "Decisions" are outstanding. Nothing pushed, merged, deployed or changed in Jira.
 
+> **Superseded by later decisions (2026-10-12/13) - read these first; the sections below keep the original record:**
+> - **Tax code is optional** (household businesses / small shops): no tax identifier is needed to create,
+>   activate or order; it can be added later. When given, uniqueness and format still apply.
+> - **Format:** 10 digits, 10-3, **or the 12-digit personal identification number** of a household business's
+>   representative (Thông tư 86/2024/TT-BTC art. 5(5), art. 38(2); Luật Căn cước 26/2023/QH15 art. 12(1); official
+>   texts read 2026-10-12) - `V20261014000540`, `TaxCode`.
+> - **A closed (INACTIVE) customer may be reopened** by the E-commerce Admin with a mandatory reason, kept in
+>   `customer.customer_status_history` (`V20261014000500`); old sessions stay revoked; a contact that never activated
+>   reopens to PENDING_ACTIVATION.
+> - **Customer groups** (P7): `/api/v1/customer-segments` and `PUT /api/v1/customers/{id}/segment`, resource
+>   `customer-segments` (`V20261014000600`). Details: `docs/handoffs/SCRUM-428.md`.
+
 ## Resume checkpoint (2026-10-12)
 
 - Branch `SCRUM-429-b2b-onboarding`, this worktree only. The production 394/395 worktree was read
@@ -24,7 +36,7 @@ of the defaults listed under "Decisions" are outstanding. Nothing pushed, merged
 
 | Change | Detail |
 |---|---|
-| `customer.customer.tax_code VARCHAR(14)` | NULL for every pre-existing customer: no invented or back-filled codes. Required for new customers. `ck_customer_tax_code` `^[0-9]{10}(-[0-9]{3})?$`. |
+| `customer.customer.tax_code VARCHAR(14)` | NULL for every pre-existing customer: no invented or back-filled codes. ~~Required for new customers~~ optional since 2026-10-12. `ck_customer_tax_code` `^[0-9]{10}(-[0-9]{3})?$`, widened to also accept 12 digits by `V20261014000540`. |
 | `uk_customer_tax_code_live` | unique over `PENDING_ACTIVATION` + `ACTIVE` only. BR-01 forbids two Active customers per code; §4.1 checks duplicates at creation, when the customer is pending, so pending is included to stop two creates racing. INACTIVE (closed) and BLOCKED rows are not constrained - the documents do not ask for it. |
 | `ck_customer_status` + `PENDING_ACTIVATION`; `ck_customer_pending_has_account` | Pending always has the account its contact activates. |
 | `identity.app_user.password_hash` nullable | NULL = invited, no password yet. |
@@ -82,7 +94,7 @@ credit-profile API (terms are set only by the approver, BR-02; no row = prepaid 
 | Topic | Default | Basis |
 |---|---|---|
 | Lifecycle mapping | Pending Activation=PENDING_ACTIVATION, Active=ACTIVE, Suspended=BLOCKED, Closed=INACTIVE | kltn-docs 18 §5 vs existing statuses |
-| Tax code format | 10 digits (enterprise) or 10-3 (dependent unit); no check-digit validation; 12-digit personal IDs (household businesses) refused | kltn-docs 18 says the customers are enterprises. Law 38/2019/QH14 art. 30(2) and Circular 86/2024/TT-BTC art. 5 (in force 2025-02-06, replaces 105/2020, which the previous commit wrongly cited) as quoted by secondary sources (luatvietnam.vn; thuvienphapluat.vn returned 403, caselaw.vn showed only the table of contents) - **official text not retrieved**. If household businesses are to be customers, the business owner must say so and the format must accept their 12-digit number. |
+| Tax code format | 10 digits (enterprise) or 10-3 (dependent unit); no check-digit validation; ~~12-digit personal IDs (household businesses) refused~~ **accepted since 2026-10-12 (official texts, see top)** | kltn-docs 18 says the customers are enterprises. Law 38/2019/QH14 art. 30(2) and Circular 86/2024/TT-BTC art. 5 (in force 2025-02-06, replaces 105/2020, which the previous commit wrongly cited) as quoted by secondary sources (luatvietnam.vn; thuvienphapluat.vn returned 403, caselaw.vn showed only the table of contents) - **official text not retrieved**. If household businesses are to be customers, the business owner must say so and the format must accept their 12-digit number. |
 | Tax code uniqueness | live = pending + active | BR-01 + §4.1 duplicate check |
 | Invitation lifetime / resend cooldown | 72 h / 1 min (`PORTAL_INVITATION_LIFETIME`, `PORTAL_INVITATION_RESEND_COOLDOWN`) | none in the documents |
 | Activation URL | blank = invitations off (503); `local` profile `http://localhost:3000/portal/activate`; token as `#token=` fragment | FE route not built (SCRUM-451) |
@@ -131,8 +143,8 @@ throwaway Mailpit containers; containers stopped afterwards; no shared or produc
 
 | Item | Owner |
 |---|---|
-| Confirm the defaults in "Decisions" | business owner (+ Tu for schema conventions) |
+| Confirm the remaining defaults in "Decisions" (lifecycle mapping, invitation lifetime/cooldown, activation URL) | business owner (+ Tu for schema conventions) |
 | FE: back-office create/resend/status screens, portal page reading `#token` and posting it | SCRUM-451 |
-| Whether a Closed (INACTIVE) customer may be reopened (§5 says no; current staff rule says yes) | business owner |
-| Whether household businesses (12-digit personal ID as tax code) are customers | business owner |
+| ~~Whether a Closed (INACTIVE) customer may be reopened~~ | **decided 2026-10-12**: yes, by the E-commerce Admin, with a reason |
+| ~~Whether household businesses (12-digit personal ID as tax code) are customers~~ | **decided 2026-10-12**: yes; tax code optional; 12 digits accepted |
 | Independent QA and CI on the pushed branch | QA / repository process |
