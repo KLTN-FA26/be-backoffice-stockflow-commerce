@@ -72,4 +72,3 @@ BEGIN
     END IF;
     RETURN NEW;
 END $function$;
-

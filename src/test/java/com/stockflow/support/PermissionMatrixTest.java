@@ -202,6 +202,14 @@ class PermissionMatrixTest {
                         quantity, status, version, created_at)
                     VALUES (?, ?, ?, 'SOFA-3S-GREY', ?, 1, 'DRAFT', 0, NOW())""",
                     victimSampleRequest, "SR-20991231-%06d".formatted(n), victimCustomer, snapshot);
+            // A quote without a line is not a quote (Quote.Offer refuses to restore it, 400 before any owner check):
+            // one line of the victim's design with one price tier, so only the owner check can refuse it.
+            UUID victimQuoteLine = Identifiers.newId();
+            jdbc.update("""
+                    INSERT INTO ordering.quote_line (id, quote_id, line_no, blank_sku, design_snapshot_id, quantity)
+                    VALUES (?, ?, 1, 'SOFA-3S-GREY', ?, 1)""", victimQuoteLine, victimQuote, snapshot);
+            jdbc.update("INSERT INTO ordering.quote_price_tier (quote_line_id, min_quantity, unit_price) VALUES (?, 1, 1000)",
+                    victimQuoteLine);
         });
     }
 
@@ -336,8 +344,11 @@ class PermissionMatrixTest {
     @Test
     void theOwnerOfTheSameRowsIsServed() throws Exception {
         SecuredMvc http = new SecuredMvc(mvc, decoder);
+        // The victim's quote and sample request are valid rows their owner reads (B-6a): the 404 the attacker gets is
+        // the owner check, not a broken fixture.
         for (String path : List.of("/api/v1/orders/" + victimOrder, "/api/v1/orders/me/" + victimOrder,
-                "/api/v1/designs/" + victimDesign, "/api/v1/customers/" + victimCustomer + "/addresses")) {
+                "/api/v1/designs/" + victimDesign, "/api/v1/customers/" + victimCustomer + "/addresses",
+                "/api/v1/quotes/" + victimQuote, "/api/v1/production/sample-requests/" + victimSampleRequest)) {
             assertThat(http.asCustomer(victimUser, MockMvcRequestBuilders.get(path)).andReturn().getResponse().getStatus())
                     .as("the owner reading " + path).isEqualTo(200);
         }
