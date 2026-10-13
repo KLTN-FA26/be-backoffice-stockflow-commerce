@@ -273,7 +273,8 @@ tables, can start in parallel on read models only). If the coordinator prefers, 
 ## Acceptance → code → test (SCRUM-433/441 finishing pass, 2026-10-13)
 
 `*` = Testcontainers test written; **not run yet** (Docker unavailable on this machine at the time of writing).
-Domain, architecture and modularity tests ran green on `60ad09b` (offline Maven on D:).
+Ran green without Docker (offline Maven on D:): lane A `e624bdc` 136 tests (Modularity, Architecture, domain, the
+mocked service tests above); integration `1a3024c` (A `e624bdc` + B `56832ca`) 164 tests; `tools/verify.py` passes on both.
 
 | Jira 433 / 441 acceptance | Code | Test |
 |---|---|---|
@@ -286,12 +287,12 @@ Domain, architecture and modularity tests ran green on `60ad09b` (offline Maven 
 | partial receipts | `ProductionOrder.receivedFromSubcontractor` | `subcontractFullService`*, `subcontractSuppliedBlanks`* |
 | shortfall → resend with PO supplement (approved amendment) | `SubcontractPurchasingImpl.supplement/approveAmendment`, `SubcontractService.sendOut` (open quantity) | `subcontractSuppliedBlanks`*, `SubcontractPurchasingIntegrationTest.lifecycle`* |
 | shortfall → in-house child | `ProductionOrder.giveBackToPrintShop/inHouseFor`, `SubcontractService.takeInHouse` | `shortfallTakenInHouse`*, `ProductionOrderTest.aShortfallGoesInHouse…` |
-| QA2: subcontractor abandons, order live — good units kept, rest in house, fee | `SubcontractService.cancel/takeInHouseLocked`, `ProductionCompletion.complete(…, fee)` | `subcontractorAbandonsWithGoodUnits`*, `subcontractCancelledAndReplaced`* |
-| QA3: dashboard activity basis | `ProductionDashboardQueries.printedAndScrapInPeriod`, `production_print_run`, V20261014000720 | `PrintRunIntegrationTest.dashboard`*, `dashboardOverHttp`*, `SubcontractMigrationUpgradeTest`* |
+| QA2: subcontractor abandons, order live — good units kept, rest in house, fee | `SubcontractService.cancel/takeInHouseLocked`, `ProductionCompletion.complete(…, fee)` | `SubcontractCancellationTest` (5, ran), `subcontractorAbandonsWithGoodUnits`*, `subcontractCancelledAndReplaced`* |
+| QA3: dashboard activity basis, each unit counted once | `ProductionDashboardQueries.printedAndScrapInPeriod`, `production_print_run`, V20261014000720 | `ProductionDashboardServiceTest` (3, ran), `dashboardActivityCountsEachUnitOnce`*, `PrintRunIntegrationTest.dashboard`*, `dashboardOverHttp`*, `SubcontractMigrationUpgradeTest`* |
 | ProductionCompleted per LSX; order waits for all (BR-PRD-06) | `ProductionCompletion.complete` | `subcontractFullService`*, `shortfallTakenInHouse`* |
 | SUBCONTRACTED → ON_HOLD (late) | `ProductionOrder.hold` | `subcontractReceiptGetsOneQc`*, `ProductionOrderTest.goodsReachingAHeldOrder…` |
 | SUBCONTRACTED → CANCELLED: recall blanks, PO cancelled, or fee | `SubcontractService.recall/cancel`, `SubcontractPurchasingImpl.closeForProduction` | `subcontractCancelledAndReplaced`*, `subcontractedOrderOfACancelledOrder`* |
 | reconciliation sent / good / scrap / unused / loss (422 comment) | `SubcontractService.reconcile/recall`, `SubcontractSettling.settle` | `subcontractReconciliationExample`*, `shortfallTakenInHouse`* |
-| loss > tolerance needs manager approval → deduction; QC-failed not paid (BR-PRD-17) | `SubcontractPurchasingImpl.settle/approveLoss`, `procurement.subcontract_settlement` | `SubcontractPurchasingIntegrationTest.settlement`*, `shortfallTakenInHouse`* |
+| loss > tolerance needs manager approval with the agreed deduction and a reason (QA1) → deduction; QC-failed not paid (BR-PRD-17) | `SubcontractPurchasingImpl.settle/approveLoss`, `procurement.subcontract_settlement` | `SubcontractSettlementTest` (3, ran), `SubcontractPurchasingIntegrationTest.settlement`*, `shortfallTakenInHouse`* |
 | permissions of the new steps | `ProductionOrderController`, `PurchaseOrderController` | `subcontractEndpointsOverHttp`* |
 | upgrade of existing rows | V20261014000700, V20261014000710 | `SubcontractMigrationUpgradeTest`* |
