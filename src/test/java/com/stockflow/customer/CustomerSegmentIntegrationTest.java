@@ -166,7 +166,7 @@ class CustomerSegmentIntegrationTest {
                 .andExpect(jsonPath("$.errorCode").value("OPTIMISTIC_LOCK"));
         send(get(SEGMENTS + "/" + segmentId), sales, null).andExpect(jsonPath("$.data.customerCount").value(1));
         send(get("/api/v1/customers").param("segmentId", segmentId.toString()), admin, null).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.items[0].id").value(customerId.toString()))
+                .andExpect(jsonPath("$.data.items[0].customerId").value(customerId.toString()))
                 .andExpect(jsonPath("$.data.items.length()").value(1));
 
         // The group now prices the customer (own → group → base); out of the group, the base price again.
