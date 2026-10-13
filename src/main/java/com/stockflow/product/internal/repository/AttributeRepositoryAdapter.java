@@ -9,6 +9,8 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Repository;
 
 import java.sql.SQLException;
+import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -30,6 +32,14 @@ class AttributeRepositoryAdapter implements AttributeRepository {
     @Override
     public Optional<Attribute> findById(UUID id) {
         return jpa.findWithValuesById(id).map(AttributePersistenceMapper::toDomain);
+    }
+
+    @Override
+    public List<Attribute> findAllById(Collection<UUID> ids) {
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        return jpa.findWithValuesByIdIn(ids).stream().map(AttributePersistenceMapper::toDomain).toList();
     }
 
     @Override
