@@ -183,7 +183,7 @@ SELECT pg_temp.expect_fail('P22 inventory item sku changed',
 SELECT pg_temp.expect_fail('P23 variant deleted while it has an inventory item',
     $q$ DELETE FROM product.variants WHERE sku = 'SOFA-3S-GREY' $q$);
 
-\echo '--- product follow-ups (V20261014000600, SCRUM-461)'
+\echo '--- product follow-ups (V20261014001100, SCRUM-461)'
 SELECT pg_temp.expect_fail('P24 DISCONTINUED without a reason (docs 01 §5.1)', $q$
     UPDATE product.products SET status = 'DISCONTINUED', discontinued_at = NOW() WHERE code = 'SOFA-3S' $q$);
 SELECT pg_temp.expect_fail('P24 DISCONTINUED with a blank reason', $q$
