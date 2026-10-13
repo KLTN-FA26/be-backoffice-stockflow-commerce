@@ -5,6 +5,7 @@ import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.InventoryItemPolicy;
 import com.stockflow.inventory.api.MoveStockCommand;
 import com.stockflow.inventory.api.ReceiveStockCommand;
+import com.stockflow.inventory.api.OrderHold;
 import com.stockflow.inventory.api.ReclassifyStockCommand;
 import com.stockflow.inventory.api.RequestAdjustmentCommand;
 
@@ -414,6 +415,14 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
             log.info("Pinned {} hold(s) of order {}: it no longer waits for payment", pinned, orderId);
         }
         return pinned;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<OrderHold> holdsOf(UUID orderId) {
+        return repository.findHeldForOrder(orderId).stream()
+                .map(held -> new OrderHold(held.sku(), held.locationCode(), held.quantity()))
+                .toList();
     }
 
     @Override

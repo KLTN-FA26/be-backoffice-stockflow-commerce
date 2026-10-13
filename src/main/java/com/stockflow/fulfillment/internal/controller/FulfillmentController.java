@@ -2,6 +2,8 @@ package com.stockflow.fulfillment.internal.controller;
 
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.api.PageResponse;
+import com.stockflow.common.audit.AuditAction;
+import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.AuthenticatedUser;
@@ -10,12 +12,15 @@ import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.common.security.Roles;
 import com.stockflow.fulfillment.api.FulfillmentService;
+import com.stockflow.fulfillment.api.FulfillmentTaskQuery;
+import com.stockflow.fulfillment.internal.controller.dto.AssigneeResponse;
 import com.stockflow.fulfillment.internal.controller.dto.FulfillmentArtifactAccessResponse;
 import com.stockflow.fulfillment.internal.controller.dto.FulfillmentTaskResponse;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
+import java.util.List;
 import java.util.UUID;
 import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
@@ -33,7 +38,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 /** Task-scoped warehouse flow with a non-bypassable design-integrity gate. */
 @RestController
-@RequestMapping("/api/v1/fulfillment/tasks")
+@RequestMapping("/api/v1/fulfillment")
 @PermissionResource(code = FulfillmentResources.PICK_LISTS, group = "Fulfillment", label = "Pick lists",
         route = "/fulfillment/picks", apiPath = "/api/v1/fulfillment/tasks",
         actions = {Action.VIEW_PAGE, Action.READ, Action.UPDATE})
@@ -47,59 +52,80 @@ class FulfillmentController {
         this.mapper = mapper;
     }
 
-    @PostMapping
+    @PostMapping("/tasks")
     @ResponseStatus(HttpStatus.CREATED)
     @RequiresPermission(resource = FulfillmentResources.PICK_LISTS, action = Action.UPDATE)
     @PreAuthorize("hasAnyAuthority('" + Roles.ORDER_COORDINATOR + "','" + Roles.WAREHOUSE_MANAGER + "')")
+    @Auditable(action = AuditAction.CREATE, resourceType = "fulfillment-task", resourceId = "#result?.data()?.taskId()")
     public ApiResponse<FulfillmentTaskResponse> create(@Valid @RequestBody CreateTaskRequest request,
                                                @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(mapper.toResponse(fulfillment.createTask(request.orderId(), request.assignedUserId(), actor)));
     }
 
-    @GetMapping
+    @GetMapping("/tasks")
     @RequiresPermission(resource = FulfillmentResources.PICK_LISTS, action = Action.READ)
     @PreAuthorize("hasAnyAuthority('" + Roles.WAREHOUSE_STAFF + "','" + Roles.WAREHOUSE_MANAGER
             + "','" + Roles.QC_STAFF + "','" + Roles.ORDER_COORDINATOR + "')")
     public ApiResponse<PageResponse<FulfillmentTaskResponse>> list(@AuthenticatedUser CurrentUser actor,
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false) UUID warehouseId,
+            @RequestParam(required = false) UUID assignedUserId,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size) {
         return ApiResponse.ok(fulfillment
-                .listTasks(actor, page, size == null ? Pages.DEFAULT_PAGE_SIZE : size)
+                .listTasks(actor, new FulfillmentTaskQuery(status, warehouseId, assignedUserId, page,
+                        size == null ? Pages.DEFAULT_PAGE_SIZE : size))
                 .map(mapper::toResponse));
     }
 
-    @PutMapping("/{taskId}/assignment")
+    /**
+     * Who a task of one warehouse can go to: the active warehouse staff and managers assigned to it.
+     * The warehouse is required, and a manager is limited to their own. The answer is deliberately not
+     * paged: it is bounded by one warehouse's staff, and the screen needs all of them to pick from.
+     */
+    @GetMapping("/assignees")
     @RequiresPermission(resource = FulfillmentResources.PICK_LISTS, action = Action.UPDATE)
     @PreAuthorize("hasAnyAuthority('" + Roles.ORDER_COORDINATOR + "','" + Roles.WAREHOUSE_MANAGER + "')")
+    public ApiResponse<List<AssigneeResponse>> assignees(@RequestParam UUID warehouseId,
+                                                         @AuthenticatedUser CurrentUser actor) {
+        return ApiResponse.ok(fulfillment.assignees(warehouseId, actor).stream().map(mapper::toResponse).toList());
+    }
+
+    @PutMapping("/tasks/{taskId}/assignment")
+    @RequiresPermission(resource = FulfillmentResources.PICK_LISTS, action = Action.UPDATE)
+    @PreAuthorize("hasAnyAuthority('" + Roles.ORDER_COORDINATOR + "','" + Roles.WAREHOUSE_MANAGER + "')")
+    @Auditable(action = AuditAction.UPDATE, resourceType = "fulfillment-task", resourceId = "#taskId")
     public ApiResponse<FulfillmentTaskResponse> assign(@PathVariable UUID taskId,
             @Valid @RequestBody AssignmentRequest request, @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(mapper.toResponse(fulfillment.assign(taskId, request.assignedUserId(), actor)));
     }
 
-    @GetMapping("/{taskId}")
+    @GetMapping("/tasks/{taskId}")
     @RequiresPermission(resource = FulfillmentResources.PICK_LISTS, action = Action.READ)
     public ApiResponse<FulfillmentTaskResponse> find(@PathVariable UUID taskId,
                                              @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(mapper.toResponse(fulfillment.findTask(taskId, actor)));
     }
 
-    @PostMapping("/{taskId}/picking-start")
+    @PostMapping("/tasks/{taskId}/picking-start")
     @RequiresPermission(resource = FulfillmentResources.PICK_LISTS, action = Action.UPDATE)
     @PreAuthorize("hasAnyAuthority('" + Roles.WAREHOUSE_STAFF + "','" + Roles.WAREHOUSE_MANAGER + "')")
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "fulfillment-task", resourceId = "#taskId")
     public ApiResponse<FulfillmentTaskResponse> startPicking(@PathVariable UUID taskId,
                                                      @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(mapper.toResponse(fulfillment.startPicking(taskId, actor)));
     }
 
-    @PostMapping("/{taskId}/picking-completion")
+    @PostMapping("/tasks/{taskId}/picking-completion")
     @RequiresPermission(resource = FulfillmentResources.PICK_LISTS, action = Action.UPDATE)
     @PreAuthorize("hasAnyAuthority('" + Roles.WAREHOUSE_STAFF + "','" + Roles.WAREHOUSE_MANAGER + "')")
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "fulfillment-task", resourceId = "#taskId")
     public ApiResponse<FulfillmentTaskResponse> completePicking(@PathVariable UUID taskId,
                                                         @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(mapper.toResponse(fulfillment.completePicking(taskId, actor)));
     }
 
-    @GetMapping("/{taskId}/lines/{lineId}/design-artifacts/{role}/download-url")
+    @GetMapping("/tasks/{taskId}/lines/{lineId}/design-artifacts/{role}/download-url")
     @RequiresPermission(resource = FulfillmentResources.PACKAGES, action = Action.READ)
     @PreAuthorize("hasAnyAuthority('" + Roles.WAREHOUSE_STAFF + "','" + Roles.WAREHOUSE_MANAGER
             + "','" + Roles.QC_STAFF + "')")
@@ -110,17 +136,19 @@ class FulfillmentController {
                 .body(ApiResponse.ok(mapper.toResponse(fulfillment.artifactDownload(taskId, lineId, role, actor))));
     }
 
-    @PostMapping("/{taskId}/packing-completion")
+    @PostMapping("/tasks/{taskId}/packing-completion")
     @RequiresPermission(resource = FulfillmentResources.PACKAGES, action = Action.CREATE)
     @PreAuthorize("hasAnyAuthority('" + Roles.WAREHOUSE_STAFF + "','" + Roles.WAREHOUSE_MANAGER + "')")
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "fulfillment-task", resourceId = "#taskId")
     public ApiResponse<FulfillmentTaskResponse> completePacking(@PathVariable UUID taskId,
                                                         @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(mapper.toResponse(fulfillment.completePacking(taskId, actor)));
     }
 
-    @PostMapping("/{taskId}/design-integrity-reverification")
+    @PostMapping("/tasks/{taskId}/design-integrity-reverification")
     @RequiresPermission(resource = FulfillmentResources.PACKAGES, action = Action.CREATE)
     @PreAuthorize("hasAnyAuthority('" + Roles.QC_STAFF + "','" + Roles.WAREHOUSE_MANAGER + "')")
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "fulfillment-task", resourceId = "#taskId")
     public ApiResponse<FulfillmentTaskResponse> reverify(@PathVariable UUID taskId,
             @Valid @RequestBody ReverificationRequest request, @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(mapper.toResponse(fulfillment.reverifyDesignIntegrity(taskId, request.resolutionNote(), actor)));

@@ -148,8 +148,9 @@ class OrderCancellationIntegrationTest {
         // Fulfillment had started picking it.
         UUID pick = Identifiers.newId();
         tx.executeWithoutResult(s -> {
-            jdbc.update("INSERT INTO fulfillment.pick (id, order_id, status, created_at) VALUES (?, ?, 'PICKING', NOW())",
-                    pick, orderId);
+            jdbc.update("""
+                    INSERT INTO fulfillment.pick (id, order_id, order_number, warehouse_id, status, created_at)
+                    VALUES (?, ?, ?, ?, 'PICKING', NOW())""", pick, orderId, placed.orderNumber(), DemoData.WAREHOUSE_HCM);
             jdbc.update("INSERT INTO fulfillment.pack (id, pick_id, status, created_at) VALUES (?, ?, 'PENDING', NOW())",
                     Identifiers.newId(), pick);
         });

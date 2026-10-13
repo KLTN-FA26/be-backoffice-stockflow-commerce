@@ -100,6 +100,12 @@ public interface InventoryService {
     int rearmReservations(UUID orderId);
 
     /**
+     * Where an order's stock is held right now (SCRUM-466): one row per live (HELD) hold, by SKU and
+     * location, in SKU order. Read-only; empty once the holds were consumed or released.
+     */
+    List<OrderHold> holdsOf(UUID orderId);
+
+    /**
      * Move unreserved stock between two locations, writing one ledger line (SCRUM-424). Joins the
      * caller's transaction, like {@link #reserve}. Locks the source and destination rows in id
      * order, as {@code reserve} does, so two moves crossing the same pair cannot deadlock.

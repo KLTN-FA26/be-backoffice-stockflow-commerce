@@ -54,7 +54,8 @@ SELECT pg_temp.expect_fail('O5 order line linked to a reservation that does not 
     INSERT INTO ordering.order_line_reservation (order_line_id, reservation_id) VALUES (md5('qa:ol:1')::uuid, gen_random_uuid()) $q$);
 
 \echo '--- picking (docs 07)'
-INSERT INTO fulfillment.pick (id, order_id, status, created_at) VALUES (md5('qa:pick:1')::uuid, md5('qa:order:1')::uuid, 'PICKING', NOW());
+INSERT INTO fulfillment.pick (id, order_id, order_number, warehouse_id, status, created_at)
+VALUES (md5('qa:pick:1')::uuid, md5('qa:order:1')::uuid, 'SO-QA-1', md5('demo:wh:HCM')::uuid, 'PICKING', NOW());
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at, created_at)
 VALUES (md5('qa:order:2')::uuid, 'SO-QA-2', 'c0000000-0000-4000-8000-000000000001', gen_random_uuid(), 'PENDING_PAYMENT', 1, 'VND', NOW(), NOW());
 INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)

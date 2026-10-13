@@ -135,6 +135,14 @@ public interface IdentityService {
      */
     UserProfile profile(UUID userId);
 
+    /**
+     * The ACTIVE staff assigned to {@code warehouseId} who hold at least one of {@code roleCodes}, by
+     * name, for a screen that picks who a task goes to (SCRUM-466). Returns only id, display name and
+     * the matching roles: it needs no user-management permission because it reveals no e-mail, phone
+     * or status. Not paged on purpose: the answer is bounded by one warehouse's staff.
+     */
+    List<AssignableUser> assignableUsers(java.util.Set<String> roleCodes, UUID warehouseId);
+
     /** Used by task assignment to reject inactive users and users outside an operational role. */
     boolean isActiveUserWithAnyRole(UUID userId, String... roleCodes);
 
