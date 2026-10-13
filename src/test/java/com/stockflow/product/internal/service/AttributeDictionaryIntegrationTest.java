@@ -151,9 +151,42 @@ class AttributeDictionaryIntegrationTest {
         try {
             var page = service.list("PAGED", null, null, 0, 20, null);
             assertThat(page.items()).hasSize(5).allSatisfy(v -> assertThat(v.values()).hasSize(2));
-            assertThat(statistics.getPrepareStatementCount()).isLessThanOrEqualTo(3);
+            // One for the page (Spring Data skips the count when the page is not full), one for the values.
+            assertThat(statistics.getPrepareStatementCount()).isEqualTo(2);
         } finally {
             statistics.setStatisticsEnabled(false);
         }
+    }
+
+    /**
+     * The audit writer commits on its own, so its rows are visible from this test's transaction.
+     * A value is audited as what it is - a child row - so the trail can tell deleting a value from
+     * deleting the attribute.
+     */
+    @Test
+    void aStaleVersionIsReportedBeforeAnyOtherReasonToRefuseADelete() {
+        var attribute = service.create("STALE", SELECT, details());
+        var value = service.addValue(attribute.id(), "V1", label("One")).values().get(0);
+        assertThat(errorOf(() -> service.deleteValue(attribute.id(), value.id(), value.version() + 1)))
+                .isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
+    }
+
+    @Test
+    void valueOperationsAreAuditedAsAttributeUpdatesAndValueRows() {
+        var attribute = service.create("AUDITED", SELECT, details());
+        var withValue = service.addValue(attribute.id(), "V1", label("One"));
+        var value = withValue.values().get(0);
+        service.updateValue(attribute.id(), value.id(), value.version(), label("Uno"), true);
+        service.deleteValue(attribute.id(), value.id(), service.get(attribute.id()).values().get(0).version());
+
+        assertThat(auditOf(attribute.id().toString())).containsExactly(
+                "CREATE product-attribute", "UPDATE product-attribute");
+        assertThat(auditOf(value.id().toString())).containsExactly(
+                "UPDATE product-attribute-value", "DELETE product-attribute-value");
+    }
+
+    private java.util.List<String> auditOf(String resourceId) {
+        return jdbc.queryForList("select action || ' ' || resource_type from platform.audit_log "
+                + "where resource_id = ? order by occurred_at", String.class, resourceId);
     }
 }

@@ -26,6 +26,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -78,7 +79,13 @@ public class AttributeDictionaryService {
         Map<UUID, Attribute> loaded = ids.isEmpty() ? Map.of() : rows.findWithValuesByIdIn(ids).stream()
                 .map(AttributePersistenceMapper::toDomain)
                 .collect(Collectors.toMap(Attribute::id, Function.identity()));
-        return Pages.toResponse(found.map(row -> view(loaded.get(row.getId()))));
+        // A row deleted between the page query and the values query is skipped, not dereferenced.
+        List<AttributeView> items = found.getContent().stream()
+                .map(row -> loaded.get(row.getId()))
+                .filter(Objects::nonNull)
+                .map(AttributeDictionaryService::view)
+                .toList();
+        return PageResponse.of(items, found.getNumber(), found.getSize(), found.getTotalElements());
     }
 
     @Transactional(readOnly = true)
@@ -113,14 +120,19 @@ public class AttributeDictionaryService {
         attributes.delete(attribute);
     }
 
-    @Auditable(action = AuditAction.CREATE, resourceType = "product-attribute", resourceId = "#attributeId")
+    /**
+     * Value operations are audited the way the warehouse audits child rows. Adding is an UPDATE of the
+     * attribute, because the new value's id is not among the arguments; changing and deleting name
+     * the value itself, so a deleted value cannot be mistaken for a deleted attribute.
+     */
+    @Auditable(action = AuditAction.UPDATE, resourceType = "product-attribute", resourceId = "#attributeId")
     public AttributeView addValue(UUID attributeId, String code, AttributeValueDetails details) {
         Attribute attribute = require(attributeId);
         attribute.addValue(Identifiers.newId(), code, details);
         return view(attributes.save(attribute));
     }
 
-    @Auditable(action = AuditAction.UPDATE, resourceType = "product-attribute", resourceId = "#attributeId")
+    @Auditable(action = AuditAction.UPDATE, resourceType = "product-attribute-value", resourceId = "#valueId")
     public AttributeView updateValue(UUID attributeId, UUID valueId, long version, AttributeValueDetails details,
                                      boolean active) {
         Attribute attribute = require(attributeId);
@@ -128,10 +140,10 @@ public class AttributeDictionaryService {
         return view(attributes.save(attribute));
     }
 
-    @Auditable(action = AuditAction.DELETE, resourceType = "product-attribute", resourceId = "#attributeId")
+    @Auditable(action = AuditAction.DELETE, resourceType = "product-attribute-value", resourceId = "#valueId")
     public AttributeView deleteValue(UUID attributeId, UUID valueId, long version) {
         Attribute attribute = require(attributeId);
-        attribute.value(valueId);
+        attribute.requireValueVersion(valueId, version);
         if (attributes.isValueInUse(valueId)) {
             throw new BusinessException(ErrorCode.ATTRIBUTE_IN_USE, "Value " + valueId + " is in use");
         }
