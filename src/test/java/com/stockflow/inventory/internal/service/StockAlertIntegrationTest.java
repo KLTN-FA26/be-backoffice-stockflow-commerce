@@ -253,7 +253,8 @@ class StockAlertIntegrationTest {
         adjust(-42);
         drainer.drain();
         awaitPlannerMessages(1);
-        Instant receivedAt = Instant.now().minusSeconds(60);
+        // Postgres keeps microseconds; Linux clocks give nanoseconds, and the layer is found by its receipt time.
+        Instant receivedAt = Instant.now().minusSeconds(60).truncatedTo(java.time.temporal.ChronoUnit.MICROS);
         UUID line = UUID.randomUUID();
         inventory.receive(new ReceiveStockCommand(line, new Sku(sku), null, null, "HCM-RCV01", 100, clerk, receivedAt));
         drainer.drain();
