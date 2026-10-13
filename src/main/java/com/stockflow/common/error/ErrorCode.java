@@ -219,6 +219,7 @@ public enum ErrorCode {
     ATTRIBUTE_IN_USE("This attribute or value is used by a product or category", 409),
     INVALID_VARIANT_TRANSITION("This variant cannot move to that status right now", 409),
     INVALID_PRODUCT_STATUS_TRANSITION("This product cannot move to that status right now", 409),
+    PRODUCT_AXES_LOCKED("Variant axes can only change while the product is a draft", 409),
     SELF_APPROVAL_NOT_ALLOWED("A product cannot be approved by the person who submitted it", 409),
     CUSTOMER_EMAIL_ALREADY_EXISTS("A customer account with this email already exists", 409),
 
