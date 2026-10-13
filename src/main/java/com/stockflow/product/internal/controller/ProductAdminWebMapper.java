@@ -5,11 +5,13 @@ import com.stockflow.inventory.api.InventoryItemLogistics;
 import com.stockflow.inventory.api.ItemLogistics;
 import com.stockflow.product.internal.controller.dto.BrandResponse;
 import com.stockflow.product.internal.controller.dto.CategoryResponse;
+import com.stockflow.product.internal.controller.dto.GeneratedVariantsResponse;
 import com.stockflow.product.internal.controller.dto.ImageDownloadResponse;
 import com.stockflow.product.internal.controller.dto.MediaResponse;
 import com.stockflow.product.internal.controller.dto.PublicGalleryResponse;
 import com.stockflow.product.internal.controller.dto.SkuLogisticsRequest;
 import com.stockflow.product.internal.controller.dto.SkuLogisticsResponse;
+import com.stockflow.product.internal.controller.dto.VariantOptionResponse;
 import com.stockflow.product.internal.controller.dto.VariantResponse;
 import com.stockflow.product.internal.service.ProductMediaService;
 import com.stockflow.product.internal.service.ProductTaxonomyService;
@@ -29,7 +31,13 @@ class ProductAdminWebMapper {
 
     VariantResponse toResponse(ProductVariantService.VariantView v) {
         return new VariantResponse(v.id(), v.productId(), v.sku(), v.name(), v.status().name(), v.defaultVariant(),
-                v.attributeSignature(), v.position(), v.obsoletedAt(), v.version());
+                v.attributeSignature(), v.position(), v.obsoletedAt(), v.version(),
+                v.options().stream().map(o -> new VariantOptionResponse(o.attributeId(), o.attributeCode(),
+                        o.valueId(), o.valueCode(), o.label())).toList());
+    }
+
+    GeneratedVariantsResponse toResponse(ProductVariantService.Generated g) {
+        return new GeneratedVariantsResponse(g.created().stream().map(this::toResponse).toList(), g.skipped());
     }
 
     MediaResponse toResponse(ProductMediaService.MediaView m) {
