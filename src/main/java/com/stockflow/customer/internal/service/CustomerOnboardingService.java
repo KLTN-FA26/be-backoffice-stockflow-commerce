@@ -7,6 +7,8 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.customer.api.CustomerSummary;
 import com.stockflow.customer.internal.domain.Customer;
+import com.stockflow.customer.internal.domain.CreditProfile;
+import com.stockflow.customer.internal.domain.CreditProfileRepository;
 import com.stockflow.customer.internal.domain.CustomerRepository;
 import com.stockflow.customer.internal.domain.CustomerStatus;
 import com.stockflow.customer.internal.domain.CustomerStatusChange;
@@ -62,6 +64,7 @@ public class CustomerOnboardingService {
     private static final Logger log = LoggerFactory.getLogger(CustomerOnboardingService.class);
 
     private final CustomerRepository customers;
+    private final CreditProfileRepository creditProfiles;
     private final CustomerStatusHistory history;
     private final PortalAccountService accounts;
     private final NotificationService notifications;
@@ -69,11 +72,13 @@ public class CustomerOnboardingService {
     private final Clock clock;
     private final String activationUrl;
 
-    CustomerOnboardingService(CustomerRepository customers, CustomerStatusHistory history, PortalAccountService accounts,
+    CustomerOnboardingService(CustomerRepository customers, CreditProfileRepository creditProfiles,
+                              CustomerStatusHistory history, PortalAccountService accounts,
                               NotificationService notifications, PlatformTransactionManager transactionManager,
                               Clock clock,
                               @Value("${stockflow.customer.portal-activation-url:}") String activationUrl) {
         this.customers = customers;
+        this.creditProfiles = creditProfiles;
         this.history = history;
         this.accounts = accounts;
         this.notifications = notifications;
@@ -89,8 +94,61 @@ public class CustomerOnboardingService {
      * the invitation and in the status history.
      */
     public record CreateBusinessCustomer(String companyName, String taxCode, String contactName, String email,
-                                         String phone, UUID actorUserId) {
+                                         String phone, UUID actorUserId,
+                                         com.stockflow.customer.api.CommercialTerm paymentTerm,
+                                         java.math.BigDecimal depositPercent) {
+
+        /** Without payment terms (prepay only until the approver sets them). */
+        public CreateBusinessCustomer(String companyName, String taxCode, String contactName, String email,
+                                      String phone, UUID actorUserId) {
+            this(companyName, taxCode, contactName, email, phone, actorUserId, null, null);
+        }
     }
+
+    /**
+     * The terms Sales may set when onboarding (decision B1, 2026-10-13): PREPAID, or DEPOSIT with its agreed share.
+     * CREDIT and a credit limit stay with the credit approver (kltn-docs 18 BR-02) - refused here. Nothing chosen:
+     * no profile, the customer prepays, as before. The profile records the Sales account as the one who set it.
+     *
+     * @throws BusinessException {@code VALIDATION_FAILED} for CREDIT, a share without DEPOSIT or DEPOSIT without
+     *         one; {@code CREDIT_PROFILE_INVALID} for a share outside (0, 100)
+     */
+    static java.util.Optional<CreditProfile> onboardingTerms(UUID customerId,
+                                                             com.stockflow.customer.api.CommercialTerm term,
+                                                             java.math.BigDecimal depositPercent, UUID actorUserId,
+                                                             Instant now) {
+        if (term == null) {
+            if (depositPercent != null) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "depositPercent needs paymentTerm DEPOSIT");
+            }
+            return java.util.Optional.empty();
+        }
+        return switch (term) {
+            case CREDIT -> throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "Credit terms and limit are set by the credit approver, not at onboarding");
+            case PREPAID -> {
+                if (depositPercent != null) {
+                    throw new BusinessException(ErrorCode.VALIDATION_FAILED, "depositPercent needs paymentTerm DEPOSIT");
+                }
+                yield java.util.Optional.of(CreditProfile.create(customerId, true, false, false,
+                        com.stockflow.customer.api.CommercialTerm.PREPAID, null, null, null, actorUserId, now,
+                        ONBOARDING_NOTE));
+            }
+            case DEPOSIT -> {
+                if (depositPercent == null) {
+                    throw new BusinessException(ErrorCode.VALIDATION_FAILED, "paymentTerm DEPOSIT needs depositPercent");
+                }
+                if (depositPercent.stripTrailingZeros().scale() > 2) {
+                    throw new BusinessException(ErrorCode.VALIDATION_FAILED, "depositPercent has at most two decimals");
+                }
+                yield java.util.Optional.of(CreditProfile.create(customerId, true, true, false,
+                        com.stockflow.customer.api.CommercialTerm.DEPOSIT, depositPercent, null, null, actorUserId,
+                        now, ONBOARDING_NOTE));
+            }
+        };
+    }
+
+    static final String ONBOARDING_NOTE = "Set by Sales at onboarding (decision B1): prepaid / deposit only";
 
     public enum InvitationDelivery { SENT, FAILED }
 
@@ -122,6 +180,9 @@ public class CustomerOnboardingService {
         } catch (IllegalArgumentException invalid) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, invalid.getMessage());
         }
+        // Checked before anything is written, like the tax code.
+        onboardingTerms(UUID.randomUUID(), command.paymentTerm(), command.depositPercent(), command.actorUserId(),
+                clock.instant());
         record Created(CustomerSummary customer, PortalInvitationLink link) {
         }
         Created created = writeRejectingDuplicates(() -> transactions.execute(status -> {
@@ -141,6 +202,8 @@ public class CustomerOnboardingService {
                 throw new BusinessException(ErrorCode.VALIDATION_FAILED, invalid.getMessage());
             }
             CustomerSummary saved = CustomerServiceImpl.toSummary(customers.save(customer));
+            onboardingTerms(customer.id(), command.paymentTerm(), command.depositPercent(), command.actorUserId(),
+                    clock.instant()).ifPresent(creditProfiles::save);
             history.record(new CustomerStatusChange(Identifiers.newId(), customer.id(), null,
                     CustomerStatus.PENDING_ACTIVATION, null, command.actorUserId(), clock.instant()));
             return new Created(saved, link);

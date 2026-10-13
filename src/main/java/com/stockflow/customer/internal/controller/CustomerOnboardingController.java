@@ -60,7 +60,7 @@ class CustomerOnboardingController {
         refuseCustomers(user);
         return ApiResponse.ok(toResponse(onboarding.create(new CustomerOnboardingService.CreateBusinessCustomer(
                 request.companyName(), request.taxCode(), request.contactName(), request.email(), request.phone(),
-                user.userId()))));
+                user.userId(), request.paymentTerm(), request.depositPercent()))));
     }
 
     @PostMapping("/{customerId}/portal-invitation")

@@ -13,6 +13,8 @@ of the defaults listed under "Decisions" are outstanding. Nothing pushed, merged
 > - **A closed (INACTIVE) customer may be reopened** by the E-commerce Admin with a mandatory reason, kept in
 >   `customer.customer_status_history` (`V20261014000500`); old sessions stay revoked; a contact that never activated
 >   reopens to PENDING_ACTIVATION.
+> - **Payment terms at onboarding** (B1, 2026-10-13): Sales may choose PREPAID or DEPOSIT (+ deposit %) in
+>   `POST /api/v1/customers` (`paymentTerm`, `depositPercent`); CREDIT stays with the credit approver.
 > - **Customer groups** (P7): `/api/v1/customer-segments` and `PUT /api/v1/customers/{id}/segment`, resource
 >   `customer-segments` (`V20261014000600`). Details: `docs/handoffs/SCRUM-428.md`.
 
@@ -87,7 +89,11 @@ Suspended". Before this change a BLOCKED customer could still sign in (only orde
 
 Unchanged and regression-tested: login, retired registration/guest checkout (denied with security on/off
 and for cached replays), availability (ACTIVE linked customer only), profile/address ownership,
-credit-profile API (terms are set only by the approver, BR-02; no row = prepaid only).
+credit-profile API (terms are set only by the approver, BR-02; no row = prepaid only). **Superseded in part
+by decision B1 (2026-10-13):** at onboarding Sales may choose `paymentTerm` PREPAID or DEPOSIT with the agreed
+`depositPercent` (above 0, below 100, two decimals); a credit profile is then recorded with credit off and the
+Sales account as the one who set it. CREDIT and the credit limit stay with the approver (`PUT …/credit-profile`,
+APPROVE); CREDIT at onboarding is refused 400 before anything is written. Omitted: nothing recorded, prepaid only.
 
 ## Decisions (defaults chosen here, not approved by anyone else)
 

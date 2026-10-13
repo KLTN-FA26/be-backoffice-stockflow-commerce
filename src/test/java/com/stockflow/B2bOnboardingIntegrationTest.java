@@ -60,6 +60,7 @@ import java.util.regex.Pattern;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -745,6 +746,62 @@ class B2bOnboardingIntegrationTest {
                 "contactName", "Contact", "email", email)), null)
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
         return UUID.fromString(mapper.readTree(created).at("/data/customer/customerId").asText());
+    }
+
+    /** Decision B1 (2026-10-13): Sales sets PREPAID or DEPOSIT at onboarding; CREDIT stays with the approver. */
+    @Test
+    void salesChoosesPrepaidOrDepositAtOnboardingAndCreditStaysWithTheApprover() throws Exception {
+        String refused = unique("credit");
+        for (Map<String, Object> bad : List.<Map<String, Object>>of(
+                Map.of("companyName", "Cong ty Cong No", "contactName", "A", "email", refused, "paymentTerm", "CREDIT"),
+                Map.of("companyName", "Cong ty Coc", "contactName", "A", "email", refused, "paymentTerm", "DEPOSIT"),
+                Map.of("companyName", "Cong ty Tra Truoc", "contactName", "A", "email", refused,
+                        "paymentTerm", "PREPAID", "depositPercent", 30),
+                Map.of("companyName", "Cong ty Coc", "contactName", "A", "email", refused,
+                        "paymentTerm", "DEPOSIT", "depositPercent", 100),
+                Map.of("companyName", "Cong ty Coc", "contactName", "A", "email", refused,
+                        "paymentTerm", "DEPOSIT", "depositPercent", 12.345))) {
+            create(sales, json(bad), null).andExpect(status().isBadRequest());
+        }
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM customer.customer WHERE email = ?", Integer.class,
+                refused)).as("nothing written").isZero();
+
+        String email = unique("deposit");
+        String created = create(sales, json(Map.of("companyName", "Cong ty Dat Coc", "contactName", "Chi B",
+                "email", email, "paymentTerm", "DEPOSIT", "depositPercent", 30)), null)
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
+        UUID customerId = UUID.fromString(mapper.readTree(created).at("/data/customer/customerId").asText());
+        String profile = "/api/v1/customers/" + customerId + "/credit-profile";
+        String terms = mvc.perform(get(profile).header("Authorization", "Bearer " + sales))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.configured").value(true))
+                .andExpect(jsonPath("$.data.allowPrepaid").value(true))
+                .andExpect(jsonPath("$.data.allowDeposit").value(true))
+                .andExpect(jsonPath("$.data.allowCredit").value(false))
+                .andExpect(jsonPath("$.data.defaultPaymentTerm").value("DEPOSIT"))
+                .andExpect(jsonPath("$.data.depositPercent").value(30))
+                .andExpect(jsonPath("$.data.approvedBy").exists())
+                .andReturn().getResponse().getContentAsString();
+        long version = mapper.readTree(terms).at("/data/version").asLong();
+
+        // Sales cannot grant credit afterwards either; the approver can.
+        Map<String, Object> credit = new java.util.HashMap<>(Map.of("allowPrepaid", true, "allowDeposit", true,
+                "allowCredit", true, "defaultPaymentTerm", "CREDIT", "depositPercent", 30, "creditLimit", 50_000_000,
+                "creditTermDays", 30, "expectedVersion", version));
+        mvc.perform(put(profile).header("Authorization", "Bearer " + sales).contentType("application/json")
+                .content(json(credit))).andExpect(status().isForbidden());
+        mvc.perform(put(profile).header("Authorization", "Bearer " + systemAdmin).contentType("application/json")
+                        .content(json(credit)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.allowCredit").value(true));
+
+        // Without a choice nothing is recorded, as before: the customer prepays until the approver acts.
+        String plain = unique("plain");
+        String createdPlain = create(sales, json(Map.of("companyName", "Cong ty Thuong", "contactName", "C",
+                "email", plain)), null).andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
+        UUID plainId = UUID.fromString(mapper.readTree(createdPlain).at("/data/customer/customerId").asText());
+        mvc.perform(get("/api/v1/customers/" + plainId + "/credit-profile").header("Authorization", "Bearer " + sales))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.configured").value(false))
+                .andExpect(jsonPath("$.data.defaultPaymentTerm").value("PREPAID"));
     }
 
     private ResultActions create(String bearer, String body, String idempotencyKey) throws Exception {
