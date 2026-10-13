@@ -105,6 +105,26 @@ Enum inventory.stock_adjustment_status {
   WITHDRAWN
 }
 
+Enum inventory.stock_alert_kind {
+  REORDER
+  SAFETY
+  EXPIRING
+  EXPIRED
+}
+
+Enum inventory.stock_alert_resolution {
+  RECOVERED
+  UNCONFIGURED
+  STOCK_GONE
+  EXPIRED_OUT
+}
+
+Enum inventory.stock_alert_status {
+  OPEN
+  ACKNOWLEDGED
+  RESOLVED
+}
+
 Enum inventory.stock_item_status {
   INBOUND
   AVAILABLE
@@ -144,6 +164,7 @@ Enum inventory.stock_movement_reference_type {
   RETURN_REQUEST_LINE
   ORDER
   PRODUCTION_ORDER
+  EXPIRY_SWEEP
 }
 
 Enum inventory.stock_reservation_status {
@@ -392,6 +413,11 @@ Enum procurement.replenishment_proposals_status {
   REJECTED
 }
 
+Enum procurement.subcontract_settlement_status {
+  AWAITING_APPROVAL
+  FINAL
+}
+
 Enum procurement.supplier_addresses_type {
   OFFICE
   WAREHOUSE
@@ -450,6 +476,7 @@ Enum production.production_order_status_before_hold {
   MATERIAL_ISSUED
   PRINTING
   SUBCONTRACTED
+  QC
 }
 
 Enum production.production_order_type {
@@ -792,6 +819,12 @@ Enum notification.template_channel {
   EMAIL
   SMS
   PUSH
+}
+
+Enum notification.user_notification_severity {
+  INFO
+  WARN
+  CRITICAL
 }
 
 Enum identity.app_role_data_scope {
@@ -1232,6 +1265,33 @@ Table inventory.stock_adjustment [headercolor: #3E7C4A] {
   last_modified_by    varchar(100)
   withdrawn_at        timestamptz
   received_at         timestamptz
+}
+
+Table inventory.stock_alert [headercolor: #3E7C4A] {
+  id                   uuid [pk]
+  kind                 inventory.stock_alert_kind [not null]
+  sku                  varchar(64) [not null]
+  warehouse_id         uuid
+  lot_number           varchar(64)
+  expiry_date          date
+  observed_qty         int [not null]
+  threshold_qty        int
+  reservation_impaired boolean [not null, default: false]
+  status               inventory.stock_alert_status [not null, default: 'OPEN']
+  opened_at            timestamptz [not null]
+  last_observed_at     timestamptz [not null]
+  acknowledged_by      uuid
+  acknowledged_at      timestamptz
+  ack_note             varchar(500)
+  resolved_at          timestamptz
+  resolution           inventory.stock_alert_resolution
+  version              bigint [not null, default: 0]
+}
+
+Table inventory.stock_alert_dirty [headercolor: #3E7C4A] {
+  id        bigint [pk]
+  sku       varchar(64) [not null]
+  marked_at timestamptz [not null, default: `now()`]
 }
 
 Table inventory.stock_item [headercolor: #3E7C4A] {
@@ -1887,6 +1947,36 @@ Table procurement.replenishment_proposals [headercolor: #7D5BA6] {
   last_modified_by varchar(100)
 }
 
+Table procurement.subcontract_settlement [headercolor: #7D5BA6] {
+  po_id                   uuid [pk]
+  production_order_id     uuid [not null, unique]
+  status                  procurement.subcontract_settlement_status [not null]
+  currency                varchar(3) [not null]
+  unit_price              decimal(18,2) [not null]
+  received_quantity       int [not null]
+  passed_quantity         int [not null]
+  failed_quantity         int [not null]
+  payable_amount          decimal(18,2) [not null]
+  blanks_sent             int [not null]
+  blanks_used             int [not null]
+  blanks_returned         int [not null]
+  blanks_lost             int [not null]
+  tolerance_percent       decimal(5,2) [not null]
+  tolerance_blanks        int [not null]
+  excess_loss             int [not null]
+  deduction_per_blank     decimal(18,2)
+  deduction_amount        decimal(18,2) [not null, default: 0]
+  cancellation_fee        decimal(18,2) [not null, default: 0]
+  cancellation_fee_reason varchar(1000)
+  net_payable             decimal(18,2) [not null]
+  settled_at              timestamptz [not null]
+  settled_by              uuid
+  approved_at             timestamptz
+  approved_by             uuid
+  approval_note           varchar(1000)
+  version                 bigint [not null, default: 0]
+}
+
 Table procurement.supplier_addresses [headercolor: #7D5BA6] {
   id               uuid [pk]
   supplier_id      uuid [not null]
@@ -2084,6 +2174,7 @@ Table production.production_order [headercolor: #E67E22] {
   created_by             varchar(100)
   last_modified_at       timestamptz
   last_modified_by       varchar(100)
+  origin                 varchar(16)
 }
 
 Table production.production_order_status_history [headercolor: #E67E22] {
@@ -2094,6 +2185,15 @@ Table production.production_order_status_history [headercolor: #E67E22] {
   reason              varchar(1000)
   changed_at          timestamptz [not null]
   changed_by          uuid
+}
+
+Table production.production_print_run [headercolor: #E67E22] {
+  id                  uuid [pk]
+  production_order_id uuid [not null]
+  printed_quantity    int [not null]
+  scrap_quantity      int [not null]
+  recorded_at         timestamptz [not null]
+  recorded_by         uuid
 }
 
 Table production.production_qc_result [headercolor: #E67E22] {
@@ -2126,6 +2226,18 @@ Table production.production_subcontract_hold [headercolor: #E67E22] {
   receipt_id          uuid [not null]
   receipt_line_id     uuid [not null, unique]
   production_order_id uuid [not null]
+}
+
+Table production.production_subcontract_recall [headercolor: #E67E22] {
+  id                  uuid [pk]
+  production_order_id uuid [not null]
+  request_id          uuid [not null, unique]
+  returned_blanks     int [not null]
+  spoilt_blanks       int [not null]
+  return_location     varchar(64)
+  note                varchar(1000)
+  recorded_at         timestamptz [not null]
+  recorded_by         uuid [not null]
 }
 
 Table production.production_subcontract_receipt [headercolor: #E67E22] {
@@ -2854,6 +2966,8 @@ Table fulfillment.pick [headercolor: #2C7873] {
   started_at       timestamptz
   picked_at        timestamptz
   needs_put_back   boolean [not null, default: false]
+  order_number     varchar(32) [not null]
+  warehouse_id     uuid [not null]
 }
 
 Table fulfillment.pick_line [headercolor: #2C7873] {
@@ -3008,6 +3122,7 @@ Table catalog.product_listing [headercolor: #1B998B] {
   published_seo_title       varchar(255)
   published_seo_description text
   last_attempt_at           timestamptz
+  search_document           tsvector
 }
 
 Table catalog.promotion [headercolor: #1B998B] {
@@ -3124,6 +3239,24 @@ Table notification.template [headercolor: #A6763F] {
   last_modified_by varchar(100)
   indexes {
     (code, locale) [unique]
+  }
+}
+
+Table notification.user_notification [headercolor: #A6763F] {
+  id           uuid [pk]
+  recipient_id uuid [not null]
+  category     varchar(40) [not null]
+  severity     notification.user_notification_severity [not null]
+  title        varchar(200) [not null]
+  body         varchar(1000)
+  link         varchar(300)
+  source_type  varchar(40)
+  source_id    varchar(100)
+  dedupe_key   varchar(200) [not null]
+  created_at   timestamptz [not null, default: `now()`]
+  read_at      timestamptz
+  indexes {
+    (recipient_id, dedupe_key) [unique]
   }
 }
 
@@ -3396,6 +3529,9 @@ Ref: inventory.stock_adjustment.decided_by > identity.app_user.id
 Ref: inventory.stock_adjustment.location_code > warehouse.storage_location.location_code [delete: restrict]
 Ref: inventory.stock_adjustment.requested_by > identity.app_user.id
 Ref: inventory.stock_adjustment.sku > inventory.inventory_items.sku [delete: restrict]
+Ref: inventory.stock_alert.acknowledged_by > identity.app_user.id
+Ref: inventory.stock_alert.sku > inventory.inventory_items.sku
+Ref: inventory.stock_alert.warehouse_id > warehouse.warehouse.id
 Ref: inventory.stock_item.location_code > warehouse.storage_location.location_code [delete: restrict]
 Ref: inventory.stock_item.sku > inventory.inventory_items.sku [delete: restrict]
 Ref: inventory.stock_movement.actor_id > identity.app_user.id
@@ -3489,6 +3625,10 @@ Ref: procurement.replenishment_proposal_lines.suggested_supplier_id > procuremen
 Ref: procurement.replenishment_proposals.converted_by > identity.app_user.id
 Ref: procurement.replenishment_proposals.reviewed_by > identity.app_user.id
 Ref: procurement.replenishment_proposals.warehouse_id > warehouse.warehouse.id [delete: restrict]
+Ref: procurement.subcontract_settlement.approved_by > identity.app_user.id
+Ref: procurement.subcontract_settlement.po_id > procurement.purchase_orders.id
+Ref: procurement.subcontract_settlement.production_order_id > production.production_order.id
+Ref: procurement.subcontract_settlement.settled_by > identity.app_user.id
 Ref: procurement.supplier_addresses.supplier_id > procurement.suppliers.id [delete: cascade]
 Ref: procurement.supplier_contacts.supplier_id > procurement.suppliers.id [delete: cascade]
 Ref: procurement.supplier_invoice_lines.invoice_id > procurement.supplier_invoices.id [delete: cascade]
@@ -3515,6 +3655,8 @@ Ref: production.production_order.subcontractor_id > procurement.suppliers.id [de
 Ref: production.production_order.warehouse_id > warehouse.warehouse.id [delete: restrict]
 Ref: production.production_order_status_history.changed_by > identity.app_user.id
 Ref: production.production_order_status_history.production_order_id > production.production_order.id [delete: cascade]
+Ref: production.production_print_run.production_order_id > production.production_order.id [delete: cascade]
+Ref: production.production_print_run.recorded_by > identity.app_user.id
 Ref: production.production_qc_result.inspected_by > identity.app_user.id
 Ref: production.production_qc_result.production_order_id > production.production_order.id [delete: cascade]
 Ref: production.production_scrap.production_order_id > production.production_order.id [delete: cascade]
@@ -3523,6 +3665,8 @@ Ref: production.production_scrap.stock_adjustment_id > inventory.stock_adjustmen
 Ref: production.production_subcontract_hold.production_order_id > production.production_order.id [delete: cascade]
 Ref: production.production_subcontract_hold.receipt_id > production.production_subcontract_receipt.receipt_id [delete: cascade]
 Ref: production.production_subcontract_hold.reservation_id > inventory.stock_reservation.id [delete: restrict]
+Ref: production.production_subcontract_recall.production_order_id > production.production_order.id [delete: cascade]
+Ref: production.production_subcontract_recall.recorded_by > identity.app_user.id
 Ref: production.production_subcontract_receipt.production_order_id > production.production_order.id [delete: cascade]
 Ref: production.production_subcontract_receipt.receipt_id > procurement.goods_receipts.id [delete: restrict]
 Ref: production.production_subcontract_receipt.reconciled_by > identity.app_user.id
@@ -3626,6 +3770,7 @@ Ref: fulfillment.package_line.order_line_id > ordering.order_line.id [delete: re
 Ref: fulfillment.package_line.package_id > fulfillment.package.id [delete: cascade]
 Ref: fulfillment.pick.assigned_user_id > identity.app_user.id
 Ref: fulfillment.pick.order_id > ordering.customer_order.id [delete: restrict]
+Ref: fulfillment.pick.warehouse_id > warehouse.warehouse.id
 Ref: fulfillment.pick.wave_id > fulfillment.wave.id
 Ref: fulfillment.pick_line.location_code > warehouse.storage_location.location_code [delete: restrict]
 Ref: fulfillment.pick_line.order_line_id > ordering.order_line.id [delete: restrict]
@@ -3649,6 +3794,7 @@ Ref: chat.conversation.order_id > ordering.customer_order.id [delete: restrict]
 Ref: chat.message.conversation_id > chat.conversation.id [delete: cascade]
 Ref: notification.po_delivery_control.purchase_order_id > procurement.purchase_orders.id [delete: cascade]
 Ref: notification.preference.user_id > identity.app_user.id [delete: cascade]
+Ref: notification.user_notification.recipient_id > identity.app_user.id [delete: cascade]
 Ref: reporting.product_sales_summary.sku > product.variants.sku [delete: restrict]
 Ref: identity.portal_invitation.issued_by > identity.app_user.id
 Ref: identity.portal_invitation.user_id > identity.app_user.id [delete: cascade]
@@ -3683,6 +3829,8 @@ TableGroup inventory_group [color: #3E7C4A] {
   inventory.cycle_count_line
   inventory.inventory_items
   inventory.stock_adjustment
+  inventory.stock_alert
+  inventory.stock_alert_dirty
   inventory.stock_item
   inventory.stock_movement
   inventory.stock_reservation
@@ -3721,6 +3869,7 @@ TableGroup procurement_group [color: #7D5BA6] {
   procurement.qc_inspections
   procurement.replenishment_proposal_lines
   procurement.replenishment_proposals
+  procurement.subcontract_settlement
   procurement.supplier_addresses
   procurement.supplier_contacts
   procurement.supplier_invoice_lines
@@ -3734,9 +3883,11 @@ TableGroup production_group [color: #E67E22] {
   production.production_material_issue
   production.production_order
   production.production_order_status_history
+  production.production_print_run
   production.production_qc_result
   production.production_scrap
   production.production_subcontract_hold
+  production.production_subcontract_recall
   production.production_subcontract_receipt
   production.sample_request
 }
@@ -3820,6 +3971,7 @@ TableGroup notification_group [color: #A6763F] {
   notification.po_retry_cursor
   notification.preference
   notification.template
+  notification.user_notification
 }
 
 TableGroup reporting_group [color: #607D8B] {

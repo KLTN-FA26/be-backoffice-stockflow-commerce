@@ -186,5 +186,6 @@ for s in SCHEMAS:
     if names:
         out.append("TableGroup %s_group [color: %s] {\n%s\n}\n" % (s, COLORS[s], "\n".join("  %s.%s" % (s, t) for t in names)))
 
-open(OUT, "w").write("\n".join(out))
+# LF on every platform: Python on Windows would write CRLF and turn a regeneration into a whole-file diff.
+open(OUT, "w", encoding="utf-8", newline="\n").write("\n".join(out))
 print("tables", len(tables), "refs", len(fks), "enums", len(enum_name))
