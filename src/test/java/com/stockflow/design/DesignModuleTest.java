@@ -32,6 +32,9 @@ class DesignModuleTest {
     // A dependency of a bootstrapped dependency, not of this module: explicit ports only, the slice must not boot more.
     @MockitoBean com.stockflow.inventory.api.InventoryControlService inventoryControlServiceMock;
     @MockitoBean com.stockflow.warehouse.api.WarehouseService warehouseServiceMock;
+    // customer (bootstrapped) invites portal accounts and mails the invitation (SCRUM-429): its ports, not the modules.
+    @MockitoBean com.stockflow.identity.api.PortalAccountService portalAccountServiceMock;
+    @MockitoBean com.stockflow.notification.api.NotificationService notificationServiceMock;
 
     @Test
     @DisplayName("design starts and answers through its api with the other modules absent")
