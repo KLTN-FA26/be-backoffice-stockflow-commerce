@@ -32,7 +32,7 @@ cost, is [ADR-0005](docs/adr/0005-modular-monolith.md) — read that first if yo
 
 ```bash
 cp .env.example .env                 # every variable the app reads, documented
-docker compose up -d                 # Postgres, Redis, Elasticsearch, MinIO, Jaeger, Mailpit
+docker compose up -d                 # Postgres, Redis, MinIO, Jaeger, Mailpit
 mvn spring-boot:run -Dspring-boot.run.profiles=local
 ```
 

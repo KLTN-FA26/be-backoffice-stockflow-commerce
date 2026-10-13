@@ -103,6 +103,7 @@ class PermissionMatrixTest {
             Map.entry("GET /api/v1/catalog/products/availability", "any signed-in user: stock availability by SKU, no private data"),
             Map.entry("GET /api/v1/catalog/products/{slug}", "any signed-in user: one published product"),
             Map.entry("GET /api/v1/catalog/products/{slug}/gallery", "any signed-in user: published images of one product"),
+            Map.entry("GET /api/v1/catalog/search/suggestions", "any signed-in user: titles of published products, no price or stock"),
             Map.entry("GET /api/v1/identity/me", "any signed-in user: reads the caller's own account from the token"),
             Map.entry("GET /api/v1/identity/me/permissions", "any signed-in user: the caller's own roles and permissions"),
             Map.entry("GET /api/v1/identity/auth/sessions", "any signed-in user: the caller's own sessions"),
