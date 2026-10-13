@@ -243,6 +243,24 @@ class SubcontractService implements Subcontracting {
         int missing = child.work().plannedQuantity() - child.good() - stock.blanksAtSubcontractor(child)
                 - unsent.stream().mapToInt(StockReservation::quantity).sum();
         List<UUID> holds = new ArrayList<>(unsent.stream().map(StockReservation::reservationId).toList());
+        if (missing < 0) {
+            // Part of the plan went back to the print shop before the blanks left: the surplus is let go, latest
+            // hold first, so only what the subcontractor still owes goes out.
+            int surplus = -missing;
+            List<StockReservation> latestFirst = new ArrayList<>(unsent);
+            Collections.reverse(latestFirst);
+            for (StockReservation hold : latestFirst) {
+                if (surplus == 0) {
+                    break;
+                }
+                int take = Math.min(hold.quantity(), surplus);
+                inventory.reduceHold(hold.reservationId(), null, child.id(), take);
+                if (take == hold.quantity()) {
+                    holds.remove(hold.reservationId());
+                }
+                surplus -= take;
+            }
+        }
         if (missing > 0) {
             String warehouse = warehouses.findWarehouse(child.work().warehouseId()).orElseThrow().prefix();
             int round = records.issuesOf(child.id()).size();

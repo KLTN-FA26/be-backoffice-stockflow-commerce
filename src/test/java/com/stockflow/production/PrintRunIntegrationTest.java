@@ -1114,6 +1114,26 @@ class PrintRunIntegrationTest {
     }
 
     @Test
+    @DisplayName("part of a SUPPLIED_BLANKS child taken back before it goes out: only the blanks still owed are sent, the surplus is let go")
+    void partTakenBackBeforeSending() throws Exception {
+        Line line = released(8);
+        UUID childId = subcontracts.split(manager, line.productionOrderId(),
+                split(4, ProductionOrder.SubcontractMethod.SUPPLIED_BLANKS, printSubcontractor())).summary().id();
+        UUID poId = purchaseOrderOf(childId);
+        approvePurchaseOrder(poId);
+        int atp = inventory.availableToPromise(BLANK);
+        UUID inHouse = subcontracts.takeInHouse(manager, childId, 1, "print shop has a free slot", null).summary().id();
+        assertThat(detail(childId).summary().plannedQuantity()).isEqualTo(3);
+        subcontracts.sendOut(storekeeper, childId);
+        assertThat(atSubcontractor(childId)).as("3 owed, 3 sent").isEqualTo(3);
+        assertThat(inventory.productionHolds(childId).stream().mapToInt(h -> h.quantity()).sum()).isEqualTo(3);
+        assertThat(inventory.availableToPromise(BLANK)).as("1 let go by the child, 1 held by the in-house order")
+                .isEqualTo(atp);
+        assertThat(inventory.productionHolds(inHouse).stream().mapToInt(h -> h.quantity()).sum()).isEqualTo(1);
+        releaseAgain(line, 8);
+    }
+
+    @Test
     @DisplayName("03 §16 SUBCONTRACTED -> CANCELLED while the order still wants the goods: blanks recalled first, the PO cancelled, the agreed fee settled, a REPLACEMENT in-house order holds the blanks; a fee needs its reason")
     void subcontractCancelledAndReplaced() throws Exception {
         Line line = released(6);
