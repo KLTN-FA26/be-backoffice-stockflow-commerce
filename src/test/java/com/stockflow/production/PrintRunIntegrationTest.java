@@ -103,7 +103,9 @@ class PrintRunIntegrationTest {
     @Autowired OrderService salesOrders;
     @Autowired InventoryService inventory;
     @Autowired StockOperations stockOperations;
-    @Autowired FileStorage storage;
+    // The test profile stores files locally, which hands out no browser link; the dispatch note needs one (BR-PRD-14).
+    // Signing itself is MinioMediaIntegrationTest's; here the link only has to look like the S3 provider's.
+    @org.springframework.test.context.bean.override.mockito.MockitoSpyBean FileStorage storage;
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager entityManager;
     @Autowired TransactionTemplate tx;
@@ -120,6 +122,8 @@ class PrintRunIntegrationTest {
 
     @BeforeEach
     void setUp() {
+        org.mockito.Mockito.doAnswer(call -> "http://objects.test/" + call.getArgument(0)).when(storage)
+                .presignedDownloadUrl(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any());
         fixtures = new ProductionFixtures(storage, jdbc, tx, entityManager, progress);
         hcm = jdbc.queryForObject("SELECT id FROM warehouse.warehouse WHERE prefix = 'HCM'", UUID.class);
         ConfirmedDesigns.stockBlanks(jdbc, tx, 80);
@@ -859,7 +863,9 @@ class PrintRunIntegrationTest {
         assertThat(atSubcontractor(childId)).as("not received yet is not lost").isEqualTo(1);
         assertThat(jdbc.queryForList("""
                 SELECT reason_code, quantity_delta, status FROM inventory.stock_adjustment
-                 WHERE location_code = ? AND reason_code = 'SUBCONTRACT_LOSS'""", SUBCONTRACTOR))
+                 WHERE location_code = ? AND reason_code = 'SUBCONTRACT_LOSS' AND note LIKE ?""", SUBCONTRACTOR,
+                // The subcontractor's site is shared by every test's orders; the note names the order.
+                child.summary().orderNumber() + " %"))
                 .as("the spoilt blank waits for the adjustment approval").singleElement()
                 .satisfies(row -> assertThat(row).containsEntry("quantity_delta", -1).containsEntry("status", "PENDING_APPROVAL"));
 
@@ -1106,10 +1112,16 @@ class PrintRunIntegrationTest {
         Line started = released(5);
         issues.issue(storekeeper, started.productionOrderId(), new MaterialIssues.Issue(UUID.randomUUID(), PRINT_SHOP, null));
         int unissued = 5 - detail(started.productionOrderId()).issuedQuantity();
+        // The scan issues one hold, and the holds span however many stock layers the shared stock has: either some
+        // blanks are still unissued (READY, a split must take fewer) or none are (MATERIAL_ISSUED, nothing to split).
         assertThatThrownBy(() -> subcontracts.split(manager, started.productionOrderId(),
                 split(5, ProductionOrder.SubcontractMethod.FULL_SERVICE, printSubcontractor())))
                 .as("blanks in the print shop: only the %d unissued can go".formatted(unissued))
-                .extracting(PrintRunIntegrationTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
+                .extracting(PrintRunIntegrationTest::code).isEqualTo(unissued > 0 ? ErrorCode.VALIDATION_FAILED
+                        : ErrorCode.INVALID_PRODUCTION_TRANSITION);
+        assertThat(detail(started.productionOrderId()).summary().mode()).as("not converted").isEqualTo("IN_HOUSE");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM production.production_order WHERE parent_id = ?",
+                Integer.class, started.productionOrderId())).as("no child either").isZero();
     }
 
     @Test
@@ -1243,6 +1255,31 @@ class PrintRunIntegrationTest {
         assertThat(settled.cancellationFee()).isEqualByComparingTo("50000");
         assertThat(settled.netPayable()).isEqualByComparingTo("50000");
         releaseAgain(line, 6);
+    }
+
+    @Test
+    @DisplayName("a whole order converted, sent, recalled and cancelled is replaced in house; the root is out of the tree's sum yet its line's release still replays")
+    void wholeOrderCancelledAndReplaced() throws Exception {
+        Line line = released(5);
+        UUID rootId = line.productionOrderId();
+        subcontracts.split(manager, rootId, split(5, ProductionOrder.SubcontractMethod.SUPPLIED_BLANKS,
+                printSubcontractor()));
+        UUID poId = purchaseOrderOf(rootId);
+        approvePurchaseOrder(poId);
+        subcontracts.sendOut(storekeeper, rootId);
+        sendPurchaseOrder(poId);
+        subcontracts.recall(storekeeper, rootId, new Subcontracting.Recall(UUID.randomUUID(), 5, 0, null, null));
+
+        assertThat(runs.cancel(manager, rootId, "subcontractor closed", null, null).summary().status())
+                .isEqualTo(ProductionOrder.Status.CANCELLED);
+        assertThat(detail(rootId).summary().plannedQuantity()).as("a cancelled order keeps its plan").isEqualTo(5);
+        ProductionOrders.Detail replacement = detail(jdbc.queryForObject("""
+                SELECT id FROM production.production_order WHERE parent_id = ? AND origin = 'REPLACEMENT'""",
+                UUID.class, rootId));
+        assertThat(replacement.summary().mode()).isEqualTo("IN_HOUSE");
+        assertThat(replacement.summary().plannedQuantity()).isEqualTo(5);
+        // Counting the cancelled root's 5 as well as its replacement's would make the tree 10 against the line's 5.
+        releaseAgain(line, 5);
     }
 
     @Test

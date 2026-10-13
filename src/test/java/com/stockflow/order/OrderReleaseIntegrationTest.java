@@ -109,11 +109,11 @@ class OrderReleaseIntegrationTest {
         tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO production.production_order (id, order_number, type, mode, status, warehouse_id, blank_sku,
                     design_snapshot_id, design_checksum, planned_quantity, sales_order_id, sales_order_line_id, parent_id,
-                    subcontract_method, subcontractor_id, subcontract_unit_price, subcontract_currency)
-                SELECT ?, ?, 'ORDER', ?, 'PENDING_PREPRESS', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    origin, subcontract_method, subcontractor_id, subcontract_unit_price, subcontract_currency)
+                SELECT ?, ?, 'ORDER', ?, 'PENDING_PREPRESS', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                   FROM procurement.suppliers s WHERE s.code = 'GOVIET'""",
                 id, "LSX-IT-" + id.toString().substring(24), parent == null ? "IN_HOUSE" : "SUBCONTRACTED", hcm, CUP,
-                design, "a".repeat(64), planned, order, line, parent,
+                design, "a".repeat(64), planned, order, line, parent, parent == null ? null : "SPLIT",
                 parent == null ? null : "SUPPLIED_BLANKS", parent == null ? null : jdbc.queryForObject(
                         "SELECT id FROM procurement.suppliers WHERE code = 'GOVIET'", UUID.class),
                 parent == null ? null : new java.math.BigDecimal("800"), parent == null ? null : "VND"));

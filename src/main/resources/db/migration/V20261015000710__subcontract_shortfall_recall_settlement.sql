@@ -28,8 +28,9 @@ ALTER TABLE production.production_order ADD COLUMN origin VARCHAR(16);
 UPDATE production.production_order SET origin = 'SPLIT' WHERE parent_id IS NOT NULL;
 ALTER TABLE production.production_order ADD CONSTRAINT ck_production_order_origin CHECK (
     (parent_id IS NULL AND origin IS NULL)
-    OR (parent_id IS NOT NULL AND type = 'ORDER' AND origin IN ('SPLIT', 'SHORTFALL', 'REPLACEMENT')));
-CREATE INDEX ix_production_order_parent ON production.production_order (parent_id) WHERE parent_id IS NOT NULL;
+    -- origin IS NOT NULL spelled out: "origin IN (...)" is NULL, not false, for a NULL origin, and a CHECK passes on NULL.
+    OR (parent_id IS NOT NULL AND type = 'ORDER' AND origin IS NOT NULL
+        AND origin IN ('SPLIT', 'SHORTFALL', 'REPLACEMENT')));
 
 COMMENT ON COLUMN production.production_order.origin IS
     'Why a child exists: SPLIT (sent out, BR-PRD-12), SHORTFALL (a subcontractor''s gap back to the print shop), '

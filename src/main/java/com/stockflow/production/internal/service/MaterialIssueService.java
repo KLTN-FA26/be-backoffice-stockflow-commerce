@@ -97,6 +97,12 @@ class MaterialIssueService implements MaterialIssues {
                     "Production order %s is %s; blanks are issued while READY".formatted(order.orderNumber(),
                             order.status()));
         }
+        if (order.mode() == ProductionOrder.Mode.SUBCONTRACTED) {
+            // A converted order stays READY until it is sent out; its blanks leave with the dispatch, not to the press.
+            throw new BusinessException(ErrorCode.INVALID_PRODUCTION_TRANSITION,
+                    "Production order %s is printed by a subcontractor; its blanks are sent out, not issued"
+                            .formatted(order.orderNumber()));
+        }
         StorageLocationView to = productionArea(order, issue.toLocation());
 
         UUID chosen = choose(order, issue);

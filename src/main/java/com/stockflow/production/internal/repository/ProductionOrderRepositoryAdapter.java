@@ -129,7 +129,9 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
     /**
      * The line's units over the whole tree, less the root's own plan. Every order counts its plan - a SHORTFALL took
      * its units off the order it came from - except one cancelled and REPLACED in house, the root included, whose
-     * replacement carries the same units. Negative when the root itself was replaced.
+     * replacement carries the same units. A cancelled order keeps its plan, so a replaced root is left out of the sum
+     * yet still taken off: the result is then its children's units, and its plan plus them is still the line's.
+     * The subtraction sits in the select list: inside the WHERE it would bind to the NOT and fail on PostgreSQL.
      */
     @Override
     public int splitOffOf(UUID parentId) {
@@ -139,11 +141,11 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
                             UNION ALL
                             SELECT c.id, c.planned_quantity, c.status FROM production.production_order c
                               JOIN tree t ON c.parent_id = t.id)
-                        SELECT COALESCE(SUM(planned_quantity), 0) FROM tree t
-                         WHERE NOT (t.status = 'CANCELLED' AND EXISTS (
-                               SELECT 1 FROM production.production_order r
-                                WHERE r.parent_id = t.id AND r.origin = 'REPLACEMENT'))
-                          - (SELECT planned_quantity FROM production.production_order WHERE id = :id)""")
+                        SELECT (SELECT COALESCE(SUM(planned_quantity), 0) FROM tree t
+                                 WHERE NOT (t.status = 'CANCELLED' AND EXISTS (
+                                       SELECT 1 FROM production.production_order r
+                                        WHERE r.parent_id = t.id AND r.origin = 'REPLACEMENT')))
+                             - (SELECT planned_quantity FROM production.production_order WHERE id = :id)""")
                 .setParameter("id", parentId).getSingleResult();
         return total.intValue();
     }

@@ -90,17 +90,27 @@ SELECT pg_temp.expect_ok('PR14 split: parent planned 300, SUBCONTRACTED child 20
     UPDATE production.production_order SET planned_quantity = 300 WHERE id = md5('qa:lsx:1')::uuid;
     INSERT INTO production.production_order (id, order_number, type, mode, status, warehouse_id, blank_sku, design_snapshot_id,
                                              design_checksum, planned_quantity, sales_order_id, sales_order_line_id, parent_id,
-                                             subcontract_method, subcontractor_id, subcontract_unit_price, subcontract_currency)
+                                             origin, subcontract_method, subcontractor_id, subcontract_unit_price,
+                                             subcontract_currency)
     VALUES (md5('qa:lsx:1c')::uuid, 'LSX-QA-1C', 'ORDER', 'SUBCONTRACTED', 'PENDING_PREPRESS', md5('demo:wh:HCM')::uuid,
             'SOFA-3S-GREY', md5('qa:snap:1')::uuid, repeat('a', 64), 200, md5('qa:order:1')::uuid,
-            md5('qa:oline:1')::uuid, md5('qa:lsx:1')::uuid, 'SUPPLIED_BLANKS', md5('demo:supplier:GOVIET')::uuid, 800, 'VND') $q$);
+            md5('qa:oline:1')::uuid, md5('qa:lsx:1')::uuid, 'SPLIT', 'SUPPLIED_BLANKS', md5('demo:supplier:GOVIET')::uuid,
+            800, 'VND') $q$);
 SELECT pg_temp.expect_fail('PR15 a subcontracted child without a subcontractor', $q$
     INSERT INTO production.production_order (id, order_number, type, mode, status, warehouse_id, blank_sku, design_snapshot_id,
                                              design_checksum, planned_quantity, sales_order_id, sales_order_line_id, parent_id,
-                                             subcontract_method)
+                                             origin, subcontract_method)
     VALUES (gen_random_uuid(), 'LSX-QA-1D', 'ORDER', 'SUBCONTRACTED', 'PENDING_PREPRESS', md5('demo:wh:HCM')::uuid,
             'SOFA-3S-GREY', md5('qa:snap:1')::uuid, repeat('a', 64), 10, md5('qa:order:1')::uuid,
-            md5('qa:oline:1')::uuid, md5('qa:lsx:1')::uuid, 'FULL_SERVICE') $q$);
+            md5('qa:oline:1')::uuid, md5('qa:lsx:1')::uuid, 'SPLIT', 'FULL_SERVICE') $q$);
+SELECT pg_temp.expect_fail('PR15b a child without an origin (a CHECK passes on NULL unless it says IS NOT NULL)', $q$
+    INSERT INTO production.production_order (id, order_number, type, mode, status, warehouse_id, blank_sku, design_snapshot_id,
+                                             design_checksum, planned_quantity, sales_order_id, sales_order_line_id, parent_id,
+                                             subcontract_method, subcontractor_id, subcontract_unit_price, subcontract_currency)
+    VALUES (gen_random_uuid(), 'LSX-QA-1E', 'ORDER', 'SUBCONTRACTED', 'PENDING_PREPRESS', md5('demo:wh:HCM')::uuid,
+            'SOFA-3S-GREY', md5('qa:snap:1')::uuid, repeat('a', 64), 10, md5('qa:order:1')::uuid,
+            md5('qa:oline:1')::uuid, md5('qa:lsx:1')::uuid, 'SUPPLIED_BLANKS', md5('demo:supplier:GOVIET')::uuid, 800,
+            'VND') $q$);
 SELECT pg_temp.expect_fail('PR16 scrap OTHER without a note (BR-04)', $q$
     INSERT INTO production.production_scrap (id, production_order_id, quantity, reason, recorded_at, recorded_by)
     VALUES (gen_random_uuid(), md5('qa:lsx:1')::uuid, 3, 'OTHER', NOW(), md5('demo:user:editor')::uuid) $q$);
