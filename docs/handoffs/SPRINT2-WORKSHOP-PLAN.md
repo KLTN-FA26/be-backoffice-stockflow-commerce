@@ -272,9 +272,12 @@ tables, can start in parallel on read models only). If the coordinator prefers, 
 
 ## Acceptance → code → test (SCRUM-433/441 finishing pass, 2026-10-13)
 
-`*` = Testcontainers test written; **not run yet** (Docker unavailable on this machine at the time of writing).
-Ran green without Docker (offline Maven on D:): lane A `e624bdc` 136 tests (Modularity, Architecture, domain, the
-mocked service tests above); integration `1a3024c` (A `e624bdc` + B `56832ca`) 164 tests; `tools/verify.py` passes on both.
+`*` = Testcontainers test. Written while Docker was unavailable; **all ran green on 2026-10-13** in the full
+`mvn test` of integration `8f83751` (develop `2d44ec1` merged): 1522 tests, 0 failures, 0 errors, 0 skipped, incl.
+every `*IntegrationTest`, every `*MigrationUpgradeTest` and the repository SQL QA (469 checks) on a fresh database.
+Their first PostgreSQL run found real defects, fixed in `67c94df`: `splitOffOf` SQL precedence (every order release
+failed), a duplicate index and a NULL-tolerant origin CHECK in `V20261015000710`, and an issue scan on a converted order.
+Earlier non-Docker runs: lane A `e624bdc` 136 tests; integration `1a3024c` 164 tests.
 
 | Jira 433 / 441 acceptance | Code | Test |
 |---|---|---|
