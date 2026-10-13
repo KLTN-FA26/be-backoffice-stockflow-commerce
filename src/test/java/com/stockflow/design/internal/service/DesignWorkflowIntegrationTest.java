@@ -53,6 +53,7 @@ class DesignWorkflowIntegrationTest {
     @MockitoBean com.stockflow.common.storage.UploadInspection inspection;
     @MockitoBean com.stockflow.common.storage.FileTransfers files;
     @MockitoBean com.stockflow.identity.api.IdentityService identities;
+    @MockitoBean com.stockflow.customer.api.CustomerService customers;
     /** Real rows: the draft's customer, every actor and (since C1) its product are foreign keys. */
     private UUID owner, editor, reviewer, customer, product;
 
@@ -66,6 +67,7 @@ class DesignWorkflowIntegrationTest {
 
     private DesignWorkflowService.DraftView draftWithArtifact() throws Exception {
         when(identities.isActiveUserWithAnyRole(any(), any(String[].class))).thenReturn(true);
+        ownerProfile(owner, customer);
         org.mockito.Mockito.doAnswer(call -> {
             ((java.io.InputStream) call.getArgument(0)).readAllBytes();
             return null;
@@ -84,6 +86,33 @@ class DesignWorkflowIntegrationTest {
         drafts.saveAndFlush(row);
         when(storage.download("design-renders/test.pdf")).thenAnswer(call -> new ByteArrayInputStream(bytes));
         return workflow.get(draft.id(), owner);
+    }
+
+    /** The owner's own customer profile, as the customer module answers it. */
+    private void ownerProfile(UUID user, UUID customerId) {
+        when(customers.findByUserId(user)).thenReturn(Optional.of(new com.stockflow.customer.api.CustomerSummary(
+                customerId, user, "Owner", "owner@example.com", null, null, "ACTIVE", 0, Instant.EPOCH)));
+    }
+
+    @Test void ownerOfAnotherCustomerIsRefusedAtCreate() {
+        when(identities.isActiveUserWithAnyRole(any(), any(String[].class))).thenReturn(true);
+        when(products.findById(any())).thenReturn(Optional.of(mock(ProductSummary.class)));
+        UUID otherCustomer = ReferenceRows.customer(entityManager);
+        ownerProfile(owner, otherCustomer);
+        assertThatThrownBy(() -> workflow.create(customer, product, owner, editor, reviewer, "Cabinet", "spec", editor))
+                .isInstanceOfSatisfying(BusinessException.class, e -> {
+                    assertThat(e.errorCode()).isEqualTo(com.stockflow.common.error.ErrorCode.DESIGN_OWNER_CUSTOMER_MISMATCH);
+                    assertThat(e.fieldErrors()).extracting(com.stockflow.common.api.FieldError::field).containsExactly("ownerUserId");
+                });
+    }
+
+    @Test void ownerWithoutCustomerProfileIsRefusedAtCreate() {
+        when(identities.isActiveUserWithAnyRole(any(), any(String[].class))).thenReturn(true);
+        when(products.findById(any())).thenReturn(Optional.of(mock(ProductSummary.class)));
+        when(customers.findByUserId(owner)).thenReturn(Optional.empty());
+        assertThatThrownBy(() -> workflow.create(customer, product, owner, editor, reviewer, "Cabinet", "spec", editor))
+                .isInstanceOfSatisfying(BusinessException.class, e ->
+                        assertThat(e.errorCode()).isEqualTo(com.stockflow.common.error.ErrorCode.DESIGN_OWNER_CUSTOMER_MISMATCH));
     }
 
     @Test void reviewCustomerConfirmationAndReplayPreserveExactSnapshot() throws Exception {

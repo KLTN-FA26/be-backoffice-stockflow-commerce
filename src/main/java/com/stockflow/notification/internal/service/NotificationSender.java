@@ -1,6 +1,7 @@
 package com.stockflow.notification.internal.service;
 
 import com.stockflow.common.http.RestClientFactory;
+import com.stockflow.common.logging.LogSafe;
 import com.stockflow.contracts.PurchaseOrderSent;
 import com.stockflow.notification.internal.domain.SupplierEndpointPolicy;
 
@@ -172,13 +173,16 @@ class NotificationSender {
             String templateCode,
             String subject,
             String body) {
+        // Subject and body can carry what a customer or an operator typed (names, notes, a payment
+        // provider's failure text), so they are never logged: the recipient id or the fact that a
+        // guest e-mail is present, the template and the sizes are enough to trace a delivery.
         log.info(
-                "NOTIFY recipient={} template={} subject='{}' body='{}'",
+                "NOTIFY recipient={} template={} subjectLength={} bodyLength={}",
                 recipientId == null
                         ? "guest-email-present=" + (recipientEmail != null)
                         : recipientId,
-                templateCode,
-                subject,
-                body);
+                LogSafe.text(templateCode),
+                subject == null ? 0 : subject.length(),
+                body == null ? 0 : body.length());
     }
 }

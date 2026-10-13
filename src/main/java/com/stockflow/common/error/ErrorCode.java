@@ -100,6 +100,8 @@ public enum ErrorCode {
     PASSWORD_UNCHANGED("The new password must differ from the current one", 400),
     /** SCRUM-427: commercial terms that contradict themselves (kltn-docs 18 §3). */
     CREDIT_PROFILE_INVALID("These commercial terms are inconsistent", 400),
+    /** An assisted design names a customer and an owner account; the owner must be that customer's own login. */
+    DESIGN_OWNER_CUSTOMER_MISMATCH("The design owner does not belong to this customer", 400),
 
     // ---- 409: the request is fine, the current state is not
     PO_COMMUNICATION_NOT_CONFIGURED("Buyer contact and receiving address must be configured before sending", 409),
