@@ -538,16 +538,30 @@ class QuoteIntegrationTest {
     }
 
     @Test
-    @DisplayName("a customer's answer to a quote whose Sales account is disabled names nobody; nobody is guessed")
-    void aDisabledSalesAccountIsNotMailed() throws Exception {
+    @DisplayName("N1: the Sales account of a quote is disabled - the customer's answer goes to the active Sales team to take over")
+    void aDisabledSalesAccountHandsTheCustomerToTheActiveSalesTeam() throws Exception {
         Quotes.QuoteView sent = sentQuote(design());
-        tx.executeWithoutResult(s -> jdbc.update("UPDATE identity.app_user SET status = 'DISABLED' WHERE id = ?",
-                sales.userId()));
+        CurrentUser colleague = staff(Role.SALES_STAFF);
+        tx.executeWithoutResult(s -> {
+            jdbc.update("UPDATE identity.app_user SET status = 'DISABLED' WHERE id = ?", sales.userId());
+            jdbc.update("""
+                    INSERT INTO identity.user_role (id, user_id, role_id, version, created_at)
+                    SELECT ?, ?, id, 0, NOW() FROM identity.app_role WHERE code = 'SALES_STAFF'""",
+                    Identifiers.newId(), colleague.userId());
+        });
         quotes.requestChanges(portal, sent.id(), sent.version(), "Another colour?");
         assertThat(noticesOf(sent.id(), CustomerActedOnQuote.Action.CHANGES_REQUESTED)).singleElement().satisfies(e -> {
             assertThat(e.salesUserId()).isEqualTo(sales.userId());
-            assertThat(e.salesEmail()).isNull();
+            assertThat(e.salesEmail()).as("the responsible account is not active").isNull();
         });
+        String disabled = emailOf(sales);
+        verify(mail, timeout(15_000).atLeastOnce()).send(argThat((SimpleMailMessage m) -> m.getTo() != null
+                && java.util.Arrays.asList(m.getTo()).contains(emailOf(colleague))
+                && !java.util.Arrays.asList(m.getTo()).contains(disabled)
+                && m.getSubject().startsWith("[Cần tiếp nhận]") && m.getText().contains(sent.quoteNumber())));
+        // Telling the team changes no access: the colleague answers nothing for the customer.
+        assertThatThrownBy(() -> quotes.accept(colleague, sent.id(), new Quotes.Acceptance(sent.version(), Map.of())))
+                .isInstanceOf(BusinessException.class);
     }
 
     @Test

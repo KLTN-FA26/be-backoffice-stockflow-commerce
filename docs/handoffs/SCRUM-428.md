@@ -34,7 +34,9 @@ pushed, not merged, no Jira change. The SCRUM-429 follow-up is its own commit on
   until Sales prices it, so it cannot be accepted or converted either. The old payment-term guard is kept.
 - **Sales notice**: a customer's acceptance, change request or reorder publishes `CustomerActedOnQuote` naming the
   Sales account that sent the quote (for a reorder, the order's quote); the notification module e-mails it after
-  commit through the configured SMTP server. No active account with an e-mail → a WARN log, nobody guessed (N1).
+  commit through the configured SMTP server. That account gone, locked or without an e-mail → every active Sales
+  account, marked "[Cần tiếp nhận]", each address once, so one of them takes the customer on (user decision N1,
+  2026-10-13; access to the quote unchanged); no active Sales account at all → a WARN log.
 - **Group prices** (P7): `V20261014000530` (one price per group and SKU, positive whole VND, grants);
   `SegmentPrice`, `SegmentPriceService`, `/api/v1/catalog/segment-prices`; product lock, CAS version, audited
   `segment-price`. Resolution unchanged.
@@ -115,8 +117,9 @@ Writes are audited (`customer-price`, `segment-price` CREATE/UPDATE/DELETE; `quo
 
 ## Gaps
 
-No business question blocks Sprint 2 BE. Still open, not blocking: **N1** (who is told when the quote's Sales
-account is disabled) and **R1b** (reorder when the old payment term is no longer allowed) - concrete cases in the plan.
+No business question blocks Sprint 2 BE. N1 is decided (2026-10-13: hand the notice to the active Sales team).
+Still open, not blocking: **R1b** (reorder when the old payment term is no longer allowed) - the guard stays until
+the user decides; concrete case in the plan.
 
 - **E-mail delivery needs external configuration**: `MAIL_HOST`, `MAIL_PORT`, `MAIL_USERNAME`, `MAIL_PASSWORD`,
   `MAIL_FROM`, `MAIL_SMTP_AUTH`, `MAIL_SMTP_STARTTLS` of a real SMTP relay. The repository has only `localhost:1025`

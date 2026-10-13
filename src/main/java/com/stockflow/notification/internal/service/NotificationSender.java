@@ -72,18 +72,21 @@ class NotificationSender {
     /**
      * Tells the Sales user that a customer's step on a quote is theirs to follow up (accepted, changes asked,
      * reorder). Internal staff mail; the customer's own data stays in the back office, only the quote and
-     * order numbers and the customer's name are written.
+     * order numbers and the customer's name are written. {@code takeover}: the responsible account is no longer
+     * active and this goes to the active Sales team to take the customer on (N1).
      */
-    void sendQuoteNotice(CustomerActedOnQuote event) {
+    void sendQuoteNotice(CustomerActedOnQuote event, List<String> recipients, boolean takeover) {
         var messages = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
         String key = "quote.mail." + event.action().name().toLowerCase(Locale.ROOT);
         String customer = event.customerName() == null ? "" : event.customerName();
         String detail = event.detail() == null ? "" : event.detail();
+        String subject = messages.getString(key + ".subject").formatted(customer, event.quoteNumber(), detail);
+        String body = messages.getString(key + ".body").formatted(customer, event.quoteNumber(), detail);
         var message = new SimpleMailMessage();
         message.setFrom(mailFrom);
-        message.setTo(event.salesEmail());
-        message.setSubject(messages.getString(key + ".subject").formatted(customer, event.quoteNumber(), detail));
-        message.setText(messages.getString(key + ".body").formatted(customer, event.quoteNumber(), detail));
+        message.setTo(recipients.toArray(String[]::new));
+        message.setSubject(takeover ? messages.getString("quote.mail.takeover.subject").formatted(subject) : subject);
+        message.setText(takeover ? messages.getString("quote.mail.takeover.body").formatted(body) : body);
         mail.send(message);
     }
 
