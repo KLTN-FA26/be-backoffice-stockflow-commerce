@@ -155,6 +155,15 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
             """)
     List<UUID> findStockItemIdsHoldingOrder(@Param("orderId") UUID orderId);
 
+    @Query("""
+            select new com.stockflow.inventory.internal.domain.HeldStock(s.sku, s.locationCode, r.quantity)
+            from ReservationJpaEntity r join r.stockItem s
+            where r.orderId = :orderId
+              and r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
+            order by s.sku, s.locationCode
+            """)
+    List<com.stockflow.inventory.internal.domain.HeldStock> findHeldForOrder(@Param("orderId") UUID orderId);
+
     @Query("select r.stockItem.id from ReservationJpaEntity r where r.id = :reservationId")
     Optional<UUID> findStockItemIdByReservationId(@Param("reservationId") UUID reservationId);
 }

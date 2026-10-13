@@ -176,6 +176,11 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     }
 
     @Override
+    public List<com.stockflow.inventory.internal.domain.HeldStock> findHeldForOrder(UUID orderId) {
+        return jpa.findHeldForOrder(orderId);
+    }
+
+    @Override
     public List<StockItem> findWithReservationsForOrder(UUID orderId) {
         return jpa.findStockItemIdsHoldingOrder(orderId).stream()
                 .map(id -> findByIdForUpdate(new StockItemId(id)))

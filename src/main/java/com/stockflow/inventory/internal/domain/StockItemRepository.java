@@ -90,5 +90,11 @@ public interface StockItemRepository {
      */
     List<StockItem> findWithReservationsForOrder(java.util.UUID orderId);
 
+    /**
+     * The live (HELD) reservations of an order with the SKU and location they sit at, read-only and
+     * without locking: for a caller that only needs to know where an order's stock is.
+     */
+    List<HeldStock> findHeldForOrder(java.util.UUID orderId);
+
     StockItem save(StockItem stockItem);
 }
