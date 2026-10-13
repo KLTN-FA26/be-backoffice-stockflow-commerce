@@ -22,10 +22,20 @@ public interface ProductionDashboard {
      * @param scrapRate         {@code scrap / printed}, four decimals; null when nothing was printed
      * @param samplesAwaitingApproval sample rounds sent to the customer and not answered yet
      * @param today             the business date the overdue count is taken on (Asia/Ho_Chi_Minh)
+     * @param periodBasis       what {@code periodFrom}/{@code periodTo} filter: {@value #CREATED_IN_PERIOD} - the
+     *                          production orders created in the period, with everything they printed and scrapped
+     *                          so far, not the units printed or scrapped during the period (the docs name only "scrap
+     *                          rate"; which one the business wants is open question QA3)
+     * @param periodFrom        the period's first day as applied, null for open-ended
+     * @param periodTo          its last day, inclusive, null for open-ended
      */
     record Summary(Map<String, Long> openByStatus, long overdue, long printed, long scrap, BigDecimal scrapRate,
-                   long samplesAwaitingApproval, LocalDate today) {
+                   long samplesAwaitingApproval, LocalDate today, String periodBasis, LocalDate periodFrom,
+                   LocalDate periodTo) {
     }
+
+    /** {@link Summary#periodBasis()}: the period selects production orders by the day they were created. */
+    String CREATED_IN_PERIOD = "PRODUCTION_ORDERS_CREATED_IN_PERIOD";
 
     /** The counts; the scrap rate over production orders created from {@code from} to {@code to}, inclusive. */
     Summary summary(CurrentUser user, LocalDate from, LocalDate to);

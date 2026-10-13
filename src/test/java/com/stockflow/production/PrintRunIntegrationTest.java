@@ -621,6 +621,8 @@ class PrintRunIntegrationTest {
         LocalDate tomorrow = after.today().plusDays(1);
         ProductionDashboard.Summary empty = dashboard.summary(manager, tomorrow, tomorrow);
         assertThat(empty.printed()).as("nothing created tomorrow").isZero();
+        assertThat(empty.periodBasis()).as("the period selects orders by creation day")
+                .isEqualTo(ProductionDashboard.CREATED_IN_PERIOD);
         assertThat(empty.scrapRate()).isNull();
         assertThatThrownBy(() -> dashboard.summary(manager, tomorrow, after.today()))
                 .extracting(PrintRunIntegrationTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
@@ -684,7 +686,8 @@ class PrintRunIntegrationTest {
         ProductionOrders.Detail received = detail(child.summary().id());
         assertThat(received.summary().status()).isEqualTo(ProductionOrder.Status.QC);
         assertThat(received.printedQuantity()).isEqualTo(3);
-        assertThat(heldForProduction(child.summary().id(), "IN_PRODUCTION")).as("held, in the print shop").isEqualTo(3);
+        assertThat(heldForProduction(child.summary().id(), "IN_PRODUCTION")).as("held for QC").isEqualTo(3);
+        assertThat(heldAtFor(child.summary().id(), QC_AREA)).as("waiting in the QC area, not the print shop").isEqualTo(3);
         assertThat(freeAtReceipt(first)).as("never free at receiving, where a putaway would sell it").isZero();
         assertThat(inventory.availableToPromise(BLANK)).as("received goods are not for sale").isEqualTo(atp + 4);
         var again = new com.stockflow.contracts.GoodsReceiptConfirmed(first, "GR-again", poId, hcm, List.of(
@@ -713,6 +716,12 @@ class PrintRunIntegrationTest {
         assertThat(recorded.matching(ProductionCompleted.class, e -> e.productionOrderId().equals(child.summary().id())))
                 .singleElement().isEqualTo(new ProductionCompleted(line.orderId(), parent.summary().salesOrderLineId(),
                         child.summary().id(), 4));
+        assertThat(subcontracts.settlement(manager, child.summary().id())).satisfies(settled -> {
+            assertThat(settled.status()).isEqualTo("FINAL");
+            assertThat(settled.passedQuantity()).isEqualTo(4);
+            assertThat(settled.payableAmount()).isEqualByComparingTo("6000");
+            assertThat(settled.blanksSent()).as("FULL_SERVICE: the subcontractor's blanks").isZero();
+        });
 
         // A redelivered release of the line still agrees with the parent: 6 + 4 split off = 10.
         assertThatCode(() -> orderProduction.createFor(new OrderLinesReleasedForProduction(line.orderId(), "SO-IT",
@@ -726,10 +735,6 @@ class PrintRunIntegrationTest {
     void subcontractSuppliedBlanks() throws Exception {
         Line line = released(8);
         int atp = inventory.availableToPromise(BLANK);
-        assertThatThrownBy(() -> subcontracts.split(manager, line.productionOrderId(),
-                split(8, ProductionOrder.SubcontractMethod.SUPPLIED_BLANKS, printSubcontractor())))
-                .as("all of it is a conversion").extracting(PrintRunIntegrationTest::code)
-                .isEqualTo(ErrorCode.VALIDATION_FAILED);
         ProductionOrders.Detail child = subcontracts.split(manager, line.productionOrderId(),
                 split(3, ProductionOrder.SubcontractMethod.SUPPLIED_BLANKS, printSubcontractor()));
 
@@ -805,7 +810,14 @@ class PrintRunIntegrationTest {
         assertThat(runs.recordQc(inspector, childId, 1, 0, null, PACKING).summary().status())
                 .as("1 good of 3").isEqualTo(ProductionOrder.Status.READY);
 
-        // G9 "gửi bù": the 2 missing blanks are held and sent, to the same location.
+        // G9 "gửi bù": the PO of 3 had 2 received; 2 are owed, so it is supplemented first - approved, it takes an
+        // amendment approved again by someone else (BR-02) - then the 2 missing blanks are held and sent.
+        assertThatThrownBy(() -> subcontracts.sendOut(storekeeper, childId)).as("the PO allows 1 more, 2 are owed")
+                .extracting(PrintRunIntegrationTest::code).isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
+        subcontracts.supplement(manager, childId, 1, "resend after the smudged cup");
+        assertThatThrownBy(() -> subcontracts.sendOut(storekeeper, childId)).as("the amendment waits for approval")
+                .extracting(PrintRunIntegrationTest::code).isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
+        WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> amendments.approveAmendment(poId, approver.userId()));
         subcontracts.sendOut(storekeeper, childId);
         assertThat(atSubcontractor(childId)).isEqualTo(2);
         assertThat(inventory.availableToPromise(BLANK)).isEqualTo(atp - 2);
@@ -904,6 +916,293 @@ class PrintRunIntegrationTest {
                   JOIN inventory.stock_item s ON s.id = r.stock_item_id
                  WHERE r.status = 'HELD' AND r.production_order_id = ? AND s.location_code = ?""", Integer.class,
                 childId, SUBCONTRACTOR);
+    }
+
+    private static final String QC_AREA = "HCM-QCA01";
+
+    @Autowired com.stockflow.procurement.internal.service.SubcontractAmendments amendments;
+
+    /** Units held, live, by the production order itself at {@code location}. */
+    private int heldAtFor(UUID productionOrderId, String location) {
+        return jdbc.queryForObject("""
+                SELECT COALESCE(SUM(r.quantity), 0) FROM inventory.stock_reservation r
+                  JOIN inventory.stock_item s ON s.id = r.stock_item_id
+                 WHERE r.status = 'HELD' AND r.production_order_id = ? AND s.location_code = ?""", Integer.class,
+                productionOrderId, location);
+    }
+
+    private UUID purchaseOrderOf(UUID productionOrderId) {
+        return jdbc.queryForObject("SELECT id FROM procurement.purchase_orders WHERE production_order_id = ?",
+                UUID.class, productionOrderId);
+    }
+
+    private String purchaseOrderStatus(UUID poId) {
+        return jdbc.queryForObject("SELECT status FROM procurement.purchase_orders WHERE id = ?", String.class, poId);
+    }
+
+    /** Submitted by the manager, approved by someone else (four eyes). */
+    private void approvePurchaseOrder(UUID poId) {
+        WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> {
+            procurement.submit(poId, manager.userId());
+            procurement.approve(poId, approver.userId());
+        });
+    }
+
+    /** The line's release delivered again: it must still agree with the tree of production orders (BR-PRD-01). */
+    private void releaseAgain(Line line, int quantity) {
+        ProductionOrders.Detail root = detail(line.productionOrderId());
+        assertThatCode(() -> orderProduction.createFor(new OrderLinesReleasedForProduction(line.orderId(), "SO-IT", hcm,
+                List.of(new OrderLinesReleasedForProduction.Line(root.summary().salesOrderLineId(),
+                        ProductionFixtures.BLANK, quantity, root.summary().designSnapshotId(), root.designChecksum(),
+                        root.approvedSampleId(), null))))).as("replay agrees with %d", quantity).doesNotThrowAnyException();
+    }
+
+    @Test
+    @DisplayName("User decision 2026-10-13: a subcontractor's goods of a SKU that needs receiving QC get ONE inspection, the production QC - receiving counts them, no receiving QC, no putaway, receipt CLOSED; held in the QC area; failed units scrapped as cups; partial receipts; a late subcontractor's hold ends when the goods come")
+    void subcontractReceiptGetsOneQc() throws Exception {
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE inventory.inventory_items SET qc_required = TRUE WHERE sku = ?",
+                BLANK.code()));
+        try {
+            Line line = released(6);
+            UUID childId = subcontracts.split(manager, line.productionOrderId(),
+                    split(2, ProductionOrder.SubcontractMethod.FULL_SERVICE, printSubcontractor())).summary().id();
+            UUID poId = purchaseOrderOf(childId);
+            approvePurchaseOrder(poId);
+            subcontracts.sendOut(storekeeper, childId);
+            sendPurchaseOrder(poId);
+            int atp = inventory.availableToPromise(BLANK);
+            workflow.hold(manager, childId, ProductionOrder.HoldReason.SUBCONTRACTOR_LATE, "2 days late");
+
+            UUID receipt = receiveSubcontracted(poId, 1);
+            assertThat(jdbc.queryForMap("SELECT status, closed_at FROM procurement.goods_receipts WHERE id = ?", receipt))
+                    .as("nothing for receiving to inspect or put away").containsEntry("status", "CLOSED")
+                    .satisfies(row -> assertThat(row.get("closed_at")).isNotNull());
+            assertThat(jdbc.queryForObject("SELECT bool_or(qc_required) FROM procurement.goods_receipt_lines WHERE receipt_id = ?",
+                    Boolean.class, receipt)).as("no receiving QC on the line").isFalse();
+            assertThat(receipts.get(receipt).lines()).singleElement().satisfies(l -> {
+                assertThat(l.qcProgress()).isEqualTo(com.stockflow.procurement.internal.service.GoodsReceipts.QcProgress.PRODUCTION_QC);
+                assertThat(l.quantityForPutaway()).isZero();
+            });
+            assertThat(detail(childId).summary().status()).as("the late goods came: the hold is over")
+                    .isEqualTo(ProductionOrder.Status.QC);
+            assertThat(heldAtFor(childId, QC_AREA)).isEqualTo(1);
+            assertThat(heldAtFor(childId, PRINT_SHOP)).as("not routed through the print shop").isZero();
+            assertThat(freeAtReceipt(receipt)).isZero();
+            assertThat(inventory.availableToPromise(BLANK)).as("not sellable").isEqualTo(atp);
+
+            assertThat(runs.recordQc(inspector, childId, 0, 1, "colour off the approved sample", PACKING).summary()
+                    .status()).isEqualTo(ProductionOrder.Status.READY);
+            assertThat(writeOffs(childId)).extracting(row -> row.get("reason_code")).containsExactly("SCRAP");
+            assertThat(inventory.availableToPromise(BLANK)).as("the failed cup is no blank").isEqualTo(atp);
+
+            receiveSubcontracted(poId, 1);
+            assertThat(runs.recordQc(inspector, childId, 1, 0, null, PACKING).summary().status())
+                    .as("1 good of 2").isEqualTo(ProductionOrder.Status.READY);
+        } finally {
+            tx.executeWithoutResult(s -> jdbc.update(
+                    "UPDATE inventory.inventory_items SET qc_required = FALSE WHERE sku = ?", BLANK.code()));
+        }
+    }
+
+    @Test
+    @DisplayName("BR-PRD-12: sending the whole order converts it - same row and number, no child, its own PO, blanks held for it; a replay still agrees; an order with blanks issued cannot be converted")
+    void wholeOrderConversion() throws Exception {
+        Line line = released(5);
+        int atp = inventory.availableToPromise(BLANK);
+        String number = detail(line.productionOrderId()).summary().orderNumber();
+        ProductionOrders.Detail converted = subcontracts.split(manager, line.productionOrderId(),
+                split(5, ProductionOrder.SubcontractMethod.SUPPLIED_BLANKS, printSubcontractor()));
+
+        assertThat(converted.summary().id()).isEqualTo(line.productionOrderId());
+        assertThat(converted.summary().orderNumber()).isEqualTo(number);
+        assertThat(converted.summary().mode()).isEqualTo("SUBCONTRACTED");
+        assertThat(converted.summary().parentId()).isNull();
+        assertThat(converted.origin()).isNull();
+        assertThat(converted.summary().plannedQuantity()).isEqualTo(5);
+        assertThat(converted.subcontract().method()).isEqualTo("SUPPLIED_BLANKS");
+        assertThat(converted.subcontract().purchaseOrderId()).isEqualTo(purchaseOrderOf(line.productionOrderId()));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM production.production_order WHERE parent_id = ?",
+                Integer.class, line.productionOrderId())).as("no child").isZero();
+        assertThat(inventory.productionHolds(line.productionOrderId()).stream().mapToInt(h -> h.quantity()).sum())
+                .as("its blanks held for it").isEqualTo(5);
+        assertThat(inventory.availableToPromise(BLANK)).as("moved, not freed").isEqualTo(atp);
+        assertThatThrownBy(() -> issues.issue(storekeeper, line.productionOrderId(),
+                new MaterialIssues.Issue(UUID.randomUUID(), PRINT_SHOP, null))).as("printed outside now")
+                .extracting(PrintRunIntegrationTest::code).isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
+        releaseAgain(line, 5);
+
+        Line started = released(5);
+        issues.issue(storekeeper, started.productionOrderId(), new MaterialIssues.Issue(UUID.randomUUID(), PRINT_SHOP, null));
+        int unissued = 5 - detail(started.productionOrderId()).issuedQuantity();
+        assertThatThrownBy(() -> subcontracts.split(manager, started.productionOrderId(),
+                split(5, ProductionOrder.SubcontractMethod.FULL_SERVICE, printSubcontractor())))
+                .as("blanks in the print shop: only the %d unissued can go".formatted(unissued))
+                .extracting(PrintRunIntegrationTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
+    }
+
+    @Test
+    @DisplayName("03 §16 G9 in-house: the gap goes to a new in-house order once the blanks are accounted for (recall, SUBCONTRACT_LOSS); the subcontracted order completes with its good units, its PO is closed short and settled; the loss above tolerance waits for the manager's deduction; the dispatch note lists what went out")
+    void shortfallTakenInHouse() throws Exception {
+        Line line = released(10);
+        UUID childId = subcontracts.split(manager, line.productionOrderId(),
+                split(4, ProductionOrder.SubcontractMethod.SUPPLIED_BLANKS, printSubcontractor())).summary().id();
+        UUID poId = purchaseOrderOf(childId);
+        approvePurchaseOrder(poId);
+        subcontracts.sendOut(storekeeper, childId);
+        sendPurchaseOrder(poId);
+
+        Subcontracting.DispatchNote note = subcontracts.dispatchNote(storekeeper, childId);
+        assertThat(note.purchaseOrderId()).isEqualTo(poId);
+        assertThat(note.subcontractorCode()).isEqualTo("INNHANH");
+        assertThat(note.quantity()).isEqualTo(4);
+        assertThat(note.blanks().stream().mapToInt(Subcontracting.SentBlanks::quantity).sum()).isEqualTo(4);
+        assertThat(note.blanks()).allSatisfy(b -> assertThat(b.toLocation()).isEqualTo(SUBCONTRACTOR));
+        assertThat(note.printFile()).as("the prepress-checked PRINT_READY file (BR-PRD-14)").isNotNull();
+        assertThat(note.approvedSampleId()).isEqualTo(detail(line.productionOrderId()).approvedSampleId());
+
+        UUID receipt = receiveSubcontracted(poId, 3);
+        subcontracts.reconcile(storekeeper, childId, receipt, 0, 0, null);
+        assertThat(runs.recordQc(inspector, childId, 3, 0, null, PACKING).summary().status())
+                .isEqualTo(ProductionOrder.Status.READY);
+        assertThatThrownBy(() -> subcontracts.takeInHouse(manager, childId, 1, "subcontractor out of ink", PACKING))
+                .as("BR-PRD-16: the blank still there is accounted for first")
+                .extracting(PrintRunIntegrationTest::code).isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
+        UUID recallId = UUID.randomUUID();
+        subcontracts.recall(storekeeper, childId, new Subcontracting.Recall(recallId, 0, 1, null, "lost in transit"));
+        assertThatCode(() -> subcontracts.recall(storekeeper, childId,
+                new Subcontracting.Recall(recallId, 0, 1, null, null))).as("a replay").doesNotThrowAnyException();
+        assertThatThrownBy(() -> subcontracts.recall(storekeeper, childId,
+                new Subcontracting.Recall(recallId, 1, 0, null, null))).as("same request, other numbers")
+                .extracting(PrintRunIntegrationTest::code).isEqualTo(ErrorCode.CONFLICT);
+        assertThat(atSubcontractor(childId)).isZero();
+
+        ProductionOrders.Detail inHouse = subcontracts.takeInHouse(manager, childId, 1, "subcontractor out of ink",
+                PACKING);
+        assertThat(inHouse.summary().mode()).isEqualTo("IN_HOUSE");
+        assertThat(inHouse.origin()).isEqualTo("SHORTFALL");
+        assertThat(inHouse.summary().parentId()).isEqualTo(childId);
+        assertThat(inHouse.summary().plannedQuantity()).isEqualTo(1);
+        assertThat(inHouse.summary().status()).as("inherits the prepress result").isEqualTo(ProductionOrder.Status.READY);
+        assertThat(inventory.productionHolds(inHouse.summary().id()).stream().mapToInt(h -> h.quantity()).sum())
+                .as("its blank held now").isEqualTo(1);
+        ProductionOrders.Detail done = detail(childId);
+        assertThat(done.summary().status()).isEqualTo(ProductionOrder.Status.COMPLETED);
+        assertThat(done.summary().plannedQuantity()).isEqualTo(3);
+        assertThat(recorded.matching(ProductionCompleted.class, e -> e.productionOrderId().equals(childId)))
+                .singleElement().extracting(ProductionCompleted::goodQuantity).isEqualTo(3);
+        assertThat(purchaseOrderStatus(poId)).as("3 of 4 received: closed short").isEqualTo("CLOSED");
+        releaseAgain(line, 10);
+
+        var settled = subcontracts.settlement(manager, childId);
+        assertThat(settled.status()).as("1 lost, 3% of 4 tolerated = 0").isEqualTo("AWAITING_APPROVAL");
+        assertThat(settled.blanksSent()).isEqualTo(4);
+        assertThat(settled.blanksUsed()).isEqualTo(3);
+        assertThat(settled.blanksLost()).isEqualTo(1);
+        assertThat(settled.excessLoss()).isEqualTo(1);
+        assertThat(settled.payableAmount()).isEqualByComparingTo("4500");
+        var approved = subcontracts.approveLoss(manager, childId, new BigDecimal("1000"), "agreed with INNHANH");
+        assertThat(approved.status()).isEqualTo("FINAL");
+        assertThat(approved.netPayable()).isEqualByComparingTo("3500");
+
+        // The in-house order prints the gap from its own hold, never from the line's checkout holds.
+        issueAll(inHouse.summary().id());
+        runs.startPrinting(printer, inHouse.summary().id());
+        runs.recordOutput(printer, inHouse.summary().id(), 1, List.of());
+        assertThat(runs.recordQc(inspector, inHouse.summary().id(), 1, 0, null, PACKING).summary().status())
+                .isEqualTo(ProductionOrder.Status.COMPLETED);
+        assertThat(detail(line.productionOrderId()).issuedQuantity()).as("the root's blanks untouched").isZero();
+    }
+
+    @Test
+    @DisplayName("03 §16 SUBCONTRACTED -> CANCELLED while the order still wants the goods: blanks recalled first, the PO cancelled, the agreed fee settled, a REPLACEMENT in-house order holds the blanks; a fee needs its reason")
+    void subcontractCancelledAndReplaced() throws Exception {
+        Line line = released(6);
+        UUID childId = subcontracts.split(manager, line.productionOrderId(),
+                split(2, ProductionOrder.SubcontractMethod.SUPPLIED_BLANKS, printSubcontractor())).summary().id();
+        UUID poId = purchaseOrderOf(childId);
+        approvePurchaseOrder(poId);
+        subcontracts.sendOut(storekeeper, childId);
+        sendPurchaseOrder(poId);
+        int atp = inventory.availableToPromise(BLANK);
+
+        assertThatThrownBy(() -> runs.cancel(manager, childId, "subcontractor closed", null, null))
+                .as("2 blanks still at the subcontractor")
+                .extracting(PrintRunIntegrationTest::code).isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
+        subcontracts.recall(storekeeper, childId, new Subcontracting.Recall(UUID.randomUUID(), 2, 0, null, null));
+        assertThat(inventory.availableToPromise(BLANK)).as("recalled blanks are free again").isEqualTo(atp + 2);
+        assertThatThrownBy(() -> runs.cancel(manager, childId, "subcontractor closed", new BigDecimal("50000"), " "))
+                .as("a fee says why").extracting(PrintRunIntegrationTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
+
+        ProductionOrders.Detail cancelled = runs.cancel(manager, childId, "subcontractor closed",
+                new BigDecimal("50000"), "setup already paid for");
+        assertThat(cancelled.summary().status()).isEqualTo(ProductionOrder.Status.CANCELLED);
+        assertThat(purchaseOrderStatus(poId)).isEqualTo("CANCELLED");
+        UUID replacement = jdbc.queryForObject("""
+                SELECT id FROM production.production_order WHERE parent_id = ? AND origin = 'REPLACEMENT'""",
+                UUID.class, childId);
+        ProductionOrders.Detail inHouse = detail(replacement);
+        assertThat(inHouse.summary().mode()).isEqualTo("IN_HOUSE");
+        assertThat(inHouse.summary().plannedQuantity()).isEqualTo(2);
+        assertThat(inHouse.summary().status()).isEqualTo(ProductionOrder.Status.READY);
+        assertThat(inventory.availableToPromise(BLANK)).as("held again for the replacement").isEqualTo(atp);
+        var settled = subcontracts.settlement(manager, childId);
+        assertThat(settled.status()).isEqualTo("FINAL");
+        assertThat(settled.blanksReturned()).isEqualTo(2);
+        assertThat(settled.cancellationFee()).isEqualByComparingTo("50000");
+        assertThat(settled.netPayable()).isEqualByComparingTo("50000");
+        releaseAgain(line, 6);
+    }
+
+    @Test
+    @DisplayName("an order cancelled under a subcontracted order: it is held for the manager (who is told), then cancelled with its PO; an order with a good unit is not cancelled while the sales order is live")
+    void subcontractedOrderOfACancelledOrder() throws Exception {
+        Line line = released(5);
+        UUID childId = subcontracts.split(manager, line.productionOrderId(),
+                split(2, ProductionOrder.SubcontractMethod.FULL_SERVICE, printSubcontractor())).summary().id();
+        UUID poId = purchaseOrderOf(childId);
+        approvePurchaseOrder(poId);
+        subcontracts.sendOut(storekeeper, childId);
+        sendPurchaseOrder(poId);
+        receiveSubcontracted(poId, 1);
+        runs.recordQc(inspector, childId, 1, 0, null, PACKING);
+        assertThatThrownBy(() -> runs.cancel(manager, childId, "too slow", null, null))
+                .as("its good unit is the live order's").extracting(PrintRunIntegrationTest::code)
+                .isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
+
+        cancelOrder(line.orderId(), "customer withdrew");
+        Await.until("held", ASYNC, () -> detail(childId).summary().status() == ProductionOrder.Status.ON_HOLD);
+        assertThat(recorded.matching(ProductionOrderHeld.class, e -> e.productionOrderId().equals(childId)))
+                .isNotEmpty();
+        ProductionOrders.Detail cancelled = runs.cancel(manager, childId, "customer withdrew", null, null);
+        assertThat(cancelled.summary().status()).isEqualTo(ProductionOrder.Status.CANCELLED);
+        assertThat(writeOffs(childId)).as("the good unit is sold to nobody else").isNotEmpty();
+        assertThat(purchaseOrderStatus(poId)).as("1 of 2 received: closed short").isEqualTo("CLOSED");
+        assertThat(subcontracts.settlement(manager, childId)).satisfies(settled -> {
+            assertThat(settled.passedQuantity()).as("the subcontractor's good unit is paid").isEqualTo(1);
+            assertThat(settled.payableAmount()).isEqualByComparingTo("1500");
+        });
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM production.production_order WHERE parent_id = ?",
+                Integer.class, childId)).as("no replacement for a cancelled order").isZero();
+    }
+
+    @Test
+    @DisplayName("Jira 396: a job in QC can be held (waiting for the customer) and resumed back to QC; no QC result while held")
+    void holdFromQc() throws Exception {
+        Line line = released(2);
+        issueAll(line.productionOrderId());
+        runs.startPrinting(printer, line.productionOrderId());
+        runs.recordOutput(printer, line.productionOrderId(), 2, List.of());
+        ProductionOrders.Detail held = workflow.hold(printer, line.productionOrderId(),
+                ProductionOrder.HoldReason.WAITING_CUSTOMER, "colour approval");
+        assertThat(held.summary().status()).isEqualTo(ProductionOrder.Status.ON_HOLD);
+        assertThat(jdbc.queryForObject("SELECT status_before_hold FROM production.production_order WHERE id = ?",
+                String.class, line.productionOrderId())).isEqualTo("QC");
+        assertThatThrownBy(() -> runs.recordQc(inspector, line.productionOrderId(), 2, 0, null, PACKING))
+                .extracting(PrintRunIntegrationTest::code).isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
+        assertThat(workflow.resume(manager, line.productionOrderId()).summary().status())
+                .isEqualTo(ProductionOrder.Status.QC);
+        assertThat(runs.recordQc(inspector, line.productionOrderId(), 2, 0, null, PACKING).summary().status())
+                .isEqualTo(ProductionOrder.Status.COMPLETED);
     }
 
     private SampleRequests.Sample submittedSample(int quantity) throws Exception {

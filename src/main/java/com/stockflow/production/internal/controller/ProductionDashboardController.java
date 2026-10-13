@@ -39,7 +39,8 @@ class ProductionDashboardController {
     }
 
     @GetMapping
-    @Operation(summary = "Open production orders by status, overdue count, scrap rate over a period, samples awaiting the customer")
+    @Operation(summary = "Open production orders by status, overdue count, samples awaiting the customer, and the scrap "
+            + "rate of the production orders CREATED from 'from' to 'to' (periodBasis in the answer says so)")
     @RequiresPermission(resource = ProductionResources.PRODUCTION_ORDERS, action = Action.READ)
     public ApiResponse<ProductionDashboard.Summary> summary(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,

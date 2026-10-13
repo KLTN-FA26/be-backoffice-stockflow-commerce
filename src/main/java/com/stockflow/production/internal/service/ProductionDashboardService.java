@@ -63,14 +63,15 @@ class ProductionDashboardService implements ProductionDashboard {
         Instant start = from == null ? null : from.atStartOfDay(BUSINESS_ZONE).toInstant();
         Instant end = to == null ? null : to.plusDays(1).atStartOfDay(BUSINESS_ZONE).toInstant();
         if (warehouses != null && warehouses.isEmpty()) {
-            return new Summary(java.util.Map.of(), 0, 0, 0, null, 0, today);
+            return new Summary(java.util.Map.of(), 0, 0, 0, null, 0, today, CREATED_IN_PERIOD, from, to);
         }
         long[] printedAndScrap = queries.printedAndScrap(warehouses, start, end);
         BigDecimal rate = printedAndScrap[0] == 0 ? null
                 : BigDecimal.valueOf(printedAndScrap[1]).divide(BigDecimal.valueOf(printedAndScrap[0]), 4,
                 RoundingMode.HALF_UP);
         return new Summary(queries.openByStatus(warehouses), queries.overdue(warehouses, today), printedAndScrap[0],
-                printedAndScrap[1], rate, queries.samplesAwaitingApproval(warehouses), today);
+                printedAndScrap[1], rate, queries.samplesAwaitingApproval(warehouses), today, CREATED_IN_PERIOD, from,
+                to);
     }
 
     @Override

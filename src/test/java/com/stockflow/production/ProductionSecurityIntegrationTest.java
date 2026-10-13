@@ -367,12 +367,67 @@ class ProductionSecurityIntegrationTest {
     }
 
     @Test
+    @DisplayName("SCRUM-441 endpoints: taking work in house, supplementing the PO and approving a loss are the manager's (production-orders:APPROVE); recalls and the dispatch note the warehouse's (production-material-issues); bad input is a 400; an in-house order is refused with 409")
+    void subcontractEndpointsOverHttp() throws Exception {
+        com.stockflow.support.ConfirmedDesigns.stockBlanks(jdbc, tx, 5);
+        String sales = staff("SALES_STAFF");
+        UUID id = createDraft(sales, DemoData.CUSTOMER_ID, fixtures.confirmedDesign());
+        String order = ORDERS + "/" + data(send(post(SAMPLES + "/" + id + "/submission"), sales,
+                java.util.Map.of("warehouseId", hcm))).path("productionOrder").path("id").asText();
+        String printer = assigned("PRODUCTION_STAFF");
+        String storekeeper = assigned("WAREHOUSE_STAFF");
+        String inspector = assigned("QC_STAFF");
+        String manager = assigned("WAREHOUSE_MANAGER");
+        String customer = staff("CUSTOMER");
+
+        var inHouse = java.util.Map.of("quantity", 1, "reason", "subcontractor late");
+        send(post(order + "/subcontract-in-house"), printer, inHouse).andExpect(status().isForbidden());
+        send(post(order + "/subcontract-in-house"), storekeeper, inHouse).andExpect(status().isForbidden());
+        send(post(order + "/subcontract-in-house"), manager, java.util.Map.of("quantity", 0, "reason", "x"))
+                .andExpect(status().isBadRequest());
+        send(post(order + "/subcontract-in-house"), manager, inHouse).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("INVALID_PRODUCTION_TRANSITION"));
+
+        var supplement = java.util.Map.of("quantity", 1, "reason", "resend");
+        send(post(order + "/subcontract-supplement"), storekeeper, supplement).andExpect(status().isForbidden());
+        send(post(order + "/subcontract-supplement"), manager, supplement).andExpect(status().isConflict());
+
+        var recall = java.util.Map.of("requestId", UUID.randomUUID(), "returned", 1, "spoilt", 0);
+        send(post(order + "/subcontract-recall"), printer, recall).andExpect(status().isForbidden());
+        send(post(order + "/subcontract-recall"), inspector, recall).andExpect(status().isForbidden());
+        send(post(order + "/subcontract-recall"), storekeeper, java.util.Map.of("returned", 1, "spoilt", 0))
+                .andExpect(status().isBadRequest());   // the request id makes a retry a replay
+        send(post(order + "/subcontract-recall"), storekeeper, recall).andExpect(status().isConflict());
+        send(get(order + "/subcontract-recalls"), customer, null).andExpect(status().isForbidden());
+
+        send(get(order + "/subcontract-dispatch-note"), customer, null).andExpect(status().isForbidden());
+        send(get(order + "/subcontract-dispatch-note"), storekeeper, null).andExpect(status().isConflict());
+
+        send(get(order + "/subcontract-settlement"), customer, null).andExpect(status().isForbidden());
+        send(get(order + "/subcontract-settlement"), manager, null).andExpect(status().isConflict());
+        var loss = java.util.Map.of("deductionPerBlank", 1000);
+        send(post(order + "/subcontract-settlement/loss-approval"), storekeeper, loss).andExpect(status().isForbidden());
+        send(post(order + "/subcontract-settlement/loss-approval"), manager, java.util.Map.of("deductionPerBlank", -1))
+                .andExpect(status().isBadRequest());
+        send(post(order + "/subcontract-settlement/loss-approval"), manager, loss).andExpect(status().isConflict());
+
+        send(post(order + "/cancellation"), manager, java.util.Map.of("reason", "x", "subcontractorFee", 10))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));   // in house: no subcontractor fee
+
+        String amendment = "/api/v1/purchase-orders/" + UUID.randomUUID() + "/amendment/approval";
+        send(post(amendment), customer, null).andExpect(status().isForbidden());
+        send(post(amendment), staff("SYSTEM_ADMIN"), null).andExpect(status().isNotFound());
+    }
+
+    @Test
     @DisplayName("SCRUM-415: the dashboard needs production-orders:READ and counts only the caller's warehouses")
     void dashboardOverHttp() throws Exception {
         send(get("/api/v1/production/dashboard"), staff("CUSTOMER"), null).andExpect(status().isForbidden());
         send(get("/api/v1/production/dashboard"), staff("PRODUCTION_STAFF"), null).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.overdue").value(0))
-                .andExpect(jsonPath("$.data.samplesAwaitingApproval").value(0));
+                .andExpect(jsonPath("$.data.samplesAwaitingApproval").value(0))
+                .andExpect(jsonPath("$.data.periodBasis").value("PRODUCTION_ORDERS_CREATED_IN_PERIOD"));
         send(get("/api/v1/production/dashboard").param("from", "2026-10-12").param("to", "2026-10-01"),
                 assigned("WAREHOUSE_MANAGER"), null).andExpect(status().isBadRequest());
         send(get("/api/v1/production/dashboard/overdue"), assigned("PRODUCTION_STAFF"), null).andExpect(status().isOk())

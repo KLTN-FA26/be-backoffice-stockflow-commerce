@@ -177,6 +177,119 @@ class ProductionOrderTest {
         assertThat(order.statusBeforeHold()).isNull();
     }
 
+    private static final ProductionOrder.Subcontract TERMS = new ProductionOrder.Subcontract(
+            ProductionOrder.SubcontractMethod.FULL_SERVICE, UUID.randomUUID(), new java.math.BigDecimal("1500"), "VND",
+            UUID.randomUUID());
+
+    /** A subcontracted child of 4 of a ready order of 10, sent out. */
+    private ProductionOrder sentChild() {
+        ProductionOrder parent = ready();
+        ProductionOrder child = ProductionOrder.subcontractedChild(UUID.randomUUID(), "LSX-C", parent, 4, null, TERMS);
+        parent.splitOff(4, "LSX-C");
+        child.sendToSubcontractor();
+        return child;
+    }
+
+    @Test
+    void theWholeOrderConvertsInsteadOfSplittingWhenNothingWasIssued() {
+        ProductionOrder order = ready();
+        assertThat(order.wholeOrder(10)).isTrue();
+        assertThat(order.wholeOrder(9)).isFalse();
+        ProductionOrder.Transition converted = order.convertToSubcontract(TERMS);
+        assertThat(converted.from()).isEqualTo(converted.to()).isEqualTo(ProductionOrder.Status.READY);
+        assertThat(order.mode()).isEqualTo(ProductionOrder.Mode.SUBCONTRACTED);
+        assertThat(order.parentId()).isNull();
+        assertThat(order.work().plannedQuantity()).isEqualTo(10);
+        assertThatThrownBy(() -> order.convertToSubcontract(TERMS)).extracting(ProductionOrderTest::code)
+                .isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
+        assertThatThrownBy(() -> order.issueBlanks(1)).as("printed outside now")
+                .extracting(ProductionOrderTest::code).isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
+
+        ProductionOrder issued = ready();
+        issued.issueBlanks(1);
+        assertThat(issued.wholeOrder(10)).isFalse();
+        assertThatThrownBy(() -> issued.convertToSubcontract(TERMS)).extracting(ProductionOrderTest::code)
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        ProductionOrder sample = ProductionOrder.forSample(UUID.randomUUID(), "LSX-S", this.sample, work);
+        assertThatThrownBy(() -> sample.convertToSubcontract(TERMS)).as("BR-PRD-11")
+                .extracting(ProductionOrderTest::code).isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
+    }
+
+    @Test
+    void aShortfallGoesInHouseAndTheSubcontractedOrderCompletesWithWhatItHas() {
+        Instant at = Instant.parse("2026-10-14T03:00:00Z");
+        ProductionOrder child = sentChild();
+        child.receivedFromSubcontractor(4);
+        assertThat(child.recordQc(3, 1, at).to()).isEqualTo(ProductionOrder.Status.READY);
+        assertThat(child.stillOwed()).isEqualTo(1);
+        assertThatThrownBy(() -> child.giveBackToPrintShop(2, "LSX-H", at)).as("only what is still owed")
+                .extracting(ProductionOrderTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
+
+        ProductionOrder.Transition given = child.giveBackToPrintShop(1, "LSX-H", at);
+        assertThat(given.to()).isEqualTo(ProductionOrder.Status.COMPLETED);
+        assertThat(child.work().plannedQuantity()).isEqualTo(3);
+        assertThat(child.good()).isEqualTo(3);
+        ProductionOrder inHouse = ProductionOrder.inHouseFor(UUID.randomUUID(), "LSX-H", child, 1,
+                ProductionOrder.Origin.SHORTFALL);
+        assertThat(inHouse.mode()).isEqualTo(ProductionOrder.Mode.IN_HOUSE);
+        assertThat(inHouse.parentId()).isEqualTo(child.id());
+        assertThat(inHouse.origin()).isEqualTo(ProductionOrder.Origin.SHORTFALL);
+        assertThat(inHouse.status()).as("inherits the prepress result").isEqualTo(ProductionOrder.Status.READY);
+        assertThat(inHouse.salesOrderLineId()).isEqualTo(child.salesOrderLineId());
+        assertThatThrownBy(() -> ProductionOrder.inHouseFor(UUID.randomUUID(), "LSX-X", child, 1,
+                ProductionOrder.Origin.SPLIT)).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void givingBackEverythingBeforeAnyGoodUnitCancelsAndAPartialGiveBackKeepsWaitingForTheRest() {
+        Instant at = Instant.parse("2026-10-14T03:00:00Z");
+        ProductionOrder whole = sentChild();
+        whole.hold(ProductionOrder.HoldReason.SUBCONTRACTOR_LATE, null, at);
+        assertThat(whole.giveBackToPrintShop(4, "LSX-R", at).to()).as("replaced, the hold ends with it")
+                .isEqualTo(ProductionOrder.Status.CANCELLED);
+        assertThat(whole.holdReason()).isNull();
+        assertThat(whole.cancellationReason()).contains("LSX-R");
+
+        ProductionOrder part = sentChild();
+        assertThat(part.giveBackToPrintShop(1, "LSX-P", at).to()).isEqualTo(ProductionOrder.Status.SUBCONTRACTED);
+        assertThat(part.work().plannedQuantity()).isEqualTo(3);
+        part.receivedFromSubcontractor(3);
+        assertThat(part.recordQc(3, 0, at).to()).isEqualTo(ProductionOrder.Status.COMPLETED);
+    }
+
+    @Test
+    void goodsReachingAHeldOrderWaitBehindTheHoldUnlessTheSubcontractorWasLate() {
+        Instant at = Instant.parse("2026-10-14T03:00:00Z");
+        ProductionOrder late = sentChild();
+        late.hold(ProductionOrder.HoldReason.SUBCONTRACTOR_LATE, null, at);
+        assertThat(late.receivedFromSubcontractor(2).to()).isEqualTo(ProductionOrder.Status.QC);
+        assertThat(late.holdReason()).isNull();
+
+        ProductionOrder waiting = sentChild();
+        waiting.hold(ProductionOrder.HoldReason.WAITING_CUSTOMER, "artwork question", at);
+        assertThat(waiting.receivedFromSubcontractor(2).to()).isEqualTo(ProductionOrder.Status.ON_HOLD);
+        assertThat(waiting.statusBeforeHold()).isEqualTo(ProductionOrder.Status.QC);
+        assertThat(waiting.resume().to()).isEqualTo(ProductionOrder.Status.QC);
+        assertThat(waiting.awaitingQc()).isEqualTo(2);
+    }
+
+    @Test
+    void aSubcontractedOrderIsCancelledWithItsOwnStepAndItsGoodUnitsBecomeScrap() {
+        Instant at = Instant.parse("2026-10-14T03:00:00Z");
+        ProductionOrder child = sentChild();
+        assertThatThrownBy(() -> child.cancel("x", at)).as("not the in-house cancel")
+                .extracting(ProductionOrderTest::code).isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
+        child.receivedFromSubcontractor(2);
+        assertThatThrownBy(() -> child.cancelSubcontracted("order cancelled", at)).as("QC first")
+                .extracting(ProductionOrderTest::code).isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
+        child.recordQc(2, 0, at);
+        assertThat(child.cancelSubcontracted("order cancelled", at)).isEqualTo(2);
+        assertThat(child.status()).isEqualTo(ProductionOrder.Status.CANCELLED);
+        assertThat(child.good()).isZero();
+        assertThat(child.scrap()).isEqualTo(2);
+        assertThat(child.good() + child.scrap()).isEqualTo(child.printed());
+    }
+
     private ProductionOrder ready() {
         ProductionOrder ready = forLine(sample, work);
         ready.passPrepress(UUID.randomUUID(), Instant.parse("2026-10-12T01:00:00Z"));
