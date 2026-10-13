@@ -645,6 +645,57 @@ class PrintRunIntegrationTest {
                 .extracting(PrintRunIntegrationTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
     }
 
+    @Test
+    @DisplayName("QA3 no double counting: a unit spoilt on the press, one failed in QC, one written off when its job was stopped and the stopped run itself are each counted once in the period, the same as the orders' own totals; a subcontractor's receipt counts as printed; nothing of it falls in another period")
+    void dashboardActivityCountsEachUnitOnce() throws Exception {
+        LocalDate today = dashboard.summary(manager, null, null).today();
+        ProductionDashboard.Summary before = dashboard.summary(manager, today, today);
+        ProductionDashboard.Summary yesterdayBefore = dashboard.summary(manager, today.minusDays(1), today.minusDays(1));
+
+        // Order A: printed 4 (1 spoilt on the press), QC passes 2 and fails 1.
+        Line a = released(4);
+        issueAll(a.productionOrderId());
+        runs.startPrinting(printer, a.productionOrderId());
+        runs.recordOutput(printer, a.productionOrderId(), 4,
+                List.of(new PrintRuns.ScrapLine(ProductionRecords.ScrapReason.PRINT_DEFECT, 1, null)));
+        runs.recordQc(inspector, a.productionOrderId(), 2, 1, "smudge", PACKING);
+        // Order B: a run of 3 (1 spoilt) recorded by the stop itself; its 2 good units are written off with it.
+        Line b = released(3);
+        issueAll(b.productionOrderId());
+        runs.startPrinting(printer, b.productionOrderId());
+        runs.stop(manager, b.productionOrderId(), 3,
+                List.of(new PrintRuns.ScrapLine(ProductionRecords.ScrapReason.PRINT_DEFECT, 1, null)), "customer withdrew");
+        // Order C: 2 printed by a subcontractor, received today.
+        Line c = released(4);
+        UUID childId = subcontracts.split(manager, c.productionOrderId(),
+                split(2, ProductionOrder.SubcontractMethod.FULL_SERVICE, printSubcontractor())).summary().id();
+        UUID poId = purchaseOrderOf(childId);
+        approvePurchaseOrder(poId);
+        subcontracts.sendOut(storekeeper, childId);
+        sendPurchaseOrder(poId);
+        receiveSubcontracted(poId, 2);
+
+        ProductionDashboard.Summary after = dashboard.summary(manager, today, today);
+        Map<String, Object> totals = jdbc.queryForMap("""
+                SELECT SUM(printed_quantity) AS printed, SUM(scrap_quantity) AS scrap FROM production.production_order
+                 WHERE id IN (?, ?, ?)""", a.productionOrderId(), b.productionOrderId(), childId);
+        assertThat(((Number) totals.get("printed")).longValue()).as("4 + 3 + 2 received").isEqualTo(9);
+        assertThat(((Number) totals.get("scrap")).longValue()).as("1 press + 1 QC + 1 press + 2 stopped").isEqualTo(5);
+        assertThat(after.printed() - before.printed()).as("printed in the period = the orders' own totals")
+                .isEqualTo(9);
+        assertThat(after.scrap() - before.scrap()).as("each spoilt unit once").isEqualTo(5);
+        assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM production.production_print_run WHERE production_order_id IN (?, ?)""",
+                Integer.class, a.productionOrderId(), b.productionOrderId())).as("one row per recorded run").isEqualTo(2);
+
+        ProductionDashboard.Summary yesterday = dashboard.summary(manager, today.minusDays(1), today.minusDays(1));
+        assertThat(yesterday.printed()).as("today's activity is not yesterday's").isEqualTo(yesterdayBefore.printed());
+        assertThat(yesterday.scrap()).isEqualTo(yesterdayBefore.scrap());
+        assertThat(dashboard.summary(manager, null, null).printed() - dashboard.summary(manager, today, today).printed())
+                .as("open period = before today + today").isEqualTo(
+                        dashboard.summary(manager, null, today.minusDays(1)).printed());
+    }
+
     /** The demo print subcontractor (V20261010000510). */
     private UUID printSubcontractor() {
         return jdbc.queryForObject("SELECT id FROM procurement.suppliers WHERE code = 'INNHANH'", UUID.class);
