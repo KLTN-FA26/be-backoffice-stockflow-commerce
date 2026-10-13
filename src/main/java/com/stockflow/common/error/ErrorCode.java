@@ -220,6 +220,8 @@ public enum ErrorCode {
     INVALID_VARIANT_TRANSITION("This variant cannot move to that status right now", 409),
     INVALID_PRODUCT_STATUS_TRANSITION("This product cannot move to that status right now", 409),
     PRODUCT_AXES_LOCKED("Variant axes can only change while the product is a draft", 409),
+    VARIANT_OPTIONS_INVALID("The options do not name one value per axis of this product", 400),
+    VARIANT_MATRIX_TOO_LARGE("Too many variants for one generation", 400),
     SELF_APPROVAL_NOT_ALLOWED("A product cannot be approved by the person who submitted it", 409),
     CUSTOMER_EMAIL_ALREADY_EXISTS("A customer account with this email already exists", 409),
 
