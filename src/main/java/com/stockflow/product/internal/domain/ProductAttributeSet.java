@@ -39,6 +39,10 @@ import java.util.function.Supplier;
  * <p>Whether a variant uses an option is not known here; the caller passes the used value ids.
  * Entries that survive a replacement keep their ids, so persistence can update rows in place
  * instead of deleting and re-inserting them.</p>
+ *
+ * <p>An axis cannot be added once any variant carries an option, even on a DRAFT product: every such
+ * variant would then lack a value on the new axis, and its signature would no longer name one value
+ * per axis. Removal was already refused by the in-use check, since the axis's options are used.</p>
  */
 public final class ProductAttributeSet extends AggregateRoot {
 
@@ -111,6 +115,11 @@ public final class ProductAttributeSet extends AggregateRoot {
         }
         if (!seen.equals(existing.keySet())) {
             requireDraft();
+        }
+        if (!valueIdsUsedByVariants.isEmpty() && !existing.keySet().containsAll(seen)) {
+            throw new BusinessException(ErrorCode.PRODUCT_AXES_LOCKED,
+                    "Product %s: variants already use the current axes; an axis can no longer be added"
+                            .formatted(productId));
         }
         for (ProductAxis before : axes) {
             Set<UUID> kept = result.stream().filter(a -> a.attributeId().equals(before.attributeId()))
@@ -282,6 +291,12 @@ public final class ProductAttributeSet extends AggregateRoot {
 
     public List<ProductAxis> axes() {
         return Collections.unmodifiableList(axes);
+    }
+
+    /** The option of the axis on {@code attributeId} that offers {@code valueId}, if this product has one. */
+    public java.util.Optional<AxisOption> optionFor(UUID attributeId, UUID valueId) {
+        return axes.stream().filter(a -> a.attributeId().equals(attributeId))
+                .flatMap(a -> a.options().stream()).filter(o -> o.valueId().equals(valueId)).findFirst();
     }
 
     public List<DescriptiveAttribute> descriptives() {
