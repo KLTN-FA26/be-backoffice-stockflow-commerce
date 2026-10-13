@@ -3,20 +3,22 @@ package com.stockflow.notification.internal.service;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.security.Role;
 import com.stockflow.identity.api.IdentityService;
-import com.stockflow.identity.api.StaffContact;
 import com.stockflow.identity.api.ListUsersQuery;
+import com.stockflow.identity.api.StaffContact;
 import com.stockflow.identity.api.StaffUser;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 /**
- * The e-mail addresses of the active staff holding a role: who a staff notice goes to when the notice names
- * a team ("Sales is notified", "alert purchasing", "the Warehouse Manager resolves") rather than a person.
- * Read through {@code identity :: api}, the address book; never a role's grants, which are not addresses.
+ * Who a staff notice goes to when it names a team ("Sales is notified", "alert purchasing", "the Warehouse Manager
+ * resolves") rather than a person: the ACTIVE accounts holding the role, with their id (the in-app inbox) and e-mail
+ * (best-effort mail). Read through {@code identity :: api}, the address book; never a role's grants.
  */
 @Component
 class StaffDirectory {
@@ -29,34 +31,28 @@ class StaffDirectory {
         this.identity = identity;
     }
 
-    /**
-     * The addresses of the ACTIVE staff holding {@code role} who can see {@code warehouseId} - those with an ALL
-     * scope and those assigned to it - through {@code identity :: api}'s recipient rule (SCRUM-147); never a
-     * customer. A notice about one warehouse's work goes to the people who can open it.
-     */
-    List<String> activeEmails(Role role, java.util.UUID warehouseId) {
-        Set<String> emails = new LinkedHashSet<>();
-        for (StaffContact contact : identity.notificationRecipients(Set.of(role.name()), warehouseId)) {
-            if (contact.email() != null && !contact.email().isBlank()) {
-                emails.add(contact.email().strip());
-            }
-        }
-        return new ArrayList<>(emails);
-    }
-
-    /** Distinct, non-blank addresses of ACTIVE accounts holding {@code role}, in the identity module's order. */
-    List<String> activeEmails(Role role) {
-        Set<String> emails = new LinkedHashSet<>();
+    /** Every ACTIVE account holding {@code role}, each once, in the identity module's order; e-mail may be null. */
+    List<StaffContact> activeStaff(Role role) {
+        Map<UUID, StaffContact> staff = new LinkedHashMap<>();
         int page = 0;
         PageResponse<StaffUser> users;
         do {
             users = identity.listUsers(new ListUsersQuery(null, "ACTIVE", role.name(), false, page++, PAGE, null));
             for (StaffUser user : users.items()) {
-                if ("ACTIVE".equals(user.status()) && user.email() != null && !user.email().isBlank()) {
-                    emails.add(user.email().strip());
+                if ("ACTIVE".equals(user.status())) {
+                    staff.putIfAbsent(user.userId(), new StaffContact(user.userId(), user.email()));
                 }
             }
         } while (users.hasNext());
-        return new ArrayList<>(emails);
+        return new ArrayList<>(staff.values());
+    }
+
+    /**
+     * The ACTIVE staff holding {@code role} who can see {@code warehouseId} - an ALL scope, or assigned to it - through
+     * {@code identity :: api}'s recipient rule (SCRUM-147); never a customer. A notice about one warehouse's work goes
+     * to the people who can open it.
+     */
+    List<StaffContact> activeStaff(Role role, UUID warehouseId) {
+        return identity.notificationRecipients(Set.of(role.name()), warehouseId);
     }
 }

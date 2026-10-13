@@ -459,10 +459,10 @@ class SubcontractService implements Subcontracting {
             orders.recordTransition(inHouse.id(), held, now, by);
             events.publishEvent(new ProductionOrderHeld(inHouse.id(), inHouse.orderNumber(),
                     inHouse.holdReason().name(), null, inHouse.salesOrderId(), inHouse.work().warehouseId(),
-                    inHouse.work().blankSku().code(), quantity));
+                    inHouse.work().blankSku().code(), quantity, now));
         }
-        log.info("Production order {}: {} unit(s) taken back to the print shop as {} ({}); it is now {}",
-                child.orderNumber(), quantity, inHouse.orderNumber(), reason, child.status());
+        log.info("Production order {}: {} unit(s) taken back to the print shop as {}; it is now {}",
+                child.orderNumber(), quantity, inHouse.orderNumber(), child.status());
         return inHouse;
     }
 
@@ -504,8 +504,8 @@ class SubcontractService implements Subcontracting {
         orders.recordTransition(order.id(), new ProductionOrder.Transition(from, ProductionOrder.Status.CANCELLED, text),
                 now, user.userId());
         settling.settle(order, text, agreed, agreedWhy, user.userId());
-        log.info("Subcontracted production order {} cancelled: {}; {} good unit(s) written off, fee {}",
-                order.orderNumber(), text, unsold, agreed);
+        log.info("Subcontracted production order {} cancelled; {} good unit(s) written off, fee {}",
+                order.orderNumber(), unsold, agreed);
         return reads.get(user, order.id());
     }
 

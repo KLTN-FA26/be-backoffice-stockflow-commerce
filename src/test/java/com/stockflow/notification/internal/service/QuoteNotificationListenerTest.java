@@ -2,43 +2,65 @@ package com.stockflow.notification.internal.service;
 
 import com.stockflow.common.http.RestClientFactory;
 import com.stockflow.contracts.CustomerActedOnQuote;
+import com.stockflow.notification.api.Inbox;
+import com.stockflow.notification.api.InboxMessage;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.mail.SimpleMailMessage;
 import org.springframework.mail.javamail.JavaMailSender;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
-/** The Sales notice of a customer's step on a quote: who gets it, what it says, and nobody when unknown. */
+/**
+ * The Sales notice of a customer's step on a quote: who gets it (the responsible Sales account, or the team to take
+ * over - N1), what it says (numbers only, never what the customer typed - B-4), in-app first and e-mail best effort
+ * (B-5), and nobody when nobody is active.
+ */
 class QuoteNotificationListenerTest {
+
+    private static final Instant AT = Instant.parse("2026-10-12T03:00:00Z");
 
     private final JavaMailSender mail = mock(JavaMailSender.class);
     private final com.stockflow.identity.api.IdentityService identity =
             mock(com.stockflow.identity.api.IdentityService.class);
+    private final Inbox inbox = mock(Inbox.class);
     private final QuoteNotificationListener listener = new QuoteNotificationListener(
             new NotificationSender(mail, mock(RestClientFactory.class), "noreply@stockflow.local", ""),
-            new StaffDirectory(identity));
+            new StaffDirectory(identity), new StaffNotices(inbox));
 
-    private void activeSales(String... emails) {
+    @BeforeEach
+    void everyoneIsNewlyTold() {
+        when(inbox.post(any(), any())).thenReturn(1);
+    }
+
+    private List<UUID> activeSales(String... emails) {
         var users = java.util.Arrays.stream(emails).map(email -> new com.stockflow.identity.api.StaffUser(UUID.randomUUID(),
                 email, email, "Sales", "ACTIVE", java.util.List.of("SALES_STAFF"), java.util.List.of(), false, null, null,
                 Instant.EPOCH, "admin", 0)).toList();
-        org.mockito.Mockito.when(identity.listUsers(org.mockito.ArgumentMatchers.argThat(
+        when(identity.listUsers(org.mockito.ArgumentMatchers.argThat(
                 (com.stockflow.identity.api.ListUsersQuery q) -> q != null && "SALES_STAFF".equals(q.roleCode())
                         && "ACTIVE".equals(q.status()) && q.page() == 0)))
                 .thenReturn(com.stockflow.common.api.PageResponse.of(users, 0, 100, users.size()));
+        return users.stream().map(com.stockflow.identity.api.StaffUser::userId).toList();
     }
 
-    private static CustomerActedOnQuote event(CustomerActedOnQuote.Action action, String detail, String salesEmail) {
+    private static CustomerActedOnQuote event(CustomerActedOnQuote.Action action, String sourceOrderNumber,
+                                              String salesEmail) {
         return new CustomerActedOnQuote(UUID.randomUUID(), "QT-20261012-0007", UUID.randomUUID(), "Cong ty In Ly A",
-                action, detail, UUID.randomUUID(), salesEmail, Instant.parse("2026-10-12T03:00:00Z"));
+                action, sourceOrderNumber, UUID.randomUUID(), salesEmail, AT);
     }
 
     private SimpleMailMessage sent() {
@@ -47,25 +69,39 @@ class QuoteNotificationListenerTest {
         return message.getValue();
     }
 
-    @Test
-    void anAcceptedQuoteIsMailedToTheSalesUserWhoSentIt() {
-        listener.on(event(CustomerActedOnQuote.Action.ACCEPTED, null, "sales@example.com"));
-        SimpleMailMessage message = sent();
-        assertThat(message.getTo()).containsExactly("sales@example.com");
-        assertThat(message.getFrom()).isEqualTo("noreply@stockflow.local");
-        assertThat(message.getSubject()).contains("Cong ty In Ly A", "QT-20261012-0007", "chấp nhận");
-        assertThat(message.getText()).contains("chuyển báo giá thành đơn hàng");
+    private InboxMessage posted() {
+        var message = ArgumentCaptor.forClass(InboxMessage.class);
+        verify(inbox, org.mockito.Mockito.atLeastOnce()).post(any(), message.capture());
+        return message.getValue();
     }
 
     @Test
-    void aChangeRequestCarriesWhatTheCustomerAsked() {
-        listener.on(event(CustomerActedOnQuote.Action.CHANGES_REQUESTED, "2,200 VND at 500?", "sales@example.com"));
-        assertThat(sent().getText()).contains("QT-20261012-0007", "2,200 VND at 500?", "sửa");
+    void anAcceptedQuoteReachesTheSalesUserWhoSentItInAppAndByMail() {
+        CustomerActedOnQuote event = event(CustomerActedOnQuote.Action.ACCEPTED, null, "sales@example.com");
+        listener.on(event);
+        InboxMessage message = posted();
+        verify(inbox).post(List.of(event.salesUserId()), message);
+        assertThat(message.title()).contains("QT-20261012-0007", "chấp nhận").doesNotContain("Cong ty In Ly A");
+        assertThat(message.link()).isEqualTo("/admin/sales/quotes/" + event.quoteId());
+        assertThat(message.dedupeKey()).isEqualTo("quote:%s:ACCEPTED:%s".formatted(event.quoteId(), AT));
+        SimpleMailMessage mailed = sent();
+        assertThat(mailed.getTo()).containsExactly("sales@example.com");
+        assertThat(mailed.getFrom()).isEqualTo("noreply@stockflow.local");
+        assertThat(mailed.getSubject()).contains("Cong ty In Ly A", "QT-20261012-0007", "chấp nhận");
+        assertThat(mailed.getText()).contains("chuyển báo giá thành đơn hàng");
+    }
+
+    @Test
+    void aChangeRequestPointsAtTheQuoteAndCarriesNothingTheCustomerTyped() {
+        listener.on(event(CustomerActedOnQuote.Action.CHANGES_REQUESTED, null, "sales@example.com"));
+        assertThat(posted().title()).contains("QT-20261012-0007", "sửa");
+        assertThat(sent().getText()).contains("QT-20261012-0007", "nội dung khách gửi nằm trong báo giá", "sửa");
     }
 
     @Test
     void aReorderSaysTheDraftIsAtTodaysListNotTheOldDeal() {
         listener.on(event(CustomerActedOnQuote.Action.REORDER_REQUESTED, "SO-20261001-0003", "sales@example.com"));
+        assertThat(posted().title()).contains("SO-20261001-0003", "QT-20261012-0007");
         SimpleMailMessage message = sent();
         assertThat(message.getSubject()).contains("SO-20261001-0003");
         assertThat(message.getText()).contains("QT-20261012-0007", "SO-20261001-0003",
@@ -75,8 +111,12 @@ class QuoteNotificationListenerTest {
     @Test
     void aGoneSalesAccountHandsTheCustomerToTheActiveSalesTeamOnceEach() {
         // N1: the responsible account is locked or gone - salesEmail is null - so the team takes over.
-        activeSales("sale1@example.com", "sale2@example.com", "sale1@example.com");
+        List<UUID> team = activeSales("sale1@example.com", "sale2@example.com", "sale1@example.com");
         listener.on(event(CustomerActedOnQuote.Action.ACCEPTED, null, null));
+        verify(inbox, times(3)).post(any(), any());
+        InboxMessage handOver = posted();
+        assertThat(handOver.body()).contains("tiếp nhận");
+        verify(inbox).post(List.of(team.get(0)), handOver);
         SimpleMailMessage message = sent();
         assertThat(message.getTo()).containsExactly("sale1@example.com", "sale2@example.com");
         assertThat(message.getSubject()).startsWith("[Cần tiếp nhận]").contains("QT-20261012-0007", "Cong ty In Ly A");
@@ -93,9 +133,22 @@ class QuoteNotificationListenerTest {
     }
 
     @Test
-    void withNoActiveSalesAtAllNobodyIsMailedAndItIsLogged() {
+    void aRedeliveredEventTellsNobodyTwiceAndAMailOutageNeverFailsIt() {
+        when(inbox.post(any(), any())).thenReturn(0);
+        listener.on(event(CustomerActedOnQuote.Action.ACCEPTED, null, "sales@example.com"));
+        verify(mail, never()).send(any(SimpleMailMessage.class));
+
+        when(inbox.post(any(), any())).thenReturn(1);
+        doThrow(new org.springframework.mail.MailSendException("refused")).when(mail).send(any(SimpleMailMessage.class));
+        assertThatCode(() -> listener.on(event(CustomerActedOnQuote.Action.ACCEPTED, null, "sales@example.com")))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void withNoActiveSalesAtAllNobodyIsToldAndItIsLogged() {
         activeSales();
         listener.on(event(CustomerActedOnQuote.Action.ACCEPTED, null, null));
+        verify(inbox, never()).post(any(), any());
         verify(mail, never()).send(any(SimpleMailMessage.class));
     }
 }

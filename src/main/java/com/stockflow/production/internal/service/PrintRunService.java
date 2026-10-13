@@ -204,7 +204,8 @@ class PrintRunService implements PrintRuns {
         orders.save(order);
         orders.recordTransition(order.id(), cancelled, now, by);
         sampleRoundCancelled(order);
-        log.info("Production order {} cancelled: {}", order.orderNumber(), order.cancellationReason());
+        // The reason is typed text and stays on the order and its history (develop #99 log hygiene).
+        log.info("Production order {} cancelled", order.orderNumber());
     }
 
     @Override
@@ -304,7 +305,7 @@ class PrintRunService implements PrintRuns {
         orders.recordTransition(order.id(), held, now, by);
         events.publishEvent(new ProductionOrderHeld(order.id(), order.orderNumber(), order.holdReason().name(),
                 order.sampleRequestId(), order.salesOrderId(), order.work().warehouseId(),
-                order.work().blankSku().code(), blanksNeeded));
+                order.work().blankSku().code(), blanksNeeded, now));
         log.info("Production order {} on hold: {}", order.orderNumber(), order.holdReason());
     }
 

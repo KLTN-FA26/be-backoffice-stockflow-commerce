@@ -15,7 +15,8 @@ import java.util.UUID;
  * {@code salesOrderId} is set, as the production order's type says. {@code warehouseId} is the production order's
  * warehouse: the Warehouse Manager notice goes to the managers who can see it. {@code blankSku} is what the order
  * prints on; {@code blanksNeeded} how many more blanks it waits for when it is held BLANKS_SHORT and the count is
- * known, null otherwise.</p>
+ * known, null otherwise. {@code heldAt} is when it was held: one hold is one in-app notice, however often the
+ * event is delivered.</p>
  *
  * <p>Consumers receive it in-process through {@code @ApplicationModuleListener}; delivery is made durable by
  * Spring Modulith's event publication registry. See {@code package-info.java} for the rules on changing
@@ -29,6 +30,7 @@ public record ProductionOrderHeld(
         UUID salesOrderId,
         UUID warehouseId,
         String blankSku,
-        Integer blanksNeeded
+        Integer blanksNeeded,
+        java.time.Instant heldAt
 ) {
 }

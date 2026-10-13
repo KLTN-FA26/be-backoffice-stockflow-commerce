@@ -211,7 +211,7 @@ class QuoteServiceTest {
         assertThat(published.getValue()).isInstanceOfSatisfying(com.stockflow.contracts.CustomerActedOnQuote.class,
                 e -> {
                     assertThat(e.action()).isEqualTo(com.stockflow.contracts.CustomerActedOnQuote.Action.REORDER_REQUESTED);
-                    assertThat(e.detail()).isEqualTo("SO-1");
+                    assertThat(e.sourceOrderNumber()).isEqualTo("SO-1");
                     assertThat(e.salesEmail()).isEqualTo("sales@example.com");
                 });
     }

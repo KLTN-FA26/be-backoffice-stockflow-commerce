@@ -129,7 +129,7 @@ class ProductionWorkflowService implements ProductionWorkflow {
                 && order.outstandingBlanks() > 0 ? order.outstandingBlanks() : null;
         events.publishEvent(new ProductionOrderHeld(order.id(), order.orderNumber(), order.holdReason().name(),
                 order.sampleRequestId(), order.salesOrderId(), order.work().warehouseId(),
-                order.work().blankSku().code(), blanksNeeded));
+                order.work().blankSku().code(), blanksNeeded, now));
         log.info("Production order {} on hold: {}", order.orderNumber(), order.holdReason());
         return reads.get(user, order.id());
     }

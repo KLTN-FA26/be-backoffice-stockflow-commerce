@@ -145,6 +145,28 @@ class SubcontractCancellationTest {
     }
 
     @Test
+    void theTypedReasonsAreKeptOffTheLog() {
+        // Develop #99 log hygiene (lane B finding B-7): reasons are typed text; the log gets ids and counts only.
+        ch.qos.logback.classic.Logger logs =
+                (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger("com.stockflow.production");
+        var appender = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>();
+        appender.start();
+        logs.addAppender(appender);
+        try {
+            String typed = "gave up" + (char) 13 + (char) 10 + "INFO FORGED line";
+            ProductionOrder abandoned = child(1, 1, OrderStatus.IN_PRODUCTION);
+            service.cancel(manager, abandoned.id(), typed, FEE, "fee " + typed, null);
+            ProductionOrder dropped = child(0, 0, OrderStatus.CANCELLED);
+            service.cancel(manager, dropped.id(), typed, null, null, null);
+            assertThat(appender.list).isNotEmpty();
+            assertThat(appender.list).extracting(ch.qos.logback.classic.spi.ILoggingEvent::getFormattedMessage)
+                    .allSatisfy(line -> assertThat(line).doesNotContain("FORGED").doesNotContain("gave up"));
+        } finally {
+            logs.detachAppender(appender);
+        }
+    }
+
+    @Test
     void theSalesOrderCancelledItsGoodUnitsAreWrittenOffAndNothingIsCreatedInHouse() {
         ProductionOrder child = child(1, 1, OrderStatus.CANCELLED);
 

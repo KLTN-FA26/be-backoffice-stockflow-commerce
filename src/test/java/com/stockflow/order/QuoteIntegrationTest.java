@@ -322,7 +322,7 @@ class QuoteIntegrationTest {
         String orderNumber = orders.findById(orderId).orElseThrow().orderNumber();
         assertThat(noticesOf(reorder.id(), CustomerActedOnQuote.Action.REORDER_REQUESTED)).as("once, not per click")
                 .singleElement().satisfies(e -> {
-                    assertThat(e.detail()).isEqualTo(orderNumber);
+                    assertThat(e.sourceOrderNumber()).isEqualTo(orderNumber);
                     assertThat(e.salesUserId()).as("who negotiated the order's quote").isEqualTo(sales.userId());
                     assertThat(e.salesEmail()).isEqualTo(emailOf(sales));
                 });
@@ -402,7 +402,8 @@ class QuoteIntegrationTest {
         long firstVersion = quotes.get(portal, first.id()).version();
         Quotes.QuoteView changed = quotes.requestChanges(portal, first.id(), firstVersion, "2,200?");
         assertThat(noticesOf(first.id(), CustomerActedOnQuote.Action.CHANGES_REQUESTED)).singleElement().satisfies(e -> {
-            assertThat(e.detail()).isEqualTo("2,200?");
+            assertThat(e.sourceOrderNumber()).as("B-4: what the customer typed stays on the quote").isNull();
+            assertThat(e.toString()).doesNotContain("2,200?");
             assertThat(e.salesUserId()).isEqualTo(sales.userId());
             assertThat(e.salesEmail()).isEqualTo(emailOf(sales));
             assertThat(e.customerName()).isEqualTo("Cong ty In Ly A");

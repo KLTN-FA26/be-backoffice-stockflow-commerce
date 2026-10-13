@@ -227,7 +227,8 @@ class QuoteService implements Quotes {
         quotes.save(quote);
         quotes.recordTransition(quote.id(), quote.revision(), from, QuoteStatus.CHANGES_REQUESTED,
                 quote.customerFeedback(), null, quote.respondedAt(), user.userId());
-        notifySales(quote, CustomerActedOnQuote.Action.CHANGES_REQUESTED, quote.customerFeedback(), quote.sentBy(),
+        // The feedback stays on the quote: the event carries facts, not what the customer typed (B-4).
+        notifySales(quote, CustomerActedOnQuote.Action.CHANGES_REQUESTED, null, quote.sentBy(),
                 quote.respondedAt());
         return view(quote);
     }
@@ -524,7 +525,7 @@ class QuoteService implements Quotes {
      * inactive or has no e-mail the event carries no address and the notification module hands it to the active
      * Sales team (N1).
      */
-    private void notifySales(Quote quote, CustomerActedOnQuote.Action action, String detail, UUID salesUserId,
+    private void notifySales(Quote quote, CustomerActedOnQuote.Action action, String sourceOrderNumber, UUID salesUserId,
                              Instant at) {
         String email = null;
         if (salesUserId != null) {
@@ -541,7 +542,7 @@ class QuoteService implements Quotes {
         }
         String customerName = customers.findById(quote.customerId()).map(CustomerSummary::fullName).orElse(null);
         events.publishEvent(new CustomerActedOnQuote(quote.id(), quote.quoteNumber(), quote.customerId(), customerName,
-                action, detail, salesUserId, email, at));
+                action, sourceOrderNumber, salesUserId, email, at));
     }
 
     private Quotes.SampleGate gate(UUID customerId, QuoteLine line) {

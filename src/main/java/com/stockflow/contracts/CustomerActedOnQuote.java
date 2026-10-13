@@ -13,8 +13,10 @@ import java.util.UUID;
  * no longer exists, is not active, or has no e-mail; the listener then hands the notice to every active Sales
  * account to take over (user decision N1, 2026-10-13).</p>
  *
- * @param detail the customer's feedback for {@code CHANGES_REQUESTED}, the reordered order's number for
- *               {@code REORDER_REQUESTED}, null for {@code ACCEPTED}
+ * <p>Facts only (verify.py rule 16, inbox rule of develop #102): what the customer typed when asking for changes
+ * stays on the quote, behind its permission; Sales opens the quote to read it.</p>
+ *
+ * @param sourceOrderNumber the reordered order's number for {@code REORDER_REQUESTED}, null otherwise
  */
 public record CustomerActedOnQuote(
         UUID quoteId,
@@ -22,7 +24,7 @@ public record CustomerActedOnQuote(
         UUID customerId,
         String customerName,
         Action action,
-        String detail,
+        String sourceOrderNumber,
         UUID salesUserId,
         String salesEmail,
         Instant occurredAt

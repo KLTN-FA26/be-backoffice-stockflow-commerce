@@ -140,7 +140,8 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing, SubcontractAme
         int newQuantity = order.quantity().intValueExact() + additionalQuantity;
         if (EDITABLE.equals(order.status())) {
             store.changeQuantity(order, newQuantity, reason.trim(), actorId);
-            log.info("Supplemented {} by {} to {}: {}", order.poNumber(), additionalQuantity, newQuantity, reason);
+            // Ids and counts only: the reason is typed text (develop #99 log hygiene); it is on the PO's timeline.
+            log.info("Supplemented {} by {} to {}", order.poNumber(), additionalQuantity, newQuantity);
             return toOrder(store.findById(purchaseOrderId, false).orElseThrow());
         }
         if (!AMENDABLE.contains(order.status())) {
@@ -154,7 +155,7 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing, SubcontractAme
                     .formatted(order.poNumber(), waiting.quantity()));
         });
         store.requestAmendment(order, newQuantity, reason.trim(), actorId);
-        log.info("Amendment of {} to {} (+{}) asked for: {}", order.poNumber(), newQuantity, additionalQuantity, reason);
+        log.info("Amendment of {} to {} (+{}) asked for", order.poNumber(), newQuantity, additionalQuantity);
         return toOrder(store.findById(purchaseOrderId, false).orElseThrow());
     }
 
@@ -203,8 +204,8 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing, SubcontractAme
             default -> { }   // RECEIVED, CLOSED, CANCELLED: nothing open is left
         }
         SubcontractOrder after = toOrder(store.findById(purchaseOrderId, false).orElseThrow());
-        log.info("{} closed for production: {} -> {} ({} received): {}", order.poNumber(), order.status(),
-                after.status(), received, reason);
+        log.info("{} closed for production: {} -> {} ({} received)", order.poNumber(), order.status(),
+                after.status(), received);
         return after;
     }
 

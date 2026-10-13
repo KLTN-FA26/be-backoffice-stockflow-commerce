@@ -80,7 +80,7 @@ class NotificationSender {
         var messages = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
         String key = "quote.mail." + event.action().name().toLowerCase(Locale.ROOT);
         String customer = event.customerName() == null ? "" : event.customerName();
-        String detail = event.detail() == null ? "" : event.detail();
+        String detail = event.sourceOrderNumber() == null ? "" : event.sourceOrderNumber();
         String subject = messages.getString(key + ".subject").formatted(customer, event.quoteNumber(), detail);
         String body = messages.getString(key + ".body").formatted(customer, event.quoteNumber(), detail);
         var message = new SimpleMailMessage();
