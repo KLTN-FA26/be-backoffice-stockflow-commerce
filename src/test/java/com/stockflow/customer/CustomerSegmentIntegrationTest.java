@@ -198,6 +198,10 @@ class CustomerSegmentIntegrationTest {
 
         UUID segmentId = jdbc.queryForObject("SELECT id FROM customer.segment WHERE code = ?", UUID.class, code);
         UUID customerId = customer();
+        // Start in another segment so both racers change something: clearing a segment the customer does not have is
+        // a no-op that moves no version, and whichever order the threads then took, both would rightly succeed.
+        UUID previous = segments.create(code + "-0", "Before", null).id();
+        segments.assign(customerId, previous, version(customerId));
         long version = version(customerId);
         List<Object> moves = race(List.of(() -> segments.assign(customerId, segmentId, version),
                 () -> segments.assign(customerId, null, version)));
