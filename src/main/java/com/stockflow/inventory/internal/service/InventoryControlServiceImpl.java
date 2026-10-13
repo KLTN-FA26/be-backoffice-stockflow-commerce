@@ -19,8 +19,10 @@ import com.stockflow.inventory.internal.domain.ItemLogisticsRules;
 import com.stockflow.inventory.internal.domain.StockPolicy;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
@@ -33,16 +35,28 @@ class InventoryControlServiceImpl implements InventoryControlService {
     private final Clock clock;
     private final CurrentUserProvider users;
     private final ApplicationEventPublisher events;
+    private final int expiryWarningDays;
 
     InventoryControlServiceImpl(
             InventoryPolicyRepository policies,
             Clock clock,
             CurrentUserProvider users,
-            ApplicationEventPublisher events) {
+            ApplicationEventPublisher events,
+            @Value("${stockflow.inventory.expiry-warning-days:30}") int expiryWarningDays) {
+        if (expiryWarningDays < 1) {
+            throw new IllegalArgumentException("stockflow.inventory.expiry-warning-days must be at least 1");
+        }
         this.policies = policies;
         this.clock = clock;
         this.users = users;
         this.events = events;
+        this.expiryWarningDays = expiryWarningDays;
+    }
+
+    @Override
+    @Transactional(propagation = Propagation.SUPPORTS, readOnly = true)
+    public int expiryWarningDays() {
+        return expiryWarningDays;
     }
 
     @Override

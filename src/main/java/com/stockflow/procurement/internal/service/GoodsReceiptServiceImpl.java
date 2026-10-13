@@ -13,6 +13,7 @@ import com.stockflow.common.persistence.SortWhitelist;
 import com.stockflow.contracts.GoodsReceiptConfirmed;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.contracts.ReceiptStockReadyForPutaway;
+import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.api.InventoryItemPolicy;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.MoveReference;
@@ -20,6 +21,7 @@ import com.stockflow.inventory.api.MoveStockCommand;
 import com.stockflow.inventory.api.ReceiveStockCommand;
 import com.stockflow.inventory.api.ReclassifyStockCommand;
 import com.stockflow.inventory.api.StockDisposition;
+import com.stockflow.procurement.internal.domain.ExpiryWarning;
 import com.stockflow.procurement.internal.domain.GoodsReceipt;
 import com.stockflow.procurement.internal.domain.GoodsReceiptRepository;
 import com.stockflow.procurement.internal.domain.GoodsReceiptStatus;
@@ -86,12 +88,14 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
     private final InventoryService inventory;
     private final WarehouseService warehouses;
     private final IdentityService identity;
+    private final InventoryControlService inventoryControl;
     private final ApplicationEventPublisher events;
     private final Clock clock;
 
     GoodsReceiptServiceImpl(GoodsReceiptRepository receipts, GoodsReceiptSearch search, ReceivingPurchaseOrders orders,
                             ReceivingLocations locations, InventoryService inventory, WarehouseService warehouses,
-                            IdentityService identity, ApplicationEventPublisher events, Clock clock) {
+                            IdentityService identity, InventoryControlService inventoryControl,
+                            ApplicationEventPublisher events, Clock clock) {
         this.receipts = receipts;
         this.search = search;
         this.orders = orders;
@@ -99,6 +103,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         this.inventory = inventory;
         this.warehouses = warehouses;
         this.identity = identity;
+        this.inventoryControl = inventoryControl;
         this.events = events;
         this.clock = clock;
     }
@@ -556,8 +561,15 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         Optional.ofNullable(receipt.confirmedBy()).ifPresent(people::add);
         receipt.lines().forEach(l -> l.inspections().forEach(i -> Optional.ofNullable(i.inspectedBy()).ifPresent(people::add)));
         Map<UUID, String> names = identity.displayNames(people);
+        // BR-06: a lot that expires soon after it arrives is flagged, never refused. Counted from the day it was
+        // received, in the business's calendar; a cancelled receipt counted nothing, so it flags nothing.
+        boolean flags = receipt.status() != GoodsReceiptStatus.CANCELLED;
+        LocalDate receivedOn = LocalDate.ofInstant(receipt.receivedAt(), BUSINESS_ZONE);
+        int window = flags ? inventoryControl.expiryWarningDays() : 0;
         List<LineView> lines = receipt.lines().stream().map(line -> {
             InventoryItemPolicy item = items.get(line.inventoryItemId());
+            List<String> lineWarnings = flags && ExpiryWarning.isNear(line.expiryDate(), receivedOn, window)
+                    ? List.of(ExpiryWarning.EXPIRY_NEAR) : List.of();
             return new LineView(line.id(), line.poLineId(),
                     order.line(line.poLineId()).map(ReceivingPurchaseOrder.Line::lineNo).orElse(null),
                     line.inventoryItemId(), item == null ? null : item.sku(), line.receivedQuantity(),
@@ -567,8 +579,11 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                     line.qcRequired() && !line.inspected() ? 0 : line.quantityForPutaway(),
                     line.inspections().stream().map(i -> new InspectionView(i.id(), i.outcome(), i.quantity(),
                             code(where, i.targetLocationId()), i.reason(), i.inspectedBy(), names.get(i.inspectedBy()),
-                            i.inspectedAt())).toList());
+                            i.inspectedAt())).toList(),
+                    lineWarnings);
         }).toList();
+        List<String> warnings = lines.stream().anyMatch(l -> !l.warnings().isEmpty())
+                ? List.of(ExpiryWarning.EXPIRY_NEAR) : List.of();
         var label = search.orderLabels(List.of(receipt.purchaseOrderId())).get(receipt.purchaseOrderId());
         var warehouse = warehouses.findWarehouse(receipt.warehouseId());
         return new ReceiptView(receipt.id(), receipt.number(), receipt.purchaseOrderId(), order.number(),
@@ -576,7 +591,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                 warehouse.map(WarehouseView::prefix).orElse(null), warehouse.map(WarehouseView::name).orElse(null),
                 receipt.status(), receipt.deliveryNote(), receipt.note(), receipt.receivedAt(), receipt.receivedBy(),
                 names.get(receipt.receivedBy()), receipt.confirmedAt(), receipt.confirmedBy(),
-                names.get(receipt.confirmedBy()), receipt.closedAt(), lines);
+                names.get(receipt.confirmedBy()), receipt.closedAt(), lines, warnings);
     }
 
     private static QcProgress progress(ReceiptLine line) {

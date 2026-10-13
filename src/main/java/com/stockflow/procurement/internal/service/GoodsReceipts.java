@@ -45,15 +45,19 @@ public interface GoodsReceipts {
                     int quantity, String lotNumber, LocalDate expiryDate, String locationCode, String note,
                     boolean qcRequired, boolean lotTracked, boolean expiryTracked, QcProgress qcProgress,
                     String qcLocationCode, Instant movedToQcAt, int quantityForPutaway,
-                    List<InspectionView> inspections) {
+                    List<InspectionView> inspections, List<String> warnings) {
     }
 
-    /** The names next to the ids are for display (SCRUM-464); a name is null when its row is gone. */
+    /**
+     * The names next to the ids are for display (SCRUM-464); a name is null when its row is gone.
+     * {@code warnings} are non-blocking business warnings (docs 03 BR-06): {@code EXPIRY_NEAR} when a line's
+     * expiry is within the configured window of the receiving date. Empty on a cancelled receipt.
+     */
     record ReceiptView(UUID id, String number, UUID purchaseOrderId, String purchaseOrderNumber, UUID supplierId,
                        String supplierName, UUID warehouseId, String warehouseCode, String warehouseName,
                        GoodsReceiptStatus status, String deliveryNote, String note, Instant receivedAt,
                        UUID receivedBy, String receivedByName, Instant confirmedAt, UUID confirmedBy,
-                       String confirmedByName, Instant closedAt, List<LineView> lines) {
+                       String confirmedByName, Instant closedAt, List<LineView> lines, List<String> warnings) {
     }
 
     record Row(UUID id, String number, UUID purchaseOrderId, String purchaseOrderNumber, UUID supplierId,
