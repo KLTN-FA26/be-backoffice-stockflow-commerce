@@ -145,7 +145,7 @@ class CatalogSearchIntegrationTest {
     private static org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder request(
             String path, String... params) {
         var b = get(path);
-        for (int i = 0; i < params.length; i += 2) b.param(params[i], params[i + 1]);
+        for (int i = 0; i + 1 < params.length; i += 2) b.param(params[i], params[i + 1]);
         return b;
     }
 
