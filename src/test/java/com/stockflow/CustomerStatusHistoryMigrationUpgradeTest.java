@@ -23,8 +23,17 @@ class CustomerStatusHistoryMigrationUpgradeTest {
     void upgradeKeepsExistingCustomersAndTheHistoryStatesTheReopenRule() throws Exception {
         try (var pg = new PostgreSQLContainer<>("postgres:16-alpine")) {
             pg.start();
+            // Everything before V20261014000500, whoever wrote it (lane A's 0004xx sit in between since the
+            // integration), so the step below is exactly the migration under test.
+            var underTest = org.flywaydb.core.api.MigrationVersion.fromVersion("20261014000500");
+            String before = java.util.Arrays.stream(Flyway.configure()
+                            .dataSource(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword())
+                            .locations("classpath:db/migration").load().info().all())
+                    .map(org.flywaydb.core.api.MigrationInfo::getVersion)
+                    .filter(version -> version.compareTo(underTest) < 0)
+                    .max(Comparable::compareTo).orElseThrow().getVersion();
             Flyway.configure().dataSource(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword())
-                    .locations("classpath:db/migration").target("20261014000300").load().migrate();
+                    .locations("classpath:db/migration").target(before).load().migrate();
             try (var connection = DriverManager.getConnection(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword());
                  Statement sql = connection.createStatement()) {
                 UUID closed = customer(sql, "INACTIVE", null);
