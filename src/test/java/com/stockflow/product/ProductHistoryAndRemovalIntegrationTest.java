@@ -175,8 +175,8 @@ class ProductHistoryAndRemovalIntegrationTest {
         products.update(new UpdateProductCommand(id, renamed.version(), "Ly giấy mới", "Fixture " + suffix, tax.brandId(),
                 tax.categoryId(), "Mô tả ngắn", null, null, TaxClass.STANDARD, null));
 
-        var extra = variants.add(id, new NewVariant("FX-" + suffix + "-16", "16oz", "SIZE=16OZ", null));
-        variants.update(id, extra.id(), new NewVariant(extra.sku(), "16oz renamed", "SIZE=16OZ", null));
+        var extra = variants.add(id, new NewVariant("FX-" + suffix + "-16", "16oz", null, null));
+        variants.update(id, extra.id(), new NewVariant(extra.sku(), "16oz renamed", null, null));
 
         var image = media.upload(id, defaultId, png(), editor, null);
         media.describe(id, defaultId, image.id(), "Mặt trước", 3, false);
@@ -351,16 +351,16 @@ class ProductHistoryAndRemovalIntegrationTest {
     void discontinueMakesEveryVariantObsolete() {
         ProductSummary created = draft();
         UUID id = created.productId();
-        variants.add(id, new NewVariant("FX-" + suffix + "-A", "A", "SIZE=A", null));
-        var blocked = variants.add(id, new NewVariant("FX-" + suffix + "-B", "B", "SIZE=B", null));
-        variants.add(id, new NewVariant("FX-" + suffix + "-C", "C", "SIZE=C", null));
+        variants.add(id, new NewVariant("FX-" + suffix + "-A", "A", null, null));
+        var blocked = variants.add(id, new NewVariant("FX-" + suffix + "-B", "B", null, null));
+        variants.add(id, new NewVariant("FX-" + suffix + "-C", "C", null, null));
         products.submit(id, editor);
         actAs(approver);
         products.approve(id, approver);
         actAs(editor);
         variants.block(id, blocked.id());
         // A variant added after approval stays DRAFT until someone puts it on sale.
-        var late = variants.add(id, new NewVariant("FX-" + suffix + "-D", "D", "SIZE=D", null));
+        var late = variants.add(id, new NewVariant("FX-" + suffix + "-D", "D", null, null));
         assertThat(late.status()).isEqualTo(VariantStatus.DRAFT);
 
         ProductSummary current = products.findById(id).orElseThrow();
@@ -416,7 +416,7 @@ class ProductHistoryAndRemovalIntegrationTest {
         assertThat(suspended.suspendReason()).isEqualTo("recall");
 
         // Maintenance goes on.
-        var added = variants.add(id, new NewVariant("FX-" + suffix + "-S", "S", "SIZE=S", null));
+        var added = variants.add(id, new NewVariant("FX-" + suffix + "-S", "S", null, null));
         assertThat(added.status()).isEqualTo(VariantStatus.DRAFT);
         var image = media.upload(id, defaultId, png(), editor, null);
         assertThat(media.describe(id, defaultId, image.id(), "Alt", 1, false).altText()).isEqualTo("Alt");
@@ -438,7 +438,7 @@ class ProductHistoryAndRemovalIntegrationTest {
         assertThat(refusal(org.assertj.core.api.Assertions.catchThrowable(() -> products.update(new UpdateProductCommand(id,
                 suspended.version(), "x", "x", tax.brandId(), tax.categoryId(), null, null, null, TaxClass.STANDARD, null))))
                 .errorCode()).isEqualTo(ErrorCode.INVALID_PRODUCT_STATUS_TRANSITION);
-        var draftVariant = variants.add(id, new NewVariant("FX-" + suffix + "-S", "S", "SIZE=S", null));
+        var draftVariant = variants.add(id, new NewVariant("FX-" + suffix + "-S", "S", null, null));
         assertThat(refusal(org.assertj.core.api.Assertions.catchThrowable(() -> variants.activate(id, draftVariant.id()))).errorCode())
                 .isEqualTo(ErrorCode.INVALID_VARIANT_TRANSITION);
         actAs(approver);
@@ -504,7 +504,7 @@ class ProductHistoryAndRemovalIntegrationTest {
         ProductSummary created = draft();
         UUID id = created.productId();
         UUID defaultId = defaultVariant(id);
-        var extra = variants.add(id, new NewVariant("FX-" + suffix + "-E", "E", "SIZE=E", null));
+        var extra = variants.add(id, new NewVariant("FX-" + suffix + "-E", "E", null, null));
         var first = media.upload(id, defaultId, png(), editor, null);
         var second = media.upload(id, extra.id(), png(), editor, null);
         List<String> keys = new ArrayList<>();

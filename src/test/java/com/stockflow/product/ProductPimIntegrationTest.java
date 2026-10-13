@@ -176,7 +176,7 @@ class ProductPimIntegrationTest {
         var category = taxonomy.createCategory("CAT-" + suffix, null, new CategoryDetails("Ly", 0, null, null, null, true));
         var brand = taxonomy.createBrand("BR-" + suffix, "Brand " + suffix, null);
         var created = create(brand.id(), category.id());
-        var extra = variants.add(created.productId(), new NewVariant("cup-" + suffix + "-16", "16oz", "SIZE=16OZ", null));
+        var extra = variants.add(created.productId(), new NewVariant("cup-" + suffix + "-16", "16oz", null, null));
         assertThat(extra.sku()).isEqualTo("CUP-" + suffix + "-16");
         assertThat(extra.position()).isEqualTo(1);
 
@@ -190,11 +190,11 @@ class ProductPimIntegrationTest {
                 .extracting(ProductVariantService.VariantView::status).containsOnly(VariantStatus.ACTIVE);
         assertThat(publication.read(created.productId()).skus()).hasSize(2);
 
-        var late = variants.add(created.productId(), new NewVariant("CUP-" + suffix + "-8", "8oz", "SIZE=8OZ", null));
+        var late = variants.add(created.productId(), new NewVariant("CUP-" + suffix + "-8", "8oz", null, null));
         assertThat(late.status()).isEqualTo(VariantStatus.DRAFT);
         assertThat(variants.activate(created.productId(), late.id()).status()).isEqualTo(VariantStatus.ACTIVE);
         assertThatThrownBy(() -> variants.update(created.productId(), late.id(),
-                new NewVariant("CUP-" + suffix + "-8B", "8oz", "SIZE=8OZ", null)))
+                new NewVariant("CUP-" + suffix + "-8B", "8oz", null, null)))
                 .isInstanceOfSatisfying(BusinessException.class,
                         e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.INVALID_VARIANT_TRANSITION));
         UUID defaultId = variants.list(created.productId(), 0, 20).items().stream()

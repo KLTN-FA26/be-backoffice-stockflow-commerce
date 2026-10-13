@@ -8,6 +8,7 @@ import org.springframework.data.repository.query.Param;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 public interface VariantJpaRepository extends BaseJpaRepository<VariantJpaEntity> {
@@ -25,6 +26,10 @@ public interface VariantJpaRepository extends BaseJpaRepository<VariantJpaEntity
     boolean existsBySku(String sku);
 
     boolean existsByProductIdAndAttributeSignature(UUID productId, String attributeSignature);
+
+    /** Every signature the product already uses, so generation can skip combinations that exist. */
+    @Query("select v.attributeSignature from VariantJpaEntity v where v.productId = :productId")
+    Set<String> signaturesOf(@Param("productId") UUID productId);
 
     @Query("select coalesce(max(v.position), -1) + 1 from VariantJpaEntity v where v.productId = :productId")
     int nextPosition(@Param("productId") UUID productId);
