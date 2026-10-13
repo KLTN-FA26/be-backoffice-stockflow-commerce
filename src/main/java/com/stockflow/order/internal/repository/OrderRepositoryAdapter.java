@@ -18,7 +18,10 @@ import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Repository;
 
 import java.time.LocalDate;
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -131,6 +134,18 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
                         row.getFromStatus() == null ? null : statusOrNull(row.getFromStatus()),
                         statusOrNull(row.getToStatus()), row.getReason(), row.getOccurredAt()))
                 .toList();
+    }
+
+    @Override
+    public Map<UUID, Integer> lineCounts(Collection<UUID> orderIds) {
+        if (orderIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<UUID, Integer> counts = new HashMap<>();
+        for (Object[] row : jpa.countLinesByOrder(orderIds)) {
+            counts.put((UUID) row[0], ((Number) row[1]).intValue());
+        }
+        return counts;
     }
 
     /**

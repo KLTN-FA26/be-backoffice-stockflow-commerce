@@ -10,6 +10,8 @@ import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.internal.controller.dto.AdminCancelOrderRequest;
 import com.stockflow.order.internal.controller.dto.CancelOrderRequest;
 import com.stockflow.order.internal.controller.dto.CancellationResultResponse;
+import com.stockflow.order.internal.controller.dto.CustomerOrderCardResponse;
+import com.stockflow.order.internal.controller.dto.CustomerOrderDetailResponse;
 import com.stockflow.order.internal.controller.dto.OrderResponse;
 import com.stockflow.order.internal.controller.dto.PlaceOrderRequest;
 import com.stockflow.common.api.ApiResponse;
@@ -27,6 +29,7 @@ import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.common.security.Role;
 import com.stockflow.customer.api.CustomerService;
+import com.stockflow.order.internal.service.CustomerOrders;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -65,10 +68,12 @@ class OrderController {
 
     private final OrderService orderService;
     private final CustomerService customerService;
+    private final CustomerOrders customerOrders;
 
-    OrderController(OrderService orderService, CustomerService customerService) {
+    OrderController(OrderService orderService, CustomerService customerService, CustomerOrders customerOrders) {
         this.orderService = orderService;
         this.customerService = customerService;
+        this.customerOrders = customerOrders;
     }
 
     /**
@@ -204,17 +209,6 @@ class OrderController {
     }
 
     /**
-     * SCRUM-245/WBS 3.17.7. The signed-in customer's own order history, newest first, paginated.
-     *
-     * <p>{@code customerId} comes from {@code @AuthenticatedUser}, never from a request parameter —
-     * there is deliberately no way to ask for anyone else's history through this endpoint. The
-     * assumption this rests on — that the authenticated principal's id equals a row in {@code
-     * customer.customer} — does not hold for anything in this codebase today: {@code identity}'s
-     * accounts are staff/backoffice logins, and no customer-facing authentication or
-     * identity-to-customer linkage exists yet (see SCRUM-46). This endpoint is correct for the
-     * moment that linkage exists; it is not meaningfully callable by a real customer before then.</p>
-     */
-    /**
      * The back-office order list (SCRUM-443, FE 440). Staff only: a customer holds
      * {@code sales-orders:READ} too, for their own orders, and gets a 403 here rather than everyone's.
      * Parameters follow FE #12: {@code search}, {@code status} repeated, {@code sort=field,dir}.
@@ -254,17 +248,50 @@ class OrderController {
                 .toList());
     }
 
+    /**
+     * SCRUM-245/WBS 3.17.7 and SCRUM-264. The signed-in customer's own orders as cards: one unified
+     * status, the total, the line count and where delivery stands. Newest first unless {@code sort} says
+     * otherwise; {@code status} may be repeated.
+     *
+     * <p>{@code customerId} is the customer profile of the sign-in, resolved here from
+     * {@code @AuthenticatedUser}, never from a request parameter - there is deliberately no way to ask for
+     * anyone else's orders through this endpoint. A signed-in account without a customer profile (staff)
+     * gets 404 {@code CUSTOMER_NOT_FOUND}. The back office lists every order with {@link #list}.</p>
+     */
     @GetMapping("/me")
-    @Operation(summary = "List the signed-in customer's own orders")
+    @Operation(summary = "List the signed-in customer's own orders: status filter, search, placed date, sort")
     @RequiresPermission(resource = OrderResources.ORDERS,
             action = Action.READ, scope = DataScope.OWN)
-    public ApiResponse<PageResponse<OrderResponse>> myOrders(
+    public ApiResponse<PageResponse<CustomerOrderCardResponse>> myOrders(
             @AuthenticatedUser CurrentUser user,
             @RequestParam(defaultValue = "0") int page,
-            @RequestParam(required = false) Integer size) {
-        return ApiResponse.ok(orderService
-                .myOrders(requiredOwnCustomerId(user), page, size == null ? Pages.DEFAULT_PAGE_SIZE : size)
-                .map(OrderWebMapper::toResponse));
+            @RequestParam(required = false) Integer size,
+            @RequestParam(name = "status", required = false) List<OrderStatus> statuses,
+            @RequestParam(required = false) String search,
+            @RequestParam(required = false) LocalDate placedFrom,
+            @RequestParam(required = false) LocalDate placedTo,
+            @RequestParam(required = false) String sort) {
+        return ApiResponse.ok(customerOrders
+                .myOrders(requiredOwnCustomerId(user), new CustomerOrders.Query(page,
+                        size == null ? Pages.DEFAULT_PAGE_SIZE : size, statuses, search, placedFrom, placedTo, sort))
+                .map(CustomerOrderWebMapper::toResponse));
+    }
+
+    /**
+     * One of the signed-in customer's own orders: status, timeline, what is printed, where delivery stands.
+     * Someone else's order, or none, is 404 either way.
+     *
+     * <p>A path of its own rather than {@code /{orderId}}, which answers staff with the whole order: this
+     * one never carries reservations, checksums, actors or the contact block.</p>
+     */
+    @GetMapping("/me/{orderId}")
+    @Operation(summary = "Look up one of the signed-in customer's own orders, with its timeline")
+    @RequiresPermission(resource = OrderResources.ORDERS,
+            action = Action.READ, scope = DataScope.OWN)
+    public ApiResponse<CustomerOrderDetailResponse> myOrder(@PathVariable UUID orderId,
+                                                            @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(CustomerOrderWebMapper.toResponse(
+                customerOrders.myOrder(requiredOwnCustomerId(user), orderId)));
     }
 
     /**

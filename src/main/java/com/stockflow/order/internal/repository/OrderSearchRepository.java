@@ -8,7 +8,9 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -31,4 +33,10 @@ public interface OrderSearchRepository {
     Page<OrderSummary> search(Criteria criteria, Pageable pageable);
 
     List<OrderStatusChange> history(UUID orderId);
+
+    /**
+     * How many lines each of these orders has, in one query. An order with no lines is absent from the
+     * map; empty input gives an empty map without touching the database.
+     */
+    Map<UUID, Integer> lineCounts(Collection<UUID> orderIds);
 }

@@ -10,6 +10,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.jpa.repository.QueryHints;
 import org.springframework.data.repository.query.Param;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -68,4 +69,12 @@ interface OrderJpaRepository extends ScopedJpaRepository<OrderJpaEntity> {
             order by o.placedAt desc
             """)
     List<OrderJpaEntity> findByCustomerIdWithLines(@Param("customerId") UUID customerId);
+
+    /** {@code [orderId, lineCount]} per order, for a list that shows how many lines each order has. */
+    @Query("""
+            select l.order.id, count(l) from OrderLineJpaEntity l
+            where l.order.id in :orderIds
+            group by l.order.id
+            """)
+    List<Object[]> countLinesByOrder(@Param("orderIds") Collection<UUID> orderIds);
 }
