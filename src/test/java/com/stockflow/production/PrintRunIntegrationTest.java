@@ -260,16 +260,18 @@ class PrintRunIntegrationTest {
         assertThat(heldAt(line, PRINT_SHOP)).as("the spoilt units left the hold at once").isEqualTo(8);
         assertThat(onHandAt(PRINT_SHOP)).as("and are still there, waiting for the write-off").isEqualTo(printShop);
         assertThat(inventory.availableToPromise(BLANK)).as("but nobody can take them").isEqualTo(atp);
+        // One write-off per receipt layer the units came from: the order's holds may span layers of the shared stock.
         List<Map<String, Object>> scrap = writeOffs(line.productionOrderId());
-        assertThat(scrap).singleElement().satisfies(row -> {
-            assertThat(row).containsEntry("status", "PENDING_APPROVAL").containsEntry("quantity_delta", -2)
-                    .containsEntry("reason_code", "SCRAP").containsEntry("scrap_reason", "PRINT_DEFECT");
+        assertThat(scrap).isNotEmpty().allSatisfy(row -> {
+            assertThat(row).containsEntry("status", "PENDING_APPROVAL").containsEntry("reason_code", "SCRAP")
+                    .containsEntry("scrap_reason", "PRINT_DEFECT");
             assertThat(row.get("received_at")).as("names its layer").isNotNull();
         });
+        assertThat(scrap.stream().mapToInt(row -> (Integer) row.get("quantity_delta")).sum()).isEqualTo(-2);
 
-        UUID writeOff = (UUID) scrap.get(0).get("id");
-        stockOperations.approve(writeOff, approver.userId());
+        scrap.forEach(row -> stockOperations.approve((UUID) row.get("id"), approver.userId()));
         assertThat(onHandAt(PRINT_SHOP)).isEqualTo(printShop - 2);
+        UUID writeOff = (UUID) scrap.get(0).get("id");
         assertThatThrownBy(() -> stockOperations.approve(writeOff, approver.userId())).as("deducted once")
                 .extracting(PrintRunIntegrationTest::code).isEqualTo(ErrorCode.INVALID_ADJUSTMENT_TRANSITION);
         assertThat(inventory.availableToPromise(BLANK)).isEqualTo(atp);
@@ -280,7 +282,8 @@ class PrintRunIntegrationTest {
         assertThat(inventory.productionHolds(line.productionOrderId())).as("3 blanks held for the reprint")
                 .extracting(h -> h.quantity()).containsExactly(3);
         assertThat(inventory.availableToPromise(BLANK)).isEqualTo(atp - 3);
-        assertThat(runs.scrapOf(manager, line.productionOrderId())).extracting(ProductionRecords.Scrap::reason)
+        assertThat(runs.scrapOf(manager, line.productionOrderId()).stream().map(ProductionRecords.Scrap::reason)
+                .distinct().toList())
                 .containsExactly(ProductionRecords.ScrapReason.PRINT_DEFECT, ProductionRecords.ScrapReason.QC_FAILED);
 
         issueAll(line.productionOrderId());
