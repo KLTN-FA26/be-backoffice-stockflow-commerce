@@ -18,11 +18,13 @@ import com.stockflow.identity.api.IdentityService;
 import com.stockflow.product.api.ProductStatus;
 import com.stockflow.product.internal.domain.ImageRendition;
 import com.stockflow.product.internal.domain.Product;
+import com.stockflow.product.internal.domain.ProductChangeType;
 import com.stockflow.product.internal.domain.VariantStatus;
 import com.stockflow.product.internal.entity.MediaJpaEntity;
 import com.stockflow.product.internal.entity.ProductJpaEntity;
 import com.stockflow.product.internal.entity.VariantJpaEntity;
 import com.stockflow.product.internal.repository.MediaJpaRepository;
+import com.stockflow.product.internal.repository.ProductChangeLogRepository;
 import com.stockflow.product.internal.repository.ProductJpaRepository;
 import com.stockflow.product.internal.repository.VariantJpaRepository;
 import org.slf4j.Logger;
@@ -31,6 +33,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionOperations;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.io.ByteArrayInputStream;
 import java.security.MessageDigest;
@@ -54,6 +58,9 @@ import java.util.UUID;
  *
  * <p>An image is a module-local use case: uploads do not enlarge the cross-module product
  * contract. Catalog reads the published images through {@code ProductPublication}.</p>
+ *
+ * <p>Each change is written to the product's history ({@code product_change_log}, SCRUM-461) in the
+ * transaction that makes it, naming the image.</p>
  */
 @Service
 @Transactional
@@ -75,13 +82,14 @@ public class ProductMediaService {
     private final TransactionOperations tx;
     private final IdentityService identity;
     private final ProductMediaProperties delivery;
+    private final ProductChangeLogRepository history;
     private final Clock clock;
 
     public ProductMediaService(ProductVariantService variants, VariantJpaRepository variantRows,
                                ProductJpaRepository productRows, MediaJpaRepository media, FileTransfers files,
                                FileStorage storage, ProductImageProcessor processor, UploadInspection inspection,
                                TransactionOperations tx, IdentityService identity, ProductMediaProperties delivery,
-                               Clock clock) {
+                               ProductChangeLogRepository history, Clock clock) {
         this.variants = variants;
         this.variantRows = variantRows;
         this.productRows = productRows;
@@ -93,6 +101,7 @@ public class ProductMediaService {
         this.tx = tx;
         this.identity = identity;
         this.delivery = delivery;
+        this.history = history;
         this.clock = clock;
     }
 
@@ -194,7 +203,10 @@ public class ProductMediaService {
                             media.nextSortOrder(variantId));
                     image.setPrimary(media.findByVariantIdOrderBySortOrderAscIdAsc(variantId).stream()
                             .noneMatch(MediaJpaEntity::isPrimary));
-                    return view(media.saveAndFlush(image));
+                    var saved = media.saveAndFlush(image);
+                    history.record(productId, ProductChangeType.MEDIA, saved.getId(), null, null, null,
+                            List.of("uploaded"));
+                    return view(saved);
                 } catch (RuntimeException ex) {
                     rolledBack[0] = true;
                     throw ex;
@@ -282,7 +294,12 @@ public class ProductMediaService {
         if (altText != null && altText.length() > 255) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "altText must be at most 255 characters");
         }
-        image.describe(altText, sortOrder == null ? image.getSortOrder() : sortOrder);
+        int newOrder = sortOrder == null ? image.getSortOrder() : sortOrder;
+        var changed = new java.util.ArrayList<String>();
+        if (!java.util.Objects.equals(altText, image.getAltText())) changed.add("altText");
+        if (newOrder != image.getSortOrder()) changed.add("sortOrder");
+        if (primary && !image.isPrimary()) changed.add("primary");
+        image.describe(altText, newOrder);
         if (primary && !image.isPrimary()) {
             // uk_media_primary is a partial unique index: the old cover must be cleared and flushed first.
             media.findByVariantIdOrderBySortOrderAscIdAsc(variantId).stream()
@@ -290,7 +307,11 @@ public class ProductMediaService {
             media.flush();
             image.setPrimary(true);
         }
-        return view(media.saveAndFlush(image));
+        var saved = media.saveAndFlush(image);
+        if (!changed.isEmpty()) {
+            history.record(productId, ProductChangeType.MEDIA, saved.getId(), null, null, null, changed);
+        }
+        return view(saved);
     }
 
     /**
@@ -305,6 +326,7 @@ public class ProductMediaService {
         boolean wasPrimary = image.isPrimary();
         media.delete(image);
         media.flush();
+        history.record(productId, ProductChangeType.MEDIA, mediaId, null, null, null, List.of("deleted"));
         if (wasPrimary) {
             media.findByVariantIdOrderBySortOrderAscIdAsc(variantId).stream().findFirst()
                     .ifPresent(next -> next.setPrimary(true));
@@ -345,10 +367,14 @@ public class ProductMediaService {
                         "Only an uploaded image with display renditions can be published; re-upload " + mediaId);
             }
             image.getRenditions().forEach(rendition -> files.publish(rendition.file().key()));
-            if (!image.isPublished()) {
+            boolean wasPublished = image.isPublished();
+            if (!wasPublished) {
                 image.publish(actor, now);
             }
             result.add(view(media.saveAndFlush(image)));
+            if (!wasPublished) {
+                history.record(productId, ProductChangeType.MEDIA, mediaId, null, null, null, List.of("published"));
+            }
         }
         return result;
     }
@@ -358,8 +384,13 @@ public class ProductMediaService {
     public MediaView withdraw(UUID productId, UUID variantId, UUID mediaId) {
         variants.requireChangeable(productId);
         var image = requireMedia(productId, variantId, mediaId);
+        boolean wasPublished = image.isPublished();
         image.withdraw();
-        return view(media.saveAndFlush(image));
+        var saved = media.saveAndFlush(image);
+        if (wasPublished) {
+            history.record(productId, ProductChangeType.MEDIA, mediaId, null, null, null, List.of("withdrawn"));
+        }
+        return view(saved);
     }
 
     // ------------------------------------------------------------------ storefront
@@ -401,6 +432,49 @@ public class ProductMediaService {
                                 r.file().contentType(),
                                 delivery.publicUrl(StorageKeys.publishedKeyOf(r.file().key())))).toList()))
                 .toList();
+    }
+
+    // ------------------------------------------------------------------ deleting a product
+
+    /**
+     * Every object-store key under the product's images: each original and each rendition. Read before
+     * the rows are deleted (the rows go with their variants), so the objects can be removed once the
+     * deletion has committed.
+     */
+    @Transactional(readOnly = true)
+    public List<String> storedKeysOf(UUID productId) {
+        var keys = new LinkedHashSet<String>();
+        for (var variant : variantRows.findByProductIdOrderByPositionAscIdAsc(productId)) {
+            for (var image : media.findByVariantIdOrderBySortOrderAscIdAsc(variant.getId())) {
+                if (image.getStorageKey() != null) {
+                    keys.add(image.getStorageKey());
+                }
+                image.getRenditions().forEach(rendition -> keys.add(rendition.file().key()));
+            }
+        }
+        return List.copyOf(keys);
+    }
+
+    /**
+     * Removes the objects once the surrounding transaction has committed, and not at all when it rolls
+     * back: a deletion that failed leaves the product, and the product still shows these images. A
+     * failure to delete an object is logged and never fails the request: the product is already gone and
+     * an object-store lifecycle rule collects what is left.
+     */
+    public void deleteStoredAfterCommit(List<String> keys) {
+        if (keys.isEmpty()) {
+            return;
+        }
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            discard(keys);
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                discard(keys);
+            }
+        });
     }
 
     // ------------------------------------------------------------------ helpers

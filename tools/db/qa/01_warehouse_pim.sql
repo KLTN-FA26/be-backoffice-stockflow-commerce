@@ -183,5 +183,76 @@ SELECT pg_temp.expect_fail('P22 inventory item sku changed',
 SELECT pg_temp.expect_fail('P23 variant deleted while it has an inventory item',
     $q$ DELETE FROM product.variants WHERE sku = 'SOFA-3S-GREY' $q$);
 
+\echo '--- product follow-ups (V20261014000600, SCRUM-461)'
+SELECT pg_temp.expect_fail('P24 DISCONTINUED without a reason (docs 01 §5.1)', $q$
+    UPDATE product.products SET status = 'DISCONTINUED', discontinued_at = NOW() WHERE code = 'SOFA-3S' $q$);
+SELECT pg_temp.expect_fail('P24 DISCONTINUED with a blank reason', $q$
+    UPDATE product.products SET status = 'DISCONTINUED', discontinued_at = NOW(), discontinue_reason = '  ' WHERE code = 'SOFA-3S' $q$);
+SELECT pg_temp.expect_ok('P24 DISCONTINUED with a reason', $q$
+    UPDATE product.products SET status = 'DISCONTINUED', discontinued_at = NOW(), discontinue_reason = 'QA: end of line'
+     WHERE code = 'TABLE-OAK' $q$);
+SELECT pg_temp.expect_fail('P25 PENDING_APPROVAL without a brand (docs 01 §3)', $q$
+    INSERT INTO product.products (id, code, name, slug, status, submitted_by, submitted_at)
+    VALUES (md5('qa:product:nobrand')::uuid, 'QA-NOBRAND', 'x', 'qa-nobrand', 'PENDING_APPROVAL',
+            md5('demo:user:editor')::uuid, NOW()) $q$);
+SELECT pg_temp.expect_ok('P25 PENDING_APPROVAL with a brand; a DRAFT needs none', $q$
+    INSERT INTO product.products (id, code, name, slug, status, brand_id, submitted_by, submitted_at)
+    VALUES (md5('qa:product:brand')::uuid, 'QA-BRAND', 'x', 'qa-brand', 'PENDING_APPROVAL',
+            md5('demo:brand:NHAXINH')::uuid, md5('demo:user:editor')::uuid, NOW());
+    INSERT INTO product.products (id, code, name, slug) VALUES (md5('qa:product:draft')::uuid, 'QA-DRAFT', 'x', 'qa-draft') $q$);
+SELECT pg_temp.expect_fail('P26 INACTIVE without suspended_at', $q$
+    UPDATE product.products SET status = 'INACTIVE', suspend_reason = 'QA' WHERE code = 'SOFA-3S' $q$);
+SELECT pg_temp.expect_fail('P26 INACTIVE without a reason', $q$
+    UPDATE product.products SET status = 'INACTIVE', suspended_at = NOW() WHERE code = 'SOFA-3S' $q$);
+SELECT pg_temp.expect_fail('P26 INACTIVE on a product nobody approved', $q$
+    UPDATE product.products SET status = 'INACTIVE', suspended_at = NOW(), suspend_reason = 'QA' WHERE id = md5('qa:product:draft')::uuid $q$);
+SELECT pg_temp.expect_ok('P26 INACTIVE with when and why', $q$
+    UPDATE product.products SET status = 'INACTIVE', suspended_at = NOW(), suspend_reason = 'QA: supplier recall'
+     WHERE code = 'SOFA-3S' $q$);
+SELECT pg_temp.expect_ok('P27 a change log row is written', $q$
+    INSERT INTO product.product_change_log (id, product_id, change_type, reason)
+    VALUES (md5('qa:changelog:1')::uuid, md5('qa:product:draft')::uuid, 'CREATED', NULL) $q$);
+SELECT pg_temp.expect_fail('P27 a change log row is updated (append-only)', $q$
+    UPDATE product.product_change_log SET reason = 'edited' WHERE id = md5('qa:changelog:1')::uuid $q$);
+SELECT pg_temp.expect_fail('P27 a change log row is deleted on its own', $q$
+    DELETE FROM product.product_change_log WHERE id = md5('qa:changelog:1')::uuid $q$);
+SELECT pg_temp.expect_fail('P27 SUSPENDED without a reason', $q$
+    INSERT INTO product.product_change_log (id, product_id, change_type) VALUES (gen_random_uuid(), md5('qa:product:draft')::uuid, 'SUSPENDED') $q$);
+SELECT pg_temp.expect_fail('P27 a variant change type on a product subject', $q$
+    INSERT INTO product.product_change_log (id, product_id, change_type) VALUES (gen_random_uuid(), md5('qa:product:draft')::uuid, 'VARIANT_STATUS') $q$);
+SELECT pg_temp.expect_fail('P27 a product status the product cannot have', $q$
+    INSERT INTO product.product_change_log (id, product_id, change_type, from_status, to_status)
+    VALUES (gen_random_uuid(), md5('qa:product:draft')::uuid, 'UPDATED', 'OBSOLETE', 'DRAFT') $q$);
+SELECT pg_temp.expect_fail('P28 a product waiting for approval is deleted (docs 01 BR-02)', $q$
+    DELETE FROM product.products WHERE id = md5('qa:product:brand')::uuid $q$);
+SELECT pg_temp.expect_fail('P28 a PUBLISHED product is deleted', $q$
+    DELETE FROM product.products WHERE code = 'SOFA-3S' $q$);
+SELECT pg_temp.expect_ok('P28 a DRAFT product with history is deleted with it (cascade through append-only)', $q$
+    DELETE FROM product.products WHERE id = md5('qa:product:draft')::uuid $q$);
+
+-- P29 is a report, not an assertion: what the brand rule and the folded hazmat/oversized flags leave
+-- behind in data that existed before them. Rows listed here need a person, not a constraint.
+DO $$
+DECLARE
+    r RECORD;
+BEGIN
+    FOR r IN SELECT p.code, p.status FROM product.products p
+              WHERE p.status IN ('APPROVED', 'PUBLISHED') AND p.brand_id IS NULL ORDER BY p.code LOOP
+        RAISE NOTICE 'P29 report: product % (%) has no brand', r.code, r.status;
+    END LOOP;
+    FOR r IN SELECT a.row_data ->> 'code' AS code, i.sku, i.storage_class,
+                    (a.row_data ->> 'hazmat')::boolean AS hazmat, (a.row_data ->> 'oversized')::boolean AS oversized
+               FROM platform.legacy_archive a
+               JOIN product.variants v ON v.product_id = a.row_id
+               JOIN inventory.inventory_items i ON i.sku = v.sku
+              WHERE a.source_table = 'product.product'
+                AND ((a.row_data ->> 'hazmat')::boolean AND i.storage_class <> 'HAZMAT'
+                     OR (a.row_data ->> 'oversized')::boolean AND i.storage_class NOT IN ('HAZMAT', 'OVERSIZE'))
+              ORDER BY 1, 2 LOOP
+        RAISE NOTICE 'P29 report: legacy product % was hazmat=% oversized=% but SKU % is stored as %',
+            r.code, r.hazmat, r.oversized, r.sku, r.storage_class;
+    END LOOP;
+END $$;
+
 ROLLBACK;
 \echo 'PASS 01_warehouse_pim'

@@ -5,13 +5,17 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.product.api.ProductEcommerce;
 import com.stockflow.product.api.ProductStatus;
 import com.stockflow.product.api.PublicationProduct;
+import com.stockflow.product.api.Purchasability;
 
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
+import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -66,11 +70,41 @@ order by pc.is_primary desc, pc.id limit 1
     }
 
     private static ProductStatus status(String status) {
-        // The expanded schema also carries ACTIVE/INACTIVE. Neither is storefront publication.
+        // The expanded schema still allows the legacy ACTIVE, which was never storefront publication: it
+        // was the approved state. INACTIVE is the suspended state since SCRUM-461 and maps to itself.
         return switch (status) {
             case "ACTIVE" -> ProductStatus.APPROVED;
-            case "INACTIVE" -> ProductStatus.DRAFT;
             default -> ProductStatus.valueOf(status);
+        };
+    }
+
+    /**
+     * Whether each SKU may go on a new purchase order line, in one query (kltn-docs 01 BR-04, 02 BR-01).
+     * Every SKU asked for is a key; one no variant carries is {@code VARIANT_NOT_ACTIVE}. The product's
+     * status decides first, then the variant's.
+     */
+    public Map<String, Purchasability> purchasability(Collection<String> skus) {
+        Map<String, Purchasability> result = new HashMap<>();
+        skus.forEach(sku -> result.put(sku, Purchasability.VARIANT_NOT_ACTIVE));
+        if (skus.isEmpty()) return result;
+        String placeholders = String.join(",", Collections.nCopies(skus.size(), "?"));
+        jdbc.query(
+                "select v.sku, v.status, p.status from product.variants v join product.products p"
+                        + " on p.id = v.product_id where v.sku in (" + placeholders + ")",
+                r -> {
+                    result.put(r.getString(1), purchasabilityOf(status(r.getString(3)), r.getString(2)));
+                },
+                skus.toArray());
+        return result;
+    }
+
+    private static Purchasability purchasabilityOf(ProductStatus product, String variant) {
+        return switch (product) {
+            case INACTIVE -> Purchasability.PRODUCT_INACTIVE;
+            case DISCONTINUED -> Purchasability.PRODUCT_DISCONTINUED;
+            case DRAFT, PENDING_APPROVAL -> Purchasability.PRODUCT_NOT_APPROVED;
+            case APPROVED, PUBLISHED -> "ACTIVE".equals(variant)
+                    ? Purchasability.PURCHASABLE : Purchasability.VARIANT_NOT_ACTIVE;
         };
     }
 

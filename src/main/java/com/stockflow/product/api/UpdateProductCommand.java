@@ -2,9 +2,13 @@ package com.stockflow.product.api;
 
 import java.util.UUID;
 
-/** Input to {@link ProductService#update}. {@code code} is not here — it is fixed at creation. */
+/**
+ * Input to {@link ProductService#update}. {@code code} is not here — it is fixed at creation.
+ * {@code version} is the product's version the edit was made from (SCRUM-461).
+ */
 public record UpdateProductCommand(
         UUID productId,
+        long version,
         String name,
         String nameEn,
         UUID brandId,

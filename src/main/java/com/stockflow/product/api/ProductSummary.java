@@ -14,6 +14,10 @@ import java.util.UUID;
  *
  * <p>{@code submittedBy}/{@code submittedAt}/{@code approvedBy}/{@code approvedAt}/
  * {@code rejectionReason} (SCRUM-57) are null until the corresponding transition has happened.</p>
+ *
+ * <p>{@code version} (SCRUM-461) is what an edit, a suspension, a discontinuation or a deletion quotes
+ * back; a product changed since answers {@code OPTIMISTIC_LOCK}. {@code discontinueReason} is set once
+ * discontinued; {@code suspendedAt}/{@code suspendReason} while {@link ProductStatus#INACTIVE}.</p>
  */
 public record ProductSummary(
         UUID productId,
@@ -40,6 +44,10 @@ public record ProductSummary(
         Instant approvedAt,
         String rejectionReason,
         Instant publishedAt,
-        Instant discontinuedAt
+        Instant discontinuedAt,
+        long version,
+        String discontinueReason,
+        Instant suspendedAt,
+        String suspendReason
 ) {
 }
