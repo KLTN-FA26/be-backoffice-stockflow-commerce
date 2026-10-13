@@ -17,10 +17,9 @@ import com.stockflow.order.internal.domain.CreditChecks;
 import com.stockflow.order.internal.domain.ProductionRecords;
 import com.stockflow.order.internal.service.CustomerOrders;
 import com.stockflow.support.DemoData;
-import com.stockflow.support.IntegrationTest;
-import com.stockflow.support.PostgresContainer;
-import com.stockflow.support.RedisContainer;
 import com.stockflow.support.ReferenceRows;
+import com.stockflow.support.SecuredIntegrationTest;
+import com.stockflow.support.TestTokens;
 import com.stockflow.support.TestUsers;
 import com.stockflow.support.WithCurrentUser;
 import jakarta.persistence.EntityManager;
@@ -29,12 +28,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
-import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -49,7 +44,6 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -60,11 +54,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * each have a sign-in account and a customer profile of their own; orders belong to the profile, not
  * to the account, which is what the old {@code /orders/me} and the OWN scope had to be reconciled with.
  */
-@IntegrationTest
-@Import({PostgresContainer.class, RedisContainer.class})
-@AutoConfigureMockMvc
-// The same properties and mock as InventoryCatalogSecurityIntegrationTest, so the application context is shared.
-@TestPropertySource(properties = {"stockflow.security.enabled=true", "stockflow.catalog.projection-retry-ms=3600000"})
+// Same annotation and mock as InventoryCatalogSecurityIntegrationTest, so the application context is shared.
+@SecuredIntegrationTest
 class CustomerOrderPortalIntegrationTest {
 
     private static final Sku SOFA = new Sku("SOFA-3S-GREY");
@@ -137,10 +128,7 @@ class CustomerOrderPortalIntegrationTest {
 
     /** Signs in as this account with these roles; the permissions and the scope come from the role matrix. */
     private String token(UUID user, String role) {
-        String value = UUID.randomUUID().toString();
-        when(decoder.decode(value)).thenReturn(Jwt.withTokenValue(value).header("alg", "RS256")
-                .subject(user.toString()).claim("roles", List.of(role)).build());
-        return "Bearer " + value;
+        return TestTokens.bearer(decoder, user, role);
     }
 
     private String customerA() {
