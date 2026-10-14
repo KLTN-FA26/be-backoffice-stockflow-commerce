@@ -356,7 +356,7 @@ from procurement.po_delivery_decision where purchase_order_id=?
     void missingDescriptionComesFromProductMasterAndRecoveryKeepsSnapshot() {
         String sku = "PO-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
         var productId = products.create(new CreateProductCommand(sku, "Original product name", "Original", null,
-                null, null, null, null, TaxClass.STANDARD, ProductKind.STANDARD)).productId();
+                null, null, null, null, TaxClass.STANDARD, ProductKind.STANDARD, List.of())).productId();
         assertThat(products.nameForSku(sku)).contains("Original product name");
         var po =
                 orders.createPurchaseOrder(

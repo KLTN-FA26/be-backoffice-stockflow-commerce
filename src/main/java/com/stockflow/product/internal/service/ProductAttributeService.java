@@ -88,6 +88,14 @@ public class ProductAttributeService {
 
     @Auditable(action = AuditAction.UPDATE, resourceType = "product-attributes", resourceId = "#productId")
     public ProductAttributesView replaceAxes(UUID productId, List<AxisSpec> axes) {
+        return defineAxes(productId, axes);
+    }
+
+    /**
+     * {@link #replaceAxes} without its audit entry: called by product creation, inside its transaction,
+     * whose own CREATE entry already covers the axes the product is born with.
+     */
+    public ProductAttributesView defineAxes(UUID productId, List<AxisSpec> axes) {
         Product product = lock(productId);
         ProductAttributeSet set = sets.load(productId, product.status());
         Map<UUID, Attribute> dictionary = dictionaryFor(set,

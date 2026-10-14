@@ -14,6 +14,7 @@ import com.stockflow.product.api.ListProductsQuery;
 import com.stockflow.product.api.ProductService;
 import com.stockflow.product.api.ProductSummary;
 import com.stockflow.product.api.UpdateProductCommand;
+import com.stockflow.product.internal.domain.AxisSpec;
 import com.stockflow.product.internal.domain.Product;
 import com.stockflow.product.internal.domain.ProductId;
 import com.stockflow.product.internal.domain.ProductRepository;
@@ -24,8 +25,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.IntStream;
 
 /**
  * The only implementation of {@link ProductService}, and the module's transaction boundary.
@@ -48,15 +51,18 @@ class ProductServiceImpl implements ProductService {
     private final ProductRepository products;
     private final ProductSearchRepository search;
     private final ProductVariantService variants;
+    private final ProductAttributeService attributes;
     private final ProductEventPublisher events;
     private final AuditHistory auditHistory;
     private final Clock clock;
 
     ProductServiceImpl(ProductRepository products, ProductSearchRepository search, ProductVariantService variants,
-                       ProductEventPublisher events, AuditHistory auditHistory, Clock clock) {
+                       ProductAttributeService attributes, ProductEventPublisher events, AuditHistory auditHistory,
+                       Clock clock) {
         this.products = products;
         this.search = search;
         this.variants = variants;
+        this.attributes = attributes;
         this.events = events;
         this.auditHistory = auditHistory;
         this.clock = clock;
@@ -75,13 +81,20 @@ class ProductServiceImpl implements ProductService {
     }
 
     /**
-     * A draft product and its default variant, whose SKU is the product code — the variant creates
-     * the SKU's inventory item (trigger), where its logistics are then filled in. Both codes are
-     * checked first for a clean 409; {@code uk_products_code} and {@code uk_variants_sku} are the
-     * real guards against a race.
+     * A draft product and its variants; each variant creates its SKU's inventory item (trigger), where
+     * its logistics are then filled in.
+     *
+     * <p>Without axes the product gets one default variant whose SKU is the product code, so that code
+     * must be free as a SKU too. With axes (spec D2) the axes are written and every combination of their
+     * active options becomes a variant, SKUs by the code rule and the first combination as the default:
+     * no SKU equal to the bare code is ever made, so only the product code is checked here, and a SKU
+     * that is taken, an invalid axis or a matrix over the limit rolls the whole product back. The checks
+     * give a clean 409; {@code uk_products_code} and {@code uk_variants_sku} are the real guards against
+     * a race.</p>
      */
     // The id is generated inside Product.draft(), so it is read off the result: the CREATE entry
-    // is the first row of the product's version history (SCRUM-86).
+    // is the first row of the product's version history (SCRUM-86). It covers the axes and variants
+    // made here too, which is why the calls below are the unaudited variants of those operations.
     @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "product", resourceId = "#result?.productId()")
     public ProductSummary create(CreateProductCommand command) {
@@ -90,7 +103,8 @@ class ProductServiceImpl implements ProductService {
             throw new BusinessException(ErrorCode.PRODUCT_CODE_ALREADY_EXISTS,
                     "A product with code " + command.code() + " already exists");
         }
-        if (products.skuExists(command.code())) {
+        boolean withAxes = !command.axes().isEmpty();
+        if (!withAxes && products.skuExists(command.code())) {
             throw new BusinessException(ErrorCode.VARIANT_SKU_ALREADY_EXISTS,
                     "SKU " + command.code() + " already belongs to another product's variant");
         }
@@ -98,8 +112,23 @@ class ProductServiceImpl implements ProductService {
                 command.categoryId(), command.shortDescription(), command.description(), command.descriptionEn(),
                 command.taxClass(), command.kind());
         products.save(product);
-        variants.createDefault(product.id().value(), product.code(), product.name());
-        return summaryOf(product.id().value());
+        UUID productId = product.id().value();
+        if (withAxes) {
+            attributes.defineAxes(productId, axisSpecs(command.axes()));
+            variants.createMatrix(productId);
+        } else {
+            variants.createDefault(productId, product.code(), product.name());
+        }
+        return summaryOf(productId);
+    }
+
+    /** A null sort order is the axis's place in the list, as on {@code PUT /axes}. */
+    private static List<AxisSpec> axisSpecs(List<CreateProductCommand.Axis> axes) {
+        return IntStream.range(0, axes.size()).mapToObj(i -> {
+            CreateProductCommand.Axis axis = axes.get(i);
+            return new AxisSpec(axis.attributeId(), axis.sortOrder() != null ? axis.sortOrder() : i,
+                    axis.optionValueIds());
+        }).toList();
     }
 
     @Override

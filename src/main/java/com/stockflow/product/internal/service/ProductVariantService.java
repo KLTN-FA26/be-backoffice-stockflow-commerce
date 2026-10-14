@@ -53,8 +53,7 @@ import java.util.stream.Collectors;
  * <p>Not an aggregate of its own in {@code internal.domain}: a variant's rules are its status table
  * ({@link VariantStatus}), the shape of its options, and three facts about its product. It can be
  * changed only while the product is not under review or discontinued, activated only once the product
- * is approved, and the default variant (created with the product, its SKU the product code) is never
- * made obsolete. The database states the rest: unique SKU, unique signature per product, one default,
+ * is approved, and the default variant (created with the product) is never made obsolete. The database states the rest: unique SKU, unique signature per product, one default,
  * one option per axis, a SKU frozen once the variant leaves DRAFT.</p>
  *
  * <p>A variant is a combination of one option per axis of its product. The client names the option
@@ -70,6 +69,10 @@ import java.util.stream.Collectors;
  * transform happens only while the default variant is DRAFT, for the reason a SKU is frozen after
  * that: a SKU on a stock card must not silently start to mean another combination. Any other
  * combination, and every combination once the default has left DRAFT, is a row of its own.</p>
+ *
+ * <p>A product created with axes (spec D2) skips that placeholder: it gets no {@code DEFAULT} variant,
+ * and {@link #createMatrix} inserts the matrix-first combination as the default variant beside the
+ * others, every SKU by the rule.</p>
  *
  * <p>On that transform path {@code add} answers 201 with the default variant itself: no row is created,
  * {@code position} is ignored (the default keeps its own), and the audit entry is a CREATE of the
@@ -240,7 +243,21 @@ public class ProductVariantService {
      */
     @Auditable(action = AuditAction.CREATE, resourceType = "product-variant", resourceId = "#productId")
     public Generated generate(UUID productId, Map<UUID, List<UUID>> optionValueIds) {
-        Product product = requireChangeable(productId);
+        return generate(requireChangeable(productId), optionValueIds);
+    }
+
+    /**
+     * Called by product creation with axes (spec D2), inside its transaction and after the axes are
+     * written, on a product that has no variant yet: every combination is created, and the matrix-first
+     * one is inserted as the default variant, its SKU by the rule like the others. Not audited on its
+     * own; the product's CREATE entry covers it.
+     */
+    public List<VariantView> createMatrix(UUID productId) {
+        return generate(requireChangeable(productId), null).created();
+    }
+
+    private Generated generate(Product product, Map<UUID, List<UUID>> optionValueIds) {
+        UUID productId = product.id().value();
         Catalog catalog = catalog(product);
         if (catalog.axes.isEmpty()) {
             throw new BusinessException(ErrorCode.VARIANT_OPTIONS_INVALID,
@@ -278,12 +295,15 @@ public class ProductVariantService {
             takeFirstCombination(defaultVariant, first, catalog.signature(first), catalog.defaultName(first), null,
                     catalog);
         }
+        // A product created with axes has no default variant yet: the matrix-first combination becomes it.
+        boolean needsDefault = defaultVariant == null;
         int position = variants.nextPosition(productId);
         List<VariantView> created = new ArrayList<>();
         for (int i = 0; i < toInsert.size(); i++) {
             List<AxisOption> combination = toInsert.get(i).options();
+            boolean isDefault = needsDefault && catalog.isMatrixFirst(combination);
             var variant = new VariantJpaEntity(Identifiers.newId(), productId, skus.get(i).code(),
-                    catalog.defaultName(combination), catalog.signature(combination).value(), position++, false);
+                    catalog.defaultName(combination), catalog.signature(combination).value(), position++, isDefault);
             created.add(view(insert(variant, combination), catalog.optionViews(combination)));
         }
         return new Generated(created, skipped);

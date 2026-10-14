@@ -92,7 +92,7 @@ class ProductController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    @Operation(summary = "Create a product master row, with its default variant (SKU = code)")
+    @Operation(summary = "Create a product master row with its variants: one default (SKU = code), or with axes every combination (SKU by rule)")
     @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.CREATE)
     public ApiResponse<ProductResponse> create(@Valid @RequestBody CreateProductRequest request) {
         return ApiResponse.ok(mapper.toResponse(productService.create(mapper.toCommand(request))));

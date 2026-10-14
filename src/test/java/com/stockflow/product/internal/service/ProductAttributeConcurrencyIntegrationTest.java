@@ -93,7 +93,7 @@ class ProductAttributeConcurrencyIntegrationTest {
         String suffix = UUID.randomUUID().toString().substring(0, 6).toUpperCase();
         code = "CONC-" + suffix;
         productId = tx.execute(s -> products.create(new CreateProductCommand(code, "Ten " + suffix,
-                "Name " + suffix, null, null, null, null, null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE))
+                "Name " + suffix, null, null, null, null, null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE, List.of()))
                 .productId());
         blue = tx.execute(s -> newValue("BLUE" + suffix));
         red = tx.execute(s -> newValue("RED" + suffix));

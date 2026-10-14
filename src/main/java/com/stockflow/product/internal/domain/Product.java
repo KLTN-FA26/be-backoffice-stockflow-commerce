@@ -22,8 +22,10 @@ import java.util.regex.Pattern;
  *
  * <p>What is deliberately <b>not</b> on the product (the PIM model, docs 01): logistics — weight,
  * dimensions, package, storage class — belong to the inventory item of each SKU (BR-08), and images
- * belong to a variant (decision D5). The product's selling SKUs are its variants; the first one is
- * created with the product, its SKU equal to the product code. Publication (status
+ * belong to a variant (decision D5). The product's selling SKUs are its variants, created with the
+ * product: one default variant whose SKU is the product code, or, for a product created with variant
+ * axes, every combination of its options, SKUs by the code rule and the first one the default.
+ * Publication (status
  * {@code PUBLISHED}) is decided by the catalog through {@code ProductPublication}, never here.</p>
  *
  * <p>No Spring, no JPA, no annotations — {@code ArchitectureTest.domainDoesNotDependOnFrameworks}
@@ -34,7 +36,8 @@ import java.util.regex.Pattern;
  */
 public final class Product extends AggregateRoot {
 
-    /** {@code ck_products_code}, stated again. Also a valid variant SKU, which the default variant needs. */
+    /** {@code ck_products_code}, stated again. Also a valid variant SKU, which the default variant of a
+     *  product without axes needs, and the stem of the rule-built SKUs of one with axes. */
     public static final Pattern CODE = Pattern.compile("[A-Z0-9][A-Z0-9_-]{0,49}");
 
     private final ProductId id;
@@ -119,7 +122,7 @@ public final class Product extends AggregateRoot {
     /**
      * Submit for approval. BR-PRD-001's fuller precondition (UoM, dimensions) is about the SKUs'
      * inventory items now, not the product; what the product itself must have is a category. The
-     * product always has at least one variant — it is created with one.
+     * product always has at least one variant — it is created with its default one.
      */
     public void submit(UUID submittedBy, Instant now) {
         requireCanTransitionTo(ProductStatus.PENDING_APPROVAL);
