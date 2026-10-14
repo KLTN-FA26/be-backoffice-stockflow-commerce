@@ -9,10 +9,12 @@ import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.product.api.ProductStatus;
 import com.stockflow.product.internal.domain.Product;
+import com.stockflow.product.internal.domain.ProductChangeType;
 import com.stockflow.product.internal.domain.ProductId;
 import com.stockflow.product.internal.domain.ProductRepository;
 import com.stockflow.product.internal.domain.VariantStatus;
 import com.stockflow.product.internal.entity.VariantJpaEntity;
+import com.stockflow.product.internal.repository.ProductChangeLogRepository;
 import com.stockflow.product.internal.repository.VariantJpaRepository;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
@@ -20,6 +22,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
 import java.util.regex.Pattern;
@@ -33,6 +37,12 @@ import java.util.regex.Pattern;
  * default variant (the one created with the product, its SKU the product code) is never made
  * obsolete. The database states the rest: unique SKU, unique attribute combination per product, one
  * default, a SKU frozen once the variant leaves DRAFT.</p>
+ *
+ * <p>Every change is written to the product's history ({@code product_change_log}) in the same
+ * transaction (SCRUM-461). Discontinuing the product makes all its variants {@code OBSOLETE},
+ * the default one included ({@link #obsoleteAll}): kltn-docs 01 §5.2 lets an obsolete SKU be shipped and
+ * adjusted to clear the stock, which is what a product that is going away needs, where {@code BLOCKED}
+ * would stop orders already running.</p>
  */
 @Service
 @Transactional
@@ -44,11 +54,14 @@ public class ProductVariantService {
 
     private final ProductRepository products;
     private final VariantJpaRepository variants;
+    private final ProductChangeLogRepository history;
     private final Clock clock;
 
-    public ProductVariantService(ProductRepository products, VariantJpaRepository variants, Clock clock) {
+    public ProductVariantService(ProductRepository products, VariantJpaRepository variants,
+                                 ProductChangeLogRepository history, Clock clock) {
         this.products = products;
         this.variants = variants;
+        this.history = history;
         this.clock = clock;
     }
 
@@ -76,8 +89,32 @@ public class ProductVariantService {
         Instant now = clock.instant();
         for (var variant : variants.findByProductIdAndStatus(productId, VariantStatus.DRAFT)) {
             variant.moveTo(VariantStatus.ACTIVE, now);
+            history.record(productId, ProductChangeType.VARIANT_STATUS, variant.getId(), VariantStatus.DRAFT.name(),
+                    VariantStatus.ACTIVE.name(), null, List.of());
         }
     }
+
+    /**
+     * Called by product discontinuation, inside its transaction: every variant that is not already
+     * {@code OBSOLETE} becomes so, whatever it was, and the default variant is no exception — the
+     * "default variant is never made obsolete" rule of {@link #obsolete} is about taking one SKU off a
+     * product that goes on, and the whole product is going away here. Each move is written to the history
+     * with the product's reason.
+     */
+    public void obsoleteAll(UUID productId, String reason) {
+        Instant now = clock.instant();
+        for (var variant : variants.findByProductIdOrderByPositionAscIdAsc(productId)) {
+            VariantStatus from = variant.getStatus();
+            if (from == VariantStatus.OBSOLETE) {
+                continue;
+            }
+            variant.moveTo(VariantStatus.OBSOLETE, now);
+            history.record(productId, ProductChangeType.VARIANT_STATUS, variant.getId(), from.name(),
+                    VariantStatus.OBSOLETE.name(), reason, List.of());
+        }
+        variants.flush();
+    }
+
 
     @Transactional(readOnly = true)
     public PageResponse<VariantView> list(UUID productId, int page, int size) {
@@ -107,7 +144,10 @@ public class ProductVariantService {
         int position = command.position() == null ? variants.nextPosition(productId) : command.position();
         var variant = new VariantJpaEntity(Identifiers.newId(), productId, sku, requireName(command.name()), signature,
                 position, false);
-        return view(variants.saveAndFlush(variant));
+        var saved = variants.saveAndFlush(variant);
+        history.record(productId, ProductChangeType.VARIANT_ADDED, saved.getId(), null, saved.getStatus().name(), null,
+                List.of());
+        return view(saved);
     }
 
     /** The SKU may change only while the variant is DRAFT ({@code tg_variants_sku_frozen}). */
@@ -132,9 +172,19 @@ public class ProductVariantService {
             throw new BusinessException(ErrorCode.VARIANT_SKU_ALREADY_EXISTS,
                     "This product already has a variant for " + signature);
         }
-        variant.setDetails(sku, requireName(command.name()), signature,
-                command.position() == null ? variant.getPosition() : command.position());
-        return view(variants.saveAndFlush(variant));
+        List<String> changed = new ArrayList<>();
+        String name = requireName(command.name());
+        int position = command.position() == null ? variant.getPosition() : command.position();
+        if (!sku.equals(variant.getSku())) changed.add("sku");
+        if (!name.equals(variant.getName())) changed.add("name");
+        if (!signature.equals(variant.getAttributeSignature())) changed.add("attributeSignature");
+        if (position != variant.getPosition()) changed.add("position");
+        variant.setDetails(sku, name, signature, position);
+        var saved = variants.saveAndFlush(variant);
+        if (!changed.isEmpty()) {
+            history.record(productId, ProductChangeType.VARIANT_UPDATED, saved.getId(), null, null, null, changed);
+        }
+        return view(saved);
     }
 
     /** On sale. Only once the product is approved: approval is what puts its variants on sale. */
@@ -171,8 +221,12 @@ public class ProductVariantService {
             throw new BusinessException(ErrorCode.INVALID_VARIANT_TRANSITION,
                     "Variant %s cannot go from %s to %s".formatted(variant.getSku(), variant.getStatus(), target));
         }
+        VariantStatus from = variant.getStatus();
         variant.moveTo(target, clock.instant());
-        return view(variants.saveAndFlush(variant));
+        var saved = variants.saveAndFlush(variant);
+        history.record(productId, ProductChangeType.VARIANT_STATUS, saved.getId(), from.name(), target.name(), null,
+                List.of());
+        return view(saved);
     }
 
     public VariantJpaEntity requireVariant(UUID productId, UUID variantId) {

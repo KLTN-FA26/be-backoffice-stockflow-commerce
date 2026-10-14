@@ -101,6 +101,15 @@ public class ProductJpaEntity extends BaseEntity {
     @Column(name = "discontinued_at")
     private Instant discontinuedAt;
 
+    @Column(name = "discontinue_reason", length = 500)
+    private String discontinueReason;
+
+    @Column(name = "suspended_at")
+    private Instant suspendedAt;
+
+    @Column(name = "suspend_reason", length = 500)
+    private String suspendReason;
+
     protected ProductJpaEntity() {
     }
 
@@ -123,7 +132,8 @@ public class ProductJpaEntity extends BaseEntity {
     }
 
     public void setWorkflow(ProductStatus status, UUID submittedBy, Instant submittedAt, UUID approvedBy,
-                            Instant approvedAt, String rejectionReason, Instant discontinuedAt) {
+                            Instant approvedAt, String rejectionReason, Instant discontinuedAt,
+                            String discontinueReason, Instant suspendedAt, String suspendReason) {
         this.status = status;
         this.submittedBy = submittedBy;
         this.submittedAt = submittedAt;
@@ -131,6 +141,9 @@ public class ProductJpaEntity extends BaseEntity {
         this.approvedAt = approvedAt;
         this.rejectionReason = rejectionReason;
         this.discontinuedAt = discontinuedAt;
+        this.discontinueReason = discontinueReason;
+        this.suspendedAt = suspendedAt;
+        this.suspendReason = suspendReason;
     }
 
     public String getCode() { return code; }
@@ -153,4 +166,7 @@ public class ProductJpaEntity extends BaseEntity {
     public Instant getApprovedAt() { return approvedAt; }
     public Instant getPublishedAt() { return publishedAt; }
     public Instant getDiscontinuedAt() { return discontinuedAt; }
+    public String getDiscontinueReason() { return discontinueReason; }
+    public Instant getSuspendedAt() { return suspendedAt; }
+    public String getSuspendReason() { return suspendReason; }
 }

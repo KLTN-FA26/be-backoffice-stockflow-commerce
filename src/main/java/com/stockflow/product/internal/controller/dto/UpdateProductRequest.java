@@ -34,6 +34,10 @@ public record UpdateProductRequest(
         @NotNull(message = "taxClass is required")
         TaxClass taxClass,
 
-        ProductKind kind
+        ProductKind kind,
+
+        @Schema(description = "The product's version as last read; a changed product answers 409 OPTIMISTIC_LOCK")
+        @NotNull(message = "version is required")
+        Long version
 ) {
 }

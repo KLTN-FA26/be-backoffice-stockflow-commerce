@@ -20,7 +20,7 @@ final class ProductPersistenceMapper {
                 e.getCategoryId(), e.getShortDescription(), e.getDescription(), e.getDescriptionEn(),
                 e.getTaxClass(), e.getKind(), e.getStatus(), e.getVersion(), e.getSubmittedBy(),
                 e.getSubmittedAt(), e.getApprovedBy(), e.getApprovedAt(), e.getRejectionReason(),
-                e.getDiscontinuedAt());
+                e.getDiscontinuedAt(), e.getDiscontinueReason(), e.getSuspendedAt(), e.getSuspendReason());
     }
 
     /** Everything the aggregate owns. The primary category is not a column of this row; the
@@ -29,7 +29,7 @@ final class ProductPersistenceMapper {
         e.setDetails(p.name(), p.nameEn(), p.brandId(), p.shortDescription(), p.description(), p.descriptionEn(),
                 p.taxClass(), p.kind());
         e.setWorkflow(p.status(), p.submittedBy(), p.submittedAt(), p.approvedBy(), p.approvedAt(),
-                p.rejectionReason(), p.discontinuedAt());
+                p.rejectionReason(), p.discontinuedAt(), p.discontinueReason(), p.suspendedAt(), p.suspendReason());
     }
 
     static ProductSummary toSummary(ProductJpaEntity e) {
@@ -38,6 +38,7 @@ final class ProductPersistenceMapper {
                 e.getDescriptionEn(), e.getTaxClass(), e.getKind(), e.getStatus(), e.getCreatedAt(),
                 e.getCreatedBy(), e.getLastModifiedAt(), e.getLastModifiedBy(), e.getSubmittedBy(),
                 e.getSubmittedAt(), e.getApprovedBy(), e.getApprovedAt(), e.getRejectionReason(),
-                e.getPublishedAt(), e.getDiscontinuedAt());
+                e.getPublishedAt(), e.getDiscontinuedAt(), e.getVersion(), e.getDiscontinueReason(),
+                e.getSuspendedAt(), e.getSuspendReason());
     }
 }

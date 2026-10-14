@@ -54,6 +54,19 @@ public record ProductResponse(
         String rejectionReason,
 
         Instant publishedAt,
-        Instant discontinuedAt
+        Instant discontinuedAt,
+
+        @Schema(description = "Send it back when editing, suspending, resuming, discontinuing or deleting; "
+                + "a product changed since answers 409 OPTIMISTIC_LOCK")
+        long version,
+
+        @Schema(description = "Why it was discontinued; set once DISCONTINUED")
+        String discontinueReason,
+
+        @Schema(description = "When it was suspended; set while INACTIVE")
+        Instant suspendedAt,
+
+        @Schema(description = "Why it was suspended; set while INACTIVE")
+        String suspendReason
 ) {
 }
