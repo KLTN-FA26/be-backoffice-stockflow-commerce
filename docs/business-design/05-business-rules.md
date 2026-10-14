@@ -12,7 +12,7 @@ that a Kafka consumer bypasses. Rules that protect an invariant belong in the ag
 | Id | Rule | Enforced in | WBS |
 |---|---|---|---|
 | BR-PRD-001 | A product cannot be submitted for approval unless name, category, base UoM, at least one variant and dimensions are present. | `Product.submit()` | 3.1.9.1 |
-| BR-PRD-002 | SKU codes are unique across the whole catalogue, including discontinued products. | DB unique index + `Sku` value object | 3.1.2.4 |
+| BR-PRD-002 | SKU codes are unique across the whole catalogue, including discontinued products. | `uk_variants_sku` + `Sku` value object (alphabet = `ck_variants_sku`); `ProductVariantService` checks first for a clean 409, and a rule-built SKU (`CODE-VALUE-VALUE`) that is taken is a 409, never a silent suffix | 3.1.2.4 |
 | BR-PRD-003 | The approver of a product must not be the person who submitted it. | `Product.approve()` | 3.1.1.3 |
 | BR-PRD-004 | A product cannot be published without a selling price, at least one image and a category. | `Product.publish()` | 3.1.6.1 |
 | BR-PRD-005 | A product cannot be discontinued while an open PO line or an unshipped order line references it. | `product-service` domain service, checks via events | 3.1.8.1 |
