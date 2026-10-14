@@ -98,15 +98,23 @@ ALTER TABLE inventory.stock_movement ADD CONSTRAINT ck_stock_movement_type CHECK
     'RETURN_IN', 'STATUS_CHANGE', 'SCRAP', 'CONSUMPTION'));
 -- A consumption leaves a location and goes nowhere, as a pick or a scrap does. Without this branch the CASE
 -- answers NULL for it, and a CHECK passes on NULL.
+-- Every other branch is the one V20261014001000 (SCRUM-267) left, unchanged - in particular PUT_BACK keeps its
+-- own branch: goods deducted when picked go back onto a bin from nowhere. Re-creating the constraint from the
+-- older V20260928005000 shape would refuse those rows, and fail this migration on a database that has them.
 ALTER TABLE inventory.stock_movement DROP CONSTRAINT ck_stock_movement_shape;
 ALTER TABLE inventory.stock_movement ADD CONSTRAINT ck_stock_movement_shape CHECK (CASE
     WHEN movement_type IN ('RECEIPT', 'TRANSFER_IN', 'RETURN_IN')
         THEN from_location_code IS NULL AND to_location_code IS NOT NULL
     WHEN movement_type IN ('PICK', 'TRANSFER_OUT', 'SCRAP', 'CONSUMPTION')
         THEN from_location_code IS NOT NULL AND to_location_code IS NULL
-    WHEN movement_type IN ('PUTAWAY', 'MOVE', 'PUT_BACK')
+    WHEN movement_type IN ('PUTAWAY', 'MOVE')
         THEN from_location_code IS NOT NULL AND to_location_code IS NOT NULL
              AND from_location_code <> to_location_code
+    -- deducted when picked, so back onto a bin from nowhere; or moved back from a staging location
+    WHEN movement_type = 'PUT_BACK'
+        THEN to_location_code IS NOT NULL
+             AND ((reference_type = 'PICK_LINE' AND from_location_code IS NULL)
+                  OR (from_location_code IS NOT NULL AND from_location_code <> to_location_code))
     WHEN movement_type IN ('ADJUSTMENT', 'COUNT_CORRECTION')
         THEN num_nonnulls(from_location_code, to_location_code) = 1
     WHEN movement_type = 'STATUS_CHANGE'
