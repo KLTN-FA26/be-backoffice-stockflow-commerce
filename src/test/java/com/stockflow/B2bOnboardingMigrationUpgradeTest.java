@@ -7,12 +7,14 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
-import java.sql.Statement;
 import java.time.Instant;
 import java.util.UUID;
 
+import static com.stockflow.support.RawSql.number;
+import static com.stockflow.support.RawSql.refused;
+import static com.stockflow.support.RawSql.text;
+import static com.stockflow.support.RawSql.update;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * V20261015000100 on a database that already holds customers: the develop schema before SCRUM-450,
@@ -22,11 +24,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class B2bOnboardingMigrationUpgradeTest {
 
     /**
-     * The newest migration on develop when this branch was merged with it (2d44ec1): the real upgrade path, and a window
-     * holding only this migration - develop's inbox and stock-alert migrations (V20261014000400/0900) move role
-     * versions of their own and must not count here.
+     * The newest migration on develop when this branch was last merged with it (0f18f24): the real upgrade path, and a
+     * window holding only this migration - develop's migrations (V20261014000400..001200: inbox, stock alerts, pick
+     * confirmation, product follow-ups, planner grants) move role versions of their own and must not count here.
      */
-    private static final String BEFORE = "20261014000900";
+    private static final String BEFORE = "20261014001200";
     private static final String DIGEST = "0123456789abcdef".repeat(4);
 
     @Test
@@ -35,25 +37,24 @@ class B2bOnboardingMigrationUpgradeTest {
             pg.start();
             Flyway.configure().dataSource(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword())
                     .locations("classpath:db/migration").target(BEFORE).load().migrate();
-            try (Connection connection = DriverManager.getConnection(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword());
-                 Statement sql = connection.createStatement()) {
+            try (Connection sql = DriverManager.getConnection(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword())) {
                 long issued = Instant.parse("2026-10-12T01:00:00Z").getEpochSecond();
                 long expires = Instant.parse("2026-10-15T01:00:00Z").getEpochSecond();
-                UUID invitedUser = user(sql, "invited@example.test", "'{portal-invitation}" + issued + ":" + expires + ":" + DIGEST + "'");
-                UUID oldUser = user(sql, "old@example.test", "'{bcrypt}$2a$10$legacy'");
-                UUID activeUser = user(sql, "active@example.test", "'{bcrypt}$2a$10$active'");
+                UUID invitedUser = user(sql, "invited@example.test", "{portal-invitation}" + issued + ":" + expires + ":" + DIGEST);
+                UUID oldUser = user(sql, "old@example.test", "{bcrypt}$2a$10$legacy");
+                UUID activeUser = user(sql, "active@example.test", "{bcrypt}$2a$10$active");
                 UUID invitedCustomer = customer(sql, invitedUser, "invited@example.test", "INACTIVE");
                 UUID closedCustomer = customer(sql, oldUser, "old@example.test", "INACTIVE");
                 UUID unlinkedCustomer = customer(sql, null, "unlinked@example.test", "INACTIVE");
                 UUID activeCustomer = customer(sql, activeUser, "active@example.test", "ACTIVE");
                 // Blocked before this rule existed: a CUSTOMER account with a live session, and a staff
                 // account that happens to be linked to a blocked profile.
-                UUID blockedUser = user(sql, "blocked@example.test", "'{bcrypt}$2a$10$blocked'");
+                UUID blockedUser = user(sql, "blocked@example.test", "{bcrypt}$2a$10$blocked");
                 role(sql, blockedUser, "CUSTOMER");
                 customer(sql, blockedUser, "blocked@example.test", "BLOCKED");
                 UUID liveSession = session(sql, blockedUser);
                 role(sql, oldUser, "CUSTOMER");
-                UUID linkedStaff = user(sql, "linked-staff@example.test", "'{bcrypt}$2a$10$staff'");
+                UUID linkedStaff = user(sql, "linked-staff@example.test", "{bcrypt}$2a$10$staff");
                 role(sql, linkedStaff, "SALES_STAFF");
                 customer(sql, linkedStaff, "linked-staff@example.test", "BLOCKED");
                 UUID staffSession = session(sql, linkedStaff);
@@ -67,38 +68,39 @@ class B2bOnboardingMigrationUpgradeTest {
                 assertThat(migrated.migrate().migrations).extracting(m -> m.version).contains("20261015000100");
                 migrated.validate();
 
-                assertThat(text(sql, "select status from customer.customer where id='" + invitedCustomer + "'"))
+                assertThat(text(sql, "select status from customer.customer where id=?", invitedCustomer))
                         .isEqualTo("PENDING_ACTIVATION");
                 for (UUID untouched : new UUID[]{closedCustomer, unlinkedCustomer}) {
-                    assertThat(text(sql, "select status from customer.customer where id='" + untouched + "'"))
+                    assertThat(text(sql, "select status from customer.customer where id=?", untouched))
                             .isEqualTo("INACTIVE");
                 }
-                assertThat(text(sql, "select status from customer.customer where id='" + activeCustomer + "'"))
+                assertThat(text(sql, "select status from customer.customer where id=?", activeCustomer))
                         .isEqualTo("ACTIVE");
                 assertThat(number(sql, "select count(*) from customer.customer where tax_code is not null")).isZero();
 
                 // Suspended and closed customers' CUSTOMER accounts no longer sign in; staff keep theirs.
-                assertThat(text(sql, "select status from identity.app_user where id='" + blockedUser + "'"))
+                assertThat(text(sql, "select status from identity.app_user where id=?", blockedUser))
                         .isEqualTo("DISABLED");
-                assertThat(text(sql, "select status from identity.app_user where id='" + oldUser + "'"))
+                assertThat(text(sql, "select status from identity.app_user where id=?", oldUser))
                         .isEqualTo("DISABLED");
-                assertThat(text(sql, "select revoked_reason from identity.user_session where id='" + liveSession + "'"))
+                assertThat(text(sql, "select revoked_reason from identity.user_session where id=?", liveSession))
                         .isEqualTo("ACCOUNT_DISABLED");
-                assertThat(text(sql, "select status from identity.app_user where id='" + linkedStaff + "'"))
+                assertThat(text(sql, "select status from identity.app_user where id=?", linkedStaff))
                         .isEqualTo("ACTIVE");
-                assertThat(text(sql, "select coalesce(revoked_reason,'live') from identity.user_session where id='"
-                        + staffSession + "'")).isEqualTo("live");
-                assertThat(text(sql, "select status from identity.app_user where id='" + activeUser + "'"))
+                assertThat(text(sql, "select coalesce(revoked_reason,'live') from identity.user_session where id=?",
+                        staffSession)).isEqualTo("live");
+                assertThat(text(sql, "select status from identity.app_user where id=?", activeUser))
                         .isEqualTo("ACTIVE");
 
-                assertThat(text(sql, "select coalesce(password_hash,'<null>') from identity.app_user where id='" + invitedUser + "'"))
+                assertThat(text(sql, "select coalesce(password_hash,'<null>') from identity.app_user where id=?", invitedUser))
                         .isEqualTo("<null>");
-                assertThat(text(sql, "select password_hash from identity.app_user where id='" + oldUser + "'"))
+                assertThat(text(sql, "select password_hash from identity.app_user where id=?", oldUser))
                         .isEqualTo("{bcrypt}$2a$10$legacy");
                 assertThat(text(sql, """
                         select token_digest || '|' || extract(epoch from issued_at)::bigint || '|'
                                || extract(epoch from expires_at)::bigint || '|' || coalesce(delivery_status, '-')
-                        from identity.portal_invitation where user_id='""" + invitedUser + "' and consumed_at is null and revoked_at is null"))
+                        from identity.portal_invitation where user_id=? and consumed_at is null and revoked_at is null""",
+                        invitedUser))
                         .isEqualTo(DIGEST + "|" + issued + "|" + expires + "|-");
                 assertThat(number(sql, "select count(*) from identity.portal_invitation")).isEqualTo(1);
 
@@ -115,24 +117,24 @@ class B2bOnboardingMigrationUpgradeTest {
     }
 
     /** Every rule V20261015000100 states, refused or accepted by the database itself. */
-    private static void assertConstraints(Statement sql, UUID invitedUser, UUID activeUser) throws SQLException {
-        sql.executeUpdate("update customer.customer set tax_code='0312345678' where email='active@example.test'");
+    private static void assertConstraints(Connection sql, UUID invitedUser, UUID activeUser) throws SQLException {
+        update(sql, "update customer.customer set tax_code='0312345678' where email='active@example.test'");
         refused(sql, "a second ACTIVE customer with the tax code",
                 "insert into customer.customer(id,full_name,email,status,tax_code,version,created_at) values"
                         + " (gen_random_uuid(),'Dup','dup@example.test','ACTIVE','0312345678',0,now())");
         refused(sql, "a PENDING customer with a live tax code",
                 "insert into customer.customer(id,user_id,full_name,email,status,tax_code,version,created_at) values"
-                        + " (gen_random_uuid(),'" + user(sql, "p2@example.test", "null") + "','Dup','p2@example.test',"
-                        + "'PENDING_ACTIVATION','0312345678',0,now())");
-        sql.executeUpdate("insert into customer.customer(id,full_name,email,status,tax_code,version,created_at) values"
+                        + " (gen_random_uuid(),?,'Dup','p2@example.test','PENDING_ACTIVATION','0312345678',0,now())",
+                user(sql, "p2@example.test", null));
+        update(sql, "insert into customer.customer(id,full_name,email,status,tax_code,version,created_at) values"
                 + " (gen_random_uuid(),'Closed twin','closed-twin@example.test','INACTIVE','0312345678',0,now())");
-        sql.executeUpdate("insert into customer.customer(id,full_name,email,status,tax_code,version,created_at) values"
+        update(sql, "insert into customer.customer(id,full_name,email,status,tax_code,version,created_at) values"
                 + " (gen_random_uuid(),'Blocked twin','blocked-twin@example.test','BLOCKED','0312345678',0,now())");
         refused(sql, "a malformed tax code",
                 "update customer.customer set tax_code='031234567' where email='active@example.test'");
         refused(sql, "an unnormalised dependent-unit code",
                 "update customer.customer set tax_code='0312345678001' where email='active@example.test'");
-        sql.executeUpdate("update customer.customer set tax_code='0312345678-001' where email='active@example.test'");
+        update(sql, "update customer.customer set tax_code='0312345678-001' where email='active@example.test'");
         refused(sql, "a pending customer without an account",
                 "insert into customer.customer(id,full_name,email,status,version,created_at) values"
                         + " (gen_random_uuid(),'No account','none@example.test','PENDING_ACTIVATION',0,now())");
@@ -140,77 +142,54 @@ class B2bOnboardingMigrationUpgradeTest {
                 "update customer.customer set status='SUSPENDED' where email='active@example.test'");
 
         String open = "insert into identity.portal_invitation(id,user_id,token_digest,issued_at,expires_at) values"
-                + " (gen_random_uuid(),'" + invitedUser + "',";
-        refused(sql, "a second open invitation for one account",
-                open + "'" + "f".repeat(64) + "',now(),now()+interval '1 day')");
-        refused(sql, "a raw token instead of a digest",
-                "insert into identity.portal_invitation(id,user_id,token_digest,issued_at,expires_at) values"
-                        + " (gen_random_uuid(),'" + activeUser + "','" + "Z".repeat(64) + "',now(),now()+interval '1 day')");
+                + " (gen_random_uuid(),?,?,now(),now()+interval '1 day')";
+        refused(sql, "a second open invitation for one account", open, invitedUser, "f".repeat(64));
+        refused(sql, "a raw token instead of a digest", open, activeUser, "Z".repeat(64));
         refused(sql, "an invitation that expires before it is issued",
                 "insert into identity.portal_invitation(id,user_id,token_digest,issued_at,expires_at) values"
-                        + " (gen_random_uuid(),'" + activeUser + "','" + "e".repeat(64) + "',now(),now())");
+                        + " (gen_random_uuid(),?,?,now(),now())", activeUser, "e".repeat(64));
         refused(sql, "consumed and revoked at once",
                 "update identity.portal_invitation set consumed_at=issued_at+interval '1 minute',"
-                        + " revoked_at=issued_at+interval '1 minute' where user_id='" + invitedUser + "'");
+                        + " revoked_at=issued_at+interval '1 minute' where user_id=?", invitedUser);
         refused(sql, "consumed after it expired",
-                "update identity.portal_invitation set consumed_at=expires_at where user_id='" + invitedUser + "'");
+                "update identity.portal_invitation set consumed_at=expires_at where user_id=?", invitedUser);
         refused(sql, "a delivery outcome without its time",
-                "update identity.portal_invitation set delivery_status='SENT' where user_id='" + invitedUser + "'");
-        sql.executeUpdate("update identity.portal_invitation set revoked_at=issued_at+interval '1 minute'"
-                + " where user_id='" + invitedUser + "'");
-        sql.executeUpdate(open + "'" + "f".repeat(64) + "',now(),now()+interval '1 day')");
+                "update identity.portal_invitation set delivery_status='SENT' where user_id=?", invitedUser);
+        update(sql, "update identity.portal_invitation set revoked_at=issued_at+interval '1 minute' where user_id=?",
+                invitedUser);
+        update(sql, open, invitedUser, "f".repeat(64));
         refused(sql, "a reused token digest",
                 "insert into identity.portal_invitation(id,user_id,token_digest,issued_at,expires_at,revoked_at) values"
-                        + " (gen_random_uuid(),'" + activeUser + "','" + "f".repeat(64)
-                        + "',now(),now()+interval '1 day',now())");
+                        + " (gen_random_uuid(),?,?,now(),now()+interval '1 day',now())", activeUser, "f".repeat(64));
     }
 
-    private static UUID user(Statement sql, String email, String passwordHashLiteral) throws SQLException {
+    private static UUID user(Connection sql, String email, String passwordHash) throws SQLException {
         UUID id = UUID.randomUUID();
-        sql.executeUpdate("insert into identity.app_user(id,username,email,password_hash,status,version,created_at)"
-                + " values ('" + id + "','" + email + "','" + email + "'," + passwordHashLiteral + ",'ACTIVE',0,now())");
+        update(sql, "insert into identity.app_user(id,username,email,password_hash,status,version,created_at)"
+                + " values (?,?,?,?,'ACTIVE',0,now())", id, email, email, passwordHash);
         return id;
     }
 
-    private static void role(Statement sql, UUID userId, String code) throws SQLException {
-        sql.executeUpdate("insert into identity.user_role(id,user_id,role_id,version,created_at) select gen_random_uuid(),'"
-                + userId + "',id,0,now() from identity.app_role where code='" + code + "'");
+    private static void role(Connection sql, UUID userId, String code) throws SQLException {
+        update(sql, "insert into identity.user_role(id,user_id,role_id,version,created_at)"
+                + " select gen_random_uuid(),?,id,0,now() from identity.app_role where code=?", userId, code);
     }
 
-    private static UUID session(Statement sql, UUID userId) throws SQLException {
+    private static UUID session(Connection sql, UUID userId) throws SQLException {
         UUID id = UUID.randomUUID();
-        sql.executeUpdate("insert into identity.user_session(id,user_id,issued_at,expires_at,version,created_at) values ('"
-                + id + "','" + userId + "',now(),now()+interval '8 hours',0,now())");
+        update(sql, "insert into identity.user_session(id,user_id,issued_at,expires_at,version,created_at)"
+                + " values (?,?,now(),now()+interval '8 hours',0,now())", id, userId);
         return id;
     }
 
-    private static UUID customer(Statement sql, UUID userId, String email, String status) throws SQLException {
+    private static UUID customer(Connection sql, UUID userId, String email, String status) throws SQLException {
         UUID id = UUID.randomUUID();
-        sql.executeUpdate("insert into customer.customer(id,user_id,full_name,email,status,version,created_at) values ('"
-                + id + "'," + (userId == null ? "null" : "'" + userId + "'") + ",'Co','" + email + "','" + status
-                + "',0,now())");
+        update(sql, "insert into customer.customer(id,user_id,full_name,email,status,version,created_at)"
+                + " values (?,?,'Co',?,?,0,now())", id, userId, email, status);
         return id;
     }
 
-    private static void refused(Statement sql, String rule, String statement) {
-        assertThatThrownBy(() -> sql.executeUpdate(statement)).as(rule).isInstanceOf(SQLException.class);
-    }
-
-    private static long roleVersion(Statement sql, String code) throws SQLException {
-        return number(sql, "select version from identity.app_role where code='" + code + "'");
-    }
-
-    private static long number(Statement sql, String query) throws SQLException {
-        try (var row = sql.executeQuery(query)) {
-            row.next();
-            return row.getLong(1);
-        }
-    }
-
-    private static String text(Statement sql, String query) throws SQLException {
-        try (var row = sql.executeQuery(query)) {
-            row.next();
-            return row.getString(1);
-        }
+    private static long roleVersion(Connection sql, String code) throws SQLException {
+        return number(sql, "select version from identity.app_role where code=?", code);
     }
 }
