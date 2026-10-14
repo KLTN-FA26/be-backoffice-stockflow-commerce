@@ -35,7 +35,7 @@ public final class ProductFixtures {
     public static ProductSummary draft(ProductService products, Taxonomy taxonomy, String suffix) {
         return products.create(new CreateProductCommand("FX-" + suffix, "Fixture " + suffix, "Fixture " + suffix,
                 taxonomy.brandId(), taxonomy.categoryId(), null, null, null, TaxClass.STANDARD,
-                ProductKind.STANDARD));
+                ProductKind.STANDARD, null));
     }
 
     /** Submitted by {@code editor}, approved by {@code approver}: APPROVED, its variant ACTIVE. */

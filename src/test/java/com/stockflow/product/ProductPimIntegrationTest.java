@@ -95,7 +95,7 @@ class ProductPimIntegrationTest {
 
     ProductSummary create(UUID brand, UUID category) {
         return products.create(new CreateProductCommand("CUP-" + suffix, "Ly giấy 12oz", "Paper cup 12oz", brand,
-                category, "Ly in logo", null, null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE));
+                category, "Ly in logo", null, null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE, List.of()));
     }
 
     @Test

@@ -71,6 +71,7 @@ class ProductServiceImplTest {
     private final ProductSearchRepository search = mock(ProductSearchRepository.class);
     private final ProductVariantService variants = mock(ProductVariantService.class);
     private final ProductMediaService media = mock(ProductMediaService.class);
+    private final ProductAttributeService attributes = mock(ProductAttributeService.class);
     private final ProductEventPublisher events = mock(ProductEventPublisher.class);
     private final ProductChangeLogRepository history = mock(ProductChangeLogRepository.class);
     private final ProductCommerceRepository commerce = mock(ProductCommerceRepository.class);
@@ -85,8 +86,8 @@ class ProductServiceImplTest {
         when(products.save(any())).thenAnswer(call -> call.getArgument(0));
         when(purchasing.openReferences(anyCollection(), anyInt())).thenReturn(List.of());
         when(selling.openReferences(anyCollection(), anyInt())).thenReturn(List.of());
-        service = new ProductServiceImpl(products, search, variants, media, events, history, commerce, inventory, identity,
-                List.of(purchasing, selling), Clock.fixed(NOW, ZoneOffset.UTC));
+        service = new ProductServiceImpl(products, search, variants, media, attributes, events, history, commerce,
+                inventory, identity, List.of(purchasing, selling), Clock.fixed(NOW, ZoneOffset.UTC));
     }
 
     private static Product productIn(ProductStatus status, long version) {
