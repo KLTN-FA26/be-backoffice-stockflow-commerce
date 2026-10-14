@@ -1,14 +1,12 @@
 package com.stockflow.order;
 
+import com.stockflow.support.RawSql;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.PostgreSQLContainer;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
-import java.sql.ResultSet;
-import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -97,35 +95,20 @@ class QuoteMigrationUpgradeTest {
     }
 
     private static List<String> grants(Connection db, String role) throws Exception {
-        List<String> codes = new ArrayList<>();
-        try (ResultSet rows = db.createStatement().executeQuery("SELECT p.code FROM identity.role_permission rp "
+        return RawSql.texts(db, "SELECT p.code FROM identity.role_permission rp "
                 + "JOIN identity.app_role r ON r.id = rp.role_id JOIN identity.permission p ON p.id = rp.permission_id "
-                + "WHERE r.code = '" + role + "'")) {
-            while (rows.next()) {
-                codes.add(rows.getString(1));
-            }
-        }
-        return codes;
+                + "WHERE r.code = ?", role);
     }
 
     private static Map<String, Long> versions(Connection db) throws Exception {
-        Map<String, Long> versions = new HashMap<>();
-        try (ResultSet rows = db.createStatement().executeQuery("SELECT code, version FROM identity.app_role")) {
-            while (rows.next()) {
-                versions.put(rows.getString(1), rows.getLong(2));
-            }
-        }
-        return versions;
+        return RawSql.numbersByText(db, "SELECT code, version FROM identity.app_role");
     }
 
     private static long scalar(Connection db, String sql) throws Exception {
-        try (ResultSet rows = db.createStatement().executeQuery(sql)) {
-            rows.next();
-            return rows.getLong(1);
-        }
+        return RawSql.number(db, sql);
     }
 
     private static void exec(Connection db, String sql) throws Exception {
-        db.createStatement().execute(sql);
+        RawSql.update(db, sql);
     }
 }

@@ -1,12 +1,12 @@
 package com.stockflow.production;
 
+import com.stockflow.support.RawSql;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.PostgreSQLContainer;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
-import java.sql.ResultSet;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -125,20 +125,14 @@ class SubcontractMigrationUpgradeTest {
     }
 
     private static String text(Connection db, String sql) throws Exception {
-        try (ResultSet rows = db.createStatement().executeQuery(sql)) {
-            rows.next();
-            return rows.getString(1);
-        }
+        return RawSql.text(db, sql);
     }
 
     private static long scalar(Connection db, String sql) throws Exception {
-        try (ResultSet rows = db.createStatement().executeQuery(sql)) {
-            rows.next();
-            return rows.getLong(1);
-        }
+        return RawSql.number(db, sql);
     }
 
     private static void exec(Connection db, String sql) throws Exception {
-        db.createStatement().execute(sql);
+        RawSql.update(db, sql);
     }
 }
