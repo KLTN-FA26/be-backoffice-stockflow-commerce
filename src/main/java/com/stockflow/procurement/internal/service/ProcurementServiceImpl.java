@@ -1,5 +1,6 @@
 package com.stockflow.procurement.internal.service;
 
+import com.stockflow.common.api.FieldError;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
@@ -48,6 +49,7 @@ import com.stockflow.procurement.internal.repository.PurchaseOrderSearchCriteria
 import com.stockflow.procurement.internal.repository.PurchaseOrderSearchRepository;
 import com.stockflow.procurement.internal.repository.SupplierSpendCriteria;
 import com.stockflow.product.api.ProductService;
+import com.stockflow.product.api.Purchasability;
 import com.stockflow.warehouse.api.WarehouseService;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Sort;
@@ -73,6 +75,12 @@ import java.util.UUID;
  *
  * <p>Package-private class, public interface: Spring injects it by the interface, so nobody can
  * bypass the port by autowiring the concrete class.</p>
+ *
+ * <p>A new line takes only an active SKU (kltn-docs 02 BR-01, SCRUM-461): checked when a standard order is
+ * created, when its draft is edited, and when it is submitted and approved, because a product can be
+ * discontinued in between. Once the order is confirmed it is not asked again: goods on their way are received
+ * whatever happened to the product (02, edge cases), and a subcontract order, which is created for a
+ * production order that is already running, is not asked at all.</p>
  *
  * <p>Every transition also appends to the order's history ({@code purchase_order_events}); submission
  * freezes the order as a revision, and each approval decision is recorded against that revision.
@@ -303,6 +311,7 @@ class ProcurementServiceImpl implements ProcurementService {
             throw new InvalidPurchaseOrderTransitionException(order.id(), order.status(),
                     PurchaseOrderStatus.PENDING_APPROVAL);
         }
+        requireLinesPurchasable(order);
         long revisionNo = purchaseOrders.nextRevisionNo(order.id());
         UUID revisionId = purchaseOrders.recordRevision(order, revisionNo, submittedBy,
                 revisionNo == 0 ? null : "Resubmitted after rejection");
@@ -317,6 +326,9 @@ class ProcurementServiceImpl implements ProcurementService {
     @Auditable(action = AuditAction.APPROVE, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
     public PurchaseOrderSummary approve(UUID purchaseOrderId, UUID approverId) {
         PurchaseOrder order = loadForUpdate(purchaseOrderId);
+        if (order.status() == PurchaseOrderStatus.PENDING_APPROVAL) {
+            requireLinesPurchasable(order);
+        }
         order.approve(approverId, clock.instant());
         purchaseOrders.save(order);
         purchaseOrders.recordApproval(order.activeRevisionId(), approverId, "APPROVED", null);
@@ -577,6 +589,40 @@ class ProcurementServiceImpl implements ProcurementService {
         return lines;
     }
 
+    /**
+     * The lines of a standard order that is being submitted or approved: a SKU discontinued or suspended since
+     * the line was written is refused on its own line ({@code lines[i].sku}), and the buyer removes the line.
+     * A subcontract order is never asked (BR-10).
+     */
+    private void requireLinesPurchasable(PurchaseOrder order) {
+        if (order.type() != PurchaseOrder.Type.STANDARD) {
+            return;
+        }
+        requirePurchasable(order.lines().stream().map(line -> line.sku().code()).toList());
+    }
+
+    /**
+     * kltn-docs 02 BR-01, 01 BR-04: only an active SKU goes on a new line. One call for the whole request,
+     * and one refusal naming every line at fault, each with why ({@code PRODUCT_INACTIVE},
+     * {@code PRODUCT_DISCONTINUED}, {@code PRODUCT_NOT_APPROVED}, {@code VARIANT_NOT_ACTIVE}) so the form
+     * can put it next to the SKU.
+     */
+    private void requirePurchasable(List<String> skus) {
+        Map<String, Purchasability> verdicts = products.purchasability(skus);
+        List<FieldError> errors = new ArrayList<>();
+        for (int i = 0; i < skus.size(); i++) {
+            Purchasability verdict = verdicts.get(skus.get(i));
+            if (verdict != null && !verdict.isPurchasable()) {
+                errors.add(new FieldError("lines[" + i + "].sku", "SKU " + skus.get(i) + " is not active for purchasing",
+                        verdict.name()));
+            }
+        }
+        if (!errors.isEmpty()) {
+            throw new BusinessException(ErrorCode.SKU_NOT_PURCHASABLE,
+                    errors.size() + " line(s) hold a SKU that is not active for purchasing; remove them", errors);
+        }
+    }
+
     /** One requested line, as created or as edited. */
     private record LineInput(String sku, String description, int quantity, BigDecimal unitPrice, BigDecimal taxRate) {
     }
@@ -628,6 +674,7 @@ class ProcurementServiceImpl implements ProcurementService {
             lines.add(new CheckedLine(item.inventoryItemId(), sku, uom, description, c.quantity(),
                     new Money(c.unitPrice(), currency), c.taxRate()));
         }
+        requirePurchasable(lines.stream().map(line -> line.sku().code()).toList());
         return lines;
     }
 }

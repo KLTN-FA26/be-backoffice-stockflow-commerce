@@ -18,6 +18,8 @@ import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.security.Action;
+import com.stockflow.common.security.AuthenticatedUser;
+import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
@@ -174,23 +176,27 @@ class InventoryController {
     }
 
     /**
-     * Confirm a pick: the goods have left the shelf, so deduct them for real.
+     * Close a hold by hand: the goods have left the shelf, so deduct them for real.
      *
-     * <p>Called by {@code fulfillment} over HTTP rather than as a Java call, because unlike the
-     * checkout reservation it does <b>not</b> need to be atomic with anything on the caller's side.
-     * The pick already happened physically; recording it is a fact, not a negotiation. Guarded by
-     * {@code UPDATE} rather than {@code CREATE}: it changes an existing hold, it does not make one.
+     * <p><b>For operations, not for picking.</b> A pick line deducts its hold in-process, in its own
+     * transaction, through {@code inventory :: consumption} (SCRUM-275): {@code fulfillment} never
+     * calls this endpoint. It stays for an operator who has to consume a hold outside a pick task, and
+     * runs the same implementation — the hold becomes CONSUMED, {@code on_hand} falls, one {@code PICK}
+     * ledger row names the order and {@code StockDeducted} is published. A hold that is no longer HELD
+     * is a 409 {@code RESERVATION_NOT_ACTIVE}. Guarded by {@code UPDATE} rather than {@code CREATE}: it
+     * changes an existing hold, it does not make one.</p>
      *
      * <p>A sub-resource ({@code /consumption}) rather than {@code PATCH /reservations/{id}} with a
      * status field, so the permission model can distinguish "may confirm a pick" from "may edit a
      * reservation" — those are different people in a warehouse.</p>
      */
     @PostMapping("/reservations/{reservationId}/consumption")
-    @Operation(summary = "Deduct the stock a reservation was holding, after picking")
+    @Operation(summary = "Deduct the stock a reservation was holding, outside a pick task")
     @RequiresPermission(resource = InventoryResources.RESERVATIONS,
             action = Action.UPDATE, scope = DataScope.WAREHOUSE)
-    public ApiResponse<Void> consume(@PathVariable UUID reservationId) {
-        stockConsumption.consume(reservationId);
+    public ApiResponse<Void> consume(@PathVariable UUID reservationId,
+                                     @AuthenticatedUser CurrentUser actor) {
+        stockConsumption.consume(reservationId, actor.userId());
         return ApiResponse.ok(null);
     }
 

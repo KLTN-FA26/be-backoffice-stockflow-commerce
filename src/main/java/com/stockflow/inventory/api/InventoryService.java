@@ -189,6 +189,12 @@ public interface InventoryService {
     List<OrderHold> holdsOf(UUID orderId);
 
     /**
+     * The holds with these ids, in any status, with the SKU, location and lot each sits on (SCRUM-267):
+     * fulfillment builds a pick list from them. Read-only; an unknown id is simply absent.
+     */
+    List<HoldView> holds(java.util.Collection<UUID> reservationIds);
+
+    /**
      * Move unreserved stock between two locations, writing one ledger line (SCRUM-424). Joins the
      * caller's transaction, like {@link #reserve}. Locks the source and destination rows in id
      * order, as {@code reserve} does, so two moves crossing the same pair cannot deadlock.
@@ -227,6 +233,20 @@ public interface InventoryService {
 
     /** The SKU of each inventory item that exists, for a list of purchase order lines in one query. */
     java.util.Map<UUID, String> skusOf(java.util.Collection<UUID> inventoryItemIds);
+
+    /**
+     * Deletes the inventory item of each SKU, for a product that is deleted before anything happened to
+     * it (SCRUM-461): the item exists only because its variant was created (docs 01 BR-07), and the
+     * variant cannot go while it stands. A SKU with no item is skipped.
+     *
+     * <p>No guard of its own: stock rows, movements, adjustments, counts, transfer lines, purchase order
+     * and receipt lines, pick lines and putaway or move tasks all point at an item through foreign keys,
+     * and any of them refuses the delete, which is exactly what must happen.</p>
+     *
+     * @throws org.springframework.dao.DataIntegrityViolationException when something still refers to an item;
+     *         the caller's transaction is then rolled back as a whole
+     */
+    void deleteUnusedItems(java.util.Collection<String> skus);
 
     /**
      * SKUs that are low on stock, in SKU order, the {@code limit} after {@code afterSku} ({@code null} or empty for

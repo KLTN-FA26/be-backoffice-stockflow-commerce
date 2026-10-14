@@ -450,6 +450,11 @@ for pi, (pcode, pname, pen, cat, brand, kind, status, axes, descr, prices, item)
         approved_by=U[APPROVER] if approved else None, approved_at=at(date(2026, 8, 4), 14) if approved else None,
         published_at=at(date(2026, 8, 5), 9) if status in ("PUBLISHED", "INACTIVE", "DISCONTINUED") else None,
         discontinued_at=at(date(2026, 9, 30), 17) if status == "DISCONTINUED" else None,
+        # SCRUM-461: a discontinued product carries why, a suspended one when and why (ck_products_discontinue_reason,
+        # ck_products_inactive).
+        discontinue_reason="Ngừng sản xuất, chuyển sang ống hút giấy" if status == "DISCONTINUED" else None,
+        suspended_at=at(date(2026, 9, 20), 11) if status == "INACTIVE" else None,
+        suspend_reason="Tạm ngừng để kiểm tra chất lượng lô hàng" if status == "INACTIVE" else None,
         rejection_reason=None, created_at=P_CREATED)
     add("product.product_categories", id=uid(f"pc:{pcode}"), product_id=pid, category_id=uid("cat:" + cat),
         is_primary=True, created_at=P_CREATED)
@@ -802,15 +807,13 @@ MOVES = []
 # ReferenceType hold only what the code writes, and a row outside them fails every ledger query with
 # "No enum constant". So rows are written the way the application writes them: a putaway is a MOVE,
 # receiving a transfer or a return is a RECEIPT, a count correction or a scrap is an ADJUSTMENT, and a
-# pick writes no movement at all (the reservation is consumed). The ledger reconciles to stock on hand
-# plus what was picked.
+# confirmed pick line writes one PICK row naming the line (reference PICK_LINE, SCRUM-267), as the
+# application does since V20261014001000. The ledger reconciles to stock on hand.
 APP_KIND = {"PUTAWAY": "MOVE", "COUNT_CORRECTION": "ADJUSTMENT", "SCRAP": "ADJUSTMENT", "TRANSFER_IN": "RECEIPT",
             "RETURN_IN": "RECEIPT"}
 
 
 def move(kind, sku, qty, ref_type, ref_id, when, actor, frm=None, to=None, lot=None, fs=None, ts_=None, reason=None):
-    if kind == "PICK":
-        return
     kind = APP_KIND.get(kind, kind)
     MOVES.append(dict(id=uid(f"mv:{len(MOVES)}:{kind}:{ref_id}"), movement_type=kind, sku=sku, lot_number=lot,
                       from_location_code=frm, to_location_code=to, quantity=qty, from_status=fs, to_status=ts_,
@@ -1600,7 +1603,9 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
                 sku=r["line"]["sku"], location_code=r["stock"].loc, lot_number=r["stock"].lot, sequence_no=k + 1,
                 allocated_qty=r["qty"], picked_qty=r["qty"] if done else 0, short_qty=0,
                 status="PICKED" if done else "OPEN", picked_by=U[staff] if done else None,
-                picked_at=t_pick + timedelta(hours=2) if done else None, created_at=t_pick)
+                picked_at=t_pick + timedelta(hours=2) if done else None,
+                # SCRUM-267: a PICKED line has deducted its hold (ck_pick_line_picked).
+                consumed_at=t_pick + timedelta(hours=2) if done else None, created_at=t_pick)
             if done:
                 move("PICK", r["line"]["sku"], r["qty"], "PICK_LINE", plid, t_pick + timedelta(hours=2), staff,
                      frm=r["stock"].loc, lot=r["stock"].lot, fs="AVAILABLE")
@@ -2315,8 +2320,8 @@ w(f"""-- =======================================================================
 -- production, picks, packs, shipments, returns and receivables; transfers, adjustments, cycle counts,
 -- move tasks, designs and samples, carts, chat, notifications, audit log, reports.
 -- Stock on hand is exactly what the receipts put away, minus what was picked, plus what was moved or
--- adjusted. inventory.stock_movement holds every movement except picks, as the application writes it
--- (a pick consumes its reservation and writes no ledger row).
+-- adjusted. inventory.stock_movement holds every movement as the application writes it, a confirmed
+-- pick line included (PICK, reference PICK_LINE).
 -- Verified against the application (jar from develop, Oct 2026): every GET endpoint answers 200 on it.
 -- =============================================================================
 

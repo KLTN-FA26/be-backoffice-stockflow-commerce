@@ -10,4 +10,9 @@ public interface PickJpaRepository extends BaseJpaRepository<PickJpaEntity> {
     @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
     @org.springframework.data.jpa.repository.Query("select p from PickJpaEntity p where p.id = :id")
     java.util.Optional<PickJpaEntity> lockById(@org.springframework.data.repository.query.Param("id") java.util.UUID id);
+
+    /** The order's task under the same write lock as {@link #lockById}: read for the first time here, never stale. */
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @org.springframework.data.jpa.repository.Query("select p from PickJpaEntity p where p.orderId = :orderId")
+    java.util.Optional<PickJpaEntity> lockByOrderId(@org.springframework.data.repository.query.Param("orderId") java.util.UUID orderId);
 }

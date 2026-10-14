@@ -71,6 +71,18 @@ class SystemAdminRoleIntegrationTest {
         assertThat(resolved).containsAll(catalog.allPermissions());
     }
 
+    /** SCRUM-461: deleting a draft product is its own permission, held by the two roles that manage products. */
+    @Test
+    void holdsProductDeleteAndSoDoesTheEcommerceAdmin() {
+        PermissionCode delete = PermissionCode.of("product-products", com.stockflow.common.security.Action.DELETE);
+
+        assertThat(lookup.resolve(List.of(ROLE)).permissions()).contains(delete);
+        assertThat(lookup.resolve(List.of(Role.ECOMMERCE_ADMIN.authority())).permissions()).contains(delete);
+        assertThat(lookup.resolve(List.of(Role.SALES_STAFF.authority())).permissions()).doesNotContain(delete);
+        assertThat(lookup.resolve(List.of(Role.WAREHOUSE_STAFF.authority())).permissions()).doesNotContain(delete);
+        assertThat(catalog.allPermissions()).contains(delete);
+    }
+
     @Test
     void itsMatrixIsFullAndReadOnly() {
         RoleMatrixView matrix = identity.roleMatrix(ROLE);

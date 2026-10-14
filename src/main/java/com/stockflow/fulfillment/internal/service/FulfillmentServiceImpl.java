@@ -66,11 +66,12 @@ class FulfillmentServiceImpl implements FulfillmentService {
     private final IdentityService identities;
     private final InventoryService inventory;
     private final WarehouseService warehouses;
+    private final PickListService pickLists;
 
     FulfillmentServiceImpl(PickJpaRepository picks, PackJpaRepository packs,
             DesignVerificationJpaRepository verifications, OrderService orders,
             DesignService designs, IdentityService identities, InventoryService inventory,
-            WarehouseService warehouses, Clock clock) {
+            WarehouseService warehouses, PickListService pickLists, Clock clock) {
         this.picks = picks;
         this.packs = packs;
         this.verifications = verifications;
@@ -79,6 +80,7 @@ class FulfillmentServiceImpl implements FulfillmentService {
         this.identities = identities;
         this.inventory = inventory;
         this.warehouses = warehouses;
+        this.pickLists = pickLists;
         this.clock = clock;
     }
 
@@ -88,14 +90,15 @@ class FulfillmentServiceImpl implements FulfillmentService {
         var existing = picks.findByOrderId(orderId);
         if (existing.isPresent()) {
             requireWarehouseAssignee(assignedUserId, existing.get().getWarehouseId());
-            requireVisible(existing.get(), actor);
+            TaskAccess.requireVisible(existing.get(), actor);
             return toTask(existing.get());
         }
         OrderSummary order = requireOrder(orderId);
         // READY_TO_FULFILL: released, and production (if any) delivered (SCRUM-423). CONFIRMED: a stock-only
         // order nobody released yet, as before release existed; the order refuses one with print lines.
         if (order.status() != OrderStatus.CONFIRMED && order.status() != OrderStatus.READY_TO_FULFILL) {
-            throw new BusinessException(ErrorCode.CONFLICT, "Only a confirmed or released order can enter fulfillment");
+            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT,
+                    "Only a confirmed or released order can enter fulfillment; it is " + order.status());
         }
         UUID warehouseId = pickingWarehouse(order);
         WarehouseScope.requireWarehouse(warehouseId);
@@ -105,8 +108,10 @@ class FulfillmentServiceImpl implements FulfillmentService {
         var pick = new PickJpaEntity(Identifiers.newId(), null, orderId, order.orderNumber(), warehouseId,
                 PickStatus.PENDING);
         pick.assign(assignedUserId, now);
-        picks.save(pick);
+        picks.saveAndFlush(pick);      // the pick row first: its lines' trigger and foreign key look for it
         packs.save(new PackJpaEntity(Identifiers.newId(), pick.getId(), PackStatus.PENDING, null));
+        // SCRUM-267: one line per hold of the order's stock lines, in this warehouse (docs 07 step 2).
+        pickLists.planLines(pick, order);
         return toTask(pick, nameOf(assignedUserId), null);
     }
 
@@ -180,24 +185,36 @@ class FulfillmentServiceImpl implements FulfillmentService {
     @Transactional(readOnly = true)
     public FulfillmentTask findTask(UUID taskId, CurrentUser actor) {
         var pick = requirePick(taskId);
-        requireVisible(pick, actor);
+        TaskAccess.requireVisible(pick, actor);
         return toTask(pick, nameOf(pick.getAssignedUserId()), linesOf(requireOrder(pick.getOrderId())));
     }
 
+    /**
+     * The assignee starts picking. A task opened before pick lines existed gets its lines now (lazily,
+     * SCRUM-267); starting a task already PICKING plans its lines if it has none and changes nothing else.
+     */
     @Override
     public FulfillmentTask startPicking(UUID taskId, CurrentUser actor) {
         var pick = lockPick(taskId);
+        WarehouseScope.requireWarehouse(pick.getWarehouseId());
         pick.requireAssigned(actor.userId());
-        requireOrderInFulfilment(pick);
+        var order = requireOrderInFulfilment(pick);
         pick.start(actor.userId(), clock.instant());
-        return toTask(picks.save(pick));
+        picks.save(pick);
+        pickLists.planLines(pick, order);
+        return toTask(pick);
     }
 
+    /** Docs 07 step 9: only when every line is picked ({@code PICK_LINES_INCOMPLETE} otherwise). */
     @Override
     public FulfillmentTask completePicking(UUID taskId, CurrentUser actor) {
         var pick = lockPick(taskId);
+        WarehouseScope.requireWarehouse(pick.getWarehouseId());
         pick.requireAssigned(actor.userId());
-        requireOrderInFulfilment(pick);
+        var order = requireOrderInFulfilment(pick);
+        if (pick.getStatus() == PickStatus.PICKING) {
+            pickLists.requireAllPicked(pick, order);
+        }
         pick.complete(actor.userId(), clock.instant());
         return toTask(picks.save(pick));
     }
@@ -232,12 +249,12 @@ class FulfillmentServiceImpl implements FulfillmentService {
         var pick = lockPick(taskId);
         pick.requireAssigned(actor.userId());
         if (pick.getStatus() != PickStatus.PICKED) {
-            throw new BusinessException(ErrorCode.CONFLICT, "Picking must finish before packing");
+            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT, "Picking must finish before packing");
         }
         var order = requireOrderInFulfilment(pick);
         var pack = requirePack(pick.getId());
         if (pack.getStatus() == PackStatus.ON_HOLD) {
-            throw new BusinessException(ErrorCode.CONFLICT,
+            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT,
                     "A checksum hold requires QC or warehouse-manager reverification");
         }
         boolean matching = verifyAll(pack, order, actor.userId());
@@ -258,7 +275,7 @@ class FulfillmentServiceImpl implements FulfillmentService {
         var pick = lockPick(taskId);
         var pack = requirePack(pick.getId());
         if (pack.getStatus() != PackStatus.ON_HOLD) {
-            throw new BusinessException(ErrorCode.CONFLICT, "The package has no design-integrity hold");
+            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT, "The package has no design-integrity hold");
         }
         if (!verifyAll(pack, requireOrderInFulfilment(pick), actor.userId())) {
             return toTask(pick);
@@ -283,20 +300,6 @@ class FulfillmentServiceImpl implements FulfillmentService {
             allMatch &= check.matching();
         }
         return allMatch;
-    }
-
-    /**
-     * The assignee sees the task; managers, QC and coordinators see the tasks of the warehouses they are
-     * assigned to (BR-SEC-002: a coordinator is not limited, as their scope is ALL).
-     */
-    private void requireVisible(PickJpaEntity pick, CurrentUser actor) {
-        if (java.util.Objects.equals(pick.getAssignedUserId(), actor.userId())) {
-            return;
-        }
-        if (!actor.hasAnyRole(Role.WAREHOUSE_MANAGER, Role.QC_STAFF, Role.ORDER_COORDINATOR)) {
-            throw new BusinessException(ErrorCode.NOT_FOUND);
-        }
-        WarehouseScope.requireWarehouse(pick.getWarehouseId());
     }
 
     private void requireArtifactAccess(PickJpaEntity pick, CurrentUser actor) {
@@ -360,18 +363,8 @@ class FulfillmentServiceImpl implements FulfillmentService {
         return packs.findByPickId(pickId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
     }
 
-    /**
-     * A task is only workable while its order is still in fulfilment (or held by it). Cancelling an
-     * order releases its stock but leaves the pick and pack rows behind, so without this check a
-     * warehouse user could go on picking and packing goods that were already returned to stock.
-     */
     private OrderSummary requireOrderInFulfilment(PickJpaEntity pick) {
-        var order = requireOrder(pick.getOrderId());
-        if (order.status() != OrderStatus.IN_FULFILMENT && order.status() != OrderStatus.ON_HOLD) {
-            throw new BusinessException(ErrorCode.CONFLICT,
-                    "The order is " + order.status() + "; this fulfillment task is closed");
-        }
-        return order;
+        return TaskAccess.orderInFulfilment(orders, pick);
     }
 
     private OrderSummary requireOrder(UUID orderId) {
@@ -437,7 +430,7 @@ class FulfillmentServiceImpl implements FulfillmentService {
                             .formatted(order.orderNumber(), String.join(", ", all), skusByWarehouse.size()));
         }
         if (skusByWarehouse.isEmpty()) {
-            throw new BusinessException(ErrorCode.CONFLICT,
+            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT,
                     "Order %s has no stock held and no release warehouse, so its warehouse is unknown"
                             .formatted(order.orderNumber()));
         }

@@ -137,7 +137,7 @@ class ProductPimIntegrationTest {
         assertThatThrownBy(() -> create(UUID.randomUUID(), null)).isInstanceOfSatisfying(BusinessException.class,
                 e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.BRAND_NOT_FOUND));
 
-        var updated = products.update(new UpdateProductCommand(created.productId(), "Ly giấy 16oz", "Paper cup 16oz",
+        var updated = products.update(new UpdateProductCommand(created.productId(), created.version(), "Ly giấy 16oz", "Paper cup 16oz",
                 null, root.id(), null, null, null, TaxClass.REDUCED, ProductKind.CUSTOMIZABLE));
         assertThat(updated.categoryId()).isEqualTo(root.id());
         assertThat(updated.brandId()).isNull();
@@ -174,7 +174,8 @@ class ProductPimIntegrationTest {
     @DisplayName("approval puts the drafted variants on sale; a later variant is activated on its own")
     void approvalActivatesVariants() {
         var category = taxonomy.createCategory("CAT-" + suffix, null, new CategoryDetails("Ly", 0, null, null, null, true));
-        var created = create(null, category.id());
+        var brand = taxonomy.createBrand("BR-" + suffix, "Brand " + suffix, null);
+        var created = create(brand.id(), category.id());
         var extra = variants.add(created.productId(), new NewVariant("cup-" + suffix + "-16", "16oz", "SIZE=16OZ", null));
         assertThat(extra.sku()).isEqualTo("CUP-" + suffix + "-16");
         assertThat(extra.position()).isEqualTo(1);
@@ -208,7 +209,8 @@ class ProductPimIntegrationTest {
     @DisplayName("an uploaded image reaches the storefront only when someone else publishes it")
     void imagesArePublishedByASecondPerson() throws Exception {
         var category = taxonomy.createCategory("CAT-" + suffix, null, new CategoryDetails("Ly", 0, null, null, null, true));
-        var created = create(null, category.id());
+        var brand = taxonomy.createBrand("BR-" + suffix, "Brand " + suffix, null);
+        var created = create(brand.id(), category.id());
         UUID productId = created.productId();
         UUID variantId = variants.list(productId, 0, 1).items().getFirst().id();
 

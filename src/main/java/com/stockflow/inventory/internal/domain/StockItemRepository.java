@@ -109,6 +109,9 @@ public interface StockItemRepository {
      */
     List<HeldStock> findHeldForOrder(java.util.UUID orderId);
 
+    /** The holds with these ids and where they sit, read-only and without locking. */
+    List<HoldDetail> findHolds(Collection<java.util.UUID> reservationIds);
+
     StockItem save(StockItem stockItem);
 
     /**

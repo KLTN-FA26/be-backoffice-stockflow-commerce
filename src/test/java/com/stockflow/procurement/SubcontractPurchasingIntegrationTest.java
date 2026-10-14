@@ -41,6 +41,7 @@ class SubcontractPurchasingIntegrationTest {
 
     @Autowired SubcontractPurchasing subcontracting;
     @Autowired com.stockflow.procurement.internal.service.SubcontractAmendments amendments;
+    @Autowired com.stockflow.product.api.ProductService products;
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager entityManager;
     @Autowired TransactionTemplate tx;
@@ -264,6 +265,28 @@ class SubcontractPurchasingIntegrationTest {
                 manager).status()).isEqualTo("CANCELLED");
         assertThat(subcontracting.closeForProduction(po.purchaseOrderId(), "again", manager).status())
                 .as("idempotent").isEqualTo("CANCELLED");
+    }
+
+    @Test
+    @DisplayName("SCRUM-461: a SUBCONTRACT order is not asked whether the SKU is purchasable, and it is an open reference of the product")
+    void subcontractOrdersIgnoreTheProductStatus() {
+        // The finished SKU of a running production order belongs to a product that has been suspended since.
+        var suspended = tx.execute(s -> ReferenceRows.approvedProduct(entityManager));
+        tx.executeWithoutResult(s -> jdbc.update("""
+                UPDATE product.products SET status = 'INACTIVE', suspended_at = NOW(), suspend_reason = 'recall' WHERE id = ?""",
+                suspended.productId()));
+        assertThat(products.purchasability(java.util.List.of(suspended.sku())).get(suspended.sku()))
+                .isEqualTo(com.stockflow.product.api.Purchasability.PRODUCT_INACTIVE);
+
+        SubcontractOrder created = subcontracting.create(command(innhanh, new Sku(suspended.sku()), 400));
+
+        assertThat(created.status()).isEqualTo("DRAFT");
+        assertThat(created.finishedSku()).isEqualTo(suspended.sku());
+        assertThat(products.openReferences(suspended.productId()).references()).singleElement().satisfies(r -> {
+            assertThat(r.kind()).isEqualTo(com.stockflow.product.api.SkuReference.Kind.PURCHASE_ORDER_LINE);
+            assertThat(r.documentId()).isEqualTo(created.purchaseOrderId());
+            assertThat(r.documentNumber()).isEqualTo(created.poNumber());
+        });
     }
 
     @Test

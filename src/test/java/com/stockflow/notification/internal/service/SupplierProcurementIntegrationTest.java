@@ -358,6 +358,17 @@ from procurement.po_delivery_decision where purchase_order_id=?
         var productId = products.create(new CreateProductCommand(sku, "Original product name", "Original", null,
                 null, null, null, null, TaxClass.STANDARD, ProductKind.STANDARD)).productId();
         assertThat(products.nameForSku(sku)).contains("Original product name");
+        // A purchase order line takes only an active SKU (SCRUM-461): approved product, active variant.
+        transactions.executeWithoutResult(
+                tx -> {
+                    jdbc.update(
+                            "update product.products set status='APPROVED',"
+                                    + " submitted_by=md5('demo:user:editor')::uuid, submitted_at=now(),"
+                                    + " approved_by=md5('demo:user:approver')::uuid, approved_at=now()"
+                                    + " where id=?",
+                            productId);
+                    jdbc.update("update product.variants set status='ACTIVE' where product_id=?", productId);
+                });
         var po =
                 orders.createPurchaseOrder(
                         new CreatePurchaseOrderCommand(

@@ -15,7 +15,7 @@ Rules that apply to every machine on this page:
 
 ## 1. Product — `product-service`
 
-WBS 3.1.1.3 (Draft → Pending → Approved), 3.1.8.1 (discontinuation).
+WBS 3.1.1.3 (Draft → Pending → Approved), 3.1.8.1 (discontinuation), SCRUM-461 (suspension, brand, reason, history).
 
 ```mermaid
 stateDiagram-v2
@@ -25,22 +25,34 @@ stateDiagram-v2
     PENDING_APPROVAL --> APPROVED: approve
     APPROVED --> PUBLISHED: publish to catalog
     PUBLISHED --> APPROVED: unpublish
+    APPROVED --> INACTIVE: suspend
+    PUBLISHED --> INACTIVE: suspend
+    INACTIVE --> APPROVED: resume
     APPROVED --> DISCONTINUED: discontinue
     PUBLISHED --> DISCONTINUED: discontinue
+    INACTIVE --> DISCONTINUED: discontinue
     DISCONTINUED --> [*]
 ```
 
 | From | To | Trigger | Actor | Guard | Event |
 |---|---|---|---|---|---|
 | — | DRAFT | create | E-commerce admin | SKU unique (BR-PRD-002) | — |
-| DRAFT | PENDING_APPROVAL | submit | E-commerce admin | all mandatory fields present (BR-PRD-001) | — |
+| DRAFT | PENDING_APPROVAL | submit | E-commerce admin | all mandatory fields present, brand included (BR-PRD-001) | — |
 | PENDING_APPROVAL | APPROVED | approve | E-commerce admin (approver) | approver ≠ submitter (BR-PRD-003) | `ProductApproved` |
 | PENDING_APPROVAL | DRAFT | reject | E-commerce admin (approver) | rejection reason given | — |
 | APPROVED | PUBLISHED | publish | E-commerce admin | has price, image, category (BR-PRD-004) | `ProductPublished` |
 | PUBLISHED | APPROVED | unpublish | E-commerce admin | — | `ProductUnpublished` |
-| APPROVED / PUBLISHED | DISCONTINUED | discontinue | E-commerce admin | no open PO and no unshipped order line (BR-PRD-005) | `ProductDiscontinued` |
+| APPROVED / PUBLISHED | INACTIVE | suspend | `product-products:APPROVE` | reason given (BR-PRD-007) | `CatalogListingChanged` |
+| INACTIVE | APPROVED | resume | `product-products:APPROVE` | — (publish again to show it) | `CatalogListingChanged` |
+| APPROVED / PUBLISHED / INACTIVE | DISCONTINUED | discontinue | `product-products:APPROVE` | reason given (BR-PRD-007). Open POs and unshipped orders are **warned about, not blocked** (BR-PRD-005) | `ProductDiscontinued` (with the reason) |
 
-**DISCONTINUED is terminal.** Existing stock stays sellable-through but nothing new is ordered.
+**INACTIVE** (kltn-docs 01 §5.1): not shown on the storefront, no new purchase order lines; orders and
+receipts already running continue. Its variants and images are still maintained.
+
+**DISCONTINUED is terminal.** Every variant becomes `OBSOLETE` (kltn-docs 01 §5.2: shipped and adjusted
+only to clear the stock). Existing stock stays sellable-through, goods on open purchase orders are received
+as usual, but no new purchase order line takes the SKU. Only a DRAFT product is deleted (BR-PRD-008).
+Every move is written to `product.product_change_log` with its from/to status, reason and actor.
 
 ---
 

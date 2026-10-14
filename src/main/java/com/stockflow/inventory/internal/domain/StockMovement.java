@@ -50,14 +50,14 @@ public record StockMovement(
 
     /** The subset of {@code ck_stock_movement_type} this module writes so far. */
     public enum MovementType {
-        RECEIPT, MOVE, ADJUSTMENT, TRANSFER_OUT, STATUS_CHANGE,
+        RECEIPT, MOVE, ADJUSTMENT, TRANSFER_OUT, STATUS_CHANGE, PICK, PUT_BACK,
         /** Held blanks a print subcontractor turned into goods received back (SCRUM-441, decision Q9). */
         CONSUMPTION
     }
 
     /** The subset of {@code ck_stock_movement_reference} this module writes so far. */
     public enum ReferenceType {
-        MOVE_TASK, PUTAWAY_TASK, TRANSFER_ORDER_LINE, ORDER, STOCK_ADJUSTMENT, GOODS_RECEIPT_LINE, QC_INSPECTION,
+        MOVE_TASK, PUTAWAY_TASK, TRANSFER_ORDER_LINE, ORDER, STOCK_ADJUSTMENT, GOODS_RECEIPT_LINE, QC_INSPECTION, PICK_LINE,
         PRODUCTION_ORDER, EXPIRY_SWEEP
     }
 }
