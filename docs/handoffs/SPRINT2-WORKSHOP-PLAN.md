@@ -278,6 +278,10 @@ every `*IntegrationTest`, every `*MigrationUpgradeTest` and the repository SQL Q
 Their first PostgreSQL run found real defects, fixed in `67c94df`: `splitOffOf` SQL precedence (every order release
 failed), a duplicate index and a NULL-tolerant origin CHECK in `V20261015000710`, and an issue scan on a converted order.
 Earlier non-Docker runs: lane A `e624bdc` 136 tests; integration `1a3024c` 164 tests.
+After merging develop `0f18f24` (PR #109 repair, 2026-10-14): full `mvn -B -ntp verify` of `865c9c0` ran 1685 tests,
+0 failures, 0 errors, 0 skipped. The PR build had failed on one date-boundary assertion (a fixture on the JVM date,
+the service on the business date), and the merge found `V20261015000470` re-creating `ck_stock_movement_shape` without
+develop's put-back branch (`StockMovementShapeMigrationUpgradeTest`).
 
 | Jira 433 / 441 acceptance | Code | Test |
 |---|---|---|
