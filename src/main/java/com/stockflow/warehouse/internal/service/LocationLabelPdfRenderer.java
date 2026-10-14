@@ -72,13 +72,15 @@ public class LocationLabelPdfRenderer {
                     PDType0Font.load(document, new ByteArrayInputStream(fonts.regular()), true));
             PDRectangle pageSize = new PDRectangle(points(format.pageWidthMm()), points(format.pageHeightMm()));
             int perPage = format.labelsPerPage();
+            // The same on every label, so cut once rather than 2,000 times.
+            String warehouseLine = cut(loaded.regular, drawable(sheet.warehouseName()), textWidthMm(format));
             for (int first = 0; first < labels.size(); first += perPage) {
                 PDPage page = new PDPage(pageSize);
                 document.addPage(page);
                 try (PDPageContentStream out = new PDPageContentStream(document, page)) {
                     for (int slot = 0; slot < perPage && first + slot < labels.size(); slot++) {
                         var cell = new Cell(format, slot);
-                        drawLabel(out, cell, labels.get(first + slot), sheet.warehouseName(), words, loaded);
+                        drawLabel(out, cell, labels.get(first + slot), warehouseLine, words, loaded);
                     }
                 }
             }
@@ -90,10 +92,13 @@ public class LocationLabelPdfRenderer {
         }
     }
 
-    private void drawLabel(PDPageContentStream out, Cell cell, LocationLabel label, String warehouseName,
+    /**
+     * @param warehouseLine the warehouse name, already made drawable and cut to the text column
+     */
+    private void drawLabel(PDPageContentStream out, Cell cell, LocationLabel label, String warehouseLine,
                            LabelWords words, Fonts fonts) throws IOException {
         double qrSide = cell.format.qrSideMm();
-        double textWidth = cell.innerWidth() - qrSide - TEXT_TO_QR_GAP_MM;
+        double textWidth = textWidthMm(cell.format);
 
         float codeSize = fittingSize(fonts.bold, label.code(), textWidth);
         double baseline = cell.innerTop() + ascentMm(fonts.bold, codeSize);
@@ -103,10 +108,10 @@ public class LocationLabelPdfRenderer {
         out.setHorizontalScaling(squeeze * 100);
         text(out, cell, fonts.bold, codeSize, label.code(), cell.innerLeft(), baseline);
         out.setHorizontalScaling(100);
-        for (String line : List.of(warehouseName, context(label, words))) {
+        String contextLine = cut(fonts.regular, drawable(context(label, words)), textWidth);
+        for (String line : List.of(warehouseLine, contextLine)) {
             baseline += millimetres(CONTEXT_POINTS * LINE_SPACING);
-            text(out, cell, fonts.regular, CONTEXT_POINTS, cut(fonts.regular, line, textWidth),
-                    cell.innerLeft(), baseline);
+            text(out, cell, fonts.regular, CONTEXT_POINTS, line, cell.innerLeft(), baseline);
         }
 
         drawQr(out, cell, label.code(), cell.innerLeft() + cell.innerWidth() - qrSide, cell.innerTop(), qrSide);
@@ -114,6 +119,31 @@ public class LocationLabelPdfRenderer {
         double barTop = cell.innerTop() + qrSide + QR_TO_BARCODE_GAP_MM;
         drawBarcode(out, cell, label.code(), cell.innerLeft(), barTop, cell.innerWidth(),
                 cell.innerTop() + cell.innerHeight() - barTop);
+    }
+
+    /** Beside the QR code: the label's inner width minus the QR code and the gap before it. */
+    private static double textWidthMm(LabelFormat format) {
+        return format.labelWidthMm() - 2 * format.paddingMm() - format.qrSideMm() - TEXT_TO_QR_GAP_MM;
+    }
+
+    /**
+     * Names are free text: a tab pasted from a spreadsheet or an emoji is a legal warehouse or area
+     * name, and PDFBox throws on any character the font has no glyph for - which would make every
+     * print of that warehouse fail. Control characters become spaces, anything else undrawable a
+     * {@code ?}, so the label still prints and still says where it is.
+     */
+    private String drawable(String text) {
+        var out = new StringBuilder(text.length());
+        text.codePoints().forEach(codePoint -> {
+            if (Character.isISOControl(codePoint)) {
+                out.append(' ');
+            } else if (fonts.canDraw(codePoint)) {
+                out.appendCodePoint(codePoint);
+            } else {
+                out.append('?');
+            }
+        });
+        return out.toString();
     }
 
     private static String context(LocationLabel label, LabelWords words) {
@@ -133,15 +163,26 @@ public class LocationLabelPdfRenderer {
         return size;
     }
 
+    /**
+     * The longest prefix that fits with an ellipsis, found by bisection: width grows with length, and
+     * measuring every prefix one character at a time cost a long name hundreds of measurements per label.
+     * {@code text} is BMP-only after {@link #drawable}, so cutting at any index splits no character.
+     */
     private static String cut(PDFont font, String text, double widthMm) throws IOException {
         if (widthMm(font, text, CONTEXT_POINTS) <= widthMm) {
             return text;
         }
-        String shorter = text;
-        while (shorter.length() > 1 && widthMm(font, shorter + ELLIPSIS, CONTEXT_POINTS) > widthMm) {
-            shorter = shorter.substring(0, shorter.length() - 1);
+        int fits = 0;
+        int tooLong = text.length();
+        while (tooLong - fits > 1) {
+            int middle = (fits + tooLong) >>> 1;
+            if (widthMm(font, text.substring(0, middle) + ELLIPSIS, CONTEXT_POINTS) <= widthMm) {
+                fits = middle;
+            } else {
+                tooLong = middle;
+            }
         }
-        return shorter.strip() + ELLIPSIS;
+        return text.substring(0, Math.max(fits, 1)).strip() + ELLIPSIS;
     }
 
     private static void drawBarcode(PDPageContentStream out, Cell cell, String code, double left, double top,

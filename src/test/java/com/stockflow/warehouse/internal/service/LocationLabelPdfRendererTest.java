@@ -13,6 +13,7 @@ import org.junit.jupiter.api.Test;
 
 import java.awt.image.BufferedImage;
 import java.io.IOException;
+import java.time.Duration;
 import java.util.List;
 import java.util.stream.IntStream;
 
@@ -131,5 +132,32 @@ class LocationLabelPdfRendererTest {
     void anEmptySheetIsRefused() {
         assertThatThrownBy(() -> renderer.render(sheet(List.of()), LabelFormat.A4_SHEET, WORDS))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void aNameTheFontCannotDrawStillPrints() throws IOException {
+        var area = new LocationLabel("HCM-RCV01", StorageLocationKind.AREA, null, null, null, "Khu	lạnh 🧊",
+                StorageClass.COLD);
+        try (PDDocument doc = Loader.loadPDF(renderer.render(new LocationLabelSheet("HCM", "Kho	🧊 lạnh",
+                List.of(area)), LabelFormat.A4_SHEET, WORDS))) {
+            String text = new PDFTextStripper().getText(doc);
+            assertThat(text).contains("Kho ? lạnh", "Khu lạnh ?");
+            BufferedImage cell = LabelDecoding.cell(page(doc, 0), LabelFormat.A4_SHEET, 0, DPI);
+            assertThat(LabelDecoding.decode(cell, BarcodeFormat.QR_CODE)).isEqualTo("HCM-RCV01");
+        }
+    }
+
+    /**
+     * The limit's worst case: 2,000 labels with a 200-character warehouse name that must be cut on
+     * every label. Coarse on purpose - it catches a return of the per-call font shaping cost, which
+     * made this take 3.5-9 s, not machine-to-machine noise.
+     */
+    @Test
+    void twoThousandLabelsRenderInAboutASecond() {
+        var sheet = new LocationLabelSheet("HCM", "Kho Hồ Chí Minh ".repeat(13), bins(2000));
+        renderer.render(sheet, LabelFormat.A4_SHEET, WORDS);   // warm-up: class loading, JIT
+        long start = System.nanoTime();
+        renderer.render(sheet, LabelFormat.A4_SHEET, WORDS);
+        assertThat(Duration.ofNanos(System.nanoTime() - start)).isLessThan(Duration.ofSeconds(3));
     }
 }

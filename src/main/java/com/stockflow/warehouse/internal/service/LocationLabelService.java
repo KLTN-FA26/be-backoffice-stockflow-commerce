@@ -10,7 +10,7 @@ import java.util.UUID;
  */
 public interface LocationLabelService {
 
-    /** About 84 A4 pages: a large warehouse in one go, small enough to render in memory quickly. */
+    /** About 84 A4 pages: a large warehouse in one go; the worst case renders in about 0.8 s. */
     int MAX_LABELS = 2000;
 
     /**

@@ -137,8 +137,10 @@ must learn why it is missing. A broad selection (shelf, zone, warehouse) silentl
 because those are not individually requested. The three new codes get `messages.properties` and
 `messages_vi.properties` entries (`MessageBundleTest` checks both).
 
-The 2,000 limit is about 84 A4 pages: a large warehouse in one go, small enough to render in memory in
-well under a second. Beyond that, print by zone or shelf.
+The 2,000 limit is about 84 A4 pages: a large warehouse in one go. Measured worst case (2,000 labels,
+a 200-character warehouse name cut on every label): 0.8 s, after `LabelFonts` drops the fonts' `GSUB`
+table - with it, PDFBox recompiled glyph-substitution patterns on every `showText` and the same sheet
+took 3.5-9 s. `LocationLabelPdfRendererTest.twoThousandLabelsRenderInAboutASecond` guards it. Beyond that, print by zone or shelf.
 
 ## 5. Label content and layout
 
