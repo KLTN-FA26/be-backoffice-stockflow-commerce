@@ -182,9 +182,9 @@ No other module needs labels, so `warehouse :: api` does not change and neither 
 |---|---|---|
 | `LocationLabelController` | `internal/controller` | Validates the body (`LocationLabelRequest`), calls the service, then the renderer; builds the `ResponseEntity<byte[]>` with headers. `@RequiresPermission(warehouse-locations, READ)` on a **public** method. |
 | `LocationLabelRequest` | `internal/controller/dto` | The body; bean validation for §4's shape rules. |
-| `LocationLabelService` / `…Impl` | `internal/service` | `@Transactional(readOnly = true)`. Checks the warehouse, shelf, levels and zone; resolves the selection; applies D4; enforces the limit and the error cases. Returns `LocationLabelSheet(warehousePrefix, List<LocationLabel>)`. |
+| `LocationLabelService` / `…Impl` | `internal/service` | `@Transactional(readOnly = true)`. Checks the warehouse, shelf, levels and zone; resolves the selection; applies D4; enforces the limit and the error cases. Returns `LocationLabelSheet(warehousePrefix, warehouseName, List<LocationLabel>)`. |
 | `LocationLabel` | `internal/service` | Read model: `code`, `kind`, `warehouseName`, `shelfCode`, `levelIndex`, `binCode`, `areaName`, `storageClass`. |
-| `LocationLabelPdfRenderer` | `internal/service` | `byte[] render(LocationLabelSheet, LabelFormat, Locale)`. ZXing and PDFBox live here only; knows nothing about JPA. |
+| `LocationLabelPdfRenderer` | `internal/service` | `byte[] render(LocationLabelSheet, LabelFormat, LabelWords)`; the controller resolves the words (`Kệ`, `Tầng`, `Bin`) from the message bundles, so the renderer needs no `MessageSource`. ZXing and PDFBox live here only; knows nothing about JPA. |
 | `LabelFormat` | `internal/service` | `A4_SHEET`, `THERMAL_ROLL` with their page and label geometry in millimetres. |
 | `LocationLabelRepository` | `internal/repository` | The read port: `findLabelRows(warehouseId, LabelSelection)` and the existence checks. Implemented in `LayoutReadRepositoryAdapter` with JPQL record projections, like the layout read. |
 
