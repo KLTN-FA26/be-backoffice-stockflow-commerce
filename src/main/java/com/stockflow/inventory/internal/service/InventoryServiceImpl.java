@@ -78,7 +78,7 @@ import java.util.stream.Collectors;
  */
 @Service
 @Transactional
-class InventoryServiceImpl implements InventoryService, StockConsumption {
+class InventoryServiceImpl implements InventoryService {
 
     private static final Logger log = LoggerFactory.getLogger(InventoryServiceImpl.class);
 
@@ -463,6 +463,16 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public List<com.stockflow.inventory.api.HoldView> holds(Collection<UUID> reservationIds) {
+        return repository.findHolds(Set.copyOf(reservationIds)).stream()
+                .map(hold -> new com.stockflow.inventory.api.HoldView(hold.reservationId(), hold.sku(),
+                        hold.locationCode(), hold.lotNumber(), hold.quantity(),
+                        com.stockflow.inventory.api.HoldView.Status.valueOf(hold.status().name()), hold.expiresAt()))
+                .toList();
+    }
+
+    @Override
     public int rearmReservations(UUID orderId) {
         Instant deadline = clock.instant().plus(reservationTtl);
         int rearmed = 0;
@@ -489,24 +499,6 @@ class InventoryServiceImpl implements InventoryService, StockConsumption {
         events.publishEventsOf(item);
 
         log.info("Released reservation {} ({})", reservationId, releaseReason);
-    }
-
-    /**
-     * {@inheritDoc}
-     *
-     * <p>Reached from {@code POST /reservations/{id}/consumption}, which {@code fulfillment} calls
-     * when a pick is confirmed. Not on the published {@link InventoryService} port — see
-     * {@link StockConsumption} for why.</p>
-     */
-    @Override
-    public void consume(UUID reservationId) {
-        ReservationId id = ReservationId.of(reservationId);
-        StockItem item = holderOf(id);
-        item.consumeReservation(id, clock.instant());
-        repository.save(item);
-        events.publishEventsOf(item);
-
-        log.info("Consumed reservation {}: stock deducted for real", reservationId);
     }
 
     /**

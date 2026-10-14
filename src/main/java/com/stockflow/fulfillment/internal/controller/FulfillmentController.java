@@ -14,8 +14,13 @@ import com.stockflow.common.security.Roles;
 import com.stockflow.fulfillment.api.FulfillmentService;
 import com.stockflow.fulfillment.api.FulfillmentTaskQuery;
 import com.stockflow.fulfillment.internal.controller.dto.AssigneeResponse;
+import com.stockflow.fulfillment.internal.controller.dto.ConfirmPickRequest;
 import com.stockflow.fulfillment.internal.controller.dto.FulfillmentArtifactAccessResponse;
 import com.stockflow.fulfillment.internal.controller.dto.FulfillmentTaskResponse;
+import com.stockflow.fulfillment.internal.controller.dto.PickLineResponse;
+import com.stockflow.fulfillment.internal.controller.dto.PutBackRequest;
+import com.stockflow.fulfillment.internal.controller.dto.PutBackRowResponse;
+import com.stockflow.fulfillment.internal.service.PickLists;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -45,10 +50,12 @@ import org.springframework.web.bind.annotation.RestController;
 class FulfillmentController {
 
     private final FulfillmentService fulfillment;
+    private final PickLists pickLists;
     private final FulfillmentWebMapper mapper;
 
-    FulfillmentController(FulfillmentService fulfillment, FulfillmentWebMapper mapper) {
+    FulfillmentController(FulfillmentService fulfillment, PickLists pickLists, FulfillmentWebMapper mapper) {
         this.fulfillment = fulfillment;
+        this.pickLists = pickLists;
         this.mapper = mapper;
     }
 
@@ -107,6 +114,10 @@ class FulfillmentController {
         return ApiResponse.ok(mapper.toResponse(fulfillment.findTask(taskId, actor)));
     }
 
+    /**
+     * Starts picking, and plans the task's lines if it has none (a task opened before pick lines existed).
+     * Starting a task already PICKING answers with it unchanged.
+     */
     @PostMapping("/tasks/{taskId}/picking-start")
     @RequiresPermission(resource = FulfillmentResources.PICK_LISTS, action = Action.UPDATE)
     @PreAuthorize("hasAnyAuthority('" + Roles.WAREHOUSE_STAFF + "','" + Roles.WAREHOUSE_MANAGER + "')")
@@ -116,6 +127,7 @@ class FulfillmentController {
         return ApiResponse.ok(mapper.toResponse(fulfillment.startPicking(taskId, actor)));
     }
 
+    /** Closes picking once every line is PICKED: {@code 409 PICK_LINES_INCOMPLETE} otherwise (docs 07 step 9). */
     @PostMapping("/tasks/{taskId}/picking-completion")
     @RequiresPermission(resource = FulfillmentResources.PICK_LISTS, action = Action.UPDATE)
     @PreAuthorize("hasAnyAuthority('" + Roles.WAREHOUSE_STAFF + "','" + Roles.WAREHOUSE_MANAGER + "')")
@@ -123,6 +135,66 @@ class FulfillmentController {
     public ApiResponse<FulfillmentTaskResponse> completePicking(@PathVariable UUID taskId,
                                                         @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(mapper.toResponse(fulfillment.completePicking(taskId, actor)));
+    }
+
+    /**
+     * The pick list: one line per hold of the order's stock lines, in walking order (print lines have
+     * none, docs 07 BR-06). The assignee, and managers, QC and coordinators of the task's warehouse.
+     */
+    @GetMapping("/tasks/{taskId}/pick-lines")
+    @RequiresPermission(resource = FulfillmentResources.PICK_LISTS, action = Action.READ)
+    @PreAuthorize("hasAnyAuthority('" + Roles.WAREHOUSE_STAFF + "','" + Roles.WAREHOUSE_MANAGER
+            + "','" + Roles.QC_STAFF + "','" + Roles.ORDER_COORDINATOR + "')")
+    public ApiResponse<PageResponse<PickLineResponse>> pickLines(@PathVariable UUID taskId,
+            @RequestParam(defaultValue = "0") int page, @RequestParam(required = false) Integer size,
+            @AuthenticatedUser CurrentUser actor) {
+        return ApiResponse.ok(pickLists.lines(taskId, page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, actor)
+                .map(mapper::toResponse));
+    }
+
+    /**
+     * Confirms one line by scan (SCRUM-267/274, docs 07 step 6): location, then SKU or barcode, then the
+     * quantity, which must be the whole allocation. The line's hold is deducted in the same transaction
+     * ({@code inventory :: consumption}, SCRUM-275). Only the assignee; the same scan again answers 200
+     * with the line unchanged. Send an {@code Idempotency-Key} per scan.
+     */
+    @PostMapping("/tasks/{taskId}/pick-lines/{lineId}/confirmation")
+    @RequiresPermission(resource = FulfillmentResources.PICK_LISTS, action = Action.UPDATE)
+    @PreAuthorize("hasAnyAuthority('" + Roles.WAREHOUSE_STAFF + "','" + Roles.WAREHOUSE_MANAGER + "')")
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "fulfillment-task", resourceId = "#taskId")
+    public ApiResponse<PickLineResponse> confirmPick(@PathVariable UUID taskId, @PathVariable UUID lineId,
+            @Valid @RequestBody ConfirmPickRequest request, @AuthenticatedUser CurrentUser actor) {
+        return ApiResponse.ok(mapper.toResponse(pickLists.confirm(taskId, lineId, request.locationCode(),
+                request.scannedCode(), request.quantity(), actor)));
+    }
+
+    /**
+     * Goods picked for orders cancelled afterwards, still off their bins (docs 07 BR-05, 17 §4.5 step 15):
+     * the put-back screen's queue. Limited to the caller's warehouses; {@code warehouseId} narrows it to one.
+     */
+    @GetMapping("/put-backs")
+    @RequiresPermission(resource = FulfillmentResources.PICK_LISTS, action = Action.READ)
+    @PreAuthorize("hasAnyAuthority('" + Roles.WAREHOUSE_STAFF + "','" + Roles.WAREHOUSE_MANAGER + "')")
+    public ApiResponse<PageResponse<PutBackRowResponse>> putBacks(
+            @RequestParam(required = false) UUID warehouseId,
+            @RequestParam(defaultValue = "0") int page, @RequestParam(required = false) Integer size,
+            @AuthenticatedUser CurrentUser actor) {
+        return ApiResponse.ok(pickLists.putBacks(warehouseId, page, size == null ? Pages.DEFAULT_PAGE_SIZE : size,
+                actor).map(mapper::toResponse));
+    }
+
+    /**
+     * Puts everything one line picked back onto an active bin of the task's warehouse, as AVAILABLE
+     * stock (SCRUM-275). Any warehouse staff member or manager of that warehouse, not only the picker. The
+     * same line again answers 200 with the line unchanged.
+     */
+    @PostMapping("/tasks/{taskId}/pick-lines/{lineId}/put-back")
+    @RequiresPermission(resource = FulfillmentResources.PICK_LISTS, action = Action.UPDATE)
+    @PreAuthorize("hasAnyAuthority('" + Roles.WAREHOUSE_STAFF + "','" + Roles.WAREHOUSE_MANAGER + "')")
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "fulfillment-task", resourceId = "#taskId")
+    public ApiResponse<PickLineResponse> putBack(@PathVariable UUID taskId, @PathVariable UUID lineId,
+            @Valid @RequestBody PutBackRequest request, @AuthenticatedUser CurrentUser actor) {
+        return ApiResponse.ok(mapper.toResponse(pickLists.putBack(taskId, lineId, request.locationCode(), actor)));
     }
 
     @GetMapping("/tasks/{taskId}/lines/{lineId}/design-artifacts/{role}/download-url")

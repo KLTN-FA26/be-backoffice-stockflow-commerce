@@ -6,6 +6,9 @@ import com.stockflow.fulfillment.api.FulfillmentTask;
 import com.stockflow.fulfillment.internal.controller.dto.AssigneeResponse;
 import com.stockflow.fulfillment.internal.controller.dto.FulfillmentArtifactAccessResponse;
 import com.stockflow.fulfillment.internal.controller.dto.FulfillmentTaskResponse;
+import com.stockflow.fulfillment.internal.controller.dto.PickLineResponse;
+import com.stockflow.fulfillment.internal.controller.dto.PutBackRowResponse;
+import com.stockflow.fulfillment.internal.service.PickLists;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -31,5 +34,16 @@ class FulfillmentWebMapper {
     FulfillmentArtifactAccessResponse toResponse(FulfillmentArtifactAccess access) {
         return new FulfillmentArtifactAccessResponse(access.artifactId(), access.role(), access.originalName(),
                 access.contentType(), access.sizeBytes(), access.checksum(), access.url(), access.expiresAt());
+    }
+
+    PickLineResponse toResponse(PickLists.PickLineView line) {
+        return new PickLineResponse(line.lineId(), line.taskId(), line.sequenceNo(), line.orderLineId(), line.sku(),
+                line.barcode(), line.locationCode(), line.lotNumber(), line.allocatedQty(), line.pickedQty(),
+                line.status(), line.pickedAt(), line.putBackQty(), line.putBackLocationCode(), line.putBackAt());
+    }
+
+    PutBackRowResponse toResponse(PickLists.PutBackRow row) {
+        return new PutBackRowResponse(row.taskId(), row.orderNumber(), row.warehouseId(), row.lineId(), row.sku(),
+                row.lotNumber(), row.pickedQty(), row.fromLocationCode(), row.pickedAt());
     }
 }

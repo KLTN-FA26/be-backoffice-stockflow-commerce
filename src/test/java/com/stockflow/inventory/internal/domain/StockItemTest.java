@@ -235,9 +235,70 @@ class StockItemTest {
                     item.reserve(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), Quantity.of(4), NOW);
             item.releaseReservation(reservation.id(), ReleaseReason.ORDER_CANCELLED, NOW);
 
+            // SCRUM-267: a business refusal (409 RESERVATION_NOT_ACTIVE), no longer an IllegalStateException
+            // that the exception handler turned into a 400.
             assertThatThrownBy(() -> item.consumeReservation(reservation.id(), NOW))
-                    .isInstanceOf(IllegalStateException.class)
+                    .isInstanceOfSatisfying(com.stockflow.common.error.BusinessException.class, refusal ->
+                            assertThat(refusal.errorCode())
+                                    .isEqualTo(com.stockflow.common.error.ErrorCode.RESERVATION_NOT_ACTIVE))
                     .hasMessageContaining("already RELEASED");
+            assertThat(item.onHand()).isEqualTo(Quantity.of(10));
+        }
+
+        @Test
+        @DisplayName("a hold consumed once cannot be consumed again")
+        void consumingTwiceIsRejected() {
+            StockItem item = availableWith(10);
+            Reservation reservation =
+                    item.reserve(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), Quantity.of(4), NOW);
+            item.consumeReservation(reservation.id(), NOW);
+
+            assertThatThrownBy(() -> item.consumeReservation(reservation.id(), NOW))
+                    .isInstanceOfSatisfying(com.stockflow.common.error.BusinessException.class, refusal ->
+                            assertThat(refusal.errorCode())
+                                    .isEqualTo(com.stockflow.common.error.ErrorCode.RESERVATION_NOT_ACTIVE));
+            assertThat(item.onHand()).isEqualTo(Quantity.of(6));
+        }
+
+        @Test
+        @DisplayName("a hold past its payment deadline is not consumed, even before the sweeper closes it")
+        void consumingAHoldPastItsDeadlineIsRejected() {
+            StockItem item = availableWith(10);
+            Reservation reservation = item.reserve(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
+                    Quantity.of(4), NOW, Duration.ofMinutes(30));
+
+            assertThatThrownBy(() -> item.consumeReservation(reservation.id(), NOW.plus(Duration.ofMinutes(31))))
+                    .isInstanceOfSatisfying(com.stockflow.common.error.BusinessException.class, refusal ->
+                            assertThat(refusal.errorCode())
+                                    .isEqualTo(com.stockflow.common.error.ErrorCode.RESERVATION_NOT_ACTIVE));
+            assertThat(item.onHand()).isEqualTo(Quantity.of(10));
+        }
+
+        @Test
+        @DisplayName("a hold of another stock item is not found here")
+        void consumingAnUnknownHoldIsNotFound() {
+            StockItem item = availableWith(10);
+
+            assertThatThrownBy(() -> item.consumeReservation(ReservationId.newId(), NOW))
+                    .isInstanceOfSatisfying(com.stockflow.common.error.BusinessException.class, refusal ->
+                            assertThat(refusal.errorCode())
+                                    .isEqualTo(com.stockflow.common.error.ErrorCode.RESERVATION_NOT_FOUND));
+        }
+
+        @Test
+        @DisplayName("put-back: picked goods come back onto sellable stock only")
+        void putBackAddsToAvailableStockOnly() {
+            StockItem item = availableWith(10);
+            item.putBack(Quantity.of(3));
+            assertThat(item.onHand()).isEqualTo(Quantity.of(13));
+
+            StockItem quarantined = new StockItem(StockItemId.newId(), SKU, LOCATION, null, null,
+                    Quantity.of(5), StockStatus.QUARANTINE, List.of(), 0L);
+            assertThatThrownBy(() -> quarantined.putBack(Quantity.of(1)))
+                    .isInstanceOfSatisfying(com.stockflow.common.error.BusinessException.class, refusal ->
+                            assertThat(refusal.errorCode())
+                                    .isEqualTo(com.stockflow.common.error.ErrorCode.STOCK_STATUS_MISMATCH));
+            assertThat(quarantined.onHand()).isEqualTo(Quantity.of(5));
         }
     }
 

@@ -11,7 +11,11 @@ import org.springframework.stereotype.Component;
 /**
  * kltn-docs 17 §4.5, BR-03: cancelling an order before it ships stops the warehouse work — the pick
  * and the pack of the order are cancelled, and a pick already started is flagged for its goods to be
- * put back (SCRUM-460). An order that never reached fulfillment has nothing here.
+ * put back (SCRUM-460). Its open pick lines are cancelled with it; picked lines stay PICKED and show up
+ * in the put-back queue (SCRUM-275). An order that never reached fulfillment has nothing here.
+ *
+ * <p>The pick is locked before anything changes, the same lock a pick confirmation takes first, so a
+ * confirmation and this listener never interleave on one task.</p>
  *
  * <p>Idempotent: the event is delivered at least once, and a cancelled pick stays cancelled.</p>
  */
@@ -22,19 +26,22 @@ class OrderCancellationListener {
 
     private final PickJpaRepository picks;
     private final PackJpaRepository packs;
+    private final PickListService pickLists;
 
-    OrderCancellationListener(PickJpaRepository picks, PackJpaRepository packs) {
+    OrderCancellationListener(PickJpaRepository picks, PackJpaRepository packs, PickListService pickLists) {
         this.picks = picks;
         this.packs = packs;
+        this.pickLists = pickLists;
     }
 
     @ApplicationModuleListener
     public void on(OrderCancelled event) {
-        picks.findByOrderId(event.orderId()).ifPresent(pick -> {
+        picks.lockByOrderId(event.orderId()).ifPresent(pick -> {
             if (!pick.cancel()) {
                 return;
             }
             picks.save(pick);
+            pickLists.cancelOpenLines(pick);
             packs.findByPickId(pick.getId()).ifPresent(pack -> {
                 pack.cancel();
                 packs.save(pack);
