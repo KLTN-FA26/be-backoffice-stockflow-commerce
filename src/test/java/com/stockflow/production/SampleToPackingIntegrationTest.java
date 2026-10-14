@@ -1,6 +1,9 @@
 package com.stockflow.production;
 
 import com.stockflow.common.domain.Sku;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
+import com.stockflow.common.error.NotFoundException;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
@@ -24,6 +27,7 @@ import com.stockflow.production.internal.service.MaterialIssues;
 import com.stockflow.production.internal.service.PrintRuns;
 import com.stockflow.production.internal.service.ProductionOrders;
 import com.stockflow.production.internal.service.ProductionWorkflow;
+import com.stockflow.production.internal.service.QcReferences;
 import com.stockflow.production.internal.service.SampleRequests;
 import com.stockflow.support.Await;
 import com.stockflow.support.ConfirmedDesigns;
@@ -51,6 +55,7 @@ import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The whole print path against a real PostgreSQL, every step through the modules' own services: a quote, its
@@ -76,10 +81,12 @@ class SampleToPackingIntegrationTest {
     @Autowired CustomerService customers;
     @Autowired ProductionWorkflow workflow;
     @Autowired MaterialIssues issues;
+    @Autowired QcReferences qcReferences;
     @Autowired PrintRuns runs;
     @Autowired ProductionOrders productionOrders;
     @Autowired InventoryService inventory;
-    @Autowired FileStorage storage;
+    /** Local storage in tests hands out no browser link (QC's preview); the URL itself is the storage module's. */
+    @org.springframework.test.context.bean.override.mockito.MockitoSpyBean FileStorage storage;
     @Autowired ApplicationEventPublisher publisher;
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager entityManager;
@@ -97,6 +104,8 @@ class SampleToPackingIntegrationTest {
 
     @BeforeEach
     void setUp() {
+        org.mockito.Mockito.doAnswer(call -> "http://objects.test/" + call.getArgument(0)).when(storage)
+                .presignedDownloadUrl(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any());
         hcm = jdbc.queryForObject("SELECT id FROM warehouse.warehouse WHERE prefix = 'HCM'", UUID.class);
         ConfirmedDesigns.stockBlanks(jdbc, tx, 40);
         UUID salesId = tx.execute(s -> ReferenceRows.user(entityManager));
@@ -125,9 +134,11 @@ class SampleToPackingIntegrationTest {
                 Set.of(hcm));
     }
 
-    /** Prepress, every blank issued to the print shop, the press, and a QC round passing everything. */
+    /** Prepress (unless done), every blank issued to the print shop, the press, and a QC round passing everything. */
     private ProductionOrders.Detail printed(UUID productionOrderId, int quantity) {
-        workflow.prepress(printer, productionOrderId, true, null);
+        if (status(productionOrderId) == ProductionOrder.Status.PENDING_PREPRESS) {
+            workflow.prepress(printer, productionOrderId, true, null);
+        }
         for (int scans = 0; scans < 10 && status(productionOrderId) == ProductionOrder.Status.READY; scans++) {
             issues.issue(storekeeper, productionOrderId, new MaterialIssues.Issue(UUID.randomUUID(), PRINT_SHOP, null));
         }
@@ -144,7 +155,8 @@ class SampleToPackingIntegrationTest {
     @Test
     @DisplayName("quote -> sample printed and approved -> quote accepted and converted -> paid, released -> printed, QC'd -> held for the order in packing, ready to fulfil")
     void sampleQuoteOrderPrintQcPacking() throws Exception {
-        ConfirmedDesigns.Design design = ConfirmedDesigns.confirmed(storage, jdbc, tx, entityManager, customerId);
+        ConfirmedDesigns.Design design = ConfirmedDesigns.confirmedWithPreview(storage, jdbc, tx, entityManager,
+                customerId);
         Quotes.QuoteView draft = quotes.create(sales, new Quotes.Create(UUID.randomUUID(), customerId,
                 new Quotes.Draft(PaymentTerm.PREPAID, null, Instant.now().plus(Duration.ofDays(7)), null,
                         List.of(new Quotes.Line(BLANK, design.snapshotId(), "Logo front", 3,
@@ -187,9 +199,63 @@ class SampleToPackingIntegrationTest {
                 UUID.class, lsx)).isEqualTo(sample.id());
         int atp = inventory.availableToPromise(new Sku(BLANK));
 
+        // SCRUM-418/419: QC sees the round the customer approved and the picture they approved, through the order.
+        QcReferences.ApprovedSample reference = qcReferences.approvedSample(inspector, lsx);
+        assertThat(reference.sampleRequestId()).isEqualTo(sample.id());
+        assertThat(reference.sampleRequestNumber()).isEqualTo(sample.requestNumber());
+        assertThat(reference.round()).isEqualTo(1);
+        assertThat(reference.approvedAt()).isNotNull();
+        assertThat(reference.designSnapshotId()).isEqualTo(design.snapshotId());
+        assertThat(reference.sampleProductionOrderId()).as("the LSX that printed the physical sample").isEqualTo(sampleLsx);
+        assertThat(reference.preview()).isNotNull();
+        assertThat(reference.preview().contentType()).isEqualTo("image/png");
+        assertThat(reference.preview().url()).isNotBlank();
+        assertThat(reference.preview().expiresAt()).isAfter(Instant.now());
+        assertThatThrownBy(() -> qcReferences.approvedSample(inspector, sampleLsx))
+                .as("a SAMPLE is checked against its print file; it has no approved sample")
+                .isInstanceOf(NotFoundException.class);
+        assertThat(qcReferences.packingLocations(inspector, lsx)).containsExactly(PACKING);
+
+        // SCRUM-409/410: the clerk sees what is still to bring and where, and a wrong scan moves nothing.
+        workflow.prepress(printer, lsx, true, null);
+        MaterialIssues.Pending pending = issues.pending(storekeeper, lsx);
+        assertThat(pending.required()).isEqualTo(3);
+        assertThat(pending.issued()).isZero();
+        assertThat(pending.outstanding()).isEqualTo(3);
+        assertThat(pending.holds()).isNotEmpty().allSatisfy(hold -> {
+            assertThat(hold.sku()).isEqualTo(BLANK);
+            assertThat(hold.locationCode()).startsWith("HCM-");
+        });
+        assertThat(pending.holds().stream().mapToInt(MaterialIssues.PendingHold::quantity).sum()).isEqualTo(3);
+        MaterialIssues.PendingHold first = pending.holds().getFirst();
+        assertThatThrownBy(() -> issues.issue(storekeeper, lsx, new MaterialIssues.Issue(UUID.randomUUID(), PRINT_SHOP,
+                first.reservationId(), PACKING, BLANK)))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.ISSUE_LOCATION_MISMATCH));
+        assertThatThrownBy(() -> issues.issue(storekeeper, lsx, new MaterialIssues.Issue(UUID.randomUUID(), PRINT_SHOP,
+                first.reservationId(), first.locationCode(), "NOT-THE-BLANK")))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.ISSUE_ITEM_MISMATCH));
+        assertThat(issues.pending(storekeeper, lsx).outstanding()).as("refused scans moved nothing").isEqualTo(3);
+        // The right location (any case) and the SKU (any case) issue the hold.
+        issues.issue(storekeeper, lsx, new MaterialIssues.Issue(UUID.randomUUID(), PRINT_SHOP, first.reservationId(),
+                first.locationCode().toLowerCase(java.util.Locale.ROOT), BLANK.toLowerCase(java.util.Locale.ROOT)));
+        assertThat(issues.pending(storekeeper, lsx).holds()).extracting(MaterialIssues.PendingHold::reservationId)
+                .doesNotContain(first.reservationId());
+
         ProductionOrders.Detail done = printed(lsx, 3);
 
         assertThat(done.summary().status()).isEqualTo(ProductionOrder.Status.COMPLETED);
+        // SCRUM-412 (decided 14/10/2026): the hand-over is automatic and the area is on the order and in the list.
+        assertThat(done.summary().packingLocation()).isEqualTo(PACKING);
+        assertThat(productionOrders.list(manager, new ProductionOrders.Criteria(null,
+                List.of(ProductionOrder.Status.COMPLETED), null, null, null, null, orderId, null, 0, 20, null))
+                .items()).singleElement().satisfies(row -> {
+                    assertThat(row.id()).isEqualTo(lsx);
+                    assertThat(row.packingLocation()).isEqualTo(PACKING);
+                });
+        assertThat(productionOrders.get(manager, sampleLsx).summary().packingLocation())
+                .as("a SAMPLE's units are written off, not handed to packing").isNull();
         List<UUID> packed = jdbc.queryForList("""
                 SELECT r.id FROM inventory.stock_reservation r JOIN inventory.stock_item s ON s.id = r.stock_item_id
                  WHERE r.status = 'HELD' AND r.order_id = ? AND s.location_code = ? AND s.status = 'AVAILABLE'""",
