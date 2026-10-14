@@ -45,6 +45,7 @@ import java.lang.reflect.Array;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.*;
+import java.util.concurrent.ThreadLocalRandom;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -180,14 +181,14 @@ class PermissionMatrixTest {
             jdbc.update("""
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at, version, created_at)
                     VALUES (?, ?, ?, ?, 'ON_HOLD', 1000, 'VND', NOW(), 0, NOW())""",
-                    victimOrder, "SO-20991231-%06d".formatted(new Random().nextInt(1_000_000)), victimCustomer, UUID.randomUUID());
+                    victimOrder, "SO-20991231-%06d".formatted(ThreadLocalRandom.current().nextInt(1_000_000)), victimCustomer, UUID.randomUUID());
             jdbc.update("INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency) VALUES (?, ?, 'TABLE-OAK-160', 1, 1000, 'VND')",
                     Identifiers.newId(), victimOrder);
             jdbc.update("""
                     INSERT INTO payment.receivable (id, order_id, customer_id, amount, currency, issued_at, due_date, status)
                     VALUES (?, ?, ?, 1000, 'VND', NOW(), CURRENT_DATE + 30, 'OPEN')""", victimReceivable, victimOrder, victimCustomer);
             // The victim's own quote, sent to them, and a sample request of theirs (SCRUM-448 / 394).
-            int n = new Random().nextInt(1_000_000);
+            int n = ThreadLocalRandom.current().nextInt(1_000_000);
             jdbc.update("""
                     INSERT INTO ordering.quote (id, quote_number, request_id, customer_id, status, payment_term, valid_until,
                         sent_at, sent_by, version, created_at)

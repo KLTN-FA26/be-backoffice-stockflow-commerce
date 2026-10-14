@@ -161,7 +161,7 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
     @Override
     public Page<Row> search(Criteria criteria, Pageable pageable) {
         Specification<QuoteJpaEntity> spec = Specification
-                .<QuoteJpaEntity>where(Specs.eq("customerId", criteria.customerId()))
+                .<QuoteJpaEntity>allOf(Specs.eq("customerId", criteria.customerId()))
                 .and(Specs.contains("quoteNumber", criteria.number()))
                 .and(criteria.statuses() == null || criteria.statuses().isEmpty()
                         ? null : Specs.in("status", criteria.statuses()))

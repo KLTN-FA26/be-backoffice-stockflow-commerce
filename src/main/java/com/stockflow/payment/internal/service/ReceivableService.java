@@ -97,8 +97,8 @@ public class ReceivableService {
         Optional<Receivable> existing = book.findReceivableOfOrder(event.orderId());
         if (existing.isPresent()) {
             if (!"CANCELLATION_FEE".equals(existing.get().kind())) {
-                throw new IllegalStateException("Order %s already has a %s receivable; its cancellation fee needs the "
-                        + "accountant".formatted(event.orderNumber(), existing.get().kind()));
+                throw new IllegalStateException(("Order %s already has a %s receivable; its cancellation fee needs the "
+                        + "accountant").formatted(event.orderNumber(), existing.get().kind()));
             }
             return;
         }

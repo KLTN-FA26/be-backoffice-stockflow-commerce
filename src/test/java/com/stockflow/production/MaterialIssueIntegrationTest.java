@@ -187,8 +187,9 @@ class MaterialIssueIntegrationTest {
         int atpBefore = inventory.availableToPromise(BLANK);
         int printShopBefore = printShopOnHand();
 
+        // One scan per hold: each scan issues the next hold of the order, whichever it is.
         List<MaterialIssues.Result> results = new ArrayList<>();
-        for (UUID hold : line.holds()) {
+        for (int scans = 0; scans < line.holds().size(); scans++) {
             results.add(scan(line.productionOrderId(), null));
         }
 
@@ -229,7 +230,7 @@ class MaterialIssueIntegrationTest {
     @DisplayName("Q3: an order cancelled after the issue does not free the goods in the print shop: still held, never available to promise")
     void issuedGoodsAreNeverResold() throws Exception {
         OrderLine line = releasedLine(4, true);
-        for (UUID ignored : line.holds()) {
+        for (int scans = 0; scans < line.holds().size(); scans++) {
             scan(line.productionOrderId(), null);
         }
         int atpBefore = inventory.availableToPromise(BLANK);
@@ -308,6 +309,7 @@ class MaterialIssueIntegrationTest {
         for (int i = 0; i < held.size(); i++) {
             result = scan(productionOrderId, null);
         }
+        assertThat(result).as("one scan per hold, and there is a hold").isNotNull();
         assertThat(result.order().summary().status()).isEqualTo(ProductionOrder.Status.MATERIAL_ISSUED);
         assertThat(inventory.availableToPromise(BLANK)).as("the issue changes nothing more").isEqualTo(atpBefore - 3);
         assertThat(inventory.productionHolds(productionOrderId)).extracting(h -> h.locationCode()).containsOnly(PRINT_SHOP);

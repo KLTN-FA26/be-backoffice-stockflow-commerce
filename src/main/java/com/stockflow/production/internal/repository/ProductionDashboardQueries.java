@@ -20,6 +20,12 @@ import java.util.UUID;
 public class ProductionDashboardQueries {
 
     private static final String OPEN = "status NOT IN ('COMPLETED', 'CANCELLED')";
+    private static final String SAMPLES_AWAITING =
+            "SELECT count(*) FROM production.sample_request s WHERE s.status = 'SENT_TO_CUSTOMER'";
+    /** A sample round belongs to the warehouses of the production orders that made it. */
+    private static final String SAMPLES_AWAITING_IN_WAREHOUSES = SAMPLES_AWAITING
+            + " AND EXISTS (SELECT 1 FROM production.production_order p"
+            + " WHERE p.sample_request_id = s.id AND p.warehouse_id IN (:warehouses))";
 
     private final NamedParameterJdbcTemplate jdbc;
 
@@ -101,10 +107,8 @@ public class ProductionDashboardQueries {
 
     /** Sample rounds sent to the customer and not answered yet, made in the warehouses given. */
     public long samplesAwaitingApproval(Collection<UUID> warehouses) {
-        String scope = warehouses == null ? "" : " AND EXISTS (SELECT 1 FROM production.production_order p "
-                + "WHERE p.sample_request_id = s.id AND p.warehouse_id IN (:warehouses))";
-        return jdbc.queryForObject("SELECT count(*) FROM production.sample_request s WHERE s.status = 'SENT_TO_CUSTOMER'"
-                + scope, params(warehouses), Long.class);
+        return jdbc.queryForObject(warehouses == null ? SAMPLES_AWAITING : SAMPLES_AWAITING_IN_WAREHOUSES,
+                params(warehouses), Long.class);
     }
 
     private static String scope(Collection<UUID> warehouses) {

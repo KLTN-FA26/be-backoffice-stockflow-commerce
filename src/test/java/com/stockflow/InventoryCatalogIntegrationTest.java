@@ -210,7 +210,6 @@ class InventoryCatalogIntegrationTest {
 
     Fixture fixture(String status) {
         UUID product = UUID.randomUUID(),
-                variant = UUID.randomUUID(),
                 sku = UUID.randomUUID(),
                 category = UUID.randomUUID();
         String code = ("TEST-" + sku.toString().substring(0, 12)).toUpperCase(Locale.ROOT);

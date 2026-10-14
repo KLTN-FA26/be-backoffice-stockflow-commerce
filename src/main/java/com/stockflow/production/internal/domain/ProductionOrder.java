@@ -228,7 +228,7 @@ public final class ProductionOrder {
                     "Production order %s is already subcontracted".formatted(orderNumber));
         }
         if (!SPLITTABLE.contains(status)) {
-            throw transition("split", status);
+            throw transition("split");
         }
         if (quantity < 1 || quantity >= unissued()) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
@@ -266,7 +266,7 @@ public final class ProductionOrder {
         }
         Status working = effectiveStatus();
         if (!SPLITTABLE.contains(status) || working != Status.PENDING_PREPRESS && working != Status.READY) {
-            throw transition("subcontract", status);
+            throw transition("subcontract");
         }
         if (issued > 0 || printed > 0) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
@@ -322,7 +322,7 @@ public final class ProductionOrder {
         requireSubcontracted();
         Status working = effectiveStatus();
         if (working != Status.SUBCONTRACTED && working != Status.QC && !(working == Status.READY && printed > 0)) {
-            throw transition("receive the subcontracted goods of", Status.QC);
+            throw transition("receive the subcontracted goods of");
         }
         if (quantity < 1) {
             throw new IllegalArgumentException("A receipt counts at least one unit");
@@ -370,7 +370,7 @@ public final class ProductionOrder {
         Objects.requireNonNull(at, "at");
         requireSubcontracted();
         if (!GIVE_BACK_FROM.contains(effectiveStatus())) {
-            throw transition("take work back from the subcontractor of", status);
+            throw transition("take work back from the subcontractor of");
         }
         if (quantity < 1 || quantity > stillOwed()) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
@@ -433,7 +433,7 @@ public final class ProductionOrder {
         requireSubcontracted();
         Status working = effectiveStatus();
         if (working != Status.PENDING_PREPRESS && working != Status.READY && working != Status.SUBCONTRACTED) {
-            throw transition("cancel", Status.CANCELLED);
+            throw transition("cancel");
         }
         int unsold = good;
         scrap += good;
@@ -494,7 +494,7 @@ public final class ProductionOrder {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A hold for another reason must say what it is");
         }
         if (!HOLDABLE.contains(status)) {
-            throw transition("hold", Status.ON_HOLD);
+            throw transition("hold");
         }
         Status from = status;
         statusBeforeHold = status;
@@ -634,7 +634,7 @@ public final class ProductionOrder {
                     "Production order %s is subcontracted; it is cancelled with its purchase order".formatted(orderNumber));
         }
         if (!CANCELLABLE.contains(effectiveStatus())) {
-            throw transition("cancel", Status.CANCELLED);
+            throw transition("cancel");
         }
         return end(text, at);
     }
@@ -653,7 +653,7 @@ public final class ProductionOrder {
         Objects.requireNonNull(at, "at");
         Status effective = effectiveStatus();
         if (effective != Status.PRINTING && effective != Status.QC) {
-            throw transition("stop", Status.CANCELLED);
+            throw transition("stop");
         }
         if (printedNow != 0 || scrapNow != 0) {
             if (effective != Status.PRINTING) {
@@ -711,11 +711,11 @@ public final class ProductionOrder {
 
     private void requireStatus(Status expected, String verb) {
         if (status != expected) {
-            throw transition(verb, expected);
+            throw transition(verb);
         }
     }
 
-    private BusinessException transition(String verb, Status target) {
+    private BusinessException transition(String verb) {
         return new BusinessException(ErrorCode.INVALID_PRODUCTION_TRANSITION,
                 "Cannot %s production order %s: it is %s".formatted(verb, orderNumber, status));
     }

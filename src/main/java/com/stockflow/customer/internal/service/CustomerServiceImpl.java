@@ -223,9 +223,15 @@ class CustomerServiceImpl implements CustomerService {
      */
     private void syncPortalAccess(Customer customer) {
         if (customer.userId() == null) return;
-        switch (customer.status()) {
-            case BLOCKED, INACTIVE -> accounts.suspend(customer.userId());
-            case ACTIVE, PENDING_ACTIVATION -> accounts.reinstate(customer.userId());
+        // A switch expression, so a new status does not compile until somebody decides whether it signs in.
+        boolean signsIn = switch (customer.status()) {
+            case ACTIVE, PENDING_ACTIVATION -> true;
+            case BLOCKED, INACTIVE -> false;
+        };
+        if (signsIn) {
+            accounts.reinstate(customer.userId());
+        } else {
+            accounts.suspend(customer.userId());
         }
     }
 

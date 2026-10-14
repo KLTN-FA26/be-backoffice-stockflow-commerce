@@ -100,7 +100,7 @@ class SampleRequestRepositoryAdapter implements SampleRequestRepository, SampleR
     @Override
     public Page<Row> search(Criteria criteria, Pageable pageable) {
         Specification<SampleRequestJpaEntity> spec = Specification
-                .<SampleRequestJpaEntity>where(Specs.eq("customerId", criteria.customerId()))
+                .<SampleRequestJpaEntity>allOf(Specs.eq("customerId", criteria.customerId()))
                 .and(Specs.eq("designSnapshotId", criteria.designSnapshotId()))
                 .and(Specs.contains("requestNumber", criteria.number()))
                 .and(criteria.statuses() == null || criteria.statuses().isEmpty()

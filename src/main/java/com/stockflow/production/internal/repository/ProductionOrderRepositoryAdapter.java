@@ -177,7 +177,7 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
     @Override
     public Page<Row> search(Criteria criteria, Pageable pageable) {
         Specification<ProductionOrderJpaEntity> spec = Specification
-                .<ProductionOrderJpaEntity>where(Specs.eq("warehouseId", criteria.warehouseId()))
+                .<ProductionOrderJpaEntity>allOf(Specs.eq("warehouseId", criteria.warehouseId()))
                 .and(Specs.eq("sampleRequestId", criteria.sampleRequestId()))
                 .and(Specs.eq("salesOrderId", criteria.salesOrderId()))
                 .and(Specs.contains("orderNumber", criteria.number()))
