@@ -744,6 +744,7 @@ Enum fulfillment.pick_line_status {
   PICKED
   SHORT
   CANCELLED
+  PUT_BACK
 }
 
 Enum fulfillment.shipment_status {
@@ -1083,6 +1084,20 @@ Table product.product_categories [headercolor: #2E86AB] {
   }
 }
 
+Table product.product_change_log [headercolor: #2E86AB] {
+  id             uuid [pk]
+  product_id     uuid [not null]
+  change_type    varchar(32) [not null]
+  subject_type   varchar(20) [not null, default: 'PRODUCT']
+  subject_id     uuid
+  from_status    varchar(32)
+  to_status      varchar(32)
+  reason         varchar(500)
+  changed_fields text[] [not null, default: `'{}'::text[]`]
+  actor_id       uuid
+  occurred_at    timestamptz [not null, default: `now()`]
+}
+
 Table product.product_descriptive_values [headercolor: #2E86AB] {
   id                   uuid [pk]
   product_attribute_id uuid [not null]
@@ -1101,33 +1116,36 @@ Table product.product_descriptive_values [headercolor: #2E86AB] {
 }
 
 Table product.products [headercolor: #2E86AB] {
-  id                uuid [pk]
-  brand_id          uuid
-  code              varchar(50) [not null, unique]
-  name              varchar(255) [not null]
-  name_en           varchar(300)
-  slug              varchar(255) [not null, unique]
-  short_description text
-  description       text
-  description_en    text
-  tax_class         product.products_tax_class
-  kind              product.products_kind [not null, default: 'STANDARD']
-  status            product.products_status [not null, default: 'DRAFT']
-  rejection_reason  text
-  seo_title         varchar(255)
-  seo_description   text
-  submitted_by      uuid
-  submitted_at      timestamptz
-  approved_by       uuid
-  approved_at       timestamptz
-  published_at      timestamptz
-  discontinued_at   timestamptz
-  version           bigint [not null, default: 0]
-  created_at        timestamptz [not null, default: `now()`]
-  created_by        varchar(100)
-  last_modified_at  timestamptz
-  last_modified_by  varchar(100)
-  ever_published    boolean [not null, default: false]
+  id                 uuid [pk]
+  brand_id           uuid
+  code               varchar(50) [not null, unique]
+  name               varchar(255) [not null]
+  name_en            varchar(300)
+  slug               varchar(255) [not null, unique]
+  short_description  text
+  description        text
+  description_en     text
+  tax_class          product.products_tax_class
+  kind               product.products_kind [not null, default: 'STANDARD']
+  status             product.products_status [not null, default: 'DRAFT']
+  rejection_reason   text
+  seo_title          varchar(255)
+  seo_description    text
+  submitted_by       uuid
+  submitted_at       timestamptz
+  approved_by        uuid
+  approved_at        timestamptz
+  published_at       timestamptz
+  discontinued_at    timestamptz
+  version            bigint [not null, default: 0]
+  created_at         timestamptz [not null, default: `now()`]
+  created_by         varchar(100)
+  last_modified_at   timestamptz
+  last_modified_by   varchar(100)
+  ever_published     boolean [not null, default: false]
+  discontinue_reason varchar(500)
+  suspended_at       timestamptz
+  suspend_reason     varchar(500)
 }
 
 Table product.variant_attribute_values [headercolor: #2E86AB] {
@@ -2971,25 +2989,32 @@ Table fulfillment.pick [headercolor: #2C7873] {
 }
 
 Table fulfillment.pick_line [headercolor: #2C7873] {
-  id               uuid [pk]
-  pick_id          uuid [not null]
-  order_line_id    uuid [not null]
-  reservation_id   uuid
-  sku              varchar(64) [not null]
-  location_code    varchar(64) [not null]
-  lot_number       varchar(64)
-  sequence_no      int [not null, default: 0]
-  allocated_qty    int [not null]
-  picked_qty       int [not null, default: 0]
-  short_qty        int [not null, default: 0]
-  status           fulfillment.pick_line_status [not null, default: 'OPEN']
-  picked_by        uuid
-  picked_at        timestamptz
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null, default: `now()`]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
+  id                     uuid [pk]
+  pick_id                uuid [not null]
+  order_line_id          uuid [not null]
+  reservation_id         uuid
+  sku                    varchar(64) [not null]
+  location_code          varchar(64) [not null]
+  lot_number             varchar(64)
+  sequence_no            int [not null, default: 0]
+  allocated_qty          int [not null]
+  picked_qty             int [not null, default: 0]
+  short_qty              int [not null, default: 0]
+  status                 fulfillment.pick_line_status [not null, default: 'OPEN']
+  picked_by              uuid
+  picked_at              timestamptz
+  version                bigint [not null, default: 0]
+  created_at             timestamptz [not null, default: `now()`]
+  created_by             varchar(100)
+  last_modified_at       timestamptz
+  last_modified_by       varchar(100)
+  consumed_at            timestamptz
+  scanned_location_code  varchar(64)
+  scanned_code           varchar(64)
+  put_back_qty           int [not null, default: 0]
+  put_back_location_code varchar(64)
+  put_back_by            uuid
+  put_back_at            timestamptz
 }
 
 Table fulfillment.shipment [headercolor: #2C7873] {
@@ -3508,6 +3533,8 @@ Ref: product.product_attributes.attribute_id > product.attributes.id [delete: re
 Ref: product.product_attributes.product_id > product.products.id [delete: cascade]
 Ref: product.product_categories.category_id > product.categories.id [delete: restrict]
 Ref: product.product_categories.product_id > product.products.id [delete: cascade]
+Ref: product.product_change_log.actor_id > identity.app_user.id
+Ref: product.product_change_log.product_id > product.products.id [delete: cascade]
 Ref: product.product_descriptive_values.attribute_value_id > product.attribute_values.id [delete: restrict]
 Ref: product.product_descriptive_values.product_attribute_id > product.product_attributes.id [delete: cascade]
 Ref: product.products.approved_by > identity.app_user.id
@@ -3776,6 +3803,8 @@ Ref: fulfillment.pick_line.location_code > warehouse.storage_location.location_c
 Ref: fulfillment.pick_line.order_line_id > ordering.order_line.id [delete: restrict]
 Ref: fulfillment.pick_line.pick_id > fulfillment.pick.id [delete: cascade]
 Ref: fulfillment.pick_line.picked_by > identity.app_user.id
+Ref: fulfillment.pick_line.put_back_by > identity.app_user.id
+Ref: fulfillment.pick_line.put_back_location_code > warehouse.storage_location.location_code [delete: restrict]
 Ref: fulfillment.pick_line.reservation_id > inventory.stock_reservation.id [delete: restrict]
 Ref: fulfillment.pick_line.sku > inventory.inventory_items.sku [delete: restrict]
 Ref: fulfillment.shipment.order_id > ordering.customer_order.id [delete: restrict]
@@ -3818,6 +3847,7 @@ TableGroup product_group [color: #2E86AB] {
   product.product_attribute_options
   product.product_attributes
   product.product_categories
+  product.product_change_log
   product.product_descriptive_values
   product.products
   product.variant_attribute_values
