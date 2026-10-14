@@ -11,12 +11,14 @@ that a Kafka consumer bypasses. Rules that protect an invariant belong in the ag
 
 | Id | Rule | Enforced in | WBS |
 |---|---|---|---|
-| BR-PRD-001 | A product cannot be submitted for approval unless name, category, base UoM, at least one variant and dimensions are present. | `Product.submit()` | 3.1.9.1 |
+| BR-PRD-001 | A product cannot be submitted for approval unless name, category, brand (kltn-docs 01 §3), base UoM, at least one variant and dimensions are present. | `Product.submit()` (brand: `PRODUCT_BRAND_REQUIRED`) + `ck_products_brand_on_submit` | 3.1.9.1 |
 | BR-PRD-002 | SKU codes are unique across the whole catalogue, including discontinued products. | DB unique index + `Sku` value object | 3.1.2.4 |
 | BR-PRD-003 | The approver of a product must not be the person who submitted it. | `Product.approve()` | 3.1.1.3 |
 | BR-PRD-004 | A product cannot be published without a selling price, at least one image and a category. | `Product.publish()` | 3.1.6.1 |
-| BR-PRD-005 | A product cannot be discontinued while an open PO line or an unshipped order line references it. | `product-service` domain service, checks via events | 3.1.8.1 |
+| BR-PRD-005 | Discontinuing a product **warns** when an open PO line or an unshipped order line references it, and does not block (kltn-docs 01 step 12, 02 edge cases): goods on their way are received, placed orders carry on. What is blocked is a **new** PO line for a SKU whose product is not APPROVED/PUBLISHED or whose variant is not ACTIVE (`SKU_NOT_PURCHASABLE`), at create, edit, submit and approve of a standard PO; a SUBCONTRACT PO is never asked. | `ProductService.discontinue` (`SkuReferenceProbe`: procurement, order) + `ProcurementServiceImpl.requirePurchasable` | 3.1.8.1 |
 | BR-PRD-006 | Expiry tracking cannot be switched off once stock with expiry dates exists. | `Product.updateInventoryControl()` | 3.1.5.3 |
+| BR-PRD-007 | Suspending or discontinuing a product needs a reason (1-500 characters); discontinuing makes every variant OBSOLETE. | `Product.suspend()` / `discontinue()` + `ck_products_inactive`, `ck_products_discontinue_reason` | 3.1.8.1 |
+| BR-PRD-008 | Only a DRAFT product is deleted, with its variants, images and inventory items; anything that still refers to its SKUs (stock, purchasing, orders, designs, a listing) refuses it. | `Product.requireDeletable()` + foreign keys | 3.1.1 |
 
 ## Procurement — `procurement-service`
 

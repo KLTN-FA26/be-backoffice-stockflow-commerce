@@ -1,5 +1,6 @@
 package com.stockflow.product.internal.domain;
 
+import com.stockflow.contracts.CatalogListingChanged;
 import com.stockflow.contracts.ProductApproved;
 import com.stockflow.contracts.ProductDiscontinued;
 import com.stockflow.common.domain.DomainEvent;
@@ -32,6 +33,19 @@ public sealed interface ProductEvent extends DomainEvent {
             implements ProductEvent {
 
         public Discontinued(ProductDiscontinued payload) {
+            this(UUID.randomUUID(), Instant.now(), payload);
+        }
+
+        @Override
+        public String aggregateId() {
+            return payload.productId().toString();
+        }
+    }
+
+    /** A change the catalog must look at again: the product left or re-entered the sellable states. */
+    record CatalogChanged(UUID eventId, Instant occurredAt, CatalogListingChanged payload) implements ProductEvent {
+
+        public CatalogChanged(CatalogListingChanged payload) {
             this(UUID.randomUUID(), Instant.now(), payload);
         }
 

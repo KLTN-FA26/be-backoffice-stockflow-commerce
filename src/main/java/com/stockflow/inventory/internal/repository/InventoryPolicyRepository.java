@@ -41,6 +41,13 @@ public class InventoryPolicyRepository {
                 skus.toArray());
     }
 
+    /** Deletes the items of these SKUs; a foreign key that still points at one refuses the whole statement. */
+    public void deleteItems(java.util.Collection<String> skus) {
+        if (skus.isEmpty()) return;
+        String placeholders = String.join(",", Collections.nCopies(skus.size(), "?"));
+        jdbc.update("delete from inventory.inventory_items where sku in (" + placeholders + ")", skus.toArray());
+    }
+
     public boolean hasActiveCount(String sku) {
         return Boolean.TRUE.equals(
                 jdbc.queryForObject(

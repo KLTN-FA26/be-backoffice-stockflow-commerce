@@ -106,8 +106,12 @@ class CatalogSearchIntegrationTest {
     /** Moves a product out of the published state straight in the source, as a discontinuation does. */
     private void setStatus(UUID id, String status) {
         tx.executeWithoutResult(s -> jdbc.update(
-                "update product.products set status=?, discontinued_at = case when ? = 'DISCONTINUED' then now() end"
-                        + " where id=?", status, status, id));
+                "update product.products set status=?,"
+                        + " discontinued_at = case when ? = 'DISCONTINUED' then now() end,"
+                        + " discontinue_reason = case when ? = 'DISCONTINUED' then 'search test' end,"
+                        + " suspended_at = case when ? = 'INACTIVE' then now() end,"
+                        + " suspend_reason = case when ? = 'INACTIVE' then 'search test' end"
+                        + " where id=?", status, status, status, status, status, id));
     }
 
     @AfterEach

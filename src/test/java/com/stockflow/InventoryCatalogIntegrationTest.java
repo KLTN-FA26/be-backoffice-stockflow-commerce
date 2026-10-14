@@ -223,14 +223,17 @@ class InventoryCatalogIntegrationTest {
                 "/" + code);
         write(
                 """
-insert into product.products(id,code,name,name_en,tax_class,slug,status,submitted_by,submitted_at,approved_by,approved_at,discontinued_at)
+insert into product.products(id,code,name,name_en,tax_class,slug,status,submitted_by,submitted_at,approved_by,approved_at,discontinued_at,
+                             brand_id,discontinue_reason)
 values (?,?,?,'Furniture','STANDARD',?,?,md5('demo:user:editor')::uuid,now(),
-        md5('demo:user:approver')::uuid,now(),case when ?='DISCONTINUED' then now() end)
+        md5('demo:user:approver')::uuid,now(),case when ?='DISCONTINUED' then now() end,
+        md5('demo:brand:NHAXINH')::uuid,case when ?='DISCONTINUED' then 'test fixture' end)
 """,
                 product,
                 code,
                 "Test furniture",
                 code.toLowerCase(),
+                status,
                 status,
                 status);
         write(

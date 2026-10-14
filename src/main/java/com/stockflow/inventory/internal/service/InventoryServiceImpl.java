@@ -188,6 +188,11 @@ class InventoryServiceImpl implements InventoryService {
     }
 
     @Override
+    public void deleteUnusedItems(java.util.Collection<String> skus) {
+        policies.deleteItems(skus);
+    }
+
+    @Override
     public StockAdjustmentSummary requestAdjustment(RequestAdjustmentCommand command) {
         return operations.requestAdjustment(command);
     }

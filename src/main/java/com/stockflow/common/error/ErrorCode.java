@@ -23,11 +23,20 @@ public enum ErrorCode {
     INVENTORY_POLICY_STOCK_CONFLICT("Existing stock is incompatible with this policy", 409),
     CATALOG_SLUG_EXISTS("This storefront URL is already reserved", 409),
     CATALOG_LISTING_REQUIRED("Configure the storefront listing before publishing", 409),
-    PRODUCT_NOT_APPROVED("Approve the product before publishing", 409),
+    /** Publishing, and since SCRUM-461 a purchase order line too (the field error carries this code): the product is not approved. */
+    PRODUCT_NOT_APPROVED("The product is not approved", 409),
     PRODUCT_CATEGORY_REQUIRED("A valid product category is required", 409),
     PRODUCT_SKU_REQUIRED("At least one sellable SKU is required", 409),
     PRODUCT_GALLERY_REQUIRED("An approved non-empty product gallery is required", 409),
     PRODUCT_NOT_PURCHASABLE("This product is not currently available for purchase", 409),
+    /** SCRUM-461, kltn-docs 02 BR-01: a new purchase order line takes only an active SKU. {@code fieldErrors[]} names each line. */
+    SKU_NOT_PURCHASABLE("The SKU is not active for purchasing", 409),
+    /** SCRUM-461, kltn-docs 01 §3: a product is identified by its brand too, so it is chosen before approval. */
+    PRODUCT_BRAND_REQUIRED("A brand is required before submitting for approval", 409),
+    /** SCRUM-461, kltn-docs 01 BR-02: only a draft is deleted. */
+    PRODUCT_NOT_DELETABLE("Only a draft product can be deleted", 409),
+    /** SCRUM-461: stock, a purchase order, an order or a design already points at the product. */
+    PRODUCT_IN_USE("The product is referenced by stock, purchasing, orders or designs", 409),
     PRICE_NOT_AVAILABLE("No selling price is available for this SKU", 409),
     CATALOG_PRICE_AMBIGUOUS("More than one selling price has the same priority", 409),
     MALFORMED_REQUEST("The request body could not be read", 400),

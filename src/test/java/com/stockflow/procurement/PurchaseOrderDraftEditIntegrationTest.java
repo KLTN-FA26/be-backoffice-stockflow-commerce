@@ -81,9 +81,10 @@ class PurchaseOrderDraftEditIntegrationTest {
                                                      version, created_at)
                     VALUES (?, 'Second warehouse', 'ACTIVE', ?, 'Somewhere', 'M', 50, 50, 0, NOW())""",
                     otherWarehouse, "E" + UUID.randomUUID().toString().substring(0, 6).toUpperCase());
-            skuA = ReferenceRows.product(entityManager).sku();
-            skuB = ReferenceRows.product(entityManager).sku();
-            skuC = ReferenceRows.product(entityManager).sku();
+            // A line takes an active SKU only (SCRUM-461): approved products, not drafts.
+            skuA = ReferenceRows.approvedProduct(entityManager).sku();
+            skuB = ReferenceRows.approvedProduct(entityManager).sku();
+            skuC = ReferenceRows.approvedProduct(entityManager).sku();
         });
     }
 

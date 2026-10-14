@@ -1,5 +1,7 @@
 package com.stockflow.product.internal.repository;
 
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Specs;
 import com.stockflow.product.api.ProductSummary;
 import com.stockflow.product.internal.domain.Product;
@@ -7,12 +9,14 @@ import com.stockflow.product.internal.domain.ProductId;
 import com.stockflow.product.internal.domain.ProductRepository;
 import com.stockflow.product.internal.entity.ProductJpaEntity;
 import jakarta.persistence.EntityManager;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -85,6 +89,30 @@ class ProductRepositoryAdapter implements ProductRepository, ProductSearchReposi
     @Override
     public boolean brandExists(UUID brandId) {
         return brands.existsById(brandId);
+    }
+
+    @Override
+    public List<String> skusOf(ProductId id) {
+        return variants.findByProductIdOrderByPositionAscIdAsc(id.value()).stream()
+                .map(com.stockflow.product.internal.entity.VariantJpaEntity::getSku).toList();
+    }
+
+    /**
+     * Variants first (their foreign key to the product is RESTRICT), flushed one statement at a time so a
+     * foreign key that still holds — an order line, a cart line, a design, a storefront listing or price
+     * — is answered here as {@code PRODUCT_IN_USE}, not at commit as a 500.
+     */
+    @Override
+    public void delete(ProductId id) {
+        try {
+            variants.deleteAll(variants.findByProductIdOrderByPositionAscIdAsc(id.value()));
+            variants.flush();
+            jpa.deleteById(id.value());
+            jpa.flush();
+        } catch (DataIntegrityViolationException stillReferenced) {
+            throw new BusinessException(ErrorCode.PRODUCT_IN_USE,
+                    "Product %s is still referenced and cannot be deleted".formatted(id), stillReferenced);
+        }
     }
 
     /**

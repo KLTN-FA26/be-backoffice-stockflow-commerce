@@ -13,6 +13,8 @@ import com.stockflow.inventory.api.InventoryPolicy;
 import com.stockflow.inventory.api.StockThresholdEvaluation;
 import com.stockflow.product.api.ProductPublication;
 import com.stockflow.product.api.ProductStatus;
+import com.stockflow.product.internal.domain.ProductChangeType;
+import com.stockflow.product.internal.repository.ProductChangeLogRepository;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -23,18 +25,22 @@ import java.util.UUID;
  * The inventory side of a product's SKUs, reached through the product: its stock policy and its
  * logistics. {@code skuId} is the variant's id; the version an edit quotes back is the inventory
  * item's. Both live in the inventory module, which is called through {@code inventory :: api} in
- * this transaction.
+ * this transaction. What an edit changed is written to the product's history in the same transaction
+ * ({@code product_change_log}, SCRUM-461). A suspended product is still maintained: only a product under
+ * review or discontinued is refused.
  */
 @Service
 @Transactional
 public class SkuInventoryControlService {
     private final ProductPublication products;
     private final InventoryControlService inventory;
+    private final ProductChangeLogRepository history;
 
     public SkuInventoryControlService(
-            ProductPublication products, InventoryControlService inventory) {
+            ProductPublication products, InventoryControlService inventory, ProductChangeLogRepository history) {
         this.products = products;
         this.inventory = inventory;
+        this.history = history;
     }
 
     public record View(
@@ -59,7 +65,13 @@ public class SkuInventoryControlService {
                 || product.status() == ProductStatus.PENDING_APPROVAL)
             throw new BusinessException(ErrorCode.CONFLICT);
         var sku = products.inventorySku(productId, skuId);
-        return view(skuId, inventory.configure(new Sku(sku.sku()), version, policy));
+        var before = inventory.item(new Sku(sku.sku())).policy();
+        var updated = inventory.configure(new Sku(sku.sku()), version, policy);
+        var changed = RecordDiff.changedFields(before, updated.policy());
+        if (!changed.isEmpty()) {
+            history.record(productId, ProductChangeType.INVENTORY_CONTROL, skuId, null, null, null, changed);
+        }
+        return view(skuId, updated);
     }
 
     /** The SKU's logistics (weight, dimensions, package, storage class), kept on its inventory item. */
@@ -77,7 +89,13 @@ public class SkuInventoryControlService {
                 || product.status() == ProductStatus.PENDING_APPROVAL)
             throw new BusinessException(ErrorCode.CONFLICT);
         var sku = products.inventorySku(productId, skuId);
-        return inventory.describe(new Sku(sku.sku()), version, logistics);
+        var before = inventory.logistics(new Sku(sku.sku())).logistics();
+        var described = inventory.describe(new Sku(sku.sku()), version, logistics);
+        var changed = RecordDiff.changedFields(before, described.logistics());
+        if (!changed.isEmpty()) {
+            history.record(productId, ProductChangeType.LOGISTICS, skuId, null, null, null, changed);
+        }
+        return described;
     }
 
     private View view(UUID skuId, InventoryControlItem item) {

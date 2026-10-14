@@ -152,6 +152,20 @@ public interface InventoryService {
     java.util.Map<UUID, String> skusOf(java.util.Collection<UUID> inventoryItemIds);
 
     /**
+     * Deletes the inventory item of each SKU, for a product that is deleted before anything happened to
+     * it (SCRUM-461): the item exists only because its variant was created (docs 01 BR-07), and the
+     * variant cannot go while it stands. A SKU with no item is skipped.
+     *
+     * <p>No guard of its own: stock rows, movements, adjustments, counts, transfer lines, purchase order
+     * and receipt lines, pick lines and putaway or move tasks all point at an item through foreign keys,
+     * and any of them refuses the delete, which is exactly what must happen.</p>
+     *
+     * @throws org.springframework.dao.DataIntegrityViolationException when something still refers to an item;
+     *         the caller's transaction is then rolled back as a whole
+     */
+    void deleteUnusedItems(java.util.Collection<String> skus);
+
+    /**
      * SKUs that are low on stock, in SKU order, the {@code limit} after {@code afterSku} ({@code null} or empty for
      * the first page): pass the last SKU returned to get the next page; fewer than {@code limit} back means the end.
      *

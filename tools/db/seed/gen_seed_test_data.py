@@ -450,6 +450,11 @@ for pi, (pcode, pname, pen, cat, brand, kind, status, axes, descr, prices, item)
         approved_by=U[APPROVER] if approved else None, approved_at=at(date(2026, 8, 4), 14) if approved else None,
         published_at=at(date(2026, 8, 5), 9) if status in ("PUBLISHED", "INACTIVE", "DISCONTINUED") else None,
         discontinued_at=at(date(2026, 9, 30), 17) if status == "DISCONTINUED" else None,
+        # SCRUM-461: a discontinued product carries why, a suspended one when and why (ck_products_discontinue_reason,
+        # ck_products_inactive).
+        discontinue_reason="Ngừng sản xuất, chuyển sang ống hút giấy" if status == "DISCONTINUED" else None,
+        suspended_at=at(date(2026, 9, 20), 11) if status == "INACTIVE" else None,
+        suspend_reason="Tạm ngừng để kiểm tra chất lượng lô hàng" if status == "INACTIVE" else None,
         rejection_reason=None, created_at=P_CREATED)
     add("product.product_categories", id=uid(f"pc:{pcode}"), product_id=pid, category_id=uid("cat:" + cat),
         is_primary=True, created_at=P_CREATED)
