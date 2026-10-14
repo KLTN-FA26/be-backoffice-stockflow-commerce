@@ -171,6 +171,23 @@ public enum ErrorCode {
     CUSTOMER_CREDIT_OVERDUE("The customer has overdue receivables", 409),
     /** SCRUM-466: a task is picked in one warehouse; the order's stock is held in more than one, or elsewhere. */
     FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE("Stock held for this order is in another warehouse", 409),
+    /** SCRUM-267 (docs 07 step 6): the bin scanned is not the one this pick line takes its goods from. */
+    PICK_LOCATION_MISMATCH("The scanned location is not this line's", 409),
+    /** SCRUM-274: the code scanned is neither this line's SKU nor its barcode. */
+    PICK_ITEM_MISMATCH("The scanned item is not this line's SKU", 409),
+    /** Docs 07 BR-04: never more than the line's allocation; more needs a re-allocation. */
+    PICK_QUANTITY_EXCEEDS_ALLOCATION("More than allocated to this line", 409),
+    /** Fewer than allocated: a short pick, reported through the short-pick flow (SCRUM-268). */
+    PICK_QUANTITY_SHORT("Fewer than allocated - report a short pick", 409),
+    PICK_LINE_NOT_OPEN("This line is no longer open", 409),
+    /** Docs 07 step 9: a pick task closes only when every line is picked. */
+    PICK_LINES_INCOMPLETE("Some lines are not picked yet", 409),
+    PICK_TASK_STATE_CONFLICT("The task cannot do that in its current status", 409),
+    /** The hold behind a pick line was released, expired or already consumed: nothing is deducted. */
+    RESERVATION_NOT_ACTIVE("The stock hold is no longer active", 409),
+    /** Docs 07 BR-05: only goods picked for an order cancelled afterwards go back to a bin. */
+    PUT_BACK_NOT_REQUIRED("Nothing on this line needs putting back", 409),
+    PUT_BACK_LOCATION_INVALID("Put back onto an active bin of the task's warehouse", 409),
     OPTIMISTIC_LOCK("The record changed meanwhile, please retry", 409),
     /** Two writers reached the same row; the loser waited for the lock and gave up. Retryable. */
     LOCK_TIMEOUT("The record is busy, please retry", 409),

@@ -123,9 +123,15 @@ public final class Reservation {
         this.closedAt = now;
     }
 
+    /**
+     * A closed hold cannot be consumed or released again. A business refusal (409
+     * {@code RESERVATION_NOT_ACTIVE}), not a programming error: a picker scanning goods whose order was
+     * just cancelled, or a hold the sweeper expired, reaches this through an ordinary request.
+     */
     private void requireActive(String operation) {
         if (status.isTerminal()) {
-            throw new IllegalStateException(
+            throw new com.stockflow.common.error.BusinessException(
+                    com.stockflow.common.error.ErrorCode.RESERVATION_NOT_ACTIVE,
                     "Cannot %s reservation %s: it is already %s".formatted(operation, id, status));
         }
     }
