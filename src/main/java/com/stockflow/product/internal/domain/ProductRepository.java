@@ -22,7 +22,8 @@ public interface ProductRepository extends AggregateRepository<Product, ProductI
 
     boolean existsByCode(String code);
 
-    /** Whether a variant anywhere already carries {@code sku}: the default variant takes the code. */
+    /** Whether a variant anywhere already carries {@code sku}: the default variant of a product created
+     *  without axes takes the code. */
     boolean skuExists(String sku);
 
     boolean categoryExists(UUID categoryId);

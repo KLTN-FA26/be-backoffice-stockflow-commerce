@@ -36,7 +36,8 @@ Only `SELECT` and `COLOR` attributes can be variant axes.
   as its SKU.
 - `sortOrder` may be left out. The axis's position in the list is then used.
 - **Errors:** if anything is refused, no product is created.
-  - 409 `VARIANT_SKU_ALREADY_EXISTS`: a SKU is taken.
+  - 409 `VARIANT_SKU_ALREADY_EXISTS`: a SKU is taken, or two combinations would build the same SKU (value codes containing `-`).
+  - 400 `VALIDATION_FAILED`: a built SKU is longer than 64 characters. This endpoint takes no SKUs, so shorten the product or value codes.
   - 400 `VARIANT_MATRIX_TOO_LARGE`: more than 100 combinations.
   - 400 `VALIDATION_FAILED`: a value is not on that attribute, a value is deactivated, or the attribute cannot be an axis.
   - 404 `ATTRIBUTE_NOT_FOUND`: the attribute does not exist.
@@ -50,9 +51,11 @@ Only `SELECT` and `COLOR` attributes can be variant axes.
 | `PUT /api/v1/products/{id}/axes` | the whole axis list, same shape as `axes` above |
 | `PUT /api/v1/products/{id}/descriptive-attributes` | non-axis attributes (material, …) |
 
-You can add or remove an axis only while the product is DRAFT and no variant uses options yet
-(otherwise 409 `PRODUCT_AXES_LOCKED`). You can add an option at any time the product accepts
-changes. An option that a variant uses cannot be removed (409 `ATTRIBUTE_IN_USE`).
+You can add or remove an axis only while the product is DRAFT (otherwise 409 `PRODUCT_AXES_LOCKED`).
+Adding an axis once a variant uses options is also 409 `PRODUCT_AXES_LOCKED`. Removing an axis or an
+option that a variant uses is 409 `ATTRIBUTE_IN_USE`. So a product created with `axes` has its axis
+set fixed from birth: every variant uses a value on every axis. You can add an option at any time the
+product accepts changes.
 
 ## 4. Variants
 
