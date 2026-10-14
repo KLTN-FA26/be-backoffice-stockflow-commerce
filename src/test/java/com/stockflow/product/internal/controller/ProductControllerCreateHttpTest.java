@@ -56,6 +56,18 @@ class ProductControllerCreateHttpTest {
     }
 
     @Test
+    void anAxisWithoutAttributeOrANullAxisIsABadRequest() throws Exception {
+        mvc.perform(post("/api/v1/products").contentType("application/json").content("""
+                        {"code":"CUP-15","name":"Ly","nameEn":"Cup","taxClass":"STANDARD",
+                         "axes":[{"optionValueIds":["%s"]}]}""".formatted(VALUE)))
+                .andExpect(status().isBadRequest());
+        mvc.perform(post("/api/v1/products").contentType("application/json").content("""
+                        {"code":"CUP-16","name":"Ly","nameEn":"Cup","taxClass":"STANDARD","axes":[null]}"""))
+                .andExpect(status().isBadRequest());
+        verify(service, never()).create(any());
+    }
+
+    @Test
     void anAxisWithoutOptionsIsABadRequest() throws Exception {
         mvc.perform(post("/api/v1/products").contentType("application/json").content("""
                         {"code":"CUP-14","name":"Ly","nameEn":"Cup","taxClass":"STANDARD",

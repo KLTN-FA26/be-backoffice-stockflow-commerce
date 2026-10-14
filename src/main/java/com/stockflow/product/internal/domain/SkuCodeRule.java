@@ -21,7 +21,7 @@ public final class SkuCodeRule {
         valueCodesInAxisOrder.forEach(v -> code.append('-').append(v));
         if (code.length() > Sku.MAX_LENGTH) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "The generated SKU %s is longer than %d characters; supply a SKU by hand"
+                    "The generated SKU %s is longer than %d characters; shorten the product or value codes, or supply a SKU by hand"
                             .formatted(code, Sku.MAX_LENGTH));
         }
         return new Sku(code.toString());

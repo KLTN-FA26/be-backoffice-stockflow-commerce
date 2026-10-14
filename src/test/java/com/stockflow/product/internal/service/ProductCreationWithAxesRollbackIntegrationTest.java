@@ -55,11 +55,26 @@ class ProductCreationWithAxesRollbackIntegrationTest {
     private UUID user;
     private UUID holder;
     private UUID attribute;
+    private String code;
 
     @AfterEach
     void cleanUp() {
         // Hikari runs with auto-commit off, so plain JdbcTemplate calls would never commit.
         new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            if (code != null) {
+                // Only there if the test failed: the refused product must not leak into later runs.
+                jdbc.update("delete from inventory.inventory_items where sku like ?", code + "-%");
+                jdbc.update("delete from product.variant_attribute_values where variant_id in (select v.id from "
+                        + "product.variants v join product.products p on p.id = v.product_id where p.code = ?)", code);
+                jdbc.update("delete from product.variants where product_id in "
+                        + "(select id from product.products where code = ?)", code);
+                jdbc.update("delete from product.product_attribute_options where product_attribute_id in (select pa.id "
+                        + "from product.product_attributes pa join product.products p on p.id = pa.product_id "
+                        + "where p.code = ?)", code);
+                jdbc.update("delete from product.product_attributes where product_id in "
+                        + "(select id from product.products where code = ?)", code);
+                jdbc.update("delete from product.products where code = ?", code);
+            }
             if (holder != null) {
                 jdbc.update("delete from inventory.inventory_items where sku in "
                         + "(select sku from product.variants where product_id = ?)", holder);
@@ -83,7 +98,7 @@ class ProductCreationWithAxesRollbackIntegrationTest {
         when(users.current()).thenReturn(Optional.of(new CurrentUser(user, "test-" + user, Set.of(), Set.of(),
                 DataScope.ALL, Set.of())));
         String suffix = UUID.randomUUID().toString().substring(0, 6).toUpperCase();
-        String code = "ROLL-" + suffix;
+        code = "ROLL-" + suffix;
 
         attribute = tx.execute(s -> dictionary.create("SIZE" + suffix, AttributeDataType.SELECT,
                 new AttributeDetails("Size", null, false, false, 0)).id());
@@ -103,6 +118,8 @@ class ProductCreationWithAxesRollbackIntegrationTest {
         assertThat(jdbc.queryForObject("select count(*) from product.product_attributes where attribute_id = ?",
                 Long.class, attribute)).isZero();
         assertThat(jdbc.queryForObject("select count(*) from product.variants where sku like ?", Long.class,
+                code + "%")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from inventory.inventory_items where sku like ?", Long.class,
                 code + "%")).isEqualTo(1);
     }
 
