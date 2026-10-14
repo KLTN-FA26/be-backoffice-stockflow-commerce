@@ -93,6 +93,9 @@ public interface StockItemRepository {
     /** The same for a production order's live holds, locked in id order. */
     List<StockItem> findWithReservationsForProductionOrder(java.util.UUID productionOrderId);
 
+    /** The ids of a production order's live holds, oldest first, read without locking (a screen's view). */
+    List<java.util.UUID> findHeldReservationIdsOfProductionOrder(java.util.UUID productionOrderId);
+
     /** The stock item a reservation is on, without locking it — so it can be locked in id order with another. */
     Optional<StockItemId> findIdByReservationId(ReservationId reservationId);
 

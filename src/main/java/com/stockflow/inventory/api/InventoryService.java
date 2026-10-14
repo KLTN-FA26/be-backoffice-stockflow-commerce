@@ -101,6 +101,12 @@ public interface InventoryService {
     List<StockReservation> productionHolds(UUID productionOrderId);
 
     /**
+     * The same holds as they stand, oldest first, for a screen to show (SCRUM-410): read-only and locking nothing,
+     * unlike {@link #productionHolds}, which locks the stock rows for the caller's write.
+     */
+    List<HoldView> productionHoldViews(UUID productionOrderId);
+
+    /**
      * Move one live hold together with its goods (see {@link IssueReservedStockCommand}) - AVAILABLE from storage,
      * or INBOUND when a subcontractor's goods were held on receipt (SCRUM-441) - writing one MOVE
      * ledger line with reference {@code PRODUCTION_ORDER}. The units are held for their owner the whole

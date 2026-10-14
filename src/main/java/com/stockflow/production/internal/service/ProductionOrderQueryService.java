@@ -59,6 +59,7 @@ class ProductionOrderQueryService implements ProductionOrders {
     private static Row toRow(ProductionOrderSearch.Row r) {
         return new Row(r.id(), r.orderNumber(), r.type(), r.mode(), r.status(), r.holdReason(), r.warehouseId(),
                 r.blankSku(), r.designSnapshotId(), r.plannedQuantity(), r.goodQuantity(), r.dueDate(),
-                r.sampleRequestId(), r.salesOrderId(), r.salesOrderLineId(), r.parentId(), r.createdAt());
+                r.sampleRequestId(), r.salesOrderId(), r.salesOrderLineId(), r.parentId(), r.createdAt(),
+                r.packingLocation());
     }
 }

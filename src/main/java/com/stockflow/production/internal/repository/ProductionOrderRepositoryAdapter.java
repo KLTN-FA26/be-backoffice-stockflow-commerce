@@ -62,6 +62,14 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
     }
 
     @Override
+    public void recordHandOver(UUID productionOrderId, String packingLocation) {
+        ProductionOrderJpaEntity entity = jpa.findById(productionOrderId)
+                .orElseThrow(() -> new IllegalStateException("No production order " + productionOrderId));
+        entity.handOverTo(packingLocation);
+        jpa.saveAndFlush(entity);
+    }
+
+    @Override
     public void recordTransition(UUID productionOrderId, ProductionOrder.Transition transition, Instant at, UUID by) {
         entityManager.persist(new ProductionOrderStatusHistoryJpaEntity(Identifiers.newId(), productionOrderId,
                 transition.from() == null ? null : transition.from().name(), transition.to().name(),
@@ -261,6 +269,6 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
                 e.getHoldReason() == null ? null : e.getHoldReason().name(),
                 e.getWarehouseId(), e.getBlankSku(), e.getDesignSnapshotId(), e.getPlannedQuantity(),
                 e.getGoodQuantity(), e.getDueDate(), e.getSampleRequestId(), e.getSalesOrderId(),
-                e.getSalesOrderLineId(), e.getParentId(), e.getCreatedAt());
+                e.getSalesOrderLineId(), e.getParentId(), e.getCreatedAt(), e.getPackingLocationCode());
     }
 }

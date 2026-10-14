@@ -185,6 +185,11 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     }
 
     @Override
+    public List<UUID> findHeldReservationIdsOfProductionOrder(UUID productionOrderId) {
+        return jpa.findHeldReservationIdsOfProductionOrder(productionOrderId);
+    }
+
+    @Override
     public Optional<StockItemId> findIdByReservationId(ReservationId reservationId) {
         return jpa.findStockItemIdByReservationId(reservationId.value()).map(StockItemId::new);
     }

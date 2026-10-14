@@ -189,6 +189,10 @@ public enum ErrorCode {
     RESERVATION_NOT_ISSUABLE("This stock hold cannot be issued", 409),
     /** BR-PRD-03: never more blanks than the production order still needs. */
     ISSUE_EXCEEDS_REQUIREMENT("More blanks than the production order still needs", 409),
+    /** SCRUM-409: the location scanned at a blank issue is not where the hold's goods are. */
+    ISSUE_LOCATION_MISMATCH("The scanned location is not where this hold's blanks are", 409),
+    /** SCRUM-409: the SKU or barcode scanned at a blank issue is not the hold's. */
+    ISSUE_ITEM_MISMATCH("The scanned item is not this hold's SKU", 409),
     /** BR-PRD-01: a source already has a production order, and it describes different work. */
     PRODUCTION_SOURCE_CONFLICT("A production order already exists for this source with different content", 409),
     /** SCRUM-448: a quote moves only along 03-state-machines §18. */

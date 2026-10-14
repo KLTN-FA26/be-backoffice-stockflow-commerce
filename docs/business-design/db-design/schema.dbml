@@ -2193,6 +2193,7 @@ Table production.production_order [headercolor: #E67E22] {
   last_modified_at       timestamptz
   last_modified_by       varchar(100)
   origin                 varchar(16)
+  packing_location_code  varchar(64)
 }
 
 Table production.production_order_status_history [headercolor: #E67E22] {
@@ -3672,6 +3673,7 @@ Ref: production.production_material_issue.reservation_id > inventory.stock_reser
 Ref: production.production_material_issue.stock_movement_id > inventory.stock_movement.id [delete: restrict]
 Ref: production.production_order.approved_sample_id > production.sample_request.id [delete: restrict]
 Ref: production.production_order.design_snapshot_id > design.design_snapshot.id [delete: restrict]
+Ref: production.production_order.packing_location_code > warehouse.storage_location.location_code [delete: restrict]
 Ref: production.production_order.parent_id > production.production_order.id [delete: restrict]
 Ref: production.production_order.prepress_checked_by > identity.app_user.id
 Ref: production.production_order.purchase_order_id > procurement.purchase_orders.id [delete: restrict]

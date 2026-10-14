@@ -18,11 +18,38 @@ import java.util.UUID;
 public interface MaterialIssues {
 
     /**
-     * @param requestId     the scan's idempotency key: a retry returns the first answer and moves nothing
-     * @param toLocation    a PRODUCTION area of the order's warehouse
-     * @param reservationId the hold scanned; null for the next hold of the order not yet issued
+     * @param requestId       the scan's idempotency key: a retry returns the first answer and moves nothing
+     * @param toLocation      a PRODUCTION area of the order's warehouse
+     * @param reservationId   the hold scanned; null for the next hold of the order not yet issued
+     * @param scannedLocation the location scanned where the blanks were taken; when given it must be the hold's
+     *                        ({@code ISSUE_LOCATION_MISMATCH}), any case
+     * @param scannedCode     the SKU or barcode scanned on the blanks; when given it must be the hold's SKU (any
+     *                        case) or the SKU's barcode ({@code ISSUE_ITEM_MISMATCH})
      */
-    record Issue(UUID requestId, String toLocation, UUID reservationId) {
+    record Issue(UUID requestId, String toLocation, UUID reservationId, String scannedLocation, String scannedCode) {
+
+        /** A scan that names no source location and no item: the hold alone decides (the SCRUM-397 contract). */
+        public Issue(UUID requestId, String toLocation, UUID reservationId) {
+            this(requestId, toLocation, reservationId, null, null);
+        }
+    }
+
+    /**
+     * What the warehouse still has to bring to the print shop (SCRUM-410: required against scanned).
+     *
+     * @param required    blanks this order needs issued in all: {@code issued + outstanding}
+     * @param outstanding blanks still to issue (BR-PRD-03 caps every scan at this)
+     * @param holds       the holds waiting to be issued, oldest first, where their blanks are now. Empty while
+     *                    blanks are still outstanding means none is held yet: the next scan holds them in the
+     *                    order's warehouse (a reprint, or a round resumed after BLANKS_SHORT)
+     */
+    record Pending(UUID productionOrderId, String orderNumber, String status, String blankSku, int required,
+                   int issued, int outstanding, List<PendingHold> holds) {
+    }
+
+    /** One hold to scan: walk to {@code locationCode}, scan it, then the SKU or {@code barcode}. */
+    record PendingHold(UUID reservationId, String sku, String lotNumber, String locationCode, int quantity,
+                       String barcode) {
     }
 
     record Issued(UUID id, UUID productionOrderId, UUID requestId, UUID reservationId, String sku, String lotNumber,
@@ -36,4 +63,6 @@ public interface MaterialIssues {
     Result issue(CurrentUser user, UUID productionOrderId, Issue issue);
 
     List<Issued> list(CurrentUser user, UUID productionOrderId);
+
+    Pending pending(CurrentUser user, UUID productionOrderId);
 }

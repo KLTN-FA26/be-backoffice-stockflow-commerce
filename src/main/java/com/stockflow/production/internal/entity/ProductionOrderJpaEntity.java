@@ -128,6 +128,10 @@ public class ProductionOrderJpaEntity extends BaseEntity {
     @Column(name = "cancellation_reason", insertable = false)
     private String cancellationReason;
 
+    /** Written once by the hand-over to packing ({@link #handOverTo}), never by {@link #applyWorkflow}. */
+    @Column(name = "packing_location_code", insertable = false)
+    private String packingLocationCode;
+
     protected ProductionOrderJpaEntity() {
     }
 
@@ -184,6 +188,16 @@ public class ProductionOrderJpaEntity extends BaseEntity {
         this.cancellationReason = order.cancellationReason();
     }
 
+    /** Where the completed order's goods went: recorded by the automatic hand-over (SCRUM-400), not the aggregate. */
+    public void handOverTo(String packingLocation) {
+        if (this.packingLocationCode != null) {
+            throw new IllegalStateException("Production order %s was already handed over to %s"
+                    .formatted(orderNumber, packingLocationCode));
+        }
+        this.packingLocationCode = packingLocation;
+    }
+
+    public String getPackingLocationCode() { return packingLocationCode; }
     public String getOrderNumber() { return orderNumber; }
     public ProductionOrder.Type getType() { return type; }
     public String getMode() { return mode; }

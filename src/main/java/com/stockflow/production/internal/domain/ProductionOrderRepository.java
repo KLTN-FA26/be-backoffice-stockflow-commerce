@@ -20,6 +20,12 @@ public interface ProductionOrderRepository {
     /** Writes the workflow columns of an existing order; flushed, so a CHECK fails here. */
     void save(ProductionOrder order);
 
+    /**
+     * Records the PACKING area a completed ORDER's goods were moved to, once (SCRUM-400). Flushed:
+     * {@code ck_production_order_packing_location} refuses it for anything but a completed ORDER.
+     */
+    void recordHandOver(UUID productionOrderId, String packingLocation);
+
     /** One immutable status-history row. */
     void recordTransition(UUID productionOrderId, ProductionOrder.Transition transition, Instant at, UUID by);
 

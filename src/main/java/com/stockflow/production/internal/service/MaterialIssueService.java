@@ -2,6 +2,7 @@ package com.stockflow.production.internal.service;
 
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
+import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.error.NotFoundException;
@@ -9,6 +10,8 @@ import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.ScopeGuards;
 import com.stockflow.common.security.WarehouseScope;
+import com.stockflow.inventory.api.HoldView;
+import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.IssueReservedStockCommand;
 import com.stockflow.inventory.api.IssueReservedStockResult;
@@ -32,6 +35,7 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -59,11 +63,13 @@ class MaterialIssueService implements MaterialIssues {
     private final InventoryService inventory;
     private final OrderService salesOrders;
     private final WarehouseService warehouses;
+    private final InventoryControlService itemControls;
     private final Clock clock;
 
     MaterialIssueService(ProductionOrderRepository orders, ProductionRecords records, ProductionOrders reads,
                          InventoryService inventory, OrderService salesOrders, WarehouseService warehouses,
-                         Clock clock) {
+                         InventoryControlService itemControls, Clock clock) {
+        this.itemControls = itemControls;
         this.orders = orders;
         this.records = records;
         this.reads = reads;
@@ -106,6 +112,7 @@ class MaterialIssueService implements MaterialIssues {
         StorageLocationView to = productionArea(order, issue.toLocation());
 
         UUID chosen = choose(order, issue);
+        requireScanned(order, chosen, issue);
         IssueReservedStockResult moved = inventory.issueReserved(new IssueReservedStockCommand(chosen,
                 order.salesOrderId(), order.id(), to.locationCode(), user.userId()));
         if (!moved.moved()) {
@@ -133,6 +140,55 @@ class MaterialIssueService implements MaterialIssues {
     public List<Issued> list(CurrentUser user, UUID productionOrderId) {
         reads.get(user, productionOrderId);   // 404 and warehouse scope, as for the order itself
         return records.issuesOf(productionOrderId).stream().map(MaterialIssueService::view).toList();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Pending pending(CurrentUser user, UUID productionOrderId) {
+        reads.get(user, productionOrderId);   // 404 and warehouse scope, as for the order itself
+        ProductionOrder order = orders.findById(productionOrderId)
+                .orElseThrow(() -> new NotFoundException("production-order", productionOrderId));
+        List<PendingHold> holds = order.status() != ProductionOrder.Status.READY
+                || order.mode() == ProductionOrder.Mode.SUBCONTRACTED ? List.of()
+                : waitingViews(order).stream()
+                        .map(hold -> new PendingHold(hold.reservationId(), hold.sku(), hold.lotNumber(),
+                                hold.locationCode(), hold.quantity(), barcodeOf(hold.sku())))
+                        .toList();
+        int outstanding = order.outstandingBlanks();
+        return new Pending(order.id(), order.orderNumber(), order.status().name(), order.work().blankSku().code(),
+                order.issued() + outstanding, order.issued(), outstanding, holds);
+    }
+
+    /**
+     * SCRUM-409 "scan confirmation": what the clerk scanned at the source must be the hold being issued - its
+     * location, then its SKU or the SKU's barcode - checked before anything moves. A scan that names neither keeps
+     * the SCRUM-397 contract, where the hold alone decides.
+     */
+    private void requireScanned(ProductionOrder order, UUID chosen, Issue issue) {
+        boolean location = issue.scannedLocation() != null && !issue.scannedLocation().isBlank();
+        boolean code = issue.scannedCode() != null && !issue.scannedCode().isBlank();
+        if (!location && !code) {
+            return;
+        }
+        HoldView hold = inventory.holds(List.of(chosen)).stream().findFirst()
+                .orElseThrow(() -> new BusinessException(ErrorCode.RESERVATION_NOT_ISSUABLE,
+                        "Hold %s of production order %s no longer exists".formatted(chosen, order.orderNumber())));
+        if (location && !sameCode(issue.scannedLocation(), hold.locationCode())) {
+            throw new BusinessException(ErrorCode.ISSUE_LOCATION_MISMATCH,
+                    "This hold's blanks are at " + hold.locationCode());
+        }
+        if (code && !sameCode(issue.scannedCode(), hold.sku()) && !issue.scannedCode().trim().equals(barcodeOf(hold.sku()))) {
+            throw new BusinessException(ErrorCode.ISSUE_ITEM_MISMATCH, "This hold is " + hold.sku());
+        }
+    }
+
+    /** Location codes and SKUs are stored upper case; a scanner or a keyboard may send either. */
+    private static boolean sameCode(String scanned, String expected) {
+        return expected != null && scanned.trim().toUpperCase(Locale.ROOT).equals(expected.toUpperCase(Locale.ROOT));
+    }
+
+    private String barcodeOf(String sku) {
+        return itemControls.logistics(new Sku(sku)).logistics().barcode();
     }
 
     private Optional<Result> replay(CurrentUser user, UUID productionOrderId, UUID requestId) {
@@ -168,21 +224,7 @@ class MaterialIssueService implements MaterialIssues {
      * for the production order, in its warehouse; too few in stock refuses the scan and holds nothing.
      */
     private UUID choose(ProductionOrder order, Issue issue) {
-        Set<UUID> issued = records.issuesOf(order.id()).stream()
-                .map(ProductionRecords.MaterialIssue::reservationId).collect(Collectors.toSet());
-        List<UUID> candidates = new ArrayList<>();
-        // The line's checkout holds are its root order's: an in-house order made for a subcontractor's shortfall
-        // works on the holds of its own.
-        if (order.type() == ProductionOrder.Type.ORDER && order.parentId() == null) {
-            OrderSummary sales = salesOrders.findById(order.salesOrderId()).orElseThrow(() -> new BusinessException(
-                    ErrorCode.NOT_FOUND, "Sales order of production order %s not found".formatted(order.orderNumber())));
-            sales.lines().stream().filter(line -> line.lineId().equals(order.salesOrderLineId()))
-                    .flatMap(line -> line.reservationIds().stream())
-                    .forEach(candidates::add);
-        }
-        inventory.productionHolds(order.id()).stream().map(StockReservation::reservationId).forEach(candidates::add);
-        candidates.removeIf(issued::contains);
-
+        List<UUID> candidates = waiting(order);
         if (issue.reservationId() != null) {
             return candidates.stream().filter(issue.reservationId()::equals).findFirst()
                     .orElseThrow(() -> new BusinessException(ErrorCode.RESERVATION_NOT_ISSUABLE,
@@ -204,6 +246,45 @@ class MaterialIssueService implements MaterialIssues {
         log.info("Held {} more blank(s) of {} for production order {}", needed, order.work().blankSku(),
                 order.orderNumber());
         return held.get(0).reservationId();
+    }
+
+    /**
+     * What {@link #waiting} would choose from, read as it stands for the screen: nothing is locked, so a GET never
+     * waits on (or holds up) a scan. The scan itself re-reads under its locks.
+     */
+    private List<HoldView> waitingViews(ProductionOrder order) {
+        Set<UUID> issued = records.issuesOf(order.id()).stream()
+                .map(ProductionRecords.MaterialIssue::reservationId).collect(Collectors.toSet());
+        List<HoldView> views = new ArrayList<>(inventory.holds(salesOrderHolds(order)));
+        views.addAll(inventory.productionHoldViews(order.id()));
+        return views.stream().filter(hold -> hold.status() == HoldView.Status.HELD)
+                .filter(hold -> !issued.contains(hold.reservationId())).toList();
+    }
+
+    /** A root ORDER's blanks were held at checkout, on its sales order line; any other order has none there. */
+    private List<UUID> salesOrderHolds(ProductionOrder order) {
+        if (order.type() != ProductionOrder.Type.ORDER || order.parentId() != null) {
+            return List.of();
+        }
+        OrderSummary sales = salesOrders.findById(order.salesOrderId()).orElseThrow(() -> new BusinessException(
+                ErrorCode.NOT_FOUND, "Sales order of production order %s not found".formatted(order.orderNumber())));
+        return sales.lines().stream().filter(line -> line.lineId().equals(order.salesOrderLineId()))
+                .flatMap(line -> line.reservationIds().stream()).toList();
+    }
+
+    /**
+     * The holds of the order not issued yet: the sales order's own holds first (a root ORDER's blanks were held at
+     * checkout), then the production order's (a sample's, a reprint's).
+     */
+    private List<UUID> waiting(ProductionOrder order) {
+        Set<UUID> issued = records.issuesOf(order.id()).stream()
+                .map(ProductionRecords.MaterialIssue::reservationId).collect(Collectors.toSet());
+        // The line's checkout holds are its root order's: an in-house order made for a subcontractor's shortfall
+        // works on the holds of its own.
+        List<UUID> candidates = new ArrayList<>(salesOrderHolds(order));
+        inventory.productionHolds(order.id()).stream().map(StockReservation::reservationId).forEach(candidates::add);
+        candidates.removeIf(issued::contains);
+        return candidates;
     }
 
     private static Issued view(ProductionRecords.MaterialIssue row) {

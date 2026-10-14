@@ -26,7 +26,7 @@ public interface ProductionOrderSearch {
     record Row(UUID id, String orderNumber, ProductionOrder.Type type, String mode, ProductionOrder.Status status,
                String holdReason, UUID warehouseId, String blankSku, UUID designSnapshotId, int plannedQuantity,
                int goodQuantity, LocalDate dueDate, UUID sampleRequestId, UUID salesOrderId, UUID salesOrderLineId,
-               UUID parentId, Instant createdAt) {
+               UUID parentId, Instant createdAt, String packingLocation) {
     }
 
     record HistoryEntry(String fromStatus, String toStatus, String reason, Instant changedAt, UUID changedBy) {

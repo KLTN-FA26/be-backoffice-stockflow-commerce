@@ -277,9 +277,12 @@ class WorkshopStock {
         }
     }
 
+    /** Where finished goods went, and which holds went there. */
+    record HandOver(String packingLocation, List<UUID> holds) {
+    }
+
     /** Every hold left in the print shop, whole and still held, to a PACKING area (SCRUM-400). */
-    /** @return the holds moved to packing */
-    List<UUID> finishToPacking(ProductionOrder order, String packingLocation, UUID by) {
+    HandOver finishToPacking(ProductionOrder order, String packingLocation, UUID by) {
         String packing = packingArea(order, packingLocation);
         List<UUID> finished = new ArrayList<>();
         for (Held held : held(order)) {
@@ -287,7 +290,13 @@ class WorkshopStock {
                     order.id(), packing, by));
             finished.add(held.reservationId());
         }
-        return finished;
+        return new HandOver(packing, finished);
+    }
+
+    /** The usable PACKING areas of the order's warehouse, any of which a completing QC round may name. */
+    List<StorageLocationView> packingAreas(ProductionOrder order) {
+        return warehouses.areasOf(order.work().warehouseId(), StorageLocationView.AreaType.PACKING).stream()
+                .filter(StorageLocationView::usable).toList();
     }
 
     /**

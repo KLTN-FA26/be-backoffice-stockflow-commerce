@@ -28,6 +28,9 @@ import com.stockflow.production.internal.controller.dto.ProductionOrderRowRespon
 import com.stockflow.production.internal.domain.ProductionOrder;
 import com.stockflow.production.internal.service.ProductionOrders;
 import com.stockflow.production.internal.service.ProductionWorkflow;
+import com.stockflow.production.internal.service.QcReferences;
+import org.springframework.http.CacheControl;
+import org.springframework.http.ResponseEntity;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -68,9 +71,11 @@ class ProductionOrderController {
     private final PrintRuns runs;
     private final Subcontracting subcontracts;
     private final ProductionWebMapper mapper;
+    private final QcReferences qcReferences;
 
     ProductionOrderController(ProductionOrders orders, ProductionWorkflow workflow, PrintRuns runs,
-                              Subcontracting subcontracts, ProductionWebMapper mapper) {
+                              Subcontracting subcontracts, ProductionWebMapper mapper, QcReferences qcReferences) {
+        this.qcReferences = qcReferences;
         this.orders = orders;
         this.workflow = workflow;
         this.runs = runs;
@@ -114,6 +119,26 @@ class ProductionOrderController {
     public ApiResponse<ProductionWorkflow.PrintFile> printFile(@PathVariable UUID productionOrderId,
                                                                @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(workflow.printFile(user, productionOrderId));
+    }
+
+    @GetMapping("/{productionOrderId}/approved-sample")
+    @Operation(summary = "The approved sample round an ORDER is QC'd against (BR-PRD-05), with a short-lived link to "
+            + "the CUSTOMER_PREVIEW the customer approved; 404 for a SAMPLE or a repeat design without one")
+    @RequiresPermission(resource = ProductionResources.PRODUCTION_ORDERS, action = Action.READ)
+    public ResponseEntity<ApiResponse<QcReferences.ApprovedSample>> approvedSample(
+            @PathVariable UUID productionOrderId, @AuthenticatedUser CurrentUser user) {
+        // The body carries a bearer URL: never kept by a shared cache or the browser's.
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(ApiResponse.ok(qcReferences.approvedSample(user, productionOrderId)));
+    }
+
+    @GetMapping("/{productionOrderId}/packing-locations")
+    @Operation(summary = "The usable PACKING areas of the order's warehouse a completing QC round may send the goods "
+            + "to; a single entry is the default (an empty packingLocation picks it)")
+    @RequiresPermission(resource = ProductionResources.QC_RESULTS, action = Action.READ)
+    public ApiResponse<List<String>> packingLocations(@PathVariable UUID productionOrderId,
+                                                      @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(qcReferences.packingLocations(user, productionOrderId));
     }
 
     @PostMapping("/{productionOrderId}/prepress")

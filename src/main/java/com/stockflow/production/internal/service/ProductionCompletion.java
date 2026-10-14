@@ -3,12 +3,12 @@ package com.stockflow.production.internal.service;
 import com.stockflow.contracts.ProductionCompleted;
 import com.stockflow.order.api.OrderReservations;
 import com.stockflow.production.internal.domain.ProductionOrder;
+import com.stockflow.production.internal.domain.ProductionOrderRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 
-import java.util.List;
 import java.util.UUID;
 
 /**
@@ -27,9 +27,12 @@ class ProductionCompletion {
     private final OrderReservations orderReservations;
     private final SubcontractSettling settling;
     private final ApplicationEventPublisher events;
+    private final ProductionOrderRepository orders;
 
     ProductionCompletion(WorkshopStock stock, SampleProductionProgress samples, OrderReservations orderReservations,
-                         SubcontractSettling settling, ApplicationEventPublisher events) {
+                         SubcontractSettling settling, ApplicationEventPublisher events,
+                         ProductionOrderRepository orders) {
+        this.orders = orders;
         this.stock = stock;
         this.samples = samples;
         this.orderReservations = orderReservations;
@@ -66,17 +69,21 @@ class ProductionCompletion {
             samples.productionCompleted(order.id());
             return;
         }
-        List<UUID> finished = stock.finishToPacking(order, packingLocation, by);
+        // Automatic, in this transaction: nobody confirms the hand-over a second time (decided 14/10/2026,
+        // SCRUM-412). The area is recorded on the order so the completed list can say where the goods are.
+        WorkshopStock.HandOver handOver = stock.finishToPacking(order, packingLocation, by);
+        orders.recordHandOver(order.id(), handOver.packingLocation());
         // Every good unit is the order's to ship: reprint holds and a subcontractor's goods join the line's
         // checkout holds.
         orderReservations.addProductionHolds(order.salesOrderId(), order.salesOrderLineId(),
-                stock.handFinishedGoodsToOrder(order, finished));
+                stock.handFinishedGoodsToOrder(order, handOver.holds()));
         events.publishEvent(new ProductionCompleted(order.salesOrderId(), order.salesOrderLineId(), order.id(),
                 order.good()));
         if (order.mode() == ProductionOrder.Mode.SUBCONTRACTED) {
             settling.settle(order, "Production order %s completed".formatted(order.orderNumber()), subcontractorFee,
                     feeReason, by);
         }
-        log.info("Production order {} completed: {} good unit(s) to packing", order.orderNumber(), order.good());
+        log.info("Production order {} completed: {} good unit(s) to packing at {}", order.orderNumber(), order.good(),
+                handOver.packingLocation());
     }
 }

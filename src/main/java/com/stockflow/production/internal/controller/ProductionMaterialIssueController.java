@@ -52,8 +52,18 @@ class ProductionMaterialIssueController {
                                                     @Valid @RequestBody MaterialIssueRequest request,
                                                     @AuthenticatedUser CurrentUser user) {
         MaterialIssues.Result result = issues.issue(user, productionOrderId,
-                new MaterialIssues.Issue(request.requestId(), request.toLocation(), request.reservationId()));
+                new MaterialIssues.Issue(request.requestId(), request.toLocation(), request.reservationId(),
+                        request.scannedLocation(), request.scannedCode()));
         return ApiResponse.ok(new MaterialIssueResponse(result.issue(), mapper.toResponse(result.order())));
+    }
+
+    @GetMapping("/pending")
+    @Operation(summary = "What is still to scan: blanks required, issued and outstanding, and each hold waiting with "
+            + "its location, lot, quantity and barcode (SCRUM-410)")
+    @RequiresPermission(resource = ProductionResources.MATERIAL_ISSUES, action = Action.READ)
+    public ApiResponse<MaterialIssues.Pending> pending(@PathVariable UUID productionOrderId,
+                                                       @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(issues.pending(user, productionOrderId));
     }
 
     @GetMapping

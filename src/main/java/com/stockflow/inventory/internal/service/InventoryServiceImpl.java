@@ -622,6 +622,16 @@ class InventoryServiceImpl implements InventoryService {
 
     @Override
     @Transactional(readOnly = true)
+    public List<com.stockflow.inventory.api.HoldView> productionHoldViews(UUID productionOrderId) {
+        List<UUID> ids = repository.findHeldReservationIdsOfProductionOrder(productionOrderId);
+        Map<UUID, com.stockflow.inventory.api.HoldView> byId = holds(ids).stream()
+                .collect(java.util.stream.Collectors.toMap(com.stockflow.inventory.api.HoldView::reservationId,
+                        java.util.function.Function.identity()));
+        return ids.stream().map(byId::get).filter(java.util.Objects::nonNull).toList();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public List<com.stockflow.inventory.api.HoldView> holds(Collection<UUID> reservationIds) {
         return repository.findHolds(Set.copyOf(reservationIds)).stream()
                 .map(hold -> new com.stockflow.inventory.api.HoldView(hold.reservationId(), hold.sku(),
