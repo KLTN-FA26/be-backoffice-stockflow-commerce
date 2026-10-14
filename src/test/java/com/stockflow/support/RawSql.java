@@ -11,7 +11,6 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowableOfType;
-import static org.assertj.core.api.Assertions.fail;
 
 /**
  * Plain JDBC for the migration upgrade tests, which run against a database Flyway migrated only part of the way, so
@@ -77,7 +76,7 @@ public final class RawSql {
     public static void refused(Connection db, String rule, String sql, Object... values) {
         SQLException refusal = catchThrowableOfType(SQLException.class, () -> update(db, sql, values));
         if (refusal == null) {
-            fail("%s is refused, but the database accepted: %s".formatted(rule, sql));
+            throw new AssertionError("%s is refused, but the database accepted: %s".formatted(rule, sql));
         }
         assertThat(refusal.getSQLState()).as("%s: %s", rule, refusal.getMessage()).startsWith("23");
     }

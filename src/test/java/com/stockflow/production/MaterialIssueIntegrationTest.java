@@ -305,11 +305,11 @@ class MaterialIssueIntegrationTest {
         assertThat(held.stream().mapToInt(row -> ((Number) row.get("quantity")).intValue()).sum()).isEqualTo(3);
 
         workflow.prepress(printer, productionOrderId, true, null);
-        MaterialIssues.Result result = null;
-        for (int i = 0; i < held.size(); i++) {
+        // One scan per hold; the assertions above found three units held, so there is at least one.
+        MaterialIssues.Result result = scan(productionOrderId, null);
+        for (int i = 1; i < held.size(); i++) {
             result = scan(productionOrderId, null);
         }
-        assertThat(result).as("one scan per hold, and there is a hold").isNotNull();
         assertThat(result.order().summary().status()).isEqualTo(ProductionOrder.Status.MATERIAL_ISSUED);
         assertThat(inventory.availableToPromise(BLANK)).as("the issue changes nothing more").isEqualTo(atpBefore - 3);
         assertThat(inventory.productionHolds(productionOrderId)).extracting(h -> h.locationCode()).containsOnly(PRINT_SHOP);
