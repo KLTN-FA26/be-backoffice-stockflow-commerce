@@ -1,14 +1,19 @@
 package com.stockflow.warehouse.internal.repository;
 
+import com.stockflow.warehouse.internal.domain.LabelSelection;
 import jakarta.persistence.EntityManager;
+import jakarta.persistence.TypedQuery;
 import org.springframework.stereotype.Repository;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
- * Implements the two read models on JPQL projections. Every query selects columns into a record, so
+ * Implements the three read models on JPQL projections. Every query selects columns into a record, so
  * nothing is managed, nothing is lazily loaded later, and the persistence context stays empty.
  *
  * <p>Plain {@link EntityManager} queries rather than {@code @Query} methods: each query reads a
@@ -18,7 +23,8 @@ import java.util.UUID;
  * selected values, in order.</p>
  */
 @Repository
-class LayoutReadRepositoryAdapter implements LayoutReadRepository, LocationLookupRepository {
+class LayoutReadRepositoryAdapter implements LayoutReadRepository, LocationLookupRepository,
+        LocationLabelRepository {
 
     private final EntityManager entityManager;
 
@@ -161,5 +167,81 @@ class LayoutReadRepositoryAdapter implements LayoutReadRepository, LocationLooku
                         where\s""" + condition, LocationRow.class)
                 .setParameter("key", key)
                 .getResultList().stream().findFirst();
+    }
+
+    // ------------------------------------------------------------------ location labels (SCRUM-97)
+
+    @Override
+    public boolean shelfExists(UUID warehouseId, UUID shelfId) {
+        return entityManager.createQuery("""
+                        select count(s) from ShelfJpaEntity s where s.id = :shelfId and s.warehouseId = :warehouseId
+                        """, Long.class)
+                .setParameter("shelfId", shelfId)
+                .setParameter("warehouseId", warehouseId)
+                .getSingleResult() > 0;
+    }
+
+    @Override
+    public Set<Integer> levelIndexesOf(UUID shelfId) {
+        return Set.copyOf(entityManager.createQuery("""
+                        select l.levelIndex from ShelfLevelJpaEntity l where l.shelf.id = :shelfId
+                        """, Integer.class)
+                .setParameter("shelfId", shelfId)
+                .getResultList());
+    }
+
+    @Override
+    public boolean zoneExists(UUID warehouseId, UUID zoneId) {
+        return entityManager.createQuery("""
+                        select count(z) from ZoneJpaEntity z where z.id = :zoneId and z.warehouseId = :warehouseId
+                        """, Long.class)
+                .setParameter("zoneId", zoneId)
+                .setParameter("warehouseId", warehouseId)
+                .getSingleResult() > 0;
+    }
+
+    /**
+     * One query over the warehouse's storage locations, left-joined to the bin path or the area that
+     * owns each - every location has exactly one owner (issue #18 D8), so exactly one side is null.
+     * The selection only adds a condition; a shelf or zone condition is on the bin side, so it drops
+     * every area by itself.
+     */
+    @Override
+    public List<LabelRow> findRows(UUID warehouseId, LabelSelection selection) {
+        Map<String, Object> parameters = new HashMap<>(Map.of("warehouseId", warehouseId));
+        String condition = switch (selection) {
+            case LabelSelection.WholeWarehouse whole -> "";
+            case LabelSelection.OfShelf shelf -> {
+                parameters.put("shelfId", shelf.shelfId());
+                if (shelf.levelIndexes().isEmpty()) {
+                    yield "and s.id = :shelfId";
+                }
+                parameters.put("levelIndexes", shelf.levelIndexes());
+                yield "and s.id = :shelfId and l.levelIndex in :levelIndexes";
+            }
+            case LabelSelection.OfZone zone -> {
+                parameters.put("zoneId", zone.zoneId());
+                yield "and s.zoneId = :zoneId";
+            }
+            case LabelSelection.OfCodes codes -> {
+                parameters.put("codes", codes.codes());
+                yield "and loc.locationCode in :codes";
+            }
+        };
+        TypedQuery<LabelRow> query = entityManager.createQuery("""
+                        select loc.locationCode, loc.kind, loc.storageClass, loc.status, s.status, s.code,
+                               l.levelIndex, b.code, a.name
+                        from StorageLocationJpaEntity loc
+                        left join BinJpaEntity b on b.location = loc
+                        left join b.level l
+                        left join l.shelf s
+                        left join AreaJpaEntity a on a.location = loc
+                        where loc.warehouseId = :warehouseId
+                        """ + condition + """
+
+                        order by case when b.id is null then 1 else 0 end, s.code, l.levelIndex, b.code, a.code
+                        """, LabelRow.class);
+        parameters.forEach(query::setParameter);
+        return query.getResultList();
     }
 }

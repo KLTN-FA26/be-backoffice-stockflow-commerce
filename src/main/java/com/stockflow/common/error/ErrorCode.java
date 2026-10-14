@@ -127,6 +127,12 @@ public enum ErrorCode {
     STOCK_STATUS_MISMATCH("The destination holds this lot in a different status", 409),
     /** The location exists, but it, its shelf or its warehouse is BLOCKED, in MAINTENANCE or INACTIVE (issue #67). */
     LOCATION_NOT_USABLE("This location cannot take stock right now", 409),
+    /** A named location, or its shelf, is INACTIVE: off the layout, so it gets no label (SCRUM-97). */
+    LOCATION_INACTIVE("This location is off the layout", 409),
+    /** A label print whose selection resolves to no location on the layout (SCRUM-97). */
+    LOCATION_LABELS_EMPTY("No storage location matches this selection", 422),
+    /** More labels than one print request renders; print by zone or shelf instead (SCRUM-97). */
+    LOCATION_LABELS_TOO_MANY("Too many labels for one request", 422),
     /** Docs 11 BR-01: stock changes warehouse only through a transfer order (SCRUM-459). */
     MOVE_ACROSS_WAREHOUSES("Stock moves to another warehouse only through a transfer order", 409),
     /** Four eyes: whoever asked for a stock adjustment may not decide it. */

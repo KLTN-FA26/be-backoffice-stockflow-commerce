@@ -44,6 +44,21 @@ public final class EffectiveStatus {
         return effective == LocationStatus.ACTIVE;
     }
 
+    /**
+     * The place is physically on the map, so it gets a label (SCRUM-97, spec D4): neither the place nor,
+     * for a bin, its shelf is {@code INACTIVE}.
+     *
+     * <p>Deliberately not {@link #isUsable}. {@code BLOCKED} and {@code MAINTENANCE} are temporary and
+     * the label outlives them; and the warehouse is ignored, because labels are printed while a new
+     * warehouse is being fitted out, before it is activated.</p>
+     *
+     * @param shelf the bin's shelf; {@code null} for an area
+     */
+    public static boolean isOnLayout(LocationStatus shelf, LocationStatus location) {
+        return Objects.requireNonNull(location, "location") != LocationStatus.INACTIVE
+                && shelf != LocationStatus.INACTIVE;
+    }
+
     private static LocationStatus of(WarehouseStatus warehouse) {
         return Objects.requireNonNull(warehouse, "warehouse") == WarehouseStatus.ACTIVE
                 ? LocationStatus.ACTIVE
