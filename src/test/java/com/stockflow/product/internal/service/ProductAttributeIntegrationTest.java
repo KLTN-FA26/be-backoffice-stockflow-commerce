@@ -74,10 +74,11 @@ class ProductAttributeIntegrationTest {
 
     private UUID draftProduct() {
         String suffix = UUID.randomUUID().toString().substring(0, 6).toUpperCase();
-        // A product cannot be submitted without a category (BR-PRD-001).
+        // A product cannot be submitted without a category and a brand (BR-PRD-001).
         UUID category = taxonomy.createCategory("CAT-" + suffix, null,
                 new ProductTaxonomyService.CategoryDetails("Ly", 0, null, null, null, true)).id();
-        return products.create(new CreateProductCommand("ATTR-" + suffix, "Ten " + suffix, "Name " + suffix, null,
+        UUID brand = taxonomy.createBrand("BR-" + suffix, "Brand " + suffix, null).id();
+        return products.create(new CreateProductCommand("ATTR-" + suffix, "Ten " + suffix, "Name " + suffix, brand,
                 category, null, null, null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE)).productId();
     }
 
