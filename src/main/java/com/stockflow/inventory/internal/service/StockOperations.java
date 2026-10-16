@@ -41,6 +41,17 @@ public interface StockOperations {
     /** See {@code InventoryService#finishHeld}. */
     IssueReservedStockResult finishHeld(IssueReservedStockCommand command);
 
+    /** See {@code InventoryService#scrapCancelledPrint}. */
+    Optional<StockAdjustmentSummary> scrapCancelledPrint(UUID reservationId, UUID orderId, String note,
+                                                         UUID requestedBy);
+
+    /**
+     * Whether {@code hold}, on the locked {@code item}, is finished custom goods of its order waiting in a PACKING
+     * area - which a release does not free (BR-PRD-10).
+     */
+    boolean isFinishedCustomGoods(com.stockflow.inventory.internal.domain.StockItem item,
+                                  com.stockflow.inventory.internal.domain.Reservation hold);
+
     /** See {@code InventoryService#writeOffHeld}. */
     StockAdjustmentSummary writeOffHeld(com.stockflow.inventory.api.WriteOffHeldStockCommand command);
 

@@ -501,6 +501,12 @@ class InventoryServiceImpl implements InventoryService {
     }
 
     @Override
+    public Optional<StockAdjustmentSummary> scrapCancelledPrint(UUID reservationId, UUID orderId, String note,
+                                                                UUID requestedBy) {
+        return operations.scrapCancelledPrint(reservationId, orderId, note, requestedBy);
+    }
+
+    @Override
     public StockMove returnHeld(com.stockflow.inventory.api.ReturnHeldStockCommand command) {
         return operations.returnHeld(command);
     }
@@ -679,6 +685,14 @@ class InventoryServiceImpl implements InventoryService {
         StockItem item = holderOf(ReservationId.of(reservationId));
         if (item.status() == StockStatus.IN_PRODUCTION) {
             log.info("Hold {} is in the print shop; production closes it, not a {} release", reservationId,
+                    releaseReason);
+            return;
+        }
+        // BR-PRD-10: printed for this order, waiting in packing - packed with it, or scrapped (scrapCancelledPrint),
+        // never freed for someone else to buy.
+        Reservation hold = item.findReservation(ReservationId.of(reservationId)).orElseThrow();
+        if (operations.isFinishedCustomGoods(item, hold)) {
+            log.info("Hold {} is printed goods in packing; it is packed or scrapped, not a {} release", reservationId,
                     releaseReason);
             return;
         }

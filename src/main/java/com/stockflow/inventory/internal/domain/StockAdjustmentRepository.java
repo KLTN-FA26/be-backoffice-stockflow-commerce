@@ -13,4 +13,7 @@ public interface StockAdjustmentRepository {
     String nextNumber(LocalDate day);
 
     StockAdjustment save(StockAdjustment adjustment);
+
+    /** The write-off of {@code reservationId}'s units that still stands: pending or posted. */
+    Optional<StockAdjustment> findLiveForHold(UUID reservationId);
 }

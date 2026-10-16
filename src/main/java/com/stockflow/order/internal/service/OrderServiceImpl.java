@@ -405,6 +405,14 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                 clock.instant());
 
         if (wasHoldingStock) {
+            // BR-PRD-10 (decision 2026-10-16): goods printed for this order and waiting in packing are scrapped,
+            // never sold - kept under their hold, a SCRAP write-off asked for in the canceller's name. Inventory
+            // decides from the goods' state which holds those are; the release below leaves them alone.
+            String note = "Order %s cancelled: printed custom goods (BR-PRD-10)".formatted(order.orderNumber());
+            order.lines().stream().filter(OrderLine::isMadeToOrder)
+                    .flatMap(line -> line.reservationIds().stream())
+                    .forEach(reservationId -> inventory.scrapCancelledPrint(reservationId, order.id().value(), note,
+                            command.cancelledBy()));
             order.reservationIds()
                     .forEach(reservationId -> inventory.release(reservationId, "ORDER_CANCELLED"));
             order.clearReservations();

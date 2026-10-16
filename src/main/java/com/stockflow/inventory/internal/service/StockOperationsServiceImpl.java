@@ -336,6 +336,54 @@ class StockOperationsServiceImpl implements StockOperations {
         }
     }
 
+    /**
+     * BR-PRD-10 under the locks every write-off takes - the SKU's, then the row's. Asked once per hold: a standing
+     * write-off is answered as it is. With nobody to ask in the name of (a cancellation by the system), the goods
+     * stay held and isolated - {@link #isFinishedCustomGoods} keeps every release off them - and nothing is asked.
+     */
+    @Override
+    @Auditable(action = AuditAction.CREATE, resourceType = "stock-adjustment", resourceId = "#reservationId")
+    public Optional<StockAdjustmentSummary> scrapCancelledPrint(UUID reservationId, UUID orderId, String note,
+                                                                UUID requestedBy) {
+        ReservationId id = ReservationId.of(reservationId);
+        Optional<StockItem> first = stockItems.findIdByReservationId(id).flatMap(stockItems::findById);
+        if (first.isEmpty()) {
+            return Optional.empty();
+        }
+        policies.lock(first.get().sku().code());
+        StockItem view = holder(id);
+        WarehouseScope.requireLocation(view.location().code());
+        StockItem item = stockItems.findByIdForUpdate(view.id()).orElseThrow();
+        Reservation hold = item.findReservation(id).orElseThrow();
+        if (!Objects.equals(orderId, hold.orderId()) || !isFinishedCustomGoods(item, hold)) {
+            return Optional.empty();
+        }
+        Optional<StockAdjustment> asked = adjustments.findLiveForHold(reservationId);
+        if (asked.isPresent()) {
+            return asked.map(StockOperationsServiceImpl::toSummary);
+        }
+        if (requestedBy == null) {
+            log.warn("Hold {}: {} x {} printed for cancelled order {} kept in {}, out of sale; nobody to ask the "
+                    + "write-off in the name of", reservationId, hold.quantity(), item.sku(), orderId, item.location());
+            return Optional.empty();
+        }
+        Instant now = clock.instant();
+        StockAdjustment adjustment = StockAdjustment.request(adjustments.nextNumber(LocalDate.ofInstant(now, BUSINESS_ZONE)),
+                        item.location(), item.sku(), item.lotNumber(), -hold.quantity().value(), AdjustmentReason.SCRAP,
+                        note, requestedBy, now)
+                .atLayer(item.receivedAt()).forHold(reservationId);
+        StockAdjustmentSummary saved = toSummary(adjustments.save(adjustment));
+        log.info("Hold {}: {} x {} printed for cancelled order {} kept in {}; SCRAP write-off {} asked for", reservationId,
+                hold.quantity(), item.sku(), orderId, item.location(), saved.number());
+        return Optional.of(saved);
+    }
+
+    @Override
+    public boolean isFinishedCustomGoods(StockItem item, Reservation hold) {
+        return hold.status().isActive() && hold.orderId() != null && hold.productionOrderId() == null
+                && item.status() == StockStatus.AVAILABLE && locations.isPackingArea(item.location());
+    }
+
     /** The same hand-over the other way: finished goods, still held, from the print shop to packing. */
     @Override
     @Auditable(action = AuditAction.UPDATE, resourceType = "stock-move", resourceId = "#command.reservationId()")
@@ -655,6 +703,22 @@ class StockOperationsServiceImpl implements StockOperations {
                         "The stock of adjustment %s no longer exists".formatted(adjustment.number())));
         StockItem item = stockItems.findByIdForUpdate(view.id()).orElseThrow();
         Instant now = clock.instant();
+        // A decided adjustment is refused by approveAndPost as it stands, before its hold is looked at.
+        if (adjustment.reservationId() != null
+                && adjustment.status() == com.stockflow.inventory.internal.domain.AdjustmentStatus.PENDING_APPROVAL) {
+            // BR-PRD-10: the cancelled order's printed goods were kept under its hold until this decision, so nobody
+            // could take them. They leave the hold as they leave stock - once: the hold closes here, and a second
+            // approval is refused by the adjustment's own state.
+            ReservationId held = ReservationId.of(adjustment.reservationId());
+            Reservation hold = item.findReservation(held).filter(r -> r.status().isActive())
+                    .orElseThrow(() -> new BusinessException(ErrorCode.RESERVATION_NOT_ACTIVE,
+                            "The hold of adjustment %s is no longer live".formatted(adjustment.number())));
+            if (hold.quantity().value() != -adjustment.quantityDelta()) {
+                throw new BusinessException(ErrorCode.CONFLICT, "Adjustment %s takes %d unit(s); its hold covers %s"
+                        .formatted(adjustment.number(), -adjustment.quantityDelta(), hold.quantity()));
+            }
+            item.releaseReservation(held, ReleaseReason.SCRAPPED, now);
+        }
         adjustment.approveAndPost(approverId, item, now);
         stockItems.save(item);
         StockAdjustment saved = adjustments.save(adjustment);

@@ -133,6 +133,24 @@ public interface InventoryService {
      */
     IssueReservedStockResult unissueHeld(IssueReservedStockCommand command);
 
+    /**
+     * BR-PRD-10 (decision 2026-10-16): the custom-printed goods of a cancelled order are scrapped, never sold. The
+     * order's cancellation calls this for each hold of its print lines, in its own transaction, before it releases
+     * them. When the hold is finished goods of {@code orderId} waiting in a PACKING area, the hold stays - its units
+     * out of available-to-promise and out of every other order's reach - and a SCRAP write-off of exactly them is
+     * asked for in {@code requestedBy}'s name, for a second person to approve (SCRUM-145). Approved, the hold closes
+     * and stock falls once; rejected, the goods stay held and never go back on sale. A release never frees them.
+     * Called again, the write-off already standing is answered and nothing is asked twice.
+     *
+     * <p>Anything else - blanks not issued yet, goods still in the print shop (production's to close), a hold closed
+     * or another order's - is not this method's: empty, and the caller releases as for any line.</p>
+     *
+     * @param requestedBy who cancelled; null (the system) keeps the goods held and asks for nothing
+     * @return the write-off asked for, or standing
+     */
+    java.util.Optional<StockAdjustmentSummary> scrapCancelledPrint(UUID reservationId, UUID orderId, String note,
+                                                                   UUID requestedBy);
+
     /** See {@link WriteOffHeldStockCommand}. Joins the caller's transaction. @return the write-off asked for */
     StockAdjustmentSummary writeOffHeld(WriteOffHeldStockCommand command);
 

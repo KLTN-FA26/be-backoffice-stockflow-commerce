@@ -30,7 +30,8 @@ public enum ReleaseReason {
             case PAYMENT_FAILED -> com.stockflow.contracts.ReleaseReason.PAYMENT_FAILED;
             case RESERVATION_EXPIRED -> com.stockflow.contracts.ReleaseReason.RESERVATION_EXPIRED;
             case MANUAL_OVERRIDE -> com.stockflow.contracts.ReleaseReason.MANUAL_OVERRIDE;
-            // Never published: a production hold announces nothing to order (StockItem#releaseReservation).
+            // A production hold announces nothing to order (StockItem#releaseReservation). SCRAPPED reaches it only
+            // for a cancelled order's printed goods (BR-PRD-10), which the order no longer acts on.
             case PRODUCTION_CANCELLED, SCRAPPED, RETURNED_FROM_PRODUCTION, SUBCONTRACTED ->
                     com.stockflow.contracts.ReleaseReason.MANUAL_OVERRIDE;
         };

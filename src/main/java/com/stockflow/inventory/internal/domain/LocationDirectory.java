@@ -20,4 +20,7 @@ public interface LocationDirectory {
     }
 
     LocationState stateOf(LocationId location);
+
+    /** Whether the location is a PACKING area: where finished custom goods wait for their package. */
+    boolean isPackingArea(LocationId location);
 }
