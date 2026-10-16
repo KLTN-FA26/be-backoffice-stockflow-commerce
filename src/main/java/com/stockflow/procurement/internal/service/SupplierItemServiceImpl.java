@@ -15,6 +15,7 @@ import com.stockflow.procurement.api.SkuSupplierSummary;
 import com.stockflow.procurement.api.SupplierItemService;
 import com.stockflow.procurement.api.SupplierItemSummary;
 import com.stockflow.procurement.internal.domain.CatalogSupplier;
+import com.stockflow.procurement.internal.domain.PurchasePrices;
 import com.stockflow.procurement.internal.domain.SupplierItem;
 import com.stockflow.procurement.internal.domain.SupplierItemRepository;
 import com.stockflow.procurement.internal.domain.SupplierItemTerms;
@@ -51,8 +52,6 @@ import java.util.UUID;
 class SupplierItemServiceImpl implements SupplierItemService {
 
     /** The largest amount {@code NUMERIC(18,2)} holds. */
-    private static final BigDecimal MAX_PRICE = new BigDecimal("9999999999999999.99");
-    private static final int MAX_PRICE_SCALE = 2;
 
     private final SupplierItemRepository items;
     private final InventoryService inventory;
@@ -216,12 +215,9 @@ class SupplierItemServiceImpl implements SupplierItemService {
     private static Money price(BigDecimal amount, Currency currency) {
         int digits = currency.getDefaultFractionDigits();
         if (digits < 0) throw invalidPrice("Unsupported supplier currency " + currency.getCurrencyCode());
-        if (amount == null || amount.signum() <= 0) throw invalidPrice("Price must be greater than zero");
-        if (amount.compareTo(MAX_PRICE) > 0) throw invalidPrice("Price must be at most " + MAX_PRICE.toPlainString());
-        int scale = Math.min(MAX_PRICE_SCALE, digits);
-        if (amount.stripTrailingZeros().scale() > scale)
-            throw invalidPrice("Price in " + currency.getCurrencyCode() + " must have at most " + scale
-                    + " decimal places");
+        if (!PurchasePrices.acceptable(amount, currency))
+            throw invalidPrice("Price must be above zero, at most " + PurchasePrices.MAX.toPlainString()
+                    + ", and have no more decimals than " + currency.getCurrencyCode() + " allows");
         return new Money(amount, currency);
     }
 

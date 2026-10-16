@@ -35,6 +35,7 @@ import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -242,5 +243,38 @@ class SupplierItemRepositoryAdapterIntegrationTest {
             return items.findPreferred(inventoryItemId);
         });
         assertThat(preferred).isEmpty();
+    }
+
+    @Test
+    @DisplayName("listedForShare returns only this supplier's rows, keyed by inventory item")
+    void listedForShareReturnsOnlyThisSuppliersRowsKeyedByItem() {
+        UUID other = supplier("Other supplier");
+        UUID first = inventoryItemId;
+        create(supplierId, "10", false, now());
+        newSku();
+        UUID second = inventoryItemId;
+        create(supplierId, "20", false, now());
+        newSku();
+        UUID third = inventoryItemId;
+        create(other, "30", false, now());
+
+        var listed = tx.execute(s -> items.listedForShare(supplierId, List.of(first, second, third)));
+
+        assertThat(listed.keySet()).isEqualTo(Set.of(first, second));
+        assertThat(listed.get(first).inventoryItemId()).isEqualTo(first);
+        assertThat(listed.get(first).supplierId()).isEqualTo(supplierId);
+        assertThat(listed.get(second).terms().price().amount()).isEqualByComparingTo("20");
+        assertThat(listed.get(second).terms().moq()).isEqualTo(10);
+        assertThat(listed.get(second).terms().packSize()).isEqualTo(5);
+    }
+
+    @Test
+    @DisplayName("listedForShare of no items is empty")
+    void listedForShareOfNoItemsIsEmpty() {
+        create(supplierId, "10", false, now());
+
+        Map<UUID, SupplierItem> listed = tx.execute(s -> items.listedForShare(supplierId, List.of()));
+
+        assertThat(listed).isEmpty();
     }
 }

@@ -1,5 +1,7 @@
 package com.stockflow.procurement.internal.controller.dto;
 
+import com.stockflow.procurement.internal.domain.PurchasePrices;
+
 import jakarta.validation.ConstraintValidator;
 import jakarta.validation.ConstraintValidatorContext;
 
@@ -61,14 +63,14 @@ public class ProcurementFieldsValidator
                         || line.quantityOrdered() > 1_000_000
                         || line.unitPrice().signum() < 0
                         || line.unitPrice().scale() > 2
-                        || line.unitPrice().compareTo(new BigDecimal("9999999999999999.99")) > 0)
+                        || line.unitPrice().compareTo(PurchasePrices.MAX) > 0)
                     continue;
                 total =
                         total.add(
                                 line.unitPrice()
                                         .multiply(BigDecimal.valueOf(line.quantityOrdered())));
             }
-            if (total.compareTo(new BigDecimal("9999999999999999.99")) > 0) {
+            if (total.compareTo(PurchasePrices.MAX) > 0) {
                 field(context, "lines", "{procurement.totalAmount}");
                 valid = false;
             }
