@@ -430,6 +430,11 @@ class InventoryServiceImpl implements InventoryService {
     public int releaseProductionHolds(UUID productionOrderId) {
         Instant now = clock.instant();
         int released = 0;
+        // SKU locks first, rows second: the order every move and checkout takes them in (review of #109, item 4).
+        // Locking the rows first and a move of the same transaction taking the SKU lock after (a completion
+        // releasing unissued blanks, then handing the goods to packing) can deadlock against a checkout (40P01).
+        productionHoldViews(productionOrderId).stream().map(com.stockflow.inventory.api.HoldView::sku).distinct()
+                .sorted().forEach(policies::lock);
         for (StockItem item : repository.findWithReservationsForProductionOrder(productionOrderId)) {
             if (item.status() != StockStatus.AVAILABLE) {
                 continue;   // issued, received for production, or finished: production closes those itself
@@ -451,15 +456,17 @@ class InventoryServiceImpl implements InventoryService {
         return released;
     }
 
+    /**
+     * Read without locking anything (review of #109, item 4). Every caller then moves or releases some of these holds
+     * through a path that takes the SKU lock first and the stock rows second; locking the rows here, before that SKU
+     * lock, inverted the order every checkout and move use, and two such transactions could deadlock (40P01). The
+     * production order's own row lock is what keeps two steps of one order apart.
+     */
     @Override
     public List<StockReservation> productionHolds(UUID productionOrderId) {
-        List<StockReservation> holds = new ArrayList<>();
-        for (StockItem item : repository.findWithReservationsForProductionOrder(productionOrderId)) {
-            item.reservations().stream()
-                    .filter(r -> r.status().isActive() && productionOrderId.equals(r.productionOrderId()))
-                    .forEach(r -> holds.add(toApiReservation(item, r)));
-        }
-        return holds;
+        return liveHolds(repository.findHeldReservationIdsOfProductionOrder(productionOrderId)).stream()
+                .sorted(java.util.Comparator.comparing(hold -> hold.stockItemId().toString()))
+                .toList();
     }
 
     /** Delegated: the hold moves with its goods and the ledger records it, see {@link StockOperations}. */
