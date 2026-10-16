@@ -2,8 +2,8 @@ package com.stockflow.inventory.internal.controller.dto;
 
 import com.stockflow.inventory.api.RemovalStrategy;
 import com.stockflow.inventory.api.TrackingMode;
-import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 
 /** PUT replaces the item's stock policy; {@code version} is the item's, and null thresholds clear them. */

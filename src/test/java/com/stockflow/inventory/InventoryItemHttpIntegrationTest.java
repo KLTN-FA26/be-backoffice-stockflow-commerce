@@ -151,11 +151,22 @@ class InventoryItemHttpIntegrationTest {
                 .andExpect(jsonPath("$.data.items[0].id").value(id.toString()));
     }
 
+    /** The schema only allows A-Z, 0-9, '.', '_' and '-' in a SKU, so a literal {@code %} is exercised through the barcode. */
     @Test
-    void qWildcardsMatchLiterally() throws Exception {
-        UUID literal = item("W%X-" + suffix, null, "NORMAL");
-        item("WAX-" + suffix, null, "NORMAL");
+    void qPercentMatchesLiterally() throws Exception {
+        UUID literal = item("HTTP-PC1-" + suffix, "W%X-" + suffix, "NORMAL");
+        item("HTTP-PC2-" + suffix, "WAX-" + suffix, "NORMAL");
         mvc.perform(get(BASE).param("q", "W%X-" + suffix))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalElements").value(1))
+                .andExpect(jsonPath("$.data.items[0].id").value(literal.toString()));
+    }
+
+    @Test
+    void qUnderscoreMatchesLiterally() throws Exception {
+        UUID literal = item("W_X-" + suffix, null, "NORMAL");
+        item("WAX-" + suffix, null, "NORMAL");
+        mvc.perform(get(BASE).param("q", "W_X-" + suffix))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.totalElements").value(1))
                 .andExpect(jsonPath("$.data.items[0].id").value(literal.toString()));
