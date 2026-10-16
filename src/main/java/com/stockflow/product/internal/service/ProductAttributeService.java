@@ -9,6 +9,7 @@ import com.stockflow.product.internal.domain.Attribute;
 import com.stockflow.product.internal.domain.AttributeDataType;
 import com.stockflow.product.internal.domain.AttributeRepository;
 import com.stockflow.product.internal.domain.AttributeValue;
+import com.stockflow.product.internal.domain.AxisOption;
 import com.stockflow.product.internal.domain.AxisSpec;
 import com.stockflow.product.internal.domain.DescriptiveAttribute;
 import com.stockflow.product.internal.domain.DescriptiveSpec;
@@ -17,8 +18,10 @@ import com.stockflow.product.internal.domain.Product;
 import com.stockflow.product.internal.domain.ProductAttributeSet;
 import com.stockflow.product.internal.domain.ProductAttributeSetRepository;
 import com.stockflow.product.internal.domain.ProductAxis;
+import com.stockflow.product.internal.domain.ProductChangeType;
 import com.stockflow.product.internal.domain.ProductId;
 import com.stockflow.product.internal.domain.ProductRepository;
+import com.stockflow.product.internal.repository.ProductChangeLogRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -46,6 +49,11 @@ import java.util.stream.Collectors;
  *
  * <p>Every view, the read's and the writes', is built by {@link #view} from the aggregate plus the
  * dictionary: one path from storage to what the caller sees.</p>
+ *
+ * <p>A write that changes the set is written to the product's history ({@code product_change_log}) in
+ * the same transaction, as a product {@code UPDATED} naming {@code axes} or {@code descriptiveAttributes}
+ * (SCRUM-461). A replacement that leaves the set as it was records nothing, like an unchanged product
+ * update: the set is compared by what it says (attributes, order, values), not by its row ids.</p>
  */
 @Service
 @Transactional
@@ -54,12 +62,14 @@ public class ProductAttributeService {
     private final ProductRepository products;
     private final ProductAttributeSetRepository sets;
     private final AttributeRepository attributes;
+    private final ProductChangeLogRepository history;
 
     public ProductAttributeService(ProductRepository products, ProductAttributeSetRepository sets,
-                                   AttributeRepository attributes) {
+                                   AttributeRepository attributes, ProductChangeLogRepository history) {
         this.products = products;
         this.sets = sets;
         this.attributes = attributes;
+        this.history = history;
     }
 
     public record ProductAttributesView(UUID productId, List<AxisView> axes, List<DescriptiveView> descriptives) {
@@ -94,8 +104,11 @@ public class ProductAttributeService {
         Map<UUID, Attribute> dictionary = dictionaryFor(set,
                 axes.stream().map(AxisSpec::attributeId).collect(Collectors.toSet()));
         Set<UUID> used = sets.valueIdsUsedByVariants(productId);
+        Set<AxisShape> before = axesOf(set);
         set.replaceAxes(axes, dictionary, used, Identifiers::newId);
-        return view(sets.save(set), dictionary, used);
+        ProductAttributeSet saved = sets.save(set);
+        recordIfChanged(productId, before, axesOf(saved), "axes");
+        return view(saved, dictionary, used);
     }
 
     @Auditable(action = AuditAction.UPDATE, resourceType = "product-attributes", resourceId = "#productId")
@@ -104,8 +117,40 @@ public class ProductAttributeService {
         ProductAttributeSet set = sets.load(productId, product.status());
         Map<UUID, Attribute> dictionary = dictionaryFor(set,
                 descriptives.stream().map(DescriptiveSpec::attributeId).collect(Collectors.toSet()));
+        Set<DescriptiveShape> before = descriptivesOf(set);
         set.replaceDescriptives(descriptives, dictionary, Identifiers::newId);
-        return view(sets.save(set), dictionary, sets.valueIdsUsedByVariants(productId));
+        ProductAttributeSet saved = sets.save(set);
+        recordIfChanged(productId, before, descriptivesOf(saved), "descriptiveAttributes");
+        return view(saved, dictionary, sets.valueIdsUsedByVariants(productId));
+    }
+
+    private void recordIfChanged(UUID productId, Object before, Object after, String field) {
+        if (!before.equals(after)) {
+            history.record(productId, ProductChangeType.UPDATED, null, null, null, null, List.of(field));
+        }
+    }
+
+    /** What an axis says. Options as a set: their order is the dictionary's, never stored. */
+    private record AxisShape(UUID attributeId, int sortOrder, Set<UUID> valueIds) {
+    }
+
+    private record DescriptiveShape(UUID attributeId, int sortOrder, Set<ValueShape> values) {
+    }
+
+    /** A number compares by value: {@code 12.5} read back from a numeric column may come as {@code 12.50}. */
+    private record ValueShape(UUID valueId, String text, BigDecimal number, Boolean bool) {
+    }
+
+    private static Set<AxisShape> axesOf(ProductAttributeSet set) {
+        return set.axes().stream().map(a -> new AxisShape(a.attributeId(), a.sortOrder(),
+                a.options().stream().map(AxisOption::valueId).collect(Collectors.toSet()))).collect(Collectors.toSet());
+    }
+
+    private static Set<DescriptiveShape> descriptivesOf(ProductAttributeSet set) {
+        return set.descriptives().stream().map(d -> new DescriptiveShape(d.attributeId(), d.sortOrder(),
+                d.values().stream().map(v -> new ValueShape(v.valueId(), v.text(),
+                        v.number() == null ? null : v.number().stripTrailingZeros(), v.bool()))
+                        .collect(Collectors.toSet()))).collect(Collectors.toSet());
     }
 
     private Product lock(UUID productId) {

@@ -25,6 +25,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -59,6 +60,7 @@ class ProductAttributeIntegrationTest {
     @Autowired AttributeDictionaryService dictionary;
     @Autowired ProductTaxonomyService taxonomy;
     @Autowired EntityManager entityManager;
+    @Autowired JdbcTemplate jdbc;
     @MockitoBean CurrentUserProvider users;
 
     private UUID user;
@@ -205,5 +207,29 @@ class ProductAttributeIntegrationTest {
                 .isEqualTo(ErrorCode.INVALID_PRODUCT_STATUS_TRANSITION);
         assertThat(errorOf(() -> service.replaceAxes(product, List.of(axis(COLOR, 0, GREY)))))
                 .isEqualTo(ErrorCode.INVALID_PRODUCT_STATUS_TRANSITION);
+    }
+
+    /** product UPDATED rows in the history, oldest first, each as its changed fields joined. */
+    private List<String> updates(UUID product) {
+        return jdbc.queryForList("""
+                SELECT array_to_string(changed_fields, ',') FROM product.product_change_log
+                WHERE product_id = ? AND change_type = 'UPDATED' ORDER BY occurred_at, id""", String.class, product);
+    }
+
+    @Test
+    void aChangedSetIsWrittenToTheHistoryAndAnUnchangedOneIsNot() {
+        UUID product = draftProduct();
+        UUID blue = addBlue();
+
+        service.replaceAxes(product, List.of(axis(COLOR, 0, GREY)));
+        service.replaceAxes(product, List.of(axis(COLOR, 0, GREY)));
+        service.replaceAxes(product, List.of(axis(COLOR, 0, blue, GREY)));
+        // The same axes again, the options in another order: nothing changed.
+        service.replaceAxes(product, List.of(axis(COLOR, 0, GREY, blue)));
+        service.replaceDescriptives(product, List.of(select(MATERIAL, 0, OAK)));
+        service.replaceDescriptives(product, List.of(select(MATERIAL, 0, OAK)));
+        service.replaceDescriptives(product, List.of(select(MATERIAL, 0, FABRIC)));
+
+        assertThat(updates(product)).containsExactly("axes", "axes", "descriptiveAttributes", "descriptiveAttributes");
     }
 }
