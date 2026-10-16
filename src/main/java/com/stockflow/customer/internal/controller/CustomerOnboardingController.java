@@ -99,7 +99,7 @@ class CustomerOnboardingController {
     }
 
     private static InvitedCustomerResponse toResponse(CustomerOnboardingService.Invited invited) {
-        return new InvitedCustomerResponse(CustomerWebMapper.toResponse(invited.customer()),
+        return new InvitedCustomerResponse(CustomerWebMapper.toMaskedResponse(invited.customer()),
                 new InvitedCustomerResponse.Invitation(invited.invitation().issuedAt(),
                         invited.invitation().expiresAt(), invited.delivery().name()));
     }

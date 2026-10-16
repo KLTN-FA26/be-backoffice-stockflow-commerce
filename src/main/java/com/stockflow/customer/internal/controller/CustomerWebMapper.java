@@ -26,14 +26,47 @@ final class CustomerWebMapper {
                 request.postalCode(), request.defaultAddress(), request.version());
     }
 
+    /** With the tax code (or personal id) in full: the staff detail and edit, where it is entered and checked. */
     static CustomerResponse toResponse(CustomerSummary summary) {
+        return toResponse(summary, summary.taxCode());
+    }
+
+    /**
+     * With the tax code masked (review of #109, item 9): a company's tax code or a household's personal id (CCCD) is
+     * not needed in full to recognise the customer in a list, after creating or inviting it, or on its own profile,
+     * where the customer cannot change it.
+     */
+    static CustomerResponse toMaskedResponse(CustomerSummary summary) {
+        return toResponse(summary, maskTaxCode(summary.taxCode()));
+    }
+
+    private static CustomerResponse toResponse(CustomerSummary summary, String taxCode) {
         return new CustomerResponse(summary.customerId(), summary.userId(), summary.fullName(),
-                summary.email(), summary.phone(), summary.taxCode(), summary.segmentId(), summary.status(),
+                summary.email(), summary.phone(), taxCode, summary.segmentId(), summary.status(),
                 summary.version(), summary.createdAt());
     }
 
+    /**
+     * The first three and the last three characters kept, every digit between them a {@code *}; a separator stays,
+     * so 0312345678-001 reads 031*******-001 and a 12-digit CCCD 001******345. Short codes are masked whole.
+     */
+    static String maskTaxCode(String taxCode) {
+        if (taxCode == null) {
+            return null;
+        }
+        if (taxCode.length() <= 6) {
+            return "*".repeat(taxCode.length());
+        }
+        StringBuilder masked = new StringBuilder(taxCode.length());
+        for (int i = 0; i < taxCode.length(); i++) {
+            char c = taxCode.charAt(i);
+            masked.append(i < 3 || i >= taxCode.length() - 3 || !Character.isLetterOrDigit(c) ? c : '*');
+        }
+        return masked.toString();
+    }
+
     static CustomerRegistrationResponse toResponse(CustomerRegistration registration) {
-        return new CustomerRegistrationResponse(toResponse(registration.customer()),
+        return new CustomerRegistrationResponse(toMaskedResponse(registration.customer()),
                 registration.accessToken(), registration.tokenType(), registration.expiresInSeconds());
     }
 

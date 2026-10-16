@@ -74,7 +74,7 @@ class CustomerSegmentController {
     @RequiresPermission(resource = CustomerResources.SEGMENTS, action = Action.UPDATE)
     public ApiResponse<CustomerResponse> assign(@PathVariable UUID customerId,
                                                 @Valid @RequestBody AssignCustomerSegmentRequest request) {
-        return ApiResponse.ok(CustomerWebMapper.toResponse(segments.assign(customerId, request.segmentId(),
+        return ApiResponse.ok(CustomerWebMapper.toMaskedResponse(segments.assign(customerId, request.segmentId(),
                 request.version())));
     }
 

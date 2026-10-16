@@ -48,7 +48,7 @@ class CustomerController {
     @GetMapping("/me")
     @RequiresPermission(resource = CustomerResources.CUSTOMERS, action = Action.READ)
     public ApiResponse<CustomerResponse> me(@AuthenticatedUser CurrentUser user) {
-        return customers.findByUserId(user.userId()).map(CustomerWebMapper::toResponse)
+        return customers.findByUserId(user.userId()).map(CustomerWebMapper::toMaskedResponse)
                 .map(ApiResponse::ok)
                 .orElseThrow(() -> new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND));
     }
@@ -59,7 +59,7 @@ class CustomerController {
                                                   @Valid @RequestBody UpdateCustomerRequest request) {
         var current = customers.findByUserId(user.userId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND));
-        return ApiResponse.ok(CustomerWebMapper.toResponse(customers.update(new UpdateCustomerCommand(
+        return ApiResponse.ok(CustomerWebMapper.toMaskedResponse(customers.update(new UpdateCustomerCommand(
                 current.customerId(), user.userId(), false, request.fullName(), request.phone(),
                 request.version()))));
     }
@@ -77,7 +77,7 @@ class CustomerController {
         requireStaff(user);
         var query = new ListCustomersQuery(page, size == null ? Pages.DEFAULT_PAGE_SIZE : size,
                 search, status, sort, segmentId);
-        return ApiResponse.ok(customers.list(query).map(CustomerWebMapper::toResponse));
+        return ApiResponse.ok(customers.list(query).map(CustomerWebMapper::toMaskedResponse));
     }
 
     @GetMapping("/{customerId}")
@@ -106,7 +106,7 @@ class CustomerController {
                                                       @AuthenticatedUser CurrentUser user,
                                                       @Valid @RequestBody ChangeCustomerStatusRequest request) {
         if (!user.hasRole(Role.ECOMMERCE_ADMIN)) throw new BusinessException(ErrorCode.FORBIDDEN);
-        return ApiResponse.ok(CustomerWebMapper.toResponse(customers.changeStatus(new ChangeCustomerStatusCommand(
+        return ApiResponse.ok(CustomerWebMapper.toMaskedResponse(customers.changeStatus(new ChangeCustomerStatusCommand(
                 customerId, request.status(), request.reason(), user.userId()))));
     }
 
