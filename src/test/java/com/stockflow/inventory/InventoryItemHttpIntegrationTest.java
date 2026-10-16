@@ -206,4 +206,15 @@ class InventoryItemHttpIntegrationTest {
                 .andExpect(jsonPath("$.data.items.length()").value(1))
                 .andExpect(jsonPath("$.data.items[0].sku").value(prefix + "-C"));
     }
+
+    /** The product-side routes were deleted outright (spec D4): no alias, no redirect. */
+    @Test
+    void theOldRoutesAreGone() throws Exception {
+        String base = "/api/v1/products/" + UUID.randomUUID() + "/skus/" + UUID.randomUUID();
+        for (String route : new String[] {"/logistics", "/inventory-control"}) {
+            mvc.perform(get(base + route)).andExpect(status().isNotFound());
+            mvc.perform(put(base + route).contentType(MediaType.APPLICATION_JSON).content("{}"))
+                    .andExpect(status().isNotFound());
+        }
+    }
 }

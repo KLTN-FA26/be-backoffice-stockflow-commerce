@@ -28,8 +28,9 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * The variants of a product (WBS 3.1.2). A variant's id is the {@code skuId} of the SKU routes
- * ({@code /skus/{skuId}/logistics}, {@code /skus/{skuId}/inventory-control}).
+ * The variants of a product (WBS 3.1.2). A variant's logistics and stock policy are no longer
+ * reached through the product: they belong to its inventory item, whose id each variant response
+ * carries ({@code /api/v1/inventory/items/{id}/logistics}, {@code .../policy}).
  *
  * <p>Variants have their own permission resource, {@code product-variants} (declared on
  * {@link ProductAttributeController}, which guards the axes the same way), rather than
