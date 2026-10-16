@@ -4,6 +4,7 @@ import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.security.Action;
+import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.procurement.api.SaveSupplierItemCommand;
 import com.stockflow.procurement.api.SkuSupplierSummary;
@@ -24,13 +25,21 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * The supplier catalog. The permission resource is {@code procurement-suppliers}, declared on
- * {@link SupplierController}: a catalog row is part of the supplier's profile, so reading needs READ and
- * every edit needs UPDATE.
+ * The supplier catalog. It has its own permission resource, {@code procurement-supplier-items}, rather than
+ * borrowing {@code procurement-suppliers}: who may edit a supplier's profile and who may maintain what it
+ * sells are separate grants, and the seed (V20260928006000) already makes them so. It shares the supplier
+ * screen, hence the same route.
  */
 @RestController
 @RequestMapping("/api/v1")
 @Tag(name = "Supplier catalog", description = "Which supplier sells which SKU, at what price and terms")
+@PermissionResource(
+        code = SupplierResources.SUPPLIER_ITEMS,
+        group = "Procurement",
+        label = "Supplier catalog",
+        route = "/admin/suppliers",
+        apiPath = "/api/v1/suppliers",
+        actions = {Action.VIEW_PAGE, Action.READ, Action.CREATE, Action.UPDATE, Action.DELETE})
 class SupplierItemController {
     private final SupplierItemService service;
 
@@ -40,7 +49,7 @@ class SupplierItemController {
 
     @GetMapping("/suppliers/{supplierId}/items")
     @Operation(summary = "List the SKUs a supplier sells")
-    @RequiresPermission(resource = SupplierResources.SUPPLIERS, action = Action.READ)
+    @RequiresPermission(resource = SupplierResources.SUPPLIER_ITEMS, action = Action.READ)
     public ApiResponse<PageResponse<SupplierItemResponse>> list(
             @PathVariable UUID supplierId,
             @RequestParam(defaultValue = "0") int page,
@@ -54,7 +63,7 @@ class SupplierItemController {
     @PostMapping("/suppliers/{supplierId}/items")
     @ResponseStatus(HttpStatus.CREATED)
     @Operation(summary = "List a SKU for an active supplier")
-    @RequiresPermission(resource = SupplierResources.SUPPLIERS, action = Action.UPDATE)
+    @RequiresPermission(resource = SupplierResources.SUPPLIER_ITEMS, action = Action.CREATE)
     public ApiResponse<SupplierItemResponse> create(
             @PathVariable UUID supplierId,
             @Validated(SaveSupplierItemRequest.Create.class) @RequestBody SaveSupplierItemRequest request) {
@@ -63,7 +72,7 @@ class SupplierItemController {
 
     @PutMapping("/suppliers/{supplierId}/items/{supplierItemId}")
     @Operation(summary = "Replace the terms of a catalog row; a new price opens a new price period")
-    @RequiresPermission(resource = SupplierResources.SUPPLIERS, action = Action.UPDATE)
+    @RequiresPermission(resource = SupplierResources.SUPPLIER_ITEMS, action = Action.UPDATE)
     public ApiResponse<SupplierItemResponse> update(
             @PathVariable UUID supplierId,
             @PathVariable UUID supplierItemId,
@@ -74,7 +83,7 @@ class SupplierItemController {
     @DeleteMapping("/suppliers/{supplierId}/items/{supplierItemId}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     @Operation(summary = "Remove a catalog row unless an open purchase order still buys it")
-    @RequiresPermission(resource = SupplierResources.SUPPLIERS, action = Action.UPDATE)
+    @RequiresPermission(resource = SupplierResources.SUPPLIER_ITEMS, action = Action.DELETE)
     public void delete(
             @PathVariable UUID supplierId,
             @PathVariable UUID supplierItemId,
@@ -84,7 +93,7 @@ class SupplierItemController {
 
     @GetMapping("/procurement/skus/{sku}/suppliers")
     @Operation(summary = "Every supplier that sells a SKU, preferred first, then by supplier name")
-    @RequiresPermission(resource = SupplierResources.SUPPLIERS, action = Action.READ)
+    @RequiresPermission(resource = SupplierResources.SUPPLIER_ITEMS, action = Action.READ)
     public ApiResponse<List<SkuSupplierResponse>> suppliersOf(@PathVariable String sku) {
         return ApiResponse.ok(
                 service.suppliersOf(sku).stream().map(SupplierItemController::response).toList());

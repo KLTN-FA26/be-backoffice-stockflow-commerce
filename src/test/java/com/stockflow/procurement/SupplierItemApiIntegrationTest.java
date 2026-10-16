@@ -38,7 +38,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * SCRUM-77 supplier catalog REST API through the real filter chain and permission aspect: the five
- * routes, who may call them (the {@code procurement-suppliers} grants, no new resource), and that a bad
+ * routes, who may call them (the seeded {@code procurement-supplier-items} grants), and that a bad
  * body is refused with the offending field named.
  */
 @SecuredIntegrationTest
@@ -130,9 +130,10 @@ class SupplierItemApiIntegrationTest {
     }
 
     @Test
-    @DisplayName("an accountant reads a catalog but cannot change it")
-    void anAccountantReadsButCannotEdit() throws Exception {
-        as(Role.ACCOUNTANT, get(items(supplierId))).andExpect(status().isOk());
+    @DisplayName("an accountant, who holds no grant on the supplier catalog, can neither read nor edit it")
+    void anAccountantHasNoCatalogAccess() throws Exception {
+        as(Role.ACCOUNTANT, get(items(supplierId))).andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.errorCode").value("FORBIDDEN"));
         as(Role.ACCOUNTANT, json(post(items(supplierId)), body(sku, "1500", 10, 5, null, false, null)))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.errorCode").value("FORBIDDEN"));
@@ -140,7 +141,7 @@ class SupplierItemApiIntegrationTest {
     }
 
     @Test
-    @DisplayName("warehouse staff, who have no supplier grants, cannot read a catalog")
+    @DisplayName("warehouse staff, who have no supplier-catalog grants, cannot read a catalog")
     void warehouseStaffCannotRead() throws Exception {
         as(Role.WAREHOUSE_STAFF, get(items(supplierId))).andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.errorCode").value("FORBIDDEN"));

@@ -18,7 +18,7 @@
 - Primary keys `Identifiers.newId()`; enums `EnumType.STRING`; entities extend `BaseEntity`; no entity leaves the adapter; nothing from `internal` in `api`.
 - No cross-schema JOIN. Inventory data (SKU ↔ inventory item) comes only through `InventoryService` (`inventory :: api`); `supplier_items ⨝ suppliers` is the same schema and is allowed.
 - Every handler `public` with `@RequiresPermission` on the method.
-- **Permissions:** reuse the seeded resource `SupplierResources.SUPPLIERS` (`procurement-suppliers`). Reads → `Action.READ`; create, update **and delete** of a catalog row → `Action.UPDATE` (removing a row edits the supplier's master data; PROCUREMENT_STAFF holds UPDATE but deliberately not DELETE, which deactivates the supplier). No new resource, so no seed change.
+- **Permissions:** use the seeded resource `SupplierResources.SUPPLIER_ITEMS` (`procurement-supplier-items`, V20260928006000; PROCUREMENT_STAFF holds all of it). GETs need `Action.READ`, POST `CREATE`, PUT `UPDATE`, DELETE `DELETE`. No migration and no seed change. (This replaced the earlier decision to reuse `procurement-suppliers`, which assumed a new resource would need a migration; the resource was already seeded.)
 - Field limits copied from the schema: `supplier_sku_code` ≤ 50; price `NUMERIC(18,2)`, > 0, ≤ 2 decimals; `moq ≥ 1`; `pack_size ≥ 1`; `lead_time_days` null or 0–365 (365 is our cap, DB only says ≥ 0); `moq % pack_size == 0`.
 - During tasks run only the focused tests plus `ModularityTest`, `ArchitectureTest` and `python -X utf8 tools/verify.py`. One full `mvn verify` in the last task.
 
@@ -232,7 +232,7 @@ The open PO for `deleteIsRefusedWhileAnOpenOrderUsesThePair` is raised through `
 
 Controller decisions:
 - `@RequestMapping("/api/v1")` with full paths on each handler: `GET/POST /suppliers/{supplierId}/items`, `PUT/DELETE /suppliers/{supplierId}/items/{supplierItemId}`, `GET /procurement/skus/{sku}/suppliers`.
-- Guards: both GETs `@RequiresPermission(resource = SupplierResources.SUPPLIERS, action = Action.READ)`; POST, PUT, DELETE `action = Action.UPDATE`.
+- Guards: `@RequiresPermission(resource = SupplierResources.SUPPLIER_ITEMS, ...)`: both GETs `Action.READ`; POST `CREATE`; PUT `UPDATE`; DELETE `DELETE`. The controller declares `@PermissionResource` for it.
 - POST → 201; DELETE → 204 with required `@RequestParam long version`; PUT body carries `version` (`@NotNull` in an `Update` validation group, as `SaveSupplierRequest` does).
 - `SaveSupplierItemRequest`: `sku` `@NotBlank` on create only (ignored on update), `supplierSkuCode` `@Size(max = 50)`, `price` `@NotNull @Positive @Digits(integer = 16, fraction = 2)`, `moq`/`packSize` `@NotNull @Min(1)`, `leadTimeDays` `@Min(0) @Max(365)`, `preferred` nullable → false, `version` `Long`.
 - `size` defaults to `Pages.DEFAULT_PAGE_SIZE`, as `SupplierController.list` does.
@@ -250,7 +250,7 @@ Controller decisions:
 ```
 
 - [ ] **Step 2: Run** `mvn -q test -Dtest=SupplierItemApiIntegrationTest` — expected: FAIL (404 for every route).
-- [ ] **Step 3: Implement** the DTOs and `SupplierItemController`; update the spec's permission paragraphs to: "Permissions reuse `procurement-suppliers`: reads need READ; creating, editing and removing a catalog row need UPDATE. No new resource and no seed change." and drop the grant bullet from §6.
+- [ ] **Step 3: Implement** the DTOs and `SupplierItemController`; update the spec's permission paragraphs to say the seeded resource `procurement-supplier-items` is used (GETs READ, POST CREATE, PUT UPDATE, DELETE DELETE; no migration, no seed change) and drop the grant bullet from §6.
 - [ ] **Step 4: Run** `mvn -q test -Dtest=SupplierItemApiIntegrationTest,PermissionMatrixTest,ModularityTest,ArchitectureTest` — expected: PASS. Then `python -X utf8 tools/verify.py`.
 - [ ] **Step 5: Full build:** `mvn verify` (≈11–16 min, run in the background) — expected: BUILD SUCCESS. Report any failure with its output; do not disable a test.
 - [ ] **Step 6: Commit** (after the owner's yes): `feat(procurement): supplier catalog REST API (SCRUM-77)`.

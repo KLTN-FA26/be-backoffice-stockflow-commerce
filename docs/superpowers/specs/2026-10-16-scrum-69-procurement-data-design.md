@@ -81,13 +81,13 @@ Behaviour:
 |---|---|---|
 | GET | `/api/v1/suppliers/{supplierId}/items?page&size&sort` | page of `SupplierItemResponse` |
 | POST | `/api/v1/suppliers/{supplierId}/items` | `{sku, supplierSkuCode?, price, moq, packSize, leadTimeDays?, preferred?}` → 201 |
-| PUT | `/api/v1/suppliers/{supplierId}/items/{itemId}` | full update + `version` → 200 |
-| DELETE | `/api/v1/suppliers/{supplierId}/items/{itemId}?version=` | 204 |
+| PUT | `/api/v1/suppliers/{supplierId}/items/{supplierItemId}` | full update + `version` → 200 |
+| DELETE | `/api/v1/suppliers/{supplierId}/items/{supplierItemId}?version=` | 204 |
 | GET | `/api/v1/procurement/skus/{sku}/suppliers` | every supplier selling the SKU, preferred first, then by name |
 
-Every handler is public and carries `@RequiresPermission` on the method. Permissions reuse
-`procurement-suppliers`: reads need READ; creating, editing and removing a catalog row need UPDATE. No new
-resource and no seed change.
+Every handler is public and carries `@RequiresPermission` on the method. Permissions use the seeded resource
+`procurement-supplier-items` (V20260928006000, PROCUREMENT_STAFF holds all of it): GETs need READ, POST
+CREATE, PUT UPDATE, DELETE DELETE. No migration and no seed change.
 
 ### 3.4 Rules
 
