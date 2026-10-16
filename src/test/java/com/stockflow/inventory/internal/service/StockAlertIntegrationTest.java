@@ -335,7 +335,7 @@ class StockAlertIntegrationTest {
         long version = controls.item(new Sku(own)).version();
 
         tx.executeWithoutResult(s -> controls.configure(new Sku(own), version,
-                new InventoryPolicy(40, null, RemovalStrategy.FEFO, TrackingMode.NONE, false, null)));
+                new InventoryPolicy(40, null, null, RemovalStrategy.FEFO, TrackingMode.NONE, false, null)));
 
         Await.until("the alert from the policy-change listener", Duration.ofSeconds(30), () -> jdbc.queryForObject(
                 "SELECT count(*) FROM inventory.stock_alert WHERE sku = ? AND kind = 'REORDER' AND status = 'OPEN'", Long.class, own) == 1);

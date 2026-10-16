@@ -1,6 +1,8 @@
 package com.stockflow.inventory.internal.domain;
 import com.stockflow.inventory.api.*;
+import com.stockflow.common.api.FieldError;
 import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
 import org.junit.jupiter.api.Test;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -9,17 +11,40 @@ import static org.assertj.core.api.Assertions.*;
 
 class StockPolicyTest {
     @Test void nullAndZeroAreDifferentAndBothValid() {
-        assertThat(StockPolicy.validate(new InventoryPolicy(null,null,RemovalStrategy.FIFO,TrackingMode.NONE,false,null)).reorderPoint()).isNull();
-        assertThat(StockPolicy.validate(new InventoryPolicy(0,0,RemovalStrategy.FIFO,TrackingMode.NONE,false,null)).reorderPoint()).isZero();
+        assertThat(StockPolicy.validate(new InventoryPolicy(null,null,null,RemovalStrategy.FIFO,TrackingMode.NONE,false,null)).reorderPoint()).isNull();
+        assertThat(StockPolicy.validate(new InventoryPolicy(0,0,null,RemovalStrategy.FIFO,TrackingMode.NONE,false,null)).reorderPoint()).isZero();
     }
     @Test void invalidCombinationsAreRejected() {
-        for (var p:List.of(new InventoryPolicy(-1,0,RemovalStrategy.FIFO,TrackingMode.NONE,false,null),
-                new InventoryPolicy(5,6,RemovalStrategy.FIFO,TrackingMode.NONE,false,null),
-                new InventoryPolicy(5,0,RemovalStrategy.FIFO,TrackingMode.LOT,true,10),
-                new InventoryPolicy(5,0,RemovalStrategy.FEFO,TrackingMode.NONE,true,10),
-                new InventoryPolicy(5,0,RemovalStrategy.FEFO,TrackingMode.LOT,false,10))) {
+        for (var p:List.of(new InventoryPolicy(-1,0,null,RemovalStrategy.FIFO,TrackingMode.NONE,false,null),
+                new InventoryPolicy(5,6,null,RemovalStrategy.FIFO,TrackingMode.NONE,false,null),
+                new InventoryPolicy(5,0,null,RemovalStrategy.FIFO,TrackingMode.LOT,true,10),
+                new InventoryPolicy(5,0,null,RemovalStrategy.FEFO,TrackingMode.NONE,true,10),
+                new InventoryPolicy(5,0,null,RemovalStrategy.FEFO,TrackingMode.LOT,false,10))) {
             assertThatThrownBy(() -> StockPolicy.validate(p)).isInstanceOf(BusinessException.class);
         }
+    }
+    @Test void maxQtyMayNotSitBelowTheReorderPointOrTheSafetyStock() {
+        // (reorder 10, safety 5, max 9) and (reorder null, safety 5, max 4): refused on the maxQty field
+        for (var p : List.of(new InventoryPolicy(10, 5, 9, RemovalStrategy.FIFO, TrackingMode.NONE, false, null),
+                new InventoryPolicy(null, 5, 4, RemovalStrategy.FIFO, TrackingMode.NONE, false, null))) {
+            assertThatThrownBy(() -> StockPolicy.validate(p))
+                    .isInstanceOfSatisfying(BusinessException.class, e -> {
+                        assertThat(e.errorCode()).isEqualTo(ErrorCode.INVENTORY_POLICY_INVALID);
+                        assertThat(e.fieldErrors()).extracting(FieldError::field, FieldError::code)
+                                .containsExactly(tuple("maxQty", "INVENTORY_MAX_QTY_BELOW_THRESHOLD"));
+                    });
+        }
+        // at the reorder point, with nothing set, and at zero with no thresholds: all valid
+        for (var p : List.of(new InventoryPolicy(10, 5, 10, RemovalStrategy.FIFO, TrackingMode.NONE, false, null),
+                new InventoryPolicy(null, null, null, RemovalStrategy.FIFO, TrackingMode.NONE, false, null),
+                new InventoryPolicy(null, null, 0, RemovalStrategy.FIFO, TrackingMode.NONE, false, null))) {
+            assertThat(StockPolicy.validate(p)).isSameAs(p);
+        }
+    }
+    @Test void aNegativeMaxQtyIsRefusedEvenWithoutTheRequestValidation() {
+        assertThatThrownBy(() -> StockPolicy.validate(
+                new InventoryPolicy(null, null, -1, RemovalStrategy.FIFO, TrackingMode.NONE, false, null)))
+                .isInstanceOf(BusinessException.class);
     }
     private StockAllocator.Candidate lot(String location,Instant received,LocalDate expiry) {
         return new StockAllocator.Candidate(StockItemId.newId(),new LocationId(location),"L",expiry,

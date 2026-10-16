@@ -282,7 +282,7 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
     InventoryPolicy policy(
             Integer threshold, RemovalStrategy strategy, TrackingMode tracking, boolean expiry) {
         return new InventoryPolicy(
-                threshold, null, strategy, tracking, expiry, expiry ? 365 : null);
+                threshold, null, null, strategy, tracking, expiry, expiry ? 365 : null);
     }
 
     @Test
@@ -618,6 +618,59 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
     }
 
     @Test
+    void maxQtyRoundTripsThroughInventoryControl() throws Exception {
+        var f = fixture("DRAFT");
+        String path = "/api/v1/products/" + f.product() + "/skus/" + f.skuId() + "/inventory-control";
+        mvc.perform(
+                        MockMvcRequestBuilders.put(path)
+                                .contentType("application/json")
+                                .content(
+                                        """
+{"version":0,"reorderPoint":10,"safetyStock":5,"maxQty":40,"removalStrategy":"FIFO","trackingMode":"NONE","expiryTracked":false}
+"""))
+                .andExpect(MockMvcResultMatchers.status().isOk())
+                .andExpect(MockMvcResultMatchers.jsonPath("$.data.maxQty").value(40));
+        mvc.perform(MockMvcRequestBuilders.get(path))
+                .andExpect(MockMvcResultMatchers.status().isOk())
+                .andExpect(MockMvcResultMatchers.jsonPath("$.data.maxQty").value(40));
+        assertThat(
+                        jdbc.queryForObject(
+                                "select max_qty from inventory.inventory_items where sku=?",
+                                Integer.class,
+                                f.sku()))
+                .isEqualTo(40);
+        assertThat(inventoryControl.policy(new Sku(f.sku())).maxQty()).isEqualTo(40);
+    }
+
+    @Test
+    void maxQtyBelowTheReorderPointIs400OnTheField() throws Exception {
+        var f = fixture("DRAFT");
+        mvc.perform(
+                        MockMvcRequestBuilders.put(
+                                        "/api/v1/products/"
+                                                + f.product()
+                                                + "/skus/"
+                                                + f.skuId()
+                                                + "/inventory-control")
+                                .contentType("application/json")
+                                .content(
+                                        """
+{"version":0,"reorderPoint":10,"maxQty":5,"removalStrategy":"FIFO","trackingMode":"NONE","expiryTracked":false}
+"""))
+                .andExpect(MockMvcResultMatchers.status().isBadRequest())
+                .andExpect(MockMvcResultMatchers.jsonPath("$.fieldErrors[0].field").value("maxQty"))
+                .andExpect(
+                        MockMvcResultMatchers.jsonPath("$.fieldErrors[0].code")
+                                .value("INVENTORY_MAX_QTY_BELOW_THRESHOLD"));
+        assertThat(
+                        jdbc.queryForObject(
+                                "select max_qty from inventory.inventory_items where sku=?",
+                                Integer.class,
+                                f.sku()))
+                .isNull();
+    }
+
+    @Test
     void databaseConstraintsRejectNegativeThresholdsEvenWithoutTheService() {
         var f = fixture("DRAFT");
         assertThatThrownBy(
@@ -700,6 +753,7 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
                                         new InventoryPolicy(
                                                 5,
                                                 null,
+                                                null,
                                                 RemovalStrategy.FEFO,
                                                 TrackingMode.LOT_SERIAL,
                                                 true,
@@ -718,7 +772,7 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
                         f.skuId(),
                         saved.version(),
                         new InventoryPolicy(
-                                5, null, RemovalStrategy.FEFO, TrackingMode.LOT_SERIAL, true, 10));
+                                5, null, null, RemovalStrategy.FEFO, TrackingMode.LOT_SERIAL, true, 10));
         assertThat(allowed.policy().maxShelfLifeDays()).isEqualTo(10);
     }
 
@@ -942,7 +996,7 @@ values (?,'Conflicting test rule',?,200,'VND',0,true,now())
                         f.skuId(),
                         initial.version(),
                         new InventoryPolicy(
-                                100, 5, RemovalStrategy.FEFO, TrackingMode.LOT_SERIAL, true, 30));
+                                100, 5, null, RemovalStrategy.FEFO, TrackingMode.LOT_SERIAL, true, 30));
         assertThat(saved.version()).isEqualTo(initial.version() + 1);
         assertThat(saved.evaluation().reorderRequired()).isTrue();
         assertThat(

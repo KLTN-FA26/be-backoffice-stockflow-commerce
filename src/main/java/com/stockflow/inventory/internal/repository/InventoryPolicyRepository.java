@@ -72,6 +72,7 @@ public class InventoryPolicyRepository {
                                         new InventoryPolicy(
                                                 rs.getObject("reorder_point", Integer.class),
                                                 rs.getObject("safety_stock", Integer.class),
+                                                rs.getObject("max_qty", Integer.class),
                                                 RemovalStrategy.valueOf(
                                                         rs.getString("removal_strategy")),
                                                 TrackingMode.of(
@@ -121,13 +122,14 @@ and ((? and nullif(trim(lot_number), '') is null)
     public boolean save(String sku, long version, InventoryPolicy p, String actor) {
         return jdbc.update(
                         """
-update inventory.inventory_items set reorder_point=?, safety_stock=?, removal_strategy=?,
+update inventory.inventory_items set reorder_point=?, safety_stock=?, max_qty=?, removal_strategy=?,
     lot_tracked=?, serial_tracked=?, expiry_tracked=?, max_shelf_life_days=?,
     policy_configured=true, version=version+1, last_modified_at=now(), last_modified_by=?
 where sku=? and version=?
 """,
                         p.reorderPoint(),
                         p.safetyStock(),
+                        p.maxQty(),
                         p.removalStrategy().name(),
                         p.trackingMode().lotTracked(),
                         p.trackingMode().serialTracked(),

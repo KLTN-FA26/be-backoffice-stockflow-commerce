@@ -30,6 +30,9 @@ public enum ErrorCode {
     SUPPLIER_ITEM_LEAD_TIME_INVALID("The lead time must be between 0 and 365 days", 400),
     VALIDATION_FAILED("Invalid request data", 400),
     INVENTORY_POLICY_INVALID("Invalid SKU inventory policy", 400),
+    /** A field-error code on {@link #INVENTORY_POLICY_INVALID}: {@code maxQty} sits below the reorder point or the safety stock. */
+    INVENTORY_MAX_QTY_BELOW_THRESHOLD(
+            "The order-up-to level must not be below the reorder point or the safety stock", 400),
     INVENTORY_POLICY_STOCK_CONFLICT("Existing stock is incompatible with this policy", 409),
     CATALOG_SLUG_EXISTS("This storefront URL is already reserved", 409),
     CATALOG_LISTING_REQUIRED("Configure the storefront listing before publishing", 409),
