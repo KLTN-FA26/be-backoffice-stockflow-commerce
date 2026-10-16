@@ -97,7 +97,7 @@ Writes are audited (`customer-price`, `segment-price` CREATE/UPDATE/DELETE; `quo
 
 | Requirement (Jira 428 + kltn-docs) | Code | Test | Result |
 |---|---|---|---|
-| Own price per customer, SKU and quantity tier (428; 13 §3; D14) | migration 000510, `CustomerPrice`, `CustomerPriceService`, `CustomerPriceController` | `CustomerPriceTest` (4), IT `onlyTheEcommerceAdminEdits…`, `CustomerPriceMigrationUpgradeTest`, QA `10_customer_pricing.sql` P1–P11 | PASS |
+| Own price per customer, SKU and quantity tier (428; 13 §3; D14) | migration 000510, `CustomerPrice`, `CustomerPriceService`, `CustomerPriceController` | `CustomerPriceTest` (4), IT `onlyTheEcommerceAdminEdits…`, `CustomerPriceMigrationUpgradeTest`, QA `12_customer_pricing.sql` P1–P11 | PASS |
 | E-commerce Admin configures; others read (13 §2, 14 §2) | grants + `@RequiresPermission` | IT: anonymous 401, Sales/warehouse/customer write 403, warehouse/customer read 403, Sales read 200; upgrade test grant list; QA P12 | PASS (P1 decided: admin edits, Sales reads, deals are not saved) |
 | No own price → group price, else base (13 §3) | `PriceResolver` | IT portal: CUSTOMER / SEGMENT / BASE | PASS |
 | Portal shows the logged-in customer's price, tiers, MOQ (172; 13 BR-02/05) | `StorefrontPriceService`, `GET /catalog/products/prices` | IT incl. BLOCKED 403, staff 403, anonymous 401 | PASS |
@@ -159,7 +159,7 @@ field lane A fills) - not required by Jira. Tests: `ProductionNotificationListen
 | Regression: `InventoryCatalogMigrationUpgradeTest` (fresh DB + every `tools/db/qa` script + orphan check), `DemoCatalogPriceSeedTest`, `QuoteIntegrationTest`, `QuoteSecurityIntegrationTest`, `QuoteMigrationUpgradeTest`, `PlaceOrderIntegrationTest`, `CreditCheckoutIntegrationTest`, `InventoryCatalog(Security)IntegrationTest`, `ProductionGrantsMigrationUpgradeTest`, B2B onboarding/access, availability, invitation | 111 run, 1 failure → fixed (below), rerun green |
 | identity + common.security tests, `CatalogProjectionStartupIntegrationTest`, `ProcurementMigrationUpgradeTest` | 122/122 |
 | `ArchitectureTest`, `ModularityTest`, `MessageBundleTest`, `tools/verify.py` | pass |
-| `tools/db/qa/run.sh` on a lane database migrated by the real jar (local profile, demo) | every script PASS, `10_customer_pricing` 16 checks |
+| `tools/db/qa/run.sh` on a lane database migrated by the real jar (local profile, demo) | every script PASS, `12_customer_pricing` 16 checks |
 | real jar, security on: admin creates, Sales 403 on create, Sales reads schedule, portal MOQ, below MOQ 409, base price refused 409, tier price 201, order line holds 10,000,000 | 8/8 behaviours (the script's last string compare expected `.00`, the column has scale 4 - value correct) |
 
 `QuoteMigrationUpgradeTest` upgraded to the newest migration and checked role versions moved by exactly one; the
