@@ -24,6 +24,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -61,14 +62,15 @@ class ProductVariantController {
     public ApiResponse<PageResponse<VariantResponse>> list(@PathVariable UUID productId,
                                                            @RequestParam(defaultValue = "0") int page,
                                                            @RequestParam(required = false) Integer size) {
-        return ApiResponse.ok(variants.list(productId, page, size == null ? Pages.DEFAULT_PAGE_SIZE : size)
-                .map(mapper::toResponse));
+        var found = variants.list(productId, page, size == null ? Pages.DEFAULT_PAGE_SIZE : size);
+        var ids = variants.inventoryItemIds(found.items());
+        return ApiResponse.ok(found.map(v -> mapper.toResponse(v, ids.get(v.sku()))));
     }
 
     @GetMapping("/{variantId}")
     @RequiresPermission(resource = ProductResources.VARIANTS, action = Action.READ)
     public ApiResponse<VariantResponse> get(@PathVariable UUID productId, @PathVariable UUID variantId) {
-        return ApiResponse.ok(mapper.toResponse(variants.get(productId, variantId)));
+        return ApiResponse.ok(withItem(variants.get(productId, variantId)));
     }
 
     @PostMapping
@@ -82,7 +84,7 @@ class ProductVariantController {
                     + "400 VARIANT_OPTIONS_INVALID.")
     @RequiresPermission(resource = ProductResources.VARIANTS, action = Action.CREATE)
     public ApiResponse<VariantResponse> add(@PathVariable UUID productId, @Valid @RequestBody VariantRequest request) {
-        return ApiResponse.ok(mapper.toResponse(variants.add(productId, command(request))));
+        return ApiResponse.ok(withItem(variants.add(productId, command(request))));
     }
 
     @PostMapping("/generation")
@@ -99,8 +101,8 @@ class ProductVariantController {
     @RequiresPermission(resource = ProductResources.VARIANTS, action = Action.CREATE)
     public ApiResponse<GeneratedVariantsResponse> generate(
             @PathVariable UUID productId, @Valid @RequestBody(required = false) GenerateVariantsRequest request) {
-        return ApiResponse.ok(mapper.toResponse(
-                variants.generate(productId, request == null ? null : request.optionValueIds())));
+        var generated = variants.generate(productId, request == null ? null : request.optionValueIds());
+        return ApiResponse.ok(mapper.toResponse(generated, variants.inventoryItemIds(generated.created())));
     }
 
     @PutMapping("/{variantId}")
@@ -114,28 +116,33 @@ class ProductVariantController {
     @RequiresPermission(resource = ProductResources.VARIANTS, action = Action.UPDATE)
     public ApiResponse<VariantResponse> update(@PathVariable UUID productId, @PathVariable UUID variantId,
                                                @Valid @RequestBody VariantRequest request) {
-        return ApiResponse.ok(mapper.toResponse(variants.update(productId, variantId, command(request))));
+        return ApiResponse.ok(withItem(variants.update(productId, variantId, command(request))));
     }
 
     @PostMapping("/{variantId}/activation")
     @Operation(summary = "Put a variant on sale (product approved or published)")
     @RequiresPermission(resource = ProductResources.VARIANTS, action = Action.APPROVE)
     public ApiResponse<VariantResponse> activate(@PathVariable UUID productId, @PathVariable UUID variantId) {
-        return ApiResponse.ok(mapper.toResponse(variants.activate(productId, variantId)));
+        return ApiResponse.ok(withItem(variants.activate(productId, variantId)));
     }
 
     @PostMapping("/{variantId}/blocking")
     @Operation(summary = "Take a variant off sale for now")
     @RequiresPermission(resource = ProductResources.VARIANTS, action = Action.UPDATE)
     public ApiResponse<VariantResponse> block(@PathVariable UUID productId, @PathVariable UUID variantId) {
-        return ApiResponse.ok(mapper.toResponse(variants.block(productId, variantId)));
+        return ApiResponse.ok(withItem(variants.block(productId, variantId)));
     }
 
     @PostMapping("/{variantId}/obsoletion")
     @Operation(summary = "Retire a variant for good (not the default one)")
     @RequiresPermission(resource = ProductResources.VARIANTS, action = Action.APPROVE)
     public ApiResponse<VariantResponse> obsolete(@PathVariable UUID productId, @PathVariable UUID variantId) {
-        return ApiResponse.ok(mapper.toResponse(variants.obsolete(productId, variantId)));
+        return ApiResponse.ok(withItem(variants.obsolete(productId, variantId)));
+    }
+
+    /** Maps one view with the id of its item: the lookup runs after the write's own transaction has committed. */
+    private VariantResponse withItem(ProductVariantService.VariantView view) {
+        return mapper.toResponse(view, variants.inventoryItemIds(List.of(view)).get(view.sku()));
     }
 
     private static ProductVariantService.NewVariant command(VariantRequest r) {

@@ -18,6 +18,7 @@ import com.stockflow.product.internal.service.ProductTaxonomyService;
 import com.stockflow.product.internal.service.ProductVariantService;
 import org.springframework.stereotype.Component;
 
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -29,15 +30,16 @@ import java.util.UUID;
 @Component
 class ProductAdminWebMapper {
 
-    VariantResponse toResponse(ProductVariantService.VariantView v) {
+    VariantResponse toResponse(ProductVariantService.VariantView v, UUID inventoryItemId) {
         return new VariantResponse(v.id(), v.productId(), v.sku(), v.name(), v.status().name(), v.defaultVariant(),
                 v.attributeSignature(), v.position(), v.obsoletedAt(), v.version(),
                 v.options().stream().map(o -> new VariantOptionResponse(o.attributeId(), o.attributeCode(),
-                        o.valueId(), o.valueCode(), o.label())).toList());
+                        o.valueId(), o.valueCode(), o.label())).toList(), inventoryItemId);
     }
 
-    GeneratedVariantsResponse toResponse(ProductVariantService.Generated g) {
-        return new GeneratedVariantsResponse(g.created().stream().map(this::toResponse).toList(), g.skipped());
+    GeneratedVariantsResponse toResponse(ProductVariantService.Generated g, Map<String, UUID> inventoryItemIds) {
+        return new GeneratedVariantsResponse(
+                g.created().stream().map(v -> toResponse(v, inventoryItemIds.get(v.sku()))).toList(), g.skipped());
     }
 
     MediaResponse toResponse(ProductMediaService.MediaView m) {

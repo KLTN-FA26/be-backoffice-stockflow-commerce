@@ -21,4 +21,7 @@ public interface InventoryItemDirectory {
 
     /** The SKU of each item that exists; one query for a whole list of lines. */
     java.util.Map<UUID, String> skusOf(java.util.Collection<UUID> inventoryItemIds);
+
+    /** The id of the item of each SKU that has one; one query for a whole list of SKUs. */
+    java.util.Map<String, UUID> itemIdsOf(java.util.Collection<String> skus);
 }
