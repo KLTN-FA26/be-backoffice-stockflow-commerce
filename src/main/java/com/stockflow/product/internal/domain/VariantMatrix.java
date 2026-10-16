@@ -81,12 +81,12 @@ public final class VariantMatrix {
     }
 
     /**
-     * The combinations whose signature is not in {@code existing}. The limit counts what is left, so
+     * The combinations whose key is not in {@code existing}. The limit counts what is left, so
      * running the same generation again after a partial one converges instead of failing.
      */
-    public static List<Combination> missing(List<Combination> all, Set<VariantSignature> existing,
-                                            Function<Combination, VariantSignature> sign) {
-        List<Combination> missing = all.stream().filter(c -> !existing.contains(sign.apply(c))).toList();
+    public static <K> List<Combination> missing(List<Combination> all, Set<K> existing,
+                                                Function<Combination, K> key) {
+        List<Combination> missing = all.stream().filter(c -> !existing.contains(key.apply(c))).toList();
         if (missing.size() > MAX_PER_CALL) {
             throw new BusinessException(ErrorCode.VARIANT_MATRIX_TOO_LARGE,
                     "%d variants would be created; at most %d per call".formatted(missing.size(), MAX_PER_CALL));

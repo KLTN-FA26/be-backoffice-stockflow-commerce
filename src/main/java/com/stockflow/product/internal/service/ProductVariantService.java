@@ -60,9 +60,15 @@ import java.util.stream.Collectors;
  * one option per axis, a SKU frozen once the variant leaves DRAFT.</p>
  *
  * <p>A variant is a combination of one option per axis of its product. The client names the option
- * values; the signature is derived from them ({@link VariantSignature}) and never accepted, so two
- * requests for one combination meet on the unique index instead of creating twins. The SKU is the
- * caller's, or {@link SkuCodeRule} builds it, and its alphabet is {@link Sku}'s.</p>
+ * values; the signature is derived from them ({@link VariantSignature}) and never accepted. The SKU is
+ * the caller's, or {@link SkuCodeRule} builds it, and its alphabet is {@link Sku}'s.</p>
+ *
+ * <p>Whether a combination is taken is decided by the option ids the variants carry
+ * ({@code variant_attribute_values}), never by comparing signatures. A signature is a derived string
+ * whose spelling has changed: rows written before it was sorted by attribute code (the deployed seed's
+ * {@code SIZE=...;COLOR=...}) name the same combination as {@code COLOR=...;SIZE=...}, so a string
+ * comparison would offer to generate a combination that exists and let {@code add} create its twin.
+ * The product lock serialises the check with every other write of the product.</p>
  *
  * <p>The default variant takes the first combination (spec D1): a product is born with one variant
  * whose signature is {@code DEFAULT}, and the matrix-first combination (the first option, in dictionary
@@ -225,7 +231,7 @@ public class ProductVariantService {
         }
         List<AxisOption> combination = catalog.resolve(command.optionValueIds(), Set.of());
         VariantSignature signature = catalog.signature(combination);
-        if (variants.existsByProductIdAndAttributeSignature(productId, signature.value())) {
+        if (combinationsOf(productId, null).contains(optionIds(combination))) {
             throw combinationTaken(signature);
         }
         String name = command.name() == null || command.name().isBlank()
@@ -245,9 +251,7 @@ public class ProductVariantService {
         int position = command.position() == null ? variants.nextPosition(productId) : command.position();
         var variant = new VariantJpaEntity(Identifiers.newId(), productId, sku.code(), name, signature.value(),
                 position, false);
-        var saved = insert(variant, combination);
-        recordAdded(saved);
-        return view(saved, catalog.optionViews(combination));
+        return view(insert(variant, combination), catalog.optionViews(combination));
     }
 
     private VariantView addWithoutAxes(UUID productId, NewVariant command) {
@@ -267,9 +271,7 @@ public class ProductVariantService {
         int position = command.position() == null ? variants.nextPosition(productId) : command.position();
         var variant = new VariantJpaEntity(Identifiers.newId(), productId, sku.code(), requireName(command.name()),
                 signature.value(), position, false);
-        var saved = insert(variant, List.of());
-        recordAdded(saved);
-        return view(saved, List.of());
+        return view(insert(variant, List.of()), List.of());
     }
 
     /**
@@ -285,12 +287,11 @@ public class ProductVariantService {
                     "This product has no axes to generate variants from");
         }
         List<List<AxisOption>> options = catalog.restrictedOptions(optionValueIds);
-        Set<VariantSignature> existing = variants.signaturesOf(productId).stream()
-                .map(VariantSignature::new).collect(Collectors.toSet());
+        Set<Set<UUID>> existing = combinationsOf(productId, null);
         // Refused from the sizes alone, before the matrix is built: see VariantMatrix.requireWithinCap.
         VariantMatrix.requireWithinCap(options.stream().map(List::size).toList(), existing.size());
         List<Combination> all = VariantMatrix.of(options);
-        List<Combination> missing = VariantMatrix.missing(all, existing, c -> catalog.signature(c.options()));
+        List<Combination> missing = VariantMatrix.missing(all, existing, c -> optionIds(c.options()));
         int skipped = all.size() - missing.size();
 
         VariantJpaEntity defaultVariant = variants.findByProductIdAndDefaultVariantTrue(productId).orElse(null);
@@ -375,8 +376,11 @@ public class ProductVariantService {
                 signature = catalog.signature(combination).value();
             }
         }
-        if (!signature.equals(variant.getAttributeSignature())
-                && variants.existsByProductIdAndAttributeSignature(productId, signature)) {
+        boolean taken = newCombination != null
+                ? combinationsOf(productId, variantId).contains(optionIds(newCombination))
+                : !signature.equals(variant.getAttributeSignature())
+                        && variants.existsByProductIdAndAttributeSignature(productId, signature);
+        if (taken) {
             throw combinationTaken(new VariantSignature(signature));
         }
         String name = command.name() == null || command.name().isBlank() ? variant.getName() : requireName(command.name());
@@ -476,37 +480,60 @@ public class ProductVariantService {
                 && VariantSignature.defaultSignature().value().equals(defaultVariant.getAttributeSignature());
     }
 
-    /** The default variant becomes the first combination; it keeps its SKU unless {@code rename} is given. */
+    /**
+     * The default variant becomes the first combination; it keeps its SKU unless {@code rename} is given.
+     * No row is added, so the history says the default variant was updated, naming what moved.
+     */
     private VariantView takeFirstCombination(VariantJpaEntity defaultVariant, List<AxisOption> combination,
                                              VariantSignature signature, String name, Sku rename, Catalog catalog) {
-        defaultVariant.setDetails(rename == null ? defaultVariant.getSku() : rename.code(), name, signature.value(), defaultVariant.getPosition());
+        String sku = rename == null ? defaultVariant.getSku() : rename.code();
+        List<String> changed = new ArrayList<>();
+        if (!sku.equals(defaultVariant.getSku())) changed.add("sku");
+        if (!name.equals(defaultVariant.getName())) changed.add("name");
+        changed.add("attributeSignature");
+        defaultVariant.setDetails(sku, name, signature.value(), defaultVariant.getPosition());
         try {
             variants.saveAndFlush(defaultVariant);
             insertOptions(defaultVariant.getId(), combination);
         } catch (DataIntegrityViolationException e) {
             throw translate(e);
         }
+        history.record(defaultVariant.getProductId(), ProductChangeType.VARIANT_UPDATED, defaultVariant.getId(),
+                null, null, null, changed);
         return view(defaultVariant, catalog.optionViews(combination));
+    }
+
+    /** The option-id set of every variant of the product but {@code except}. */
+    private Set<Set<UUID>> combinationsOf(UUID productId, UUID except) {
+        return variantOptions.findByProductId(productId).stream()
+                .filter(o -> !o.getVariantId().equals(except))
+                .collect(Collectors.groupingBy(VariantAttributeValueJpaEntity::getVariantId,
+                        Collectors.mapping(VariantAttributeValueJpaEntity::getProductAttributeOptionId,
+                                Collectors.toSet())))
+                .values().stream().collect(Collectors.toSet());
+    }
+
+    private static Set<UUID> optionIds(List<AxisOption> combination) {
+        return combination.stream().map(AxisOption::id).collect(Collectors.toSet());
     }
 
     /**
      * Inserts the variant and its options, flushing so a clash on {@code uk_variants_sku} or
      * {@code uk_variants_combination} from a request that raced past the checks surfaces here, as the
-     * error the checks would have given, not as a constraint error at commit.
+     * error the checks would have given, not as a constraint error at commit. Every new row goes
+     * through here, which is what puts each one in the history: an add and a generation alike.
      */
     private VariantJpaEntity insert(VariantJpaEntity variant, List<AxisOption> combination) {
+        VariantJpaEntity saved;
         try {
-            VariantJpaEntity saved = variants.saveAndFlush(variant);
+            saved = variants.saveAndFlush(variant);
             insertOptions(saved.getId(), combination);
-            return saved;
         } catch (DataIntegrityViolationException e) {
             throw translate(e);
         }
-    }
-
-    private void recordAdded(VariantJpaEntity added) {
-        history.record(added.getProductId(), ProductChangeType.VARIANT_ADDED, added.getId(), null,
-                added.getStatus().name(), null, List.of());
+        history.record(saved.getProductId(), ProductChangeType.VARIANT_ADDED, saved.getId(), null,
+                saved.getStatus().name(), null, List.of());
+        return saved;
     }
 
     private void insertOptions(UUID variantId, List<AxisOption> combination) {

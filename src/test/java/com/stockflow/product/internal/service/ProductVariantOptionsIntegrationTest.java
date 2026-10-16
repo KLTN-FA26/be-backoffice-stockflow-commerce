@@ -521,4 +521,45 @@ class ProductVariantOptionsIntegrationTest {
             entityManager.clear();
         }
     }
+
+    /** The variant entries of the product's history, oldest first, as {@code TYPE:changed,fields}. */
+    private List<String> variantHistory(UUID product) {
+        return jdbc.queryForList("""
+                SELECT change_type || ':' || array_to_string(changed_fields, ',') FROM product.product_change_log
+                WHERE product_id = ? AND subject_type = 'VARIANT' ORDER BY occurred_at, id""", String.class, product);
+    }
+
+    @Test
+    void generationWritesEveryNewRowAndTheDefaultsCombinationToTheHistory() {
+        UUID product = productWithAxes();
+
+        variants.generate(product, null);
+
+        // The default variant was named after the product; taking a combination renames it.
+        assertThat(variantHistory(product)).containsExactly("VARIANT_UPDATED:name,attributeSignature",
+                "VARIANT_ADDED:", "VARIANT_ADDED:", "VARIANT_ADDED:");
+        // Nothing to create, nothing recorded.
+        variants.generate(product, null);
+        assertThat(variantHistory(product)).hasSize(4);
+    }
+
+    @Test
+    void aCombinationIsTakenWhateverOrderItsStoredSignatureIsSpelledIn() {
+        UUID product = productWithAxes();
+        String code = newCode;
+        variants.generate(product, null);
+        // Rows written before the signature was sorted by attribute code, as the deployed seed has them.
+        jdbc.update("""
+                UPDATE product.variants SET attribute_signature =
+                       split_part(attribute_signature, ';', 2) || ';' || split_part(attribute_signature, ';', 1)
+                WHERE product_id = ?""", product);
+        entityManager.clear();
+
+        Generated again = variants.generate(product, null);
+        assertThat(again.created()).isEmpty();
+        assertThat(again.skipped()).isEqualTo(4);
+        assertThat(errorOf(() -> variants.add(product, new NewVariant(code + "-BY-HAND", null, List.of(cap16, red), null))))
+                .isEqualTo(ErrorCode.VARIANT_SKU_ALREADY_EXISTS);
+        assertThat(count(product)).isEqualTo(4);
+    }
 }
