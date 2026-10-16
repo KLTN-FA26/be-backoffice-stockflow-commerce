@@ -44,8 +44,11 @@ class WorkshopStock {
     private final ProductionRecords records;
     private final InventoryService inventory;
     private final WarehouseService warehouses;
+    private final java.time.Clock clock;
 
-    WorkshopStock(ProductionRecords records, InventoryService inventory, WarehouseService warehouses) {
+    WorkshopStock(ProductionRecords records, InventoryService inventory, WarehouseService warehouses,
+                  java.time.Clock clock) {
+        this.clock = clock;
         this.records = records;
         this.inventory = inventory;
         this.warehouses = warehouses;
@@ -248,12 +251,20 @@ class WorkshopStock {
      * {@code quantity} unprinted blanks back to the storage locations they were issued from, latest issue first.
      * {@code keepForOrder}: the order still wants them, so its own holds go back with the goods (still held for
      * it); otherwise every hold lets the units go, free.
+     *
+     * <p>Blanks past their expiry do not go back: storage cannot take them (review of #109, item 8). They are
+     * written off instead - out of the hold, their EXPIRED adjustment asked for, approved by four eyes as every
+     * write-off - so a cancellation or a stop is never stuck on them, and they are never sold.</p>
      */
     void returnUnprinted(ProductionOrder order, int quantity, boolean keepForOrder, UUID by) {
         List<Held> pool = new ArrayList<>(held(order));
         java.util.Collections.reverse(pool);
         java.util.Set<UUID> ownHolds = inventory.productionHolds(order.id()).stream()
                 .map(StockReservation::reservationId).collect(Collectors.toSet());
+        java.time.LocalDate today = com.stockflow.common.domain.BusinessCalendar.date(clock.instant());
+        java.util.Set<UUID> expired = inventory.holds(pool.stream().map(Held::reservationId).toList()).stream()
+                .filter(hold -> hold.expiryDate() != null && hold.expiryDate().isBefore(today))
+                .map(com.stockflow.inventory.api.HoldView::reservationId).collect(Collectors.toSet());
         int remaining = quantity;
         for (Held held : pool) {
             if (remaining == 0) {
@@ -262,7 +273,11 @@ class WorkshopStock {
             int take = Math.min(held.quantity(), remaining);
             boolean orderHold = keepForOrder && order.type() == ProductionOrder.Type.ORDER
                     && !ownHolds.contains(held.reservationId());
-            if (orderHold && take == held.quantity()) {
+            if (expired.contains(held.reservationId())) {
+                inventory.writeOffHeld(new WriteOffHeldStockCommand(held.reservationId(), order.salesOrderId(),
+                        order.id(), take, StockAdjustmentReason.EXPIRED,
+                        order.orderNumber() + " unprinted blanks past their expiry", by));
+            } else if (orderHold && take == held.quantity()) {
                 inventory.unissueHeld(new IssueReservedStockCommand(held.reservationId(), order.salesOrderId(),
                         order.id(), held.fromLocation(), by));
             } else {

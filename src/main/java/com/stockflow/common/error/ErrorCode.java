@@ -197,6 +197,8 @@ public enum ErrorCode {
     RESERVATION_NOT_ISSUABLE("This stock hold cannot be issued", 409),
     /** BR-PRD-03: never more blanks than the production order still needs. */
     ISSUE_EXCEEDS_REQUIREMENT("More blanks than the production order still needs", 409),
+    /** Review of #109: goods past their expiry cannot move to a new location; they are written off (EXPIRED). */
+    STOCK_EXPIRED("This stock is past its expiry date and can only be written off", 409),
     /** SCRUM-409: the location scanned at a blank issue is not where the hold's goods are. */
     ISSUE_LOCATION_MISMATCH("The scanned location is not where this hold's blanks are", 409),
     /** SCRUM-409: the SKU or barcode scanned at a blank issue is not the hold's. */

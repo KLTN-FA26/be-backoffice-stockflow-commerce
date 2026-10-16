@@ -265,6 +265,7 @@ class StockOperationsServiceImpl implements StockOperations {
             throw new BusinessException(ErrorCode.MOVE_ACROSS_WAREHOUSES,
                     "%s and %s are in different warehouses; use a transfer order".formatted(from, to));
         }
+        requireNotExpired(sourceView, to);
         switch (locations.stateOf(to)) {
             case UNKNOWN -> throw new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + to);
             case UNUSABLE -> throw new BusinessException(ErrorCode.LOCATION_NOT_USABLE,
@@ -318,6 +319,21 @@ class StockOperationsServiceImpl implements StockOperations {
                 hold.quantity(), source.sku(), lotSuffix(source.lotNumber()), from, to, command.productionOrderId());
         return new IssueReservedStockResult(hold.id().value(), destination.id().value(), source.sku().code(),
                 source.lotNumber(), from.code(), to.code(), hold.quantity().value(), true, line.id(), now);
+    }
+
+    /**
+     * Review of #109, item 8: goods past their expiry land nowhere new - not in the print shop, not back in storage,
+     * not in packing. The policy trigger would refuse the layer with a generic "Invalid receipt/expiry date"; this
+     * says what happened and what to do instead, before anything is written: write them off (EXPIRED), which
+     * production does for unprinted blanks it gives back, and QC does for printed goods it fails.
+     */
+    private void requireNotExpired(StockItem source, LocationId to) {
+        LocalDate today = LocalDate.ofInstant(clock.instant(), BUSINESS_ZONE);
+        if (com.stockflow.inventory.internal.domain.ExpiryPolicy.isExpired(source.expiryDate(), today)) {
+            throw new BusinessException(ErrorCode.STOCK_EXPIRED, ("%s%s expired on %s and cannot move to %s; write it off "
+                    + "instead (adjustment reason EXPIRED)").formatted(source.sku(), lotSuffix(source.lotNumber()),
+                    source.expiryDate(), to));
+        }
     }
 
     /** The same hand-over the other way: finished goods, still held, from the print shop to packing. */
@@ -434,6 +450,7 @@ class StockOperationsServiceImpl implements StockOperations {
             throw new BusinessException(ErrorCode.MOVE_ACROSS_WAREHOUSES,
                     "%s and %s are in different warehouses; use a transfer order".formatted(from, to));
         }
+        requireNotExpired(sourceView, to);
         switch (locations.stateOf(to)) {
             case UNKNOWN -> throw new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + to);
             case UNUSABLE -> throw new BusinessException(ErrorCode.LOCATION_NOT_USABLE,
