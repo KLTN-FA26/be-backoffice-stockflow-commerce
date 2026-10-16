@@ -84,7 +84,7 @@ class LocationLabelServiceImpl implements LocationLabelService {
                     throw new BusinessException(ErrorCode.ZONE_NOT_FOUND);
                 }
             }
-            case LabelSelection.WholeWarehouse whole -> { }
+            case LabelSelection.WholeWarehouse -> { }
             case LabelSelection.OfCodes codes -> { }
         }
     }
