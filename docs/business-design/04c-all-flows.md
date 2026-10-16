@@ -87,8 +87,8 @@ flowchart LR
 
 | # | Service | Ghi vào | Kết quả |
 |---|---|---|---|
-| 01 | `product` | `+ product, + variant × N` | status = DRAFT |
-| 02 | `product` | `+ sku (unique toàn hệ thống)` | BR-PRD-002 |
+| 01 | `product` | `+ product, + product_attributes, + product_attribute_options, + variant × N, + variant_attribute_values` | status = DRAFT · một transaction |
+| 02 | `product` | `+ sku (unique toàn hệ thống)` · `+ inventory_item × N` (trigger) | BR-PRD-002 |
 | 03 | `product` | `~ product.status` | → PENDING_APPROVAL |
 | 04 | `product` | `~ product, + product_approval, + outbox_event` | → APPROVED · ProductApproved |
 | 05 | `product` | `~ product, + outbox_event` | → PUBLISHED · ProductPublished |
@@ -97,6 +97,7 @@ flowchart LR
 
 > · DRAFT → PENDING_APPROVAL → APPROVED → PUBLISHED. Người duyệt phải khác người gửi — BR-PRD-003.
 > · catalog-service giữ BẢN SAO chỉ gồm sản phẩm đã publish, không phải toàn bộ product master.
+> · Bước 01–02 (`POST /products`): không gửi `axes` thì sản phẩm có đúng một variant mặc định, SKU = mã sản phẩm. Gửi `axes` thì tạo luôn trục, option và mọi tổ hợp của các option còn hoạt động; SKU theo quy tắc `MÃ-GIÁ_TRỊ-GIÁ_TRỊ`, tổ hợp đầu tiên là variant mặc định, không có SKU tạm. Một SKU bị trùng hay ma trận quá 100 tổ hợp thì cả sản phẩm không được tạo.
 
 ---
 

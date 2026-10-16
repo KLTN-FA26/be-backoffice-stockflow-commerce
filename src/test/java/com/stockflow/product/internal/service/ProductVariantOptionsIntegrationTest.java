@@ -110,7 +110,7 @@ class ProductVariantOptionsIntegrationTest {
     private UUID product(String code) {
         newCode = code;
         return products.create(new CreateProductCommand(code, "Ly giay", "Paper cup", brand, category, null, null,
-                null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE)).productId();
+                null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE, List.of())).productId();
     }
 
     private UUID productWithAxes() {
@@ -377,6 +377,82 @@ class ProductVariantOptionsIntegrationTest {
         assertThat(errorOf(() -> variants.generate(product, null))).isEqualTo(ErrorCode.VARIANT_MATRIX_TOO_LARGE);
         assertThat(count(product)).isEqualTo(1);
         assertThat(defaultOf(product).attributeSignature()).isEqualTo("DEFAULT");
+    }
+
+    private UUID createWithAxes(String code, List<CreateProductCommand.Axis> axes) {
+        newCode = code;
+        return products.create(new CreateProductCommand(code, "Ly giay", "Paper cup", null, category, null, null,
+                null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE, axes)).productId();
+    }
+
+    @Test
+    void aProductCreatedWithAxesIsBornWithTheWholeMatrixAndNoPlaceholderSku() {
+        String code = "CUP-" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
+        // Listed colour first with no sort order: the list position decides, so COLOR is the first axis.
+        UUID product = createWithAxes(code, List.of(
+                new CreateProductCommand.Axis(color, null, List.of(red, clear)),
+                new CreateProductCommand.Axis(capacity, null, List.of(cap16, cap12))));
+
+        var all = variants.list(product, 0, 50).items();
+
+        assertThat(all).extracting(VariantView::sku).containsExactly(
+                code + "-CLEAR-12OZ", code + "-CLEAR-16OZ", code + "-RED-12OZ", code + "-RED-16OZ");
+        assertThat(all).extracting(VariantView::sku).doesNotContain(code);
+        assertThat(all).filteredOn(VariantView::defaultVariant).singleElement().satisfies(def -> {
+            assertThat(def.sku()).isEqualTo(code + "-CLEAR-12OZ");
+            assertThat(def.position()).isZero();
+            assertThat(def.attributeSignature()).isEqualTo("CAPACITY=12OZ;COLOR=CLEAR");
+            assertThat(def.name()).isEqualTo("Ly giay – Clear / 12 oz");
+        });
+        assertThat(all).allSatisfy(v -> assertThat(v.status()).isEqualTo(VariantStatus.DRAFT));
+        assertThat(jdbc.queryForObject("select count(*) from inventory.inventory_items i join product.variants v "
+                + "on v.sku = i.sku where v.product_id = ?", Long.class, product)).isEqualTo(4);
+        assertThat(attributesOfProduct.get(product).axes()).extracting(ProductAttributeService.AxisView::attributeId)
+                .containsExactly(color, capacity);
+        // Generating again finds nothing missing.
+        assertThat(variants.generate(product, null).created()).isEmpty();
+    }
+
+    @Test
+    void aProductCreatedWithAxesHasEveryVariantInItsHistoryAndNoSeparateAxesEntry() {
+        String code = "CUP-" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
+        UUID product = createWithAxes(code, List.of(new CreateProductCommand.Axis(capacity, 0, List.of(cap12, cap16)),
+                new CreateProductCommand.Axis(color, 1, List.of(clear, red))));
+
+        assertThat(jdbc.queryForList("""
+                SELECT change_type FROM product.product_change_log WHERE product_id = ? ORDER BY occurred_at, id""",
+                String.class, product))
+                .containsExactly("CREATED", "VARIANT_ADDED", "VARIANT_ADDED", "VARIANT_ADDED", "VARIANT_ADDED");
+    }
+
+    @Test
+    void aDeactivatedValueCannotBeAnOptionOfANewProduct() {
+        deactivate(color, red);
+        String code = "CUP-" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
+
+        assertThat(errorOf(() -> createWithAxes(code, List.of(
+                new CreateProductCommand.Axis(capacity, 0, List.of(cap12, cap16)),
+                new CreateProductCommand.Axis(color, 1, List.of(clear, red)))))).isEqualTo(ErrorCode.VALIDATION_FAILED);
+    }
+
+    @Test
+    void creatingWithInvalidAxesIsRefused() {
+        String code = "CUP-" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
+        // A value that belongs to another attribute is not an option of this axis.
+        assertThat(errorOf(() -> createWithAxes(code, List.of(new CreateProductCommand.Axis(capacity, 0,
+                List.of(clear)))))).isEqualTo(ErrorCode.VALIDATION_FAILED);
+    }
+
+    @Test
+    void creatingWithTooLargeAMatrixIsRefused() {
+        UUID wide = dictionary.create("WIDE", AttributeDataType.SELECT, details("Wide")).id();
+        UUID tall = dictionary.create("TALL", AttributeDataType.SELECT, details("Tall")).id();
+        List<UUID> wideValues = IntStream.range(0, 11).mapToObj(i -> value(wide, "W" + i, "W" + i, i, null)).toList();
+        List<UUID> tallValues = IntStream.range(0, 10).mapToObj(i -> value(tall, "T" + i, "T" + i, i, null)).toList();
+        String code = "CUP-" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
+
+        assertThat(errorOf(() -> createWithAxes(code, List.of(new CreateProductCommand.Axis(wide, 0, wideValues),
+                new CreateProductCommand.Axis(tall, 1, tallValues))))).isEqualTo(ErrorCode.VARIANT_MATRIX_TOO_LARGE);
     }
 
     private void deactivate(UUID attribute, UUID valueId) {

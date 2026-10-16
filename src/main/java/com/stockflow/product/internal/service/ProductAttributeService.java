@@ -98,6 +98,18 @@ public class ProductAttributeService {
 
     @Auditable(action = AuditAction.UPDATE, resourceType = "product-attributes", resourceId = "#productId")
     public ProductAttributesView replaceAxes(UUID productId, List<AxisSpec> axes) {
+        return writeAxes(productId, axes, true);
+    }
+
+    /**
+     * {@link #replaceAxes} without its audit entry or its history entry: called by product creation,
+     * inside its transaction, whose own CREATE entries already cover the axes the product is born with.
+     */
+    public ProductAttributesView defineAxes(UUID productId, List<AxisSpec> axes) {
+        return writeAxes(productId, axes, false);
+    }
+
+    private ProductAttributesView writeAxes(UUID productId, List<AxisSpec> axes, boolean recorded) {
         Product product = lock(productId);
         ProductAttributeSet set = sets.load(productId, product.status());
         Map<UUID, Attribute> dictionary = dictionaryFor(set,
@@ -106,7 +118,9 @@ public class ProductAttributeService {
         Set<AxisShape> before = axesOf(set);
         set.replaceAxes(axes, dictionary, used, Identifiers::newId);
         ProductAttributeSet saved = sets.save(set);
-        recordIfChanged(productId, before, axesOf(saved), "axes");
+        if (recorded) {
+            recordIfChanged(productId, before, axesOf(saved), "axes");
+        }
         return view(saved, dictionary, used);
     }
 

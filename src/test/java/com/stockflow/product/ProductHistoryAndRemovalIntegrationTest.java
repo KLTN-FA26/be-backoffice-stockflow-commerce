@@ -529,7 +529,7 @@ class ProductHistoryAndRemovalIntegrationTest {
         keys.forEach(key -> assertThat(stored(key)).as(key).isFalse());
         // The product's code and SKU can be used again.
         ProductSummary again = products.create(new com.stockflow.product.api.CreateProductCommand(created.code(), "Again", "Again",
-                tax.brandId(), tax.categoryId(), null, null, null, TaxClass.STANDARD, null));
+                tax.brandId(), tax.categoryId(), null, null, null, TaxClass.STANDARD, null, null));
         assertThat(again.status()).isEqualTo(ProductStatus.DRAFT);
     }
 
