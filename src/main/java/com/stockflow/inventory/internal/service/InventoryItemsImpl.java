@@ -1,5 +1,6 @@
 package com.stockflow.inventory.internal.service;
 
+import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.domain.Sku;
@@ -8,6 +9,9 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.api.InventoryPolicy;
 import com.stockflow.inventory.api.ItemLogistics;
+import com.stockflow.common.persistence.Pages;
+import com.stockflow.inventory.api.TrackingMode;
+import com.stockflow.inventory.internal.repository.InventoryItemSearch;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
 
 import org.springframework.stereotype.Service;
@@ -26,10 +30,27 @@ import java.util.UUID;
 class InventoryItemsImpl implements InventoryItems {
     private final InventoryPolicyRepository policies;
     private final InventoryControlService control;
+    private final InventoryItemSearch search;
 
-    InventoryItemsImpl(InventoryPolicyRepository policies, InventoryControlService control) {
+    InventoryItemsImpl(InventoryPolicyRepository policies, InventoryControlService control,
+                       InventoryItemSearch search) {
         this.policies = policies;
         this.control = control;
+        this.search = search;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<Summary> search(ItemQuery query) {
+        var criteria = new InventoryItemSearch.Criteria(blankToNull(query.sku()), blankToNull(query.q()),
+                query.storageClass(), query.policyConfigured());
+        return Pages.toResponse(search.items(criteria, Pages.of(query.page(), query.size()))
+                .map(r -> new Summary(r.id(), r.sku(), r.unitOfMeasure(), r.barcode(), r.storageClass(),
+                        TrackingMode.of(r.lotTracked(), r.serialTracked()), r.policyConfigured())));
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
     }
 
     @Override
