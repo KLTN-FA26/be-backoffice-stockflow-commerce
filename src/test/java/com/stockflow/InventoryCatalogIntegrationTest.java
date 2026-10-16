@@ -302,7 +302,7 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
         assertThat(available.getOrDefault(b.sku(), 0L)).isZero();
         assertThat(available.getOrDefault("MISSING-SKU", 0L)).isZero();
         // Policy uses usable on-hand before reservations; QC stock is still excluded.
-        assertThat(inventoryControl.evaluate(new Sku(a.sku())).usableOnHand()).isEqualTo(6L);
+        assertThat(items.get(a.itemId()).evaluation().usableOnHand()).isEqualTo(6L);
     }
 
     @Test
@@ -507,7 +507,7 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
         assertThat(inventory.availableToPromise(List.of(new Sku(f.sku()))).get(new Sku(f.sku())))
                 .isZero();
         assertThat(inventory.availableToPromise(new Sku(f.sku()), "HCM")).isZero();
-        assertThat(inventoryControl.evaluate(new Sku(f.sku())).usableOnHand()).isZero();
+        assertThat(items.get(f.itemId()).evaluation().usableOnHand()).isZero();
     }
 
     @Test
@@ -840,7 +840,7 @@ values (?,'Conflicting test rule',?,200,'VND',0,true,now())
                                     policy(5, RemovalStrategy.FEFO, TrackingMode.NONE, false));
                             return true;
                         } catch (BusinessException e) {
-                            assertThat(e.errorCode()).isEqualTo(ErrorCode.CONFLICT);
+                            assertThat(e.errorCode()).isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
                             return false;
                         }
                     };

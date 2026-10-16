@@ -7,8 +7,8 @@ import java.util.UUID;
 
 /**
  * Read port over {@code inventory.inventory_items}: what receiving must ask of a SKU. A port rather
- * than an aggregate because nothing in this module edits inventory items yet; the inventory-item
- * screens (SCRUM-70) will own the table and can implement this from their own repository.
+ * than an aggregate because it only reads; edits to an item go through {@code InventoryItems}, which
+ * applies the rules against the same table.
  */
 public interface InventoryItemDirectory {
 

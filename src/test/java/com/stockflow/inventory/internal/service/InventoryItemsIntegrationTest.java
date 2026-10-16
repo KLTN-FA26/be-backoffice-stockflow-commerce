@@ -188,4 +188,52 @@ class InventoryItemsIntegrationTest {
         assertThat(codeOf(() -> items.describe(secondId, second.version(), logistics("EACH", barcode, "0.120"))))
                 .isEqualTo(ErrorCode.CONFLICT);
     }
+
+    @Test
+    void staleVersionOnPolicyIsOptimisticLock() {
+        var f = fixture();
+        var before = items.get(f.itemId());
+        items.describe(f.itemId(), before.version(), logistics("EACH", null, "0.120"));
+        assertThat(codeOf(() -> items.configure(f.itemId(), before.version(),
+                new InventoryPolicy(500, null, null, RemovalStrategy.FEFO, TrackingMode.NONE, false, null))))
+                .isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
+    }
+
+    @Test
+    void staleVersionOnLogisticsIsOptimisticLock() {
+        var f = fixture();
+        var before = items.get(f.itemId());
+        items.configure(f.itemId(), before.version(),
+                new InventoryPolicy(500, null, null, RemovalStrategy.FEFO, TrackingMode.NONE, false, null));
+        assertThat(codeOf(() -> items.describe(f.itemId(), before.version(), logistics("EACH", null, "0.120"))))
+                .isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
+    }
+
+    @Test
+    void sharedVersionRefusesTheSecondGroup() {
+        var f = fixture();
+        long v = items.get(f.itemId()).version();
+        items.describe(f.itemId(), v, logistics("EACH", null, "0.120"));
+        assertThat(codeOf(() -> items.configure(f.itemId(), v,
+                new InventoryPolicy(500, null, null, RemovalStrategy.FEFO, TrackingMode.NONE, false, null))))
+                .isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
+    }
+
+    @Test
+    void policySaveStillReevaluatesAlerts() {
+        var f = fixture();
+        tx.executeWithoutResult(s -> jdbc.update("""
+                insert into inventory.stock_item(id,sku,location_code,on_hand,reserved,status,received_at,created_at)
+                values (?,?,'HCM-A01-1-A',5,0,'AVAILABLE',now(),now())""", UUID.randomUUID(), f.sku()));
+        try {
+            var before = items.get(f.itemId());
+            items.configure(f.itemId(), before.version(),
+                    new InventoryPolicy(500, null, null, RemovalStrategy.FEFO, TrackingMode.NONE, false, null));
+            Await.until("the alert from the policy-change listener", Duration.ofSeconds(30), () -> jdbc.queryForObject(
+                    "SELECT count(*) FROM inventory.stock_alert WHERE sku = ? AND kind = 'REORDER' AND status = 'OPEN'",
+                    Long.class, f.sku()) == 1);
+        } finally {
+            tx.executeWithoutResult(s -> jdbc.update("delete from inventory.stock_item where sku = ?", f.sku()));
+        }
+    }
 }
