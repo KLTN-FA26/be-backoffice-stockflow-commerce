@@ -25,6 +25,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
 
+import java.math.BigDecimal;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
@@ -206,12 +207,12 @@ class SupplierItemRepositoryAdapter implements SupplierItemRepository {
 
     private static RowMapper<SkuSupplierRow> skuSupplierRow() {
         return (rs, row) -> {
-            var terms = new SupplierItemTerms(rs.getString("supplier_sku_code"),
-                    new Money(rs.getBigDecimal("current_price"), Currency.getInstance(rs.getString("item_currency"))),
-                    rs.getInt("moq"), rs.getInt("pack_size"), rs.getObject("item_lead_time_days", Integer.class));
-            var item = new SupplierItem(rs.getObject("id", UUID.class), rs.getObject("supplier_id", UUID.class),
-                    rs.getObject("inventory_item_id", UUID.class), terms, rs.getBoolean("is_preferred"),
-                    rs.getLong("version"), instant(rs, "created_at"), instant(rs, "last_modified_at"));
+            var item = supplierItem(rs.getObject("id", UUID.class), rs.getObject("supplier_id", UUID.class),
+                    rs.getObject("inventory_item_id", UUID.class), rs.getString("supplier_sku_code"),
+                    rs.getBigDecimal("current_price"), rs.getString("item_currency"), rs.getInt("moq"),
+                    rs.getInt("pack_size"), rs.getObject("item_lead_time_days", Integer.class),
+                    rs.getBoolean("is_preferred"), rs.getLong("version"), instant(rs, "created_at"),
+                    instant(rs, "last_modified_at"));
             var supplier = new CatalogSupplier(item.supplierId(), rs.getString("code"), rs.getString("name"),
                     SupplierStatus.valueOf(rs.getString("status")),
                     Currency.getInstance(rs.getString("supplier_currency")),
@@ -226,10 +227,24 @@ class SupplierItemRepositoryAdapter implements SupplierItemRepository {
     }
 
     private static SupplierItem domain(SupplierItemJpaEntity e) {
-        var price = new Money(e.getCurrentPrice(), Currency.getInstance(e.getCurrency()));
-        var terms = new SupplierItemTerms(e.getSupplierSkuCode(), price, e.getMoq(), e.getPackSize(),
-                e.getLeadTimeDays());
-        return new SupplierItem(e.getId(), e.getSupplierId(), e.getInventoryItemId(), terms, e.isPreferred(),
-                e.getVersion(), e.getCreatedAt(), e.getLastModifiedAt());
+        return supplierItem(e.getId(), e.getSupplierId(), e.getInventoryItemId(), e.getSupplierSkuCode(),
+                e.getCurrentPrice(), e.getCurrency(), e.getMoq(), e.getPackSize(), e.getLeadTimeDays(),
+                e.isPreferred(), e.getVersion(), e.getCreatedAt(), e.getLastModifiedAt());
+    }
+
+    /**
+     * The one row-to-aggregate mapping, for the entity and for the native SKU query alike. It goes
+     * through {@link SupplierItemTerms#stored}, which checks nothing: the table admits rows the
+     * catalog form would refuse, and one of them must not fail a whole page, the SKU's supplier list,
+     * or the edit that would correct it.
+     */
+    private static SupplierItem supplierItem(UUID id, UUID supplierId, UUID inventoryItemId, String supplierSkuCode,
+                                             BigDecimal price, String currency, int moq, int packSize,
+                                             Integer leadTimeDays, boolean preferred, long version,
+                                             Instant createdAt, Instant lastModifiedAt) {
+        var terms = SupplierItemTerms.stored(supplierSkuCode, new Money(price, Currency.getInstance(currency)), moq,
+                packSize, leadTimeDays);
+        return new SupplierItem(id, supplierId, inventoryItemId, terms, preferred, version, createdAt,
+                lastModifiedAt);
     }
 }

@@ -178,12 +178,12 @@ class SupplierItemServiceIntegrationTest {
     }
 
     @Test
-    @DisplayName("a malformed SKU is VALIDATION_FAILED on the sku field, not a 500")
+    @DisplayName("a malformed SKU is VALIDATION_FAILED with SUPPLIER_ITEM_SKU_INVALID on the sku field, not a 500")
     void aMalformedSkuIsAValidationError() {
         assertFieldRefused(() -> catalog.create(supplierId, command("not a sku!", "1500", false, null)),
-                ErrorCode.VALIDATION_FAILED, "sku", "VALIDATION_FAILED");
+                ErrorCode.VALIDATION_FAILED, "sku", "SUPPLIER_ITEM_SKU_INVALID");
         assertFieldRefused(() -> catalog.suppliersOf("not a sku!"),
-                ErrorCode.VALIDATION_FAILED, "sku", "VALIDATION_FAILED");
+                ErrorCode.VALIDATION_FAILED, "sku", "SUPPLIER_ITEM_SKU_INVALID");
     }
 
     @Test
@@ -204,23 +204,23 @@ class SupplierItemServiceIntegrationTest {
     }
 
     @Test
-    @DisplayName("a MOQ that is not a whole number of packs is VALIDATION_FAILED on moq")
+    @DisplayName("a MOQ that is not a whole number of packs is VALIDATION_FAILED with its own code on moq")
     void moqNotAMultipleOfPackSizeIsRefused() {
         var oddMoq = new SaveSupplierItemCommand(sku, null, new BigDecimal("1500"), 5, 2, null, false, null);
 
         assertFieldRefused(() -> catalog.create(supplierId, oddMoq), ErrorCode.VALIDATION_FAILED, "moq",
-                "VALIDATION_FAILED");
+                "SUPPLIER_ITEM_MOQ_NOT_PACK_MULTIPLE");
     }
 
     @Test
     @DisplayName("a VND price with decimals is refused on price instead of being rounded")
     void aVndPriceWithDecimalsIsRefused() {
         assertFieldRefused(() -> create(supplierId, "1500.50", false), ErrorCode.VALIDATION_FAILED, "price",
-                "VALIDATION_FAILED");
+                "SUPPLIER_ITEM_PRICE_INVALID");
         assertFieldRefused(() -> create(supplierId, "0", false), ErrorCode.VALIDATION_FAILED, "price",
-                "VALIDATION_FAILED");
+                "SUPPLIER_ITEM_PRICE_INVALID");
         assertFieldRefused(() -> create(supplierId, "10000000000000000", false), ErrorCode.VALIDATION_FAILED,
-                "price", "VALIDATION_FAILED");
+                "price", "SUPPLIER_ITEM_PRICE_INVALID");
         assertThat(catalog.list(supplierId, 0, 20, null).totalElements()).isZero();
     }
 
@@ -312,6 +312,70 @@ class SupplierItemServiceIntegrationTest {
         } finally {
             pool.shutdownNow();
         }
+    }
+
+    @Test
+    @DisplayName("two switches of one SKU's preferred supplier at once both succeed and leave one preferred row")
+    void concurrentSwitchesSerialise() throws Exception {
+        UUID beta = supplier("Beta supplier");
+        var alphaItem = create(supplierId, "1500", false);
+        var betaItem = create(beta, "1400", false);
+        var start = new CountDownLatch(1);
+        var pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<SupplierItemSummary> a = pool.submit(() -> {
+                start.await();
+                return catalog.update(supplierId, alphaItem.supplierItemId(),
+                        command(sku, "1500", true, alphaItem.version()));
+            });
+            Future<SupplierItemSummary> b = pool.submit(() -> {
+                start.await();
+                return catalog.update(beta, betaItem.supplierItemId(), command(sku, "1400", true, betaItem.version()));
+            });
+            start.countDown();
+
+            var first = a.get(30, TimeUnit.SECONDS);
+            var second = b.get(30, TimeUnit.SECONDS);
+
+            assertThat(first.preferred()).isTrue();
+            assertThat(second.preferred()).isTrue();
+            assertThat(preferredRows(alphaItem.inventoryItemId())).singleElement()
+                    .isIn(alphaItem.supplierItemId(), betaItem.supplierItemId());
+            assertThat(catalog.suppliersOf(sku)).hasSize(2);
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    @DisplayName("a stored row outside the form's limits still lists, looks up, gets unpreferred, edits and deletes")
+    void aStoredRowOutsideTheFormLimitsStillReadsAndDeletes() {
+        UUID beta = supplier("Beta supplier");
+        var alphaItem = create(supplierId, "1500", true);
+        var betaItem = create(beta, "1400", false);
+        // What the table admits and the form refuses: no CHECK holds moq to whole packs or lead time to 365.
+        tx.executeWithoutResult(s -> jdbc.update("""
+                UPDATE procurement.supplier_items SET moq = 5, pack_size = 2, lead_time_days = 366
+                 WHERE id IN (?, ?)""", alphaItem.supplierItemId(), betaItem.supplierItemId()));
+
+        assertThat(catalog.list(supplierId, 0, 20, null).items()).singleElement().satisfies(item -> {
+            assertThat(item.moq()).isEqualTo(5);
+            assertThat(item.packSize()).isEqualTo(2);
+            assertThat(item.leadTimeDays()).isEqualTo(366);
+        });
+        assertThat(catalog.suppliersOf(sku)).extracting(SkuSupplierSummary::supplierItemId)
+                .containsExactly(alphaItem.supplierItemId(), betaItem.supplierItemId());
+
+        // Preferring beta loads the stored alpha row to unprefer it; editing beta replaces its bad terms.
+        var edited = catalog.update(beta, betaItem.supplierItemId(),
+                new SaveSupplierItemCommand(sku, "BETA-1", new BigDecimal("1400"), 10, 5, 30, true, betaItem.version()));
+        assertThat(edited.moq()).isEqualTo(10);
+        assertThat(edited.leadTimeDays()).isEqualTo(30);
+        assertThat(preferredRows(alphaItem.inventoryItemId())).containsExactly(betaItem.supplierItemId());
+
+        var stored = catalog.list(supplierId, 0, 20, null).items().get(0);
+        catalog.delete(supplierId, stored.supplierItemId(), stored.version());
+        assertThat(rowExists(alphaItem.supplierItemId())).isFalse();
     }
 
     @Test

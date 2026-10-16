@@ -199,6 +199,19 @@ class SupplierItemApiIntegrationTest {
         assertThat(catalog.list(supplierId, 0, 20, null).totalElements()).isZero();
     }
 
+    @Test
+    @DisplayName("a rule the domain enforces reaches the form translated by its own code, not as 'invalid data'")
+    void aDomainFieldErrorIsTranslatedByItsOwnCode() throws Exception {
+        as(Role.PROCUREMENT_STAFF, json(post(items(supplierId)), body(sku, "1500", 5, 2, null, false, null))
+                .header("Accept-Language", "vi"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("moq"))
+                .andExpect(jsonPath("$.fieldErrors[0].code").value("SUPPLIER_ITEM_MOQ_NOT_PACK_MULTIPLE"))
+                .andExpect(jsonPath("$.fieldErrors[0].message")
+                        .value("Số lượng đặt hàng tối thiểu phải là bội số của quy cách đóng gói"));
+    }
+
     private void refusedOn(MockHttpServletRequestBuilder request, String field) throws Exception {
         as(Role.PROCUREMENT_STAFF, request).andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"))
@@ -212,6 +225,7 @@ class SupplierItemApiIntegrationTest {
         as(Role.PROCUREMENT_STAFF, get(URI.create("/api/v1/procurement/skus/%20bad%21/suppliers")))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"))
-                .andExpect(jsonPath("$.fieldErrors[0].field").value("sku"));
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("sku"))
+                .andExpect(jsonPath("$.fieldErrors[0].code").value("SUPPLIER_ITEM_SKU_INVALID"));
     }
 }

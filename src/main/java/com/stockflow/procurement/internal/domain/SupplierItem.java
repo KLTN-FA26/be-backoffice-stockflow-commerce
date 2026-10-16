@@ -14,9 +14,10 @@ import java.util.UUID;
  * One supplier's offer for one inventory item: who sells it, on what terms, and whether this is
  * the supplier we normally buy it from.
  *
- * <p>The terms validate themselves ({@link SupplierItemTerms}); this aggregate owns what depends on
- * history and on other rows: whether an update changed the price, and what a given order quantity
- * is allowed to be. Uniqueness of the preferred flag per item is a cross-row rule, so the service
+ * <p>Terms a caller supplies validate themselves ({@link SupplierItemTerms#of}); a row read back from
+ * the database is rebuilt unchecked, so it can still be listed, corrected or removed. This
+ * aggregate owns what depends on history and on other rows: whether an update changed the price,
+ * and what a given order quantity is allowed to be. Uniqueness of the preferred flag per item is a cross-row rule, so the service
  * enforces it under {@link SupplierItemRepository#lockCatalogOf(UUID)}.</p>
  */
 public final class SupplierItem extends AggregateRoot {

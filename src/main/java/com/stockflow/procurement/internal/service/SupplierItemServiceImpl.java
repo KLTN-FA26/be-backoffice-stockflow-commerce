@@ -85,7 +85,10 @@ class SupplierItemServiceImpl implements SupplierItemService {
     @Auditable(action = AuditAction.UPDATE, resourceType = "supplier-item", resourceId = "#supplierItemId")
     public SupplierItemSummary update(UUID supplierId, UUID supplierItemId, SaveSupplierItemCommand command) {
         var supplier = activeSupplier(supplierId);
-        if (command.version() == null) throw invalid("version", "Version is required to edit a supplier item");
+        // The request's own @NotNull catches this first; the code is the one that bean validation
+        // would have reported for the same field.
+        if (command.version() == null)
+            throw invalid("version", "NotNull", "Version is required to edit a supplier item");
         var item = lockedItem(supplierId, supplierItemId, command.version());
         var terms = terms(command, supplier.currency());
         Instant now = clock.instant();
@@ -175,7 +178,7 @@ class SupplierItemServiceImpl implements SupplierItemService {
         try {
             return new Sku(code);
         } catch (IllegalArgumentException malformed) {
-            throw invalid("sku", malformed.getMessage());
+            throw invalid("sku", ErrorCode.SUPPLIER_ITEM_SKU_INVALID.name(), malformed.getMessage());
         }
     }
 
@@ -201,7 +204,7 @@ class SupplierItemServiceImpl implements SupplierItemService {
     }
 
     private static SupplierItemTerms terms(SaveSupplierItemCommand command, Currency currency) {
-        return new SupplierItemTerms(command.supplierSkuCode(), price(command.price(), currency), command.moq(),
+        return SupplierItemTerms.of(command.supplierSkuCode(), price(command.price(), currency), command.moq(),
                 command.packSize(), command.leadTimeDays());
     }
 
@@ -212,19 +215,27 @@ class SupplierItemServiceImpl implements SupplierItemService {
      */
     private static Money price(BigDecimal amount, Currency currency) {
         int digits = currency.getDefaultFractionDigits();
-        if (digits < 0) throw invalid("price", "Unsupported supplier currency " + currency.getCurrencyCode());
-        if (amount == null || amount.signum() <= 0) throw invalid("price", "Price must be greater than zero");
-        if (amount.compareTo(MAX_PRICE) > 0) throw invalid("price", "Price must be at most " + MAX_PRICE.toPlainString());
+        if (digits < 0) throw invalidPrice("Unsupported supplier currency " + currency.getCurrencyCode());
+        if (amount == null || amount.signum() <= 0) throw invalidPrice("Price must be greater than zero");
+        if (amount.compareTo(MAX_PRICE) > 0) throw invalidPrice("Price must be at most " + MAX_PRICE.toPlainString());
         int scale = Math.min(MAX_PRICE_SCALE, digits);
         if (amount.stripTrailingZeros().scale() > scale)
-            throw invalid("price", "Price in " + currency.getCurrencyCode() + " must have at most " + scale
+            throw invalidPrice("Price in " + currency.getCurrencyCode() + " must have at most " + scale
                     + " decimal places");
         return new Money(amount, currency);
     }
 
-    private static BusinessException invalid(String field, String message) {
+    private static BusinessException invalidPrice(String message) {
+        return invalid("price", ErrorCode.SUPPLIER_ITEM_PRICE_INVALID.name(), message);
+    }
+
+    /**
+     * A 400 naming one field. The field code is what the exception handler translates beside the input,
+     * so it is never {@code VALIDATION_FAILED}: that would put "invalid data" there instead of the rule.
+     */
+    private static BusinessException invalid(String field, String fieldCode, String message) {
         return new BusinessException(ErrorCode.VALIDATION_FAILED, message,
-                List.of(new FieldError(field, message, ErrorCode.VALIDATION_FAILED.name())));
+                List.of(new FieldError(field, message, fieldCode)));
     }
 
     private static SupplierItemSummary summary(SupplierItem item, String sku, CatalogSupplier supplier) {

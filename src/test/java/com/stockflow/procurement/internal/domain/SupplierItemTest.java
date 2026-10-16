@@ -1,15 +1,21 @@
 package com.stockflow.procurement.internal.domain;
 
-import com.stockflow.common.api.FieldError;
 import com.stockflow.common.domain.CommercialTerms;
 import com.stockflow.common.domain.Money;
 import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.util.Currency;
 import java.util.UUID;
 
+import static com.stockflow.common.error.ErrorCode.SUPPLIER_ITEM_LEAD_TIME_INVALID;
+import static com.stockflow.common.error.ErrorCode.SUPPLIER_ITEM_MOQ_INVALID;
+import static com.stockflow.common.error.ErrorCode.SUPPLIER_ITEM_MOQ_NOT_PACK_MULTIPLE;
+import static com.stockflow.common.error.ErrorCode.SUPPLIER_ITEM_PACK_SIZE_INVALID;
+import static com.stockflow.common.error.ErrorCode.SUPPLIER_ITEM_PRICE_INVALID;
+import static com.stockflow.common.error.ErrorCode.SUPPLIER_ITEM_SUPPLIER_SKU_CODE_TOO_LONG;
 import static com.stockflow.procurement.internal.domain.OrderQuantityViolation.BELOW_MOQ;
 import static com.stockflow.procurement.internal.domain.OrderQuantityViolation.NOT_PACK_MULTIPLE;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -26,26 +32,31 @@ class SupplierItemTest {
 
     private static SupplierItemTerms terms(
             String code, BigDecimal price, int moq, int packSize, Integer leadTimeDays) {
-        return new SupplierItemTerms(code, new Money(price, Money.VND), moq, packSize, leadTimeDays);
+        return SupplierItemTerms.of(code, new Money(price, Money.VND), moq, packSize, leadTimeDays);
     }
 
-    private static void assertRefusedOn(Runnable action, String field) {
-        assertThatThrownBy(action::run)
-                .isInstanceOf(BusinessException.class)
-                .satisfies(e -> assertThat(((BusinessException) e).fieldErrors())
-                        .extracting(FieldError::field)
-                        .containsExactly(field));
+    /** The exception stays VALIDATION_FAILED (a 400); the field error carries the rule's own code. */
+    private static void assertRefusedOn(Runnable action, String field, ErrorCode fieldCode) {
+        assertThatThrownBy(action::run).isInstanceOfSatisfying(BusinessException.class, e -> {
+            assertThat(e.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+            assertThat(e.fieldErrors()).singleElement().satisfies(error -> {
+                assertThat(error.field()).isEqualTo(field);
+                assertThat(error.code()).isEqualTo(fieldCode.name());
+            });
+        });
     }
 
     @Test
     void moqMustBeAMultipleOfThePackSize() {
-        assertRefusedOn(() -> terms(new BigDecimal("10.00"), 5, 2, null), "moq");
+        assertRefusedOn(() -> terms(new BigDecimal("10.00"), 5, 2, null), "moq",
+                SUPPLIER_ITEM_MOQ_NOT_PACK_MULTIPLE);
     }
 
     @Test
     void moqAndPackSizeMustBeAtLeastOne() {
-        assertRefusedOn(() -> terms(new BigDecimal("10.00"), 0, 1, null), "moq");
-        assertRefusedOn(() -> terms(new BigDecimal("10.00"), 6, 0, null), "packSize");
+        assertRefusedOn(() -> terms(new BigDecimal("10.00"), 0, 1, null), "moq", SUPPLIER_ITEM_MOQ_INVALID);
+        assertRefusedOn(() -> terms(new BigDecimal("10.00"), 6, 0, null), "packSize",
+                SUPPLIER_ITEM_PACK_SIZE_INVALID);
     }
 
     @Test
@@ -54,24 +65,27 @@ class SupplierItemTest {
         // currency with a wider scale (KWD has three) that NUMERIC(18,2) could not store exactly.
         var usd = Currency.getInstance("USD");
         var kwd = Currency.getInstance("KWD");
-        assertRefusedOn(() -> new SupplierItemTerms("S", new Money(new BigDecimal("1.005"), kwd), 1, 1, null), "price");
-        assertRefusedOn(() -> new SupplierItemTerms("S", new Money(BigDecimal.ZERO, usd), 1, 1, null), "price");
-        assertRefusedOn(() -> new SupplierItemTerms("S", new Money(new BigDecimal("-1"), usd), 1, 1, null), "price");
-        assertRefusedOn(() -> terms(new BigDecimal("0"), 1, 1, null), "price");
-        assertRefusedOn(() -> terms(new BigDecimal("-1"), 1, 1, null), "price");
-        assertThatCode(() -> new SupplierItemTerms("S", new Money(new BigDecimal("1.50"), usd), 1, 1, null))
+        assertRefusedOn(() -> SupplierItemTerms.of("S", new Money(new BigDecimal("1.005"), kwd), 1, 1, null), "price",
+                SUPPLIER_ITEM_PRICE_INVALID);
+        assertRefusedOn(() -> SupplierItemTerms.of("S", new Money(BigDecimal.ZERO, usd), 1, 1, null), "price",
+                SUPPLIER_ITEM_PRICE_INVALID);
+        assertRefusedOn(() -> SupplierItemTerms.of("S", new Money(new BigDecimal("-1"), usd), 1, 1, null), "price",
+                SUPPLIER_ITEM_PRICE_INVALID);
+        assertRefusedOn(() -> terms(new BigDecimal("0"), 1, 1, null), "price", SUPPLIER_ITEM_PRICE_INVALID);
+        assertRefusedOn(() -> terms(new BigDecimal("-1"), 1, 1, null), "price", SUPPLIER_ITEM_PRICE_INVALID);
+        assertThatCode(() -> SupplierItemTerms.of("S", new Money(new BigDecimal("1.50"), usd), 1, 1, null))
                 .doesNotThrowAnyException();
     }
 
     @Test
     void aNullPriceIsRefusedOnThePriceField() {
-        assertRefusedOn(() -> new SupplierItemTerms("S", null, 1, 1, null), "price");
+        assertRefusedOn(() -> SupplierItemTerms.of("S", null, 1, 1, null), "price", SUPPLIER_ITEM_PRICE_INVALID);
     }
 
     @Test
     void leadTimeIsNullOrZeroTo365() {
-        assertRefusedOn(() -> terms(new BigDecimal("10"), 1, 1, -1), "leadTimeDays");
-        assertRefusedOn(() -> terms(new BigDecimal("10"), 1, 1, 366), "leadTimeDays");
+        assertRefusedOn(() -> terms(new BigDecimal("10"), 1, 1, -1), "leadTimeDays", SUPPLIER_ITEM_LEAD_TIME_INVALID);
+        assertRefusedOn(() -> terms(new BigDecimal("10"), 1, 1, 366), "leadTimeDays", SUPPLIER_ITEM_LEAD_TIME_INVALID);
         assertThat(terms(new BigDecimal("10"), 1, 1, null).leadTimeDays()).isNull();
         assertThat(terms(new BigDecimal("10"), 1, 1, 0).leadTimeDays()).isZero();
         assertThat(terms(new BigDecimal("10"), 1, 1, 365).leadTimeDays()).isEqualTo(365);
@@ -88,7 +102,35 @@ class SupplierItemTest {
     void supplierSkuCodeIsAtMostFiftyCharacters() {
         assertThatCode(() -> terms("x".repeat(50), new BigDecimal("10"), 1, 1, null))
                 .doesNotThrowAnyException();
-        assertRefusedOn(() -> terms("x".repeat(51), new BigDecimal("10"), 1, 1, null), "supplierSkuCode");
+        assertRefusedOn(() -> terms("x".repeat(51), new BigDecimal("10"), 1, 1, null), "supplierSkuCode",
+                SUPPLIER_ITEM_SUPPLIER_SKU_CODE_TOO_LONG);
+    }
+
+    @Test
+    void messagesAreBuiltFromTheLimits() {
+        assertThatThrownBy(() -> terms(new BigDecimal("10"), 1, 1, SupplierItemTerms.MAX_LEAD_TIME_DAYS + 1))
+                .hasMessageContaining(String.valueOf(SupplierItemTerms.MAX_LEAD_TIME_DAYS));
+        assertThatThrownBy(() -> terms("x".repeat(SupplierItemTerms.MAX_SKU_CODE_LENGTH + 1), new BigDecimal("10"), 1,
+                1, null)).hasMessageContaining(String.valueOf(SupplierItemTerms.MAX_SKU_CODE_LENGTH));
+    }
+
+    @Test
+    void storedTermsAreRebuiltAsTheRowHoldsThemWithoutValidation() {
+        // A row the form would refuse: MOQ not a whole number of packs, lead time past 365, a code
+        // past 50 characters. Reading it back must not throw, or one row blocks the whole catalog.
+        var price = new Money(new BigDecimal("10"), Money.VND);
+        var stored = SupplierItemTerms.stored("x".repeat(51), price, 5, 2, 366);
+
+        assertThat(stored.supplierSkuCode()).hasSize(51);
+        assertThat(stored.moq()).isEqualTo(5);
+        assertThat(stored.packSize()).isEqualTo(2);
+        assertThat(stored.leadTimeDays()).isEqualTo(366);
+        assertThatCode(() -> SupplierItemTerms.stored(null, price, 0, 0, -1)).doesNotThrowAnyException();
+
+        var item = new SupplierItem(UUID.randomUUID(), SUPPLIER, ITEM, stored, false, 3L, null, null);
+        assertThat(item.orderQuantityViolations(6)).isEmpty();
+        assertThat(item.update(terms(new BigDecimal("10"), 6, 2, 30), false)).isEmpty();
+        assertThat(item.terms().leadTimeDays()).isEqualTo(30);
     }
 
     @Test
@@ -128,7 +170,7 @@ class SupplierItemTest {
     @Test
     void updateRefusesACurrencyChange() {
         var item = SupplierItem.create(SUPPLIER, ITEM, terms(new BigDecimal("10"), 1, 1, null), false);
-        var usd = new SupplierItemTerms("S", new Money(new BigDecimal("10"), Currency.getInstance("USD")), 1, 1, null);
+        var usd = SupplierItemTerms.of("S", new Money(new BigDecimal("10"), Currency.getInstance("USD")), 1, 1, null);
         assertThatThrownBy(() -> item.update(usd, false)).isInstanceOf(IllegalStateException.class);
     }
 
