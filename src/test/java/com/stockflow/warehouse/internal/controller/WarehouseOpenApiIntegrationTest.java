@@ -34,7 +34,7 @@ class WarehouseOpenApiIntegrationTest {
 
     private static final List<String> TAGS = List.of("Warehouses", "Warehouse map: zones",
             "Warehouse map: shelves", "Warehouse map: areas", "Warehouse map: boundaries",
-            "Warehouse map: layout and lookup");
+            "Warehouse map: layout and lookup", "Warehouse map: location labels");
 
     @Autowired WebApplicationContext context;
     @Autowired ObjectMapper objectMapper;
@@ -70,9 +70,9 @@ class WarehouseOpenApiIntegrationTest {
     }
 
     @Test
-    @DisplayName("all 27 endpoints of the map are documented, each with a summary and one of the six tags")
+    @DisplayName("all 28 endpoints of the map are documented, each with a summary and one of the seven tags")
     void everyEndpointIsDocumented() {
-        assertThat(operations()).hasSize(27).allSatisfy(operation -> {
+        assertThat(operations()).hasSize(28).allSatisfy(operation -> {
             assertThat(operation.getValue().path("summary").asText()).as(operation.getKey()).isNotBlank();
             assertThat(operation.getValue().path("tags").get(0).asText()).as(operation.getKey()).isIn(TAGS);
         });
@@ -123,5 +123,14 @@ class WarehouseOpenApiIntegrationTest {
                 .contains("90");
         assertThat(schema("CreateArea").path("properties").path("location").path("description").asText())
                 .contains("NON_STORAGE");
+    }
+
+    @Test
+    @DisplayName("printing labels answers a binary PDF, not the JSON envelope")
+    void labelsAreAPdf() {
+        JsonNode ok = document.path("paths").path("/api/v1/warehouses/{warehouseId}/location-labels")
+                .path("post").path("responses").path("200").path("content");
+        assertThat(ok.has("application/pdf")).isTrue();
+        assertThat(ok.path("application/pdf").path("schema").path("format").asText()).isEqualTo("binary");
     }
 }
