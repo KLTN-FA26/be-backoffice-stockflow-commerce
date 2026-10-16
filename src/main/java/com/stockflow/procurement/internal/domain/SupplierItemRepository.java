@@ -3,7 +3,9 @@ package com.stockflow.procurement.internal.domain;
 import com.stockflow.common.api.PageResponse;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -41,6 +43,14 @@ public interface SupplierItemRepository {
     SupplierItem save(SupplierItem item, Optional<PriceChange> priceChange, Instant now);
 
     void delete(SupplierItem item);
+
+    /**
+     * The supplier's catalog rows for the given SKUs in one query, keyed by inventory item id; a SKU the
+     * supplier does not list is simply absent. Locked {@code FOR SHARE}, so a concurrent catalog delete
+     * waits for the purchase order transaction instead of stranding a draft line on a row that is gone.
+     * Postgres refuses the lock in a read-only transaction.
+     */
+    Map<UUID, SupplierItem> listedForShare(UUID supplierId, Collection<UUID> inventoryItemIds);
 
     boolean usedByOpenPurchaseOrder(UUID supplierId, UUID inventoryItemId);
 

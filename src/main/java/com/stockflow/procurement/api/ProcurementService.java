@@ -15,7 +15,11 @@ import java.util.UUID;
  */
 public interface ProcurementService {
 
-    /** A DRAFT order to an ACTIVE supplier, received into an ACTIVE warehouse (SCRUM-113/390). */
+    /**
+     * A DRAFT order to an ACTIVE supplier, received into an ACTIVE warehouse (SCRUM-113/390), of SKUs the
+     * supplier lists in quantities its catalog allows (SCRUM-78, BR-PO-001); otherwise SUPPLIER_TERMS_VIOLATED
+     * with one field error per broken rule.
+     */
     PurchaseOrderSummary createPurchaseOrder(CreatePurchaseOrderCommand command);
 
     Optional<PurchaseOrderSummary> findById(UUID purchaseOrderId);
@@ -26,7 +30,7 @@ public interface ProcurementService {
     /**
      * Changes a DRAFT standard order — warehouse, delivery date, note, lines — in place (SCRUM-462,
      * kltn-docs 02 §5). Anything else is PURCHASE_ORDER_NOT_EDITABLE; a stale {@code version} is
-     * OPTIMISTIC_LOCK.
+     * OPTIMISTIC_LOCK. Every line is held to the supplier's catalog as it is now, as on create.
      */
     PurchaseOrderSummary reviseDraft(UUID purchaseOrderId, RevisePurchaseOrderCommand command);
 

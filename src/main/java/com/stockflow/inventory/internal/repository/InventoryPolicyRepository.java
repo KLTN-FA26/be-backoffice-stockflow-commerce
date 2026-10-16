@@ -72,6 +72,7 @@ public class InventoryPolicyRepository {
                                         new InventoryPolicy(
                                                 rs.getObject("reorder_point", Integer.class),
                                                 rs.getObject("safety_stock", Integer.class),
+                                                rs.getObject("max_qty", Integer.class),
                                                 RemovalStrategy.valueOf(
                                                         rs.getString("removal_strategy")),
                                                 TrackingMode.of(
@@ -118,16 +119,23 @@ and ((? and nullif(trim(lot_number), '') is null)
         return count != null && count > 0;
     }
 
+    /**
+     * Saves the policy and retires {@code min_qty}. That column is superseded by {@code safetyStock} and
+     * {@code reorderPoint} and read by nothing, but {@code ck_inventory_items_thresholds} still requires
+     * {@code max_qty >= min_qty}: left alone, a seeded {@code min_qty} above the new {@code maxQty} would fail this
+     * UPDATE at the database with a field-less 409. A policy save therefore sets it NULL.
+     */
     public boolean save(String sku, long version, InventoryPolicy p, String actor) {
         return jdbc.update(
                         """
-update inventory.inventory_items set reorder_point=?, safety_stock=?, removal_strategy=?,
+update inventory.inventory_items set reorder_point=?, safety_stock=?, max_qty=?, min_qty=NULL, removal_strategy=?,
     lot_tracked=?, serial_tracked=?, expiry_tracked=?, max_shelf_life_days=?,
     policy_configured=true, version=version+1, last_modified_at=now(), last_modified_by=?
 where sku=? and version=?
 """,
                         p.reorderPoint(),
                         p.safetyStock(),
+                        p.maxQty(),
                         p.removalStrategy().name(),
                         p.trackingMode().lotTracked(),
                         p.trackingMode().serialTracked(),

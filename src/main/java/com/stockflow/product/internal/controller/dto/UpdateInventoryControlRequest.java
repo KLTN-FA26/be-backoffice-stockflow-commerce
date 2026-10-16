@@ -9,5 +9,6 @@ import jakarta.validation.constraints.NotNull;
 /** PUT replaces configuration; null thresholds explicitly clear them. */
 public record UpdateInventoryControlRequest(@NotNull @Min(0) Long version,
         @Min(0) Integer reorderPoint, @Min(0) Integer safetyStock,
+        @Min(0) Integer maxQty,
         @NotNull RemovalStrategy removalStrategy, @NotNull TrackingMode trackingMode,
         @NotNull Boolean expiryTracked, @Min(1) @Max(36500) Integer maxShelfLifeDays) {}

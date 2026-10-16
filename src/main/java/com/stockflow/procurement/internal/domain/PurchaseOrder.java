@@ -55,7 +55,8 @@ public final class PurchaseOrder extends AggregateRoot {
     private LocalDate expectedAt;
     private String note;
     private final int paymentTermDays;
-    private final int leadTimeDays;
+    /** The slowest line's lead time; a draft edit recomputes it from the lines as edited (SCRUM-78). */
+    private int leadTimeDays;
 
     private long revisionNo;
     private UUID activeRevisionId;
@@ -207,9 +208,12 @@ public final class PurchaseOrder extends AggregateRoot {
      * its row as WITHDRAWN when a revision already froze it. New lines are numbered from
      * {@code firstNewLineNo}, past every number the order has ever used, so a number is never
      * reused.</p>
+     *
+     * <p>{@code leadTimeDays} is the slowest line's as the catalog has it now, which the service works out:
+     * the lines change, so the lead time they need does too.</p>
      */
     public void reviseDraft(UUID warehouseId, LocalDate expectedAt, String note, List<DraftLine> lines,
-                            int firstNewLineNo) {
+                            int firstNewLineNo, int leadTimeDays) {
         if (status != PurchaseOrderStatus.DRAFT || type != Type.STANDARD) {
             throw new BusinessException(ErrorCode.PURCHASE_ORDER_NOT_EDITABLE,
                     "Purchase order %s is %s %s".formatted(poNumber, status, type));
@@ -263,6 +267,7 @@ public final class PurchaseOrder extends AggregateRoot {
         this.warehouseId = warehouseId;
         this.expectedAt = expectedAt;
         this.note = note;
+        this.leadTimeDays = leadTimeDays;
         this.lines.clear();
         this.lines.addAll(revised);
     }

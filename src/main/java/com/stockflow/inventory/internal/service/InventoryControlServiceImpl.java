@@ -99,7 +99,7 @@ class InventoryControlServiceImpl implements InventoryControlService {
         return policies.find(sku.code())
                 .orElse(
                         new InventoryPolicy(
-                                null, null, RemovalStrategy.FEFO, TrackingMode.NONE, false, null));
+                                null, null, null, RemovalStrategy.FEFO, TrackingMode.NONE, false, null));
     }
 
     @Override

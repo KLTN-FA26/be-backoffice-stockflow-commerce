@@ -191,7 +191,7 @@ class ProductHistoryAndRemovalIntegrationTest {
 
         var control = skus.get(id, defaultId);
         skus.update(id, defaultId, control.version(),
-                new InventoryPolicy(10, 2, RemovalStrategy.FIFO, TrackingMode.NONE, false, null));
+                new InventoryPolicy(10, 2, 20, RemovalStrategy.FIFO, TrackingMode.NONE, false, null));
 
         products.submit(id, editor);
         actAs(approver);
@@ -270,7 +270,7 @@ class ProductHistoryAndRemovalIntegrationTest {
         assertThat(log.get(13).actorId()).isEqualTo(editor);
 
         assertThat(log.get(14).subjectId()).isEqualTo(defaultId);
-        assertThat(log.get(14).changedFields()).contains("reorderPoint", "safetyStock");
+        assertThat(log.get(14).changedFields()).contains("reorderPoint", "safetyStock", "maxQty");
         assertThat(log.get(15).subjectId()).isEqualTo(defaultId);
         assertThat(log.get(15).changedFields()).contains("barcode", "weightKg", "lengthCm", "packageWeightKg", "packSize",
                 "storageClass", "qcRequired").doesNotContain("unitOfMeasure", "requiresAdultSignature");
@@ -422,7 +422,7 @@ class ProductHistoryAndRemovalIntegrationTest {
         assertThat(media.describe(id, defaultId, image.id(), "Alt", 1, false).altText()).isEqualTo("Alt");
         var item = skus.get(id, defaultId);
         assertThat(skus.update(id, defaultId, item.version(),
-                new InventoryPolicy(4, 1, RemovalStrategy.FIFO, TrackingMode.NONE, false, null)).policy().reorderPoint()).isEqualTo(4);
+                new InventoryPolicy(4, 1, null, RemovalStrategy.FIFO, TrackingMode.NONE, false, null)).policy().reorderPoint()).isEqualTo(4);
         assertThat(variants.block(id, defaultId).status()).isEqualTo(VariantStatus.BLOCKED);
     }
 
