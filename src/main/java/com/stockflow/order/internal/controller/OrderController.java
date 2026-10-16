@@ -146,7 +146,7 @@ class OrderController {
                 // A customer sees only their own orders. The order carries the shipping address and
                 // phone of whoever placed it, so answering 200 to anyone would leak both.
                 .filter(order -> ownCustomerId == null || ownCustomerId.equals(order.customerId()))
-                .map(OrderWebMapper::toResponse)
+                .map(order -> OrderWebMapper.toResponse(order, ownCustomerId == null))
                 .map(ApiResponse::ok)
                 .orElseThrow(() -> new BusinessException(
                         ErrorCode.NOT_FOUND, "No order with id " + orderId));
@@ -195,7 +195,7 @@ class OrderController {
         }
         CancellationOutcome outcome = orderService.cancelOwn(orderId, ownCustomerId, code, note, user.userId());
         var body = ApiResponse.ok(new CancellationResultResponse(outcome.result().name(), outcome.requestId(),
-                OrderWebMapper.toResponse(outcome.order())));
+                OrderWebMapper.toResponse(outcome.order(), false)));
         return outcome.result() == CancellationOutcome.Result.REQUESTED
                 ? org.springframework.http.ResponseEntity.status(HttpStatus.ACCEPTED).body(body)
                 : org.springframework.http.ResponseEntity.ok(body);

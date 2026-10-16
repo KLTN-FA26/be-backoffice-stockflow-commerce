@@ -326,6 +326,8 @@ class ProductionSecurityIntegrationTest {
     @DisplayName("Q2 over HTTP: Sales keeps an agreed amount on cancellation (sales-order-cancellations:UPDATE), validated and audited; the print shop cannot")
     void agreedFeeOverHttp() throws Exception {
         UUID orderId = Identifiers.newId();
+        UUID portalUser = fixtures.user();
+        UUID buyer = fixtures.customerOf(portalUser);
         tx.executeWithoutResult(s -> {
             jdbc.update("""
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
@@ -333,7 +335,7 @@ class ProductionSecurityIntegrationTest {
                         released_at, released_by)
                     VALUES (?, ?, ?, ?, 'IN_PRODUCTION', 20000, 'VND', NOW(), 0, NOW(), 20000, NOW(), ?, NOW(), ?)""",
                     orderId, "SO-20991227-%06d".formatted(java.util.concurrent.ThreadLocalRandom.current()
-                            .nextInt(1_000_000)), DemoData.CUSTOMER_ID, UUID.randomUUID(), hcm, fixtures.user());
+                            .nextInt(1_000_000)), buyer, UUID.randomUUID(), hcm, fixtures.user());
             jdbc.update("""
                     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
                     VALUES (?, ?, ?, 1, 20000, 'VND')""", Identifiers.newId(), orderId, ProductionFixtures.BLANK);
@@ -361,6 +363,13 @@ class ProductionSecurityIntegrationTest {
         send(post(path), sales, java.util.Map.of("reasonCode", "CUSTOMER_REQUEST", "agreedFee", fee))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("ORDER_NOT_CANCELLABLE"));
+        // The customer sees what is kept and why, not the back office's note of how it was agreed (review of #109).
+        send(get("/api/v1/orders/" + orderId), token(portalUser, "CUSTOMER"), null).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.cancellation.feeAmount").value(12000))
+                .andExpect(jsonPath("$.data.cancellation.feeReason").value("Printing had started"))
+                .andExpect(jsonPath("$.data.cancellation.feeDetail").doesNotExist());
+        send(get("/api/v1/orders/" + orderId), sales, null).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.cancellation.feeDetail").value("Agreed with the buyer: setup and 6 printed cups"));
         com.stockflow.support.Await.until("audited", java.time.Duration.ofSeconds(10), () -> jdbc.queryForObject("""
                 SELECT count(*) FROM platform.audit_log WHERE resource_type = 'order' AND resource_id = ?
                    AND outcome = 'SUCCESS'""", Integer.class, orderId.toString()) >= 1);
