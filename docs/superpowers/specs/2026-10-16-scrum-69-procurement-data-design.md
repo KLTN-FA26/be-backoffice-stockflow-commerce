@@ -20,7 +20,7 @@ the points the tickets left open.
 | `inventory_items.max_qty` | Column exists, unused. `InventoryPolicy` (`inventory :: api`) has no field for it. |
 | BR-PO-001 | `05-business-rules.md` names `PurchaseOrder.addLine()`, which does not exist. The `createPurchaseOrder` javadoc says MOQ "is not enforced". |
 
-No migration is needed for the feature itself. Two CHECK constraints are missing and are Tú's to add (§6).
+No migration is needed for the feature itself. Three CHECK constraints are missing and are Tú's to add (§6).
 
 ## 2. Delivery
 
@@ -205,8 +205,11 @@ one full `mvn verify` at the end.
 ## 6. Coordination
 
 - **Tú** (schema and PO code owner):
-  - add `ck_supplier_items_moq_pack CHECK (moq % pack_size = 0)` and `CHECK (max_qty IS NULL OR
-    reorder_point IS NULL OR max_qty >= reorder_point)` on `inventory_items`;
+  - add `ck_supplier_items_moq_pack CHECK (moq % pack_size = 0)` and
+    `CHECK (lead_time_days IS NULL OR lead_time_days <= 365)` on `procurement.supplier_items`, and
+    `CHECK (max_qty IS NULL OR reorder_point IS NULL OR max_qty >= reorder_point)` on `inventory_items`.
+    PR2's demo seed must respect both `supplier_items` rules. Until they exist, the catalog reads a stored
+    row without re-validating it, so one row outside them cannot block the catalog;
   - PO create/edit paths and ~14 PO tests change (catalog seeding);
   - decide on dropping `inventory_items.default_supplier_id` (unused; `supplier_items.is_preferred` is the
     single source of truth).

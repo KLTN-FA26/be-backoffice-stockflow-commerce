@@ -199,6 +199,7 @@ Behaviour (`@Service @Transactional`, package-private class, public methods, `@A
 @Test void resavingThePreferredRowKeepsIt()
 @Test void unpreferringLeavesNoPreferredSupplier()
 @Test void concurrentPreferredCreatesSerialise()                   // two threads, both preferred=true, CountDownLatch start → both succeed, exactly one preferred
+@Test void concurrentSwitchesSerialise()                           // two existing non-preferred rows, both updated to preferred=true behind a CountDownLatch → both succeed, exactly one preferred
 @Test void anItemIsOnlyReachableThroughItsOwnSupplier()            // update/delete via supplier A of B's item → SUPPLIER_ITEM_NOT_FOUND
 @Test void aStaleVersionIsAConflict()                              // update and delete → OPTIMISTIC_LOCK
 @Test void deleteIsRefusedWhileAnOpenOrderUsesThePair()            // SUPPLIER_ITEM_IN_USE; allowed once that PO is CANCELLED
@@ -222,13 +223,13 @@ The open PO for `deleteIsRefusedWhileAnOpenOrderUsesThePair` is raised through `
 - Create: `src/main/java/com/stockflow/procurement/internal/controller/dto/SaveSupplierItemRequest.java`
 - Create: `src/main/java/com/stockflow/procurement/internal/controller/dto/SupplierItemResponse.java`
 - Create: `src/main/java/com/stockflow/procurement/internal/controller/dto/SkuSupplierResponse.java`
-- Modify: `docs/superpowers/specs/2026-10-16-scrum-69-procurement-data-design.md` §3.1 (drop `SUPPLIER_ITEMS`), §3.3 and §6 (permission decision below)
+- Modify: `docs/superpowers/specs/2026-10-16-scrum-69-procurement-data-design.md` §3.1 (keep `SUPPLIER_ITEMS`, the seeded `procurement-supplier-items`), §3.3 and §6 (permission decision below)
 - Modify: `docs/business-design/04c-all-flows.md` or the procurement API section of `README.md` — wherever supplier endpoints are listed today; add the five routes (skip if neither lists supplier endpoints)
 - Test: `src/test/java/com/stockflow/procurement/SupplierItemApiIntegrationTest.java`
 
 **Interfaces:**
 - Consumes: `SupplierItemService` (Task 3).
-- Produces: the five routes of spec §3.3. No `@PermissionResource` on this controller — the resource is the one `SupplierController` already declares.
+- Produces: the five routes of spec §3.3. The controller declares `@PermissionResource(procurement-supplier-items)` (`SupplierResources.SUPPLIER_ITEMS`); `SupplierController` keeps `procurement-suppliers`.
 
 Controller decisions:
 - `@RequestMapping("/api/v1")` with full paths on each handler: `GET/POST /suppliers/{supplierId}/items`, `PUT/DELETE /suppliers/{supplierId}/items/{supplierItemId}`, `GET /procurement/skus/{sku}/suppliers`.
@@ -241,7 +242,7 @@ Controller decisions:
 
 ```java
 @Test void procurementStaffMaintainsACatalog()      // PROCUREMENT_STAFF: POST 201 → GET page has it → PUT 200 → DELETE ?version= 204
-@Test void anAccountantReadsButCannotEdit()         // ACCOUNTANT: GET 200, POST 403
+@Test void anAccountantHasNoCatalogAccess()         // ACCOUNTANT: GET 403, POST 403
 @Test void warehouseStaffCannotRead()               // WAREHOUSE_STAFF: GET /suppliers/{id}/items 403
 @Test void anonymousIsRefused()                     // 401
 @Test void skuSuppliersListsThePreferredFirst()     // GET /api/v1/procurement/skus/{lowercase sku}/suppliers → [preferred, other]
