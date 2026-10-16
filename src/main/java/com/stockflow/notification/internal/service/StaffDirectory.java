@@ -48,6 +48,25 @@ class StaffDirectory {
     }
 
     /**
+     * One account by id, if it is ACTIVE and has an e-mail address; empty when it is gone, inactive or has none. A
+     * notice addressed to a person reads their address when it is delivered, so the stored event names only the id.
+     */
+    java.util.Optional<StaffContact> activeContact(UUID userId) {
+        if (userId == null) {
+            return java.util.Optional.empty();
+        }
+        try {
+            StaffUser user = identity.user(userId);
+            if (user != null && "ACTIVE".equals(user.status()) && user.email() != null && !user.email().isBlank()) {
+                return java.util.Optional.of(new StaffContact(user.userId(), user.email().strip()));
+            }
+        } catch (com.stockflow.common.error.BusinessException gone) {
+            // An account deleted since the event was published: the team takes over.
+        }
+        return java.util.Optional.empty();
+    }
+
+    /**
      * The ACTIVE staff holding {@code role} who can see {@code warehouseId} - an ALL scope, or assigned to it - through
      * {@code identity :: api}'s recipient rule (SCRUM-147); never a customer. A notice about one warehouse's work goes
      * to the people who can open it.

@@ -45,10 +45,10 @@ class QuoteNotificationListener {
 
     @ApplicationModuleListener
     public void on(CustomerActedOnQuote event) {
-        boolean responsible = event.salesUserId() != null && event.salesEmail() != null && !event.salesEmail().isBlank();
-        List<StaffContact> recipients = responsible
-                ? List.of(new StaffContact(event.salesUserId(), event.salesEmail().strip()))
-                : staff.activeStaff(Role.SALES_STAFF);
+        // The responsible account is looked up now, not carried in the stored event (no e-mail in event_publication).
+        java.util.Optional<StaffContact> handler = staff.activeContact(event.salesUserId());
+        boolean responsible = handler.isPresent();
+        List<StaffContact> recipients = responsible ? List.of(handler.get()) : staff.activeStaff(Role.SALES_STAFF);
         if (recipients.isEmpty()) {
             log.warn("Quote {}: customer {} {}; the responsible Sales account {} is not active and there is no active "
                     + "Sales account - nobody was notified", LogSafe.text(event.quoteNumber()), event.customerId(),

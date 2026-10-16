@@ -324,7 +324,6 @@ class QuoteIntegrationTest {
                 .singleElement().satisfies(e -> {
                     assertThat(e.sourceOrderNumber()).isEqualTo(orderNumber);
                     assertThat(e.salesUserId()).as("who negotiated the order's quote").isEqualTo(sales.userId());
-                    assertThat(e.salesEmail()).isEqualTo(emailOf(sales));
                 });
         mailedTo(emailOf(sales), reorder.quoteNumber());
         assertThat(ordersOf(customerId)).as("nothing payable was created").isEqualTo(ordersBefore);
@@ -405,8 +404,9 @@ class QuoteIntegrationTest {
             assertThat(e.sourceOrderNumber()).as("B-4: what the customer typed stays on the quote").isNull();
             assertThat(e.toString()).doesNotContain("2,200?");
             assertThat(e.salesUserId()).isEqualTo(sales.userId());
-            assertThat(e.salesEmail()).isEqualTo(emailOf(sales));
-            assertThat(e.customerName()).isEqualTo("Cong ty In Ly A");
+            // Review of #109, item 10: ids only in the stored event - the address and the name are looked up on
+            // delivery (the mail below still reaches the right person).
+            assertThat(e.toString()).doesNotContain("Cong ty In Ly A", emailOf(sales));
         });
         Quotes.QuoteView reopened = quotes.reopen(sales, first.id(), changed.version());
         Quotes.QuoteView edited = quotes.edit(sales, first.id(), reopened.version(),
@@ -422,7 +422,7 @@ class QuoteIntegrationTest {
                 quotes.get(portal, first.id()).version(), Map.of()));
         assertThat(accepted.revision()).isEqualTo(2);
         assertThat(noticesOf(first.id(), CustomerActedOnQuote.Action.ACCEPTED)).singleElement()
-                .satisfies(e -> assertThat(e.salesEmail()).isEqualTo(emailOf(sales)));
+                .satisfies(e -> assertThat(e.salesUserId()).isEqualTo(sales.userId()));
         mailedTo(emailOf(sales), accepted.quoteNumber());
         assertThat(accepted.lines().getFirst().acceptedQuantity()).isEqualTo(4);
         assertThat(accepted.lines().getFirst().acceptedUnitPrice()).isEqualByComparingTo("2200");
@@ -552,8 +552,8 @@ class QuoteIntegrationTest {
         });
         quotes.requestChanges(portal, sent.id(), sent.version(), "Another colour?");
         assertThat(noticesOf(sent.id(), CustomerActedOnQuote.Action.CHANGES_REQUESTED)).singleElement().satisfies(e -> {
-            assertThat(e.salesUserId()).isEqualTo(sales.userId());
-            assertThat(e.salesEmail()).as("the responsible account is not active").isNull();
+            assertThat(e.salesUserId()).as("still names who handled it; the listener finds the account inactive")
+                    .isEqualTo(sales.userId());
         });
         String disabled = emailOf(sales);
         verify(mail, timeout(15_000).atLeastOnce()).send(argThat((SimpleMailMessage m) -> m.getTo() != null

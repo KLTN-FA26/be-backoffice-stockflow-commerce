@@ -64,12 +64,10 @@ class QuoteServiceTest {
     private final QuotedOrders quotedOrders = mock(QuotedOrders.class);
     private final OrderService orders = mock(OrderService.class);
     private final com.stockflow.catalog.api.CatalogService catalog = mock(com.stockflow.catalog.api.CatalogService.class);
-    private final com.stockflow.identity.api.IdentityService identity =
-            mock(com.stockflow.identity.api.IdentityService.class);
     private final org.springframework.context.ApplicationEventPublisher events =
             mock(org.springframework.context.ApplicationEventPublisher.class);
     private final QuoteService service = new QuoteService(quotes, search, production, customers, designs, quotedOrders,
-            orders, new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC), catalog, identity, events);
+            orders, new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC), catalog, events);
 
     private final UUID customer = UUID.randomUUID();
     private final UUID portalUser = UUID.randomUUID();
@@ -188,9 +186,6 @@ class QuoteServiceTest {
         when(quotes.nextNumber(any())).thenReturn("QT-2");
         when(catalog.priceSchedule(customer, "CUP-PP-500"))
                 .thenThrow(new BusinessException(ErrorCode.PRICE_NOT_AVAILABLE));
-        when(identity.user(sales.userId())).thenReturn(new com.stockflow.identity.api.StaffUser(sales.userId(), "sales",
-                "sales@example.com", "Sales", "ACTIVE", List.of("SALES_STAFF"), List.of(), false, null, null, NOW,
-                "admin", 0));
 
         Quotes.QuoteView draft = service.reorder(portal, new Quotes.Reorder(UUID.randomUUID(), orderId));
 
@@ -212,7 +207,8 @@ class QuoteServiceTest {
                 e -> {
                     assertThat(e.action()).isEqualTo(com.stockflow.contracts.CustomerActedOnQuote.Action.REORDER_REQUESTED);
                     assertThat(e.sourceOrderNumber()).isEqualTo("SO-1");
-                    assertThat(e.salesEmail()).isEqualTo("sales@example.com");
+                    assertThat(e.salesUserId()).as("who sent the order's quote; the address is looked up on delivery")
+                            .isEqualTo(sales.userId());
                 });
     }
 

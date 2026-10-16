@@ -30,9 +30,6 @@ import com.stockflow.order.internal.domain.QuoteStatus;
 import com.stockflow.order.internal.repository.QuoteSearch;
 import com.stockflow.catalog.api.CatalogService;
 import com.stockflow.contracts.CustomerActedOnQuote;
-import com.stockflow.customer.api.CustomerSummary;
-import com.stockflow.identity.api.IdentityService;
-import com.stockflow.identity.api.StaffUser;
 import org.springframework.context.ApplicationEventPublisher;
 import com.stockflow.catalog.api.PriceSchedule;
 import org.slf4j.Logger;
@@ -92,13 +89,11 @@ class QuoteService implements Quotes {
     private final OrderService orders;
     private final ObjectMapper json;
     private final Clock clock;
-    private final IdentityService identity;
     private final ApplicationEventPublisher events;
 
     QuoteService(QuoteRepository quotes, QuoteSearch search, ProductionRecords production, CustomerService customers,
                  DesignService designs, QuotedOrders quotedOrders, OrderService orders, ObjectMapper json, Clock clock,
-                 CatalogService catalog, IdentityService identity, ApplicationEventPublisher events) {
-        this.identity = identity;
+                 CatalogService catalog, ApplicationEventPublisher events) {
         this.events = events;
         this.catalog = catalog;
         this.quotes = quotes;
@@ -521,28 +516,14 @@ class QuoteService implements Quotes {
 
     /**
      * Tells Sales that the customer's step made the next one theirs. Published in this transaction and
-     * delivered after commit; the recipient is the Sales account that sent the quote. When that account is gone,
-     * inactive or has no e-mail the event carries no address and the notification module hands it to the active
-     * Sales team (N1).
+     * delivered after commit to the Sales account that sent the quote, which the notification module resolves when
+     * it delivers (gone, inactive or without e-mail: the active Sales team takes over, N1). Ids only in the stored
+     * event: no customer name, no e-mail address.
      */
     private void notifySales(Quote quote, CustomerActedOnQuote.Action action, String sourceOrderNumber, UUID salesUserId,
                              Instant at) {
-        String email = null;
-        if (salesUserId != null) {
-            try {
-                StaffUser sales = identity.user(salesUserId);
-                if (sales != null && "ACTIVE".equals(sales.status()) && sales.email() != null
-                        && !sales.email().isBlank()) {
-                    email = sales.email();
-                }
-            } catch (BusinessException gone) {
-                log.warn("Quote {}: Sales user {} cannot be notified ({})", quote.quoteNumber(), salesUserId,
-                        gone.errorCode());
-            }
-        }
-        String customerName = customers.findById(quote.customerId()).map(CustomerSummary::fullName).orElse(null);
-        events.publishEvent(new CustomerActedOnQuote(quote.id(), quote.quoteNumber(), quote.customerId(), customerName,
-                action, sourceOrderNumber, salesUserId, email, at));
+        events.publishEvent(new CustomerActedOnQuote(quote.id(), quote.quoteNumber(), quote.customerId(), action,
+                sourceOrderNumber, salesUserId, at));
     }
 
     private Quotes.SampleGate gate(UUID customerId, QuoteLine line) {

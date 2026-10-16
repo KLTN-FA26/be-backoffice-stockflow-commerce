@@ -57,10 +57,26 @@ class QuoteNotificationListenerTest {
         return users.stream().map(com.stockflow.identity.api.StaffUser::userId).toList();
     }
 
-    private static CustomerActedOnQuote event(CustomerActedOnQuote.Action action, String sourceOrderNumber,
-                                              String salesEmail) {
-        return new CustomerActedOnQuote(UUID.randomUUID(), "QT-20261012-0007", UUID.randomUUID(), "Cong ty In Ly A",
-                action, sourceOrderNumber, UUID.randomUUID(), salesEmail, AT);
+    /**
+     * The event names the Sales account by id only; its address is looked up on delivery. {@code salesEmail} is what
+     * the identity module answers for it then: null for an account deleted since (404).
+     */
+    private CustomerActedOnQuote event(CustomerActedOnQuote.Action action, String sourceOrderNumber, String salesEmail) {
+        return event(action, sourceOrderNumber, salesEmail, "ACTIVE");
+    }
+
+    private CustomerActedOnQuote event(CustomerActedOnQuote.Action action, String sourceOrderNumber, String salesEmail,
+                                       String status) {
+        UUID sales = UUID.randomUUID();
+        if (salesEmail == null) {
+            when(identity.user(sales)).thenThrow(new com.stockflow.common.error.BusinessException(
+                    com.stockflow.common.error.ErrorCode.NOT_FOUND));
+        } else {
+            when(identity.user(sales)).thenReturn(new com.stockflow.identity.api.StaffUser(sales, "sales", salesEmail,
+                    "Sales", status, List.of("SALES_STAFF"), List.of(), false, null, null, Instant.EPOCH, "admin", 0));
+        }
+        return new CustomerActedOnQuote(UUID.randomUUID(), "QT-20261012-0007", UUID.randomUUID(), action,
+                sourceOrderNumber, sales, AT);
     }
 
     private SimpleMailMessage sent() {
@@ -87,7 +103,7 @@ class QuoteNotificationListenerTest {
         SimpleMailMessage mailed = sent();
         assertThat(mailed.getTo()).containsExactly("sales@example.com");
         assertThat(mailed.getFrom()).isEqualTo("noreply@stockflow.local");
-        assertThat(mailed.getSubject()).contains("Cong ty In Ly A", "QT-20261012-0007", "chấp nhận");
+        assertThat(mailed.getSubject()).contains("QT-20261012-0007", "chấp nhận");
         assertThat(mailed.getText()).contains("chuyển báo giá thành đơn hàng");
     }
 
@@ -110,7 +126,7 @@ class QuoteNotificationListenerTest {
 
     @Test
     void aGoneSalesAccountHandsTheCustomerToTheActiveSalesTeamOnceEach() {
-        // N1: the responsible account is locked or gone - salesEmail is null - so the team takes over.
+        // N1: the responsible account is gone (the identity module answers 404), so the team takes over.
         List<UUID> team = activeSales("sale1@example.com", "sale2@example.com", "sale1@example.com");
         listener.on(event(CustomerActedOnQuote.Action.ACCEPTED, null, null));
         verify(inbox, times(3)).post(any(), any());
@@ -119,7 +135,7 @@ class QuoteNotificationListenerTest {
         verify(inbox).post(List.of(team.get(0)), handOver);
         SimpleMailMessage message = sent();
         assertThat(message.getTo()).containsExactly("sale1@example.com", "sale2@example.com");
-        assertThat(message.getSubject()).startsWith("[Cần tiếp nhận]").contains("QT-20261012-0007", "Cong ty In Ly A");
+        assertThat(message.getSubject()).startsWith("[Cần tiếp nhận]").contains("QT-20261012-0007");
         assertThat(message.getText()).contains("không còn hoạt động", "tiếp nhận", "chuyển báo giá thành đơn hàng");
     }
 
@@ -142,6 +158,22 @@ class QuoteNotificationListenerTest {
         doThrow(new org.springframework.mail.MailSendException("refused")).when(mail).send(any(SimpleMailMessage.class));
         assertThatCode(() -> listener.on(event(CustomerActedOnQuote.Action.ACCEPTED, null, "sales@example.com")))
                 .doesNotThrowAnyException();
+    }
+
+    @Test
+    void aSalesAccountLockedSinceThePublicationIsNotWrittenToTheTeamIs() {
+        activeSales("sale3@example.com");
+        listener.on(event(CustomerActedOnQuote.Action.ACCEPTED, null, "locked@example.com", "LOCKED"));
+        assertThat(sent().getTo()).containsExactly("sale3@example.com");
+    }
+
+    @Test
+    void theStoredEventCarriesNoNameAndNoAddress() {
+        // Review of #109, item 10: the event lives in event_publication; ids and document numbers only.
+        assertThat(java.util.Arrays.stream(CustomerActedOnQuote.class.getRecordComponents())
+                .map(java.lang.reflect.RecordComponent::getName))
+                .containsExactly("quoteId", "quoteNumber", "customerId", "action", "sourceOrderNumber", "salesUserId",
+                        "occurredAt");
     }
 
     @Test
