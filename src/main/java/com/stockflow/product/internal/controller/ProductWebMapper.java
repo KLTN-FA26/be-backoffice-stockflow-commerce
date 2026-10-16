@@ -30,7 +30,7 @@ import java.util.UUID;
 interface ProductWebMapper {
 
     /** The code is upper-cased here: {@code ck_products_code} accepts upper case only, and a code is
-     *  also the default variant's SKU. */
+     *  also the stem of every variant SKU. */
     @Mapping(target = "code",
             expression = "java(request.code() == null ? null : request.code().strip().toUpperCase(java.util.Locale.ROOT))")
     CreateProductCommand toCommand(CreateProductRequest request);

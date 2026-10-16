@@ -7,6 +7,8 @@ package com.stockflow.product.internal.controller;
 public final class ProductResources {
 
     public static final String PRODUCTS = "product-products";
+    public static final String ATTRIBUTES = "product-attributes";
+    public static final String VARIANTS = "product-variants";
 
     private ProductResources() {
     }

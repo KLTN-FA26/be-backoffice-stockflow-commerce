@@ -69,6 +69,8 @@ public enum ErrorCode {
     CATEGORY_NOT_FOUND("Category not found", 404),
     BRAND_NOT_FOUND("Brand not found", 404),
     VARIANT_NOT_FOUND("Variant not found", 404),
+    ATTRIBUTE_NOT_FOUND("Attribute not found", 404),
+    ATTRIBUTE_VALUE_NOT_FOUND("Attribute value not found", 404),
     MEDIA_NOT_FOUND("Media not found", 404),
     CUSTOMER_NOT_FOUND("Customer not found", 404),
     ADDRESS_NOT_FOUND("Address not found", 404),
@@ -134,6 +136,12 @@ public enum ErrorCode {
     STOCK_STATUS_MISMATCH("The destination holds this lot in a different status", 409),
     /** The location exists, but it, its shelf or its warehouse is BLOCKED, in MAINTENANCE or INACTIVE (issue #67). */
     LOCATION_NOT_USABLE("This location cannot take stock right now", 409),
+    /** A named location, or its shelf, is INACTIVE: off the layout, so it gets no label (SCRUM-97). */
+    LOCATION_INACTIVE("This location is off the layout", 409),
+    /** A label print whose selection resolves to no location on the layout (SCRUM-97). */
+    LOCATION_LABELS_EMPTY("No storage location matches this selection", 422),
+    /** More labels than one print request renders; print by zone or shelf instead (SCRUM-97). */
+    LOCATION_LABELS_TOO_MANY("Too many labels for one request", 422),
     /** Docs 11 BR-01: stock changes warehouse only through a transfer order (SCRUM-459). */
     MOVE_ACROSS_WAREHOUSES("Stock moves to another warehouse only through a transfer order", 409),
     /** Four eyes: whoever asked for a stock adjustment may not decide it. */
@@ -254,8 +262,13 @@ public enum ErrorCode {
     BRAND_CODE_ALREADY_EXISTS("A brand with this code or slug already exists", 409),
     CATEGORY_CODE_ALREADY_EXISTS("A category with this code or slug already exists", 409),
     VARIANT_SKU_ALREADY_EXISTS("A variant with this SKU or attribute combination already exists", 409),
+    ATTRIBUTE_CODE_ALREADY_EXISTS("An attribute or value with this code already exists", 409),
+    ATTRIBUTE_IN_USE("This attribute or value is used by a product or category", 409),
     INVALID_VARIANT_TRANSITION("This variant cannot move to that status right now", 409),
     INVALID_PRODUCT_STATUS_TRANSITION("This product cannot move to that status right now", 409),
+    PRODUCT_AXES_LOCKED("Variant axes can only change while the product is a draft", 409),
+    VARIANT_OPTIONS_INVALID("The options do not name one value per axis of this product", 400),
+    VARIANT_MATRIX_TOO_LARGE("Too many variants for one generation", 400),
     SELF_APPROVAL_NOT_ALLOWED("A product cannot be approved by the person who submitted it", 409),
     CUSTOMER_EMAIL_ALREADY_EXISTS("A customer account with this email already exists", 409),
     /** kltn-docs 18 BR-01: one pending or active customer per tax code. */

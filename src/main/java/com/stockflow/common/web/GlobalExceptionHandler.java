@@ -17,6 +17,7 @@ import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.dao.PessimisticLockingFailureException;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.beans.TypeMismatchException;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -60,6 +61,11 @@ import java.util.List;
  * a developer and regularly contains a SQL fragment, a file path or a class name — free
  * reconnaissance for anyone probing the API. The correlation id, which <i>is</i> returned, is how
  * the response and the stack trace are joined up instead.</p>
+ *
+ * <p>Every response sets {@code Content-Type: application/json} itself. A preset concrete content
+ * type skips {@code Accept} negotiation, so a client that asked for a binary - the location label
+ * PDF sends {@code Accept: application/pdf} - still receives the envelope with the status chosen
+ * here, instead of a 406 or 500 because no converter writes an {@code ApiResponse} as a PDF.</p>
  */
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -413,6 +419,7 @@ public class GlobalExceptionHandler {
         }
         // The framework's own status wins over the mapped code's, so a 405 stays a 405.
         return ResponseEntity.status(status)
+                .contentType(MediaType.APPLICATION_JSON)
                 .body(ApiResponse.error(code.name(), messages.forCode(code), null,
                         MDC.get(CorrelationIdFilter.MDC_KEY)));
     }
@@ -473,6 +480,7 @@ public class GlobalExceptionHandler {
     private ResponseEntity<ApiResponse<Void>> respond(ErrorCode code, String message,
                                                       List<FieldError> fieldErrors) {
         return ResponseEntity.status(code.httpStatus())
+                .contentType(MediaType.APPLICATION_JSON)
                 .body(ApiResponse.error(code.name(), message, fieldErrors,
                         MDC.get(CorrelationIdFilter.MDC_KEY)));
     }
