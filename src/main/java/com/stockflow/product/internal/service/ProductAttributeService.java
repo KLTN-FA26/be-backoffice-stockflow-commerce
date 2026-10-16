@@ -26,7 +26,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -187,8 +186,7 @@ public class ProductAttributeService {
         Map<UUID, AttributeValue> values = byId(attribute);
         // The dictionary decides the order; the stored rows have none (see AxisSpec).
         List<OptionView> options = axis.options().stream().map(o -> values.get(o.valueId()))
-                .sorted(Comparator.<AttributeValue>comparingInt(v -> v.details().sortOrder())
-                        .thenComparing(AttributeValue::code))
+                .sorted(AttributeValue.DICTIONARY_ORDER)
                 .map(v -> new OptionView(v.id(), v.code(), v.details().label(), v.details().hexColor(),
                         v.details().valueNumber(), v.active(), usedByVariants.contains(v.id())))
                 .toList();

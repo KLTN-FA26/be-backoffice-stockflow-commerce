@@ -3,6 +3,7 @@ package com.stockflow.product.internal.domain;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 
+import java.util.Comparator;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -11,6 +12,10 @@ import java.util.UUID;
  * so that every change goes through the aggregate, which knows the attribute's type.
  */
 public final class AttributeValue {
+
+    /** The order values are offered in: the dictionary's sort order, then the code. One definition, used by every view and by the variant matrix. */
+    public static final Comparator<AttributeValue> DICTIONARY_ORDER =
+            Comparator.<AttributeValue>comparingInt(v -> v.details().sortOrder()).thenComparing(AttributeValue::code);
 
     private final UUID id;
     private final String code;

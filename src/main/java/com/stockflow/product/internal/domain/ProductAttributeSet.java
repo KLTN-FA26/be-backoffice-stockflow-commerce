@@ -39,6 +39,10 @@ import java.util.function.Supplier;
  * <p>Whether a variant uses an option is not known here; the caller passes the used value ids.
  * Entries that survive a replacement keep their ids, so persistence can update rows in place
  * instead of deleting and re-inserting them.</p>
+ *
+ * <p>An axis cannot be added once any variant carries an option, even on a DRAFT product: every such
+ * variant would then lack a value on the new axis, and its signature would no longer name one value
+ * per axis. Removal was already refused by the in-use check, since the axis's options are used.</p>
  */
 public final class ProductAttributeSet extends AggregateRoot {
 
@@ -60,6 +64,11 @@ public final class ProductAttributeSet extends AggregateRoot {
     /**
      * Makes the axes exactly {@code specs}. Adding or removing an axis needs a DRAFT product; options
      * and order may change while the product accepts changes. Nothing is changed if any rule fails.
+     *
+     * <p>Once any variant uses options ({@code valueIdsUsedByVariants} is not empty) an axis can no
+     * longer be added, even in DRAFT: {@code PRODUCT_AXES_LOCKED}, because every existing variant
+     * would lack a value on it. Removing an axis still needs DRAFT, and is {@code ATTRIBUTE_IN_USE}
+     * while a variant carries one of its values.</p>
      *
      * @param valueIdsUsedByVariants values some variant of this product carries; their options must stay
      */
@@ -111,6 +120,11 @@ public final class ProductAttributeSet extends AggregateRoot {
         }
         if (!seen.equals(existing.keySet())) {
             requireDraft();
+        }
+        if (!valueIdsUsedByVariants.isEmpty() && !existing.keySet().containsAll(seen)) {
+            throw new BusinessException(ErrorCode.PRODUCT_AXES_LOCKED,
+                    "Product %s: variants already use the current axes; an axis can no longer be added"
+                            .formatted(productId));
         }
         for (ProductAxis before : axes) {
             Set<UUID> kept = result.stream().filter(a -> a.attributeId().equals(before.attributeId()))

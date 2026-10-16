@@ -71,6 +71,19 @@ class ProductAttributeSetTest {
     }
 
     @Test
+    void noAxisCanBeAddedOnceVariantsUseOptions() {
+        var set = draft(axis(CAPACITY, OZ12));
+        assertCode(() -> set.replaceAxes(List.of(spec(CAPACITY, OZ12), spec(COLOR, CLEAR)), dictionary(), Set.of(OZ12), ids()),
+                PRODUCT_AXES_LOCKED);
+        assertThat(set.axes()).hasSize(1);
+        set.replaceAxes(List.of(spec(CAPACITY, OZ12, OZ16)), dictionary(), Set.of(OZ12), ids());
+        assertThat(set.axes().getFirst().options()).hasSize(2);
+        // with no variant using an option, a draft may still gain an axis
+        set.replaceAxes(List.of(spec(CAPACITY, OZ12, OZ16), spec(COLOR, CLEAR)), dictionary(), Set.of(), ids());
+        assertThat(set.axes()).hasSize(2);
+    }
+
+    @Test
     void anApprovedProductMayGainAnOptionAndReorder() {
         var set = approved(axis(CAPACITY, OZ12));
         set.replaceAxes(List.of(new AxisSpec(CAPACITY.id(), 5, List.of(OZ12, OZ16))), dictionary(), Set.of(), ids());

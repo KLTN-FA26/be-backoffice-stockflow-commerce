@@ -1,10 +1,10 @@
 package com.stockflow.inventory.internal.controller.dto;
 
+import com.stockflow.common.validation.ValidSku;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
-import jakarta.validation.constraints.Pattern;
 
 import java.util.UUID;
 
@@ -30,7 +30,7 @@ public record ReserveStockRequest(
 
         @Schema(example = "SOFA-3S-GREY")
         @NotBlank(message = "sku is required")
-        @Pattern(regexp = "[A-Za-z0-9\\-]{3,64}", message = "malformed SKU")
+        @ValidSku
         String sku,
 
         @Schema(example = "2")
