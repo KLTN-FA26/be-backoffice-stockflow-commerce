@@ -162,6 +162,8 @@ public class PurchaseOrderJpaEntity extends BaseEntity {
         this.note = o.note();
         this.status = o.status();
         this.expectedAt = o.expectedAt();
+        // A draft edit recomputes it from the lines (SCRUM-78); unchanged by every other transition.
+        this.leadTimeDays = o.leadTimeDays();
         this.subtotal = o.subtotal().amount();
         this.taxTotal = o.taxTotal().amount();
         this.totalAmount = o.totalAmount().amount();

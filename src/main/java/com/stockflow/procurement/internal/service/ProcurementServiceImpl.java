@@ -19,7 +19,6 @@ import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.api.InventoryItemPolicy;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.notification.api.NotificationService;
-import com.stockflow.procurement.api.CreatePOLineCommand;
 import com.stockflow.procurement.api.CreatePurchaseOrderCommand;
 import com.stockflow.procurement.api.ListPurchaseOrdersQuery;
 import com.stockflow.procurement.api.ProcurementService;
@@ -38,9 +37,12 @@ import com.stockflow.procurement.internal.domain.PurchaseOrder;
 import com.stockflow.procurement.internal.domain.PurchaseOrderId;
 import com.stockflow.procurement.internal.domain.PurchaseOrderRepository;
 import com.stockflow.procurement.internal.domain.PurchaseOrderStatus;
+import com.stockflow.procurement.internal.domain.PurchasePrices;
 import com.stockflow.procurement.internal.domain.SupplierCommunicationChannel;
 import com.stockflow.procurement.internal.domain.SupplierConfirmationStatus;
 import com.stockflow.procurement.internal.domain.SupplierDetails;
+import com.stockflow.procurement.internal.domain.SupplierItem;
+import com.stockflow.procurement.internal.domain.SupplierItemRepository;
 import com.stockflow.procurement.internal.domain.SupplierRepository;
 import com.stockflow.procurement.internal.domain.SupplierStatus;
 import com.stockflow.procurement.internal.repository.PoDeliveryDecisionRepository;
@@ -94,7 +96,6 @@ class ProcurementServiceImpl implements ProcurementService {
             SortWhitelist.of("poNumber", "expectedAt", "orderDate", "createdAt", "lastModifiedAt", "status",
                             "totalAmount")
                     .withDefault("lastModifiedAt", Sort.Direction.DESC);
-    private static final BigDecimal MAX_AMOUNT = new BigDecimal("9999999999999999.99");
 
     private final PurchaseOrderRepository purchaseOrders;
     private final PurchaseOrderSearchRepository search;
@@ -110,6 +111,7 @@ class ProcurementServiceImpl implements ProcurementService {
     private final InventoryControlService inventoryControl;
     private final WarehouseService warehouses;
     private final CurrentUserProvider users;
+    private final SupplierItemRepository supplierItems;
 
     ProcurementServiceImpl(PurchaseOrderRepository purchaseOrders, PurchaseOrderSearchRepository search,
                            ProcurementReportRepository reports, Clock clock, SupplierRepository suppliers,
@@ -117,7 +119,7 @@ class ProcurementServiceImpl implements ProcurementService {
                            PoDeliveryDecisionRepository deliveryDecisions, PoCommunicationProfile communication,
                            ProductService products, InventoryService inventory,
                            InventoryControlService inventoryControl, WarehouseService warehouses,
-                           CurrentUserProvider users) {
+                           CurrentUserProvider users, SupplierItemRepository supplierItems) {
         this.purchaseOrders = purchaseOrders;
         this.search = search;
         this.reports = reports;
@@ -132,14 +134,17 @@ class ProcurementServiceImpl implements ProcurementService {
         this.inventoryControl = inventoryControl;
         this.warehouses = warehouses;
         this.users = users;
+        this.supplierItems = supplierItems;
     }
 
     /**
      * {@inheritDoc}
      *
      * <p>Each line's SKU must have an inventory item (BR-01, plan Q4): the line orders the item, and
-     * its unit of measure is the item's. <b>BR-PO-001 (MOQ) is not enforced</b>: no per-SKU minimum is
-     * kept for a supplier yet.</p>
+     * its unit of measure is the item's. The line must also follow the supplier's catalog (SCRUM-78,
+     * BR-PO-001): the supplier lists the SKU, the quantity meets its MOQ in whole packs, and a line
+     * without a price takes the catalog price; see {@link #checkLines}. The order's lead time is its
+     * slowest line's, and a missing delivery date is today plus that lead time, not the supplier's.</p>
      */
     @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "purchase-order", resourceId = "#result?.purchaseOrderId()")
@@ -160,15 +165,22 @@ class ProcurementServiceImpl implements ProcurementService {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Unsupported purchase order currency");
         }
         String note = note(command.note());
-        List<PoLine> lines = toLines(command.lines(), currency);
+        if (command.lines() == null || command.lines().isEmpty()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A purchase order must have at least one line");
+        }
+        CheckedLines checked = checkLines(command.lines().stream()
+                .map(c -> c == null ? null : new LineInput(c.sku(), c.description(), c.quantityOrdered(), c.unitPrice(),
+                        c.taxRate()))
+                .toList(), currency, command.supplierId(), supplierLeadTimeDays(command.supplierId()));
+        List<PoLine> lines = toLines(checked.lines());
 
         // Purchasing calendar dates use the same Vietnam zone as supplier delivery KPIs.
         LocalDate today = BusinessCalendar.date(clock.instant());
-        LocalDate expectedAt = command.expectedAt() == null ? today.plusDays(supplier.leadTimeDays())
+        LocalDate expectedAt = command.expectedAt() == null ? today.plusDays(checked.leadTimeDays())
                 : command.expectedAt();
         PurchaseOrder order = PurchaseOrder.draft(purchaseOrders.nextPoNumber(today), command.supplierId(),
                 command.warehouseId(), currency, lines, today, expectedAt,
-                note, supplier.paymentTermDays(), supplier.leadTimeDays());
+                note, supplier.paymentTermDays(), checked.leadTimeDays());
 
         boolean possibleDuplicate = isPossibleDuplicate(order);
         purchaseOrders.save(order);
@@ -209,9 +221,12 @@ class ProcurementServiceImpl implements ProcurementService {
      *
      * <p>The draft is locked, then checked the way {@link #createPurchaseOrder} checks a new one:
      * the receiving warehouse exists, is the caller's (BR-SEC-002) and is ACTIVE; each SKU has an
-     * inventory item (BR-01). The caller must be allowed both the old warehouse and the new one. What
-     * changed goes on the order's timeline as REVISED; the revision history is untouched until the
-     * draft is submitted again.</p>
+     * inventory item (BR-01) and every line, kept or new, follows the supplier's catalog as it is now
+     * (BR-PO-001), so a MOQ raised since the draft was written applies to it. The lead time is
+     * recomputed from the lines as edited; the delivery date is the request's, which the edit requires.
+     * The caller must be allowed both the old warehouse and the new one. What changed goes on the
+     * order's timeline as REVISED; the revision history is untouched until the draft is submitted
+     * again.</p>
      */
     @Override
     @Auditable(action = AuditAction.UPDATE, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
@@ -230,20 +245,20 @@ class ProcurementServiceImpl implements ProcurementService {
         if (command.lines() == null || command.lines().isEmpty()) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A purchase order must have at least one line");
         }
-        List<CheckedLine> checked = checkLines(command.lines().stream()
+        CheckedLines checked = checkLines(command.lines().stream()
                 .map(l -> l == null ? null : new LineInput(l.sku(), l.description(), l.quantityOrdered(),
                         l.unitPrice(), l.taxRate()))
-                .toList(), order.currency());
+                .toList(), order.currency(), order.supplierId(), supplierLeadTimeDays(order.supplierId()));
         List<PurchaseOrder.DraftLine> wanted = new ArrayList<>();
-        for (int i = 0; i < checked.size(); i++) {
-            CheckedLine line = checked.get(i);
+        for (int i = 0; i < checked.lines().size(); i++) {
+            CheckedLine line = checked.lines().get(i);
             wanted.add(new PurchaseOrder.DraftLine(command.lines().get(i).lineId(), line.inventoryItemId(), line.sku(),
                     line.uom(), line.description(), line.quantity(), line.unitPrice(), line.taxRate()));
         }
 
         Map<String, String> before = timelineFacts(order);
         order.reviseDraft(command.warehouseId(), command.expectedAt(), note, wanted,
-                purchaseOrders.nextLineNo(order.id()));
+                purchaseOrders.nextLineNo(order.id()), checked.leadTimeDays());
         boolean possibleDuplicate = isPossibleDuplicate(order);
         purchaseOrders.save(order);
         purchaseOrders.recordEvent(order.id(), null, "REVISED", actor(), PurchaseOrderStatus.DRAFT,
@@ -573,20 +588,25 @@ class ProcurementServiceImpl implements ProcurementService {
                 .anyMatch(other -> other.lines().stream().map(PoLine::inventoryItemId).anyMatch(items::contains));
     }
 
-    private List<PoLine> toLines(List<CreatePOLineCommand> commands, Currency currency) {
-        if (commands == null || commands.isEmpty()) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A purchase order must have at least one line");
-        }
-        List<CheckedLine> checked = checkLines(commands.stream()
-                .map(c -> c == null ? null : new LineInput(c.sku(), c.description(), c.quantityOrdered(), c.unitPrice(),
-                        c.taxRate()))
-                .toList(), currency);
+    private static List<PoLine> toLines(List<CheckedLine> checked) {
         List<PoLine> lines = new ArrayList<>();
         for (CheckedLine c : checked) {
             lines.add(PurchaseOrder.line(lines.size() + 1, c.inventoryItemId(), c.sku(), c.uom(), c.description(),
                     c.quantity(), c.unitPrice(), c.taxRate()));
         }
         return lines;
+    }
+
+    /**
+     * The supplier's own lead time, {@code null} when it has none. Read from the catalog's slice of the
+     * supplier rather than from {@link SupplierDetails}, which reads a NULL column as 0 and would plan a
+     * same-day delivery where {@link SupplierItem#effectiveLeadTimeDays} falls back to the system default.
+     */
+    private Integer supplierLeadTimeDays(UUID supplierId) {
+        return supplierItems.findSupplier(supplierId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.SUPPLIER_NOT_FOUND,
+                        "No supplier with id " + supplierId))
+                .leadTimeDays();
     }
 
     /**
@@ -623,37 +643,54 @@ class ProcurementServiceImpl implements ProcurementService {
         }
     }
 
-    /** One requested line, as created or as edited. */
+    /** One requested line, as created or as edited; {@code unitPrice} null takes the catalog price. */
     private record LineInput(String sku, String description, int quantity, BigDecimal unitPrice, BigDecimal taxRate) {
     }
 
-    /** A requested line once its SKU is resolved to an inventory item (BR-01) and its amounts checked. */
+    /** A requested line once its SKU is resolved to an inventory item (BR-01), before the catalog is asked. */
+    private record ResolvedLine(UUID inventoryItemId, Sku sku, String uom, String description, LineInput input) {
+    }
+
+    /** A requested line once its SKU is resolved, its catalog terms met and its amounts checked. */
     private record CheckedLine(UUID inventoryItemId, Sku sku, String uom, String description, int quantity,
                                Money unitPrice, BigDecimal taxRate) {
     }
 
-    private List<CheckedLine> checkLines(List<LineInput> inputs, Currency currency) {
+    /** The lines as they will be written, and the order's lead time: the slowest line's. */
+    private record CheckedLines(List<CheckedLine> lines, int leadTimeDays) {
+    }
+
+    /**
+     * The single choke point for the lines of a standard order, on create and on draft edit alike; a
+     * subcontract order never comes here (BR-10). In this order:
+     * <ol>
+     *   <li>each SKU resolves to an inventory item, once per order, with a description;</li>
+     *   <li>the supplier's catalog rows for all of them, in one query, {@code FOR SHARE} so a concurrent
+     *       catalog delete waits for this order instead of stranding its line;</li>
+     *   <li>the catalog terms (BR-PO-001), every line at fault in one 409 {@code SUPPLIER_TERMS_VIOLATED}:
+     *       an unlisted SKU on {@code lines[i].sku} and nothing else for that line, since there are no terms
+     *       to hold it to; the MOQ and whole packs on {@code lines[i].quantityOrdered}; a missing price
+     *       takes the catalog's when the currencies match, and is required on {@code lines[i].unitPrice}
+     *       when they do not. A typed price wins: it is a negotiated one;</li>
+     *   <li>the amounts, only now that every price is known, held to {@link PurchasePrices} like the
+     *       catalog's own;</li>
+     *   <li>purchasability (BR-01), one call for the whole order.</li>
+     * </ol>
+     * The lead time is the largest {@link SupplierItem#effectiveLeadTimeDays} among the lines. A draft is
+     * checked against the catalog when it is written; a catalog edit afterwards reaches it at its next edit.
+     */
+    private CheckedLines checkLines(List<LineInput> inputs, Currency currency, UUID supplierId,
+                                    Integer supplierLeadTimeDays) {
+        // PurchasePrices alone would accept a whole amount in a pseudo-currency such as XXX.
         if (currency.getDefaultFractionDigits() < 0) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Unsupported purchase order currency");
         }
-        BigDecimal total = BigDecimal.ZERO;
-        for (var c : inputs) {
-            if (c == null || c.quantity() <= 0 || c.quantity() > 1_000_000 || c.unitPrice() == null
-                    || c.unitPrice().signum() <= 0 || c.unitPrice().compareTo(MAX_AMOUNT) > 0
-                    || c.unitPrice().stripTrailingZeros().scale() > Math.min(2, currency.getDefaultFractionDigits())
-                    || c.taxRate() != null && (c.taxRate().signum() < 0
-                    || c.taxRate().compareTo(BigDecimal.valueOf(100)) > 0)) {
-                throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                        "Invalid purchase order quantity, unit price or tax rate");
-            }
-            total = total.add(c.unitPrice().multiply(BigDecimal.valueOf(c.quantity())));
-        }
-        if (total.compareTo(MAX_AMOUNT) > 0) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Purchase order total exceeds the supported limit");
-        }
-        List<CheckedLine> lines = new ArrayList<>();
+        List<ResolvedLine> resolved = new ArrayList<>();
         Set<UUID> seen = new HashSet<>();
         for (var c : inputs) {
+            if (c == null) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A purchase order line is missing");
+            }
             var sku = new Sku(c.sku());
             InventoryItemPolicy item = inventory.itemPolicy(sku)
                     .orElseThrow(() -> new BusinessException(ErrorCode.INVENTORY_ITEM_NOT_FOUND,
@@ -671,10 +708,79 @@ class ProcurementServiceImpl implements ProcurementService {
                         "Product description must not exceed 255 characters");
             }
             String uom = inventoryControl.item(sku).unitOfMeasure();
-            lines.add(new CheckedLine(item.inventoryItemId(), sku, uom, description, c.quantity(),
-                    new Money(c.unitPrice(), currency), c.taxRate()));
+            resolved.add(new ResolvedLine(item.inventoryItemId(), sku, uom, description, c));
+        }
+
+        Map<UUID, SupplierItem> listed = supplierItems.listedForShare(supplierId,
+                resolved.stream().map(ResolvedLine::inventoryItemId).toList());
+        List<FieldError> errors = new ArrayList<>();
+        List<BigDecimal> prices = new ArrayList<>();
+        int linesAtFault = 0;
+        int leadTimeDays = 0;
+        for (int i = 0; i < resolved.size(); i++) {
+            ResolvedLine line = resolved.get(i);
+            SupplierItem item = listed.get(line.inventoryItemId());
+            if (item == null) {
+                errors.add(new FieldError("lines[" + i + "].sku",
+                        "SKU " + line.sku().code() + " is not listed by this supplier",
+                        ErrorCode.SUPPLIER_ITEM_NOT_LISTED.name()));
+                linesAtFault++;
+                prices.add(null);
+                continue;
+            }
+            int before = errors.size();
+            int quantity = line.input().quantity();
+            for (var violation : item.orderQuantityViolations(quantity)) {
+                ErrorCode code = switch (violation) {
+                    case BELOW_MOQ -> ErrorCode.PO_LINE_BELOW_MOQ;
+                    case NOT_PACK_MULTIPLE -> ErrorCode.PO_LINE_NOT_PACK_MULTIPLE;
+                };
+                errors.add(new FieldError("lines[" + i + "].quantityOrdered", "Quantity " + quantity
+                        + " does not meet the supplier's minimum " + item.terms().moq() + " in packs of "
+                        + item.terms().packSize(), code.name()));
+            }
+            BigDecimal price = line.input().unitPrice();
+            if (price == null) {
+                Money catalogPrice = item.terms().price();
+                if (catalogPrice.currency().equals(currency)) {
+                    price = catalogPrice.amount();
+                } else {
+                    errors.add(new FieldError("lines[" + i + "].unitPrice", "The catalog price is in "
+                            + catalogPrice.currency().getCurrencyCode() + "; enter a price in "
+                            + currency.getCurrencyCode(), ErrorCode.PO_LINE_PRICE_REQUIRED.name()));
+                }
+            }
+            if (errors.size() > before) {
+                linesAtFault++;
+            }
+            prices.add(price);
+            leadTimeDays = Math.max(leadTimeDays, item.effectiveLeadTimeDays(supplierLeadTimeDays));
+        }
+        if (!errors.isEmpty()) {
+            throw new BusinessException(ErrorCode.SUPPLIER_TERMS_VIOLATED,
+                    linesAtFault + " line(s) do not meet the supplier's catalog terms", errors);
+        }
+
+        BigDecimal total = BigDecimal.ZERO;
+        List<CheckedLine> lines = new ArrayList<>();
+        for (int i = 0; i < resolved.size(); i++) {
+            ResolvedLine line = resolved.get(i);
+            LineInput c = line.input();
+            BigDecimal price = prices.get(i);
+            if (c.quantity() <= 0 || c.quantity() > 1_000_000 || !PurchasePrices.acceptable(price, currency)
+                    || c.taxRate() != null && (c.taxRate().signum() < 0
+                    || c.taxRate().compareTo(BigDecimal.valueOf(100)) > 0)) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                        "Invalid purchase order quantity, unit price or tax rate");
+            }
+            total = total.add(price.multiply(BigDecimal.valueOf(c.quantity())));
+            lines.add(new CheckedLine(line.inventoryItemId(), line.sku(), line.uom(), line.description(),
+                    c.quantity(), new Money(price, currency), c.taxRate()));
+        }
+        if (total.compareTo(PurchasePrices.MAX) > 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Purchase order total exceeds the supported limit");
         }
         requirePurchasable(lines.stream().map(line -> line.sku().code()).toList());
-        return lines;
+        return new CheckedLines(lines, leadTimeDays);
     }
 }

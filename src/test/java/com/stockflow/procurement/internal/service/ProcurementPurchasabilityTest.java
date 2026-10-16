@@ -15,12 +15,16 @@ import com.stockflow.procurement.api.CreatePurchaseOrderCommand;
 import com.stockflow.procurement.api.PurchaseOrderSummary;
 import com.stockflow.procurement.api.RevisePOLineCommand;
 import com.stockflow.procurement.api.RevisePurchaseOrderCommand;
+import com.stockflow.procurement.internal.domain.CatalogSupplier;
 import com.stockflow.procurement.internal.domain.PurchaseOrder;
 import com.stockflow.procurement.internal.domain.PurchaseOrderRepository;
 import com.stockflow.procurement.internal.domain.PurchaseOrderStatus;
 import com.stockflow.procurement.internal.domain.Supplier;
 import com.stockflow.procurement.internal.domain.SupplierCommunicationChannel;
 import com.stockflow.procurement.internal.domain.SupplierDetails;
+import com.stockflow.procurement.internal.domain.SupplierItem;
+import com.stockflow.procurement.internal.domain.SupplierItemRepository;
+import com.stockflow.procurement.internal.domain.SupplierItemTerms;
 import com.stockflow.procurement.internal.domain.SupplierRepository;
 import com.stockflow.procurement.internal.domain.SupplierStatus;
 import com.stockflow.procurement.internal.repository.PoDeliveryDecisionRepository;
@@ -39,9 +43,12 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -71,6 +78,7 @@ class ProcurementPurchasabilityTest {
     private final InventoryControlService inventoryControl = mock(InventoryControlService.class);
     private final WarehouseService warehouses = mock(WarehouseService.class);
     private final ProductService products = mock(ProductService.class);
+    private final SupplierItemRepository supplierItems = mock(SupplierItemRepository.class);
     private ProcurementServiceImpl service;
 
     @BeforeEach
@@ -92,11 +100,20 @@ class ProcurementPurchasabilityTest {
         });
         when(inventoryControl.item(any())).thenAnswer(call ->
                 new InventoryControlItem(((Sku) call.getArgument(0)).code(), "EACH", 0, null));
+        // The supplier lists every SKU asked for, moq 1 in packs of 1: the catalog is not what these tests are about.
+        when(supplierItems.findSupplier(supplierId)).thenReturn(Optional.of(
+                new CatalogSupplier(supplierId, "SUP", "Supplier", SupplierStatus.ACTIVE, Money.VND, 7)));
+        when(supplierItems.listedForShare(any(), anyCollection())).thenAnswer(call -> {
+            Collection<UUID> items = call.getArgument(1);
+            return items.stream().collect(Collectors.toMap(Function.identity(), item -> new SupplierItem(
+                    UUID.randomUUID(), supplierId, item, SupplierItemTerms.stored(null, Money.vnd(100), 1, 1, null),
+                    false, 0, null, null)));
+        });
         service = new ProcurementServiceImpl(orders, search, null,
                 Clock.fixed(Instant.parse("2026-10-14T03:00:00Z"), ZoneOffset.UTC), suppliers,
                 mock(ApplicationEventPublisher.class), mock(NotificationService.class),
                 mock(PoDeliveryDecisionRepository.class), null, products, inventory, inventoryControl, warehouses,
-                mock(CurrentUserProvider.class));
+                mock(CurrentUserProvider.class), supplierItems);
     }
 
     private CreatePurchaseOrderCommand create(String... skus) {

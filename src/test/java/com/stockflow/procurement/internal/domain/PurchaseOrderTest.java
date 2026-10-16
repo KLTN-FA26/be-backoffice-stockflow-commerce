@@ -310,11 +310,12 @@ class PurchaseOrderTest {
             UUID warehouse = UUID.randomUUID();
 
             po.reviseDraft(warehouse, ORDER_DATE.plusDays(20), "call before delivery",
-                    List.of(keep(first, 12, 1500), added("CUP-22OZ", 3, 4000)), 3);
+                    List.of(keep(first, 12, 1500), added("CUP-22OZ", 3, 4000)), 3, 12);
 
             assertThat(po.warehouseId()).isEqualTo(warehouse);
             assertThat(po.expectedAt()).isEqualTo(ORDER_DATE.plusDays(20));
             assertThat(po.note()).isEqualTo("call before delivery");
+            assertThat(po.leadTimeDays()).isEqualTo(12);
             assertThat(po.lines()).extracting(PoLine::lineNo).containsExactly(1, 3);
             assertThat(po.lines().get(0).id()).isEqualTo(first.id());
             assertThat(po.lines().get(0).quantityOrdered()).isEqualTo(12);
@@ -328,7 +329,7 @@ class PurchaseOrderTest {
         @DisplayName("a new line is numbered past every number the order used, withdrawn lines included")
         void newLineNumbersAreNeverReused() {
             var po = draft();
-            po.reviseDraft(po.warehouseId(), po.expectedAt(), null, List.of(added("CUP-22OZ", 1, 100)), 7);
+            po.reviseDraft(po.warehouseId(), po.expectedAt(), null, List.of(added("CUP-22OZ", 1, 100)), 7, 7);
             assertThat(po.lines()).extracting(PoLine::lineNo).containsExactly(7);
         }
 
@@ -337,7 +338,7 @@ class PurchaseOrderTest {
         void onlyADraft() {
             for (var po : List.of(submitted(), approved(), confirmed())) {
                 assertThatThrownBy(() -> po.reviseDraft(po.warehouseId(), po.expectedAt(), null,
-                        List.of(added("CUP-22OZ", 1, 100)), 3))
+                        List.of(added("CUP-22OZ", 1, 100)), 3, 7))
                         .isInstanceOf(BusinessException.class)
                         .extracting(e -> ((BusinessException) e).errorCode())
                         .isEqualTo(ErrorCode.PURCHASE_ORDER_NOT_EDITABLE);
@@ -346,7 +347,7 @@ class PurchaseOrderTest {
                     UUID.randomUUID(), Money.VND, line(1, "CUP-12OZ", 10, 1000), ORDER_DATE, ORDER_DATE.plusDays(5),
                     30, 7);
             assertThatThrownBy(() -> subcontract.reviseDraft(subcontract.warehouseId(), subcontract.expectedAt(),
-                    null, List.of(added("CUP-22OZ", 1, 100)), 2))
+                    null, List.of(added("CUP-22OZ", 1, 100)), 2, 7))
                     .extracting(e -> ((BusinessException) e).errorCode())
                     .isEqualTo(ErrorCode.PURCHASE_ORDER_NOT_EDITABLE);
         }
@@ -357,23 +358,23 @@ class PurchaseOrderTest {
             var po = draft();
             PoLine first = po.lines().get(0);
             assertThatThrownBy(() -> po.reviseDraft(po.warehouseId(), ORDER_DATE.minusDays(1), null,
-                    List.of(keep(first, 1, 100)), 3))
+                    List.of(keep(first, 1, 100)), 3, 7))
                     .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
-            assertThatThrownBy(() -> po.reviseDraft(po.warehouseId(), null, null, List.of(keep(first, 1, 100)), 3))
+            assertThatThrownBy(() -> po.reviseDraft(po.warehouseId(), null, null, List.of(keep(first, 1, 100)), 3, 7))
                     .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
-            assertThatThrownBy(() -> po.reviseDraft(po.warehouseId(), po.expectedAt(), null, List.of(), 3))
+            assertThatThrownBy(() -> po.reviseDraft(po.warehouseId(), po.expectedAt(), null, List.of(), 3, 7))
                     .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
             assertThatThrownBy(() -> po.reviseDraft(po.warehouseId(), po.expectedAt(), null,
                     List.of(new PurchaseOrder.DraftLine(UUID.randomUUID(), first.inventoryItemId(), first.sku(), "EACH",
-                            null, 1, Money.vnd(100), null)), 3))
+                            null, 1, Money.vnd(100), null)), 3, 7))
                     .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
             assertThatThrownBy(() -> po.reviseDraft(po.warehouseId(), po.expectedAt(), null,
                     List.of(new PurchaseOrder.DraftLine(first.id(), UUID.randomUUID(), new Sku("OTHER-SKU"), "EACH",
-                            null, 1, Money.vnd(100), null)), 3))
+                            null, 1, Money.vnd(100), null)), 3, 7))
                     .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
             assertThatThrownBy(() -> po.reviseDraft(po.warehouseId(), po.expectedAt(), null,
                     List.of(keep(first, 1, 100), new PurchaseOrder.DraftLine(null, first.inventoryItemId(),
-                            first.sku(), "EACH", null, 2, Money.vnd(100), null)), 3))
+                            first.sku(), "EACH", null, 2, Money.vnd(100), null)), 3, 7))
                     .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
             // Nothing changed by a refusal.
             assertThat(po.lines()).hasSize(2);
@@ -385,7 +386,7 @@ class PurchaseOrderTest {
         void afterRejection() {
             var po = submitted();
             po.reject("too expensive");
-            po.reviseDraft(po.warehouseId(), po.expectedAt(), null, List.of(keep(po.lines().get(1), 5, 1500)), 3);
+            po.reviseDraft(po.warehouseId(), po.expectedAt(), null, List.of(keep(po.lines().get(1), 5, 1500)), 3, 7);
             po.submit(SUBMITTER, UUID.randomUUID(), 1, NOW);
             assertThat(po.status()).isEqualTo(PurchaseOrderStatus.PENDING_APPROVAL);
             assertThat(po.lines()).extracting(PoLine::lineNo).containsExactly(2);
