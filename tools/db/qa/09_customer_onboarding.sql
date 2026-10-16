@@ -41,9 +41,14 @@ SELECT pg_temp.expect_fail('B2 a second live customer with the same tax code', $
     INSERT INTO customer.customer (id, user_id, full_name, email, status, tax_code, version, created_at)
     VALUES (gen_random_uuid(), md5('qa:b2b:contact2')::uuid, 'QA Copy', 'qa.contact2@example.test',
             'ACTIVE', '0312345678', 0, NOW()) $q$);
-SELECT pg_temp.expect_ok('B3 a closed customer may share it (BR-01 covers live customers)', $q$
+-- V20261015000830 (decision 2026-10-16, BR-CUS-004): one customer per tax code in every status - a closed customer
+-- is reopened, not created again, and a blocked one's code is not reused.
+SELECT pg_temp.expect_fail('B3 a closed customer does not share it', $q$
     INSERT INTO customer.customer (id, full_name, email, status, tax_code, version, created_at)
     VALUES (gen_random_uuid(), 'QA Closed', 'qa.closed@example.test', 'INACTIVE', '0312345678', 0, NOW()) $q$);
+SELECT pg_temp.expect_fail('B3a nor a blocked one', $q$
+    INSERT INTO customer.customer (id, full_name, email, status, tax_code, version, created_at)
+    VALUES (gen_random_uuid(), 'QA Blocked', 'qa.blocked@example.test', 'BLOCKED', '0312345678', 0, NOW()) $q$);
 SELECT pg_temp.expect_ok('B4 a dependent unit 10-3 is a different code', $q$
     INSERT INTO customer.customer (id, full_name, email, status, tax_code, version, created_at)
     VALUES (gen_random_uuid(), 'QA Branch', 'qa.branch@example.test', 'ACTIVE', '0312345678-001', 0, NOW()) $q$);

@@ -130,7 +130,6 @@ class B2bOnboardingIntegrationTest {
 
     @BeforeAll
     void staff() {
-        sales = staffToken("SALES_STAFF");
         ecommerceAdmin = staffToken("ECOMMERCE_ADMIN");
         warehouse = staffToken("WAREHOUSE_STAFF");
         systemAdmin = staffToken("SYSTEM_ADMIN");
@@ -139,6 +138,16 @@ class B2bOnboardingIntegrationTest {
     @AfterAll
     void stopMail() {
         MAILPIT.stop();
+    }
+
+    /**
+     * Creating a customer is rate-limited per user (30 a minute), and this class creates more than that in under a
+     * minute. Each test gets its own Sales user, so the limit stays real but the tests do not share one bucket - the
+     * same reason {@link #anotherClient} gives each login its own address.
+     */
+    @BeforeEach
+    void salesUser() {
+        sales = staffToken("SALES_STAFF");
     }
 
     @BeforeEach
