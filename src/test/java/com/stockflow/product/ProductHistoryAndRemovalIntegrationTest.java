@@ -263,21 +263,17 @@ class ProductHistoryAndRemovalIntegrationTest {
         assertThat(log.get(13).toStatus()).isEqualTo("PENDING_APPROVAL");
         assertThat(log.get(13).actorId()).isEqualTo(editor);
 
-        assertThat(log.get(14).subjectId()).isEqualTo(defaultId);
-        assertThat(log.get(14).changedFields()).contains("reorderPoint", "safetyStock", "maxQty");
-        assertThat(log.get(15).subjectId()).isEqualTo(defaultId);
-        assertThat(log.get(15).changedFields()).contains("barcode", "weightKg", "lengthCm", "packageWeightKg", "packSize",
-                "storageClass", "qcRequired").doesNotContain("unitOfMeasure", "requiresAdultSignature");
-        assertThat(log.get(16).changedFields()).containsExactlyInAnyOrder("altText", "sortOrder");
-        assertThat(log.get(16).subjectId()).isEqualTo(image.id());
-        assertThat(log.get(17).changedFields()).containsExactly("uploaded");
-        assertThat(log.get(18).subjectId()).isEqualTo(extra.id());
-        assertThat(log.get(18).changedFields()).containsExactly("name");
-        assertThat(log.get(19).subjectId()).isEqualTo(extra.id());
+        // D1: logistics and stock policy live on the inventory item, so no LOGISTICS / INVENTORY_CONTROL rows appear here.
+        assertThat(log.get(14).changedFields()).containsExactlyInAnyOrder("altText", "sortOrder");
+        assertThat(log.get(14).subjectId()).isEqualTo(image.id());
+        assertThat(log.get(15).changedFields()).containsExactly("uploaded");
+        assertThat(log.get(16).subjectId()).isEqualTo(extra.id());
+        assertThat(log.get(16).changedFields()).containsExactly("name");
+        assertThat(log.get(17).subjectId()).isEqualTo(extra.id());
+        assertThat(log.get(17).toStatus()).isEqualTo("DRAFT");
+        assertThat(log.get(18).changedFields()).containsExactlyInAnyOrder("name", "shortDescription");
         assertThat(log.get(19).toStatus()).isEqualTo("DRAFT");
-        assertThat(log.get(20).changedFields()).containsExactlyInAnyOrder("name", "shortDescription");
-        assertThat(log.get(21).toStatus()).isEqualTo("DRAFT");
-        assertThat(log.get(21).fromStatus()).isNull();
+        assertThat(log.get(19).fromStatus()).isNull();
         assertThat(log).extracting(ProductChange::occurredAt).isSortedAccordingTo(java.util.Comparator.reverseOrder());
     }
 

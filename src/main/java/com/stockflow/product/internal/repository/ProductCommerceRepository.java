@@ -128,21 +128,6 @@ order by pc.is_primary desc, pc.id limit 1
                 after == null ? new Object[] {size} : new Object[] {after, size});
     }
 
-    public PublicationProduct.PublicationSku inventorySku(UUID productId, UUID variantId) {
-        return jdbc
-                .query(
-                        "select id,sku from product.variants where product_id=? and id=? and"
-                                + " status<>'OBSOLETE'",
-                        (r, n) ->
-                                new PublicationProduct.PublicationSku(
-                                        r.getObject(1, UUID.class), r.getString(2)),
-                        productId,
-                        variantId)
-                .stream()
-                .findFirst()
-                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
-    }
-
     public ProductEcommerce ecommerce(UUID id) {
         return jdbc
                 .query(

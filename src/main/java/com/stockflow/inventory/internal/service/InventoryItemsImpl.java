@@ -84,7 +84,7 @@ class InventoryItemsImpl implements InventoryItems {
     @Auditable(action = AuditAction.UPDATE, resourceType = "inventory-item", resourceId = "#id")
     public Detail describe(UUID id, long expectedVersion, ItemLogistics logistics) {
         Sku sku = sku(id);
-        saveLogistics(sku, expectedVersion, logistics);
+        saveLogistics(id, sku, expectedVersion, logistics);
         return detail(id, sku);
     }
 
@@ -92,7 +92,7 @@ class InventoryItemsImpl implements InventoryItems {
     @Auditable(action = AuditAction.UPDATE, resourceType = "inventory-item", resourceId = "#id")
     public Detail configure(UUID id, long expectedVersion, InventoryPolicy policy) {
         Sku sku = sku(id);
-        savePolicy(sku, expectedVersion, policy);
+        savePolicy(id, sku, expectedVersion, policy);
         return detail(id, sku);
     }
 
@@ -102,15 +102,25 @@ class InventoryItemsImpl implements InventoryItems {
                 .orElseThrow(() -> new BusinessException(ErrorCode.INVENTORY_ITEM_NOT_FOUND, "No inventory item " + id));
     }
 
+    /**
+     * The id was resolved to a SKU before the SKU-keyed lock, so a DRAFT SKU renamed in between would otherwise surface
+     * as a generic NOT_FOUND from the SKU lookup: once locked, the id must still map to the same SKU.
+     */
+    private void lockItem(UUID id, Sku sku) {
+        policies.lock(sku.code());
+        if (!policies.findSku(id).filter(sku.code()::equals).isPresent())
+            throw new BusinessException(ErrorCode.INVENTORY_ITEM_NOT_FOUND, "No inventory item " + id);
+    }
+
     private Detail detail(UUID id, Sku sku) {
         var item = control.item(sku);
         return new Detail(id, item.sku(), item.version(), control.logistics(sku).logistics(), item.policy(),
                 evaluate(sku));
     }
 
-    private void savePolicy(Sku sku, long expectedVersion, InventoryPolicy policy) {
+    private void savePolicy(UUID id, Sku sku, long expectedVersion, InventoryPolicy policy) {
         StockPolicy.validate(policy);
-        policies.lock(sku.code());
+        lockItem(id, sku);
         var current = control.item(sku);
         if (current.version() != expectedVersion) throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
         var previous = current.policy();
@@ -130,9 +140,9 @@ class InventoryItemsImpl implements InventoryItems {
         events.publishEvent(new SkuInventoryControlChanged(sku.code(), updated.version(), clock.instant()));
     }
 
-    private void saveLogistics(Sku sku, long expectedVersion, ItemLogistics logistics) {
+    private void saveLogistics(UUID id, Sku sku, long expectedVersion, ItemLogistics logistics) {
         ItemLogisticsRules.validate(logistics);
-        policies.lock(sku.code());
+        lockItem(id, sku);
         var current = control.logistics(sku);
         if (current.version() != expectedVersion) throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
         if (!current.logistics().unitOfMeasure().equals(logistics.unitOfMeasure()) && policies.holdsStock(sku.code())) {

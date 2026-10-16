@@ -48,13 +48,18 @@ class InventoryItemHttpIntegrationTest {
         return tx.execute(s -> {
             UUID product = Identifiers.newId();
             jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
-                    "Item fixture", sku.toLowerCase(Locale.ROOT));
+                    "Item fixture", slugOf(sku));
             jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature)"
                     + " values (?,?,?,'Item fixture','')", Identifiers.newId(), product, sku);
             jdbc.update("update inventory.inventory_items set barcode=?, storage_class=? where sku=?", barcode,
                     storageClass, sku);
             return jdbc.queryForObject("select id from inventory.inventory_items where sku=?", UUID.class, sku);
         });
+    }
+
+    /** ck_products_slug: lowercase runs of [a-z0-9] separated by single hyphens. */
+    private static String slugOf(String sku) {
+        return sku.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", "-").replaceAll("^-+|-+$", "");
     }
 
     private long versionOf(UUID id) {
@@ -149,6 +154,19 @@ class InventoryItemHttpIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.totalElements").value(1))
                 .andExpect(jsonPath("$.data.items[0].id").value(id.toString()));
+    }
+
+    @Test
+    void skuAndQCombineWithAnd() throws Exception {
+        String sku = "HTTP-AQ-" + suffix;
+        UUID id = item(sku, null, "NORMAL");
+        mvc.perform(get(BASE).param("sku", sku).param("q", "aq-" + suffix.toLowerCase(Locale.ROOT)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalElements").value(1))
+                .andExpect(jsonPath("$.data.items[0].id").value(id.toString()));
+        mvc.perform(get(BASE).param("sku", sku).param("q", "no-such-" + suffix))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalElements").value(0));
     }
 
     /** The schema only allows A-Z, 0-9, '.', '_' and '-' in a SKU, so a literal {@code %} is exercised through the barcode. */
