@@ -60,7 +60,13 @@ public final class ConfirmedDesigns {
 
     public static Design confirmed(FileStorage storage, JdbcTemplate jdbc, TransactionTemplate tx, EntityManager em,
                                    UUID customerId) throws Exception {
-        return confirmed(storage, jdbc, tx, em, customerId, false);
+        return confirmed(storage, jdbc, tx, em, customerId, false, DemoData.PRODUCT_SOFA);
+    }
+
+    /** The same for another product than the demo sofa: a test of that product's own life cycle. */
+    public static Design confirmedFor(FileStorage storage, JdbcTemplate jdbc, TransactionTemplate tx, EntityManager em,
+                                      UUID customerId, UUID productId) throws Exception {
+        return confirmed(storage, jdbc, tx, em, customerId, false, productId);
     }
 
     /**
@@ -69,7 +75,7 @@ public final class ConfirmedDesigns {
      */
     public static Design confirmedWithPreview(FileStorage storage, JdbcTemplate jdbc, TransactionTemplate tx,
                                               EntityManager em, UUID customerId) throws Exception {
-        return confirmed(storage, jdbc, tx, em, customerId, true);
+        return confirmed(storage, jdbc, tx, em, customerId, true, DemoData.PRODUCT_SOFA);
     }
 
     private record Stored(UUID artifactId, String role, String key, String name, String contentType, int size,
@@ -85,7 +91,7 @@ public final class ConfirmedDesigns {
     }
 
     private static Design confirmed(FileStorage storage, JdbcTemplate jdbc, TransactionTemplate tx, EntityManager em,
-                                    UUID customerId, boolean withPreview) throws Exception {
+                                    UUID customerId, boolean withPreview, UUID productId) throws Exception {
         Stored art = store(storage, "PRINT_READY", "art.pdf", "application/pdf",
                 ("%PDF-1.4\n% print art " + UUID.randomUUID()).getBytes(StandardCharsets.US_ASCII));
         java.util.List<Stored> files = new java.util.ArrayList<>();
@@ -112,7 +118,7 @@ public final class ConfirmedDesigns {
         tx.executeWithoutResult(s -> {
             jdbc.update("""
                     INSERT INTO design.design_draft (id, customer_id, product_id, status, created_at, current_artifacts)
-                    VALUES (?, ?, ?, 'DRAFT', NOW(), '{}'::jsonb)""", draft, customerId, DemoData.PRODUCT_SOFA);
+                    VALUES (?, ?, ?, 'DRAFT', NOW(), '{}'::jsonb)""", draft, customerId, productId);
             for (Stored f : files) {
                 jdbc.update("""
                         INSERT INTO design.design_artifact (id, draft_id, storage_key, original_name, content_type,

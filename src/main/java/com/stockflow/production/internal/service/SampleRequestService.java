@@ -1,5 +1,6 @@
 package com.stockflow.production.internal.service;
 
+import com.stockflow.common.api.FieldError;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
@@ -29,6 +30,8 @@ import com.stockflow.production.internal.domain.SampleRequestRepository;
 import com.stockflow.production.internal.domain.SampleSpecification;
 import com.stockflow.production.internal.repository.ProductionOrderSearch;
 import com.stockflow.production.internal.repository.SampleRequestSearch;
+import com.stockflow.product.api.ProductService;
+import com.stockflow.product.api.Purchasability;
 import com.stockflow.warehouse.api.WarehouseService;
 import com.stockflow.warehouse.api.WarehouseView;
 import org.slf4j.Logger;
@@ -87,12 +90,14 @@ class SampleRequestService implements SampleRequests {
     private final QuoteDirectory quoteDirectory;
     private final ApplicationEventPublisher events;
     private final Clock clock;
+    private final ProductService products;
 
     SampleRequestService(SampleRequestRepository samples, SampleRequestSearch sampleSearch,
                          ProductionOrderRepository productionOrders, ProductionOrderSearch productionSearch,
                          CustomerService customers, DesignService designs, WarehouseService warehouses,
                          InventoryService inventory, QuoteDirectory quoteDirectory, ApplicationEventPublisher events,
-                         Clock clock) {
+                         Clock clock, ProductService products) {
+        this.products = products;
         this.samples = samples;
         this.sampleSearch = sampleSearch;
         this.productionOrders = productionOrders;
@@ -169,6 +174,7 @@ class SampleRequestService implements SampleRequests {
         }
         WarehouseScope.requireWarehouse(warehouseId);
         SampleSpecification spec = sample.specification();
+        requireActiveBlank(spec.blankSku());
         // 03 §17: submit needs a confirmed design snapshot — re-read now, so a draft whose snapshot no
         // longer verifies does not reach the workshop — and blanks to make it from, held for the sample's
         // production order from now on (decision Q1, 2026-10-12): no other order can take them before the
@@ -242,6 +248,7 @@ class SampleRequestService implements SampleRequests {
                     "Sample request %s already has a next round".formatted(previous.requestNumber()));
         }
         SampleSpecification spec = draft == null ? previous.specification() : verified(previous.customerId(), draft);
+        requireActiveBlank(spec.blankSku());
         requireQuoteCovers(previous.quoteId(), previous.customerId(), spec);
         // Decision Q5: a round whose production order was cancelled may be started again too.
         boolean productionCancelled = previous.status() == SampleStatus.CANCELLED
@@ -357,10 +364,29 @@ class SampleRequestService implements SampleRequests {
                 .orElseThrow(() -> new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND)).customerId());
     }
 
+    /**
+     * Review of #109, item 6 (BR-PRD-005): a new sample - drafted, edited, its next round, sent to the workshop
+     * where it holds blanks - is made only on a blank that is still ACTIVE, the answer held until the step
+     * commits. Sales chooses an active SKU; nothing is substituted. A production order already running is not
+     * asked: it carries on, whatever happened to the product since.
+     */
+    private void requireActiveBlank(Sku blank) {
+        Purchasability verdict = products.lockedPurchasability(List.of(blank.code()))
+                .get(blank.code().toUpperCase(java.util.Locale.ROOT));
+        if (verdict != null && !verdict.isPurchasable()) {
+            throw new BusinessException(ErrorCode.SKU_NOT_SELLABLE,
+                    "Blank %s is no longer active (%s); choose an active SKU for the sample"
+                            .formatted(blank.code(), verdict),
+                    List.of(new FieldError("blankSku", "SKU " + blank.code() + " is no longer active",
+                            verdict.name())));
+        }
+    }
+
     /** The snapshot must be this customer's confirmed design for a product the blank belongs to. */
     private SampleSpecification verified(UUID customerId, Draft draft) {
         Objects.requireNonNull(draft, "draft");
         Sku blank = new Sku(draft.blankSku());
+        requireActiveBlank(blank);
         ConfirmedDesign design = designs.verifySnapshotForSku(draft.designSnapshotId(), customerId, blank.code());
         return new SampleSpecification(design.snapshotId(), blank, draft.quantity(), draft.dueDate());
     }

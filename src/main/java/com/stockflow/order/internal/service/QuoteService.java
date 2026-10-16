@@ -2,6 +2,7 @@ package com.stockflow.order.internal.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.stockflow.common.api.FieldError;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
@@ -28,6 +29,8 @@ import com.stockflow.order.internal.domain.QuoteLine;
 import com.stockflow.order.internal.domain.QuoteRepository;
 import com.stockflow.order.internal.domain.QuoteStatus;
 import com.stockflow.order.internal.repository.QuoteSearch;
+import com.stockflow.product.api.ProductService;
+import com.stockflow.product.api.Purchasability;
 import com.stockflow.catalog.api.CatalogService;
 import com.stockflow.contracts.CustomerActedOnQuote;
 import org.springframework.context.ApplicationEventPublisher;
@@ -68,6 +71,12 @@ import java.util.function.Consumer;
  * a concurrent one waiting on the row lock — finds the quote CONVERTED and returns its order, and even a
  * call that slipped past the lock would hit the order's request-id idempotency. If placing fails (stock,
  * credit terms, addresses) the whole conversion rolls back and the quote stays ACCEPTED.</p>
+ *
+ * <p><b>Active SKUs only</b> (review of #109, item 6; BR-PRD-005): drafting, revising, sending, accepting and
+ * converting each ask again whether every blank on the quote is still ACTIVE, the answer held until the step
+ * commits. An old quote is no exception. A line at fault is named; Sales puts an active SKU on it and sends
+ * the quote again - nothing is substituted. A reorder draft is the one step that does not ask: it is a request
+ * for Sales to look at, and its sending asks. Orders already placed carry on whatever happens to the product.</p>
  */
 @Service
 @Transactional
@@ -90,11 +99,13 @@ class QuoteService implements Quotes {
     private final ObjectMapper json;
     private final Clock clock;
     private final ApplicationEventPublisher events;
+    private final ProductService products;
 
     QuoteService(QuoteRepository quotes, QuoteSearch search, ProductionRecords production, CustomerService customers,
                  DesignService designs, QuotedOrders quotedOrders, OrderService orders, ObjectMapper json, Clock clock,
-                 CatalogService catalog, ApplicationEventPublisher events) {
+                 CatalogService catalog, ApplicationEventPublisher events, ProductService products) {
         this.events = events;
+        this.products = products;
         this.catalog = catalog;
         this.quotes = quotes;
         this.search = search;
@@ -124,6 +135,7 @@ class QuoteService implements Quotes {
         requireNewWorkFor(customerId);
         Quote.Offer offer = offer(customerId, command.draft());
         requireTermAllowed(customerId, offer);
+        requireActiveSkus(null, offer);
         Quote quote = Quote.draft(Identifiers.newId(), quotes.nextNumber(today()), command.requestId(), customerId, offer);
         quotes.save(quote);
         quotes.recordTransition(quote.id(), 1, null, QuoteStatus.DRAFT, null, null, clock.instant(), user.userId());
@@ -159,6 +171,7 @@ class QuoteService implements Quotes {
         return backOffice(user, quoteId, version, quote -> {
             Quote.Offer offer = offer(quote.customerId(), draft);
             requireTermAllowed(quote.customerId(), offer);
+            requireActiveSkus(quote.quoteNumber(), offer);
             quote.revise(offer);
         }, null);
     }
@@ -170,6 +183,7 @@ class QuoteService implements Quotes {
         Quote quote = lock(user, quoteId, version);
         requireNewWorkFor(quote.customerId());
         requireTermAllowed(quote.customerId(), quote.offer());
+        requireActiveSkus(quote.quoteNumber(), quote.offer());
         QuoteStatus from = quote.status();
         quote.send(user.userId(), clock.instant());
         quotes.save(quote);
@@ -191,6 +205,7 @@ class QuoteService implements Quotes {
         if (quote.statusAt(now) == QuoteStatus.EXPIRED) {
             throw new BusinessException(ErrorCode.QUOTE_EXPIRED, "Quote " + quote.quoteNumber() + " has expired");
         }
+        requireActiveSkus(quote.quoteNumber(), quote.offer());
         List<String> missing = new ArrayList<>();
         for (QuoteLine line : quote.offer().lines()) {
             if (!gate(quote.customerId(), line).satisfied()) {
@@ -255,6 +270,7 @@ class QuoteService implements Quotes {
                     "Quote %s is %s; only an accepted quote becomes an order".formatted(quote.quoteNumber(),
                             quote.status()));
         }
+        requireActiveSkus(quote.quoteNumber(), quote.offer());
         List<PlaceOrderCommand.Line> lines = quote.offer().lines().stream()
                 .map(line -> new PlaceOrderCommand.Line(line.blankSku(), line.acceptedQuantity(),
                         line.acceptedUnitPrice(), line.designSnapshotId()))
@@ -418,6 +434,34 @@ class QuoteService implements Quotes {
     }
 
     /** kltn-docs 15 BR-01: a quote offers only a payment term the customer's commercial terms allow. */
+    /**
+     * Every blank on the offer is still ACTIVE - product APPROVED or PUBLISHED, variant ACTIVE - and stays so
+     * until this step commits ({@link ProductService#lockedPurchasability}). One refusal names every line at
+     * fault with why, on {@code lines[i].blankSku}, so the form can put it next to the SKU.
+     */
+    private void requireActiveSkus(String quoteNumber, Quote.Offer offer) {
+        List<QuoteLine> lines = offer.lines();
+        Map<String, Purchasability> verdicts = products.lockedPurchasability(
+                lines.stream().map(line -> line.blankSku().code()).toList());
+        List<FieldError> errors = new ArrayList<>();
+        List<String> named = new ArrayList<>();
+        for (int i = 0; i < lines.size(); i++) {
+            QuoteLine line = lines.get(i);
+            String sku = line.blankSku().code();
+            Purchasability verdict = verdicts.get(sku.toUpperCase(java.util.Locale.ROOT));
+            if (verdict != null && !verdict.isPurchasable()) {
+                errors.add(new FieldError("lines[" + i + "].blankSku",
+                        "SKU %s on line %d is no longer active".formatted(sku, line.lineNo()), verdict.name()));
+                named.add("line %d (%s, %s)".formatted(line.lineNo(), sku, verdict));
+            }
+        }
+        if (!errors.isEmpty()) {
+            throw new BusinessException(ErrorCode.SKU_NOT_SELLABLE, "%s holds a SKU that is no longer active: %s; "
+                    .formatted(quoteNumber == null ? "The quote" : "Quote " + quoteNumber, String.join(", ", named))
+                    + "change it to an active SKU and send the quote again", errors);
+        }
+    }
+
     private void requireTermAllowed(UUID customerId, Quote.Offer offer) {
         if (!customers.creditTerms(customerId).allows(CommercialTerm.valueOf(offer.paymentTerm().name()))) {
             throw new BusinessException(ErrorCode.PAYMENT_TERM_NOT_ALLOWED,

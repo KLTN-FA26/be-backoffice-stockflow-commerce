@@ -31,6 +31,8 @@ public enum ErrorCode {
     PRODUCT_NOT_PURCHASABLE("This product is not currently available for purchase", 409),
     /** SCRUM-461, kltn-docs 02 BR-01: a new purchase order line takes only an active SKU. {@code fieldErrors[]} names each line. */
     SKU_NOT_PURCHASABLE("The SKU is not active for purchasing", 409),
+    /** Review of #109, item 6: a quote, its acceptance or its order, or a new sample, on a SKU no longer ACTIVE. */
+    SKU_NOT_SELLABLE("The SKU is no longer active; change the line to an active SKU", 409),
     /** SCRUM-461, kltn-docs 01 §3: a product is identified by its brand too, so it is chosen before approval. */
     PRODUCT_BRAND_REQUIRED("A brand is required before submitting for approval", 409),
     /** SCRUM-461, kltn-docs 01 BR-02: only a draft is deleted. */

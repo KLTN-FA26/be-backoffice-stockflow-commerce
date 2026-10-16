@@ -6,8 +6,9 @@
  *
  * <p><b>May depend on:</b> customer (who a sample is for, and which customer a portal user is),
  * design (the confirmed snapshot a sample prints), warehouse (the workshop a sample is made in),
- * inventory (whether the workshop holds the blanks a sample needs) and order (the released order a
- * production order is created for). Plus {@code common} and
+ * inventory (whether the workshop holds the blanks a sample needs), order (the released order a
+ * production order is created for), procurement (subcontracted work) and product (whether a blank is still
+ * ACTIVE before a new sample takes it). Plus {@code common} and
  * {@code contracts}, which are available to every module.</p>
  *
  * <p>Nothing depends on this module: the order module learns what production did from
@@ -23,5 +24,5 @@
  * </ul>
  */
 @org.springframework.modulith.ApplicationModule(allowedDependencies = {"customer :: api", "design :: api",
-        "warehouse :: api", "inventory :: api", "order :: api", "procurement :: api"})
+        "warehouse :: api", "inventory :: api", "order :: api", "procurement :: api", "product :: api"})
 package com.stockflow.production;

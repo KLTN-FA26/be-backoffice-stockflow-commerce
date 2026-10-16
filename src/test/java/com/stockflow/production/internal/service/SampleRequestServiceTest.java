@@ -73,7 +73,8 @@ class SampleRequestServiceTest {
     private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
     private final QuoteDirectory quotes = mock(QuoteDirectory.class);
     private final SampleRequestService service = new SampleRequestService(samples, sampleSearch, productionOrders,
-            productionSearch, customers, designs, warehouses, inventory, quotes, events, Clock.fixed(NOW, ZoneOffset.UTC));
+            productionSearch, customers, designs, warehouses, inventory, quotes, events, Clock.fixed(NOW, ZoneOffset.UTC),
+            mock(com.stockflow.product.api.ProductService.class));
 
     private final UUID customer = UUID.randomUUID();
     private final UUID snapshot = UUID.randomUUID();
