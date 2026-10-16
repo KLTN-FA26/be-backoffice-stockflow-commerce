@@ -10,9 +10,11 @@ import java.util.List;
 /**
  * What a supplier commits to for one SKU: price, minimum order, pack size and lead time.
  *
- * <p>The limits mirror the {@code supplier_items} column types and CHECK constraints, so a value
- * that gets past this constructor can never be refused by the database later as an opaque 500.
- * Each violation names its field, because the catalog form puts the message beside the input.</p>
+ * <p>The limits mirror the {@code supplier_items} CHECK constraints, and each violation names its
+ * field, because the catalog form puts the message beside the input. The price's upper bound and
+ * its decimal places against the currency are not checked here: by the time a {@link Money}
+ * exists, its constructor has already rounded the amount to the currency's scale, so the catalog
+ * service checks the amount as entered, before building it.</p>
  *
  * <p>{@code moq % packSize == 0} is enforced here and not left to the order line: a MOQ that is not
  * a whole number of packs is a catalog that no quantity can satisfy.</p>

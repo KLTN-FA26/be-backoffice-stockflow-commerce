@@ -16,6 +16,12 @@ public interface SupplierItemRepository {
      */
     Optional<CatalogSupplier> supplierForShare(UUID supplierId);
 
+    /**
+     * The same slice without the lock, for reads: Postgres refuses {@code FOR SHARE} in a read-only
+     * transaction.
+     */
+    Optional<CatalogSupplier> findSupplier(UUID supplierId);
+
     Optional<SupplierItem> findById(UUID supplierItemId);
 
     Optional<SupplierItem> findByIdForUpdate(UUID supplierItemId);

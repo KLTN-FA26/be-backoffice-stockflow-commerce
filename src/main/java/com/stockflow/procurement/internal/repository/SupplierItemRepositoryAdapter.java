@@ -36,7 +36,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * The supplier catalog over JPA, plus two native reads of the supplier row that the supplier entity
+ * The supplier catalog over JPA, plus native reads of the supplier row that the supplier entity
  * deliberately does not map ({@code currency}).
  *
  * <p>The price history lives here and not in the aggregate: a reprice closes the open period and
@@ -54,11 +54,12 @@ class SupplierItemRepositoryAdapter implements SupplierItemRepository {
             SortWhitelist.of("createdAt", "lastModifiedAt", "currentPrice")
                     .withDefault("createdAt", Sort.Direction.DESC);
 
-    private static final String SUPPLIER_FOR_SHARE = """
+    private static final String SUPPLIER = """
             SELECT id, code, name, status, currency, lead_time_days
               FROM procurement.suppliers
-             WHERE id = ?
-               FOR SHARE""";
+             WHERE id = ?""";
+
+    private static final String SUPPLIER_FOR_SHARE = SUPPLIER + "\n   FOR SHARE";
 
     /** One query for the SKU's whole catalog: the item row and the slice of its supplier. */
     private static final String SUPPLIERS_OF = """
@@ -87,7 +88,16 @@ class SupplierItemRepositoryAdapter implements SupplierItemRepository {
 
     @Override
     public Optional<CatalogSupplier> supplierForShare(UUID supplierId) {
-        return jdbc.query(SUPPLIER_FOR_SHARE,
+        return catalogSupplier(SUPPLIER_FOR_SHARE, supplierId);
+    }
+
+    @Override
+    public Optional<CatalogSupplier> findSupplier(UUID supplierId) {
+        return catalogSupplier(SUPPLIER, supplierId);
+    }
+
+    private Optional<CatalogSupplier> catalogSupplier(String sql, UUID supplierId) {
+        return jdbc.query(sql,
                 (rs, row) -> new CatalogSupplier(rs.getObject("id", UUID.class), rs.getString("code"),
                         rs.getString("name"), SupplierStatus.valueOf(rs.getString("status")),
                         Currency.getInstance(rs.getString("currency")), rs.getObject("lead_time_days", Integer.class)),

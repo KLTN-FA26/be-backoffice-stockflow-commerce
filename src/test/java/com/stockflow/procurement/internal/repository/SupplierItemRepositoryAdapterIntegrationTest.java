@@ -216,6 +216,8 @@ class SupplierItemRepositoryAdapterIntegrationTest {
         assertThat(found.name()).isEqualTo("Alpha supplier");
         assertThat(found.currency()).isEqualTo(Money.VND);
         assertThat(found.leadTimeDays()).isEqualTo(7);
+        Optional<CatalogSupplier> unlocked = tx.execute(s -> items.findSupplier(supplierId));
+        assertThat(unlocked).contains(found);
         Optional<CatalogSupplier> unknown = tx.execute(s -> items.supplierForShare(UUID.randomUUID()));
         assertThat(unknown).isEmpty();
     }
