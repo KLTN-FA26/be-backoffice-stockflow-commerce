@@ -4,6 +4,7 @@ import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.api.InventoryItemPolicy;
 import com.stockflow.inventory.api.InventoryService;
@@ -251,6 +252,9 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing, SubcontractAme
     @Override
     @Transactional(readOnly = true)
     public Optional<SubcontractSettlement> settlement(UUID purchaseOrderId) {
+        // The same warehouse scope as every write on the order (BR-SEC-002): a manager of another warehouse reads
+        // none of what this one owes its subcontractor.
+        store.findById(purchaseOrderId, false).ifPresent(row -> WarehouseScope.requireWarehouse(row.warehouseId()));
         return store.settlement(purchaseOrderId, false);
     }
 
@@ -297,9 +301,16 @@ class SubcontractPurchasingImpl implements SubcontractPurchasing, SubcontractAme
                 s.printSubcontractor(), s.lossTolerancePercent()));
     }
 
+    /**
+     * The order, locked, and only for a caller of its warehouse (BR-SEC-002). Checked here, before any change: every
+     * write of this class is {@code @Transactional}, so a check left to a read after it would come once the change is
+     * already committed. The system (an event listener) is not warehouse-bound.
+     */
     private SubcontractOrderStore.Row lock(UUID purchaseOrderId) {
-        return store.findById(purchaseOrderId, true).orElseThrow(() ->
+        SubcontractOrderStore.Row row = store.findById(purchaseOrderId, true).orElseThrow(() ->
                 new BusinessException(ErrorCode.PURCHASE_ORDER_NOT_FOUND, "No subcontract order " + purchaseOrderId));
+        WarehouseScope.requireWarehouse(row.warehouseId());
+        return row;
     }
 
     private SubcontractOrder toOrder(SubcontractOrderStore.Row row) {
