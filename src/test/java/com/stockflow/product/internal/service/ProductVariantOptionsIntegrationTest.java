@@ -414,6 +414,18 @@ class ProductVariantOptionsIntegrationTest {
     }
 
     @Test
+    void aProductCreatedWithAxesHasEveryVariantInItsHistoryAndNoSeparateAxesEntry() {
+        String code = "CUP-" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
+        UUID product = createWithAxes(code, List.of(new CreateProductCommand.Axis(capacity, 0, List.of(cap12, cap16)),
+                new CreateProductCommand.Axis(color, 1, List.of(clear, red))));
+
+        assertThat(jdbc.queryForList("""
+                SELECT change_type FROM product.product_change_log WHERE product_id = ? ORDER BY occurred_at, id""",
+                String.class, product))
+                .containsExactly("CREATED", "VARIANT_ADDED", "VARIANT_ADDED", "VARIANT_ADDED", "VARIANT_ADDED");
+    }
+
+    @Test
     void aDeactivatedValueCannotBeAnOptionOfANewProduct() {
         deactivate(color, red);
         String code = "CUP-" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
