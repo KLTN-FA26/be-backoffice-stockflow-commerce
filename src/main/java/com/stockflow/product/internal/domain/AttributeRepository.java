@@ -2,10 +2,15 @@ package com.stockflow.product.internal.domain;
 
 import com.stockflow.common.domain.AggregateRepository;
 
+import java.util.Collection;
+import java.util.List;
 import java.util.UUID;
 
 /** Persistence port for {@link Attribute}. Lookups by id come from {@link AggregateRepository}. */
 public interface AttributeRepository extends AggregateRepository<Attribute, UUID> {
+
+    /** The attributes with their values in one query; ids with no attribute are simply absent. */
+    List<Attribute> findAllById(Collection<UUID> ids);
 
     boolean existsByCode(String code);
 
