@@ -214,7 +214,9 @@ one full `mvn verify` at the end.
     row without re-validating it, so one row outside them cannot block the catalog;
   - PO create/edit paths and ~14 PO tests change (catalog seeding);
   - decide on dropping `inventory_items.default_supplier_id` (unused; `supplier_items.is_preferred` is the
-    single source of truth).
+    single source of truth);
+  - a policy save clears the superseded `min_qty`; the demo seed's `min_qty` values go on the first save,
+    so consider dropping the column.
 - **Võ**: `maxQty` appears on `/products/{productId}/skus/{skuId}/inventory-control`.
 - **FE**: supplier detail gets an "items" tab; the PO form lists only the chosen supplier's SKUs, the price
   is optional and prefilled; field error codes above.

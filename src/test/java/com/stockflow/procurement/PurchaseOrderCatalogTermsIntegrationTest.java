@@ -55,7 +55,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * SCRUM-78 (BR-PO-001): a standard purchase order line takes only a SKU its supplier lists, in a quantity the
  * catalog allows, and a line without a price takes the catalog's. The order's lead time is the slowest line's,
  * and a missing delivery date follows it. Create and draft edit are held to the same rule; a subcontract order is
- * not. Against Postgres, because the catalog is read {@code FOR SHARE}, which a mock cannot check.
+ * not. Runs on real Postgres because the catalog rows, their constraints and the purchase order's persistence are
+ * real, which a mock cannot check.
  */
 @IntegrationTest
 @AutoConfigureMockMvc
@@ -248,25 +249,27 @@ class PurchaseOrderCatalogTermsIntegrationTest {
     @Test
     @DisplayName("the order's lead time is its slowest line's: an item's own, else the supplier's")
     void leadTimeIsTheLargestLineLeadTime() {
-        list(skuA, "1000", 1, 1, 3);
+        // 12 is above the supplier's 9, so a supplier-wide rule (9) and the slowest-line rule (12) differ; skuB has
+        // no lead time of its own and falls back to the supplier's 9, which is the smaller of the two
+        list(skuA, "1000", 1, 1, 12);
         list(skuB, "1000", 1, 1, null);
 
         PurchaseOrderSummary order = create("VND", today().plusDays(30), line(skuA, 1, null), line(skuB, 1, null));
 
-        assertThat(order.leadTimeDays()).isEqualTo(9);
+        assertThat(order.leadTimeDays()).isEqualTo(12);
         assertThat(order.expectedAt()).isEqualTo(today().plusDays(30));
     }
 
     @Test
     @DisplayName("no delivery date: today on the business calendar plus that lead time")
     void noExpectedAtDefaultsToTodayPlusThatLeadTime() {
-        list(skuA, "1000", 1, 1, 3);
+        list(skuA, "1000", 1, 1, 12);
         list(skuB, "1000", 1, 1, null);
 
         PurchaseOrderSummary order = create("VND", null, line(skuA, 1, null), line(skuB, 1, null));
 
-        assertThat(order.leadTimeDays()).isEqualTo(9);
-        assertThat(order.expectedAt()).isEqualTo(today().plusDays(9));
+        assertThat(order.leadTimeDays()).isEqualTo(12);
+        assertThat(order.expectedAt()).isEqualTo(today().plusDays(12));
     }
 
     @Test

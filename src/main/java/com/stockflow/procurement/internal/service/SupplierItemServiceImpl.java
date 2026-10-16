@@ -51,8 +51,6 @@ import java.util.UUID;
 @Transactional
 class SupplierItemServiceImpl implements SupplierItemService {
 
-    /** The largest amount {@code NUMERIC(18,2)} holds. */
-
     private final SupplierItemRepository items;
     private final InventoryService inventory;
     private final ProductService products;
