@@ -49,7 +49,7 @@ Two stacked PRs, as with SCRUM-45:
 | repository | `SupplierItemJpaRepository`, `SupplierItemPriceJpaRepository`, `SupplierItemRepositoryAdapter` |
 | api | `SupplierItemService`, `SaveSupplierItemCommand`, `SupplierItemSummary`, `SkuSupplierSummary` |
 | service | `SupplierItemServiceImpl` |
-| controller | `SupplierItemController`, `SupplierItemWebMapper`, request/response records; `SupplierResources.SUPPLIER_ITEMS = "procurement-supplier-items"` |
+| controller | `SupplierItemController`, request/response records |
 
 `SupplierItemService` is in `api` because the SKU → suppliers view is read by the SKU page and the PO
 form, and PR2's `checkLines` reads the catalog through the same service's port.
@@ -85,8 +85,9 @@ Behaviour:
 | DELETE | `/api/v1/suppliers/{supplierId}/items/{itemId}?version=` | 204 |
 | GET | `/api/v1/procurement/skus/{sku}/suppliers` | every supplier selling the SKU, preferred first, then by name |
 
-Every handler is public and carries `@RequiresPermission` on the method. The resource is declared with
-`@PermissionResource`. Granting it to roles is a seed change in `db/migration`, which is Tú's (§6).
+Every handler is public and carries `@RequiresPermission` on the method. Permissions reuse
+`procurement-suppliers`: reads need READ; creating, editing and removing a catalog row need UPDATE. No new
+resource and no seed change.
 
 ### 3.4 Rules
 
@@ -206,8 +207,6 @@ one full `mvn verify` at the end.
 - **Tú** (schema and PO code owner):
   - add `ck_supplier_items_moq_pack CHECK (moq % pack_size = 0)` and `CHECK (max_qty IS NULL OR
     reorder_point IS NULL OR max_qty >= reorder_point)` on `inventory_items`;
-  - grant `procurement-supplier-items` to the purchasing roles in the seed, with the `app_role.version`
-    bump;
   - PO create/edit paths and ~14 PO tests change (catalog seeding);
   - decide on dropping `inventory_items.default_supplier_id` (unused; `supplier_items.is_preferred` is the
     single source of truth).
