@@ -29,6 +29,8 @@ import com.stockflow.order.api.OrderSummary;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.OrderHold;
+import com.stockflow.inventory.api.StockReservation;
+import com.stockflow.inventory.consumption.PickConsumption;
 import com.stockflow.warehouse.api.StorageLocationView;
 import com.stockflow.warehouse.api.WarehouseService;
 import java.time.Clock;
@@ -67,11 +69,13 @@ class FulfillmentServiceImpl implements FulfillmentService {
     private final InventoryService inventory;
     private final WarehouseService warehouses;
     private final PickListService pickLists;
+    private final PickConsumption consumption;
 
     FulfillmentServiceImpl(PickJpaRepository picks, PackJpaRepository packs,
             DesignVerificationJpaRepository verifications, OrderService orders,
             DesignService designs, IdentityService identities, InventoryService inventory,
-            WarehouseService warehouses, PickListService pickLists, Clock clock) {
+            WarehouseService warehouses, PickListService pickLists, PickConsumption consumption, Clock clock) {
+        this.consumption = consumption;
         this.picks = picks;
         this.packs = packs;
         this.verifications = verifications;
@@ -265,6 +269,7 @@ class FulfillmentServiceImpl implements FulfillmentService {
             return toTask(pick);
         }
         pack.complete(clock.instant());
+        deductPrintedGoods(pack, order, actor.userId());
         packs.save(pack);
         return toTask(pick);
     }
@@ -277,13 +282,33 @@ class FulfillmentServiceImpl implements FulfillmentService {
         if (pack.getStatus() != PackStatus.ON_HOLD) {
             throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT, "The package has no design-integrity hold");
         }
-        if (!verifyAll(pack, requireOrderInFulfilment(pick), actor.userId())) {
+        OrderSummary order = requireOrderInFulfilment(pick);
+        if (!verifyAll(pack, order, actor.userId())) {
             return toTask(pick);
         }
         pack.complete(clock.instant());
+        deductPrintedGoods(pack, order, actor.userId());
         packs.save(pack);
         orders.resolveDesignHold(pick.getOrderId(), actor.userId(), resolutionNote);
         return toTask(pick);
+    }
+
+    /**
+     * Decision 2026-10-16 (docs 04b §15-18, 04c F-FUL): the order's custom-printed goods leave stock with their
+     * package, in the transaction that records it complete - after every design checksum matched, so a mismatch or
+     * any failure leaves the holds and the goods where they are. Stock lines were deducted when picked; a print line
+     * is never picked (production hands its goods to packing, still held for the order), so this is its one
+     * deduction, and dispatch deducts nothing. A completed package is not completed again ({@code CONFLICT}), and
+     * inventory answers a package it already deducted for as done.
+     */
+    private void deductPrintedGoods(PackJpaEntity pack, OrderSummary order, UUID actor) {
+        List<UUID> printHolds = order.lines().stream().filter(line -> line.designSnapshotId() != null)
+                .flatMap(line -> line.reservationIds().stream()).toList();
+        if (printHolds.isEmpty()) {
+            return;
+        }
+        List<UUID> live = inventory.liveHolds(printHolds).stream().map(StockReservation::reservationId).toList();
+        consumption.consumeForPack(pack.getId(), order.orderId(), live, actor);
     }
 
     private boolean verifyAll(PackJpaEntity pack, OrderSummary order, UUID actor) {

@@ -58,6 +58,8 @@ public record StockMovement(
     /** The subset of {@code ck_stock_movement_reference} this module writes so far. */
     public enum ReferenceType {
         MOVE_TASK, PUTAWAY_TASK, TRANSFER_ORDER_LINE, ORDER, STOCK_ADJUSTMENT, GOODS_RECEIPT_LINE, QC_INSPECTION, PICK_LINE,
-        PRODUCTION_ORDER, EXPIRY_SWEEP
+        PRODUCTION_ORDER, EXPIRY_SWEEP,
+        /** A completed package: its custom-printed goods leave stock with it (decision 2026-10-16). */
+        PACKAGE
     }
 }
