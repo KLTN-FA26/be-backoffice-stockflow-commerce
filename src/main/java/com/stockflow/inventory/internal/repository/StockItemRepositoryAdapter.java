@@ -211,13 +211,24 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     public StockItem saveMerged(StockItem stockItem) {
         entityManager.flush();
         mergeMarker(stockItem.id().value().toString());
+        StockItem saved;
         try {
-            StockItem saved = save(stockItem);
+            saved = save(stockItem);
             entityManager.flush();
-            return saved;
-        } finally {
-            mergeMarker("");
+        } catch (RuntimeException failure) {
+            // The UPDATE failed, and in PostgreSQL that aborts the transaction: clearing the marker now fails too
+            // ("current transaction is aborted", 25P02). That second error must not replace the first, which is the
+            // one the caller can act on (a CHECK or the policy trigger, mapped to 409). The setting is
+            // transaction-local and ends with the rolled-back transaction anyway.
+            try {
+                mergeMarker("");
+            } catch (RuntimeException cleanup) {
+                failure.addSuppressed(cleanup);
+            }
+            throw failure;
         }
+        mergeMarker("");
+        return saved;
     }
 
     private void mergeMarker(String value) {
