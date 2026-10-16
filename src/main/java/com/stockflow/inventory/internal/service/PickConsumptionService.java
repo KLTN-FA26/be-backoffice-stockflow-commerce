@@ -82,6 +82,7 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
         Objects.requireNonNull(pickLineId, "pickLineId");
         StockItem item = holderOf(reservationId);
         Reservation hold = item.findReservation(ReservationId.of(reservationId)).orElseThrow();
+        requireOrderStock(item, hold);
         Optional<StockMovement> done = ledger.findByReference(StockMovement.MovementType.PICK,
                 StockMovement.ReferenceType.PICK_LINE, pickLineId);
         if (done.isPresent()) {
@@ -104,8 +105,20 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
     public void consume(UUID reservationId, UUID actorId) {
         StockItem item = holderOf(reservationId);
         Reservation hold = item.findReservation(ReservationId.of(reservationId)).orElseThrow();
+        requireOrderStock(item, hold);
         deduct(item, reservationId, StockMovement.ReferenceType.ORDER, hold.orderId(), actorId);
         log.info("Consumed reservation {} by hand: stock deducted for real", reservationId);
+    }
+
+    /**
+     * A pick deducts an order's goods from a shelf. A production order's hold (a sample's or reprint's blanks) and
+     * goods in the print shop are production's to close - issue, finish, write off - never a pick's (review of #109).
+     */
+    private static void requireOrderStock(StockItem item, Reservation hold) {
+        if (hold.productionOrderId() != null || item.status() == StockStatus.IN_PRODUCTION) {
+            throw new BusinessException(ErrorCode.PRODUCTION_HOLD_NOT_PICKABLE,
+                    "Hold %s belongs to production; production closes it, not a pick".formatted(hold.id().value()));
+        }
     }
 
     @Override

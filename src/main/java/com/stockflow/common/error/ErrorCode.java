@@ -243,6 +243,8 @@ public enum ErrorCode {
     PICK_TASK_STATE_CONFLICT("The task cannot do that in its current status", 409),
     /** The hold behind a pick line was released, expired or already consumed: nothing is deducted. */
     RESERVATION_NOT_ACTIVE("The stock hold is no longer active", 409),
+    /** A production order's hold, or goods in the print shop: production closes them, not a pick (review of #109). */
+    PRODUCTION_HOLD_NOT_PICKABLE("This stock hold belongs to production and cannot be picked", 409),
     /** Docs 07 BR-05: only goods picked for an order cancelled afterwards go back to a bin. */
     PUT_BACK_NOT_REQUIRED("Nothing on this line needs putting back", 409),
     PUT_BACK_LOCATION_INVALID("Put back onto an active bin of the task's warehouse", 409),
