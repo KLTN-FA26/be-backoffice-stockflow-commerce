@@ -66,6 +66,12 @@ class StockAdjustmentRepositoryAdapter implements StockAdjustmentRepository, Sto
     }
 
     @Override
+    public Optional<StockAdjustment> findLatestForHold(UUID reservationId) {
+        return jpa.findFirstByReservationIdOrderByCreatedAtDescIdDesc(reservationId)
+                .map(StockAdjustmentRepositoryAdapter::toDomain);
+    }
+
+    @Override
     public Optional<StockAdjustment> findLiveForHold(UUID reservationId) {
         return jpa.findFirstByReservationIdAndStatusIn(reservationId, java.util.EnumSet.of(
                         com.stockflow.inventory.internal.domain.AdjustmentStatus.PENDING_APPROVAL,

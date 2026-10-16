@@ -10,6 +10,8 @@ import java.util.UUID;
 
 interface StockAdjustmentJpaRepository extends BaseJpaRepository<StockAdjustmentJpaEntity> {
 
+    Optional<StockAdjustmentJpaEntity> findFirstByReservationIdOrderByCreatedAtDescIdDesc(UUID reservationId);
+
     /** uk_stock_adjustment_live_reservation: at most one. */
     Optional<StockAdjustmentJpaEntity> findFirstByReservationIdAndStatusIn(UUID reservationId,
                                                                            Collection<AdjustmentStatus> statuses);

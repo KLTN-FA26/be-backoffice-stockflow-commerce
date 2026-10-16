@@ -14,6 +14,9 @@ public interface StockAdjustmentRepository {
 
     StockAdjustment save(StockAdjustment adjustment);
 
+    /** The latest write-off ever asked for {@code reservationId}'s units, whatever became of it. */
+    Optional<StockAdjustment> findLatestForHold(UUID reservationId);
+
     /** The write-off of {@code reservationId}'s units that still stands: pending or posted. */
     Optional<StockAdjustment> findLiveForHold(UUID reservationId);
 }

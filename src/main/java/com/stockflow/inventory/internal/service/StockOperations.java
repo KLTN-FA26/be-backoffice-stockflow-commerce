@@ -46,6 +46,16 @@ public interface StockOperations {
                                                          UUID requestedBy);
 
     /**
+     * BR-PRD-10: the write-off of a cancelled order's printed goods was rejected or withdrawn; the goods are still
+     * held and out of sale, and this asks again, in {@code requestedBy}'s name. A write-off still standing is
+     * answered as it is.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code CONFLICT} for a hold no cancellation asked to scrap,
+     *         or one that is no longer printed goods waiting in packing
+     */
+    StockAdjustmentSummary askScrapAgain(UUID reservationId, String note, UUID requestedBy);
+
+    /**
      * Whether {@code hold}, on the locked {@code item}, is finished custom goods of its order waiting in a PACKING
      * area - which a release does not free (BR-PRD-10).
      */

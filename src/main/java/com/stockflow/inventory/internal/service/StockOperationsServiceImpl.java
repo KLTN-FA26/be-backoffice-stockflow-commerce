@@ -378,6 +378,26 @@ class StockOperationsServiceImpl implements StockOperations {
         return Optional.of(saved);
     }
 
+    /**
+     * Only a hold a cancellation already asked to scrap is asked again here: inventory cannot tell a cancelled order
+     * from a live one, and a live order's goods are nobody's to scrap. That first write-off - which only
+     * {@link #scrapCancelledPrint} writes against a hold - is the proof.
+     */
+    @Override
+    @Auditable(action = AuditAction.CREATE, resourceType = "stock-adjustment", resourceId = "#reservationId")
+    public StockAdjustmentSummary askScrapAgain(UUID reservationId, String note, UUID requestedBy) {
+        StockAdjustment last = adjustments.findLatestForHold(reservationId).orElseThrow(() -> new BusinessException(
+                ErrorCode.CONFLICT, "Hold %s was never asked to be scrapped; only a cancelled order's printed goods are"
+                        .formatted(reservationId)));
+        if (!last.status().isClosed() || last.status() == com.stockflow.inventory.internal.domain.AdjustmentStatus.POSTED) {
+            return toSummary(last);
+        }
+        UUID orderId = holder(ReservationId.of(reservationId)).findReservation(ReservationId.of(reservationId))
+                .map(Reservation::orderId).orElse(null);
+        return scrapCancelledPrint(reservationId, orderId, note, requestedBy).orElseThrow(() -> new BusinessException(
+                ErrorCode.CONFLICT, "Hold %s is no longer printed goods waiting in packing".formatted(reservationId)));
+    }
+
     @Override
     public boolean isFinishedCustomGoods(StockItem item, Reservation hold) {
         return hold.status().isActive() && hold.orderId() != null && hold.productionOrderId() == null

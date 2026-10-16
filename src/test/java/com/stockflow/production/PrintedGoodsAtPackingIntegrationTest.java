@@ -321,6 +321,9 @@ class PrintedGoodsAtPackingIntegrationTest {
         assertThat(onHandAtPacking()).isEqualTo(before);
         assertThat(holdStatuses(holds)).doesNotContain("CONSUMED");
         assertThat(packageLedgerRows(packOf(task))).isZero();
+        assertThat(code(catchThrowable(() -> stockOperations.askScrapAgain(holds.get(0), "Scrap it", manager.userId()))))
+                .as("a live order's goods are nobody's to scrap").isEqualTo(ErrorCode.CONFLICT);
+        assertThat(scrapOf(holds)).isEmpty();
     }
 
     // ------------------------------------------------------------------------------------------- 5a
@@ -363,9 +366,10 @@ class PrintedGoodsAtPackingIntegrationTest {
         stockOperations.reject(adjustment, approver.userId(), "Counted 2, not 3");
         assertThat(holdStatuses(holds)).isEqualTo(heldBefore);
         assertThat(inventory.availableToPromise(BLANK)).isEqualTo(atp);
-        StockAdjustmentSummary renewed = tx.execute(s -> inventory.scrapCancelledPrint(first, line.orderId(),
-                "Recounted: 3", manager.userId())).orElseThrow();
+        StockAdjustmentSummary renewed = stockOperations.askScrapAgain(first, "Recounted: 3", manager.userId());
         assertThat(renewed.adjustmentId()).isNotEqualTo(adjustment);
+        assertThat(stockOperations.askScrapAgain(first, "twice", manager.userId()).adjustmentId())
+                .as("asked again while it stands: the same").isEqualTo(renewed.adjustmentId());
 
         scrapOf(holds).stream().filter(row -> "PENDING_APPROVAL".equals(row.get("status")))
                 .forEach(row -> stockOperations.approve((UUID) row.get("id"), approver.userId()));
