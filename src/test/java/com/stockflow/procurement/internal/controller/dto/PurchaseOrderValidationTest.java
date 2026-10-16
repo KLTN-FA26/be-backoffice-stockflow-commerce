@@ -40,7 +40,9 @@ class PurchaseOrderValidationTest {
     @Test
     void missingValuesDoNotReachTheService() {
         assertThat(fields(request(null, new CreatePOLineRequest("CHAIR-01", "Chair", 1, null, null))))
-                .contains("currency", "lines[0].unitPrice");
+                .contains("currency")
+                // SCRUM-78: an omitted price is the catalog price, so it is no longer a field error here.
+                .doesNotContain("lines[0].unitPrice");
         assertThat(fields(new CreatePurchaseOrderRequest(UUID.randomUUID(), UUID.randomUUID(), "VND", null, null,
                 Arrays.asList((CreatePOLineRequest) null)))).isNotEmpty();
     }

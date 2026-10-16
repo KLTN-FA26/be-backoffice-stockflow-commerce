@@ -13,6 +13,7 @@ import com.stockflow.product.internal.service.ProductTaxonomyService;
 import com.stockflow.procurement.api.CreatePOLineCommand;
 import com.stockflow.procurement.api.CreatePurchaseOrderCommand;
 import com.stockflow.procurement.api.ProcurementService;
+import com.stockflow.procurement.api.SupplierItemService;
 import com.stockflow.support.Await;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
@@ -20,6 +21,7 @@ import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.ProductFixtures;
 import com.stockflow.support.RedisContainer;
 import com.stockflow.support.ReferenceRows;
+import com.stockflow.support.SupplierItemFixtures;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -83,6 +85,7 @@ class ProductLifecycleIntegrationTest {
     @Autowired ProductService products;
     @Autowired ProductTaxonomyService taxonomy;
     @Autowired ProcurementService procurement;
+    @Autowired SupplierItemService supplierCatalog;
     @Autowired CatalogService catalog;
     @Autowired CatalogProjectionService projection;
 
@@ -186,8 +189,17 @@ class ProductLifecycleIntegrationTest {
         return supplier;
     }
 
+    /** A supplier that lists each of {@code skus} (BR-PO-001), while they are still purchasable. */
+    private UUID supplierListing(String... skus) {
+        UUID supplier = supplier();
+        for (String sku : skus) {
+            SupplierItemFixtures.list(supplierCatalog, supplier, sku);
+        }
+        return supplier;
+    }
+
     private UUID draftPurchaseOrder(String sku) {
-        return procurement.createPurchaseOrder(new CreatePurchaseOrderCommand(supplier(), DemoData.WAREHOUSE_HCM, "VND",
+        return procurement.createPurchaseOrder(new CreatePurchaseOrderCommand(supplierListing(sku), DemoData.WAREHOUSE_HCM, "VND",
                 LocalDate.now().plusDays(10), null, List.of(new CreatePOLineCommand(sku, null, 5, new BigDecimal("1000")))))
                 .purchaseOrderId();
     }
@@ -721,14 +733,14 @@ class ProductLifecycleIntegrationTest {
 
     // ------------------------------------------------------------------ purchase order endpoints
 
-    private String poBody(String... skus) {
+    private String poBody(UUID supplierId, String... skus) {
         StringBuilder lines = new StringBuilder();
         for (String sku : skus) {
             lines.append(lines.length() == 0 ? "" : ",")
                     .append("{\"sku\":\"%s\",\"quantityOrdered\":1,\"unitPrice\":1000}".formatted(sku));
         }
         return "{\"supplierId\":\"%s\",\"warehouseId\":\"%s\",\"currency\":\"VND\",\"lines\":[%s]}"
-                .formatted(supplier(), DemoData.WAREHOUSE_HCM, lines);
+                .formatted(supplierId, DemoData.WAREHOUSE_HCM, lines);
     }
 
     @Test
@@ -737,13 +749,14 @@ class ProductLifecycleIntegrationTest {
     void purchaseOrderEndpointsRefuseSkusThatAreNotActive() throws Exception {
         ProductSummary alive = approvedProduct();
         ProductSummary dying = approvedProduct();
+        UUID listed = supplierListing(alive.code(), dying.code());
         // The buyer is a real user: the purchase order's history points at who acted.
         String buyer = token(tx.execute(s -> ReferenceRows.user(entityManager)), "PROCUREMENT_STAFF");
 
         // No permission, no purchase order.
-        assertRefused(send("POST", token(UUID.randomUUID(), "WAREHOUSE_STAFF"), "/api/v1/purchase-orders", poBody(alive.code())),
+        assertRefused(send("POST", token(UUID.randomUUID(), "WAREHOUSE_STAFF"), "/api/v1/purchase-orders", poBody(listed, alive.code())),
                 403, "FORBIDDEN");
-        JsonNode created = data(expectStatus(send("POST", buyer, "/api/v1/purchase-orders", poBody(alive.code(), dying.code())), 201));
+        JsonNode created = data(expectStatus(send("POST", buyer, "/api/v1/purchase-orders", poBody(listed, alive.code(), dying.code())), 201));
         String po = created.path("purchaseOrderId").asText();
         long version = created.path("version").asLong();
         assertThat(created.path("lines").size()).isEqualTo(2);
@@ -752,17 +765,17 @@ class ProductLifecycleIntegrationTest {
                 reasonAndVersion("end of line", dying.version())).andExpect(status().isOk());
 
         // Create: the line at fault is named, with why, translated (Vietnamese by default, English on request).
-        assertRefused(send("POST", buyer, "/api/v1/purchase-orders", poBody(alive.code(), dying.code())), 409, "SKU_NOT_PURCHASABLE");
-        send("POST", buyer, "/api/v1/purchase-orders", poBody(alive.code(), dying.code()))
+        assertRefused(send("POST", buyer, "/api/v1/purchase-orders", poBody(listed, alive.code(), dying.code())), 409, "SKU_NOT_PURCHASABLE");
+        send("POST", buyer, "/api/v1/purchase-orders", poBody(listed, alive.code(), dying.code()))
                 .andExpect(jsonPath("$.fieldErrors.length()").value(1))
                 .andExpect(jsonPath("$.fieldErrors[0].field").value("lines[1].sku"))
                 .andExpect(jsonPath("$.fieldErrors[0].code").value("PRODUCT_DISCONTINUED"))
                 .andExpect(jsonPath("$.fieldErrors[0].message").value("Sản phẩm đã ngừng kinh doanh"));
         mvc.perform(post("/api/v1/purchase-orders").header("Authorization", buyer).header("Accept-Language", "en")
-                        .contentType(JSON).content(poBody(alive.code(), dying.code())))
+                        .contentType(JSON).content(poBody(listed, alive.code(), dying.code())))
                 .andExpect(jsonPath("$.errorCode").value("SKU_NOT_PURCHASABLE"))
                 .andExpect(jsonPath("$.fieldErrors[0].message").value("The product is discontinued"));
-        assertRefused(send("POST", buyer, "/api/v1/purchase-orders", poBody(dying.code(), dying.code())), 400, "VALIDATION_FAILED");
+        assertRefused(send("POST", buyer, "/api/v1/purchase-orders", poBody(listed, dying.code(), dying.code())), 400, "VALIDATION_FAILED");
 
         // Submission of the draft that holds the SKU: refused at the line, still a draft.
         assertRefused(send("POST", buyer, "/api/v1/purchase-orders/" + po + "/submission", null), 409, "SKU_NOT_PURCHASABLE");
