@@ -68,6 +68,7 @@ class ProductVariantOptionsIntegrationTest {
 
     private UUID user;
     private UUID category;
+    private UUID brand;
     private UUID capacity;
     private UUID color;
     private UUID cap12;
@@ -83,6 +84,8 @@ class ProductVariantOptionsIntegrationTest {
         String suffix = UUID.randomUUID().toString().substring(0, 6).toUpperCase();
         category = taxonomy.createCategory("CAT-" + suffix, null,
                 new ProductTaxonomyService.CategoryDetails("Ly", 0, null, null, null, true)).id();
+        // A product needs a brand before it is submitted (BR-PRD-001).
+        brand = taxonomy.createBrand("BR-" + suffix, "Brand " + suffix, null).id();
 
         capacity = dictionary.create("CAPACITY", AttributeDataType.SELECT, details("Dung tich")).id();
         cap12 = value(capacity, "12OZ", "12 oz", 1, null);
@@ -106,7 +109,7 @@ class ProductVariantOptionsIntegrationTest {
 
     private UUID product(String code) {
         newCode = code;
-        return products.create(new CreateProductCommand(code, "Ly giay", "Paper cup", null, category, null, null,
+        return products.create(new CreateProductCommand(code, "Ly giay", "Paper cup", brand, category, null, null,
                 null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE)).productId();
     }
 
