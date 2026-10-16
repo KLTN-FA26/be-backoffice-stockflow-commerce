@@ -5,6 +5,7 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.i18n.Messages;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
+import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.support.StaticMessageSource;
 import org.springframework.http.MediaType;
@@ -80,9 +81,9 @@ class ErrorResponseContentTypeTest {
             throw new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No storage location has this code");
         }
 
-        @PostMapping(value = "/pdf-with-body",produces = MediaType.APPLICATION_PDF_VALUE)
+        @PostMapping(value = "/pdf-with-body", produces = MediaType.APPLICATION_PDF_VALUE)
         public byte[] pdfWithBody(@Valid @RequestBody Body body) {
-            return new byte[0];
+            return body.name().getBytes(StandardCharsets.UTF_8);
         }
     }
 }

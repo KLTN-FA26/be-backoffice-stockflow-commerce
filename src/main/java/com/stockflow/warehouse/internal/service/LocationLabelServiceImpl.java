@@ -84,8 +84,11 @@ class LocationLabelServiceImpl implements LocationLabelService {
                     throw new BusinessException(ErrorCode.ZONE_NOT_FOUND);
                 }
             }
-            case LabelSelection.WholeWarehouse -> { }
-            case LabelSelection.OfCodes codes -> { }
+            // The whole warehouse needs no check, and named codes are checked against what the query
+            // finds, in refuseMissingOrOffLayout. A default rather than two empty cases because Java 21
+            // cannot match OfCodes without binding a variable nobody reads; findRows still switches
+            // exhaustively, so a new selector cannot slip past both.
+            default -> { }
         }
     }
 
