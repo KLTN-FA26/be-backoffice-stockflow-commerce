@@ -210,7 +210,7 @@ class LayoutReadRepositoryAdapter implements LayoutReadRepository, LocationLooku
     public List<LabelRow> findRows(UUID warehouseId, LabelSelection selection) {
         Map<String, Object> parameters = new HashMap<>(Map.of("warehouseId", warehouseId));
         String condition = switch (selection) {
-            case LabelSelection.WholeWarehouse whole -> "";
+            case LabelSelection.WholeWarehouse _ -> "";
             case LabelSelection.OfShelf shelf -> {
                 parameters.put("shelfId", shelf.shelfId());
                 if (shelf.levelIndexes().isEmpty()) {
