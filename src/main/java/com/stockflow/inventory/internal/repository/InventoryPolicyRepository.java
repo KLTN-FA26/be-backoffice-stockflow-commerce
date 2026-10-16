@@ -86,6 +86,13 @@ public class InventoryPolicyRepository {
                 .findFirst();
     }
 
+    /** The SKU of the item with this id; empty when there is none. */
+    public Optional<String> findSku(java.util.UUID id) {
+        return jdbc.queryForList("select sku from inventory.inventory_items where id = ?", String.class, id)
+                .stream()
+                .findFirst();
+    }
+
     public Optional<InventoryPolicy> find(String sku) {
         return findItem(sku).map(InventoryControlItem::policy);
     }
