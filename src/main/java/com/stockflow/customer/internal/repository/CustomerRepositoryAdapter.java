@@ -59,8 +59,8 @@ class CustomerRepositoryAdapter implements CustomerRepository, CustomerSearchRep
     }
 
     @Override
-    public boolean isTaxCodeLive(String taxCode, UUID exceptCustomerId) {
-        return customers.existsLiveTaxCode(taxCode, exceptCustomerId);
+    public boolean isTaxCodeTaken(String taxCode, UUID exceptCustomerId) {
+        return customers.existsTaxCode(taxCode, exceptCustomerId);
     }
 
     @Override
@@ -106,13 +106,26 @@ class CustomerRepositoryAdapter implements CustomerRepository, CustomerSearchRep
         return withAddresses(customers.findById(customer.id()).orElseThrow());
     }
 
+    private static Specification<CustomerJpaEntity> taxCodeIs(String search) {
+        if (search == null || search.isBlank()) {
+            return Specs.all();   // no search: no restriction, like the other terms
+        }
+        try {
+            return Specs.eq("taxCode", com.stockflow.customer.internal.domain.TaxCode.normalise(search));
+        } catch (IllegalArgumentException notATaxCode) {
+            return Specs.none();
+        }
+    }
+
     @Override
     public Page<CustomerSummary> search(String search, String status, UUID segmentId, Pageable pageable) {
         Specification<CustomerJpaEntity> specification = Specification
                 .<CustomerJpaEntity>where(Specs.contains("fullName", search))
                 .or(Specs.contains("email", search))
                 .or(Specs.contains("phone", search))
-                .or(Specs.contains("taxCode", search));
+                // A tax code or personal id is matched whole, never by a part of it (review of #109, item 9): a
+                // search box must not let anyone walk the codes digit by digit.
+                .or(taxCodeIs(search));
         if (segmentId != null) {
             specification = specification.and(Specs.eq("segmentId", segmentId));
         }

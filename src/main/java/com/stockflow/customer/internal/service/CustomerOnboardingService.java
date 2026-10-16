@@ -186,7 +186,7 @@ public class CustomerOnboardingService {
         record Created(CustomerSummary customer, PortalInvitationLink link) {
         }
         Created created = writeRejectingDuplicates(() -> transactions.execute(status -> {
-            if (taxCode != null && customers.isTaxCodeLive(taxCode, null)) {
+            if (taxCode != null && customers.isTaxCodeTaken(taxCode, null)) {
                 throw new BusinessException(ErrorCode.CUSTOMER_TAX_CODE_ALREADY_EXISTS);
             }
             if (customers.findByEmail(email).isPresent()) {

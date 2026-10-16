@@ -26,15 +26,13 @@ interface CustomerJpaRepository extends BaseJpaRepository<CustomerJpaEntity> {
     @Query("select c from CustomerJpaEntity c where c.id = :id")
     Optional<CustomerJpaEntity> lockById(@Param("id") UUID id);
 
-    /** Mirrors uk_customer_tax_code_live: the code is taken by a pending or active customer. */
+    /** Mirrors uk_customer_tax_code (V20261015000830): the code is another customer's, whatever its status. */
     @Query("""
             select count(c) > 0 from CustomerJpaEntity c
             where c.taxCode = :taxCode
-              and c.status in (com.stockflow.customer.internal.domain.CustomerStatus.PENDING_ACTIVATION,
-                               com.stockflow.customer.internal.domain.CustomerStatus.ACTIVE)
               and (:exceptId is null or c.id <> :exceptId)
             """)
-    boolean existsLiveTaxCode(@Param("taxCode") String taxCode, @Param("exceptId") UUID exceptId);
+    boolean existsTaxCode(@Param("taxCode") String taxCode, @Param("exceptId") UUID exceptId);
 
     /** {@code [segmentId, count]} for every group that holds a customer. */
     @Query("select c.segmentId, count(c) from CustomerJpaEntity c where c.segmentId is not null group by c.segmentId")

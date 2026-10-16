@@ -10,13 +10,14 @@ import java.util.Locale;
  */
 final class CustomerConstraints {
 
-    static final String TAX_CODE_LIVE = "uk_customer_tax_code_live";
+    /** V20261015000830: one customer per tax code in every status (was uk_customer_tax_code_live, live ones only). */
+    static final String TAX_CODE = "uk_customer_tax_code";
 
     private CustomerConstraints() {
     }
 
     static boolean isTaxCodeTaken(Throwable error) {
-        return violated(error, TAX_CODE_LIVE);
+        return violated(error, TAX_CODE);
     }
 
     /** True when the cause chain names {@code constraint}, by Hibernate's parse or the driver's message. */

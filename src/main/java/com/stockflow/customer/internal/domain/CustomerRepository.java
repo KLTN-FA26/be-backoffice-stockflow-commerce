@@ -12,7 +12,8 @@ public interface CustomerRepository extends AggregateRepository<Customer, UUID> 
     Optional<Customer> findByUserIdForUpdate(UUID userId);
     Optional<Customer> findByEmail(String email);
     /** Whether a PENDING_ACTIVATION or ACTIVE customer other than {@code exceptCustomerId} has this code. */
-    boolean isTaxCodeLive(String taxCode, UUID exceptCustomerId);
+    /** BR-01 (decided 16/10/2026): another customer holds this normalised tax code, in any status. */
+    boolean isTaxCodeTaken(String taxCode, UUID exceptCustomerId);
 
     boolean segmentExists(UUID segmentId);
 }

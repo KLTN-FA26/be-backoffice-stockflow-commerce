@@ -236,13 +236,12 @@ class CustomerServiceImpl implements CustomerService {
     }
 
     /**
-     * BR-01: one live (pending or active) customer per tax code. Checked first for a clear 409, and
-     * enforced by uk_customer_tax_code_live for the writer that races past the check.
+     * BR-01, decided 16/10/2026: one customer record per tax code in every status. A BLOCKED customer cannot come back
+     * under a new record, and a closed one is reopened rather than created again. Checked first for a clear 409, and
+     * enforced by uk_customer_tax_code (V20261015000830) for the writer that races past the check.
      */
     private void requireTaxCodeFree(Customer customer) {
-        boolean live = customer.status() == CustomerStatus.ACTIVE
-                || customer.status() == CustomerStatus.PENDING_ACTIVATION;
-        if (live && customer.taxCode() != null && customers.isTaxCodeLive(customer.taxCode(), customer.id())) {
+        if (customer.taxCode() != null && customers.isTaxCodeTaken(customer.taxCode(), customer.id())) {
             throw new BusinessException(ErrorCode.CUSTOMER_TAX_CODE_ALREADY_EXISTS);
         }
     }

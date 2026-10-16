@@ -160,7 +160,8 @@ class B2bOnboardingIntegrationTest {
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.customer.fullName").value("Cong ty TNHH Ly Giay Sai Gon"))
                 .andExpect(jsonPath("$.data.customer.email").value(email))
-                .andExpect(jsonPath("$.data.customer.taxCode").value(mst + "-001"))
+                // Review of #109, item 9: masked in the invitation response; the staff detail shows it whole.
+                .andExpect(jsonPath("$.data.customer.taxCode").value(masked(mst + "-001")))
                 .andExpect(jsonPath("$.data.customer.status").value("PENDING_ACTIVATION"))
                 .andExpect(jsonPath("$.data.invitation.delivery").value("SENT"))
                 .andExpect(jsonPath("$.data.invitation.expiresAt").isNotEmpty())
@@ -456,6 +457,29 @@ class B2bOnboardingIntegrationTest {
     }
 
     @Test
+    void theTaxCodeIsWholeOnlyOnTheStaffDetailAndIsFoundOnlyWhole() throws Exception {
+        // Review of #109, item 9: a company's tax code or a household's personal id is PII.
+        String mst = mst();
+        String created = create(sales, json(Map.of("companyName", "Masked Co", "taxCode", mst, "contactName", "A",
+                "email", unique("mask"))), null).andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.customer.taxCode").value(masked(mst)))
+                .andReturn().getResponse().getContentAsString();
+        UUID customerId = UUID.fromString(mapper.readTree(created).at("/data/customer/customerId").asText());
+
+        mvc.perform(get("/api/v1/customers").param("q", mst).header("Authorization", "Bearer " + sales))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items.length()").value(1))
+                .andExpect(jsonPath("$.data.items[0].customerId").value(customerId.toString()))
+                .andExpect(jsonPath("$.data.items[0].taxCode").value(masked(mst)));
+        // A part of the code finds nothing: nobody walks the codes digit by digit through the search box.
+        mvc.perform(get("/api/v1/customers").param("q", mst.substring(2, 8)).header("Authorization", "Bearer " + sales))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[?(@.customerId == '" + customerId + "')]").isEmpty());
+        mvc.perform(get("/api/v1/customers/" + customerId).header("Authorization", "Bearer " + sales))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.taxCode").value(mst));
+    }
+
+    @Test
     void aTaxCodeBelongsToOneLiveCustomerInAnySpellingAndRacesEndInOneWinner() throws Exception {
         String mst = mst();
         String created = create(sales, json(Map.of("companyName", "First", "taxCode", mst, "contactName", "A",
@@ -472,16 +496,26 @@ class B2bOnboardingIntegrationTest {
         create(sales, json(Map.of("companyName", "Branch", "taxCode", mst + "-002", "contactName", "C",
                 "email", unique("mst-branch"))), null).andExpect(status().isCreated());
 
-        // BR-01 covers live customers only: once the first is closed, the code may be onboarded again,
-        // and the closed one cannot come back while the new one holds it.
+        // BR-01, decided 16/10/2026: one record per tax code in every status. A closed customer is not created
+        // again under its code - it is reopened, with a reason and its history; a blocked one cannot come back
+        // under a new record at all.
         changeStatus(first, "INACTIVE").andExpect(status().isOk());
-        String again = create(sales, json(Map.of("companyName", "Again", "taxCode", mst, "contactName", "D",
-                "email", unique("mst-again"))), null).andExpect(status().isCreated()).andReturn().getResponse()
-                .getContentAsString();
-        reopen(first, "Back with the same tax code").andExpect(status().isConflict())
+        create(sales, json(Map.of("companyName", "Again", "taxCode", mst, "contactName", "D",
+                "email", unique("mst-again"))), null).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("CUSTOMER_TAX_CODE_ALREADY_EXISTS"));
-        assertThat(customerStatus(first)).isEqualTo("INACTIVE");
-        assertThat(mapper.readTree(again).at("/data/customer/taxCode").asText()).isEqualTo(mst);
+        reopen(first, "Back with the same tax code").andExpect(status().isOk());
+        assertThat(customerStatus(first)).isIn("PENDING_ACTIVATION", "ACTIVE");
+        // An existing BLOCKED customer (only an activated one can be blocked; set here as one would find it).
+        new TransactionTemplate(transactions).executeWithoutResult(tx -> jdbc.update(
+                "UPDATE customer.customer SET status = 'BLOCKED' WHERE id = ?", first));
+        create(sales, json(Map.of("companyName", "Around the block", "taxCode", mst, "contactName", "E",
+                "email", unique("mst-blocked"))), null).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("CUSTOMER_TAX_CODE_ALREADY_EXISTS"));
+        // Without a tax code (a household business, a small shop) nothing is constrained.
+        for (String who : List.of("mst-none-1", "mst-none-2")) {
+            create(sales, json(Map.of("companyName", "Quan nho", "contactName", "F", "email", unique(who))), null)
+                    .andExpect(status().isCreated());
+        }
 
         String raced = mst();
         List<Callable<Object>> attempts = new ArrayList<>();
@@ -528,7 +562,10 @@ class B2bOnboardingIntegrationTest {
                         .header("Authorization", "Bearer " + customerToken).contentType("application/json")
                         .content(json(Map.of("fullName", "Self Renamed", "version", version(customerId),
                                 "taxCode", mst()))))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.taxCode").value(corrected));
+                // Unchanged by the customer, and shown to them masked: they cannot change it (review of #109, item 9).
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.taxCode").value(masked(corrected)));
+        mvc.perform(get("/api/v1/customers/" + customerId).header("Authorization", "Bearer " + sales))
+                .andExpect(jsonPath("$.data.taxCode").value(corrected));
         changeStatus(customerId, "PENDING_ACTIVATION").andExpect(status().isConflict());
 
         // A pending customer that Sales closes cannot be activated from its old link any more.
@@ -942,6 +979,16 @@ class B2bOnboardingIntegrationTest {
         return identities.login(new LoginCommand(username, PASSWORD, null, "scrum450-test")).accessToken();
     }
 
+    /** What a list or an invitation response shows: the first and last three kept (review of #109, item 9). */
+    private static String masked(String code) {
+        StringBuilder out = new StringBuilder();
+        for (int i = 0; i < code.length(); i++) {
+            char c = code.charAt(i);
+            out.append(i < 3 || i >= code.length() - 3 || !Character.isLetterOrDigit(c) ? c : '*');
+        }
+        return out.toString();
+    }
+
     private String customerStatus(UUID customerId) {
         return jdbc.queryForObject("SELECT status FROM customer.customer WHERE id=?", String.class, customerId);
     }
@@ -954,7 +1001,7 @@ class B2bOnboardingIntegrationTest {
         return mapper.writeValueAsString(body);
     }
 
-    /** A fresh 10-digit tax code, so tests never collide on uk_customer_tax_code_live. */
+    /** A fresh 10-digit tax code, so tests never collide on uk_customer_tax_code. */
     private static String mst() {
         return String.format("%010d",
                 java.util.concurrent.ThreadLocalRandom.current().nextLong(1_000_000_000L, 9_999_999_999L));
