@@ -160,6 +160,13 @@ class QuoteSecurityIntegrationTest {
         send(post(QUOTES + "/" + id + "/conversion"), coordinator, Map.of("version", version + 1))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("INVALID_QUOTE_TRANSITION"));
+        // Decision 2026-10-17: the coordinator reads quotes and turns accepted ones into orders; it never edits one.
+        send(post(QUOTES + "/" + id + "/sending"), coordinator, Map.of("version", version + 1))
+                .andExpect(status().isForbidden());
+        send(post(QUOTES + "/" + id + "/cancellation"), coordinator, Map.of("version", version + 1,
+                "reason", "Not mine to cancel")).andExpect(status().isForbidden());
+        send(post(QUOTES + "/" + id + "/revision"), coordinator, Map.of("version", version + 1))
+                .andExpect(status().isForbidden());
     }
 
     @Test

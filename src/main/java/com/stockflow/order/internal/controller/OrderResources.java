@@ -19,6 +19,13 @@ public final class OrderResources {
     /** B2B quotes (SCRUM-448), seeded by V20261017000300. */
     public static final String QUOTES = "sales-quotes";
 
+    /**
+     * Turning an accepted quote into its order (decision 2026-10-17): Sales' and the order coordinator's, who does not
+     * edit quotes. Its own resource so neither {@code sales-quotes:UPDATE} (editing) nor {@code sales-orders:CREATE}
+     * (which the portal customer holds) has to stand for it. Seeded by V20261017000300.
+     */
+    public static final String QUOTE_CONVERSIONS = "sales-quote-conversions";
+
     private OrderResources() {
     }
 }

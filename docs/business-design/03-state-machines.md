@@ -419,6 +419,10 @@ artwork and cannot be resold.
   is owed as one `CANCELLATION_FEE` receivable; a payment of that receivable counts as kept (retained = the fee,
   at most what was paid). It is **never above the order total**. Below what was paid the rest is refunded through
   the refund process. `ck_order_fee_after_printing`, `ck_order_fee_within_total` say it again in the table.
+- **No cancellation by the system once printing started** (decision 2026-10-17): a failed payment or an unpaid
+  hold running out does not cancel such an order; it stays as it is and Sales and the order coordinators are told
+  (`OrderCancellationReferred`, in-app) to settle the fee, the blanks and the printed goods and to cancel by hand
+  if they must (`CANCELLATION_NEEDS_STAFF` for any cancellation without a person).
 - **PACKED and later** is enforced on every path, including an approved request and a payment failure: once a
   package of the order is completed (`customer_order.packed_at`) the order goes through a return (RMA). Printing
   started and package completed are recorded by production and fulfillment under the order's row lock, so a
@@ -797,7 +801,7 @@ stateDiagram-v2
 |---|---|---|---|---|---|
 | DRAFT | SENT | send | Sales staff | discount within the sales staff's limit, or approved | — |
 | SENT | ACCEPTED | accept | Customer (portal) | within validity; every new design has an APPROVED sample (BR-PRD-08) | — |
-| ACCEPTED | CONVERTED | create order | system / Sales staff | lines reserved (BR-ORD-001) | `OrderPlaced` |
+| ACCEPTED | CONVERTED | create order | Sales staff or order coordinator (`sales-quote-conversions:CREATE`; editing a quote is Sales' - `sales-quotes:UPDATE`, which the coordinator does not hold, decision 2026-10-17) | lines reserved (BR-ORD-001) | `OrderPlaced` |
 | ACCEPTED | CANCELLED | cancel | Sales staff | a SKU on the quote is INACTIVE/DISCONTINUED, so it can never be converted; reason required and kept in the history; the customer still sees it; a new quote follows if the goods are still wanted (decision 2026-10-17) | — |
 | SENT | EXPIRED | validity ends | system | — | — |
 

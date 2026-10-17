@@ -421,7 +421,7 @@ class PrintRunIntegrationTest {
     }
 
     @Test
-    @DisplayName("audit P1-4: an order cancelled by Sales after a QC round cancels the job and asks the write-off in Sales' name; one cancelled by the system leaves the job ON_HOLD for the manager")
+    @DisplayName("audit P1-4: an order cancelled by Sales after a QC round cancels the job and asks the write-off in Sales' name; the system cancels no order that started printing, and one it cancels before printing leaves the job with issued blanks ON_HOLD for the manager")
     void anOrderCancelledAfterQcHandsTheGoodUnitsToAWriteOff() throws Exception {
         Line bySales = released(4);
         issueAll(bySales.productionOrderId());
@@ -438,11 +438,17 @@ class PrintRunIntegrationTest {
                  WHERE s.production_order_id = ? AND s.reason = 'OTHER' AND a.requested_by = ? AND a.quantity_delta < 0""",
                 Integer.class, bySales.productionOrderId(), sales.userId())).isPositive();
 
+        // Decision 2026-10-17: once printing started the system cancels nothing on its own - staff decide.
+        Line printedBySystem = released(4);
+        issueAll(printedBySystem.productionOrderId());
+        runs.startPrinting(printer, printedBySystem.productionOrderId());
+        assertThatThrownBy(() -> WithCurrentUser.run(TestUsers.admin(), DataScope.ALL,
+                () -> salesOrders.cancel(printedBySystem.orderId(), "Payment never came")))
+                .extracting(PrintRunIntegrationTest::code).isEqualTo(ErrorCode.CANCELLATION_NEEDS_STAFF);
+
+        // Before printing it may; the job's issued blanks wait for a manager to cancel it under their own name.
         Line bySystem = released(4);
         issueAll(bySystem.productionOrderId());
-        runs.startPrinting(printer, bySystem.productionOrderId());
-        runs.recordOutput(printer, bySystem.productionOrderId(), 4, List.of());
-        runs.recordQc(inspector, bySystem.productionOrderId(), 3, 1, "Smudge", null);
         WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> salesOrders.cancel(bySystem.orderId(),
                 "Payment never came"));
         Await.until("the job waits for the manager", ASYNC, () -> detail(bySystem.productionOrderId()).summary()

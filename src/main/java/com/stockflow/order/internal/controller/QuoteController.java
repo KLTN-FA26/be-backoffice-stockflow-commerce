@@ -156,7 +156,9 @@ class QuoteController {
     @PostMapping("/{quoteId}/conversion")
     @Operation(summary = "ACCEPTED -> CONVERTED: place the one sales order at the accepted quantities and prices; "
             + "a repeat returns the same order")
-    @RequiresPermission(resource = OrderResources.QUOTES, action = Action.UPDATE)
+    // Decision 2026-10-17: converting an accepted quote is the coordinator's work as much as Sales' - its own
+    // resource, so the coordinator need not hold the right to edit quotes, and no customer holds it.
+    @RequiresPermission(resource = OrderResources.QUOTE_CONVERSIONS, action = Action.CREATE)
     public ApiResponse<QuoteResponse> convert(@PathVariable UUID quoteId,
                                               @Valid @RequestBody QuoteRequests.Conversion request,
                                               @AuthenticatedUser CurrentUser user) {

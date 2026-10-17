@@ -52,8 +52,12 @@ class QuoteMigrationUpgradeTest {
                         .doesNotContain("sales-quotes:APPROVE");
                 assertThat(grants(db, "CUSTOMER")).filteredOn(g -> g.startsWith("sales-quotes:"))
                         .containsExactlyInAnyOrder("sales-quotes:VIEW_PAGE", "sales-quotes:READ", "sales-quotes:APPROVE");
-                assertThat(grants(db, "ORDER_COORDINATOR")).filteredOn(g -> g.startsWith("sales-quotes:"))
-                        .containsExactlyInAnyOrder("sales-quotes:VIEW_PAGE", "sales-quotes:READ", "sales-quotes:UPDATE");
+                // Decision 2026-10-17: the coordinator reads quotes and converts accepted ones; it never edits one.
+                assertThat(grants(db, "ORDER_COORDINATOR")).filteredOn(g -> g.startsWith("sales-quote"))
+                        .containsExactlyInAnyOrder("sales-quotes:VIEW_PAGE", "sales-quotes:READ",
+                                "sales-quote-conversions:CREATE");
+                assertThat(grants(db, "SALES_STAFF")).contains("sales-quote-conversions:CREATE");
+                assertThat(grants(db, "CUSTOMER")).doesNotContain("sales-quote-conversions:CREATE");
                 Map<String, Long> versionsAfter = versions(db);
                 for (String role : versionsBefore.keySet()) {
                     boolean changed = List.of("SALES_STAFF", "ORDER_COORDINATOR", "CUSTOMER", "SYSTEM_ADMIN").contains(role);

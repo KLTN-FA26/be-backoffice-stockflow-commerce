@@ -98,6 +98,7 @@ class PrintedGoodsAtPackingIntegrationTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager entityManager;
     @Autowired TransactionTemplate tx;
+    @Autowired org.springframework.context.ApplicationEventPublisher publisher;
 
     private ProductionFixtures fixtures;
     private UUID hcm;
@@ -379,6 +380,34 @@ class PrintedGoodsAtPackingIntegrationTest {
         assertThat(code(catchThrowable(() -> stockOperations.approve(renewed.adjustmentId(), approver.userId()))))
                 .as("deducted once").isEqualTo(ErrorCode.INVALID_ADJUSTMENT_TRANSITION);
         assertThat(onHandAtPacking()).isEqualTo(before - 3);
+    }
+
+    @Test
+    @DisplayName("decision 2026-10-17: a payment failing after printing started cancels nothing; Sales and the coordinators are told, once")
+    void aFailedPaymentAfterPrintingIsReferredToStaff() throws Exception {
+        Line line = inPacking(2);
+        CurrentUser salesPerson = assignable(Role.SALES_STAFF);
+        CurrentUser coordinatorPerson = assignable(Role.ORDER_COORDINATOR);
+        var failed = new com.stockflow.contracts.PaymentFailed(line.orderId(), UUID.randomUUID(), "CARD_DECLINED",
+                "declined");
+
+        tx.executeWithoutResult(s -> publisher.publishEvent(failed));
+
+        Await.until("Sales and the coordinator are told", ASYNC, () -> jdbc.queryForObject("""
+                SELECT count(*) FROM notification.user_notification WHERE category = 'ORDER_ATTENTION'
+                   AND source_id = ? AND recipient_id IN (?, ?)""", Integer.class, line.orderId().toString(),
+                salesPerson.userId(), coordinatorPerson.userId()) == 2);
+        assertThat(salesOrders.findById(line.orderId()).orElseThrow().status()).as("not cancelled")
+                .isEqualTo(OrderStatus.READY_TO_FULFILL);
+        tx.executeWithoutResult(s -> publisher.publishEvent(failed));
+        Thread.sleep(800);
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM notification.user_notification WHERE category = 'ORDER_ATTENTION'
+                   AND source_id = ? AND recipient_id = ?""", Integer.class, line.orderId().toString(),
+                salesPerson.userId())).as("told once").isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM event_publication WHERE completion_date IS NULL AND serialized_event LIKE ?""",
+                Integer.class, "%" + line.orderId() + "%")).as("nothing left to retry").isZero();
     }
 
     @Test

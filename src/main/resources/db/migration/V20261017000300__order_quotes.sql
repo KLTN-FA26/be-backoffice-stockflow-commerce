@@ -171,7 +171,9 @@ END $$;
 
 -- Who may do what with quotes. Resource sales-quotes, declared by the order module's QuoteController.
 --   SALES_STAFF        drafts, revises, sends, cancels and converts (CREATE, UPDATE)
---   ORDER_COORDINATOR  follows quotes and converts an accepted one (UPDATE)
+--   ORDER_COORDINATOR  follows quotes (READ) and converts an accepted one (sales-quote-conversions:CREATE); it
+--                      never edits a quote (decision 2026-10-17)
+--   sales-quote-conversions:CREATE - converting an accepted quote: SALES_STAFF, ORDER_COORDINATOR, SYSTEM_ADMIN
 --   CUSTOMER           reads the quotes sent to them and answers (APPROVE) - the answer is the
 --                      customer's own (03 §18: accept is "Customer (portal)"), so no staff role holds it
 --   SYSTEM_ADMIN       everything, as for every permission (V20260929000200)
@@ -184,7 +186,7 @@ INSERT INTO identity.role_permission (id, role_id, permission_id, version, creat
 SELECT gen_random_uuid(), role.id, permission.id, 0, NOW(), 'flyway'
 FROM (VALUES
           ('SALES_STAFF',       'VIEW_PAGE,READ,CREATE,UPDATE'),
-          ('ORDER_COORDINATOR', 'VIEW_PAGE,READ,UPDATE'),
+          ('ORDER_COORDINATOR', 'VIEW_PAGE,READ'),
           ('CUSTOMER',          'VIEW_PAGE,READ,APPROVE'),
           ('SYSTEM_ADMIN',      'VIEW_PAGE,READ,CREATE,UPDATE,APPROVE')
      ) AS g(role_code, actions)
@@ -192,6 +194,17 @@ JOIN identity.app_role role ON role.code = g.role_code
 JOIN identity.permission permission
   ON permission.resource = 'sales-quotes'
  AND permission.action = ANY (string_to_array(g.actions, ','))
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO identity.permission (id, code, resource, action, version, created_at, created_by)
+VALUES (gen_random_uuid(), 'sales-quote-conversions:CREATE', 'sales-quote-conversions', 'CREATE', 0, NOW(), 'flyway')
+ON CONFLICT (code) DO NOTHING;
+
+INSERT INTO identity.role_permission (id, role_id, permission_id, version, created_at, created_by)
+SELECT gen_random_uuid(), role.id, permission.id, 0, NOW(), 'flyway'
+FROM identity.app_role role
+JOIN identity.permission permission ON permission.code = 'sales-quote-conversions:CREATE'
+WHERE role.code IN ('SALES_STAFF', 'ORDER_COORDINATOR', 'SYSTEM_ADMIN')
 ON CONFLICT (role_id, permission_id) DO NOTHING;
 
 UPDATE identity.app_role
