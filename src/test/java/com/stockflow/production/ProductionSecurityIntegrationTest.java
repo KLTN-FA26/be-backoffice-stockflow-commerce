@@ -354,6 +354,12 @@ class ProductionSecurityIntegrationTest {
                 java.util.Map.of("amount", new java.math.BigDecimal("12000.5"), "reason", "r", "detail", "d")))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
+        // Decision 2026-10-17: nothing is kept before printing - over HTTP it is a 409 with its code.
+        send(post(path), sales, java.util.Map.of("reasonCode", "CUSTOMER_REQUEST", "agreedFee", fee))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("CANCELLATION_FEE_BEFORE_PRINTING"));
+        tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE ordering.customer_order SET printing_started_at = NOW() WHERE id = ?", orderId));
         send(post(path), sales, java.util.Map.of("reasonCode", "CUSTOMER_REQUEST", "agreedFee", fee))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("CANCELLED"))

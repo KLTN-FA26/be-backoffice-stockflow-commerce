@@ -58,7 +58,8 @@ class QuoteTest {
                 QuoteStatus.DRAFT, EnumSet.of(QuoteStatus.SENT, QuoteStatus.CANCELLED),
                 QuoteStatus.SENT, EnumSet.of(QuoteStatus.ACCEPTED, QuoteStatus.CHANGES_REQUESTED, QuoteStatus.EXPIRED),
                 QuoteStatus.CHANGES_REQUESTED, EnumSet.of(QuoteStatus.DRAFT),
-                QuoteStatus.ACCEPTED, EnumSet.of(QuoteStatus.CONVERTED),
+                // CANCELLED: decision 2026-10-17, a SKU on the accepted quote stopped (Sales, with a reason).
+                QuoteStatus.ACCEPTED, EnumSet.of(QuoteStatus.CONVERTED, QuoteStatus.CANCELLED),
                 QuoteStatus.EXPIRED, EnumSet.noneOf(QuoteStatus.class),
                 QuoteStatus.CANCELLED, EnumSet.noneOf(QuoteStatus.class),
                 QuoteStatus.CONVERTED, EnumSet.noneOf(QuoteStatus.class));
