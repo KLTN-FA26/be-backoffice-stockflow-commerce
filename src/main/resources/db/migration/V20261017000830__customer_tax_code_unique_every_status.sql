@@ -11,7 +11,7 @@
 -- The tax code stays optional (household businesses, small shops): NULL is not constrained.
 --
 -- Data: existing duplicates are not merged, deleted or renumbered here - which record is the real customer is a
--- business decision. The file stops with the duplicated codes' customer ids instead, for manual reconciliation
+-- business decision. The file stops with the customer ids of each shared code instead (never the code), for manual reconciliation
 -- (tools/db/preflight/pr109_preflight.sql lists them read-only before a deploy).
 -- =============================================================================
 
@@ -19,7 +19,9 @@ DO $$
 DECLARE
     duplicates TEXT;
 BEGIN
-    SELECT string_agg(tax_code || ': ' || ids, '; ') INTO duplicates
+    -- Customer ids only, a group per shared code: the code itself is personal data for a household business and would
+    -- end up in the startup log (audit of #109).
+    SELECT string_agg('[' || ids || ']', '; ') INTO duplicates
       FROM (SELECT tax_code, string_agg(id::text, ', ' ORDER BY created_at, id) AS ids
               FROM customer.customer
              WHERE tax_code IS NOT NULL
@@ -28,8 +30,8 @@ BEGIN
              ORDER BY tax_code
              LIMIT 20) twins;
     IF duplicates IS NOT NULL THEN
-        RAISE EXCEPTION 'V20261017000830: tax codes held by more than one customer, reconcile them by hand first '
-            '(first 20): %', duplicates;
+        RAISE EXCEPTION 'V20261017000830: customers sharing one tax code, reconcile them by hand first '
+            '(first 20 groups): %', duplicates;
     END IF;
 END $$;
 

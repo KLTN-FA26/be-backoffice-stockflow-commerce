@@ -43,11 +43,13 @@ class CustomerTaxCodeMigrationUpgradeTest {
                 var preflight = pg.execInContainer("psql", "-U", pg.getUsername(), "-d", pg.getDatabaseName(), "-X",
                         "-q", "-f", "/tmp/preflight.sql");
                 assertThat(preflight.getExitCode()).withFailMessage(preflight.getStderr()).isZero();
-                assertThat(preflight.getStderr()).contains("3. tax code 0319999901 is held by more than one customer",
-                        active.toString(), closed.toString());
+                assertThat(preflight.getStderr()).contains("3. these customers share one tax code",
+                        active.toString(), closed.toString())
+                        .as("ids only: the tax code is personal data for a household").doesNotContain("0319999901");
 
                 assertThatThrownBy(() -> flyway(pg, null).migrate()).isInstanceOf(FlywayException.class)
-                        .hasMessageContaining("0319999901").hasMessageContaining(closed.toString());
+                        .hasMessageContaining(active.toString()).hasMessageContaining(closed.toString())
+                        .hasMessageNotContaining("0319999901");
                 assertThat(number(db, "SELECT count(*) FROM customer.customer WHERE tax_code = '0319999901'"))
                         .as("nothing merged, deleted or renumbered").isEqualTo(2);
 

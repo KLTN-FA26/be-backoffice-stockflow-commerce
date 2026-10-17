@@ -72,6 +72,13 @@ buyer identity and receiving address, including a valid reply-to email. Set
 delivery. Validate with `docker compose config --quiet` before deploying. Mailpit captures messages
 for testing; it does not deliver them to external supplier inboxes.
 
+B2B onboarding (SCRUM-429) needs `PORTAL_ACTIVATION_URL` in `/opt/stockflow/.env`: the customer portal's
+activation page, e.g. `https://portal.<domain>/portal/activate` - the invitation e-mail links to it with the token
+appended. Compose refuses a missing or empty value. Without it the application would answer 503
+`PORTAL_INVITATION_UNAVAILABLE` to every customer creation, and since self-registration is closed no customer could
+be created at all. Check after the deploy: Sales creates a test customer and gets 201, and the mail in Mailpit carries
+the portal link.
+
 ---
 
 ## 1. One-time: the VPS
