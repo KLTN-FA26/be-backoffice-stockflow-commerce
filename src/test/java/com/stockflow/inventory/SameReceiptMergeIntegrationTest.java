@@ -127,9 +127,12 @@ class SameReceiptMergeIntegrationTest {
                 DemoData.CUSTOMER_ID, UUID.randomUUID()));
         List<UUID> holds = tx.execute(s -> {
             List<UUID> ids = new java.util.ArrayList<>();
-            ids.addAll(inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), 3, order)).reservationIds());
-            ids.addAll(inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), 4, order)).reservationIds());
+            inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), 3, order));
+            inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), 4, order));
             inventory.pinReservations(order);
+            // SCRUM-152: checkout holds the SKU; the release puts each reservation on the FIFO layer as an allocation.
+            inventory.allocate(new com.stockflow.inventory.api.AllocateStockCommand(order, "HCM")).allocations()
+                    .forEach(allocation -> ids.addAll(allocation.holdIds()));
             return ids;
         });
         for (UUID hold : holds) {

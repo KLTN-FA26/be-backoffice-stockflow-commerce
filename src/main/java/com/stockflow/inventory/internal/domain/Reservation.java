@@ -53,6 +53,11 @@ public final class Reservation {
     private ReservationStatus status;
     private ReleaseReason releaseReason;
     private Instant closedAt;
+    /**
+     * The {@link SkuReservation} this hold was allocated from (F-FUL step 02), null for a production hold and for a
+     * checkout hold placed on a stock item before SKU reservations existed. An allocation never expires.
+     */
+    private final UUID allocatedFrom;
 
     /** An order's hold, as stored. */
     public Reservation(ReservationId id, UUID orderId, UUID rootRequestId, UUID requestId,
@@ -62,11 +67,26 @@ public final class Reservation {
                 reservedAt, expiresAt, status, releaseReason, closedAt);
     }
 
-    /** Full constructor, used by the persistence mapper when rehydrating a stored row. */
+    /** A hold that was not allocated from a SKU reservation, as stored. */
     public Reservation(ReservationId id, UUID orderId, UUID productionOrderId, UUID rootRequestId, UUID requestId,
                        Quantity quantity, Instant reservedAt, Instant expiresAt,
                        ReservationStatus status, ReleaseReason releaseReason, Instant closedAt) {
+        this(id, orderId, productionOrderId, rootRequestId, requestId, quantity, reservedAt, expiresAt, status,
+                releaseReason, closedAt, null);
+    }
+
+    /** Full constructor, used by the persistence mapper when rehydrating a stored row. */
+    public Reservation(ReservationId id, UUID orderId, UUID productionOrderId, UUID rootRequestId, UUID requestId,
+                       Quantity quantity, Instant reservedAt, Instant expiresAt,
+                       ReservationStatus status, ReleaseReason releaseReason, Instant closedAt, UUID allocatedFrom) {
         this.id = java.util.Objects.requireNonNull(id, "id");
+        if (status == ReservationStatus.ALLOCATED) {
+            throw new IllegalArgumentException("A hold on a stock item is never ALLOCATED; its SKU reservation is");
+        }
+        if (allocatedFrom != null && (orderId == null || expiresAt != null)) {
+            throw new IllegalArgumentException("An allocation belongs to an order and does not expire");
+        }
+        this.allocatedFrom = allocatedFrom;
         if ((orderId == null) == (productionOrderId == null)) {
             throw new IllegalArgumentException("A hold belongs to exactly one order or one production order");
         }
@@ -93,6 +113,18 @@ public final class Reservation {
                             Instant now, java.time.Duration ttl) {
         return new Reservation(ReservationId.newId(), orderId, rootRequestId, requestId, quantity,
                 now, now.plus(ttl), ReservationStatus.HELD, null, null);
+    }
+
+    /**
+     * An allocation (F-FUL step 02): units of a {@link SkuReservation} placed on this stock item when the order was
+     * released to its warehouse. Pinned - an allocation has no {@code expires_at} (X-RESV). Package-private, like
+     * {@link #open}.
+     */
+    static Reservation allocate(UUID orderId, UUID allocatedFrom, UUID rootRequestId, UUID requestId,
+                                Quantity quantity, Instant now) {
+        return new Reservation(new ReservationId(com.stockflow.common.id.Identifiers.newId()), orderId, null,
+                rootRequestId, requestId, quantity, now, null, ReservationStatus.HELD, null, null,
+                java.util.Objects.requireNonNull(allocatedFrom, "allocatedFrom"));
     }
 
     /** A production order's hold: pinned from the start. Package-private, like {@link #open}. */
@@ -152,7 +184,7 @@ public final class Reservation {
      * @return true if this call gave an active pinned hold its deadline
      */
     boolean rearm(Instant deadline) {
-        if (!status.isActive() || expiresAt != null || productionOrderId != null) {
+        if (!status.isActive() || expiresAt != null || productionOrderId != null || allocatedFrom != null) {
             return false;
         }
         this.expiresAt = java.util.Objects.requireNonNull(deadline, "deadline");
@@ -211,4 +243,8 @@ public final class Reservation {
     public ReservationStatus status() { return status; }
     public ReleaseReason releaseReason() { return releaseReason; }
     public Instant closedAt() { return closedAt; }
+    public UUID allocatedFrom() { return allocatedFrom; }
+
+    /** Whether this hold is an allocation of a SKU reservation rather than a production or pre-split checkout hold. */
+    public boolean isAllocation() { return allocatedFrom != null; }
 }

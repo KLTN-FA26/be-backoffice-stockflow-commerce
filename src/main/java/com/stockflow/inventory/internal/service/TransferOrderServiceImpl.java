@@ -62,13 +62,16 @@ class TransferOrderServiceImpl implements TransferOrders {
     private final int approvalThreshold;
     private final InventoryControlService controls;
     private final InventoryPolicyRepository policies;
+    private final com.stockflow.inventory.internal.domain.SkuReservationRepository skuReservations;
 
     TransferOrderServiceImpl(TransferOrderRepository transfers, TransferOrderSearch search,
                              WarehouseDirectory warehouses, StockItemRepository stockItems, StockMovementLog ledger,
                              Clock clock,
             InventoryControlService controls,
             InventoryPolicyRepository policies,
+                             com.stockflow.inventory.internal.domain.SkuReservationRepository skuReservations,
                              @Value("${stockflow.inventory.transfer.approval-threshold-units:100}") int approvalThreshold) {
+        this.skuReservations = skuReservations;
         this.transfers = transfers;
         this.search = search;
         this.warehouses = warehouses;
@@ -215,6 +218,25 @@ class TransferOrderServiceImpl implements TransferOrders {
      * lowered, with one TRANSFER_OUT ledger line each. The units are then owned by the transfer —
      * counted in no warehouse — until receipt.
      */
+    /**
+     * SCRUM-152: checkout reservations sit on no stock row, so nothing on a row stops a transfer from shipping the
+     * units they were promised. Under the SKU locks just taken, a dispatch may take only what is left of each SKU's
+     * sellable stock once its live reservations are counted; units in transit are sellable nowhere.
+     */
+    private void requireSkuReservationsCovered(TransferOrder order, java.time.LocalDate today) {
+        Map<com.stockflow.common.domain.Sku, Integer> shipped = new LinkedHashMap<>();
+        order.lines().forEach(line -> shipped.merge(line.sku(), line.shipped(), Integer::sum));
+        Map<com.stockflow.common.domain.Sku, Integer> unheld = stockItems.sumAvailableBySkus(shipped.keySet(), today);
+        Map<String, Long> reserved = skuReservations.heldBySku(
+                shipped.keySet().stream().map(com.stockflow.common.domain.Sku::code).toList());
+        shipped.forEach((sku, quantity) -> {
+            long free = unheld.getOrDefault(sku, 0) - reserved.getOrDefault(sku.code(), 0L);
+            if (quantity > 0 && free < quantity) {
+                throw new InsufficientStockException(sku.code(), quantity, (int) Math.max(0, free));
+            }
+        });
+    }
+
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "transfer-order", resourceId = "#transferId")
     public Transfer dispatch(UUID transferId, UUID userId, Map<UUID, Integer> shippedByLine) {
@@ -225,6 +247,7 @@ class TransferOrderServiceImpl implements TransferOrders {
         // Match reservation and policy-edit lock order before planning or taking row locks.
         policies.lockReservationStock(
                 order.lines().stream().map(line -> line.sku().code()).collect(Collectors.toSet()));
+        requireSkuReservationsCovered(order, BusinessCalendar.date(now));
 
         record Take(TransferLine line, StockItemId stockItemId, Quantity quantity) {
         }
@@ -254,7 +277,7 @@ class TransferOrderServiceImpl implements TransferOrders {
             ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.TRANSFER_OUT,
                     item.sku(), item.lotNumber(), item.location(), null, take.quantity().value(), StockStatus.AVAILABLE,
                     StockMovement.ReferenceType.TRANSFER_ORDER_LINE, take.line().id(),
-                    "Transfer " + order.number(), userId, now));
+                    "Transfer " + order.number(), userId, now).ofLot(item.lotId()));
         }
         locked.values().forEach(stockItems::save);
         TransferOrder saved = transfers.save(order);

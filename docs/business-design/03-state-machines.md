@@ -250,6 +250,14 @@ stateDiagram-v2
 | ALLOCATED | CONSUMED | pick confirmed | Warehouse staff | picked qty = allocated qty | `StockDeducted` |
 | ALLOCATED | RELEASED | cancel after allocation | Order coordinator | not yet picked; put-back task raised (WBS 3.7.7.2) | `StockReservationReleased(ORDER_CANCELLED)` |
 
+**As built (SCRUM-152, 2026-10-17).** Both kinds live in `inventory.stock_reservation`. A SKU reservation
+(`stock_item_id` NULL) is the HELD row above: checkout, payment pin/re-arm, expiry sweep, cancellation. Release
+to a warehouse turns it ALLOCATED and writes one allocation per bin and lot (`stock_item_id` set,
+`allocated_from_id` = the reservation, `expires_at` NULL); each allocation then goes HELD → CONSUMED (pick) or
+RELEASED (cancel, or `SHORT_PICKED` when X-SHORT reallocates it elsewhere). The order line swaps the reservation id
+for the allocation ids. Production holds and checkout holds placed before this change are stock-item rows that
+were never SKU reservations; they keep their old lifecycle.
+
 **The reservation clock is the most under-specified part of the BRD.** WBS 3.14.5.1 says
 "time-limited" without saying how long. See `06-open-questions.md`, OQ-03.
 

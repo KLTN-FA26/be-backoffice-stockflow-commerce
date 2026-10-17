@@ -104,10 +104,12 @@ class FulfillmentServiceImpl implements FulfillmentService {
             throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT,
                     "Only a confirmed or released order can enter fulfillment; it is " + order.status());
         }
-        UUID warehouseId = pickingWarehouse(order);
+        UUID warehouseId = pickingWarehouse(order, assignedUserId);
         WarehouseScope.requireWarehouse(warehouseId);
         requireWarehouseAssignee(assignedUserId, warehouseId);
-        orders.releaseToFulfillment(orderId);
+        // SKU reservations still unallocated become allocations in this warehouse now (SCRUM-152, F-FUL step 02);
+        // the lines are planned from the allocations, so from the order as it reads afterwards.
+        order = orders.releaseToFulfillment(orderId, warehouseId);
         var now = clock.instant();
         var pick = new PickJpaEntity(Identifiers.newId(), null, orderId, order.orderNumber(), warehouseId,
                 PickStatus.PENDING);
@@ -379,6 +381,29 @@ class FulfillmentServiceImpl implements FulfillmentService {
         }
     }
 
+    private UUID warehouseToAllocate(OrderSummary order, UUID assignedUserId) {
+        List<UUID> able = inventory.warehousesAbleToAllocate(order.orderId());
+        if (able.isEmpty()) {
+            throw new BusinessException(ErrorCode.INSUFFICIENT_STOCK,
+                    "No warehouse holds enough pickable stock for every line of order %s".formatted(order.orderNumber()));
+        }
+        List<UUID> usable = able.stream()
+                .filter(warehouse -> WarehouseScope.restriction().map(scope -> scope.ids().contains(warehouse)).orElse(true))
+                .filter(warehouse -> assignedUserId != null && identities.assignableUsers(ASSIGNEE_ROLES, warehouse)
+                        .stream().anyMatch(user -> user.userId().equals(assignedUserId)))
+                .toList();
+        if (usable.size() == 1) {
+            return usable.get(0);
+        }
+        if (usable.isEmpty()) {
+            // The assignee check that follows names the real problem (BR-SEC-002) for the one warehouse there is.
+            return able.get(0);
+        }
+        throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT,
+                "Order %s can be picked in %d warehouses; release it to one of them first".formatted(
+                        order.orderNumber(), usable.size()));
+    }
+
     private PickJpaEntity requirePick(UUID taskId) {
         return picks.findById(taskId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
     }
@@ -425,11 +450,22 @@ class FulfillmentServiceImpl implements FulfillmentService {
      * order picked straight from CONFIRMED, where its holds are. Release does not check where the holds
      * sit, so they are checked here: stock in two warehouses, or outside the order's, cannot be picked as
      * one task (the goods would have to be moved by a transfer order first, docs 11 BR-01).
+     *
+     * <p>An order never released whose holds are still SKU reservations (SCRUM-152) sits in no warehouse yet. It
+     * is picked in the one warehouse that can allocate every line now, that the caller may work in and that the
+     * assignee belongs to (OQ-04: one order, one warehouse). None is {@code INSUFFICIENT_STOCK}; several is a
+     * choice for the coordinator, who releases the order to one of them first.</p>
      */
-    private UUID pickingWarehouse(OrderSummary order) {
+    private UUID pickingWarehouse(OrderSummary order, UUID assignedUserId) {
         List<OrderHold> holds = inventory.holdsOf(order.orderId());
+        if (order.warehouseId() == null && holds.stream().anyMatch(hold -> hold.locationCode() == null)) {
+            return warehouseToAllocate(order, assignedUserId);
+        }
         Map<UUID, Set<String>> skusByWarehouse = new java.util.LinkedHashMap<>();
         for (OrderHold hold : holds) {
+            if (hold.locationCode() == null) {
+                continue;   // a SKU reservation of a released order: allocated in that warehouse by the task
+            }
             UUID where = warehouses.findLocation(hold.locationCode()).map(StorageLocationView::warehouseId)
                     .orElseThrow(() -> new BusinessException(ErrorCode.LOCATION_NOT_FOUND,
                             "Stock held for the order sits at an unknown location"));

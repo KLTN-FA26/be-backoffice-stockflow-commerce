@@ -45,8 +45,11 @@ public final class ConfirmedDesigns {
     public static void stockBlanks(JdbcTemplate jdbc, TransactionTemplate tx, int units) {
         tx.executeWithoutResult(s -> {
             Integer free = jdbc.queryForObject("""
-                    SELECT COALESCE(SUM(on_hand - reserved), 0)::int FROM inventory.stock_item
-                     WHERE sku = ? AND status = 'AVAILABLE' AND location_code LIKE 'HCM-%'""", Integer.class, BLANK);
+                    SELECT (SELECT COALESCE(SUM(on_hand - reserved), 0) FROM inventory.stock_item
+                             WHERE sku = ? AND status = 'AVAILABLE' AND location_code LIKE 'HCM-%')
+                         - (SELECT COALESCE(SUM(quantity), 0) FROM inventory.stock_reservation
+                             WHERE sku = ? AND stock_item_id IS NULL AND status = 'HELD')""",
+                    Integer.class, BLANK, BLANK);   // SCRUM-152: checkout reservations promise stock on no row
             if (free < units) {
                 jdbc.update("""
                         INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version,

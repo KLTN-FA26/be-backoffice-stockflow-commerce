@@ -27,6 +27,11 @@ class LocationDirectoryAdapter implements LocationDirectory {
     }
 
     @Override
+    public java.util.Map<String, java.util.UUID> pickable(java.util.Collection<String> locations) {
+        return warehouses.pickableLocations(locations);
+    }
+
+    @Override
     public boolean isPackingArea(LocationId location) {
         return warehouses.findLocation(location.code())
                 .map(view -> view.areaType() == com.stockflow.warehouse.api.StorageLocationView.AreaType.PACKING)

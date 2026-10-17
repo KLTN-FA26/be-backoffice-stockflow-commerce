@@ -35,7 +35,8 @@ class CatalogSearchServiceTest {
     private final InventoryService inventory = mock(InventoryService.class);
     private final SearchProperties properties = new SearchProperties(1.0, 1.0, 10.0, 0.25, 0.2, 500);
     private final CatalogSearchService service =
-            new CatalogSearchService(repository, products, inventory, properties);
+            new CatalogSearchService(repository, products, inventory, properties,
+                    mock(com.stockflow.product.api.CategoryNavigation.class));
 
     private static Candidate candidate(String title, double score, String sku, Instant listedAt) {
         return new Candidate(UUID.randomUUID(), title.toLowerCase().replace(' ', '-'), title, null, score,
@@ -77,7 +78,8 @@ class CatalogSearchServiceTest {
     @Test
     void stockBonusFollowsTheConfiguredWeight() {
         var service = new CatalogSearchService(repository, products, inventory,
-                new SearchProperties(1.0, 1.0, 10.0, 1.0, 0.2, 500));
+                new SearchProperties(1.0, 1.0, 10.0, 1.0, 0.2, 500),
+                mock(com.stockflow.product.api.CategoryNavigation.class));
         var better = candidate("Better text", 0.9, "A-1", null);
         var stocked = candidate("Worse text", 0.5, "B-1", null);
         when(repository.match(any(), any(), anyInt())).thenReturn(List.of(better, stocked));

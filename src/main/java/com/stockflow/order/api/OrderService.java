@@ -56,6 +56,17 @@ public interface OrderService {
     OrderSummary releaseToFulfillment(UUID orderId);
 
     /**
+     * The order enters fulfillment from {@code warehouseId} (fulfillment's task creation). An order never released
+     * to a warehouse — a stock-only order picked straight from CONFIRMED — has its SKU reservations allocated there
+     * first (SCRUM-152, F-FUL step 02), in this transaction; an order released already keeps the warehouse and the
+     * allocations its release made. Idempotent.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code WAREHOUSE_NOT_FOUND}; {@code INSUFFICIENT_STOCK}
+     *         when the warehouse cannot cover a line, and then nothing changes
+     */
+    OrderSummary releaseToFulfillment(UUID orderId, UUID warehouseId);
+
+    /**
      * The carrier reported the order delivered (kltn-docs 09 §4.3): SHIPPED → DELIVERED, announced as
      * {@code OrderDelivered}. Idempotent for an order already delivered. Shipping (SCRUM-294) calls
      * this when it records the shipment's outcome.

@@ -13,7 +13,6 @@ import com.stockflow.contracts.ProductionCompleted;
 import com.stockflow.contracts.ProductionOrderHeld;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.ReserveStockCommand;
-import com.stockflow.inventory.api.ReserveStockResult;
 import com.stockflow.inventory.internal.service.StockOperations;
 import com.stockflow.order.api.CancelOrderCommand;
 import com.stockflow.order.api.CancellationFee;
@@ -184,12 +183,13 @@ class PrintRunIntegrationTest {
                     lineId, orderId, ProductionFixtures.BLANK, quantity, design.snapshotId(), design.checksum());
         });
         tx.executeWithoutResult(s -> {
-            ReserveStockResult held = inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), BLANK, quantity,
-                    orderId));
-            held.reservationIds().forEach(id -> jdbc.update(
-                    "INSERT INTO ordering.order_line_reservation (order_line_id, reservation_id) VALUES (?, ?)",
-                    lineId, id));
+            inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), BLANK, quantity, orderId));
             inventory.pinReservations(orderId);
+            // As the release does (SCRUM-152): the SKU reservation becomes allocations on HCM bins.
+            inventory.allocate(new com.stockflow.inventory.api.AllocateStockCommand(orderId, "HCM")).allocations()
+                    .get(0).holdIds().forEach(id -> jdbc.update(
+                            "INSERT INTO ordering.order_line_reservation (order_line_id, reservation_id) VALUES (?, ?)",
+                            lineId, id));
         });
         UUID productionOrderId = orderProduction.createFor(new OrderLinesReleasedForProduction(orderId, "SO-IT", hcm,
                 List.of(new OrderLinesReleasedForProduction.Line(lineId, ProductionFixtures.BLANK, quantity,

@@ -50,7 +50,8 @@ class CancelOwnOrderTest {
             mock(DesignService.class), mock(OrderHoldJpaRepository.class), mock(CustomerService.class),
             mock(com.stockflow.catalog.api.CatalogService.class), mock(OrderPayments.class), requests,
             mock(com.stockflow.order.internal.domain.CreditChecks.class),
-                mock(com.stockflow.payment.api.PaymentService.class));
+                mock(com.stockflow.payment.api.PaymentService.class),
+                mock(OrderStockAllocation.class), mock(com.stockflow.order.internal.domain.WarehouseDirectory.class));
 
     private Order orderOf(UUID customerId) {
         var order = Order.draft(OrderNumber.of(LocalDate.of(2026, 9, 20), 7), customerId, UUID.randomUUID(),

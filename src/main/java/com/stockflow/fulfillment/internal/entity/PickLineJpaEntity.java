@@ -98,6 +98,11 @@ public class PickLineJpaEntity extends BaseEntity {
         this.putBackAt = putBackAt;
     }
 
+    /** The units a picker did not find at the bin (X-SHORT); {@code ck_pick_line_within_allocation} bounds it. */
+    public void recordShort(int shortQty) {
+        this.shortQty = shortQty;
+    }
+
     public UUID getPickId() { return pickId; }
     public UUID getOrderLineId() { return orderLineId; }
     public UUID getReservationId() { return reservationId; }

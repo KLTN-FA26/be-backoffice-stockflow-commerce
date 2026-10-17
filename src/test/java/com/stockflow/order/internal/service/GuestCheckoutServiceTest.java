@@ -46,7 +46,8 @@ class GuestCheckoutServiceTest {
                 mock(com.stockflow.order.internal.domain.OrderPayments.class),
                 mock(com.stockflow.order.internal.domain.CancellationRequestRepository.class),
                 mock(com.stockflow.order.internal.domain.CreditChecks.class),
-                mock(com.stockflow.payment.api.PaymentService.class));
+                mock(com.stockflow.payment.api.PaymentService.class),
+                mock(OrderStockAllocation.class), mock(com.stockflow.order.internal.domain.WarehouseDirectory.class));
         var command = new PlaceOrderCommand(UUID.randomUUID(), UUID.randomUUID(), null, null, true,
                 List.of(new PlaceOrderCommand.Line(new Sku("TABLE-OAK"), 1, Money.vnd(1), UUID.randomUUID())));
 
@@ -95,7 +96,8 @@ class GuestCheckoutServiceTest {
                 mock(com.stockflow.order.internal.domain.OrderPayments.class),
                 mock(com.stockflow.order.internal.domain.CancellationRequestRepository.class),
                 mock(com.stockflow.order.internal.domain.CreditChecks.class),
-                mock(com.stockflow.payment.api.PaymentService.class));
+                mock(com.stockflow.payment.api.PaymentService.class),
+                mock(OrderStockAllocation.class), mock(com.stockflow.order.internal.domain.WarehouseDirectory.class));
 
         var result = service.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), customerId,
                 shippingId, null, true,
@@ -121,7 +123,8 @@ class GuestCheckoutServiceTest {
                 mock(com.stockflow.order.internal.domain.OrderPayments.class),
                 mock(com.stockflow.order.internal.domain.CancellationRequestRepository.class),
                 mock(com.stockflow.order.internal.domain.CreditChecks.class),
-                mock(com.stockflow.payment.api.PaymentService.class));
+                mock(com.stockflow.payment.api.PaymentService.class),
+                mock(OrderStockAllocation.class), mock(com.stockflow.order.internal.domain.WarehouseDirectory.class));
         var address = new PlaceGuestOrderCommand.Address("Minh", "0901234567", "12 Nguyen Hue",
                 null, "26734", "Ben Nghe", "79", "Ho Chi Minh City", "VN", null);
         var command = new PlaceGuestOrderCommand(UUID.randomUUID(), "guest@example.test", address, address,

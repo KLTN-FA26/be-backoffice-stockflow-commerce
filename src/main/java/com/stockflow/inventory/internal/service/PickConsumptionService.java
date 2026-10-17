@@ -216,7 +216,10 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
         Instant now = clock.instant();
         ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.PUT_BACK,
                 source.sku(), source.lotNumber(), null, target, quantity.value(), StockStatus.AVAILABLE,
-                StockMovement.ReferenceType.PICK_LINE, command.pickLineId(), null, command.actorId(), now));
+                StockMovement.ReferenceType.PICK_LINE, command.pickLineId(), null, command.actorId(), now)
+                .ofLot(source.lotId())
+                .forOrder(source.findReservation(ReservationId.of(command.reservationId()))
+                        .map(Reservation::orderId).orElse(null)));
         log.info("Pick line {} put back: {} x {} onto {}", command.pickLineId(), quantity, source.sku(), target);
     }
 
@@ -230,7 +233,7 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
         events.publishEventsOf(item);
         ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.PICK, item.sku(),
                 item.lotNumber(), item.location(), null, hold.quantity().value(), status, referenceType,
-                referenceId, null, actorId, now));
+                referenceId, null, actorId, now).ofLot(item.lotId()).forOrder(hold.orderId()));
     }
 
     /**

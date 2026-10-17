@@ -95,6 +95,20 @@ public final class OrderLine {
         this.reservationIds.clear();
     }
 
+    /** One hold gives way to the holds that replace it, in its place on the line; each kept once. */
+    void replaceHold(UUID replaced, List<UUID> replacements) {
+        if (replacements == null || replacements.isEmpty()) {
+            throw new IllegalArgumentException("A hold is replaced by at least one hold");
+        }
+        int at = reservationIds.indexOf(replaced);
+        if (at < 0) {
+            return;
+        }
+        reservationIds.remove(at);
+        List<UUID> fresh = replacements.stream().filter(id -> !reservationIds.contains(id)).distinct().toList();
+        reservationIds.addAll(at, fresh);
+    }
+
     public boolean isReserved() {
         return !reservationIds.isEmpty();
     }

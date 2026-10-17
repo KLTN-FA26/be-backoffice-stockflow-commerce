@@ -197,6 +197,36 @@ class FulfillmentController {
         return ApiResponse.ok(mapper.toResponse(pickLists.putBack(taskId, lineId, request.locationCode(), actor)));
     }
 
+    /**
+     * X-SHORT (docs 04c): the assignee is at the line's bin and finds fewer units than allocated. The line turns
+     * SHORT, nothing is deducted, and the order goes ON_HOLD ({@code INVENTORY_ISSUE}) for the coordinator. The
+     * same report again answers 200 with the line unchanged.
+     */
+    @PostMapping("/tasks/{taskId}/pick-lines/{lineId}/short")
+    @RequiresPermission(resource = FulfillmentResources.PICK_LISTS, action = Action.UPDATE)
+    @PreAuthorize("hasAnyAuthority('" + Roles.WAREHOUSE_STAFF + "','" + Roles.WAREHOUSE_MANAGER + "')")
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "fulfillment-task", resourceId = "#taskId")
+    public ApiResponse<PickLineResponse> reportShort(@PathVariable UUID taskId, @PathVariable UUID lineId,
+            @Valid @RequestBody ShortPickRequest request, @AuthenticatedUser CurrentUser actor) {
+        return ApiResponse.ok(mapper.toResponse(pickLists.reportShort(taskId, lineId, request.locationCode(),
+                request.foundQuantity(), actor)));
+    }
+
+    /**
+     * Resolves a SHORT line by reallocation (X-SHORT step 04): the same quantity is allocated on other pickable
+     * bins of the warehouse, FEFO, never the short one; the answer is the new lines to pick. The order resumes
+     * once no line is SHORT. Too little stock is 409 {@code INSUFFICIENT_STOCK} and nothing changes.
+     */
+    @PostMapping("/tasks/{taskId}/pick-lines/{lineId}/reallocation")
+    @RequiresPermission(resource = FulfillmentResources.PICK_LISTS, action = Action.UPDATE)
+    @PreAuthorize("hasAnyAuthority('" + Roles.ORDER_COORDINATOR + "','" + Roles.WAREHOUSE_MANAGER + "')")
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "fulfillment-task", resourceId = "#taskId")
+    public ApiResponse<List<PickLineResponse>> reallocateShort(@PathVariable UUID taskId, @PathVariable UUID lineId,
+            @AuthenticatedUser CurrentUser actor) {
+        return ApiResponse.ok(pickLists.reallocateShort(taskId, lineId, actor).stream().map(mapper::toResponse)
+                .toList());
+    }
+
     @GetMapping("/tasks/{taskId}/lines/{lineId}/design-artifacts/{role}/download-url")
     @RequiresPermission(resource = FulfillmentResources.PACKAGES, action = Action.READ)
     @PreAuthorize("hasAnyAuthority('" + Roles.WAREHOUSE_STAFF + "','" + Roles.WAREHOUSE_MANAGER
@@ -227,6 +257,8 @@ class FulfillmentController {
     }
 
     record CreateTaskRequest(@NotNull UUID orderId, @NotNull UUID assignedUserId) { }
+    record ShortPickRequest(@NotBlank @Size(max = 64) String locationCode,
+                            @NotNull @jakarta.validation.constraints.PositiveOrZero Integer foundQuantity) { }
     record AssignmentRequest(@NotNull UUID assignedUserId) { }
     record ReverificationRequest(@NotBlank @Size(max = 1000) String resolutionNote) { }
 }

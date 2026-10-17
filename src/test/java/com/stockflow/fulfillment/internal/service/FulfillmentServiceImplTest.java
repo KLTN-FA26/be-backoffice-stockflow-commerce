@@ -74,6 +74,9 @@ class FulfillmentServiceImplTest {
             return value;
         });
         when(evidence.findByPackIdOrderByVerifiedAtDesc(any())).thenAnswer(call -> List.copyOf(recorded));
+        // The order as it reads after entering fulfillment (and, for a never-released order, after allocation).
+        when(orders.releaseToFulfillment(any(), any())).thenAnswer(call ->
+                orders.findById(call.getArgument(0)).orElseThrow());
     }
 
     @Test
@@ -235,13 +238,61 @@ class FulfillmentServiceImplTest {
         assertThat(task.warehouseId()).isEqualTo(HN);
         assertThat(task.assignedUserName()).isEqualTo("Kho Nam");
         assertThat(task.lines()).isNull();
-        verify(orders).releaseToFulfillment(order.orderId());
+        verify(orders).releaseToFulfillment(order.orderId(), HN);
         org.mockito.ArgumentCaptor<PickJpaEntity> saved = org.mockito.ArgumentCaptor.forClass(PickJpaEntity.class);
         verify(picks).saveAndFlush(saved.capture());
         assertThat(saved.getValue().getOrderNumber()).isEqualTo("SO-20261014-0001");
         assertThat(saved.getValue().getWarehouseId()).isEqualTo(HN);
         // SCRUM-267: the lines are planned with the task, from the order's holds.
         verify(pickLists).planLines(saved.getValue(), order);
+    }
+
+    @Test
+    void aNeverReleasedOrderOfSkuReservationsIsAllocatedInTheOneWarehouseThatCanCoverIt() {
+        var order = orderIn(OrderStatus.CONFIRMED, null);
+        UUID picker = UUID.randomUUID();
+        when(inventory.holdsOf(order.orderId())).thenReturn(List.of(new OrderHold("SOFA-3S-GREY", null, 2)));
+        when(inventory.warehousesAbleToAllocate(order.orderId())).thenReturn(List.of(HCM, HN));
+        assignable(HN, picker);
+        assignable(HCM);
+        when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
+        when(picks.findByOrderId(order.orderId())).thenReturn(Optional.empty());
+        when(packs.findByPickId(any())).thenReturn(Optional.of(new PackJpaEntity(UUID.randomUUID(), UUID.randomUUID(),
+                PackStatus.PENDING, null)));
+
+        // SCRUM-152: both warehouses hold enough, only HN has the assignee - the order is allocated there.
+        assertThat(service.createTask(order.orderId(), picker, coordinator()).warehouseId()).isEqualTo(HN);
+        verify(orders).releaseToFulfillment(order.orderId(), HN);
+    }
+
+    @Test
+    void aNeverReleasedOrderNoWarehouseCanCoverIsRefusedAndNothingIsAllocated() {
+        var order = orderIn(OrderStatus.CONFIRMED, null);
+        when(inventory.holdsOf(order.orderId())).thenReturn(List.of(new OrderHold("SOFA-3S-GREY", null, 2)));
+        when(inventory.warehousesAbleToAllocate(order.orderId())).thenReturn(List.of());
+        when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
+        when(picks.findByOrderId(order.orderId())).thenReturn(Optional.empty());
+
+        assertThat(refusal(() -> service.createTask(order.orderId(), UUID.randomUUID(), coordinator())).errorCode())
+                .isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
+        verify(orders, never()).releaseToFulfillment(any(), any());
+        verify(picks, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void aNeverReleasedOrderTwoWarehousesCouldPickWithTheSameAssigneeMustBeReleasedFirst() {
+        var order = orderIn(OrderStatus.CONFIRMED, null);
+        UUID picker = UUID.randomUUID();
+        when(inventory.holdsOf(order.orderId())).thenReturn(List.of(new OrderHold("SOFA-3S-GREY", null, 2)));
+        when(inventory.warehousesAbleToAllocate(order.orderId())).thenReturn(List.of(HCM, HN));
+        assignable(HN, picker);
+        assignable(HCM, picker);
+        when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
+        when(picks.findByOrderId(order.orderId())).thenReturn(Optional.empty());
+
+        assertThat(refusal(() -> service.createTask(order.orderId(), picker, coordinator())).errorCode())
+                .isEqualTo(ErrorCode.PICK_TASK_STATE_CONFLICT);
+        verify(orders, never()).releaseToFulfillment(any(), any());
     }
 
     @Test
@@ -283,7 +334,7 @@ class FulfillmentServiceImplTest {
 
         assertThat(thrown.errorCode()).isEqualTo(ErrorCode.FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE);
         assertThat(thrown.getMessage()).contains("SOFA-3S-GREY", "TABLE-OAK-160");
-        verify(orders, never()).releaseToFulfillment(any());
+        verify(orders, never()).releaseToFulfillment(any(), any());
         verify(picks, never()).save(any());
         verify(picks, never()).saveAndFlush(any());
     }
@@ -330,7 +381,7 @@ class FulfillmentServiceImplTest {
             assertThat(error.field()).isEqualTo("assignedUserId");
             assertThat(error.code()).isEqualTo("NotAssignable");
         });
-        verify(orders, never()).releaseToFulfillment(any());
+        verify(orders, never()).releaseToFulfillment(any(), any());
         verify(picks, never()).save(any());
         verify(picks, never()).saveAndFlush(any());
     }

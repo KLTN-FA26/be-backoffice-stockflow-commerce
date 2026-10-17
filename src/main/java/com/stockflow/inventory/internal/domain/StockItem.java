@@ -68,9 +68,20 @@ public final class StockItem extends AggregateRoot {
     private final LocalDate expiryDate;
     private Instant receivedAt;
     private String serialNumber;
+    /**
+     * The lot these units belong to ({@code inventory.stock_lot}, SCRUM-142): one per goods receipt and lot number,
+     * so two receipts reusing a lot number stay two lots. Travels with the units through every move, hold hand-over
+     * and putaway; null only for a layer the application creates without one, which the database then resolves
+     * ({@code tg_stock_item_lot}).
+     */
+    private UUID lotId;
 
     public Instant receivedAt() {
         return receivedAt;
+    }
+
+    public UUID lotId() {
+        return lotId;
     }
 
     public String serialNumber() {
@@ -94,6 +105,15 @@ public final class StockItem extends AggregateRoot {
         this.serialNumber = serialNumber;
         if (serialNumber != null && (serialNumber.isBlank() || onHand.value() > 1))
             throw new BusinessException(ErrorCode.INVENTORY_POLICY_INVALID);
+    }
+
+    /** Full constructor, as stored, with the lot the units belong to. */
+    public StockItem(StockItemId id, Sku sku, LocationId location, String lotNumber, LocalDate expiryDate,
+                     Quantity onHand, StockStatus status, List<Reservation> reservations, long version,
+                     Instant receivedAt, String serialNumber, UUID lotId) {
+        this(id, sku, location, lotNumber, expiryDate, onHand, status, reservations, version, receivedAt,
+                serialNumber);
+        this.lotId = lotId;
     }
 
     /**
@@ -184,9 +204,15 @@ public final class StockItem extends AggregateRoot {
      */
     public static StockItem receiveInbound(Sku sku, LocationId location, String lotNumber,
                                            LocalDate expiryDate, Quantity quantity, Instant receivedAt) {
+        return receiveInbound(sku, location, lotNumber, expiryDate, quantity, receivedAt, null);
+    }
+
+    /** The same, into the lot the receipt opened (SCRUM-142). */
+    public static StockItem receiveInbound(Sku sku, LocationId location, String lotNumber,
+                                           LocalDate expiryDate, Quantity quantity, Instant receivedAt, UUID lotId) {
         Objects.requireNonNull(receivedAt, "receivedAt");
         return new StockItem(StockItemId.newId(), sku, location, lotNumber, expiryDate, quantity,
-                StockStatus.INBOUND, List.of(), 0L, receivedAt, null);
+                StockStatus.INBOUND, List.of(), 0L, receivedAt, null, lotId);
     }
 
     // ------------------------------------------------------------------ queries
@@ -362,6 +388,39 @@ public final class StockItem extends AggregateRoot {
         requireHoldable(quantity, now, "production order " + productionOrderId);
         Reservation reservation =
                 Reservation.openForProduction(productionOrderId, rootRequestId, requestId, quantity, now);
+        reservations.add(reservation);
+        checkInvariants();
+        return reservation;
+    }
+
+    /**
+     * Allocate part of a SKU reservation to this stock item (F-FUL step 02, BR-STK-006): the order was released to
+     * this warehouse and the planner chose this bin and lot. A hard hold, pinned, that the picker will walk to; the
+     * units stop being the SKU's soft reservation once the caller marks it {@link SkuReservation#markAllocated}.
+     * Idempotent on {@code requestId}. Announces nothing: available-to-promise does not change.
+     *
+     * @throws InsufficientStockException when fewer than {@code quantity} units here are free
+     */
+    public Reservation allocate(SkuReservation from, UUID requestId, Quantity quantity, Instant now) {
+        if (!from.sku().equals(sku)) {
+            throw new IllegalArgumentException("Reservation %s is for %s, not %s".formatted(from.id(), from.sku(), sku));
+        }
+        return allocate(from.orderId(), from.id().value(), from.id().value(), requestId, quantity, now);
+    }
+
+    /**
+     * An allocation of {@code orderId}'s units here, made from the SKU reservation {@code allocatedFrom} — at
+     * release, or again after a short pick elsewhere (X-SHORT). {@code rootRequestId} is what a replay of the call
+     * that made it looks for.
+     */
+    public Reservation allocate(UUID orderId, UUID allocatedFrom, UUID rootRequestId, UUID requestId,
+                                Quantity quantity, Instant now) {
+        Optional<Reservation> alreadyServed = findByRequestId(requestId);
+        if (alreadyServed.isPresent()) {
+            return alreadyServed.get();
+        }
+        requireHoldable(quantity, now, "order " + orderId);
+        Reservation reservation = Reservation.allocate(orderId, allocatedFrom, rootRequestId, requestId, quantity, now);
         reservations.add(reservation);
         checkInvariants();
         return reservation;
@@ -710,7 +769,7 @@ public final class StockItem extends AggregateRoot {
         }
         return new StockItem(StockItemId.newId(), source.sku, destination, source.lotNumber, source.expiryDate,
                 Quantity.ZERO, Objects.requireNonNull(status, "status"), List.of(), 0L, source.receivedAt,
-                source.serialNumber);
+                source.serialNumber, source.lotId);
     }
 
     /**
@@ -735,7 +794,8 @@ public final class StockItem extends AggregateRoot {
                         List.of(),
                         0L,
                         source.receivedAt,
-                        source.serialNumber);
+                        source.serialNumber,
+                        source.lotId);
         arrived.moveIn(quantity);
         return arrived;
     }
@@ -752,7 +812,7 @@ public final class StockItem extends AggregateRoot {
         }
         StockItem arrived = new StockItem(StockItemId.newId(), source.sku, destination, source.lotNumber,
                 source.expiryDate, Quantity.ZERO, Objects.requireNonNull(status, "status"), List.of(), 0L,
-                source.receivedAt, source.serialNumber);
+                source.receivedAt, source.serialNumber, source.lotId);
         arrived.moveIn(quantity);
         return arrived;
     }
@@ -769,6 +829,8 @@ public final class StockItem extends AggregateRoot {
                 && Objects.equals(receivedAt, other.receivedAt)
                 && Objects.equals(serialNumber, other.serialNumber)
                 && Objects.equals(expiryDate, other.expiryDate)
+                // Two lots never merge into one layer; a layer the database has not tagged yet takes any.
+                && (lotId == null || other.lotId == null || lotId.equals(other.lotId))
                 && status == arrivingStatus;
     }
 

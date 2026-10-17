@@ -15,6 +15,10 @@ import java.util.UUID;
  * @param status   the status the units had before the line; for a receipt, the status they arrived in
  * @param toStatus the status they have after it. Equal to {@code status} except when a QC decision or
  *                 a putaway changes it on the way (INBOUND to QUARANTINE, BLOCKED or AVAILABLE)
+ * @param lotId    the lot the units belong to (SCRUM-142); null lets the database resolve it from the stock row
+ *                 the line touched, when that is unambiguous ({@code tg_stock_movement_lot})
+ * @param orderId  the customer order the units left for or came back from (a pick, a put-back, a package),
+ *                 so the lot trace reaches the order without reading another module's tables (SCRUM-153)
  */
 public record StockMovement(
         UUID id,
@@ -30,8 +34,30 @@ public record StockMovement(
         UUID referenceId,
         String reason,
         UUID actorId,
-        Instant occurredAt
+        Instant occurredAt,
+        UUID lotId,
+        UUID orderId
 ) {
+
+    /** A line whose lot the database resolves and which names no customer order. */
+    public StockMovement(UUID id, MovementType type, Sku sku, String lotNumber, LocationId from, LocationId to,
+                         int quantity, StockStatus status, StockStatus toStatus, ReferenceType referenceType,
+                         UUID referenceId, String reason, UUID actorId, Instant occurredAt) {
+        this(id, type, sku, lotNumber, from, to, quantity, status, toStatus, referenceType, referenceId, reason,
+                actorId, occurredAt, null, null);
+    }
+
+    /** The same line, of the lot {@code lot} (null keeps the database's resolution). */
+    public StockMovement ofLot(UUID lot) {
+        return new StockMovement(id, type, sku, lotNumber, from, to, quantity, status, toStatus, referenceType,
+                referenceId, reason, actorId, occurredAt, lot, orderId);
+    }
+
+    /** The same line, naming the customer order the units moved for. */
+    public StockMovement forOrder(UUID order) {
+        return new StockMovement(id, type, sku, lotNumber, from, to, quantity, status, toStatus, referenceType,
+                referenceId, reason, actorId, occurredAt, lotId, order);
+    }
 
     public StockMovement {
         if (quantity <= 0) {

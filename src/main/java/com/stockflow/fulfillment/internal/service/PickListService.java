@@ -22,7 +22,10 @@ import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.consumption.PickConsumption;
 import com.stockflow.inventory.consumption.PutBackCommand;
+import com.stockflow.order.api.OrderReservations;
 import com.stockflow.order.api.OrderService;
+import com.stockflow.inventory.api.ReallocateStockCommand;
+import com.stockflow.inventory.api.StockReservation;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.warehouse.api.StorageLocationView;
 import com.stockflow.warehouse.api.WarehouseService;
@@ -77,10 +80,15 @@ class PickListService implements PickLists {
     private final PickConsumption consumption;
     private final WarehouseService warehouses;
     private final Clock clock;
+    private final OrderReservations orderReservations;
+
+    /** The hold reason X-SHORT puts the order ON_HOLD with (docs 04c, 03 order machine). */
+    static final String INVENTORY_ISSUE = "INVENTORY_ISSUE";
 
     PickListService(PickJpaRepository picks, PickLineJpaRepository pickLines, OrderService orders,
                     InventoryService inventory, InventoryControlService itemControls, PickConsumption consumption,
-                    WarehouseService warehouses, Clock clock) {
+                    WarehouseService warehouses, Clock clock, OrderReservations orderReservations) {
+        this.orderReservations = orderReservations;
         this.picks = picks;
         this.pickLines = pickLines;
         this.orders = orders;
@@ -241,6 +249,64 @@ class PickListService implements PickLists {
         return view(taskId, line, barcode);
     }
 
+    @Override
+    public PickLineView reportShort(UUID taskId, UUID lineId, String locationCode, int found, CurrentUser actor) {
+        PickJpaEntity pick = lockPick(taskId);
+        WarehouseScope.requireWarehouse(pick.getWarehouseId());
+        pick.requireAssigned(actor.userId());
+        TaskAccess.orderInFulfilment(orders, pick);
+        List<PickLineJpaEntity> stored = pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId());
+        PickList list = toList(pick, stored);
+        PickList.Confirmation outcome = list.reportShort(lineId, locationCode, found);
+        PickLine line = outcome.line();
+        String barcode = barcodesOf(List.of(line.sku())).get(line.sku());
+        if (outcome.repeated()) {
+            return view(taskId, line, barcode);
+        }
+        writeBack(list, stored, Set.of(line.id()));
+        // X-SHORT step 02: the order stops; it does not cancel, and no stock is deducted (docs 04c).
+        orders.putOnDesignHold(pick.getOrderId(), INVENTORY_ISSUE);
+        log.info("Pick line {} of task {} short: {} of {} x {} missing at {}", line.id(), taskId, line.shortQty(),
+                line.allocatedQty(), line.sku(), line.locationCode());
+        return view(taskId, line, barcode);
+    }
+
+    @Override
+    public List<PickLineView> reallocateShort(UUID taskId, UUID lineId, CurrentUser actor) {
+        PickJpaEntity pick = lockPick(taskId);
+        WarehouseScope.requireWarehouse(pick.getWarehouseId());
+        TaskAccess.orderInFulfilment(orders, pick);
+        List<PickLineJpaEntity> stored = pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId());
+        PickList list = toList(pick, stored);
+        PickLine shortLine = list.line(lineId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND,
+                "Task %s has no pick line %s".formatted(taskId, lineId)));
+        if (shortLine.status() != PickLineStatus.SHORT || shortLine.reservationId() == null) {
+            throw new BusinessException(ErrorCode.PICK_LINE_NOT_OPEN,
+                    "Only a SHORT line with an allocation is reallocated; it is " + shortLine.status());
+        }
+        // Pick first, then stock rows (class javadoc): the pick is locked, inventory locks the SKU and its rows.
+        List<StockReservation> allocated = inventory.reallocate(new ReallocateStockCommand(pick.getOrderId(),
+                shortLine.reservationId(), UUID.nameUUIDFromBytes(("reallocate:" + lineId)
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8))));
+        orderReservations.replaceHold(pick.getOrderId(), shortLine.reservationId(),
+                allocated.stream().map(StockReservation::reservationId).toList());
+        Map<String, UUID> warehouseOf = new HashMap<>();
+        List<PickList.Hold> holds = allocated.stream().map(hold -> new PickList.Hold(hold.reservationId(),
+                shortLine.sku(), hold.locationCode(), warehouseOf.computeIfAbsent(hold.locationCode(),
+                        code -> warehouses.findLocation(code).map(StorageLocationView::warehouseId).orElse(null)),
+                hold.lotNumber(), hold.quantity(), true)).toList();
+        List<PickLine> added = list.replaceShort(lineId, holds, Identifiers::newId);
+        writeBack(list, stored, Set.of(lineId));
+        pickLines.saveAll(added.stream().map(line -> PickLineMapper.toNewEntity(pick.getId(), line)).toList());
+        if (!list.hasShortLines()) {
+            orders.resolveDesignHold(pick.getOrderId(), actor.userId(),
+                    "Short pick reallocated: line %s".formatted(lineId));
+        }
+        log.info("Short line {} of task {} reallocated to {} new line(s)", lineId, taskId, added.size());
+        Map<String, String> barcodes = barcodesOf(List.of(shortLine.sku()));
+        return added.stream().map(line -> view(taskId, line, barcodes.get(line.sku()))).toList();
+    }
+
     // ------------------------------------------------------------------ helpers
 
     private PickJpaEntity lockPick(UUID taskId) {
@@ -307,6 +373,6 @@ class PickListService implements PickLists {
     private static PickLineView view(UUID taskId, PickLine line, String barcode) {
         return new PickLineView(line.id(), taskId, line.sequenceNo(), line.orderLineId(), line.sku(), barcode,
                 line.locationCode(), line.lotNumber(), line.allocatedQty(), line.pickedQty(), line.status().name(),
-                line.pickedAt(), line.putBackQty(), line.putBackLocationCode(), line.putBackAt());
+                line.pickedAt(), line.putBackQty(), line.putBackLocationCode(), line.putBackAt(), line.shortQty());
     }
 }

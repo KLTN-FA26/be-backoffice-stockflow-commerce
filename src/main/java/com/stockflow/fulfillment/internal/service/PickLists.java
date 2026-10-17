@@ -4,6 +4,7 @@ import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.security.CurrentUser;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -55,13 +56,37 @@ public interface PickLists {
     PickLineView putBack(UUID taskId, UUID lineId, String locationCode, CurrentUser actor);
 
     /**
+     * X-SHORT: the assignee is at the line's bin and finds {@code found} of the allocated units. The line turns
+     * SHORT, nothing is deducted, and the order goes ON_HOLD with reason {@code INVENTORY_ISSUE} until the
+     * coordinator reallocates. The same report again answers with the line as it is.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code OUT_OF_DATA_SCOPE};
+     *         {@code PICK_TASK_STATE_CONFLICT}; {@code PICK_LINE_NOT_OPEN}; {@code PICK_LOCATION_MISMATCH};
+     *         {@code VALIDATION_FAILED}
+     */
+    PickLineView reportShort(UUID taskId, UUID lineId, String locationCode, int found, CurrentUser actor);
+
+    /**
+     * X-SHORT resolved by reallocation: inventory releases the short allocation and allocates the same quantity
+     * on other pickable bins of the warehouse (FEFO, never the short bin); the order line holds the new
+     * allocations, the short line is superseded by one new line per allocation, and once no line is SHORT any
+     * more the order resumes. A coordinator or the warehouse's manager.
+     *
+     * @return the new lines
+     * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code OUT_OF_DATA_SCOPE};
+     *         {@code PICK_LINE_NOT_OPEN} unless SHORT; {@code INSUFFICIENT_STOCK}, and then nothing changes
+     */
+    List<PickLineView> reallocateShort(UUID taskId, UUID lineId, CurrentUser actor);
+
+    /**
      * One line of a pick list.
      *
      * @param barcode the SKU's barcode, which a scan may send instead of the SKU; null when it has none
      */
     record PickLineView(UUID lineId, UUID taskId, int sequenceNo, UUID orderLineId, String sku, String barcode,
                         String locationCode, String lotNumber, int allocatedQty, int pickedQty, String status,
-                        Instant pickedAt, int putBackQty, String putBackLocationCode, Instant putBackAt) { }
+                        Instant pickedAt, int putBackQty, String putBackLocationCode, Instant putBackAt,
+                        int shortQty) { }
 
     /** A picked line of a cancelled task, waiting to go back onto a bin. */
     record PutBackRow(UUID taskId, String orderNumber, UUID warehouseId, UUID lineId, String sku, String lotNumber,

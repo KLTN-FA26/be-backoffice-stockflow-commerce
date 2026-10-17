@@ -19,6 +19,7 @@ import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.MoveReference;
 import com.stockflow.inventory.api.MoveStockCommand;
 import com.stockflow.inventory.api.ReceiveStockCommand;
+import com.stockflow.inventory.api.ReceiptOrigin;
 import com.stockflow.inventory.api.ReclassifyStockCommand;
 import com.stockflow.inventory.api.StockDisposition;
 import com.stockflow.procurement.internal.domain.ExpiryWarning;
@@ -270,13 +271,16 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         Map<UUID, ReceivingLocation> where = locations.byIds(
                 saved.lines().stream().map(ReceiptLine::locationId).toList());
         Map<UUID, InventoryItemPolicy> items = new HashMap<>();
+        // SCRUM-142: the lots this receipt opens remember it, its order and its supplier as they read now.
+        ReceiptOrigin origin = new ReceiptOrigin(saved.id(), saved.number(), order.id(), order.number(),
+                order.supplierId(), orders.supplierName(order.supplierId()).orElse(null), saved.warehouseId());
         List<GoodsReceiptConfirmed.Line> confirmedLines = new ArrayList<>();
         List<ReceiptStockReadyForPutaway.Line> readyLines = new ArrayList<>();
         for (ReceiptLine line : saved.lines()) {
             InventoryItemPolicy item = items.computeIfAbsent(line.inventoryItemId(), this::policy);
             String locationCode = where.get(line.locationId()).code();
             inventory.receive(new ReceiveStockCommand(line.id(), new Sku(item.sku()), line.lotNumber(),
-                    line.expiryDate(), locationCode, line.receivedQuantity(), userId, saved.confirmedAt()));
+                    line.expiryDate(), locationCode, line.receivedQuantity(), userId, saved.confirmedAt(), origin));
             confirmedLines.add(new GoodsReceiptConfirmed.Line(line.id(), line.poLineId(), item.sku(), line.lotNumber(),
                     line.receivedQuantity(), line.qcRequired(), locationCode));
             // A SUBCONTRACT order's goods are held for their production order in this transaction (production's

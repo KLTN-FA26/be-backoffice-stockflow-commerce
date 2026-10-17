@@ -136,22 +136,22 @@ class PlaceOrderIntegrationTest {
     }
 
     /**
-     * A line big enough to exhaust the first lot must draw from the second.
+     * A line bigger than any one lot is still one hold at checkout.
      *
      * <p>The seed puts 25 units at one location and 8 at another, so 30 units cannot come from one
-     * stock item. This is the case that a single shared idempotency key would break — the second
-     * lot's reservation would violate {@code uk_stock_reservation_request} — and the case where
-     * keeping only the first reservation id would strand the second hold on cancellation.</p>
+     * stock item. Since SCRUM-152 checkout holds the SKU, not the lots: the line carries one SKU
+     * reservation, and the two lots are chosen when the order is released (one allocation per lot,
+     * {@code SkuReservationAllocationIntegrationTest}); cancelling before that releases the one hold.</p>
      */
     @Test
-    @DisplayName("an order line spanning two lots gets a hold on each, and releases both")
+    @DisplayName("an order line bigger than any lot holds the SKU once, and releases it")
     void aLineSpanningTwoLotsHoldsAndReleasesBoth() {
         int before = inventory.availableToPromise(SOFA);
         int quantity = before - 2;   // more than any single lot holds
 
         OrderSummary summary = orders.placeOrder(order(quantity));
 
-        assertThat(summary.lines().getFirst().reservationIds()).hasSizeGreaterThan(1);
+        assertThat(summary.lines().getFirst().reservationIds()).hasSize(1);
         assertThat(inventory.availableToPromise(SOFA)).isEqualTo(before - quantity);
 
         cancel(summary.orderId(), "CUSTOMER_REQUEST");

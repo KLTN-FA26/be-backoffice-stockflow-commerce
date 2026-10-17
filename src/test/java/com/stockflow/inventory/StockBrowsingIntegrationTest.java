@@ -79,8 +79,15 @@ class StockBrowsingIntegrationTest {
                     order, "SO-20991231-%06d".formatted(ThreadLocalRandom.current().nextInt(1_000_000)),
                     DemoData.CUSTOMER_ID, UUID.randomUUID());
         });
-        inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), 3, order));
+        // SCRUM-152: checkout holds the SKU; releasing the order to HCM puts the hold on a bin.
+        UUID reservation = inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), 3, order))
+                .reservationIds().get(0);
+        softReservation = reservation;
+        tx.executeWithoutResult(s -> inventory.allocate(
+                new com.stockflow.inventory.api.AllocateStockCommand(order, "HCM")));
     }
+
+    private UUID softReservation;
 
     private void stock(String location, int onHand, String status) {
         jdbc.update("""
@@ -99,7 +106,14 @@ class StockBrowsingIntegrationTest {
     @Test
     @DisplayName("holds by order, status and warehouse; one hold by id; a clerk of another warehouse sees none")
     void reservations() {
-        var page = browsing.reservations(byOrder(null, null));
+        // The SKU reservation the checkout made stays on record, ALLOCATED, on no location.
+        assertThat(browsing.reservations(byOrder(List.of(ReservationStatus.ALLOCATED), null)).items())
+                .singleElement().satisfies(soft -> {
+                    assertThat(soft.reservationId()).isEqualTo(softReservation);
+                    assertThat(soft.locationCode()).isNull();
+                    assertThat(soft.quantity()).isEqualTo(3);
+                });
+        var page = browsing.reservations(byOrder(List.of(ReservationStatus.HELD), null));
         assertThat(page.items()).singleElement().satisfies(hold -> {
             assertThat(hold.sku()).isEqualTo(sku);
             assertThat(hold.locationCode()).isEqualTo("HCM-A01-1-B");
@@ -116,7 +130,9 @@ class StockBrowsingIntegrationTest {
                 .isEqualTo(ErrorCode.RESERVATION_NOT_FOUND);
 
         assertThat(WithCurrentUser.call(HCM_CLERK, HCM_CLERK.scope(),
-                () -> browsing.reservations(byOrder(null, null))).items()).hasSize(1);
+                () -> browsing.reservations(byOrder(null, null))).items()).hasSize(1);   // not the SKU reservation
+        assertThat(codeOf(catchThrowable(() -> WithCurrentUser.call(HCM_CLERK, HCM_CLERK.scope(),
+                () -> browsing.reservation(softReservation))))).isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE);
         assertThat(WithCurrentUser.call(OTHER_CLERK, OTHER_CLERK.scope(),
                 () -> browsing.reservations(byOrder(null, null))).items()).isEmpty();
         assertThat(codeOf(catchThrowable(() -> WithCurrentUser.call(OTHER_CLERK, OTHER_CLERK.scope(),

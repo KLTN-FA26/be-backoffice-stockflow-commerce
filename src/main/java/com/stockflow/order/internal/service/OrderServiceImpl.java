@@ -121,6 +121,8 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     private final CancellationRequestRepository cancellationRequests;
     private final CreditChecks creditChecks;
     private final com.stockflow.payment.api.PaymentService paymentService;
+    private final OrderStockAllocation allocation;
+    private final com.stockflow.order.internal.domain.WarehouseDirectory warehouseDirectory;
 
     OrderServiceImpl(OrderRepository repository, OrderSearchRepository search,
                      InventoryService inventory, OrderEventPublisher events, Clock clock,
@@ -129,7 +131,10 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                      CustomerService customers,
             CatalogService catalog, OrderPayments payments,
                      CancellationRequestRepository cancellationRequests, CreditChecks creditChecks,
-                     com.stockflow.payment.api.PaymentService paymentService) {
+                     com.stockflow.payment.api.PaymentService paymentService, OrderStockAllocation allocation,
+                     com.stockflow.order.internal.domain.WarehouseDirectory warehouseDirectory) {
+        this.allocation = allocation;
+        this.warehouseDirectory = warehouseDirectory;
         this.repository = repository;
         this.search = search;
         this.inventory = inventory;
@@ -620,9 +625,21 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
 
     @Override
     public OrderSummary releaseToFulfillment(UUID orderId) {
+        return releaseToFulfillment(orderId, null);
+    }
+
+    @Override
+    public OrderSummary releaseToFulfillment(UUID orderId, UUID warehouseId) {
         var order = repository.findByIdForUpdate(new OrderId(orderId))
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         if (order.status() == OrderStatus.IN_FULFILMENT) { return toSummary(order); }
+        UUID where = order.warehouseId() != null ? order.warehouseId() : warehouseId;
+        if (where != null) {
+            // A released order was allocated by its release and gets an empty answer here; one never released is
+            // allocated where fulfillment picks it (SCRUM-152).
+            allocation.allocate(order, warehouseDirectory.codeOf(where).orElseThrow(() ->
+                    new BusinessException(ErrorCode.WAREHOUSE_NOT_FOUND, "No warehouse " + where)));
+        }
         order.startFulfilment();
         Order saved = repository.save(order);
         events.publishEventsOf(order);

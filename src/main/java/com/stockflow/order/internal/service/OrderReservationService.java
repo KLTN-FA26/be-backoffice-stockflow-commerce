@@ -41,4 +41,15 @@ class OrderReservationService implements OrderReservations {
                     orderLineId, reservationIds.size());
         }
     }
+
+    @Override
+    public void replaceHold(UUID orderId, UUID reservationId, Collection<UUID> replacements) {
+        Order order = orders.findByIdForUpdate(new OrderId(orderId))
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));
+        if (order.replaceReservation(reservationId, List.copyOf(replacements))) {
+            orders.save(order);
+            log.info("Order {}: hold {} reallocated to {} hold(s)", order.orderNumber(), reservationId,
+                    replacements.size());
+        }
+    }
 }

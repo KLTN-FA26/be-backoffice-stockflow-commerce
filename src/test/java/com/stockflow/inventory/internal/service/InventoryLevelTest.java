@@ -60,6 +60,8 @@ class InventoryLevelTest {
                         clock,
                         mock(InventoryControlService.class),
                         mock(InventoryPolicyRepository.class),
+                        mock(com.stockflow.inventory.internal.domain.SkuReservationRepository.class),
+                        mock(com.stockflow.inventory.internal.domain.LocationDirectory.class),
                         java.time.Duration.ofMinutes(30));
         assertThat(tested.levelsOf(SKU).getFirst().atp()).isEqualTo(20);
         Mockito.verify(clock, Mockito.times(1)).instant();
@@ -77,6 +79,8 @@ class InventoryLevelTest {
                     Clock.systemUTC(),
                     mock(InventoryControlService.class),
                     mock(InventoryPolicyRepository.class),
+                        mock(com.stockflow.inventory.internal.domain.SkuReservationRepository.class),
+                        mock(com.stockflow.inventory.internal.domain.LocationDirectory.class),
                         java.time.Duration.ofMinutes(30));
 
     private static StockLevelLine line(

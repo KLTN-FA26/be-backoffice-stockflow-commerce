@@ -148,7 +148,8 @@ class ExpirySweeper {
         LocationId where = item.location();
         ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.STATUS_CHANGE, item.sku(),
                 item.lotNumber(), where, where, item.onHand().value(), StockStatus.AVAILABLE, StockStatus.EXPIRED,
-                StockMovement.ReferenceType.EXPIRY_SWEEP, item.id().value(), "EXPIRY_SWEEP:" + today, null, now));
+                StockMovement.ReferenceType.EXPIRY_SWEEP, item.id().value(), "EXPIRY_SWEEP:" + today, null, now)
+                .ofLot(item.lotId()));
         return true;
     }
 

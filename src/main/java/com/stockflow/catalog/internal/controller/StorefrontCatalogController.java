@@ -30,18 +30,21 @@ class StorefrontCatalogController {
      * The published catalogue, searched when {@code q} is given (SCRUM-170/181/182). {@code sort} is
      * {@code relevance} (default with {@code q}), {@code newest} (default without) or {@code title};
      * anything else, price included until SCRUM-428, is {@code UNSUPPORTED_PARAMETER}. No-store: the
-     * answer sits behind a token and the in-stock order follows live stock.
+     * answer sits behind a token and the in-stock order follows live stock. {@code category} (a slug from
+     * {@code /api/v1/catalog/categories}) narrows the listing to that category and every category under it
+     * (SCRUM-171); an unknown or hidden one is {@code CATEGORY_NOT_FOUND}.
      */
     @GetMapping
-    @Operation(summary = "List or search the published catalogue")
+    @Operation(summary = "List or search the published catalogue, optionally inside one category")
     public ResponseEntity<ApiResponse<PageResponse<CatalogCardResponse>>> list(
             @RequestParam(required = false) String q,
             @RequestParam(required = false) String sort,
+            @RequestParam(required = false) String category,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
         return ResponseEntity.ok()
                 .cacheControl(CacheControl.noStore())
-                .body(ApiResponse.ok(search.search(q, sort, page, size).map(mapper::toResponse)));
+                .body(ApiResponse.ok(search.search(q, sort, page, size, category).map(mapper::toResponse)));
     }
 
     @GetMapping("/{slug}")

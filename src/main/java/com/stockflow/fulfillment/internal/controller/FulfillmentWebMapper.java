@@ -39,7 +39,8 @@ class FulfillmentWebMapper {
     PickLineResponse toResponse(PickLists.PickLineView line) {
         return new PickLineResponse(line.lineId(), line.taskId(), line.sequenceNo(), line.orderLineId(), line.sku(),
                 line.barcode(), line.locationCode(), line.lotNumber(), line.allocatedQty(), line.pickedQty(),
-                line.status(), line.pickedAt(), line.putBackQty(), line.putBackLocationCode(), line.putBackAt());
+                line.status(), line.pickedAt(), line.putBackQty(), line.putBackLocationCode(), line.putBackAt(),
+                line.shortQty());
     }
 
     PutBackRowResponse toResponse(PickLists.PutBackRow row) {

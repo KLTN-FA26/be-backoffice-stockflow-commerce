@@ -87,6 +87,11 @@ class ReceivingPurchaseOrderAdapter implements ReceivingPurchaseOrders {
         }
     }
 
+    @Override
+    public Optional<String> supplierName(UUID supplierId) {
+        return supplierId == null ? Optional.empty() : suppliers.findById(supplierId).map(SupplierJpaEntity::getName);
+    }
+
     private ReceivingPurchaseOrder toView(PurchaseOrderJpaEntity order) {
         BigDecimal tolerance = suppliers.findById(order.getSupplierId())
                 .map(SupplierJpaEntity::getOverReceiptTolerancePercent)

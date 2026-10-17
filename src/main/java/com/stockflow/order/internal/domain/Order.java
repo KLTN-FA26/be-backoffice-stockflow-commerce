@@ -206,6 +206,23 @@ public final class Order extends AggregateRoot {
     }
 
     /**
+     * Inventory allocated a SKU reservation of this order to bins and lots (SCRUM-152, F-FUL step 02), or a short
+     * allocation again elsewhere (X-SHORT): the line holding {@code reservationId} holds {@code replacements} from
+     * now on, which is what fulfillment picks and a cancellation releases. A reservation no line holds — replaced
+     * already by an earlier call — is left alone, so applying the same allocation twice changes nothing.
+     *
+     * @return whether a line held it
+     */
+    public boolean replaceReservation(UUID reservationId, List<UUID> replacements) {
+        return lines.stream().filter(line -> line.reservationIds().contains(reservationId)).findFirst()
+                .map(line -> {
+                    line.replaceHold(reservationId, replacements);
+                    return true;
+                })
+                .orElse(false);
+    }
+
+    /**
      * Holds production hands to a line after checkout (reprints, subcontracted children); see
      * {@code OrderReservations}. Idempotent.
      *

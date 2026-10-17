@@ -49,10 +49,13 @@ class OrderReleaseService implements OrderReleases {
     private final Clock clock;
     private final InventoryService inventory;
     private final com.stockflow.payment.api.PaymentService paymentService;
+    private final OrderStockAllocation allocation;
 
     OrderReleaseService(OrderRepository repository, ProductionRecords production, WarehouseDirectory warehouses,
                         OrderEventPublisher events, OrderService orders, Clock clock,
-                        InventoryService inventory, com.stockflow.payment.api.PaymentService paymentService) {
+                        InventoryService inventory, com.stockflow.payment.api.PaymentService paymentService,
+                        OrderStockAllocation allocation) {
+        this.allocation = allocation;
         this.repository = repository;
         this.production = production;
         this.warehouses = warehouses;
@@ -96,6 +99,10 @@ class OrderReleaseService implements OrderReleases {
                     "Order %s is on credit and its customer has overdue receivables".formatted(order.orderNumber()));
         }
         order.release(warehouseId, warehouseCode, releasedBy, clock.instant(), approvedSamples);
+        // F-FUL step 02 (SCRUM-152): the SKU reservations taken at checkout become allocations on pickable bins of
+        // this warehouse, FEFO - every line, print lines included, whose blanks production issues from them. All
+        // or nothing: a warehouse that cannot cover a line refuses the release, and the order stays as it was.
+        allocation.allocate(order, warehouseCode);
         // A deposit order leaves PENDING_PAYMENT here (BR-PRD-09): from now on its holds must not
         // expire (kltn-docs 14 BR-07, SCRUM-465). Idempotent for an order already paid and pinned.
         inventory.pinReservations(orderId);

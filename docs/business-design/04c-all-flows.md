@@ -419,6 +419,7 @@ flowchart LR
 | 07 | `fulfillment` | `+ package, + outbox_event` | → PACKED · OrderPacked |
 
 > · Bước phân bổ chọn vị trí và lô cụ thể theo FEFO — BR-STK-006. Trước đó reservation không gắn vị trí nào.
+> · Đã cài (SCRUM-152): bước 02 chạy trong cùng transaction với `release` (hoặc khi tạo task cho đơn CONFIRMED chưa release — chọn kho duy nhất đủ hàng và có người được giao). Chỉ lấy bin `is_pickable` đang dùng được của đúng kho; thiếu hàng ở kho đó thì từ chối release (`INSUFFICIENT_STOCK`), không phân bổ một phần. Không có cột `stock_item.allocated` riêng: `stock_item.reserved` gồm cả allocation; bảng "stock_allocation" là các dòng `stock_reservation` có `allocated_from_id`.
 > ★ Tồn kho THẬT SỰ giảm ở bước PickCompleted, không phải lúc đặt hàng.
 > ⚠ Lệch checksum thiết kế lúc đóng gói thì DỪNG, không đóng — BR-DSG-003.
 
@@ -842,6 +843,7 @@ flowchart LR
 > ★ Dòng đơn → SHORT, đơn → ON_HOLD(INVENTORY_ISSUE). Không dòng stock_movement nào được ghi.
 > · Điều phối chọn một trong ba: phân bổ lại từ vị trí khác, tách đơn, hoặc huỷ dòng đó.
 > · Chênh lệch giữa allocated và thực tế nhặt được luôn kèm một cycle_count tự động cho vị trí đó.
+> · Đã cài (SCRUM-152): `POST /fulfillment/tasks/{id}/pick-lines/{lineId}/short` (dòng → SHORT, đơn → ON_HOLD `INVENTORY_ISSUE`, không ghi stock_movement) và `.../reallocation` (Điều phối/QL kho: nhả allocation cũ `SHORT_PICKED`, phân bổ lại FEFO ở bin khác cùng kho, dòng cũ → CANCELLED giữ `short_qty`, thêm dòng mới; hết dòng SHORT thì đơn quay lại IN_FULFILMENT). Cycle count tự động **chưa** có (module cycle count chưa được cài).
 
 ---
 

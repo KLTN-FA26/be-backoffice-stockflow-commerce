@@ -15,6 +15,10 @@ import java.util.UUID;
 public record HoldView(UUID reservationId, String sku, String locationCode, String lotNumber, int quantity,
                        Status status, Instant expiresAt, java.time.LocalDate expiryDate) {
 
-    /** The hold's lifecycle; only {@code HELD} still keeps stock back. */
-    public enum Status { HELD, CONSUMED, RELEASED, EXPIRED }
+    /**
+     * The hold's lifecycle; only {@code HELD} still keeps stock back. {@code ALLOCATED} is a SKU reservation whose
+     * units moved to allocations (SCRUM-152): its {@code locationCode}, {@code lotNumber} and {@code expiryDate}
+     * are null, as they are for a SKU reservation still HELD — it was never on a shelf.
+     */
+    public enum Status { HELD, ALLOCATED, CONSUMED, RELEASED, EXPIRED }
 }
