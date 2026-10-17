@@ -39,6 +39,36 @@ class ProductionRecordsAdapter implements ProductionRecords {
     }
 
     @Override
+    public Optional<UUID> approvedSampleOf(UUID customerId, UUID designSnapshotId, String blankSku) {
+        @SuppressWarnings("unchecked")
+        List<UUID> found = entityManager.createNativeQuery("""
+                        SELECT sample_request_id FROM ordering.approved_sample
+                         WHERE customer_id = :customer AND design_snapshot_id = :design AND blank_sku = :blank
+                         ORDER BY approved_at DESC""")
+                .setParameter("customer", customerId)
+                .setParameter("design", designSnapshotId)
+                .setParameter("blank", blankSku)
+                .setMaxResults(1)
+                .getResultList();
+        return found.stream().findFirst();
+    }
+
+    @Override
+    public boolean producedBeforeFor(UUID customerId, UUID designSnapshotId, String blankSku) {
+        return !entityManager.createNativeQuery("""
+                        SELECT 1 FROM ordering.order_line_production p
+                          JOIN ordering.order_line l ON l.id = p.order_line_id
+                          JOIN ordering.customer_order o ON o.id = l.order_id
+                         WHERE o.customer_id = :customer AND l.design_snapshot_id = :design AND l.sku = :blank""")
+                .setParameter("customer", customerId)
+                .setParameter("design", designSnapshotId)
+                .setParameter("blank", blankSku)
+                .setMaxResults(1)
+                .getResultList()
+                .isEmpty();
+    }
+
+    @Override
     public boolean producedBefore(UUID designSnapshotId, UUID excludingOrderId) {
         return !entityManager.createNativeQuery("""
                         SELECT 1 FROM ordering.order_line_production p

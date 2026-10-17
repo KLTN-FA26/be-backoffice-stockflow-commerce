@@ -52,6 +52,11 @@ public interface FulfillmentService {
     FulfillmentTask completePicking(UUID taskId, CurrentUser actor);
     FulfillmentArtifactAccess artifactDownload(UUID taskId, UUID orderLineId, String role,
                                                 CurrentUser actor);
+    /**
+     * Verifies every print line's design checksum; all matching, the package is complete and the print lines' goods
+     * leave stock with it, in this transaction (decision 2026-10-16) - a mismatch puts it on hold and deducts
+     * nothing. A package already complete is refused ({@code CONFLICT}).
+     */
     FulfillmentTask completePacking(UUID taskId, CurrentUser actor);
     FulfillmentTask reverifyDesignIntegrity(UUID taskId, String resolutionNote, CurrentUser actor);
 }

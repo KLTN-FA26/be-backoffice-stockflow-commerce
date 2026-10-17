@@ -27,8 +27,8 @@ import org.springframework.web.cors.CorsConfigurationSource;
  * Swagger UI cannot call anything, and the {@code app} container in docker-compose never passes its
  * readiness probe, so {@code docker compose --profile app up} hangs and never converges.</p>
  *
- * <p>Declaring a permissive chain removes the ambiguity: "off" means a chain that permits
- * everything, not the absence of a chain.</p>
+ * <p>Declaring a permissive chain removes the ambiguity: "off" opens development routes,
+ * while retired B2C routes remain closed even when an old idempotency result exists.</p>
  *
  * <p>{@link UnsecuredDataScopeFilter} is the second half of the same job. This class opens the
  * filter chain; that one supplies the row scope, which is otherwise never established once
@@ -56,7 +56,8 @@ public class PermissiveSecurityConfig {
         log.warn("""
                 ============================================================
                 SECURITY IS DISABLED (stockflow.security.enabled=false).
-                Every endpoint is open and @RequiresPermission is NOT enforced.
+                Authentication and @RequiresPermission are NOT enforced.
+                Retired B2C routes remain blocked.
                 This is for local development only.
                 ============================================================""");
 
@@ -66,7 +67,14 @@ public class PermissiveSecurityConfig {
                 // endpoints, not the browser's same-origin policy: without a policy here a
                 // frontend on another localhost port could call nothing.
                 .cors(c -> c.configurationSource(cors))
-                .authorizeHttpRequests(auth -> auth.anyRequest().permitAll())
+                .authorizeHttpRequests(auth -> auth
+                        // Keep the same retirement as the secured chain, before idempotency can
+                        // replay an old registration token or guest-order success in local mode.
+                        .requestMatchers("/api/v1/customers/registrations", "/api/v1/customers/registrations/**",
+                                "/api/v1/orders/guest-checkout", "/api/v1/orders/guest-checkout/**",
+                                "/api/v1/public/products/availability", "/api/v1/public/products/availability/**")
+                        .denyAll()
+                        .anyRequest().permitAll())
                 .build();
     }
 }

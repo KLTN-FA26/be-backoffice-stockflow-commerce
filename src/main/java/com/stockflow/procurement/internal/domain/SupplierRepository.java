@@ -19,8 +19,9 @@ public interface SupplierRepository {
 
     boolean taxCodeExists(String taxCode, UUID excludingId);
 
+    /** @param printSubcontractor only print subcontractors (true), only the others (false), or both (null) */
     PageResponse<Supplier> list(
-            int page, int size, String search, SupplierStatus status, String sort);
+            int page, int size, String search, SupplierStatus status, Boolean printSubcontractor, String sort);
 
     SupplierMetrics performance(UUID id);
 }

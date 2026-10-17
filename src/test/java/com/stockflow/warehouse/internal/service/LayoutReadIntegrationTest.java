@@ -103,7 +103,7 @@ class LayoutReadIntegrationTest {
             assertThat(a01.pickFaces()).isEqualTo(new PickFaces(false, false, true, false));
             assertThat(layout.areas()).extracting(WarehouseLayout.Area::code)
                     // QCA01 (QUALITY_CONTROL) and RTV01 (rejects) come from the receiving demo seed (SCRUM-435).
-                    .containsExactly("DSP01", "OFFICE", "PACK01", "QC01", "QCA01", "RCV01", "RTV01");
+                    .containsExactly("DSP01", "OFFICE", "PACK01", "PRD01", "QC01", "QCA01", "RCV01", "RTV01");
             assertThat(layout.boundaries()).hasSize(2);
         }
 
@@ -217,7 +217,7 @@ class LayoutReadIntegrationTest {
                         assertThat(bin.effectiveStatus()).isEqualTo(LocationStatus.INACTIVE);
                         assertThat(bin.usable()).isFalse();
                     });
-            assertThat(layout.areas()).filteredOn(a -> a.locationId() != null).hasSize(6)
+            assertThat(layout.areas()).filteredOn(a -> a.locationId() != null).hasSize(7)   // with the print shop, V20261015000410
                     .allSatisfy(a -> assertThat(a.usable()).isFalse());
             assertThat(location("HCM-B01-1-A").usable()).isFalse();
             assertThat(location("HCM-RCV01").effectiveStatus()).isEqualTo(StorageLocationView.Status.INACTIVE);

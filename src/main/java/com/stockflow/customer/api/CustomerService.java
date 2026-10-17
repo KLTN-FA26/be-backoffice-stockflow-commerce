@@ -23,9 +23,13 @@ import java.util.UUID;
  */
 public interface CustomerService {
 
+    /** Retained for caller compatibility; always refuses self-registration under the B2B policy. */
     CustomerRegistration register(RegisterCustomerCommand command);
 
     Optional<CustomerSummary> findById(UUID customerId);
+
+    /** Whether this customer group ({@code customer.segment}) exists: catalog prices groups (P7). */
+    boolean segmentExists(UUID segmentId);
 
     Optional<CustomerSummary> findByUserId(UUID userId);
 
@@ -33,7 +37,15 @@ public interface CustomerService {
 
     CustomerSummary update(UpdateCustomerCommand command);
 
-    CustomerSummary changeStatus(UUID customerId, String status);
+    /**
+     * @throws com.stockflow.common.error.BusinessException {@code INVALID_CUSTOMER_STATUS_TRANSITION};
+     *         {@code VALIDATION_FAILED} when reopening a closed customer without a reason;
+     *         {@code CUSTOMER_TAX_CODE_ALREADY_EXISTS} when the code is held by another live customer
+     */
+    CustomerSummary changeStatus(ChangeCustomerStatusCommand command);
+
+    /** Oldest first. @throws com.stockflow.common.error.BusinessException {@code CUSTOMER_NOT_FOUND} */
+    List<CustomerStatusEntry> statusHistory(UUID customerId);
 
     List<CustomerAddressSummary> listAddresses(UUID customerId, UUID actorUserId, boolean privileged);
 

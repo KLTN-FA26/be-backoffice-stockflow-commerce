@@ -18,12 +18,26 @@ public record GoodsReceiptConfirmed(
         String receiptNumber,
         UUID purchaseOrderId,
         UUID warehouseId,
-        List<Line> lines
+        List<Line> lines,
+        java.time.Instant confirmedAt
 ) {
 
-    /** One counted line. {@code qcRequired}: the line goes through the QC area before putaway. */
+    /**
+     * One counted line. {@code qcRequired}: the line goes through the QC area before putaway. {@code locationCode}: where the line's stock was counted in; with {@code confirmedAt} (its receipt time) it
+     * names the stock layer the line created — production holds a subcontractor's goods on it (SCRUM-441).
+     */
     public record Line(UUID receiptLineId, UUID purchaseOrderLineId, String sku, String lotNumber, int quantity,
-                       boolean qcRequired) {
+                       boolean qcRequired, String locationCode) {
+
+        public Line(UUID receiptLineId, UUID purchaseOrderLineId, String sku, String lotNumber, int quantity,
+                    boolean qcRequired) {
+            this(receiptLineId, purchaseOrderLineId, sku, lotNumber, quantity, qcRequired, null);
+        }
+    }
+
+    public GoodsReceiptConfirmed(UUID receiptId, String receiptNumber, UUID purchaseOrderId, UUID warehouseId,
+                                 List<Line> lines) {
+        this(receiptId, receiptNumber, purchaseOrderId, warehouseId, lines, null);
     }
 
     public GoodsReceiptConfirmed {

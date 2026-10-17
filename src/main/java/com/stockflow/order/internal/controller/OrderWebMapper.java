@@ -79,6 +79,15 @@ final class OrderWebMapper {
     }
 
     static OrderResponse toResponse(OrderSummary summary) {
+        return toResponse(summary, true);
+    }
+
+    /**
+     * {@code internal} false for a customer reading their own order: the agreed cancellation amount and why they pay
+     * it are theirs to see, but {@code feeDetail} - what Sales agreed with whom and how it was counted - is the back
+     * office's note (review of #109, nit).
+     */
+    static OrderResponse toResponse(OrderSummary summary, boolean internal) {
         return new OrderResponse(
                 summary.orderId(),
                 summary.orderNumber(),
@@ -112,7 +121,9 @@ final class OrderWebMapper {
                 summary.payment() == null ? null : summary.payment().creditTermDays(),
                 summary.cancellation() == null ? null : new OrderResponse.Cancellation(
                         summary.cancellation().reasonCode() == null ? null : summary.cancellation().reasonCode().name(),
-                        summary.cancellation().reason(), summary.cancellation().retainedAmount()));
+                        summary.cancellation().reason(), summary.cancellation().retainedAmount(),
+                        summary.cancellation().feeReason(), internal ? summary.cancellation().feeDetail() : null,
+                        summary.cancellation().feeAmount()));
     }
 
     private static PlaceGuestOrderCommand.Address toCommand(
@@ -143,5 +154,11 @@ final class OrderWebMapper {
                 address.provinceName(),
                 address.countryCode(),
                 address.postalCode());
+    }
+
+    static com.stockflow.order.api.CancellationFee toFee(
+            com.stockflow.order.internal.controller.dto.CancellationFeeRequest request) {
+        return request == null ? null
+                : new com.stockflow.order.api.CancellationFee(request.amount(), request.reason(), request.detail());
     }
 }

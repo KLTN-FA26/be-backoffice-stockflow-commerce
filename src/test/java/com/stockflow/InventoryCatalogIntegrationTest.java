@@ -210,7 +210,6 @@ class InventoryCatalogIntegrationTest {
 
     Fixture fixture(String status) {
         UUID product = UUID.randomUUID(),
-                variant = UUID.randomUUID(),
                 sku = UUID.randomUUID(),
                 category = UUID.randomUUID();
         String code = ("TEST-" + sku.toString().substring(0, 12)).toUpperCase(Locale.ROOT);
@@ -333,8 +332,13 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
                 .isInstanceOf(DataIntegrityViolationException.class);
     }
 
+    /**
+     * The server price and the replayed snapshot, through account checkout. This test used guest
+     * checkout until SCRUM-450 retired it (B2B only, decision 2026-10-06); the pricing guarantees it
+     * pins belong to the checkout that remains, and the retired one must not reserve anything.
+     */
     @Test
-    void guestCheckoutUsesServerPriceAndReplayKeepsTheAgreedSnapshot() {
+    void accountCheckoutUsesServerPriceAndReplayKeepsTheAgreedSnapshot() {
         var f = fixture("APPROVED");
         gallery(f);
         stock(f, 10, null, null, null);
@@ -347,50 +351,42 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
                 "test");
         catalog.publish(f.product());
         projection.project(f.product());
-        var address =
-                new PlaceGuestOrderCommand.Address(
-                        "Minh",
-                        "0901234567",
-                        "12 Nguyen Hue",
-                        null,
-                        "26734",
-                        "Ben Nghe",
-                        "79",
-                        "Ho Chi Minh City",
-                        "VN",
-                        null);
+        UUID buyer = activeCustomerWithShippingAddress();
         var tampered =
-                new PlaceGuestOrderCommand(
-                        UUID.randomUUID(),
-                        "minh@example.com",
-                        address,
-                        address,
-                        List.of(
-                                new PlaceGuestOrderCommand.Line(
-                                        new Sku(f.sku()), 1, Money.vnd(1))));
-        assertThatThrownBy(() -> orders.placeGuestOrder(tampered))
+                new PlaceOrderCommand(
+                        UUID.randomUUID(), buyer, null, null, true,
+                        List.of(new PlaceOrderCommand.Line(new Sku(f.sku()), 1, Money.vnd(1), null)));
+        assertThatThrownBy(() -> orders.placeOrder(tampered))
                 .isInstanceOfSatisfying(
                         BusinessException.class,
                         e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.CHECKOUT_PRICE_CHANGED));
         assertThat(inventory.availableToPromise(new Sku(f.sku()))).isEqualTo(10);
+
+        var address =
+                new PlaceGuestOrderCommand.Address(
+                        "Minh", "0901234567", "12 Nguyen Hue", null, "26734", "Ben Nghe", "79",
+                        "Ho Chi Minh City", "VN", null);
+        assertThatThrownBy(() -> orders.placeGuestOrder(new PlaceGuestOrderCommand(
+                        UUID.randomUUID(), "minh@example.com", address, address,
+                        List.of(new PlaceGuestOrderCommand.Line(new Sku(f.sku()), 1, Money.vnd(100))))))
+                .isInstanceOfSatisfying(
+                        BusinessException.class,
+                        e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.GUEST_CHECKOUT_DISABLED));
+        assertThat(inventory.availableToPromise(new Sku(f.sku()))).isEqualTo(10);
+
         var accepted =
-                new PlaceGuestOrderCommand(
-                        UUID.randomUUID(),
-                        "minh@example.com",
-                        address,
-                        address,
-                        List.of(
-                                new PlaceGuestOrderCommand.Line(
-                                        new Sku(f.sku()), 1, Money.vnd(100))));
-        var order = orders.placeGuestOrder(accepted);
+                new PlaceOrderCommand(
+                        UUID.randomUUID(), buyer, null, null, true,
+                        List.of(new PlaceOrderCommand.Line(new Sku(f.sku()), 1, Money.vnd(100), null)));
+        var order = orders.placeOrder(accepted);
         catalog.price(
                 f.product(),
                 f.sku(),
                 catalog.get(f.product()).revision(),
                 new SellingPrice(new BigDecimal("200"), "VND"),
                 "test");
-        assertThat(orders.placeGuestOrder(accepted).orderId()).isEqualTo(order.orderId());
-        assertThat(orders.placeGuestOrder(accepted).total()).isEqualTo(Money.vnd(100));
+        assertThat(orders.placeOrder(accepted).orderId()).isEqualTo(order.orderId());
+        assertThat(orders.placeOrder(accepted).total()).isEqualTo(Money.vnd(100));
         assertThat(inventory.availableToPromise(new Sku(f.sku()))).isEqualTo(9);
         catalog.unpublish(f.product());
         assertThatThrownBy(() -> checkoutCatalog.checkoutPrices(Set.of(f.sku())))
@@ -399,6 +395,24 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
                         e ->
                                 assertThat(e.errorCode())
                                         .isEqualTo(ErrorCode.PRODUCT_NOT_PURCHASABLE));
+    }
+
+    /** An ACTIVE customer of its own with a default shipping address, so account checkout can run. */
+    private UUID activeCustomerWithShippingAddress() {
+        UUID customer = com.stockflow.common.id.Identifiers.newId();
+        transactions.executeWithoutResult(status -> {
+            jdbc.update("""
+                    INSERT INTO customer.customer(id, full_name, email, status, version, created_at)
+                    VALUES (?, 'Checkout Buyer', ?, 'ACTIVE', 0, now())""",
+                    customer, "buyer-" + customer + "@example.test");
+            jdbc.update("""
+                    INSERT INTO customer.address(id, customer_id, type, recipient_name, phone, line1, ward,
+                        ward_code, province, province_code, country, is_default, version, created_at)
+                    VALUES (?, ?, 'SHIPPING', 'Minh', '+84901234567', '12 Nguyen Hue', 'Ben Nghe', '26734',
+                        'Ho Chi Minh City', '79', 'VN', true, 0, now())""",
+                    com.stockflow.common.id.Identifiers.newId(), customer);
+        });
+        return customer;
     }
 
     @Test

@@ -35,7 +35,11 @@ public interface GoodsReceipts {
     }
 
     /** Where a line is in the 3-step flow (docs 03 §5.2). */
-    enum QcProgress { NOT_REQUIRED, AWAITING_MOVE_TO_QC, IN_QC_AREA, INSPECTED }
+    /**
+     * {@code PRODUCTION_QC}: a SUBCONTRACT order's goods, which the production module holds for its production order
+     * and inspects once against the approved sample — receiving runs no QC on them and puts none of them away.
+     */
+    enum QcProgress { NOT_REQUIRED, AWAITING_MOVE_TO_QC, IN_QC_AREA, INSPECTED, PRODUCTION_QC }
 
     record InspectionView(UUID id, QcOutcome outcome, int quantity, String locationCode, String reason,
                           UUID inspectedBy, String inspectedByName, Instant inspectedAt) {

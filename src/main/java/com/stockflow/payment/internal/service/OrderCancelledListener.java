@@ -20,9 +20,11 @@ class OrderCancelledListener {
     private static final Logger log = LoggerFactory.getLogger(OrderCancelledListener.class);
 
     private final CancelledOrderSettlement settlement;
+    private final ReceivableService receivables;
 
-    OrderCancelledListener(CancelledOrderSettlement settlement) {
+    OrderCancelledListener(CancelledOrderSettlement settlement, ReceivableService receivables) {
         this.settlement = settlement;
+        this.receivables = receivables;
     }
 
     @ApplicationModuleListener
@@ -38,6 +40,7 @@ class OrderCancelledListener {
                         unplaced);
             }
         }
+        receivables.cancellationOwed(event);
         log.info("Order {} cancelled: {} awaited payment(s) cancelled, {} {} to refund",
                 event.orderNumber(), cancelled, refundable, event.currency());
     }

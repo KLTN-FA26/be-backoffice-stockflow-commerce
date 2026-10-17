@@ -31,6 +31,8 @@ public enum ErrorCode {
     PRODUCT_NOT_PURCHASABLE("This product is not currently available for purchase", 409),
     /** SCRUM-461, kltn-docs 02 BR-01: a new purchase order line takes only an active SKU. {@code fieldErrors[]} names each line. */
     SKU_NOT_PURCHASABLE("The SKU is not active for purchasing", 409),
+    /** Review of #109, item 6: a quote, its acceptance or its order, or a new sample, on a SKU no longer ACTIVE. */
+    SKU_NOT_SELLABLE("The SKU is no longer active; change the line to an active SKU", 409),
     /** SCRUM-461, kltn-docs 01 §3: a product is identified by its brand too, so it is chosen before approval. */
     PRODUCT_BRAND_REQUIRED("A brand is required before submitting for approval", 409),
     /** SCRUM-461, kltn-docs 01 BR-02: only a draft is deleted. */
@@ -38,6 +40,13 @@ public enum ErrorCode {
     /** SCRUM-461: stock, a purchase order, an order or a design already points at the product. */
     PRODUCT_IN_USE("The product is referenced by stock, purchasing, orders or designs", 409),
     PRICE_NOT_AVAILABLE("No selling price is available for this SKU", 409),
+    /** kltn-docs 13 BR-05: the first tier of a customer's own price is its minimum order quantity. */
+    /** Direct checkout never falls back to another price below the list's first tier (P4): Sales quotes it. */
+    CUSTOMER_PRICE_BELOW_MOQ("The quantity is below this customer's price list minimum for the SKU; ask Sales for a quote", 409),
+    CUSTOMER_PRICE_NOT_FOUND("This customer has no own price for the SKU", 404),
+    /** P7: a customer group (customer.segment) that does not exist. */
+    SEGMENT_NOT_FOUND("Customer group not found", 404),
+    SEGMENT_PRICE_NOT_FOUND("This customer group has no price for the SKU", 404),
     CATALOG_PRICE_AMBIGUOUS("More than one selling price has the same priority", 409),
     MALFORMED_REQUEST("The request body could not be read", 400),
     UNSUPPORTED_PARAMETER("Unsupported parameter value", 400),
@@ -172,6 +181,42 @@ public enum ErrorCode {
     SUPPLIER_NOT_SUBCONTRACTOR("This supplier is not a print subcontractor", 409),
     /** BR-PRD-08: a new design goes to print only after the customer approved its sample. */
     DESIGN_SAMPLE_NOT_APPROVED("A design on this order has no approved sample yet", 409),
+    /** SCRUM-394: a sample round moves only along 03-state-machines §17. */
+    INVALID_SAMPLE_REQUEST_TRANSITION("This sample request cannot move to that status right now", 409),
+    /** BR-ORD-007 / BR-CUS-003: new work (a sample round, a quote, an order) is only for an ACTIVE customer. */
+    CUSTOMER_NOT_ACTIVE("This customer is not active and cannot take on new work", 409),
+    /** SCRUM-394: a sample linked to a quote prints a design and blank of that quote, for its customer. */
+    SAMPLE_QUOTE_MISMATCH("The quote is not for this customer, design and blank", 409),
+    /** SCRUM-394: a sample is linked only to a quote still being negotiated. */
+    QUOTE_NOT_OPEN("The quote is no longer open", 409),
+    /** SCRUM-394: a round that ended in CHANGES_REQUESTED is followed by exactly one next round. */
+    SAMPLE_NEXT_ROUND_EXISTS("The next round of this sample request has already been started", 409),
+    /** SCRUM-396..401: a production order moves only along 03-state-machines §16. */
+    INVALID_PRODUCTION_TRANSITION("This production order cannot move to that status right now", 409),
+    /** BR-PRD-02: the print file no longer matches the design the order locked. */
+    PRINT_FILE_MISMATCH("The print file does not match the locked design", 409),
+    /** SCRUM-397: a hold issued to production is live, its owner's, and no longer waits for payment. */
+    RESERVATION_NOT_ISSUABLE("This stock hold cannot be issued", 409),
+    /** BR-PRD-03: never more blanks than the production order still needs. */
+    ISSUE_EXCEEDS_REQUIREMENT("More blanks than the production order still needs", 409),
+    /** Review of #109: goods past their expiry cannot move to a new location; they are written off (EXPIRED). */
+    STOCK_EXPIRED("This stock is past its expiry date and can only be written off", 409),
+    /** SCRUM-409: the location scanned at a blank issue is not where the hold's goods are. */
+    ISSUE_LOCATION_MISMATCH("The scanned location is not where this hold's blanks are", 409),
+    /** SCRUM-409: the SKU or barcode scanned at a blank issue is not the hold's. */
+    ISSUE_ITEM_MISMATCH("The scanned item is not this hold's SKU", 409),
+    /** BR-PRD-01: a source already has a production order, and it describes different work. */
+    PRODUCTION_SOURCE_CONFLICT("A production order already exists for this source with different content", 409),
+    /** SCRUM-448: a quote moves only along 03-state-machines §18. */
+    INVALID_QUOTE_TRANSITION("This quote cannot move to that status right now", 409),
+    /** BR-ORD-008: a quote is answered only within its validity. */
+    QUOTE_EXPIRED("This quote is no longer valid", 409),
+    /** BR-ORD-007: a quoted line is ordered at or above its minimum order quantity. */
+    QUOTE_BELOW_MOQ("The quantity is below the minimum order quantity of the quote", 409),
+    /** Reorder: only an order placed from a quote is re-quoted; a price-list order is simply placed again. */
+    /** R1: a reorder line the price list cannot price waits for Sales; nothing is sent or accepted unpriced. */
+    QUOTE_NOT_PRICED("A line of this quote has no price yet; Sales enters it before the quote is sent", 409),
+    ORDER_NOT_QUOTED("This order was not placed from a quote; order it again at the current price", 409),
     /** BR-PRD-09: a deposit order goes to production only once the deposit has arrived. */
     ORDER_DEPOSIT_NOT_RECEIVED("The deposit for this order has not arrived yet", 409),
     /** SCRUM-460: from IN_PRODUCTION on, a customer asks and Sales or the coordinator decides. */
@@ -202,6 +247,8 @@ public enum ErrorCode {
     PICK_TASK_STATE_CONFLICT("The task cannot do that in its current status", 409),
     /** The hold behind a pick line was released, expired or already consumed: nothing is deducted. */
     RESERVATION_NOT_ACTIVE("The stock hold is no longer active", 409),
+    /** A production order's hold, or goods in the print shop: production closes them, not a pick (review of #109). */
+    PRODUCTION_HOLD_NOT_PICKABLE("This stock hold belongs to production and cannot be picked", 409),
     /** Docs 07 BR-05: only goods picked for an order cancelled afterwards go back to a bin. */
     PUT_BACK_NOT_REQUIRED("Nothing on this line needs putting back", 409),
     PUT_BACK_LOCATION_INVALID("Put back onto an active bin of the task's warehouse", 409),
@@ -232,11 +279,20 @@ public enum ErrorCode {
     VARIANT_MATRIX_TOO_LARGE("Too many variants for one generation", 400),
     SELF_APPROVAL_NOT_ALLOWED("A product cannot be approved by the person who submitted it", 409),
     CUSTOMER_EMAIL_ALREADY_EXISTS("A customer account with this email already exists", 409),
+    /** kltn-docs 18 BR-01: one pending or active customer per tax code. */
+    CUSTOMER_TAX_CODE_ALREADY_EXISTS("A customer with this tax code already exists", 409),
+    /** kltn-docs 18 §5: only onboarding enters PENDING_ACTIVATION, only activation leaves it for ACTIVE. */
+    INVALID_CUSTOMER_STATUS_TRANSITION("This customer cannot move to that status", 409),
 
     /** Checkout needs somewhere to deliver: no shipping address was chosen and none is the default. */
     SHIPPING_ADDRESS_REQUIRED("Add a shipping address before placing an order", 409),
 
-    /** Deployment rollout gate for guest checkout; see application.yml. */
+    /** B2B accounts must be onboarded by Sales, not through public registration. */
+    CUSTOMER_REGISTRATION_DISABLED("Public customer registration is not available", 403),
+    PORTAL_INVITATION_INVALID("This portal invitation is invalid or no longer available", 400),
+    /** Resending would reset a password the customer already chose. */
+    PORTAL_ACCOUNT_ALREADY_ACTIVE("This customer has already activated their portal account", 409),
+    /** Guest checkout is permanently disabled by the B2B-only decision. */
     GUEST_CHECKOUT_DISABLED("Guest checkout is not available", 403),
     INVALID_PURCHASE_ORDER_TRANSITION("This purchase order cannot move to that status right now", 409),
     /** Only a DRAFT standard order is edited in place; afterwards changes go through a revision (BR-02, BR-10). */
@@ -304,6 +360,8 @@ public enum ErrorCode {
     /** A dependency we call failed. Separated from INTERNAL_ERROR so alerting can tell them apart. */
     EXTERNAL_SERVICE_ERROR("An upstream service is unavailable", 502),
     STORAGE_ERROR("File storage is unavailable", 503),
+    /** No portal activation address is configured, so no invitation link can be built. */
+    PORTAL_INVITATION_UNAVAILABLE("Portal invitations cannot be sent right now", 503),
     /** The caller's permissions could not be looked up (ADR-0008). The token itself may be fine,
      *  which is why this is a 503 and not a 401 that would sign the user out. */
     AUTHORIZATION_UNAVAILABLE("Permissions cannot be checked right now, please retry", 503);

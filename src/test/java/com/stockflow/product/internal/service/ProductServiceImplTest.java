@@ -442,14 +442,14 @@ class ProductServiceImplTest {
     @Test
     @DisplayName("purchasability: SKUs are upper-cased and stripped, and the answer is the commerce repository's")
     void purchasabilityNormalisesTheKeys() {
-        when(commerce.purchasability(anyCollection())).thenReturn(Map.of("CUP-12OZ", Purchasability.PRODUCT_INACTIVE));
+        when(commerce.purchasability(anyCollection(), org.mockito.ArgumentMatchers.eq(false))).thenReturn(Map.of("CUP-12OZ", Purchasability.PRODUCT_INACTIVE));
 
         Map<String, Purchasability> answer = service.purchasability(List.of(" cup-12oz ", "CUP-12OZ"));
 
         assertThat(answer).containsExactly(Map.entry("CUP-12OZ", Purchasability.PRODUCT_INACTIVE));
         @SuppressWarnings("unchecked")
         var asked = org.mockito.ArgumentCaptor.forClass(Collection.class);
-        verify(commerce).purchasability(asked.capture());
+        verify(commerce).purchasability(asked.capture(), org.mockito.ArgumentMatchers.eq(false));
         assertThat(asked.getValue()).containsExactly("CUP-12OZ");
     }
 

@@ -33,6 +33,9 @@ class OrderModuleTest {
     @MockitoBean com.stockflow.product.api.ProductService productServiceMock;
     @MockitoBean com.stockflow.identity.api.IdentityService identityServiceMock;
     @MockitoBean com.stockflow.product.api.ProductPublication productPublicationMock;
+    // customer (bootstrapped) invites portal accounts and mails the invitation (SCRUM-429): its ports, not the modules.
+    @MockitoBean com.stockflow.identity.api.PortalAccountService portalAccountServiceMock;
+    @MockitoBean com.stockflow.notification.api.NotificationService notificationServiceMock;
 
     @Test
     @DisplayName("order starts and answers through its api with the other modules absent")

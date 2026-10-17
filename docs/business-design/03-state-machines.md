@@ -687,6 +687,7 @@ stateDiagram-v2
     MATERIAL_ISSUED --> ON_HOLD
     PRINTING --> ON_HOLD
     SUBCONTRACTED --> ON_HOLD
+    QC --> ON_HOLD
     ON_HOLD --> PENDING_PREPRESS: resume (back to the state it left)
     PENDING_PREPRESS --> CANCELLED
     READY --> CANCELLED
@@ -713,7 +714,13 @@ stateDiagram-v2
 | SUBCONTRACTED | CANCELLED | cancel | Warehouse manager | blanks recalled from the subcontractor, PO cancelled (or fee paid per BR-PRD-10) | — |
 
 Once `PRINTING` or `SUBCONTRACTED`, the design cannot change (BR-PRD-07, BR-PRD-14) and
-cancellation follows BR-PRD-10. A shortfall on a subcontracted child goes back to `READY`, from
+cancellation follows BR-PRD-10.
+
+Decided 2026-10-13: a subcontractor's goods get **one** inspection, the production QC against the approved sample.
+The warehouse counts the receipt and reconciles the blanks; receiving runs no QC of its own on a `SUBCONTRACT` PO and
+puts nothing away; the goods stay held for their production order, outside ATP, in the QUALITY_CONTROL area until
+QC. A subcontracted order cancelled while its sales order still wants the goods is replaced by an in-house child
+(origin `REPLACEMENT`); a shortfall taken back to the print shop is an in-house child with origin `SHORTFALL`. A shortfall on a subcontracted child goes back to `READY`, from
 where the manager either sends more to the same subcontractor (PO supplement) or splits the gap
 into a new in-house child.
 

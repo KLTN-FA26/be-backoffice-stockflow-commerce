@@ -19,7 +19,8 @@ public final class Customer extends AggregateRoot {
     private String fullName;
     private final String email;
     private String phone;
-    private final UUID segmentId;
+    private String taxCode;
+    private UUID segmentId;
     private CustomerStatus status;
     private final List<CustomerAddress> addresses;
     private final long version;
@@ -28,11 +29,19 @@ public final class Customer extends AggregateRoot {
     public Customer(UUID id, UUID userId, String fullName, String email, String phone,
                     UUID segmentId, CustomerStatus status, List<CustomerAddress> addresses,
                     long version, Instant createdAt) {
+        this(id, userId, fullName, email, phone, null, segmentId, status, addresses, version, createdAt);
+    }
+
+    /** @param taxCode null only for a customer created before tax codes were recorded */
+    public Customer(UUID id, UUID userId, String fullName, String email, String phone, String taxCode,
+                    UUID segmentId, CustomerStatus status, List<CustomerAddress> addresses,
+                    long version, Instant createdAt) {
         this.id = Objects.requireNonNull(id, "id");
         this.userId = userId;
         this.fullName = requireNonBlank(fullName, "fullName");
         this.email = normaliseEmail(email);
         this.phone = normaliseOptional(phone);
+        this.taxCode = taxCode == null ? null : TaxCode.normalise(taxCode);
         this.segmentId = segmentId;
         this.status = Objects.requireNonNull(status, "status");
         this.addresses = new ArrayList<>(addresses == null ? List.of() : addresses);
@@ -46,6 +55,57 @@ public final class Customer extends AggregateRoot {
                 null, CustomerStatus.ACTIVE, List.of(), 0L, null);
     }
 
+    /**
+     * A business customer Sales onboarded (SCRUM-450, kltn-docs 18 §4.1), linked to the account its
+     * contact will activate. It cannot sign in, see prices or order until then.
+     *
+     * @param companyName the business name; the contact's own name stays on their account
+     * @param taxCode     optional: household businesses and small shops are customers too and may
+     *                    supply it later (decision 2026-10-12); normalised by {@link TaxCode} when given
+     */
+    public static Customer onboard(UUID id, UUID userId, String companyName, String email, String phone,
+                                   String taxCode) {
+        return new Customer(id, Objects.requireNonNull(userId, "userId"), companyName, email, phone,
+                taxCode == null || taxCode.isBlank() ? null : TaxCode.normalise(taxCode), null,
+                CustomerStatus.PENDING_ACTIVATION, List.of(), 0L, null);
+    }
+
+    /**
+     * The contact redeemed the invitation. Only a pending customer activates: a blocked or closed
+     * one stays as it is - activating an account must not lift a staff decision.
+     *
+     * @throws IllegalStateException for any other status
+     */
+    public void activatePortal() {
+        if (status != CustomerStatus.PENDING_ACTIVATION) {
+            throw new IllegalStateException("Only a customer pending activation can activate, not " + status);
+        }
+        this.status = CustomerStatus.ACTIVE;
+    }
+
+    /**
+     * Sales records or corrects the tax code. It is never cleared: a customer that has one keeps one.
+     *
+     * @throws IllegalArgumentException for a malformed code
+     */
+    public void changeTaxCode(String taxCode) {
+        this.taxCode = TaxCode.normalise(taxCode);
+    }
+
+    /**
+     * Puts the customer in a group, or none (P7: the E-commerce Admin's decision). Prices already given - a
+     * quote, an order - keep theirs; only later pricing reads the new group.
+     *
+     * @param segmentId an existing group (the caller checks it), or null for none
+     * @throws IllegalStateException when the customer changed since {@code expectedVersion} was read
+     */
+    public void assignSegment(UUID segmentId, long expectedVersion) {
+        if (version != expectedVersion) {
+            throw new IllegalStateException("Customer changed meanwhile");
+        }
+        this.segmentId = segmentId;
+    }
+
     public void updateProfile(String fullName, String phone, long expectedVersion) {
         if (version != expectedVersion) {
             throw new IllegalStateException("Customer profile changed meanwhile");
@@ -54,8 +114,41 @@ public final class Customer extends AggregateRoot {
         this.phone = normaliseOptional(phone);
     }
 
+    /**
+     * A staff status change. PENDING_ACTIVATION is entered only by onboarding and left for ACTIVE only
+     * by activation (kltn-docs 18 §5): staff may close a pending customer (INACTIVE), nothing else. A
+     * closed customer leaves INACTIVE only through {@link #reopen}, which needs a reason.
+     *
+     * @throws IllegalStateException for a transition the lifecycle does not have
+     */
     public void changeStatus(CustomerStatus target) {
-        this.status = Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(target, "target");
+        if (target == status) return;
+        if (target == CustomerStatus.PENDING_ACTIVATION
+                || (status == CustomerStatus.PENDING_ACTIVATION && target != CustomerStatus.INACTIVE)
+                || status == CustomerStatus.INACTIVE) {
+            throw new IllegalStateException("A customer cannot go from %s to %s".formatted(status, target));
+        }
+        this.status = target;
+    }
+
+    /**
+     * A manager reopens a closed customer (decision 2026-10-12; kltn-docs 18 §5 itself ends Closed at
+     * Anonymized). The customer returns to where its contact left off: ACTIVE if the portal account was
+     * activated (or there is none), PENDING_ACTIVATION if it never was, so Sales can invite again.
+     *
+     * @param portalActivated whether the contact's account has a password
+     * @throws IllegalStateException unless the customer is INACTIVE
+     * @throws IllegalArgumentException without a reason
+     */
+    public void reopen(String reason, boolean portalActivated) {
+        if (status != CustomerStatus.INACTIVE) {
+            throw new IllegalStateException("Only a closed customer can be reopened, not " + status);
+        }
+        if (reason == null || reason.isBlank()) {
+            throw new IllegalArgumentException("A reason is required to reopen a closed customer");
+        }
+        this.status = userId == null || portalActivated ? CustomerStatus.ACTIVE : CustomerStatus.PENDING_ACTIVATION;
     }
 
     public CustomerAddress addAddress(CustomerAddress address) {
@@ -169,6 +262,7 @@ public final class Customer extends AggregateRoot {
     public String fullName() { return fullName; }
     public String email() { return email; }
     public String phone() { return phone; }
+    public String taxCode() { return taxCode; }
     public UUID segmentId() { return segmentId; }
     public CustomerStatus status() { return status; }
     public List<CustomerAddress> addresses() { return List.copyOf(addresses); }

@@ -78,7 +78,7 @@ class SupplierServiceImpl implements SupplierService {
     @Override
     @Transactional(readOnly = true)
     public PageResponse<SupplierSummary> list(
-            int page, int size, String search, String status, String sort) {
+            int page, int size, String search, String status, Boolean printSubcontractor, String sort) {
         SupplierStatus requestedStatus;
         try {
             requestedStatus =
@@ -87,7 +87,7 @@ class SupplierServiceImpl implements SupplierService {
             throw new BusinessException(ErrorCode.SUPPLIER_PROFILE_INVALID);
         }
         return suppliers
-                .list(page, size, search, requestedStatus, sort)
+                .list(page, size, search, requestedStatus, printSubcontractor, sort)
                 .map(SupplierServiceImpl::summary);
     }
 

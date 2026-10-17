@@ -68,6 +68,18 @@ public final class OrderLine {
      * being reserved again means a code path ran twice — and appending would silently double the
      * stock held for one line.</p>
      */
+    /** Holds added after checkout, each once (see {@code Order#addProductionHolds}). */
+    boolean addHolds(List<UUID> more) {
+        boolean added = false;
+        for (UUID id : more) {
+            if (!reservationIds.contains(java.util.Objects.requireNonNull(id, "reservationId"))) {
+                reservationIds.add(id);
+                added = true;
+            }
+        }
+        return added;
+    }
+
     void attachReservations(List<UUID> granted) {
         if (!this.reservationIds.isEmpty()) {
             throw new IllegalStateException(

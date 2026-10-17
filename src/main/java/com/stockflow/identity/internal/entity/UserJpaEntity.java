@@ -30,7 +30,8 @@ public class UserJpaEntity extends BaseEntity {
     @Column(name = "email", nullable = false, length = 320)
     private String email;
 
-    @Column(name = "password_hash", nullable = false, length = 200)
+    /** Null for an invited customer account that has not been activated (SCRUM-450). */
+    @Column(name = "password_hash", length = 200)
     private String passwordHash;
 
     @Column(name = "full_name", length = 200)

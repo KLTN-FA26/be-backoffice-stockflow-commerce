@@ -172,9 +172,11 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
             perPoLine.merge(poLine.id(), in.quantity(), Integer::sum);
             indexesOf.computeIfAbsent(poLine.id(), id -> new ArrayList<>()).add(i);
             if (errors.size() == before) {
+                // A SUBCONTRACT order's goods get one inspection, the production QC against the approved sample
+                // (user decision 2026-10-13): receiving counts them and does not inspect the same goods again.
                 counted.add(ReceiptLine.counted(Identifiers.newId(), poLine.id(), poLine.inventoryItemId(),
                         location.id(), in.quantity(), lot, in.expiryDate(), blankToNull(in.note()),
-                        item.qcRequired()));
+                        item.qcRequired() && !order.subcontract()));
             }
         }
         for (var over : overTolerance(order, receipt.id(), perPoLine)) {
@@ -251,7 +253,8 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         overTolerance(order, receipt.id(), perPoLine).stream().findFirst().ifPresent(over -> {
             throw new BusinessException(ErrorCode.OVER_RECEIPT_TOLERANCE, over.message());
         });
-        if (receipt.lines().stream().anyMatch(ReceiptLine::qcRequired)
+        // A SUBCONTRACT order's goods wait for production QC in the QUALITY_CONTROL area as well.
+        if ((order.subcontract() || receipt.lines().stream().anyMatch(ReceiptLine::qcRequired))
                 && !locations.hasArea(receipt.warehouseId(), QUALITY_CONTROL)) {
             // Docs 03 edge case: the 3-step flow has nowhere to go.
             throw new BusinessException(ErrorCode.QC_AREA_MISSING,
@@ -261,7 +264,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         // Microseconds, as the database keeps them: the confirmation time is also the receipt time of
         // the stock layers this creates, and the QC steps find their layer again by it.
         Instant now = clock.instant().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
-        receipt.confirm(userId, now);
+        receipt.confirm(userId, now, order.subcontract());
         GoodsReceipt saved = receipts.save(receipt);
 
         Map<UUID, ReceivingLocation> where = locations.byIds(
@@ -275,8 +278,10 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
             inventory.receive(new ReceiveStockCommand(line.id(), new Sku(item.sku()), line.lotNumber(),
                     line.expiryDate(), locationCode, line.receivedQuantity(), userId, saved.confirmedAt()));
             confirmedLines.add(new GoodsReceiptConfirmed.Line(line.id(), line.poLineId(), item.sku(), line.lotNumber(),
-                    line.receivedQuantity(), line.qcRequired()));
-            if (!line.qcRequired()) {
+                    line.receivedQuantity(), line.qcRequired(), locationCode));
+            // A SUBCONTRACT order's goods are held for their production order in this transaction (production's
+            // BEFORE_COMMIT listener) and wait for its QC: nothing of them is for putaway.
+            if (!line.qcRequired() && !order.subcontract()) {
                 readyLines.add(new ReceiptStockReadyForPutaway.Line(line.id(), item.sku(), line.lotNumber(),
                         locationCode, line.receivedQuantity()));
             }
@@ -292,7 +297,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         orders.recordProgress(order, lineStatuses, orderStatus, userId, saved.id(), saved.number());
 
         events.publishEvent(new GoodsReceiptConfirmed(saved.id(), saved.number(), order.id(), saved.warehouseId(),
-                confirmedLines));
+                confirmedLines, saved.confirmedAt()));
         if (!readyLines.isEmpty()) {
             events.publishEvent(new ReceiptStockReadyForPutaway(saved.id(), saved.number(), saved.warehouseId(),
                     readyLines));
@@ -575,8 +580,8 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                     line.inventoryItemId(), item == null ? null : item.sku(), line.receivedQuantity(),
                     line.lotNumber(), line.expiryDate(), code(where, line.locationId()), line.note(),
                     line.qcRequired(), item != null && item.lotTracked(), item != null && item.expiryTracked(),
-                    progress(line), code(where, line.qcLocationId()), line.movedToQcAt(),
-                    line.qcRequired() && !line.inspected() ? 0 : line.quantityForPutaway(),
+                    progress(line, order.subcontract()), code(where, line.qcLocationId()), line.movedToQcAt(),
+                    order.subcontract() || line.qcRequired() && !line.inspected() ? 0 : line.quantityForPutaway(),
                     line.inspections().stream().map(i -> new InspectionView(i.id(), i.outcome(), i.quantity(),
                             code(where, i.targetLocationId()), i.reason(), i.inspectedBy(), names.get(i.inspectedBy()),
                             i.inspectedAt())).toList(),
@@ -594,7 +599,10 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                 names.get(receipt.confirmedBy()), receipt.closedAt(), lines, warnings);
     }
 
-    private static QcProgress progress(ReceiptLine line) {
+    private static QcProgress progress(ReceiptLine line, boolean subcontract) {
+        if (subcontract && !line.qcRequired()) {
+            return QcProgress.PRODUCTION_QC;
+        }
         if (!line.qcRequired()) {
             return QcProgress.NOT_REQUIRED;
         }

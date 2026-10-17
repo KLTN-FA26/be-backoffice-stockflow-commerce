@@ -56,7 +56,6 @@ import com.stockflow.order.internal.entity.OrderHoldJpaEntity;
 import com.stockflow.order.internal.repository.OrderHoldJpaRepository;
 import java.nio.charset.StandardCharsets;
 import java.time.ZoneId;
-import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Collectors;
 
@@ -96,7 +95,7 @@ import java.util.stream.Collectors;
  */
 @Service
 @Transactional
-class OrderServiceImpl implements OrderService {
+class OrderServiceImpl implements OrderService, QuotedOrders {
 
     private static final Logger log = LoggerFactory.getLogger(OrderServiceImpl.class);
 
@@ -155,6 +154,23 @@ class OrderServiceImpl implements OrderService {
      */
     @Override
     public OrderSummary placeOrder(PlaceOrderCommand command) {
+        return place(command, false);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The same transaction and steps as {@link #placeOrder}; only the price source differs. Every line
+     * — design lines included — is placed at the price on the command, which the quote service computed
+     * from the accepted quote. This is why the method is on an internal interface and not on
+     * {@code OrderService}: a client-supplied price never reaches it.</p>
+     */
+    @Override
+    public OrderSummary placeQuotedOrder(PlaceOrderCommand command) {
+        return place(command, true);
+    }
+
+    private OrderSummary place(PlaceOrderCommand command, boolean quotePriced) {
         // Idempotency first. A double-clicked "Place order" must not create two orders, and this
         // check is cheap compared to discovering the duplicate after the customer has paid twice.
         Optional<Order> alreadyPlaced = repository.findByRequestId(command.requestId());
@@ -167,18 +183,21 @@ class OrderServiceImpl implements OrderService {
             return toSummary(alreadyPlaced.get());
         }
 
-        // SCRUM-298 is a separate integration: never fall back to a client-supplied design price.
-        if (command.snapshotCustomer()
+        // SCRUM-298 is a separate integration: never fall back to a client-supplied design price. A
+        // design line is priced by an accepted quote (SCRUM-448), which arrives through placeQuotedOrder.
+        if (!quotePriced && command.snapshotCustomer()
                 && command.lines().stream().anyMatch(line -> line.designSnapshotId() != null)) {
             throw new BusinessException(ErrorCode.DESIGN_QUOTE_REQUIRED);
         }
+        // SCRUM-428: the customer's own tier for the order's total of each SKU, else its group's or the
+        // base price (kltn-docs 13 §3); the client's price is only what it expects to pay (agreedPrice).
         var sellingPrices =
-                command.snapshotCustomer()
-                        ? catalog.checkoutPrices(
+                command.snapshotCustomer() && !quotePriced
+                        ? catalog.checkoutPrices(command.customerId(),
                                 command.lines().stream()
                                         .filter(line -> line.designSnapshotId() == null)
-                                        .map(line -> line.sku().code())
-                                        .collect(Collectors.toSet()))
+                                        .collect(Collectors.toMap(line -> line.sku().code(),
+                                                PlaceOrderCommand.Line::quantity, Integer::sum)))
                         : Map.<String, Money>of();
         LocalDate today = LocalDate.ofInstant(clock.instant(), ZoneOffset.UTC);
         OrderNumber orderNumber = repository.nextOrderNumber(today);
@@ -192,7 +211,7 @@ class OrderServiceImpl implements OrderService {
             PlaceOrderCommand.Line line = command.lines().get(index);
             var orderLine = Order.line(deterministicLineId(command.requestId(), index),
                     line.sku(), line.quantity(),
-                            command.snapshotCustomer()
+                            command.snapshotCustomer() && !quotePriced
                                     ? agreedPrice(
                                             line.sku().code(), line.unitPrice(), sellingPrices)
                                     : line.unitPrice(), line.designSnapshotId());
@@ -297,80 +316,16 @@ class OrderServiceImpl implements OrderService {
 
     @Override
     public OrderSummary placeGuestOrder(PlaceGuestOrderCommand command) {
-        String email = command.email().trim().toLowerCase(Locale.ROOT);
-        // Construct snapshots before the replay lookup as well: a reused request id must not make
-        // malformed address data appear valid merely because an earlier checkout succeeded.
-        var shipping = toSnapshot(command.shippingAddress());
-        var billing = toSnapshot(command.billingAddress());
-        Optional<Order> alreadyPlaced = repository.findByRequestId(command.requestId());
-        if (alreadyPlaced.isPresent()) {
-            if (!sameGuestCheckout(alreadyPlaced.get(), email, shipping, billing, command.lines())) {
-                throw new BusinessException(ErrorCode.IDEMPOTENCY_KEY_REUSED);
-            }
-            return toSummary(alreadyPlaced.get());
-        }
-
-        var sellingPrices =
-                catalog.checkoutPrices(
-                        command.lines().stream()
-                                .map(line -> line.sku().code())
-                                .collect(Collectors.toSet()));
-        LocalDate today = LocalDate.ofInstant(clock.instant(), ZoneOffset.UTC);
-        OrderNumber orderNumber = repository.nextOrderNumber(today);
-        List<OrderLine> lines = new ArrayList<>();
-        for (int index = 0; index < command.lines().size(); index++) {
-            PlaceGuestOrderCommand.Line line = command.lines().get(index);
-            lines.add(Order.line(deterministicLineId(command.requestId(), index), line.sku(),
-                    line.quantity(),
-                            agreedPrice(line.sku().code(), line.unitPrice(), sellingPrices), null));
-        }
-        Order order = Order.guestDraft(orderNumber, command.requestId(), lines, clock.instant(),
-                shipping.recipientName(), email,
-                shipping.phone(), shipping, billing);
-        reserve(order, command.requestId());
-        order.submit();
-        Order saved = repository.save(order);
-        events.publishEventsOf(order);
-        return toSummary(saved);
+        // Guard the module API as well as HTTP: no caller may reserve stock for a guest.
+        throw new BusinessException(ErrorCode.GUEST_CHECKOUT_DISABLED);
     }
 
-    /**
-     * A body {@code requestId} is an idempotency key, not an order lookup key. Returning an old
-     * order for a changed basket or address would make a customer believe the changed checkout was
-     * accepted while fulfilment receives the earlier one. The HTTP idempotency filter protects
-     * normal callers too; this comparison is the durable, service-level backstop for retries that
-     * reach this use case directly.
-     */
+    /** The server price is authoritative; the client's amount is only what it expects to pay. */
     private static Money agreedPrice(String sku, Money expected, Map<String, Money> prices) {
         var actual = prices.get(sku);
         if (actual == null) throw new BusinessException(ErrorCode.PRICE_NOT_AVAILABLE);
         if (!actual.equals(expected)) throw new BusinessException(ErrorCode.CHECKOUT_PRICE_CHANGED);
         return actual;
-    }
-
-    private static boolean sameGuestCheckout(Order order, String email,
-                                             OrderAddressSnapshot shipping,
-                                             OrderAddressSnapshot billing,
-                                             List<PlaceGuestOrderCommand.Line> requestedLines) {
-        if (order.customerId() != null
-                || !email.equals(order.contactEmail())
-                || !shipping.equals(order.shippingAddress())
-                || !billing.equals(order.billingAddress())
-                || order.lines().size() != requestedLines.size()) {
-            return false;
-        }
-        for (int index = 0; index < requestedLines.size(); index++) {
-            PlaceGuestOrderCommand.Line requested = requestedLines.get(index);
-            OrderLine stored = order.lines().get(index);
-            if (!requested.sku().equals(stored.sku())
-                    || requested.quantity() != stored.quantity()
-                    || !requested.unitPrice().equals(stored.unitPrice())
-                    || stored.designSnapshotId() != null
-                    || stored.designChecksum() != null) {
-                return false;
-            }
-        }
-        return true;
     }
 
     @Override
@@ -445,10 +400,19 @@ class OrderServiceImpl implements OrderService {
      */
     Order cancelLoaded(Order order, CancelOrderCommand command) {
         boolean wasHoldingStock = order.status().holdsStock();
-        order.cancel(command.reasonCode(), command.note(), command.retainedPercent(), command.cancelledBy(),
+        order.cancel(command.reasonCode(), command.note(), command.retainedPercent(), command.agreedFee(),
+                command.cancelledBy(),
                 clock.instant());
 
         if (wasHoldingStock) {
+            // BR-PRD-10 (decision 2026-10-16): goods printed for this order and waiting in packing are scrapped,
+            // never sold - kept under their hold, a SCRAP write-off asked for in the canceller's name. Inventory
+            // decides from the goods' state which holds those are; the release below leaves them alone.
+            String note = "Order %s cancelled: printed custom goods (BR-PRD-10)".formatted(order.orderNumber());
+            order.lines().stream().filter(OrderLine::isMadeToOrder)
+                    .flatMap(line -> line.reservationIds().stream())
+                    .forEach(reservationId -> inventory.scrapCancelledPrint(reservationId, order.id().value(), note,
+                            command.cancelledBy()));
             order.reservationIds()
                     .forEach(reservationId -> inventory.release(reservationId, "ORDER_CANCELLED"));
             order.clearReservations();
@@ -671,25 +635,9 @@ class OrderServiceImpl implements OrderService {
                         order.paidInFullAt(), order.paymentStatus(), order.creditTermDays()),
                 order.status() == OrderStatus.CANCELLED
                         ? new OrderSummary.Cancellation(order.cancellationReasonCode(), order.cancellationReason(),
-                                order.cancellationRetainedAmount())
+                                order.cancellationRetainedAmount(), order.cancellationFeeReason(),
+                                order.cancellationFeeDetail(), order.cancellationFeeAmount())
                         : null);
-    }
-
-    private void reserve(Order order, UUID requestId) {
-        inventory.prepareReservation(
-                order.lines().stream().map(OrderLine::sku).collect(Collectors.toSet()));
-        for (OrderLine line : order.lines()) {
-            ReserveStockResult reservation = inventory.reserve(new ReserveStockCommand(
-                    deterministicRequestId(requestId, line.id()), line.sku(), line.quantity(),
-                    order.id().value()));
-            order.attachReservations(line.id(), reservation.reservationIds());
-        }
-    }
-
-    private static OrderAddressSnapshot toSnapshot(PlaceGuestOrderCommand.Address address) {
-        return new OrderAddressSnapshot(address.recipientName(), address.phone(), address.line1(),
-                address.line2(), address.wardCode(), address.wardName(), address.provinceCode(),
-                address.provinceName(), address.countryCode(), address.postalCode());
     }
 
     private static OrderAddressSnapshot toSnapshot(CheckoutCustomer.CheckoutAddress address) {

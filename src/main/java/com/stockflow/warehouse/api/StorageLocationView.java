@@ -21,17 +21,27 @@ import java.util.UUID;
  *                        shelf in {@code MAINTENANCE} has effective status {@code MAINTENANCE}
  * @param usable          {@code effectiveStatus == ACTIVE}: stock may be put into or taken from here.
  *                        Check this, not {@code status}
+ * @param areaType        what the area is for; null for a bin
  */
 public record StorageLocationView(UUID id, Kind kind, UUID warehouseId, String locationCode,
                                   StorageClass storageClass, Status status, Status effectiveStatus,
-                                  boolean usable) {
+                                  boolean usable, AreaType areaType) {
 
-    /** What owns the location: a bin on a shelf level, or a storage area on the floor. */
-    public enum Kind { BIN, AREA }
+    /** A location whose area type is not asked for (a bin, or a caller that does not care). */
+    public StorageLocationView(UUID id, Kind kind, UUID warehouseId, String locationCode, StorageClass storageClass,
+                               Status status, Status effectiveStatus, boolean usable) {
+        this(id, kind, warehouseId, locationCode, storageClass, status, effectiveStatus, usable, null);
+    }
+
+    /** What owns the location: a bin on a shelf level, a storage area on the floor, or a print subcontractor. */
+    public enum Kind { BIN, AREA, SUBCONTRACTOR }
 
     /** The storage condition the location offers; a SKU goes only where its own class matches (BR-01). */
     public enum StorageClass { NORMAL, COLD, HAZMAT, FRAGILE, OVERSIZE }
 
     /** {@code INACTIVE} = taken off the layout; the location is kept, because history refers to its code. */
     public enum Status { ACTIVE, BLOCKED, MAINTENANCE, INACTIVE }
+
+    /** What an area is for; null for a bin. Production issues blanks only to a {@code PRODUCTION} area. */
+    public enum AreaType { RECEIVING, QUALITY_CONTROL, QUARANTINE, PACKING, DISPATCH, OVERFLOW, PRODUCTION, NON_STORAGE }
 }

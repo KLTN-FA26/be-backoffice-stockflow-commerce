@@ -66,6 +66,13 @@ public class ReceivableJpaEntity extends BaseEntity {
         this.status = ReceivableStatus.OPEN;
     }
 
+    public ReceivableJpaEntity ofKind(String kind) {
+        this.kind = kind;
+        return this;
+    }
+
+    public String getKind() { return kind; }
+
     public void apply(BigDecimal paidAmount, ReceivableStatus status, Instant settledAt) {
         this.paidAmount = paidAmount;
         this.status = status;

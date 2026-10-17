@@ -176,6 +176,96 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     }
 
     @Override
+    public List<StockItem> findWithReservationsForProductionOrder(UUID productionOrderId) {
+        return jpa.findStockItemIdsHoldingProductionOrder(productionOrderId).stream()
+                .sorted(java.util.Comparator.comparing(UUID::toString))
+                .map(id -> findByIdForUpdate(new StockItemId(id)))
+                .flatMap(Optional::stream)
+                .toList();
+    }
+
+    @Override
+    public List<UUID> findHeldReservationIdsOfProductionOrder(UUID productionOrderId) {
+        return jpa.findHeldReservationIdsOfProductionOrder(productionOrderId);
+    }
+
+    @Override
+    public Optional<StockItemId> findIdByReservationId(ReservationId reservationId) {
+        return jpa.findStockItemIdByReservationId(reservationId.value()).map(StockItemId::new);
+    }
+
+    /**
+     * The hold changes parent by an UPDATE of its {@code stock_item_id}. Going through the two collections
+     * would have {@code orphanRemoval} delete the row under the source while the destination inserted it
+     * again — a primary-key clash at best, and a DELETE the foreign keys from
+     * {@code ordering.order_line_reservation} and fulfilment rightly refuse. Both parents are refreshed after
+     * the UPDATE so their collections match the rows, then saved as usual for {@code on_hand} and
+     * {@code reserved}.
+     */
+    /**
+     * The marker is a transaction-local setting naming the row ({@code inventory.enforce_sku_policy},
+     * V20261015000450); it is set just before this row's UPDATE is flushed and cleared right after, so no other
+     * row and no later statement of the transaction is covered by it.
+     */
+    @Override
+    public StockItem saveMerged(StockItem stockItem) {
+        entityManager.flush();
+        mergeMarker(stockItem.id().value().toString());
+        StockItem saved;
+        try {
+            saved = save(stockItem);
+            entityManager.flush();
+        } catch (RuntimeException failure) {
+            // The UPDATE failed, and in PostgreSQL that aborts the transaction: clearing the marker now fails too
+            // ("current transaction is aborted", 25P02). That second error must not replace the first, which is the
+            // one the caller can act on (a CHECK or the policy trigger, mapped to 409). The setting is
+            // transaction-local and ends with the rolled-back transaction anyway.
+            try {
+                mergeMarker("");
+            } catch (RuntimeException cleanup) {
+                failure.addSuppressed(cleanup);
+            }
+            throw failure;
+        }
+        mergeMarker("");
+        return saved;
+    }
+
+    private void mergeMarker(String value) {
+        entityManager.createNativeQuery("SELECT set_config('stockflow.same_receipt_merge', :value, true)")
+                .setParameter("value", value).getSingleResult();
+    }
+
+    @Override
+    public void saveHandOver(StockItem from, StockItem to, ReservationId moved) {
+        boolean merged = jpa.existsById(to.id().value());
+        if (!merged) {
+            StockItemJpaEntity fresh = StockItemPersistenceMapper.toNewEntity(to);
+            fresh.getReservations().removeIf(r -> r.getId().equals(moved.value()));
+            jpa.save(fresh);
+        }
+        entityManager.flush();
+        int updated = entityManager.createNativeQuery(
+                        "update inventory.stock_reservation set stock_item_id = :to where id = :id and stock_item_id = :from")
+                .setParameter("to", to.id().value())
+                .setParameter("id", moved.value())
+                .setParameter("from", from.id().value())
+                .executeUpdate();
+        if (updated != 1) {
+            throw new IllegalStateException("Reservation %s is no longer on stock item %s".formatted(moved, from.id()));
+        }
+        for (StockItem item : List.of(from, to)) {
+            jpa.findByIdWithReservations(item.id().value()).ifPresent(entityManager::refresh);
+        }
+        save(from);
+        if (merged) {
+            saveMerged(to);
+        } else {
+            save(to);
+        }
+    }
+
+    @Override
     public List<com.stockflow.inventory.internal.domain.HeldStock> findHeldForOrder(UUID orderId) {
         return jpa.findHeldForOrder(orderId);
     }

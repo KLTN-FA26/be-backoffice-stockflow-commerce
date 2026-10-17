@@ -23,7 +23,7 @@ public interface OrderService {
      */
     OrderSummary placeOrder(PlaceOrderCommand command);
 
-    /** Guest checkout with immutable contact/address snapshots and no customer account. */
+    /** Retained for caller compatibility; always refuses guest checkout under the B2B policy. */
     OrderSummary placeGuestOrder(PlaceGuestOrderCommand command);
 
     Optional<OrderSummary> findById(UUID orderId);

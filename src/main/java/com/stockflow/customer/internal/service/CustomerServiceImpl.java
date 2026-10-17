@@ -6,7 +6,9 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.SortWhitelist;
+import com.stockflow.customer.api.ChangeCustomerStatusCommand;
 import com.stockflow.customer.api.CheckoutCustomer;
+import com.stockflow.customer.api.CustomerStatusEntry;
 import com.stockflow.customer.api.CreditTerms;
 import com.stockflow.customer.api.SaveCreditTermsCommand;
 import com.stockflow.customer.api.CustomerAddressSummary;
@@ -24,9 +26,10 @@ import com.stockflow.customer.internal.domain.Customer;
 import com.stockflow.customer.internal.domain.CustomerAddress;
 import com.stockflow.customer.internal.domain.CustomerRepository;
 import com.stockflow.customer.internal.domain.CustomerStatus;
+import com.stockflow.customer.internal.domain.CustomerStatusChange;
+import com.stockflow.customer.internal.domain.CustomerStatusHistory;
 import com.stockflow.customer.internal.repository.CustomerSearchRepository;
-import com.stockflow.identity.api.IdentityService;
-import com.stockflow.identity.api.RegisterAccountCommand;
+import com.stockflow.identity.api.PortalAccountService;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -47,16 +50,19 @@ class CustomerServiceImpl implements CustomerService {
 
     private final CustomerRepository customers;
     private final CustomerSearchRepository search;
-    private final IdentityService identities;
+    private final PortalAccountService accounts;
     private final CreditProfileRepository creditProfiles;
+    private final CustomerStatusHistory history;
     private final java.time.Clock clock;
 
     CustomerServiceImpl(CustomerRepository customers, CustomerSearchRepository search,
-                        IdentityService identities, CreditProfileRepository creditProfiles, java.time.Clock clock) {
+                        PortalAccountService accounts, CreditProfileRepository creditProfiles,
+                        CustomerStatusHistory history, java.time.Clock clock) {
         this.customers = customers;
         this.search = search;
-        this.identities = identities;
+        this.accounts = accounts;
         this.creditProfiles = creditProfiles;
+        this.history = history;
         this.clock = clock;
     }
 
@@ -115,22 +121,19 @@ class CustomerServiceImpl implements CustomerService {
 
     @Override
     public CustomerRegistration register(RegisterCustomerCommand command) {
-        String email = command.email().trim().toLowerCase(Locale.ROOT);
-        if (customers.findByEmail(email).isPresent()) {
-            throw new BusinessException(ErrorCode.CUSTOMER_EMAIL_ALREADY_EXISTS);
-        }
-        var account = identities.registerCustomer(new RegisterAccountCommand(
-                email, command.password(), command.fullName()));
-        Customer saved = customers.save(Customer.register(Identifiers.newId(), account.userId(),
-                command.fullName(), email, command.phone()));
-        return new CustomerRegistration(toSummary(saved), account.token().accessToken(),
-                account.token().tokenType(), account.token().expiresInSeconds());
+        throw new BusinessException(ErrorCode.CUSTOMER_REGISTRATION_DISABLED);
     }
 
     @Override
     @Transactional(readOnly = true)
     public Optional<CustomerSummary> findById(UUID customerId) {
         return customers.findById(customerId).map(CustomerServiceImpl::toSummary);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public boolean segmentExists(UUID segmentId) {
+        return customers.segmentExists(segmentId);
     }
 
     @Override
@@ -143,7 +146,7 @@ class CustomerServiceImpl implements CustomerService {
     @Transactional(readOnly = true)
     public PageResponse<CustomerSummary> list(ListCustomersQuery query) {
         var pageable = Pages.of(query.page(), query.size(), SORT.parse(query.sort()));
-        return Pages.toResponse(search.search(query.search(), query.status(), pageable));
+        return Pages.toResponse(search.search(query.search(), query.status(), query.segmentId(), pageable));
     }
 
     @Override
@@ -155,18 +158,103 @@ class CustomerServiceImpl implements CustomerService {
         } catch (IllegalStateException stale) {
             throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK, stale.getMessage());
         }
-        return toSummary(customers.save(customer));
+        if (command.privileged() && command.taxCode() != null) {
+            try {
+                customer.changeTaxCode(command.taxCode());
+            } catch (IllegalArgumentException invalid) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, invalid.getMessage());
+            }
+            requireTaxCodeFree(customer);
+        }
+        return saveGuardingTaxCode(customer);
     }
 
     @Override
-    public CustomerSummary changeStatus(UUID customerId, String status) {
-        Customer customer = requireForUpdate(customerId);
+    @com.stockflow.common.audit.Auditable(action = com.stockflow.common.audit.AuditAction.TRANSITION,
+            resourceType = "customer", resourceId = "#command.customerId()")
+    public CustomerSummary changeStatus(ChangeCustomerStatusCommand command) {
+        Customer customer = requireForUpdate(command.customerId());
+        CustomerStatus from = customer.status();
+        CustomerStatus target;
         try {
-            customer.changeStatus(CustomerStatus.valueOf(status.trim().toUpperCase(Locale.ROOT)));
+            target = CustomerStatus.valueOf(command.status().trim().toUpperCase(Locale.ROOT));
         } catch (IllegalArgumentException invalid) {
-            throw new BusinessException(ErrorCode.UNSUPPORTED_PARAMETER, "Unknown customer status " + status);
+            throw new BusinessException(ErrorCode.UNSUPPORTED_PARAMETER, "Unknown customer status " + command.status());
         }
-        return toSummary(customers.save(customer));
+        try {
+            if (from == CustomerStatus.INACTIVE && target == CustomerStatus.ACTIVE) {
+                boolean activated = customer.userId() == null || !accounts.awaitingActivation(customer.userId());
+                customer.reopen(command.reason(), activated);
+            } else {
+                customer.changeStatus(target);
+            }
+        } catch (IllegalStateException refused) {
+            throw new BusinessException(ErrorCode.INVALID_CUSTOMER_STATUS_TRANSITION, refused.getMessage());
+        } catch (IllegalArgumentException invalid) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, invalid.getMessage());
+        }
+        requireTaxCodeFree(customer);
+        CustomerSummary saved = saveGuardingTaxCode(customer);
+        syncPortalAccess(customer);
+        if (customer.status() != from) {
+            history.record(new CustomerStatusChange(Identifiers.newId(), customer.id(), from, customer.status(),
+                    command.reason(), command.actorUserId(), clock.instant()));
+        }
+        return saved;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<CustomerStatusEntry> statusHistory(UUID customerId) {
+        if (!customers.existsById(customerId)) throw new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND);
+        return history.of(customerId).stream()
+                .map(change -> new CustomerStatusEntry(change.from() == null ? null : change.from().name(),
+                        change.to().name(), change.reason(), change.changedBy(), change.changedAt()))
+                .toList();
+    }
+
+    /**
+     * kltn-docs 18 §5: a Suspended (BLOCKED) customer may not sign in, and a Closed (INACTIVE) one has
+     * closed its account; an ACTIVE one may. The contact's account follows in this transaction - the
+     * customer row is locked first, the account second, the order resend and activation use too - so
+     * a block ends every live session at commit and a lifted block lets the same password in again.
+     * Reinstating keeps no session: the ones a block or closure ended stay ended. A pending customer
+     * reopened after closure gets its (passwordless) account back so an invitation can be redeemed.
+     */
+    private void syncPortalAccess(Customer customer) {
+        if (customer.userId() == null) return;
+        // A switch expression, so a new status does not compile until somebody decides whether it signs in.
+        boolean signsIn = switch (customer.status()) {
+            case ACTIVE, PENDING_ACTIVATION -> true;
+            case BLOCKED, INACTIVE -> false;
+        };
+        if (signsIn) {
+            accounts.reinstate(customer.userId());
+        } else {
+            accounts.suspend(customer.userId());
+        }
+    }
+
+    /**
+     * BR-01, decided 16/10/2026: one customer record per tax code in every status. A BLOCKED customer cannot come back
+     * under a new record, and a closed one is reopened rather than created again. Checked first for a clear 409, and
+     * enforced by uk_customer_tax_code (V20261015000830) for the writer that races past the check.
+     */
+    private void requireTaxCodeFree(Customer customer) {
+        if (customer.taxCode() != null && customers.isTaxCodeTaken(customer.taxCode(), customer.id())) {
+            throw new BusinessException(ErrorCode.CUSTOMER_TAX_CODE_ALREADY_EXISTS);
+        }
+    }
+
+    private CustomerSummary saveGuardingTaxCode(Customer customer) {
+        try {
+            return toSummary(customers.save(customer));
+        } catch (org.springframework.dao.DataIntegrityViolationException race) {
+            if (CustomerConstraints.isTaxCodeTaken(race)) {
+                throw new BusinessException(ErrorCode.CUSTOMER_TAX_CODE_ALREADY_EXISTS);
+            }
+            throw race;
+        }
     }
 
     @Override
@@ -287,9 +375,9 @@ class CustomerServiceImpl implements CustomerService {
         }
     }
 
-    private static CustomerSummary toSummary(Customer customer) {
+    static CustomerSummary toSummary(Customer customer) {
         return new CustomerSummary(customer.id(), customer.userId(), customer.fullName(), customer.email(),
-                customer.phone(), customer.segmentId(), customer.status().name(), customer.version(),
+                customer.phone(), customer.taxCode(), customer.segmentId(), customer.status().name(), customer.version(),
                 customer.createdAt());
     }
 

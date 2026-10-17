@@ -223,6 +223,44 @@ class PickConsumptionServiceTest {
     }
 
     @Nested
+    @DisplayName("production's stock is never picked")
+    class ProductionStock {
+
+        @Test
+        @DisplayName("a production order's hold is refused, by a pick line and by hand, and nothing moves")
+        void aProductionHoldIsRefused() {
+            UUID holdId = UUID.randomUUID();
+            Reservation hold = new Reservation(ReservationId.of(holdId), null, UUID.randomUUID(), UUID.randomUUID(),
+                    UUID.randomUUID(), Quantity.of(2), NOW.minusSeconds(3600), null, ReservationStatus.HELD, null, null);
+            StockItem item = new StockItem(StockItemId.newId(), SOFA, BIN, "LOT-1", LocalDate.of(2030, 1, 1),
+                    Quantity.of(10), StockStatus.AVAILABLE, List.of(hold), 0L, NOW.minusSeconds(86_400), null);
+            when(stockItems.findByReservationIdForUpdate(ReservationId.of(holdId))).thenReturn(Optional.of(item));
+
+            assertThat(refusal(() -> service.consumeForPick(holdId, UUID.randomUUID(), PICKER)))
+                    .isEqualTo(ErrorCode.PRODUCTION_HOLD_NOT_PICKABLE);
+            assertThat(refusal(() -> service.consume(holdId, PICKER))).isEqualTo(ErrorCode.PRODUCTION_HOLD_NOT_PICKABLE);
+            assertThat(ledgerRows).isEmpty();
+            assertThat(saved).isEmpty();
+        }
+
+        @Test
+        @DisplayName("an order's hold on goods in the print shop is refused too")
+        void goodsInThePrintShopAreRefused() {
+            UUID holdId = UUID.randomUUID();
+            Reservation hold = new Reservation(ReservationId.of(holdId), UUID.randomUUID(), UUID.randomUUID(),
+                    UUID.randomUUID(), Quantity.of(2), NOW.minusSeconds(3600), null, ReservationStatus.HELD, null, null);
+            StockItem item = new StockItem(StockItemId.newId(), SOFA, new LocationId("HCM-PRD01"), "LOT-1",
+                    LocalDate.of(2030, 1, 1), Quantity.of(2), StockStatus.IN_PRODUCTION, List.of(hold), 0L,
+                    NOW.minusSeconds(86_400), null);
+            when(stockItems.findByReservationIdForUpdate(ReservationId.of(holdId))).thenReturn(Optional.of(item));
+
+            assertThat(refusal(() -> service.consumeForPick(holdId, UUID.randomUUID(), PICKER)))
+                    .isEqualTo(ErrorCode.PRODUCTION_HOLD_NOT_PICKABLE);
+            assertThat(ledgerRows).isEmpty();
+        }
+    }
+
+    @Nested
     @DisplayName("putting picked goods back")
     class PuttingBack {
 
