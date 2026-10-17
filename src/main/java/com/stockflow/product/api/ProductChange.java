@@ -11,7 +11,7 @@ import java.util.UUID;
  * @param changeType    {@code CREATED, UPDATED, SUBMITTED, APPROVED, REJECTED, SUSPENDED, RESUMED, DISCONTINUED}
  *                      for the product; {@code VARIANT_ADDED, VARIANT_UPDATED, VARIANT_STATUS},
  *                      {@code MEDIA}, {@code LOGISTICS}, {@code INVENTORY_CONTROL} for what hangs off it
- * @param subjectType   {@code PRODUCT, VARIANT, MEDIA, LOGISTICS, INVENTORY_CONTROL}
+ * @param subjectType   {@code PRODUCT, VARIANT, MEDIA, LOGISTICS, INVENTORY_CONTROL, PURCHASING, UOM_CONVERSION, SALES_UNIT}
  * @param subjectId     the variant, image or SKU concerned; null for the product itself, and for entries
  *                      recovered from the audit trail that named no single image
  * @param fromStatus    status of the subject before; null when the change moved none, and for entries

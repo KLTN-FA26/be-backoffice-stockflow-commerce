@@ -242,7 +242,7 @@ where sku=? and version=?
                         rs.getInt("package_count"), rs.getInt("pack_size"),
                         StorageClass.valueOf(rs.getString("storage_class")),
                         rs.getBoolean("requires_adult_signature"), rs.getString("shipping_restriction_note"),
-                        rs.getBoolean("qc_required"))), sku).stream().findFirst();
+                        rs.getBoolean("qc_required"), rs.getBoolean("rotatable"))), sku).stream().findFirst();
     }
 
     /** Whether any stock of the SKU is held anywhere, in any status. */
@@ -258,12 +258,21 @@ where sku=? and version=?
                 update inventory.inventory_items set unit_of_measure=?, barcode=?, weight_kg=?, length_cm=?,
                     width_cm=?, height_cm=?, package_weight_kg=?, package_length_cm=?, package_width_cm=?,
                     package_height_cm=?, package_count=?, pack_size=?, storage_class=?, requires_adult_signature=?,
-                    shipping_restriction_note=?, qc_required=?, version=version+1, last_modified_at=now(),
+                    shipping_restriction_note=?, qc_required=?, rotatable=?, version=version+1, last_modified_at=now(),
                     last_modified_by=?
                 where sku=? and version=?
                 """, l.unitOfMeasure(), l.barcode(), l.weightKg(), l.lengthCm(), l.widthCm(), l.heightCm(),
                 l.packageWeightKg(), l.packageLengthCm(), l.packageWidthCm(), l.packageHeightCm(), l.packageCount(),
                 l.packSize(), l.storageClass().name(), l.requiresAdultSignature(), l.shippingRestrictionNote(),
-                l.qcRequired(), actor, sku, version) == 1;
+                l.qcRequired(), l.rotatable(), actor, sku, version) == 1;
+    }
+
+    /** Whether a packing unit of the SKU (not its base unit) already uses this unit code. */
+    public boolean packingUnitUses(String sku, String unitOfMeasure) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                select exists(select 1 from inventory.uom_conversions c
+                    join inventory.inventory_items i on i.id = c.inventory_item_id
+                    where i.sku = ? and not c.is_base and c.unit_of_measure = ?)
+                """, Boolean.class, sku, unitOfMeasure));
     }
 }

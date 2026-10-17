@@ -132,6 +132,12 @@ class InventoryControlServiceImpl implements InventoryControlService {
             throw new BusinessException(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT,
                     "The unit of measure of %s cannot change while stock of it is held".formatted(sku));
         }
+        // The base unit row follows the item's code (V20261016001200); a packing unit cannot share it.
+        if (!current.logistics().unitOfMeasure().equals(logistics.unitOfMeasure())
+                && policies.packingUnitUses(sku.code(), logistics.unitOfMeasure())) {
+            throw new BusinessException(ErrorCode.UOM_CONVERSION_DUPLICATE,
+                    "%s already has a packing unit %s".formatted(sku, logistics.unitOfMeasure()));
+        }
         String actor = users.current().map(u -> u.userId().toString()).orElse("system");
         try {
             if (!policies.saveLogistics(sku.code(), expectedVersion, logistics, actor))

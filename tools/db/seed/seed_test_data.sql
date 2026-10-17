@@ -1418,6 +1418,57 @@ INSERT INTO procurement.supplier_items (id, supplier_id, inventory_item_id, supp
     ('80c6a9b8-a60b-6364-1c71-518c47556644', 'e95d6372-b4c9-cf7b-c4e2-00f35f456a45', 'a15e6b43-02bb-e68f-073f-95a6b2d90607', 'XYZ-0004', 376000, 20, 1, 15, FALSE, TIMESTAMPTZ '2026-08-01 11:00:00+07', 'seed'),
     ('6fd41018-6913-ce01-4452-cd302603c534', 'e95d6372-b4c9-cf7b-c4e2-00f35f456a45', '027204a0-f377-dd87-65ce-e058a3bde567', 'XYZ-0005', 536000, 20, 1, 15, FALSE, TIMESTAMPTZ '2026-08-01 11:00:00+07', 'seed'),
     ('fa1763de-b771-d19b-e12e-6ad1af70533e', 'e95d6372-b4c9-cf7b-c4e2-00f35f456a45', '31e47deb-1ef2-936f-08b6-6ba86164da17', 'XYZ-0006', 582000, 20, 1, 15, FALSE, TIMESTAMPTZ '2026-08-01 11:00:00+07', 'seed');
+UPDATE inventory.inventory_items SET reference_purchase_price = 261000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'LYG-1L-8OZ';
+UPDATE inventory.inventory_items SET reference_purchase_price = 350000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'LYG-1L-12OZ';
+UPDATE inventory.inventory_items SET reference_purchase_price = 341000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'LYG-1L-16OZ';
+UPDATE inventory.inventory_items SET reference_purchase_price = 491000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'LYG-1L-22OZ';
+UPDATE inventory.inventory_items SET reference_purchase_price = 358000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'LYG-2L-8OZ';
+UPDATE inventory.inventory_items SET reference_purchase_price = 510000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'LYG-2L-12OZ';
+UPDATE inventory.inventory_items SET reference_purchase_price = 554000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'LYG-2L-16OZ';
+UPDATE inventory.inventory_items SET reference_purchase_price = 431000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'LYG-KRAFT-12OZ';
+UPDATE inventory.inventory_items SET reference_purchase_price = 433000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'LYG-KRAFT-16OZ';
+UPDATE inventory.inventory_items SET reference_purchase_price = 189000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'LYG-ESP-4OZ';
+UPDATE inventory.inventory_items SET reference_purchase_price = 320000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'LYN-PET-12OZ';
+UPDATE inventory.inventory_items SET reference_purchase_price = 329000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'LYN-PET-16OZ';
+UPDATE inventory.inventory_items SET reference_purchase_price = 400000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'LYN-PET-22OZ';
+UPDATE inventory.inventory_items SET reference_purchase_price = 465000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'LYN-PET-24OZ';
+UPDATE inventory.inventory_items SET reference_purchase_price = 266000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'LYN-PP-16OZ';
+UPDATE inventory.inventory_items SET reference_purchase_price = 303000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'LYN-PP-22OZ';
+UPDATE inventory.inventory_items SET reference_purchase_price = 176000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'NAP-GIAY-D80-WHITE';
+UPDATE inventory.inventory_items SET reference_purchase_price = 156000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'NAP-GIAY-D80-BLACK';
+UPDATE inventory.inventory_items SET reference_purchase_price = 161000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'NAP-GIAY-D90-WHITE';
+UPDATE inventory.inventory_items SET reference_purchase_price = 189000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'NAP-GIAY-D90-BLACK';
+UPDATE inventory.inventory_items SET reference_purchase_price = 158000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'NAP-PET-D90';
+UPDATE inventory.inventory_items SET reference_purchase_price = 182000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'NAP-PET-D95';
+UPDATE inventory.inventory_items SET reference_purchase_price = 305000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'HOP-COM-S';
+UPDATE inventory.inventory_items SET reference_purchase_price = 392000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'HOP-COM-M';
+UPDATE inventory.inventory_items SET reference_purchase_price = 428000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'HOP-COM-L';
+UPDATE inventory.inventory_items SET reference_purchase_price = 253000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'HOP-PIZZA-8IN';
+UPDATE inventory.inventory_items SET reference_purchase_price = 257000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'HOP-PIZZA-10IN';
+UPDATE inventory.inventory_items SET reference_purchase_price = 319000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'HOP-PIZZA-12IN';
+UPDATE inventory.inventory_items SET reference_purchase_price = 1184000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'HOP-QUA-S';
+UPDATE inventory.inventory_items SET reference_purchase_price = 1509000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'HOP-QUA-M';
+UPDATE inventory.inventory_items SET reference_purchase_price = 270000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'TUI-KRAFT-S-KRAFT';
+UPDATE inventory.inventory_items SET reference_purchase_price = 294000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'TUI-KRAFT-S-WHITE';
+UPDATE inventory.inventory_items SET reference_purchase_price = 292000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'TUI-KRAFT-M-KRAFT';
+UPDATE inventory.inventory_items SET reference_purchase_price = 320000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'TUI-KRAFT-M-WHITE';
+UPDATE inventory.inventory_items SET reference_purchase_price = 343000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'TUI-KRAFT-L-KRAFT';
+UPDATE inventory.inventory_items SET reference_purchase_price = 360000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'TUI-KRAFT-L-WHITE';
+UPDATE inventory.inventory_items SET reference_purchase_price = 304000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'TUI-QUAI-M';
+UPDATE inventory.inventory_items SET reference_purchase_price = 371000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'TUI-QUAI-L';
+UPDATE inventory.inventory_items SET reference_purchase_price = 194000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'OHG-WHITE';
+UPDATE inventory.inventory_items SET reference_purchase_price = 233000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'OHG-BLACK';
+UPDATE inventory.inventory_items SET reference_purchase_price = 208000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'OHG-PINK';
+UPDATE inventory.inventory_items SET reference_purchase_price = 176000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'TAYCAM-12OZ';
+UPDATE inventory.inventory_items SET reference_purchase_price = 189000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'TAYCAM-16OZ';
+UPDATE inventory.inventory_items SET reference_purchase_price = 182000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'KHAY-LY-2CUP';
+UPDATE inventory.inventory_items SET reference_purchase_price = 266000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'KHAY-LY-4CUP';
+UPDATE inventory.inventory_items SET reference_purchase_price = 1250000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 2 WHERE sku = 'MUC-FLEXO-CYAN';
+UPDATE inventory.inventory_items SET reference_purchase_price = 1250000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 2 WHERE sku = 'MUC-FLEXO-MAGENTA';
+UPDATE inventory.inventory_items SET reference_purchase_price = 1250000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 2 WHERE sku = 'MUC-FLEXO-YELLOW';
+UPDATE inventory.inventory_items SET reference_purchase_price = 1250000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 2 WHERE sku = 'MUC-FLEXO-BLACK';
+UPDATE inventory.inventory_items SET reference_purchase_price = 586000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'HOP-TRUNGTHU-S';
+UPDATE inventory.inventory_items SET reference_purchase_price = 589000, reference_purchase_currency = 'VND', lead_time_days = 10, moq = 5 WHERE sku = 'HOP-TRUNGTHU-M';
 
 -- procurement.supplier_item_prices (102)
 INSERT INTO procurement.supplier_item_prices (id, supplier_item_id, unit_price, effective_from, effective_to, created_at, created_by) VALUES

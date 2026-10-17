@@ -30,11 +30,11 @@ public record ProductVersionResponse(
         Instant occurredAt,
 
         @Schema(description = "CREATED, UPDATED, SUBMITTED, APPROVED, REJECTED, SUSPENDED, RESUMED, DISCONTINUED, "
-                + "VARIANT_ADDED, VARIANT_UPDATED, VARIANT_STATUS, MEDIA, LOGISTICS or INVENTORY_CONTROL",
+                + "VARIANT_ADDED, VARIANT_UPDATED, VARIANT_STATUS, MEDIA, LOGISTICS, INVENTORY_CONTROL, PURCHASING, UOM_CONVERSION or SALES_UNIT",
                 example = "DISCONTINUED")
         String changeType,
 
-        @Schema(description = "PRODUCT, VARIANT, MEDIA, LOGISTICS or INVENTORY_CONTROL", example = "PRODUCT")
+        @Schema(description = "PRODUCT, VARIANT, MEDIA, LOGISTICS, INVENTORY_CONTROL, PURCHASING, UOM_CONVERSION or SALES_UNIT", example = "PRODUCT")
         String subjectType,
 
         @Schema(description = "The variant, image or SKU concerned; empty for the product itself")

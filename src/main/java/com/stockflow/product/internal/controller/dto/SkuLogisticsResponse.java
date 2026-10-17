@@ -11,5 +11,5 @@ public record SkuLogisticsResponse(UUID skuId, String sku, long version, String 
                                    BigDecimal packageWeightKg, BigDecimal packageLengthCm, BigDecimal packageWidthCm,
                                    BigDecimal packageHeightCm, int packageCount, int packSize,
                                    StorageClass storageClass, boolean requiresAdultSignature,
-                                   String shippingRestrictionNote, boolean qcRequired) {
+                                   String shippingRestrictionNote, boolean qcRequired, boolean rotatable) {
 }

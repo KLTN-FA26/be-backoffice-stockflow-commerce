@@ -19,11 +19,17 @@ public enum ProductChangeType {
     VARIANT_STATUS(Subject.VARIANT),
     MEDIA(Subject.MEDIA),
     LOGISTICS(Subject.LOGISTICS),
-    INVENTORY_CONTROL(Subject.INVENTORY_CONTROL);
+    INVENTORY_CONTROL(Subject.INVENTORY_CONTROL),
+    PURCHASING(Subject.PURCHASING),
+    UOM_CONVERSION(Subject.UOM_CONVERSION),
+    SALES_UNIT(Subject.SALES_UNIT);
 
-    /** What changed: the product itself, a variant, an image, or the logistics / stock policy of a SKU. */
+    /**
+     * What changed: the product itself, a variant, an image, or the logistics / stock policy / purchasing
+     * information / units of measure / sales units of a SKU (V20261016001300).
+     */
     public enum Subject {
-        PRODUCT, VARIANT, MEDIA, LOGISTICS, INVENTORY_CONTROL
+        PRODUCT, VARIANT, MEDIA, LOGISTICS, INVENTORY_CONTROL, PURCHASING, UOM_CONVERSION, SALES_UNIT
     }
 
     private final Subject subject;

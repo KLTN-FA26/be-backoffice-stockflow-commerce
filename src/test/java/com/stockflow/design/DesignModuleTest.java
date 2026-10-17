@@ -32,6 +32,8 @@ class DesignModuleTest {
     // A dependency of a bootstrapped dependency, not of this module: explicit ports only, the slice must not boot more.
     @MockitoBean com.stockflow.inventory.api.InventoryControlService inventoryControlServiceMock;
     @MockitoBean com.stockflow.inventory.api.InventoryService inventoryServiceMock;
+    @MockitoBean com.stockflow.inventory.api.ItemPurchasingService itemPurchasingServiceMock;
+    @MockitoBean com.stockflow.inventory.api.UomConversionService uomConversionServiceMock;
     @MockitoBean com.stockflow.warehouse.api.WarehouseService warehouseServiceMock;
 
     @Test

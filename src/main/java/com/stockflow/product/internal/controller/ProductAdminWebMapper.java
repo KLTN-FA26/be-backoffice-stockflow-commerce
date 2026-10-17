@@ -77,13 +77,14 @@ class ProductAdminWebMapper {
         return new SkuLogisticsResponse(skuId, item.sku(), item.version(), l.unitOfMeasure(), l.barcode(),
                 l.weightKg(), l.lengthCm(), l.widthCm(), l.heightCm(), l.packageWeightKg(), l.packageLengthCm(),
                 l.packageWidthCm(), l.packageHeightCm(), l.packageCount(), l.packSize(), l.storageClass(),
-                l.requiresAdultSignature(), l.shippingRestrictionNote(), l.qcRequired());
+                l.requiresAdultSignature(), l.shippingRestrictionNote(), l.qcRequired(), l.rotatable());
     }
 
     ItemLogistics toLogistics(SkuLogisticsRequest r) {
         return new ItemLogistics(r.unitOfMeasure(), r.barcode(), r.weightKg(), r.lengthCm(), r.widthCm(),
                 r.heightCm(), r.packageWeightKg(), r.packageLengthCm(), r.packageWidthCm(), r.packageHeightCm(),
                 Objects.requireNonNullElse(r.packageCount(), 1), Objects.requireNonNullElse(r.packSize(), 1),
-                r.storageClass(), r.requiresAdultSignature(), r.shippingRestrictionNote(), r.qcRequired());
+                r.storageClass(), r.requiresAdultSignature(), r.shippingRestrictionNote(), r.qcRequired(),
+                !Boolean.FALSE.equals(r.rotatable()));
     }
 }

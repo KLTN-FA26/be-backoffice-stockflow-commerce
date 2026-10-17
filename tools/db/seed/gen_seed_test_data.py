@@ -620,6 +620,12 @@ for v in VARIANTS:
     add("procurement.supplier_items", id=si, supplier_id=SUP[code], inventory_item_id=ITEM[v["sku"]],
         supplier_sku_code=f"{code[:3]}-{v['idx']:04d}", current_price=cost, moq=5 if v["uom"] == "CTN" else 2,
         pack_size=1, lead_time_days=10, is_preferred=True, created_at=at(date(2026, 8, 1), 11))
+    # kltn-docs 01 "Thông tin mua hàng" (V20261016001100): the item's own reference purchase price, lead time
+    # and MOQ, here those its default supplier quotes. No random draw: the rest of the data must not shift.
+    POST.append(("procurement.supplier_items",
+                 f"UPDATE inventory.inventory_items SET reference_purchase_price = {q(cost)}, "
+                 f"reference_purchase_currency = 'VND', lead_time_days = 10, "
+                 f"moq = {q(5 if v['uom'] == 'CTN' else 2)} WHERE sku = {q(v['sku'])};"))
     add("procurement.supplier_item_prices", id=uid(f"sip:{code}:{v['sku']}:0"), supplier_item_id=si,
         unit_price=money(cost * 0.96 / 1000) * 1000, effective_from=at(date(2026, 1, 1), 0),
         effective_to=at(date(2026, 9, 1), 0), created_at=at(date(2026, 8, 1), 11))
