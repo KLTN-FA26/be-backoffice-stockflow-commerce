@@ -548,6 +548,21 @@ public final class ProductionOrder {
                 "Blanks issued: %d unprinted in the print shop".formatted(unprintedBlanks())));
     }
 
+    /**
+     * Audit of #109, P1-3: a run that printed only part of its blanks leaves the rest issued and unprinted. When the
+     * round's QC (or an all-spoilt run) leaves the order READY but needing no more blanks - the ones already in the
+     * print shop cover the shortfall - there is nothing to scan, so the order goes straight back to MATERIAL_ISSUED
+     * and the press prints them; otherwise it would wait in READY for an issue BR-PRD-03 must refuse.
+     */
+    public Optional<Transition> continueWithIssuedBlanks() {
+        if (status != Status.READY || mode == Mode.SUBCONTRACTED || outstandingBlanks() > 0 || unprintedBlanks() == 0) {
+            return Optional.empty();
+        }
+        status = Status.MATERIAL_ISSUED;
+        return Optional.of(new Transition(Status.READY, Status.MATERIAL_ISSUED,
+                "%d issued blank(s) still unprinted cover the shortfall".formatted(unprintedBlanks())));
+    }
+
     /** Printing starts (SCRUM-398). From here the design cannot change (BR-PRD-07). */
     public Transition startPrinting() {
         requireStatus(Status.MATERIAL_ISSUED, "start printing");
@@ -613,6 +628,9 @@ public final class ProductionOrder {
 
     // ------------------------------------------------------------------ cancel and stop (SCRUM-401)
 
+    /** Not persisted: set by {@link #cancel} for the service that writes the units off. */
+    private transient int goodUnitsScrappedByCancel;
+
     private static final java.util.EnumSet<Status> CANCELLABLE =
             java.util.EnumSet.of(Status.PENDING_PREPRESS, Status.READY, Status.MATERIAL_ISSUED);
 
@@ -624,6 +642,11 @@ public final class ProductionOrder {
     /**
      * Cancel before printing (03 §16: PENDING_PREPRESS, READY, MATERIAL_ISSUED; also ON_HOLD from one of
      * those, stopped where it was). The caller puts the issued blanks back into stock.
+     *
+     * <p>READY and MATERIAL_ISSUED also follow a QC round that left the order short (audit of #109, P1-4): good
+     * units are printed already. They are sold to nobody else (BR-PRD-10, Q3), exactly as when a job is stopped:
+     * they become scrap here and the caller writes them off through an approved adjustment
+     * ({@link #goodUnitsScrappedByCancel}); unprinted blanks go back as before.</p>
      */
     public Transition cancel(String reason, Instant at) {
         String text = requireReason(reason);
@@ -636,7 +659,16 @@ public final class ProductionOrder {
         if (!CANCELLABLE.contains(effectiveStatus())) {
             throw transition("cancel");
         }
+        goodUnitsScrappedByCancel = good;
+        scrap += good;
+        good = 0;
+        passed = 0;
         return end(text, at);
+    }
+
+    /** The good units the last {@link #cancel} turned into scrap, for the caller to write off; 0 before printing. */
+    public int goodUnitsScrappedByCancel() {
+        return goodUnitsScrappedByCancel;
     }
 
     /**

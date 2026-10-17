@@ -34,9 +34,12 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
     private final OrderNumberSequence sequence;
     private final OrderStatusHistoryJpaRepository history;
     private final java.time.Clock clock;
+    private final jakarta.persistence.EntityManager entityManager;
 
     OrderRepositoryAdapter(OrderJpaRepository jpa, OrderNumberSequence sequence,
-                           OrderStatusHistoryJpaRepository history, java.time.Clock clock) {
+                           OrderStatusHistoryJpaRepository history, java.time.Clock clock,
+                           jakarta.persistence.EntityManager entityManager) {
+        this.entityManager = entityManager;
         this.jpa = jpa;
         this.sequence = sequence;
         this.history = history;
@@ -48,9 +51,19 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
         return jpa.findByIdWithLines(id.value()).map(OrderPersistenceMapper::toDomain);
     }
 
+    /**
+     * The row lock, then the row as it is now. A copy already in the persistence context - {@link #findByIdInScope}
+     * reads one before it locks - is not re-read by the locking query, so without the refresh the caller would decide
+     * on the state from before the wait: a cancellation would not see the package completed while it waited (audit
+     * of #109). Pending changes were flushed by the query itself, so the refresh loses nothing.
+     */
     @Override
     public Optional<Order> findByIdForUpdate(OrderId id) {
         return jpa.findByIdForUpdate(id.value())
+                .map(locked -> {
+                    entityManager.refresh(locked);
+                    return locked;
+                })
                 .flatMap(locked -> jpa.findByIdWithLines(locked.getId()))
                 .map(OrderPersistenceMapper::toDomain);
     }
@@ -64,8 +77,14 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
      */
     @Override
     public Optional<Order> findByIdInScope(OrderId id) {
+        // The probe is let go before the lock: kept managed, the locking query would upgrade it with a version check
+        // and answer a concurrent change (a package completed while this waited) with an optimistic-lock failure
+        // instead of the current row the caller must decide on (audit of #109).
         return jpa.findByIdInScope(id.value())
-                .flatMap(scoped -> findByIdForUpdate(new OrderId(scoped.getId())));
+                .flatMap(scoped -> {
+                    entityManager.detach(scoped);
+                    return findByIdForUpdate(new OrderId(scoped.getId()));
+                });
     }
 
     @Override

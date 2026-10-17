@@ -12,7 +12,6 @@ import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.contracts.ProductionOrderHeld;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
-import com.stockflow.order.api.OrderSummary;
 import com.stockflow.production.internal.domain.ProductionOrder;
 import com.stockflow.production.internal.domain.ProductionOrderRepository;
 import com.stockflow.production.internal.domain.ProductionRecords;
@@ -78,6 +77,10 @@ class PrintRunService implements PrintRuns {
         ProductionOrder order = lock(user, productionOrderId);
         Instant now = now();
         ProductionOrder.Transition started = order.startPrinting();
+        if (order.type() == ProductionOrder.Type.ORDER) {
+            // From the first print run a cancellation may keep an agreed fee (03 §9); a cancelled order prints nothing.
+            salesOrders.recordPrintingStarted(order.salesOrderId());
+        }
         orders.save(order);
         orders.recordTransition(order.id(), started, now, user.userId());
         if (order.type() == ProductionOrder.Type.SAMPLE) {
@@ -154,7 +157,15 @@ class PrintRunService implements PrintRuns {
             return;   // a subcontractor's shortfall is sent again or split in house, not reprinted here
         }
         int needed = order.outstandingBlanks();
-        if (needed == 0 || stock.holdForReprint(order, needed)) {
+        if (needed == 0) {
+            // Blanks issued and not printed cover the shortfall: back to the press without a scan (audit P1-3).
+            order.continueWithIssuedBlanks().ifPresent(moved -> {
+                orders.save(order);
+                orders.recordTransition(order.id(), moved, now, by);
+            });
+            return;
+        }
+        if (stock.holdForReprint(order, needed)) {
             return;
         }
         held(order, order.hold(ProductionOrder.HoldReason.BLANKS_SHORT,
@@ -197,6 +208,13 @@ class PrintRunService implements PrintRuns {
     private void cancelLocked(ProductionOrder order, String reason, UUID by) {
         Instant now = now();
         ProductionOrder.Transition cancelled = order.cancel(reason, now);
+        int unsold = order.goodUnitsScrappedByCancel();
+        if (unsold > 0) {
+            // Audit P1-4: printed and passed before the cancel - sold to nobody (BR-PRD-10), written off through the
+            // four-eyes adjustment in the canceller's name, never left on a hold in the print shop.
+            stock.writeOff(order, List.of(new WorkshopStock.Spoilt(ProductionRecords.ScrapReason.OTHER, unsold,
+                    "Printed for a cancelled job: " + order.cancellationReason())), by, now);
+        }
         if (order.unprintedBlanks() > 0) {
             stock.returnUnprinted(order, order.unprintedBlanks(), keepForOrder(order), by);
         }
@@ -246,8 +264,13 @@ class PrintRunService implements PrintRuns {
      * knows how many it printed, and a stop with a guessed count could return printed cups as blanks; the
      * manager stops it with the real count. A job in QC waits for the same stop (QC refuses a cancelled order).
      * A subcontracted job is put ON_HOLD too: the manager recalls its blanks and cancels it with its PO.
+     *
+     * <p>A job cancelled here may have write-offs to ask for - good units of an earlier QC round, expired blanks -
+     * which need a person to ask in the name of (four eyes). That is {@code cancelledBy}, who cancelled the order.
+     * With none (a cancellation by the system) such a job is put ON_HOLD for the manager instead, who cancels it
+     * under their own name; a job with nothing issued yet is still cancelled at once.</p>
      */
-    public void onOrderCancelled(UUID salesOrderId, String orderNumber) {
+    public void onOrderCancelled(UUID salesOrderId, String orderNumber, UUID cancelledBy) {
         for (UUID id : orders.idsOfSalesOrder(salesOrderId)) {
             ProductionOrder order = orders.findByIdForUpdate(id).orElseThrow();
             Instant now = now();
@@ -265,7 +288,13 @@ class PrintRunService implements PrintRuns {
             }
             if (effective == ProductionOrder.Status.PENDING_PREPRESS || effective == ProductionOrder.Status.READY
                     || effective == ProductionOrder.Status.MATERIAL_ISSUED) {
-                cancelLocked(order, "Order %s cancelled".formatted(orderNumber), null);
+                if (cancelledBy == null && (order.good() > 0 || order.unprintedBlanks() > 0)) {
+                    held(order, order.hold(ProductionOrder.HoldReason.OTHER,
+                            "Order %s cancelled by the system: cancel the job to write off what was printed or issued"
+                                    .formatted(orderNumber), now), null, now, null);
+                } else {
+                    cancelLocked(order, "Order %s cancelled".formatted(orderNumber), cancelledBy);
+                }
             } else if (order.status() == ProductionOrder.Status.PRINTING) {
                 held(order, order.hold(ProductionOrder.HoldReason.OTHER,
                         "Order %s cancelled: stop the job with the printed count".formatted(orderNumber), now), null, now,
@@ -314,8 +343,14 @@ class PrintRunService implements PrintRuns {
         return order.type() == ProductionOrder.Type.ORDER && !salesOrderCancelled(order);
     }
 
+    /**
+     * Read under the sales order's row lock (audit of #109): a cancellation committing between this check and the work
+     * done next - QC completing the job, goods handed to packing, blanks kept for the order - waits for this
+     * transaction, or came first and is seen. Production order row first, then the sales order, the same order the
+     * completion's stock locks follow.
+     */
     private boolean salesOrderCancelled(ProductionOrder order) {
-        return salesOrders.findById(order.salesOrderId()).map(OrderSummary::status)
+        return salesOrders.lockedStatus(order.salesOrderId())
                 .map(status -> status == OrderStatus.CANCELLED).orElse(true);
     }
 

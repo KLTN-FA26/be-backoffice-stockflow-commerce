@@ -409,6 +409,21 @@ artwork and cannot be resold.
 | PICKING | no | yes, with reason | put-back task (WBS 3.7.7.2) |
 | PACKED and later | no | no — must go through RMA | — |
 
+**Refund and fee (decision 2026-10-17, audit of #109).**
+- **Before printing** - no production order of the order has printed or been sent to a subcontractor
+  (`customer_order.printing_started_at` is empty) - a cancellation is **refunded in full** and keeps nothing:
+  neither an agreed amount nor a share (`CANCELLATION_FEE_BEFORE_PRINTING`). A stock-only order is never printed,
+  so it is always refunded in full.
+- **From the first print run** (or work sent out) Sales enters the amount **agreed with the customer**, with its
+  reason and detail. It may be **above what was paid** (a deposit): the money received pays it first and the rest
+  is owed as one `CANCELLATION_FEE` receivable; a payment of that receivable counts as kept (retained = the fee,
+  at most what was paid). It is **never above the order total**. Below what was paid the rest is refunded through
+  the refund process. `ck_order_fee_after_printing`, `ck_order_fee_within_total` say it again in the table.
+- **PACKED and later** is enforced on every path, including an approved request and a payment failure: once a
+  package of the order is completed (`customer_order.packed_at`) the order goes through a return (RMA). Printing
+  started and package completed are recorded by production and fulfillment under the order's row lock, so a
+  cancellation either comes before them (and the print or the package is refused) or after them.
+
 **Implemented 2026-10-10 (SCRUM-460).**
 - **One state for "may go ahead":** the code has `CONFIRMED` (kltn-docs 17 §5); `PAID` became `CONFIRMED`.
   The money is the order's `paid_amount`, from which the payment status of kltn-docs 15 §5.2 (UNPAID /
@@ -423,7 +438,8 @@ artwork and cannot be resold.
   `sales-order-cancellations:UPDATE` (kltn-docs 17 §2), the permission that also cancels from the back
   office.
 - **Fee kept:** approving or cancelling from the back office may keep a percentage of what was paid
-  (17 §4.4, 15 §4.4, never more than paid — 15 BR-05).
+  (17 §4.4, 15 §4.4, never more than paid — 15 BR-05) - since 2026-10-17 only once printing started; see
+  "Refund and fee" above for the agreed amount.
 - **`OrderCancelled` is published on every path.**
   - Payment cancels awaited payments and asks back the refundable amount as PENDING refunds.
   - Fulfillment cancels the pick and pack, flagging picked goods for put-back.

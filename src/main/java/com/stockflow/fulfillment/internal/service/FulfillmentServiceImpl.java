@@ -268,6 +268,8 @@ class FulfillmentServiceImpl implements FulfillmentService {
             orders.putOnDesignHold(pick.getOrderId(), "DESIGN_MISMATCH");
             return toTask(pick);
         }
+        // Under the order's row lock: a cancellation came first (refused, nothing deducted) or is refused after (03 §9).
+        orders.recordPacked(pick.getOrderId());
         pack.complete(clock.instant());
         deductPrintedGoods(pack, order, actor.userId());
         packs.save(pack);
@@ -286,6 +288,7 @@ class FulfillmentServiceImpl implements FulfillmentService {
         if (!verifyAll(pack, order, actor.userId())) {
             return toTask(pick);
         }
+        orders.recordPacked(pick.getOrderId());
         pack.complete(clock.instant());
         deductPrintedGoods(pack, order, actor.userId());
         packs.save(pack);

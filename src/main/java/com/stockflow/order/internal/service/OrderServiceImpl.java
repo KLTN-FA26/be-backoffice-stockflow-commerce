@@ -360,6 +360,35 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         cancel(orderId, CancelOrderCommand.fromText(reason, null));
     }
 
+    @Override
+    public void recordPrintingStarted(UUID orderId) {
+        Order order = lockOrder(orderId);
+        if (order.recordPrintingStarted(clock.instant())) {
+            repository.save(order);
+            log.info("Order {}: printing started", order.orderNumber());
+        }
+    }
+
+    @Override
+    public void recordPacked(UUID orderId) {
+        Order order = lockOrder(orderId);
+        if (order.recordPacked(clock.instant())) {
+            repository.save(order);
+            log.info("Order {}: packed", order.orderNumber());
+        }
+    }
+
+    @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public Optional<OrderStatus> lockedStatus(UUID orderId) {
+        return repository.findByIdForUpdate(new OrderId(orderId)).map(Order::status);
+    }
+
+    private Order lockOrder(UUID orderId) {
+        return repository.findByIdForUpdate(new OrderId(orderId))
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));
+    }
+
     /**
      * {@inheritDoc}
      *
@@ -383,6 +412,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                     "Order %s is %s and can no longer be cancelled; raise a return instead"
                             .formatted(order.orderNumber(), order.status()));
         }
+        order.requireNotPacked();
         if (cancellationRequests.hasPending(order.id().value())) {
             throw new BusinessException(ErrorCode.ORDER_CANCELLATION_REQUEST_PENDING,
                     "Order %s already has a cancellation request waiting".formatted(order.orderNumber()));
@@ -409,7 +439,9 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
             // never sold - kept under their hold, a SCRAP write-off asked for in the canceller's name. Inventory
             // decides from the goods' state which holds those are; the release below leaves them alone.
             String note = "Order %s cancelled: printed custom goods (BR-PRD-10)".formatted(order.orderNumber());
+            // SKU order: each write-off takes its SKU's lock, and checkout takes them sorted too (no deadlock).
             order.lines().stream().filter(OrderLine::isMadeToOrder)
+                    .sorted(java.util.Comparator.comparing(line -> line.sku().code()))
                     .flatMap(line -> line.reservationIds().stream())
                     .forEach(reservationId -> inventory.scrapCancelledPrint(reservationId, order.id().value(), note,
                             command.cancelledBy()));
@@ -485,6 +517,12 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                 .orElseThrow(() -> new IllegalArgumentException("No order with id " + orderId));
         if (order.status() == OrderStatus.CANCELLED) {
             return; // Redelivered event; already handled.
+        }
+        if (!order.status().canTransitionTo(OrderStatus.CANCELLED) || order.packedAt() != null) {
+            // A listener must not throw for a state it cannot change: the publication would be retried for ever.
+            log.warn("Payment of order {} failed ({}), but the order is {}{}: left for Sales", order.orderNumber(),
+                    failureCode, order.status(), order.packedAt() != null ? " and packed" : "");
+            return;
         }
         order.cancel(CancellationReasonCode.PAYMENT_FAILED, failureCode, null, null, clock.instant());
         order.clearReservations();

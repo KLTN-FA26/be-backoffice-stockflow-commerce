@@ -221,6 +221,10 @@ public enum ErrorCode {
     ORDER_DEPOSIT_NOT_RECEIVED("The deposit for this order has not arrived yet", 409),
     /** SCRUM-460: from IN_PRODUCTION on, a customer asks and Sales or the coordinator decides. */
     ORDER_NOT_CANCELLABLE("This order can no longer be cancelled; raise a return instead", 409),
+    /** Audit of #109 (decision 2026-10-17): before printing a cancellation is refunded in full - nothing is kept. */
+    CANCELLATION_FEE_BEFORE_PRINTING("Printing has not started: the order is refunded in full, no fee is kept", 409),
+    /** Work for an order that has been cancelled (printing started, a package completed) is refused. */
+    ORDER_CANCELLED("This order is cancelled", 409),
     ORDER_CANCELLATION_REQUEST_PENDING("A cancellation request for this order is already waiting for a decision", 409),
     ORDER_CANCELLATION_REQUEST_NOT_PENDING("This cancellation request has already been decided", 409),
     PAYMENT_TERM_NOT_ALLOWED("This payment term is not available for this order", 409),

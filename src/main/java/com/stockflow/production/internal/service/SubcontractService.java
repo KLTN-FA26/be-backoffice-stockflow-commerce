@@ -17,7 +17,6 @@ import com.stockflow.inventory.api.ReserveProductionStockCommand;
 import com.stockflow.inventory.api.StockReservation;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
-import com.stockflow.order.api.OrderSummary;
 import com.stockflow.procurement.api.CreateSubcontractOrderCommand;
 import com.stockflow.procurement.api.SubcontractOrder;
 import com.stockflow.procurement.api.SubcontractPurchasing;
@@ -219,6 +218,8 @@ class SubcontractService implements Subcontracting {
         Instant now = now();
         // The transition first: it refuses a child that is not READY, so a second dispatch sends nothing.
         ProductionOrder.Transition sent = child.sendToSubcontractor();
+        // Work out of the door counts as printing started (03 §9): the subcontractor may claim it (BR-PRD-10).
+        salesOrders.recordPrintingStarted(child.salesOrderId());
         if (child.subcontract().method() == ProductionOrder.SubcontractMethod.SUPPLIED_BLANKS) {
             sendBlanks(child, user.userId(), now);
         }
@@ -606,8 +607,14 @@ class SubcontractService implements Subcontracting {
         return value == null || value.isBlank() ? null : value.strip();
     }
 
+    /**
+     * Read under the sales order's row lock (audit of #109): a cancellation committing between this check and the work
+     * done next - QC completing the job, goods handed to packing, blanks kept for the order - waits for this
+     * transaction, or came first and is seen. Production order row first, then the sales order, the same order the
+     * completion's stock locks follow.
+     */
     private boolean salesOrderCancelled(ProductionOrder order) {
-        return salesOrders.findById(order.salesOrderId()).map(OrderSummary::status)
+        return salesOrders.lockedStatus(order.salesOrderId())
                 .map(status -> status == OrderStatus.CANCELLED).orElse(true);
     }
 

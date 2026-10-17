@@ -382,21 +382,66 @@ class PrintedGoodsAtPackingIntegrationTest {
     }
 
     @Test
-    @DisplayName("5a: cancelled after the package was completed - deducted once at the package, nothing asked to scrap "
-            + "twice, nothing back on sale")
-    void cancelledAfterThePackageScrapsNothingTwice() throws Exception {
+    @DisplayName("03 §9: once the package is completed the order is not cancelled (it goes through a return) - deducted "
+            + "once at the package, nothing scrapped, nothing back on sale")
+    void aPackedOrderIsNotCancelled() throws Exception {
         Line line = inPacking(2);
         List<UUID> holds = holdsOf(line);
         int before = onHandAtPacking();
         UUID task = picked(line);
         fulfillment.completePacking(task, picker);
         int atp = inventory.availableToPromise(BLANK);
+        assertThat(jdbc.queryForObject("SELECT packed_at FROM ordering.customer_order WHERE id = ?",
+                java.sql.Timestamp.class, line.orderId())).isNotNull();
 
-        cancel(line);
+        assertThat(code(catchThrowable(() -> cancel(line)))).isEqualTo(ErrorCode.ORDER_NOT_CANCELLABLE);
 
+        assertThat(salesOrders.findById(line.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.IN_FULFILMENT);
+        assertThat(jdbc.queryForObject("SELECT p.status FROM fulfillment.pack p WHERE p.pick_id = ?", String.class, task))
+                .isEqualTo("PACKED");
         assertThat(onHandAtPacking()).isEqualTo(before - 2);
         assertThat(scrapOf(holds)).isEmpty();
-        assertThat(holdStatuses(holds)).doesNotContain("HELD");
         assertThat(inventory.availableToPromise(BLANK)).isEqualTo(atp);
+    }
+
+    @Test
+    @DisplayName("race: a cancellation while a package is being completed waits for it and is then refused; one that "
+            + "came first stops the package")
+    void aCancellationRacingThePackageIsOrdered() throws Exception {
+        Line line = inPacking(2);
+        UUID task = picked(line);
+        java.util.concurrent.CountDownLatch packedNotCommitted = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch commit = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CompletableFuture<Void> packing = java.util.concurrent.CompletableFuture.runAsync(() ->
+                tx.executeWithoutResult(s -> {
+                    salesOrders.recordPacked(line.orderId());
+                    packedNotCommitted.countDown();
+                    try {
+                        commit.await(30, java.util.concurrent.TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }));
+        assertThat(packedNotCommitted.await(30, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+        java.util.concurrent.CompletableFuture<Throwable> cancelling = java.util.concurrent.CompletableFuture.supplyAsync(
+                () -> catchThrowable(() -> cancel(line)));
+        try {
+            Await.until("the cancellation waits on the order row", ASYNC, () -> jdbc.queryForObject("""
+                    SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()
+                       AND wait_event_type = 'Lock'""", Integer.class) > 0);
+            assertThat(cancelling).isNotDone();
+        } finally {
+            commit.countDown();
+        }
+        packing.get(30, java.util.concurrent.TimeUnit.SECONDS);
+        assertThat(code(cancelling.get(30, java.util.concurrent.TimeUnit.SECONDS)))
+                .isEqualTo(ErrorCode.ORDER_NOT_CANCELLABLE);
+
+        Line other = inPacking(2);
+        UUID otherTask = picked(other);
+        cancel(other);
+        assertThat(catchThrowable(() -> fulfillment.completePacking(otherTask, picker)))
+                .as("a cancelled order's package is not completed").isInstanceOf(BusinessException.class);
+        assertThat(packageLedgerRows(packOf(otherTask))).isZero();
     }
 }

@@ -73,6 +73,23 @@ class DevelopHistoryBackfillMigrationUpgradeTest {
                 assertThat(text(db, "SELECT COALESCE(packing_location_code, 'none') FROM production.production_order"
                         + " WHERE id = ?", completed)).as("shipped since: not known, not invented").isEqualTo("none");
 
+                // V20261017001000 (audit of #109): printing started is the earliest PRINTING transition of the order's
+                // production orders; none in history, none invented. No package completed: packed_at stays empty.
+                String startedOf = "SELECT COALESCE(to_char(o.printing_started_at AT TIME ZONE 'UTC', 'YYYY-MM-DD'), 'none')"
+                        + " FROM ordering.customer_order o JOIN production.production_order p ON p.sales_order_id = o.id"
+                        + " WHERE p.id = ?";
+                assertThat(text(db, startedOf, completed)).isNotEqualTo("none");
+                assertThat(text(db, startedOf, inQc)).isNotEqualTo("none");
+                assertThat(text(db, startedOf, noHistory)).as("its PRINTING row dates it").isNotEqualTo("none");
+                assertThat(number(db, "SELECT count(*) FROM ordering.customer_order o WHERE o.printing_started_at IS NOT NULL"
+                        + " AND NOT EXISTS (SELECT 1 FROM production.production_order p JOIN"
+                        + " production.production_order_status_history h ON h.production_order_id = p.id"
+                        + " WHERE p.sales_order_id = o.id AND h.to_status IN ('PRINTING', 'SUBCONTRACTED')"
+                        + " AND h.changed_at = o.printing_started_at)")).as("nothing invented").isZero();
+                assertThat(number(db, "SELECT count(*) FROM ordering.customer_order o JOIN production.production_order p"
+                        + " ON p.sales_order_id = o.id WHERE p.id IN (?, ?, ?, ?) AND o.packed_at IS NOT NULL",
+                        completed, inQc, packed, noHistory)).isZero();
+
                 // Running the backfill again adds nothing: it fills only what is missing.
                 long runs = number(db, "SELECT count(*) FROM production.production_print_run");
                 update(db, "INSERT INTO production.production_print_run (id, production_order_id, printed_quantity,"

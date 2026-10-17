@@ -66,6 +66,17 @@ public final class Order extends AggregateRoot {
     /** Decision Q6a: the whole agreed amount; above {@code paidAmount} the rest is owed (a receivable). */
     private BigDecimal cancellationFeeAmount;
     private String cancellationFeeDetail;
+    /**
+     * When the first production order of the order started printing - in house, or sent to a subcontractor (audit of
+     * #109, decision 2026-10-17). Before it a cancellation is refunded in full; from it Sales may keep an agreed fee.
+     * Written by production in its own transaction, under this order's row lock, so a cancellation sees it or not.
+     */
+    private Instant printingStartedAt;
+    /**
+     * When a package of the order was completed (03 §9: PACKED and later is not cancelled, it goes through a return).
+     * Written by fulfillment in the transaction that completes the package, under this order's row lock.
+     */
+    private Instant packedAt;
     private PaymentTerm paymentTerm = PaymentTerm.PREPAID;
     private java.math.BigDecimal depositRequired;
     private Instant depositReceivedAt;
@@ -319,6 +330,12 @@ public final class Order extends AggregateRoot {
             throw new IllegalArgumentException("A payment adds money");
         }
         this.paidAmount = paidAmount.add(amount.amount());
+        if (status == OrderStatus.CANCELLED && cancellationFeeAmount != null) {
+            // Q6a: money arriving after a cancellation with an agreed fee pays that fee first - the receivable its
+            // shortfall became, or a late transfer - so what is kept stays LEAST(fee, paid), as
+            // ck_order_cancellation_fee says. Anything above the fee is the customer's, settled as before.
+            this.cancellationRetainedAmount = cancellationFeeAmount.min(paidAmount);
+        }
         if (paidInFullAt == null && paidAmount.compareTo(total().amount()) >= 0) {
             this.paidInFullAt = now;
         }
@@ -553,6 +570,14 @@ public final class Order extends AggregateRoot {
             throw new BusinessException(ErrorCode.ORDER_NOT_CANCELLABLE,
                     "Order %s is %s and can no longer be cancelled; raise a return instead".formatted(orderNumber, status));
         }
+        requireNotPacked();
+        // Decision 2026-10-17 (03 §9, BR-ORD-004): before printing nothing is kept - neither an agreed amount nor a
+        // share; from the first print run Sales may keep what was agreed with the customer.
+        boolean keepsSomething = agreedFee != null || retainedPercent != null && retainedPercent.signum() > 0;
+        if (keepsSomething && printingStartedAt == null) {
+            throw new BusinessException(ErrorCode.CANCELLATION_FEE_BEFORE_PRINTING,
+                    "Order %s has not started printing: it is refunded in full and no fee is kept".formatted(orderNumber));
+        }
         OrderStatus previous = status;
         int scale = total().currency().getDefaultFractionDigits();
         BigDecimal agreed = agreedFee == null ? null : agreedFee.amount().setScale(scale);
@@ -582,6 +607,11 @@ public final class Order extends AggregateRoot {
         if (fee.amount().signum() <= 0 || fee.amount().stripTrailingZeros().scale() > digits) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The agreed amount is more than zero, in whole %s"
                     .formatted(digits == 0 ? total().currency().getCurrencyCode() : "units of " + total().currency()));
+        }
+        // Decision 2026-10-17: above what was paid the rest is owed, but never above what the order is worth.
+        if (fee.amount().compareTo(total().amount()) > 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The agreed amount is at most the order total, %s %s"
+                    .formatted(total().amount().stripTrailingZeros().toPlainString(), total().currency().getCurrencyCode()));
         }
         if (fee.reason() == null || fee.reason().isEmpty() || fee.reason().length() > 500
                 || fee.detail() == null || fee.detail().isEmpty() || fee.detail().length() > 2000) {
@@ -636,6 +666,61 @@ public final class Order extends AggregateRoot {
     public String cancellationFeeReason() { return cancellationFeeReason; }
     public BigDecimal cancellationFeeAmount() { return cancellationFeeAmount; }
     public String cancellationFeeDetail() { return cancellationFeeDetail; }
+
+    /** Rehydration of the production and fulfilment facts the cancellation rules read. */
+    public void restoreFulfilmentFacts(Instant printingStarted, Instant packed) {
+        this.printingStartedAt = printingStarted;
+        this.packedAt = packed;
+    }
+
+    public Instant printingStartedAt() { return printingStartedAt; }
+    public Instant packedAt() { return packedAt; }
+
+    /**
+     * Printing of the order started (production, its own transaction, holding this row's lock). Once is enough; a
+     * cancelled order prints nothing more.
+     *
+     * @return whether this changed the order
+     */
+    public boolean recordPrintingStarted(Instant at) {
+        java.util.Objects.requireNonNull(at, "at");
+        if (status == OrderStatus.CANCELLED) {
+            throw new BusinessException(ErrorCode.ORDER_CANCELLED,
+                    "Order %s is cancelled; nothing more is printed for it".formatted(orderNumber));
+        }
+        if (printingStartedAt != null) {
+            return false;
+        }
+        printingStartedAt = at;
+        return true;
+    }
+
+    /**
+     * A package of the order was completed (fulfillment, the completing transaction, holding this row's lock). From
+     * here the order is not cancelled: it goes through a return (03 §9).
+     *
+     * @return whether this changed the order
+     */
+    public boolean recordPacked(Instant at) {
+        java.util.Objects.requireNonNull(at, "at");
+        if (status == OrderStatus.CANCELLED) {
+            throw new BusinessException(ErrorCode.ORDER_CANCELLED,
+                    "Order %s is cancelled; its package is not completed".formatted(orderNumber));
+        }
+        if (packedAt != null) {
+            return false;
+        }
+        packedAt = at;
+        return true;
+    }
+
+    /** 03 §9: a packed order is not cancelled - by anyone, on any path; it goes through a return (RMA). */
+    public void requireNotPacked() {
+        if (packedAt != null) {
+            throw new BusinessException(ErrorCode.ORDER_NOT_CANCELLABLE,
+                    "Order %s is packed; it can no longer be cancelled - raise a return instead".formatted(orderNumber));
+        }
+    }
 
     /** Rehydration of the agreed amount's terms. */
     public void restoreCancellationFee(BigDecimal amount, String reason, String detail) {

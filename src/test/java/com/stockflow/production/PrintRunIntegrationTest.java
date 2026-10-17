@@ -101,6 +101,7 @@ class PrintRunIntegrationTest {
     @Autowired SampleProductionProgress progress;
     @Autowired OrderProductionService orderProduction;
     @Autowired OrderService salesOrders;
+    @Autowired com.stockflow.payment.internal.service.ReceivableService receivables;
     @Autowired InventoryService inventory;
     @Autowired StockOperations stockOperations;
     // The test profile stores files locally, which hands out no browser link; the dispatch note needs one (BR-PRD-14).
@@ -171,9 +172,12 @@ class PrintRunIntegrationTest {
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
                         currency, placed_at, version, created_at, paid_amount, paid_in_full_at, warehouse_id,
                         released_at, released_by)
-                    VALUES (?, ?, ?, ?, 'IN_PRODUCTION', 20000, 'VND', NOW(), 0, NOW(), 20000, NOW(), ?, NOW(), ?)""",
+                    VALUES (?, ?, ?, ?, 'IN_PRODUCTION', ?, 'VND', NOW(), 0, NOW(), 20000, ?, ?, NOW(), ?)""",
                     orderId, "SO-20991229-%06d".formatted(java.util.concurrent.ThreadLocalRandom.current()
-                            .nextInt(1_000_000)), DemoData.CUSTOMER_ID, UUID.randomUUID(), hcm, sales.userId());
+                            .nextInt(1_000_000)), DemoData.CUSTOMER_ID, UUID.randomUUID(), quantity * 2000,
+                    // ck_order_paid_in_full: 20,000 paid is "in full" only for an order of at most that.
+                    quantity * 2000 <= 20000 ? java.sql.Timestamp.from(java.time.Instant.now()) : null, hcm,
+                    sales.userId());
             jdbc.update("""
                     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency,
                         design_snapshot_id, design_checksum) VALUES (?, ?, ?, ?, 2000, 'VND', ?, ?)""",
@@ -284,7 +288,8 @@ class PrintRunIntegrationTest {
         assertThat(short1.summary().status()).isEqualTo(ProductionOrder.Status.READY);
         assertThat(short1.summary().goodQuantity()).isEqualTo(7);
         assertThat(inventory.productionHolds(line.productionOrderId())).as("3 blanks held for the reprint")
-                .extracting(h -> h.quantity()).containsExactly(3);
+                .extracting(h -> h.quantity()).asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.list(Integer.class))
+                .satisfies(held -> assertThat(held.stream().mapToInt(Integer::intValue).sum()).isEqualTo(3));
         assertThat(inventory.availableToPromise(BLANK)).isEqualTo(atp - 3);
         assertThat(runs.scrapOf(manager, line.productionOrderId()).stream().map(ProductionRecords.Scrap::reason)
                 .distinct().toList())
@@ -324,6 +329,127 @@ class PrintRunIntegrationTest {
         assertThat(done.history()).extracting(ProductionOrders.StatusChange::toStatus).containsExactly(
                 "PENDING_PREPRESS", "READY", "MATERIAL_ISSUED", "PRINTING", "QC", "READY", "MATERIAL_ISSUED",
                 "PRINTING", "QC", "COMPLETED");
+    }
+
+    @Test
+    @DisplayName("decision 2026-10-17: before printing an order is refunded in full - neither an agreed amount nor a share is kept; once a run starts, an agreed amount is")
+    void noFeeIsKeptBeforePrinting() throws Exception {
+        Line notPrinted = released(10);
+        issueAll(notPrinted.productionOrderId());
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO payment.payment (id, order_id, amount, currency, method, status, captured_at, created_at)
+                VALUES (?, ?, 20000, 'VND', 'BANK_TRANSFER', 'CAPTURED', NOW(), NOW())""", Identifiers.newId(),
+                notPrinted.orderId()));
+        CancellationFee agreed = new CancellationFee(new BigDecimal("5000"), "Blanks prepared", "Agreed by phone");
+        assertThatThrownBy(() -> cancelWithFee(notPrinted.orderId(), null, agreed))
+                .extracting(PrintRunIntegrationTest::code).isEqualTo(ErrorCode.CANCELLATION_FEE_BEFORE_PRINTING);
+        assertThatThrownBy(() -> cancelWithFee(notPrinted.orderId(), new BigDecimal("10"), null))
+                .extracting(PrintRunIntegrationTest::code).isEqualTo(ErrorCode.CANCELLATION_FEE_BEFORE_PRINTING);
+        assertThat(jdbc.queryForObject("SELECT printing_started_at FROM ordering.customer_order WHERE id = ?",
+                java.sql.Timestamp.class, notPrinted.orderId())).isNull();
+
+        cancelWithFee(notPrinted.orderId(), null, null);
+        assertThat(salesOrders.findById(notPrinted.orderId()).orElseThrow().cancellation().retainedAmount())
+                .isEqualByComparingTo("0");
+        Await.until("everything paid is asked back", ASYNC, () -> jdbc.queryForObject("""
+                SELECT count(*) FROM payment.refund WHERE order_id = ? AND amount = 20000""", Integer.class,
+                notPrinted.orderId()) == 1);
+
+        Line printing = released(10);
+        issueAll(printing.productionOrderId());
+        runs.startPrinting(printer, printing.productionOrderId());
+        assertThat(jdbc.queryForObject("SELECT printing_started_at FROM ordering.customer_order WHERE id = ?",
+                java.sql.Timestamp.class, printing.orderId())).as("recorded by the first run").isNotNull();
+        cancelWithFee(printing.orderId(), null, agreed);
+        assertThat(salesOrders.findById(printing.orderId()).orElseThrow().cancellation().retainedAmount())
+                .isEqualByComparingTo("5000");
+    }
+
+    @Test
+    @DisplayName("audit P1-3: a run that printed 9 of 10 issued blanks, all passed, goes back to MATERIAL_ISSUED and prints the last one - no stuck READY, nothing held twice")
+    void aPartialRunPrintsTheRestOfItsIssuedBlanks() throws Exception {
+        Line line = released(10);
+        issueAll(line.productionOrderId());
+        runs.startPrinting(printer, line.productionOrderId());
+        runs.recordOutput(printer, line.productionOrderId(), 9, List.of());
+
+        ProductionOrders.Detail afterQc = runs.recordQc(inspector, line.productionOrderId(), 9, 0, null, null);
+
+        assertThat(afterQc.summary().status()).as("the 1 unprinted blank covers the shortfall")
+                .isEqualTo(ProductionOrder.Status.MATERIAL_ISSUED);
+        assertThat(inventory.productionHolds(line.productionOrderId())).as("no reprint blanks held").isEmpty();
+        assertThat(heldAt(line, PRINT_SHOP)).isEqualTo(10);
+        runs.startPrinting(printer, line.productionOrderId());
+        runs.recordOutput(printer, line.productionOrderId(), 1, List.of());
+        ProductionOrders.Detail done = runs.recordQc(inspector, line.productionOrderId(), 1, 0, null, PACKING);
+        assertThat(done.summary().status()).isEqualTo(ProductionOrder.Status.COMPLETED);
+        assertThat(heldAt(line, PACKING)).isEqualTo(10);
+        assertThat(done.history()).extracting(ProductionOrders.StatusChange::toStatus).containsSubsequence(
+                "QC", "READY", "MATERIAL_ISSUED", "PRINTING", "QC", "COMPLETED");
+    }
+
+    @Test
+    @DisplayName("audit P1-4: a job cancelled after a QC round writes its 7 good units off (four eyes, in the canceller's name) with the 3 QC failures; nothing stays held in the print shop")
+    void aJobCancelledAfterQcWritesItsGoodUnitsOff() throws Exception {
+        Line line = released(10);
+        issueAll(line.productionOrderId());
+        runs.startPrinting(printer, line.productionOrderId());
+        runs.recordOutput(printer, line.productionOrderId(), 10, List.of());
+        assertThat(runs.recordQc(inspector, line.productionOrderId(), 7, 3, "Colour off", null).summary().status())
+                .isEqualTo(ProductionOrder.Status.READY);
+        int atp = inventory.availableToPromise(BLANK);
+
+        ProductionOrders.Detail cancelled = runs.cancel(manager, line.productionOrderId(), "Customer withdrew the design");
+
+        assertThat(cancelled.summary().status()).isEqualTo(ProductionOrder.Status.CANCELLED);
+        assertThat(cancelled.summary().goodQuantity()).isZero();
+        assertThat(cancelled.scrapQuantity()).as("printed 10: 3 failed, 7 sold to nobody").isEqualTo(10);
+        assertThat(heldAt(line, PRINT_SHOP)).as("no hold left in the print shop").isZero();
+        assertThat(inventory.productionHolds(line.productionOrderId())).as("the reprint blanks went back").isEmpty();
+        List<Map<String, Object>> scrap = writeOffs(line.productionOrderId());
+        assertThat(scrap).allSatisfy(row -> assertThat(row).containsEntry("status", "PENDING_APPROVAL")
+                .containsEntry("reason_code", "SCRAP"));
+        assertThat(scrap.stream().filter(row -> "OTHER".equals(row.get("scrap_reason")))
+                .mapToInt(row -> (Integer) row.get("quantity_delta")).sum()).isEqualTo(-7);
+        assertThat(jdbc.queryForList("""
+                SELECT DISTINCT a.requested_by FROM production.production_scrap s
+                  JOIN inventory.stock_adjustment a ON a.id = s.stock_adjustment_id
+                 WHERE s.production_order_id = ? AND s.reason = 'OTHER'""", UUID.class, line.productionOrderId()))
+                .containsExactly(manager.userId());
+        assertThat(inventory.availableToPromise(BLANK)).as("the printed cups are not sellable blanks")
+                .isEqualTo(atp + 3);
+    }
+
+    @Test
+    @DisplayName("audit P1-4: an order cancelled by Sales after a QC round cancels the job and asks the write-off in Sales' name; one cancelled by the system leaves the job ON_HOLD for the manager")
+    void anOrderCancelledAfterQcHandsTheGoodUnitsToAWriteOff() throws Exception {
+        Line bySales = released(4);
+        issueAll(bySales.productionOrderId());
+        runs.startPrinting(printer, bySales.productionOrderId());
+        runs.recordOutput(printer, bySales.productionOrderId(), 4, List.of());
+        runs.recordQc(inspector, bySales.productionOrderId(), 3, 1, "Smudge", null);
+        cancelOrder(bySales.orderId(), "Customer withdrew");
+        Await.until("the job is cancelled", ASYNC, () -> detail(bySales.productionOrderId()).summary().status()
+                == ProductionOrder.Status.CANCELLED);
+        assertThat(heldAt(bySales, PRINT_SHOP)).isZero();
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM production.production_scrap s JOIN inventory.stock_adjustment a
+                    ON a.id = s.stock_adjustment_id
+                 WHERE s.production_order_id = ? AND s.reason = 'OTHER' AND a.requested_by = ? AND a.quantity_delta < 0""",
+                Integer.class, bySales.productionOrderId(), sales.userId())).isPositive();
+
+        Line bySystem = released(4);
+        issueAll(bySystem.productionOrderId());
+        runs.startPrinting(printer, bySystem.productionOrderId());
+        runs.recordOutput(printer, bySystem.productionOrderId(), 4, List.of());
+        runs.recordQc(inspector, bySystem.productionOrderId(), 3, 1, "Smudge", null);
+        WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> salesOrders.cancel(bySystem.orderId(),
+                "Payment never came"));
+        Await.until("the job waits for the manager", ASYNC, () -> detail(bySystem.productionOrderId()).summary()
+                .status() == ProductionOrder.Status.ON_HOLD);
+        ProductionOrders.Detail byManager = runs.cancel(manager, bySystem.productionOrderId(), "Order cancelled");
+        assertThat(byManager.summary().status()).isEqualTo(ProductionOrder.Status.CANCELLED);
+        assertThat(heldAt(bySystem, PRINT_SHOP)).isZero();
     }
 
     @Test
@@ -1442,7 +1568,12 @@ class PrintRunIntegrationTest {
 
     /** A released order of 10 with a captured payment of 20,000 and its job stopped on the press. */
     private Line paidJobOnThePress() throws Exception {
-        Line line = released(10);
+        return paidJobOnThePress(10);
+    }
+
+    /** {@code quantity} at 2,000 VND on the press, 20,000 VND of it paid. */
+    private Line paidJobOnThePress(int quantity) throws Exception {
+        Line line = released(quantity);
         issueAll(line.productionOrderId());
         runs.startPrinting(printer, line.productionOrderId());
         tx.executeWithoutResult(s -> jdbc.update("""
@@ -1453,9 +1584,13 @@ class PrintRunIntegrationTest {
     }
 
     @Test
-    @DisplayName("Q6a: an agreed 30,000 above the 20,000 paid keeps all of it, refunds nothing and owes 10,000 as one receivable, once; an agreed 20,000 owes and refunds nothing")
+    @DisplayName("Q6a: on an order of 40,000 with 20,000 paid, an agreed 30,000 keeps all that was paid, refunds nothing and owes 10,000 as one receivable, once; above the order total it is refused; an agreed 20,000 owes and refunds nothing")
     void agreedFeeAboveWhatWasPaid() throws Exception {
-        Line above = paidJobOnThePress();
+        Line above = paidJobOnThePress(20);
+        // Decision 2026-10-17: above what was paid, but never above what the order is worth (40,000).
+        assertThatThrownBy(() -> cancelWithFee(above.orderId(), null, new CancellationFee(new BigDecimal("40001"),
+                "Printing finished", "More than the order"))).extracting(PrintRunIntegrationTest::code)
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
         UUID customer = salesOrders.findById(above.orderId()).orElseThrow().customerId();
         cancelWithFee(above.orderId(), null, new CancellationFee(new BigDecimal("30000"), "Printing finished",
                 "Agreed with the buyer: 10 cups printed and the plates"));
@@ -1475,6 +1610,25 @@ class PrintRunIntegrationTest {
         Thread.sleep(500);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM payment.receivable WHERE order_id = ?", Integer.class,
                 above.orderId())).as("owed once").isEqualTo(1);
+
+        // The customer pays the shortfall (review audit P1-5): the receivable is paid, and the order counts the money
+        // as kept against its fee - paid 30,000, kept 30,000 - instead of failing ck_order_cancellation_fee and
+        // leaving the PaymentCaptured publication to be retried for ever.
+        receivables.recordTransfer(new com.stockflow.payment.internal.service.ReceivableService.RecordTransferCommand(
+                customer, "Q6A-" + above.orderId(), new BigDecimal("10000"), "VND", java.time.LocalDate.now(), List.of(),
+                null, sales.userId()));
+        Await.until("the order counts the payment of its fee", ASYNC, () -> salesOrders.findById(above.orderId())
+                .orElseThrow().cancellation().retainedAmount().compareTo(new BigDecimal("30000")) == 0);
+        assertThat(jdbc.queryForMap("SELECT paid_amount, cancellation_retained_amount, cancellation_fee_amount "
+                + "FROM ordering.customer_order WHERE id = ?", above.orderId()))
+                .allSatisfy((column, value) -> assertThat((BigDecimal) value).as(column).isEqualByComparingTo("30000"));
+        assertThat(jdbc.queryForObject("""
+                SELECT status FROM payment.receivable WHERE order_id = ?""", String.class, above.orderId())).isEqualTo("PAID");
+        Await.until("no publication of the payment is left to retry", ASYNC, () -> jdbc.queryForObject("""
+                SELECT count(*) FROM event_publication WHERE completion_date IS NULL
+                   AND serialized_event LIKE ?""", Integer.class, "%" + above.orderId() + "%") == 0);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM payment.refund WHERE order_id = ?", Integer.class,
+                above.orderId())).as("the fee, paid, refunds nothing").isZero();
 
         Line equal = paidJobOnThePress();
         cancelWithFee(equal.orderId(), null, new CancellationFee(new BigDecimal("20000"), "Printing finished",

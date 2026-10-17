@@ -20,6 +20,6 @@ class OrderCancellationListener {
 
     @ApplicationModuleListener
     public void on(OrderCancelled event) {
-        runs.onOrderCancelled(event.orderId(), event.orderNumber());
+        runs.onOrderCancelled(event.orderId(), event.orderNumber(), event.cancelledBy());
     }
 }

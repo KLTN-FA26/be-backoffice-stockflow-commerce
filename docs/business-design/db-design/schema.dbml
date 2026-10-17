@@ -2392,6 +2392,8 @@ Table ordering.customer_order [headercolor: #C0392B] {
   cancellation_fee_reason      varchar(500)
   cancellation_fee_detail      varchar(2000)
   cancellation_fee_amount      decimal(19,4)
+  printing_started_at          timestamptz
+  packed_at                    timestamptz
 }
 
 Table ordering.order_cancellation_request [headercolor: #C0392B] {

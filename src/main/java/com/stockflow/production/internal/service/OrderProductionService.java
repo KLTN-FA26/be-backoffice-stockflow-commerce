@@ -75,6 +75,9 @@ public class OrderProductionService {
     /** @return the production order of each released line, in line id order */
     public List<ProductionOrder> createFor(OrderLinesReleasedForProduction release) {
         List<OrderLinesReleasedForProduction.Line> lines = validShape(release);
+        // Under the order's row lock (audit of #109): a cancellation committing while this runs is either seen here,
+        // or waits and then finds the production orders this creates and stops them.
+        orders.lockedStatus(release.orderId());
         OrderSummary order = orders.findById(release.orderId()).orElseThrow(() -> new BusinessException(
                 ErrorCode.NOT_FOUND, "Released order " + release.orderNumber() + " does not exist"));
         if (order.status() == OrderStatus.CANCELLED) {

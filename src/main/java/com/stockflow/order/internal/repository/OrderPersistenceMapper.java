@@ -59,6 +59,7 @@ final class OrderPersistenceMapper {
                 entity.getCancellationReasonCode(), entity.getCancellationRetainedAmount(), entity.getCreditTermDays());
         order.restoreCancellationFee(entity.getCancellationFeeAmount(), entity.getCancellationFeeReason(),
                 entity.getCancellationFeeDetail());
+        order.restoreFulfilmentFacts(entity.getPrintingStartedAt(), entity.getPackedAt());
         return order;
     }
 
@@ -88,6 +89,7 @@ final class OrderPersistenceMapper {
                 order.cancellationRetainedAmount(), order.creditTermDays());
         entity.applyCancellationFee(order.cancellationFeeAmount(), order.cancellationFeeReason(),
                 order.cancellationFeeDetail());
+        entity.applyFulfilmentFacts(order.printingStartedAt(), order.packedAt());
     }
 
     /** For the paginated order-history query only. Deliberately never touches {@code

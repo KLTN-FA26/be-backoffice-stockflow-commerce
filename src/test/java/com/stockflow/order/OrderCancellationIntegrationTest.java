@@ -164,11 +164,13 @@ class OrderCancellationIntegrationTest {
         assertThat(codeOf(catchThrowable(() -> orders.cancelOwn(orderId, UUID.randomUUID(), null, null,
                 customerUser)))).isEqualTo(ErrorCode.NOT_FOUND);
 
-        OrderSummary cancelled = requests.approve(orderId, asked.requestId(), new BigDecimal("25"), "picked already",
-                coordinator);
+        // Decision 2026-10-17 (03 §9): nothing was printed - a stock order never is - so nothing may be kept.
+        assertThat(codeOf(catchThrowable(() -> requests.approve(orderId, asked.requestId(), new BigDecimal("25"),
+                "picked already", coordinator)))).isEqualTo(ErrorCode.CANCELLATION_FEE_BEFORE_PRINTING);
+        OrderSummary cancelled = requests.approve(orderId, asked.requestId(), null, "picked already", coordinator);
 
         assertThat(cancelled.status()).isEqualTo(OrderStatus.CANCELLED);
-        assertThat(cancelled.cancellation().retainedAmount()).isEqualByComparingTo("3000000");
+        assertThat(cancelled.cancellation().retainedAmount()).isEqualByComparingTo("0");
         assertThat(codeOf(catchThrowable(() -> requests.approve(orderId, asked.requestId(), null, null, coordinator))))
                 .isEqualTo(ErrorCode.ORDER_CANCELLATION_REQUEST_NOT_PENDING);
         Await.until("pick cancelled", ASYNC, () -> "CANCELLED:true".equals(jdbc.queryForObject(
@@ -176,7 +178,7 @@ class OrderCancellationIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.pack WHERE pick_id = ?", String.class, pick))
                 .isEqualTo("CANCELLED");
         Await.until("refund asked", ASYNC, () -> jdbc.queryForObject("""
-                SELECT count(*) FROM payment.refund WHERE order_id = ? AND amount = 9000000""",
+                SELECT count(*) FROM payment.refund WHERE order_id = ? AND amount = 12000000""",
                 Integer.class, orderId) == 1);
     }
 

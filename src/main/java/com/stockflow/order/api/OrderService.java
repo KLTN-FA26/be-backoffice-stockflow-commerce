@@ -65,6 +65,27 @@ public interface OrderService {
      */
     OrderSummary recordDelivery(UUID orderId);
     void putOnDesignHold(UUID orderId, String reason);
+
+    /**
+     * Production started printing for the order - an in-house run, or work sent to a subcontractor. Joins the caller's
+     * transaction and takes the order's row lock, so a cancellation in flight either came first (this is refused,
+     * {@code ORDER_CANCELLED}, and nothing is printed) or comes after and may keep an agreed fee (03 §9). Idempotent.
+     */
+    void recordPrintingStarted(UUID orderId);
+
+    /**
+     * Fulfillment completed a package of the order. Joins the caller's transaction and takes the order's row lock,
+     * so a cancellation in flight either came first ({@code ORDER_CANCELLED}: the package is not completed, nothing
+     * is deducted) or is refused afterwards: a packed order goes through a return (03 §9). Idempotent.
+     */
+    void recordPacked(UUID orderId);
+
+    /**
+     * The order's status read under its row lock, in the caller's transaction: what production checks before it
+     * completes, releases or carries on work for the order, so a cancellation cannot slip in between the check and
+     * the work (audit of #109). Empty for an unknown order.
+     */
+    Optional<OrderStatus> lockedStatus(UUID orderId);
     void resolveDesignHold(UUID orderId, UUID resolvedBy, String note);
 
     /**

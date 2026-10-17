@@ -161,6 +161,14 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "cancellation_retained_amount", precision = 19, scale = 4)
     private java.math.BigDecimal cancellationRetainedAmount;
 
+    /** V20261017001000: production started printing for the order (the cancellation rules read it). */
+    @Column(name = "printing_started_at")
+    private Instant printingStartedAt;
+
+    /** V20261017001000: a package of the order was completed (03 §9: no cancellation from here). */
+    @Column(name = "packed_at")
+    private Instant packedAt;
+
     /** V20261017000430, decision Q2: the terms of an agreed amount kept on cancellation. */
     @Column(name = "cancellation_fee_amount", precision = 19, scale = 4)
     private java.math.BigDecimal cancellationFeeAmount;
@@ -274,6 +282,14 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     public String getCancellationFeeReason() { return cancellationFeeReason; }
     public java.math.BigDecimal getCancellationFeeAmount() { return cancellationFeeAmount; }
     public String getCancellationFeeDetail() { return cancellationFeeDetail; }
+
+    public void applyFulfilmentFacts(Instant printingStarted, Instant packed) {
+        this.printingStartedAt = printingStarted;
+        this.packedAt = packed;
+    }
+
+    public Instant getPrintingStartedAt() { return printingStartedAt; }
+    public Instant getPackedAt() { return packedAt; }
 
     public void applyCancellationFee(java.math.BigDecimal amount, String reason, String detail) {
         this.cancellationFeeAmount = amount;
