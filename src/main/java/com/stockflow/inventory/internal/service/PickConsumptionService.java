@@ -115,6 +115,11 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
                 throw new BusinessException(ErrorCode.RESERVATION_NOT_ACTIVE,
                         "Hold %s is not order %s's".formatted(reservationId, orderId));
             }
+            if (!packed && !locations.isPackingArea(item.location())) {
+                // A package takes the printed goods waiting in packing - never blanks still on a storage bin.
+                throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH, "Hold %s is at %s, not in a packing area"
+                        .formatted(reservationId, item.location()));
+            }
             if (packed) {
                 consumed.add(toConsumed(item, hold, true));
                 continue;

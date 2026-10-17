@@ -48,7 +48,11 @@ class PaymentEventListener {
     private final InventoryEventPublisher events;
     private final Clock clock;
 
-    PaymentEventListener(StockItemRepository repository, InventoryEventPublisher events, Clock clock) {
+    private final StockOperations operations;
+
+    PaymentEventListener(StockItemRepository repository, InventoryEventPublisher events, Clock clock,
+                         StockOperations operations) {
+        this.operations = operations;
         this.repository = repository;
         this.events = events;
         this.clock = clock;
@@ -82,6 +86,8 @@ class PaymentEventListener {
             List<ReservationId> toRelease = item.reservations().stream()
                     .filter(r -> r.status().isActive())
                     .filter(r -> event.orderId().equals(r.orderId()))
+                    // BR-PRD-10: printed goods waiting in packing are packed or scrapped, never freed (as release()).
+                    .filter(r -> !operations.isFinishedCustomGoods(item, r))
                     .map(r -> r.id())
                     .toList();
             toRelease.forEach(id ->

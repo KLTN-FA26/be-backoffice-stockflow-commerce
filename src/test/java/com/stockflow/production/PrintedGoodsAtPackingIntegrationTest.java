@@ -382,6 +382,51 @@ class PrintedGoodsAtPackingIntegrationTest {
     }
 
     @Test
+    @DisplayName("audit of #109: another warehouse's manager reads nothing of a cancelled order's scrap request, and cannot ask it again")
+    void askingAgainIsWarehouseScoped() throws Exception {
+        Line line = inPacking(2);
+        UUID hold = holdsOf(line).getFirst();
+        cancel(line);
+        // Assigned to another warehouse only (the scope compares prefixes; the warehouse need not exist here).
+        UUID otherWarehouse = UUID.randomUUID();
+        String otherPrefix = "ZZ";
+        CurrentUser elsewhere = new CurrentUser(manager.userId(), "elsewhere", Set.of(Role.WAREHOUSE_MANAGER), Set.of(),
+                DataScope.WAREHOUSE, Set.of(otherPrefix), Set.of(otherWarehouse));
+
+        Throwable refused = catchThrowable(() -> WithCurrentUser.run(elsewhere, DataScope.WAREHOUSE,
+                () -> stockOperations.askScrapAgain(hold, "Scrap them", elsewhere.userId())));
+
+        assertThat(code(refused)).isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE);
+        assertThat(refused.getMessage()).doesNotContain("ADJ-");
+    }
+
+    @Test
+    @DisplayName("audit of #109: free blanks moved into a packing area and held by an order are released on its cancellation - only goods production handed there are kept")
+    void freeStockInAPackingAreaIsReleasedNotKept() throws Exception {
+        UUID orderId = Identifiers.newId();
+        tx.executeWithoutResult(s -> {
+            jdbc.update("""
+                    INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version, created_at,
+                        received_at) VALUES (?, ?, ?, 1, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '9000 days')""",
+                    Identifiers.newId(), BLANK.code(), PACKING);
+            jdbc.update("""
+                    INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
+                        currency, placed_at, version, created_at) VALUES (?, ?, ?, ?, 'PENDING_PAYMENT', 2000, 'VND', NOW(), 0,
+                        NOW())""", orderId, "SO-20991231-%06d".formatted(java.util.concurrent.ThreadLocalRandom.current()
+                    .nextInt(1_000_000)), DemoData.CUSTOMER_ID, UUID.randomUUID());
+        });
+        UUID hold = tx.execute(s -> inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), BLANK, 1, orderId)))
+                .reservationIds().getFirst();
+        assertThat(jdbc.queryForObject("""
+                SELECT s.location_code FROM inventory.stock_reservation r JOIN inventory.stock_item s
+                    ON s.id = r.stock_item_id WHERE r.id = ?""", String.class, hold)).as("the oldest layer").isEqualTo(PACKING);
+
+        tx.executeWithoutResult(s -> inventory.release(hold, "ORDER_CANCELLED"));
+
+        assertThat(holdStatuses(List.of(hold))).containsExactly("RELEASED");
+    }
+
+    @Test
     @DisplayName("03 §9: once the package is completed the order is not cancelled (it goes through a return) - deducted "
             + "once at the package, nothing scrapped, nothing back on sale")
     void aPackedOrderIsNotCancelled() throws Exception {

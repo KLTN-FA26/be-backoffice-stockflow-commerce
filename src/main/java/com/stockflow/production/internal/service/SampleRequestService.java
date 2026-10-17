@@ -259,6 +259,11 @@ class SampleRequestService implements SampleRequests {
         try {
             samples.save(next);
         } catch (DataIntegrityViolationException raced) {
+            // Only the next-round index means "someone started it first"; any other refusal (a foreign key, a CHECK)
+            // is not that, and is not answered as if it were (audit of #109).
+            if (!violates(raced, "uk_sample_request_next_round")) {
+                throw raced;
+            }
             throw new BusinessException(ErrorCode.SAMPLE_NEXT_ROUND_EXISTS,
                     "Sample request %s already has a next round".formatted(previous.requestNumber()));
         }
@@ -380,6 +385,20 @@ class SampleRequestService implements SampleRequests {
                     List.of(new FieldError("blankSku", "SKU " + blank.code() + " is no longer active",
                             verdict.name())));
         }
+    }
+
+    private static boolean violates(Throwable failure, String constraint) {
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+            if (cause instanceof org.hibernate.exception.ConstraintViolationException violation
+                    && constraint.equalsIgnoreCase(violation.getConstraintName())) {
+                return true;
+            }
+            if (cause instanceof java.sql.SQLException sql && sql.getMessage() != null
+                    && sql.getMessage().contains(constraint)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** The snapshot must be this customer's confirmed design for a product the blank belongs to. */

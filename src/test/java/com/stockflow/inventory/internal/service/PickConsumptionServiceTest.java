@@ -70,6 +70,13 @@ class PickConsumptionServiceTest {
             return ledgerRows.stream().filter(row -> row.type() == type && row.referenceType() == referenceType
                     && row.referenceId().equals(referenceId)).findFirst();
         }
+
+        @Override
+        public boolean handedOverFromProduction(com.stockflow.inventory.internal.domain.ReservationId hold,
+                                                LocationId location) {
+            return ledgerRows.stream().anyMatch(row -> row.type() == StockMovement.MovementType.MOVE
+                    && row.referenceType() == StockMovement.ReferenceType.PRODUCTION_ORDER);
+        }
     };
     private final ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
     private final LocationDirectory locations = mock(LocationDirectory.class);

@@ -660,6 +660,26 @@ class ProductHistoryAndRemovalIntegrationTest {
     }
 
     @Test
+    @DisplayName("audit of #109: a customer's own price for a DRAFT SKU counts as a use - rename and delete are refused by name, not by a foreign key")
+    void aCustomersOwnPriceIsAUse() {
+        ProductSummary created = draft();
+        UUID id = created.productId();
+        UUID defaultId = defaultVariant(id);
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO catalog.customer_price (id, customer_id, sku, created_at)
+                VALUES (?, 'c0000000-0000-4000-8000-000000000001', ?, NOW())""", Identifiers.newId(), created.code()));
+
+        BusinessException rename = refusal(org.assertj.core.api.Assertions.catchThrowable(() ->
+                variants.update(id, defaultId, new NewVariant(created.code() + "-NEW", null, null, null))));
+        assertThat(rename.errorCode()).isEqualTo(ErrorCode.INVALID_VARIANT_TRANSITION);
+        BusinessException delete = refusal(org.assertj.core.api.Assertions.catchThrowable(() ->
+                products.deleteDraft(id, products.findById(id).orElseThrow().version())));
+        assertThat(delete.errorCode()).isEqualTo(ErrorCode.PRODUCT_IN_USE);
+        assertThat(delete.getMessage()).contains(created.code());
+        assertThat(delete.getCause()).as("refused before any DELETE ran").isNull();
+    }
+
+    @Test
     @DisplayName("an OBSOLETE variant's logistics and stock policy stay readable (its stock is still cleared); editing them is VARIANT_OBSOLETE")
     void obsoleteVariantIsReadButNotEdited() {
         ProductSummary created = draft();

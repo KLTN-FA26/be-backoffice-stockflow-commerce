@@ -389,6 +389,8 @@ class StockOperationsServiceImpl implements StockOperations {
         StockAdjustment last = adjustments.findLatestForHold(reservationId).orElseThrow(() -> new BusinessException(
                 ErrorCode.CONFLICT, "Hold %s was never asked to be scrapped; only a cancelled order's printed goods are"
                         .formatted(reservationId)));
+        // BR-SEC-002 before anything is answered: another warehouse's write-off is not this caller's to read.
+        WarehouseScope.requireLocation(last.location().code());
         if (!last.status().isClosed() || last.status() == com.stockflow.inventory.internal.domain.AdjustmentStatus.POSTED) {
             return toSummary(last);
         }
@@ -398,10 +400,16 @@ class StockOperationsServiceImpl implements StockOperations {
                 ErrorCode.CONFLICT, "Hold %s is no longer printed goods waiting in packing".formatted(reservationId)));
     }
 
+    /**
+     * Printed goods of the order waiting in packing: a live order hold on AVAILABLE goods in a PACKING area that
+     * production handed there (audit of #109: by location alone, free stock somebody moved into a packing area and a
+     * checkout then held would be kept from its release for ever, and never scrapped either).
+     */
     @Override
     public boolean isFinishedCustomGoods(StockItem item, Reservation hold) {
         return hold.status().isActive() && hold.orderId() != null && hold.productionOrderId() == null
-                && item.status() == StockStatus.AVAILABLE && locations.isPackingArea(item.location());
+                && item.status() == StockStatus.AVAILABLE && locations.isPackingArea(item.location())
+                && ledger.handedOverFromProduction(hold.id(), item.location());
     }
 
     /** The same hand-over the other way: finished goods, still held, from the print shop to packing. */
