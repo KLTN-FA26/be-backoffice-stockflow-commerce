@@ -11,6 +11,7 @@ import com.stockflow.common.security.SessionValidator;
 import com.stockflow.customer.internal.service.CustomerOnboardingService;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.identity.api.LoginCommand;
+import com.stockflow.support.Await;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.RedisContainer;
@@ -448,6 +449,9 @@ class B2bOnboardingIntegrationTest {
                     .andReturn().getResponse().getContentAsString();
         } finally {
             docker.unpauseContainerCmd(MAILPIT.getContainerId()).exec();
+            // Unpausing returns before the server answers again: under a loaded Docker the next SMTP connect may still
+            // time out, and the resend below would fail for the infrastructure, not for the code under test.
+            awaitMailServerAnswers();
         }
         UUID customerId = UUID.fromString(mapper.readTree(created).at("/data/customer/customerId").asText());
         assertThat(customerStatus(customerId)).isEqualTo("PENDING_ACTIVATION");
@@ -778,6 +782,21 @@ class B2bOnboardingIntegrationTest {
         String fresh = linksSentTo(email).stream().filter(link -> !link.equals(firstLink)).findFirst().orElseThrow();
         activate(fresh, PASSWORD).andExpect(status().isOk());
         assertThat(customerStatus(customerId)).isEqualTo("ACTIVE");
+    }
+
+    /** Until Mailpit's SMTP port greets a new connection (220), at most 15 seconds. */
+    private static void awaitMailServerAnswers() {
+        Await.until("Mailpit answers SMTP again", java.time.Duration.ofSeconds(15), () -> {
+            try (java.net.Socket socket = new java.net.Socket()) {
+                socket.connect(new java.net.InetSocketAddress(mailHost(), MAILPIT.getMappedPort(1025)), 1000);
+                socket.setSoTimeout(1000);
+                String greeting = new java.io.BufferedReader(new java.io.InputStreamReader(socket.getInputStream(),
+                        java.nio.charset.StandardCharsets.US_ASCII)).readLine();
+                return greeting != null && greeting.startsWith("220");
+            } catch (java.io.IOException notYet) {
+                return false;
+            }
+        });
     }
 
     private ResultActions reopen(UUID customerId, String reason) throws Exception {
