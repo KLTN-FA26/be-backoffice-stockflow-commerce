@@ -111,6 +111,20 @@ class PermissionMatrixTest {
             Map.entry("POST /api/v1/identity/auth/logout-others", "any signed-in user: ends the caller's other sessions"),
             Map.entry("PUT /api/v1/identity/auth/password", "any signed-in user: changes the caller's own password (current password required)"));
 
+    /**
+     * Deprecated routes kept for existing clients, and the canonical route each one stands for. The old one must carry
+     * exactly the guard of the new one: a deprecated alias is the classic place for a permission to drift.
+     */
+    private static final Map<String, String> DEPRECATED_ALIASES = Map.of(
+            "GET /api/v1/products/{productId}/skus/{skuId}/logistics", "GET /api/v1/products/{productId}/variants/{variantId}/logistics",
+            "PUT /api/v1/products/{productId}/skus/{skuId}/logistics", "PUT /api/v1/products/{productId}/variants/{variantId}/logistics",
+            "GET /api/v1/products/{productId}/skus/{skuId}/inventory-control",
+            "GET /api/v1/products/{productId}/variants/{variantId}/inventory-control",
+            "PUT /api/v1/products/{productId}/skus/{skuId}/inventory-control",
+            "PUT /api/v1/products/{productId}/variants/{variantId}/inventory-control",
+            "GET /api/v1/products/{productId}/skus/{sku}/base-price", "GET /api/v1/products/{productId}/variants/{variantId}/base-price",
+            "PUT /api/v1/products/{productId}/skus/{sku}/base-price", "PUT /api/v1/products/{productId}/variants/{variantId}/base-price");
+
     /** A valid body for the customer-reachable write handlers, so validation (400) cannot hide a missing owner check. */
     private Map<String, String> attackBodies() {
         String address = """
@@ -329,6 +343,22 @@ class PermissionMatrixTest {
             assertThat(byKey.get(key).preAuthorize()).as(key + " is guarded now").isFalse();
         });
         attackBodies().keySet().forEach(key -> assertThat(byKey).as("attack body for " + key).containsKey(key));
+    }
+
+    @Test
+    void aDeprecatedRouteKeepsTheGuardOfItsCanonicalRoute() {
+        Map<String, Handler> byKey = new HashMap<>();
+        handlers().forEach(h -> byKey.put(h.key(), h));
+        DEPRECATED_ALIASES.forEach((old, canonical) -> {
+            assertThat(byKey).as(old).containsKey(old);
+            assertThat(byKey).as(canonical).containsKey(canonical);
+            RequiresPermission was = byKey.get(old).rp();
+            RequiresPermission is = byKey.get(canonical).rp();
+            assertThat(was).as(old + " is guarded").isNotNull();
+            assertThat(is).as(canonical + " is guarded").isNotNull();
+            assertThat(PermissionCode.of(was.resource(), was.action())).as(old + " vs " + canonical)
+                    .isEqualTo(PermissionCode.of(is.resource(), is.action()));
+        });
     }
 
     @Test

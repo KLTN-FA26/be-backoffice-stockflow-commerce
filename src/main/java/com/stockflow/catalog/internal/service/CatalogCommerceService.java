@@ -5,6 +5,7 @@ import com.stockflow.catalog.internal.domain.SellingPrice;
 import com.stockflow.catalog.internal.repository.ListingRepository;
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
+import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.contracts.CatalogListingChanged;
@@ -81,8 +82,14 @@ public class CatalogCommerceService {
         return updated;
     }
 
+    /**
+     * Sets the base price of one SKU of the product. {@code sku} is normalised like every SKU in the system
+     * ({@link Sku}: trimmed, upper case), so {@code cup-12oz} names {@code CUP-12OZ}; a value that cannot be a SKU is
+     * {@code VALIDATION_FAILED}, one the product does not sell is {@code NOT_FOUND}.
+     */
     @Auditable(action = AuditAction.UPDATE, resourceType = "catalog-price", resourceId = "#id")
-    public Listing price(UUID id, String sku, long revision, SellingPrice price, String actor) {
+    public Listing price(UUID id, String rawSku, long revision, SellingPrice price, String actor) {
+        String sku = skuCode(rawSku);
         var product = products.lock(id);
         if (product.status() == ProductStatus.DISCONTINUED)
             throw new BusinessException(ErrorCode.CONFLICT);
@@ -106,8 +113,17 @@ public class CatalogCommerceService {
     public record PriceView(
             String sku, long revision, SellingPrice basePrice, SellingPrice effectivePrice) {}
 
+    /** The SKU of one variant the product sells (an ACTIVE one), for the routes that name the variant by its id. */
     @Transactional(readOnly = true)
-    public PriceView price(UUID id, String sku) {
+    public String skuOfVariant(UUID id, UUID variantId) {
+        return products.read(id).skus().stream().filter(s -> s.skuId().equals(variantId)).findFirst()
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND)).sku();
+    }
+
+    /** The base and effective price of one SKU of the product; {@code sku} is normalised as in the setter. */
+    @Transactional(readOnly = true)
+    public PriceView price(UUID id, String rawSku) {
+        String sku = skuCode(rawSku);
         if (products.read(id).skus().stream().noneMatch(s -> s.sku().equals(sku)))
             throw new BusinessException(ErrorCode.NOT_FOUND);
         return new PriceView(
@@ -210,5 +226,14 @@ public class CatalogCommerceService {
         var listing =
                 listings.bySlug(slug).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         return products.publishedImages(listing.productId());
+    }
+
+    private static String skuCode(String raw) {
+        try {
+            return new Sku(raw).code();
+        } catch (IllegalArgumentException e) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "sku must be 1-64 letters, digits, '.', '_' or '-', starting with a letter or digit");
+        }
     }
 }
