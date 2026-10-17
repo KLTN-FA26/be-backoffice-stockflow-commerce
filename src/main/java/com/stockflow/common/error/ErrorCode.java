@@ -18,6 +18,16 @@ public enum ErrorCode {
     PO_LINE_DESCRIPTION_REQUIRED("A product description is required for each purchase order line", 400),
     SUPPLIER_DELIVERY_CONTACT_INVALID("Supplier delivery contact is invalid or not allowed", 400),
     SUPPLIER_PROFILE_INVALID("Invalid supplier profile or commercial terms", 400),
+    // Supplier catalog field codes (SCRUM-77): each names one rule on one input of the catalog form, so
+    // the field error is translated by its own code. The response's errorCode stays VALIDATION_FAILED.
+    SUPPLIER_ITEM_SKU_INVALID("The SKU is not a well-formed SKU code", 400),
+    SUPPLIER_ITEM_SUPPLIER_SKU_CODE_TOO_LONG("The supplier SKU code must be at most 50 characters", 400),
+    SUPPLIER_ITEM_PRICE_INVALID("The price must be above zero, at most 9,999,999,999,999,999.99, and have no more"
+            + " decimals than the supplier's currency allows", 400),
+    SUPPLIER_ITEM_MOQ_INVALID("The minimum order quantity must be at least 1", 400),
+    SUPPLIER_ITEM_PACK_SIZE_INVALID("The pack size must be at least 1", 400),
+    SUPPLIER_ITEM_MOQ_NOT_PACK_MULTIPLE("The minimum order quantity must be a multiple of the pack size", 400),
+    SUPPLIER_ITEM_LEAD_TIME_INVALID("The lead time must be between 0 and 365 days", 400),
     VALIDATION_FAILED("Invalid request data", 400),
     INVENTORY_POLICY_INVALID("Invalid SKU inventory policy", 400),
     INVENTORY_POLICY_STOCK_CONFLICT("Existing stock is incompatible with this policy", 409),
@@ -57,6 +67,7 @@ public enum ErrorCode {
     ROLE_NOT_FOUND("Role not found", 404),
     USER_NOT_FOUND("User not found", 404),
     SUPPLIER_NOT_FOUND("Supplier not found", 404),
+    SUPPLIER_ITEM_NOT_FOUND("Supplier item not found", 404),
     PURCHASE_ORDER_NOT_FOUND("Purchase order not found", 404),
     PRODUCT_NOT_FOUND("Product not found", 404),
     CATEGORY_NOT_FOUND("Category not found", 404),
@@ -216,6 +227,8 @@ public enum ErrorCode {
     SUPPLIER_HAS_OPEN_PURCHASE_ORDERS("Supplier has open purchase orders", 409),
     SUPPLIER_CODE_ALREADY_EXISTS("A supplier with this code already exists", 409),
     SUPPLIER_TAX_CODE_ALREADY_EXISTS("A supplier with this tax code already exists", 409),
+    SUPPLIER_ITEM_DUPLICATE("This supplier already lists this SKU", 409),
+    SUPPLIER_ITEM_IN_USE("An open purchase order still orders this SKU from this supplier", 409),
     INVALID_SUPPLIER_CONFIRMATION("This supplier confirmation cannot be recorded", 409),
     PRODUCT_CODE_ALREADY_EXISTS("A product with this code already exists", 409),
     BRAND_CODE_ALREADY_EXISTS("A brand with this code or slug already exists", 409),
