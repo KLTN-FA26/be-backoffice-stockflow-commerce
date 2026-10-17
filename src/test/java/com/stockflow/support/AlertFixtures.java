@@ -66,14 +66,37 @@ public final class AlertFixtures {
         return sku("ALERT-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT), reorderPoint, safetyStock);
     }
 
-    /** The same with a SKU code of the caller's choosing, for tests that page through SKUs in order. */
+    /**
+     * The same with a SKU code of the caller's choosing, for tests that page through SKUs in order. The SKU is one that
+     * may be bought (an ACTIVE variant of an APPROVED product): low-stock alerts are raised only for such a SKU.
+     */
     public String sku(String sku, Integer reorderPoint, Integer safetyStock) {
+        return sku(sku, reorderPoint, safetyStock, true);
+    }
+
+    /** A SKU of a DRAFT product (its variant DRAFT too): nobody may put it on a purchase order yet. */
+    public String draftSku(Integer reorderPoint, Integer safetyStock) {
+        return sku("ALERT-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT), reorderPoint,
+                safetyStock, false);
+    }
+
+    /** Puts the SKU's product back to DRAFT, as if it had never been approved: its SKU is no longer purchasable. */
+    public void makeDraft(String sku) {
+        tx.executeWithoutResult(s -> jdbc.update("update product.products set status = 'DRAFT', approved_by = null,"
+                + " approved_at = null where id = (select product_id from product.variants where sku = ?)", sku));
+    }
+
+    private String sku(String sku, Integer reorderPoint, Integer safetyStock, boolean purchasable) {
+        UUID approver = purchasable ? tx.execute(s -> ReferenceRows.user(entityManager)) : null;
         tx.executeWithoutResult(s -> {
             UUID product = Identifiers.newId();
-            jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku, "Alert fixture",
-                    sku.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,'Alert fixture','')",
-                    Identifiers.newId(), product, sku);
+            jdbc.update("insert into product.products(id,code,name,slug,status,approved_by,approved_at)"
+                            + " values (?,?,?,?,?,?,?)", product, sku, "Alert fixture", sku.toLowerCase(Locale.ROOT),
+                    purchasable ? "APPROVED" : "DRAFT", approver,
+                    purchasable ? java.sql.Timestamp.from(java.time.Instant.now()) : null);
+            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature,status)"
+                            + " values (?,?,?,'Alert fixture','',?)",
+                    Identifiers.newId(), product, sku, purchasable ? "ACTIVE" : "DRAFT");
             jdbc.update("update inventory.inventory_items set reorder_point = ?, safety_stock = ? where sku = ?",
                     reorderPoint, safetyStock, sku);
         });

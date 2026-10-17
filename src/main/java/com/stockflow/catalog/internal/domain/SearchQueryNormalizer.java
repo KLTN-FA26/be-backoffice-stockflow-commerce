@@ -33,7 +33,11 @@ public final class SearchQueryNormalizer {
 
     private static final Pattern COMBINING_MARKS = Pattern.compile("\\p{M}+");
     private static final Pattern NOT_LETTER_OR_DIGIT = Pattern.compile("[^\\p{L}\\p{N}]+");
-    private static final Pattern SKU_SHAPE = Pattern.compile("[a-z0-9][a-z0-9._/-]*");
+    /**
+     * The alphabet of {@code common.domain.Sku} (and {@code ck_variants_sku}) in lower case: letters, digits, {@code .},
+     * {@code _} and {@code -}, at most 64, not starting with a separator. A key outside it can never equal a stored SKU.
+     */
+    private static final Pattern SKU_SHAPE = Pattern.compile("[a-z0-9][a-z0-9._-]{0,63}");
 
     private SearchQueryNormalizer() {
     }
@@ -70,7 +74,9 @@ public final class SearchQueryNormalizer {
 
     /**
      * SKU codes keep their hyphens ({@code SOFA-3S-GREY}), so "sofa-3s-grey" and "sofa 3s grey" both
-     * have to be tried. Whitespace-only differences are the only fuzziness allowed here.
+     * have to be tried. Whitespace-only differences are the only fuzziness allowed here. The input as typed (its
+     * whitespace turned into hyphens) is tried first and keeps its {@code _} and {@code .}: {@code CUP_A-RED} is
+     * looked up as {@code cup_a-red}. The words joined by hyphens come second, for input typed with spaces.
      */
     private static List<String> skuKeys(String folded, List<String> terms) {
         Set<String> keys = new LinkedHashSet<>();

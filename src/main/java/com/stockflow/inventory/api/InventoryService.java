@@ -263,14 +263,23 @@ public interface InventoryService {
      * it (SCRUM-461): the item exists only because its variant was created (docs 01 BR-07), and the
      * variant cannot go while it stands. A SKU with no item is skipped.
      *
-     * <p>No guard of its own: stock rows, movements, adjustments, counts, transfer lines, purchase order
-     * and receipt lines, pick lines and putaway or move tasks all point at an item through foreign keys,
-     * and any of them refuses the delete, which is exactly what must happen.</p>
+     * <p>The caller asks {@link #skusInUse} first; this is the last line of defence: stock rows, movements,
+     * adjustments, counts, transfer lines, purchase order and receipt lines, pick lines and putaway or move tasks
+     * all point at an item through foreign keys, and any of them refuses the delete. The item's stock alerts are
+     * not a use: they are deleted with it.</p>
      *
      * @throws org.springframework.dao.DataIntegrityViolationException when something still refers to an item;
      *         the caller's transaction is then rolled back as a whole
      */
     void deleteUnusedItems(java.util.Collection<String> skus);
+
+    /**
+     * The SKUs among {@code skus} whose inventory item a document uses — stock, a movement, an adjustment, a count,
+     * a transfer line, a putaway, move or pick task, a selling price, a supplier item or a procurement line — in SKU
+     * order; empty when none is. Such an item can be neither deleted nor renamed (kltn-docs 01 BR-01, BR-02); the
+     * SKU rename guard asks the same question in the database ({@code inventory.item_in_use}).
+     */
+    java.util.List<String> skusInUse(java.util.Collection<String> skus);
 
     /**
      * SKUs that are low on stock, in SKU order, the {@code limit} after {@code afterSku} ({@code null} or empty for

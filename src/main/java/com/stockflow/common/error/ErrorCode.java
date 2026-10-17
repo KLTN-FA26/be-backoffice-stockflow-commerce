@@ -271,6 +271,8 @@ public enum ErrorCode {
     ATTRIBUTE_CODE_ALREADY_EXISTS("An attribute or value with this code already exists", 409),
     ATTRIBUTE_IN_USE("This attribute or value is used by a product or category", 409),
     INVALID_VARIANT_TRANSITION("This variant cannot move to that status right now", 409),
+    /** kltn-docs 01 §5.2: an obsolete SKU is only shipped or adjusted to clear its stock; its settings stay as they are. */
+    VARIANT_OBSOLETE("This variant is obsolete; its inventory settings can no longer be changed", 409),
     INVALID_PRODUCT_STATUS_TRANSITION("This product cannot move to that status right now", 409),
     PRODUCT_AXES_LOCKED("Variant axes can only change while the product is a draft", 409),
     VARIANT_OPTIONS_INVALID("The options do not name one value per axis of this product", 400),

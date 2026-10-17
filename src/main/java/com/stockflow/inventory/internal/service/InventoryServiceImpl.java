@@ -196,6 +196,12 @@ class InventoryServiceImpl implements InventoryService {
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public java.util.List<String> skusInUse(java.util.Collection<String> skus) {
+        return policies.skusInUse(skus);
+    }
+
+    @Override
     public StockAdjustmentSummary requestAdjustment(RequestAdjustmentCommand command) {
         return operations.requestAdjustment(command);
     }

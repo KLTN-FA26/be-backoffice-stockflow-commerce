@@ -68,6 +68,23 @@ class SearchQueryNormalizerTest {
     }
 
     @Test
+    void aSkuWithAnUnderscoreKeepsItInItsFirstKey() {
+        // Sku allows '_' ([A-Z0-9][A-Z0-9._-]{0,63}); the word split turns it into a space, the SKU key must not.
+        assertThat(SearchQueryNormalizer.normalize("CUP_A-RED").skuKeys()).containsExactly("cup_a-red", "cup-a-red");
+        assertThat(SearchQueryNormalizer.normalize("cup_a-red").terms()).containsExactly("cup", "a", "red");
+        assertThat(SearchQueryNormalizer.normalize("LY.1L_X").skuKeys()).first().isEqualTo("ly.1l_x");
+    }
+
+    @Test
+    void aKeyOutsideTheSkuAlphabetIsNotTried() {
+        // '/' is not in a SKU, and a SKU is at most 64 characters: neither can equal a stored code.
+        assertThat(SearchQueryNormalizer.normalize("cup/12oz").skuKeys()).containsExactly("cup-12oz");
+        String longest = "a".repeat(64);
+        assertThat(SearchQueryNormalizer.normalize(longest).skuKeys()).containsExactly(longest);
+        assertThat(SearchQueryNormalizer.normalize(longest + "b").skuKeys()).isEmpty();
+    }
+
+    @Test
     void anAccentedWordIsNeverAnSkuKeyOnItsOwnAccents() {
         // "Bàn" folds to "ban"; the SKU key is the folded form, ASCII only.
         assertThat(SearchQueryNormalizer.normalize("Bàn").skuKeys()).containsExactly("ban");
