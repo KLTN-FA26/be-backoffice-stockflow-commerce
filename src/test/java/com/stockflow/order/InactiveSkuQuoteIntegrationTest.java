@@ -258,6 +258,44 @@ class InactiveSkuQuoteIntegrationTest {
     }
 
     @Test
+    @DisplayName("decision 2026-10-17: an accepted quote whose SKU stopped is cancelled by Sales with a reason, kept in "
+            + "its history and still shown to the customer; with every SKU active it is converted, not cancelled")
+    void anAcceptedQuoteWithAStoppedSkuIsCancelledWithAReason() {
+        approvedSample();
+        Quotes.QuoteView accepted = accepted();
+        assertThat(code(catchThrowable(() -> quotes.cancel(sales, accepted.id(), accepted.version(), "Changed my mind"))))
+                .as("every SKU active: convert it").isEqualTo(ErrorCode.INVALID_QUOTE_TRANSITION);
+        suspend();
+        Throwable convert = catchThrowable(() -> quotes.convert(sales, accepted.id(),
+                new Quotes.Conversion(accepted.version(), null, null)));
+        assertRefusedFor(convert, "PRODUCT_INACTIVE");
+        assertThat(convert.getMessage()).contains("cancel the quote");
+        assertThat(code(catchThrowable(() -> quotes.cancel(sales, accepted.id(), accepted.version(), " "))))
+                .as("a reason is required").isEqualTo(ErrorCode.VALIDATION_FAILED);
+
+        Quotes.QuoteView cancelled = quotes.cancel(sales, accepted.id(), accepted.version(),
+                "Blank discontinued by the supplier; a new quote follows on the 16oz cup");
+
+        assertThat(cancelled.status()).isEqualTo(QuoteStatus.CANCELLED);
+        assertThat(cancelled.history()).last().satisfies(t -> {
+            assertThat(t.fromStatus()).isEqualTo(QuoteStatus.ACCEPTED);
+            assertThat(t.toStatus()).isEqualTo(QuoteStatus.CANCELLED);
+            assertThat(t.reason()).startsWith("Blank discontinued");
+        });
+        assertThat(quotes.get(portal, accepted.id()).status()).as("the customer sees what became of it")
+                .isEqualTo(QuoteStatus.CANCELLED);
+        assertThat(quotes.list(portal, new Quotes.Criteria(null, null, null, 0, 20, null)).items())
+                .extracting(Quotes.Row::id).contains(accepted.id());
+        assertThat(code(catchThrowable(() -> quotes.convert(sales, accepted.id(),
+                new Quotes.Conversion(cancelled.version(), null, null))))).isEqualTo(ErrorCode.INVALID_QUOTE_TRANSITION);
+    }
+
+    private static ErrorCode code(Throwable thrown) {
+        assertThat(thrown).isInstanceOf(BusinessException.class);
+        return ((BusinessException) thrown).errorCode();
+    }
+
+    @Test
     @DisplayName("race: a suspension during an acceptance waits for it; the conversion after it is refused")
     void aSuspensionDuringAnAcceptanceWaitsForIt() throws Exception {
         approvedSample();

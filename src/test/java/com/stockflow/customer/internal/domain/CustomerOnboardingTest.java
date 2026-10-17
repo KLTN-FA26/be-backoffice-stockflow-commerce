@@ -41,7 +41,9 @@ class CustomerOnboardingTest {
                 .isInstanceOf(IllegalStateException.class);
         customer.changeStatus(CustomerStatus.BLOCKED);
         assertThatThrownBy(customer::activatePortal).isInstanceOf(IllegalStateException.class);
-        customer.changeStatus(CustomerStatus.ACTIVE);
+        assertThatThrownBy(() -> customer.changeStatus(CustomerStatus.ACTIVE)).as("lifting a block needs a reason")
+                .isInstanceOf(IllegalArgumentException.class);
+        customer.changeStatus(CustomerStatus.ACTIVE, "Settled");
     }
 
     @Test

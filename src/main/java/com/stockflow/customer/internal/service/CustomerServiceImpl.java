@@ -53,11 +53,14 @@ class CustomerServiceImpl implements CustomerService {
     private final PortalAccountService accounts;
     private final CreditProfileRepository creditProfiles;
     private final CustomerStatusHistory history;
+    private final com.stockflow.customer.internal.domain.CustomerChangeLog changes;
     private final java.time.Clock clock;
 
     CustomerServiceImpl(CustomerRepository customers, CustomerSearchRepository search,
                         PortalAccountService accounts, CreditProfileRepository creditProfiles,
-                        CustomerStatusHistory history, java.time.Clock clock) {
+                        CustomerStatusHistory history, java.time.Clock clock,
+                        com.stockflow.customer.internal.domain.CustomerChangeLog changes) {
+        this.changes = changes;
         this.customers = customers;
         this.search = search;
         this.accounts = accounts;
@@ -150,9 +153,13 @@ class CustomerServiceImpl implements CustomerService {
     }
 
     @Override
+    @com.stockflow.common.audit.Auditable(action = com.stockflow.common.audit.AuditAction.UPDATE,
+            resourceType = "customer", resourceId = "#command.customerId()")
     public CustomerSummary update(UpdateCustomerCommand command) {
         Customer customer = requireForUpdate(command.customerId());
         authorise(customer, command.actorUserId(), command.privileged());
+        String nameBefore = customer.fullName();
+        String taxCodeBefore = customer.taxCode();
         try {
             customer.updateProfile(command.fullName(), command.phone(), command.expectedVersion());
         } catch (IllegalStateException stale) {
@@ -166,7 +173,21 @@ class CustomerServiceImpl implements CustomerService {
             }
             requireTaxCodeFree(customer);
         }
-        return saveGuardingTaxCode(customer);
+        CustomerSummary saved = saveGuardingTaxCode(customer);
+        // Decision 2026-10-17: the contact may rename the company, Sales may correct the tax code - and every change
+        // of either is kept, with the value before, the value after, who and when.
+        java.time.Instant now = clock.instant();
+        if (!java.util.Objects.equals(nameBefore, customer.fullName())) {
+            changes.record(new com.stockflow.customer.internal.domain.CustomerChange(Identifiers.newId(), customer.id(),
+                    com.stockflow.customer.internal.domain.CustomerChange.Field.FULL_NAME, nameBefore,
+                    customer.fullName(), command.actorUserId(), now));
+        }
+        if (!java.util.Objects.equals(taxCodeBefore, customer.taxCode())) {
+            changes.record(new com.stockflow.customer.internal.domain.CustomerChange(Identifiers.newId(), customer.id(),
+                    com.stockflow.customer.internal.domain.CustomerChange.Field.TAX_CODE, taxCodeBefore,
+                    customer.taxCode(), command.actorUserId(), now));
+        }
+        return saved;
     }
 
     @Override
@@ -186,7 +207,7 @@ class CustomerServiceImpl implements CustomerService {
                 boolean activated = customer.userId() == null || !accounts.awaitingActivation(customer.userId());
                 customer.reopen(command.reason(), activated);
             } else {
-                customer.changeStatus(target);
+                customer.changeStatus(target, command.reason());
             }
         } catch (IllegalStateException refused) {
             throw new BusinessException(ErrorCode.INVALID_CUSTOMER_STATUS_TRANSITION, refused.getMessage());
@@ -201,6 +222,16 @@ class CustomerServiceImpl implements CustomerService {
                     command.reason(), command.actorUserId(), clock.instant()));
         }
         return saved;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<com.stockflow.customer.api.CustomerChangeEntry> changeHistory(UUID customerId) {
+        if (!customers.existsById(customerId)) throw new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND);
+        return changes.of(customerId).stream()
+                .map(change -> new com.stockflow.customer.api.CustomerChangeEntry(change.field().name(),
+                        change.oldValue(), change.newValue(), change.changedBy(), change.changedAt()))
+                .toList();
     }
 
     @Override

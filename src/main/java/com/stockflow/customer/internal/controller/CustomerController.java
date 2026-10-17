@@ -118,6 +118,15 @@ class CustomerController {
         return ApiResponse.ok(customers.statusHistory(customerId));
     }
 
+    /** Decision 2026-10-17: every change of the company name and the tax code, for staff (values whole). */
+    @GetMapping("/{customerId}/change-history")
+    @RequiresPermission(resource = CustomerResources.CUSTOMERS, action = Action.READ)
+    public ApiResponse<List<com.stockflow.customer.api.CustomerChangeEntry>> changeHistory(@PathVariable UUID customerId,
+                                                                                          @AuthenticatedUser CurrentUser user) {
+        requireStaff(user);
+        return ApiResponse.ok(customers.changeHistory(customerId));
+    }
+
     private static void requireStaff(CurrentUser user) {
         if (!user.hasAnyRole(Role.ECOMMERCE_ADMIN, Role.SALES_STAFF)) {
             throw new BusinessException(ErrorCode.FORBIDDEN);

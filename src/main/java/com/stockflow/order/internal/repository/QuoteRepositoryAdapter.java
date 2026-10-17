@@ -166,8 +166,10 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
                 .and(criteria.statuses() == null || criteria.statuses().isEmpty()
                         ? null : Specs.in("status", criteria.statuses()))
                 .and(criteria.seenByCustomerOnly()
-                        ? Specs.in("status", java.util.Arrays.stream(QuoteStatus.values())
-                                .filter(QuoteStatus::seenByCustomer).toList())
+                        ? Specification.<QuoteJpaEntity>anyOf(Specs.in("status", java.util.Arrays.stream(QuoteStatus.values())
+                                        .filter(QuoteStatus::seenByCustomer).toList()),
+                                (root, query, cb) -> cb.and(cb.equal(root.get("status"), QuoteStatus.CANCELLED),
+                                        cb.isNotNull(root.get("sentAt"))))
                         : null);
         return jpa.findAll(spec, pageable).map(QuoteRepositoryAdapter::toRow);
     }

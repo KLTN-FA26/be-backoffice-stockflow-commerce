@@ -47,6 +47,9 @@ public interface CustomerService {
     /** Oldest first. @throws com.stockflow.common.error.BusinessException {@code CUSTOMER_NOT_FOUND} */
     List<CustomerStatusEntry> statusHistory(UUID customerId);
 
+    /** Every change of the customer's company name and tax code, oldest first (decision 2026-10-17). */
+    List<CustomerChangeEntry> changeHistory(UUID customerId);
+
     List<CustomerAddressSummary> listAddresses(UUID customerId, UUID actorUserId, boolean privileged);
 
     CustomerAddressSummary addAddress(UUID customerId, UUID actorUserId, boolean privileged,

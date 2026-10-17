@@ -630,6 +630,11 @@ Enum customer.customer_status {
   BLOCKED
 }
 
+Enum customer.customer_change_history_field {
+  FULL_NAME
+  TAX_CODE
+}
+
 Enum customer.customer_status_history_from_status {
   PENDING_ACTIVATION
   ACTIVE
@@ -2665,6 +2670,17 @@ Table customer.customer [headercolor: #D68910] {
   tax_code         varchar(14)
 }
 
+Table customer.customer_change_history [headercolor: #D68910] {
+  id          uuid [pk]
+  customer_id uuid [not null]
+  field       customer.customer_change_history_field [not null]
+  old_value   varchar(200)
+  new_value   varchar(200)
+  changed_by  uuid
+  changed_at  timestamptz [not null]
+  created_at  timestamptz [not null, default: `now()`]
+}
+
 Table customer.customer_status_history [headercolor: #D68910] {
   id               uuid [pk]
   customer_id      uuid [not null]
@@ -3758,6 +3774,8 @@ Ref: customer.credit_profile.approved_by > identity.app_user.id
 Ref: customer.credit_profile.customer_id > customer.customer.id [delete: cascade]
 Ref: customer.customer.segment_id > customer.segment.id
 Ref: customer.customer.user_id > identity.app_user.id [delete: restrict]
+Ref: customer.customer_change_history.changed_by > identity.app_user.id
+Ref: customer.customer_change_history.customer_id > customer.customer.id [delete: cascade]
 Ref: customer.customer_status_history.changed_by > identity.app_user.id
 Ref: customer.customer_status_history.customer_id > customer.customer.id [delete: cascade]
 Ref: payment.cod_remittance.reconciled_by > identity.app_user.id

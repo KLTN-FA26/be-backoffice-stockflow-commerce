@@ -786,6 +786,7 @@ stateDiagram-v2
     CHANGES_REQUESTED --> DRAFT: revised
     SENT --> EXPIRED: validity ends
     ACCEPTED --> CONVERTED: sales order created
+    ACCEPTED --> CANCELLED: a SKU on it stopped (Sales, reason)
     DRAFT --> CANCELLED
     CONVERTED --> [*]
     EXPIRED --> [*]
@@ -797,5 +798,6 @@ stateDiagram-v2
 | DRAFT | SENT | send | Sales staff | discount within the sales staff's limit, or approved | — |
 | SENT | ACCEPTED | accept | Customer (portal) | within validity; every new design has an APPROVED sample (BR-PRD-08) | — |
 | ACCEPTED | CONVERTED | create order | system / Sales staff | lines reserved (BR-ORD-001) | `OrderPlaced` |
+| ACCEPTED | CANCELLED | cancel | Sales staff | a SKU on the quote is INACTIVE/DISCONTINUED, so it can never be converted; reason required and kept in the history; the customer still sees it; a new quote follows if the goods are still wanted (decision 2026-10-17) | — |
 | SENT | EXPIRED | validity ends | system | — | — |
 

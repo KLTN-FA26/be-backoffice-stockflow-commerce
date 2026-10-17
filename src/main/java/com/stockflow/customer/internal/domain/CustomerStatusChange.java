@@ -21,5 +21,8 @@ public record CustomerStatusChange(UUID id, UUID customerId, CustomerStatus from
         if (from == CustomerStatus.INACTIVE && reason == null) {
             throw new IllegalArgumentException("Reopening a closed customer needs a reason");
         }
+        if (from == CustomerStatus.BLOCKED && to == CustomerStatus.ACTIVE && reason == null) {
+            throw new IllegalArgumentException("Lifting a customer's block needs a reason");
+        }
     }
 }

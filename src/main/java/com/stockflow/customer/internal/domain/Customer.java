@@ -122,8 +122,21 @@ public final class Customer extends AggregateRoot {
      * @throws IllegalStateException for a transition the lifecycle does not have
      */
     public void changeStatus(CustomerStatus target) {
+        changeStatus(target, null);
+    }
+
+    /**
+     * {@code reason} is required to lift a block (BLOCKED to ACTIVE, decision 2026-10-17), as it is to reopen a closed
+     * customer: both give a customer back what a manager had taken away; the history keeps why.
+     *
+     * @throws IllegalArgumentException lifting a block without a reason
+     */
+    public void changeStatus(CustomerStatus target, String reason) {
         Objects.requireNonNull(target, "target");
         if (target == status) return;
+        if (status == CustomerStatus.BLOCKED && target == CustomerStatus.ACTIVE && (reason == null || reason.isBlank())) {
+            throw new IllegalArgumentException("A reason is required to lift a customer's block");
+        }
         if (target == CustomerStatus.PENDING_ACTIVATION
                 || (status == CustomerStatus.PENDING_ACTIVATION && target != CustomerStatus.INACTIVE)
                 || status == CustomerStatus.INACTIVE) {

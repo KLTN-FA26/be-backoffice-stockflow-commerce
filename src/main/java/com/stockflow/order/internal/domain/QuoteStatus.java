@@ -14,7 +14,8 @@ public enum QuoteStatus {
             case DRAFT -> target == SENT || target == CANCELLED;
             case SENT -> target == ACCEPTED || target == CHANGES_REQUESTED || target == EXPIRED;
             case CHANGES_REQUESTED -> target == DRAFT;
-            case ACCEPTED -> target == CONVERTED;
+            // CANCELLED: decision 2026-10-17 - Sales, with a reason, when a SKU on it stopped (QuoteService).
+            case ACCEPTED -> target == CONVERTED || target == CANCELLED;
             case EXPIRED, CANCELLED, CONVERTED -> false;
         };
     }

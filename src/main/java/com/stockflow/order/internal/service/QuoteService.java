@@ -252,7 +252,30 @@ class QuoteService implements Quotes {
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "quote", resourceId = "#quoteId")
     public QuoteView cancel(CurrentUser user, UUID quoteId, long version, String reason) {
-        return backOffice(user, quoteId, version, quote -> quote.cancel(reason), reason);
+        return backOffice(user, quoteId, version, quote -> {
+            if (quote.status() == QuoteStatus.ACCEPTED) {
+                requireAStoppedSku(quote);
+            }
+            quote.cancel(reason);
+        }, reason);
+    }
+
+    /**
+     * Decision 2026-10-17: an accepted quote becomes its order; Sales cancels it - with its reason, kept in the
+     * history - only when a SKU on it is no longer active, so it can never be converted, and sends a new quote with an
+     * active SKU if the customer still wants the goods. Held under the product lock until the cancel commits, like
+     * every SKU check of a quote, so a SKU resumed meanwhile is converted instead.
+     */
+    private void requireAStoppedSku(Quote quote) {
+        Map<String, Purchasability> verdicts = products.lockedPurchasability(
+                quote.offer().lines().stream().map(line -> line.blankSku().code()).toList());
+        boolean stopped = quote.offer().lines().stream().map(line -> verdicts.get(
+                line.blankSku().code().toUpperCase(java.util.Locale.ROOT))).anyMatch(v -> v != null && !v.isPurchasable());
+        if (!stopped) {
+            throw new BusinessException(ErrorCode.INVALID_QUOTE_TRANSITION,
+                    "Quote %s is accepted and every SKU on it is active: convert it into its order".formatted(
+                            quote.quoteNumber()));
+        }
     }
 
     @Override
@@ -270,7 +293,8 @@ class QuoteService implements Quotes {
                     "Quote %s is %s; only an accepted quote becomes an order".formatted(quote.quoteNumber(),
                             quote.status()));
         }
-        requireActiveSkus(quote.quoteNumber(), quote.offer());
+        requireActiveSkus(quote.quoteNumber(), quote.offer(), "cancel the quote with its reason and send a new one with "
+                + "an active SKU");
         List<PlaceOrderCommand.Line> lines = quote.offer().lines().stream()
                 .map(line -> new PlaceOrderCommand.Line(line.blankSku(), line.acceptedQuantity(),
                         line.acceptedUnitPrice(), line.designSnapshotId()))
@@ -400,7 +424,7 @@ class QuoteService implements Quotes {
      */
     private void requireVisible(CurrentUser user, Quote quote) {
         Optional<UUID> own = portalCustomer(user);
-        if (own.isPresent() && (!own.get().equals(quote.customerId()) || !quote.status().seenByCustomer())) {
+        if (own.isPresent() && (!own.get().equals(quote.customerId()) || !quote.seenByCustomer())) {
             throw new NotFoundException("quote", quote.id());
         }
     }
@@ -440,6 +464,11 @@ class QuoteService implements Quotes {
      * fault with why, on {@code lines[i].blankSku}, so the form can put it next to the SKU.
      */
     private void requireActiveSkus(String quoteNumber, Quote.Offer offer) {
+        requireActiveSkus(quoteNumber, offer, "change it to an active SKU and send the quote again");
+    }
+
+    /** {@code next}: what Sales does about it - revise and send again, or, for an accepted quote, cancel it. */
+    private void requireActiveSkus(String quoteNumber, Quote.Offer offer, String next) {
         List<QuoteLine> lines = offer.lines();
         Map<String, Purchasability> verdicts = products.lockedPurchasability(
                 lines.stream().map(line -> line.blankSku().code()).toList());
@@ -458,7 +487,7 @@ class QuoteService implements Quotes {
         if (!errors.isEmpty()) {
             throw new BusinessException(ErrorCode.SKU_NOT_SELLABLE, "%s holds a SKU that is no longer active: %s; "
                     .formatted(quoteNumber == null ? "The quote" : "Quote " + quoteNumber, String.join(", ", named))
-                    + "change it to an active SKU and send the quote again", errors);
+                    + next, errors);
         }
     }
 

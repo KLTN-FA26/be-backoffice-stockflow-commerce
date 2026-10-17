@@ -575,6 +575,24 @@ class B2bOnboardingIntegrationTest {
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.taxCode").value(masked(corrected)));
         mvc.perform(get("/api/v1/customers/" + customerId).header("Authorization", "Bearer " + sales))
                 .andExpect(jsonPath("$.data.taxCode").value(corrected));
+        // Decision 2026-10-17: the contact renames the company, and every change of the name and the tax code is kept
+        // - before, after, who - for staff to read; the customer does not read it.
+        String history = mvc.perform(get("/api/v1/customers/" + customerId + "/change-history")
+                        .header("Authorization", "Bearer " + sales))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        com.fasterxml.jackson.databind.JsonNode entries = mapper.readTree(history).at("/data");
+        java.util.List<String> lines = new java.util.ArrayList<>();
+        entries.forEach(e -> lines.add(e.path("field").asText() + ":" + e.path("oldValue").asText() + "->"
+                + e.path("newValue").asText()));
+        assertThat(lines).contains("FULL_NAME:Renamed Co->Self Renamed", "TAX_CODE:" + entries.findValues("oldValue")
+                .stream().filter(v -> v.asText().matches("[0-9-]{10,14}")).findFirst().orElseThrow().asText()
+                + "->" + corrected);
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM customer.customer_change_history WHERE customer_id = ? AND field = 'FULL_NAME'
+                   AND new_value = 'Self Renamed' AND changed_by = (SELECT user_id FROM customer.customer WHERE id = ?)""",
+                Integer.class, customerId, customerId)).isEqualTo(1);
+        mvc.perform(get("/api/v1/customers/" + customerId + "/change-history")
+                .header("Authorization", "Bearer " + customerToken)).andExpect(status().isForbidden());
         changeStatus(customerId, "PENDING_ACTIVATION").andExpect(status().isConflict());
 
         // A pending customer that Sales closes cannot be activated from its old link any more.
@@ -611,8 +629,16 @@ class B2bOnboardingIntegrationTest {
                 WHERE lower(u.email) = ? ORDER BY s.issued_at DESC LIMIT 1""", String.class, email))
                 .isEqualTo("ACCOUNT_DISABLED");
 
-        // Suspended -> Active is allowed (§5). The same password works again; the old session does not.
-        changeStatus(customerId, "ACTIVE").andExpect(status().isOk());
+        // Suspended -> Active is allowed (§5), with a reason (decision 2026-10-17) kept in the history. The same
+        // password works again; the old session does not.
+        changeStatus(customerId, "ACTIVE").andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
+        assertThat(customerStatus(customerId)).isEqualTo("BLOCKED");
+        reopen(customerId, "Overdue invoice settled on 2026-10-17").andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("""
+                SELECT reason FROM customer.customer_status_history WHERE customer_id = ? AND from_status = 'BLOCKED'
+                   AND to_status = 'ACTIVE'""", String.class, customerId))
+                .isEqualTo("Overdue invoice settled on 2026-10-17");
         me(before).andExpect(status().isUnauthorized());
         String after = loginToken(email, PASSWORD);
         me(after).andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("ACTIVE"));

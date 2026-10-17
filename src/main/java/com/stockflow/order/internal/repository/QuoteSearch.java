@@ -15,7 +15,7 @@ public interface QuoteSearch {
     /**
      * @param customerId          forced to the caller's own customer for a portal user
      * @param seenByCustomerOnly  true for a portal user: drafts and quotes cancelled before sending are
-     *                            Sales' working copies and are not shown
+     *                            Sales' working copies and are not shown; one cancelled after it was sent is
      */
     record Criteria(UUID customerId, List<QuoteStatus> statuses, String number, boolean seenByCustomerOnly) {
     }

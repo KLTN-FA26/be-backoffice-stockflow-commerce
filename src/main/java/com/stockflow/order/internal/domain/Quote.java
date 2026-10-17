@@ -310,6 +310,14 @@ public final class Quote {
     public int revision() { return revision; }
     public Offer offer() { return offer; }
     public Instant sentAt() { return sentAt; }
+
+    /**
+     * Whether the customer has been shown this quote: everything once sent - an accepted quote Sales cancelled
+     * included, so the customer sees what became of it - but not a draft, nor one cancelled before it was sent.
+     */
+    public boolean seenByCustomer() {
+        return status.seenByCustomer() || status == QuoteStatus.CANCELLED && sentAt != null;
+    }
     public UUID sentBy() { return sentBy; }
     public Instant respondedAt() { return respondedAt; }
     public UUID respondedBy() { return respondedBy; }
