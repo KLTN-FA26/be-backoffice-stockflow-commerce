@@ -112,6 +112,21 @@ class QuoteServiceTest {
     }
 
     @Test
+    void aDepositQuoteWithoutAShareTakesTheCustomersDefaultWhenDrafted() {
+        when(quotes.findByRequestId(any())).thenReturn(Optional.empty());
+        when(quotes.nextNumber(any())).thenReturn("QT-9");
+        org.mockito.ArgumentCaptor<Quote> saved = org.mockito.ArgumentCaptor.forClass(Quote.class);
+
+        service.create(sales, new Quotes.Create(UUID.randomUUID(), customer, new Quotes.Draft(PaymentTerm.DEPOSIT, null,
+                NOW.plusSeconds(3600), null, List.of(new Quotes.Line("CUP-PP-500", design, "Logo", 1000,
+                List.of(new Quotes.Tier(1000, new BigDecimal("2000"))))))));
+
+        // Audit of #109: the share is the one the customer sees and accepts, not the default read again at conversion.
+        org.mockito.Mockito.verify(quotes).save(saved.capture());
+        assertThat(saved.getValue().offer().depositPercent()).isEqualByComparingTo("30");
+    }
+
+    @Test
     void aReorderOfWhatWasPrintedForThisCustomerIsAcceptedWithoutASample() {
         Quote quote = stored(QuoteStatus.SENT);
         when(production.approvedSampleOf(customer, design, "CUP-PP-500")).thenReturn(Optional.empty());

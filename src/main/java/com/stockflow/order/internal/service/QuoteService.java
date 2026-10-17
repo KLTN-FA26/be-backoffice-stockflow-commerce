@@ -553,7 +553,14 @@ class QuoteService implements Quotes {
             lines.add(new QuoteLine(Identifiers.newId(), lineNo++, blank, line.designSnapshotId(), line.printSpec(),
                     line.quantity(), tiers, null, null));
         }
-        return new Quote.Offer(draft.paymentTerm(), draft.depositPercent(),
+        BigDecimal deposit = draft.depositPercent();
+        if (draft.paymentTerm() == com.stockflow.order.api.PaymentTerm.DEPOSIT && deposit == null) {
+            // Audit of #109: the share the customer is shown and accepts is the share its order asks for. The customer's
+            // default is copied in now, not read again at conversion, when it may have changed since.
+            com.stockflow.customer.api.CreditTerms terms = customers.creditTerms(customerId);
+            deposit = terms == null ? null : terms.depositPercent();
+        }
+        return new Quote.Offer(draft.paymentTerm(), deposit,
                 draft.validUntil().truncatedTo(java.time.temporal.ChronoUnit.MICROS), draft.terms(), lines);
     }
 
