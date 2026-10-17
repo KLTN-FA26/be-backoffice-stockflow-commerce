@@ -28,7 +28,7 @@ import java.util.UUID;
 /**
  * Back office: customer-group prices by SKU (user decision P7). E-commerce Admin and System Admin edit; Sales
  * and the Order Coordinator read - Sales negotiates on the quote, never on the group's price. Grants:
- * V20261015000530.
+ * V20261017000530.
  */
 @RestController
 @RequestMapping("/api/v1/catalog/segment-prices")

@@ -15,7 +15,7 @@ import java.util.regex.Pattern;
  *
  * <p>The code is the group's identity in price rules and reports, so it is fixed once created: upper-case
  * letters, digits, {@code _} and {@code -}, at most 64. Name and description may change.
- * {@code ck_segment_code} and {@code ck_segment_name} say the same in the database (V20261015000600).</p>
+ * {@code ck_segment_code} and {@code ck_segment_name} say the same in the database (V20261017000600).</p>
  */
 public final class CustomerSegment {
 

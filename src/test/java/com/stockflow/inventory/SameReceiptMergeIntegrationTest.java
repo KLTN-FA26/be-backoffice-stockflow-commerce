@@ -33,7 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * V20261015000450 against a real PostgreSQL: units of one FIFO receipt layer may be moved into a layer of the
+ * V20261017000450 against a real PostgreSQL: units of one FIFO receipt layer may be moved into a layer of the
  * same receipt elsewhere, in parts — two moves to the same bin, two holds issued to the print shop — keeping
  * the receipt time, lot and total; replenishing an existing FIFO layer (a FOUND adjustment) is still refused,
  * and so is a receipt dated more than a minute ahead of the database clock.

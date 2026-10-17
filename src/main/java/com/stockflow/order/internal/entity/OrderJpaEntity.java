@@ -161,7 +161,7 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "cancellation_retained_amount", precision = 19, scale = 4)
     private java.math.BigDecimal cancellationRetainedAmount;
 
-    /** V20261015000430, decision Q2: the terms of an agreed amount kept on cancellation. */
+    /** V20261017000430, decision Q2: the terms of an agreed amount kept on cancellation. */
     @Column(name = "cancellation_fee_amount", precision = 19, scale = 4)
     private java.math.BigDecimal cancellationFeeAmount;
 

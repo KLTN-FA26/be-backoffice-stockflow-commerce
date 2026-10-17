@@ -6,7 +6,7 @@ pushed, not merged, no Jira change. The SCRUM-429 follow-up is its own commit on
 
 ## What was built
 
-- **Migration `V20261015000510__catalog_customer_prices.sql`** (lane range `…000500–000599`):
+- **Migration `V20261017000510__catalog_customer_prices.sql`** (lane range `…000500–000599`):
   `catalog.customer_price` (customer + SKU, unique, FK to `customer.customer` cascade and `product.variants`,
   VND only, versioned) and `catalog.customer_price_tier` (`min_quantity ≥ 1`, whole positive VND, unique per
   price). Permission resource `catalog-customer-prices`; ECOMMERCE_ADMIN all, SALES_STAFF VIEW_PAGE+READ,
@@ -40,17 +40,17 @@ pushed, not merged, no Jira change. The SCRUM-429 follow-up is its own commit on
   commit through the configured SMTP server. That account gone, locked or without an e-mail → every active Sales
   account, marked "[Cần tiếp nhận]", each address once, so one of them takes the customer on (user decision N1,
   2026-10-13; access to the quote unchanged); no active Sales account at all → a WARN log.
-- **Group prices** (P7): `V20261015000530` (one price per group and SKU, positive whole VND, grants);
+- **Group prices** (P7): `V20261017000530` (one price per group and SKU, positive whole VND, grants);
   `SegmentPrice`, `SegmentPriceService`, `/api/v1/catalog/segment-prices`; product lock, CAS version, audited
   `segment-price`. Resolution unchanged.
-- **Customer groups** (P7 completed 2026-10-13, branch `SPRINT2-finish-lane-b`): `V20261015000600` (resource
+- **Customer groups** (P7 completed 2026-10-13, branch `SPRINT2-finish-lane-b`): `V20261017000600` (resource
   `customer-segments`; `ck_segment_code` upper-case code, `ck_segment_name`, both NOT VALID so older rows are never
   rewritten); `CustomerSegment`, `CustomerSegmentService`, `CustomerSegmentController`. E-commerce Admin and System
   Admin create / rename groups and assign or clear a customer's group (customer version read, row lock, audited
   `customer-segment`, `customer-segment-assignment`); Sales and the Order Coordinator read. The code is fixed once
   created. `GET /api/v1/customers?segmentId=` lists a group's customers.
 - **Household identifier** (T1, from official texts): the 12-digit personal ID is accepted next to 10 and 10-3
-  (`TaxCode`, `V20261015000540` widens `ck_customer_tax_code`).
+  (`TaxCode`, `V20261017000540` widens `ck_customer_tax_code`).
 - **Portal display**: the logged-in ACTIVE customer's own/group/base prices with tiers and MOQ (13 BR-02, BR-05),
   published SKUs only.
 
@@ -115,8 +115,8 @@ Writes are audited (`customer-price`, `segment-price` CREATE/UPDATE/DELETE; `quo
 | Sales units (13/14 BR-11) | pieces only (P6, decided by the user: no carton / conversion in this batch) | — | scope chosen |
 | Sales is told when a customer accepts, asks for changes or reorders; nobody guessed without an active Sales account; no real mail in tests | `CustomerActedOnQuote`, `QuoteService.notifySales`, `QuoteNotificationListener`, `NotificationSender.sendQuoteNotice` | `QuoteNotificationListenerTest` (4); IT: events with the right Sales e-mail for CHANGES_REQUESTED / ACCEPTED / REORDER_REQUESTED (once per click), mail captured by a mocked `JavaMailSenderImpl`, disabled Sales → `salesEmail` null | PASS |
 | R1: a reorder the list cannot price reaches Sales unpriced; cannot be sent / accepted / converted until priced; then the normal flow | `QuoteLine.priced`, `Quote.send`, `QuoteService.listTiers` | `QuoteTest.anUnpricedLineIsExplicitAndCannotBeSent`, `QuoteServiceTest.aReorderOfABlankWithoutAListPrice…` (no list price), IT `aReorderTheListCannotPriceWaitsForSales` (below the 1,000 tier) | PASS |
-| P7: group prices by the admins, read by Sales / coordinator; validation, version, concurrency, audit; resolution own → group → base | `SegmentPriceController`, `SegmentPriceService`, `SegmentPriceRepositoryAdapter`, `V20261015000530` | IT `groupPricesAreTheAdminsAndResolveBetweenOwnAndBase` (401/403/400/404/409, System Admin edits, 2 audit rows, own wins, delete → BASE, 2 racing creates / edits); QA G1–G6 | PASS |
-| T1: 12-digit household identifier accepted, company rule unchanged | `TaxCode`, `V20261015000540` | `CustomerOnboardingTest`, QA B5a/B5b, onboarding ITs | PASS |
+| P7: group prices by the admins, read by Sales / coordinator; validation, version, concurrency, audit; resolution own → group → base | `SegmentPriceController`, `SegmentPriceService`, `SegmentPriceRepositoryAdapter`, `V20261017000530` | IT `groupPricesAreTheAdminsAndResolveBetweenOwnAndBase` (401/403/400/404/409, System Admin edits, 2 audit rows, own wins, delete → BASE, 2 racing creates / edits); QA G1–G6 | PASS |
+| T1: 12-digit household identifier accepted, company rule unchanged | `TaxCode`, `V20261017000540` | `CustomerOnboardingTest`, QA B5a/B5b, onboarding ITs | PASS |
 
 ## Gaps
 
@@ -155,7 +155,7 @@ field lane A fills) - not required by Jira. Tests: `ProductionNotificationListen
 | After P4/P5: `QuoteTest` 10, `QuoteIntegrationTest` 11, `QuoteSecurityIntegrationTest` 2, `CustomerPricingIntegrationTest` 7, `CustomerPriceTest` 4, `PlaceOrderIntegrationTest` 7, `CreditCheckoutIntegrationTest` 4, `QuoteMigrationUpgradeTest` 1, `InventoryCatalogMigrationUpgradeTest` 5 (every `tools/db/qa` script), `ArchitectureTest`, `ModularityTest`, `MessageBundleTest`; `tools/verify.py` | 77/77, pass |
 | After the reorder: `QuoteIntegrationTest` 9/9, `QuoteSecurityIntegrationTest` 2/2; `ArchitectureTest`, `ModularityTest`, `MessageBundleTest`, `CustomerPricingIntegrationTest`, `PlaceOrderIntegrationTest`, `CreditCheckoutIntegrationTest`, `QuoteMigrationUpgradeTest` 45/45; `tools/verify.py` | pass |
 | After the override: `QuoteIntegrationTest`, `QuoteSecurityIntegrationTest`, `ArchitectureTest`, `ModularityTest`, `tools/verify.py` | 29/29, static checks pass |
-| `CustomerPriceTest`, `CustomerPriceMigrationUpgradeTest` (from `V20261015000500` with demo data and an existing customer), `CustomerStatusHistoryMigrationUpgradeTest` | 4 + 1 + 1 |
+| `CustomerPriceTest`, `CustomerPriceMigrationUpgradeTest` (from `V20261017000500` with demo data and an existing customer), `CustomerStatusHistoryMigrationUpgradeTest` | 4 + 1 + 1 |
 | Regression: `InventoryCatalogMigrationUpgradeTest` (fresh DB + every `tools/db/qa` script + orphan check), `DemoCatalogPriceSeedTest`, `QuoteIntegrationTest`, `QuoteSecurityIntegrationTest`, `QuoteMigrationUpgradeTest`, `PlaceOrderIntegrationTest`, `CreditCheckoutIntegrationTest`, `InventoryCatalog(Security)IntegrationTest`, `ProductionGrantsMigrationUpgradeTest`, B2B onboarding/access, availability, invitation | 111 run, 1 failure → fixed (below), rerun green |
 | identity + common.security tests, `CatalogProjectionStartupIntegrationTest`, `ProcurementMigrationUpgradeTest` | 122/122 |
 | `ArchitectureTest`, `ModularityTest`, `MessageBundleTest`, `tools/verify.py` | pass |
@@ -163,5 +163,5 @@ field lane A fills) - not required by Jira. Tests: `ProductionNotificationListen
 | real jar, security on: admin creates, Sales 403 on create, Sales reads schedule, portal MOQ, below MOQ 409, base price refused 409, tier price 201, order line holds 10,000,000 | 8/8 behaviours (the script's last string compare expected `.00`, the column has scale 4 - value correct) |
 
 `QuoteMigrationUpgradeTest` upgraded to the newest migration and checked role versions moved by exactly one; the
-new `V20261015000510` moves the same roles. It now upgrades exactly to the migration it tests (`V20261015000300`), the
+new `V20261017000510` moves the same roles. It now upgrades exactly to the migration it tests (`V20261017000300`), the
 same fix SCRUM-448 applied to `ProductionGrantsMigrationUpgradeTest`. `schema.dbml` regenerated (+3 tables).

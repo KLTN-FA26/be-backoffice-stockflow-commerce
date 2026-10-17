@@ -1,6 +1,6 @@
 -- =============================================================================
--- Adversarial checks + happy paths: B2B quotes (SCRUM-448, V20261015000300), the sample -> quote key, and
--- who may answer a sample or a quote (V20261015000200 / 000300). Needs the demo seed. Rolled back at the end.
+-- Adversarial checks + happy paths: B2B quotes (SCRUM-448, V20261017000300), the sample -> quote key, and
+-- who may answer a sample or a quote (V20261017000200 / 000300). Needs the demo seed. Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;
@@ -50,7 +50,7 @@ VALUES (md5('qa9:line')::uuid, md5('qa9:quote')::uuid, 1, 'SOFA-3S-GREY', md5('q
 INSERT INTO ordering.quote_price_tier (quote_line_id, min_quantity, unit_price)
 VALUES (md5('qa9:line')::uuid, 500, 2000);
 
-\echo '--- quotes (V20261015000300)'
+\echo '--- quotes (V20261017000300)'
 SELECT pg_temp.expect_fail('QT1 an unknown status', $q$
     UPDATE ordering.quote SET status = 'APPROVED' WHERE id = md5('qa9:quote')::uuid $q$);
 SELECT pg_temp.expect_fail('QT2 SENT without who sent it and when', $q$
@@ -106,7 +106,7 @@ SELECT pg_temp.expect_ok('SQ3 a sample naming its quote', $q$
     SELECT gen_random_uuid(), 'SR-QA-10', customer_id, id, 'SOFA-3S-GREY', md5('qa9:snap')::uuid, 2, 'DRAFT'
       FROM ordering.quote WHERE id = md5('qa9:quote')::uuid $q$);
 
-\echo '--- who answers (V20261015000200 / 000300)'
+\echo '--- who answers (V20261017000200 / 000300)'
 CREATE FUNCTION pg_temp.grants(role_code TEXT, permission_code TEXT) RETURNS BOOLEAN LANGUAGE sql AS $$
     SELECT EXISTS (SELECT 1 FROM identity.role_permission rp
                      JOIN identity.app_role r ON r.id = rp.role_id
@@ -117,7 +117,7 @@ SELECT pg_temp.expect_true('GR1 the customer reads and answers samples',
     pg_temp.grants('CUSTOMER', 'production-sample-requests:READ')
     AND pg_temp.grants('CUSTOMER', 'production-sample-requests:APPROVE')
     AND NOT pg_temp.grants('CUSTOMER', 'production-sample-requests:UPDATE'));
--- QC's own step is production-qc-results since V20261015000420 (11_workshop.sql checks it).
+-- QC's own step is production-qc-results since V20261017000420 (11_workshop.sql checks it).
 SELECT pg_temp.expect_true('GR2 Sales records a sample answer; QC does not handle rounds',
     pg_temp.grants('SALES_STAFF', 'production-sample-requests:APPROVE')
     AND NOT pg_temp.grants('QC_STAFF', 'production-sample-requests:UPDATE')

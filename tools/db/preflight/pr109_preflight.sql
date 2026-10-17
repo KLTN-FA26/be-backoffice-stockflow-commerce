@@ -6,12 +6,12 @@
 -- It writes nothing (the whole script is one READ ONLY transaction, rolled back) and decides nothing: every line it
 -- prints is for a person to look at. Review of #109, deploy checklist (Tú) and decision of 16/10/2026 on tax codes.
 --
---   1. V20261015000100 disables the CUSTOMER-only accounts of BLOCKED / INACTIVE customers and ends their sessions.
+--   1. V20261017000100 disables the CUSTOMER-only accounts of BLOCKED / INACTIVE customers and ends their sessions.
 --      Lists the accounts that would be disabled, so nobody is surprised by a customer who can no longer sign in.
---   2. V20261015000530 adds uk_pricing_rule_segment_sku and ck_pricing_rule_segment_vnd. A duplicate (segment, SKU)
+--   2. V20261017000530 adds uk_pricing_rule_segment_sku and ck_pricing_rule_segment_vnd. A duplicate (segment, SKU)
 --      price or a group price that is not positive whole VND makes that migration fail; listed here first.
---   3. V20261015000830 makes a tax code unique in every status and stops on a duplicate. On a database that never
---      ran this branch the column does not exist yet (V20261015000100 adds it, empty), so there is nothing to check.
+--   3. V20261017000830 makes a tax code unique in every status and stops on a duplicate. On a database that never
+--      ran this branch the column does not exist yet (V20261017000100 adds it, empty), so there is nothing to check.
 -- Each section prints "OK: ..." when it finds nothing.
 -- =============================================================================
 
@@ -35,7 +35,7 @@ BEGIN
          ORDER BY c.status, u.username
     LOOP
         found := true;
-        RAISE NOTICE '1. will be DISABLED by V20261015000100: account % (%), customer % is %',
+        RAISE NOTICE '1. will be DISABLED by V20261017000100: account % (%), customer % is %',
             row.username, row.user_id, row.customer_id, row.status;
     END LOOP;
     IF NOT found THEN
@@ -80,7 +80,7 @@ DECLARE
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns
                     WHERE table_schema = 'customer' AND table_name = 'customer' AND column_name = 'tax_code') THEN
-        RAISE NOTICE 'OK: 3. customer.tax_code does not exist yet: V20261015000100 adds it empty, nothing can clash';
+        RAISE NOTICE 'OK: 3. customer.tax_code does not exist yet: V20261017000100 adds it empty, nothing can clash';
         RETURN;
     END IF;
     FOR row IN EXECUTE
@@ -88,7 +88,7 @@ BEGIN
            FROM customer.customer WHERE tax_code IS NOT NULL GROUP BY tax_code HAVING count(*) > 1 ORDER BY tax_code'
     LOOP
         found := true;
-        RAISE NOTICE '3. tax code % is held by more than one customer (stops V20261015000830; reconcile by hand): %',
+        RAISE NOTICE '3. tax code % is held by more than one customer (stops V20261017000830; reconcile by hand): %',
             row.tax_code, row.customers;
     END LOOP;
     IF NOT found THEN

@@ -40,7 +40,7 @@ import java.util.UUID;
  *
  * <p>Two kinds of write, two actions. UPDATE is Sales handling the round — edit, submit, record sending,
  * cancel. APPROVE is the customer's answer — approve or ask for changes — given on the portal or recorded
- * by Sales on their behalf (V20261015000200 grants it to CUSTOMER and SALES_STAFF only). Keeping the answer
+ * by Sales on their behalf (V20261017000200 grants it to CUSTOMER and SALES_STAFF only). Keeping the answer
  * off UPDATE is what stops anyone who merely works on a round, a QC inspector say, from approving a design
  * for mass print in the customer's place (BR-PRD-08). A portal customer is held to their own rounds by
  * the service, and the back-office verbs refuse a caller who is only a customer.</p>

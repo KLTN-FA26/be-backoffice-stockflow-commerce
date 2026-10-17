@@ -26,7 +26,7 @@ interface CustomerJpaRepository extends BaseJpaRepository<CustomerJpaEntity> {
     @Query("select c from CustomerJpaEntity c where c.id = :id")
     Optional<CustomerJpaEntity> lockById(@Param("id") UUID id);
 
-    /** Mirrors uk_customer_tax_code (V20261015000830): the code is another customer's, whatever its status. */
+    /** Mirrors uk_customer_tax_code (V20261017000830): the code is another customer's, whatever its status. */
     @Query("""
             select count(c) > 0 from CustomerJpaEntity c
             where c.taxCode = :taxCode

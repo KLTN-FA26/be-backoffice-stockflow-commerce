@@ -42,7 +42,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * The reads the Sprint 2 screens were missing (FE live integration, 14/10/2026), over HTTP with the real filter chain,
- * the role grants of the database (V20261015000800) and the warehouse scope:
+ * the role grants of the database (V20261017000800) and the warehouse scope:
  * <ul>
  *   <li>Sales lists warehouses to submit a sample to, and nothing more of the warehouse module;</li>
  *   <li>Sales lists one customer's confirmed designs and their preview - never another customer's, and a customer

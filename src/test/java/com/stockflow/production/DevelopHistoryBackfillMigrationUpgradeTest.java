@@ -25,8 +25,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class DevelopHistoryBackfillMigrationUpgradeTest {
 
-    /** The newest migration on develop (0f18f24, unchanged at 47550fe). */
-    private static final String DEVELOP = "20261014001200";
+    /** The newest migration on develop (e0d082e, #120): what the deployed database holds. */
+    private static final String DEVELOP = "20261016000100";
     private static final String HCM = "(SELECT id FROM warehouse.warehouse WHERE prefix = 'HCM')";
     private static final String USER = "(SELECT id FROM identity.app_user ORDER BY created_at LIMIT 1)";
     private static int salesOrders;

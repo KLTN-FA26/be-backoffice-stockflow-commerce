@@ -8,7 +8,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * The storage location of a print subcontractor for one sending warehouse (V20261015000470, decision Q7). Plain
+ * The storage location of a print subcontractor for one sending warehouse (V20261017000470, decision Q7). Plain
  * SQL: a site is a pair of rows written once and never changed, no aggregate behaviour to map.
  */
 @Repository

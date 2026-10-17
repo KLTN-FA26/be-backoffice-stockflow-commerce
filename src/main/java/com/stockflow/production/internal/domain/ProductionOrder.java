@@ -80,7 +80,7 @@ public final class ProductionOrder {
 
     /**
      * The states a hold can interrupt and a resume returns to ({@code ck_production_order_status_before_hold}):
-     * every one before COMPLETED (Jira 396), QC included since V20261015000700 — an inspection waiting for the
+     * every one before COMPLETED (Jira 396), QC included since V20261017000700 — an inspection waiting for the
      * customer's word on a borderline unit is stopped, not decided.
      */
     private static final java.util.EnumSet<Status> HOLDABLE = java.util.EnumSet.of(Status.PENDING_PREPRESS,

@@ -30,7 +30,7 @@ class ProductReplenishmentEligibility implements ReplenishmentEligibility {
         if (skus == null || skus.isEmpty()) {
             return Set.of();
         }
-        return products.purchasability(Set.copyOf(skus)).entrySet().stream()
+        return products.purchasability(Set.copyOf(skus), false).entrySet().stream()
                 .filter(e -> e.getValue().isPurchasable())
                 .map(java.util.Map.Entry::getKey)
                 .collect(Collectors.toUnmodifiableSet());

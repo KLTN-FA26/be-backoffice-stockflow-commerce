@@ -17,15 +17,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * {@code ck_stock_movement_shape} is re-created twice: by develop's V20261014001000 (SCRUM-267: a put-back of a pick
- * line comes from nowhere, the goods were deducted when picked) and by Sprint 2's V20261015000470 (SCRUM-441: a
+ * line comes from nowhere, the goods were deducted when picked) and by Sprint 2's V20261017000470 (SCRUM-441: a
  * CONSUMPTION leaves a location for nowhere). The later one must keep the earlier one's rule, or a database that
  * already holds such a put-back cannot be upgraded - the ADD CONSTRAINT validates every existing row - and a fresh
  * one refuses the put-back the fulfillment module writes.
  */
 class StockMovementShapeMigrationUpgradeTest {
 
-    /** The newest migration on develop when Sprint 2 was merged with it (0f18f24). */
-    private static final String DEVELOP = "20261014001200";
+    /** The newest migration on develop when Sprint 2 was last merged with it (e0d082e, #120): what is deployed. */
+    private static final String DEVELOP = "20261016000100";
     private static final String BIN = "HCM-A01-1-A";
     private static final String OTHER_BIN = "HCM-A01-1-B";
     private static final String SKU = "SOFA-3S-GREY";
@@ -50,7 +50,7 @@ class StockMovementShapeMigrationUpgradeTest {
 
                 var result = flyway(pg, null).migrate();
                 assertThat(result.success).isTrue();
-                assertThat(result.migrations).extracting(m -> m.version).contains("20261015000470");
+                assertThat(result.migrations).extracting(m -> m.version).contains("20261017000470");
 
                 assertThat(number(db, "SELECT count(*) FROM inventory.stock_movement WHERE movement_type = 'PUT_BACK'"
                         + " AND from_location_code IS NULL AND reference_id = ?", pickLine)).isEqualTo(1);

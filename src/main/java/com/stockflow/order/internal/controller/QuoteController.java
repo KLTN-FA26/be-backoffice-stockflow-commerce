@@ -36,7 +36,7 @@ import java.util.UUID;
  * B2B quotes (SCRUM-448, 03-state-machines §18): Sales drafts, sends, revises and converts; the customer
  * accepts or asks for changes on the portal.
  *
- * <p>Actions follow V20261015000300: CREATE drafts, UPDATE is Sales handling the quote (edit, send,
+ * <p>Actions follow V20261017000300: CREATE drafts, UPDATE is Sales handling the quote (edit, send,
  * revise, cancel, convert), APPROVE is the customer's answer and is granted to CUSTOMER only. The service
  * adds what a permission cannot say: a portal user only sees their own quotes once sent and is refused
  * every back-office verb, and only a portal customer answers. Every endpoint keeps scope ALL, the

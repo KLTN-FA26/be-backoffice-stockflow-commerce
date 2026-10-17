@@ -217,7 +217,7 @@ class LayoutReadIntegrationTest {
                         assertThat(bin.effectiveStatus()).isEqualTo(LocationStatus.INACTIVE);
                         assertThat(bin.usable()).isFalse();
                     });
-            assertThat(layout.areas()).filteredOn(a -> a.locationId() != null).hasSize(7)   // with the print shop, V20261015000410
+            assertThat(layout.areas()).filteredOn(a -> a.locationId() != null).hasSize(7)   // with the print shop, V20261017000410
                     .allSatisfy(a -> assertThat(a.usable()).isFalse());
             assertThat(location("HCM-B01-1-A").usable()).isFalse();
             assertThat(location("HCM-RCV01").effectiveStatus()).isEqualTo(StorageLocationView.Status.INACTIVE);

@@ -1,10 +1,10 @@
 -- =============================================================================
--- Second backfill of print runs (V20261015000720) and packing areas (V20261015000810), from the history a develop
+-- Second backfill of print runs (V20261017000720) and packing areas (V20261017000810), from the history a develop
 -- database actually holds (review of #109, item 11).
 --
 -- The rehearsal on the generated develop seed found both earlier backfills writing nothing: develop never wrote the
--- "Printed N, scrap M" reason V20261015000720 parses (its PRINTING -> QC history rows have no reason), and it wrote no
--- ledger line for a hand-over to packing, which V20261015000810 reads. Without this file the workshop dashboard shows
+-- "Printed N, scrap M" reason V20261017000720 parses (its PRINTING -> QC history rows have no reason), and it wrote no
+-- ledger line for a hand-over to packing, which V20261017000810 reads. Without this file the workshop dashboard shows
 -- nothing printed before the upgrade.
 --
 -- 1. Print runs. An order whose printed_quantity is more than its print runs and a subcontractor's receipts account

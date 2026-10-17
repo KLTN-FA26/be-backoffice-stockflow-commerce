@@ -18,14 +18,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * V20261015000830 (one customer per tax code in every status, decided 16/10/2026) on a database that already holds
+ * V20261017000830 (one customer per tax code in every status, decided 16/10/2026) on a database that already holds
  * customers: a duplicate stops the migration with the ids for a person to reconcile - nothing is merged or changed -
  * and the read-only preflight names the same duplicate first. Once reconciled, the code is unique for BLOCKED and
  * INACTIVE customers too, and NULL stays free.
  */
 class CustomerTaxCodeMigrationUpgradeTest {
 
-    private static final String BEFORE = "20261015000820";
+    private static final String BEFORE = "20261017000820";
 
     @Test
     void aDuplicateStopsTheUpgradeUntilSomeoneReconcilesIt() throws Exception {

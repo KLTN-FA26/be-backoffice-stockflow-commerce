@@ -16,7 +16,7 @@ import static com.stockflow.support.RawSql.update;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * V20261015000510 on a database with customers, variants and base/segment price rules already in it: the
+ * V20261017000510 on a database with customers, variants and base/segment price rules already in it: the
  * existing prices are untouched, the new tables state the tier rules, and only the intended roles gain
  * catalog-customer-prices, with their versions advanced.
  */
@@ -27,7 +27,7 @@ class CustomerPriceMigrationUpgradeTest {
         try (var pg = new PostgreSQLContainer<>("postgres:16-alpine")) {
             pg.start();
             Flyway.configure().dataSource(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword())
-                    .locations("classpath:db/migration", "classpath:db/demo").target("20261015000500").load().migrate();
+                    .locations("classpath:db/migration", "classpath:db/demo").target("20261017000500").load().migrate();
             try (Connection sql = DriverManager.getConnection(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword())) {
                 UUID customer = UUID.randomUUID();
                 update(sql, "insert into customer.customer(id,full_name,email,status,version,created_at)"
@@ -41,8 +41,8 @@ class CustomerPriceMigrationUpgradeTest {
                 long warehouse = version(sql, "WAREHOUSE_STAFF");
 
                 var migrated = Flyway.configure().dataSource(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword())
-                        .locations("classpath:db/migration", "classpath:db/demo").target("20261015000510").load();
-                assertThat(migrated.migrate().migrations).extracting(m -> m.version).containsExactly("20261015000510");
+                        .locations("classpath:db/migration", "classpath:db/demo").target("20261017000510").load();
+                assertThat(migrated.migrate().migrations).extracting(m -> m.version).containsExactly("20261017000510");
 
                 assertThat(number(sql, "select count(*) from catalog.pricing_rule")).isEqualTo(rules);
                 assertThat(text(sql, "select price::text from catalog.pricing_rule where name='BASE:SOFA-3S-GREY'"))

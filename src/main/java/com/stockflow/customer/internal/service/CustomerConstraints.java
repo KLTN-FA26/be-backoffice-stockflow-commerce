@@ -10,7 +10,7 @@ import java.util.Locale;
  */
 final class CustomerConstraints {
 
-    /** V20261015000830: one customer per tax code in every status (was uk_customer_tax_code_live, live ones only). */
+    /** V20261017000830: one customer per tax code in every status (was uk_customer_tax_code_live, live ones only). */
     static final String TAX_CODE = "uk_customer_tax_code";
 
     private CustomerConstraints() {

@@ -9,14 +9,14 @@ of the defaults listed under "Decisions" are outstanding. Nothing pushed, merged
 >   activate or order; it can be added later. When given, uniqueness and format still apply.
 > - **Format:** 10 digits, 10-3, **or the 12-digit personal identification number** of a household business's
 >   representative (Thông tư 86/2024/TT-BTC art. 5(5), art. 38(2); Luật Căn cước 26/2023/QH15 art. 12(1); official
->   texts read 2026-10-12) - `V20261015000540`, `TaxCode`.
+>   texts read 2026-10-12) - `V20261017000540`, `TaxCode`.
 > - **A closed (INACTIVE) customer may be reopened** by the E-commerce Admin with a mandatory reason, kept in
->   `customer.customer_status_history` (`V20261015000500`); old sessions stay revoked; a contact that never activated
+>   `customer.customer_status_history` (`V20261017000500`); old sessions stay revoked; a contact that never activated
 >   reopens to PENDING_ACTIVATION.
 > - **Payment terms at onboarding** (B1, 2026-10-13): Sales may choose PREPAID or DEPOSIT (+ deposit %) in
 >   `POST /api/v1/customers` (`paymentTerm`, `depositPercent`); CREDIT stays with the credit approver.
 > - **Customer groups** (P7): `/api/v1/customer-segments` and `PUT /api/v1/customers/{id}/segment`, resource
->   `customer-segments` (`V20261015000600`). Details: `docs/handoffs/SCRUM-428.md`.
+>   `customer-segments` (`V20261017000600`). Details: `docs/handoffs/SCRUM-428.md`.
 
 ## Resume checkpoint (2026-10-12)
 
@@ -24,8 +24,8 @@ of the defaults listed under "Decisions" are outstanding. Nothing pushed, merged
   (migration numbers) and never modified.
 - `origin/develop` integrated: **`74d624d2c99e527550f66d0b6e5a58cadfcb76d0`** (merge `60da3e8`; the earlier
   `1de8f42` merge is `d15ff67`). Newest develop migration then: `V20261013000600`; production worktree had
-  nothing newer. This branch adds **`V20261015000100`** (B2B suffix `00100`; production keeps `00200`+).
-  At commit time the production worktree holds `V20261015000200__production_sample_answer_grants.sql`
+  nothing newer. This branch adds **`V20261017000100`** (B2B suffix `00100`; production keeps `00200`+).
+  At commit time the production worktree holds `V20261017000200__production_sample_answer_grants.sql`
   (uncommitted there). **Merge order matters:** if that reaches develop first, rename this file above it
   before merging - Flyway does not run out of order (CLAUDE.md §7).
 - Jira read live through the Atlassian connector on 2026-10-12: SCRUM-429 and SCRUM-450 unchanged since
@@ -34,11 +34,11 @@ of the defaults listed under "Decisions" are outstanding. Nothing pushed, merged
 - The repository owner authorised this branch to write its own migration and local commits (2026-10-12).
 - Implementation commit follows the merge; recover with `git log -3 --format='%H %s'`.
 
-## Schema - `V20261015000100__customer_b2b_onboarding.sql`
+## Schema - `V20261017000100__customer_b2b_onboarding.sql`
 
 | Change | Detail |
 |---|---|
-| `customer.customer.tax_code VARCHAR(14)` | NULL for every pre-existing customer: no invented or back-filled codes. ~~Required for new customers~~ optional since 2026-10-12. `ck_customer_tax_code` `^[0-9]{10}(-[0-9]{3})?$`, widened to also accept 12 digits by `V20261015000540`. |
+| `customer.customer.tax_code VARCHAR(14)` | NULL for every pre-existing customer: no invented or back-filled codes. ~~Required for new customers~~ optional since 2026-10-12. `ck_customer_tax_code` `^[0-9]{10}(-[0-9]{3})?$`, widened to also accept 12 digits by `V20261017000540`. |
 | `uk_customer_tax_code_live` | unique over `PENDING_ACTIVATION` + `ACTIVE` only. BR-01 forbids two Active customers per code; §4.1 checks duplicates at creation, when the customer is pending, so pending is included to stop two creates racing. INACTIVE (closed) and BLOCKED rows are not constrained - the documents do not ask for it. |
 | `ck_customer_status` + `PENDING_ACTIVATION`; `ck_customer_pending_has_account` | Pending always has the account its contact activates. |
 | `identity.app_user.password_hash` nullable | NULL = invited, no password yet. |
@@ -80,7 +80,7 @@ Suspended". Before this change a BLOCKED customer could still sign in (only orde
   never disabled, so reinstating can never lift someone else's lock.
 - Only accounts holding **CUSTOMER and nothing else** are touched; a staff login linked to a customer profile is
   kept (and customer accounts are already outside user management, `STAFF_ACCOUNT_REQUIRED`).
-- Migration `V20261015000100` brings existing rows in line: CUSTOMER-only accounts of BLOCKED/INACTIVE customers
+- Migration `V20261017000100` brings existing rows in line: CUSTOMER-only accounts of BLOCKED/INACTIVE customers
   → DISABLED, their live sessions revoked. Edited in place because the file was never pushed and only ever ran
   in throwaway test containers.
 - Closed: the current staff rule still allows INACTIVE → ACTIVE (§5 has no such transition, Closed ends at
@@ -127,7 +127,7 @@ Also added: `mail.from` and optional `MAIL_SMTP_LOCALHOST` mail properties. Meas
 | A11 | Pending / blocked / closed access | login 401 without password; activation only from pending; availability/checkout ACTIVE only | IT lifecycle + blocked; `StorefrontAvailabilityServiceTest` (pending/inactive/blocked) | PASS |
 | A12 | Self-registration removed, guest checkout disabled, availability needs login | security deny + fail-closed services | `B2bAccessIntegrationTest` (5), `B2bUnsecuredAccessIntegrationTest` (1), HTTP smoke | PASS |
 | A14 | Suspended/closed customers cannot sign in; existing sessions end; unblocking restores sign-in; staff untouched | `CustomerServiceImpl.syncPortalAccess`, `PortalAccountService.suspend/reinstate`, migration sync | IT `blockingEndsTheSession…` (token before block → 401, login → 403, unblock → login again, close → 401), `aStaffLoginIsNeverTakenAway…`; upgrade test (pre-existing blocked account disabled + session revoked, linked staff kept); real jar smoke 18/18 | PASS |
-| A13 | Migration fresh + upgrade with data | `V20261015000100` | every integration test (fresh), `B2bOnboardingMigrationUpgradeTest`, real jar boot on a fresh DB | PASS |
+| A13 | Migration fresh + upgrade with data | `V20261017000100` | every integration test (fresh), `B2bOnboardingMigrationUpgradeTest`, real jar boot on a fresh DB | PASS |
 
 ## Verification (2026-10-12; Java 21.0.9, Maven 3.9.9 offline, Docker 28.5.1, PostgreSQL 16 / Redis 7 / Mailpit)
 

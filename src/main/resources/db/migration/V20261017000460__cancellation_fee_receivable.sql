@@ -4,7 +4,7 @@
 --
 -- ordering.customer_order.cancellation_fee_amount - the whole amount agreed. cancellation_retained_amount keeps
 --   meaning "kept of the money received", now LEAST(agreed, paid), so refunds and ck_order_cancellation_retained
---   work unchanged. Rows written under V20261015000430 (agreed <= paid) get their amount from what was kept.
+--   work unchanged. Rows written under V20261017000430 (agreed <= paid) get their amount from what was kept.
 -- payment.receivable.kind CANCELLATION_FEE - the shortfall, one per order like any receivable. A cancelled order
 --   is never delivered, so no CREDIT_ORDER receivable exists or follows for it: the sale is not billed twice.
 -- =============================================================================

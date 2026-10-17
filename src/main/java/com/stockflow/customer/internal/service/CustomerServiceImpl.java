@@ -238,7 +238,7 @@ class CustomerServiceImpl implements CustomerService {
     /**
      * BR-01, decided 16/10/2026: one customer record per tax code in every status. A BLOCKED customer cannot come back
      * under a new record, and a closed one is reopened rather than created again. Checked first for a clear 409, and
-     * enforced by uk_customer_tax_code (V20261015000830) for the writer that races past the check.
+     * enforced by uk_customer_tax_code (V20261017000830) for the writer that races past the check.
      */
     private void requireTaxCodeFree(Customer customer) {
         if (customer.taxCode() != null && customers.isTaxCodeTaken(customer.taxCode(), customer.id())) {

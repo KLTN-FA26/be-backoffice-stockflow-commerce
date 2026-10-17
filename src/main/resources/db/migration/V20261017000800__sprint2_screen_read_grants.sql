@@ -26,7 +26,7 @@ DO $$
 BEGIN
     IF (SELECT count(*) FROM identity.permission
          WHERE code IN ('warehouse-warehouses:READ', 'design-snapshots:READ', 'procurement-suppliers:READ')) <> 3 THEN
-        RAISE EXCEPTION 'V20261015000800: a permission it grants is missing';
+        RAISE EXCEPTION 'V20261017000800: a permission it grants is missing';
     END IF;
 END $$;
 

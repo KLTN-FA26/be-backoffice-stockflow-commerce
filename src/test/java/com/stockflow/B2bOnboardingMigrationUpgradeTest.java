@@ -17,18 +17,18 @@ import static com.stockflow.support.RawSql.update;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * V20261015000100 on a database that already holds customers: the develop schema before SCRUM-450,
+ * V20261017000100 on a database that already holds customers: the develop schema before SCRUM-450,
  * populated with a legacy INACTIVE customer, an ACTIVE one, and the open invitation the SCRUM-429
  * branch kept in {@code password_hash}. Then the constraints the migration adds, on real PostgreSQL.
  */
 class B2bOnboardingMigrationUpgradeTest {
 
     /**
-     * The newest migration on develop when this branch was last merged with it (0f18f24): the real upgrade path, and a
-     * window holding only this migration - develop's migrations (V20261014000400..001200: inbox, stock alerts, pick
-     * confirmation, product follow-ups, planner grants) move role versions of their own and must not count here.
+     * The newest migration on develop when this branch was last merged with it (e0d082e, #120): the real upgrade path -
+     * what the deployed database holds - and a window holding only this migration: develop's migrations move role
+     * versions of their own and must not count here.
      */
-    private static final String BEFORE = "20261014001200";
+    private static final String BEFORE = "20261016000100";
     private static final String DIGEST = "0123456789abcdef".repeat(4);
 
     @Test
@@ -61,11 +61,11 @@ class B2bOnboardingMigrationUpgradeTest {
                 long salesVersion = roleVersion(sql, "SALES_STAFF");
                 long customerRoleVersion = roleVersion(sql, "CUSTOMER");
 
-                // Up to this migration only: later ones (V20261015000200/0300, production grants and quotes)
+                // Up to this migration only: later ones (V20261017000200/0300, production grants and quotes)
                 // move some of the same role versions again, and this test is about what 000100 does.
                 var migrated = Flyway.configure().dataSource(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword())
-                        .locations("classpath:db/migration").target("20261015000100").load();
-                assertThat(migrated.migrate().migrations).extracting(m -> m.version).contains("20261015000100");
+                        .locations("classpath:db/migration").target("20261017000100").load();
+                assertThat(migrated.migrate().migrations).extracting(m -> m.version).contains("20261017000100");
                 migrated.validate();
 
                 assertThat(text(sql, "select status from customer.customer where id=?", invitedCustomer))
@@ -116,7 +116,7 @@ class B2bOnboardingMigrationUpgradeTest {
         }
     }
 
-    /** Every rule V20261015000100 states, refused or accepted by the database itself. */
+    /** Every rule V20261017000100 states, refused or accepted by the database itself. */
     private static void assertConstraints(Connection sql, UUID invitedUser, UUID activeUser) throws SQLException {
         update(sql, "update customer.customer set tax_code='0312345678' where email='active@example.test'");
         refused(sql, "a second ACTIVE customer with the tax code",

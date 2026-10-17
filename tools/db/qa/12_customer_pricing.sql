@@ -1,6 +1,6 @@
 -- =============================================================================
--- Customer prices (SCRUM-428, V20261015000510), customer-group prices (P7, V20261015000530), customer groups (V20261015000600) and the customer status history (SCRUM-429 follow-up,
--- V20261015000500). Needs the demo seed. Rolled back at the end.
+-- Customer prices (SCRUM-428, V20261017000510), customer-group prices (P7, V20261017000530), customer groups (V20261017000600) and the customer status history (SCRUM-429 follow-up,
+-- V20261017000500). Needs the demo seed. Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;
@@ -81,7 +81,7 @@ SELECT pg_temp.expect_ok('H4 a reopening with its reason', $q$
     INSERT INTO customer.customer_status_history (id, customer_id, from_status, to_status, reason, changed_at)
     VALUES (gen_random_uuid(), 'c0000000-0000-4000-8000-000000000001', 'INACTIVE', 'ACTIVE', 'came back', NOW()) $q$);
 
-\echo '--- customer-group prices (catalog.pricing_rule with a segment, V20261015000530)'
+\echo '--- customer-group prices (catalog.pricing_rule with a segment, V20261017000530)'
 INSERT INTO customer.segment (id, code, name, version, created_at)
 VALUES (md5('qa:seg530')::uuid, 'QA-SEG-530', 'QA group', 0, NOW());
 SELECT pg_temp.expect_ok('G1 a group price for a SKU', $q$
@@ -102,7 +102,7 @@ SELECT pg_temp.expect_fail('G5 a group that does not exist', $q$
     INSERT INTO catalog.pricing_rule (id, name, sku, segment_id, price, currency, created_at)
     VALUES (gen_random_uuid(), 'SEGMENT:qa:5', 'SOFA-3S-GREY', gen_random_uuid(), 11000000, 'VND', NOW()) $q$);
 
-\echo '--- customer groups (customer.segment, V20261015000600)'
+\echo '--- customer groups (customer.segment, V20261017000600)'
 SELECT pg_temp.expect_fail('G7 a group code in lower case', $q$
     INSERT INTO customer.segment (id, code, name, version, created_at)
     VALUES (gen_random_uuid(), 'qa-lower', 'QA', 0, NOW()) $q$);

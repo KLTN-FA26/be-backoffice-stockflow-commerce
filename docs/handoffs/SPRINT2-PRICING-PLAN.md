@@ -2,7 +2,7 @@
 
 **Checkpoint 2026-10-12** on `SCRUM-428-customer-pricing` from `4a389a6`: `aca7f05` SCRUM-429 follow-up → `2c190ff`
 SCRUM-428 → `0081cfa` reorder → `ed3107e` P4/P5 → `425f27d` Sales notice → `2b3c4bf` R1 → `272f347` P7 group prices
-→ T1 (household identifier). Migrations `V20261015000500` (status history), `…000510` (customer prices), `…000530`
+→ T1 (household identifier). Migrations `V20261017000500` (status history), `…000510` (customer prices), `…000530`
 (group prices), `…000540` (12-digit identifier). Details, API and evidence: `docs/handoffs/SCRUM-428.md`.
 
 **All lane-B business questions are decided** (P1–P7, R1 by the user; T1 from the official texts). Two narrow
@@ -59,7 +59,7 @@ guidance quoting the Circular), congbao.chinhphu.vn (the Circular, in force 06/0
 
 Branch `SCRUM-428-customer-pricing`, worktree `orca/workspaces/.../SCRUM-428-customer-pricing`, from the
 integration checkpoint `4a389a6` (`SCRUM-394-395-production-foundation`: develop `74d624d` + 394/395 + 448 +
-429). Migration range reserved for this lane: `V20261015000500` … `V20261014000599` (lane A: `…000400–000499`).
+429). Migration range reserved for this lane: `V20261017000500` … `V20261014000599` (lane A: `…000400–000499`).
 Develop checked 2026-10-12: still `74d624d`, newest migration `V20261013000600`.
 
 ## Sources read (2026-10-12)

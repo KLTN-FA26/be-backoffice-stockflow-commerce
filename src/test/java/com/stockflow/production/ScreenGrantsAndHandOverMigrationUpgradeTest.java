@@ -16,13 +16,13 @@ import static com.stockflow.support.RawSql.update;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * V20261015000800 (read grants for the Sprint 2 screens) and V20261015000810 (the PACKING area a completed order's
+ * V20261017000800 (read grants for the Sprint 2 screens) and V20261017000810 (the PACKING area a completed order's
  * goods went to) on a database that already holds completed production orders - one whose hand-over is in the
  * ledger, one whose is not - upgraded from the newest migration before them.
  */
 class ScreenGrantsAndHandOverMigrationUpgradeTest {
 
-    private static final String BEFORE = "20261015000720";
+    private static final String BEFORE = "20261017000720";
     private static final String HCM = "(SELECT id FROM warehouse.warehouse WHERE prefix = 'HCM')";
     private static final String USER = "(SELECT id FROM identity.app_user LIMIT 1)";
     private static int salesOrders;
@@ -50,7 +50,7 @@ class ScreenGrantsAndHandOverMigrationUpgradeTest {
 
                 var result = flyway(pg, null).migrate();
                 assertThat(result.migrations).extracting(m -> m.version)
-                        .contains("20261015000800", "20261015000810");
+                        .contains("20261017000800", "20261017000810");
 
                 assertThat(text(db, "SELECT packing_location_code FROM production.production_order WHERE id = ?",
                         ledgered)).isEqualTo("HCM-PACK01");

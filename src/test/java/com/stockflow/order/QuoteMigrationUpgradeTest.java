@@ -15,15 +15,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * V20261015000300 on the real upgrade path: a database at V20261015000200 (the production foundation)
+ * V20261017000300 on the real upgrade path: a database at V20261017000200 (the production foundation)
  * holding rows written before — a customer, a user and a grant an administrator added — then upgraded.
  * Proves the quote tables and their constraints, the grants and the role-version moves (ADR-0008), the
  * validated foreign key from sample requests, and that nothing written before is touched.
  */
 class QuoteMigrationUpgradeTest {
 
-    private static final String BEFORE = "20261015000200";
-    private static final String MIGRATION = "20261015000300";
+    private static final String BEFORE = "20261017000200";
+    private static final String MIGRATION = "20261017000300";
 
     @Test
     void upgradeAddsQuotesGrantsAndTheSampleLink() throws Exception {
@@ -42,8 +42,8 @@ class QuoteMigrationUpgradeTest {
                 Map<String, Long> versionsBefore = versions(db);
                 List<String> salesBefore = grants(db, "SALES_STAFF");
 
-                // Exactly this migration: later ones (V20261015000400.., V20261015000510, catalog-customer-prices)
-                // advance the same role versions, and this test is about what V20261015000300 does.
+                // Exactly this migration: later ones (V20261017000400.., V20261017000510, catalog-customer-prices)
+                // advance the same role versions, and this test is about what V20261017000300 does.
                 var result = flyway(postgres, MIGRATION).migrate();
                 assertThat(result.migrations).extracting(m -> m.version).contains(MIGRATION);
 
