@@ -1,4 +1,4 @@
-package com.stockflow.product.internal.controller.dto;
+package com.stockflow.inventory.internal.controller.dto;
 
 import com.stockflow.inventory.api.StorageClass;
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -11,11 +11,10 @@ import jakarta.validation.constraints.Size;
 import java.math.BigDecimal;
 
 /**
- * PUT replaces the logistics of one SKU's inventory item (SCRUM-74/75/76, moved off the product row:
- * two variants of one product weigh and pack differently). {@code version} is the inventory item's,
- * as the last read returned it. A null measure means "not known yet".
+ * PUT replaces the logistics of one inventory item. {@code version} is the item's, as the last read returned it.
+ * A null measure means "not known yet".
  */
-public record SkuLogisticsRequest(
+public record UpdateItemLogisticsRequest(
         @NotNull(message = "version is required") @Min(0)
         Long version,
 

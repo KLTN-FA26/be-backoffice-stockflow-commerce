@@ -13,9 +13,9 @@ import com.stockflow.common.storage.UploadInspection;
 import com.stockflow.contracts.CatalogListingChanged;
 import com.stockflow.contracts.ProductDiscontinued;
 import com.stockflow.inventory.api.InventoryPolicy;
-import com.stockflow.inventory.api.ItemLogistics;
+import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.RemovalStrategy;
-import com.stockflow.inventory.api.StorageClass;
+import com.stockflow.inventory.internal.service.InventoryItems;
 import com.stockflow.inventory.api.TrackingMode;
 import com.stockflow.product.api.ListProductsQuery;
 import com.stockflow.product.api.ProductChange;
@@ -31,7 +31,6 @@ import com.stockflow.product.internal.service.ProductMediaService;
 import com.stockflow.product.internal.service.ProductTaxonomyService;
 import com.stockflow.product.internal.service.ProductVariantService;
 import com.stockflow.product.internal.service.ProductVariantService.NewVariant;
-import com.stockflow.product.internal.service.SkuInventoryControlService;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -53,7 +52,6 @@ import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
-import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -82,7 +80,8 @@ class ProductHistoryAndRemovalIntegrationTest {
     @Autowired ProductVariantService variants;
     @Autowired ProductMediaService media;
     @Autowired ProductTaxonomyService taxonomy;
-    @Autowired SkuInventoryControlService skus;
+    @Autowired InventoryItems items;
+    @Autowired InventoryService inventory;
     @Autowired FileStorage storage;
     @Autowired RecordedEvents.Recorder recorded;
     @Autowired JdbcTemplate jdbc;
@@ -129,6 +128,11 @@ class ProductHistoryAndRemovalIntegrationTest {
                 .findFirst().orElseThrow().id();
     }
 
+    private UUID itemOf(UUID variantId) {
+        String sku = jdbc.queryForObject("select sku from product.variants where id = ?", String.class, variantId);
+        return inventory.itemIdsOf(List.of(sku)).get(sku);
+    }
+
     private List<ProductChange> history(UUID productId) {
         return products.history(productId, 0, 100).items();
     }
@@ -163,7 +167,7 @@ class ProductHistoryAndRemovalIntegrationTest {
     // ------------------------------------------------------------------ history
 
     @Test
-    @DisplayName("every change is in the history in the order it happened: status moves, variants, images, logistics, stock policy")
+    @DisplayName("every change is in the history in the order it happened: status moves, variants, images")
     void historyRecordsEveryKindOfChange() throws Exception {
         ProductSummary created = draft();
         UUID id = created.productId();
@@ -181,17 +185,7 @@ class ProductHistoryAndRemovalIntegrationTest {
         var image = media.upload(id, defaultId, png(), editor, null);
         media.describe(id, defaultId, image.id(), "Mặt trước", 3, false);
 
-        var logisticsBefore = skus.logistics(id, defaultId);
-        var logistics = new ItemLogistics("EACH", "893" + suffix.replaceAll("[^0-9]", "1"), new BigDecimal("0.012"),
-                new BigDecimal("8"), new BigDecimal("8"), new BigDecimal("10"), new BigDecimal("6.2"), new BigDecimal("40"),
-                new BigDecimal("30"), new BigDecimal("50"), 1, 50, StorageClass.FRAGILE, false, null, true);
-        skus.describe(id, defaultId, logisticsBefore.version(), logistics);
-        // The same values again: the version moves, nothing changed, nothing recorded.
-        skus.describe(id, defaultId, skus.logistics(id, defaultId).version(), logistics);
-
-        var control = skus.get(id, defaultId);
-        skus.update(id, defaultId, control.version(),
-                new InventoryPolicy(10, 2, 20, RemovalStrategy.FIFO, TrackingMode.NONE, false, null));
+        // Logistics and stock policy are edited on the inventory item and leave no trace in the product's history.
 
         products.submit(id, editor);
         actAs(approver);
@@ -213,12 +207,12 @@ class ProductHistoryAndRemovalIntegrationTest {
                 "DISCONTINUED", "VARIANT_STATUS", "VARIANT_STATUS", "RESUMED", "SUSPENDED",
                 "MEDIA", "VARIANT_STATUS", "VARIANT_STATUS", "MEDIA", "MEDIA",
                 "APPROVED", "VARIANT_STATUS", "VARIANT_STATUS", "SUBMITTED",
-                "INVENTORY_CONTROL", "LOGISTICS", "MEDIA", "MEDIA", "VARIANT_UPDATED", "VARIANT_ADDED", "UPDATED", "CREATED");
+                "MEDIA", "MEDIA", "VARIANT_UPDATED", "VARIANT_ADDED", "UPDATED", "CREATED");
         assertThat(log).extracting(ProductChange::subjectType).containsExactly(
                 "PRODUCT", "VARIANT", "VARIANT", "PRODUCT", "PRODUCT",
                 "MEDIA", "VARIANT", "VARIANT", "MEDIA", "MEDIA",
                 "PRODUCT", "VARIANT", "VARIANT", "PRODUCT",
-                "INVENTORY_CONTROL", "LOGISTICS", "MEDIA", "MEDIA", "VARIANT", "VARIANT", "PRODUCT", "PRODUCT");
+                "MEDIA", "MEDIA", "VARIANT", "VARIANT", "PRODUCT", "PRODUCT");
 
         ProductChange discontinued = log.get(0);
         assertThat(discontinued.fromStatus()).isEqualTo("APPROVED");
@@ -269,21 +263,17 @@ class ProductHistoryAndRemovalIntegrationTest {
         assertThat(log.get(13).toStatus()).isEqualTo("PENDING_APPROVAL");
         assertThat(log.get(13).actorId()).isEqualTo(editor);
 
-        assertThat(log.get(14).subjectId()).isEqualTo(defaultId);
-        assertThat(log.get(14).changedFields()).contains("reorderPoint", "safetyStock", "maxQty");
-        assertThat(log.get(15).subjectId()).isEqualTo(defaultId);
-        assertThat(log.get(15).changedFields()).contains("barcode", "weightKg", "lengthCm", "packageWeightKg", "packSize",
-                "storageClass", "qcRequired").doesNotContain("unitOfMeasure", "requiresAdultSignature");
-        assertThat(log.get(16).changedFields()).containsExactlyInAnyOrder("altText", "sortOrder");
-        assertThat(log.get(16).subjectId()).isEqualTo(image.id());
-        assertThat(log.get(17).changedFields()).containsExactly("uploaded");
-        assertThat(log.get(18).subjectId()).isEqualTo(extra.id());
-        assertThat(log.get(18).changedFields()).containsExactly("name");
-        assertThat(log.get(19).subjectId()).isEqualTo(extra.id());
+        // D1: logistics and stock policy live on the inventory item, so no LOGISTICS / INVENTORY_CONTROL rows appear here.
+        assertThat(log.get(14).changedFields()).containsExactlyInAnyOrder("altText", "sortOrder");
+        assertThat(log.get(14).subjectId()).isEqualTo(image.id());
+        assertThat(log.get(15).changedFields()).containsExactly("uploaded");
+        assertThat(log.get(16).subjectId()).isEqualTo(extra.id());
+        assertThat(log.get(16).changedFields()).containsExactly("name");
+        assertThat(log.get(17).subjectId()).isEqualTo(extra.id());
+        assertThat(log.get(17).toStatus()).isEqualTo("DRAFT");
+        assertThat(log.get(18).changedFields()).containsExactlyInAnyOrder("name", "shortDescription");
         assertThat(log.get(19).toStatus()).isEqualTo("DRAFT");
-        assertThat(log.get(20).changedFields()).containsExactlyInAnyOrder("name", "shortDescription");
-        assertThat(log.get(21).toStatus()).isEqualTo("DRAFT");
-        assertThat(log.get(21).fromStatus()).isNull();
+        assertThat(log.get(19).fromStatus()).isNull();
         assertThat(log).extracting(ProductChange::occurredAt).isSortedAccordingTo(java.util.Comparator.reverseOrder());
     }
 
@@ -402,6 +392,22 @@ class ProductHistoryAndRemovalIntegrationTest {
         });
     }
 
+    @Test
+    @DisplayName("a logistics row written before the split is still readable in the history")
+    void aLogisticsRowWrittenBeforeTheSplitIsStillReadable() {
+        UUID id = draft().productId();
+        UUID variant = defaultVariant(id);
+        tx.executeWithoutResult(s -> jdbc.update("insert into product.product_change_log"
+                + "(id, product_id, change_type, subject_type, subject_id, changed_fields)"
+                + " values (?, ?, 'LOGISTICS', 'LOGISTICS', ?, '{weightKg}')", Identifiers.newId(), id, variant));
+
+        assertThat(history(id)).anySatisfy(change -> {
+            assertThat(change.changeType()).isEqualTo("LOGISTICS");
+            assertThat(change.subjectType()).isEqualTo("LOGISTICS");
+            assertThat(change.changedFields()).containsExactly("weightKg");
+        });
+    }
+
     // ------------------------------------------------------------------ suspended products
 
     @Test
@@ -420,8 +426,8 @@ class ProductHistoryAndRemovalIntegrationTest {
         assertThat(added.status()).isEqualTo(VariantStatus.DRAFT);
         var image = media.upload(id, defaultId, png(), editor, null);
         assertThat(media.describe(id, defaultId, image.id(), "Alt", 1, false).altText()).isEqualTo("Alt");
-        var item = skus.get(id, defaultId);
-        assertThat(skus.update(id, defaultId, item.version(),
+        var item = items.get(itemOf(defaultId));
+        assertThat(items.configure(item.id(), item.version(),
                 new InventoryPolicy(4, 1, null, RemovalStrategy.FIFO, TrackingMode.NONE, false, null)).policy().reorderPoint()).isEqualTo(4);
         assertThat(variants.block(id, defaultId).status()).isEqualTo(VariantStatus.BLOCKED);
     }

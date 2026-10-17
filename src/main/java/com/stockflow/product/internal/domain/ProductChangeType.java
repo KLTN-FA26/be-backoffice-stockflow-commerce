@@ -18,7 +18,9 @@ public enum ProductChangeType {
     VARIANT_UPDATED(Subject.VARIANT),
     VARIANT_STATUS(Subject.VARIANT),
     MEDIA(Subject.MEDIA),
+    /** Only read: logistics are edited on the inventory item now and nothing writes this; old rows remain. */
     LOGISTICS(Subject.LOGISTICS),
+    /** Only read: the stock policy is edited on the inventory item now and nothing writes this; old rows remain. */
     INVENTORY_CONTROL(Subject.INVENTORY_CONTROL);
 
     /** What changed: the product itself, a variant, an image, or the logistics / stock policy of a SKU. */

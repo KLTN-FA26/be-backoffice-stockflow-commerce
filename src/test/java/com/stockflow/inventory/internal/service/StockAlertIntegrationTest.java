@@ -1,7 +1,6 @@
 package com.stockflow.inventory.internal.service;
 
 import com.stockflow.common.domain.Sku;
-import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.api.InventoryPolicy;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.LowStockItem;
@@ -55,7 +54,7 @@ class StockAlertIntegrationTest {
     @Autowired StockAlertRepository alerts;
     @Autowired StockOperations operations;
     @Autowired InventoryService inventory;
-    @Autowired InventoryControlService controls;
+    @Autowired InventoryItems items;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
@@ -332,9 +331,10 @@ class StockAlertIntegrationTest {
         String own = fixtures.sku(null, null);
         fixtures.stock(own, HCM_BIN, 30, "AVAILABLE", null, null);
         drainer.drain();
-        long version = controls.item(new Sku(own)).version();
+        UUID itemId = inventory.itemIdsOf(List.of(own)).get(own);
+        long version = items.get(itemId).version();
 
-        tx.executeWithoutResult(s -> controls.configure(new Sku(own), version,
+        tx.executeWithoutResult(s -> items.configure(itemId, version,
                 new InventoryPolicy(40, null, null, RemovalStrategy.FEFO, TrackingMode.NONE, false, null)));
 
         Await.until("the alert from the policy-change listener", Duration.ofSeconds(30), () -> jdbc.queryForObject(
@@ -424,7 +424,7 @@ class StockAlertIntegrationTest {
         String own = fixtures.sku("LSB-" + UUID.randomUUID().toString().substring(0, 6).toUpperCase(), 10, null);
         fixtures.stock(own, HCM_BIN, 10, "AVAILABLE", null, null);
         assertThat(inventory.lowStockBatch(own.substring(0, own.length() - 1), 5)).extracting(LowStockItem::sku).contains(own);
-        assertThat(controls.evaluate(new Sku(own)).reorderRequired()).isTrue();
+        assertThat(items.get(inventory.itemIdsOf(List.of(own)).get(own)).evaluation().reorderRequired()).isTrue();
         drainer.drain();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_alert WHERE sku = ? AND kind = 'REORDER' AND status <> 'RESOLVED'",
                 Long.class, own)).isEqualTo(1);

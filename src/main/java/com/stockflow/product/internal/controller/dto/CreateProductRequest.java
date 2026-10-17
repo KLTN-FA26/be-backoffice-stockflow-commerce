@@ -17,7 +17,7 @@ import java.util.UUID;
  * one default variant whose SKU is the code. With axes, its axes and every combination of their active
  * options are created in the same transaction, SKUs by the code rule ({@code CODE-VALUE-VALUE}) and the
  * first combination as the default variant; anything refused (a SKU taken, a matrix over the limit)
- * leaves no product behind. Logistics are then set per SKU ({@code /skus/{skuId}/logistics}) and
+ * leaves no product behind. Logistics are then set per inventory item ({@code /api/v1/inventory/items/{id}/logistics}) and
  * images per variant ({@code /variants/{variantId}/media}).
  *
  * <p>{@code code} is upper-cased by the server. {@code categoryId} is not {@code @NotNull}: a product

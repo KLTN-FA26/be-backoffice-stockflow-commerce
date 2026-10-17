@@ -64,6 +64,9 @@
     -->
     <git.commit>unknown</git.commit>
     <git.branch>unknown</git.branch>
+
+    <!-- Filled in by jacoco:prepare-agent; empty so @{argLine} below still resolves with -Djacoco.skip=true. -->
+    <argLine></argLine>
   </properties>
 
   <dependencyManagement>
@@ -412,6 +415,20 @@
               <version>${project.parent.version}</version>
             </path>
           </annotationProcessorPaths>
+        </configuration>
+      </plugin>
+
+      <!--
+        A heap ceiling for the test JVM. Left alone it takes a quarter of RAM and holds every cached
+        Spring context until it exits; together with Docker that froze 16 GB laptops. The context cache
+        is capped in src/test/resources/spring.properties, which is what keeps the suite inside this.
+        @{argLine} (late-bound) keeps the JaCoCo agent that prepare-agent puts there.
+      -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <argLine>@{argLine} -Xmx2g</argLine>
         </configuration>
       </plugin>
 

@@ -8,15 +8,13 @@ import com.stockflow.customer.internal.domain.Customer;
 import com.stockflow.customer.internal.domain.CustomerAddress;
 import com.stockflow.support.ReferenceRows;
 import jakarta.persistence.EntityManager;
+import com.stockflow.support.PostgresContainer;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.util.List;
@@ -33,12 +31,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @DataJpaTest(properties = "spring.jpa.hibernate.ddl-auto=validate")
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import({JpaAuditingConfig.class, CustomerRepositoryAdapter.class})
+@Import({JpaAuditingConfig.class, CustomerRepositoryAdapter.class, PostgresContainer.class})
 @Testcontainers(disabledWithoutDocker = true)
 class CustomerAddressPersistenceIntegrationTest {
 
-    @Container @ServiceConnection
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine");
 
     @Autowired EntityManager em;
     @Autowired CustomerRepositoryAdapter adapter;

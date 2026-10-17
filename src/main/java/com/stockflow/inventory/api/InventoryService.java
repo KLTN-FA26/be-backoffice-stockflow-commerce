@@ -46,6 +46,13 @@ public interface InventoryService {
     Map<Sku, Integer> availableToPromise(Collection<Sku> skus);
 
     /**
+     * The id of the inventory item of each SKU that has one, in one query: the inverse of {@link #skusOf}. A page of
+     * variants needs it to link each row to its item screen; a SKU without an item is simply absent. An empty
+     * input costs no query.
+     */
+    Map<String, UUID> itemIdsOf(Collection<String> skus);
+
+    /**
      * ATP for one SKU inside one warehouse (SCRUM-157: the storefront may promise per warehouse
      * or system-wide, open question C3). Zero for a warehouse holding none of it.
      */

@@ -16,7 +16,8 @@ import com.stockflow.product.api.ProductSummary;
 import com.stockflow.inventory.api.ItemLogistics;
 import com.stockflow.inventory.api.StorageClass;
 import com.stockflow.product.internal.service.ProductTaxonomyService;
-import com.stockflow.product.internal.service.SkuInventoryControlService;
+import com.stockflow.inventory.api.InventoryService;
+import com.stockflow.inventory.internal.service.InventoryItems;
 import com.stockflow.product.internal.service.ProductVariantService;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
@@ -54,7 +55,8 @@ class ProductEndOfLifePurchasingIntegrationTest {
 
     @Autowired ProductService products;
     @Autowired ProductVariantService variants;
-    @Autowired SkuInventoryControlService skus;
+    @Autowired InventoryItems items;
+    @Autowired InventoryService inventory;
     @Autowired ProductTaxonomyService taxonomy;
     @Autowired ProcurementService procurement;
     @Autowired SupplierItemService catalog;
@@ -96,8 +98,9 @@ class ProductEndOfLifePurchasingIntegrationTest {
     /** What a SKU needs before goods of it are received (BR-03): its weight and dimensions. */
     private ProductSummary approvedWithLogistics(String tag) {
         ProductSummary product = approved(tag);
-        UUID variant = variants.list(product.productId(), 0, 5).items().getFirst().id();
-        skus.describe(product.productId(), variant, skus.logistics(product.productId(), variant).version(),
+        String sku = variants.list(product.productId(), 0, 5).items().getFirst().sku();
+        UUID item = inventory.itemIdsOf(java.util.List.of(sku)).get(sku);
+        items.describe(item, items.get(item).version(),
                 new ItemLogistics("EACH", null, new BigDecimal("0.5"), new BigDecimal("10"), new BigDecimal("10"),
                         new BigDecimal("10"), new BigDecimal("0.6"), new BigDecimal("12"), new BigDecimal("12"),
                         new BigDecimal("12"), 1, 1, StorageClass.NORMAL, false, null, false));
