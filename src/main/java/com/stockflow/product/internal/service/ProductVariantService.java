@@ -8,6 +8,7 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.persistence.Pages;
+import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.product.api.ProductStatus;
 import com.stockflow.product.internal.domain.Attribute;
 import com.stockflow.product.internal.domain.AttributeRepository;
@@ -129,18 +130,20 @@ public class ProductVariantService {
     private final ProductAttributeSetRepository attributeSets;
     private final AttributeRepository attributes;
     private final ProductChangeLogRepository history;
+    private final InventoryService inventory;
     private final Clock clock;
 
     public ProductVariantService(ProductRepository products, VariantJpaRepository variants,
                                  VariantAttributeValueJpaRepository variantOptions,
                                  ProductAttributeSetRepository attributeSets, AttributeRepository attributes,
-                                 ProductChangeLogRepository history, Clock clock) {
+                                 ProductChangeLogRepository history, InventoryService inventory, Clock clock) {
         this.products = products;
         this.variants = variants;
         this.variantOptions = variantOptions;
         this.attributeSets = attributeSets;
         this.attributes = attributes;
         this.history = history;
+        this.inventory = inventory;
         this.clock = clock;
     }
 
@@ -372,6 +375,7 @@ public class ProductVariantService {
                         "The SKU of a variant is fixed once it has left DRAFT");
             }
             requireSkuFree(requested);
+            requireSkuUnused(sku);
             sku = requested.code();
         }
 
@@ -567,6 +571,18 @@ public class ProductVariantService {
         variantOptions.saveAll(combination.stream()
                 .map(o -> new VariantAttributeValueJpaEntity(Identifiers.newId(), variantId, o.id())).toList());
         variantOptions.flush();
+    }
+
+    /**
+     * kltn-docs 01 BR-01: a SKU is fixed once a document uses it. Asked before the UPDATE so the refusal is a plain
+     * answer, not a failed statement; the database guard ({@code inventory.guard_item_sku_rename}, the same
+     * {@code inventory.item_in_use}) still holds for a reference that appears in between.
+     */
+    private void requireSkuUnused(String current) {
+        if (!inventory.skusInUse(List.of(current)).isEmpty()) {
+            throw new BusinessException(ErrorCode.INVALID_VARIANT_TRANSITION,
+                    "This SKU is referenced and can no longer be renamed");
+        }
     }
 
     private void requireSkuFree(Sku sku) {

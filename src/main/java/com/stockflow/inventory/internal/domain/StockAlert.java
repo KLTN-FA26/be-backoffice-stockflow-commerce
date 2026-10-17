@@ -33,8 +33,12 @@ public final class StockAlert {
 
     public enum Status { OPEN, ACKNOWLEDGED, RESOLVED }
 
-    /** How an episode ended; which ones a kind can have is checked in {@link #resolve}. */
-    public enum Resolution { RECOVERED, UNCONFIGURED, STOCK_GONE, EXPIRED_OUT }
+    /**
+     * How an episode ended; which ones a kind can have is checked in {@link #resolve}. {@code NOT_PURCHASABLE}: the
+     * SKU can no longer go on a purchase order (draft, under review, suspended, discontinued, or a variant that is
+     * not ACTIVE), so asking somebody to reorder it is pointless (V20261016000100).
+     */
+    public enum Resolution { RECOVERED, UNCONFIGURED, STOCK_GONE, EXPIRED_OUT, NOT_PURCHASABLE }
 
     /** What makes two alerts "the same condition": the columns of the unique index. */
     public record Key(Kind kind, String sku, UUID warehouseId, String lotNumber, LocalDate expiryDate) {
@@ -172,7 +176,8 @@ public final class StockAlert {
     /** Which endings make sense for which kind; mirrors {@code ck_stock_alert_resolution_kind}. */
     public static boolean allows(Kind kind, Resolution resolution) {
         return switch (kind) {
-            case REORDER, SAFETY -> resolution == Resolution.RECOVERED || resolution == Resolution.UNCONFIGURED;
+            case REORDER, SAFETY -> resolution == Resolution.RECOVERED || resolution == Resolution.UNCONFIGURED
+                    || resolution == Resolution.NOT_PURCHASABLE;
             case EXPIRING -> resolution == Resolution.STOCK_GONE || resolution == Resolution.EXPIRED_OUT;
             case EXPIRED -> resolution == Resolution.STOCK_GONE;
         };
