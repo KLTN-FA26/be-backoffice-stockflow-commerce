@@ -600,6 +600,7 @@ class B2bOnboardingIntegrationTest {
         UUID closed = createdCustomer(closedEmail);
         String closedLink = onlyLinkSentTo(closedEmail);
         changeStatus(closed, "INACTIVE").andExpect(status().isOk());
+        invitationState(closed).andExpect(jsonPath("$.data.state").value("UNAVAILABLE"));
         activate(closedLink, PASSWORD).andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("PORTAL_INVITATION_INVALID"));
         resend(sales, closed).andExpect(status().isConflict());

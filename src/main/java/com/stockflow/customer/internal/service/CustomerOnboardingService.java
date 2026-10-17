@@ -155,7 +155,11 @@ public class CustomerOnboardingService {
     public record Invited(CustomerSummary customer, PortalInvitationStatus invitation, InvitationDelivery delivery) {
     }
 
-    public enum InvitationState { PENDING, EXPIRED, ACTIVATED, NO_ACCOUNT }
+    /**
+     * {@code UNAVAILABLE}: the customer is blocked or closed - an open link no longer activates and a resend is refused
+     * (audit of #109: it used to read PENDING).
+     */
+    public enum InvitationState { PENDING, EXPIRED, ACTIVATED, NO_ACCOUNT, UNAVAILABLE }
 
     /** {@code delivery} is the recorded outcome of the open invitation's e-mail, null if none. */
     public record InvitationView(UUID customerId, InvitationState state, Instant issuedAt, Instant expiresAt,
@@ -273,9 +277,11 @@ public class CustomerOnboardingService {
         if (customer.userId() == null) {
             return new InvitationView(customerId, InvitationState.NO_ACCOUNT, null, null, null);
         }
+        boolean closedOrBlocked = customer.status() == com.stockflow.customer.internal.domain.CustomerStatus.BLOCKED
+                || customer.status() == com.stockflow.customer.internal.domain.CustomerStatus.INACTIVE;
         return accounts.invitation(customer.userId())
-                .map(open -> new InvitationView(customerId,
-                        open.expiredAt(clock.instant()) ? InvitationState.EXPIRED : InvitationState.PENDING,
+                .map(open -> new InvitationView(customerId, closedOrBlocked ? InvitationState.UNAVAILABLE
+                        : open.expiredAt(clock.instant()) ? InvitationState.EXPIRED : InvitationState.PENDING,
                         open.issuedAt(), open.expiresAt(), open.delivery()))
                 .orElseGet(() -> new InvitationView(customerId, InvitationState.ACTIVATED, null, null, null));
     }

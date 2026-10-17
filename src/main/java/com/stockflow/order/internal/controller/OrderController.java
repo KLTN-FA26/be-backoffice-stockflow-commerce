@@ -128,6 +128,8 @@ class OrderController {
     @ResponseStatus(HttpStatus.CREATED)
     @Operation(summary = "Reorder a quoted order: a new draft quote for Sales at today's price list, never the old deal")
     @RequiresPermission(resource = OrderResources.ORDERS, action = Action.CREATE, scope = DataScope.OWN)
+    // Each new request id drafts a quote and notifies Sales (audit of #109): a bound, as on customer creation.
+    @com.stockflow.common.ratelimit.RateLimit(limit = 10, perSeconds = 60)
     public ApiResponse<QuoteResponse> reorder(@PathVariable UUID orderId,
                                               @Valid @RequestBody QuoteRequests.Reorder request,
                                               @AuthenticatedUser CurrentUser user) {

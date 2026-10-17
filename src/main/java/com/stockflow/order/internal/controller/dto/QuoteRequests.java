@@ -45,7 +45,8 @@ public final class QuoteRequests {
             @NotNull(message = "requestId is required") UUID requestId,
             @NotNull(message = "customerId is required") UUID customerId,
             @NotNull(message = "paymentTerm is required") PaymentTerm paymentTerm,
-            @Schema(description = "DEPOSIT only; empty takes the customer's default") BigDecimal depositPercent,
+            @Schema(description = "DEPOSIT only; empty takes the customer's default")
+            @Digits(integer = 3, fraction = 2, message = "depositPercent has at most 2 decimals") BigDecimal depositPercent,
             @NotNull(message = "validUntil is required") Instant validUntil,
             @Size(max = 2000, message = "terms are at most 2000 characters") String terms,
             @NotEmpty(message = "a quote needs at least one line") @Size(max = 50, message = "at most 50 lines")
@@ -55,7 +56,7 @@ public final class QuoteRequests {
     public record Edit(
             @NotNull(message = "version is required") Long version,
             @NotNull(message = "paymentTerm is required") PaymentTerm paymentTerm,
-            BigDecimal depositPercent,
+            @Digits(integer = 3, fraction = 2, message = "depositPercent has at most 2 decimals") BigDecimal depositPercent,
             @NotNull(message = "validUntil is required") Instant validUntil,
             @Size(max = 2000, message = "terms are at most 2000 characters") String terms,
             @NotEmpty(message = "a quote needs at least one line") @Size(max = 50, message = "at most 50 lines")
