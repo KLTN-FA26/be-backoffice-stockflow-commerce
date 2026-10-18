@@ -57,8 +57,9 @@ public interface PickLists {
 
     /**
      * X-SHORT: the assignee is at the line's bin and finds {@code found} of the allocated units. The line turns
-     * SHORT, nothing is deducted, and the order goes ON_HOLD with reason {@code INVENTORY_ISSUE} until the
-     * coordinator reallocates. The same report again answers with the line as it is.
+     * SHORT, nothing is deducted, the order goes ON_HOLD with reason {@code INVENTORY_ISSUE} until the
+     * coordinator reallocates, and the bin gets a blind {@code SHORT_PICK} recount (one open recount per bin, SKU and
+     * lot). The same report again answers with the line as it is.
      *
      * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code OUT_OF_DATA_SCOPE};
      *         {@code PICK_TASK_STATE_CONFLICT}; {@code PICK_LINE_NOT_OPEN}; {@code PICK_LOCATION_MISMATCH};

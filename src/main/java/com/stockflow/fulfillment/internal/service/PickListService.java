@@ -266,6 +266,12 @@ class PickListService implements PickLists {
         writeBack(list, stored, Set.of(line.id()));
         // X-SHORT step 02: the order stops; it does not cancel, and no stock is deducted (docs 04c).
         orders.putOnDesignHold(pick.getOrderId(), INVENTORY_ISSUE);
+        // X-SHORT step 03: the books and the shelf disagree, so the bin is counted again.
+        if (line.reservationId() != null) {
+            var recount = consumption.requestRecount(line.reservationId(), line.id(),
+                    line.allocatedQty() - line.shortQty());
+            log.info("Short pick line {}: recount {} of {}", line.id(), recount.countNumber(), line.locationCode());
+        }
         log.info("Pick line {} of task {} short: {} of {} x {} missing at {}", line.id(), taskId, line.shortQty(),
                 line.allocatedQty(), line.sku(), line.locationCode());
         return view(taskId, line, barcode);

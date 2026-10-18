@@ -29,4 +29,7 @@ public interface LocationDirectory {
      * warehouse id. Allocation chooses bins from these only (SCRUM-152, module 06 BR-12).
      */
     java.util.Map<String, java.util.UUID> pickable(java.util.Collection<String> locations);
+
+    /** The warehouse a location belongs to; empty for an unknown code. */
+    java.util.Optional<java.util.UUID> warehouseOf(LocationId location);
 }

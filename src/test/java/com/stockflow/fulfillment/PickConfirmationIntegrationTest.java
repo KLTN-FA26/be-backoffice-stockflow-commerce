@@ -343,6 +343,16 @@ class PickConfirmationIntegrationTest {
         assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.ON_HOLD);
         assertThat(onHand(location, SOFA)).as("nothing deducted").isEqualTo(before);
         assertThat(ledgerRows("PICK", lineId)).isZero();
+        // X-SHORT step 03: a blind recount of that bin and SKU, opened once even if the short is reported again.
+        String recount = "SELECT count(*) FROM inventory.cycle_count c JOIN inventory.cycle_count_line l"
+                + " ON l.cycle_count_id = c.id WHERE c.trigger_type = 'SHORT_PICK' AND c.status = 'PLANNED' AND c.is_blind"
+                + " AND l.location_code = ? AND l.sku = 'SOFA-3S-GREY'";
+        assertThat(jdbc.queryForObject(recount, Integer.class, location)).isEqualTo(1);
+        call(post("/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + lineId + "/short")
+                .header("Authorization", token(pickerHcm, "WAREHOUSE_STAFF"))
+                .contentType("application/json").content("{\"locationCode\":\"" + location + "\",\"foundQuantity\":0}"))
+                .andExpect(status().isOk());
+        assertThat(jdbc.queryForObject(recount, Integer.class, location)).as("the same report again").isEqualTo(1);
 
         JsonNode added = body(call(post("/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + lineId + "/reallocation")
                 .header("Authorization", token(coordinator, "ORDER_COORDINATOR")))

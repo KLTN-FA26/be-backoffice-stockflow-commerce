@@ -82,7 +82,8 @@ class PickConsumptionServiceTest {
     private final LocationDirectory locations = mock(LocationDirectory.class);
     private final InventoryPolicyRepository policies = mock(InventoryPolicyRepository.class);
     private final PickConsumptionService service = new PickConsumptionService(stockItems, ledger,
-            new InventoryEventPublisher(publisher), locations, policies, Clock.fixed(NOW, ZoneOffset.UTC));
+            new InventoryEventPublisher(publisher), locations, policies, Clock.fixed(NOW, ZoneOffset.UTC),
+            mock(com.stockflow.inventory.internal.domain.Recounts.class));
     private final List<StockItem> saved = new ArrayList<>();
 
     @BeforeEach

@@ -60,4 +60,16 @@ public interface PickConsumption {
      *         {@code OUT_OF_DATA_SCOPE}
      */
     void putBack(PutBackCommand command);
+
+    /**
+     * A picker came up short at an allocation's bin (docs 04c X-SHORT step 03): the books and the shelf disagree, so the
+     * bin is counted again. Opens a blind {@code SHORT_PICK} cycle count of the allocation's bin, SKU and lot for today,
+     * or answers with the open one when that bin, SKU and lot already wait for a recount. Joins the caller's
+     * transaction; changes no stock.
+     *
+     * @param found the units the picker found, for the count's note
+     * @throws com.stockflow.common.error.BusinessException {@code RESERVATION_NOT_FOUND} for an allocation not on a
+     *         stock item; {@code OUT_OF_DATA_SCOPE} outside the caller's warehouses
+     */
+    ShortPickRecount requestRecount(UUID reservationId, UUID pickLineId, int found);
 }

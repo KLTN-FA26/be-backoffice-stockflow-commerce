@@ -68,6 +68,8 @@ class SkuReservationAllocationIntegrationTest {
 
     @Autowired InventoryService inventory;
     @Autowired com.stockflow.support.RecordedEvents.Recorder recorded;
+    @Autowired com.stockflow.inventory.consumption.PickConsumption consumption;
+    @Autowired com.stockflow.inventory.internal.service.CycleCounts cycleCounts;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
 
@@ -365,6 +367,43 @@ class SkuReservationAllocationIntegrationTest {
                 new ReallocateStockCommand(order(), again.get(0).reservationId(), UUID.randomUUID()))))))
                 .as("another order's allocation").isEqualTo(ErrorCode.RESERVATION_NOT_FOUND);
         assertThat(reservedEverywhere()).isEqualTo(4);
+    }
+
+    @Test
+    @DisplayName("a short pick opens one blind recount of the bin, SKU and lot; the counter does not see the books")
+    void shortPickOpensOneBlindRecount() {
+        UUID order = order();
+        reserve(order, 4);
+        StockReservation allocation = allocate(order, "HCM").allocations().get(0).holds().get(0);
+
+        var first = tx.execute(s -> consumption.requestRecount(allocation.reservationId(), UUID.randomUUID(), 1));
+        var again = tx.execute(s -> consumption.requestRecount(allocation.reservationId(), UUID.randomUUID(), 0));
+
+        assertThat(first.created()).isTrue();
+        assertThat(first.countNumber()).startsWith("CC-");
+        assertThat(again.created()).as("one open recount per bin, SKU and lot").isFalse();
+        assertThat(again.cycleCountId()).isEqualTo(first.cycleCountId());
+        var counter = cycleCounts.list("planned", DemoData.WAREHOUSE_HCM, false, 0, 200).items().stream()
+                .filter(c -> c.id().equals(first.cycleCountId())).findFirst().orElseThrow();
+        assertThat(counter.triggerType()).isEqualTo("SHORT_PICK");
+        assertThat(counter.lines()).singleElement().satisfies(line -> {
+            assertThat(line.locationCode()).isEqualTo(allocation.locationCode());
+            assertThat(line.sku()).isEqualTo(sku);
+            assertThat(line.expectedQty()).as("blind").isNull();
+        });
+        var manager = cycleCounts.list(null, DemoData.WAREHOUSE_HCM, true, 0, 200).items().stream()
+                .filter(c -> c.id().equals(first.cycleCountId())).findFirst().orElseThrow();
+        assertThat(manager.lines().get(0).expectedQty()).as("the books, for who decides").isEqualTo(5);
+        assertThat(code(catchThrowable(() -> cycleCounts.list("LOST", null, false, 0, 20))))
+                .isEqualTo(ErrorCode.UNSUPPORTED_PARAMETER);
+        var elsewhere = new com.stockflow.common.security.CurrentUser(UUID.randomUUID(), "kho",
+                Set.of(com.stockflow.common.security.Role.WAREHOUSE_STAFF), Set.of(),
+                com.stockflow.common.security.DataScope.WAREHOUSE, Set.of("ZZZ"), Set.of(UUID.randomUUID()));
+        assertThat(com.stockflow.support.WithCurrentUser.call(elsewhere, elsewhere.scope(),
+                () -> cycleCounts.list(null, null, false, 0, 20)).items()).as("another warehouse's clerk").isEmpty();
+        assertThat(code(catchThrowable(() -> com.stockflow.support.WithCurrentUser.call(elsewhere, elsewhere.scope(),
+                () -> cycleCounts.list(null, DemoData.WAREHOUSE_HCM, false, 0, 20)))))
+                .isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE);
     }
 
     @Test
