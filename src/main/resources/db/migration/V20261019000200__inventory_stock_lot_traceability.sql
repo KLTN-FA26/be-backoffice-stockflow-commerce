@@ -11,6 +11,7 @@
 --   stock_movement.lot_id  every ledger line names the lot it moved; the lot trace reads these
 --   stock_movement.order_id the customer order a pick, a put-back or a package deduction was for, so
 --                          the trace reaches the order without reading another module's tables
+--   *.order_number         its number as it read then, filled by tg_*_order_number from ordering
 --
 -- A layer or a ledger line written without a lot - a path the application does not tag yet, an
 -- adjustment that found stock - gets one from the database: the lot with the same identity (SKU, lot
@@ -81,10 +82,21 @@ CREATE INDEX ix_stock_item_lot ON inventory.stock_item (lot_id);
 ALTER TABLE inventory.stock_movement
     ADD COLUMN lot_id UUID,
     ADD COLUMN order_id UUID,
+    -- The order's number as it read when the units moved: the trace names the order without reading ordering.
+    ADD COLUMN order_number VARCHAR(32),
     ADD CONSTRAINT fk_stock_movement_lot FOREIGN KEY (lot_id) REFERENCES inventory.stock_lot (id) ON DELETE RESTRICT,
     ADD CONSTRAINT fk_stock_movement_order FOREIGN KEY (order_id)
         REFERENCES ordering.customer_order (id) ON DELETE RESTRICT;
 CREATE INDEX ix_stock_movement_lot ON inventory.stock_movement (lot_id, occurred_at);
+
+-- The same snapshot on a hold (an allocation, a production hold handed to an order): filled from the order when the
+-- hold first names one that exists. A checkout's SKU reservation is written before its order row (the order foreign
+-- key is deferred), so it carries none; its allocations, written at release, do.
+ALTER TABLE inventory.stock_reservation ADD COLUMN order_number VARCHAR(32);
+COMMENT ON COLUMN inventory.stock_reservation.order_number IS
+    'Snapshot of ordering.customer_order.order_number for the lot trace (SCRUM-153); NULL until the order row exists.';
+COMMENT ON COLUMN inventory.stock_movement.order_number IS
+    'Snapshot of ordering.customer_order.order_number when order_id is set (SCRUM-153).';
 CREATE INDEX ix_stock_movement_order ON inventory.stock_movement (order_id) WHERE order_id IS NOT NULL;
 
 -- ---- backfill, receipts first ----------------------------------------------------------------------
@@ -173,7 +185,13 @@ UPDATE inventory.stock_movement m SET order_id = p.order_id
   FROM fulfillment.pack pa JOIN fulfillment.pick p ON p.id = pa.pick_id
  WHERE m.order_id IS NULL AND m.reference_type = 'PACKAGE' AND pa.id = m.reference_id;
 
+UPDATE inventory.stock_movement m SET order_number = o.order_number
+  FROM ordering.customer_order o WHERE m.order_id = o.id AND m.order_number IS NULL;
+
 ALTER TABLE inventory.stock_movement ENABLE TRIGGER tg_stock_movement_append_only;
+
+UPDATE inventory.stock_reservation r SET order_number = o.order_number
+  FROM ordering.customer_order o WHERE r.order_id = o.id AND r.order_number IS NULL;
 
 -- ---- every new layer and ledger line gets a lot --------------------------------------------------
 CREATE FUNCTION inventory.resolve_stock_item_lot()
@@ -240,3 +258,52 @@ $$;
 
 CREATE TRIGGER tg_stock_movement_lot BEFORE INSERT ON inventory.stock_movement
     FOR EACH ROW EXECUTE FUNCTION inventory.resolve_stock_movement_lot();
+
+-- The order number snapshot, on a ledger line or a hold that names an order (the application writes only the id).
+CREATE FUNCTION inventory.snapshot_order_number()
+    RETURNS trigger
+    LANGUAGE plpgsql AS
+$$
+BEGIN
+    IF NEW.order_id IS NOT NULL AND NEW.order_number IS NULL THEN
+        SELECT order_number INTO NEW.order_number FROM ordering.customer_order WHERE id = NEW.order_id;
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER tg_stock_movement_order_number BEFORE INSERT ON inventory.stock_movement
+    FOR EACH ROW EXECUTE FUNCTION inventory.snapshot_order_number();
+
+CREATE TRIGGER tg_stock_reservation_order_number BEFORE INSERT OR UPDATE ON inventory.stock_reservation
+    FOR EACH ROW EXECUTE FUNCTION inventory.snapshot_order_number();
+
+-- ---- the SKU rename guard and the draft product delete know the two new references --------------
+-- inventory.item_in_use (V20261016000100, V20261017001200) answers "does a document use this item?" so a rename or a
+-- delete is refused with "this SKU is referenced" instead of a foreign-key error. A SKU reservation and a lot both
+-- name the SKU (fk_stock_reservation_sku, fk_stock_lot_item); the body is V20261017001200's with those two lines added.
+CREATE OR REPLACE FUNCTION inventory.item_in_use(p_item_id UUID, p_sku VARCHAR) RETURNS BOOLEAN
+    LANGUAGE sql STABLE AS $$
+    SELECT EXISTS (SELECT 1 FROM inventory.stock_item WHERE sku = p_sku)
+        OR EXISTS (SELECT 1 FROM inventory.stock_movement WHERE sku = p_sku)
+        OR EXISTS (SELECT 1 FROM inventory.stock_adjustment WHERE sku = p_sku)
+        OR EXISTS (SELECT 1 FROM inventory.cycle_count_line WHERE sku = p_sku)
+        OR EXISTS (SELECT 1 FROM inventory.transfer_order_line WHERE sku = p_sku)
+        OR EXISTS (SELECT 1 FROM warehouse.putaway_task WHERE sku = p_sku)
+        OR EXISTS (SELECT 1 FROM warehouse.move_task WHERE sku = p_sku)
+        OR EXISTS (SELECT 1 FROM fulfillment.pick_line WHERE sku = p_sku)
+        OR EXISTS (SELECT 1 FROM catalog.pricing_rule WHERE sku = p_sku)
+        OR EXISTS (SELECT 1 FROM procurement.supplier_items WHERE inventory_item_id = p_item_id)
+        OR EXISTS (SELECT 1 FROM procurement.replenishment_proposal_lines WHERE inventory_item_id = p_item_id)
+        OR EXISTS (SELECT 1 FROM procurement.purchase_order_lines WHERE inventory_item_id = p_item_id)
+        OR EXISTS (SELECT 1 FROM procurement.purchase_order_line_revisions WHERE inventory_item_id = p_item_id)
+        OR EXISTS (SELECT 1 FROM procurement.goods_receipt_lines WHERE inventory_item_id = p_item_id)
+        OR EXISTS (SELECT 1 FROM catalog.customer_price WHERE sku = p_sku)
+        OR EXISTS (SELECT 1 FROM ordering.quote_line WHERE blank_sku = p_sku)
+        OR EXISTS (SELECT 1 FROM production.production_order WHERE blank_sku = p_sku)
+        OR EXISTS (SELECT 1 FROM production.sample_request WHERE blank_sku = p_sku)
+        OR EXISTS (SELECT 1 FROM ordering.approved_sample WHERE blank_sku = p_sku)
+        OR EXISTS (SELECT 1 FROM production.production_material_issue WHERE sku = p_sku)
+        OR EXISTS (SELECT 1 FROM inventory.stock_reservation WHERE sku = p_sku)
+        OR EXISTS (SELECT 1 FROM inventory.stock_lot WHERE sku = p_sku)
+$$;

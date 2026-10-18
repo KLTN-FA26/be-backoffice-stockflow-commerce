@@ -38,14 +38,16 @@ public record LotTraceResponse(Lot lot, List<Balance> balances, List<Hold> holds
     public record Balance(String locationCode, String status, int onHand, int held) { }
 
     @Schema(name = "LotHold", description = "An allocation (allocatedFrom set) or another hold on the lot's stock")
-    public record Hold(UUID reservationId, UUID orderId, UUID productionOrderId, UUID allocatedFrom,
-                       String locationCode, int quantity, String status, Instant reservedAt, Instant closedAt) { }
+    public record Hold(UUID reservationId, UUID orderId, String orderNumber, UUID productionOrderId,
+                       UUID allocatedFrom, String locationCode, int quantity, String status, Instant reservedAt,
+                       Instant closedAt) { }
 
     @Schema(name = "LotOrder", description = "A customer order the lot left for")
-    public record OrderLeg(UUID orderId, long picked, long putBack, Instant firstAt, Instant lastAt) { }
+    public record OrderLeg(UUID orderId, String orderNumber, long picked, long putBack, Instant firstAt,
+                           Instant lastAt) { }
 
     @Schema(name = "LotMovement", description = "One stock ledger line of the lot")
     public record Movement(UUID movementId, String type, String fromLocation, String toLocation, int quantity,
                            String fromStatus, String toStatus, String referenceType, UUID referenceId, UUID orderId,
-                           UUID actorId, Instant occurredAt, String reason) { }
+                           String orderNumber, UUID actorId, Instant occurredAt, String reason) { }
 }

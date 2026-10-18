@@ -77,14 +77,15 @@ class LotTraceSearchAdapter implements LotTraceSearch {
     public List<LotTrace.Hold> holds(UUID lotId, Set<String> warehouses) {
         MapSqlParameterSource params = new MapSqlParameterSource().addValue("lotId", lotId);
         String sql = """
-                SELECT r.id, r.order_id, r.production_order_id, r.allocated_from_id, si.location_code, r.quantity,
+                SELECT r.id, r.order_id, r.order_number, r.production_order_id, r.allocated_from_id, si.location_code,
+                       r.quantity,
                        r.status, r.reserved_at, r.closed_at
                   FROM inventory.stock_reservation r
                   JOIN inventory.stock_item si ON si.id = r.stock_item_id
                  WHERE si.lot_id = :lotId""" + inWarehouses("si.location_code", warehouses, params)
                 + " ORDER BY r.reserved_at, r.id";
         return jdbc.query(sql, params, (rs, i) -> new LotTrace.Hold(uuid(rs, "id"), uuid(rs, "order_id"),
-                uuid(rs, "production_order_id"), uuid(rs, "allocated_from_id"), rs.getString("location_code"),
+                rs.getString("order_number"), uuid(rs, "production_order_id"), uuid(rs, "allocated_from_id"), rs.getString("location_code"),
                 rs.getInt("quantity"), rs.getString("status"), instant(rs, "reserved_at"), instant(rs, "closed_at")));
     }
 
@@ -92,14 +93,15 @@ class LotTraceSearchAdapter implements LotTraceSearch {
     public List<LotTrace.OrderLeg> orders(UUID lotId, Set<String> warehouses) {
         MapSqlParameterSource params = new MapSqlParameterSource().addValue("lotId", lotId);
         String sql = """
-                SELECT m.order_id,
+                SELECT m.order_id, max(m.order_number) AS order_number,
                        sum(CASE WHEN m.movement_type = 'PICK' THEN m.quantity ELSE 0 END) AS picked,
                        sum(CASE WHEN m.movement_type = 'PUT_BACK' THEN m.quantity ELSE 0 END) AS put_back,
                        min(m.occurred_at) AS first_at, max(m.occurred_at) AS last_at
                   FROM inventory.stock_movement m
                  WHERE m.lot_id = :lotId AND m.order_id IS NOT NULL""" + movementIn(warehouses, params)
                 + " GROUP BY m.order_id ORDER BY min(m.occurred_at), m.order_id";
-        return jdbc.query(sql, params, (rs, i) -> new LotTrace.OrderLeg(uuid(rs, "order_id"), rs.getLong("picked"),
+        return jdbc.query(sql, params, (rs, i) -> new LotTrace.OrderLeg(uuid(rs, "order_id"),
+                rs.getString("order_number"), rs.getLong("picked"),
                 rs.getLong("put_back"), instant(rs, "first_at"), instant(rs, "last_at")));
     }
 
@@ -118,14 +120,16 @@ class LotTraceSearchAdapter implements LotTraceSearch {
                 .addValue("offset", offset).addValue("limit", limit);
         String sql = """
                 SELECT m.id, m.movement_type, m.from_location_code, m.to_location_code, m.quantity, m.from_status,
-                       m.to_status, m.reference_type, m.reference_id, m.order_id, m.actor_id, m.occurred_at, m.reason
+                       m.to_status, m.reference_type, m.reference_id, m.order_id, m.order_number, m.actor_id,
+                       m.occurred_at, m.reason
                   FROM inventory.stock_movement m
                  WHERE m.lot_id = :lotId""" + movementIn(warehouses, params) + window(from, to, params)
                 + " ORDER BY m.occurred_at, m.id LIMIT :limit OFFSET :offset";
         return jdbc.query(sql, params, (rs, i) -> new LotTrace.Movement(uuid(rs, "id"), rs.getString("movement_type"),
                 rs.getString("from_location_code"), rs.getString("to_location_code"), rs.getInt("quantity"),
                 rs.getString("from_status"), rs.getString("to_status"), rs.getString("reference_type"),
-                uuid(rs, "reference_id"), uuid(rs, "order_id"), uuid(rs, "actor_id"), instant(rs, "occurred_at"),
+                uuid(rs, "reference_id"), uuid(rs, "order_id"), rs.getString("order_number"), uuid(rs, "actor_id"),
+                instant(rs, "occurred_at"),
                 rs.getString("reason")));
     }
 

@@ -36,14 +36,20 @@ public record LotTrace(Summary lot, List<Balance> balances, List<Hold> holds, Li
     public record Balance(String locationCode, String status, int onHand, int held) { }
 
     /** An allocation or hold placed on the lot's stock, in any status. */
-    public record Hold(UUID reservationId, UUID orderId, UUID productionOrderId, UUID allocatedFrom,
-                       String locationCode, int quantity, String status, Instant reservedAt, Instant closedAt) { }
+    public record Hold(UUID reservationId, UUID orderId, String orderNumber, UUID productionOrderId,
+                       UUID allocatedFrom, String locationCode, int quantity, String status, Instant reservedAt,
+                       Instant closedAt) { }
 
-    /** A customer order the lot left for: units picked or packed out, units put back. */
-    public record OrderLeg(UUID orderId, long picked, long putBack, Instant firstAt, Instant lastAt) { }
+    /**
+     * A customer order the lot left for: units picked or packed out, units put back.
+     *
+     * @param orderNumber the order's number as it read when the units moved (a snapshot on the ledger line)
+     */
+    public record OrderLeg(UUID orderId, String orderNumber, long picked, long putBack, Instant firstAt,
+                           Instant lastAt) { }
 
     /** One ledger line of the lot. */
     public record Movement(UUID movementId, String type, String fromLocation, String toLocation, int quantity,
                            String fromStatus, String toStatus, String referenceType, UUID referenceId, UUID orderId,
-                           UUID actorId, Instant occurredAt, String reason) { }
+                           String orderNumber, UUID actorId, Instant occurredAt, String reason) { }
 }

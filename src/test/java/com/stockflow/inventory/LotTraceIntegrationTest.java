@@ -176,19 +176,24 @@ class LotTraceIntegrationTest {
         assertThat(trace.lot().receivedQuantity()).isEqualTo(3);
         assertThat(trace.lot().onHand()).isZero();
         assertThat(trace.lot().available()).isZero();
+        String orderNumber = jdbc.queryForObject("SELECT order_number FROM ordering.customer_order WHERE id = ?",
+                String.class, order);
         assertThat(trace.orders()).singleElement().satisfies(leg -> {
             assertThat(leg.orderId()).isEqualTo(order);
+            assertThat(leg.orderNumber()).as("snapshot on the ledger line").isEqualTo(orderNumber);
             assertThat(leg.picked()).isEqualTo(3);
         });
         assertThat(trace.holds()).singleElement().satisfies(hold -> {
             assertThat(hold.orderId()).isEqualTo(order);
             assertThat(hold.allocatedFrom()).isNotNull();
+            assertThat(hold.orderNumber()).as("snapshot on the allocation").isEqualTo(orderNumber);
             assertThat(hold.status()).isEqualTo("CONSUMED");
         });
         var ledger = traces.movements(lot1, null, null, null, 0, 20).items();
         assertThat(ledger).extracting(LotTrace.Movement::type).containsExactly("RECEIPT", "MOVE", "PICK");
         assertThat(ledger.get(2).referenceId()).isEqualTo(pickLine);
         assertThat(ledger.get(2).orderId()).isEqualTo(order);
+        assertThat(ledger.get(2).orderNumber()).isEqualTo(orderNumber);
 
         LotTrace other = traces.trace(lot2, null);
         assertThat(other.lot().goodsReceiptId()).isEqualTo(second.id());

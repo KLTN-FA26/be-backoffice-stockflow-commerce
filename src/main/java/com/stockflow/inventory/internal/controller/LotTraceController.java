@@ -63,9 +63,10 @@ class LotTraceController {
                 trace.balances().stream().map(b -> new LotTraceResponse.Balance(b.locationCode(), b.status(),
                         b.onHand(), b.held())).toList(),
                 trace.holds().stream().map(h -> new LotTraceResponse.Hold(h.reservationId(), h.orderId(),
-                        h.productionOrderId(), h.allocatedFrom(), h.locationCode(), h.quantity(), h.status(),
+                        h.orderNumber(), h.productionOrderId(), h.allocatedFrom(), h.locationCode(), h.quantity(), h.status(),
                         h.reservedAt(), h.closedAt())).toList(),
-                trace.orders().stream().map(o -> new LotTraceResponse.OrderLeg(o.orderId(), o.picked(), o.putBack(),
+                trace.orders().stream().map(o -> new LotTraceResponse.OrderLeg(o.orderId(), o.orderNumber(),
+                        o.picked(), o.putBack(),
                         o.firstAt(), o.lastAt())).toList()));
     }
 
@@ -82,7 +83,8 @@ class LotTraceController {
         return ApiResponse.ok(traces.movements(lotId, warehouseId, from, to, page,
                 size == null ? Pages.DEFAULT_PAGE_SIZE : size).map(m -> new LotTraceResponse.Movement(m.movementId(),
                 m.type(), m.fromLocation(), m.toLocation(), m.quantity(), m.fromStatus(), m.toStatus(),
-                m.referenceType(), m.referenceId(), m.orderId(), m.actorId(), m.occurredAt(), m.reason())));
+                m.referenceType(), m.referenceId(), m.orderId(), m.orderNumber(), m.actorId(), m.occurredAt(),
+                m.reason())));
     }
 
     private static LotTraceResponse.Lot toResponse(LotTrace.Summary l) {
