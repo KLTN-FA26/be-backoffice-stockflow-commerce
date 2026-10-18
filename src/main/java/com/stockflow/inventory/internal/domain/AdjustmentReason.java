@@ -18,10 +18,12 @@ public enum AdjustmentReason {
     /** Blanks used to make a sample for the customer (kltn-docs 19 §4.1). Stock only goes down. */
     SAMPLE,
     /** Needs a note: "other" with no explanation is not a reason. */
-    OTHER;
+    OTHER,
+    /** Blanks spoilt or missing at a print subcontractor (04c G8, decision Q9). Stock only goes down. */
+    SUBCONTRACT_LOSS;
 
     /** Scrap and samples consume blanks; they never bring stock back. */
     public boolean onlyWritesDown() {
-        return this == SCRAP || this == SAMPLE;
+        return this == SCRAP || this == SAMPLE || this == SUBCONTRACT_LOSS;
     }
 }

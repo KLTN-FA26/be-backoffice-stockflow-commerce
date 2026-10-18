@@ -28,6 +28,8 @@ public final class Receivable extends AggregateRoot {
     private ReceivableStatus status;
     private Instant settledAt;
     private final long version;
+    /** {@code CREDIT_ORDER} (a delivered credit order) or {@code CANCELLATION_FEE} (decision Q6a). */
+    private String kind = "CREDIT_ORDER";
 
     public Receivable(UUID id, UUID orderId, UUID customerId, BigDecimal amount, BigDecimal paidAmount, String currency,
                       Instant issuedAt, LocalDate dueDate, ReceivableStatus status, Instant settledAt, long version) {
@@ -52,6 +54,25 @@ public final class Receivable extends AggregateRoot {
         return new Receivable(Identifiers.newId(), orderId, customerId, amount, BigDecimal.ZERO, currency, issuedAt,
                 dueDate, ReceivableStatus.OPEN, null, 0L);
     }
+
+    /**
+     * What a cancelled order's customer agreed to pay beyond the money already received (decision Q6a): owed from
+     * the cancellation day. Opened, never collected: it is paid like any receivable, by a transfer the accountant
+     * records and allocates.
+     */
+    public static Receivable openCancellationFee(UUID orderId, UUID customerId, BigDecimal amount, String currency,
+                                                 Instant issuedAt, LocalDate dueDate) {
+        Receivable fee = open(orderId, customerId, amount, currency, issuedAt, dueDate);
+        fee.kind = "CANCELLATION_FEE";
+        return fee;
+    }
+
+    public Receivable withKind(String kind) {
+        this.kind = Objects.requireNonNull(kind, "kind");
+        return this;
+    }
+
+    public String kind() { return kind; }
 
     public BigDecimal outstanding() {
         return amount.subtract(paidAmount);

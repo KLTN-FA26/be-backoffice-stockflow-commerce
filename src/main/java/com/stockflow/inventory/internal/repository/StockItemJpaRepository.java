@@ -166,7 +166,7 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
 
     @Query("""
             select new com.stockflow.inventory.internal.domain.HoldDetail(r.id, s.sku, s.locationCode, s.lotNumber,
-                   r.quantity, r.status, r.expiresAt)
+                   r.quantity, r.status, r.expiresAt, s.expiryDate)
             from ReservationJpaEntity r join r.stockItem s
             where r.id in :ids
             """)
@@ -174,4 +174,20 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
 
     @Query("select r.stockItem.id from ReservationJpaEntity r where r.id = :reservationId")
     Optional<UUID> findStockItemIdByReservationId(@Param("reservationId") UUID reservationId);
+
+    @Query("""
+            select distinct r.stockItem.id from ReservationJpaEntity r
+            where r.productionOrderId = :productionOrderId
+              and r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
+            """)
+    List<UUID> findStockItemIdsHoldingProductionOrder(@Param("productionOrderId") UUID productionOrderId);
+
+    /** The live holds of a production order, oldest first; nothing is locked. */
+    @Query("""
+            select r.id from ReservationJpaEntity r
+            where r.productionOrderId = :productionOrderId
+              and r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
+            order by r.reservedAt, r.id
+            """)
+    List<UUID> findHeldReservationIdsOfProductionOrder(@Param("productionOrderId") UUID productionOrderId);
 }

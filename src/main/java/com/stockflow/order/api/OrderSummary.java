@@ -63,7 +63,16 @@ public record OrderSummary(
     }
 
     /** Why and on what terms a cancelled order was cancelled; null while it is not. */
-    public record Cancellation(CancellationReasonCode reasonCode, String reason, BigDecimal retainedAmount) {
+    /**
+     * @param retainedAmount what was kept of the money received
+     * @param feeAmount      the amount agreed with the customer (Q2); above {@code retainedAmount} the rest is owed
+     */
+    public record Cancellation(CancellationReasonCode reasonCode, String reason, BigDecimal retainedAmount,
+                               String feeReason, String feeDetail, BigDecimal feeAmount) {
+
+        public Cancellation(CancellationReasonCode reasonCode, String reason, BigDecimal retainedAmount) {
+            this(reasonCode, reason, retainedAmount, null, null, null);
+        }
     }
 
     public OrderSummary(UUID orderId, String orderNumber, UUID customerId, OrderStatus status,

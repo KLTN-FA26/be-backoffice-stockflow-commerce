@@ -58,10 +58,25 @@ class StockAdjustmentRepositoryAdapter implements StockAdjustmentRepository, Sto
         StockAdjustmentJpaEntity entity = jpa.findById(adjustment.id()).orElseGet(() ->
                 new StockAdjustmentJpaEntity(adjustment.id(), adjustment.number(), adjustment.location().code(),
                         adjustment.sku().code(), adjustment.lotNumber(), adjustment.quantityDelta(),
-                        adjustment.reason(), adjustment.note(), adjustment.requestedBy()));
+                        adjustment.reason(), adjustment.note(), adjustment.requestedBy())
+                        .atLayer(adjustment.receivedAt()).forHold(adjustment.reservationId()));
         entity.decide(adjustment.status(), adjustment.decidedBy(), adjustment.decidedAt(),
                 adjustment.rejectionReason(), adjustment.postedAt(), adjustment.withdrawnAt());
         return toDomain(jpa.saveAndFlush(entity));
+    }
+
+    @Override
+    public Optional<StockAdjustment> findLatestForHold(UUID reservationId) {
+        return jpa.findFirstByReservationIdOrderByCreatedAtDescIdDesc(reservationId)
+                .map(StockAdjustmentRepositoryAdapter::toDomain);
+    }
+
+    @Override
+    public Optional<StockAdjustment> findLiveForHold(UUID reservationId) {
+        return jpa.findFirstByReservationIdAndStatusIn(reservationId, java.util.EnumSet.of(
+                        com.stockflow.inventory.internal.domain.AdjustmentStatus.PENDING_APPROVAL,
+                        com.stockflow.inventory.internal.domain.AdjustmentStatus.POSTED))
+                .map(StockAdjustmentRepositoryAdapter::toDomain);
     }
 
     @Override
@@ -82,6 +97,7 @@ class StockAdjustmentRepositoryAdapter implements StockAdjustmentRepository, Sto
         return new StockAdjustment(e.getId(), e.getAdjustmentNumber(), new LocationId(e.getLocationCode()),
                 new Sku(e.getSku()), e.getLotNumber(), e.getQuantityDelta(), e.getReasonCode(), e.getNote(),
                 e.getRequestedBy(), e.getCreatedAt(), e.getStatus(), e.getDecidedBy(), e.getDecidedAt(),
-                e.getRejectionReason(), e.getPostedAt(), e.getWithdrawnAt(), e.getVersion());
+                e.getRejectionReason(), e.getPostedAt(), e.getWithdrawnAt(), e.getVersion())
+                .atLayer(e.getReceivedAt()).forHold(e.getReservationId());
     }
 }

@@ -66,10 +66,18 @@ public class CancellationRequestService {
      */
     @Auditable(action = AuditAction.APPROVE, resourceType = "order-cancellation-request", resourceId = "#requestId")
     public OrderSummary approve(UUID orderId, UUID requestId, BigDecimal retainedPercent, String note, UUID by) {
+        return approve(orderId, requestId, retainedPercent, null, note, by);
+    }
+
+    /** The same, keeping an amount agreed with the customer instead of a percentage (decision Q2). */
+    @Auditable(action = AuditAction.APPROVE, resourceType = "order-cancellation-request", resourceId = "#requestId")
+    public OrderSummary approve(UUID orderId, UUID requestId, BigDecimal retainedPercent,
+                                com.stockflow.order.api.CancellationFee agreedFee, String note, UUID by) {
         CancellationRequest request = load(orderId, requestId);
         request.approve(by, retainedPercent, note, clock.instant());
         Order order = orders.loadForUpdate(orderId);
-        orders.cancelLoaded(order, new CancelOrderCommand(request.reasonCode(), request.note(), retainedPercent, by));
+        orders.cancelLoaded(order, new CancelOrderCommand(request.reasonCode(), request.note(), retainedPercent, by,
+                agreedFee));
         requests.save(request);
         log.info("Cancellation request {} approved; order {} cancelled", requestId, order.orderNumber());
         return orderService.findById(orderId).orElseThrow();

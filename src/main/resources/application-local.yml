@@ -30,8 +30,9 @@ logging:
     # org.hibernate.orm.jdbc.bind: TRACE
 
 stockflow:
-  checkout:
-    guest-enabled: true
+  customer:
+    # The Next.js customer portal on its default dev port (SCRUM-451); mail goes to Mailpit.
+    portal-activation-url: ${PORTAL_ACTIVATION_URL:http://localhost:3000/portal/activate}
   upload-inspection:
     # No ClamAV container needed on a laptop. Everywhere else the default (true) applies and a
     # missing scanner fails the upload closed. To scan locally: docker-compose.media.yml.

@@ -33,6 +33,10 @@ public record AdminCancelOrderRequest(
 
         @Schema(deprecated = true, description = "Free text, before reasonCode existed")
         @Size(max = 500, message = "reason is at most 500 characters")
-        String reason
+        String reason,
+
+        @Schema(description = "Instead of retainedPercent: an amount agreed with the customer (decision Q2)")
+        @jakarta.validation.Valid
+        CancellationFeeRequest agreedFee
 ) {
 }

@@ -42,6 +42,13 @@ public final class StockAdjustment extends AggregateRoot {
     private Instant postedAt;
     private Instant withdrawnAt;
     private final long version;
+    /** The receipt layer, when the location holds several layers of the lot; null picks the only one. */
+    private Instant receivedAt;
+    /**
+     * The hold whose units this write-off takes (BR-PRD-10: printed goods of a cancelled order, still held so nobody
+     * can take them); approving it closes the hold as it deducts the units. Null for every other write-off.
+     */
+    private UUID reservationId;
 
     public StockAdjustment(UUID id, String number, LocationId location, Sku sku, String lotNumber,
                            int quantityDelta, AdjustmentReason reason, String note, UUID requestedBy,
@@ -77,6 +84,22 @@ public final class StockAdjustment extends AggregateRoot {
                     "An adjustment with reason %s can only reduce stock".formatted(this.reason));
         }
     }
+
+    /** The adjustment names one receipt layer of the lot at its location (set once, when asked for). */
+    public StockAdjustment atLayer(Instant receivedAt) {
+        this.receivedAt = receivedAt;
+        return this;
+    }
+
+    public Instant receivedAt() { return receivedAt; }
+
+    /** The adjustment takes the units of this hold (set once, when asked for). */
+    public StockAdjustment forHold(UUID reservationId) {
+        this.reservationId = reservationId;
+        return this;
+    }
+
+    public UUID reservationId() { return reservationId; }
 
     public static StockAdjustment request(String number, LocationId location, Sku sku, String lotNumber,
                                           int quantityDelta, AdjustmentReason reason, String note,

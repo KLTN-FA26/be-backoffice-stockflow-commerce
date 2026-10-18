@@ -18,6 +18,7 @@ import com.stockflow.inventory.api.StockAdjustmentStatus;
 import com.stockflow.inventory.internal.controller.dto.MoveStockRequest;
 import com.stockflow.inventory.internal.controller.dto.RejectAdjustmentRequest;
 import com.stockflow.inventory.internal.controller.dto.RequestAdjustmentRequest;
+import com.stockflow.inventory.internal.controller.dto.ScrapHoldRequest;
 import com.stockflow.inventory.internal.controller.dto.StockAdjustmentResponse;
 import com.stockflow.inventory.internal.controller.dto.StockMoveResponse;
 import com.stockflow.inventory.internal.controller.dto.StockMovementResponse;
@@ -141,6 +142,20 @@ class StockOperationsController {
                                                        @Valid @RequestBody RejectAdjustmentRequest request,
                                                        @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(mapper.toResponse(operations.reject(adjustmentId, user.userId(), request.reason())));
+    }
+
+    /**
+     * BR-PRD-10: a cancelled order's printed goods stay held until their write-off is approved. When it was rejected
+     * or withdrawn, this is the way out - the same four-eyes approval decides it.
+     */
+    @PostMapping("/reservations/{reservationId}/scrap-request")
+    @ResponseStatus(HttpStatus.CREATED)
+    @Operation(summary = "Ask again to scrap a cancelled order's printed goods whose write-off was rejected or withdrawn")
+    @RequiresPermission(resource = InventoryResources.STOCK_ITEMS, action = Action.UPDATE)
+    public ApiResponse<StockAdjustmentResponse> askScrapAgain(@PathVariable UUID reservationId,
+                                                              @Valid @RequestBody ScrapHoldRequest request,
+                                                              @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(mapper.toResponse(operations.askScrapAgain(reservationId, request.note(), user.userId())));
     }
 
     @PostMapping("/adjustments/{adjustmentId}/withdrawal")

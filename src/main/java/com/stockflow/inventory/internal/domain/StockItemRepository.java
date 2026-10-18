@@ -90,6 +90,22 @@ public interface StockItemRepository {
      */
     List<StockItem> findWithReservationsForOrder(java.util.UUID orderId);
 
+    /** The same for a production order's live holds, locked in id order. */
+    List<StockItem> findWithReservationsForProductionOrder(java.util.UUID productionOrderId);
+
+    /** The ids of a production order's live holds, oldest first, read without locking (a screen's view). */
+    List<java.util.UUID> findHeldReservationIdsOfProductionOrder(java.util.UUID productionOrderId);
+
+    /** The stock item a reservation is on, without locking it — so it can be locked in id order with another. */
+    Optional<StockItemId> findIdByReservationId(ReservationId reservationId);
+
+    /**
+     * Persist a {@link StockItem#handOverReservation hand-over}: {@code from} gave up the hold {@code moved}
+     * and {@code to} (new or existing) took it over. The reservation row keeps its id and changes parent;
+     * it is never deleted and inserted again — order lines and fulfilment lines reference it.
+     */
+    void saveHandOver(StockItem from, StockItem to, ReservationId moved);
+
     /**
      * The live (HELD) reservations of an order with the SKU and location they sit at, read-only and
      * without locking: for a caller that only needs to know where an order's stock is.
@@ -100,4 +116,13 @@ public interface StockItemRepository {
     List<HoldDetail> findHolds(Collection<java.util.UUID> reservationIds);
 
     StockItem save(StockItem stockItem);
+
+    /**
+     * Save a layer that has just taken units of <b>its own receipt</b> from another location (a move, a hold
+     * handed over). The database refuses to raise an existing FIFO layer's {@code on_hand} — replenishment
+     * must be a new layer, or FIFO loses the age of the incoming units — and this tells it, for this row and
+     * this statement only, that nothing new is entering: the units carry the same receipt time, lot, expiry
+     * and serial, which the database checks as before.
+     */
+    StockItem saveMerged(StockItem stockItem);
 }

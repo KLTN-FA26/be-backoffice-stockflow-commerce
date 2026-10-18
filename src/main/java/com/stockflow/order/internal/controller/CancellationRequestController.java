@@ -69,8 +69,9 @@ class CancellationRequestController {
                                               @Valid @RequestBody(required = false) ApproveCancellationRequest request,
                                               @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(OrderWebMapper.toResponse(requests.approve(orderId, requestId,
-                request == null ? null : request.retainedPercent(), request == null ? null : request.note(),
-                user.userId())));
+                request == null ? null : request.retainedPercent(),
+                request == null ? null : OrderWebMapper.toFee(request.agreedFee()),
+                request == null ? null : request.note(), user.userId())));
     }
 
     @PostMapping("/{orderId}/cancellation-requests/{requestId}/rejection")

@@ -53,7 +53,8 @@ public final class User extends AggregateRoot {
         this.id = Objects.requireNonNull(id, "id");
         this.username = requireNonBlank(username, "username");
         this.email = requireNonBlank(email, "email");
-        this.passwordHash = requireNonBlank(passwordHash, "passwordHash");
+        // Null only for an invited account that has not been activated (inviteCustomer).
+        this.passwordHash = passwordHash == null ? null : requireNonBlank(passwordHash, "passwordHash");
         this.fullName = fullName;
         this.status = Objects.requireNonNull(status, "status");
         this.lastLoginAt = lastLoginAt;
@@ -82,6 +83,39 @@ public final class User extends AggregateRoot {
                                    String fullName, boolean temporaryPassword) {
         return new User(new UserId(id), requireNonBlank(username, "username").trim(), normaliseEmail(email),
                 passwordHash, fullName, UserStatus.ACTIVE, null, temporaryPassword, 0, null, 0L, null, null);
+    }
+
+    /**
+     * A customer contact that Sales onboarded (SCRUM-450): signs in with the e-mail address, but has
+     * no password - {@code passwordHash} is null - until they redeem their {@link PortalInvitation}.
+     * Until then nothing can authenticate as this account, Sales included.
+     */
+    public static User inviteCustomer(UUID id, String email, String fullName) {
+        String normalisedEmail = normaliseEmail(email);
+        return new User(new UserId(id), normalisedEmail, normalisedEmail, null, fullName,
+                UserStatus.ACTIVE, null, false, 0, null, 0L, null, null);
+    }
+
+    /** No password has been chosen yet: the account of a contact who has not activated. */
+    public boolean awaitingActivation() {
+        return passwordHash == null;
+    }
+
+    /**
+     * The contact redeemed an invitation and chose this password. Only an account that never had a
+     * password, and that no administrator locked or disabled, can be activated; every refusal looks
+     * the same to the caller, so a link cannot be probed for why it failed.
+     *
+     * @throws BusinessException {@code PORTAL_INVITATION_INVALID}
+     */
+    public void activate(String newPasswordHash) {
+        if (!awaitingActivation() || status != UserStatus.ACTIVE) {
+            throw new BusinessException(ErrorCode.PORTAL_INVITATION_INVALID);
+        }
+        this.passwordHash = requireNonBlank(newPasswordHash, "passwordHash");
+        this.mustChangePassword = false;
+        this.failedLoginCount = 0;
+        this.lockedUntil = null;
     }
 
     /**

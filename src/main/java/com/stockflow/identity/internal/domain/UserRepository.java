@@ -10,4 +10,11 @@ public interface UserRepository extends AggregateRepository<User, UserId> {
 
     Optional<User> findByUsername(String username);
     Optional<User> findByEmail(String email);
+
+    /**
+     * Loads the account under a row lock held to the end of the transaction. Call it before anything
+     * else in the transaction reads the account: a copy already in the persistence context would be
+     * returned as it was, and the lock would protect stale state.
+     */
+    Optional<User> findByIdForUpdate(UserId id);
 }

@@ -80,6 +80,113 @@ public interface InventoryService {
     void release(UUID reservationId, String reason);
 
     /**
+     * Hold blanks for a production order (see {@link ReserveProductionStockCommand}). Joins the caller's
+     * transaction, like {@link #reserve}: a sample submission that fails afterwards leaves no hold behind.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code INSUFFICIENT_STOCK} when the warehouse
+     *         holds fewer free units than asked
+     */
+    ReserveStockResult reserveForProduction(ReserveProductionStockCommand command);
+
+    /**
+     * Release every live hold of a production order whose goods are still in storage (cancelled before they
+     * were issued; issued ones go back through {@link #returnHeld}). Joins the caller's transaction.
+     * Idempotent: closed holds are left as they are.
+     *
+     * @return the units released
+     */
+    int releaseProductionHolds(UUID productionOrderId);
+
+    /** The live holds of a production order, wherever their goods are now; in stock item id order. */
+    List<StockReservation> productionHolds(UUID productionOrderId);
+
+    /**
+     * The same holds as they stand, oldest first, for a screen to show (SCRUM-410): read-only and locking nothing,
+     * unlike {@link #productionHolds}, which locks the stock rows for the caller's write.
+     */
+    List<HoldView> productionHoldViews(UUID productionOrderId);
+
+    /**
+     * Move one live hold together with its goods (see {@link IssueReservedStockCommand}) - AVAILABLE from storage,
+     * or INBOUND when a subcontractor's goods were held on receipt (SCRUM-441) - writing one MOVE
+     * ledger line with reference {@code PRODUCTION_ORDER}. The units are held for their owner the whole
+     * time: available-to-promise does not change, and no other order can take them on the way. Joins the
+     * caller's transaction; locks both stock rows in id order.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code RESERVATION_NOT_FOUND},
+     *         {@code RESERVATION_NOT_ISSUABLE} (closed, another owner's, or still waiting for payment),
+     *         {@code LOCATION_NOT_FOUND}, {@code LOCATION_NOT_USABLE}, {@code MOVE_ACROSS_WAREHOUSES},
+     *         {@code STOCK_STATUS_MISMATCH}
+     */
+    IssueReservedStockResult issueReserved(IssueReservedStockCommand command);
+
+    /**
+     * The hand-over of finished goods (SCRUM-400): a hold and its goods from the print shop (IN_PRODUCTION) to a
+     * PACKING area as AVAILABLE, still held for its owner. Same locks, ledger and refusals as
+     * {@link #issueReserved}.
+     */
+    IssueReservedStockResult finishHeld(IssueReservedStockCommand command);
+
+    /**
+     * Unprinted goods of a stopped print job, still held for their order, back to storage with the hold
+     * (SCRUM-401): IN_PRODUCTION → AVAILABLE, same locks and ledger as {@link #issueReserved}.
+     */
+    IssueReservedStockResult unissueHeld(IssueReservedStockCommand command);
+
+    /**
+     * BR-PRD-10 (decision 2026-10-16): the custom-printed goods of a cancelled order are scrapped, never sold. The
+     * order's cancellation calls this for each hold of its print lines, in its own transaction, before it releases
+     * them. When the hold is finished goods of {@code orderId} waiting in a PACKING area, the hold stays - its units
+     * out of available-to-promise and out of every other order's reach - and a SCRAP write-off of exactly them is
+     * asked for in {@code requestedBy}'s name, for a second person to approve (SCRUM-145). Approved, the hold closes
+     * and stock falls once; rejected, the goods stay held and never go back on sale. A release never frees them.
+     * Called again, the write-off already standing is answered and nothing is asked twice.
+     *
+     * <p>Anything else - blanks not issued yet, goods still in the print shop (production's to close), a hold closed
+     * or another order's - is not this method's: empty, and the caller releases as for any line.</p>
+     *
+     * @param requestedBy who cancelled; null (the system) keeps the goods held and asks for nothing
+     * @return the write-off asked for, or standing
+     */
+    java.util.Optional<StockAdjustmentSummary> scrapCancelledPrint(UUID reservationId, UUID orderId, String note,
+                                                                   UUID requestedBy);
+
+    /** See {@link WriteOffHeldStockCommand}. Joins the caller's transaction. @return the write-off asked for */
+    StockAdjustmentSummary writeOffHeld(WriteOffHeldStockCommand command);
+
+    /** See {@link ReturnHeldStockCommand}. Joins the caller's transaction. */
+    StockMove returnHeld(ReturnHeldStockCommand command);
+
+    /**
+     * A hold in storage gives up {@code quantity} units, free again (SCRUM-441: part of a production order goes to
+     * a subcontractor who sources the blanks). The hold must belong to {@code orderId} or {@code productionOrderId}.
+     * Joins the caller's transaction.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code RESERVATION_NOT_FOUND},
+     *         {@code RESERVATION_NOT_ISSUABLE} (another owner's, closed, in the print shop, or fewer units)
+     */
+    void reduceHold(UUID reservationId, UUID orderId, UUID productionOrderId, int quantity);
+
+    /**
+     * A production order's live hold becomes its sales order's, same id, still pinned (SCRUM-400: finished goods
+     * of a reprint round or a subcontracted child are the order's to ship). Joins the caller's transaction;
+     * idempotent — a hold already the order's is left as it is.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code RESERVATION_NOT_FOUND},
+     *         {@code RESERVATION_NOT_ISSUABLE} (another production order's, another order's, or closed)
+     */
+    void handHoldToOrder(UUID reservationId, UUID productionOrderId, UUID orderId);
+
+    /** See {@link HoldReceivedStockCommand}. Joins the caller's transaction. */
+    StockReservation holdReceived(HoldReceivedStockCommand command);
+
+    /** See {@link ConsumeHeldStockCommand}. Joins the caller's transaction. */
+    StockMove consumeHeld(ConsumeHeldStockCommand command);
+
+    /** The holds among {@code reservationIds} that are still live, with what they hold now and where. */
+    List<StockReservation> liveHolds(Collection<UUID> reservationIds);
+
+    /**
      * Stop the holds of an order from expiring: the order no longer waits for payment (paid, or
      * released on its deposit), so its stock stays held until it is consumed or the order releases
      * it (kltn-docs 14 BR-07, SCRUM-465). Joins the caller's transaction, like {@link #reserve}, so

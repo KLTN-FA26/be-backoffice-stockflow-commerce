@@ -9,5 +9,7 @@ public enum StockAdjustmentReason {
     DATA_CORRECTION,
     SCRAP,
     SAMPLE,
-    OTHER
+    OTHER,
+    /** Blanks spoilt or missing at a print subcontractor (SCRUM-441). Only writes stock down. */
+    SUBCONTRACT_LOSS
 }

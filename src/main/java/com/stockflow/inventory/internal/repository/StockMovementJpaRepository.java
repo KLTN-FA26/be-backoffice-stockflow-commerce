@@ -11,4 +11,9 @@ interface StockMovementJpaRepository extends BaseJpaRepository<StockMovementJpaE
 
     Optional<StockMovementJpaEntity> findFirstByMovementTypeAndReferenceTypeAndReferenceId(
             StockMovement.MovementType movementType, StockMovement.ReferenceType referenceType, UUID referenceId);
+
+    boolean existsByMovementTypeAndReferenceTypeAndReasonAndToLocationCodeAndFromStatusAndToStatus(
+            StockMovement.MovementType movementType, StockMovement.ReferenceType referenceType, String reason,
+            String toLocationCode, com.stockflow.inventory.internal.domain.StockStatus fromStatus,
+            com.stockflow.inventory.internal.domain.StockStatus toStatus);
 }

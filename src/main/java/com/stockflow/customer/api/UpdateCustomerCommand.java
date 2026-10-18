@@ -8,6 +8,12 @@ public record UpdateCustomerCommand(
         boolean privileged,
         String fullName,
         String phone,
-        long expectedVersion
+        long expectedVersion,
+        /* Staff only (Sales records the business identity, kltn-docs 18 §3); null leaves it unchanged. */
+        String taxCode
 ) {
+    public UpdateCustomerCommand(UUID customerId, UUID actorUserId, boolean privileged, String fullName,
+                                 String phone, long expectedVersion) {
+        this(customerId, actorUserId, privileged, fullName, phone, expectedVersion, null);
+    }
 }
