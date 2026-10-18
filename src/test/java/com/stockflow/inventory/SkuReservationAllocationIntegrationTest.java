@@ -63,10 +63,11 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * Available to promise is therefore 22.
  */
 @IntegrationTest
-@Import(PostgresContainer.class)
+@Import({PostgresContainer.class, com.stockflow.support.RecordedEvents.class})
 class SkuReservationAllocationIntegrationTest {
 
     @Autowired InventoryService inventory;
+    @Autowired com.stockflow.support.RecordedEvents.Recorder recorded;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
 
@@ -209,6 +210,13 @@ class SkuReservationAllocationIntegrationTest {
                  WHERE allocated_from_id IS NOT NULL AND order_id = ?""", String.class, order))
                 .hasSize(3).containsOnly(soft.reservationId() + ":true");
 
+        assertThat(recorded.matching(com.stockflow.contracts.StockAllocated.class, e -> e.orderId().equals(order)))
+                .as("one StockAllocated per bin and lot")
+                .extracting(com.stockflow.contracts.StockAllocated::locationCode,
+                        com.stockflow.contracts.StockAllocated::quantity)
+                .containsExactlyInAnyOrder(org.assertj.core.groups.Tuple.tuple("HCM-A01-1-B", 5),
+                        org.assertj.core.groups.Tuple.tuple("HCM-A01-1-A", 5),
+                        org.assertj.core.groups.Tuple.tuple("HCM-A02-2-A", 2));
         assertThat(allocate(order, "HCM").allocations()).as("allocating again changes nothing").isEmpty();
         assertThat(reservedEverywhere()).isEqualTo(12);
     }

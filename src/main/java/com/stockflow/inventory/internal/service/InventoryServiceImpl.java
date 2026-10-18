@@ -451,6 +451,7 @@ class InventoryServiceImpl implements InventoryService {
                 made.put(p.sequence(), toApiReservation(locked, allocation));
             }
             repository.save(locked);
+            events.publishEventsOf(locked);
         }
 
         List<AllocateStockResult.Allocation> allocations = new ArrayList<>();

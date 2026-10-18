@@ -397,7 +397,7 @@ public final class StockItem extends AggregateRoot {
      * Allocate part of a SKU reservation to this stock item (F-FUL step 02, BR-STK-006): the order was released to
      * this warehouse and the planner chose this bin and lot. A hard hold, pinned, that the picker will walk to; the
      * units stop being the SKU's soft reservation once the caller marks it {@link SkuReservation#markAllocated}.
-     * Idempotent on {@code requestId}. Announces nothing: available-to-promise does not change.
+     * Idempotent on {@code requestId}. Announces {@code StockAllocated}; available-to-promise does not change.
      *
      * @throws InsufficientStockException when fewer than {@code quantity} units here are free
      */
@@ -423,6 +423,8 @@ public final class StockItem extends AggregateRoot {
         Reservation reservation = Reservation.allocate(orderId, allocatedFrom, rootRequestId, requestId, quantity, now);
         reservations.add(reservation);
         checkInvariants();
+        registerEvent(new StockEvent.Allocated(new com.stockflow.contracts.StockAllocated(orderId,
+                reservation.id().value(), sku.code(), location.code(), lotNumber, quantity.value())));
         return reservation;
     }
 
