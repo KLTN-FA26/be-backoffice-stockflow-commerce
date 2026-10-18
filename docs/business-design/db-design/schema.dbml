@@ -115,6 +115,7 @@ Enum inventory.stock_alert_kind {
 Enum inventory.stock_alert_resolution {
   RECOVERED
   UNCONFIGURED
+  NOT_PURCHASABLE
   STOCK_GONE
   EXPIRED_OUT
 }
@@ -133,6 +134,11 @@ Enum inventory.stock_item_status {
   DAMAGED
   EXPIRED
   IN_PRODUCTION
+}
+
+Enum inventory.stock_lot_origin_type {
+  GOODS_RECEIPT
+  UNTRACED
 }
 
 Enum inventory.stock_movement_movement_type {
@@ -169,6 +175,7 @@ Enum inventory.stock_movement_reference_type {
 
 Enum inventory.stock_reservation_status {
   HELD
+  ALLOCATED
   CONSUMED
   RELEASED
   EXPIRED
@@ -1334,6 +1341,28 @@ Table inventory.stock_item [headercolor: #3E7C4A] {
   last_modified_by varchar(100)
   received_at      timestamptz
   serial_number    varchar(100)
+  lot_id           uuid
+}
+
+Table inventory.stock_lot [headercolor: #3E7C4A] {
+  id                    uuid [pk]
+  sku                   varchar(64) [not null]
+  lot_number            varchar(64)
+  expiry_date           date
+  received_at           timestamptz
+  origin_type           inventory.stock_lot_origin_type [not null]
+  goods_receipt_id      uuid
+  goods_receipt_number  varchar(30)
+  purchase_order_id     uuid
+  purchase_order_number varchar(30)
+  supplier_id           uuid
+  supplier_name         varchar(200)
+  warehouse_id          uuid
+  version               bigint [not null, default: 0]
+  created_at            timestamptz [not null, default: `now()`]
+  created_by            varchar(100)
+  last_modified_at      timestamptz
+  last_modified_by      varchar(100)
 }
 
 Table inventory.stock_movement [headercolor: #3E7C4A] {
@@ -1356,11 +1385,14 @@ Table inventory.stock_movement [headercolor: #3E7C4A] {
   created_by         varchar(100)
   last_modified_at   timestamptz
   last_modified_by   varchar(100)
+  lot_id             uuid
+  order_id           uuid
+  order_number       varchar(32)
 }
 
 Table inventory.stock_reservation [headercolor: #3E7C4A] {
   id                  uuid [pk]
-  stock_item_id       uuid [not null]
+  stock_item_id       uuid
   order_id            uuid
   root_request_id     uuid [not null]
   request_id          uuid [not null, unique]
@@ -1371,6 +1403,9 @@ Table inventory.stock_reservation [headercolor: #3E7C4A] {
   release_reason      varchar(32)
   closed_at           timestamptz
   production_order_id uuid
+  sku                 varchar(64) [not null]
+  allocated_from_id   uuid
+  order_number        varchar(32)
 }
 
 Table inventory.transfer_order [headercolor: #3E7C4A] {
@@ -3578,16 +3613,26 @@ Ref: inventory.stock_adjustment.requested_by > identity.app_user.id
 Ref: inventory.stock_adjustment.reservation_id > inventory.stock_reservation.id [delete: restrict]
 Ref: inventory.stock_adjustment.sku > inventory.inventory_items.sku [delete: restrict]
 Ref: inventory.stock_alert.acknowledged_by > identity.app_user.id
-Ref: inventory.stock_alert.sku > inventory.inventory_items.sku
+Ref: inventory.stock_alert.sku > inventory.inventory_items.sku [delete: cascade]
 Ref: inventory.stock_alert.warehouse_id > warehouse.warehouse.id
 Ref: inventory.stock_item.location_code > warehouse.storage_location.location_code [delete: restrict]
+Ref: inventory.stock_item.lot_id > inventory.stock_lot.id [delete: restrict]
 Ref: inventory.stock_item.sku > inventory.inventory_items.sku [delete: restrict]
+Ref: inventory.stock_lot.goods_receipt_id > procurement.goods_receipts.id [delete: restrict]
+Ref: inventory.stock_lot.purchase_order_id > procurement.purchase_orders.id [delete: restrict]
+Ref: inventory.stock_lot.sku > inventory.inventory_items.sku [delete: restrict]
+Ref: inventory.stock_lot.supplier_id > procurement.suppliers.id [delete: restrict]
+Ref: inventory.stock_lot.warehouse_id > warehouse.warehouse.id [delete: restrict]
 Ref: inventory.stock_movement.actor_id > identity.app_user.id
 Ref: inventory.stock_movement.from_location_code > warehouse.storage_location.location_code [delete: restrict]
+Ref: inventory.stock_movement.lot_id > inventory.stock_lot.id [delete: restrict]
+Ref: inventory.stock_movement.order_id > ordering.customer_order.id [delete: restrict]
 Ref: inventory.stock_movement.sku > inventory.inventory_items.sku [delete: restrict]
 Ref: inventory.stock_movement.to_location_code > warehouse.storage_location.location_code [delete: restrict]
+Ref: inventory.stock_reservation.allocated_from_id > inventory.stock_reservation.id [delete: restrict]
 Ref: inventory.stock_reservation.order_id > ordering.customer_order.id [delete: restrict]
 Ref: inventory.stock_reservation.production_order_id > production.production_order.id [delete: restrict]
+Ref: inventory.stock_reservation.sku > inventory.inventory_items.sku [delete: restrict]
 Ref: inventory.stock_reservation.stock_item_id > inventory.stock_item.id [delete: cascade]
 Ref: inventory.transfer_order.approved_by > identity.app_user.id
 Ref: inventory.transfer_order.dispatched_by > identity.app_user.id
@@ -3886,6 +3931,7 @@ TableGroup inventory_group [color: #3E7C4A] {
   inventory.stock_alert
   inventory.stock_alert_dirty
   inventory.stock_item
+  inventory.stock_lot
   inventory.stock_movement
   inventory.stock_reservation
   inventory.transfer_order
@@ -3972,6 +4018,7 @@ TableGroup customer_group [color: #D68910] {
   customer.address
   customer.credit_profile
   customer.customer
+  customer.customer_change_history
   customer.customer_status_history
   customer.segment
 }
