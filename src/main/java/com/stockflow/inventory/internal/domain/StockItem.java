@@ -826,14 +826,22 @@ public final class StockItem extends AggregateRoot {
 
     /** Whether units of {@code other}, arriving as {@code arrivingStatus}, may be merged into this one. */
     public boolean canReceiveFrom(StockItem other, StockStatus arrivingStatus) {
+        return isSameGoodsAs(other) && status == arrivingStatus;
+    }
+
+    /**
+     * Whether {@code other} is a layer of the same goods, whatever its status: SKU, lot number, expiry, receipt time
+     * and serial. One receipt may bring a lot number twice with two expiries (two {@code stock_lot} rows), so the lot
+     * number alone does not tell them apart.
+     */
+    public boolean isSameGoodsAs(StockItem other) {
         return sku.equals(other.sku)
                 && Objects.equals(lotNumber, other.lotNumber)
                 && Objects.equals(receivedAt, other.receivedAt)
                 && Objects.equals(serialNumber, other.serialNumber)
                 && Objects.equals(expiryDate, other.expiryDate)
                 // Two lots never merge into one layer; a layer the database has not tagged yet takes any.
-                && (lotId == null || other.lotId == null || lotId.equals(other.lotId))
-                && status == arrivingStatus;
+                && (lotId == null || other.lotId == null || lotId.equals(other.lotId));
     }
 
     /**

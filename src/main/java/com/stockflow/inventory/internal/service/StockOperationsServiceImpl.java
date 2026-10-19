@@ -276,9 +276,7 @@ class StockOperationsServiceImpl implements StockOperations {
             case USABLE -> { }
         }
         Optional<StockItem> destinationView = stockItems.findBySkuAndLocation(sourceView.sku(), to).stream()
-                .filter(item -> Objects.equals(item.lotNumber(), sourceView.lotNumber())
-                        && Objects.equals(item.receivedAt(), sourceView.receivedAt())
-                        && Objects.equals(item.serialNumber(), sourceView.serialNumber()))
+                .filter(item -> item.isSameGoodsAs(sourceView))
                 .findFirst();
 
         List<StockItem> toLock = destinationView.isPresent()
@@ -571,9 +569,7 @@ class StockOperationsServiceImpl implements StockOperations {
     /** The layer of the same goods (SKU, lot, receipt, serial) at {@code location}, if there is one. */
     private Optional<StockItem> sameLayerAt(StockItem source, LocationId location) {
         return stockItems.findBySkuAndLocation(source.sku(), location).stream()
-                .filter(item -> Objects.equals(item.lotNumber(), source.lotNumber())
-                        && Objects.equals(item.receivedAt(), source.receivedAt())
-                        && Objects.equals(item.serialNumber(), source.serialNumber()))
+                .filter(item -> item.isSameGoodsAs(source))
                 .findFirst();
     }
 

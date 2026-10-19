@@ -188,9 +188,7 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
         Optional<StockItem> destinationView = sourceView.location().equals(target)
                 ? Optional.of(sourceView)
                 : stockItems.findBySkuAndLocation(sourceView.sku(), target).stream()
-                        .filter(item -> Objects.equals(item.lotNumber(), sourceView.lotNumber())
-                                && Objects.equals(item.receivedAt(), sourceView.receivedAt())
-                                && Objects.equals(item.serialNumber(), sourceView.serialNumber()))
+                        .filter(item -> item.isSameGoodsAs(sourceView))
                         .findFirst();
         List<StockItem> toLock = destinationView.isPresent() && !destinationView.get().id().equals(sourceView.id())
                 ? List.of(sourceView, destinationView.get()) : List.of(sourceView);

@@ -68,6 +68,25 @@ class StockMoveAndAdjustTest {
         }
 
         @Test
+        @DisplayName("one lot number with two expiries, or in two lots, is two layers: a put-back never merges them")
+        void sameLotNumberOtherExpiryOrLotIsOtherGoods() {
+            Instant received = Instant.parse("2026-10-01T02:00:00Z");
+            UUID lotA = UUID.randomUUID();
+            StockItem early = StockItem.receiveInbound(SKU, BIN, "L01", LocalDate.of(2027, 1, 31), Quantity.of(4),
+                    received, lotA);
+            StockItem late = StockItem.receiveInbound(SKU, BIN, "L01", LocalDate.of(2027, 6, 30), Quantity.of(4),
+                    received, UUID.randomUUID());
+            StockItem otherLot = StockItem.receiveInbound(SKU, BIN, "L01", LocalDate.of(2027, 1, 31), Quantity.of(4),
+                    received, UUID.randomUUID());
+            StockItem untagged = StockItem.receiveInbound(SKU, BIN, "L01", LocalDate.of(2027, 1, 31), Quantity.of(4),
+                    received, null);
+
+            assertThat(late.isSameGoodsAs(early)).as("another expiry").isFalse();
+            assertThat(otherLot.isSameGoodsAs(early)).as("another stock_lot").isFalse();
+            assertThat(untagged.isSameGoodsAs(early)).as("not tagged by the database yet").isTrue();
+        }
+
+        @Test
         @DisplayName("a move needs a quantity and two different places")
         void degenerateMovesAreRefused() {
             StockItem item = available(3);
