@@ -35,6 +35,11 @@ class UserRepositoryAdapter implements UserRepository {
     }
 
     @Override
+    public Optional<User> findByIdForUpdate(UserId id) {
+        return users.lockById(id.value()).map(UserPersistenceMapper::toDomain);
+    }
+
+    @Override
     public boolean existsById(UserId id) {
         return users.existsById(id.value());
     }

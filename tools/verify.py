@@ -34,7 +34,8 @@ WHAT IT CHECKS
   14   @Transactional / @Scheduled / @ApplicationModuleListener methods are public, because a
        Spring proxy cannot intercept a non-public method and ignores the annotation in silence
   15   api/ carries @NamedInterface("api") and the module base package holds only package-info
-  16   no new free-text component (note, body, comment, message, reason) in a contracts/ record
+  16   no new free-text component (note, body, comment, message, reason) in a contracts/ record,
+       and no personal data (e-mail, phone, address, person or customer name, tax code, personal id)
 
 The comment on strip_java() is worth reading before touching the parser.
 """
@@ -368,6 +369,42 @@ for f in files:
             if key not in FREE_TEXT_ALLOWED:
                 problems.append(f"FREE TEXT IN CONTRACT {f}: {key} - events carry facts and enum codes, "
                                 f"not typed text; send a code or an id and let the owning module hold the text")
+# 16b. Nor personal data (review of #109, item 10). The same table keeps what an event says long after it
+#      is delivered: a person's e-mail, phone, address, full or customer name, tax code or personal id has
+#      no place there. Send the id; the listener looks the person up when it delivers, behind its own rules.
+PII_LAST_WORDS = {"email", "emails", "phone", "phones", "address"}
+PII_NAMES = {"fullname", "customername", "contactname", "username", "taxcode", "personalid", "cccd", "recipientname"}
+PII_ALLOWED = {
+    # Record.component: why it exists today. The list only ever shrinks.
+    "OrderPlaced.contactEmail":           # develop: the order confirmation mail goes to the customer's contact.
+        "customer contact e-mail for the order confirmation mail (follow-up: resolve it in the listener)",
+    "Buyer.companyAddress":               # PurchaseOrderSent.Buyer: our own company, printed on the PO mail.
+        "our company's address on the purchase order sent to the supplier",
+    "Buyer.receivingAddress":
+        "our warehouse's receiving address on the purchase order sent to the supplier",
+    "Buyer.contactName":
+        "our purchasing contact named on the purchase order sent to the supplier",
+    "Buyer.phone":
+        "our purchasing contact's phone on the purchase order sent to the supplier",
+    "Buyer.email":
+        "our purchasing contact's e-mail on the purchase order sent to the supplier",
+}
+seen_pii = set()
+for f in files:
+    if "/src/main/java/com/stockflow/contracts/" not in f:
+        continue
+    for record, component, ctype in record_components(strip_java(open(f, encoding="utf-8").read())):
+        words = camel_words(component)
+        if not words or not re.search(r'\b(String|CharSequence|Object|List|Set|Collection)\b', ctype):
+            continue
+        if words[-1] in PII_LAST_WORDS or "".join(words) in PII_NAMES or "".join(words[-2:]) in PII_NAMES:
+            key = f"{record}.{component}"
+            seen_pii.add(key)
+            if key not in PII_ALLOWED:
+                problems.append(f"PERSONAL DATA IN CONTRACT {f}: {key} - events are stored in event_publication; "
+                                f"send the id and let the listener look the person up when it delivers")
+for key in sorted(set(PII_ALLOWED) - seen_pii):
+    problems.append(f"STALE ALLOW-LIST ENTRY in verify.py check 16b: {key} is no longer a contracts/ component")
 for key in sorted(set(FREE_TEXT_ALLOWED) - seen_free_text):
     problems.append(f"STALE ALLOW-LIST ENTRY in verify.py check 16: {key} is no longer a contracts/ component - "
                     f"remove it from FREE_TEXT_ALLOWED")

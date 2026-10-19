@@ -62,6 +62,7 @@ class FulfillmentServiceImplTest {
     private final Instant now = Instant.parse("2026-09-18T08:00:00Z");
     private final FulfillmentServiceImpl service = new FulfillmentServiceImpl(
             picks, packs, evidence, orders, designs, identities, inventory, warehouses, pickLists,
+            mock(com.stockflow.inventory.consumption.PickConsumption.class),
             Clock.fixed(now, ZoneOffset.UTC));
     private final List<DesignVerificationJpaEntity> recorded = new ArrayList<>();
 

@@ -17,6 +17,19 @@ public interface ProductionRecords {
     Optional<UUID> approvedSample(UUID designSnapshotId, String blankSku);
 
     /**
+     * The approved sample of this design on this blank that <i>this customer</i> approved, the latest if
+     * there were several. A quote is accepted on the customer's own approval (BR-ORD-008): a design and
+     * blank approved by someone else is not their sign-off.
+     */
+    Optional<UUID> approvedSampleOf(UUID customerId, UUID designSnapshotId, String blankSku);
+
+    /**
+     * Whether this design on this blank was already printed to completion for one of this customer's
+     * orders: a reorder of it needs no new sample (plan D4).
+     */
+    boolean producedBeforeFor(UUID customerId, UUID designSnapshotId, String blankSku);
+
+    /**
      * Whether this design was already printed to completion for another order: a repeat design needs
      * no new sample (BR-PRD-08).
      */

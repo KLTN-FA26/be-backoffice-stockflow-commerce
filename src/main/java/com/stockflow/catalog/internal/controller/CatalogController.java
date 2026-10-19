@@ -1,9 +1,16 @@
 package com.stockflow.catalog.internal.controller;
 
 import com.stockflow.catalog.internal.controller.dto.SkuAvailabilityResponse;
+import com.stockflow.catalog.internal.controller.dto.PriceScheduleResponse;
 import com.stockflow.catalog.internal.service.StorefrontAvailabilityService;
+import com.stockflow.catalog.internal.service.StorefrontPriceService;
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.ratelimit.RateLimit;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
+import com.stockflow.common.security.AuthenticatedUser;
+import com.stockflow.common.security.CurrentUser;
+import com.stockflow.common.security.Role;
 import io.swagger.v3.oas.annotations.Operation;
 import org.springframework.http.CacheControl;
 import org.springframework.http.ResponseEntity;
@@ -16,15 +23,15 @@ import java.time.Duration;
 import java.util.List;
 
 /**
- * Catalog reads for signed-in customers and staff (SCRUM-158).
+ * Catalog reads for signed-in, active portal customers (SCRUM-429).
  *
  * <p>Not under {@code /api/v1/public/**}. Since 2026-10-06 the business sells only to wholesale
  * customers it has onboarded, so there is no anonymous shopper to serve, and stock levels are
  * commercially sensitive — a competitor polling an open endpoint could read a customer's run
- * rate off them. The security chain's {@code anyRequest().authenticated()} is the gate.</p>
+ * rate off them. Both the authenticated subject and its customer profile are checked.</p>
  *
- * <p>No {@code @RequiresPermission}: every role that can sign in, the portal customer included,
- * is meant to see the indicator, and it says only in stock / low / out — never a quantity.</p>
+ * <p>No new permission is needed for a customer's own portal read. Staff retain their existing
+ * permission-guarded inventory API. The indicator never includes quantities or prices.</p>
  */
 @RestController
 @RequestMapping("/api/v1/catalog")
@@ -37,10 +44,13 @@ class CatalogController {
     private static final Duration FRESHNESS = Duration.ofSeconds(10);
 
     private final StorefrontAvailabilityService availability;
+    private final StorefrontPriceService prices;
     private final CatalogWebMapper mapper;
 
-    CatalogController(StorefrontAvailabilityService availability, CatalogWebMapper mapper) {
+    CatalogController(StorefrontAvailabilityService availability, StorefrontPriceService prices,
+                      CatalogWebMapper mapper) {
         this.availability = availability;
+        this.prices = prices;
         this.mapper = mapper;
     }
 
@@ -52,9 +62,26 @@ class CatalogController {
     @Operation(summary = "Stock indicator for the SKUs on a catalog page, in the order asked")
     @RateLimit(limit = 120, perSeconds = 60, key = RateLimit.Key.USER)
     public ResponseEntity<ApiResponse<List<SkuAvailabilityResponse>>> availability(
+            @AuthenticatedUser CurrentUser user,
             @RequestParam("sku") List<String> skus) {
+        if (!user.roles().contains(Role.CUSTOMER)) throw new BusinessException(ErrorCode.FORBIDDEN);
         return ResponseEntity.ok()
                 .cacheControl(CacheControl.maxAge(FRESHNESS).cachePrivate())
-                .body(ApiResponse.ok(mapper.toResponses(availability.availabilityOf(skus))));
+                .body(ApiResponse.ok(mapper.toResponses(availability.availabilityOf(user.userId(), skus))));
+    }
+
+    /**
+     * The logged-in customer's prices for the SKUs of a catalog page: its own tiers, else its group's or
+     * the base price, with the MOQ (kltn-docs 13 BR-02, BR-05; SCRUM-428). Unpublished or unpriced SKUs are
+     * left out. Not cached: a price edit must show at once, and the checkout re-checks it anyway.
+     */
+    @GetMapping("/products/prices")
+    @Operation(summary = "The logged-in customer's prices, tiers and MOQ for the SKUs asked")
+    @RateLimit(limit = 120, perSeconds = 60, key = RateLimit.Key.USER)
+    public ApiResponse<List<PriceScheduleResponse>> prices(@AuthenticatedUser CurrentUser user,
+                                                           @RequestParam("sku") List<String> skus) {
+        if (!user.roles().contains(Role.CUSTOMER)) throw new BusinessException(ErrorCode.FORBIDDEN);
+        return ApiResponse.ok(prices.pricesOf(user.userId(), skus).stream()
+                .map(CustomerPriceController::toResponse).toList());
     }
 }

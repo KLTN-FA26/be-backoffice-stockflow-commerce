@@ -13,6 +13,7 @@ import com.stockflow.product.api.ProductStatus;
 import com.stockflow.product.api.SupplierProbe;
 import com.stockflow.product.internal.domain.ProductChangeType;
 import com.stockflow.product.internal.repository.ProductChangeLogRepository;
+import com.stockflow.product.internal.repository.ProductCommerceRepository;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -32,13 +33,16 @@ import java.util.UUID;
 public class SkuPurchasingService {
 
     private final ProductPublication products;
+    private final ProductCommerceRepository variants;
     private final ItemPurchasingService inventory;
     private final ObjectProvider<SupplierProbe> suppliers;
     private final ProductChangeLogRepository history;
 
-    public SkuPurchasingService(ProductPublication products, ItemPurchasingService inventory,
-                                ObjectProvider<SupplierProbe> suppliers, ProductChangeLogRepository history) {
+    public SkuPurchasingService(ProductPublication products, ProductCommerceRepository variants,
+                                ItemPurchasingService inventory, ObjectProvider<SupplierProbe> suppliers,
+                                ProductChangeLogRepository history) {
         this.products = products;
+        this.variants = variants;
         this.inventory = inventory;
         this.suppliers = suppliers;
         this.history = history;
@@ -47,7 +51,7 @@ public class SkuPurchasingService {
     @Transactional(readOnly = true)
     public InventoryItemPurchasing purchasing(UUID productId, UUID variantId) {
         products.read(productId);
-        return inventory.purchasing(new Sku(products.inventorySku(productId, variantId).sku()));
+        return inventory.purchasing(new Sku(variants.variantSku(productId, variantId).sku()));
     }
 
     /** Same guard as logistics: not while the product is under review, never once discontinued. */
@@ -56,7 +60,12 @@ public class SkuPurchasingService {
         var product = products.lock(productId);
         if (product.status() == ProductStatus.DISCONTINUED || product.status() == ProductStatus.PENDING_APPROVAL)
             throw new BusinessException(ErrorCode.CONFLICT);
-        var sku = new Sku(products.inventorySku(productId, variantId).sku());
+        var variant = variants.variantSku(productId, variantId);
+        if (variant.obsolete()) {
+            throw new BusinessException(ErrorCode.VARIANT_OBSOLETE,
+                    "SKU %s is obsolete: its purchasing information is kept as it is".formatted(variant.sku()));
+        }
+        var sku = new Sku(variant.sku());
         var before = inventory.purchasing(sku).purchasing();
         if (purchasing.defaultSupplierId() != null
                 && !Objects.equals(purchasing.defaultSupplierId(), before.defaultSupplierId())) {

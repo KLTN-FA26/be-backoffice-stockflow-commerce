@@ -10,6 +10,8 @@ public record CustomerSummary(
         String fullName,
         String email,
         String phone,
+        /* Normalised tax code; null for a customer created before SCRUM-450. */
+        String taxCode,
         UUID segmentId,
         String status,
         long version,

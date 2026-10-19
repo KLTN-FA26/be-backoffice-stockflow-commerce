@@ -96,6 +96,15 @@ public interface ProductService {
     Map<String, Purchasability> purchasability(Collection<String> skus);
 
     /**
+     * {@link #purchasability}, for a step that commits to the answer: a quote sent, accepted or converted, a
+     * sample put into production (review of #109, item 6). The products asked about stay read-locked until the
+     * caller's transaction ends, so a suspension or a discontinuation either committed first and is seen, or
+     * waits until the step has committed - a step never goes through on an answer that has just stopped being
+     * true. Must run inside the caller's transaction.
+     */
+    Map<String, Purchasability> lockedPurchasability(Collection<String> skus);
+
+    /**
      * SCRUM-86 (WBS 3.1.8.2): this product's history, newest first — its status moves with the reason,
      * and what changed on its variants, images, logistics and stock policy. Throws
      * {@code PRODUCT_NOT_FOUND} if no such product exists, so a bad id gets 404 rather than a confusing

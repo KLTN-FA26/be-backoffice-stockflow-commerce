@@ -16,6 +16,8 @@ public enum AreaType {
     PACKING,
     DISPATCH,
     OVERFLOW,
+    /** The print shop: blanks issued for a production order, printed there (V20261010000200, SCRUM-397). */
+    PRODUCTION,
     NON_STORAGE;
 
     /**

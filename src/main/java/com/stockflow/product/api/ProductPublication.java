@@ -14,8 +14,6 @@ public interface ProductPublication {
     /** Keyset page of canonical publications, including products with no catalog snapshot yet. */
     List<UUID> publishedPage(UUID after, int size);
 
-    PublicationProduct.PublicationSku inventorySku(UUID productId, UUID variantId);
-
     List<PublishedProductImage> publishedImages(UUID productId);
 
     ProductEcommerce ecommerce(UUID productId);

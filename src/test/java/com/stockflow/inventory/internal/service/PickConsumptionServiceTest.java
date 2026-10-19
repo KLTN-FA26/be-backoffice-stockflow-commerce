@@ -70,6 +70,13 @@ class PickConsumptionServiceTest {
             return ledgerRows.stream().filter(row -> row.type() == type && row.referenceType() == referenceType
                     && row.referenceId().equals(referenceId)).findFirst();
         }
+
+        @Override
+        public boolean handedOverFromProduction(com.stockflow.inventory.internal.domain.ReservationId hold,
+                                                LocationId location) {
+            return ledgerRows.stream().anyMatch(row -> row.type() == StockMovement.MovementType.MOVE
+                    && row.referenceType() == StockMovement.ReferenceType.PRODUCTION_ORDER);
+        }
     };
     private final ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
     private final LocationDirectory locations = mock(LocationDirectory.class);
@@ -219,6 +226,44 @@ class PickConsumptionServiceTest {
             });
             assertThat(refusal(() -> service.consume(hold, PICKER))).isEqualTo(ErrorCode.RESERVATION_NOT_ACTIVE);
             assertThat(ledgerRows).hasSize(1);
+        }
+    }
+
+    @Nested
+    @DisplayName("production's stock is never picked")
+    class ProductionStock {
+
+        @Test
+        @DisplayName("a production order's hold is refused, by a pick line and by hand, and nothing moves")
+        void aProductionHoldIsRefused() {
+            UUID holdId = UUID.randomUUID();
+            Reservation hold = new Reservation(ReservationId.of(holdId), null, UUID.randomUUID(), UUID.randomUUID(),
+                    UUID.randomUUID(), Quantity.of(2), NOW.minusSeconds(3600), null, ReservationStatus.HELD, null, null);
+            StockItem item = new StockItem(StockItemId.newId(), SOFA, BIN, "LOT-1", LocalDate.of(2030, 1, 1),
+                    Quantity.of(10), StockStatus.AVAILABLE, List.of(hold), 0L, NOW.minusSeconds(86_400), null);
+            when(stockItems.findByReservationIdForUpdate(ReservationId.of(holdId))).thenReturn(Optional.of(item));
+
+            assertThat(refusal(() -> service.consumeForPick(holdId, UUID.randomUUID(), PICKER)))
+                    .isEqualTo(ErrorCode.PRODUCTION_HOLD_NOT_PICKABLE);
+            assertThat(refusal(() -> service.consume(holdId, PICKER))).isEqualTo(ErrorCode.PRODUCTION_HOLD_NOT_PICKABLE);
+            assertThat(ledgerRows).isEmpty();
+            assertThat(saved).isEmpty();
+        }
+
+        @Test
+        @DisplayName("an order's hold on goods in the print shop is refused too")
+        void goodsInThePrintShopAreRefused() {
+            UUID holdId = UUID.randomUUID();
+            Reservation hold = new Reservation(ReservationId.of(holdId), UUID.randomUUID(), UUID.randomUUID(),
+                    UUID.randomUUID(), Quantity.of(2), NOW.minusSeconds(3600), null, ReservationStatus.HELD, null, null);
+            StockItem item = new StockItem(StockItemId.newId(), SOFA, new LocationId("HCM-PRD01"), "LOT-1",
+                    LocalDate.of(2030, 1, 1), Quantity.of(2), StockStatus.IN_PRODUCTION, List.of(hold), 0L,
+                    NOW.minusSeconds(86_400), null);
+            when(stockItems.findByReservationIdForUpdate(ReservationId.of(holdId))).thenReturn(Optional.of(item));
+
+            assertThat(refusal(() -> service.consumeForPick(holdId, UUID.randomUUID(), PICKER)))
+                    .isEqualTo(ErrorCode.PRODUCTION_HOLD_NOT_PICKABLE);
+            assertThat(ledgerRows).isEmpty();
         }
     }
 

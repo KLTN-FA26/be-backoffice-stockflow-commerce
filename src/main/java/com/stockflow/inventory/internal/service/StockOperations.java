@@ -1,6 +1,8 @@
 package com.stockflow.inventory.internal.service;
 
 import com.stockflow.common.api.PageResponse;
+import com.stockflow.inventory.api.IssueReservedStockCommand;
+import com.stockflow.inventory.api.IssueReservedStockResult;
 import com.stockflow.inventory.api.MoveStockCommand;
 import com.stockflow.inventory.api.ReceiveStockCommand;
 import com.stockflow.inventory.api.ReclassifyStockCommand;
@@ -23,6 +25,48 @@ public interface StockOperations {
     StockMove move(MoveStockCommand command);
 
     StockMove receive(ReceiveStockCommand command);
+
+    /** See {@code InventoryService#issueReserved}. */
+    IssueReservedStockResult issueReserved(IssueReservedStockCommand command);
+
+    /** See {@code InventoryService#holdReceived}. */
+    com.stockflow.inventory.api.StockReservation holdReceived(com.stockflow.inventory.api.HoldReceivedStockCommand command);
+
+    /** See {@code InventoryService#consumeHeld}. */
+    StockMove consumeHeld(com.stockflow.inventory.api.ConsumeHeldStockCommand command);
+
+    /** See {@code InventoryService#unissueHeld}. */
+    IssueReservedStockResult unissueHeld(IssueReservedStockCommand command);
+
+    /** See {@code InventoryService#finishHeld}. */
+    IssueReservedStockResult finishHeld(IssueReservedStockCommand command);
+
+    /** See {@code InventoryService#scrapCancelledPrint}. */
+    Optional<StockAdjustmentSummary> scrapCancelledPrint(UUID reservationId, UUID orderId, String note,
+                                                         UUID requestedBy);
+
+    /**
+     * BR-PRD-10: the write-off of a cancelled order's printed goods was rejected or withdrawn; the goods are still
+     * held and out of sale, and this asks again, in {@code requestedBy}'s name. A write-off still standing is
+     * answered as it is.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code CONFLICT} for a hold no cancellation asked to scrap,
+     *         or one that is no longer printed goods waiting in packing
+     */
+    StockAdjustmentSummary askScrapAgain(UUID reservationId, String note, UUID requestedBy);
+
+    /**
+     * Whether {@code hold}, on the locked {@code item}, is finished custom goods of its order waiting in a PACKING
+     * area - which a release does not free (BR-PRD-10).
+     */
+    boolean isFinishedCustomGoods(com.stockflow.inventory.internal.domain.StockItem item,
+                                  com.stockflow.inventory.internal.domain.Reservation hold);
+
+    /** See {@code InventoryService#writeOffHeld}. */
+    StockAdjustmentSummary writeOffHeld(com.stockflow.inventory.api.WriteOffHeldStockCommand command);
+
+    /** See {@code InventoryService#returnHeld}. */
+    StockMove returnHeld(com.stockflow.inventory.api.ReturnHeldStockCommand command);
 
     StockMove reclassify(ReclassifyStockCommand command);
 

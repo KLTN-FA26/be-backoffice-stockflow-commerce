@@ -109,11 +109,11 @@ class OrderReleaseIntegrationTest {
         tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO production.production_order (id, order_number, type, mode, status, warehouse_id, blank_sku,
                     design_snapshot_id, design_checksum, planned_quantity, sales_order_id, sales_order_line_id, parent_id,
-                    subcontract_method, subcontractor_id, subcontract_unit_price, subcontract_currency)
-                SELECT ?, ?, 'ORDER', ?, 'PENDING_PREPRESS', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    origin, subcontract_method, subcontractor_id, subcontract_unit_price, subcontract_currency)
+                SELECT ?, ?, 'ORDER', ?, 'PENDING_PREPRESS', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                   FROM procurement.suppliers s WHERE s.code = 'GOVIET'""",
                 id, "LSX-IT-" + id.toString().substring(24), parent == null ? "IN_HOUSE" : "SUBCONTRACTED", hcm, CUP,
-                design, "a".repeat(64), planned, order, line, parent,
+                design, "a".repeat(64), planned, order, line, parent, parent == null ? null : "SPLIT",
                 parent == null ? null : "SUPPLIED_BLANKS", parent == null ? null : jdbc.queryForObject(
                         "SELECT id FROM procurement.suppliers WHERE code = 'GOVIET'", UUID.class),
                 parent == null ? null : new java.math.BigDecimal("800"), parent == null ? null : "VND"));
@@ -177,8 +177,19 @@ class OrderReleaseIntegrationTest {
         assertThat(jdbc.queryForList("SELECT to_status FROM ordering.order_status_history WHERE order_id = ?",
                 String.class, order)).contains("IN_PRODUCTION");
 
-        // Production splits the line: 6 in house, 4 subcontracted. The first one finishing is not enough.
-        UUID root = productionOrder(order, line, design, null, 6);
+        // The production module turns the release into the line's root production order (SCRUM-405);
+        // inserting a second root here would break BR-PRD-01. Production then splits the line:
+        // 6 in house, 4 subcontracted. The first one finishing is not enough.
+        Await.until("the release becomes the line's production order", Duration.ofSeconds(10), () -> jdbc.queryForObject(
+                "SELECT count(*) FROM production.production_order WHERE sales_order_line_id = ? AND parent_id IS NULL",
+                Integer.class, line) == 1);
+        UUID root = jdbc.queryForObject(
+                "SELECT id FROM production.production_order WHERE sales_order_line_id = ? AND parent_id IS NULL",
+                UUID.class, line);
+        assertThat(jdbc.queryForObject("SELECT approved_sample_id FROM production.production_order WHERE id = ?",
+                UUID.class, root)).isEqualTo(sample);
+        tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE production.production_order SET planned_quantity = 6 WHERE id = ?", root));
         UUID child = productionOrder(order, line, design, root, 4);
         publish(new ProductionCompleted(order, line, root, 6));
         Await.until("the first production order is recorded", Duration.ofSeconds(10), () -> jdbc.queryForObject(

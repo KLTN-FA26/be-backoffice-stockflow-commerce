@@ -82,15 +82,20 @@ order by pc.is_primary desc, pc.id limit 1
      * Whether each SKU may go on a new purchase order line, in one query (kltn-docs 01 BR-04, 02 BR-01).
      * Every SKU asked for is a key; one no variant carries is {@code VARIANT_NOT_ACTIVE}. The product's
      * status decides first, then the variant's.
+     *
+     * <p>{@code hold}: the products asked about are read {@code FOR SHARE}, in id order, and stay so until the
+     * caller's transaction ends. Every status move of a product or of one of its variants locks the product row
+     * {@code FOR UPDATE}, so it either committed before this read (and is seen) or waits for the caller.</p>
      */
-    public Map<String, Purchasability> purchasability(Collection<String> skus) {
+    public Map<String, Purchasability> purchasability(Collection<String> skus, boolean hold) {
         Map<String, Purchasability> result = new HashMap<>();
         skus.forEach(sku -> result.put(sku, Purchasability.VARIANT_NOT_ACTIVE));
         if (skus.isEmpty()) return result;
         String placeholders = String.join(",", Collections.nCopies(skus.size(), "?"));
         jdbc.query(
                 "select v.sku, v.status, p.status from product.variants v join product.products p"
-                        + " on p.id = v.product_id where v.sku in (" + placeholders + ")",
+                        + " on p.id = v.product_id where v.sku in (" + placeholders + ")"
+                        + (hold ? " order by p.id for share of p" : ""),
                 r -> {
                     result.put(r.getString(1), purchasabilityOf(status(r.getString(3)), r.getString(2)));
                 },
@@ -128,20 +133,25 @@ order by pc.is_primary desc, pc.id limit 1
                 after == null ? new Object[] {size} : new Object[] {after, size});
     }
 
-    public PublicationProduct.PublicationSku inventorySku(UUID productId, UUID variantId) {
-        return jdbc
-                .query(
-                        "select id,sku from product.variants where product_id=? and id=? and"
-                                + " status<>'OBSOLETE'",
-                        (r, n) ->
-                                new PublicationProduct.PublicationSku(
-                                        r.getObject(1, UUID.class), r.getString(2)),
-                        productId,
-                        variantId)
+    /**
+     * One variant of a product, whatever its status, for the screens that read and edit its inventory item. An
+     * OBSOLETE variant is included: its stock is still shipped or adjusted away (kltn-docs 01 §5.2), so its
+     * logistics and stock policy must stay readable; refusing to edit them is the caller's decision.
+     *
+     * @throws BusinessException {@code NOT_FOUND} when the product has no such variant
+     */
+    public VariantSku variantSku(UUID productId, UUID variantId) {
+        return jdbc.query("select id,sku,status from product.variants where product_id=? and id=?",
+                        (r, n) -> new VariantSku(r.getObject(1, UUID.class), r.getString(2),
+                                "OBSOLETE".equals(r.getString(3))),
+                        productId, variantId)
                 .stream()
                 .findFirst()
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
     }
+
+    /** A variant's id and SKU, and whether it is OBSOLETE. */
+    public record VariantSku(UUID variantId, String sku, boolean obsolete) {}
 
     public ProductEcommerce ecommerce(UUID id) {
         return jdbc

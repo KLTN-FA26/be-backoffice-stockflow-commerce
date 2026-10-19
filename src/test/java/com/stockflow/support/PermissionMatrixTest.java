@@ -45,6 +45,7 @@ import java.lang.reflect.Array;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.*;
+import java.util.concurrent.ThreadLocalRandom;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -78,16 +79,18 @@ class PermissionMatrixTest {
      * Handlers a CUSTOMER may call and get a 2xx from, because they answer only about the caller. The test still
      * checks that the answer contains none of another customer's ids.
      */
-    private static final Map<String, String> OWN_DATA_ONLY = Map.of(
-            "GET /api/v1/customers/me", "the caller's own profile (resolved from the token, no id taken from the request)",
-            "PUT /api/v1/customers/me", "edits the caller's own profile (resolved from the token)",
-            "GET /api/v1/designs", "list filtered to designs the caller owns (owner predicate in the query)",
-            "GET /api/v1/orders/me", "the caller's own orders, selected by the customer profile of the token",
-            "GET /api/v1/orders/payment-terms", "payment terms offered to the caller's own customer profile",
-            "GET /api/v1/receivables/me", "the caller's own receivables, selected by the customer profile of the token",
-            "GET /api/v1/notifications/me", "the caller's own inbox: every query is recipient_id = the token's subject",
-            "GET /api/v1/notifications/me/unread-count", "the caller's own unread count (recipient_id = the token's subject)",
-            "POST /api/v1/notifications/me/read-all", "marks only the caller's own inbox read (recipient_id = the token's subject)");
+    private static final Map<String, String> OWN_DATA_ONLY = Map.ofEntries(
+            Map.entry("GET /api/v1/customers/me", "the caller's own profile (resolved from the token, no id taken from the request)"),
+            Map.entry("PUT /api/v1/customers/me", "edits the caller's own profile (resolved from the token)"),
+            Map.entry("GET /api/v1/designs", "list filtered to designs the caller owns (owner predicate in the query)"),
+            Map.entry("GET /api/v1/orders/me", "the caller's own orders, selected by the customer profile of the token"),
+            Map.entry("GET /api/v1/orders/payment-terms", "payment terms offered to the caller's own customer profile"),
+            Map.entry("GET /api/v1/receivables/me", "the caller's own receivables, selected by the customer profile of the token"),
+            Map.entry("GET /api/v1/notifications/me", "the caller's own inbox: every query is recipient_id = the token's subject"),
+            Map.entry("GET /api/v1/notifications/me/unread-count", "the caller's own unread count (recipient_id = the token's subject)"),
+            Map.entry("POST /api/v1/notifications/me/read-all", "marks only the caller's own inbox read (recipient_id = the token's subject)"),
+            Map.entry("GET /api/v1/quotes", "portal list: the caller's own customer's quotes, sent ones only (SCRUM-448)"),
+            Map.entry("GET /api/v1/production/sample-requests", "portal list: the caller's own customer's sample requests (SCRUM-394)"));
 
     /**
      * Handlers with neither {@code @RequiresPermission} nor {@code @PreAuthorize}. They are open to anyone signed in
@@ -95,12 +98,15 @@ class PermissionMatrixTest {
      */
     private static final Map<String, String> UNGUARDED = Map.ofEntries(
             Map.entry("POST /api/v1/identity/auth/login", "public: this is what mints a token"),
-            Map.entry("POST /api/v1/customers/registrations", "public: a visitor signs up (permitAll in the filter chain)"),
-            Map.entry("POST /api/v1/orders/guest-checkout", "public: B2C guest checkout, off unless the rollout switch is on (permitAll)"),
+            Map.entry("POST /api/v1/customers/portal-activation",
+                    "public: a Sales-invited contact sets a password; the one-time token is the authorisation (permitAll for POST, SCRUM-450)"),
             Map.entry("GET /oauth2/jwks", "public: the signing keys the resource server validates tokens with (permitAll)"),
             Map.entry("GET /api/v1/public/products/{productId}/gallery", "public: published product images (permitAll)"),
             Map.entry("GET /api/v1/catalog/products", "any signed-in user: published storefront catalog, no private data"),
-            Map.entry("GET /api/v1/catalog/products/availability", "any signed-in user: stock availability by SKU, no private data"),
+            Map.entry("GET /api/v1/catalog/products/availability",
+                    "signed-in only (SCRUM-429): stock availability by SKU for an ACTIVE linked customer, checked in the service"),
+            Map.entry("GET /api/v1/catalog/products/prices",
+                    "signed-in CUSTOMER: the caller's own ACTIVE customer's prices, the customer taken from the token; staff 403 (StorefrontPriceService)"),
             Map.entry("GET /api/v1/catalog/products/{slug}", "any signed-in user: one published product"),
             Map.entry("GET /api/v1/catalog/products/{slug}/gallery", "any signed-in user: published images of one product"),
             Map.entry("GET /api/v1/catalog/search/suggestions", "any signed-in user: titles of published products, no price or stock"),
@@ -111,22 +117,41 @@ class PermissionMatrixTest {
             Map.entry("POST /api/v1/identity/auth/logout-others", "any signed-in user: ends the caller's other sessions"),
             Map.entry("PUT /api/v1/identity/auth/password", "any signed-in user: changes the caller's own password (current password required)"));
 
+    /**
+     * Deprecated routes kept for existing clients, and the canonical route each one stands for. The old one must carry
+     * exactly the guard of the new one: a deprecated alias is the classic place for a permission to drift.
+     */
+    private static final Map<String, String> DEPRECATED_ALIASES = Map.of(
+            "GET /api/v1/products/{productId}/skus/{skuId}/logistics", "GET /api/v1/products/{productId}/variants/{variantId}/logistics",
+            "PUT /api/v1/products/{productId}/skus/{skuId}/logistics", "PUT /api/v1/products/{productId}/variants/{variantId}/logistics",
+            "GET /api/v1/products/{productId}/skus/{skuId}/inventory-control",
+            "GET /api/v1/products/{productId}/variants/{variantId}/inventory-control",
+            "PUT /api/v1/products/{productId}/skus/{skuId}/inventory-control",
+            "PUT /api/v1/products/{productId}/variants/{variantId}/inventory-control",
+            "GET /api/v1/products/{productId}/skus/{sku}/base-price", "GET /api/v1/products/{productId}/variants/{variantId}/base-price",
+            "PUT /api/v1/products/{productId}/skus/{sku}/base-price", "PUT /api/v1/products/{productId}/variants/{variantId}/base-price");
+
     /** A valid body for the customer-reachable write handlers, so validation (400) cannot hide a missing owner check. */
     private Map<String, String> attackBodies() {
         String address = """
                 {"type":"SHIPPING","recipientName":"Mallory","phone":"0901234567","line1":"1 Evil St","wardCode":"26734",
                  "wardName":"Ward","provinceCode":"79","provinceName":"Province","countryCode":"VN","defaultAddress":false,"version":0}""";
-        return Map.of(
-                "POST /api/v1/customers/{customerId}/addresses", address,
-                "PUT /api/v1/customers/{customerId}/addresses/{addressId}", address,
-                "PUT /api/v1/customers/{customerId}", "{\"fullName\":\"Mallory\",\"version\":0}",
-                "PUT /api/v1/customers/me", "{\"fullName\":\"Attacker renamed\",\"version\":0}",
-                "POST /api/v1/orders", "{\"requestId\":\"" + UUID.randomUUID() + "\",\"customerId\":\"" + victimCustomer
-                        + "\",\"lines\":[{\"sku\":\"SOFA-3S-GREY\",\"quantity\":1,\"unitPrice\":1000}]}",
-                "PUT /api/v1/designs/{id}/specification", "{\"version\":0,\"spec\":\"stolen\"}",
-                "POST /api/v1/designs/{id}/change-requests", "{\"version\":0,\"reason\":\"stolen\"}",
-                "POST /api/v1/designs/{id}/confirmation-withdrawals", "{\"version\":0,\"reason\":\"stolen\"}",
-                "POST /api/v1/designs/{id}/confirmations", "{\"version\":0,\"artifactId\":\"" + UUID.randomUUID() + "\"}");
+        return Map.ofEntries(
+                Map.entry("POST /api/v1/customers/{customerId}/addresses", address),
+                Map.entry("PUT /api/v1/customers/{customerId}/addresses/{addressId}", address),
+                Map.entry("PUT /api/v1/customers/{customerId}", "{\"fullName\":\"Mallory\",\"version\":0}"),
+                Map.entry("PUT /api/v1/customers/me", "{\"fullName\":\"Attacker renamed\",\"version\":0}"),
+                Map.entry("POST /api/v1/orders", "{\"requestId\":\"" + UUID.randomUUID() + "\",\"customerId\":\"" + victimCustomer
+                        + "\",\"lines\":[{\"sku\":\"SOFA-3S-GREY\",\"quantity\":1,\"unitPrice\":1000}]}"),
+                Map.entry("PUT /api/v1/designs/{id}/specification", "{\"version\":0,\"spec\":\"stolen\"}"),
+                Map.entry("POST /api/v1/designs/{id}/change-requests", "{\"version\":0,\"reason\":\"stolen\"}"),
+                Map.entry("POST /api/v1/designs/{id}/confirmation-withdrawals", "{\"version\":0,\"reason\":\"stolen\"}"),
+                Map.entry("POST /api/v1/designs/{id}/confirmations", "{\"version\":0,\"artifactId\":\"" + UUID.randomUUID() + "\"}"),
+                // SCRUM-448 / 394 / R1: valid bodies, so only the owner check can refuse the victim's quote, sample and order.
+                Map.entry("POST /api/v1/quotes/{quoteId}/acceptance", "{\"version\":0}"),
+                Map.entry("POST /api/v1/quotes/{quoteId}/change-request", "{\"version\":0,\"feedback\":\"stolen\"}"),
+                Map.entry("POST /api/v1/production/sample-requests/{sampleRequestId}/change-request", "{\"feedback\":\"stolen\"}"),
+                Map.entry("POST /api/v1/orders/{orderId}/reorder", "{\"requestId\":\"" + UUID.randomUUID() + "\"}"));
     }
 
 
@@ -139,7 +164,8 @@ class PermissionMatrixTest {
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
 
-    UUID attackerUser, victimUser, victimCustomer, victimAddress, victimOrder, victimDesign, victimReceivable;
+    UUID attackerUser, victimUser, victimCustomer, victimAddress, victimOrder, victimDesign, victimReceivable, victimQuote,
+            victimSampleRequest;
 
     @BeforeEach
     void victim() {
@@ -151,6 +177,8 @@ class PermissionMatrixTest {
         victimOrder = Identifiers.newId();
         victimDesign = Identifiers.newId();
         victimReceivable = Identifiers.newId();
+        victimQuote = Identifiers.newId();
+        victimSampleRequest = Identifiers.newId();
         UUID snapshot = Identifiers.newId();
         tx.executeWithoutResult(s -> {
             jdbc.update("INSERT INTO customer.customer (id, user_id, full_name, email, status, version, created_at) VALUES (?, ?, 'Attacker', ?, 'ACTIVE', 0, NOW())",
@@ -167,12 +195,36 @@ class PermissionMatrixTest {
             jdbc.update("""
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at, version, created_at)
                     VALUES (?, ?, ?, ?, 'ON_HOLD', 1000, 'VND', NOW(), 0, NOW())""",
-                    victimOrder, "SO-20991231-%06d".formatted(new Random().nextInt(1_000_000)), victimCustomer, UUID.randomUUID());
+                    victimOrder, "SO-20991231-%06d".formatted(ThreadLocalRandom.current().nextInt(1_000_000)), victimCustomer, UUID.randomUUID());
             jdbc.update("INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency) VALUES (?, ?, 'TABLE-OAK-160', 1, 1000, 'VND')",
                     Identifiers.newId(), victimOrder);
             jdbc.update("""
                     INSERT INTO payment.receivable (id, order_id, customer_id, amount, currency, issued_at, due_date, status)
                     VALUES (?, ?, ?, 1000, 'VND', NOW(), CURRENT_DATE + 30, 'OPEN')""", victimReceivable, victimOrder, victimCustomer);
+            // The victim's own quote, sent to them, and a sample request of theirs (SCRUM-448 / 394).
+            int n = ThreadLocalRandom.current().nextInt(1_000_000);
+            jdbc.update("""
+                    INSERT INTO ordering.quote (id, quote_number, request_id, customer_id, status, payment_term, valid_until,
+                        sent_at, sent_by, version, created_at)
+                    VALUES (?, ?, ?, ?, 'SENT', 'PREPAID', NOW() + INTERVAL '7 days', NOW(), ?, 0, NOW())""",
+                    victimQuote, "QT-20991231-%06d".formatted(n), UUID.randomUUID(), victimCustomer, victimUser);
+            jdbc.update("""
+                    INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at, artifact_manifest)
+                    VALUES (?, ?, ?, 'https://example.com/victim.pdf', NOW(), NOW(), '[]'::jsonb)""",
+                    snapshot, victimDesign, "c".repeat(64));
+            jdbc.update("""
+                    INSERT INTO production.sample_request (id, request_number, customer_id, blank_sku, design_snapshot_id,
+                        quantity, status, version, created_at)
+                    VALUES (?, ?, ?, 'SOFA-3S-GREY', ?, 1, 'DRAFT', 0, NOW())""",
+                    victimSampleRequest, "SR-20991231-%06d".formatted(n), victimCustomer, snapshot);
+            // A quote without a line is not a quote (Quote.Offer refuses to restore it, 400 before any owner check):
+            // one line of the victim's design with one price tier, so only the owner check can refuse it.
+            UUID victimQuoteLine = Identifiers.newId();
+            jdbc.update("""
+                    INSERT INTO ordering.quote_line (id, quote_id, line_no, blank_sku, design_snapshot_id, quantity)
+                    VALUES (?, ?, 1, 'SOFA-3S-GREY', ?, 1)""", victimQuoteLine, victimQuote, snapshot);
+            jdbc.update("INSERT INTO ordering.quote_price_tier (quote_line_id, min_quantity, unit_price) VALUES (?, 1, 1000)",
+                    victimQuoteLine);
         });
     }
 
@@ -205,6 +257,8 @@ class PermissionMatrixTest {
                 case "orderId" -> victimOrder;
                 case "designId" -> victimDesign;
                 case "receivableId" -> victimReceivable;
+                case "quoteId" -> victimQuote;
+                case "sampleRequestId" -> victimSampleRequest;
                 case "id" -> h.template().startsWith("/api/v1/designs") ? victimDesign
                         : h.template().startsWith("/api/v1/orders") ? victimOrder : UUID.randomUUID();
                 default -> UUID.randomUUID();
@@ -280,7 +334,8 @@ class PermissionMatrixTest {
             int status = Integer.parseInt(answer.substring(0, 3));
             if (OWN_DATA_ONLY.containsKey(h.key())) {
                 if (status >= 500) problems.add(h.key() + " answered " + status);
-                for (UUID other : List.of(victimCustomer, victimAddress, victimOrder, victimDesign, victimReceivable)) {
+                for (UUID other : List.of(victimCustomer, victimAddress, victimOrder, victimDesign, victimReceivable,
+                        victimQuote, victimSampleRequest)) {
                     if (answer.contains(other.toString())) problems.add(h.key() + " (own-data-only) exposed another customer's id " + other);
                 }
             } else if (status != 403 && status != 404) {
@@ -304,8 +359,11 @@ class PermissionMatrixTest {
     @Test
     void theOwnerOfTheSameRowsIsServed() throws Exception {
         SecuredMvc http = new SecuredMvc(mvc, decoder);
+        // The victim's quote and sample request are valid rows their owner reads (B-6a): the 404 the attacker gets is
+        // the owner check, not a broken fixture.
         for (String path : List.of("/api/v1/orders/" + victimOrder, "/api/v1/orders/me/" + victimOrder,
-                "/api/v1/designs/" + victimDesign, "/api/v1/customers/" + victimCustomer + "/addresses")) {
+                "/api/v1/designs/" + victimDesign, "/api/v1/customers/" + victimCustomer + "/addresses",
+                "/api/v1/quotes/" + victimQuote, "/api/v1/production/sample-requests/" + victimSampleRequest)) {
             assertThat(http.asCustomer(victimUser, MockMvcRequestBuilders.get(path)).andReturn().getResponse().getStatus())
                     .as("the owner reading " + path).isEqualTo(200);
         }
@@ -329,6 +387,22 @@ class PermissionMatrixTest {
             assertThat(byKey.get(key).preAuthorize()).as(key + " is guarded now").isFalse();
         });
         attackBodies().keySet().forEach(key -> assertThat(byKey).as("attack body for " + key).containsKey(key));
+    }
+
+    @Test
+    void aDeprecatedRouteKeepsTheGuardOfItsCanonicalRoute() {
+        Map<String, Handler> byKey = new HashMap<>();
+        handlers().forEach(h -> byKey.put(h.key(), h));
+        DEPRECATED_ALIASES.forEach((old, canonical) -> {
+            assertThat(byKey).as(old).containsKey(old);
+            assertThat(byKey).as(canonical).containsKey(canonical);
+            RequiresPermission was = byKey.get(old).rp();
+            RequiresPermission is = byKey.get(canonical).rp();
+            assertThat(was).as(old + " is guarded").isNotNull();
+            assertThat(is).as(canonical + " is guarded").isNotNull();
+            assertThat(PermissionCode.of(was.resource(), was.action())).as(old + " vs " + canonical)
+                    .isEqualTo(PermissionCode.of(is.resource(), is.action()));
+        });
     }
 
     @Test

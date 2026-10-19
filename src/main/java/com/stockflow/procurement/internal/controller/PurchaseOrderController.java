@@ -85,16 +85,22 @@ class PurchaseOrderController {
     private final PurchaseOrderWebMapper mapper;
     private final NotificationService notifications;
     private final Clock clock;
+    private final com.stockflow.procurement.internal.service.SubcontractAmendments amendments;
+    private final com.stockflow.procurement.api.SubcontractPurchasing subcontracting;
 
     PurchaseOrderController(
             ProcurementService procurementService,
             PurchaseOrderWebMapper mapper,
             NotificationService notifications,
-            Clock clock) {
+            Clock clock,
+            com.stockflow.procurement.internal.service.SubcontractAmendments amendments,
+            com.stockflow.procurement.api.SubcontractPurchasing subcontracting) {
         this.procurementService = procurementService;
         this.mapper = mapper;
         this.notifications = notifications;
         this.clock = clock;
+        this.amendments = amendments;
+        this.subcontracting = subcontracting;
     }
 
     @PostMapping
@@ -193,6 +199,42 @@ class PurchaseOrderController {
                                                      @AuthenticatedUser CurrentUser user,
                                                      @Valid @RequestBody CancelPurchaseOrderRequest request) {
         return ApiResponse.ok(toResponse(procurementService.reject(purchaseOrderId, user.userId(), request.reason())));
+    }
+
+    /**
+     * BR-02, 03 §16 "PO supplement": a SUBCONTRACT order already approved got more quantity for a resend after a QC
+     * shortfall; the amendment is approved by someone other than who asked for it, with the approval permission.
+     */
+    @PostMapping("/{purchaseOrderId}/amendment/approval")
+    @Operation(summary = "Approve the amendment waiting on an approved SUBCONTRACT purchase order (four eyes)")
+    @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.APPROVE)
+    public ApiResponse<PurchaseOrderResponse> approveAmendment(@PathVariable UUID purchaseOrderId,
+                                                               @AuthenticatedUser CurrentUser user) {
+        amendments.approveAmendment(purchaseOrderId, user.userId());
+        return ApiResponse.ok(toResponse(procurementService.findById(purchaseOrderId).orElseThrow()));
+    }
+
+    @PostMapping("/{purchaseOrderId}/amendment/rejection")
+    @Operation(summary = "Reject the amendment waiting on an approved SUBCONTRACT purchase order, with a reason")
+    @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.APPROVE)
+    public ApiResponse<PurchaseOrderResponse> rejectAmendment(@PathVariable UUID purchaseOrderId,
+                                                              @AuthenticatedUser CurrentUser user,
+                                                              @Valid @RequestBody CancelPurchaseOrderRequest request) {
+        amendments.rejectAmendment(purchaseOrderId, user.userId(), request.reason());
+        return ApiResponse.ok(toResponse(procurementService.findById(purchaseOrderId).orElseThrow()));
+    }
+
+    /**
+     * BR-PRD-17, 04c G10: what a SUBCONTRACT order owes once its production order ended - QC-passed units paid,
+     * failed ones not, approved excess loss deducted, an agreed cancellation fee added. The basis of the invoice match.
+     */
+    @GetMapping("/{purchaseOrderId}/subcontract-settlement")
+    @Operation(summary = "The settlement of a SUBCONTRACT purchase order (BR-PRD-17)")
+    @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.READ)
+    public ApiResponse<com.stockflow.procurement.api.SubcontractSettlement> subcontractSettlement(
+            @PathVariable UUID purchaseOrderId) {
+        return ApiResponse.ok(subcontracting.settlement(purchaseOrderId).orElseThrow(() ->
+                new com.stockflow.common.error.NotFoundException("subcontract-settlement", purchaseOrderId)));
     }
 
     /** {@code /sending} is the old name, kept while the screens move to {@code /confirmation}. */

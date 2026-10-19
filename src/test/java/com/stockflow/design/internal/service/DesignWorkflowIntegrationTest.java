@@ -91,7 +91,7 @@ class DesignWorkflowIntegrationTest {
     /** The owner's own customer profile, as the customer module answers it. */
     private void ownerProfile(UUID user, UUID customerId) {
         when(customers.findByUserId(user)).thenReturn(Optional.of(new com.stockflow.customer.api.CustomerSummary(
-                customerId, user, "Owner", "owner@example.com", null, null, "ACTIVE", 0, Instant.EPOCH)));
+                customerId, user, "Owner", "owner@example.com", null, null, null, "ACTIVE", 0, Instant.EPOCH)));
     }
 
     @Test void ownerOfAnotherCustomerIsRefusedAtCreate() {

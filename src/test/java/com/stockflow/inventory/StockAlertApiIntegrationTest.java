@@ -1,5 +1,6 @@
 package com.stockflow.inventory;
 
+import com.stockflow.common.domain.BusinessCalendar;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.inventory.internal.domain.StockAlert;
 import com.stockflow.inventory.internal.domain.StockAlert.Key;
@@ -77,8 +78,11 @@ class StockAlertApiIntegrationTest {
         expiringSku = fixtures.sku(null, null);
         expiredSku = fixtures.sku(null, null);
         reorder = open(Key.stockLevel(Kind.REORDER, reorderSku), 3, 10, false);
-        expiring = open(Key.expiry(Kind.EXPIRING, expiringSku, hcm, "LOT-1", LocalDate.now().plusDays(10)), 7, null, false);
-        expiredElsewhere = open(Key.expiry(Kind.EXPIRED, expiredSku, other.id(), "LOT-2", LocalDate.now().minusDays(2)), 4, null, true);
+        // daysToExpiry counts from the business date (Asia/Ho_Chi_Minh), not the JVM's: on a UTC runner after 17:00
+        // UTC the two differ by a day.
+        LocalDate today = BusinessCalendar.date(Instant.now());
+        expiring = open(Key.expiry(Kind.EXPIRING, expiringSku, hcm, "LOT-1", today.plusDays(10)), 7, null, false);
+        expiredElsewhere = open(Key.expiry(Kind.EXPIRED, expiredSku, other.id(), "LOT-2", today.minusDays(2)), 4, null, true);
     }
 
     private StockAlert open(Key key, int qty, Integer threshold, boolean impaired) {
@@ -224,8 +228,11 @@ class StockAlertApiIntegrationTest {
 
     @Test
     void aResolvedAlertCannotBeAcknowledged() throws Exception {
-        tx.executeWithoutResult(s -> jdbc.update("UPDATE inventory.stock_alert SET status = 'RESOLVED', resolved_at = NOW(),"
-                + " resolution = 'RECOVERED', version = version + 1 WHERE id = ?", reorder.id()));
+        // GREATEST: opened_at came from the JVM clock, NOW() from the database's, and a database container's clock can
+        // trail the host's by milliseconds - enough for ck_stock_alert_opened to refuse the fixture itself.
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE inventory.stock_alert SET status = 'RESOLVED',"
+                + " resolved_at = GREATEST(NOW(), opened_at), resolution = 'RECOVERED', version = version + 1 WHERE id = ?",
+                reorder.id()));
         ack(planner, reorder.id(), "{\"version\":1}").andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("INVALID_ALERT_TRANSITION"));
     }

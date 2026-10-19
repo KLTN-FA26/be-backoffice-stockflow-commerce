@@ -17,6 +17,7 @@ import com.stockflow.product.api.ProductPublication;
 import com.stockflow.product.api.ProductStatus;
 import com.stockflow.product.internal.domain.ProductChangeType;
 import com.stockflow.product.internal.repository.ProductChangeLogRepository;
+import com.stockflow.product.internal.repository.ProductCommerceRepository;
 import com.stockflow.product.internal.repository.VariantSalesUnitRepository;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
@@ -45,15 +46,17 @@ import java.util.UUID;
 public class SkuUnitService {
 
     private final ProductPublication products;
+    private final ProductCommerceRepository variants;
     private final UomConversionService units;
     private final VariantSalesUnitRepository salesUnits;
     private final ProductChangeLogRepository history;
     private final CurrentUserProvider users;
 
-    public SkuUnitService(ProductPublication products, UomConversionService units,
+    public SkuUnitService(ProductPublication products, ProductCommerceRepository variants, UomConversionService units,
                           VariantSalesUnitRepository salesUnits, ProductChangeLogRepository history,
                           CurrentUserProvider users) {
         this.products = products;
+        this.variants = variants;
         this.units = units;
         this.salesUnits = salesUnits;
         this.history = history;
@@ -193,14 +196,19 @@ public class SkuUnitService {
 
     private Sku readSku(UUID productId, UUID variantId) {
         products.read(productId);
-        return new Sku(products.inventorySku(productId, variantId).sku());
+        return new Sku(variants.variantSku(productId, variantId).sku());
     }
 
     private Sku editableSku(UUID productId, UUID variantId) {
         var product = products.lock(productId);
         if (product.status() == ProductStatus.DISCONTINUED || product.status() == ProductStatus.PENDING_APPROVAL)
             throw new BusinessException(ErrorCode.CONFLICT);
-        return new Sku(products.inventorySku(productId, variantId).sku());
+        var variant = variants.variantSku(productId, variantId);
+        if (variant.obsolete()) {
+            throw new BusinessException(ErrorCode.VARIANT_OBSOLETE,
+                    "SKU %s is obsolete: its units are kept as they are".formatted(variant.sku()));
+        }
+        return new Sku(variant.sku());
     }
 
     private static void checkPrice(UomConversion unit, BigDecimal price) {

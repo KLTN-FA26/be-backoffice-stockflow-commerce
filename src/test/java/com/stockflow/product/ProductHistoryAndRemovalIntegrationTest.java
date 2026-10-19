@@ -572,4 +572,142 @@ class ProductHistoryAndRemovalIntegrationTest {
                 .errorCode()).isEqualTo(ErrorCode.PRODUCT_IN_USE);
         assertThat(products.findById(created.productId())).isPresent();
     }
+
+    // ------------------------------------------------------------------ stock alerts and SKU-keyed references
+
+    /** A REORDER episode of the SKU, open or already resolved, and a row on the alert queue: what a reorder point leaves. */
+    private void alertsOf(String sku) {
+        tx.executeWithoutResult(s -> {
+            jdbc.update("""
+                    INSERT INTO inventory.stock_alert (id, kind, sku, observed_qty, threshold_qty, status, opened_at, last_observed_at)
+                    VALUES (?, 'REORDER', ?, 0, 10, 'OPEN', NOW(), NOW())""", Identifiers.newId(), sku);
+            jdbc.update("""
+                    INSERT INTO inventory.stock_alert (id, kind, sku, observed_qty, threshold_qty, status, opened_at, last_observed_at,
+                        resolved_at, resolution)
+                    VALUES (?, 'SAFETY', ?, 0, 5, 'RESOLVED', NOW() - INTERVAL '1 day', NOW() - INTERVAL '1 day', NOW(), 'RECOVERED')""",
+                    Identifiers.newId(), sku);
+            jdbc.update("INSERT INTO inventory.stock_alert_dirty (sku) VALUES (?)", sku);
+        });
+    }
+
+    private long alertRows(String sku) {
+        return jdbc.queryForObject("SELECT count(*) FROM inventory.stock_alert WHERE sku = ?", Long.class, sku);
+    }
+
+    @Test
+    @DisplayName("a draft whose SKU got a reorder point (and so stock alerts) is still deleted: the alerts and queue rows go with its item")
+    void deleteDraftTakesItsStockAlertsAlong() {
+        ProductSummary created = draft();
+        UUID id = created.productId();
+        UUID defaultId = defaultVariant(id);
+        skus.update(id, defaultId, skus.get(id, defaultId).version(),
+                new InventoryPolicy(10, 5, RemovalStrategy.FIFO, TrackingMode.NONE, false, null));
+        alertsOf(created.code());
+        assertThat(alertRows(created.code())).isEqualTo(2);
+
+        products.deleteDraft(id, products.findById(id).orElseThrow().version());
+
+        assertThat(products.findById(id)).isEmpty();
+        assertThat(alertRows(created.code())).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_alert_dirty WHERE sku = ?", Long.class,
+                created.code())).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.inventory_items WHERE sku = ?", Long.class,
+                created.code())).isZero();
+    }
+
+    @Test
+    @DisplayName("a DRAFT SKU with stock alerts is still renamed: its alerts follow the new code")
+    void renamingADraftSkuMovesItsAlerts() {
+        ProductSummary created = draft();
+        UUID id = created.productId();
+        UUID defaultId = defaultVariant(id);
+        alertsOf(created.code());
+        String renamed = created.code() + "-NEW";
+
+        var view = variants.update(id, defaultId, new NewVariant(renamed, null, null, null));
+
+        assertThat(view.sku()).isEqualTo(renamed);
+        assertThat(alertRows(created.code())).isZero();
+        assertThat(alertRows(renamed)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.inventory_items WHERE sku = ?", Long.class, renamed)).isOne();
+    }
+
+    @Test
+    @DisplayName("a DRAFT SKU an adjustment refers to (no stock row) is in use: rename INVALID_VARIANT_TRANSITION, delete PRODUCT_IN_USE naming it")
+    void aSkuKeyedReferenceRefusesRenameAndDeleteByName() {
+        ProductSummary created = draft();
+        UUID id = created.productId();
+        UUID defaultId = defaultVariant(id);
+        String location = jdbc.queryForObject("SELECT location_code FROM warehouse.storage_location ORDER BY location_code LIMIT 1",
+                String.class);
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by)
+                VALUES (?, ?, ?, ?, 5, 'FOUND', ?)""", Identifiers.newId(), "ADJ-" + suffix, location, created.code(), editor));
+
+        BusinessException rename = refusal(org.assertj.core.api.Assertions.catchThrowable(() ->
+                variants.update(id, defaultId, new NewVariant(created.code() + "-NEW", null, null, null))));
+        assertThat(rename.errorCode()).isEqualTo(ErrorCode.INVALID_VARIANT_TRANSITION);
+
+        BusinessException delete = refusal(org.assertj.core.api.Assertions.catchThrowable(() ->
+                products.deleteDraft(id, products.findById(id).orElseThrow().version())));
+        assertThat(delete.errorCode()).isEqualTo(ErrorCode.PRODUCT_IN_USE);
+        assertThat(delete.getMessage()).contains(created.code());
+        assertThat(delete.getCause()).as("refused before any DELETE ran").isNull();
+
+        assertThat(products.findById(id)).isPresent();
+        assertThat(jdbc.queryForObject("SELECT sku FROM product.variants WHERE id = ?", String.class, defaultId))
+                .isEqualTo(created.code());
+    }
+
+    @Test
+    @DisplayName("audit of #109: a customer's own price for a DRAFT SKU counts as a use - rename and delete are refused by name, not by a foreign key")
+    void aCustomersOwnPriceIsAUse() {
+        ProductSummary created = draft();
+        UUID id = created.productId();
+        UUID defaultId = defaultVariant(id);
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO catalog.customer_price (id, customer_id, sku, created_at)
+                VALUES (?, 'c0000000-0000-4000-8000-000000000001', ?, NOW())""", Identifiers.newId(), created.code()));
+
+        BusinessException rename = refusal(org.assertj.core.api.Assertions.catchThrowable(() ->
+                variants.update(id, defaultId, new NewVariant(created.code() + "-NEW", null, null, null))));
+        assertThat(rename.errorCode()).isEqualTo(ErrorCode.INVALID_VARIANT_TRANSITION);
+        BusinessException delete = refusal(org.assertj.core.api.Assertions.catchThrowable(() ->
+                products.deleteDraft(id, products.findById(id).orElseThrow().version())));
+        assertThat(delete.errorCode()).isEqualTo(ErrorCode.PRODUCT_IN_USE);
+        assertThat(delete.getMessage()).contains(created.code());
+        assertThat(delete.getCause()).as("refused before any DELETE ran").isNull();
+    }
+
+    @Test
+    @DisplayName("an OBSOLETE variant's logistics and stock policy stay readable (its stock is still cleared); editing them is VARIANT_OBSOLETE")
+    void obsoleteVariantIsReadButNotEdited() {
+        ProductSummary created = draft();
+        UUID id = created.productId();
+        var extra = variants.add(id, new NewVariant("FX-" + suffix + "-OB", "Obsolete", null, null));
+        products.submit(id, editor);
+        actAs(approver);
+        products.approve(id, approver);
+        variants.obsolete(id, extra.id());
+        actAs(editor);
+
+        var logistics = skus.logistics(id, extra.id());
+        var control = skus.get(id, extra.id());
+        assertThat(control.sku()).isEqualTo(extra.sku());
+
+        assertThat(refusal(org.assertj.core.api.Assertions.catchThrowable(() -> skus.update(id, extra.id(), control.version(),
+                new InventoryPolicy(4, 1, RemovalStrategy.FIFO, TrackingMode.NONE, false, null)))).errorCode())
+                .isEqualTo(ErrorCode.VARIANT_OBSOLETE);
+        assertThat(refusal(org.assertj.core.api.Assertions.catchThrowable(() -> skus.describe(id, extra.id(), logistics.version(),
+                logistics.logistics()))).errorCode()).isEqualTo(ErrorCode.VARIANT_OBSOLETE);
+
+        // Discontinuing makes every variant obsolete; the reads still answer.
+        products.discontinue(id, "Ngừng", products.findById(id).orElseThrow().version());
+        UUID defaultId = defaultVariant(id);
+        assertThat(skus.logistics(id, defaultId).sku()).isEqualTo(created.code());
+        assertThat(skus.get(id, defaultId).sku()).isEqualTo(created.code());
+        // Another product's variant is still NOT_FOUND.
+        assertThat(refusal(org.assertj.core.api.Assertions.catchThrowable(() -> skus.get(UUID.randomUUID(), defaultId)))
+                .errorCode()).isIn(ErrorCode.NOT_FOUND, ErrorCode.PRODUCT_NOT_FOUND);
+    }
 }

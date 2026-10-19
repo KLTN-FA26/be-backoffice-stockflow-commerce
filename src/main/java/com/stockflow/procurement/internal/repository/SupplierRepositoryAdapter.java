@@ -117,7 +117,8 @@ class SupplierRepositoryAdapter implements SupplierRepository {
     }
 
     @Override
-    public PageResponse<Supplier> list(int page, int size, String search, SupplierStatus status, String sort) {
+    public PageResponse<Supplier> list(int page, int size, String search, SupplierStatus status,
+                                       Boolean printSubcontractor, String sort) {
         Specification<SupplierJpaEntity> spec = (root, query, cb) -> {
             var predicates = new ArrayList<Predicate>();
             if (search != null && !search.isBlank()) {
@@ -129,6 +130,7 @@ class SupplierRepositoryAdapter implements SupplierRepository {
                         cb.like(cb.lower(root.get("taxCode")), term, '\\')));
             }
             if (status != null) predicates.add(cb.equal(root.get("status"), status));
+            if (printSubcontractor != null) predicates.add(cb.equal(root.get("printSubcontractor"), printSubcontractor));
             return cb.and(predicates.toArray(Predicate[]::new));
         };
         var rows = jpa.findAll(spec, Pages.of(page, size, SORT.parse(sort)));

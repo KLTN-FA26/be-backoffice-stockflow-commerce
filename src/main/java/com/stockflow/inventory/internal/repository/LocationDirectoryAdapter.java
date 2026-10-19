@@ -25,4 +25,11 @@ class LocationDirectoryAdapter implements LocationDirectory {
                 .map(view -> view.usable() ? LocationState.USABLE : LocationState.UNUSABLE)
                 .orElse(LocationState.UNKNOWN);
     }
+
+    @Override
+    public boolean isPackingArea(LocationId location) {
+        return warehouses.findLocation(location.code())
+                .map(view -> view.areaType() == com.stockflow.warehouse.api.StorageLocationView.AreaType.PACKING)
+                .orElse(false);
+    }
 }

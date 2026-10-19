@@ -188,6 +188,11 @@ class OrderTest {
         Order order = submittedOrder();
         paidInFull(order);
         order.pullDomainEvents();
+        // Decision 2026-10-17: nothing is kept before printing; once printing started a share may be.
+        assertThatThrownBy(() -> order.cancel(CancellationReasonCode.CUSTOMER_REQUEST, "changed supplier",
+                new BigDecimal("25"), STAFF, NOW)).isInstanceOfSatisfying(BusinessException.class,
+                e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.CANCELLATION_FEE_BEFORE_PRINTING));
+        order.recordPrintingStarted(NOW);
 
         order.cancel(CancellationReasonCode.CUSTOMER_REQUEST, "changed supplier", new BigDecimal("25"), STAFF, NOW);
 
