@@ -401,6 +401,29 @@ class PermissionMatrixTest {
         });
     }
 
+    /**
+     * kltn-docs 01 §5.1: suspending, resuming and discontinuing a product are the System Admin's. The three handlers
+     * need {@code product-lifecycle:APPROVE}, and the seeded matrix grants it to SYSTEM_ADMIN and nobody else - not
+     * the E-commerce Admin, who approves and publishes with {@code product-products:APPROVE}.
+     */
+    @Test
+    void onlyTheSystemAdminSuspendsResumesAndDiscontinuesAProduct() {
+        PermissionCode lifecycle = PermissionCode.of("product-lifecycle", com.stockflow.common.security.Action.APPROVE);
+        Map<String, PermissionCode> guards = new TreeMap<>();
+        for (Handler h : handlers()) {
+            if (h.key().matches("POST /api/v1/products/\\{productId}/(suspension|resumption|discontinuation)")) {
+                guards.put(h.key(), h.rp() == null ? null : PermissionCode.of(h.rp().resource(), h.rp().action()));
+            }
+        }
+        assertThat(guards).hasSize(3).allSatisfy((key, guard) -> assertThat(guard).as(key).isEqualTo(lifecycle));
+        List<Role> holders = Arrays.stream(Role.values())
+                .filter(role -> roles.resolve(List.of(role.authority())).permissions().contains(lifecycle))
+                .toList();
+        assertThat(holders).containsExactly(Role.SYSTEM_ADMIN);
+        assertThat(roles.resolve(List.of(Role.ECOMMERCE_ADMIN.authority())).permissions())
+                .contains(PermissionCode.of("product-products", com.stockflow.common.security.Action.APPROVE));
+    }
+
     @Test
     void everyUnguardedHandlerIsDeclared() {
         List<String> undeclared = handlers().stream()

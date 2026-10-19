@@ -4,14 +4,10 @@ import com.stockflow.product.api.ListProductsQuery;
 import com.stockflow.product.api.ProductService;
 import com.stockflow.product.api.ProductStatus;
 import com.stockflow.product.internal.controller.dto.CreateProductRequest;
-import com.stockflow.product.internal.controller.dto.DiscontinueProductRequest;
 import com.stockflow.product.internal.controller.dto.OpenReferencesResponse;
-import com.stockflow.product.internal.controller.dto.ProductDiscontinuationResponse;
 import com.stockflow.product.internal.controller.dto.ProductResponse;
 import com.stockflow.product.internal.controller.dto.ProductVersionResponse;
 import com.stockflow.product.internal.controller.dto.RejectProductRequest;
-import com.stockflow.product.internal.controller.dto.ResumeProductRequest;
-import com.stockflow.product.internal.controller.dto.SuspendProductRequest;
 import com.stockflow.product.internal.controller.dto.UpdateProductRequest;
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.api.PageResponse;
@@ -46,11 +42,9 @@ import java.util.UUID;
  * (SCRUM-57/WBS 3.1.1.3), and its end of life (SCRUM-461): suspension, discontinuation with a reason and
  * warnings, and deletion of a draft.
  *
- * <p><b>Who may suspend, resume or discontinue.</b> kltn-docs 01 §5.1 has the System Admin do it; the code
- * gives it to {@code product-products:APPROVE}, which ECOMMERCE_ADMIN holds too. The docs allow a small
- * organisation to merge those roles (open question A3) and permissions are configured at run time
- * (ADR-0008), so a deployment that wants it for the System Admin only takes the permission off the other
- * role. {@code DELETE} is a permission of its own, so it can be given or withheld separately.</p>
+ * <p><b>Suspend, resume and discontinue</b> are in {@link ProductLifecycleController}, under a permission of
+ * their own ({@code product-lifecycle:APPROVE}, System Admin only, kltn-docs 01 §5.1). {@code DELETE} is a
+ * permission of its own too, so it can be given or withheld separately.</p>
  *
  * <p><b>Handler methods are public.</b> {@code @RequiresPermission} is applied by a Spring AOP
  * proxy, which advises a non-public method only when the generated proxy happens to land in the
@@ -144,38 +138,6 @@ class ProductController {
                                                @Valid @RequestBody RejectProductRequest request) {
         return ApiResponse.ok(mapper.toResponse(
                 productService.reject(productId, user.userId(), request.reason())));
-    }
-
-    /**
-     * Terminal (WBS 3.1.8.1). BR-PRD-005 is a warning (kltn-docs 01 step 12): the product is discontinued
-     * and the response lists the purchase order lines and order lines that still refer to it. The body
-     * carries the reason (mandatory) and the version the screen read.
-     */
-    @PostMapping("/{productId}/discontinuation")
-    @Operation(summary = "Discontinue an approved, published or suspended product, with a reason; "
-            + "open purchase orders and orders are reported as warnings, never refused")
-    @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.APPROVE)
-    public ApiResponse<ProductDiscontinuationResponse> discontinue(@PathVariable UUID productId,
-                                                                   @Valid @RequestBody DiscontinueProductRequest request) {
-        return ApiResponse.ok(mapper.toResponse(
-                productService.discontinue(productId, request.reason(), request.version())));
-    }
-
-    @PostMapping("/{productId}/suspension")
-    @Operation(summary = "Suspend an approved or published product (INACTIVE): hidden, no new purchase order lines")
-    @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.APPROVE)
-    public ApiResponse<ProductResponse> suspend(@PathVariable UUID productId,
-                                                @Valid @RequestBody SuspendProductRequest request) {
-        return ApiResponse.ok(mapper.toResponse(
-                productService.suspend(productId, request.reason(), request.version())));
-    }
-
-    @PostMapping("/{productId}/resumption")
-    @Operation(summary = "Resume a suspended product: back to APPROVED; publish it again to show it")
-    @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.APPROVE)
-    public ApiResponse<ProductResponse> resume(@PathVariable UUID productId,
-                                               @Valid @RequestBody ResumeProductRequest request) {
-        return ApiResponse.ok(mapper.toResponse(productService.resume(productId, request.version())));
     }
 
     @DeleteMapping("/{productId}")
