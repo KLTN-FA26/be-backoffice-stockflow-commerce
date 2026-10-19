@@ -100,9 +100,11 @@ class InventoryItemsImpl implements InventoryItems {
     /**
      * Takes the item's advisory lock and reads the item under it. The lock is keyed by SKU and the request by id, so
      * the SKU is read before the lock, and a DRAFT variant renamed in between leaves the lock on the old SKU. The row
-     * read under the lock then shows the new SKU, and the answer is {@code OPTIMISTIC_LOCK}, not a retry: the rename
-     * trigger bumps the version, and it committed after this request began, so the version the client quotes is
-     * stale whatever it is. A 404 would be wrong, since the item still exists.
+     * read under the lock then shows the new SKU, and the answer is {@code OPTIMISTIC_LOCK} rather than this method
+     * re-locking on the new SKU: the rename trigger bumps the version, and it committed after this request began, so
+     * the version the client quotes is stale whatever it is. Like every stale version here, the client retries after
+     * a fresh read, which is what {@code OPTIMISTIC_LOCK.isRetryable()} means; resending the same body cannot pass.
+     * A 404 would be wrong, since the item still exists.
      */
     private ItemRow lockItem(UUID id) {
         String sku = policies.findSku(id).orElseThrow(() -> notFound(id));
