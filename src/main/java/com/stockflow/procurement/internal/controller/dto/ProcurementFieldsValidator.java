@@ -1,5 +1,7 @@
 package com.stockflow.procurement.internal.controller.dto;
 
+import com.stockflow.procurement.internal.domain.PurchasePrices;
+
 import jakarta.validation.ConstraintValidator;
 import jakarta.validation.ConstraintValidatorContext;
 
@@ -45,8 +47,8 @@ public class ProcurementFieldsValidator
             for (int i = 0; po.lines() != null && i < po.lines().size(); i++) {
                 var line = po.lines().get(i);
                 if (line == null || line.unitPrice() == null) continue;
-                if (line.unitPrice().stripTrailingZeros().scale()
-                        > currency.getDefaultFractionDigits()) {
+                // The service's own rule (PurchasePrices), so a price passes here only if it passes there.
+                if (line.unitPrice().stripTrailingZeros().scale() > PurchasePrices.maxScale(currency)) {
                     context.buildConstraintViolationWithTemplate("{procurement.priceScale}")
                             .addPropertyNode("lines")
                             .addPropertyNode("unitPrice")
@@ -61,14 +63,14 @@ public class ProcurementFieldsValidator
                         || line.quantityOrdered() > 1_000_000
                         || line.unitPrice().signum() < 0
                         || line.unitPrice().scale() > 2
-                        || line.unitPrice().compareTo(new BigDecimal("9999999999999999.99")) > 0)
+                        || line.unitPrice().compareTo(PurchasePrices.MAX) > 0)
                     continue;
                 total =
                         total.add(
                                 line.unitPrice()
                                         .multiply(BigDecimal.valueOf(line.quantityOrdered())));
             }
-            if (total.compareTo(new BigDecimal("9999999999999999.99")) > 0) {
+            if (total.compareTo(PurchasePrices.MAX) > 0) {
                 field(context, "lines", "{procurement.totalAmount}");
                 valid = false;
             }

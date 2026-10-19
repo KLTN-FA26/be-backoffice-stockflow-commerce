@@ -11,10 +11,12 @@ import com.stockflow.procurement.api.CreatePurchaseOrderCommand;
 import com.stockflow.procurement.api.ListPurchaseOrdersQuery;
 import com.stockflow.procurement.api.ProcurementService;
 import com.stockflow.procurement.api.PurchaseOrderSummary;
+import com.stockflow.procurement.api.SupplierItemService;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.ReferenceRows;
+import com.stockflow.support.SupplierItemFixtures;
 import com.stockflow.support.WithCurrentUser;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.DisplayName;
@@ -42,6 +44,7 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 class PurchaseOrderWarehouseScopeIntegrationTest {
 
     @Autowired ProcurementService procurement;
+    @Autowired SupplierItemService catalog;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
@@ -61,6 +64,7 @@ class PurchaseOrderWarehouseScopeIntegrationTest {
     }
 
     private PurchaseOrderSummary draftAtHcm(UUID supplierId) {
+        SupplierItemFixtures.list(catalog, supplierId, "SOFA-3S-GREY");
         return procurement.createPurchaseOrder(new CreatePurchaseOrderCommand(supplierId, DemoData.WAREHOUSE_HCM,
                 "VND", LocalDate.now().plusDays(10), null,
                 List.of(new CreatePOLineCommand("SOFA-3S-GREY", "scope test", 2, new BigDecimal("1000000")))));

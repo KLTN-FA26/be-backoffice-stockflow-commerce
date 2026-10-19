@@ -119,15 +119,11 @@ class PermissionMatrixTest {
 
     /**
      * Deprecated routes kept for existing clients, and the canonical route each one stands for. The old one must carry
-     * exactly the guard of the new one: a deprecated alias is the classic place for a permission to drift.
+     * exactly the guard of the new one: a deprecated alias is the classic place for a permission to drift. (A
+     * variant's logistics and inventory-control routes, old and new, are gone: both are edited on the inventory item,
+     * {@code /api/v1/inventory/items/{id}}.)
      */
     private static final Map<String, String> DEPRECATED_ALIASES = Map.of(
-            "GET /api/v1/products/{productId}/skus/{skuId}/logistics", "GET /api/v1/products/{productId}/variants/{variantId}/logistics",
-            "PUT /api/v1/products/{productId}/skus/{skuId}/logistics", "PUT /api/v1/products/{productId}/variants/{variantId}/logistics",
-            "GET /api/v1/products/{productId}/skus/{skuId}/inventory-control",
-            "GET /api/v1/products/{productId}/variants/{variantId}/inventory-control",
-            "PUT /api/v1/products/{productId}/skus/{skuId}/inventory-control",
-            "PUT /api/v1/products/{productId}/variants/{variantId}/inventory-control",
             "GET /api/v1/products/{productId}/skus/{sku}/base-price", "GET /api/v1/products/{productId}/variants/{variantId}/base-price",
             "PUT /api/v1/products/{productId}/skus/{sku}/base-price", "PUT /api/v1/products/{productId}/variants/{variantId}/base-price");
 

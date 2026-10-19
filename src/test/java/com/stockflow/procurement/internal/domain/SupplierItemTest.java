@@ -75,7 +75,7 @@ class SupplierItemTest {
                 SUPPLIER_ITEM_PRICE_INVALID);
         assertRefusedOn(() -> terms(new BigDecimal("0"), 1, 1, null), "price", SUPPLIER_ITEM_PRICE_INVALID);
         assertRefusedOn(() -> terms(new BigDecimal("-1"), 1, 1, null), "price", SUPPLIER_ITEM_PRICE_INVALID);
-        assertRefusedOn(() -> terms(SupplierItemTerms.MAX_PRICE.add(BigDecimal.ONE), 1, 1, null), "price",
+        assertRefusedOn(() -> terms(PurchasePrices.MAX.add(BigDecimal.ONE), 1, 1, null), "price",
                 SUPPLIER_ITEM_PRICE_INVALID);
         assertThatCode(() -> SupplierItemTerms.of("S", new BigDecimal("1.50"), usd, 1, 1, null))
                 .doesNotThrowAnyException();
