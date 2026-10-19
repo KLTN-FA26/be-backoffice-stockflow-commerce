@@ -278,6 +278,8 @@ public enum ErrorCode {
     /** Fewer than allocated: a short pick, reported through the short-pick flow (SCRUM-268). */
     PICK_QUANTITY_SHORT("Fewer than allocated - report a short pick", 409),
     PICK_LINE_NOT_OPEN("This line is no longer open", 409),
+    /** A cycle count already completed or cancelled. */
+    CYCLE_COUNT_NOT_OPEN("This cycle count is no longer open", 409),
     /** Docs 07 step 9: a pick task closes only when every line is picked. */
     PICK_LINES_INCOMPLETE("Some lines are not picked yet", 409),
     PICK_TASK_STATE_CONFLICT("The task cannot do that in its current status", 409),

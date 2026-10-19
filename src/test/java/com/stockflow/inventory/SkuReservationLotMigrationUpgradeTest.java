@@ -58,7 +58,7 @@ class SkuReservationLotMigrationUpgradeTest {
                 var result = flyway(pg, null).migrate();
                 assertThat(result.success).isTrue();
                 assertThat(result.migrations).extracting(m -> m.version)
-                        .contains("20261019000800", "20261019000900");
+                        .contains("20261019000800", "20261019000900", "20261019001000");
 
                 // The pre-split checkout hold stays on its stock item, as it was; it now names its SKU.
                 assertThat(text(db, """

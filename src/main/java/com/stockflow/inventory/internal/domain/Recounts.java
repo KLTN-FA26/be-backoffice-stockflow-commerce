@@ -26,7 +26,10 @@ public interface Recounts {
     /** What to count where; {@code expectedQty} is what the books say, null where a blind counter must not see it. */
     record Line(UUID id, String locationCode, String sku, String lotNumber, Integer expectedQty, Integer countedQty) { }
 
-    /** An open (PLANNED or IN_PROGRESS) recount with a line for this bin, SKU and lot, if any. */
+    /**
+     * An open (PLANNED or IN_PROGRESS) recount with a line for this bin, SKU and lot, if any. Holds the slot until
+     * the transaction ends, so a caller that finds none can open one without a second caller doing the same.
+     */
     Optional<Recount> findOpenFor(LocationId location, Sku sku, String lotNumber);
 
     /** A new blind SHORT_PICK recount, PLANNED for {@code day}, with one line. */
@@ -37,4 +40,20 @@ public interface Recounts {
     List<Recount> find(String status, java.util.Set<UUID> warehouses, long offset, int limit);
 
     long count(String status, java.util.Set<UUID> warehouses);
+
+    /** A sellable layer whose free units an open SHORT_PICK recount puts in doubt. */
+    record Frozen(UUID stockItemId, String sku, String locationCode, long free) { }
+
+    /**
+     * The layers of these SKUs that are sellable on {@code today} (AVAILABLE, not expired, something unreserved) and
+     * sit in a bin, SKU and lot an open SHORT_PICK recount covers. A picker found fewer units there than the books
+     * hold, so until the count closes none of the free ones is promised or allocated (docs 04c X-SHORT step 03).
+     */
+    List<Frozen> frozen(java.util.Collection<String> skus, LocalDate today);
+
+    /** The recount, its row locked until the transaction ends. */
+    Optional<Recount> findForUpdate(UUID id);
+
+    /** CANCELLED, with the reason appended to the note. */
+    void cancel(UUID id, String reason, String actor);
 }

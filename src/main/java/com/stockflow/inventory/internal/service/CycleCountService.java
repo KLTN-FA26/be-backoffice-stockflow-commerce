@@ -52,13 +52,34 @@ class CycleCountService implements CycleCounts {
         return PageResponse.of(items, paging.getPageNumber(), paging.getPageSize(), total);
     }
 
-    /** A blind count's counter does not see what the books say (V20260928005000: is_blind). */
+    @Override
+    @Transactional
+    public Recounts.Recount cancel(UUID id, String reason, String actor) {
+        Recounts.Recount count = recounts.findForUpdate(id).orElseThrow(() -> new BusinessException(
+                ErrorCode.NOT_FOUND, "No cycle count with id " + id));
+        WarehouseScope.requireWarehouse(count.warehouseId());
+        switch (count.status()) {
+            case "CANCELLED" -> {
+                return count;
+            }
+            case "COMPLETED" -> throw new BusinessException(ErrorCode.CYCLE_COUNT_NOT_OPEN,
+                    "Cycle count %s is already COMPLETED".formatted(count.number()));
+            default -> { }
+        }
+        recounts.cancel(id, reason.strip(), actor);
+        return recounts.findForUpdate(id).orElseThrow();
+    }
+
+    /**
+     * A blind count's counter does not see what the books say (V20260928005000: is_blind), nor the note: a short
+     * pick's note carries what the picker found, which would anchor the count just as the book quantity does.
+     */
     private static Recounts.Recount blind(Recounts.Recount count) {
         if (!count.blind()) {
             return count;
         }
         return new Recounts.Recount(count.id(), count.number(), count.warehouseId(), count.triggerType(),
-                count.status(), true, count.plannedDate(), count.note(), count.createdAt(),
+                count.status(), true, count.plannedDate(), null, count.createdAt(),
                 count.lines().stream().map(line -> new Recounts.Line(line.id(), line.locationCode(), line.sku(),
                         line.lotNumber(), null, line.countedQty())).toList());
     }

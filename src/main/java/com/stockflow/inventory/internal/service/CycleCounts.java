@@ -23,4 +23,13 @@ public interface CycleCounts {
      *         {@code OUT_OF_DATA_SCOPE}
      */
     PageResponse<Recounts.Recount> list(String status, UUID warehouse, boolean showExpected, int page, int size);
+
+    /**
+     * The warehouse manager calls a recount off (it is not needed, or the bin was checked by hand), which also lifts
+     * the freeze a SHORT_PICK recount puts on the bin, SKU and lot. Cancelling a cancelled count again is a no-op.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code OUT_OF_DATA_SCOPE};
+     *         {@code CYCLE_COUNT_NOT_OPEN} once COMPLETED
+     */
+    Recounts.Recount cancel(UUID id, String reason, String actor);
 }

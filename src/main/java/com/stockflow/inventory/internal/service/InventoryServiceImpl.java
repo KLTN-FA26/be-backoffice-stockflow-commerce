@@ -101,6 +101,7 @@ class InventoryServiceImpl implements InventoryService {
     private final InventoryPolicyRepository policies;
     private final SkuReservationRepository skuReservations;
     private final LocationDirectory locations;
+    private final com.stockflow.inventory.internal.domain.Recounts recounts;
 
     /** How long a hold lasts while its order waits for payment (kltn-docs 14: set by the business). */
     private final java.time.Duration reservationTtl;
@@ -109,6 +110,7 @@ class InventoryServiceImpl implements InventoryService {
                          StockOperations operations, InventoryItemDirectory items, Clock clock,
                          InventoryControlService controls, InventoryPolicyRepository policies,
                          SkuReservationRepository skuReservations, LocationDirectory locations,
+                         com.stockflow.inventory.internal.domain.Recounts recounts,
                          @org.springframework.beans.factory.annotation.Value(
                                  "${stockflow.inventory.reservation-ttl:PT30M}") java.time.Duration reservationTtl) {
         if (reservationTtl == null || reservationTtl.isZero() || reservationTtl.isNegative()) {
@@ -124,6 +126,7 @@ class InventoryServiceImpl implements InventoryService {
         this.policies = policies;
         this.skuReservations = skuReservations;
         this.locations = locations;
+        this.recounts = recounts;
     }
 
     @Override
@@ -254,20 +257,39 @@ class InventoryServiceImpl implements InventoryService {
                 .map(code -> new Sku(code).code())
                 .collect(Collectors.toSet());
         if (normalized.isEmpty()) return Map.of();
-        return netOfSkuReservations(repository.availableQuantities(normalized, BusinessCalendar.date(clock.instant())),
-                normalized);
+        LocalDate today = BusinessCalendar.date(clock.instant());
+        Map<String, Long> unheld = new java.util.HashMap<>(repository.availableQuantities(normalized, today));
+        frozenBySku(normalized, today).forEach((sku, frozen) -> unheld.merge(sku, -frozen, Long::sum));
+        return netOfSkuReservations(unheld, normalized);
+    }
+
+    /**
+     * Free units in doubt per SKU code (X-SHORT step 03): a picker came up short in their bin and the recount is
+     * open, so they are not promised. Every figure of available to promise subtracts them, the planner skips them.
+     */
+    private Map<String, Long> frozenBySku(Collection<String> skus, LocalDate today) {
+        return recounts.frozen(skus, today).stream().collect(Collectors.groupingBy(
+                com.stockflow.inventory.internal.domain.Recounts.Frozen::sku,
+                Collectors.summingLong(com.stockflow.inventory.internal.domain.Recounts.Frozen::free)));
+    }
+
+    private Set<StockItemId> frozenLayers(Sku sku, LocalDate today) {
+        return recounts.frozen(List.of(sku.code()), today).stream()
+                .map(frozen -> new StockItemId(frozen.stockItemId())).collect(Collectors.toSet());
     }
 
     @Override
     @Transactional(readOnly = true)
     public Map<Sku, Integer> availableToPromise(Collection<Sku> skus) {
         Set<Sku> wanted = new LinkedHashSet<>(skus);
-        Map<Sku, Integer> found = repository.sumAvailableBySkus(wanted, BusinessCalendar.date(clock.instant()));
+        LocalDate today = BusinessCalendar.date(clock.instant());
+        Map<Sku, Integer> found = repository.sumAvailableBySkus(wanted, today);
         Map<String, Long> reserved = skuReservations.heldBySku(wanted.stream().map(Sku::code).toList());
+        Map<String, Long> frozen = frozenBySku(wanted.stream().map(Sku::code).toList(), today);
         Map<Sku, Integer> result = new LinkedHashMap<>();
         // Every SKU asked for gets an answer: no stock is an answer (0), not a missing key.
-        wanted.forEach(sku -> result.put(sku, (int) Math.max(0,
-                found.getOrDefault(sku, 0) - reserved.getOrDefault(sku.code(), 0L))));
+        wanted.forEach(sku -> result.put(sku, (int) Math.max(0, found.getOrDefault(sku, 0)
+                - reserved.getOrDefault(sku.code(), 0L) - frozen.getOrDefault(sku.code(), 0L))));
         return result;
     }
 
@@ -285,9 +307,11 @@ class InventoryServiceImpl implements InventoryService {
     @Transactional(readOnly = true)
     public List<StockAvailability> availabilityOf(Sku sku) {
         var today = BusinessCalendar.date(clock.instant());
+        Set<StockItemId> frozen = frozenLayers(sku, today);
         // Use the configured picking order and one business date for the entire result.
         return repository.findAvailableBySku(sku).stream()
                 .filter(item -> notExpired(item, today))
+                .filter(item -> !frozen.contains(item.id()))
                 .sorted(Comparator.comparing(item ->
                                         new StockAllocator.Candidate(
                                                 item.id(),
@@ -330,6 +354,11 @@ class InventoryServiceImpl implements InventoryService {
         var today = BusinessCalendar.date(clock.instant());
         for (StockLevelLine line : repository.findLevelLinesBySku(sku)) {
             byWarehouse.merge(line.location().warehouseCode(), Totals.of(line, today), Totals::plus);
+        }
+        for (var frozen : recounts.frozen(List.of(sku.code()), today)) {
+            byWarehouse.computeIfPresent(new LocationId(frozen.locationCode()).warehouseCode(), (code, totals) ->
+                    new Totals(totals.onHand(), totals.available(), totals.reserved(),
+                            (int) Math.max(0, totals.atp() - frozen.free())));
         }
         // A SKU reservation is promised against the whole system, not against a warehouse (SCRUM-152): no warehouse
         // can promise more than is left system-wide once those are counted - from these same lines and this same day.
@@ -573,9 +602,11 @@ class InventoryServiceImpl implements InventoryService {
      * {@code excluded}; read as projections, so nothing lands in the persistence context before the locked reads.
      */
     private List<StockAllocator.Candidate> pickableCandidates(Sku sku, String warehouse, LocationId excluded) {
+        Set<StockItemId> frozen = frozenLayers(sku, BusinessCalendar.date(clock.instant()));
         List<StockAllocator.Candidate> inWarehouse = repository.findAvailabilityBySku(sku).stream()
                 .filter(c -> c.location().warehouseCode().equals(warehouse))
                 .filter(c -> !c.location().equals(excluded))
+                .filter(c -> !frozen.contains(c.stockItemId()))
                 .toList();
         Map<String, UUID> pickable = locations.pickable(inWarehouse.stream().map(c -> c.location().code()).toList());
         return inWarehouse.stream().filter(c -> pickable.containsKey(c.location().code())).toList();

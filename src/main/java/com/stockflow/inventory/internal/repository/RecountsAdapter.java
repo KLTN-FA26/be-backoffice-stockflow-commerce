@@ -37,8 +37,18 @@ class RecountsAdapter implements Recounts {
         this.jdbc = new NamedParameterJdbcTemplate(jdbc);
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Takes a transaction-scoped advisory lock on the bin, SKU and lot first (seed 703; 701 is the SKU's, 702 the
+     * alerts'). No constraint says one open count per slot, so without it two short reports on one bin in different
+     * picks would both find none and both open one.</p>
+     */
     @Override
     public Optional<Recount> findOpenFor(LocationId location, Sku sku, String lotNumber) {
+        jdbc.getJdbcOperations().query("select pg_advisory_xact_lock(hashtextextended(?, 703))",
+                (org.springframework.jdbc.core.RowCallbackHandler) rs -> { },
+                location.code() + "|" + sku.code() + "|" + (lotNumber == null ? "" : lotNumber));
         List<UUID> ids = jdbc.queryForList("""
                 SELECT c.id FROM inventory.cycle_count c JOIN inventory.cycle_count_line l ON l.cycle_count_id = c.id
                  WHERE c.status IN ('PLANNED', 'IN_PROGRESS') AND l.location_code = :location AND l.sku = :sku
@@ -100,6 +110,44 @@ class RecountsAdapter implements Recounts {
         return count == null ? 0 : count;
     }
 
+    @Override
+    public List<Frozen> frozen(java.util.Collection<String> skus, LocalDate today) {
+        if (skus.isEmpty()) {
+            return List.of();
+        }
+        return jdbc.query("""
+                SELECT s.id, s.sku, s.location_code, s.on_hand - s.reserved AS free
+                  FROM inventory.stock_item s
+                 WHERE s.sku IN (:skus) AND s.status = 'AVAILABLE' AND s.on_hand > s.reserved
+                   AND (s.expiry_date IS NULL OR s.expiry_date >= :today)
+                   AND EXISTS (SELECT 1 FROM inventory.cycle_count c
+                                 JOIN inventory.cycle_count_line l ON l.cycle_count_id = c.id
+                                WHERE c.trigger_type = 'SHORT_PICK' AND c.status IN ('PLANNED', 'IN_PROGRESS')
+                                  AND l.location_code = s.location_code AND l.sku = s.sku
+                                  AND COALESCE(l.lot_number, '') = COALESCE(s.lot_number, ''))""",
+                new MapSqlParameterSource().addValue("skus", skus).addValue("today", today),
+                (rs, row) -> new Frozen(rs.getObject("id", UUID.class), rs.getString("sku"),
+                        rs.getString("location_code"), rs.getLong("free")));
+    }
+
+    @Override
+    public Optional<Recount> findForUpdate(UUID id) {
+        List<UUID> ids = jdbc.queryForList("SELECT id FROM inventory.cycle_count WHERE id = :id FOR UPDATE",
+                new MapSqlParameterSource("id", id), UUID.class);
+        return ids.isEmpty() ? Optional.empty() : Optional.of(load(ids).get(0));
+    }
+
+    @Override
+    public void cancel(UUID id, String reason, String actor) {
+        jdbc.update("""
+                UPDATE inventory.cycle_count
+                   SET status = 'CANCELLED', last_modified_at = NOW(), last_modified_by = :actor, version = version + 1,
+                       note = left(CASE WHEN note IS NULL OR note = '' THEN '' ELSE note || ' | ' END
+                                  || 'Cancelled: ' || :reason, 1000)
+                 WHERE id = :id""",
+                new MapSqlParameterSource().addValue("id", id).addValue("reason", reason).addValue("actor", actor));
+    }
+
     /** {@code warehouses} null for every warehouse; empty for none, answered without a query (null). */
     private static String where(String status, Set<UUID> warehouses, MapSqlParameterSource params) {
         if (warehouses != null && warehouses.isEmpty()) {
@@ -126,7 +174,7 @@ class RecountsAdapter implements Recounts {
                 new MapSqlParameterSource("ids", ids), (ResultSet rs) -> {
                     lines.computeIfAbsent(rs.getObject("cycle_count_id", UUID.class), id -> new ArrayList<>())
                             .add(new Line(rs.getObject("id", UUID.class), rs.getString("location_code"),
-                                    rs.getString("sku"), rs.getString("lot_number"), rs.getInt("expected_qty"),
+                                    rs.getString("sku"), rs.getString("lot_number"), (Integer) rs.getObject("expected_qty"),
                                     (Integer) rs.getObject("counted_qty")));
                 });
         Map<UUID, Recount> byId = new LinkedHashMap<>();

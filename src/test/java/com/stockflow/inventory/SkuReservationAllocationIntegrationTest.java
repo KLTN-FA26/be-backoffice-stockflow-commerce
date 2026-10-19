@@ -11,6 +11,7 @@ import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.ReallocateStockCommand;
 import com.stockflow.inventory.api.ReserveProductionStockCommand;
 import com.stockflow.inventory.api.ReserveStockCommand;
+import com.stockflow.inventory.api.StockAvailability;
 import com.stockflow.inventory.api.StockReservation;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
@@ -413,6 +414,35 @@ class SkuReservationAllocationIntegrationTest {
         var manager = cycleCounts.list(null, DemoData.WAREHOUSE_HCM, true, 0, 200).items().stream()
                 .filter(c -> c.id().equals(first.cycleCountId())).findFirst().orElseThrow();
         assertThat(manager.lines().get(0).expectedQty()).as("the books, for who decides").isEqualTo(5);
+        assertThat(manager.note()).contains("found 1");
+        assertThat(counter.note()).as("what the picker found would anchor the count too").isNull();
+        assertThat(jdbc.queryForList("""
+                SELECT p.code FROM identity.role_permission rp JOIN identity.app_role ro ON ro.id = rp.role_id
+                  JOIN identity.permission p ON p.id = rp.permission_id
+                 WHERE ro.code = 'WAREHOUSE_STAFF' AND p.resource = 'inventory-cycle-counts'""", String.class))
+                .as("docs 04c F-CNT: the warehouse staff count").containsExactlyInAnyOrder(
+                        "inventory-cycle-counts:VIEW_PAGE", "inventory-cycle-counts:READ");
+
+        // The short bin's free unit is in doubt: not promised, not allocated, until the count is called off.
+        assertThat(allocation.locationCode()).isEqualTo("HCM-A01-1-B");
+        assertThat(atp()).as("22 - 4 reserved - 1 free in doubt at HCM-A01-1-B").isEqualTo(17);
+        UUID next = order();
+        reserve(next, 1);
+        assertThat(allocate(next, "HCM").allocations().get(0).holds()).extracting(StockReservation::locationCode)
+                .as("FEFO would take HCM-A01-1-B first").containsExactly("HCM-A01-1-A");
+        assertThat(inventory.availabilityOf(new Sku(sku))).extracting(StockAvailability::locationCode)
+                .doesNotContain("HCM-A01-1-B");
+
+        var cancelled = tx.execute(s -> cycleCounts.cancel(first.cycleCountId(), "Bin checked by hand", "manager"));
+        assertThat(cancelled.status()).isEqualTo("CANCELLED");
+        assertThat(cancelled.note()).endsWith("Cancelled: Bin checked by hand");
+        assertThat(atp()).as("sellable again: 22 - 4 - 1 reserved by the next order").isEqualTo(17);
+        assertThat(tx.execute(s -> cycleCounts.cancel(first.cycleCountId(), "again", "manager")).status())
+                .as("a no-op").isEqualTo("CANCELLED");
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE inventory.cycle_count SET status = 'COMPLETED',"
+                + " started_at = NOW(), completed_at = NOW() WHERE id = ?", first.cycleCountId()));
+        assertThat(code(catchThrowable(() -> tx.execute(s -> cycleCounts.cancel(first.cycleCountId(), "late",
+                "manager"))))).isEqualTo(ErrorCode.CYCLE_COUNT_NOT_OPEN);
         assertThat(code(catchThrowable(() -> cycleCounts.list("LOST", null, false, 0, 20))))
                 .isEqualTo(ErrorCode.UNSUPPORTED_PARAMETER);
         var elsewhere = new com.stockflow.common.security.CurrentUser(UUID.randomUUID(), "kho",

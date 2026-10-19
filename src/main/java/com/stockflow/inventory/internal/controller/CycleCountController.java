@@ -15,7 +15,13 @@ import com.stockflow.inventory.internal.service.CycleCounts;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -26,9 +32,9 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Cycle counts (WBS 3.10.5), so far the blind recounts a short pick opens (docs 04c X-SHORT step 03). Read only:
- * counting and posting the difference belong to the cycle-count story. A counter sees what to count, not what the
- * books say; a warehouse manager sees both.
+ * Cycle counts (WBS 3.10.5), so far the blind recounts a short pick opens (docs 04c X-SHORT step 03): listed, and
+ * called off by the warehouse manager. Counting and posting the difference belong to the cycle-count story. A counter
+ * sees what to count, not what the books say; a warehouse manager sees both.
  */
 @RestController
 @RequestMapping("/api/v1/inventory/cycle-counts")
@@ -50,7 +56,9 @@ class CycleCountController {
 
     @Schema(name = "CycleCount")
     record CycleCountResponse(UUID id, String countNumber, UUID warehouseId, String triggerType, String status,
-                              boolean blind, LocalDate plannedDate, String note, Instant createdAt,
+                              boolean blind, LocalDate plannedDate,
+                              @Schema(description = "Null on a blind count for a counter") String note,
+                              Instant createdAt,
                               List<LineResponse> lines) { }
 
     @Schema(name = "CycleCountLine")
@@ -71,6 +79,17 @@ class CycleCountController {
         boolean manager = actor != null && actor.hasAnyRole(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN);
         return ApiResponse.ok(counts.list(status, warehouseId, manager, page,
                 size == null ? Pages.DEFAULT_PAGE_SIZE : size).map(CycleCountController::toResponse));
+    }
+
+    @Schema(name = "CancelCycleCountRequest")
+    record CancelRequest(@NotBlank(message = "reason is required") @Size(max = 500) String reason) { }
+
+    @PostMapping("/{countId}/cancellation")
+    @Operation(summary = "Call a recount off; a SHORT_PICK recount's bin, SKU and lot are sellable again")
+    @RequiresPermission(resource = InventoryResources.CYCLE_COUNTS, action = Action.APPROVE, scope = DataScope.WAREHOUSE)
+    public ApiResponse<CycleCountResponse> cancel(@PathVariable UUID countId, @Valid @RequestBody CancelRequest request,
+                                                  @AuthenticatedUser CurrentUser actor) {
+        return ApiResponse.ok(toResponse(counts.cancel(countId, request.reason(), actor.userId().toString())));
     }
 
     private static CycleCountResponse toResponse(Recounts.Recount count) {
