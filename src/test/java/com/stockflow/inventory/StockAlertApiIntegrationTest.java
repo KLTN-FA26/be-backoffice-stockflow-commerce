@@ -1,5 +1,6 @@
 package com.stockflow.inventory;
 
+import com.stockflow.common.domain.BusinessCalendar;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.inventory.internal.domain.StockAlert;
 import com.stockflow.inventory.internal.domain.StockAlert.Key;
@@ -20,6 +21,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.UUID;
@@ -44,6 +46,7 @@ class StockAlertApiIntegrationTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
+    @Autowired Clock clock;
 
     private AlertFixtures fixtures;
     private UUID hcm;
@@ -77,8 +80,12 @@ class StockAlertApiIntegrationTest {
         expiringSku = fixtures.sku(null, null);
         expiredSku = fixtures.sku(null, null);
         reorder = open(Key.stockLevel(Kind.REORDER, reorderSku), 3, 10, false);
-        expiring = open(Key.expiry(Kind.EXPIRING, expiringSku, hcm, "LOT-1", LocalDate.now().plusDays(10)), 7, null, false);
-        expiredElsewhere = open(Key.expiry(Kind.EXPIRED, expiredSku, other.id(), "LOT-2", LocalDate.now().minusDays(2)), 4, null, true);
+        // The API counts daysToExpiry from today in Vietnam, not in the JVM's zone: on a UTC runner the two dates
+        // differ from 00:00 to 07:00 Vietnam time, and LocalDate.now() made this test fail in that window. The
+        // application's Clock is what the API reads, so the fixture reads it too.
+        LocalDate today = BusinessCalendar.date(clock.instant());
+        expiring = open(Key.expiry(Kind.EXPIRING, expiringSku, hcm, "LOT-1", today.plusDays(10)), 7, null, false);
+        expiredElsewhere = open(Key.expiry(Kind.EXPIRED, expiredSku, other.id(), "LOT-2", today.minusDays(2)), 4, null, true);
     }
 
     private StockAlert open(Key key, int qty, Integer threshold, boolean impaired) {

@@ -29,7 +29,7 @@ import java.util.TreeSet;
  * <p>It re-reads the current policy and stock, whatever event or job asked: an old trigger must not restore stale
  * settings ({@code SkuInventoryControlChanged}). The comparison itself is {@link StockThresholds}, the quantity is
  * the usable on-hand of {@link InventoryPolicyRepository}, so this is the same definition of "low" as
- * {@code InventoryControlService.evaluate} and {@code InventoryService.lowStockBatch}.</p>
+ * the evaluation in {@code InventoryItems} and {@code InventoryService.lowStockBatch}.</p>
  *
  * <p>Per SKU and kind: threshold crossed and no open alert, open one; crossed and one open, refresh its numbers;
  * not crossed and one open, close it {@code RECOVERED}; threshold removed, close it {@code UNCONFIGURED} (no message:

@@ -61,27 +61,53 @@ public class InventoryPolicyRepository {
     }
 
     public Optional<InventoryControlItem> findItem(String sku) {
-        return jdbc
-                .query(
-                        "select * from inventory.inventory_items where sku = ?",
-                        (rs, n) ->
-                                new InventoryControlItem(
-                                        rs.getString("sku"),
-                                        rs.getString("unit_of_measure"),
-                                        rs.getLong("version"),
-                                        new InventoryPolicy(
-                                                rs.getObject("reorder_point", Integer.class),
-                                                rs.getObject("safety_stock", Integer.class),
-                                                rs.getObject("max_qty", Integer.class),
-                                                RemovalStrategy.valueOf(
-                                                        rs.getString("removal_strategy")),
-                                                TrackingMode.of(
-                                                        rs.getBoolean("lot_tracked"),
-                                                        rs.getBoolean("serial_tracked")),
-                                                rs.getBoolean("expiry_tracked"),
-                                                rs.getObject(
-                                                        "max_shelf_life_days", Integer.class))),
-                        sku)
+        return jdbc.query("select * from inventory.inventory_items where sku = ?", (rs, n) ->
+                new InventoryControlItem(rs.getString("sku"), rs.getString("unit_of_measure"), rs.getLong("version"),
+                        policy(rs)), sku).stream().findFirst();
+    }
+
+    /** One inventory item, both groups and the version, as they stood together. */
+    public record ItemRow(java.util.UUID id, String sku, long version, ItemLogistics logistics,
+                          InventoryPolicy policy) {
+    }
+
+    /**
+     * The whole item in one SELECT. Reading the logistics, the policy and the version separately lets a concurrent
+     * save land between the reads, and the result would label one save's values with another's version.
+     */
+    public Optional<ItemRow> findById(java.util.UUID id) {
+        return jdbc.query("select * from inventory.inventory_items where id = ?", (rs, n) ->
+                new ItemRow(rs.getObject("id", java.util.UUID.class), rs.getString("sku"), rs.getLong("version"),
+                        logistics(rs), policy(rs)), id).stream().findFirst();
+    }
+
+    private static InventoryPolicy policy(java.sql.ResultSet rs) throws java.sql.SQLException {
+        return new InventoryPolicy(
+                rs.getObject("reorder_point", Integer.class),
+                rs.getObject("safety_stock", Integer.class),
+                rs.getObject("max_qty", Integer.class),
+                RemovalStrategy.valueOf(rs.getString("removal_strategy")),
+                TrackingMode.of(rs.getBoolean("lot_tracked"), rs.getBoolean("serial_tracked")),
+                rs.getBoolean("expiry_tracked"),
+                rs.getObject("max_shelf_life_days", Integer.class));
+    }
+
+    private static ItemLogistics logistics(java.sql.ResultSet rs) throws java.sql.SQLException {
+        return new ItemLogistics(
+                rs.getString("unit_of_measure"), rs.getString("barcode"),
+                rs.getBigDecimal("weight_kg"), rs.getBigDecimal("length_cm"),
+                rs.getBigDecimal("width_cm"), rs.getBigDecimal("height_cm"),
+                rs.getBigDecimal("package_weight_kg"), rs.getBigDecimal("package_length_cm"),
+                rs.getBigDecimal("package_width_cm"), rs.getBigDecimal("package_height_cm"),
+                rs.getInt("package_count"), rs.getInt("pack_size"),
+                StorageClass.valueOf(rs.getString("storage_class")),
+                rs.getBoolean("requires_adult_signature"), rs.getString("shipping_restriction_note"),
+                rs.getBoolean("qc_required"));
+    }
+
+    /** The SKU of the item with this id; empty when there is none. */
+    public Optional<String> findSku(java.util.UUID id) {
+        return jdbc.queryForList("select sku from inventory.inventory_items where id = ?", String.class, id)
                 .stream()
                 .findFirst();
     }
@@ -241,16 +267,8 @@ where sku=? and version=?
 
     public Optional<InventoryItemLogistics> findLogistics(String sku) {
         return jdbc.query("select * from inventory.inventory_items where sku = ?", (rs, n) ->
-                new InventoryItemLogistics(rs.getString("sku"), rs.getLong("version"), new ItemLogistics(
-                        rs.getString("unit_of_measure"), rs.getString("barcode"),
-                        rs.getBigDecimal("weight_kg"), rs.getBigDecimal("length_cm"),
-                        rs.getBigDecimal("width_cm"), rs.getBigDecimal("height_cm"),
-                        rs.getBigDecimal("package_weight_kg"), rs.getBigDecimal("package_length_cm"),
-                        rs.getBigDecimal("package_width_cm"), rs.getBigDecimal("package_height_cm"),
-                        rs.getInt("package_count"), rs.getInt("pack_size"),
-                        StorageClass.valueOf(rs.getString("storage_class")),
-                        rs.getBoolean("requires_adult_signature"), rs.getString("shipping_restriction_note"),
-                        rs.getBoolean("qc_required"))), sku).stream().findFirst();
+                new InventoryItemLogistics(rs.getString("sku"), rs.getLong("version"), logistics(rs)), sku)
+                .stream().findFirst();
     }
 
     /** Whether any stock of the SKU is held anywhere, in any status. */

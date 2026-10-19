@@ -8,6 +8,7 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.persistence.Pages;
+import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.product.api.ProductStatus;
 import com.stockflow.product.internal.domain.Attribute;
 import com.stockflow.product.internal.domain.AttributeRepository;
@@ -130,11 +131,13 @@ public class ProductVariantService {
     private final AttributeRepository attributes;
     private final ProductChangeLogRepository history;
     private final Clock clock;
+    private final InventoryService inventory;
 
     public ProductVariantService(ProductRepository products, VariantJpaRepository variants,
                                  VariantAttributeValueJpaRepository variantOptions,
                                  ProductAttributeSetRepository attributeSets, AttributeRepository attributes,
-                                 ProductChangeLogRepository history, Clock clock) {
+                                 ProductChangeLogRepository history, Clock clock,
+                                 InventoryService inventory) {
         this.products = products;
         this.variants = variants;
         this.variantOptions = variantOptions;
@@ -142,6 +145,7 @@ public class ProductVariantService {
         this.attributes = attributes;
         this.history = history;
         this.clock = clock;
+        this.inventory = inventory;
     }
 
     public record VariantView(UUID id, UUID productId, String sku, String name, VariantStatus status,
@@ -218,6 +222,16 @@ public class ProductVariantService {
                 : variantOptions.findByVariantIdIn(found.map(VariantJpaEntity::getId).toList()).stream()
                 .collect(Collectors.groupingBy(VariantAttributeValueJpaEntity::getVariantId));
         return Pages.toResponse(found.map(v -> view(v, catalog.optionsOf(optionRows.getOrDefault(v.getId(), List.of())))));
+    }
+
+    /**
+     * The inventory item id of each variant's SKU, in one query for the whole batch. A separate call rather than a
+     * field of {@link VariantView}: the controller asks after the write that created or renamed the variant has
+     * committed, so an item made by the database trigger is visible, and a SKU without an item is just absent.
+     */
+    @Transactional(readOnly = true)
+    public Map<String, UUID> inventoryItemIds(Collection<VariantView> variants) {
+        return inventory.itemIdsOf(variants.stream().map(VariantView::sku).distinct().toList());
     }
 
     @Transactional(readOnly = true)
