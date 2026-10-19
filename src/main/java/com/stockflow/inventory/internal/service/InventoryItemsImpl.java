@@ -4,14 +4,11 @@ import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.domain.BusinessCalendar;
-import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.security.CurrentUserProvider;
 import com.stockflow.contracts.SkuInventoryControlChanged;
-import com.stockflow.inventory.api.InventoryControlItem;
-import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.api.InventoryPolicy;
 import com.stockflow.inventory.api.ItemLogistics;
 import com.stockflow.inventory.api.StockThresholdEvaluation;
@@ -21,6 +18,7 @@ import com.stockflow.inventory.internal.domain.StockPolicy;
 import com.stockflow.inventory.internal.domain.StockThresholds;
 import com.stockflow.inventory.internal.repository.InventoryItemSearch;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
+import com.stockflow.inventory.internal.repository.InventoryPolicyRepository.ItemRow;
 
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DuplicateKeyException;
@@ -32,7 +30,7 @@ import java.util.Objects;
 import java.util.UUID;
 
 /**
- * The only place an inventory item is edited. It resolves the item's SKU once, then applies the rules: the version
+ * The only place an inventory item is edited. It locks the item and reads it once, then applies the rules: the version
  * check (a stale or shared version is {@code OPTIMISTIC_LOCK} for both groups), stock compatibility, active counts and
  * barcode uniqueness. A policy save publishes {@link SkuInventoryControlChanged} so stock alerts are re-evaluated. The
  * audit row names the item id: the same item is reached from any number of variants or none, so a variant id would
@@ -43,17 +41,14 @@ import java.util.UUID;
 @Transactional
 class InventoryItemsImpl implements InventoryItems {
     private final InventoryPolicyRepository policies;
-    private final InventoryControlService control;
     private final InventoryItemSearch search;
     private final Clock clock;
     private final CurrentUserProvider users;
     private final ApplicationEventPublisher events;
 
-    InventoryItemsImpl(InventoryPolicyRepository policies, InventoryControlService control,
-                       InventoryItemSearch search, Clock clock, CurrentUserProvider users,
-                       ApplicationEventPublisher events) {
+    InventoryItemsImpl(InventoryPolicyRepository policies, InventoryItemSearch search, Clock clock,
+                       CurrentUserProvider users, ApplicationEventPublisher events) {
         this.policies = policies;
-        this.control = control;
         this.search = search;
         this.clock = clock;
         this.users = users;
@@ -77,80 +72,85 @@ class InventoryItemsImpl implements InventoryItems {
     @Override
     @Transactional(readOnly = true)
     public Detail get(UUID id) {
-        return detail(id, sku(id));
+        return detail(row(id));
     }
 
     @Override
     @Auditable(action = AuditAction.UPDATE, resourceType = "inventory-item", resourceId = "#id")
     public Detail describe(UUID id, long expectedVersion, ItemLogistics logistics) {
-        Sku sku = sku(id);
-        saveLogistics(id, sku, expectedVersion, logistics);
-        return detail(id, sku);
+        saveLogistics(id, expectedVersion, logistics);
+        return detail(row(id));
     }
 
     @Override
     @Auditable(action = AuditAction.UPDATE, resourceType = "inventory-item", resourceId = "#id")
     public Detail configure(UUID id, long expectedVersion, InventoryPolicy policy) {
-        Sku sku = sku(id);
-        savePolicy(id, sku, expectedVersion, policy);
-        return detail(id, sku);
+        savePolicy(id, expectedVersion, policy);
+        return detail(row(id));
     }
 
-    private Sku sku(UUID id) {
-        return policies.findSku(id)
-                .map(Sku::new)
-                .orElseThrow(() -> new BusinessException(ErrorCode.INVENTORY_ITEM_NOT_FOUND, "No inventory item " + id));
+    private ItemRow row(UUID id) {
+        return policies.findById(id).orElseThrow(() -> notFound(id));
+    }
+
+    private static BusinessException notFound(UUID id) {
+        return new BusinessException(ErrorCode.INVENTORY_ITEM_NOT_FOUND, "No inventory item " + id);
     }
 
     /**
-     * The id was resolved to a SKU before the SKU-keyed lock, so a DRAFT SKU renamed in between would otherwise surface
-     * as a generic NOT_FOUND from the SKU lookup: once locked, the id must still map to the same SKU.
+     * Takes the item's advisory lock and reads the item under it. The lock is keyed by SKU and the request by id, so
+     * the SKU is read before the lock, and a DRAFT variant renamed in between leaves the lock on the old SKU. The row
+     * read under the lock then shows the new SKU, and the answer is {@code OPTIMISTIC_LOCK}, not a retry: the rename
+     * trigger bumps the version, and it committed after this request began, so the version the client quotes is
+     * stale whatever it is. A 404 would be wrong, since the item still exists.
      */
-    private void lockItem(UUID id, Sku sku) {
-        policies.lock(sku.code());
-        if (!policies.findSku(id).filter(sku.code()::equals).isPresent())
-            throw new BusinessException(ErrorCode.INVENTORY_ITEM_NOT_FOUND, "No inventory item " + id);
+    private ItemRow lockItem(UUID id) {
+        String sku = policies.findSku(id).orElseThrow(() -> notFound(id));
+        policies.lock(sku);
+        ItemRow locked = row(id);
+        if (!locked.sku().equals(sku)) throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
+        return locked;
     }
 
-    private Detail detail(UUID id, Sku sku) {
-        var item = control.item(sku);
-        return new Detail(id, item.sku(), item.version(), control.logistics(sku).logistics(), item.policy(),
-                evaluate(sku));
+    /** One read of the row, so the version, the logistics and the policy shown are those of the same save. */
+    private Detail detail(ItemRow row) {
+        return new Detail(row.id(), row.sku(), row.version(), row.logistics(), row.policy(),
+                evaluate(row.sku(), row.policy()));
     }
 
-    private void savePolicy(UUID id, Sku sku, long expectedVersion, InventoryPolicy policy) {
+    private void savePolicy(UUID id, long expectedVersion, InventoryPolicy policy) {
         StockPolicy.validate(policy);
-        lockItem(id, sku);
-        var current = control.item(sku);
+        ItemRow current = lockItem(id);
         if (current.version() != expectedVersion) throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
+        String sku = current.sku();
         var previous = current.policy();
         boolean operationalChange =
                 previous.removalStrategy() != policy.removalStrategy()
                         || previous.trackingMode() != policy.trackingMode()
                         || previous.expiryTracked() != policy.expiryTracked()
                         || !Objects.equals(previous.maxShelfLifeDays(), policy.maxShelfLifeDays());
-        if (operationalChange && policies.hasActiveCount(sku.code()))
+        if (operationalChange && policies.hasActiveCount(sku))
             throw new BusinessException(ErrorCode.COUNT_POLICY_CONFLICT);
-        if (policies.incompatible(sku.code(), policy)) {
+        if (policies.incompatible(sku, policy)) {
             throw new BusinessException(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT);
         }
-        if (!policies.save(sku.code(), expectedVersion, policy, actor()))
+        if (!policies.save(sku, expectedVersion, policy, actor()))
             throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
-        InventoryControlItem updated = control.item(sku);
-        events.publishEvent(new SkuInventoryControlChanged(sku.code(), updated.version(), clock.instant()));
+        // The UPDATE matched version = expectedVersion and set version + 1, under the item's lock.
+        events.publishEvent(new SkuInventoryControlChanged(sku, expectedVersion + 1, clock.instant()));
     }
 
-    private void saveLogistics(UUID id, Sku sku, long expectedVersion, ItemLogistics logistics) {
+    private void saveLogistics(UUID id, long expectedVersion, ItemLogistics logistics) {
         ItemLogisticsRules.validate(logistics);
-        lockItem(id, sku);
-        var current = control.logistics(sku);
+        ItemRow current = lockItem(id);
         if (current.version() != expectedVersion) throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
-        if (!current.logistics().unitOfMeasure().equals(logistics.unitOfMeasure()) && policies.holdsStock(sku.code())) {
+        String sku = current.sku();
+        if (!current.logistics().unitOfMeasure().equals(logistics.unitOfMeasure()) && policies.holdsStock(sku)) {
             throw new BusinessException(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT,
                     "The unit of measure of %s cannot change while stock of it is held".formatted(sku));
         }
         try {
-            if (!policies.saveLogistics(sku.code(), expectedVersion, logistics, actor()))
+            if (!policies.saveLogistics(sku, expectedVersion, logistics, actor()))
                 throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
         } catch (DuplicateKeyException e) {
             throw new BusinessException(ErrorCode.CONFLICT,
@@ -158,9 +158,8 @@ class InventoryItemsImpl implements InventoryItems {
         }
     }
 
-    private StockThresholdEvaluation evaluate(Sku sku) {
-        InventoryPolicy p = control.policy(sku);
-        long quantity = policies.usableOnHand(sku.code(), BusinessCalendar.date(clock.instant()));
+    private StockThresholdEvaluation evaluate(String sku, InventoryPolicy p) {
+        long quantity = policies.usableOnHand(sku, BusinessCalendar.date(clock.instant()));
         return new StockThresholdEvaluation(
                 quantity,
                 p.reorderPoint(),
