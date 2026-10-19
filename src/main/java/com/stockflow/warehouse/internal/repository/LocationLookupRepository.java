@@ -19,6 +19,8 @@ public interface LocationLookupRepository {
 
     Optional<LocationRow> findById(UUID locationId);
 
+    java.util.List<LocationRow> findAreas(UUID warehouseId, com.stockflow.warehouse.internal.domain.AreaType type);
+
     /** The warehouse itself, for other modules naming it on a document (a purchase order's receiving warehouse). */
     Optional<WarehouseHeader> findWarehouseHeader(UUID warehouseId);
 
@@ -31,6 +33,6 @@ public interface LocationLookupRepository {
      */
     record LocationRow(UUID id, StorageLocationKind kind, UUID warehouseId, String locationCode,
                        StorageClass storageClass, LocationStatus status, WarehouseStatus warehouseStatus,
-                       LocationStatus shelfStatus) {
+                       LocationStatus shelfStatus, com.stockflow.warehouse.internal.domain.AreaType areaType) {
     }
 }

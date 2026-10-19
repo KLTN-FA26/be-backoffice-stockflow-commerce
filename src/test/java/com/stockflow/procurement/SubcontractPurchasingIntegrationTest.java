@@ -40,6 +40,7 @@ class SubcontractPurchasingIntegrationTest {
     private static final Sku CUP = new Sku("SOFA-3S-GREY");
 
     @Autowired SubcontractPurchasing subcontracting;
+    @Autowired com.stockflow.procurement.internal.service.SubcontractAmendments amendments;
     @Autowired com.stockflow.product.api.ProductService products;
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager entityManager;
@@ -95,9 +96,9 @@ class SubcontractPurchasingIntegrationTest {
             jdbc.update("""
                     INSERT INTO production.production_order (id, order_number, type, mode, status, warehouse_id, blank_sku,
                         design_snapshot_id, design_checksum, planned_quantity, sales_order_id, sales_order_line_id, parent_id,
-                        subcontract_method, subcontractor_id, subcontract_unit_price, subcontract_currency)
+                        origin, subcontract_method, subcontractor_id, subcontract_unit_price, subcontract_currency)
                     VALUES (?, ?, 'ORDER', 'SUBCONTRACTED', 'PENDING_PREPRESS', ?, ?, ?, ?, 400, ?, ?, ?,
-                            'SUPPLIED_BLANKS', ?, 800, 'VND')""",
+                            'SPLIT', 'SUPPLIED_BLANKS', ?, 800, 'VND')""",
                     sub, "LSX-IT-" + sub.toString().substring(24), hcm, CUP.code(), snapshot, "b".repeat(64), order, line,
                     root, innhanh);
         });
@@ -186,8 +187,87 @@ class SubcontractPurchasingIntegrationTest {
                 revision, approver, created.purchaseOrderId()));
         assertThat(subcontracting.findById(created.purchaseOrderId())).get()
                 .satisfies(o -> assertThat(o.approved()).isTrue());
-        assertThatThrownBy(() -> subcontracting.supplement(created.purchaseOrderId(), 10, "more", manager))
-                .extracting(SubcontractPurchasingIntegrationTest::code).isEqualTo(ErrorCode.INVALID_PURCHASE_ORDER_TRANSITION);
+
+        // Approved: more quantity is an AMENDMENT revision approved again (BR-02, 03 §16 "PO supplement"); until then
+        // the order keeps its approved 450.
+        SubcontractOrder asked = subcontracting.supplement(created.purchaseOrderId(), 10, "QC shortfall resend", manager);
+        assertThat(asked.quantity()).isEqualTo(450);
+        assertThat(asked.pendingQuantity()).isEqualTo(460);
+        assertThat(asked.status()).isEqualTo("APPROVED");
+        assertThatThrownBy(() -> subcontracting.supplement(created.purchaseOrderId(), 5, "again", manager))
+                .as("one amendment waits at a time")
+                .extracting(SubcontractPurchasingIntegrationTest::code).isEqualTo(ErrorCode.CONFLICT);
+        assertThatThrownBy(() -> amendments.approveAmendment(created.purchaseOrderId(), manager)).as("four eyes")
+                .extracting(SubcontractPurchasingIntegrationTest::code).isEqualTo(ErrorCode.SELF_APPROVAL_NOT_ALLOWED);
+        SubcontractOrder amended = amendments.approveAmendment(created.purchaseOrderId(), approver);
+        assertThat(amended.quantity()).isEqualTo(460);
+        assertThat(amended.pendingQuantity()).isNull();
+        assertThat(amended.totalAmount()).isEqualByComparingTo("368000");
+        assertThat(amended.status()).isEqualTo("APPROVED");
+        assertThat(jdbc.queryForMap("""
+                SELECT r.kind, r.revision_no, lr.ordered_qty, p.revision_no AS order_revision
+                  FROM procurement.purchase_orders p JOIN procurement.purchase_order_revisions r ON r.id = p.active_revision_id
+                  JOIN procurement.purchase_order_line_revisions lr ON lr.po_revision_id = r.id
+                 WHERE p.id = ?""", created.purchaseOrderId()))
+                .containsEntry("kind", "AMENDMENT").satisfies(row -> {
+                    assertThat((java.math.BigDecimal) row.get("ordered_qty")).isEqualByComparingTo("460");
+                    assertThat(row.get("revision_no")).isEqualTo(row.get("order_revision"));
+                });
+        assertThat(jdbc.queryForList("""
+                SELECT decision FROM procurement.purchase_order_approvals a
+                  JOIN procurement.purchase_orders p ON p.active_revision_id = a.po_revision_id WHERE p.id = ?""",
+                String.class, created.purchaseOrderId())).containsExactly("APPROVED");
+
+        // A rejected amendment leaves the approved quantity as it was.
+        subcontracting.supplement(created.purchaseOrderId(), 40, "more", manager);
+        assertThatThrownBy(() -> amendments.rejectAmendment(created.purchaseOrderId(), approver, " "))
+                .extracting(SubcontractPurchasingIntegrationTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(amendments.rejectAmendment(created.purchaseOrderId(), approver, "not needed"))
+                .satisfies(o -> {
+                    assertThat(o.quantity()).isEqualTo(460);
+                    assertThat(o.pendingQuantity()).isNull();
+                });
+    }
+
+    @Test
+    @DisplayName("BR-PRD-17: settled once; QC-failed units not paid; a loss above the 3% tolerance waits for the approver's deduction; the PO is cancelled when nothing was received")
+    void settlement() {
+        SubcontractOrder po = subcontracting.create(command(innhanh, CUP, 400));
+        UUID approver = tx.execute(s -> ReferenceRows.user(entityManager));
+        // 400 blanks sent, 380 received (370 passed, 10 failed), 5 returned, 15 lost: tolerance 3% of 400 = 12, 3 above.
+        var settled = subcontracting.settle(new com.stockflow.procurement.api.SettleSubcontractCommand(
+                po.purchaseOrderId(), child, 380, 370, 10, 400, 380, 5, 15, null, null, manager));
+        assertThat(settled.status()).isEqualTo("AWAITING_APPROVAL");
+        assertThat(settled.toleranceBlanks()).isEqualTo(12);
+        assertThat(settled.excessLoss()).isEqualTo(3);
+        assertThat(settled.payableAmount()).as("370 x 800, the 10 failed not paid").isEqualByComparingTo("296000");
+        assertThat(settled.netPayable()).isEqualByComparingTo("296000");
+        assertThat(subcontracting.settle(new com.stockflow.procurement.api.SettleSubcontractCommand(
+                po.purchaseOrderId(), child, 1, 1, 0, 0, 0, 0, 0, null, null, manager)))
+                .as("settled once").isEqualTo(settled);
+
+        assertThatThrownBy(() -> subcontracting.approveLoss(po.purchaseOrderId(), new java.math.BigDecimal("-1"), "x",
+                approver)).extracting(SubcontractPurchasingIntegrationTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThatThrownBy(() -> subcontracting.approveLoss(po.purchaseOrderId(), new java.math.BigDecimal("1500"), " ",
+                approver)).as("QA1: the approver says why").extracting(SubcontractPurchasingIntegrationTest::code)
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        var approved = subcontracting.approveLoss(po.purchaseOrderId(), new java.math.BigDecimal("1500"), "agreed",
+                approver);
+        assertThat(approved.status()).isEqualTo("FINAL");
+        assertThat(approved.deductionAmount()).isEqualByComparingTo("4500");
+        assertThat(approved.netPayable()).isEqualByComparingTo("291500");
+        assertThat(approved.approvedBy()).isEqualTo(approver);
+        assertThat(subcontracting.approveLoss(po.purchaseOrderId(), new java.math.BigDecimal("1500.00"), "agreed",
+                approver)).as("a replay").isEqualTo(approved);
+        assertThatThrownBy(() -> subcontracting.approveLoss(po.purchaseOrderId(), new java.math.BigDecimal("2000"),
+                "renegotiated", approver)).extracting(SubcontractPurchasingIntegrationTest::code)
+                .isEqualTo(ErrorCode.CONFLICT);
+
+        // Nothing was received on the DRAFT order: production closing it cancels it.
+        assertThat(subcontracting.closeForProduction(po.purchaseOrderId(), "Production order replaced in house",
+                manager).status()).isEqualTo("CANCELLED");
+        assertThat(subcontracting.closeForProduction(po.purchaseOrderId(), "again", manager).status())
+                .as("idempotent").isEqualTo("CANCELLED");
     }
 
     @Test

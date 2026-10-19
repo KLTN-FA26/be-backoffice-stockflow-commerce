@@ -5,5 +5,5 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 
 public interface CustomerSearchRepository {
-    Page<CustomerSummary> search(String search, String status, Pageable pageable);
+    Page<CustomerSummary> search(String search, String status, java.util.UUID segmentId, Pageable pageable);
 }

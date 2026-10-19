@@ -39,7 +39,7 @@ public class StorageLocationJpaEntity extends BaseEntity {
     private UUID warehouseId;
 
     @Enumerated(EnumType.STRING)
-    @Column(name = "kind", nullable = false, length = 8, updatable = false)
+    @Column(name = "kind", nullable = false, length = 16, updatable = false)
     private StorageLocationKind kind;
 
     /** {@code prefix-shelf-level-bin} or {@code prefix-area}; what a scanner reads (BR-10). */

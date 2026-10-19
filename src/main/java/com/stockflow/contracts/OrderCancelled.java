@@ -33,6 +33,18 @@ public record OrderCancelled(
         BigDecimal refundableAmount,
         String currency,
         UUID cancelledBy,
-        Instant cancelledAt
+        Instant cancelledAt,
+        BigDecimal owedAmount
 ) {
+
+    /**
+     * {@code owedAmount}: what the customer agreed to pay on cancellation beyond the money already received
+     * (decision Q6a, 2026-10-12) — payment records it as a receivable; zero or null when nothing more is owed.
+     */
+    public OrderCancelled(UUID orderId, String orderNumber, UUID customerId, String previousStatus, String reasonCode,
+                          String note, BigDecimal paidAmount, BigDecimal refundableAmount, String currency,
+                          UUID cancelledBy, Instant cancelledAt) {
+        this(orderId, orderNumber, customerId, previousStatus, reasonCode, note, paidAmount, refundableAmount, currency,
+                cancelledBy, cancelledAt, BigDecimal.ZERO);
+    }
 }

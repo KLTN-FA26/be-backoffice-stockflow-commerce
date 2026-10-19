@@ -409,6 +409,25 @@ artwork and cannot be resold.
 | PICKING | no | yes, with reason | put-back task (WBS 3.7.7.2) |
 | PACKED and later | no | no — must go through RMA | — |
 
+**Refund and fee (decision 2026-10-17, audit of #109).**
+- **Before printing** - no production order of the order has printed or been sent to a subcontractor
+  (`customer_order.printing_started_at` is empty) - a cancellation is **refunded in full** and keeps nothing:
+  neither an agreed amount nor a share (`CANCELLATION_FEE_BEFORE_PRINTING`). A stock-only order is never printed,
+  so it is always refunded in full.
+- **From the first print run** (or work sent out) Sales enters the amount **agreed with the customer**, with its
+  reason and detail. It may be **above what was paid** (a deposit): the money received pays it first and the rest
+  is owed as one `CANCELLATION_FEE` receivable; a payment of that receivable counts as kept (retained = the fee,
+  at most what was paid). It is **never above the order total**. Below what was paid the rest is refunded through
+  the refund process. `ck_order_fee_after_printing`, `ck_order_fee_within_total` say it again in the table.
+- **No cancellation by the system once printing started** (decision 2026-10-17): a failed payment or an unpaid
+  hold running out does not cancel such an order; it stays as it is and Sales and the order coordinators are told
+  (`OrderCancellationReferred`, in-app) to settle the fee, the blanks and the printed goods and to cancel by hand
+  if they must (`CANCELLATION_NEEDS_STAFF` for any cancellation without a person).
+- **PACKED and later** is enforced on every path, including an approved request and a payment failure: once a
+  package of the order is completed (`customer_order.packed_at`) the order goes through a return (RMA). Printing
+  started and package completed are recorded by production and fulfillment under the order's row lock, so a
+  cancellation either comes before them (and the print or the package is refused) or after them.
+
 **Implemented 2026-10-10 (SCRUM-460).**
 - **One state for "may go ahead":** the code has `CONFIRMED` (kltn-docs 17 §5); `PAID` became `CONFIRMED`.
   The money is the order's `paid_amount`, from which the payment status of kltn-docs 15 §5.2 (UNPAID /
@@ -423,7 +442,8 @@ artwork and cannot be resold.
   `sales-order-cancellations:UPDATE` (kltn-docs 17 §2), the permission that also cancels from the back
   office.
 - **Fee kept:** approving or cancelling from the back office may keep a percentage of what was paid
-  (17 §4.4, 15 §4.4, never more than paid — 15 BR-05).
+  (17 §4.4, 15 §4.4, never more than paid — 15 BR-05) - since 2026-10-17 only once printing started; see
+  "Refund and fee" above for the agreed amount.
 - **`OrderCancelled` is published on every path.**
   - Payment cancels awaited payments and asks back the refundable amount as PENDING refunds.
   - Fulfillment cancels the pick and pack, flagging picked goods for put-back.
@@ -687,6 +707,7 @@ stateDiagram-v2
     MATERIAL_ISSUED --> ON_HOLD
     PRINTING --> ON_HOLD
     SUBCONTRACTED --> ON_HOLD
+    QC --> ON_HOLD
     ON_HOLD --> PENDING_PREPRESS: resume (back to the state it left)
     PENDING_PREPRESS --> CANCELLED
     READY --> CANCELLED
@@ -713,7 +734,13 @@ stateDiagram-v2
 | SUBCONTRACTED | CANCELLED | cancel | Warehouse manager | blanks recalled from the subcontractor, PO cancelled (or fee paid per BR-PRD-10) | — |
 
 Once `PRINTING` or `SUBCONTRACTED`, the design cannot change (BR-PRD-07, BR-PRD-14) and
-cancellation follows BR-PRD-10. A shortfall on a subcontracted child goes back to `READY`, from
+cancellation follows BR-PRD-10.
+
+Decided 2026-10-13: a subcontractor's goods get **one** inspection, the production QC against the approved sample.
+The warehouse counts the receipt and reconciles the blanks; receiving runs no QC of its own on a `SUBCONTRACT` PO and
+puts nothing away; the goods stay held for their production order, outside ATP, in the QUALITY_CONTROL area until
+QC. A subcontracted order cancelled while its sales order still wants the goods is replaced by an in-house child
+(origin `REPLACEMENT`); a shortfall taken back to the print shop is an in-house child with origin `SHORTFALL`. A shortfall on a subcontracted child goes back to `READY`, from
 where the manager either sends more to the same subcontractor (PO supplement) or splits the gap
 into a new in-house child.
 
@@ -763,6 +790,7 @@ stateDiagram-v2
     CHANGES_REQUESTED --> DRAFT: revised
     SENT --> EXPIRED: validity ends
     ACCEPTED --> CONVERTED: sales order created
+    ACCEPTED --> CANCELLED: a SKU on it stopped (Sales, reason)
     DRAFT --> CANCELLED
     CONVERTED --> [*]
     EXPIRED --> [*]
@@ -773,6 +801,7 @@ stateDiagram-v2
 |---|---|---|---|---|---|
 | DRAFT | SENT | send | Sales staff | discount within the sales staff's limit, or approved | — |
 | SENT | ACCEPTED | accept | Customer (portal) | within validity; every new design has an APPROVED sample (BR-PRD-08) | — |
-| ACCEPTED | CONVERTED | create order | system / Sales staff | lines reserved (BR-ORD-001) | `OrderPlaced` |
+| ACCEPTED | CONVERTED | create order | Sales staff or order coordinator (`sales-quote-conversions:CREATE`; editing a quote is Sales' - `sales-quotes:UPDATE`, which the coordinator does not hold, decision 2026-10-17) | lines reserved (BR-ORD-001) | `OrderPlaced` |
+| ACCEPTED | CANCELLED | cancel | Sales staff | a SKU on the quote is INACTIVE/DISCONTINUED, so it can never be converted; reason required and kept in the history; the customer still sees it; a new quote follows if the goods are still wanted (decision 2026-10-17) | — |
 | SENT | EXPIRED | validity ends | system | — | — |
 

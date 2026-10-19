@@ -86,7 +86,8 @@ class SupplierController {
     }
 
     @GetMapping
-    @Operation(summary = "Search supplier profiles by status and text")
+    @Operation(summary = "Search supplier profiles by status and text; printSubcontractor=true lists the print "
+            + "subcontractors a production order may be split to")
     @RequiresPermission(resource = SupplierResources.SUPPLIERS, action = Action.READ)
     public ApiResponse<PageResponse<SupplierResponse>> list(
             @RequestParam(defaultValue = "0") int page,
@@ -95,6 +96,7 @@ class SupplierController {
             @RequestParam(required = false)
                     @Pattern(regexp = "ACTIVE|INACTIVE|BLACKLISTED|", message = "{procurement.supplierStatus}")
                     String status,
+            @RequestParam(required = false) Boolean printSubcontractor,
             @RequestParam(required = false) String sort) {
         return ApiResponse.ok(
                 service.list(
@@ -102,6 +104,7 @@ class SupplierController {
                                 size == null ? Pages.DEFAULT_PAGE_SIZE : size,
                                 search,
                                 status,
+                                printSubcontractor,
                                 sort)
                         .map(SupplierController::response));
     }

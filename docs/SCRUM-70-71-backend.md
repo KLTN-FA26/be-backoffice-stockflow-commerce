@@ -46,7 +46,7 @@ canonical inventory/commerce behavior together. PR #36 was pushed first; merge o
 
 | Route | Behavior | Permission |
 | --- | --- | --- |
-| GET /api/v1/inventory/items/{id}, PUT .../logistics, PUT .../policy | Inventory item id (carried by each variant response); version is inventory-item version; independent of product status. Replaces `/products/{productId}/skus/{skuId}/inventory-control` and `/logistics` | inventory-inventory-items READ/UPDATE |
+| GET /api/v1/inventory/items/{id}, PUT .../logistics, PUT .../policy | Inventory item id (carried by each variant response); version is inventory-item version; independent of product status, except that an OBSOLETE variant's item is read-only (409 `VARIANT_OBSOLETE`, #120). Replaces `/products/{productId}/skus/{skuId}/inventory-control` and `/logistics` | inventory-inventory-items READ/UPDATE |
 | GET/PUT /api/v1/products/{productId}/ecommerce | Canonical source content and product version; separate projected revision | product-products READ/UPDATE |
 | GET/PUT /api/v1/products/{productId}/skus/{sku}/base-price | Positive whole VND base price | product-products READ/UPDATE |
 | POST /api/v1/products/{productId}/publication or /unpublication | Master/category/gallery/active-SKU/price gates | product-products APPROVE |

@@ -221,7 +221,9 @@ class InventoryItemsIntegrationTest {
 
     @Test
     void policySaveStillReevaluatesAlerts() {
-        var f = fixture();
+        // An approved product's SKU: a REORDER alert is raised only for a SKU a purchase order may take (#120).
+        String sku = tx.execute(s -> ReferenceRows.approvedProduct(entityManager).sku());
+        var f = new Fixture(null, sku, itemId(sku));
         tx.executeWithoutResult(s -> jdbc.update("""
                 insert into inventory.stock_item(id,sku,location_code,on_hand,reserved,status,received_at,created_at)
                 values (?,?,'HCM-A01-1-A',5,0,'AVAILABLE',now(),now())""", UUID.randomUUID(), f.sku()));

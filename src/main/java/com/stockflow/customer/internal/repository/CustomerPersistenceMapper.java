@@ -15,7 +15,7 @@ final class CustomerPersistenceMapper {
 
     static Customer toDomain(CustomerJpaEntity entity, List<AddressJpaEntity> addresses) {
         return new Customer(entity.getId(), entity.getUserId(), entity.getFullName(), entity.getEmail(),
-                entity.getPhone(), entity.getSegmentId(), entity.getStatus(),
+                entity.getPhone(), entity.getTaxCode(), entity.getSegmentId(), entity.getStatus(),
                 addresses.stream().map(CustomerPersistenceMapper::toDomain).toList(),
                 entity.getVersion(), entity.getCreatedAt());
     }
@@ -30,7 +30,7 @@ final class CustomerPersistenceMapper {
 
     static CustomerJpaEntity toNewEntity(Customer customer) {
         return new CustomerJpaEntity(customer.id(), customer.userId(), customer.fullName(),
-                customer.email(), customer.phone(), customer.segmentId(), customer.status());
+                customer.email(), customer.phone(), customer.taxCode(), customer.segmentId(), customer.status());
     }
 
     static AddressJpaEntity toNewEntity(java.util.UUID customerId, CustomerAddress address) {
@@ -41,7 +41,8 @@ final class CustomerPersistenceMapper {
     }
 
     static void apply(Customer customer, CustomerJpaEntity entity) {
-        entity.apply(customer.fullName(), customer.phone(), customer.status());
+        entity.apply(customer.fullName(), customer.phone(), customer.taxCode(), customer.segmentId(),
+                customer.status());
     }
 
     static void apply(CustomerAddress address, AddressJpaEntity entity) {
@@ -53,7 +54,8 @@ final class CustomerPersistenceMapper {
 
     static CustomerSummary toSummary(CustomerJpaEntity entity) {
         return new CustomerSummary(entity.getId(), entity.getUserId(), entity.getFullName(),
-                entity.getEmail(), entity.getPhone(), entity.getSegmentId(), entity.getStatus().name(),
+                entity.getEmail(), entity.getPhone(), entity.getTaxCode(), entity.getSegmentId(),
+                entity.getStatus().name(),
                 entity.getVersion(), entity.getCreatedAt());
     }
 }

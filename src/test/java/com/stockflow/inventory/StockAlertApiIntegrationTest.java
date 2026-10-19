@@ -231,8 +231,11 @@ class StockAlertApiIntegrationTest {
 
     @Test
     void aResolvedAlertCannotBeAcknowledged() throws Exception {
-        tx.executeWithoutResult(s -> jdbc.update("UPDATE inventory.stock_alert SET status = 'RESOLVED', resolved_at = NOW(),"
-                + " resolution = 'RECOVERED', version = version + 1 WHERE id = ?", reorder.id()));
+        // GREATEST: opened_at came from the JVM clock, NOW() from the database's, and a database container's clock can
+        // trail the host's by milliseconds - enough for ck_stock_alert_opened to refuse the fixture itself.
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE inventory.stock_alert SET status = 'RESOLVED',"
+                + " resolved_at = GREATEST(NOW(), opened_at), resolution = 'RECOVERED', version = version + 1 WHERE id = ?",
+                reorder.id()));
         ack(planner, reorder.id(), "{\"version\":1}").andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("INVALID_ALERT_TRANSITION"));
     }

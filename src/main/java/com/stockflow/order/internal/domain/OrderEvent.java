@@ -44,6 +44,20 @@ public sealed interface OrderEvent extends DomainEvent {
         }
     }
 
+    /** A system cancellation refused because printing started: staff decide (decision 2026-10-17). */
+    record CancellationReferred(UUID eventId, Instant occurredAt, com.stockflow.contracts.OrderCancellationReferred payload)
+            implements OrderEvent {
+
+        public CancellationReferred(com.stockflow.contracts.OrderCancellationReferred payload) {
+            this(UUID.randomUUID(), Instant.now(), payload);
+        }
+
+        @Override
+        public String aggregateId() {
+            return payload.orderId().toString();
+        }
+    }
+
     /** Delivered by the carrier, as the coordinator recorded it: payment opens the receivable (SCRUM-431). */
     record Delivered(UUID eventId, Instant occurredAt, OrderDelivered payload) implements OrderEvent {
 

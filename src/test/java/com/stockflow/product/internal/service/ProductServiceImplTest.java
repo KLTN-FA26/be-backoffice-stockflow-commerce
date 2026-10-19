@@ -313,6 +313,7 @@ class ProductServiceImplTest {
         order.verify(products).findForUpdate(product.id());
         order.verify(purchasing).openReferences(anyCollection(), anyInt());
         order.verify(selling).openReferences(anyCollection(), anyInt());
+        order.verify(inventory).skusInUse(List.of("CUP-12OZ", "CUP-12OZ-L"));
         order.verify(media).storedKeysOf(product.id().value());
         order.verify(inventory).deleteUnusedItems(List.of("CUP-12OZ", "CUP-12OZ-L"));
         order.verify(products).delete(product.id());
@@ -352,6 +353,21 @@ class ProductServiceImplTest {
         assertThat(refused.getMessage()).contains("SO-7");
         verify(products, never()).delete(any());
         verifyNoInteractions(inventory);
+    }
+
+    @Test
+    @DisplayName("delete: an inventory item some document uses (stock, ledger, warehouse task...) is PRODUCT_IN_USE naming the SKU, before anything is deleted")
+    void deleteRefusedByAnItemInUse() {
+        Product product = locked(ProductStatus.DRAFT, 3, ProductStatus.DRAFT);
+        when(inventory.skusInUse(anyCollection())).thenReturn(List.of("CUP-12OZ-L"));
+
+        BusinessException refused = refusal(catchThrowable(() -> service.deleteDraft(product.id().value(), 3)));
+
+        assertThat(refused.errorCode()).isEqualTo(ErrorCode.PRODUCT_IN_USE);
+        assertThat(refused.getMessage()).contains("CUP-12OZ-L");
+        verify(inventory, never()).deleteUnusedItems(anyCollection());
+        verify(products, never()).delete(any());
+        verifyNoInteractions(media);
     }
 
     @Test
@@ -426,14 +442,14 @@ class ProductServiceImplTest {
     @Test
     @DisplayName("purchasability: SKUs are upper-cased and stripped, and the answer is the commerce repository's")
     void purchasabilityNormalisesTheKeys() {
-        when(commerce.purchasability(anyCollection())).thenReturn(Map.of("CUP-12OZ", Purchasability.PRODUCT_INACTIVE));
+        when(commerce.purchasability(anyCollection(), org.mockito.ArgumentMatchers.eq(false))).thenReturn(Map.of("CUP-12OZ", Purchasability.PRODUCT_INACTIVE));
 
         Map<String, Purchasability> answer = service.purchasability(List.of(" cup-12oz ", "CUP-12OZ"));
 
         assertThat(answer).containsExactly(Map.entry("CUP-12OZ", Purchasability.PRODUCT_INACTIVE));
         @SuppressWarnings("unchecked")
         var asked = org.mockito.ArgumentCaptor.forClass(Collection.class);
-        verify(commerce).purchasability(asked.capture());
+        verify(commerce).purchasability(asked.capture(), org.mockito.ArgumentMatchers.eq(false));
         assertThat(asked.getValue()).containsExactly("CUP-12OZ");
     }
 

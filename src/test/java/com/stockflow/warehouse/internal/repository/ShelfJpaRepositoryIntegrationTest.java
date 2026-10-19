@@ -99,14 +99,14 @@ class ShelfJpaRepositoryIntegrationTest {
     }
 
     @Test
-    @DisplayName("a location owned by no bin and no area is refused at commit")
+    @DisplayName("a location owned by no bin, no area and no subcontractor site is refused at commit")
     void anOrphanLocationIsRefused() {
         entityManager.persist(location(warehouse("HN"), StorageLocationKind.AREA, "HN-LOST01"));
         entityManager.flush();
 
         assertThatThrownBy(this::checkDeferredConstraints)
                 .isInstanceOf(DataIntegrityViolationException.class)
-                .hasMessageContaining("owned by no bin and no area");
+                .hasMessageContaining("owned by no bin, no area and no subcontractor site");
     }
 
     /**

@@ -54,7 +54,7 @@ class ReceivableBookAdapter implements ReceivableBook, ReceivableSearch {
     @Override
     public Receivable save(Receivable r) {
         ReceivableJpaEntity entity = receivables.findById(r.id()).orElseGet(() -> new ReceivableJpaEntity(r.id(),
-                r.orderId(), r.customerId(), r.amount(), r.currency(), r.issuedAt(), r.dueDate()));
+                r.orderId(), r.customerId(), r.amount(), r.currency(), r.issuedAt(), r.dueDate()).ofKind(r.kind()));
         entity.apply(r.paidAmount(), r.status(), r.settledAt());
         return toDomain(receivables.saveAndFlush(entity));
     }
@@ -169,7 +169,8 @@ class ReceivableBookAdapter implements ReceivableBook, ReceivableSearch {
 
     private static Receivable toDomain(ReceivableJpaEntity e) {
         return new Receivable(e.getId(), e.getOrderId(), e.getCustomerId(), e.getAmount(), e.getPaidAmount(),
-                e.getCurrency(), e.getIssuedAt(), e.getDueDate(), e.getStatus(), e.getSettledAt(), e.getVersion());
+                e.getCurrency(), e.getIssuedAt(), e.getDueDate(), e.getStatus(), e.getSettledAt(), e.getVersion())
+                .withKind(e.getKind());
     }
 
     private static CustomerTransfer toDomain(CustomerTransferJpaEntity e) {

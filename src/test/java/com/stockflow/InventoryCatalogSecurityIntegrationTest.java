@@ -139,8 +139,14 @@ values (?,?,'Table',?,'DRAFT')
                 .andExpect(status().isUnauthorized());
     }
 
+    /**
+     * Availability is the customer portal's view: since SCRUM-450 it answers only a CUSTOMER linked
+     * to an ACTIVE profile (kltn-docs 18 BR-01a), so any other signed-in identity gets 403 and uses
+     * the inventory API instead. The positive case is B2bAccessIntegrationTest's and
+     * B2bOnboardingIntegrationTest's.
+     */
     @Test
-    void authenticatedUserCanReadCatalogAndTheAvailabilityEndpoint() throws Exception {
+    void authenticatedUserCanReadCatalogButAvailabilityIsForActiveCustomersOnly() throws Exception {
         String authorization = token("product-products:READ");
         mvc.perform(get("/api/v1/catalog/products").header("Authorization", authorization))
                 .andExpect(status().isOk());
@@ -148,7 +154,7 @@ values (?,?,'Table',?,'DRAFT')
                         get("/api/v1/catalog/products/availability")
                                 .param("sku", "SOFA-3S-GREY")
                                 .header("Authorization", authorization))
-                .andExpect(status().isOk());
+                .andExpect(status().isForbidden());
     }
 
     @Test

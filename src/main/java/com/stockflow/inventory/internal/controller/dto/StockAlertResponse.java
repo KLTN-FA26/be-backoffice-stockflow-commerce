@@ -51,7 +51,7 @@ public record StockAlertResponse(
         String ackNote,
         Instant resolvedAt,
 
-        @Schema(description = "RECOVERED, UNCONFIGURED, STOCK_GONE or EXPIRED_OUT; null while open")
+        @Schema(description = "RECOVERED, UNCONFIGURED, NOT_PURCHASABLE (REORDER/SAFETY of a SKU no longer bought), STOCK_GONE or EXPIRED_OUT; null while open")
         String resolution,
 
         @Schema(description = "Send back when acknowledging")

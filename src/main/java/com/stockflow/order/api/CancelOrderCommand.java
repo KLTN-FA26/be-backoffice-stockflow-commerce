@@ -10,12 +10,19 @@ import java.util.UUID;
  * @param retainedPercent share of the money received kept for work already done (kltn-docs 17 §4.4,
  *                        15 §4.4); null or 0 keeps nothing
  * @param cancelledBy     the member of staff deciding
+ * @param agreedFee       instead of a percentage, the amount agreed with the customer (decision Q2); null
+ *                        for none
  */
 public record CancelOrderCommand(CancellationReasonCode reasonCode, String note, BigDecimal retainedPercent,
-                                 UUID cancelledBy) {
+                                 UUID cancelledBy, CancellationFee agreedFee) {
 
     public CancelOrderCommand {
         if (reasonCode == null) throw new IllegalArgumentException("reasonCode is required");
+    }
+
+    public CancelOrderCommand(CancellationReasonCode reasonCode, String note, BigDecimal retainedPercent,
+                              UUID cancelledBy) {
+        this(reasonCode, note, retainedPercent, cancelledBy, null);
     }
 
     /**

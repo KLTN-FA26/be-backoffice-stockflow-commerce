@@ -24,6 +24,8 @@ public interface VariantJpaRepository extends BaseJpaRepository<VariantJpaEntity
 
     boolean existsBySku(String sku);
 
+    boolean existsBySkuAndStatus(String sku, VariantStatus status);
+
     boolean existsByProductIdAndAttributeSignature(UUID productId, String attributeSignature);
 
     @Query("select coalesce(max(v.position), -1) + 1 from VariantJpaEntity v where v.productId = :productId")

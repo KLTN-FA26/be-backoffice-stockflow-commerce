@@ -298,10 +298,12 @@ class ProductServiceImpl implements ProductService {
      * {@inheritDoc}
      *
      * <p>Refused while a purchase order line or an order line that is still open points at one of its SKUs,
-     * and then by the foreign keys for everything else (stock, movements, receipts, carts, designs, a
-     * storefront listing): that is the last line of defence, and it is a 409 {@code PRODUCT_IN_USE}, never a
-     * 500. The inventory item each SKU got when its variant was created is deleted with it; the stored
-     * image files are removed only after the commit.</p>
+     * then while a SKU's inventory item is used by any document ({@code InventoryService.skusInUse}: stock, the
+     * ledger, warehouse tasks, a price, procurement), and then by the foreign keys for everything else (order and
+     * cart lines, designs, a storefront listing): that is the last line of defence, and it is a 409
+     * {@code PRODUCT_IN_USE}, never a 500. The inventory item each SKU got when its variant was created is deleted
+     * with it, its stock alerts too (a note about the item, not a use of it); the stored image files are removed
+     * only after the commit.</p>
      */
     @Override
     @Auditable(action = AuditAction.DELETE, resourceType = "product", resourceId = "#productId")
@@ -315,6 +317,11 @@ class ProductServiceImpl implements ProductService {
             SkuReference first = open.references().getFirst();
             throw new BusinessException(ErrorCode.PRODUCT_IN_USE, "%s %s still refers to %s".formatted(
                     first.kind(), first.documentNumber(), first.sku()));
+        }
+        List<String> used = inventory.skusInUse(skus);
+        if (!used.isEmpty()) {
+            throw new BusinessException(ErrorCode.PRODUCT_IN_USE,
+                    "SKU %s has stock, warehouse, pricing or purchasing history".formatted(used.getFirst()));
         }
         List<String> stored = media.storedKeysOf(productId);
         try {
@@ -338,8 +345,18 @@ class ProductServiceImpl implements ProductService {
     @Override
     @Transactional(readOnly = true)
     public Map<String, Purchasability> purchasability(Collection<String> skus) {
-        return commerce.purchasability(skus.stream().filter(java.util.Objects::nonNull)
-                .map(sku -> sku.strip().toUpperCase(Locale.ROOT)).collect(java.util.stream.Collectors.toSet()));
+        return commerce.purchasability(normalised(skus), false);
+    }
+
+    @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public Map<String, Purchasability> lockedPurchasability(Collection<String> skus) {
+        return commerce.purchasability(normalised(skus), true);
+    }
+
+    private static java.util.Set<String> normalised(Collection<String> skus) {
+        return skus.stream().filter(java.util.Objects::nonNull)
+                .map(sku -> sku.strip().toUpperCase(Locale.ROOT)).collect(java.util.stream.Collectors.toSet());
     }
 
     @Override

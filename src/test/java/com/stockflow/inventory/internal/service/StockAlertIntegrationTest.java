@@ -385,6 +385,37 @@ class StockAlertIntegrationTest {
         assertThat(open(Kind.REORDER)).isEmpty();
     }
 
+    // ------------------------------------------------------------------ only a SKU that may be bought is watched
+
+    @Test
+    void aDraftSkuFarBelowItsThresholdsGetsNoLowStockAlertFromTheDrainOrTheReconcile() {
+        String draft = fixtures.draftSku(40, 15);
+        fixtures.stock(draft, HCM_BIN_2, 1, "AVAILABLE", null, null);
+        drainer.drain();
+        reconciler.reconcile();
+        awaitEventsDelivered();
+
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_alert WHERE sku = ?", Long.class, draft)).isZero();
+        assertThat(fixtures.messages(planner)).isZero();
+    }
+
+    @Test
+    void anOpenAlertOfASkuThatCanNoLongerBeBoughtIsClosedNotPurchasableByTheReconcile() {
+        adjust(-42);
+        drainer.drain();
+        assertThat(open(Kind.REORDER)).isPresent();
+        awaitPlannerMessages(1);
+
+        fixtures.makeDraft(sku);
+        reconciler.reconcile();
+        awaitEventsDelivered();
+
+        assertThat(open(Kind.REORDER)).isEmpty();
+        assertThat(jdbc.queryForObject("SELECT resolution FROM inventory.stock_alert WHERE sku = ? AND kind = 'REORDER'",
+                String.class, sku)).isEqualTo("NOT_PURCHASABLE");
+        assertThat(fixtures.messages(planner)).as("closing says nothing").isEqualTo(1);
+    }
+
     // ------------------------------------------------------------------ one definition of low stock (plan A8)
 
     @Test

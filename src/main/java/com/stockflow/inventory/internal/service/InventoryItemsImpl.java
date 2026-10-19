@@ -11,6 +11,7 @@ import com.stockflow.common.security.CurrentUserProvider;
 import com.stockflow.contracts.SkuInventoryControlChanged;
 import com.stockflow.inventory.api.InventoryPolicy;
 import com.stockflow.inventory.api.ItemLogistics;
+import com.stockflow.inventory.api.SkuRetirement;
 import com.stockflow.inventory.api.StockThresholdEvaluation;
 import com.stockflow.inventory.api.TrackingMode;
 import com.stockflow.inventory.internal.domain.ItemLogisticsRules;
@@ -36,6 +37,10 @@ import java.util.UUID;
  * audit row names the item id: the same item is reached from any number of variants or none, so a variant id would
  * make its trail depend on the route taken. No product history is written and no product status is consulted; a
  * product under review does not freeze its warehouse data.
+ *
+ * <p>A retired SKU does ({@link SkuRetirement}, #120): an {@code OBSOLETE} variant keeps its stock only to ship it or
+ * adjust it away, so its item is still read like any other but an edit of either group is {@code VARIANT_OBSOLETE},
+ * not a 404 that would say the item does not exist.</p>
  */
 @Service
 @Transactional
@@ -45,14 +50,16 @@ class InventoryItemsImpl implements InventoryItems {
     private final Clock clock;
     private final CurrentUserProvider users;
     private final ApplicationEventPublisher events;
+    private final SkuRetirement retirement;
 
     InventoryItemsImpl(InventoryPolicyRepository policies, InventoryItemSearch search, Clock clock,
-                       CurrentUserProvider users, ApplicationEventPublisher events) {
+                       CurrentUserProvider users, ApplicationEventPublisher events, SkuRetirement retirement) {
         this.policies = policies;
         this.search = search;
         this.clock = clock;
         this.users = users;
         this.events = events;
+        this.retirement = retirement;
     }
 
     @Override
@@ -114,6 +121,16 @@ class InventoryItemsImpl implements InventoryItems {
         return locked;
     }
 
+    /** The item under its lock, refused when its SKU is retired; asked before the version, as #120 did. */
+    private ItemRow lockEditable(UUID id) {
+        ItemRow locked = lockItem(id);
+        if (retirement.retired(locked.sku())) {
+            throw new BusinessException(ErrorCode.VARIANT_OBSOLETE,
+                    "SKU %s is obsolete: its inventory settings are kept as they are".formatted(locked.sku()));
+        }
+        return locked;
+    }
+
     /** One read of the row, so the version, the logistics and the policy shown are those of the same save. */
     private Detail detail(ItemRow row) {
         return new Detail(row.id(), row.sku(), row.version(), row.logistics(), row.policy(),
@@ -122,7 +139,7 @@ class InventoryItemsImpl implements InventoryItems {
 
     private void savePolicy(UUID id, long expectedVersion, InventoryPolicy policy) {
         StockPolicy.validate(policy);
-        ItemRow current = lockItem(id);
+        ItemRow current = lockEditable(id);
         if (current.version() != expectedVersion) throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
         String sku = current.sku();
         var previous = current.policy();
@@ -144,7 +161,7 @@ class InventoryItemsImpl implements InventoryItems {
 
     private void saveLogistics(UUID id, long expectedVersion, ItemLogistics logistics) {
         ItemLogisticsRules.validate(logistics);
-        ItemRow current = lockItem(id);
+        ItemRow current = lockEditable(id);
         if (current.version() != expectedVersion) throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
         String sku = current.sku();
         if (!current.logistics().unitOfMeasure().equals(logistics.unitOfMeasure()) && policies.holdsStock(sku)) {

@@ -5,6 +5,7 @@ import com.stockflow.inventory.internal.domain.ReleaseReason;
 import com.stockflow.inventory.internal.domain.ReservationId;
 import com.stockflow.inventory.internal.domain.StockItem;
 import com.stockflow.inventory.internal.domain.StockItemRepository;
+import com.stockflow.inventory.internal.domain.StockStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.modulith.events.ApplicationModuleListener;
@@ -47,7 +48,11 @@ class PaymentEventListener {
     private final InventoryEventPublisher events;
     private final Clock clock;
 
-    PaymentEventListener(StockItemRepository repository, InventoryEventPublisher events, Clock clock) {
+    private final StockOperations operations;
+
+    PaymentEventListener(StockItemRepository repository, InventoryEventPublisher events, Clock clock,
+                         StockOperations operations) {
+        this.operations = operations;
         this.repository = repository;
         this.events = events;
         this.clock = clock;
@@ -70,9 +75,19 @@ class PaymentEventListener {
         }
 
         for (StockItem item : holders) {
+            if (item.status() == StockStatus.IN_PRODUCTION) {
+                // Blanks in the print shop: production closes those holds, not a payment (as release() does).
+                log.info("Order {}: hold(s) on {} are in the print shop; production closes them", event.orderId(),
+                        item.id().value());
+                continue;
+            }
+            // A layer may carry a production hold too (a sample's, a reprint's), whose orderId is null: compare
+            // from the event's side.
             List<ReservationId> toRelease = item.reservations().stream()
                     .filter(r -> r.status().isActive())
-                    .filter(r -> r.orderId().equals(event.orderId()))
+                    .filter(r -> event.orderId().equals(r.orderId()))
+                    // BR-PRD-10: printed goods waiting in packing are packed or scrapped, never freed (as release()).
+                    .filter(r -> !operations.isFinishedCustomGoods(item, r))
                     .map(r -> r.id())
                     .toList();
             toRelease.forEach(id ->

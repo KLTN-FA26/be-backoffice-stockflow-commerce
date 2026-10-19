@@ -24,10 +24,18 @@ class CustomerRepositoryAdapter implements CustomerRepository, CustomerSearchRep
 
     private final CustomerJpaRepository customers;
     private final AddressJpaRepository addresses;
+    private final SegmentJpaRepository segments;
 
-    CustomerRepositoryAdapter(CustomerJpaRepository customers, AddressJpaRepository addresses) {
+    CustomerRepositoryAdapter(CustomerJpaRepository customers, AddressJpaRepository addresses,
+                              SegmentJpaRepository segments) {
         this.customers = customers;
         this.addresses = addresses;
+        this.segments = segments;
+    }
+
+    @Override
+    public boolean segmentExists(UUID segmentId) {
+        return segments.existsById(segmentId);
     }
 
     @Override
@@ -43,6 +51,16 @@ class CustomerRepositoryAdapter implements CustomerRepository, CustomerSearchRep
     @Override
     public Optional<Customer> findByUserId(UUID userId) {
         return customers.findByUserId(userId).map(this::withAddresses);
+    }
+
+    @Override
+    public Optional<Customer> findByUserIdForUpdate(UUID userId) {
+        return customers.lockByUserId(userId).map(this::withAddresses);
+    }
+
+    @Override
+    public boolean isTaxCodeTaken(String taxCode, UUID exceptCustomerId) {
+        return customers.existsTaxCode(taxCode, exceptCustomerId);
     }
 
     @Override
@@ -88,12 +106,29 @@ class CustomerRepositoryAdapter implements CustomerRepository, CustomerSearchRep
         return withAddresses(customers.findById(customer.id()).orElseThrow());
     }
 
+    private static Specification<CustomerJpaEntity> taxCodeIs(String search) {
+        if (search == null || search.isBlank()) {
+            return Specs.all();   // no search: no restriction, like the other terms
+        }
+        try {
+            return Specs.eq("taxCode", com.stockflow.customer.internal.domain.TaxCode.normalise(search));
+        } catch (IllegalArgumentException notATaxCode) {
+            return Specs.none();
+        }
+    }
+
     @Override
-    public Page<CustomerSummary> search(String search, String status, Pageable pageable) {
+    public Page<CustomerSummary> search(String search, String status, UUID segmentId, Pageable pageable) {
         Specification<CustomerJpaEntity> specification = Specification
                 .<CustomerJpaEntity>where(Specs.contains("fullName", search))
                 .or(Specs.contains("email", search))
-                .or(Specs.contains("phone", search));
+                .or(Specs.contains("phone", search))
+                // A tax code or personal id is matched whole, never by a part of it (review of #109, item 9): a
+                // search box must not let anyone walk the codes digit by digit.
+                .or(taxCodeIs(search));
+        if (segmentId != null) {
+            specification = specification.and(Specs.eq("segmentId", segmentId));
+        }
         if (status != null && !status.isBlank()) {
             try {
                 specification = specification.and(Specs.eq("status",

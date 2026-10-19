@@ -129,6 +129,9 @@ services:
       PO_BUYER_PHONE: ${PO_BUYER_PHONE:?PO_BUYER_PHONE is required}
       PO_BUYER_EMAIL: ${PO_BUYER_EMAIL:?PO_BUYER_EMAIL is required}
       PO_RECEIVING_ADDRESS: ${PO_RECEIVING_ADDRESS:?PO_RECEIVING_ADDRESS is required}
+      # B2B onboarding (SCRUM-429): the portal page an invitation links to. Without it Sales cannot create a customer
+      # (503 PORTAL_INVITATION_UNAVAILABLE) and, with self-registration gone, nobody can. Required, never guessed.
+      PORTAL_ACTIVATION_URL: ${PORTAL_ACTIVATION_URL:?PORTAL_ACTIVATION_URL is required}
       SUPPLIER_API_ALLOWED_HOSTS: ${SUPPLIER_API_ALLOWED_HOSTS:-}
       CACHE_VERSION: ${CACHE_VERSION:-v1}
       LOG_LEVEL: ${LOG_LEVEL:-DEBUG}

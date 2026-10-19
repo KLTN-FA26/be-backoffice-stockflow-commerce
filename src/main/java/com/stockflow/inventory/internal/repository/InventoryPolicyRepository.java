@@ -41,11 +41,28 @@ public class InventoryPolicyRepository {
                 skus.toArray());
     }
 
-    /** Deletes the items of these SKUs; a foreign key that still points at one refuses the whole statement. */
+    /**
+     * Deletes the items of these SKUs; a foreign key that still points at one refuses the whole statement. Their stock
+     * alerts go with them (ON DELETE CASCADE, V20261016000100); their rows on the alert queue, which has no foreign key
+     * so that it never blocks a stock write, are removed here.
+     */
     public void deleteItems(java.util.Collection<String> skus) {
         if (skus.isEmpty()) return;
         String placeholders = String.join(",", Collections.nCopies(skus.size(), "?"));
+        jdbc.update("delete from inventory.stock_alert_dirty where sku in (" + placeholders + ")", skus.toArray());
         jdbc.update("delete from inventory.inventory_items where sku in (" + placeholders + ")", skus.toArray());
+    }
+
+    /**
+     * The SKUs among these whose item some document uses ({@code inventory.item_in_use}: stock, the ledger,
+     * adjustments, counts, transfers, warehouse tasks, pick lines, a price, procurement), in SKU order. The same
+     * function guards a SKU rename, so a delete and a rename refuse the same items.
+     */
+    public java.util.List<String> skusInUse(java.util.Collection<String> skus) {
+        if (skus.isEmpty()) return java.util.List.of();
+        String placeholders = String.join(",", Collections.nCopies(skus.size(), "?"));
+        return jdbc.queryForList("select sku from inventory.inventory_items where sku in (" + placeholders
+                + ") and inventory.item_in_use(id, sku) order by sku", String.class, skus.toArray());
     }
 
     public boolean hasActiveCount(String sku) {
