@@ -13,6 +13,7 @@ import com.stockflow.product.internal.service.ProductTaxonomyService;
 import com.stockflow.procurement.api.CreatePOLineCommand;
 import com.stockflow.procurement.api.CreatePurchaseOrderCommand;
 import com.stockflow.procurement.api.ProcurementService;
+import com.stockflow.procurement.api.SupplierItemService;
 import com.stockflow.support.Await;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
@@ -20,6 +21,7 @@ import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.ProductFixtures;
 import com.stockflow.support.RedisContainer;
 import com.stockflow.support.ReferenceRows;
+import com.stockflow.support.SupplierItemFixtures;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -83,6 +85,7 @@ class ProductLifecycleIntegrationTest {
     @Autowired ProductService products;
     @Autowired ProductTaxonomyService taxonomy;
     @Autowired ProcurementService procurement;
+    @Autowired SupplierItemService supplierCatalog;
     @Autowired CatalogService catalog;
     @Autowired CatalogProjectionService projection;
 
@@ -108,11 +111,12 @@ class ProductLifecycleIntegrationTest {
         return "Bearer " + token;
     }
 
-    /** Product people: ECOMMERCE_ADMIN has every product permission (create, update, approve, delete). */
+    /** Product people: ECOMMERCE_ADMIN has every product-products permission (create, update, approve, delete). */
     private String editor() {
         return token(editorUser, "ECOMMERCE_ADMIN");
     }
 
+    /** SYSTEM_ADMIN: approves, and alone suspends, resumes and discontinues (product-lifecycle:APPROVE). */
     private String approver() {
         return token(approverUser, "SYSTEM_ADMIN");
     }
@@ -186,8 +190,17 @@ class ProductLifecycleIntegrationTest {
         return supplier;
     }
 
+    /** A supplier that lists each of {@code skus} (BR-PO-001), while they are still purchasable. */
+    private UUID supplierListing(String... skus) {
+        UUID supplier = supplier();
+        for (String sku : skus) {
+            SupplierItemFixtures.list(supplierCatalog, supplier, sku);
+        }
+        return supplier;
+    }
+
     private UUID draftPurchaseOrder(String sku) {
-        return procurement.createPurchaseOrder(new CreatePurchaseOrderCommand(supplier(), DemoData.WAREHOUSE_HCM, "VND",
+        return procurement.createPurchaseOrder(new CreatePurchaseOrderCommand(supplierListing(sku), DemoData.WAREHOUSE_HCM, "VND",
                 LocalDate.now().plusDays(10), null, List.of(new CreatePOLineCommand(sku, null, 5, new BigDecimal("1000")))))
                 .purchaseOrderId();
     }
@@ -286,14 +299,16 @@ class ProductLifecycleIntegrationTest {
         String poNumber = jdbc.queryForObject("SELECT po_number FROM procurement.purchase_orders WHERE id = ?", String.class, po);
         String orderNumber = jdbc.queryForObject("SELECT order_number FROM ordering.customer_order WHERE id = ?", String.class, order);
 
-        // Who may discontinue: product-products:APPROVE. WAREHOUSE_STAFF has no product permission, SALES_STAFF no APPROVE.
+        // Who may discontinue: product-lifecycle:APPROVE, the System Admin only (kltn-docs 01 §5.1). ECOMMERCE_ADMIN
+        // approves and publishes but does not end a product's life; WAREHOUSE_STAFF and SALES_STAFF have neither.
         String path = "/api/v1/products/" + id + "/discontinuation";
         String body = reasonAndVersion("Het dong san pham", approved.version());
+        assertRefused(send("POST", editor(), path, body), 403, "FORBIDDEN");
         assertRefused(send("POST", token(UUID.randomUUID(), "WAREHOUSE_STAFF"), path, body), 403, "FORBIDDEN");
         assertRefused(send("POST", token(UUID.randomUUID(), "SALES_STAFF"), path, body), 403, "FORBIDDEN");
         mvc.perform(post(path).contentType(JSON).content(body)).andExpect(status().isUnauthorized());
 
-        send("POST", editor(), path, body)
+        send("POST", approver(), path, body)
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("DISCONTINUED"))
                 .andExpect(jsonPath("$.data.productId").value(id.toString()))
@@ -327,32 +342,32 @@ class ProductLifecycleIntegrationTest {
         String path = "/api/v1/products/" + approved.productId() + "/discontinuation";
 
         // The old call without a body no longer works: the reason is required (docs 01 §5.2).
-        assertRefused(send("POST", editor(), path, null), 400, "MALFORMED_REQUEST");
-        assertRefused(send("POST", editor(), path, "{}"), 400, "VALIDATION_FAILED");
-        JsonNode both = body(send("POST", editor(), path, "{}"));
+        assertRefused(send("POST", approver(), path, null), 400, "MALFORMED_REQUEST");
+        assertRefused(send("POST", approver(), path, "{}"), 400, "VALIDATION_FAILED");
+        JsonNode both = body(send("POST", approver(), path, "{}"));
         assertThat(both.path("fieldErrors")).extracting(f -> f.path("field").asText()).containsExactlyInAnyOrder("reason", "version");
-        assertRefused(send("POST", editor(), path, "{\"reason\":\"  \",\"version\":%d}".formatted(approved.version())),
+        assertRefused(send("POST", approver(), path, "{\"reason\":\"  \",\"version\":%d}".formatted(approved.version())),
                 400, "VALIDATION_FAILED");
-        send("POST", editor(), path, "{\"reason\":\"  \",\"version\":%d}".formatted(approved.version()))
+        send("POST", approver(), path, "{\"reason\":\"  \",\"version\":%d}".formatted(approved.version()))
                 .andExpect(jsonPath("$.fieldErrors[0].field").value("reason"));
-        assertRefused(send("POST", editor(), path, reasonAndVersion("x".repeat(501), approved.version())), 400, "VALIDATION_FAILED");
-        assertRefused(send("POST", editor(), path, reasonAndVersion("end", approved.version() + 5)), 409, "OPTIMISTIC_LOCK");
-        assertRefused(send("POST", editor(), "/api/v1/products/" + UUID.randomUUID() + "/discontinuation",
+        assertRefused(send("POST", approver(), path, reasonAndVersion("x".repeat(501), approved.version())), 400, "VALIDATION_FAILED");
+        assertRefused(send("POST", approver(), path, reasonAndVersion("end", approved.version() + 5)), 409, "OPTIMISTIC_LOCK");
+        assertRefused(send("POST", approver(), "/api/v1/products/" + UUID.randomUUID() + "/discontinuation",
                 reasonAndVersion("end", 0)), 404, "PRODUCT_NOT_FOUND");
         // Nothing above changed anything.
         assertThat(product(approved.productId()).path("status").asText()).isEqualTo("APPROVED");
 
         // A draft cannot be discontinued; a discontinued product cannot be discontinued again.
         ProductSummary draft = draftProduct();
-        assertRefused(send("POST", editor(), "/api/v1/products/" + draft.productId() + "/discontinuation",
+        assertRefused(send("POST", approver(), "/api/v1/products/" + draft.productId() + "/discontinuation",
                 reasonAndVersion("end", draft.version())), 409, "INVALID_PRODUCT_STATUS_TRANSITION");
-        send("POST", editor(), path, reasonAndVersion("end of line", approved.version()))
+        send("POST", approver(), path, reasonAndVersion("end of line", approved.version()))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.warnings.length()").value(0))
                 .andExpect(jsonPath("$.data.openReferences.length()").value(0));
-        assertRefused(send("POST", editor(), path, reasonAndVersion("again", versionOf(approved.productId()))),
+        assertRefused(send("POST", approver(), path, reasonAndVersion("again", versionOf(approved.productId()))),
                 409, "INVALID_PRODUCT_STATUS_TRANSITION");
         // Two screens discontinue the same product: the second quotes the version the first read.
-        assertRefused(send("POST", editor(), path, reasonAndVersion("again", approved.version())), 409, "OPTIMISTIC_LOCK");
+        assertRefused(send("POST", approver(), path, reasonAndVersion("again", approved.version())), 409, "OPTIMISTIC_LOCK");
     }
 
     @Test
@@ -360,14 +375,14 @@ class ProductLifecycleIntegrationTest {
     void discontinueFromInactive() throws Exception {
         ProductSummary approved = approvedProduct();
         UUID id = approved.productId();
-        JsonNode suspended = data(send("POST", editor(), "/api/v1/products/" + id + "/suspension",
+        JsonNode suspended = data(send("POST", approver(), "/api/v1/products/" + id + "/suspension",
                 reasonAndVersion("recall", approved.version())).andExpect(status().isOk()));
 
-        send("POST", editor(), "/api/v1/products/" + id + "/discontinuation",
+        send("POST", approver(), "/api/v1/products/" + id + "/discontinuation",
                 reasonAndVersion("supplier gone", suspended.path("version").asLong()))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("DISCONTINUED"))
                 .andExpect(jsonPath("$.data.suspendReason").value("recall"));
-        assertRefused(send("POST", editor(), "/api/v1/products/" + id + "/resumption",
+        assertRefused(send("POST", approver(), "/api/v1/products/" + id + "/resumption",
                 "{\"version\":%d}".formatted(versionOf(id))), 409, "INVALID_PRODUCT_STATUS_TRANSITION");
     }
 
@@ -383,34 +398,37 @@ class ProductLifecycleIntegrationTest {
 
         assertRefused(send("POST", token(UUID.randomUUID(), "SALES_STAFF"), suspension,
                 reasonAndVersion("recall", approved.version())), 403, "FORBIDDEN");
-        assertRefused(send("POST", editor(), suspension, "{\"version\":%d}".formatted(approved.version())), 400, "VALIDATION_FAILED");
-        send("POST", editor(), suspension, "{\"version\":%d}".formatted(approved.version()))
+        // product-lifecycle:APPROVE is the System Admin's alone (kltn-docs 01 §5.1): not the E-commerce Admin's.
+        assertRefused(send("POST", editor(), suspension, reasonAndVersion("recall", approved.version())), 403, "FORBIDDEN");
+        assertRefused(send("POST", editor(), resumption, "{\"version\":%d}".formatted(approved.version())), 403, "FORBIDDEN");
+        assertRefused(send("POST", approver(), suspension, "{\"version\":%d}".formatted(approved.version())), 400, "VALIDATION_FAILED");
+        send("POST", approver(), suspension, "{\"version\":%d}".formatted(approved.version()))
                 .andExpect(jsonPath("$.fieldErrors[0].field").value("reason"));
-        assertRefused(send("POST", editor(), suspension, reasonAndVersion("recall", approved.version() + 1)), 409, "OPTIMISTIC_LOCK");
+        assertRefused(send("POST", approver(), suspension, reasonAndVersion("recall", approved.version() + 1)), 409, "OPTIMISTIC_LOCK");
         // Resuming a product that is not suspended.
-        assertRefused(send("POST", editor(), resumption, "{\"version\":%d}".formatted(approved.version())),
+        assertRefused(send("POST", approver(), resumption, "{\"version\":%d}".formatted(approved.version())),
                 409, "INVALID_PRODUCT_STATUS_TRANSITION");
 
-        JsonNode suspended = data(send("POST", editor(), suspension, reasonAndVersion("Nha cung cap thu hoi", approved.version()))
+        JsonNode suspended = data(send("POST", approver(), suspension, reasonAndVersion("Nha cung cap thu hoi", approved.version()))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("INACTIVE"))
                 .andExpect(jsonPath("$.data.suspendReason").value("Nha cung cap thu hoi"))
                 .andExpect(jsonPath("$.data.suspendedAt").isNotEmpty()));
         long version = suspended.path("version").asLong();
         assertThat(version).isGreaterThan(approved.version());
-        assertRefused(send("POST", editor(), suspension, reasonAndVersion("again", version)), 409, "INVALID_PRODUCT_STATUS_TRANSITION");
+        assertRefused(send("POST", approver(), suspension, reasonAndVersion("again", version)), 409, "INVALID_PRODUCT_STATUS_TRANSITION");
         // The variants of a suspended product are not touched: only discontinuing makes them OBSOLETE.
         assertThat(jdbc.queryForList("SELECT status FROM product.variants WHERE product_id = ?", String.class, id))
                 .containsOnly("ACTIVE");
 
-        assertRefused(send("POST", editor(), resumption, "{}"), 400, "VALIDATION_FAILED");
-        assertRefused(send("POST", editor(), resumption, "{\"version\":%d}".formatted(version - 1)), 409, "OPTIMISTIC_LOCK");
-        send("POST", editor(), resumption, "{\"version\":%d}".formatted(version))
+        assertRefused(send("POST", approver(), resumption, "{}"), 400, "VALIDATION_FAILED");
+        assertRefused(send("POST", approver(), resumption, "{\"version\":%d}".formatted(version - 1)), 409, "OPTIMISTIC_LOCK");
+        send("POST", approver(), resumption, "{\"version\":%d}".formatted(version))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("APPROVED"))
                 .andExpect(jsonPath("$.data.suspendedAt").doesNotExist())
                 .andExpect(jsonPath("$.data.suspendReason").doesNotExist());
         // Draft and pending products cannot be suspended.
         ProductSummary draft = draftProduct();
-        assertRefused(send("POST", editor(), "/api/v1/products/" + draft.productId() + "/suspension",
+        assertRefused(send("POST", approver(), "/api/v1/products/" + draft.productId() + "/suspension",
                 reasonAndVersion("recall", draft.version())), 409, "INVALID_PRODUCT_STATUS_TRANSITION");
     }
 
@@ -458,7 +476,7 @@ class ProductLifecycleIntegrationTest {
         String shopper = token(UUID.randomUUID(), "SALES_STAFF");
         send("GET", shopper, "/api/v1/catalog/products/" + product.slug(), null).andExpect(status().isOk());
 
-        send("POST", editor(), "/api/v1/products/" + product.id() + "/discontinuation",
+        send("POST", approver(), "/api/v1/products/" + product.id() + "/discontinuation",
                 reasonAndVersion("end of line", versionOf(product.id()))).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("DISCONTINUED"));
 
@@ -486,7 +504,7 @@ class ProductLifecycleIntegrationTest {
         assertThat(catalog.checkoutPrices(Set.of(sku))).containsKey(sku);
 
         long version = versionOf(id);
-        send("POST", editor(), "/api/v1/products/" + id + "/suspension", reasonAndVersion("recall", version))
+        send("POST", approver(), "/api/v1/products/" + id + "/suspension", reasonAndVersion("recall", version))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("INACTIVE"))
                 .andExpect(jsonPath("$.data.publishedAt").isNotEmpty());
 
@@ -499,7 +517,7 @@ class ProductLifecycleIntegrationTest {
         // And the catalog's own rows follow, once it has been told (CatalogListingChanged).
         awaitCatalogHides(product);
 
-        send("POST", editor(), "/api/v1/products/" + id + "/resumption", "{\"version\":%d}".formatted(versionOf(id)))
+        send("POST", approver(), "/api/v1/products/" + id + "/resumption", "{\"version\":%d}".formatted(versionOf(id)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("APPROVED"));
         assertRefused(send("GET", shopper, "/api/v1/catalog/products/" + slug, null), 404, "NOT_FOUND");
 
@@ -513,7 +531,7 @@ class ProductLifecycleIntegrationTest {
     void aSuspendedProductCannotBePublished() throws Exception {
         ProductSummary approved = approvedProduct();
         UUID id = approved.productId();
-        JsonNode suspended = data(send("POST", editor(), "/api/v1/products/" + id + "/suspension",
+        JsonNode suspended = data(send("POST", approver(), "/api/v1/products/" + id + "/suspension",
                 reasonAndVersion("recall", approved.version())).andExpect(status().isOk()));
         // A listing to publish: its revision is the product's version.
         send("PUT", editor(), "/api/v1/products/" + id + "/ecommerce",
@@ -567,11 +585,11 @@ class ProductLifecycleIntegrationTest {
                 409, "PRODUCT_NOT_DELETABLE");
 
         long version = approved.version();
-        JsonNode suspended = data(send("POST", editor(), "/api/v1/products/" + approved.productId() + "/suspension",
+        JsonNode suspended = data(send("POST", approver(), "/api/v1/products/" + approved.productId() + "/suspension",
                 reasonAndVersion("recall", version)).andExpect(status().isOk()));
         assertRefused(send("DELETE", editor(), "/api/v1/products/" + approved.productId() + "?version=" + suspended.path("version").asLong(),
                 null), 409, "PRODUCT_NOT_DELETABLE");
-        send("POST", editor(), "/api/v1/products/" + approved.productId() + "/discontinuation",
+        send("POST", approver(), "/api/v1/products/" + approved.productId() + "/discontinuation",
                 reasonAndVersion("end", suspended.path("version").asLong())).andExpect(status().isOk());
         assertRefused(send("DELETE", editor(), "/api/v1/products/" + approved.productId() + "?version=" + versionOf(approved.productId()),
                 null), 409, "PRODUCT_NOT_DELETABLE");
@@ -669,11 +687,11 @@ class ProductLifecycleIntegrationTest {
     void versionsShowStatusMovesWithReasonAndVariants() throws Exception {
         ProductSummary approved = approvedProduct();
         UUID id = approved.productId();
-        JsonNode suspended = data(send("POST", editor(), "/api/v1/products/" + id + "/suspension",
+        JsonNode suspended = data(send("POST", approver(), "/api/v1/products/" + id + "/suspension",
                 reasonAndVersion("recall", approved.version())).andExpect(status().isOk()));
-        JsonNode resumed = data(send("POST", editor(), "/api/v1/products/" + id + "/resumption",
+        JsonNode resumed = data(send("POST", approver(), "/api/v1/products/" + id + "/resumption",
                 "{\"version\":%d}".formatted(suspended.path("version").asLong())).andExpect(status().isOk()));
-        send("POST", editor(), "/api/v1/products/" + id + "/discontinuation",
+        send("POST", approver(), "/api/v1/products/" + id + "/discontinuation",
                 reasonAndVersion("end of line", resumed.path("version").asLong())).andExpect(status().isOk());
 
         JsonNode page = data(send("GET", token(UUID.randomUUID(), "SALES_STAFF"), "/api/v1/products/" + id + "/versions", null)
@@ -721,14 +739,14 @@ class ProductLifecycleIntegrationTest {
 
     // ------------------------------------------------------------------ purchase order endpoints
 
-    private String poBody(String... skus) {
+    private String poBody(UUID supplierId, String... skus) {
         StringBuilder lines = new StringBuilder();
         for (String sku : skus) {
             lines.append(lines.length() == 0 ? "" : ",")
                     .append("{\"sku\":\"%s\",\"quantityOrdered\":1,\"unitPrice\":1000}".formatted(sku));
         }
         return "{\"supplierId\":\"%s\",\"warehouseId\":\"%s\",\"currency\":\"VND\",\"lines\":[%s]}"
-                .formatted(supplier(), DemoData.WAREHOUSE_HCM, lines);
+                .formatted(supplierId, DemoData.WAREHOUSE_HCM, lines);
     }
 
     @Test
@@ -737,32 +755,33 @@ class ProductLifecycleIntegrationTest {
     void purchaseOrderEndpointsRefuseSkusThatAreNotActive() throws Exception {
         ProductSummary alive = approvedProduct();
         ProductSummary dying = approvedProduct();
+        UUID listed = supplierListing(alive.code(), dying.code());
         // The buyer is a real user: the purchase order's history points at who acted.
         String buyer = token(tx.execute(s -> ReferenceRows.user(entityManager)), "PROCUREMENT_STAFF");
 
         // No permission, no purchase order.
-        assertRefused(send("POST", token(UUID.randomUUID(), "WAREHOUSE_STAFF"), "/api/v1/purchase-orders", poBody(alive.code())),
+        assertRefused(send("POST", token(UUID.randomUUID(), "WAREHOUSE_STAFF"), "/api/v1/purchase-orders", poBody(listed, alive.code())),
                 403, "FORBIDDEN");
-        JsonNode created = data(expectStatus(send("POST", buyer, "/api/v1/purchase-orders", poBody(alive.code(), dying.code())), 201));
+        JsonNode created = data(expectStatus(send("POST", buyer, "/api/v1/purchase-orders", poBody(listed, alive.code(), dying.code())), 201));
         String po = created.path("purchaseOrderId").asText();
         long version = created.path("version").asLong();
         assertThat(created.path("lines").size()).isEqualTo(2);
 
-        send("POST", editor(), "/api/v1/products/" + dying.productId() + "/discontinuation",
+        send("POST", approver(), "/api/v1/products/" + dying.productId() + "/discontinuation",
                 reasonAndVersion("end of line", dying.version())).andExpect(status().isOk());
 
         // Create: the line at fault is named, with why, translated (Vietnamese by default, English on request).
-        assertRefused(send("POST", buyer, "/api/v1/purchase-orders", poBody(alive.code(), dying.code())), 409, "SKU_NOT_PURCHASABLE");
-        send("POST", buyer, "/api/v1/purchase-orders", poBody(alive.code(), dying.code()))
+        assertRefused(send("POST", buyer, "/api/v1/purchase-orders", poBody(listed, alive.code(), dying.code())), 409, "SKU_NOT_PURCHASABLE");
+        send("POST", buyer, "/api/v1/purchase-orders", poBody(listed, alive.code(), dying.code()))
                 .andExpect(jsonPath("$.fieldErrors.length()").value(1))
                 .andExpect(jsonPath("$.fieldErrors[0].field").value("lines[1].sku"))
                 .andExpect(jsonPath("$.fieldErrors[0].code").value("PRODUCT_DISCONTINUED"))
                 .andExpect(jsonPath("$.fieldErrors[0].message").value("Sản phẩm đã ngừng kinh doanh"));
         mvc.perform(post("/api/v1/purchase-orders").header("Authorization", buyer).header("Accept-Language", "en")
-                        .contentType(JSON).content(poBody(alive.code(), dying.code())))
+                        .contentType(JSON).content(poBody(listed, alive.code(), dying.code())))
                 .andExpect(jsonPath("$.errorCode").value("SKU_NOT_PURCHASABLE"))
                 .andExpect(jsonPath("$.fieldErrors[0].message").value("The product is discontinued"));
-        assertRefused(send("POST", buyer, "/api/v1/purchase-orders", poBody(dying.code(), dying.code())), 400, "VALIDATION_FAILED");
+        assertRefused(send("POST", buyer, "/api/v1/purchase-orders", poBody(listed, dying.code(), dying.code())), 400, "VALIDATION_FAILED");
 
         // Submission of the draft that holds the SKU: refused at the line, still a draft.
         assertRefused(send("POST", buyer, "/api/v1/purchase-orders/" + po + "/submission", null), 409, "SKU_NOT_PURCHASABLE");
@@ -784,13 +803,13 @@ class ProductLifecycleIntegrationTest {
                 .andExpect(jsonPath("$.data.status").value("PENDING_APPROVAL"));
 
         // Approval: the active SKU is suspended while the order waits.
-        JsonNode suspended = data(send("POST", editor(), "/api/v1/products/" + alive.productId() + "/suspension",
+        JsonNode suspended = data(send("POST", approver(), "/api/v1/products/" + alive.productId() + "/suspension",
                 reasonAndVersion("recall", alive.version())).andExpect(status().isOk()));
         assertRefused(send("POST", approver(), "/api/v1/purchase-orders/" + po + "/approval", null), 409, "SKU_NOT_PURCHASABLE");
         send("POST", approver(), "/api/v1/purchase-orders/" + po + "/approval", null)
                 .andExpect(jsonPath("$.fieldErrors[0].field").value("lines[0].sku"))
                 .andExpect(jsonPath("$.fieldErrors[0].code").value("PRODUCT_INACTIVE"));
-        send("POST", editor(), "/api/v1/products/" + alive.productId() + "/resumption",
+        send("POST", approver(), "/api/v1/products/" + alive.productId() + "/resumption",
                 "{\"version\":%d}".formatted(suspended.path("version").asLong())).andExpect(status().isOk());
         send("POST", approver(), "/api/v1/purchase-orders/" + po + "/approval", null).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("APPROVED"));

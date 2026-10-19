@@ -18,8 +18,21 @@ public enum ErrorCode {
     PO_LINE_DESCRIPTION_REQUIRED("A product description is required for each purchase order line", 400),
     SUPPLIER_DELIVERY_CONTACT_INVALID("Supplier delivery contact is invalid or not allowed", 400),
     SUPPLIER_PROFILE_INVALID("Invalid supplier profile or commercial terms", 400),
+    // Supplier catalog field codes (SCRUM-77): each names one rule on one input of the catalog form, so
+    // the field error is translated by its own code. The response's errorCode stays VALIDATION_FAILED.
+    SUPPLIER_ITEM_SKU_INVALID("The SKU is not a well-formed SKU code", 400),
+    SUPPLIER_ITEM_SUPPLIER_SKU_CODE_TOO_LONG("The supplier SKU code must be at most 50 characters", 400),
+    SUPPLIER_ITEM_PRICE_INVALID("The price must be above zero, at most 9,999,999,999,999,999.99, and have no more"
+            + " decimals than the supplier's currency allows", 400),
+    SUPPLIER_ITEM_MOQ_INVALID("The minimum order quantity must be at least 1", 400),
+    SUPPLIER_ITEM_PACK_SIZE_INVALID("The pack size must be at least 1", 400),
+    SUPPLIER_ITEM_MOQ_NOT_PACK_MULTIPLE("The minimum order quantity must be a multiple of the pack size", 400),
+    SUPPLIER_ITEM_LEAD_TIME_INVALID("The lead time must be between 0 and 365 days", 400),
     VALIDATION_FAILED("Invalid request data", 400),
     INVENTORY_POLICY_INVALID("Invalid SKU inventory policy", 400),
+    /** A field-error code on {@link #INVENTORY_POLICY_INVALID}: {@code maxQty} sits below the reorder point or the safety stock. */
+    INVENTORY_MAX_QTY_BELOW_THRESHOLD(
+            "The order-up-to level must not be below the reorder point or the safety stock", 400),
     INVENTORY_POLICY_STOCK_CONFLICT("Existing stock is incompatible with this policy", 409),
     CATALOG_SLUG_EXISTS("This storefront URL is already reserved", 409),
     CATALOG_LISTING_REQUIRED("Configure the storefront listing before publishing", 409),
@@ -66,6 +79,7 @@ public enum ErrorCode {
     ROLE_NOT_FOUND("Role not found", 404),
     USER_NOT_FOUND("User not found", 404),
     SUPPLIER_NOT_FOUND("Supplier not found", 404),
+    SUPPLIER_ITEM_NOT_FOUND("Supplier item not found", 404),
     PURCHASE_ORDER_NOT_FOUND("Purchase order not found", 404),
     PRODUCT_NOT_FOUND("Product not found", 404),
     CATEGORY_NOT_FOUND("Category not found", 404),
@@ -100,6 +114,10 @@ public enum ErrorCode {
     TRANSFER_ORDER_NOT_FOUND("Transfer order not found", 404),
     /** The SKU has no inventory item yet: its logistics data must be completed first (docs 01 BR-03). */
     INVENTORY_ITEM_NOT_FOUND("No inventory item for this SKU", 404),
+    /** No such unit of measure on this SKU's inventory item (docs 01 UoM conversion). */
+    UOM_CONVERSION_NOT_FOUND("No such unit of measure on this SKU", 404),
+    /** No such sales unit on this variant (docs 01 BR-11). */
+    SALES_UNIT_NOT_FOUND("No such sales unit on this variant", 404),
 
     /** Credentials were correct but the account is LOCKED or DISABLED. Distinct from UNAUTHORIZED,
      *  which covers "wrong username or password" without revealing the account exists. */
@@ -130,8 +148,20 @@ public enum ErrorCode {
     // ---- 409: the request is fine, the current state is not
     PO_COMMUNICATION_NOT_CONFIGURED("Buyer contact and receiving address must be configured before sending", 409),
     CONFLICT("Conflicting state", 409),
+    /** SCRUM-78: the envelope of a purchase order whose lines break the supplier's catalog; each line carries its own field code. */
+    SUPPLIER_TERMS_VIOLATED("One or more lines do not meet the supplier's catalog terms", 409),
+    SUPPLIER_ITEM_NOT_LISTED("This supplier does not list this SKU", 409),
+    PO_LINE_BELOW_MOQ("The quantity is below the supplier's minimum order quantity", 409),
+    PO_LINE_NOT_PACK_MULTIPLE("The quantity must be a multiple of the supplier's pack size", 409),
+    PO_LINE_PRICE_REQUIRED("A unit price is required: the catalog price is in another currency", 409),
     CHECKOUT_PRICE_CHANGED("The selling price changed; review the basket and confirm again", 409),
     COUNT_POLICY_CONFLICT("Reconcile the active count and SKU tracking policy before proceeding",409),
+    /** The inventory item already has a unit with this code (its base unit included). */
+    UOM_CONVERSION_DUPLICATE("This SKU already has a unit of measure with this code", 409),
+    /** The base unit, or a unit a variant sells in, cannot be deleted or retired (docs 01 BR-10, BR-11). */
+    UOM_CONVERSION_IN_USE("This unit of measure is the base unit or is still sold in", 409),
+    /** The variant already sells in this unit. */
+    SALES_UNIT_DUPLICATE("The variant already sells in this unit", 409),
     DESIGN_QUOTE_REQUIRED("An accepted design quote matching this order line is required",409),
     INSUFFICIENT_STOCK("Not enough available stock", 409),
     /** The destination already holds this SKU and lot in another status (QC state does not merge). */
@@ -269,6 +299,8 @@ public enum ErrorCode {
     SUPPLIER_HAS_OPEN_PURCHASE_ORDERS("Supplier has open purchase orders", 409),
     SUPPLIER_CODE_ALREADY_EXISTS("A supplier with this code already exists", 409),
     SUPPLIER_TAX_CODE_ALREADY_EXISTS("A supplier with this tax code already exists", 409),
+    SUPPLIER_ITEM_DUPLICATE("This supplier already lists this SKU", 409),
+    SUPPLIER_ITEM_IN_USE("An open purchase order still orders this SKU from this supplier", 409),
     INVALID_SUPPLIER_CONFIRMATION("This supplier confirmation cannot be recorded", 409),
     PRODUCT_CODE_ALREADY_EXISTS("A product with this code already exists", 409),
     BRAND_CODE_ALREADY_EXISTS("A brand with this code or slug already exists", 409),

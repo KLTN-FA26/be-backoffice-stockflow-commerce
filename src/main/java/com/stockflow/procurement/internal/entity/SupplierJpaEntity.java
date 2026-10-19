@@ -1,5 +1,6 @@
 package com.stockflow.procurement.internal.entity;
 
+import com.stockflow.common.domain.CommercialTerms;
 import com.stockflow.common.persistence.BaseEntity;
 import com.stockflow.procurement.internal.domain.SupplierCommunicationChannel;
 import com.stockflow.procurement.internal.domain.SupplierStatus;
@@ -88,7 +89,12 @@ public class SupplierJpaEntity extends BaseEntity {
     public String getTaxCode() { return taxCode; }
     public SupplierStatus getStatus() { return status; }
     public int getPaymentTermDays() { return paymentTermDays; }
-    public int getLeadTimeDays() { return leadTimeDays == null ? 0 : leadTimeDays; }
+    /**
+     * A NULL column (legacy rows; the API always writes one) is the system default, as it is for a catalog item
+     * ({@code SupplierItem.effectiveLeadTimeDays}). Reading it as 0 planned same-day deliveries for subcontract
+     * orders and showed 0 on the supplier screen.
+     */
+    public int getLeadTimeDays() { return leadTimeDays == null ? CommercialTerms.LEAD_DAYS : leadTimeDays; }
     public SupplierCommunicationChannel getCommunicationChannel() { return communicationChannel; }
     public String getApiEndpoint() { return apiEndpoint; }
     public BigDecimal getOverReceiptTolerancePercent() { return overReceiptTolerancePercent; }

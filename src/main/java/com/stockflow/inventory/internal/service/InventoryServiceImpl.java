@@ -205,6 +205,12 @@ class InventoryServiceImpl implements InventoryService {
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public java.util.Map<String, UUID> itemIdsOf(java.util.Collection<String> skus) {
+        return items.itemIdsOf(skus);
+    }
+
+    @Override
     public void deleteUnusedItems(java.util.Collection<String> skus) {
         policies.deleteItems(skus);
     }

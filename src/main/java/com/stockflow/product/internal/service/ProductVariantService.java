@@ -223,6 +223,16 @@ public class ProductVariantService {
         return Pages.toResponse(found.map(v -> view(v, catalog.optionsOf(optionRows.getOrDefault(v.getId(), List.of())))));
     }
 
+    /**
+     * The inventory item id of each variant's SKU, in one query for the whole batch. A separate call rather than a
+     * field of {@link VariantView}: the controller asks after the write that created or renamed the variant has
+     * committed, so an item made by the database trigger is visible, and a SKU without an item is just absent.
+     */
+    @Transactional(readOnly = true)
+    public Map<String, UUID> inventoryItemIds(Collection<VariantView> variants) {
+        return inventory.itemIdsOf(variants.stream().map(VariantView::sku).distinct().toList());
+    }
+
     @Transactional(readOnly = true)
     public VariantView get(UUID productId, UUID variantId) {
         Catalog catalog = catalog(requireProduct(productId));

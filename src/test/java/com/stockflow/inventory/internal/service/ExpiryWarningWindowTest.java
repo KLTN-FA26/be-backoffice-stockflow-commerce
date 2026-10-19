@@ -1,11 +1,7 @@
 package com.stockflow.inventory.internal.service;
 
-import com.stockflow.common.security.CurrentUserProvider;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
 import org.junit.jupiter.api.Test;
-import org.springframework.context.ApplicationEventPublisher;
-
-import java.time.Clock;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -15,8 +11,7 @@ import static org.mockito.Mockito.mock;
 class ExpiryWarningWindowTest {
 
     private static InventoryControlServiceImpl service(int days) {
-        return new InventoryControlServiceImpl(mock(InventoryPolicyRepository.class), Clock.systemUTC(),
-                mock(CurrentUserProvider.class), mock(ApplicationEventPublisher.class), days);
+        return new InventoryControlServiceImpl(mock(InventoryPolicyRepository.class), days);
     }
 
     @Test

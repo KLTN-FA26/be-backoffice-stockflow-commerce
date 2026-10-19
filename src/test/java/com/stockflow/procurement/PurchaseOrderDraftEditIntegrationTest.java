@@ -13,10 +13,12 @@ import com.stockflow.procurement.api.ProcurementService;
 import com.stockflow.procurement.api.PurchaseOrderSummary;
 import com.stockflow.procurement.api.RevisePOLineCommand;
 import com.stockflow.procurement.api.RevisePurchaseOrderCommand;
+import com.stockflow.procurement.api.SupplierItemService;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.ReferenceRows;
+import com.stockflow.support.SupplierItemFixtures;
 import com.stockflow.support.WithCurrentUser;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
@@ -56,6 +58,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class PurchaseOrderDraftEditIntegrationTest {
 
     @Autowired ProcurementService procurement;
+    @Autowired SupplierItemService catalog;
     @Autowired MockMvc mvc;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
@@ -86,6 +89,10 @@ class PurchaseOrderDraftEditIntegrationTest {
             skuB = ReferenceRows.approvedProduct(entityManager).sku();
             skuC = ReferenceRows.approvedProduct(entityManager).sku();
         });
+        // BR-PO-001: a standard order line takes only a SKU its supplier lists.
+        for (String sku : List.of(skuA, skuB, skuC)) {
+            SupplierItemFixtures.list(catalog, supplier, sku);
+        }
     }
 
     private PurchaseOrderSummary draft(UUID warehouseId) {

@@ -25,6 +25,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -61,6 +62,17 @@ class ProductVariantControllerHttpTest {
         verify(service).add(eq(PRODUCT), command.capture());
         assertThat(command.getValue().optionValueIds()).containsExactly(VALUE);
         assertThat(command.getValue().sku()).isNull();
+    }
+
+    @Test
+    void getCarriesTheInventoryItemIdOfItsSku() throws Exception {
+        UUID item = UUID.fromString("0190a000-0000-7000-8000-000000000045");
+        when(service.get(PRODUCT, VARIANT)).thenReturn(view());
+        when(service.inventoryItemIds(any())).thenReturn(Map.of("CUP-RED", item));
+
+        mvc.perform(get("/api/v1/products/{id}/variants/{v}", PRODUCT, VARIANT))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.inventoryItemId").value(item.toString()));
     }
 
     @Test

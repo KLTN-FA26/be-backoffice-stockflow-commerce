@@ -244,9 +244,10 @@ SELECT pg_temp.expect_ok('R42 closing the old period, then the new price', $q$
     UPDATE procurement.supplier_item_prices SET effective_to = '2026-10-01T00:00:00Z' WHERE id = md5('demo:sip:SOFA')::uuid;
     INSERT INTO procurement.supplier_item_prices (id, supplier_item_id, unit_price, effective_from)
     VALUES (gen_random_uuid(), md5('demo:si:GOVIET:SOFA')::uuid, 5200000, '2026-10-01T00:00:00Z') $q$);
-SELECT pg_temp.expect_fail('R43 two preferred suppliers for one item', $q$
-    INSERT INTO procurement.supplier_items (id, supplier_id, inventory_item_id, current_price, is_preferred)
-    VALUES (gen_random_uuid(), md5('qa:supplier:OTHER')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 1, TRUE) $q$);
+-- One preferred supplier per item: it is the item's default_supplier_id (V20261019000600), one column.
+SELECT pg_temp.expect_fail('R43 an item''s default (preferred) supplier must exist', $q$
+    UPDATE inventory.inventory_items SET default_supplier_id = gen_random_uuid()
+     WHERE id = md5('demo:item:SOFA-3S-GREY')::uuid $q$);
 SELECT pg_temp.expect_fail('R44 two suppliers with one tax id', $q$
     INSERT INTO procurement.suppliers (id, code, name, tax_id) VALUES (gen_random_uuid(), 'DUP', 'x', '0300000001') $q$);
 SELECT pg_temp.expect_fail('R45 proposal line flagged converted without a PO', $q$

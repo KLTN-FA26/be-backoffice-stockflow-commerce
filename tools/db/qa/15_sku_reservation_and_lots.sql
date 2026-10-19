@@ -1,6 +1,6 @@
 -- =============================================================================
--- Adversarial checks: SKU reservations and allocations (SCRUM-152, V20261019000100) and lot identity, the ledger's
--- lot and order snapshot (SCRUM-142/153, V20261019000200). Needs the demo seed. Rolled back at the end.
+-- Adversarial checks: SKU reservations and allocations (SCRUM-152, V20261019000800) and lot identity, the ledger's
+-- lot and order snapshot (SCRUM-142/153, V20261019000900). Needs the demo seed. Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;
@@ -48,7 +48,7 @@ SELECT md5('qa15:other')::uuid, 'SO-QA-15B', c.id, gen_random_uuid(), 'PENDING_P
 INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version, created_at, received_at)
 VALUES (md5('qa15:layer')::uuid, 'SOFA-3S-GREY', 'HCM-B01-2-B', 6, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '3 days');
 
-\echo '--- SKU reservations (V20261019000100)'
+\echo '--- SKU reservations (V20261019000800)'
 SELECT pg_temp.expect_ok('SR1 a checkout reservation of a SKU, on no stock row', $q$
     INSERT INTO inventory.stock_reservation (id, sku, order_id, root_request_id, request_id, quantity, reserved_at,
         expires_at, status)
@@ -97,7 +97,7 @@ SELECT pg_temp.expect_ok('SR9 an allocation of the reservation, pinned, with the
 SELECT pg_temp.expect_true('SR10 the allocation names its order',
     (SELECT order_number = 'SO-QA-15' FROM inventory.stock_reservation WHERE id = md5('qa15:alloc')::uuid));
 
-\echo '--- lots (V20261019000200)'
+\echo '--- lots (V20261019000900)'
 SELECT pg_temp.expect_true('LT1 a layer written without a lot got one',
     (SELECT lot_id IS NOT NULL FROM inventory.stock_item WHERE id = md5('qa15:layer')::uuid));
 SELECT pg_temp.expect_true('LT2 every layer has a lot', NOT EXISTS (SELECT 1 FROM inventory.stock_item WHERE lot_id IS NULL));

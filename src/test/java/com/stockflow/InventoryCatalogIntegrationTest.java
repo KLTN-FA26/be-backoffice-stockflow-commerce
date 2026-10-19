@@ -12,10 +12,10 @@ import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.inventory.api.*;
+import com.stockflow.inventory.internal.service.InventoryItems;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.PlaceGuestOrderCommand;
 import com.stockflow.order.api.PlaceOrderCommand;
-import com.stockflow.product.internal.service.SkuInventoryControlService;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -49,7 +49,7 @@ import java.util.concurrent.TimeUnit;
 @AutoConfigureMockMvc
 class InventoryCatalogIntegrationTest {
     @Autowired JdbcTemplate jdbc;
-    @Autowired SkuInventoryControlService controls;
+    @Autowired InventoryItems items;
     @Autowired InventoryControlService inventoryControl;
     @Autowired InventoryService inventory;
     @Autowired CatalogCommerceService catalog;
@@ -128,9 +128,7 @@ class InventoryCatalogIntegrationTest {
     @Test
     void stockMoveKeepsCanonicalSerialAndReceiptIdentity() {
         var f = fixture("APPROVED");
-        controls.update(
-                f.product(),
-                f.skuId(),
+        items.configure(f.itemId(),
                 0,
                 policy(null, RemovalStrategy.FIFO, TrackingMode.SERIAL, false));
         var received = Instant.parse("2026-09-01T00:00:00Z");
@@ -167,9 +165,7 @@ class InventoryCatalogIntegrationTest {
     @Test
     void stockMoveDoesNotChooseAnArbitraryReceiptLayer() {
         var f = fixture("APPROVED");
-        controls.update(
-                f.product(),
-                f.skuId(),
+        items.configure(f.itemId(),
                 0,
                 policy(null, RemovalStrategy.FIFO, TrackingMode.NONE, false));
         stock(f, 3, Instant.parse("2026-09-01T00:00:00Z"), null, null);
@@ -202,7 +198,7 @@ class InventoryCatalogIntegrationTest {
                 .isEqualTo(7);
     }
 
-    record Fixture(UUID product, UUID skuId, String sku) {}
+    record Fixture(UUID product, UUID skuId, String sku, UUID itemId) {}
 
     int write(String sql, Object... args) {
         return transactions.execute(status -> jdbc.update(sql, args));
@@ -247,7 +243,8 @@ values (?,?,?,'Furniture','STANDARD',?,?,md5('demo:user:editor')::uuid,now(),
                 sku,
                 product,
                 code);
-        return new Fixture(product, sku, code);
+        UUID itemId = inventory.itemIdsOf(List.of(code)).get(code);
+        return new Fixture(product, sku, code, itemId);
     }
 
     void gallery(Fixture f) {
@@ -281,7 +278,7 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
     InventoryPolicy policy(
             Integer threshold, RemovalStrategy strategy, TrackingMode tracking, boolean expiry) {
         return new InventoryPolicy(
-                threshold, null, strategy, tracking, expiry, expiry ? 365 : null);
+                threshold, null, null, strategy, tracking, expiry, expiry ? 365 : null);
     }
 
     @Test
@@ -304,7 +301,7 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
         assertThat(available.getOrDefault(b.sku(), 0L)).isZero();
         assertThat(available.getOrDefault("MISSING-SKU", 0L)).isZero();
         // Policy uses usable on-hand before reservations; QC stock is still excluded.
-        assertThat(inventoryControl.evaluate(new Sku(a.sku())).usableOnHand()).isEqualTo(6L);
+        assertThat(items.get(a.itemId()).evaluation().usableOnHand()).isEqualTo(6L);
     }
 
     @Test
@@ -418,47 +415,35 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
     @Test
     void thresholdsAreNullableZeroIsMeaningfulAndHigherThanStockIsAllowed() {
         var f = fixture("DRAFT");
-        assertThat(controls.get(f.product(), f.skuId()).policy().reorderPoint()).isNull();
+        assertThat(items.get(f.itemId()).policy().reorderPoint()).isNull();
         var saved =
-                controls.update(
-                        f.product(),
-                        f.skuId(),
+                items.configure(f.itemId(),
                         0,
                         policy(10, RemovalStrategy.FEFO, TrackingMode.NONE, false));
         assertThat(saved.evaluation().reorderRequired()).isTrue();
         assertThat(inventoryControl.policy(new Sku(f.sku())).reorderPoint()).isEqualTo(10);
         var cleared =
-                controls.update(
-                        f.product(),
-                        f.skuId(),
+                items.configure(f.itemId(),
                         saved.version(),
                         policy(null, RemovalStrategy.FEFO, TrackingMode.NONE, false));
         assertThat(cleared.evaluation().reorderRequired()).isNull();
         var zero =
-                controls.update(
-                        f.product(),
-                        f.skuId(),
+                items.configure(f.itemId(),
                         cleared.version(),
                         policy(0, RemovalStrategy.FEFO, TrackingMode.NONE, false));
         assertThat(zero.evaluation().reorderRequired()).isTrue();
     }
 
     @Test
-    void skuMustBelongToProductAndStaleVersionCannotOverwrite() {
+    void staleVersionCannotOverwrite() {
         var a = fixture("DRAFT");
-        var b = fixture("DRAFT");
-        assertThatThrownBy(() -> controls.get(a.product(), b.skuId()))
-                .isInstanceOf(BusinessException.class);
-        controls.update(
-                a.product(),
-                a.skuId(),
+        // "the SKU must belong to the product" is gone: the item is addressed by its own id (spec D1)
+        items.configure(a.itemId(),
                 0,
                 policy(5, RemovalStrategy.FEFO, TrackingMode.NONE, false));
         assertThatThrownBy(
                         () ->
-                                controls.update(
-                                        a.product(),
-                                        a.skuId(),
+                                items.configure(a.itemId(),
                                         0,
                                         policy(6, RemovalStrategy.FEFO, TrackingMode.NONE, false)))
                 .isInstanceOf(BusinessException.class);
@@ -470,21 +455,17 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
         stock(f, 10, null, null, null);
         assertThatThrownBy(
                         () ->
-                                controls.update(
-                                        f.product(),
-                                        f.skuId(),
+                                items.configure(f.itemId(),
                                         0,
                                         policy(3, RemovalStrategy.FIFO, TrackingMode.NONE, false)))
                 .isInstanceOf(BusinessException.class);
-        assertThat(controls.get(f.product(), f.skuId()).policy().reorderPoint()).isNull();
+        assertThat(items.get(f.itemId()).policy().reorderPoint()).isNull();
     }
 
     @Test
     void fifoActuallyReservesTheOlderReceiptLayer() {
         var f = fixture("APPROVED");
-        controls.update(
-                f.product(),
-                f.skuId(),
+        items.configure(f.itemId(),
                 0,
                 policy(2, RemovalStrategy.FIFO, TrackingMode.NONE, false));
         var newer = stock(f, 5, Instant.parse("2026-09-02T00:00:00Z"), null, null);
@@ -519,9 +500,7 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
     void serialFlagIsEnforcedAtStockIngressAndCannotBeDisabledWithStock() {
         var f = fixture("DRAFT");
         var saved =
-                controls.update(
-                        f.product(),
-                        f.skuId(),
+                items.configure(f.itemId(),
                         0,
                         policy(null, RemovalStrategy.FIFO, TrackingMode.SERIAL, false));
         assertThatThrownBy(() -> stock(f, 2, Instant.parse("2026-09-01T00:00:00Z"), null, "SN-1"))
@@ -529,9 +508,7 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
         stock(f, 1, Instant.parse("2026-09-01T00:00:00Z"), null, "SN-1");
         assertThatThrownBy(
                         () ->
-                                controls.update(
-                                        f.product(),
-                                        f.skuId(),
+                                items.configure(f.itemId(),
                                         saved.version(),
                                         policy(
                                                 null,
@@ -549,7 +526,7 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
         assertThat(inventory.availableToPromise(List.of(new Sku(f.sku()))).get(new Sku(f.sku())))
                 .isZero();
         assertThat(inventory.availableToPromise(new Sku(f.sku()), "HCM")).isZero();
-        assertThat(inventoryControl.evaluate(new Sku(f.sku())).usableOnHand()).isZero();
+        assertThat(items.get(f.itemId()).evaluation().usableOnHand()).isZero();
     }
 
     @Test
@@ -620,12 +597,7 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
     void negativeThresholdIsHttp400AndPublicCatalogReturnsAPage() throws Exception {
         var f = fixture("DRAFT");
         mvc.perform(
-                        MockMvcRequestBuilders.put(
-                                        "/api/v1/products/"
-                                                + f.product()
-                                                + "/skus/"
-                                                + f.skuId()
-                                                + "/inventory-control")
+                        MockMvcRequestBuilders.put("/api/v1/inventory/items/" + f.itemId() + "/policy")
                                 .contentType("application/json")
                                 .content(
                                         """
@@ -634,6 +606,54 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
                 .andExpect(MockMvcResultMatchers.status().isBadRequest());
         mvc.perform(MockMvcRequestBuilders.get("/api/v1/catalog/products"))
                 .andExpect(MockMvcResultMatchers.status().isOk());
+    }
+
+    @Test
+    void maxQtyRoundTripsThroughInventoryControl() throws Exception {
+        var f = fixture("DRAFT");
+        String path = "/api/v1/inventory/items/" + f.itemId();
+        mvc.perform(
+                        MockMvcRequestBuilders.put(path + "/policy")
+                                .contentType("application/json")
+                                .content(
+                                        """
+{"version":0,"reorderPoint":10,"safetyStock":5,"maxQty":40,"removalStrategy":"FIFO","trackingMode":"NONE","expiryTracked":false}
+"""))
+                .andExpect(MockMvcResultMatchers.status().isOk())
+                .andExpect(MockMvcResultMatchers.jsonPath("$.data.policy.maxQty").value(40));
+        mvc.perform(MockMvcRequestBuilders.get(path))
+                .andExpect(MockMvcResultMatchers.status().isOk())
+                .andExpect(MockMvcResultMatchers.jsonPath("$.data.policy.maxQty").value(40));
+        assertThat(
+                        jdbc.queryForObject(
+                                "select max_qty from inventory.inventory_items where sku=?",
+                                Integer.class,
+                                f.sku()))
+                .isEqualTo(40);
+        assertThat(inventoryControl.policy(new Sku(f.sku())).maxQty()).isEqualTo(40);
+    }
+
+    @Test
+    void maxQtyBelowTheReorderPointIs400OnTheField() throws Exception {
+        var f = fixture("DRAFT");
+        mvc.perform(
+                        MockMvcRequestBuilders.put("/api/v1/inventory/items/" + f.itemId() + "/policy")
+                                .contentType("application/json")
+                                .content(
+                                        """
+{"version":0,"reorderPoint":10,"maxQty":5,"removalStrategy":"FIFO","trackingMode":"NONE","expiryTracked":false}
+"""))
+                .andExpect(MockMvcResultMatchers.status().isBadRequest())
+                .andExpect(MockMvcResultMatchers.jsonPath("$.fieldErrors[0].field").value("maxQty"))
+                .andExpect(
+                        MockMvcResultMatchers.jsonPath("$.fieldErrors[0].code")
+                                .value("INVENTORY_MAX_QTY_BELOW_THRESHOLD"));
+        assertThat(
+                        jdbc.queryForObject(
+                                "select max_qty from inventory.inventory_items where sku=?",
+                                Integer.class,
+                                f.sku()))
+                .isNull();
     }
 
     @Test
@@ -648,32 +668,14 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
                 .isInstanceOf(DataIntegrityViolationException.class);
     }
 
-    @Test
-    void inventoryControlCannotChangeDuringApprovalOrAfterDiscontinuation() {
-        for (String status : List.of("PENDING_APPROVAL", "DISCONTINUED")) {
-            var f = fixture(status);
-            assertThatThrownBy(
-                            () ->
-                                    controls.update(
-                                            f.product(),
-                                            f.skuId(),
-                                            0,
-                                            policy(
-                                                    5,
-                                                    RemovalStrategy.FEFO,
-                                                    TrackingMode.NONE,
-                                                    false)))
-                    .isInstanceOf(BusinessException.class);
-        }
-    }
+    // inventoryControlCannotChangeDuringApprovalOrAfterDiscontinuation removed: an inventory item is
+    // independent of its product's status (spec D1); the policy is editable in every product state.
 
     @Test
     void expiryCannotBeDisabledAndIngressRejectsMissingOrExpiredDates() {
         var f = fixture("DRAFT");
         var saved =
-                controls.update(
-                        f.product(),
-                        f.skuId(),
+                items.configure(f.itemId(),
                         0,
                         policy(5, RemovalStrategy.FEFO, TrackingMode.LOT_SERIAL, true));
         Instant receipt = Instant.now().minusSeconds(60);
@@ -685,9 +687,7 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
         stock(f, 1, receipt, today.plusDays(10), "EXP-1");
         assertThatThrownBy(
                         () ->
-                                controls.update(
-                                        f.product(),
-                                        f.skuId(),
+                                items.configure(f.itemId(),
                                         saved.version(),
                                         policy(
                                                 5,
@@ -701,9 +701,7 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
     void shorterShelfLifeCannotInvalidateExistingStock() {
         var f = fixture("DRAFT");
         var saved =
-                controls.update(
-                        f.product(),
-                        f.skuId(),
+                items.configure(f.itemId(),
                         0,
                         policy(5, RemovalStrategy.FEFO, TrackingMode.LOT_SERIAL, true));
         Instant receipt = Instant.now().minusSeconds(60);
@@ -712,12 +710,11 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
 
         assertThatThrownBy(
                         () ->
-                                controls.update(
-                                        f.product(),
-                                        f.skuId(),
+                                items.configure(f.itemId(),
                                         saved.version(),
                                         new InventoryPolicy(
                                                 5,
+                                                null,
                                                 null,
                                                 RemovalStrategy.FEFO,
                                                 TrackingMode.LOT_SERIAL,
@@ -728,16 +725,14 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
                         e ->
                                 assertThat(e.errorCode())
                                         .isEqualTo(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT));
-        assertThat(controls.get(f.product(), f.skuId()).policy().maxShelfLifeDays()).isEqualTo(365);
+        assertThat(items.get(f.itemId()).policy().maxShelfLifeDays()).isEqualTo(365);
         assertThat(inventoryControl.policy(new Sku(f.sku())).maxShelfLifeDays()).isEqualTo(365);
 
         var allowed =
-                controls.update(
-                        f.product(),
-                        f.skuId(),
+                items.configure(f.itemId(),
                         saved.version(),
                         new InventoryPolicy(
-                                5, null, RemovalStrategy.FEFO, TrackingMode.LOT_SERIAL, true, 10));
+                                5, null, null, RemovalStrategy.FEFO, TrackingMode.LOT_SERIAL, true, 10));
         assertThat(allowed.policy().maxShelfLifeDays()).isEqualTo(10);
     }
 
@@ -749,9 +744,7 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
         stock(f, 1, null, today.plusDays(10), "UNKNOWN-AGE");
         assertThatThrownBy(
                         () ->
-                                controls.update(
-                                        f.product(),
-                                        f.skuId(),
+                                items.configure(f.itemId(),
                                         0,
                                         policy(
                                                 5,
@@ -763,7 +756,7 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
                         e ->
                                 assertThat(e.errorCode())
                                         .isEqualTo(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT));
-        assertThat(controls.get(f.product(), f.skuId()).version()).isZero();
+        assertThat(items.get(f.itemId()).version()).isZero();
     }
 
     @Test
@@ -834,14 +827,12 @@ values (?,'Conflicting test rule',?,200,'VND',0,true,now())
                     () -> {
                         start.await();
                         try {
-                            controls.update(
-                                    f.product(),
-                                    f.skuId(),
+                            items.configure(f.itemId(),
                                     0,
                                     policy(5, RemovalStrategy.FEFO, TrackingMode.NONE, false));
                             return true;
                         } catch (BusinessException e) {
-                            assertThat(e.errorCode()).isEqualTo(ErrorCode.CONFLICT);
+                            assertThat(e.errorCode()).isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
                             return false;
                         }
                     };
@@ -926,9 +917,7 @@ values (?,'Conflicting test rule',?,200,'VND',0,true,now())
                     executor.submit(
                             () -> {
                                 try {
-                                    controls.update(
-                                            f.product(),
-                                            f.skuId(),
+                                    items.configure(f.itemId(),
                                             0,
                                             policy(
                                                     null,
@@ -952,16 +941,14 @@ values (?,'Conflicting test rule',?,200,'VND',0,true,now())
     void canonicalVariantCreatesInventoryItemAndPolicyHasItsOwnVersion() {
         var f = fixture("DRAFT");
         write("update product.variants set status='DRAFT' where id=?", f.skuId());
-        var initial = controls.get(f.product(), f.skuId());
+        var initial = items.get(f.itemId());
         assertThat(initial.policy().trackingMode()).isEqualTo(TrackingMode.NONE);
         assertThat(initial.evaluation().reorderRequired()).isNull();
         var saved =
-                controls.update(
-                        f.product(),
-                        f.skuId(),
+                items.configure(f.itemId(),
                         initial.version(),
                         new InventoryPolicy(
-                                100, 5, RemovalStrategy.FEFO, TrackingMode.LOT_SERIAL, true, 30));
+                                100, 5, null, RemovalStrategy.FEFO, TrackingMode.LOT_SERIAL, true, 30));
         assertThat(saved.version()).isEqualTo(initial.version() + 1);
         assertThat(saved.evaluation().reorderRequired()).isTrue();
         assertThat(

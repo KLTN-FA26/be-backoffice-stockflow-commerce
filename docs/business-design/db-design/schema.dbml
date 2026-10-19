@@ -1254,10 +1254,9 @@ Table inventory.inventory_items [headercolor: #3E7C4A] {
   lot_tracked               boolean [not null, default: false]
   expiry_tracked            boolean [not null, default: false]
   serial_tracked            boolean [not null, default: false]
-  min_qty                   int
   max_qty                   int
-  reorder_point             int
-  default_supplier_id       uuid
+  reorder_point             int [note: 'the minimum threshold (docs 02 §4); min_qty dropped in V20261019000500']
+  default_supplier_id       uuid [note: 'the supplier catalog\'s preferred supplier (V20261019000600)']
   requires_adult_signature  boolean [not null, default: false]
   shipping_restriction_note varchar(500)
   version                   bigint [not null, default: 0]
@@ -2136,7 +2135,6 @@ Table procurement.supplier_items [headercolor: #7D5BA6] {
   moq               int [not null, default: 1]
   pack_size         int [not null, default: 1]
   lead_time_days    int [default: 7]
-  is_preferred      boolean [not null, default: false]
   version           bigint [not null, default: 0]
   created_at        timestamptz [not null, default: `now()`]
   created_by        varchar(100)

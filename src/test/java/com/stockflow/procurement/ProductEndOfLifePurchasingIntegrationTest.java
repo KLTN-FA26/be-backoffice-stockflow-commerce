@@ -9,19 +9,22 @@ import com.stockflow.procurement.api.ProcurementService;
 import com.stockflow.procurement.api.PurchaseOrderSummary;
 import com.stockflow.procurement.api.RevisePOLineCommand;
 import com.stockflow.procurement.api.RevisePurchaseOrderCommand;
+import com.stockflow.procurement.api.SupplierItemService;
 import com.stockflow.procurement.internal.service.GoodsReceipts;
 import com.stockflow.product.api.ProductService;
 import com.stockflow.product.api.ProductSummary;
 import com.stockflow.inventory.api.ItemLogistics;
 import com.stockflow.inventory.api.StorageClass;
 import com.stockflow.product.internal.service.ProductTaxonomyService;
-import com.stockflow.product.internal.service.SkuInventoryControlService;
+import com.stockflow.inventory.api.InventoryService;
+import com.stockflow.inventory.internal.service.InventoryItems;
 import com.stockflow.product.internal.service.ProductVariantService;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.ProductFixtures;
 import com.stockflow.support.ReferenceRows;
+import com.stockflow.support.SupplierItemFixtures;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -52,9 +55,11 @@ class ProductEndOfLifePurchasingIntegrationTest {
 
     @Autowired ProductService products;
     @Autowired ProductVariantService variants;
-    @Autowired SkuInventoryControlService skus;
+    @Autowired InventoryItems items;
+    @Autowired InventoryService inventory;
     @Autowired ProductTaxonomyService taxonomy;
     @Autowired ProcurementService procurement;
+    @Autowired SupplierItemService catalog;
     @Autowired GoodsReceipts receipts;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
@@ -79,15 +84,23 @@ class ProductEndOfLifePurchasingIntegrationTest {
                 supplier, "EL-" + supplier.toString().substring(24).toUpperCase(Locale.ROOT)));
     }
 
+    /**
+     * Approved and listed by the supplier. BR-PO-001 makes the catalog the first check on a line, so a SKU
+     * that is listed while it is purchasable is what lets these tests reach the lifecycle refusal they are about
+     * after the product is discontinued or suspended. The catalog itself takes only a purchasable SKU.
+     */
     private ProductSummary approved(String tag) {
-        return ProductFixtures.approved(products, tax, suffix + tag, editor, approver);
+        ProductSummary product = ProductFixtures.approved(products, tax, suffix + tag, editor, approver);
+        SupplierItemFixtures.list(catalog, supplier, product.code());
+        return product;
     }
 
     /** What a SKU needs before goods of it are received (BR-03): its weight and dimensions. */
     private ProductSummary approvedWithLogistics(String tag) {
         ProductSummary product = approved(tag);
-        UUID variant = variants.list(product.productId(), 0, 5).items().getFirst().id();
-        skus.describe(product.productId(), variant, skus.logistics(product.productId(), variant).version(),
+        String sku = variants.list(product.productId(), 0, 5).items().getFirst().sku();
+        UUID item = inventory.itemIdsOf(java.util.List.of(sku)).get(sku);
+        items.describe(item, items.get(item).version(),
                 new ItemLogistics("EACH", null, new BigDecimal("0.5"), new BigDecimal("10"), new BigDecimal("10"),
                         new BigDecimal("10"), new BigDecimal("0.6"), new BigDecimal("12"), new BigDecimal("12"),
                         new BigDecimal("12"), 1, 1, StorageClass.NORMAL, false, null, false));
@@ -203,6 +216,13 @@ class ProductEndOfLifePurchasingIntegrationTest {
         ProductSummary suspended = approved("S");
         products.suspend(suspended.productId(), "recall", suspended.version());
         ProductSummary draft = ProductFixtures.draft(products, tax, suffix + "T");
+        // A product that was never approved cannot be listed through the catalog service, so the row goes in
+        // directly: the line must get past the catalog check to meet the purchasability one.
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO procurement.supplier_items (id, supplier_id, inventory_item_id, current_price, currency,
+                                                        moq, pack_size, version, created_at)
+                SELECT ?, ?, id, 100000, 'VND', 1, 1, 0, NOW() FROM inventory.inventory_items WHERE sku = ?""",
+                Identifiers.newId(), supplier, draft.code()));
         ProductSummary blocked = approved("K");
         variants.block(blocked.productId(), variants.list(blocked.productId(), 0, 5).items().getFirst().id());
 

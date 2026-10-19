@@ -5,6 +5,7 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.CurrentUserProvider;
 import com.stockflow.common.security.DataScope;
+import com.stockflow.inventory.internal.service.InventoryItems;
 import com.stockflow.product.api.CreateProductCommand;
 import com.stockflow.product.api.ProductKind;
 import com.stockflow.product.api.ProductService;
@@ -60,7 +61,8 @@ class ProductVariantOptionsIntegrationTest {
     @Autowired AttributeDictionaryService dictionary;
     @Autowired ProductService products;
     @Autowired ProductTaxonomyService taxonomy;
-    @Autowired SkuInventoryControlService skus;
+    @Autowired InventoryItems items;
+    @Autowired com.stockflow.inventory.api.InventoryService inventory;
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager entityManager;
     @Autowired EntityManagerFactory entityManagerFactory;
@@ -560,9 +562,9 @@ class ProductVariantOptionsIntegrationTest {
 
         assertThat(defaultOf(product).sku()).isEqualTo(code);
         assertThat(generated.created()).extracting(VariantView::sku).containsExactly(code + "-16OZ");
-        UUID defaultId = defaultOf(product).id();
-        assertThat(skus.get(product, defaultId).sku()).isEqualTo(code);
-        assertThat(skus.get(product, generated.created().getFirst().id()).sku()).isEqualTo(code + "-16OZ");
+        var itemIds = inventory.itemIdsOf(List.of(code, code + "-16OZ"));
+        assertThat(items.get(itemIds.get(code)).sku()).isEqualTo(code);
+        assertThat(items.get(itemIds.get(code + "-16OZ")).sku()).isEqualTo(code + "-16OZ");
     }
 
     @Test
