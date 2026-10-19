@@ -240,6 +240,25 @@ class SkuReservationAllocationIntegrationTest {
     }
 
     @Test
+    @DisplayName("a release after one line's reservation lapsed allocates nothing, rather than the other lines alone")
+    void aLapsedReservationStopsTheAllocation() {
+        UUID order = order();
+        StockReservation kept = reserve(order, 2);
+        StockReservation lapsed = reserve(order, 3);
+        tx.executeWithoutResult(s -> inventory.release(lapsed.reservationId(), "MANUAL_OVERRIDE"));
+
+        assertThat(code(catchThrowable(() -> allocate(order, "HCM")))).isEqualTo(ErrorCode.RESERVATION_NOT_ACTIVE);
+        assertThat(status(kept.reservationId())).isEqualTo("HELD");
+        assertThat(reservedEverywhere()).isZero();
+
+        UUID none = order();
+        StockReservation only = reserve(none, 1);
+        tx.executeWithoutResult(s -> inventory.release(only.reservationId(), "MANUAL_OVERRIDE"));
+        assertThat(code(catchThrowable(() -> allocate(none, "HCM")))).as("nothing left to allocate either")
+                .isEqualTo(ErrorCode.RESERVATION_NOT_ACTIVE);
+    }
+
+    @Test
     @DisplayName("concurrent checkouts never promise more than the SKU has")
     void noOversellUnderConcurrency() throws Exception {
         int threads = 8;

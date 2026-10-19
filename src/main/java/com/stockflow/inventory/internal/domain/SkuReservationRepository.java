@@ -29,6 +29,9 @@ public interface SkuReservationRepository {
     /** The live reservations of an order, read without a lock. */
     List<SkuReservation> findHeldForOrder(UUID orderId);
 
+    /** Whether a reservation of the order closed without being allocated (expired or released). */
+    boolean anyLapsedForOrder(UUID orderId);
+
     /** Live reservations past {@code cutoff}, locked, skipping rows another transaction holds. */
     List<SkuReservation> findExpiredForUpdate(Instant cutoff, int limit);
 

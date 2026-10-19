@@ -424,10 +424,13 @@ class InventoryServiceImpl implements InventoryService {
         String warehouse = new LocationId(command.warehouseCode()).code();
         List<SkuReservation> unlocked = skuReservations.findHeldForOrder(command.orderId());
         if (unlocked.isEmpty()) {
+            requireNoneLapsed(command.orderId());
             return new AllocateStockResult(command.orderId(), warehouse, List.of());
         }
         unlocked.stream().map(r -> r.sku().code()).distinct().sorted().forEach(policies::lock);
         List<SkuReservation> held = skuReservations.findHeldForOrderForUpdate(command.orderId());
+        // After the lock: a reservation the sweeper expired a moment ago is seen as expired here, not skipped.
+        requireNoneLapsed(command.orderId());
         LocalDate today = BusinessCalendar.date(now);
 
         record Planned(SkuReservation from, int sequence, StockAllocator.AllocationLine line) { }
@@ -576,6 +579,19 @@ class InventoryServiceImpl implements InventoryService {
                 .toList();
         Map<String, UUID> pickable = locations.pickable(inWarehouse.stream().map(c -> c.location().code()).toList());
         return inWarehouse.stream().filter(c -> pickable.containsKey(c.location().code())).toList();
+    }
+
+    /**
+     * All or nothing (docs 04c F-FUL): a line whose reservation expired or was released before the release has no
+     * stock behind it, and allocating the other lines would send the order to the warehouse short. Only a
+     * cancellation releases an order's reservations, and an expiry cancels an unpaid order, so this is the race
+     * where the release came first.
+     */
+    private void requireNoneLapsed(UUID orderId) {
+        if (skuReservations.anyLapsedForOrder(orderId)) {
+            throw new BusinessException(ErrorCode.RESERVATION_NOT_ACTIVE,
+                    "A reservation of order %s expired or was released; the order cannot be allocated".formatted(orderId));
+        }
     }
 
     /** BR-STK-006 through {@link StockAllocator}, with the SKU's own removal strategy; names the warehouse when short. */

@@ -72,6 +72,16 @@ class SkuReservationRepositoryAdapter implements SkuReservationRepository {
         return jpa.findHeldForOrder(orderId).stream().map(SkuReservationRepositoryAdapter::toDomain).toList();
     }
 
+    @Override
+    public boolean anyLapsedForOrder(UUID orderId) {
+        return !entityManager.createNativeQuery("""
+                        select 1 from inventory.stock_reservation
+                         where order_id = :orderId and stock_item_id is null and status in ('EXPIRED', 'RELEASED')
+                         limit 1
+                        """)
+                .setParameter("orderId", orderId).getResultList().isEmpty();
+    }
+
     /** {@code SKIP LOCKED}: a reservation a checkout or a release is busy with is swept on the next run. */
     @Override
     public List<SkuReservation> findExpiredForUpdate(Instant cutoff, int limit) {
