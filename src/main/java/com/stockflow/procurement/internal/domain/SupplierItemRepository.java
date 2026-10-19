@@ -40,7 +40,8 @@ public interface SupplierItemRepository {
 
     /**
      * Inserts a {@linkplain SupplierItem#isNew new} item or updates a stored one; opens the first price
-     * period on insert and applies {@code priceChange} otherwise.
+     * period on insert and applies {@code priceChange} otherwise. An update that finds no open period (a
+     * row carried over without history) opens one at {@code now} even when the price is unchanged.
      */
     SupplierItem save(SupplierItem item, Optional<PriceChange> priceChange, Instant now);
 

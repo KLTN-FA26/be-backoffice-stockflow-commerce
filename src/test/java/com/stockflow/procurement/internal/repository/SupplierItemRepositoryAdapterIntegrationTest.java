@@ -154,6 +154,31 @@ class SupplierItemRepositoryAdapterIntegrationTest {
     }
 
     @Test
+    @DisplayName("an edit that keeps the price gives a row without history its open period")
+    void anEditWithoutAPriceChangeOpensAMissingPeriod() {
+        Instant first = now();
+        Instant second = first.plusSeconds(1);
+        var saved = create(supplierId, "10", false, first);
+        // A row carried over before the price table existed: it has no period at all.
+        tx.executeWithoutResult(s -> jdbc.update(
+                "DELETE FROM procurement.supplier_item_prices WHERE supplier_item_id = ?", saved.id()));
+
+        tx.execute(s -> {
+            var loaded = items.findByIdForUpdate(saved.id()).orElseThrow();
+            var change = loaded.update(SupplierItemTerms.of("SUP-10", new BigDecimal("10"), Money.VND, 20, 5, null),
+                    false);
+            assertThat(change).isEmpty();
+            return items.save(loaded, change, second);
+        });
+
+        assertThat(periods(saved.id())).singleElement().satisfies(period -> {
+            assertThat((BigDecimal) period.get("unit_price")).isEqualByComparingTo("10");
+            assertThat(instant(period.get("effective_from"))).isEqualTo(second);
+            assertThat(period.get("effective_to")).isNull();
+        });
+    }
+
+    @Test
     @DisplayName("a row priced in another currency is repriced into the supplier's, history kept")
     void aRowInAnotherCurrencyIsRepricedIntoTheSuppliers() {
         Instant first = now();

@@ -158,7 +158,8 @@ class SupplierItemRepositoryAdapter implements SupplierItemRepository {
         if (inserting) {
             prices.saveAndFlush(newPeriod(entity.getId(), terms.price(), now));
         } else {
-            priceChange.ifPresent(change -> record(entity.getId(), change.to(), now));
+            priceChange.ifPresentOrElse(change -> record(entity.getId(), change.to(), now),
+                    () -> openIfMissing(entity.getId(), terms.price(), now));
         }
         return domain(entity);
     }
@@ -182,6 +183,17 @@ class SupplierItemRepositoryAdapter implements SupplierItemRepository {
             prices.saveAndFlush(open.get());
         }
         prices.saveAndFlush(newPeriod(itemId, price, now));
+    }
+
+    /**
+     * An edit that keeps the price still gives a row without history (carried over before the price
+     * table existed) its open period, so "the price on date D" has an answer for it from now on. One
+     * extra indexed read per such edit.
+     */
+    private void openIfMissing(UUID itemId, Money price, Instant now) {
+        if (prices.findBySupplierItemIdAndEffectiveToIsNull(itemId).isEmpty()) {
+            prices.saveAndFlush(newPeriod(itemId, price, now));
+        }
     }
 
     private static SupplierItemPriceJpaEntity newPeriod(UUID itemId, Money price, Instant from) {
