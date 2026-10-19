@@ -29,6 +29,10 @@ import java.util.UUID;
  * Inventory items by their own id. Logistics and stock policy are edited here, not under a product: the item is what
  * stock hangs off, and a product or variant is only one of the ways to reach it. Reading needs
  * {@code inventory-inventory-items:READ}; both PUTs need {@code :UPDATE}, which warehouse staff do not hold.
+ *
+ * <p>The resource declares only the actions an endpoint here checks. V20260928006000 also seeded CREATE and EXPORT
+ * for it, but items are created by the variant trigger and nothing exports them, so the role matrix would offer
+ * grants that guard nothing. Undeclared grants are left alone by the matrix rather than shown or removed.</p>
  */
 @RestController
 @RequestMapping("/api/v1/inventory/items")
@@ -39,7 +43,7 @@ import java.util.UUID;
         label = "Inventory items",
         route = "/inventory/items",
         apiPath = "/api/v1/inventory/items",
-        actions = {Action.VIEW_PAGE, Action.READ, Action.CREATE, Action.UPDATE, Action.EXPORT})
+        actions = {Action.VIEW_PAGE, Action.READ, Action.UPDATE})
 class InventoryItemController {
 
     private final InventoryItems items;
