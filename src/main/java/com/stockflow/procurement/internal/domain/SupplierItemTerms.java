@@ -5,6 +5,8 @@ import com.stockflow.common.domain.Money;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 
+import java.math.BigDecimal;
+import java.util.Currency;
 import java.util.List;
 import java.util.Objects;
 
@@ -21,10 +23,11 @@ import java.util.Objects;
  *
  * <p>The limits mirror the {@code supplier_items} CHECK constraints. Each violation names its field
  * and carries its own field code, whose translated message the exception handler puts beside the
- * input; the exception itself stays {@code VALIDATION_FAILED}, so the response is a 400. The price's
- * upper bound and its decimal places against the currency are not checked here: by the time a
- * {@link Money} exists, its constructor has already rounded the amount to the currency's scale, so
- * the catalog service checks the amount as entered, before building it.</p>
+ * input; the exception itself stays {@code VALIDATION_FAILED}, so the response is a 400. The price
+ * comes in as the amount entered plus the currency, not as a {@link Money}: Money's constructor rounds
+ * to the currency's scale, so a VND price of {@code 1500.50} would already be {@code 1501} and no
+ * check made afterwards could see the lost digits. The whole price rule is therefore here, in one
+ * place, and nothing that builds terms can skip it.</p>
  *
  * <p>{@code moq % packSize == 0} is enforced here and not left to the order line: a MOQ that is not
  * a whole number of packs is a catalog that no quantity can satisfy.</p>
@@ -32,8 +35,13 @@ import java.util.Objects;
 public final class SupplierItemTerms {
 
     static final int MAX_SKU_CODE_LENGTH = 50;
-    static final int MAX_PRICE_SCALE = 2;
     static final int MAX_LEAD_TIME_DAYS = 365;
+
+    /** The largest amount {@code NUMERIC(18,2)} holds. */
+    public static final BigDecimal MAX_PRICE = new BigDecimal("9999999999999999.99");
+
+    /** The column's decimals: a currency with three (KWD) is still capped at two. */
+    static final int MAX_PRICE_SCALE = 2;
 
     private final String supplierSkuCode;
     private final Money price;
@@ -53,22 +61,18 @@ public final class SupplierItemTerms {
      * Terms a caller is creating or changing.
      *
      * @param supplierSkuCode the supplier's own code for the SKU; blank is stored as {@code null}
+     * @param amount          the price as entered, checked before it is rounded into a {@link Money}
+     * @param currency        the supplier's currency
      * @param leadTimeDays    {@code null} means "use the supplier's lead time"
      * @throws BusinessException {@code VALIDATION_FAILED}, with one field error naming the rule broken
      */
-    public static SupplierItemTerms of(
-            String supplierSkuCode, Money price, int moq, int packSize, Integer leadTimeDays) {
+    public static SupplierItemTerms of(String supplierSkuCode, BigDecimal amount, Currency currency, int moq,
+                                       int packSize, Integer leadTimeDays) {
         String code = supplierSkuCode == null || supplierSkuCode.isBlank() ? null : supplierSkuCode.strip();
         if (code != null && code.length() > MAX_SKU_CODE_LENGTH)
             throw refused("supplierSkuCode", ErrorCode.SUPPLIER_ITEM_SUPPLIER_SKU_CODE_TOO_LONG,
                     "Supplier SKU code must be at most " + MAX_SKU_CODE_LENGTH + " characters");
-        if (price == null || price.amount().signum() <= 0)
-            throw refused("price", ErrorCode.SUPPLIER_ITEM_PRICE_INVALID, "Price must be greater than zero");
-        // Money already rounds to its currency's scale; this catches a currency wider than the
-        // NUMERIC(18,2) column rather than silently losing digits on insert.
-        if (price.amount().scale() > MAX_PRICE_SCALE)
-            throw refused("price", ErrorCode.SUPPLIER_ITEM_PRICE_INVALID,
-                    "Price must have at most " + MAX_PRICE_SCALE + " decimal places");
+        Money price = price(amount, currency);
         if (moq < 1)
             throw refused("moq", ErrorCode.SUPPLIER_ITEM_MOQ_INVALID, "Minimum order quantity must be at least 1");
         if (packSize < 1)
@@ -89,6 +93,22 @@ public final class SupplierItemTerms {
     public static SupplierItemTerms stored(
             String supplierSkuCode, Money price, int moq, int packSize, Integer leadTimeDays) {
         return new SupplierItemTerms(supplierSkuCode, price, moq, packSize, leadTimeDays);
+    }
+
+    private static Money price(BigDecimal amount, Currency currency) {
+        if (currency == null || currency.getDefaultFractionDigits() < 0)
+            throw refused("price", ErrorCode.SUPPLIER_ITEM_PRICE_INVALID, "Unsupported supplier currency "
+                    + (currency == null ? null : currency.getCurrencyCode()));
+        if (amount == null || amount.signum() <= 0)
+            throw refused("price", ErrorCode.SUPPLIER_ITEM_PRICE_INVALID, "Price must be greater than zero");
+        if (amount.compareTo(MAX_PRICE) > 0)
+            throw refused("price", ErrorCode.SUPPLIER_ITEM_PRICE_INVALID,
+                    "Price must be at most " + MAX_PRICE.toPlainString());
+        int scale = Math.min(MAX_PRICE_SCALE, currency.getDefaultFractionDigits());
+        if (amount.stripTrailingZeros().scale() > scale)
+            throw refused("price", ErrorCode.SUPPLIER_ITEM_PRICE_INVALID,
+                    "Price in " + currency.getCurrencyCode() + " must have at most " + scale + " decimal places");
+        return new Money(amount, currency);
     }
 
     private static BusinessException refused(String field, ErrorCode fieldCode, String message) {

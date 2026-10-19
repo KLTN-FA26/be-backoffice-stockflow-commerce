@@ -88,7 +88,7 @@ class SupplierItemRepositoryAdapterIntegrationTest {
     }
 
     private static SupplierItemTerms terms(String price) {
-        return SupplierItemTerms.of("SUP-" + price, new Money(new BigDecimal(price), Money.VND), 10, 5, null);
+        return SupplierItemTerms.of("SUP-" + price, new BigDecimal(price), Money.VND, 10, 5, null);
     }
 
     private SupplierItem create(UUID supplier, String price, boolean preferred, Instant at) {

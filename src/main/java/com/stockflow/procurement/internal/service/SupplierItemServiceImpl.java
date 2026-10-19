@@ -4,7 +4,6 @@ import com.stockflow.common.api.FieldError;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
-import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
@@ -25,7 +24,6 @@ import com.stockflow.product.api.Purchasability;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.Currency;
@@ -49,10 +47,6 @@ import java.util.UUID;
 @Service
 @Transactional
 class SupplierItemServiceImpl implements SupplierItemService {
-
-    /** The largest amount {@code NUMERIC(18,2)} holds. */
-    private static final BigDecimal MAX_PRICE = new BigDecimal("9999999999999999.99");
-    private static final int MAX_PRICE_SCALE = 2;
 
     private final SupplierItemRepository items;
     private final InventoryService inventory;
@@ -203,30 +197,10 @@ class SupplierItemServiceImpl implements SupplierItemService {
         }
     }
 
+    /** The price is checked as entered, in the supplier's currency, by {@link SupplierItemTerms#of}. */
     private static SupplierItemTerms terms(SaveSupplierItemCommand command, Currency currency) {
-        return SupplierItemTerms.of(command.supplierSkuCode(), price(command.price(), currency), command.moq(),
+        return SupplierItemTerms.of(command.supplierSkuCode(), command.price(), currency, command.moq(),
                 command.packSize(), command.leadTimeDays());
-    }
-
-    /**
-     * Checks the amount as entered, before {@link Money} rounds it to the currency's scale: a VND price
-     * of {@code 1500.50} would otherwise be stored as {@code 1501} without a word. Same rule as a
-     * purchase order line's unit price.
-     */
-    private static Money price(BigDecimal amount, Currency currency) {
-        int digits = currency.getDefaultFractionDigits();
-        if (digits < 0) throw invalidPrice("Unsupported supplier currency " + currency.getCurrencyCode());
-        if (amount == null || amount.signum() <= 0) throw invalidPrice("Price must be greater than zero");
-        if (amount.compareTo(MAX_PRICE) > 0) throw invalidPrice("Price must be at most " + MAX_PRICE.toPlainString());
-        int scale = Math.min(MAX_PRICE_SCALE, digits);
-        if (amount.stripTrailingZeros().scale() > scale)
-            throw invalidPrice("Price in " + currency.getCurrencyCode() + " must have at most " + scale
-                    + " decimal places");
-        return new Money(amount, currency);
-    }
-
-    private static BusinessException invalidPrice(String message) {
-        return invalid("price", ErrorCode.SUPPLIER_ITEM_PRICE_INVALID.name(), message);
     }
 
     /**
