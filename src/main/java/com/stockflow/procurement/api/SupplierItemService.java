@@ -7,8 +7,9 @@ import java.util.UUID;
 
 /**
  * The supplier catalog (SCRUM-77): which supplier sells which SKU, at what price and terms, and
- * which one is preferred. At most one supplier is preferred per SKU; preferring another moves the
- * flag. Every price change is kept as a dated period.
+ * which one is preferred. The preferred supplier is the SKU's inventory item default supplier (docs 01 §3),
+ * so there is at most one and the purchasing screen of the SKU shows the same: preferring a row sets that
+ * default, un-preferring the preferred row clears it. Every price change is kept as a dated period.
  */
 public interface SupplierItemService {
 

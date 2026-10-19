@@ -132,7 +132,7 @@ class InventoryControlServiceImpl implements InventoryControlService {
             throw new BusinessException(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT,
                     "The unit of measure of %s cannot change while stock of it is held".formatted(sku));
         }
-        // The base unit row follows the item's code (V20261016001200); a packing unit cannot share it.
+        // The base unit row follows the item's code (V20261019000300); a packing unit cannot share it.
         if (!current.logistics().unitOfMeasure().equals(logistics.unitOfMeasure())
                 && policies.packingUnitUses(sku.code(), logistics.unitOfMeasure())) {
             throw new BusinessException(ErrorCode.UOM_CONVERSION_DUPLICATE,

@@ -136,25 +136,24 @@ class SupplierItemTest {
         assertThat(stored.leadTimeDays()).isEqualTo(366);
         assertThatCode(() -> SupplierItemTerms.stored(null, price, 0, 0, -1)).doesNotThrowAnyException();
 
-        var item = new SupplierItem(UUID.randomUUID(), SUPPLIER, ITEM, stored, false, 3L, null, null);
+        var item = new SupplierItem(UUID.randomUUID(), SUPPLIER, ITEM, stored, 3L, null, null);
         assertThat(item.orderQuantityViolations(6)).isEmpty();
-        assertThat(item.update(terms(new BigDecimal("10"), 6, 2, 30), false)).isEmpty();
+        assertThat(item.update(terms(new BigDecimal("10"), 6, 2, 30))).isEmpty();
         assertThat(item.terms().leadTimeDays()).isEqualTo(30);
     }
 
     @Test
     void createAssignsAnIdAndVersionZero() {
-        var item = SupplierItem.create(SUPPLIER, ITEM, terms(new BigDecimal("10"), 1, 1, null), true);
+        var item = SupplierItem.create(SUPPLIER, ITEM, terms(new BigDecimal("10"), 1, 1, null));
         assertThat(item.id()).isNotNull();
         assertThat(item.version()).isZero();
         assertThat(item.supplierId()).isEqualTo(SUPPLIER);
         assertThat(item.inventoryItemId()).isEqualTo(ITEM);
-        assertThat(item.preferred()).isTrue();
     }
 
     @Test
     void orderQuantityViolations() {
-        var item = SupplierItem.create(SUPPLIER, ITEM, terms(new BigDecimal("10"), 12, 6, null), false);
+        var item = SupplierItem.create(SUPPLIER, ITEM, terms(new BigDecimal("10"), 12, 6, null));
         assertThat(item.orderQuantityViolations(12)).isEmpty();
         assertThat(item.orderQuantityViolations(18)).isEmpty();
         assertThat(item.orderQuantityViolations(6)).containsExactly(BELOW_MOQ);
@@ -164,13 +163,12 @@ class SupplierItemTest {
 
     @Test
     void updateReportsAPriceChangeOnlyWhenTheAmountDiffers() {
-        var item = SupplierItem.create(SUPPLIER, ITEM, terms(new BigDecimal("10.00"), 1, 1, null), false);
+        var item = SupplierItem.create(SUPPLIER, ITEM, terms(new BigDecimal("10.00"), 1, 1, null));
 
-        assertThat(item.update(terms(new BigDecimal("10.0"), 2, 1, null), true)).isEmpty();
+        assertThat(item.update(terms(new BigDecimal("10.0"), 2, 1, null))).isEmpty();
         assertThat(item.terms().moq()).isEqualTo(2);
-        assertThat(item.preferred()).isTrue();
 
-        var change = item.update(terms(new BigDecimal("12"), 2, 1, null), true);
+        var change = item.update(terms(new BigDecimal("12"), 2, 1, null));
         assertThat(change).contains(new PriceChange(
                 new Money(new BigDecimal("10.00"), Money.VND), new Money(new BigDecimal("12"), Money.VND)));
         assertThat(item.terms().price()).isEqualTo(new Money(new BigDecimal("12"), Money.VND));
@@ -182,9 +180,9 @@ class SupplierItemTest {
         // even though the number is the same, so its history closes the USD period.
         var usd = Currency.getInstance("USD");
         var stored = SupplierItemTerms.stored("S", new Money(new BigDecimal("10"), usd), 1, 1, null);
-        var item = new SupplierItem(UUID.randomUUID(), SUPPLIER, ITEM, stored, false, 3L, Instant.EPOCH, null);
+        var item = new SupplierItem(UUID.randomUUID(), SUPPLIER, ITEM, stored, 3L, Instant.EPOCH, null);
 
-        var change = item.update(terms(new BigDecimal("10"), 1, 1, null), false);
+        var change = item.update(terms(new BigDecimal("10"), 1, 1, null));
 
         assertThat(change).contains(new PriceChange(
                 new Money(new BigDecimal("10"), usd), new Money(new BigDecimal("10"), Money.VND)));
@@ -193,17 +191,17 @@ class SupplierItemTest {
 
     @Test
     void onlyAnItemThatWasNeverStoredIsNew() {
-        assertThat(SupplierItem.create(SUPPLIER, ITEM, terms(new BigDecimal("10"), 1, 1, null), false).isNew())
+        assertThat(SupplierItem.create(SUPPLIER, ITEM, terms(new BigDecimal("10"), 1, 1, null)).isNew())
                 .isTrue();
         var stored = SupplierItemTerms.stored("S", new Money(BigDecimal.TEN, Money.VND), 1, 1, null);
-        assertThat(new SupplierItem(UUID.randomUUID(), SUPPLIER, ITEM, stored, false, 0L, Instant.EPOCH, null).isNew())
+        assertThat(new SupplierItem(UUID.randomUUID(), SUPPLIER, ITEM, stored, 0L, Instant.EPOCH, null).isNew())
                 .isFalse();
     }
 
     @Test
     void effectiveLeadTimeFallsBackToTheSupplierThenTheDefault() {
-        var withLead = SupplierItem.create(SUPPLIER, ITEM, terms(new BigDecimal("10"), 1, 1, 3), false);
-        var without = SupplierItem.create(SUPPLIER, ITEM, terms(new BigDecimal("10"), 1, 1, null), false);
+        var withLead = SupplierItem.create(SUPPLIER, ITEM, terms(new BigDecimal("10"), 1, 1, 3));
+        var without = SupplierItem.create(SUPPLIER, ITEM, terms(new BigDecimal("10"), 1, 1, null));
         assertThat(withLead.effectiveLeadTimeDays(9)).isEqualTo(3);
         assertThat(without.effectiveLeadTimeDays(9)).isEqualTo(9);
         assertThat(without.effectiveLeadTimeDays(null)).isEqualTo(CommercialTerms.LEAD_DAYS);

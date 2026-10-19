@@ -26,7 +26,7 @@ public enum ProductChangeType {
 
     /**
      * What changed: the product itself, a variant, an image, or the logistics / stock policy / purchasing
-     * information / units of measure / sales units of a SKU (V20261016001300).
+     * information / units of measure / sales units of a SKU (V20261019000400).
      */
     public enum Subject {
         PRODUCT, VARIANT, MEDIA, LOGISTICS, INVENTORY_CONTROL, PURCHASING, UOM_CONVERSION, SALES_UNIT

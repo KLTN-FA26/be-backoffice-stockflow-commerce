@@ -11,21 +11,20 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * One supplier's offer for one inventory item: who sells it, on what terms, and whether this is
- * the supplier we normally buy it from.
+ * One supplier's offer for one inventory item: who sells it, and on what terms. Whether this is the
+ * supplier we normally buy it from is not the row's: it is the item's default supplier (docs 01 §3), kept by
+ * inventory and read through {@code inventory :: api}.
  *
  * <p>Terms a caller supplies validate themselves ({@link SupplierItemTerms#of}); a row read back from
  * the database is rebuilt unchecked, so it can still be listed, corrected or removed. This
  * aggregate owns what depends on history and on other rows: whether an update changed the price,
- * and what a given order quantity is allowed to be. Uniqueness of the preferred flag per item is a cross-row rule, so the service
- * enforces it under {@link SupplierItemRepository#lockCatalogOf(UUID)}.</p>
+ * and what a given order quantity is allowed to be.</p>
  */
 public final class SupplierItem extends AggregateRoot {
     private final UUID id;
     private final UUID supplierId;
     private final UUID inventoryItemId;
     private SupplierItemTerms terms;
-    private boolean preferred;
     private final long version;
     private final Instant createdAt;
     private final Instant lastModifiedAt;
@@ -35,7 +34,6 @@ public final class SupplierItem extends AggregateRoot {
             UUID supplierId,
             UUID inventoryItemId,
             SupplierItemTerms terms,
-            boolean preferred,
             long version,
             Instant createdAt,
             Instant lastModifiedAt) {
@@ -43,20 +41,19 @@ public final class SupplierItem extends AggregateRoot {
         this.supplierId = supplierId;
         this.inventoryItemId = inventoryItemId;
         this.terms = terms;
-        this.preferred = preferred;
         this.version = version;
         this.createdAt = createdAt;
         this.lastModifiedAt = lastModifiedAt;
     }
 
     public static SupplierItem create(
-            UUID supplierId, UUID inventoryItemId, SupplierItemTerms terms, boolean preferred) {
+            UUID supplierId, UUID inventoryItemId, SupplierItemTerms terms) {
         return new SupplierItem(
-                Identifiers.newId(), supplierId, inventoryItemId, terms, preferred, 0L, null, null);
+                Identifiers.newId(), supplierId, inventoryItemId, terms, 0L, null, null);
     }
 
     /**
-     * Replaces the terms and the preferred flag. The price history is not this aggregate's to
+     * Replaces the terms. The price history is not this aggregate's to
      * write, so the change is returned for the repository to record.
      *
      * <p>The replacement is priced in the supplier's currency. A row priced in another one (nothing in
@@ -68,7 +65,7 @@ public final class SupplierItem extends AggregateRoot {
      * @return the price movement, empty when currency and amount are unchanged ({@code 10.00} to
      *         {@code 10.0} is not a change, hence {@code compareTo} and not {@code equals})
      */
-    public Optional<PriceChange> update(SupplierItemTerms replacement, boolean preferred) {
+    public Optional<PriceChange> update(SupplierItemTerms replacement) {
         var current = terms.price();
         var next = replacement.price();
         Optional<PriceChange> change =
@@ -76,7 +73,6 @@ public final class SupplierItem extends AggregateRoot {
                         ? Optional.empty()
                         : Optional.of(new PriceChange(current, next));
         this.terms = replacement;
-        this.preferred = preferred;
         return change;
     }
 
@@ -116,10 +112,6 @@ public final class SupplierItem extends AggregateRoot {
 
     public SupplierItemTerms terms() {
         return terms;
-    }
-
-    public boolean preferred() {
-        return preferred;
     }
 
     public long version() {

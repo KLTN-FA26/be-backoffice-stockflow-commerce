@@ -10,7 +10,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * {@code product.variant_sales_units} (V20261016001300): the units a variant is sold in, each with its
+ * {@code product.variant_sales_units} (V20261019000400): the units a variant is sold in, each with its
  * price. Native SQL on one small table, like {@link ProductChangeLogRepository}.
  */
 @Repository

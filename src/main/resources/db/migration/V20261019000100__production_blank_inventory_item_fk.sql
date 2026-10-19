@@ -9,8 +9,8 @@
 --
 -- Plain keys, no cascade either way: a blank named by a production or sample document counts as
 -- "used", so its DRAFT SKU may be neither renamed (the variant rename cascades to the item and stops
--- here) nor deleted. Once merged with the bug-fix branch, these three tables belong in
--- inventory.item_in_use(), which the rename guard asks.
+-- here) nor deleted. inventory.item_in_use() already counts these three tables (V20261017001200), so
+-- the rename guard and the DRAFT delete answer the friendly "SKU in use" error before this key would.
 --
 -- Existing rows are checked first and the migration stops with the table and the count, rather
 -- than half-way through an ALTER: a blank without an inventory item has no meaning in the docs, so

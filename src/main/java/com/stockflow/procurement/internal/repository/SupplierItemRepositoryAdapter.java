@@ -46,9 +46,6 @@ import java.util.UUID;
 @Repository
 class SupplierItemRepositoryAdapter implements SupplierItemRepository {
 
-    /** Namespace of the catalog advisory lock; the inventory item lock uses 701. */
-    private static final int CATALOG_LOCK_SEED = 769;
-
     private static final String PAIR_CONSTRAINT = "uk_supplier_items_pair";
 
     private static final SortWhitelist SORT =
@@ -66,13 +63,13 @@ class SupplierItemRepositoryAdapter implements SupplierItemRepository {
     private static final String SUPPLIERS_OF = """
             SELECT i.id, i.supplier_id, i.inventory_item_id, i.supplier_sku_code, i.current_price,
                    i.currency AS item_currency, i.moq, i.pack_size, i.lead_time_days AS item_lead_time_days,
-                   i.is_preferred, i.version, i.created_at, i.last_modified_at,
+                   i.version, i.created_at, i.last_modified_at,
                    s.code, s.name, s.status, s.currency AS supplier_currency,
                    s.lead_time_days AS supplier_lead_time_days
               FROM procurement.supplier_items i
               JOIN procurement.suppliers s ON s.id = i.supplier_id
              WHERE i.inventory_item_id = ?
-             ORDER BY i.is_preferred DESC, s.name, s.code, i.id""";
+             ORDER BY s.name, s.code, i.id""";
 
     private final SupplierItemJpaRepository jpa;
     private final SupplierItemPriceJpaRepository prices;
@@ -121,21 +118,6 @@ class SupplierItemRepositoryAdapter implements SupplierItemRepository {
     }
 
     @Override
-    public void lockCatalogOf(UUID inventoryItemId) {
-        jdbc.query("select pg_advisory_xact_lock(hashtextextended(?, " + CATALOG_LOCK_SEED + "))", rs -> {},
-                inventoryItemId.toString());
-    }
-
-    @Override
-    public Optional<SupplierItem> findPreferredForUpdate(UUID inventoryItemId) {
-        return jpa.findPreferredForUpdate(inventoryItemId).map(entity -> {
-            // As in findByIdForUpdate: the persistence-context copy may predate the lock.
-            entityManager.refresh(entity, LockModeType.PESSIMISTIC_WRITE);
-            return domain(entity);
-        });
-    }
-
-    @Override
     public SupplierItem save(SupplierItem item, Optional<PriceChange> priceChange, Instant now) {
         // A new item's id cannot be in the table yet, so it is not looked up. A stored one was read under
         // its lock in this transaction, so the lookup is a persistence-context hit, not a SELECT.
@@ -146,7 +128,7 @@ class SupplierItemRepositoryAdapter implements SupplierItemRepository {
                         "Supplier item " + item.id() + " vanished before it was saved"));
         var terms = item.terms();
         entity.update(terms.supplierSkuCode(), terms.price().amount(), terms.price().currency().getCurrencyCode(),
-                terms.moq(), terms.packSize(), terms.leadTimeDays(), item.preferred());
+                terms.moq(), terms.packSize(), terms.leadTimeDays());
         try {
             jpa.saveAndFlush(entity);
         } catch (DataIntegrityViolationException race) {
@@ -231,7 +213,7 @@ class SupplierItemRepositoryAdapter implements SupplierItemRepository {
                     rs.getObject("inventory_item_id", UUID.class), rs.getString("supplier_sku_code"),
                     rs.getBigDecimal("current_price"), rs.getString("item_currency"), rs.getInt("moq"),
                     rs.getInt("pack_size"), rs.getObject("item_lead_time_days", Integer.class),
-                    rs.getBoolean("is_preferred"), rs.getLong("version"), instant(rs, "created_at"),
+                    rs.getLong("version"), instant(rs, "created_at"),
                     instant(rs, "last_modified_at"));
             var supplier = new CatalogSupplier(item.supplierId(), rs.getString("code"), rs.getString("name"),
                     SupplierStatus.valueOf(rs.getString("status")),
@@ -249,7 +231,7 @@ class SupplierItemRepositoryAdapter implements SupplierItemRepository {
     private static SupplierItem domain(SupplierItemJpaEntity e) {
         return supplierItem(e.getId(), e.getSupplierId(), e.getInventoryItemId(), e.getSupplierSkuCode(),
                 e.getCurrentPrice(), e.getCurrency(), e.getMoq(), e.getPackSize(), e.getLeadTimeDays(),
-                e.isPreferred(), e.getVersion(), e.getCreatedAt(), e.getLastModifiedAt());
+                e.getVersion(), e.getCreatedAt(), e.getLastModifiedAt());
     }
 
     /**
@@ -260,11 +242,11 @@ class SupplierItemRepositoryAdapter implements SupplierItemRepository {
      */
     private static SupplierItem supplierItem(UUID id, UUID supplierId, UUID inventoryItemId, String supplierSkuCode,
                                              BigDecimal price, String currency, int moq, int packSize,
-                                             Integer leadTimeDays, boolean preferred, long version,
+                                             Integer leadTimeDays, long version,
                                              Instant createdAt, Instant lastModifiedAt) {
         var terms = SupplierItemTerms.stored(supplierSkuCode, new Money(price, Currency.getInstance(currency)), moq,
                 packSize, leadTimeDays);
-        return new SupplierItem(id, supplierId, inventoryItemId, terms, preferred, version, createdAt,
+        return new SupplierItem(id, supplierId, inventoryItemId, terms, version, createdAt,
                 lastModifiedAt);
     }
 }

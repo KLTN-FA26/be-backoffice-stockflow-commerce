@@ -45,9 +45,6 @@ public class SupplierItemJpaEntity extends BaseEntity {
     @Column(name = "lead_time_days")
     private Integer leadTimeDays;
 
-    @Column(name = "is_preferred", nullable = false)
-    private boolean preferred;
-
     protected SupplierItemJpaEntity() {
     }
 
@@ -58,14 +55,13 @@ public class SupplierItemJpaEntity extends BaseEntity {
     }
 
     public void update(String supplierSkuCode, BigDecimal currentPrice, String currency, int moq, int packSize,
-                       Integer leadTimeDays, boolean preferred) {
+                       Integer leadTimeDays) {
         this.supplierSkuCode = supplierSkuCode;
         this.currentPrice = currentPrice;
         this.currency = currency;
         this.moq = moq;
         this.packSize = packSize;
         this.leadTimeDays = leadTimeDays;
-        this.preferred = preferred;
     }
 
     public UUID getSupplierId() { return supplierId; }
@@ -76,5 +72,4 @@ public class SupplierItemJpaEntity extends BaseEntity {
     public int getMoq() { return moq; }
     public int getPackSize() { return packSize; }
     public Integer getLeadTimeDays() { return leadTimeDays; }
-    public boolean isPreferred() { return preferred; }
 }

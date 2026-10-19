@@ -597,7 +597,7 @@ for v in VARIANTS:
                 weight_kg=round(w * 0.92, 3), length_cm=l - 2, width_cm=wd - 2, height_cm=h - 2,
                 package_weight_kg=w, package_length_cm=l, package_width_cm=wd, package_height_cm=h, package_count=1,
                 pack_size=1, storage_class=cls, lot_tracked=lot, expiry_tracked=lot, serial_tracked=False,
-                min_qty=10, max_qty=400 if not lot else 120, reorder_point=40 if not lot else 20,
+                max_qty=400 if not lot else 120, reorder_point=40 if not lot else 20,
                 safety_stock=15 if not lot else 8, default_supplier_id=SUP[sup] if sup else None,
                 qc_required="qc" in flags, removal_strategy="FEFO" if lot else "FIFO",
                 max_shelf_life_days=None, policy_configured=v["vstatus"] == "ACTIVE",
@@ -619,8 +619,9 @@ for v in VARIANTS:
     si = uid(f"si:{code}:{v['sku']}")
     add("procurement.supplier_items", id=si, supplier_id=SUP[code], inventory_item_id=ITEM[v["sku"]],
         supplier_sku_code=f"{code[:3]}-{v['idx']:04d}", current_price=cost, moq=5 if v["uom"] == "CTN" else 2,
-        pack_size=1, lead_time_days=10, is_preferred=True, created_at=at(date(2026, 8, 1), 11))
-    # kltn-docs 01 "Thông tin mua hàng" (V20261016001100): the item's own reference purchase price, lead time
+        pack_size=1, lead_time_days=10, created_at=at(date(2026, 8, 1), 11))
+    # Preferred in the catalog = the item's default_supplier_id set above (V20261019000600), no flag of its own.
+    # kltn-docs 01 "Thông tin mua hàng" (V20261019000200): the item's own reference purchase price, lead time
     # and MOQ, here those its default supplier quotes. No random draw: the rest of the data must not shift.
     POST.append(("procurement.supplier_items",
                  f"UPDATE inventory.inventory_items SET reference_purchase_price = {q(cost)}, "
@@ -638,7 +639,7 @@ for v in VARIANTS:
         add("procurement.supplier_items", id=uid(f"si:BAOBIXYZ:{v['sku']}"), supplier_id=SUP["BAOBIXYZ"],
             inventory_item_id=ITEM[v["sku"]], supplier_sku_code=f"XYZ-{v['idx']:04d}",
             current_price=money(v["cost"] * 1.05 / 1000) * 1000, moq=20, pack_size=1, lead_time_days=15,
-            is_preferred=False, created_at=at(date(2026, 8, 1), 11))
+            created_at=at(date(2026, 8, 1), 11))
 
 for role, amount in (("PROCUREMENT_STAFF", 50000000), ("WAREHOUSE_MANAGER", 300000000)):
     add("procurement.approval_limits", id=uid("limit:" + role), role_id=ROLE(role), currency="VND",

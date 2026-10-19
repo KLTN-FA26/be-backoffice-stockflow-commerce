@@ -12,7 +12,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * {@code inventory.uom_conversions} (V20261016001200), always read with its item: the SKU, and for the
+ * {@code inventory.uom_conversions} (V20261019000300), always read with its item: the SKU, and for the
  * base unit the size and weight, are the item's.
  */
 @Repository
