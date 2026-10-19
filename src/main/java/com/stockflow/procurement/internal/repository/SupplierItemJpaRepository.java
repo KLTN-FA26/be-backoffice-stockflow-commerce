@@ -17,7 +17,9 @@ interface SupplierItemJpaRepository extends BaseJpaRepository<SupplierItemJpaEnt
     @Query("select i from SupplierItemJpaEntity i where i.id = :id")
     Optional<SupplierItemJpaEntity> findByIdForUpdate(UUID id);
 
-    Optional<SupplierItemJpaEntity> findByInventoryItemIdAndPreferredTrue(UUID inventoryItemId);
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select i from SupplierItemJpaEntity i where i.inventoryItemId = :inventoryItemId and i.preferred = true")
+    Optional<SupplierItemJpaEntity> findPreferredForUpdate(UUID inventoryItemId);
 
     Page<SupplierItemJpaEntity> findBySupplierId(UUID supplierId, Pageable pageable);
 

@@ -262,7 +262,7 @@ class SupplierItemRepositoryAdapterIntegrationTest {
         assertThat(secondPage.items()).extracting(i -> i.terms().price().amount().intValue()).containsExactly(10);
         Optional<SupplierItem> preferred = tx.execute(s -> {
             items.lockCatalogOf(inventoryItemId);
-            return items.findPreferred(inventoryItemId);
+            return items.findPreferredForUpdate(inventoryItemId);
         });
         assertThat(preferred).isEmpty();
     }

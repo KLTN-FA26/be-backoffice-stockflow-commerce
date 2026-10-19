@@ -40,7 +40,8 @@ import java.util.UUID;
  *
  * <p>"At most one preferred supplier per SKU" spans rows no single row lock covers, so making a row
  * preferred takes the item's catalog lock first and clears the previous preferred row, flushed,
- * before the new one is written; {@code uk_supplier_items_preferred} never sees two at once. Two
+ * before the new one is written; {@code uk_supplier_items_preferred} never sees two at once. The
+ * previous preferred row is locked before it is cleared (see {@code unpreferOthers}). Two
  * buyers preferring different suppliers at the same moment therefore both succeed, and the later
  * one wins.</p>
  */
@@ -157,10 +158,15 @@ class SupplierItemServiceImpl implements SupplierItemService {
     /**
      * Clears the SKU's current preferred row, if it is another one, under the catalog lock. Saved
      * (and flushed) before the caller saves {@code item}, so the partial unique index never holds two.
+     *
+     * <p>The preferred row is locked and re-read too. A buyer editing it holds only its row lock (it is
+     * already preferred, so that edit takes no catalog lock); reading it unlocked would save its old
+     * terms back over theirs, which the version check turns into a 409 for a caller who never touched
+     * that row. Locks are taken in one order: the caller's own row, the catalog, the preferred row.</p>
      */
     private void unpreferOthers(SupplierItem item, Instant now) {
         items.lockCatalogOf(item.inventoryItemId());
-        items.findPreferred(item.inventoryItemId())
+        items.findPreferredForUpdate(item.inventoryItemId())
                 .filter(current -> !current.id().equals(item.id()))
                 .ifPresent(current -> {
                     current.update(current.terms(), false);

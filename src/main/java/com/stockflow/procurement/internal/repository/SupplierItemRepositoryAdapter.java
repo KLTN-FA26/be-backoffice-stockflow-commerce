@@ -127,8 +127,12 @@ class SupplierItemRepositoryAdapter implements SupplierItemRepository {
     }
 
     @Override
-    public Optional<SupplierItem> findPreferred(UUID inventoryItemId) {
-        return jpa.findByInventoryItemIdAndPreferredTrue(inventoryItemId).map(SupplierItemRepositoryAdapter::domain);
+    public Optional<SupplierItem> findPreferredForUpdate(UUID inventoryItemId) {
+        return jpa.findPreferredForUpdate(inventoryItemId).map(entity -> {
+            // As in findByIdForUpdate: the persistence-context copy may predate the lock.
+            entityManager.refresh(entity, LockModeType.PESSIMISTIC_WRITE);
+            return domain(entity);
+        });
     }
 
     @Override
