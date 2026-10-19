@@ -24,7 +24,8 @@ import com.stockflow.product.internal.service.ProductTaxonomyService;
 import com.stockflow.product.internal.service.ProductTaxonomyService.CategoryDetails;
 import com.stockflow.product.internal.service.ProductVariantService;
 import com.stockflow.product.internal.service.ProductVariantService.NewVariant;
-import com.stockflow.product.internal.service.SkuInventoryControlService;
+import com.stockflow.inventory.api.InventoryService;
+import com.stockflow.inventory.internal.service.InventoryItems;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.ReferenceRows;
@@ -68,7 +69,8 @@ class ProductPimIntegrationTest {
     @Autowired ProductVariantService variants;
     @Autowired ProductMediaService media;
     @Autowired ProductTaxonomyService taxonomy;
-    @Autowired SkuInventoryControlService skus;
+    @Autowired InventoryItems items;
+    @Autowired InventoryService inventory;
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager entityManager;
     @Autowired TransactionTemplate tx;
@@ -150,22 +152,23 @@ class ProductPimIntegrationTest {
     @DisplayName("logistics are per SKU, on the inventory item, with optimistic versioning")
     void logisticsLiveOnTheInventoryItem() {
         var created = create(null, null);
-        UUID skuId = variants.list(created.productId(), 0, 1).items().getFirst().id();
-        var before = skus.logistics(created.productId(), skuId);
+        String sku = variants.list(created.productId(), 0, 1).items().getFirst().sku();
+        UUID itemId = inventory.itemIdsOf(List.of(sku)).get(sku);
+        var before = items.get(itemId);
         assertThat(before.logistics().unitOfMeasure()).isEqualTo("EACH");
 
         var logistics = new ItemLogistics("EACH", "893" + suffix.replaceAll("[^0-9]", "1"),
                 new BigDecimal("0.012"), new BigDecimal("8"), new BigDecimal("8"), new BigDecimal("10"),
                 new BigDecimal("6.2"), new BigDecimal("40"), new BigDecimal("30"), new BigDecimal("50"), 1, 50,
                 StorageClass.FRAGILE, false, null, true);
-        var after = skus.describe(created.productId(), skuId, before.version(), logistics);
+        var after = items.describe(itemId, before.version(), logistics);
 
         assertThat(after.version()).isGreaterThan(before.version());
         assertThat(after.logistics().storageClass()).isEqualTo(StorageClass.FRAGILE);
         assertThat(after.logistics().packSize()).isEqualTo(50);
         assertThat(jdbc.queryForObject("select qc_required from inventory.inventory_items where sku = ?",
                 Boolean.class, "CUP-" + suffix)).isTrue();
-        assertThatThrownBy(() -> skus.describe(created.productId(), skuId, before.version(), logistics))
+        assertThatThrownBy(() -> items.describe(itemId, before.version(), logistics))
                 .isInstanceOfSatisfying(BusinessException.class,
                         e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.OPTIMISTIC_LOCK));
     }

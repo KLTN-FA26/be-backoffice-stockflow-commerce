@@ -12,6 +12,7 @@ import com.stockflow.inventory.api.ItemPurchasing;
 import com.stockflow.inventory.api.StorageClass;
 import com.stockflow.inventory.api.UomConversion;
 import com.stockflow.inventory.api.UomConversionDraft;
+import com.stockflow.inventory.internal.service.InventoryItems;
 import com.stockflow.product.api.CreateProductCommand;
 import com.stockflow.product.api.ProductKind;
 import com.stockflow.product.api.ProductService;
@@ -19,7 +20,6 @@ import com.stockflow.product.api.ProductSummary;
 import com.stockflow.product.api.TaxClass;
 import com.stockflow.product.internal.service.ProductVariantService;
 import com.stockflow.product.internal.service.ProductVariantService.NewVariant;
-import com.stockflow.product.internal.service.SkuInventoryControlService;
 import com.stockflow.product.internal.service.SkuPurchasingService;
 import com.stockflow.product.internal.service.SkuUnitService;
 import com.stockflow.support.DemoData;
@@ -59,7 +59,7 @@ class InventoryItemMasterDataIntegrationTest {
 
     @Autowired ProductService products;
     @Autowired ProductVariantService variants;
-    @Autowired SkuInventoryControlService skus;
+    @Autowired InventoryItems items;
     @Autowired SkuPurchasingService purchasing;
     @Autowired SkuUnitService units;
     @Autowired JdbcTemplate jdbc;
@@ -86,6 +86,11 @@ class InventoryItemMasterDataIntegrationTest {
         sku = "CUP-" + suffix;
     }
 
+    /** Logistics are edited on the inventory item by its own id (#118). */
+    private UUID itemId() {
+        return jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class, sku);
+    }
+
     // ---- purchasing ------------------------------------------------------------------------------------------
 
     @Test
@@ -101,7 +106,7 @@ class InventoryItemMasterDataIntegrationTest {
         assertThat(after.purchasing().defaultSupplierId()).isEqualTo(goviet);
         assertThat(after.purchasing().referencePurchasePrice()).isEqualByComparingTo("1250.50");
         assertThat(after.purchasing().moq()).isEqualTo(500);
-        assertThat(skus.logistics(productId, variantId).version()).isEqualTo(after.version());
+        assertThat(items.get(itemId()).version()).isEqualTo(after.version());
         assertThat(history()).contains("PURCHASING");
 
         assertCode(() -> purchasing.describe(productId, variantId, before.version(),
@@ -132,12 +137,12 @@ class InventoryItemMasterDataIntegrationTest {
     @Test
     @DisplayName("rotatable defaults to on and is written with the logistics")
     void rotatable() {
-        var before = skus.logistics(productId, variantId);
+        var before = items.get(itemId());
         assertThat(before.logistics().rotatable()).isTrue();
         var logistics = new ItemLogistics("EACH", null, new BigDecimal("0.01"), new BigDecimal("8"),
                 new BigDecimal("8"), new BigDecimal("10"), null, null, null, null, 1, 1, StorageClass.FRAGILE, false,
                 null, false, false);
-        var after = skus.describe(productId, variantId, before.version(), logistics);
+        var after = items.describe(itemId(), before.version(), logistics);
         assertThat(after.logistics().rotatable()).isFalse();
         assertThat(jdbc.queryForObject("SELECT rotatable FROM inventory.inventory_items WHERE sku = ?",
                 Boolean.class, sku)).isFalse();
@@ -185,10 +190,10 @@ class InventoryItemMasterDataIntegrationTest {
         assertThat(units.conversion(productId, variantId, base.id()).defaultPurchase()).isTrue();
 
         // The base unit follows the item's unit code; a packing unit's code cannot be taken by it.
-        var logistics = skus.logistics(productId, variantId);
-        assertCode(() -> skus.describe(productId, variantId, logistics.version(), withUnit(logistics.logistics(),
+        var logistics = items.get(itemId());
+        assertCode(() -> items.describe(itemId(), logistics.version(), withUnit(logistics.logistics(),
                 "CARTON")), ErrorCode.UOM_CONVERSION_DUPLICATE);
-        skus.describe(productId, variantId, logistics.version(), withUnit(logistics.logistics(), "PCS"));
+        items.describe(itemId(), logistics.version(), withUnit(logistics.logistics(), "PCS"));
         assertThat(units.conversion(productId, variantId, base.id()).unitOfMeasure()).isEqualTo("PCS");
 
         UomConversion reread = units.conversion(productId, variantId, carton.id());

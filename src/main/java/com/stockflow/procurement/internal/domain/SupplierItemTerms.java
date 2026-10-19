@@ -26,8 +26,9 @@ import java.util.Objects;
  * input; the exception itself stays {@code VALIDATION_FAILED}, so the response is a 400. The price
  * comes in as the amount entered plus the currency, not as a {@link Money}: Money's constructor rounds
  * to the currency's scale, so a VND price of {@code 1500.50} would already be {@code 1501} and no
- * check made afterwards could see the lost digits. The whole price rule is therefore here, in one
- * place, and nothing that builds terms can skip it.</p>
+ * check made afterwards could see the lost digits. The price is therefore checked here, so nothing that
+ * builds terms can skip it, against {@link PurchasePrices}: the rule a purchase order line's price meets
+ * too, so a catalog price and a typed order price are held to the same standard.</p>
  *
  * <p>{@code moq % packSize == 0} is enforced here and not left to the order line: a MOQ that is not
  * a whole number of packs is a catalog that no quantity can satisfy.</p>
@@ -36,12 +37,6 @@ public final class SupplierItemTerms {
 
     static final int MAX_SKU_CODE_LENGTH = 50;
     static final int MAX_LEAD_TIME_DAYS = 365;
-
-    /** The largest amount {@code NUMERIC(18,2)} holds. */
-    public static final BigDecimal MAX_PRICE = new BigDecimal("9999999999999999.99");
-
-    /** The column's decimals: a currency with three (KWD) is still capped at two. */
-    static final int MAX_PRICE_SCALE = 2;
 
     private final String supplierSkuCode;
     private final Money price;
@@ -95,16 +90,20 @@ public final class SupplierItemTerms {
         return new SupplierItemTerms(supplierSkuCode, price, moq, packSize, leadTimeDays);
     }
 
+    /**
+     * {@link PurchasePrices}, the rule a purchase order line's price is held to as well, checked one
+     * part at a time so the message names the part that failed.
+     */
     private static Money price(BigDecimal amount, Currency currency) {
         if (currency == null || currency.getDefaultFractionDigits() < 0)
             throw refused("price", ErrorCode.SUPPLIER_ITEM_PRICE_INVALID, "Unsupported supplier currency "
                     + (currency == null ? null : currency.getCurrencyCode()));
         if (amount == null || amount.signum() <= 0)
             throw refused("price", ErrorCode.SUPPLIER_ITEM_PRICE_INVALID, "Price must be greater than zero");
-        if (amount.compareTo(MAX_PRICE) > 0)
+        if (amount.compareTo(PurchasePrices.MAX) > 0)
             throw refused("price", ErrorCode.SUPPLIER_ITEM_PRICE_INVALID,
-                    "Price must be at most " + MAX_PRICE.toPlainString());
-        int scale = Math.min(MAX_PRICE_SCALE, currency.getDefaultFractionDigits());
+                    "Price must be at most " + PurchasePrices.MAX.toPlainString());
+        int scale = PurchasePrices.maxScale(currency);
         if (amount.stripTrailingZeros().scale() > scale)
             throw refused("price", ErrorCode.SUPPLIER_ITEM_PRICE_INVALID,
                     "Price in " + currency.getCurrencyCode() + " must have at most " + scale + " decimal places");

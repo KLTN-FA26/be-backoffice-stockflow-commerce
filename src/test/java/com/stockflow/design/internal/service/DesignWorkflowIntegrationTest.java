@@ -13,16 +13,14 @@ import com.stockflow.product.api.ProductService;
 import com.stockflow.product.api.ProductSummary;
 import com.stockflow.support.ReferenceRows;
 import org.junit.jupiter.api.BeforeEach;
+import com.stockflow.support.PostgresContainer;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.context.annotation.Import;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import java.io.ByteArrayInputStream;
 import java.time.Instant;
@@ -36,10 +34,9 @@ import static org.mockito.Mockito.when;
 
 @DataJpaTest(properties = "spring.jpa.hibernate.ddl-auto=validate")
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import({JpaAuditingConfig.class, DesignWorkflowService.class, DesignServiceImpl.class})
+@Import({JpaAuditingConfig.class, DesignWorkflowService.class, DesignServiceImpl.class, PostgresContainer.class})
 @Testcontainers(disabledWithoutDocker = true)
 class DesignWorkflowIntegrationTest {
-    @Container @ServiceConnection static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine");
     @Autowired DesignWorkflowService workflow;
     @Autowired DesignDraftJpaRepository drafts;
     @Autowired DesignArtifactJpaRepository artifacts;

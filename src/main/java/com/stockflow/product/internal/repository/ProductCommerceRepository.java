@@ -134,9 +134,9 @@ order by pc.is_primary desc, pc.id limit 1
     }
 
     /**
-     * One variant of a product, whatever its status, for the screens that read and edit its inventory item. An
-     * OBSOLETE variant is included: its stock is still shipped or adjusted away (kltn-docs 01 §5.2), so its
-     * logistics and stock policy must stay readable; refusing to edit them is the caller's decision.
+     * One variant of a product, whatever its status, for the screens that read and edit its inventory item's
+     * purchasing information and units (#121). An OBSOLETE variant is included: its stock is still shipped or
+     * adjusted away (kltn-docs 01 §5.2), so it stays readable; refusing to edit it is the caller's decision.
      *
      * @throws BusinessException {@code NOT_FOUND} when the product has no such variant
      */

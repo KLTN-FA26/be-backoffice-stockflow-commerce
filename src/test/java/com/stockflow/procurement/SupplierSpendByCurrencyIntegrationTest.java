@@ -7,11 +7,13 @@ import com.stockflow.procurement.api.CreatePOLineCommand;
 import com.stockflow.procurement.api.CreatePurchaseOrderCommand;
 import com.stockflow.procurement.api.ProcurementService;
 import com.stockflow.procurement.api.PurchaseOrderSummary;
+import com.stockflow.procurement.api.SupplierItemService;
 import com.stockflow.procurement.api.SupplierSpendReportQuery;
 import com.stockflow.procurement.api.SupplierSpendSummary;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.ReferenceRows;
+import com.stockflow.support.SupplierItemFixtures;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
 import com.stockflow.support.PostgresContainer;
@@ -50,6 +52,9 @@ class SupplierSpendByCurrencyIntegrationTest {
     @Autowired
     private EntityManager entityManager;
 
+    @Autowired
+    private SupplierItemService catalog;
+
     private UUID submitter;
     private UUID approver;
 
@@ -71,6 +76,8 @@ class SupplierSpendByCurrencyIntegrationTest {
                     INSERT INTO procurement.supplier_contacts (id, supplier_id, full_name, email, is_primary, version, created_at)
                     VALUES (?, ?, 'Spend', 'spend@example.com', TRUE, 0, NOW())""", Identifiers.newId(), id);
         });
+        // BR-PO-001: every order below takes this SKU, so the supplier must list it.
+        SupplierItemFixtures.list(catalog, id, "SOFA-3S-GREY");
         return id;
     }
 

@@ -30,6 +30,9 @@ public enum ErrorCode {
     SUPPLIER_ITEM_LEAD_TIME_INVALID("The lead time must be between 0 and 365 days", 400),
     VALIDATION_FAILED("Invalid request data", 400),
     INVENTORY_POLICY_INVALID("Invalid SKU inventory policy", 400),
+    /** A field-error code on {@link #INVENTORY_POLICY_INVALID}: {@code maxQty} sits below the reorder point or the safety stock. */
+    INVENTORY_MAX_QTY_BELOW_THRESHOLD(
+            "The order-up-to level must not be below the reorder point or the safety stock", 400),
     INVENTORY_POLICY_STOCK_CONFLICT("Existing stock is incompatible with this policy", 409),
     CATALOG_SLUG_EXISTS("This storefront URL is already reserved", 409),
     CATALOG_LISTING_REQUIRED("Configure the storefront listing before publishing", 409),
@@ -145,6 +148,12 @@ public enum ErrorCode {
     // ---- 409: the request is fine, the current state is not
     PO_COMMUNICATION_NOT_CONFIGURED("Buyer contact and receiving address must be configured before sending", 409),
     CONFLICT("Conflicting state", 409),
+    /** SCRUM-78: the envelope of a purchase order whose lines break the supplier's catalog; each line carries its own field code. */
+    SUPPLIER_TERMS_VIOLATED("One or more lines do not meet the supplier's catalog terms", 409),
+    SUPPLIER_ITEM_NOT_LISTED("This supplier does not list this SKU", 409),
+    PO_LINE_BELOW_MOQ("The quantity is below the supplier's minimum order quantity", 409),
+    PO_LINE_NOT_PACK_MULTIPLE("The quantity must be a multiple of the supplier's pack size", 409),
+    PO_LINE_PRICE_REQUIRED("A unit price is required: the catalog price is in another currency", 409),
     CHECKOUT_PRICE_CHANGED("The selling price changed; review the basket and confirm again", 409),
     COUNT_POLICY_CONFLICT("Reconcile the active count and SKU tracking policy before proceeding",409),
     /** The inventory item already has a unit with this code (its base unit included). */

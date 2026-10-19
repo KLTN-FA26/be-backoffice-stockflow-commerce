@@ -131,8 +131,8 @@ updated to say so.
 2. Load the supplier's catalog rows for all the request's inventory items in **one** query.
 3. Per line, collecting errors:
    - not listed → `lines[i].sku` / `SUPPLIER_ITEM_NOT_LISTED`;
-   - below MOQ → `lines[i].quantity` / `PO_LINE_BELOW_MOQ`;
-   - not a pack multiple → `lines[i].quantity` / `PO_LINE_NOT_PACK_MULTIPLE`;
+   - below MOQ → `lines[i].quantityOrdered` / `PO_LINE_BELOW_MOQ`;
+   - not a pack multiple → `lines[i].quantityOrdered` / `PO_LINE_NOT_PACK_MULTIPLE`;
    - price: a typed price wins (negotiated price). A null price takes `current_price` when the PO
      currency equals the catalog currency; otherwise `lines[i].unitPrice` / `PO_LINE_PRICE_REQUIRED`.
    Any error → one `BusinessException(SUPPLIER_TERMS_VIOLATED, 409, fieldErrors)`, same shape as
@@ -146,7 +146,9 @@ updated to say so.
 - PO `leadTimeDays` = the largest `effectiveLeadTimeDays` among its lines.
 - When the request has no `expectedAt`, it is today (business calendar) + that lead time. Today it is
   today + the supplier's lead time.
-- Draft edit recomputes both the same way.
+- Draft edit recomputes the lead time the same way but keeps the request's required `expectedAt`. The
+  supplier lead time is read with NULL kept (not mapped to 0), so a supplier and an item with no lead time
+  fall back to `CommercialTerms.LEAD_DAYS`.
 
 ### 4.4 API contract changes
 
@@ -160,16 +162,16 @@ updated to say so.
 
 - `InventoryPolicy` gains `Integer maxQty`, mapped to `inventory_items.max_qty`. The inventory-control
   endpoint (SCRUM-70) exposes it through its existing request/response.
-- Rule: `maxQty ≥ reorderPoint` when both are set; otherwise 400 `VALIDATION_FAILED` with the error on
-  `maxQty`. Checked in the inventory domain where the policy is configured.
+- Rule: `maxQty ≥ reorderPoint` when both are set, and `maxQty ≥ safetyStock` too; otherwise the envelope is
+  `INVENTORY_POLICY_INVALID` with field code `INVENTORY_MAX_QTY_BELOW_THRESHOLD` on `maxQty`. Checked in the
+  inventory domain where the policy is configured.
 - `min_qty` stays unused; the javadoc of `InventoryPolicy` says it is superseded by `safetyStock` /
   `reorderPoint`.
 
 ### 4.6 Data and tests
 
-- `src/main/resources/db/demo/R__demo_supplier_items.sql`, repeatable, modelled on
-  `R__demo_catalog_selling_prices.sql`: lists the demo SKUs not yet in the catalog for the demo suppliers,
-  `ON CONFLICT (supplier_id, inventory_item_id) DO NOTHING`, plus an opening price period for each.
+- No demo script: both demo SKUs are already listed for GOVIET, and INNHANH is the print subcontractor,
+  which is exempt (SUBCONTRACT orders never reach `checkLines`).
 - `support/SupplierItemFixtures` — one call to list a SKU for a supplier. The existing tests that raise POs
   through the service (SupplierProcurement, PurchaseOrderDraftEdit, PurchaseOrderWarehouseScope,
   SupplierSpendByCurrency, ProductEndOfLifePurchasing, ProductLifecycle, ProcurementPurchasability,
@@ -215,7 +217,8 @@ one full `mvn verify` at the end.
     row without re-validating it, so one row outside them cannot block the catalog;
   - PO create/edit paths and ~14 PO tests change (catalog seeding);
   - ~~decide on dropping `inventory_items.default_supplier_id`~~ decided the other way (#121):
-    `default_supplier_id` is the single source, `is_preferred` is gone.
+    `default_supplier_id` is the single source, `is_preferred` is gone;
+  - ~~a policy save clears the superseded `min_qty`~~ the column is dropped (#121, V20261019000500).
 - **Võ**: `maxQty` appears on `/products/{productId}/skus/{skuId}/inventory-control`.
 - **FE**: supplier detail gets an "items" tab; the PO form lists only the chosen supplier's SKUs, the price
   is optional and prefilled; field error codes above.

@@ -30,9 +30,12 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.util.Collection;
 import java.util.Currency;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -70,6 +73,15 @@ class SupplierItemRepositoryAdapter implements SupplierItemRepository {
               JOIN procurement.suppliers s ON s.id = i.supplier_id
              WHERE i.inventory_item_id = ?
              ORDER BY s.name, s.code, i.id""";
+
+    /** The item columns {@link #catalogItem} reads, without the supplier join. */
+    private static final String LISTED_FOR_SHARE = """
+            SELECT id, supplier_id, inventory_item_id, supplier_sku_code, current_price,
+                   currency AS item_currency, moq, pack_size, lead_time_days AS item_lead_time_days,
+                   version, created_at, last_modified_at
+              FROM procurement.supplier_items
+             WHERE supplier_id = ? AND inventory_item_id = ANY (?)
+               FOR SHARE""";
 
     private final SupplierItemJpaRepository jpa;
     private final SupplierItemPriceJpaRepository prices;
@@ -191,6 +203,23 @@ class SupplierItemRepositoryAdapter implements SupplierItemRepository {
     }
 
     @Override
+    public Map<UUID, SupplierItem> listedForShare(UUID supplierId, Collection<UUID> inventoryItemIds) {
+        if (inventoryItemIds.isEmpty()) return Map.of();
+        UUID[] ids = inventoryItemIds.toArray(UUID[]::new);
+        Map<UUID, SupplierItem> listed = new HashMap<>();
+        jdbc.query(con -> {
+            var statement = con.prepareStatement(LISTED_FOR_SHARE);
+            statement.setObject(1, supplierId);
+            statement.setArray(2, con.createArrayOf("uuid", ids));
+            return statement;
+        }, rs -> {
+            var item = catalogItem(rs);
+            listed.put(item.inventoryItemId(), item);
+        });
+        return listed;
+    }
+
+    @Override
     public boolean usedByOpenPurchaseOrder(UUID supplierId, UUID inventoryItemId) {
         return jpa.usedByOpenPurchaseOrder(supplierId, inventoryItemId);
     }
@@ -209,18 +238,23 @@ class SupplierItemRepositoryAdapter implements SupplierItemRepository {
 
     private static RowMapper<SkuSupplierRow> skuSupplierRow() {
         return (rs, row) -> {
-            var item = supplierItem(rs.getObject("id", UUID.class), rs.getObject("supplier_id", UUID.class),
-                    rs.getObject("inventory_item_id", UUID.class), rs.getString("supplier_sku_code"),
-                    rs.getBigDecimal("current_price"), rs.getString("item_currency"), rs.getInt("moq"),
-                    rs.getInt("pack_size"), rs.getObject("item_lead_time_days", Integer.class),
-                    rs.getLong("version"), instant(rs, "created_at"),
-                    instant(rs, "last_modified_at"));
+            var item = catalogItem(rs);
             var supplier = new CatalogSupplier(item.supplierId(), rs.getString("code"), rs.getString("name"),
                     SupplierStatus.valueOf(rs.getString("status")),
                     Currency.getInstance(rs.getString("supplier_currency")),
                     rs.getObject("supplier_lead_time_days", Integer.class));
             return new SkuSupplierRow(item, supplier);
         };
+    }
+
+    /** The item columns of a native row, aliased {@code item_currency} and {@code item_lead_time_days}. */
+    private static SupplierItem catalogItem(ResultSet rs) throws SQLException {
+        return supplierItem(rs.getObject("id", UUID.class), rs.getObject("supplier_id", UUID.class),
+                rs.getObject("inventory_item_id", UUID.class), rs.getString("supplier_sku_code"),
+                rs.getBigDecimal("current_price"), rs.getString("item_currency"), rs.getInt("moq"),
+                rs.getInt("pack_size"), rs.getObject("item_lead_time_days", Integer.class),
+                rs.getLong("version"), instant(rs, "created_at"),
+                instant(rs, "last_modified_at"));
     }
 
     private static Instant instant(ResultSet rs, String column) throws SQLException {
