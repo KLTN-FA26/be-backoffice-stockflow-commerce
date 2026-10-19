@@ -17,8 +17,11 @@ import java.util.UUID;
  * one default variant whose SKU is the code. With axes, its axes and every combination of their active
  * options are created in the same transaction, SKUs by the code rule ({@code CODE-VALUE-VALUE}) and the
  * first combination as the default variant; anything refused (a SKU taken, a matrix over the limit)
- * leaves no product behind. Logistics are then set per inventory item ({@code /api/v1/inventory/items/{id}/logistics}) and
- * images per variant ({@code /variants/{variantId}/media}).
+ * leaves no product behind. Images are then added per variant ({@code /variants/{variantId}/media}).
+ * Logistics and stock policy are not part of the catalog flow: they belong to the variant's inventory item
+ * ({@code /api/v1/inventory/items/{id}}) and are set by the warehouse side, which holds
+ * {@code inventory-inventory-items:UPDATE} (warehouse manager, inventory planner). Catalog roles hold no grant on
+ * that resource by design.
  *
  * <p>{@code code} is upper-cased by the server. {@code categoryId} is not {@code @NotNull}: a product
  * can be created without one, and {@code submit()} is what refuses to move it to approval without a
