@@ -60,7 +60,9 @@ import java.util.stream.Collectors;
  * {@code SELECT … FOR UPDATE}) and only then reaches inventory, which locks the stock row. No path takes
  * them the other way round: cancelling an order locks stock rows in the order's transaction and touches
  * the pick only afterwards, in the listener's own transaction. Two confirmations of one line are
- * therefore serialised on the pick, and the second sees the line PICKED.</p>
+ * therefore serialised on the pick, and the second sees the line PICKED. A write that also changes the order
+ * (a short report, a reallocation) locks it after the pick and before any stock row, because a cancellation
+ * locks the order first and the stock rows second.</p>
  *
  * <p><b>One transaction.</b> The line turning PICKED, the hold turning CONSUMED, {@code on_hand}
  * falling, the {@code PICK} ledger row and {@code StockDeducted} commit together or not at all — which
@@ -290,7 +292,9 @@ class PickListService implements PickLists {
             throw new BusinessException(ErrorCode.PICK_LINE_NOT_OPEN,
                     "Only a SHORT line with an allocation is reallocated; it is " + shortLine.status());
         }
-        // Pick first, then stock rows (class javadoc): the pick is locked, inventory locks the SKU and its rows.
+        // Pick, then order, then stock rows. A cancellation locks the order before the stock rows it releases; taking
+        // the order only at the end (replaceHold, resolveDesignHold) would wait on it while holding those rows.
+        orders.lockedStatus(pick.getOrderId());
         List<StockReservation> allocated = inventory.reallocate(new ReallocateStockCommand(pick.getOrderId(),
                 shortLine.reservationId(), UUID.nameUUIDFromBytes(("reallocate:" + lineId)
                         .getBytes(java.nio.charset.StandardCharsets.UTF_8))));
