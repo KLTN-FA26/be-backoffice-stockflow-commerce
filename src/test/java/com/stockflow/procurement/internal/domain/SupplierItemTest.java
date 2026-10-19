@@ -7,6 +7,7 @@ import com.stockflow.common.error.ErrorCode;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.Currency;
 import java.util.UUID;
 
@@ -176,10 +177,18 @@ class SupplierItemTest {
     }
 
     @Test
-    void updateRefusesACurrencyChange() {
-        var item = SupplierItem.create(SUPPLIER, ITEM, terms(new BigDecimal("10"), 1, 1, null), false);
-        var usd = SupplierItemTerms.of("S", new BigDecimal("10"), Currency.getInstance("USD"), 1, 1, null);
-        assertThatThrownBy(() -> item.update(usd, false)).isInstanceOf(IllegalStateException.class);
+    void anEditRepricesARowFromAnotherCurrencyIntoTheSuppliers() {
+        // A carried row in USD for a VND supplier: the edit moves it to VND, and that is a price change
+        // even though the number is the same, so its history closes the USD period.
+        var usd = Currency.getInstance("USD");
+        var stored = SupplierItemTerms.stored("S", new Money(new BigDecimal("10"), usd), 1, 1, null);
+        var item = new SupplierItem(UUID.randomUUID(), SUPPLIER, ITEM, stored, false, 3L, Instant.EPOCH, null);
+
+        var change = item.update(terms(new BigDecimal("10"), 1, 1, null), false);
+
+        assertThat(change).contains(new PriceChange(
+                new Money(new BigDecimal("10"), usd), new Money(new BigDecimal("10"), Money.VND)));
+        assertThat(item.terms().price().currency()).isEqualTo(Money.VND);
     }
 
     @Test

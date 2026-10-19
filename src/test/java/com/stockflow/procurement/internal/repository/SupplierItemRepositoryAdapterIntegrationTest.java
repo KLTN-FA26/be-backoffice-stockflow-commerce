@@ -154,6 +154,29 @@ class SupplierItemRepositoryAdapterIntegrationTest {
     }
 
     @Test
+    @DisplayName("a row priced in another currency is repriced into the supplier's, history kept")
+    void aRowInAnotherCurrencyIsRepricedIntoTheSuppliers() {
+        Instant first = now();
+        Instant second = first.plusSeconds(1);
+        var saved = create(supplierId, "10", false, first);
+        tx.executeWithoutResult(s -> {
+            jdbc.update("UPDATE procurement.supplier_items SET currency = 'USD' WHERE id = ?", saved.id());
+            jdbc.update("UPDATE procurement.supplier_item_prices SET currency = 'USD' WHERE supplier_item_id = ?",
+                    saved.id());
+        });
+
+        var repriced = reprice(saved.id(), "12", second);
+
+        assertThat(repriced.terms().price()).isEqualTo(new Money(new BigDecimal("12"), Money.VND));
+        var rows = periods(saved.id());
+        assertThat(rows).hasSize(2);
+        assertThat(rows.get(0).get("currency")).isEqualTo("USD");
+        assertThat(instant(rows.get(0).get("effective_to"))).isEqualTo(second);
+        assertThat(rows.get(1).get("currency")).isEqualTo("VND");
+        assertThat(rows.get(1).get("effective_to")).isNull();
+    }
+
+    @Test
     @DisplayName("repricing at the instant the period opened overwrites it instead of making a zero-length one")
     void repricingAtTheSameInstantOverwritesTheOpenPeriod() {
         Instant at = now();

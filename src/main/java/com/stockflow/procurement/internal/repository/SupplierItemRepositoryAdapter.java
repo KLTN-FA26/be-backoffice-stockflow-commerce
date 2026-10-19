@@ -165,7 +165,7 @@ class SupplierItemRepositoryAdapter implements SupplierItemRepository {
     private void record(UUID itemId, Money price, Instant now) {
         var open = prices.findBySupplierItemIdAndEffectiveToIsNull(itemId);
         if (open.isPresent() && !now.isAfter(open.get().getEffectiveFrom())) {
-            open.get().reprice(price.amount());
+            open.get().reprice(price.amount(), price.currency().getCurrencyCode());
             prices.saveAndFlush(open.get());
             return;
         }

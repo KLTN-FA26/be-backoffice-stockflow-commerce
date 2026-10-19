@@ -49,8 +49,10 @@ public class SupplierItemPriceJpaEntity extends BaseEntity {
         this.effectiveFrom = effectiveFrom;
     }
 
-    public void reprice(BigDecimal unitPrice) {
+    /** Rewrites the period's price; the currency too, since a reprice may move a row into its supplier's. */
+    public void reprice(BigDecimal unitPrice, String currency) {
         this.unitPrice = unitPrice;
+        this.currency = currency;
     }
 
     public void closeAt(Instant effectiveTo) {
