@@ -24,6 +24,11 @@ public final class PurchasePrices {
     /** Checked as entered, before any rounding to the currency's scale could hide an excess decimal. */
     public static boolean acceptable(BigDecimal amount, Currency currency) {
         if (amount == null || amount.signum() <= 0 || amount.compareTo(MAX) > 0) return false;
-        return amount.stripTrailingZeros().scale() <= Math.min(COLUMN_SCALE, currency.getDefaultFractionDigits());
+        return amount.stripTrailingZeros().scale() <= maxScale(currency);
+    }
+
+    /** The decimals a price in {@code currency} may carry: the currency's own, at most the column's two. */
+    public static int maxScale(Currency currency) {
+        return Math.min(COLUMN_SCALE, currency.getDefaultFractionDigits());
     }
 }

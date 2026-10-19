@@ -47,8 +47,8 @@ public class ProcurementFieldsValidator
             for (int i = 0; po.lines() != null && i < po.lines().size(); i++) {
                 var line = po.lines().get(i);
                 if (line == null || line.unitPrice() == null) continue;
-                if (line.unitPrice().stripTrailingZeros().scale()
-                        > currency.getDefaultFractionDigits()) {
+                // The service's own rule (PurchasePrices), so a price passes here only if it passes there.
+                if (line.unitPrice().stripTrailingZeros().scale() > PurchasePrices.maxScale(currency)) {
                     context.buildConstraintViolationWithTemplate("{procurement.priceScale}")
                             .addPropertyNode("lines")
                             .addPropertyNode("unitPrice")
