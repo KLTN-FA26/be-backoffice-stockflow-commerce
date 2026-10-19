@@ -2,8 +2,8 @@ package com.stockflow.inventory.internal.repository;
 
 import com.stockflow.inventory.api.StorageClass;
 import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.support.PageableExecutionUtils;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
@@ -59,9 +59,13 @@ class InventoryItemSearchAdapter implements InventoryItemSearch {
                         StorageClass.valueOf(rs.getString("storage_class")), rs.getBoolean("lot_tracked"),
                         rs.getBoolean("serial_tracked"), rs.getBoolean("policy_configured")),
                 pageArgs.toArray());
-        Long total = jdbc.queryForObject("SELECT count(*) FROM inventory.inventory_items" + where, Long.class,
-                args.toArray());
-        return new PageImpl<>(content, pageable, total == null ? 0 : total);
+        // A partial page already gives the total (its offset plus its length), so the count, a second scan with the
+        // same ILIKE filters, runs only for a full page or an empty page past the first.
+        return PageableExecutionUtils.getPage(content, pageable, () -> {
+            Long total = jdbc.queryForObject("SELECT count(*) FROM inventory.inventory_items" + where, Long.class,
+                    args.toArray());
+            return total == null ? 0 : total;
+        });
     }
 
     /** Backslash first, or the escapes added for the other two would themselves be escaped. */
