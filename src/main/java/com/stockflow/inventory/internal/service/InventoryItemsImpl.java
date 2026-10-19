@@ -21,6 +21,7 @@ import com.stockflow.inventory.internal.repository.InventoryItemSearch;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository.ItemRow;
 
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
@@ -50,10 +51,12 @@ class InventoryItemsImpl implements InventoryItems {
     private final Clock clock;
     private final CurrentUserProvider users;
     private final ApplicationEventPublisher events;
-    private final SkuRetirement retirement;
+    /** Absent when the module owning SKUs is not loaded (an inventory-only module test): nothing is retired then. */
+    private final ObjectProvider<SkuRetirement> retirement;
 
     InventoryItemsImpl(InventoryPolicyRepository policies, InventoryItemSearch search, Clock clock,
-                       CurrentUserProvider users, ApplicationEventPublisher events, SkuRetirement retirement) {
+                       CurrentUserProvider users, ApplicationEventPublisher events,
+                       ObjectProvider<SkuRetirement> retirement) {
         this.policies = policies;
         this.search = search;
         this.clock = clock;
@@ -124,7 +127,8 @@ class InventoryItemsImpl implements InventoryItems {
     /** The item under its lock, refused when its SKU is retired; asked before the version, as #120 did. */
     private ItemRow lockEditable(UUID id) {
         ItemRow locked = lockItem(id);
-        if (retirement.retired(locked.sku())) {
+        SkuRetirement owner = retirement.getIfAvailable();
+        if (owner != null && owner.retired(locked.sku())) {
             throw new BusinessException(ErrorCode.VARIANT_OBSOLETE,
                     "SKU %s is obsolete: its inventory settings are kept as they are".formatted(locked.sku()));
         }
