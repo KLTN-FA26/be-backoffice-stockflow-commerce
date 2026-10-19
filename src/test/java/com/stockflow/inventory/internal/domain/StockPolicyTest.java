@@ -44,7 +44,11 @@ class StockPolicyTest {
     @Test void aNegativeMaxQtyIsRefusedEvenWithoutTheRequestValidation() {
         assertThatThrownBy(() -> StockPolicy.validate(
                 new InventoryPolicy(null, null, -1, RemovalStrategy.FIFO, TrackingMode.NONE, false, null)))
-                .isInstanceOf(BusinessException.class);
+                .isInstanceOfSatisfying(BusinessException.class, e -> {
+                    // malformed, like a negative threshold: no "below the reorder point" claim on the field
+                    assertThat(e.errorCode()).isEqualTo(ErrorCode.INVENTORY_POLICY_INVALID);
+                    assertThat(e.fieldErrors()).isEmpty();
+                });
     }
     private StockAllocator.Candidate lot(String location,Instant received,LocalDate expiry) {
         return new StockAllocator.Candidate(StockItemId.newId(),new LocationId(location),"L",expiry,
