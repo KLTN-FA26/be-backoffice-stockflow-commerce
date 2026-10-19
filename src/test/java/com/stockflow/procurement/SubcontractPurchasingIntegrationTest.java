@@ -138,7 +138,10 @@ class SubcontractPurchasingIntegrationTest {
                   FROM procurement.purchase_orders p JOIN procurement.purchase_order_lines l ON l.po_id = p.id
                  WHERE p.id = ?""", created.purchaseOrderId());
         Map<String, Object> terms = jdbc.queryForMap(
-                "SELECT payment_term_days, COALESCE(lead_time_days, 0) AS lead_time_days FROM procurement.suppliers WHERE id = ?",
+                // a NULL lead time is the system default, as SupplierJpaEntity reads it
+                "SELECT payment_term_days, COALESCE(lead_time_days, "
+                        + com.stockflow.common.domain.CommercialTerms.LEAD_DAYS
+                        + ") AS lead_time_days FROM procurement.suppliers WHERE id = ?",
                 innhanh);
         assertThat(stored).containsEntry("payment_term_days", terms.get("payment_term_days"))
                 .containsEntry("lead_time_days", terms.get("lead_time_days"))

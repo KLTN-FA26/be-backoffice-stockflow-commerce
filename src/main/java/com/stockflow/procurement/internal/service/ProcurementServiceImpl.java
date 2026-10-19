@@ -171,7 +171,7 @@ class ProcurementServiceImpl implements ProcurementService {
         CheckedLines checked = checkLines(command.lines().stream()
                 .map(c -> c == null ? null : new LineInput(c.sku(), c.description(), c.quantityOrdered(), c.unitPrice(),
                         c.taxRate()))
-                .toList(), currency, command.supplierId(), supplierLeadTimeDays(command.supplierId()));
+                .toList(), currency, command.supplierId(), supplier.leadTimeDays());
         List<PoLine> lines = toLines(checked.lines());
 
         // Purchasing calendar dates use the same Vietnam zone as supplier delivery KPIs.
@@ -598,9 +598,10 @@ class ProcurementServiceImpl implements ProcurementService {
     }
 
     /**
-     * The supplier's own lead time, {@code null} when it has none. Read from the catalog's slice of the
-     * supplier rather than from {@link SupplierDetails}, which reads a NULL column as 0 and would plan a
-     * same-day delivery where {@link SupplierItem#effectiveLeadTimeDays} falls back to the system default.
+     * The supplier's own lead time for a draft edit, which has the order but not the supplier: the catalog's
+     * slice of the supplier row is one cheap read, where {@link SupplierDetails} would also load its contact.
+     * Create already holds the supplier and uses its details. Both agree on a NULL column, which means the
+     * system default ({@link SupplierItem#effectiveLeadTimeDays}, {@code SupplierJpaEntity.getLeadTimeDays}).
      */
     private Integer supplierLeadTimeDays(UUID supplierId) {
         return supplierItems.findSupplier(supplierId)
