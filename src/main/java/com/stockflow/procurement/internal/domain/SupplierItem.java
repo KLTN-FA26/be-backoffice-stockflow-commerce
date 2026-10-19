@@ -59,23 +59,20 @@ public final class SupplierItem extends AggregateRoot {
      * Replaces the terms and the preferred flag. The price history is not this aggregate's to
      * write, so the change is returned for the repository to record.
      *
-     * @return the price movement, empty when the amount is unchanged ({@code 10.00} to {@code 10.0}
-     *         is not a change, hence {@code compareTo} and not {@code equals})
-     * @throws IllegalStateException when the currency differs: a supplier quotes in one currency
-     *         and the service always passes that one, so a mismatch is a programming error
+     * <p>The replacement is priced in the supplier's currency. A row priced in another one (nothing in
+     * the schema ties {@code supplier_items.currency} to the supplier's, and carried rows may differ) is
+     * repriced into it by this edit: always a price change, whatever the amounts, so the old period
+     * closes in its own currency and the new one opens in the supplier's. Refusing it instead would
+     * leave the row uneditable, and delete-and-relist would lose its price history.</p>
+     *
+     * @return the price movement, empty when currency and amount are unchanged ({@code 10.00} to
+     *         {@code 10.0} is not a change, hence {@code compareTo} and not {@code equals})
      */
     public Optional<PriceChange> update(SupplierItemTerms replacement, boolean preferred) {
         var current = terms.price();
         var next = replacement.price();
-        if (!current.currency().equals(next.currency()))
-            throw new IllegalStateException(
-                    "Supplier item %s is priced in %s, not %s"
-                            .formatted(
-                                    id,
-                                    current.currency().getCurrencyCode(),
-                                    next.currency().getCurrencyCode()));
         Optional<PriceChange> change =
-                current.compareTo(next) == 0
+                current.currency().equals(next.currency()) && current.compareTo(next) == 0
                         ? Optional.empty()
                         : Optional.of(new PriceChange(current, next));
         this.terms = replacement;
@@ -95,6 +92,14 @@ public final class SupplierItem extends AggregateRoot {
     public int effectiveLeadTimeDays(Integer supplierLeadTimeDays) {
         if (terms.leadTimeDays() != null) return terms.leadTimeDays();
         return supplierLeadTimeDays != null ? supplierLeadTimeDays : CommercialTerms.LEAD_DAYS;
+    }
+
+    /**
+     * Never saved: {@link #create} leaves the audit time unset, and every stored row has one
+     * ({@code created_at} is NOT NULL). The adapter inserts such an item without looking it up first.
+     */
+    public boolean isNew() {
+        return createdAt == null;
     }
 
     public UUID id() {

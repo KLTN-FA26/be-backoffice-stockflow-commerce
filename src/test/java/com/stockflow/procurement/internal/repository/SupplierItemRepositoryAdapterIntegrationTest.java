@@ -92,7 +92,7 @@ class SupplierItemRepositoryAdapterIntegrationTest {
     }
 
     private static SupplierItemTerms terms(String price) {
-        return SupplierItemTerms.of("SUP-" + price, new Money(new BigDecimal(price), Money.VND), 10, 5, null);
+        return SupplierItemTerms.of("SUP-" + price, new BigDecimal(price), Money.VND, 10, 5, null);
     }
 
     private SupplierItem create(UUID supplier, String price, boolean preferred, Instant at) {
@@ -154,6 +154,54 @@ class SupplierItemRepositoryAdapterIntegrationTest {
         assertThat(instant(rows.get(0).get("effective_to"))).isEqualTo(second);
         assertThat((BigDecimal) rows.get(1).get("unit_price")).isEqualByComparingTo("12");
         assertThat(instant(rows.get(1).get("effective_from"))).isEqualTo(second);
+        assertThat(rows.get(1).get("effective_to")).isNull();
+    }
+
+    @Test
+    @DisplayName("an edit that keeps the price gives a row without history its open period")
+    void anEditWithoutAPriceChangeOpensAMissingPeriod() {
+        Instant first = now();
+        Instant second = first.plusSeconds(1);
+        var saved = create(supplierId, "10", false, first);
+        // A row carried over before the price table existed: it has no period at all.
+        tx.executeWithoutResult(s -> jdbc.update(
+                "DELETE FROM procurement.supplier_item_prices WHERE supplier_item_id = ?", saved.id()));
+
+        tx.execute(s -> {
+            var loaded = items.findByIdForUpdate(saved.id()).orElseThrow();
+            var change = loaded.update(SupplierItemTerms.of("SUP-10", new BigDecimal("10"), Money.VND, 20, 5, null),
+                    false);
+            assertThat(change).isEmpty();
+            return items.save(loaded, change, second);
+        });
+
+        assertThat(periods(saved.id())).singleElement().satisfies(period -> {
+            assertThat((BigDecimal) period.get("unit_price")).isEqualByComparingTo("10");
+            assertThat(instant(period.get("effective_from"))).isEqualTo(second);
+            assertThat(period.get("effective_to")).isNull();
+        });
+    }
+
+    @Test
+    @DisplayName("a row priced in another currency is repriced into the supplier's, history kept")
+    void aRowInAnotherCurrencyIsRepricedIntoTheSuppliers() {
+        Instant first = now();
+        Instant second = first.plusSeconds(1);
+        var saved = create(supplierId, "10", false, first);
+        tx.executeWithoutResult(s -> {
+            jdbc.update("UPDATE procurement.supplier_items SET currency = 'USD' WHERE id = ?", saved.id());
+            jdbc.update("UPDATE procurement.supplier_item_prices SET currency = 'USD' WHERE supplier_item_id = ?",
+                    saved.id());
+        });
+
+        var repriced = reprice(saved.id(), "12", second);
+
+        assertThat(repriced.terms().price()).isEqualTo(new Money(new BigDecimal("12"), Money.VND));
+        var rows = periods(saved.id());
+        assertThat(rows).hasSize(2);
+        assertThat(rows.get(0).get("currency")).isEqualTo("USD");
+        assertThat(instant(rows.get(0).get("effective_to"))).isEqualTo(second);
+        assertThat(rows.get(1).get("currency")).isEqualTo("VND");
         assertThat(rows.get(1).get("effective_to")).isNull();
     }
 
@@ -245,7 +293,7 @@ class SupplierItemRepositoryAdapterIntegrationTest {
         assertThat(secondPage.items()).extracting(i -> i.terms().price().amount().intValue()).containsExactly(10);
         Optional<SupplierItem> preferred = tx.execute(s -> {
             items.lockCatalogOf(inventoryItemId);
-            return items.findPreferred(inventoryItemId);
+            return items.findPreferredForUpdate(inventoryItemId);
         });
         assertThat(preferred).isEmpty();
     }

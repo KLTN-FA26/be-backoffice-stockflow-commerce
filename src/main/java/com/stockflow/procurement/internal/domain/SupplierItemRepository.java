@@ -34,11 +34,16 @@ public interface SupplierItemRepository {
      */
     void lockCatalogOf(UUID inventoryItemId);
 
-    Optional<SupplierItem> findPreferred(UUID inventoryItemId);
+    /**
+     * The item's preferred row, locked {@code FOR UPDATE} and re-read under the lock, so clearing its
+     * flag saves the row as it is now and not as an earlier read saw it.
+     */
+    Optional<SupplierItem> findPreferredForUpdate(UUID inventoryItemId);
 
     /**
-     * Inserts or updates; opens the first price period on insert and applies {@code priceChange}
-     * otherwise.
+     * Inserts a {@linkplain SupplierItem#isNew new} item or updates a stored one; opens the first price
+     * period on insert and applies {@code priceChange} otherwise. An update that finds no open period (a
+     * row carried over without history) opens one at {@code now} even when the price is unchanged.
      */
     SupplierItem save(SupplierItem item, Optional<PriceChange> priceChange, Instant now);
 

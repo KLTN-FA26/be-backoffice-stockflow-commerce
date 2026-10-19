@@ -7,6 +7,7 @@ import com.stockflow.common.error.ErrorCode;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.Currency;
 import java.util.UUID;
 
@@ -32,7 +33,7 @@ class SupplierItemTest {
 
     private static SupplierItemTerms terms(
             String code, BigDecimal price, int moq, int packSize, Integer leadTimeDays) {
-        return SupplierItemTerms.of(code, new Money(price, Money.VND), moq, packSize, leadTimeDays);
+        return SupplierItemTerms.of(code, price, Money.VND, moq, packSize, leadTimeDays);
     }
 
     /** The exception stays VALIDATION_FAILED (a 400); the field error carries the rule's own code. */
@@ -61,25 +62,33 @@ class SupplierItemTest {
 
     @Test
     void priceMustBePositiveWithAtMostTwoDecimals() {
-        // Money already rounds to its currency's scale, so the two-decimal rule only bites for a
-        // currency with a wider scale (KWD has three) that NUMERIC(18,2) could not store exactly.
+        // The amount is checked as entered, before Money rounds it: KWD has three decimals but the
+        // column two, and VND has none, so 1500.50 VND would otherwise become 1501 without a word.
         var usd = Currency.getInstance("USD");
         var kwd = Currency.getInstance("KWD");
-        assertRefusedOn(() -> SupplierItemTerms.of("S", new Money(new BigDecimal("1.005"), kwd), 1, 1, null), "price",
+        assertRefusedOn(() -> SupplierItemTerms.of("S", new BigDecimal("1.005"), kwd, 1, 1, null), "price",
                 SUPPLIER_ITEM_PRICE_INVALID);
-        assertRefusedOn(() -> SupplierItemTerms.of("S", new Money(BigDecimal.ZERO, usd), 1, 1, null), "price",
+        assertRefusedOn(() -> terms(new BigDecimal("1500.50"), 1, 1, null), "price", SUPPLIER_ITEM_PRICE_INVALID);
+        assertRefusedOn(() -> SupplierItemTerms.of("S", BigDecimal.ZERO, usd, 1, 1, null), "price",
                 SUPPLIER_ITEM_PRICE_INVALID);
-        assertRefusedOn(() -> SupplierItemTerms.of("S", new Money(new BigDecimal("-1"), usd), 1, 1, null), "price",
+        assertRefusedOn(() -> SupplierItemTerms.of("S", new BigDecimal("-1"), usd, 1, 1, null), "price",
                 SUPPLIER_ITEM_PRICE_INVALID);
         assertRefusedOn(() -> terms(new BigDecimal("0"), 1, 1, null), "price", SUPPLIER_ITEM_PRICE_INVALID);
         assertRefusedOn(() -> terms(new BigDecimal("-1"), 1, 1, null), "price", SUPPLIER_ITEM_PRICE_INVALID);
-        assertThatCode(() -> SupplierItemTerms.of("S", new Money(new BigDecimal("1.50"), usd), 1, 1, null))
+        assertRefusedOn(() -> terms(PurchasePrices.MAX.add(BigDecimal.ONE), 1, 1, null), "price",
+                SUPPLIER_ITEM_PRICE_INVALID);
+        assertThatCode(() -> SupplierItemTerms.of("S", new BigDecimal("1.50"), usd, 1, 1, null))
                 .doesNotThrowAnyException();
+        assertThatCode(() -> terms(new BigDecimal("1500.00"), 1, 1, null)).doesNotThrowAnyException();
     }
 
     @Test
-    void aNullPriceIsRefusedOnThePriceField() {
-        assertRefusedOn(() -> SupplierItemTerms.of("S", null, 1, 1, null), "price", SUPPLIER_ITEM_PRICE_INVALID);
+    void aNullPriceOrAPseudoCurrencyIsRefusedOnThePriceField() {
+        assertRefusedOn(() -> SupplierItemTerms.of("S", null, Money.VND, 1, 1, null), "price",
+                SUPPLIER_ITEM_PRICE_INVALID);
+        // XXX has no decimals at all (getDefaultFractionDigits() is -1): not a currency to price in.
+        assertRefusedOn(() -> SupplierItemTerms.of("S", BigDecimal.TEN, Currency.getInstance("XXX"), 1, 1, null),
+                "price", SUPPLIER_ITEM_PRICE_INVALID);
     }
 
     @Test
@@ -161,17 +170,34 @@ class SupplierItemTest {
         assertThat(item.terms().moq()).isEqualTo(2);
         assertThat(item.preferred()).isTrue();
 
-        var change = item.update(terms(new BigDecimal("12.50"), 2, 1, null), true);
+        var change = item.update(terms(new BigDecimal("12"), 2, 1, null), true);
         assertThat(change).contains(new PriceChange(
-                new Money(new BigDecimal("10.00"), Money.VND), new Money(new BigDecimal("12.50"), Money.VND)));
-        assertThat(item.terms().price()).isEqualTo(new Money(new BigDecimal("12.50"), Money.VND));
+                new Money(new BigDecimal("10.00"), Money.VND), new Money(new BigDecimal("12"), Money.VND)));
+        assertThat(item.terms().price()).isEqualTo(new Money(new BigDecimal("12"), Money.VND));
     }
 
     @Test
-    void updateRefusesACurrencyChange() {
-        var item = SupplierItem.create(SUPPLIER, ITEM, terms(new BigDecimal("10"), 1, 1, null), false);
-        var usd = SupplierItemTerms.of("S", new Money(new BigDecimal("10"), Currency.getInstance("USD")), 1, 1, null);
-        assertThatThrownBy(() -> item.update(usd, false)).isInstanceOf(IllegalStateException.class);
+    void anEditRepricesARowFromAnotherCurrencyIntoTheSuppliers() {
+        // A carried row in USD for a VND supplier: the edit moves it to VND, and that is a price change
+        // even though the number is the same, so its history closes the USD period.
+        var usd = Currency.getInstance("USD");
+        var stored = SupplierItemTerms.stored("S", new Money(new BigDecimal("10"), usd), 1, 1, null);
+        var item = new SupplierItem(UUID.randomUUID(), SUPPLIER, ITEM, stored, false, 3L, Instant.EPOCH, null);
+
+        var change = item.update(terms(new BigDecimal("10"), 1, 1, null), false);
+
+        assertThat(change).contains(new PriceChange(
+                new Money(new BigDecimal("10"), usd), new Money(new BigDecimal("10"), Money.VND)));
+        assertThat(item.terms().price().currency()).isEqualTo(Money.VND);
+    }
+
+    @Test
+    void onlyAnItemThatWasNeverStoredIsNew() {
+        assertThat(SupplierItem.create(SUPPLIER, ITEM, terms(new BigDecimal("10"), 1, 1, null), false).isNew())
+                .isTrue();
+        var stored = SupplierItemTerms.stored("S", new Money(BigDecimal.TEN, Money.VND), 1, 1, null);
+        assertThat(new SupplierItem(UUID.randomUUID(), SUPPLIER, ITEM, stored, false, 0L, Instant.EPOCH, null).isNew())
+                .isFalse();
     }
 
     @Test

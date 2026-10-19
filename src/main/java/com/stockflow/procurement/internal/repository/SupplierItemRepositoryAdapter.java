@@ -139,15 +139,23 @@ class SupplierItemRepositoryAdapter implements SupplierItemRepository {
     }
 
     @Override
-    public Optional<SupplierItem> findPreferred(UUID inventoryItemId) {
-        return jpa.findByInventoryItemIdAndPreferredTrue(inventoryItemId).map(SupplierItemRepositoryAdapter::domain);
+    public Optional<SupplierItem> findPreferredForUpdate(UUID inventoryItemId) {
+        return jpa.findPreferredForUpdate(inventoryItemId).map(entity -> {
+            // As in findByIdForUpdate: the persistence-context copy may predate the lock.
+            entityManager.refresh(entity, LockModeType.PESSIMISTIC_WRITE);
+            return domain(entity);
+        });
     }
 
     @Override
     public SupplierItem save(SupplierItem item, Optional<PriceChange> priceChange, Instant now) {
-        var existing = jpa.findById(item.id());
-        SupplierItemJpaEntity entity = existing.orElseGet(
-                () -> new SupplierItemJpaEntity(item.id(), item.supplierId(), item.inventoryItemId()));
+        // A new item's id cannot be in the table yet, so it is not looked up. A stored one was read under
+        // its lock in this transaction, so the lookup is a persistence-context hit, not a SELECT.
+        boolean inserting = item.isNew();
+        SupplierItemJpaEntity entity = inserting
+                ? new SupplierItemJpaEntity(item.id(), item.supplierId(), item.inventoryItemId())
+                : jpa.findById(item.id()).orElseThrow(() -> new IllegalStateException(
+                        "Supplier item " + item.id() + " vanished before it was saved"));
         var terms = item.terms();
         entity.update(terms.supplierSkuCode(), terms.price().amount(), terms.price().currency().getCurrencyCode(),
                 terms.moq(), terms.packSize(), terms.leadTimeDays(), item.preferred());
@@ -159,10 +167,11 @@ class SupplierItemRepositoryAdapter implements SupplierItemRepository {
             var error = ErrorCode.SUPPLIER_ITEM_DUPLICATE;
             throw new BusinessException(error, error.defaultMessage(), race);
         }
-        if (existing.isEmpty()) {
+        if (inserting) {
             prices.saveAndFlush(newPeriod(entity.getId(), terms.price(), now));
         } else {
-            priceChange.ifPresent(change -> record(entity.getId(), change.to(), now));
+            priceChange.ifPresentOrElse(change -> record(entity.getId(), change.to(), now),
+                    () -> openIfMissing(entity.getId(), terms.price(), now));
         }
         return domain(entity);
     }
@@ -177,7 +186,7 @@ class SupplierItemRepositoryAdapter implements SupplierItemRepository {
     private void record(UUID itemId, Money price, Instant now) {
         var open = prices.findBySupplierItemIdAndEffectiveToIsNull(itemId);
         if (open.isPresent() && !now.isAfter(open.get().getEffectiveFrom())) {
-            open.get().reprice(price.amount());
+            open.get().reprice(price.amount(), price.currency().getCurrencyCode());
             prices.saveAndFlush(open.get());
             return;
         }
@@ -186,6 +195,17 @@ class SupplierItemRepositoryAdapter implements SupplierItemRepository {
             prices.saveAndFlush(open.get());
         }
         prices.saveAndFlush(newPeriod(itemId, price, now));
+    }
+
+    /**
+     * An edit that keeps the price still gives a row without history (carried over before the price
+     * table existed) its open period, so "the price on date D" has an answer for it from now on. One
+     * extra indexed read per such edit.
+     */
+    private void openIfMissing(UUID itemId, Money price, Instant now) {
+        if (prices.findBySupplierItemIdAndEffectiveToIsNull(itemId).isEmpty()) {
+            prices.saveAndFlush(newPeriod(itemId, price, now));
+        }
     }
 
     private static SupplierItemPriceJpaEntity newPeriod(UUID itemId, Money price, Instant from) {

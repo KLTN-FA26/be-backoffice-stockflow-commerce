@@ -348,6 +348,62 @@ class SupplierItemServiceIntegrationTest {
     }
 
     @Test
+    @DisplayName("preferring another supplier while the preferred row is being edited waits, then keeps that edit")
+    void preferringWhileThePreferredRowIsEditedWaitsForTheEdit() throws Exception {
+        UUID beta = supplier("Beta supplier");
+        var alphaItem = create(supplierId, "1500", true);
+        var betaItem = create(beta, "1400", false);
+        var edited = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var pool = Executors.newFixedThreadPool(2);
+        try {
+            // A buyer editing the preferred row holds only its row lock (it is already preferred).
+            Future<?> edit = pool.submit(() -> tx.executeWithoutResult(s -> {
+                jdbc.queryForList("SELECT id FROM procurement.supplier_items WHERE id = ? FOR UPDATE",
+                        alphaItem.supplierItemId());
+                jdbc.update("UPDATE procurement.supplier_items SET moq = 20, version = version + 1 WHERE id = ?",
+                        alphaItem.supplierItemId());
+                edited.countDown();
+                try {
+                    release.await(30, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }));
+            assertThat(edited.await(30, TimeUnit.SECONDS)).isTrue();
+            Future<SupplierItemSummary> prefer = pool.submit(() -> catalog.update(beta, betaItem.supplierItemId(),
+                    command(sku, "1400", true, betaItem.version())));
+            awaitALockWait();
+            release.countDown();
+            edit.get(30, TimeUnit.SECONDS);
+
+            // An unlocked read of the preferred row would have saved its old terms back: a 409 here.
+            assertThat(prefer.get(30, TimeUnit.SECONDS).preferred()).isTrue();
+            assertThat(preferredRows(alphaItem.inventoryItemId())).containsExactly(betaItem.supplierItemId());
+            Integer moq = tx.execute(s -> jdbc.queryForObject(
+                    "SELECT moq FROM procurement.supplier_items WHERE id = ?", Integer.class,
+                    alphaItem.supplierItemId()));
+            assertThat(moq).isEqualTo(20);
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    /** Until some backend waits on a lock: the preferring request has reached the edited row. */
+    private void awaitALockWait() throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+        while (System.nanoTime() < deadline) {
+            Integer waiting = tx.execute(s -> jdbc.queryForObject(
+                    "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND datname = current_database()",
+                    Integer.class));
+            if (waiting != null && waiting > 0) return;
+            Thread.sleep(20);
+        }
+        throw new AssertionError("The preferring request never waited on the edited row");
+    }
+
+    @Test
     @DisplayName("a stored row outside the form's limits still lists, looks up, gets unpreferred, edits and deletes")
     void aStoredRowOutsideTheFormLimitsStillReadsAndDeletes() {
         UUID beta = supplier("Beta supplier");
