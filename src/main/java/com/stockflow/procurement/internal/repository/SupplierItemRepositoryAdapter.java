@@ -137,9 +137,13 @@ class SupplierItemRepositoryAdapter implements SupplierItemRepository {
 
     @Override
     public SupplierItem save(SupplierItem item, Optional<PriceChange> priceChange, Instant now) {
-        var existing = jpa.findById(item.id());
-        SupplierItemJpaEntity entity = existing.orElseGet(
-                () -> new SupplierItemJpaEntity(item.id(), item.supplierId(), item.inventoryItemId()));
+        // A new item's id cannot be in the table yet, so it is not looked up. A stored one was read under
+        // its lock in this transaction, so the lookup is a persistence-context hit, not a SELECT.
+        boolean inserting = item.isNew();
+        SupplierItemJpaEntity entity = inserting
+                ? new SupplierItemJpaEntity(item.id(), item.supplierId(), item.inventoryItemId())
+                : jpa.findById(item.id()).orElseThrow(() -> new IllegalStateException(
+                        "Supplier item " + item.id() + " vanished before it was saved"));
         var terms = item.terms();
         entity.update(terms.supplierSkuCode(), terms.price().amount(), terms.price().currency().getCurrencyCode(),
                 terms.moq(), terms.packSize(), terms.leadTimeDays(), item.preferred());
@@ -151,7 +155,7 @@ class SupplierItemRepositoryAdapter implements SupplierItemRepository {
             var error = ErrorCode.SUPPLIER_ITEM_DUPLICATE;
             throw new BusinessException(error, error.defaultMessage(), race);
         }
-        if (existing.isEmpty()) {
+        if (inserting) {
             prices.saveAndFlush(newPeriod(entity.getId(), terms.price(), now));
         } else {
             priceChange.ifPresent(change -> record(entity.getId(), change.to(), now));

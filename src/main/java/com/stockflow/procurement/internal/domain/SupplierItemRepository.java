@@ -39,8 +39,8 @@ public interface SupplierItemRepository {
     Optional<SupplierItem> findPreferredForUpdate(UUID inventoryItemId);
 
     /**
-     * Inserts or updates; opens the first price period on insert and applies {@code priceChange}
-     * otherwise.
+     * Inserts a {@linkplain SupplierItem#isNew new} item or updates a stored one; opens the first price
+     * period on insert and applies {@code priceChange} otherwise.
      */
     SupplierItem save(SupplierItem item, Optional<PriceChange> priceChange, Instant now);
 

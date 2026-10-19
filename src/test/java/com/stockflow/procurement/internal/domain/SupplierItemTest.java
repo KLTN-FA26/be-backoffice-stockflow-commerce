@@ -192,6 +192,15 @@ class SupplierItemTest {
     }
 
     @Test
+    void onlyAnItemThatWasNeverStoredIsNew() {
+        assertThat(SupplierItem.create(SUPPLIER, ITEM, terms(new BigDecimal("10"), 1, 1, null), false).isNew())
+                .isTrue();
+        var stored = SupplierItemTerms.stored("S", new Money(BigDecimal.TEN, Money.VND), 1, 1, null);
+        assertThat(new SupplierItem(UUID.randomUUID(), SUPPLIER, ITEM, stored, false, 0L, Instant.EPOCH, null).isNew())
+                .isFalse();
+    }
+
+    @Test
     void effectiveLeadTimeFallsBackToTheSupplierThenTheDefault() {
         var withLead = SupplierItem.create(SUPPLIER, ITEM, terms(new BigDecimal("10"), 1, 1, 3), false);
         var without = SupplierItem.create(SUPPLIER, ITEM, terms(new BigDecimal("10"), 1, 1, null), false);

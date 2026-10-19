@@ -94,6 +94,14 @@ public final class SupplierItem extends AggregateRoot {
         return supplierLeadTimeDays != null ? supplierLeadTimeDays : CommercialTerms.LEAD_DAYS;
     }
 
+    /**
+     * Never saved: {@link #create} leaves the audit time unset, and every stored row has one
+     * ({@code created_at} is NOT NULL). The adapter inserts such an item without looking it up first.
+     */
+    public boolean isNew() {
+        return createdAt == null;
+    }
+
     public UUID id() {
         return id;
     }
