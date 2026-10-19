@@ -1,12 +1,12 @@
 # Yêu cầu duyệt schema — SCRUM-142 / 152 / 153 (Sprint 3)
 
 Ngày đề xuất: 19/10/2026. Người duyệt schema: **Tú**. Nhánh `feature/sprint3-batch-fefo-traceability-category`,
-rebase trên develop `5f00ef5a`. Chi tiết nghiệp vụ và API: `docs/SCRUM-142-152-153-171-183-backend.md`.
+rebase trên develop `5f00ef5a`, sau đó merge develop `535e6c38`. Chi tiết nghiệp vụ và API: `docs/SCRUM-142-152-153-171-183-backend.md`.
 
-Hai migration mới, version cao hơn bản mới nhất trên develop (`V20261017001200`). Không sửa migration đã áp,
+Ba migration mới, version cao hơn bản mới nhất trên develop (`V20261019000700`; develop đã dùng `000100`–`000700` cùng ngày). Không sửa migration đã áp,
 không reset dữ liệu, không kích hoạt gì trong `db/pending`.
 
-## 1. `V20261019000100__inventory_sku_reservation_and_allocation.sql` (SCRUM-152)
+## 1. `V20261019000800__inventory_sku_reservation_and_allocation.sql` (SCRUM-152)
 
 **Vì sao.** Docs 01 tách *Reserved* (giữ mềm theo SKU, có hạn, chưa gắn vị trí) và *Allocated* (giữ cứng ở bin + lô,
 tạo khi release đơn, FEFO — BR-STK-006). Code cũ chọn bin/lô ngay lúc checkout.
@@ -24,7 +24,7 @@ tạo khi release đơn, FEFO — BR-STK-006). Code cũ chọn bin/lô ngay lúc
 
 Dữ liệu cũ: mọi dòng hiện có đều trên `stock_item`, chỉ được điền `sku`. Hold checkout cũ vẫn hợp lệ và vẫn pick được.
 
-## 2. `V20261019000200__inventory_stock_lot_traceability.sql` (SCRUM-142/153)
+## 2. `V20261019000900__inventory_stock_lot_traceability.sql` (SCRUM-142/153)
 
 | Thay đổi | Ý nghĩa |
 |---|---|
@@ -35,18 +35,25 @@ Dữ liệu cũ: mọi dòng hiện có đều trên `stock_item`, chỉ đượ
 | `inventory.item_in_use` | thêm `stock_reservation`, `stock_lot` để guard đổi SKU trả lỗi nghiệp vụ trước khi đụng FK |
 | backfill | lô theo phiếu nhập từ sổ cái; còn lại UNTRACED theo định danh lớp tồn; `lot_id`/`order_id`/`order_number` của sổ cái khi xác định được duy nhất. Trigger append-only của `stock_movement` chỉ tạm tắt cho các câu backfill này |
 
-## 3. Đã kiểm tra
+## 3. `V20261019001000__inventory_cycle_count_counter_grant.sql` (X-SHORT / F-CNT)
+
+Cấp `inventory-cycle-counts:VIEW_PAGE`, `READ` cho `WAREHOUSE_STAFF` (docs 04c F-CNT: NV kho là người đếm); seed
+`V20260903000100` chỉ cấp cho QL kho và Inventory Planner nên NV kho bị 403 ở danh sách phiếu kiểm kê mù. Tăng
+`app_role.version` của WAREHOUSE_STAFF trong cùng migration (ADR-0008). Không đổi bảng nào.
+
+## 4. Đã kiểm tra
 
 - Full `mvn test` (Testcontainers) trên nhánh đã rebase: 1.978 test, không lỗi code; `SkuReservationLotMigrationUpgradeTest` nâng cấp từ
-  `20261017001200` có dữ liệu cũ.
+  `20261019000700` có dữ liệu cũ.
 - Áp 135 migration + `db/pending/C0` lên DB trống; bộ QA `tools/db/qa/run.sh` 01–15 (thêm
   `15_sku_reservation_and_lots.sql`) không FAIL.
 - `schema.dbml` sinh lại bằng `tools/db/gen_dbml.py`.
 
-## 4. Cần Tú quyết
+## 5. Cần Tú quyết
 
 1. Đồng ý giữ chung bảng `stock_reservation` cho cả SKU reservation và allocation (không tách bảng
    `stock_allocation`) để mọi FK hiện có tới `stock_reservation(id)` giữ nguyên.
 2. Đồng ý FK chéo schema mới: `stock_lot` → `procurement.*`, `warehouse.warehouse`; `stock_movement.order_id` →
    `ordering.customer_order`.
 3. Đồng ý trigger snapshot `order_number` đọc `ordering.customer_order` (đọc trong DB, code không join chéo schema).
+4. Đồng ý cấp quyền xem phiếu kiểm kê (`inventory-cycle-counts:VIEW_PAGE`, `READ`) cho `WAREHOUSE_STAFF`.
