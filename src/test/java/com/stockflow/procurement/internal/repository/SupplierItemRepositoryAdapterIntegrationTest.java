@@ -46,7 +46,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * SCRUM-77 supplier catalog persistence against Postgres: the price periods the exclusion constraint
- * polices, the unique pair, the open-order probe and the preferred-first listing.
+ * polices, the unique pair, the open-order probe and the SKU's supplier listing.
  *
  * <p>Every call runs in its own {@link TransactionTemplate} transaction, as the service will, so each
  * save really commits; Hikari runs with auto-commit off, so a bare {@code JdbcTemplate} read would
@@ -95,15 +95,15 @@ class SupplierItemRepositoryAdapterIntegrationTest {
         return SupplierItemTerms.of("SUP-" + price, new BigDecimal(price), Money.VND, 10, 5, null);
     }
 
-    private SupplierItem create(UUID supplier, String price, boolean preferred, Instant at) {
+    private SupplierItem create(UUID supplier, String price, Instant at) {
         return tx.execute(s -> items.save(
-                SupplierItem.create(supplier, inventoryItemId, terms(price), preferred), Optional.empty(), at));
+                SupplierItem.create(supplier, inventoryItemId, terms(price)), Optional.empty(), at));
     }
 
     private SupplierItem reprice(UUID itemId, String price, Instant at) {
         return tx.execute(s -> {
             var loaded = items.findByIdForUpdate(itemId).orElseThrow();
-            var change = loaded.update(terms(price), loaded.preferred());
+            var change = loaded.update(terms(price));
             return items.save(loaded, change, at);
         });
     }
@@ -123,7 +123,7 @@ class SupplierItemRepositoryAdapterIntegrationTest {
     @DisplayName("an insert opens the first price period, open-ended")
     void insertOpensTheFirstPricePeriod() {
         Instant at = now();
-        var saved = create(supplierId, "10", false, at);
+        var saved = create(supplierId, "10", at);
 
         assertThat(saved.terms().price()).isEqualTo(new Money(new BigDecimal("10"), Money.VND));
         assertThat(periods(saved.id())).singleElement().satisfies(period -> {
@@ -142,7 +142,7 @@ class SupplierItemRepositoryAdapterIntegrationTest {
     void repricingClosesTheOpenPeriodAndOpensOne() {
         Instant first = now();
         Instant second = first.plusSeconds(1);
-        var saved = create(supplierId, "10", false, first);
+        var saved = create(supplierId, "10", first);
 
         var repriced = reprice(saved.id(), "12", second);
 
@@ -162,15 +162,14 @@ class SupplierItemRepositoryAdapterIntegrationTest {
     void anEditWithoutAPriceChangeOpensAMissingPeriod() {
         Instant first = now();
         Instant second = first.plusSeconds(1);
-        var saved = create(supplierId, "10", false, first);
+        var saved = create(supplierId, "10", first);
         // A row carried over before the price table existed: it has no period at all.
         tx.executeWithoutResult(s -> jdbc.update(
                 "DELETE FROM procurement.supplier_item_prices WHERE supplier_item_id = ?", saved.id()));
 
         tx.execute(s -> {
             var loaded = items.findByIdForUpdate(saved.id()).orElseThrow();
-            var change = loaded.update(SupplierItemTerms.of("SUP-10", new BigDecimal("10"), Money.VND, 20, 5, null),
-                    false);
+            var change = loaded.update(SupplierItemTerms.of("SUP-10", new BigDecimal("10"), Money.VND, 20, 5, null));
             assertThat(change).isEmpty();
             return items.save(loaded, change, second);
         });
@@ -187,7 +186,7 @@ class SupplierItemRepositoryAdapterIntegrationTest {
     void aRowInAnotherCurrencyIsRepricedIntoTheSuppliers() {
         Instant first = now();
         Instant second = first.plusSeconds(1);
-        var saved = create(supplierId, "10", false, first);
+        var saved = create(supplierId, "10", first);
         tx.executeWithoutResult(s -> {
             jdbc.update("UPDATE procurement.supplier_items SET currency = 'USD' WHERE id = ?", saved.id());
             jdbc.update("UPDATE procurement.supplier_item_prices SET currency = 'USD' WHERE supplier_item_id = ?",
@@ -209,7 +208,7 @@ class SupplierItemRepositoryAdapterIntegrationTest {
     @DisplayName("repricing at the instant the period opened overwrites it instead of making a zero-length one")
     void repricingAtTheSameInstantOverwritesTheOpenPeriod() {
         Instant at = now();
-        var saved = create(supplierId, "10", false, at);
+        var saved = create(supplierId, "10", at);
 
         reprice(saved.id(), "11", at);
 
@@ -222,9 +221,9 @@ class SupplierItemRepositoryAdapterIntegrationTest {
     @Test
     @DisplayName("a second row for the same supplier and SKU is SUPPLIER_ITEM_DUPLICATE, not a 500")
     void aDuplicatePairIsABusinessError() {
-        create(supplierId, "10", false, now());
+        create(supplierId, "10", now());
 
-        assertThatThrownBy(() -> create(supplierId, "11", false, now()))
+        assertThatThrownBy(() -> create(supplierId, "11", now()))
                 .isInstanceOfSatisfying(BusinessException.class,
                         e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.SUPPLIER_ITEM_DUPLICATE));
     }
@@ -248,16 +247,15 @@ class SupplierItemRepositoryAdapterIntegrationTest {
     }
 
     @Test
-    @DisplayName("the SKU's suppliers come preferred first, then by name")
-    void suppliersOfListsThePreferredFirst() {
+    @DisplayName("the SKU's suppliers come by supplier name")
+    void suppliersOfListsByName() {
         UUID beta = supplier("Beta supplier");
-        create(supplierId, "10", false, now());
-        create(beta, "9", true, now());
+        create(supplierId, "10", now());
+        create(beta, "9", now());
 
         var rows = tx.execute(s -> items.suppliersOf(inventoryItemId));
 
-        assertThat(rows).extracting(row -> row.supplier().id()).containsExactly(beta, supplierId);
-        assertThat(rows.get(0).item().preferred()).isTrue();
+        assertThat(rows).extracting(row -> row.supplier().id()).containsExactly(supplierId, beta);
         assertThat(rows.get(0).supplier().currency()).isEqualTo(Money.VND);
         assertThat(rows.get(0).supplier().status()).isEqualTo(SupplierStatus.ACTIVE);
     }
@@ -277,13 +275,13 @@ class SupplierItemRepositoryAdapterIntegrationTest {
     }
 
     @Test
-    @DisplayName("a supplier's catalog pages by price, and a SKU with no preferred supplier has none")
-    void listBySupplierPagesAndFindPreferred() {
-        create(supplierId, "10", false, now());
+    @DisplayName("a supplier's catalog pages by price")
+    void listBySupplierPages() {
+        create(supplierId, "10", now());
         newSku();
-        create(supplierId, "20", false, now());
+        create(supplierId, "20", now());
         newSku();
-        create(supplierId, "30", false, now());
+        create(supplierId, "30", now());
 
         var firstPage = tx.execute(s -> items.listBySupplier(supplierId, 0, 2, "currentPrice,desc"));
         var secondPage = tx.execute(s -> items.listBySupplier(supplierId, 1, 2, "currentPrice,desc"));
@@ -291,11 +289,6 @@ class SupplierItemRepositoryAdapterIntegrationTest {
         assertThat(firstPage.totalElements()).isEqualTo(3);
         assertThat(firstPage.items()).extracting(i -> i.terms().price().amount().intValue()).containsExactly(30, 20);
         assertThat(secondPage.items()).extracting(i -> i.terms().price().amount().intValue()).containsExactly(10);
-        Optional<SupplierItem> preferred = tx.execute(s -> {
-            items.lockCatalogOf(inventoryItemId);
-            return items.findPreferredForUpdate(inventoryItemId);
-        });
-        assertThat(preferred).isEmpty();
     }
 
     @Test
@@ -303,13 +296,13 @@ class SupplierItemRepositoryAdapterIntegrationTest {
     void listedForShareReturnsOnlyThisSuppliersRowsKeyedByItem() {
         UUID other = supplier("Other supplier");
         UUID first = inventoryItemId;
-        create(supplierId, "10", false, now());
+        create(supplierId, "10", now());
         newSku();
         UUID second = inventoryItemId;
-        create(supplierId, "20", false, now());
+        create(supplierId, "20", now());
         newSku();
         UUID third = inventoryItemId;
-        create(other, "30", false, now());
+        create(other, "30", now());
 
         var listed = tx.execute(s -> items.listedForShare(supplierId, List.of(first, second, third)));
 
@@ -324,7 +317,7 @@ class SupplierItemRepositoryAdapterIntegrationTest {
     @Test
     @DisplayName("listedForShare of no items is empty")
     void listedForShareOfNoItemsIsEmpty() {
-        create(supplierId, "10", false, now());
+        create(supplierId, "10", now());
 
         Map<UUID, SupplierItem> listed = tx.execute(s -> items.listedForShare(supplierId, List.of()));
 

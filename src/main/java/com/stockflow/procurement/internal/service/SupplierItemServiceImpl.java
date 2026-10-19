@@ -9,6 +9,7 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.inventory.api.InventoryItemPolicy;
 import com.stockflow.inventory.api.InventoryService;
+import com.stockflow.inventory.api.ItemPurchasingService;
 import com.stockflow.procurement.api.SaveSupplierItemCommand;
 import com.stockflow.procurement.api.SkuSupplierSummary;
 import com.stockflow.procurement.api.SupplierItemService;
@@ -25,7 +26,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
-import java.time.Instant;
+import java.util.Comparator;
 import java.util.Currency;
 import java.util.List;
 import java.util.Optional;
@@ -38,12 +39,13 @@ import java.util.UUID;
  * slip in between the status check and the commit. An edit then locks its own row, and only that
  * lock makes the version comparison meaningful: the adapter does not apply the version on save.</p>
  *
- * <p>"At most one preferred supplier per SKU" spans rows no single row lock covers, so making a row
- * preferred takes the item's catalog lock first and clears the previous preferred row, flushed,
- * before the new one is written; {@code uk_supplier_items_preferred} never sees two at once. The
- * previous preferred row is locked before it is cleared (see {@code unpreferOthers}). Two
- * buyers preferring different suppliers at the same moment therefore both succeed, and the later
- * one wins.</p>
+ * <p>"Preferred" is not stored on the catalog row. The supplier we normally buy an item from is the
+ * item's default supplier (kltn-docs 01 §3 "Nhà cung cấp mặc định", read by 02 §7), kept by inventory: a
+ * row is preferred when its supplier is that default. Preferring a row sets the item's default supplier;
+ * un-preferring the preferred row clears it; both go through {@code inventory :: api} under the item's
+ * per-SKU lock, so two buyers preferring different suppliers at once both succeed and the later one wins.
+ * Creating a row never clears a default: a new row is not yet anybody's choice to withdraw. Removing a
+ * row leaves the item's default supplier alone: it is the item's master data, not the catalog's.</p>
  */
 @Service
 @Transactional
@@ -51,13 +53,16 @@ class SupplierItemServiceImpl implements SupplierItemService {
 
     private final SupplierItemRepository items;
     private final InventoryService inventory;
+    private final ItemPurchasingService purchasing;
     private final ProductService products;
     private final Clock clock;
 
     SupplierItemServiceImpl(
-            SupplierItemRepository items, InventoryService inventory, ProductService products, Clock clock) {
+            SupplierItemRepository items, InventoryService inventory, ItemPurchasingService purchasing,
+            ProductService products, Clock clock) {
         this.items = items;
         this.inventory = inventory;
+        this.purchasing = purchasing;
         this.products = products;
         this.clock = clock;
     }
@@ -69,11 +74,10 @@ class SupplierItemServiceImpl implements SupplierItemService {
         var sku = sku(command.sku());
         var policy = inventoryItem(sku);
         requirePurchasable(sku);
-        var item = SupplierItem.create(supplierId, policy.inventoryItemId(), terms(command, supplier.currency()),
-                command.preferred());
-        Instant now = clock.instant();
-        if (item.preferred()) unpreferOthers(item, now);
-        return summary(items.save(item, Optional.empty(), now), policy.sku(), supplier);
+        var item = SupplierItem.create(supplierId, policy.inventoryItemId(), terms(command, supplier.currency()));
+        var saved = items.save(item, Optional.empty(), clock.instant());
+        if (command.preferred()) purchasing.assignDefaultSupplier(saved.inventoryItemId(), supplierId);
+        return summary(saved, policy.sku(), supplier, preferred(saved));
     }
 
     @Override
@@ -85,12 +89,11 @@ class SupplierItemServiceImpl implements SupplierItemService {
         if (command.version() == null)
             throw invalid("version", "NotNull", "Version is required to edit a supplier item");
         var item = lockedItem(supplierId, supplierItemId, command.version());
-        var terms = terms(command, supplier.currency());
-        Instant now = clock.instant();
-        if (command.preferred() && !item.preferred()) unpreferOthers(item, now);
-        var priceChange = item.update(terms, command.preferred());
-        var saved = items.save(item, priceChange, now);
-        return summary(saved, skuOf(saved.inventoryItemId()), supplier);
+        var priceChange = item.update(terms(command, supplier.currency()));
+        var saved = items.save(item, priceChange, clock.instant());
+        if (command.preferred()) purchasing.assignDefaultSupplier(saved.inventoryItemId(), supplierId);
+        else purchasing.clearDefaultSupplier(saved.inventoryItemId(), supplierId);
+        return summary(saved, skuOf(saved.inventoryItemId()), supplier, preferred(saved));
     }
 
     @Override
@@ -109,15 +112,22 @@ class SupplierItemServiceImpl implements SupplierItemService {
         var supplier = items.findSupplier(supplierId).orElseThrow(() -> supplierNotFound(supplierId));
         var rows = items.listBySupplier(supplierId, page, size, sort);
         // One lookup for the page's SKUs, not one per row.
-        var policies = inventory.itemPolicies(rows.items().stream().map(SupplierItem::inventoryItemId).toList());
-        return rows.map(item -> summary(item, policies.get(item.inventoryItemId()).sku(), supplier));
+        var itemIds = rows.items().stream().map(SupplierItem::inventoryItemId).toList();
+        var policies = inventory.itemPolicies(itemIds);
+        var defaults = purchasing.defaultSuppliers(itemIds);
+        return rows.map(item -> summary(item, policies.get(item.inventoryItemId()).sku(), supplier,
+                supplierId.equals(defaults.get(item.inventoryItemId()))));
     }
 
     @Override
     @Transactional(readOnly = true)
     public List<SkuSupplierSummary> suppliersOf(String sku) {
         var policy = inventoryItem(sku(sku));
+        UUID defaultSupplier = purchasing.defaultSuppliers(List.of(policy.inventoryItemId()))
+                .get(policy.inventoryItemId());
+        // Stable: the default supplier first, the rest in the repository's supplier-name order.
         return items.suppliersOf(policy.inventoryItemId()).stream()
+                .sorted(Comparator.comparing(row -> !row.supplier().id().equals(defaultSupplier)))
                 .map(row -> {
                     var item = row.item();
                     var supplier = row.supplier();
@@ -125,7 +135,8 @@ class SupplierItemServiceImpl implements SupplierItemService {
                     return new SkuSupplierSummary(supplier.id(), supplier.code(), supplier.name(),
                             supplier.status().name(), item.id(), item.terms().supplierSkuCode(), price.amount(),
                             price.currency().getCurrencyCode(), item.terms().moq(), item.terms().packSize(),
-                            item.effectiveLeadTimeDays(supplier.leadTimeDays()), item.preferred());
+                            item.effectiveLeadTimeDays(supplier.leadTimeDays()),
+                            supplier.id().equals(defaultSupplier));
                 })
                 .toList();
     }
@@ -153,25 +164,6 @@ class SupplierItemServiceImpl implements SupplierItemService {
                         "No supplier item " + supplierItemId + " for supplier " + supplierId));
         if (item.version() != version) throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
         return item;
-    }
-
-    /**
-     * Clears the SKU's current preferred row, if it is another one, under the catalog lock. Saved
-     * (and flushed) before the caller saves {@code item}, so the partial unique index never holds two.
-     *
-     * <p>The preferred row is locked and re-read too. A buyer editing it holds only its row lock (it is
-     * already preferred, so that edit takes no catalog lock); reading it unlocked would save its old
-     * terms back over theirs, which the version check turns into a 409 for a caller who never touched
-     * that row. Locks are taken in one order: the caller's own row, the catalog, the preferred row.</p>
-     */
-    private void unpreferOthers(SupplierItem item, Instant now) {
-        items.lockCatalogOf(item.inventoryItemId());
-        items.findPreferredForUpdate(item.inventoryItemId())
-                .filter(current -> !current.id().equals(item.id()))
-                .ifPresent(current -> {
-                    current.update(current.terms(), false);
-                    items.save(current, Optional.empty(), now);
-                });
     }
 
     private static Sku sku(String code) {
@@ -218,12 +210,19 @@ class SupplierItemServiceImpl implements SupplierItemService {
                 List.of(new FieldError(field, message, fieldCode)));
     }
 
-    private static SupplierItemSummary summary(SupplierItem item, String sku, CatalogSupplier supplier) {
+    /** Whether the row's supplier is its item's default supplier, read after this transaction's own write. */
+    private boolean preferred(SupplierItem item) {
+        return item.supplierId().equals(purchasing.defaultSuppliers(List.of(item.inventoryItemId()))
+                .get(item.inventoryItemId()));
+    }
+
+    private static SupplierItemSummary summary(SupplierItem item, String sku, CatalogSupplier supplier,
+                                               boolean preferred) {
         var terms = item.terms();
         return new SupplierItemSummary(item.id(), item.supplierId(), item.inventoryItemId(), sku,
                 terms.supplierSkuCode(), terms.price().amount(), terms.price().currency().getCurrencyCode(),
                 terms.moq(), terms.packSize(), terms.leadTimeDays(),
-                item.effectiveLeadTimeDays(supplier.leadTimeDays()), item.preferred(), item.version(),
+                item.effectiveLeadTimeDays(supplier.leadTimeDays()), preferred, item.version(),
                 item.createdAt(), item.lastModifiedAt());
     }
 }

@@ -1,7 +1,10 @@
 package com.stockflow.procurement.internal.service;
 
 import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.inventory.api.ItemPurchasing;
+import com.stockflow.inventory.api.ItemPurchasingService;
 import com.stockflow.procurement.api.CreatePOLineCommand;
 import com.stockflow.procurement.api.CreatePurchaseOrderCommand;
 import com.stockflow.procurement.api.ProcurementService;
@@ -42,7 +45,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * SCRUM-77 supplier catalog service against Postgres: who may list what, the price history a reprice
- * writes, the single preferred supplier per SKU, and the guards on edit and removal.
+ * writes, the preferred supplier as the item's default supplier, and the guards on edit and removal.
  *
  * <p>Every service call commits on its own, as it does behind the controller; the rows are then read
  * back with {@code JdbcTemplate} inside a {@link TransactionTemplate}, because Hikari runs with
@@ -53,6 +56,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class SupplierItemServiceIntegrationTest {
 
     @Autowired SupplierItemService catalog;
+    @Autowired ItemPurchasingService purchasing;
     @Autowired SupplierService suppliers;
     @Autowired ProcurementService procurement;
     @Autowired JdbcTemplate jdbc;
@@ -93,10 +97,24 @@ class SupplierItemServiceIntegrationTest {
                  WHERE supplier_item_id = ? ORDER BY effective_from""", itemId));
     }
 
+    /** The catalog rows of the item whose supplier is the item's default supplier: at most one. */
     private List<UUID> preferredRows(UUID inventoryItemId) {
         return tx.execute(s -> jdbc.queryForList("""
-                SELECT id FROM procurement.supplier_items
-                 WHERE inventory_item_id = ? AND is_preferred""", UUID.class, inventoryItemId));
+                SELECT s.id FROM procurement.supplier_items s
+                  JOIN inventory.inventory_items i ON i.id = s.inventory_item_id
+                 WHERE s.inventory_item_id = ? AND s.supplier_id = i.default_supplier_id""", UUID.class, inventoryItemId));
+    }
+
+    private UUID defaultSupplier() {
+        return tx.execute(s -> jdbc.queryForObject(
+                "SELECT default_supplier_id FROM inventory.inventory_items WHERE sku = ?", UUID.class, sku));
+    }
+
+    private void setDefaultSupplier(UUID supplier) {
+        var current = purchasing.purchasing(new Sku(sku));
+        var p = current.purchasing();
+        tx.executeWithoutResult(s -> purchasing.describe(new Sku(sku), current.version(), new ItemPurchasing(
+                supplier, p.referencePurchasePrice(), p.referencePurchaseCurrency(), p.leadTimeDays(), p.moq())));
     }
 
     private boolean rowExists(UUID itemId) {
@@ -348,8 +366,8 @@ class SupplierItemServiceIntegrationTest {
     }
 
     @Test
-    @DisplayName("preferring another supplier while the preferred row is being edited waits, then keeps that edit")
-    void preferringWhileThePreferredRowIsEditedWaitsForTheEdit() throws Exception {
+    @DisplayName("preferring another supplier does not touch the preferred row, even while it is being edited")
+    void preferringWhileThePreferredRowIsEditedLeavesThatRowAlone() throws Exception {
         UUID beta = supplier("Beta supplier");
         var alphaItem = create(supplierId, "1500", true);
         var betaItem = create(beta, "1400", false);
@@ -371,14 +389,12 @@ class SupplierItemServiceIntegrationTest {
                 }
             }));
             assertThat(edited.await(30, TimeUnit.SECONDS)).isTrue();
-            Future<SupplierItemSummary> prefer = pool.submit(() -> catalog.update(beta, betaItem.supplierItemId(),
-                    command(sku, "1400", true, betaItem.version())));
-            awaitALockWait();
+            // The flag is the item's default supplier, so preferring beta never waits on alpha's row.
+            var prefer = catalog.update(beta, betaItem.supplierItemId(), command(sku, "1400", true, betaItem.version()));
             release.countDown();
             edit.get(30, TimeUnit.SECONDS);
 
-            // An unlocked read of the preferred row would have saved its old terms back: a 409 here.
-            assertThat(prefer.get(30, TimeUnit.SECONDS).preferred()).isTrue();
+            assertThat(prefer.preferred()).isTrue();
             assertThat(preferredRows(alphaItem.inventoryItemId())).containsExactly(betaItem.supplierItemId());
             Integer moq = tx.execute(s -> jdbc.queryForObject(
                     "SELECT moq FROM procurement.supplier_items WHERE id = ?", Integer.class,
@@ -390,21 +406,72 @@ class SupplierItemServiceIntegrationTest {
         }
     }
 
-    /** Until some backend waits on a lock: the preferring request has reached the edited row. */
-    private void awaitALockWait() throws InterruptedException {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
-        while (System.nanoTime() < deadline) {
-            Integer waiting = tx.execute(s -> jdbc.queryForObject(
-                    "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND datname = current_database()",
-                    Integer.class));
-            if (waiting != null && waiting > 0) return;
-            Thread.sleep(20);
-        }
-        throw new AssertionError("The preferring request never waited on the edited row");
+    @Test
+    @DisplayName("a default supplier set on the item's purchasing info reads as the preferred catalog row, and back")
+    void theItemsDefaultSupplierIsThePreferredRow() {
+        UUID beta = supplier("Beta supplier");
+        var alphaItem = create(supplierId, "1500", true);
+        var betaItem = create(beta, "1400", false);
+        assertThat(defaultSupplier()).isEqualTo(supplierId);
+
+        setDefaultSupplier(beta);
+
+        assertThat(catalog.suppliersOf(sku)).extracting(SkuSupplierSummary::supplierItemId, SkuSupplierSummary::preferred)
+                .containsExactly(org.assertj.core.groups.Tuple.tuple(betaItem.supplierItemId(), true),
+                        org.assertj.core.groups.Tuple.tuple(alphaItem.supplierItemId(), false));
+        assertThat(catalog.list(beta, 0, 20, null).items()).singleElement()
+                .satisfies(item -> assertThat(item.preferred()).isTrue());
+        assertThat(catalog.list(supplierId, 0, 20, null).items()).singleElement()
+                .satisfies(item -> assertThat(item.preferred()).isFalse());
+
+        setDefaultSupplier(null);
+
+        assertThat(catalog.suppliersOf(sku)).noneMatch(SkuSupplierSummary::preferred);
     }
 
     @Test
-    @DisplayName("a stored row outside the form's limits still lists, looks up, gets unpreferred, edits and deletes")
+    @DisplayName("un-preferring a row that is not the default, or creating one unpreferred, leaves the default alone")
+    void unpreferringAnotherRowLeavesTheDefault() {
+        UUID beta = supplier("Beta supplier");
+        setDefaultSupplier(supplierId);
+        var betaItem = create(beta, "1400", false);
+        var alphaItem = create(supplierId, "1500", false);
+
+        assertThat(defaultSupplier()).isEqualTo(supplierId);
+        assertThat(alphaItem.preferred()).isTrue();
+
+        catalog.update(beta, betaItem.supplierItemId(), command(sku, "1450", false, betaItem.version()));
+
+        assertThat(defaultSupplier()).isEqualTo(supplierId);
+    }
+
+    @Test
+    @DisplayName("removing the preferred row keeps the item's default supplier: it is the item's, not the catalog's")
+    void removingThePreferredRowKeepsTheDefault() {
+        var preferred = create(supplierId, "1500", true);
+
+        catalog.delete(supplierId, preferred.supplierItemId(), preferred.version());
+
+        assertThat(defaultSupplier()).isEqualTo(supplierId);
+        assertThat(catalog.suppliersOf(sku)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("preferring a row moves the item version, so a purchasing form read before it is stale")
+    void preferringMovesTheItemVersion() {
+        long before = purchasing.purchasing(new Sku(sku)).version();
+        var row = create(supplierId, "1500", false);
+        assertThat(purchasing.purchasing(new Sku(sku)).version()).isEqualTo(before);
+
+        catalog.update(supplierId, row.supplierItemId(), command(sku, "1500", true, row.version()));
+
+        assertThat(purchasing.purchasing(new Sku(sku)).version()).isEqualTo(before + 1);
+        assertRefused(() -> tx.executeWithoutResult(s -> purchasing.describe(new Sku(sku), before,
+                new ItemPurchasing(null, null, null, null, null))), ErrorCode.OPTIMISTIC_LOCK);
+    }
+
+    @Test
+    @DisplayName("a stored row outside the form's limits still lists, looks up, loses preferred, edits and deletes")
     void aStoredRowOutsideTheFormLimitsStillReadsAndDeletes() {
         UUID beta = supplier("Beta supplier");
         var alphaItem = create(supplierId, "1500", true);
@@ -422,7 +489,7 @@ class SupplierItemServiceIntegrationTest {
         assertThat(catalog.suppliersOf(sku)).extracting(SkuSupplierSummary::supplierItemId)
                 .containsExactly(alphaItem.supplierItemId(), betaItem.supplierItemId());
 
-        // Preferring beta loads the stored alpha row to unprefer it; editing beta replaces its bad terms.
+        // Preferring beta moves the item's default from alpha; editing beta replaces its bad terms.
         var edited = catalog.update(beta, betaItem.supplierItemId(),
                 new SaveSupplierItemCommand(sku, "BETA-1", new BigDecimal("1400"), 10, 5, 30, true, betaItem.version()));
         assertThat(edited.moq()).isEqualTo(10);

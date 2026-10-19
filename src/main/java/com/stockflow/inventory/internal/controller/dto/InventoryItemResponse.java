@@ -14,7 +14,9 @@ public record InventoryItemResponse(UUID id, String sku, long version, Logistics
                             BigDecimal widthCm, BigDecimal heightCm, BigDecimal packageWeightKg,
                             BigDecimal packageLengthCm, BigDecimal packageWidthCm, BigDecimal packageHeightCm,
                             int packageCount, int packSize, String storageClass, boolean requiresAdultSignature,
-                            String shippingRestrictionNote, boolean qcRequired) {
+                            String shippingRestrictionNote, boolean qcRequired,
+                            @Schema(description = "Packages may be turned 6 ways when a truck is loaded (docs 01, E13)")
+                            boolean rotatable) {
     }
 
     public record Policy(Integer reorderPoint, Integer safetyStock, Integer maxQty, String removalStrategy,

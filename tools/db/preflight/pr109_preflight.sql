@@ -15,7 +15,7 @@
 --      price or a group price that is not positive whole VND makes that migration fail; listed here first.
 --   3. V20261017000830 makes a tax code unique in every status and stops on a duplicate. On a database that never
 --      ran this branch the column does not exist yet (V20261017000100 adds it, empty), so there is nothing to check.
---   4. PR #121 (V20261016001000) gives production_order / sample_request / approved_sample.blank_sku a foreign key to
+--   4. PR #121 (V20261019000100) gives production_order / sample_request / approved_sample.blank_sku a foreign key to
 --      inventory.inventory_items and stops on a row whose blank has no item. Counted here, per table, before either
 --      deploy; nothing is repaired automatically - a blank without an item has no meaning to repair it by.
 -- Each section prints "OK: ..." when it finds nothing.

@@ -133,6 +133,26 @@ order by pc.is_primary desc, pc.id limit 1
                 after == null ? new Object[] {size} : new Object[] {after, size});
     }
 
+    /**
+     * One variant of a product, whatever its status, for the screens that read and edit its inventory item's
+     * purchasing information and units (#121). An OBSOLETE variant is included: its stock is still shipped or
+     * adjusted away (kltn-docs 01 §5.2), so it stays readable; refusing to edit it is the caller's decision.
+     *
+     * @throws BusinessException {@code NOT_FOUND} when the product has no such variant
+     */
+    public VariantSku variantSku(UUID productId, UUID variantId) {
+        return jdbc.query("select id,sku,status from product.variants where product_id=? and id=?",
+                        (r, n) -> new VariantSku(r.getObject(1, UUID.class), r.getString(2),
+                                "OBSOLETE".equals(r.getString(3))),
+                        productId, variantId)
+                .stream()
+                .findFirst()
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+    }
+
+    /** A variant's id and SKU, and whether it is OBSOLETE. */
+    public record VariantSku(UUID variantId, String sku, boolean obsolete) {}
+
     public ProductEcommerce ecommerce(UUID id) {
         return jdbc
                 .query(

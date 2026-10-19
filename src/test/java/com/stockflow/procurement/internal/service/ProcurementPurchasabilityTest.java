@@ -107,7 +107,7 @@ class ProcurementPurchasabilityTest {
             Collection<UUID> items = call.getArgument(1);
             return items.stream().collect(Collectors.toMap(Function.identity(), item -> new SupplierItem(
                     UUID.randomUUID(), supplierId, item, SupplierItemTerms.stored(null, Money.vnd(100), 1, 1, null),
-                    false, 0, null, null)));
+                     0, null, null)));
         });
         service = new ProcurementServiceImpl(orders, search, null,
                 Clock.fixed(Instant.parse("2026-10-14T03:00:00Z"), ZoneOffset.UTC), suppliers,

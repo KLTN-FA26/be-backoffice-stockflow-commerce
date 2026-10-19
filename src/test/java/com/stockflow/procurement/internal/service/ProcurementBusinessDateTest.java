@@ -83,7 +83,7 @@ class ProcurementBusinessDateTest {
         when(supplierItems.findSupplier(supplierId)).thenReturn(Optional.of(
                 new CatalogSupplier(supplierId, "SUP", "Supplier", SupplierStatus.ACTIVE, Money.VND, 7)));
         when(supplierItems.listedForShare(any(), anyCollection())).thenReturn(Map.of(item, new SupplierItem(
-                UUID.randomUUID(), supplierId, item, SupplierItemTerms.stored(null, Money.vnd(100), 1, 1, null), false, 0,
+                UUID.randomUUID(), supplierId, item, SupplierItemTerms.stored(null, Money.vnd(100), 1, 1, null), 0,
                 null, null)));
         return new ProcurementServiceImpl(orders, search, null, clock, suppliers, mock(ApplicationEventPublisher.class),
                 mock(NotificationService.class), mock(PoDeliveryDecisionRepository.class),

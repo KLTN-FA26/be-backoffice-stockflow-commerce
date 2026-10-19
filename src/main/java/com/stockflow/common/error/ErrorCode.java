@@ -114,6 +114,10 @@ public enum ErrorCode {
     TRANSFER_ORDER_NOT_FOUND("Transfer order not found", 404),
     /** The SKU has no inventory item yet: its logistics data must be completed first (docs 01 BR-03). */
     INVENTORY_ITEM_NOT_FOUND("No inventory item for this SKU", 404),
+    /** No such unit of measure on this SKU's inventory item (docs 01 UoM conversion). */
+    UOM_CONVERSION_NOT_FOUND("No such unit of measure on this SKU", 404),
+    /** No such sales unit on this variant (docs 01 BR-11). */
+    SALES_UNIT_NOT_FOUND("No such sales unit on this variant", 404),
 
     /** Credentials were correct but the account is LOCKED or DISABLED. Distinct from UNAUTHORIZED,
      *  which covers "wrong username or password" without revealing the account exists. */
@@ -152,6 +156,12 @@ public enum ErrorCode {
     PO_LINE_PRICE_REQUIRED("A unit price is required: the catalog price is in another currency", 409),
     CHECKOUT_PRICE_CHANGED("The selling price changed; review the basket and confirm again", 409),
     COUNT_POLICY_CONFLICT("Reconcile the active count and SKU tracking policy before proceeding",409),
+    /** The inventory item already has a unit with this code (its base unit included). */
+    UOM_CONVERSION_DUPLICATE("This SKU already has a unit of measure with this code", 409),
+    /** The base unit, or a unit a variant sells in, cannot be deleted or retired (docs 01 BR-10, BR-11). */
+    UOM_CONVERSION_IN_USE("This unit of measure is the base unit or is still sold in", 409),
+    /** The variant already sells in this unit. */
+    SALES_UNIT_DUPLICATE("The variant already sells in this unit", 409),
     DESIGN_QUOTE_REQUIRED("An accepted design quote matching this order line is required",409),
     INSUFFICIENT_STOCK("Not enough available stock", 409),
     /** The destination already holds this SKU and lot in another status (QC state does not merge). */

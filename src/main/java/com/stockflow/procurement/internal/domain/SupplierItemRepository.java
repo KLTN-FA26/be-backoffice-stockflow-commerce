@@ -29,18 +29,6 @@ public interface SupplierItemRepository {
     Optional<SupplierItem> findByIdForUpdate(UUID supplierItemId);
 
     /**
-     * Transaction-scoped advisory lock on one inventory item's catalog, serialising the
-     * "at most one preferred supplier" check across rows that no single row lock covers.
-     */
-    void lockCatalogOf(UUID inventoryItemId);
-
-    /**
-     * The item's preferred row, locked {@code FOR UPDATE} and re-read under the lock, so clearing its
-     * flag saves the row as it is now and not as an earlier read saw it.
-     */
-    Optional<SupplierItem> findPreferredForUpdate(UUID inventoryItemId);
-
-    /**
      * Inserts a {@linkplain SupplierItem#isNew new} item or updates a stored one; opens the first price
      * period on insert and applies {@code priceChange} otherwise. An update that finds no open period (a
      * row carried over without history) opens one at {@code now} even when the price is unchanged.
@@ -61,7 +49,7 @@ public interface SupplierItemRepository {
 
     PageResponse<SupplierItem> listBySupplier(UUID supplierId, int page, int size, String sort);
 
-    /** Preferred first, then by supplier name. */
+    /** By supplier name; the service puts the item's default supplier first. */
     List<SkuSupplierRow> suppliersOf(UUID inventoryItemId);
 
     record SkuSupplierRow(SupplierItem item, CatalogSupplier supplier) {}

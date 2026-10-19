@@ -652,33 +652,6 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
     }
 
     @Test
-    void aPolicySaveRetiresTheSupersededMinQty() throws Exception {
-        var f = fixture("DRAFT");
-        // the demo seed gives its SKUs min_qty = 5; ck_inventory_items_thresholds wants max_qty >= min_qty
-        write("update inventory.inventory_items set min_qty = 5 where sku = ?", f.sku());
-        mvc.perform(
-                        MockMvcRequestBuilders.put("/api/v1/inventory/items/" + f.itemId() + "/policy")
-                                .contentType("application/json")
-                                .content(
-                                        """
-{"version":0,"maxQty":3,"removalStrategy":"FIFO","trackingMode":"NONE","expiryTracked":false}
-"""))
-                .andExpect(MockMvcResultMatchers.status().isOk());
-        assertThat(
-                        jdbc.queryForObject(
-                                "select max_qty from inventory.inventory_items where sku=?",
-                                Integer.class,
-                                f.sku()))
-                .isEqualTo(3);
-        assertThat(
-                        jdbc.queryForObject(
-                                "select min_qty from inventory.inventory_items where sku=?",
-                                Integer.class,
-                                f.sku()))
-                .isNull();
-    }
-
-    @Test
     void databaseConstraintsRejectNegativeThresholdsEvenWithoutTheService() {
         var f = fixture("DRAFT");
         assertThatThrownBy(

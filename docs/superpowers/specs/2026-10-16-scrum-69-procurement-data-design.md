@@ -98,6 +98,9 @@ CREATE, PUT UPDATE, DELETE DELETE. No migration and no seed change.
 - `currency` is the supplier's; the client does not send it.
 - Duplicate pair → 409 `SUPPLIER_ITEM_DUPLICATE`, translated from `uk_supplier_items_pair` only (constraint
   name matched, nothing broader).
+- **Superseded 2026-10-19 (#121, lead's ruling to follow kltn-docs 01 §3):** `is_preferred` is dropped
+  (V20261019000600); a row is preferred when its supplier is the item's `default_supplier_id`, which
+  preferring/un-preferring writes through `inventory :: api` `ItemPurchasingService`. The text below is history.
 - **Preferred switch.** Before touching `is_preferred`, take `pg_advisory_xact_lock` keyed by the
   inventory item id (the pattern `InventoryPolicyRepository` already uses). The lock is taken whether or
   not the item has catalog rows yet, so two concurrent creates that both ask for `preferred=true` are
@@ -213,10 +216,9 @@ one full `mvn verify` at the end.
     PR2's demo seed must respect both `supplier_items` rules. Until they exist, the catalog reads a stored
     row without re-validating it, so one row outside them cannot block the catalog;
   - PO create/edit paths and ~14 PO tests change (catalog seeding);
-  - decide on dropping `inventory_items.default_supplier_id` (unused; `supplier_items.is_preferred` is the
-    single source of truth);
-  - a policy save clears the superseded `min_qty`; the demo seed's `min_qty` values go on the first save,
-    so consider dropping the column.
+  - ~~decide on dropping `inventory_items.default_supplier_id`~~ decided the other way (#121):
+    `default_supplier_id` is the single source, `is_preferred` is gone;
+  - ~~a policy save clears the superseded `min_qty`~~ the column is dropped (#121, V20261019000500).
 - **Võ**: `maxQty` appears on `/products/{productId}/skus/{skuId}/inventory-control`.
 - **FE**: supplier detail gets an "items" tab; the PO form lists only the chosen supplier's SKUs, the price
   is optional and prefilled; field error codes above.

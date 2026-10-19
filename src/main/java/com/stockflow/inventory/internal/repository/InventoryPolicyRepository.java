@@ -119,7 +119,7 @@ public class InventoryPolicyRepository {
                 rs.getInt("package_count"), rs.getInt("pack_size"),
                 StorageClass.valueOf(rs.getString("storage_class")),
                 rs.getBoolean("requires_adult_signature"), rs.getString("shipping_restriction_note"),
-                rs.getBoolean("qc_required"));
+                rs.getBoolean("qc_required"), rs.getBoolean("rotatable"));
     }
 
     /** The SKU of the item with this id; empty when there is none. */
@@ -162,16 +162,11 @@ and ((? and nullif(trim(lot_number), '') is null)
         return count != null && count > 0;
     }
 
-    /**
-     * Saves the policy and retires {@code min_qty}. That column is superseded by {@code safetyStock} and
-     * {@code reorderPoint} and read by nothing, but {@code ck_inventory_items_thresholds} still requires
-     * {@code max_qty >= min_qty}: left alone, a seeded {@code min_qty} above the new {@code maxQty} would fail this
-     * UPDATE at the database with a field-less 409. A policy save therefore sets it NULL.
-     */
+    /** Saves the policy. There is no {@code min_qty} any more: the minimum threshold is the reorder point (V20261019000500). */
     public boolean save(String sku, long version, InventoryPolicy p, String actor) {
         return jdbc.update(
                         """
-update inventory.inventory_items set reorder_point=?, safety_stock=?, max_qty=?, min_qty=NULL, removal_strategy=?,
+update inventory.inventory_items set reorder_point=?, safety_stock=?, max_qty=?, removal_strategy=?,
     lot_tracked=?, serial_tracked=?, expiry_tracked=?, max_shelf_life_days=?,
     policy_configured=true, version=version+1, last_modified_at=now(), last_modified_by=?
 where sku=? and version=?
@@ -301,12 +296,21 @@ where sku=? and version=?
                 update inventory.inventory_items set unit_of_measure=?, barcode=?, weight_kg=?, length_cm=?,
                     width_cm=?, height_cm=?, package_weight_kg=?, package_length_cm=?, package_width_cm=?,
                     package_height_cm=?, package_count=?, pack_size=?, storage_class=?, requires_adult_signature=?,
-                    shipping_restriction_note=?, qc_required=?, version=version+1, last_modified_at=now(),
+                    shipping_restriction_note=?, qc_required=?, rotatable=?, version=version+1, last_modified_at=now(),
                     last_modified_by=?
                 where sku=? and version=?
                 """, l.unitOfMeasure(), l.barcode(), l.weightKg(), l.lengthCm(), l.widthCm(), l.heightCm(),
                 l.packageWeightKg(), l.packageLengthCm(), l.packageWidthCm(), l.packageHeightCm(), l.packageCount(),
                 l.packSize(), l.storageClass().name(), l.requiresAdultSignature(), l.shippingRestrictionNote(),
-                l.qcRequired(), actor, sku, version) == 1;
+                l.qcRequired(), l.rotatable(), actor, sku, version) == 1;
+    }
+
+    /** Whether a packing unit of the SKU (not its base unit) already uses this unit code. */
+    public boolean packingUnitUses(String sku, String unitOfMeasure) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                select exists(select 1 from inventory.uom_conversions c
+                    join inventory.inventory_items i on i.id = c.inventory_item_id
+                    where i.sku = ? and not c.is_base and c.unit_of_measure = ?)
+                """, Boolean.class, sku, unitOfMeasure));
     }
 }

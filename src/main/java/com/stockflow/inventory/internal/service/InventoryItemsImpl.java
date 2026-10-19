@@ -172,6 +172,12 @@ class InventoryItemsImpl implements InventoryItems {
             throw new BusinessException(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT,
                     "The unit of measure of %s cannot change while stock of it is held".formatted(sku));
         }
+        // The base unit row follows the item's code (V20261019000300); a packing unit cannot share it.
+        if (!current.logistics().unitOfMeasure().equals(logistics.unitOfMeasure())
+                && policies.packingUnitUses(sku, logistics.unitOfMeasure())) {
+            throw new BusinessException(ErrorCode.UOM_CONVERSION_DUPLICATE,
+                    "%s already has a packing unit %s".formatted(sku, logistics.unitOfMeasure()));
+        }
         try {
             if (!policies.saveLogistics(sku, expectedVersion, logistics, actor()))
                 throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
