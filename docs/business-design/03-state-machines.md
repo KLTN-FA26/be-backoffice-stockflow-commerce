@@ -42,9 +42,9 @@ stateDiagram-v2
 | PENDING_APPROVAL | DRAFT | reject | E-commerce admin (approver) | rejection reason given | — |
 | APPROVED | PUBLISHED | publish | E-commerce admin | has price, image, category (BR-PRD-004) | `ProductPublished` |
 | PUBLISHED | APPROVED | unpublish | E-commerce admin | — | `ProductUnpublished` |
-| APPROVED / PUBLISHED | INACTIVE | suspend | `product-products:APPROVE` | reason given (BR-PRD-007) | `CatalogListingChanged` |
-| INACTIVE | APPROVED | resume | `product-products:APPROVE` | — (publish again to show it) | `CatalogListingChanged` |
-| APPROVED / PUBLISHED / INACTIVE | DISCONTINUED | discontinue | `product-products:APPROVE` | reason given (BR-PRD-007). Open POs and unshipped orders are **warned about, not blocked** (BR-PRD-005) | `ProductDiscontinued` (with the reason) |
+| APPROVED / PUBLISHED | INACTIVE | suspend | `product-lifecycle:APPROVE` (System Admin only, kltn-docs 01 §5.1) | reason given (BR-PRD-007) | `CatalogListingChanged` |
+| INACTIVE | APPROVED | resume | `product-lifecycle:APPROVE` (System Admin only, kltn-docs 01 §5.1) | — (publish again to show it) | `CatalogListingChanged` |
+| APPROVED / PUBLISHED / INACTIVE | DISCONTINUED | discontinue | `product-lifecycle:APPROVE` (System Admin only, kltn-docs 01 §5.1) | reason given (BR-PRD-007). Open POs and unshipped orders are **warned about, not blocked** (BR-PRD-005) | `ProductDiscontinued` (with the reason) |
 
 **INACTIVE** (kltn-docs 01 §5.1): not shown on the storefront, no new purchase order lines; orders and
 receipts already running continue. Its variants and images are still maintained.
