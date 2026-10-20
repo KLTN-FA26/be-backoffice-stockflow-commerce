@@ -59,10 +59,15 @@ class GoodsReceiptRepositoryAdapter implements GoodsReceiptRepository, GoodsRece
     }
 
     /**
-     * Lines are synchronised by id. A draft whose lines were replaced removes the old rows and
-     * flushes BEFORE inserting the new ones: Hibernate orders inserts ahead of deletes, and a new line
-     * for the same PO line and lot would otherwise collide with the old one on
-     * {@code uk_goods_receipt_lines_lot} — and be counted twice by the tolerance trigger.
+     * Lines are synchronised by id. A line the draft recounted keeps its id (stock packages point at
+     * it) and its row is updated in place.
+     *
+     * <p>The tolerance trigger ({@code check_goods_receipt_line}) checks each row against the others
+     * as they are at that moment, and Hibernate runs inserts before updates and deletes. So the rows
+     * are written in an order where the PO line's total only rises towards the final count, which
+     * the service has already checked: removed lines and smaller counts first, flushed; then larger
+     * counts, flushed; then new lines. Removing first also keeps a new line for the same PO line and
+     * lot from colliding with the old one on {@code uk_goods_receipt_lines_lot}.</p>
      */
     @Override
     public GoodsReceipt save(GoodsReceipt receipt) {
@@ -72,11 +77,31 @@ class GoodsReceiptRepositoryAdapter implements GoodsReceiptRepository, GoodsRece
                         receipt.receivedBy(), receipt.deliveryNote(), receipt.note()));
 
         Set<UUID> wanted = receipt.lines().stream().map(ReceiptLine::id).collect(Collectors.toSet());
-        if (entity.getLines().removeIf(row -> !wanted.contains(row.getId())) && !entity.isNew()) {
-            jpa.saveAndFlush(entity);
-        }
+        boolean lowered = entity.getLines().removeIf(row -> !wanted.contains(row.getId()));
         Map<UUID, GoodsReceiptLineJpaEntity> rows = entity.getLines().stream()
                 .collect(Collectors.toMap(GoodsReceiptLineJpaEntity::getId, row -> row));
+        List<ReceiptLine> raised = new ArrayList<>();
+        if (receipt.status() == GoodsReceiptStatus.DRAFT) {
+            for (ReceiptLine line : receipt.lines()) {
+                GoodsReceiptLineJpaEntity row = rows.get(line.id());
+                if (row == null) {
+                    continue;
+                }
+                if (BigDecimal.valueOf(line.receivedQuantity()).compareTo(row.getReceivedQty()) > 0) {
+                    raised.add(line);
+                } else {
+                    recount(row, line);
+                    lowered = true;
+                }
+            }
+        }
+        if (lowered && !entity.isNew()) {
+            jpa.saveAndFlush(entity);
+        }
+        raised.forEach(line -> recount(rows.get(line.id()), line));
+        if (!raised.isEmpty()) {
+            jpa.saveAndFlush(entity);
+        }
         for (ReceiptLine line : receipt.lines()) {
             GoodsReceiptLineJpaEntity row = rows.get(line.id());
             if (row == null) {
@@ -100,6 +125,11 @@ class GoodsReceiptRepositoryAdapter implements GoodsReceiptRepository, GoodsRece
         }
         entity.apply(receipt.status(), receipt.confirmedAt(), receipt.confirmedBy(), receipt.closedAt());
         return toDomain(jpa.saveAndFlush(entity));
+    }
+
+    private static void recount(GoodsReceiptLineJpaEntity row, ReceiptLine line) {
+        row.recount(line.locationId(), BigDecimal.valueOf(line.receivedQuantity()), line.expiryDate(), line.note(),
+                line.qcRequired());
     }
 
     @Override

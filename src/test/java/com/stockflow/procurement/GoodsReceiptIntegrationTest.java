@@ -121,6 +121,16 @@ class GoodsReceiptIntegrationTest {
         return new GoodsReceipts.NewLine(poLine(po, TABLE), qty, lot, LocalDate.now().plusYears(1), "HCM-RCV01", null);
     }
 
+    private GoodsReceipts.NewLine tableLot(UUID poLine, int qty, String lotNumber, String note) {
+        return new GoodsReceipts.NewLine(poLine, qty, lotNumber, LocalDate.now().plusYears(1), "HCM-RCV01", note);
+    }
+
+    private List<UUID> lineIds(UUID receiptId, String lotNumber) {
+        return jdbc.queryForList("""
+                SELECT id FROM procurement.goods_receipt_lines WHERE receipt_id = ? AND lot_number = ?""",
+                UUID.class, receiptId, lotNumber);
+    }
+
     @Test
     @DisplayName("2 + 3 steps: confirm counts INBOUND stock and closes the PO; QC splits the TABLE lot three ways")
     void fullFlow() {
@@ -216,6 +226,38 @@ class GoodsReceiptIntegrationTest {
     }
 
     @Test
+    @DisplayName("a recounted draft line keeps its id; counts move between lots without passing the tolerance on the way")
+    void recountKeepsLineIds() {
+        UUID po = confirmedOrder(TABLE, 10);
+        UUID line = poLine(po, TABLE);
+        String second = lot + "-B";
+        String third = lot + "-C";
+        GoodsReceipts.ReceiptView draft = receipts.create(new GoodsReceipts.Create(po, null, null), clerk);
+        receipts.replaceLines(draft.id(), List.of(tableLot(line, 8, lot, null), tableLot(line, 2, second, null)));
+        List<UUID> first = lineIds(draft.id(), lot);
+        List<UUID> other = lineIds(draft.id(), second);
+
+        // 8 + 2 to 2 + 8 and back. Whichever row were written first, raising before lowering would pass
+        // 10 × 1.05 on the way, and check_goods_receipt_line checks every row as it is written.
+        receipts.replaceLines(draft.id(), List.of(tableLot(line, 2, lot, "short"), tableLot(line, 8, second, null)));
+        receipts.replaceLines(draft.id(), List.of(tableLot(line, 8, lot, null), tableLot(line, 2, second, "short")));
+        assertThat(lineIds(draft.id(), lot)).as("stock packages point at the line").isEqualTo(first);
+        assertThat(lineIds(draft.id(), second)).isEqualTo(other);
+        assertThat(jdbc.queryForObject("""
+                SELECT received_qty::int || ':' || note FROM procurement.goods_receipt_lines WHERE id = ?""",
+                String.class, other.get(0))).isEqualTo("2:short");
+
+        // A lot no longer counted goes, a new one is a new line, inserted after the others went down.
+        receipts.replaceLines(draft.id(), List.of(tableLot(line, 1, lot, null), tableLot(line, 9, third, null)));
+        assertThat(lineIds(draft.id(), lot)).isEqualTo(first);
+        assertThat(lineIds(draft.id(), second)).isEmpty();
+        assertThat(lineIds(draft.id(), third)).hasSize(1).doesNotContainAnyElementsOf(other);
+
+        assertThat(receipts.confirm(draft.id(), clerk).status()).isEqualTo(GoodsReceiptStatus.IN_QC);
+        assertThat(stock(TABLE, "HCM-RCV01", third)).isEqualTo("INBOUND:9");
+    }
+
+    @Test
     @DisplayName("partial receipts move the PO on; the supplier's 5% tolerance caps the total (BR-02)")
     void partialAndTolerance() {
         UUID po = confirmedOrder(SOFA, 10);
@@ -231,7 +273,7 @@ class GoodsReceiptIntegrationTest {
         assertThatThrownBy(() -> receipts.replaceLines(second.id(),
                 List.of(new GoodsReceipts.NewLine(line, 5, null, null, "HCM-RCV01", null))))
                 .extracting(GoodsReceiptIntegrationTest::code).isEqualTo(ErrorCode.OVER_RECEIPT_TOLERANCE);
-        // Replacing a draft's lines twice with the same PO line: the old row goes before the new one is inserted.
+        // Recounting a draft's line twice: the row is updated in place, never counted twice by the tolerance.
         receipts.replaceLines(second.id(), List.of(new GoodsReceipts.NewLine(line, 3, null, null, "HCM-RCV01", null)));
         receipts.replaceLines(second.id(), List.of(new GoodsReceipts.NewLine(line, 4, null, null, "HCM-RCV01", "rest")));
         assertThat(receipts.confirm(second.id(), clerk).status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);

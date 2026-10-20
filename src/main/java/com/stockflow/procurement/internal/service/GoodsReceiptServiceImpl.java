@@ -132,6 +132,12 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
      * naming each field at fault — {@code lines[i].purchaseOrderLineId}, {@code .locationCode},
      * {@code .lotNumber}, {@code .expiryDate}, {@code .quantity} — and the top-level error code is the
      * first one found, line by line. {@code check_goods_receipt_line} checks the same again.</p>
+     *
+     * <p>A line counted again for the same PO line and lot keeps its id: the draft's line is recounted,
+     * not replaced. Stock packages labelled during receiving point at their receipt line
+     * ({@code inventory.stock_package.goods_receipt_line_id}, V20261020000100), with a restricting
+     * foreign key and a value that never changes once set, so a fresh id on every recount would make a
+     * draft with labelled cartons impossible to correct.</p>
      */
     @Override
     @Auditable(action = AuditAction.UPDATE, resourceType = "goods-receipt", resourceId = "#receiptId")
@@ -139,6 +145,10 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         GoodsReceipt receipt = load(receiptId);
         ReceivingPurchaseOrder order = orderOf(receipt);
         LocalDate receivedOn = LocalDate.ofInstant(receipt.receivedAt(), BUSINESS_ZONE);
+        Map<String, UUID> lineIds = new HashMap<>();
+        for (ReceiptLine line : receipt.lines()) {
+            lineIds.put(lineKey(line.poLineId(), line.lotNumber()), line.id());
+        }
 
         LineErrors errors = new LineErrors();
         List<ReceiptLine> counted = new ArrayList<>();
@@ -164,7 +174,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
             int before = errors.size();
             ReceivingLocation location = errors.area(i, in.locationCode(), RECEIVING, receipt.warehouseId());
             checkLotData(errors, i, item, lot, in.expiryDate(), receivedOn);
-            if (!seen.add(poLine.id() + "|" + Objects.toString(lot, ""))) {
+            if (!seen.add(lineKey(poLine.id(), lot))) {
                 errors.add(i, "lotNumber", ErrorCode.DUPLICATE_RECEIPT_LINE,
                         "Line %d of %s with this lot is already counted above; put the whole quantity of a lot on one line"
                                 .formatted(poLine.lineNo(), order.number()));
@@ -174,7 +184,8 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
             if (errors.size() == before) {
                 // A SUBCONTRACT order's goods get one inspection, the production QC against the approved sample
                 // (user decision 2026-10-13): receiving counts them and does not inspect the same goods again.
-                counted.add(ReceiptLine.counted(Identifiers.newId(), poLine.id(), poLine.inventoryItemId(),
+                UUID lineId = lineIds.getOrDefault(lineKey(poLine.id(), lot), Identifiers.newId());
+                counted.add(ReceiptLine.counted(lineId, poLine.id(), poLine.inventoryItemId(),
                         location.id(), in.quantity(), lot, in.expiryDate(), blankToNull(in.note()),
                         item.qcRequired() && !order.subcontract()));
             }
@@ -187,6 +198,11 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         errors.throwIfAny();
         receipt.replaceLines(counted);
         return view(receipts.save(receipt), order);
+    }
+
+    /** What identifies a line within one receipt: its PO line and lot ({@code uk_goods_receipt_lines_lot}). */
+    private static String lineKey(UUID poLineId, String lot) {
+        return poLineId + "|" + Objects.toString(lot, "");
     }
 
     /**
