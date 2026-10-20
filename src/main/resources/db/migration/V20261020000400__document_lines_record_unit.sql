@@ -68,8 +68,8 @@ COMMENT ON COLUMN procurement.purchase_order_line_revisions.unit_qty IS
 -- be the default purchase unit any more" (V20261019000300). A line already in it keeps it, and so do
 -- its revisions (a frozen copy), so an approved amendment of an old line still goes through.
 --
--- The unit row is read FOR SHARE, so a factor change waits for this transaction and then sees the
--- unit in use (see check_stock_package_created, V20261020000100).
+-- The unit's advisory lock is taken SHARED before the unit is read, so a change of its factor, item or
+-- name cannot commit alongside this line (see check_stock_package_created, V20261020000100).
 CREATE FUNCTION procurement.check_po_line_unit()
     RETURNS trigger
     LANGUAGE plpgsql AS
@@ -78,7 +78,8 @@ DECLARE
     unit     inventory.uom_conversions%ROWTYPE;
     new_unit BOOLEAN;
 BEGIN
-    SELECT * INTO unit FROM inventory.uom_conversions WHERE id = NEW.uom_conversion_id FOR SHARE;
+    PERFORM pg_advisory_xact_lock_shared(inventory.unit_lock_key(NEW.uom_conversion_id));
+    SELECT * INTO unit FROM inventory.uom_conversions WHERE id = NEW.uom_conversion_id;
     IF NOT FOUND THEN
         RETURN NEW; -- the foreign key reports it
     END IF;
@@ -177,8 +178,8 @@ COMMENT ON COLUMN procurement.goods_receipt_lines.uom_conversion_id IS
 -- The unit is one of the received item's units. A line is newly put in a retired unit only when its
 -- PO line was ordered in it: goods ordered before the supplier changed its carton still arrive in the
 -- old one, and a retired unit "stays for the documents that already used it" (V20261019000300). A
--- line already in a unit keeps it when the unit is retired later. The unit row is read FOR SHARE, as
--- in check_po_line_unit.
+-- line already in a unit keeps it when the unit is retired later. The unit's advisory lock is taken
+-- SHARED, as in check_po_line_unit.
 CREATE FUNCTION procurement.check_goods_receipt_line_unit()
     RETURNS trigger
     LANGUAGE plpgsql AS
@@ -187,7 +188,8 @@ DECLARE
     unit     inventory.uom_conversions%ROWTYPE;
     new_unit BOOLEAN;
 BEGIN
-    SELECT * INTO unit FROM inventory.uom_conversions WHERE id = NEW.uom_conversion_id FOR SHARE;
+    PERFORM pg_advisory_xact_lock_shared(inventory.unit_lock_key(NEW.uom_conversion_id));
+    SELECT * INTO unit FROM inventory.uom_conversions WHERE id = NEW.uom_conversion_id;
     IF NOT FOUND THEN
         RETURN NEW; -- the foreign key reports it
     END IF;

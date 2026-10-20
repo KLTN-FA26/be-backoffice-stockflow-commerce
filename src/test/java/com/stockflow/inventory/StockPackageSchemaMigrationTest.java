@@ -113,22 +113,25 @@ class StockPackageSchemaMigrationTest {
     }
 
     @Test
-    void aFactorChangeWaitsForTheDocumentBeingWrittenInItsUnit() throws Exception {
+    void aUnitBeingWrittenOntoADocumentKeepsItsFactorAndOnlyThat() throws Exception {
         try (Connection writer = connect(); Connection editor = connect()) {
             String carton = unit(writer, "RACED");
             writer.setAutoCommit(false);
             update(writer, "INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id,"
                     + " nominal_qty, location_code) VALUES (gen_random_uuid(), 'IT-RACED', " + SOFA + ", " + carton
                     + ", 10, 'HCM-A01-1-A')");
-
-            // Without FOR SHARE on the unit row the foreign key's KEY SHARE lets this through, it cannot see the
-            // uncommitted stock package, and both commit: a carton of 10 in a unit that now says 12.
+            // Anything that waits is a failure here: the lock_timeout turns a wait into an error at once.
             update(editor, "SET lock_timeout = '1s'");
-            SQLException blocked = catchThrowableOfType(SQLException.class, () ->
+
+            // The foreign key's KEY SHARE does not stop a factor change, and unit_in_use cannot see the uncommitted
+            // stock package: without the unit's advisory lock both would commit, a carton of 10 in a unit of 12.
+            SQLException change = catchThrowableOfType(SQLException.class, () ->
                     update(editor, "UPDATE inventory.uom_conversions SET factor = 12 WHERE id = " + carton));
-            assertThat(blocked == null ? "accepted" : blocked.getSQLState())
-                    .as("the factor change waits for the stock package's transaction (55P03: lock timeout)")
-                    .isEqualTo("55P03");
+            assertThat(change == null ? "accepted" : change.getSQLState())
+                    .as("the factor change is refused while the stock package is being written, without waiting")
+                    .isEqualTo("23514");
+            // Everything else about the unit is still edited meanwhile, and nothing waits for the writer.
+            update(editor, "UPDATE inventory.uom_conversions SET weight_kg = 12.5, length_cm = 60 WHERE id = " + carton);
 
             writer.commit();
             writer.setAutoCommit(true);

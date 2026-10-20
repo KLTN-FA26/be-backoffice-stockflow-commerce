@@ -133,9 +133,10 @@ CREATE TRIGGER tg_stock_package_immutable BEFORE UPDATE ON inventory.stock_packa
 -- before the supplier changed its carton still arrive in the old carton. (goods_receipt_lines gets
 -- uom_conversion_id in V20261020000400; PL/pgSQL resolves the column when the function runs.)
 --
--- The unit row is read FOR SHARE. The foreign key alone takes KEY SHARE, which does not conflict
--- with an UPDATE of the factor; FOR SHARE does, so a factor change (V20261020000600) waits for this
--- transaction and then sees the unit in use, instead of both committing.
+-- The unit's advisory lock is taken SHARED before the unit is read (inventory.unit_lock_key,
+-- V20261020000600): a change of the unit's factor, item or name meanwhile is refused as "in use",
+-- and one already made is waited for, so this reads the factor it will be kept to. The foreign key
+-- alone takes KEY SHARE on the unit row, which a factor change does not wait for.
 CREATE FUNCTION inventory.check_stock_package_created()
     RETURNS trigger
     LANGUAGE plpgsql AS
@@ -147,7 +148,8 @@ BEGIN
         RAISE EXCEPTION 'stock package % is created RECEIVING or IN_STOCK, not %', NEW.lpn, NEW.status
             USING ERRCODE = 'check_violation';
     END IF;
-    SELECT * INTO unit FROM inventory.uom_conversions WHERE id = NEW.uom_conversion_id FOR SHARE;
+    PERFORM pg_advisory_xact_lock_shared(inventory.unit_lock_key(NEW.uom_conversion_id));
+    SELECT * INTO unit FROM inventory.uom_conversions WHERE id = NEW.uom_conversion_id;
     IF NOT FOUND THEN
         RETURN NEW; -- fk_stock_package_unit reports it
     END IF;
