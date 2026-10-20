@@ -22,6 +22,10 @@ import java.util.UUID;
  * {@code procurement.goods_receipt_lines}. {@code received_qty} is NUMERIC(18,3) in the schema; the
  * stock it becomes is counted in whole units, so the domain carries an int and this maps the column
  * as it is.
+ *
+ * <p>The PO line, item and lot are what the line IS and are never written again. What was counted —
+ * where, how many, expiry, note, whether QC is needed — is recounted while the receipt is a draft
+ * ({@link #recount}); {@code tg_goods_receipt_lines_frozen} refuses it once the receipt is past DRAFT.</p>
  */
 @Entity
 @Table(name = "goods_receipt_lines", schema = "procurement")
@@ -37,22 +41,22 @@ public class GoodsReceiptLineJpaEntity extends BaseEntity {
     @Column(name = "inventory_item_id", nullable = false, updatable = false)
     private UUID inventoryItemId;
 
-    @Column(name = "location_id", nullable = false, updatable = false)
+    @Column(name = "location_id", nullable = false)
     private UUID locationId;
 
-    @Column(name = "received_qty", nullable = false, precision = 18, scale = 3, updatable = false)
+    @Column(name = "received_qty", nullable = false, precision = 18, scale = 3)
     private BigDecimal receivedQty;
 
     @Column(name = "lot_number", length = 64, updatable = false)
     private String lotNumber;
 
-    @Column(name = "expiry_date", updatable = false)
+    @Column(name = "expiry_date")
     private LocalDate expiryDate;
 
-    @Column(name = "note", length = 255, updatable = false)
+    @Column(name = "note", length = 255)
     private String note;
 
-    @Column(name = "qc_required", nullable = false, updatable = false)
+    @Column(name = "qc_required", nullable = false)
     private boolean qcRequired;
 
     @Column(name = "qc_location_id")
@@ -87,6 +91,18 @@ public class GoodsReceiptLineJpaEntity extends BaseEntity {
 
     void attachTo(GoodsReceiptJpaEntity owner) {
         this.receipt = owner;
+    }
+
+    /** The draft's line counted again. Unchanged values leave the row clean, so a confirmed line is not written. */
+    public void recount(UUID locationId, BigDecimal receivedQty, LocalDate expiryDate, String note,
+                        boolean qcRequired) {
+        this.locationId = locationId;
+        if (this.receivedQty == null || this.receivedQty.compareTo(receivedQty) != 0) {
+            this.receivedQty = receivedQty;
+        }
+        this.expiryDate = expiryDate;
+        this.note = note;
+        this.qcRequired = qcRequired;
     }
 
     public void movedToQc(UUID qcLocationId, Instant at, UUID by) {

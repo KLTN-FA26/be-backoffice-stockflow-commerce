@@ -18,11 +18,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * V20261017000800 (read grants for the Sprint 2 screens) and V20261017000810 (the PACKING area a completed order's
  * goods went to) on a database that already holds completed production orders - one whose hand-over is in the
- * ledger, one whose is not - upgraded from the newest migration before them.
+ * ledger, one whose is not - upgraded from the newest migration before them, and only through them: the role
+ * versions are asserted exactly, and any later migration that grants to the same roles moves them again.
  */
 class ScreenGrantsAndHandOverMigrationUpgradeTest {
 
     private static final String BEFORE = "20261017000720";
+    private static final String UNDER_TEST = "20261017000810";
     private static final String HCM = "(SELECT id FROM warehouse.warehouse WHERE prefix = 'HCM')";
     private static final String USER = "(SELECT id FROM identity.app_user LIMIT 1)";
     private static int salesOrders;
@@ -48,7 +50,7 @@ class ScreenGrantsAndHandOverMigrationUpgradeTest {
                 long manager = version(db, "WAREHOUSE_MANAGER");
                 long qc = version(db, "QC_STAFF");
 
-                var result = flyway(pg, null).migrate();
+                var result = flyway(pg, UNDER_TEST).migrate();
                 assertThat(result.migrations).extracting(m -> m.version)
                         .contains("20261017000800", "20261017000810");
 
