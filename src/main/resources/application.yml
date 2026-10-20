@@ -59,6 +59,13 @@ spring:
       # Belt and braces with the server-side setting in docker-compose: a statement still running
       # after 10s is not going to finish usefully and is holding a connection every module shares.
       connection-init-sql: SET statement_timeout = 10000
+      # MUST stay true while auto-commit is false. Without it Hikari runs the init SQL above and
+      # neither commits nor rolls back, so every new connection enters the pool "idle in
+      # transaction": Postgres kills it after idle_in_transaction_session_timeout (60s in
+      # docker-compose) and the pool logs "Failed to validate connection ... has been closed" on
+      # the next borrow. SET is transactional too, so the first rollback on such a connection
+      # would also undo the statement_timeout it was opened to set.
+      isolate-internal-queries: true
       # Every module shares this pool. That is the monolith's main operational risk: a runaway
       # report query can starve checkout. Mitigated by statement timeouts below, and revisited in
       # docs/adr/0005 if reporting ever needs its own read replica.
