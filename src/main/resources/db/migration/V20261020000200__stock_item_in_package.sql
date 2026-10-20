@@ -14,10 +14,18 @@
 -- a transaction (a move updates the stock package and its rows one statement at a time), so it is
 -- checked by DEFERRABLE INITIALLY DEFERRED constraint triggers, at commit:
 --
---   1. every row has the stock package's SKU and sits where the stock package is;
---   2. all its rows are of one lot (a supplier carton is one SKU, one lot);
+--   1. every row has the stock package's SKU, and every row holding stock sits where the stock
+--      package is;
+--   2. all its rows holding stock are of one lot (a supplier carton is one SKU, one lot);
 --   3. one RECEIVING, VOID, CONSUMED or LOST holds nothing; one IN_STOCK holds something;
 --   4. an unopened one in stock holds exactly what was counted into it.
+--
+-- Rules 1 (location) and 2 look only at rows with stock. A stock row is never deleted once emptied
+-- (reservations point at it, and findLayer reuses it), so an emptied row stays in its stock package:
+-- a serial picked out of a carton, or a lot picked out before another was put back. Counting those
+-- would make the carton immovable unless every empty row were dragged along, and would refuse a
+-- put-back of another lot into a carton that holds none of the first. An empty row filled again at a
+-- place other than its stock package's fires the check through on_hand, and is refused then.
 --
 -- A violation surfaces at commit, as a 500: the application checks first and answers with an error
 -- code; these are what a missed path or a direct UPDATE cannot get past.
@@ -74,8 +82,8 @@ BEGIN
     SELECT sku INTO item_sku FROM inventory.inventory_items WHERE id = pkg.inventory_item_id;
 
     SELECT count(*) FILTER (WHERE s.sku <> item_sku),
-           count(*) FILTER (WHERE s.location_code <> pkg.location_code),
-           count(DISTINCT COALESCE(s.lot_number, '')),
+           count(*) FILTER (WHERE s.on_hand > 0 AND s.location_code <> pkg.location_code),
+           count(DISTINCT COALESCE(s.lot_number, '')) FILTER (WHERE s.on_hand > 0),
            COALESCE(sum(s.on_hand), 0)
       INTO wrong_sku, elsewhere, lots, held
       FROM inventory.stock_item s

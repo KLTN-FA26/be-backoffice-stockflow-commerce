@@ -152,6 +152,25 @@ SELECT pg_temp.expect_fail('K27 a source stock package with no source location',
 SELECT pg_temp.expect_ok('K28 a whole stock package moved, named on both sides', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, reference_type, reference_id, occurred_at, from_stock_package_id, to_stock_package_id)
     VALUES (gen_random_uuid(), 'MOVE', 'SOFA-3S-GREY', 'HCM-A01-1-A', 'HCM-A01-1-B', 4, 'MOVE_TASK', gen_random_uuid(), NOW(), md5('qa:pk:2')::uuid, md5('qa:pk:2')::uuid) $q$);
+SELECT pg_temp.expect_fail('K28a a movement naming a stock package of another SKU', $q$
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, reference_type, reference_id, occurred_at, from_stock_package_id)
+    VALUES (gen_random_uuid(), 'MOVE', 'TABLE-OAK-160', 'HCM-A01-1-A', 'HCM-A01-1-B', 1, 'MOVE_TASK', gen_random_uuid(), NOW(), md5('qa:pk:2')::uuid) $q$);
+SELECT pg_temp.expect_fail('K28b a movement naming a stock package at a bin it never touched', $q$
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, reference_type, reference_id, occurred_at, from_stock_package_id)
+    VALUES (gen_random_uuid(), 'MOVE', 'SOFA-3S-GREY', 'HCM-A01-1-B', 'HCM-RCV01', 1, 'MOVE_TASK', gen_random_uuid(), NOW(), md5('qa:pk:2')::uuid) $q$);
+
+\echo '--- emptied rows stay in their stock package (V20261020000200)'
+SELECT pg_temp.expect_ok('K28c an emptied row left behind when the stock package moves', $q$
+    INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at, received_at, stock_package_id)
+    VALUES (md5('qa:pk:2:empty')::uuid, 'SOFA-3S-GREY', 'HCM-A01-1-A', 0, 0, 'AVAILABLE', NOW(), NOW() - interval '5 hour', md5('qa:pk:2')::uuid);
+    UPDATE inventory.stock_package SET location_code = 'HCM-A01-1-B' WHERE id = md5('qa:pk:2')::uuid;
+    UPDATE inventory.stock_item SET location_code = 'HCM-A01-1-B' WHERE id = md5('qa:pk:2:row')::uuid $q$);
+SELECT pg_temp.expect_fail('K28d the emptied row filled again away from its stock package', $q$
+    UPDATE inventory.stock_item SET on_hand = 1 WHERE id = md5('qa:pk:2:empty')::uuid $q$);
+SELECT pg_temp.expect_ok('K28e one lot picked out, another put back into the stock package', $q$
+    UPDATE inventory.stock_item SET on_hand = 0 WHERE stock_package_id = md5('qa:pk:26')::uuid;
+    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, expiry_date, on_hand, reserved, status, created_at, received_at, stock_package_id)
+    VALUES (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-A01-1-A', 'L2', CURRENT_DATE + 30, 1, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour', md5('qa:pk:26')::uuid) $q$);
 
 \echo '--- purchase order lines record their unit (V20261020000400)'
 INSERT INTO procurement.purchase_orders (id, po_number, supplier_id, warehouse_id, currency, order_date)
@@ -246,6 +265,12 @@ SELECT pg_temp.expect_ok('K32 one open putaway task for the stock package', $q$
 SELECT pg_temp.expect_fail('K33 a second open putaway task for it', $q$
     INSERT INTO warehouse.putaway_task (id, goods_receipt_id, goods_receipt_line_id, sku, quantity, status, created_at, stock_package_id)
     VALUES (gen_random_uuid(), md5('qa:pk:gr')::uuid, md5('qa:pk:grl')::uuid, 'SOFA-3S-GREY', 10, 'PENDING', NOW(), md5('qa:pk:30')::uuid) $q$);
+SELECT pg_temp.expect_fail('K33a a putaway task naming a VOID stock package', $q$
+    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code, goods_receipt_line_id)
+    VALUES (md5('qa:pk:33a')::uuid, 'QA-LPN-33A', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa:unit:SOFA-CARTON')::uuid, 10, 'HCM-RCV01', md5('qa:pk:grl')::uuid);
+    UPDATE inventory.stock_package SET status = 'VOID', closed_at = NOW() WHERE id = md5('qa:pk:33a')::uuid;
+    INSERT INTO warehouse.putaway_task (id, goods_receipt_id, goods_receipt_line_id, sku, quantity, status, created_at, stock_package_id)
+    VALUES (gen_random_uuid(), md5('qa:pk:gr')::uuid, md5('qa:pk:grl')::uuid, 'SOFA-3S-GREY', 10, 'PENDING', NOW(), md5('qa:pk:33a')::uuid) $q$);
 
 \echo '--- a retired unit stays for the documents already in it (V20261020000100, 0400)'
 SELECT pg_temp.expect_fail('U11 a receipt line newly put in a retired unit its PO line was not ordered in', $q$

@@ -9,6 +9,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
+import java.sql.Statement;
 
 import static com.stockflow.support.RawSql.refused;
 import static com.stockflow.support.RawSql.text;
@@ -53,6 +54,36 @@ class StockPackageSchemaMigrationTest {
         update(db, "INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor) VALUES ("
                 + id + ", " + SOFA + ", '" + name + "', 10)");
         return id;
+    }
+
+    /** An opened stock package in stock at {@code location}, holding {@code held} sofas in one row. */
+    private static String inStock(Connection db, String name, String unit, String location, int held)
+            throws SQLException {
+        String id = "md5('it:pk:" + name + "')::uuid";
+        transaction(db,
+                "INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,"
+                        + " received_qty, location_code, status, unopened) VALUES (" + id + ", 'IT-" + name + "', "
+                        + SOFA + ", " + unit + ", 10, " + held + ", '" + location + "', 'IN_STOCK', FALSE)",
+                "INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at,"
+                        + " received_at, stock_package_id) VALUES (md5('it:pk:" + name + ":row')::uuid, 'SOFA-3S-GREY', '"
+                        + location + "', " + held + ", 0, 'AVAILABLE', NOW(), NOW() - interval '1 day', " + id + ")");
+        return id;
+    }
+
+    /** The statements as one transaction, so the deferred checks run once, at its commit. */
+    private static void transaction(Connection db, String... statements) throws SQLException {
+        db.setAutoCommit(false);
+        try (Statement st = db.createStatement()) {
+            for (String sql : statements) {
+                st.execute(sql);
+            }
+            db.commit();
+        } catch (SQLException e) {
+            db.rollback();
+            throw e;
+        } finally {
+            db.setAutoCommit(true);
+        }
     }
 
     @Test
@@ -115,6 +146,39 @@ class StockPackageSchemaMigrationTest {
                     "INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,"
                             + " location_code) VALUES (gen_random_uuid(), 'IT-RETIRED', " + SOFA + ", " + old
                             + ", 10, 'HCM-A01-1-A')");
+        }
+    }
+
+    @Test
+    void theLedgerNamesAStockPackageOfItsSkuAtOneOfItsLocations() throws Exception {
+        try (Connection db = connect()) {
+            String pkg = inStock(db, "LEDGER", unit(db, "LEDGER"), "HCM-A01-1-A", 4);
+            String row = "INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code,"
+                    + " to_location_code, quantity, reference_type, reference_id, occurred_at, from_stock_package_id)"
+                    + " VALUES (gen_random_uuid(), 'MOVE', '%s', '%s', '%s', 1, 'MOVE_TASK', gen_random_uuid(), NOW(), "
+                    + pkg + ")";
+
+            refused(db, "a stock package of another SKU", row.formatted("TABLE-OAK-160", "HCM-A01-1-A", "HCM-A01-1-B"));
+            refused(db, "a stock package at a bin the movement never touched",
+                    row.formatted("SOFA-3S-GREY", "HCM-A01-1-B", "HCM-RCV01"));
+            update(db, row.formatted("SOFA-3S-GREY", "HCM-A01-1-A", "HCM-A01-1-B"));
+        }
+    }
+
+    @Test
+    void anEmptiedRowStaysInItsStockPackageWithoutPinningIt() throws Exception {
+        try (Connection db = connect()) {
+            String pkg = inStock(db, "EMPTIED", unit(db, "EMPTIED"), "HCM-A01-1-A", 4);
+            update(db, "INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at,"
+                    + " received_at, stock_package_id) VALUES (md5('it:pk:EMPTIED:empty')::uuid, 'SOFA-3S-GREY',"
+                    + " 'HCM-A01-1-A', 0, 0, 'AVAILABLE', NOW(), NOW() - interval '2 day', " + pkg + ")");
+
+            // A serial picked out of the carton leaves its row at 0; the carton moves on without it.
+            transaction(db,
+                    "UPDATE inventory.stock_package SET location_code = 'HCM-A01-1-B' WHERE id = " + pkg,
+                    "UPDATE inventory.stock_item SET location_code = 'HCM-A01-1-B' WHERE id = md5('it:pk:EMPTIED:row')::uuid");
+            refused(db, "the emptied row filled again away from its stock package",
+                    "UPDATE inventory.stock_item SET on_hand = 1 WHERE id = md5('it:pk:EMPTIED:empty')::uuid");
         }
     }
 }
