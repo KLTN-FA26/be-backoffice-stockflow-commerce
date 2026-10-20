@@ -171,6 +171,13 @@ SELECT pg_temp.expect_ok('K28e one lot picked out, another put back into the sto
     UPDATE inventory.stock_item SET on_hand = 0 WHERE stock_package_id = md5('qa:pk:26')::uuid;
     INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, expiry_date, on_hand, reserved, status, created_at, received_at, stock_package_id)
     VALUES (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-A01-1-A', 'L2', CURRENT_DATE + 30, 1, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour', md5('qa:pk:26')::uuid) $q$);
+SELECT pg_temp.expect_fail('K28f a second row of the emptied layer in the stock package, on its new bin', $q$
+    INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at, received_at, stock_package_id)
+    SELECT gen_random_uuid(), sku, 'HCM-A01-1-B', 1, 0, 'AVAILABLE', NOW(), received_at, stock_package_id
+      FROM inventory.stock_item WHERE id = md5('qa:pk:2:empty')::uuid $q$);
+SELECT pg_temp.expect_ok('K28g the stock package back on the bin its emptied row never left', $q$
+    UPDATE inventory.stock_package SET location_code = 'HCM-A01-1-A' WHERE id = md5('qa:pk:2')::uuid;
+    UPDATE inventory.stock_item SET location_code = 'HCM-A01-1-A' WHERE id = md5('qa:pk:2:row')::uuid $q$);
 
 \echo '--- purchase order lines record their unit (V20261020000400)'
 INSERT INTO procurement.purchase_orders (id, po_number, supplier_id, warehouse_id, currency, order_date)

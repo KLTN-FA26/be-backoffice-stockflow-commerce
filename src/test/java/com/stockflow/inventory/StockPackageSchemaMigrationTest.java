@@ -182,6 +182,19 @@ class StockPackageSchemaMigrationTest {
                     "UPDATE inventory.stock_item SET location_code = 'HCM-A01-1-B' WHERE id = md5('it:pk:EMPTIED:row')::uuid");
             refused(db, "the emptied row filled again away from its stock package",
                     "UPDATE inventory.stock_item SET on_hand = 1 WHERE id = md5('it:pk:EMPTIED:empty')::uuid");
+            // A carton's layer is one row wherever it is: a put-back fills the emptied row, it does not open a
+            // second row of the same layer on the carton's new bin.
+            refused(db, "a second row of the emptied layer in the same stock package, on another bin",
+                    "INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at,"
+                            + " received_at, stock_package_id) SELECT gen_random_uuid(), sku, 'HCM-A01-1-B', 1, 0,"
+                            + " 'AVAILABLE', NOW(), received_at, stock_package_id FROM inventory.stock_item"
+                            + " WHERE id = md5('it:pk:EMPTIED:empty')::uuid");
+            // And the carton goes back to the bin its emptied row never left.
+            transaction(db,
+                    "UPDATE inventory.stock_package SET location_code = 'HCM-A01-1-A' WHERE id = " + pkg,
+                    "UPDATE inventory.stock_item SET location_code = 'HCM-A01-1-A' WHERE id = md5('it:pk:EMPTIED:row')::uuid");
+            assertThat(text(db, "SELECT count(*) || ' rows at ' || min(location_code) FROM inventory.stock_item"
+                    + " WHERE stock_package_id = " + pkg)).isEqualTo("2 rows at HCM-A01-1-A");
         }
     }
 }

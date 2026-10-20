@@ -6,9 +6,14 @@
 -- rows: usually one, more for serials or stock of another receipt time put back into it. What is left
 -- in it is the sum of their on_hand.
 --
--- The stock package is part of the stock row's identity, so two of them with the same SKU and lot on
--- one bin stay two rows, and moving one is an UPDATE of its rows' location_code: the rows keep their
--- id, and the reservations that point at them (stock_reservation.stock_item_id) stay valid.
+-- Moving a stock package is an UPDATE of its rows' location_code: the rows keep their id, and the
+-- reservations that point at them (stock_reservation.stock_item_id) stay valid.
+--
+-- So the natural key of a row in a stock package is the stock package, not the bin: one row per stock
+-- package, SKU, lot, serial and receipt time, wherever it is. Loose stock keeps its key of SKU, bin,
+-- lot, serial and receipt time. With the bin in a packaged row's key, an emptied row left on a bin
+-- (rule 1 below lets it stay) would collide with its own stock package's row of the same layer the
+-- day the carton came back to that bin, and two rows of one layer could sit in one carton on two bins.
 --
 -- What must hold between a stock package and its rows spans two tables and is only true at the end of
 -- a transaction (a move updates the stock package and its rows one statement at a time), so it is
@@ -36,10 +41,11 @@
 -- without that lock, each commit-time check would see the other's rows as they were, and both could
 -- pass (write skew).
 --
--- Before any code writes stock_package_id, every lookup that finds a stock layer by SKU, location,
--- lot and receipt time (StockOperationsServiceImpl.findLayer / findOne, picking, transfers,
--- adjustments, counts) must match the stock package too: the key now allows a loose row and rows
--- of several stock packages with otherwise equal values on one bin.
+-- Before any code writes stock_package_id, every lookup that finds a stock layer (StockOperations-
+-- ServiceImpl.findLayer / findOne, picking, transfers, adjustments, counts) must tell the two keys
+-- apart: loose stock by SKU, bin, lot and receipt time with no stock package; stock in a carton by the
+-- stock package, SKU, lot and receipt time, with no bin. A put-back into a carton finds its emptied
+-- row of that layer, wherever the row was left, and fills it there.
 -- =============================================================================
 
 
@@ -48,16 +54,23 @@ ALTER TABLE inventory.stock_item
     ADD CONSTRAINT fk_stock_item_package FOREIGN KEY (stock_package_id)
         REFERENCES inventory.stock_package (id) ON DELETE RESTRICT;
 
--- The natural key (V20260930001000), now per stock package. NULLS NOT DISTINCT: loose stock (NULL) is
--- still one row per SKU, location, lot, serial and receipt time.
+-- The natural key (V20260930001000), now for loose stock only; NULLS NOT DISTINCT as before (legacy
+-- rows have no receipt time). A row in a stock package is keyed by the stock package instead, which
+-- also serves "the rows of this stock package".
 DROP INDEX inventory.uk_stock_item_sku_location_lot;
 CREATE UNIQUE INDEX uk_stock_item_sku_location_lot
     ON inventory.stock_item (sku, location_code, COALESCE(lot_number, ''), COALESCE(serial_number, ''),
-                             received_at, stock_package_id)
-    NULLS NOT DISTINCT;
-
-CREATE INDEX ix_stock_item_package ON inventory.stock_item (stock_package_id)
+                             received_at)
+    NULLS NOT DISTINCT
+    WHERE stock_package_id IS NULL;
+CREATE UNIQUE INDEX uk_stock_item_package_layer
+    ON inventory.stock_item (stock_package_id, sku, COALESCE(lot_number, ''), COALESCE(serial_number, ''),
+                             received_at)
+    NULLS NOT DISTINCT
     WHERE stock_package_id IS NOT NULL;
+-- The whole-table key was also the index behind every lookup by SKU and bin (findLayer, findOne); a
+-- partial index serves only a query that repeats its WHERE, and none of today's do.
+CREATE INDEX ix_stock_item_sku_location ON inventory.stock_item (sku, location_code);
 
 COMMENT ON COLUMN inventory.stock_item.stock_package_id IS
     'The stock package this stock is in; NULL for loose stock.';
