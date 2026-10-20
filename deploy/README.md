@@ -9,8 +9,9 @@ Changes to the deployment itself (this directory, the workflow) go through a pul
 `develop` like any other change; the pull request runs the build but never deploys.
 
 ```
-browser ── Cloudflare Free (DNS, CDN, WAF, TLS "Full (strict)")
-              │ 443 only, Cloudflare ranges only
+browser ─┬─ api, s3, media ─────── DNS-only, straight to the VPS ───────┐
+         └─ jaeger, mail, logs ── Cloudflare Free ("Full (strict)") ───┤ 443, Let's Encrypt wildcard;
+                                                                       │ these three: Cloudflare ranges only
            VPS ── nginx ─┬─ api.<domain>     → app:8080        (Swagger UI for the frontend)
                          ├─ s3.<domain>      → minio:9000      (presigned downloads, app uploads)
                          ├─ media.<domain>   → minio:9000/<bucket>/product-images/ only
@@ -34,7 +35,7 @@ browser ── Cloudflare Free (DNS, CDN, WAF, TLS "Full (strict)")
 |---|---|
 | `docker-compose.yml` | the whole stack; only nginx publishes public ports (Postgres: loopback only); a memory limit on everything |
 | `.env.example` | every variable; copied to `.env` on the server, never committed |
-| `nginx/nginx.conf` | real client IP from Cloudflare, origin lock, per-request DNS |
+| `nginx/nginx.conf` | real client IP from Cloudflare, origin lock, flood limits for the DNS-only hosts, per-request DNS |
 | `nginx/templates/stockflow.conf.template` | the six sites |
 | `nginx/snippets/` | TLS, proxy headers, Cloudflare ranges (generated) |
 | `scripts/deploy.sh` | pull, replace, wait for health, roll back on failure |
@@ -125,19 +126,50 @@ htpasswd -cB /opt/stockflow/auth/htpasswd team      # -c only the first time
 ## 2. One-time: Cloudflare (Free plan is enough)
 
 1. Add the domain to Cloudflare and point its nameservers there.
-2. DNS: `A` records for `api`, `s3`, `media`, `jaeger`, `mail`, `logs` → VPS IPv4, **proxied** (orange cloud).
+2. DNS: `A` records → VPS IPv4:
+   - `api`, `s3`, `media` → **DNS only** (grey cloud). Cloudflare Free sends Vietnamese ISPs to
+     PoPs as far as Europe (measured: 13 of 20 requests), and back to a VPS in Vietnam - up to
+     seconds for a trivial request. These hosts have no origin lock; nginx rate-limits them.
+   - `jaeger`, `mail`, `logs` → **proxied** (orange cloud), locked to Cloudflare's ranges.
+
    **No `AAAA` records.** Docker does not publish IPv6 natively; it hands IPv6 connections to a
-   userland proxy that replaces the source address, so nginx would see an internal address
-   instead of Cloudflare's and drop every IPv6 request.
+   userland proxy that replaces the source address, so nginx would see an internal address - every
+   IPv6 client in one rate-limit bucket on the DNS-only hosts, every request dropped on the
+   proxied ones.
 3. SSL/TLS → Overview → **Full (strict)**.
-4. SSL/TLS → Origin Server → Create Certificate for `<domain>, *.<domain>` (RSA, 15 years). Save
-   on the VPS as `/opt/stockflow/certs/origin.pem` and `/opt/stockflow/certs/origin.key`
-   (`chmod 600 origin.key`).
-5. Caching → Cache Rules:
-   - `api.<domain>`, `s3.<domain>`, `jaeger.<domain>`, `mail.<domain>`, `logs.<domain>` → **Bypass cache**.
-   - `media.<domain>` → Eligible for cache, Edge TTL "use cache-control header" (a year for 200s).
-6. Security → Bots: leave **Bot Fight Mode off**. It would challenge the application's own S3
-   calls to `s3.<domain>`, which are not a browser.
+4. The certificate: a Let's Encrypt wildcard, see 2a. (The Cloudflare Origin Certificate this
+   used before is trusted by Cloudflare only, so a DNS-only host cannot use it.)
+5. Caching → Cache Rules: `jaeger.<domain>`, `mail.<domain>`, `logs.<domain>` → **Bypass cache**.
+   The DNS-only hosts never pass through Cloudflare, so no rule applies to them.
+6. Security → Bots: leave **Bot Fight Mode off**.
+
+## 2a. One-time: the certificate
+
+Issued by certbot's DNS-01 challenge, which works whether or not a host is proxied - no port 80,
+no downtime. It lands in `certs/letsencrypt/`, which CI's rsync never touches. **It must exist
+before nginx starts with this configuration**: without it `nginx -t` fails and `deploy.sh`
+refuses to restart nginx.
+
+1. Cloudflare → My Profile → API Tokens → Create Token → template **Edit zone DNS**, zone
+   `<domain>` only. Never paste it anywhere but the file below.
+2. On the VPS:
+
+```bash
+sudo mkdir -p /root/.secrets && sudo nano /root/.secrets/cf.ini   # dns_cloudflare_api_token = <token>
+sudo chmod 600 /root/.secrets/cf.ini
+sudo docker run --rm -v /opt/stockflow/certs/letsencrypt:/etc/letsencrypt -v /root/.secrets/cf.ini:/cf.ini:ro \
+  certbot/dns-cloudflare certonly --dns-cloudflare --dns-cloudflare-credentials /cf.ini \
+  --dns-cloudflare-propagation-seconds 30 --cert-name wildcard -d <domain> -d "*.<domain>" \
+  --agree-tos -m <email> --non-interactive
+sudo ls -l /opt/stockflow/certs/letsencrypt/live/wildcard/        # fullchain.pem, privkey.pem
+```
+
+3. Renewal, in **root's** crontab (`sudo crontab -e`) - the token file is root's. `renew` does
+   nothing until 30 days before expiry; the reload is harmless when nothing changed:
+
+```cron
+0 3 * * * docker run --rm -v /opt/stockflow/certs/letsencrypt:/etc/letsencrypt -v /root/.secrets/cf.ini:/cf.ini:ro certbot/dns-cloudflare renew --quiet && cd /opt/stockflow && docker compose exec -T nginx nginx -s reload
+```
 
 ## 3. One-time: GitHub
 
@@ -205,7 +237,8 @@ curl -sI https://media.<domain>/design-renders/x             # 404 from nginx
 curl -sI https://jaeger.<domain>                             # 401 without the password
 curl -sI https://mail.<domain>                               # 401 without the password
 curl -sI https://logs.<domain>                               # 401 without the password
-curl -sk --resolve api.<domain>:443:<vps-ip> https://api.<domain>/   # "Empty reply": origin lock works
+curl -sI --resolve api.<domain>:443:<vps-ip> https://api.<domain>/oauth2/jwks   # 200, no -k: the certificate is public
+curl -sk --resolve jaeger.<domain>:443:<vps-ip> https://jaeger.<domain>/   # "Empty reply": origin lock works
 ```
 
 ## 5. Operating it
@@ -283,8 +316,10 @@ the uploaded files matter.
   add the host a deployed frontend is served from (`https://*.<domain>` covers every subdomain) and
   run `bash scripts/deploy.sh` to apply it. A bare `*`, a missing scheme or a trailing slash stops
   the application at startup with the reason in `docker compose logs app`.
-- The application's own uploads go out to Cloudflare and back (`S3_ENDPOINT` must be the public
-  host for presigned links to work, and the presigner and client share it).
+- The application's own uploads go out to the VPS's public address and back (`S3_ENDPOINT` must
+  be the public host for presigned links to work, and the presigner and client share it).
+- api, s3 and media have no DDoS protection or WAF in front of them - only nginx's per-address
+  limits. Acceptable for a dev server; a production deployment would want an edge again.
 - One machine: if the VPS is lost, so is everything not in an off-site backup.
 
 ## 7. Before this becomes production
