@@ -132,6 +132,26 @@ and (sku=? or sku is null) order by priority desc, id limit 2
 
     private record PriceRow(BigDecimal amount, String currency, int priority) {}
 
+    /**
+     * The active price rule of a customer group for this SKU (or for every SKU), kltn-docs 13 §3's
+     * fallback when a customer has no own price. Same precedence and ambiguity rule as {@link #price}.
+     */
+    public Optional<SellingPrice> segmentPrice(UUID segmentId, String sku) {
+        var rows =
+                jdbc.query(
+                        """
+select price,currency,priority from catalog.pricing_rule where active and segment_id=?
+and (sku=? or sku is null) order by priority desc, id limit 2
+""",
+                        (r, n) -> new PriceRow(r.getBigDecimal(1), r.getString(2), r.getInt(3)),
+                        segmentId,
+                        sku);
+        if (rows.isEmpty()) return Optional.empty();
+        if (rows.size() > 1 && rows.get(0).priority() == rows.get(1).priority())
+            throw new BusinessException(ErrorCode.CATALOG_PRICE_AMBIGUOUS);
+        return Optional.of(new SellingPrice(rows.getFirst().amount(), rows.getFirst().currency()));
+    }
+
     public Optional<SellingPrice> basePrice(String sku) {
         return jdbc
                 .query(
@@ -230,24 +250,6 @@ where product_id=?
         jdbc.update(
                 "update catalog.product_listing set projected_revision=revision where product_id=?",
                 id);
-    }
-
-    public List<Listing> page(long offset, int size) {
-        return jdbc.query(
-                """
-                select * from catalog.product_listing where enabled and published_title is not null
-                order by product_id limit ? offset ?
-                """,
-                ListingRepository::map,
-                size,
-                offset);
-    }
-
-    public long count() {
-        return jdbc.queryForObject(
-                "select count(*) from catalog.product_listing where enabled and published_title is"
-                        + " not null",
-                Long.class);
     }
 
     public List<UUID> dirtyIds() {

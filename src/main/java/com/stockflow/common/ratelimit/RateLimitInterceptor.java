@@ -1,5 +1,6 @@
 package com.stockflow.common.ratelimit;
 
+import com.stockflow.common.logging.LogSafe;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.CurrentUserProvider;
@@ -73,7 +74,7 @@ public class RateLimitInterceptor implements HandlerInterceptor {
             long retryAfterSeconds = Math.max(1, (decision.retryAfter().toMillis() + 999) / 1000);
             response.setHeader(HEADER_RETRY_AFTER, String.valueOf(retryAfterSeconds));
             log.info("Rate limit hit: bucket={} identity={} retryAfter={}s",
-                    bucket, identity, retryAfterSeconds);
+                    LogSafe.text(bucket), LogSafe.text(identity), retryAfterSeconds);
             throw new BusinessException(ErrorCode.RATE_LIMITED,
                     "Too many requests. Try again in %d second(s).".formatted(retryAfterSeconds));
         }

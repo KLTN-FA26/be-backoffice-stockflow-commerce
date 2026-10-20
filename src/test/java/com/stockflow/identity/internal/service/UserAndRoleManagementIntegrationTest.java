@@ -62,6 +62,9 @@ class UserAndRoleManagementIntegrationTest {
     private JdbcTemplate jdbc;
 
     @Autowired
+    private org.springframework.transaction.support.TransactionTemplate tx;
+
+    @Autowired
     private com.stockflow.common.security.UserWarehouseLookup warehouseLookup;
 
     private static String unique(String prefix) {
@@ -361,6 +364,52 @@ class UserAndRoleManagementIntegrationTest {
                 unique("w") + "@example.com", null, null, List.of("QC_STAFF"),
                 List.of(com.stockflow.support.DemoData.WAREHOUSE_HCM)));
         assertThat(withWarehouse.user().warehouseIds()).containsExactly(com.stockflow.support.DemoData.WAREHOUSE_HCM);
+    }
+
+    // ---- who a warehouse task can be given to (SCRUM-466) ---------------------------------------
+
+    @Test
+    void assignableUsersAreTheActiveWarehouseRolesOfOneWarehouseAndRevealNothingElse() {
+        UUID hcm = com.stockflow.support.DemoData.WAREHOUSE_HCM;
+        UUID other = UUID.randomUUID();
+        tx.executeWithoutResult(status -> jdbc.update("""
+                INSERT INTO warehouse.warehouse (id, name, status, prefix, address, map_unit, map_width, map_height,
+                                                 version, created_at)
+                VALUES (?, 'Assignee test warehouse', 'ACTIVE', ?, 'Somewhere', 'M', 50, 50, 0, NOW())""",
+                other, "A" + UUID.randomUUID().toString().substring(0, 6).toUpperCase(Locale.ROOT)));
+        List<UUID> inHcm = List.of(hcm);
+
+        StaffUser picker = identity.createStaffUser(new CreateStaffUserCommand(unique("a."), unique("a") + "@example.com",
+                "An Picker", null, List.of("WAREHOUSE_STAFF"), inHcm)).user();
+        StaffUser manager = identity.createStaffUser(new CreateStaffUserCommand(unique("a."), unique("a") + "@example.com",
+                null, null, List.of("WAREHOUSE_MANAGER", "QC_STAFF"), inHcm)).user();
+        StaffUser sales = identity.createStaffUser(new CreateStaffUserCommand(unique("a."), unique("a") + "@example.com",
+                "Sales Person", null, List.of("SALES_STAFF"), inHcm)).user();
+        StaffUser elsewhere = identity.createStaffUser(new CreateStaffUserCommand(unique("a."),
+                unique("a") + "@example.com", "Other Picker", null, List.of("WAREHOUSE_STAFF"), List.of(other))).user();
+        StaffUser unassigned = identity.createStaffUser(new CreateStaffUserCommand(unique("a."),
+                unique("a") + "@example.com", "Nowhere Picker", null, List.of("WAREHOUSE_STAFF"), List.of())).user();
+        StaffUser disabled = identity.createStaffUser(new CreateStaffUserCommand(unique("a."),
+                unique("a") + "@example.com", "Gone Picker", null, List.of("WAREHOUSE_STAFF"), inHcm)).user();
+        tx.executeWithoutResult(status -> jdbc.update(
+                "UPDATE identity.app_user SET status = 'DISABLED' WHERE id = ?", disabled.userId()));
+
+        var found = identity.assignableUsers(Set.of("WAREHOUSE_STAFF", "WAREHOUSE_MANAGER"), hcm);
+
+        assertThat(found).extracting(u -> u.userId()).contains(picker.userId(), manager.userId())
+                .doesNotContain(sales.userId(), elsewhere.userId(), unassigned.userId(), disabled.userId());
+        var pickerRow = found.stream().filter(u -> u.userId().equals(picker.userId())).findFirst().orElseThrow();
+        assertThat(pickerRow.displayName()).isEqualTo("An Picker");
+        assertThat(pickerRow.roles()).containsExactly("WAREHOUSE_STAFF");
+        var managerRow = found.stream().filter(u -> u.userId().equals(manager.userId())).findFirst().orElseThrow();
+        // No full name given: the username is shown. Only the roles asked for are listed, not QC_STAFF.
+        assertThat(managerRow.displayName()).isEqualTo(manager.username());
+        assertThat(managerRow.roles()).containsExactly("WAREHOUSE_MANAGER");
+
+        assertThat(identity.assignableUsers(Set.of("WAREHOUSE_STAFF"), other)).extracting(u -> u.userId())
+                .containsExactly(elsewhere.userId());
+        assertThat(identity.assignableUsers(Set.of(), hcm)).isEmpty();
+        assertThat(identity.assignableUsers(Set.of("WAREHOUSE_STAFF"), UUID.randomUUID())).isEmpty();
     }
 
     @Test

@@ -4,6 +4,7 @@ import com.stockflow.product.api.ListProductsQuery;
 import com.stockflow.product.api.ProductService;
 import com.stockflow.product.api.ProductStatus;
 import com.stockflow.product.internal.controller.dto.CreateProductRequest;
+import com.stockflow.product.internal.controller.dto.OpenReferencesResponse;
 import com.stockflow.product.internal.controller.dto.ProductResponse;
 import com.stockflow.product.internal.controller.dto.ProductVersionResponse;
 import com.stockflow.product.internal.controller.dto.RejectProductRequest;
@@ -22,6 +23,7 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -36,8 +38,13 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * HTTP entry point for the product master (SCRUM-56/WBS 3.1.1.2) and its approval workflow
- * (SCRUM-57/WBS 3.1.1.3).
+ * HTTP entry point for the product master (SCRUM-56/WBS 3.1.1.2), its approval workflow
+ * (SCRUM-57/WBS 3.1.1.3), and its end of life (SCRUM-461): suspension, discontinuation with a reason and
+ * warnings, and deletion of a draft.
+ *
+ * <p><b>Suspend, resume and discontinue</b> are in {@link ProductLifecycleController}, under a permission of
+ * their own ({@code product-lifecycle:APPROVE}, System Admin only, kltn-docs 01 §5.1). {@code DELETE} is a
+ * permission of its own too, so it can be given or withheld separately.</p>
  *
  * <p><b>Handler methods are public.</b> {@code @RequiresPermission} is applied by a Spring AOP
  * proxy, which advises a non-public method only when the generated proxy happens to land in the
@@ -52,7 +59,7 @@ import java.util.UUID;
         label = "Products",
         route = "/admin/products",
         apiPath = "/api/v1/products",
-        actions = {Action.VIEW_PAGE, Action.READ, Action.CREATE, Action.UPDATE, Action.APPROVE})
+        actions = {Action.VIEW_PAGE, Action.READ, Action.CREATE, Action.UPDATE, Action.DELETE, Action.APPROVE})
 class ProductController {
 
     private final ProductService productService;
@@ -92,14 +99,14 @@ class ProductController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    @Operation(summary = "Create a product master row, with its default variant (SKU = code)")
+    @Operation(summary = "Create a product master row with its variants: one default (SKU = code), or with axes every combination (SKU by rule)")
     @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.CREATE)
     public ApiResponse<ProductResponse> create(@Valid @RequestBody CreateProductRequest request) {
         return ApiResponse.ok(mapper.toResponse(productService.create(mapper.toCommand(request))));
     }
 
     @PutMapping("/{productId}")
-    @Operation(summary = "Update a product master row")
+    @Operation(summary = "Update a draft product; quote the version the last read returned (409 OPTIMISTIC_LOCK when it changed)")
     @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.UPDATE)
     public ApiResponse<ProductResponse> update(@PathVariable UUID productId,
                                                @Valid @RequestBody UpdateProductRequest request) {
@@ -133,21 +140,26 @@ class ProductController {
                 productService.reject(productId, user.userId(), request.reason())));
     }
 
-    /**
-     * Terminal (WBS 3.1.8.1). See {@code Product.discontinue}'s javadoc for the BR-PRD-005
-     * (open PO / unshipped order line) gap this does not yet enforce.
-     */
-    @PostMapping("/{productId}/discontinuation")
-    @Operation(summary = "Discontinue an approved or published product")
-    @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.APPROVE)
-    public ApiResponse<ProductResponse> discontinue(@PathVariable UUID productId) {
-        return ApiResponse.ok(mapper.toResponse(productService.discontinue(productId)));
+    @DeleteMapping("/{productId}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    @Operation(summary = "Delete a draft product with its variants and images; quote the version as ?version=")
+    @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.DELETE)
+    public void delete(@PathVariable UUID productId, @RequestParam long version) {
+        productService.deleteDraft(productId, version);
     }
 
-    /** SCRUM-86 (WBS 3.1.8.2). 404s via {@code ProductService.history} if the product does not
+    @GetMapping("/{productId}/open-references")
+    @Operation(summary = "The open purchase order lines and order lines that still refer to this product's SKUs")
+    @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.READ)
+    public ApiResponse<OpenReferencesResponse> openReferences(@PathVariable UUID productId) {
+        return ApiResponse.ok(mapper.toResponse(productService.openReferences(productId)));
+    }
+
+    /** SCRUM-86 (WBS 3.1.8.2), SCRUM-461. 404s via {@code ProductService.history} if the product does not
      *  exist, same as every other single-product endpoint here. */
     @GetMapping("/{productId}/versions")
-    @Operation(summary = "This product's audit trail, newest first")
+    @Operation(summary = "This product's history, newest first: status moves with reason, and variant, image, "
+            + "logistics and stock policy changes")
     @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.READ)
     public ApiResponse<PageResponse<ProductVersionResponse>> versions(
             @PathVariable UUID productId,

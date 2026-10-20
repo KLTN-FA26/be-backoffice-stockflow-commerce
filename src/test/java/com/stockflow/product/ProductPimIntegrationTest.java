@@ -24,7 +24,8 @@ import com.stockflow.product.internal.service.ProductTaxonomyService;
 import com.stockflow.product.internal.service.ProductTaxonomyService.CategoryDetails;
 import com.stockflow.product.internal.service.ProductVariantService;
 import com.stockflow.product.internal.service.ProductVariantService.NewVariant;
-import com.stockflow.product.internal.service.SkuInventoryControlService;
+import com.stockflow.inventory.api.InventoryService;
+import com.stockflow.inventory.internal.service.InventoryItems;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.ReferenceRows;
@@ -68,7 +69,8 @@ class ProductPimIntegrationTest {
     @Autowired ProductVariantService variants;
     @Autowired ProductMediaService media;
     @Autowired ProductTaxonomyService taxonomy;
-    @Autowired SkuInventoryControlService skus;
+    @Autowired InventoryItems items;
+    @Autowired InventoryService inventory;
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager entityManager;
     @Autowired TransactionTemplate tx;
@@ -95,7 +97,7 @@ class ProductPimIntegrationTest {
 
     ProductSummary create(UUID brand, UUID category) {
         return products.create(new CreateProductCommand("CUP-" + suffix, "Ly giấy 12oz", "Paper cup 12oz", brand,
-                category, "Ly in logo", null, null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE));
+                category, "Ly in logo", null, null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE, List.of()));
     }
 
     @Test
@@ -137,7 +139,7 @@ class ProductPimIntegrationTest {
         assertThatThrownBy(() -> create(UUID.randomUUID(), null)).isInstanceOfSatisfying(BusinessException.class,
                 e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.BRAND_NOT_FOUND));
 
-        var updated = products.update(new UpdateProductCommand(created.productId(), "Ly giấy 16oz", "Paper cup 16oz",
+        var updated = products.update(new UpdateProductCommand(created.productId(), created.version(), "Ly giấy 16oz", "Paper cup 16oz",
                 null, root.id(), null, null, null, TaxClass.REDUCED, ProductKind.CUSTOMIZABLE));
         assertThat(updated.categoryId()).isEqualTo(root.id());
         assertThat(updated.brandId()).isNull();
@@ -150,22 +152,23 @@ class ProductPimIntegrationTest {
     @DisplayName("logistics are per SKU, on the inventory item, with optimistic versioning")
     void logisticsLiveOnTheInventoryItem() {
         var created = create(null, null);
-        UUID skuId = variants.list(created.productId(), 0, 1).items().getFirst().id();
-        var before = skus.logistics(created.productId(), skuId);
+        String sku = variants.list(created.productId(), 0, 1).items().getFirst().sku();
+        UUID itemId = inventory.itemIdsOf(List.of(sku)).get(sku);
+        var before = items.get(itemId);
         assertThat(before.logistics().unitOfMeasure()).isEqualTo("EACH");
 
         var logistics = new ItemLogistics("EACH", "893" + suffix.replaceAll("[^0-9]", "1"),
                 new BigDecimal("0.012"), new BigDecimal("8"), new BigDecimal("8"), new BigDecimal("10"),
                 new BigDecimal("6.2"), new BigDecimal("40"), new BigDecimal("30"), new BigDecimal("50"), 1, 50,
                 StorageClass.FRAGILE, false, null, true);
-        var after = skus.describe(created.productId(), skuId, before.version(), logistics);
+        var after = items.describe(itemId, before.version(), logistics);
 
         assertThat(after.version()).isGreaterThan(before.version());
         assertThat(after.logistics().storageClass()).isEqualTo(StorageClass.FRAGILE);
         assertThat(after.logistics().packSize()).isEqualTo(50);
         assertThat(jdbc.queryForObject("select qc_required from inventory.inventory_items where sku = ?",
                 Boolean.class, "CUP-" + suffix)).isTrue();
-        assertThatThrownBy(() -> skus.describe(created.productId(), skuId, before.version(), logistics))
+        assertThatThrownBy(() -> items.describe(itemId, before.version(), logistics))
                 .isInstanceOfSatisfying(BusinessException.class,
                         e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.OPTIMISTIC_LOCK));
     }
@@ -174,8 +177,9 @@ class ProductPimIntegrationTest {
     @DisplayName("approval puts the drafted variants on sale; a later variant is activated on its own")
     void approvalActivatesVariants() {
         var category = taxonomy.createCategory("CAT-" + suffix, null, new CategoryDetails("Ly", 0, null, null, null, true));
-        var created = create(null, category.id());
-        var extra = variants.add(created.productId(), new NewVariant("cup-" + suffix + "-16", "16oz", "SIZE=16OZ", null));
+        var brand = taxonomy.createBrand("BR-" + suffix, "Brand " + suffix, null);
+        var created = create(brand.id(), category.id());
+        var extra = variants.add(created.productId(), new NewVariant("cup-" + suffix + "-16", "16oz", null, null));
         assertThat(extra.sku()).isEqualTo("CUP-" + suffix + "-16");
         assertThat(extra.position()).isEqualTo(1);
 
@@ -189,11 +193,11 @@ class ProductPimIntegrationTest {
                 .extracting(ProductVariantService.VariantView::status).containsOnly(VariantStatus.ACTIVE);
         assertThat(publication.read(created.productId()).skus()).hasSize(2);
 
-        var late = variants.add(created.productId(), new NewVariant("CUP-" + suffix + "-8", "8oz", "SIZE=8OZ", null));
+        var late = variants.add(created.productId(), new NewVariant("CUP-" + suffix + "-8", "8oz", null, null));
         assertThat(late.status()).isEqualTo(VariantStatus.DRAFT);
         assertThat(variants.activate(created.productId(), late.id()).status()).isEqualTo(VariantStatus.ACTIVE);
         assertThatThrownBy(() -> variants.update(created.productId(), late.id(),
-                new NewVariant("CUP-" + suffix + "-8B", "8oz", "SIZE=8OZ", null)))
+                new NewVariant("CUP-" + suffix + "-8B", "8oz", null, null)))
                 .isInstanceOfSatisfying(BusinessException.class,
                         e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.INVALID_VARIANT_TRANSITION));
         UUID defaultId = variants.list(created.productId(), 0, 20).items().stream()
@@ -208,7 +212,8 @@ class ProductPimIntegrationTest {
     @DisplayName("an uploaded image reaches the storefront only when someone else publishes it")
     void imagesArePublishedByASecondPerson() throws Exception {
         var category = taxonomy.createCategory("CAT-" + suffix, null, new CategoryDetails("Ly", 0, null, null, null, true));
-        var created = create(null, category.id());
+        var brand = taxonomy.createBrand("BR-" + suffix, "Brand " + suffix, null);
+        var created = create(brand.id(), category.id());
         UUID productId = created.productId();
         UUID variantId = variants.list(productId, 0, 1).items().getFirst().id();
 

@@ -4,9 +4,19 @@ import com.stockflow.order.api.ListOrdersQuery;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.internal.controller.dto.OrderStatusChangeResponse;
+import com.stockflow.order.api.CancelOrderCommand;
+import com.stockflow.order.api.CancellationOutcome;
+import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.internal.controller.dto.AdminCancelOrderRequest;
+import com.stockflow.order.internal.controller.dto.CancelOrderRequest;
+import com.stockflow.order.internal.controller.dto.CancellationResultResponse;
+import com.stockflow.order.internal.controller.dto.CustomerOrderCardResponse;
+import com.stockflow.order.internal.controller.dto.CustomerOrderDetailResponse;
 import com.stockflow.order.internal.controller.dto.OrderResponse;
 import com.stockflow.order.internal.controller.dto.PlaceOrderRequest;
+import com.stockflow.order.internal.controller.dto.QuoteRequests;
+import com.stockflow.order.internal.controller.dto.QuoteResponse;
+import com.stockflow.order.internal.service.Quotes;
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.audit.AuditAction;
@@ -22,6 +32,7 @@ import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.common.security.Role;
 import com.stockflow.customer.api.CustomerService;
+import com.stockflow.order.internal.service.CustomerOrders;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -60,10 +71,15 @@ class OrderController {
 
     private final OrderService orderService;
     private final CustomerService customerService;
+    private final Quotes quotes;
+    private final CustomerOrders customerOrders;
 
-    OrderController(OrderService orderService, CustomerService customerService) {
+    OrderController(OrderService orderService, CustomerService customerService, Quotes quotes,
+                    CustomerOrders customerOrders) {
         this.orderService = orderService;
         this.customerService = customerService;
+        this.quotes = quotes;
+        this.customerOrders = customerOrders;
     }
 
     /**
@@ -90,8 +106,35 @@ class OrderController {
                 throw new BusinessException(ErrorCode.NOT_FOUND);
             }
         }
-        return ApiResponse.ok(OrderWebMapper.toResponse(
-                orderService.placeOrder(OrderWebMapper.toCommand(request))));
+        var command = OrderWebMapper.toCommand(request);
+        if (!mayPlaceForAnotherCustomer && command.depositPercent() != null) {
+            // The deposit share is the customer's terms, or a quote's (kltn-docs 15 §3) — never the
+            // customer's own pick: their configured share is used.
+            command = new com.stockflow.order.api.PlaceOrderCommand(command.requestId(), command.customerId(),
+                    command.shippingAddressId(), command.billingAddressId(), command.snapshotCustomer(),
+                    command.lines(), command.paymentTerm(), null);
+        }
+        return ApiResponse.ok(OrderWebMapper.toResponse(orderService.placeOrder(command)));
+    }
+
+    /**
+     * Order again what a negotiated order bought (user decision 2026-10-12): a new DRAFT quote with the same
+     * blanks, designs, print specifications and quantities, priced from today's price list - the old deal is
+     * not reused and nothing is payable until Sales sends the quote and the customer accepts it. An order
+     * bought at the price list is not re-quoted ({@code ORDER_NOT_QUOTED}): it is placed again directly.
+     * The same verb as placing an order, so the customer and Sales may both start it.
+     */
+    @PostMapping("/{orderId}/reorder")
+    @ResponseStatus(HttpStatus.CREATED)
+    @Operation(summary = "Reorder a quoted order: a new draft quote for Sales at today's price list, never the old deal")
+    @RequiresPermission(resource = OrderResources.ORDERS, action = Action.CREATE, scope = DataScope.OWN)
+    // Each new request id drafts a quote and notifies Sales (audit of #109): a bound, as on customer creation.
+    @com.stockflow.common.ratelimit.RateLimit(limit = 10, perSeconds = 60)
+    public ApiResponse<QuoteResponse> reorder(@PathVariable UUID orderId,
+                                              @Valid @RequestBody QuoteRequests.Reorder request,
+                                              @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(QuoteWebMapper.toResponse(quotes.reorder(user,
+                new Quotes.Reorder(request.requestId(), orderId))));
     }
 
     @GetMapping("/{orderId}")
@@ -105,7 +148,7 @@ class OrderController {
                 // A customer sees only their own orders. The order carries the shipping address and
                 // phone of whoever placed it, so answering 200 to anyone would leak both.
                 .filter(order -> ownCustomerId == null || ownCustomerId.equals(order.customerId()))
-                .map(OrderWebMapper::toResponse)
+                .map(order -> OrderWebMapper.toResponse(order, ownCustomerId == null))
                 .map(ApiResponse::ok)
                 .orElseThrow(() -> new BusinessException(
                         ErrorCode.NOT_FOUND, "No order with id " + orderId));
@@ -125,53 +168,72 @@ class OrderController {
      * the permission layer.</p>
      */
     @PostMapping("/{orderId}/cancellation")
-    @Operation(summary = "Cancel an order and release its reservations")
+    @Operation(summary = "Cancel your order; once released to production or the warehouse, ask for it to be "
+            + "cancelled (202, decided by Sales)")
     @RequiresPermission(resource = OrderResources.ORDERS,
             action = Action.UPDATE, scope = DataScope.OWN)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "order", resourceId = "#orderId")
-    public ApiResponse<Void> cancel(@PathVariable UUID orderId,
-                             @RequestParam(value = "reason", required = false) String reason,
-                             @AuthenticatedUser CurrentUser user) {
-        String why = reason == null ? "CUSTOMER_REQUEST" : reason;
+    public org.springframework.http.ResponseEntity<ApiResponse<CancellationResultResponse>> cancel(
+            @PathVariable UUID orderId,
+            @Valid @RequestBody(required = false) CancelOrderRequest request,
+            @RequestParam(value = "reason", required = false) String reason,
+            @AuthenticatedUser CurrentUser user) {
         UUID ownCustomerId = ownCustomerIdOrNull(user);
         if (ownCustomerId == null) {
-            orderService.cancel(orderId, why);
-        } else {
-            orderService.cancelOwn(orderId, ownCustomerId, why);
+            // Staff on the customer path: an immediate cancellation, as before reason codes.
+            CancelOrderCommand command = request != null && request.reasonCode() != null
+                    ? new CancelOrderCommand(request.reasonCode(), request.note(), null, user.userId())
+                    : CancelOrderCommand.fromText(reason == null ? "CUSTOMER_REQUEST" : reason, user.userId());
+            var order = orderService.cancel(orderId, command);
+            return org.springframework.http.ResponseEntity.ok(ApiResponse.ok(new CancellationResultResponse(
+                    CancellationOutcome.Result.CANCELLED.name(), null, OrderWebMapper.toResponse(order))));
         }
-        return ApiResponse.ok(null);
+        CancellationReasonCode code = request != null ? request.reasonCode() : null;
+        String note = request != null ? request.note() : null;
+        if (request == null && reason != null && !reason.isBlank()) {
+            CancelOrderCommand legacy = CancelOrderCommand.fromText(reason, user.userId());
+            code = legacy.reasonCode();
+            note = legacy.note();
+        }
+        CancellationOutcome outcome = orderService.cancelOwn(orderId, ownCustomerId, code, note, user.userId());
+        var body = ApiResponse.ok(new CancellationResultResponse(outcome.result().name(), outcome.requestId(),
+                OrderWebMapper.toResponse(outcome.order(), false)));
+        return outcome.result() == CancellationOutcome.Result.REQUESTED
+                ? org.springframework.http.ResponseEntity.status(HttpStatus.ACCEPTED).body(body)
+                : org.springframework.http.ResponseEntity.ok(body);
     }
 
     /**
      * Cancel any order as an admin or sales rep, with a documented reason.
      *
      * <p>SCRUM-242/WBS 3.17.4. Same underlying {@link OrderService#cancel}, but {@code scope =
-     * ALL} and a distinct action ({@code APPROVE}, not {@code UPDATE}) — a customer's role is never
-     * granted {@code APPROVE} on this resource, so this endpoint is unreachable for them even
-     * though it accepts the same path shape as {@link #cancel}.</p>
+     * ALL} and its own resource, {@code sales-order-cancellations:UPDATE}: kltn-docs 17 §2 has Sales
+     * handle cancellations, while releasing an order to production ({@code sales-orders:APPROVE})
+     * stays with the coordinator. A customer's role is never granted it, so this endpoint is
+     * unreachable for them even though it accepts the same path shape as {@link #cancel}.</p>
      */
     @PostMapping("/{orderId}/admin-cancellation")
     @Operation(summary = "Cancel any order as an admin or sales rep, with a documented reason")
-    @RequiresPermission(resource = OrderResources.ORDERS,
-            action = Action.APPROVE, scope = DataScope.ALL)
+    @RequiresPermission(resource = OrderResources.ORDER_CANCELLATIONS,
+            action = Action.UPDATE, scope = DataScope.ALL)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "order", resourceId = "#orderId")
-    public ApiResponse<Void> adminCancel(@PathVariable UUID orderId,
-                             @Valid @RequestBody AdminCancelOrderRequest request) {
-        orderService.cancel(orderId, request.reason());
-        return ApiResponse.ok(null);
+    public ApiResponse<OrderResponse> adminCancel(@PathVariable UUID orderId,
+                                                  @Valid @RequestBody AdminCancelOrderRequest request,
+                                                  @AuthenticatedUser CurrentUser user) {
+        CancelOrderCommand command;
+        if (request.reasonCode() != null) {
+            command = new CancelOrderCommand(request.reasonCode(), request.note(), request.retainedPercent(),
+                    user.userId(), OrderWebMapper.toFee(request.agreedFee()));
+        } else if (request.reason() != null && !request.reason().isBlank()) {
+            CancelOrderCommand legacy = CancelOrderCommand.fromText(request.reason(), user.userId());
+            command = new CancelOrderCommand(legacy.reasonCode(), legacy.note(), request.retainedPercent(),
+                    user.userId(), OrderWebMapper.toFee(request.agreedFee()));
+        } else {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "reasonCode is required");
+        }
+        return ApiResponse.ok(OrderWebMapper.toResponse(orderService.cancel(orderId, command)));
     }
 
-    /**
-     * SCRUM-245/WBS 3.17.7. The signed-in customer's own order history, newest first, paginated.
-     *
-     * <p>{@code customerId} comes from {@code @AuthenticatedUser}, never from a request parameter —
-     * there is deliberately no way to ask for anyone else's history through this endpoint. The
-     * assumption this rests on — that the authenticated principal's id equals a row in {@code
-     * customer.customer} — does not hold for anything in this codebase today: {@code identity}'s
-     * accounts are staff/backoffice logins, and no customer-facing authentication or
-     * identity-to-customer linkage exists yet (see SCRUM-46). This endpoint is correct for the
-     * moment that linkage exists; it is not meaningfully callable by a real customer before then.</p>
-     */
     /**
      * The back-office order list (SCRUM-443, FE 440). Staff only: a customer holds
      * {@code sales-orders:READ} too, for their own orders, and gets a 403 here rather than everyone's.
@@ -212,17 +274,50 @@ class OrderController {
                 .toList());
     }
 
+    /**
+     * SCRUM-245/WBS 3.17.7 and SCRUM-264. The signed-in customer's own orders as cards: one unified
+     * status, the total, the line count and where delivery stands. Newest first unless {@code sort} says
+     * otherwise; {@code status} may be repeated.
+     *
+     * <p>{@code customerId} is the customer profile of the sign-in, resolved here from
+     * {@code @AuthenticatedUser}, never from a request parameter - there is deliberately no way to ask for
+     * anyone else's orders through this endpoint. A signed-in account without a customer profile (staff)
+     * gets 404 {@code CUSTOMER_NOT_FOUND}. The back office lists every order with {@link #list}.</p>
+     */
     @GetMapping("/me")
-    @Operation(summary = "List the signed-in customer's own orders")
+    @Operation(summary = "List the signed-in customer's own orders: status filter, search, placed date, sort")
     @RequiresPermission(resource = OrderResources.ORDERS,
             action = Action.READ, scope = DataScope.OWN)
-    public ApiResponse<PageResponse<OrderResponse>> myOrders(
+    public ApiResponse<PageResponse<CustomerOrderCardResponse>> myOrders(
             @AuthenticatedUser CurrentUser user,
             @RequestParam(defaultValue = "0") int page,
-            @RequestParam(required = false) Integer size) {
-        return ApiResponse.ok(orderService
-                .myOrders(requiredOwnCustomerId(user), page, size == null ? Pages.DEFAULT_PAGE_SIZE : size)
-                .map(OrderWebMapper::toResponse));
+            @RequestParam(required = false) Integer size,
+            @RequestParam(name = "status", required = false) List<OrderStatus> statuses,
+            @RequestParam(required = false) String search,
+            @RequestParam(required = false) LocalDate placedFrom,
+            @RequestParam(required = false) LocalDate placedTo,
+            @RequestParam(required = false) String sort) {
+        return ApiResponse.ok(customerOrders
+                .myOrders(requiredOwnCustomerId(user), new CustomerOrders.Query(page,
+                        size == null ? Pages.DEFAULT_PAGE_SIZE : size, statuses, search, placedFrom, placedTo, sort))
+                .map(CustomerOrderWebMapper::toResponse));
+    }
+
+    /**
+     * One of the signed-in customer's own orders: status, timeline, what is printed, where delivery stands.
+     * Someone else's order, or none, is 404 either way.
+     *
+     * <p>A path of its own rather than {@code /{orderId}}, which answers staff with the whole order: this
+     * one never carries reservations, checksums, actors or the contact block.</p>
+     */
+    @GetMapping("/me/{orderId}")
+    @Operation(summary = "Look up one of the signed-in customer's own orders, with its timeline")
+    @RequiresPermission(resource = OrderResources.ORDERS,
+            action = Action.READ, scope = DataScope.OWN)
+    public ApiResponse<CustomerOrderDetailResponse> myOrder(@PathVariable UUID orderId,
+                                                            @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(CustomerOrderWebMapper.toResponse(
+                customerOrders.myOrder(requiredOwnCustomerId(user), orderId)));
     }
 
     /**

@@ -1,7 +1,11 @@
 package com.stockflow.notification.internal.service;
 
+import com.stockflow.contracts.CustomerActedOnQuote;
+import com.stockflow.contracts.ProductionOrderHeld;
 import com.stockflow.common.http.RestClientFactory;
+import com.stockflow.common.logging.LogSafe;
 import com.stockflow.contracts.PurchaseOrderSent;
+import com.stockflow.notification.api.PortalInvitationMail;
 import com.stockflow.notification.internal.domain.SupplierEndpointPolicy;
 
 import org.slf4j.Logger;
@@ -14,6 +18,8 @@ import org.springframework.web.client.RestClientResponseException;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Locale;
 import java.util.ResourceBundle;
@@ -28,6 +34,10 @@ import java.util.stream.Collectors;
  */
 @Component
 class NotificationSender {
+    /** The business runs in Vietnam; the customer reads the deadline in its local time. */
+    private static final DateTimeFormatter INVITATION_EXPIRY =
+            DateTimeFormatter.ofPattern("HH:mm dd/MM/yyyy").withZone(ZoneId.of("Asia/Ho_Chi_Minh"));
+
     private final JavaMailSender mail;
     private final RestClientFactory clients;
     private final String mailFrom;
@@ -42,6 +52,66 @@ class NotificationSender {
         this.clients = clients;
         this.mailFrom = mailFrom;
         this.policy = new SupplierEndpointPolicy(allowedHosts);
+    }
+
+    /** The portal invitation, in Vietnamese like the purchase-order mail. Never logs the link. */
+    void sendPortalInvitation(PortalInvitationMail invitation) {
+        var messages = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
+        var message = new SimpleMailMessage();
+        message.setFrom(mailFrom);
+        message.setTo(invitation.recipient());
+        message.setSubject(messages.getString("portal.invitation.mail.subject")
+                .formatted(invitation.companyName()));
+        message.setText(messages.getString("portal.invitation.mail.body").formatted(
+                invitation.contactName() == null ? "" : invitation.contactName(),
+                invitation.companyName(),
+                invitation.activationUrl(),
+                INVITATION_EXPIRY.format(invitation.expiresAt())));
+        mail.send(message);
+    }
+
+    /**
+     * Tells the Sales user that a customer's step on a quote is theirs to follow up (accepted, changes asked,
+     * reorder). Internal staff mail; the customer's own data stays in the back office, only the quote and order
+     * numbers are written (the event carries no name, review of #109 item 10): the quote says who. {@code takeover}: the responsible account is no longer
+     * active and this goes to the active Sales team to take the customer on (N1).
+     */
+    void sendQuoteNotice(CustomerActedOnQuote event, List<String> recipients, boolean takeover) {
+        var messages = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
+        String key = "quote.mail." + event.action().name().toLowerCase(Locale.ROOT);
+        String detail = event.sourceOrderNumber() == null ? "" : event.sourceOrderNumber();
+        String subject = messages.getString(key + ".subject").formatted(event.quoteNumber(), detail);
+        String body = messages.getString(key + ".body").formatted(event.quoteNumber(), detail);
+        var message = new SimpleMailMessage();
+        message.setFrom(mailFrom);
+        message.setTo(recipients.toArray(String[]::new));
+        message.setSubject(takeover ? messages.getString("quote.mail.takeover.subject").formatted(subject) : subject);
+        message.setText(takeover ? messages.getString("quote.mail.takeover.body").formatted(body) : body);
+        mail.send(message);
+    }
+
+    /**
+     * Tells the staff who can unblock a held production order (Jira 396 / 398 / 401), in Vietnamese like the
+     * other staff mail. One message to every recipient: a refusal is retried as a whole from the event registry.
+     */
+    void sendProductionHold(ProductionOrderHeld event, com.stockflow.common.security.Role audience,
+                            List<String> recipients) {
+        var messages = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
+        String reason = messages.containsKey("production.hold.reason." + event.reasonCode())
+                ? messages.getString("production.hold.reason." + event.reasonCode()) : event.reasonCode();
+        String source = event.sampleRequestId() != null
+                ? messages.getString("production.hold.source.sample").formatted(event.sampleRequestId())
+                : messages.getString("production.hold.source.order").formatted(event.salesOrderId());
+        // Facts only: the note the workshop typed stays on the production order, which the reader opens.
+        String note = event.blanksNeeded() == null || event.blankSku() == null ? ""
+                : messages.getString("production.hold.blanks").formatted(event.blanksNeeded(), event.blankSku());
+        var message = new SimpleMailMessage();
+        message.setFrom(mailFrom);
+        message.setTo(recipients.toArray(String[]::new));
+        message.setSubject(messages.getString("production.hold.mail.subject").formatted(event.orderNumber(), reason));
+        message.setText(messages.getString("production.hold.mail.body." + audience.name().toLowerCase(Locale.ROOT))
+                .formatted(event.orderNumber(), reason, source, note));
+        mail.send(message);
     }
 
     /**
@@ -146,6 +216,19 @@ class NotificationSender {
 
     private static final Logger log = LoggerFactory.getLogger(NotificationSender.class);
 
+    /**
+     * Sends one plain e-mail with a system-generated subject and body (the inventory alert digest). Throws when the
+     * mail server refuses; the caller decides whether that matters. Neither the subject nor the body is logged.
+     */
+    void sendInventoryAlertEmail(String toEmail, String subject, String body) {
+        var message = new SimpleMailMessage();
+        message.setFrom(mailFrom);
+        message.setTo(toEmail);
+        message.setSubject(subject);
+        message.setText(body);
+        mail.send(message);
+    }
+
     /** Internal recovery generations must not change the supplier's idempotent PO payload. */
     private record SupplierPurchaseOrderMessage(
             UUID purchaseOrderId,
@@ -172,13 +255,16 @@ class NotificationSender {
             String templateCode,
             String subject,
             String body) {
+        // Subject and body can carry what a customer or an operator typed (names, notes, a payment
+        // provider's failure text), so they are never logged: the recipient id or the fact that a
+        // guest e-mail is present, the template and the sizes are enough to trace a delivery.
         log.info(
-                "NOTIFY recipient={} template={} subject='{}' body='{}'",
+                "NOTIFY recipient={} template={} subjectLength={} bodyLength={}",
                 recipientId == null
                         ? "guest-email-present=" + (recipientEmail != null)
                         : recipientId,
-                templateCode,
-                subject,
-                body);
+                LogSafe.text(templateCode),
+                subject == null ? 0 : subject.length(),
+                body == null ? 0 : body.length());
     }
 }

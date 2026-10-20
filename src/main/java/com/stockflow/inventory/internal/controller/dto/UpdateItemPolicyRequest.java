@@ -1,0 +1,14 @@
+package com.stockflow.inventory.internal.controller.dto;
+
+import com.stockflow.inventory.api.RemovalStrategy;
+import com.stockflow.inventory.api.TrackingMode;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotNull;
+
+/** PUT replaces the item's stock policy; {@code version} is the item's, and null thresholds clear them. */
+public record UpdateItemPolicyRequest(@NotNull @Min(0) Long version,
+        @Min(0) Integer reorderPoint, @Min(0) Integer safetyStock,
+        @Min(0) Integer maxQty,
+        @NotNull RemovalStrategy removalStrategy, @NotNull TrackingMode trackingMode,
+        @NotNull Boolean expiryTracked, @Min(1) @Max(36500) Integer maxShelfLifeDays) {}

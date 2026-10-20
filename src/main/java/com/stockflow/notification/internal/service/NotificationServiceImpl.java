@@ -6,6 +6,7 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.notification.api.DeliveryAttemptSummary;
 import com.stockflow.notification.api.NotificationService;
+import com.stockflow.notification.api.PortalInvitationMail;
 import com.stockflow.notification.internal.domain.SupplierEndpointPolicy;
 import com.stockflow.notification.internal.repository.DeliveryLogJpaRepository;
 import com.stockflow.notification.internal.repository.PoDeliveryControlRepository;
@@ -13,6 +14,7 @@ import com.stockflow.notification.internal.repository.PoDeliveryControlRepositor
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Collection;
@@ -29,14 +31,23 @@ class NotificationServiceImpl implements NotificationService {
     private final DeliveryLogJpaRepository logs;
     private final SupplierEndpointPolicy policy;
     private final PoDeliveryControlRepository controls;
+    private final NotificationSender sender;
 
     NotificationServiceImpl(
             DeliveryLogJpaRepository logs,
             PoDeliveryControlRepository controls,
+            NotificationSender sender,
             @Value("${stockflow.notification.supplier-api-allowed-hosts:}") String hosts) {
         this.logs = logs;
         this.controls = controls;
+        this.sender = sender;
         this.policy = new SupplierEndpointPolicy(hosts);
+    }
+
+    @Override
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public void sendPortalInvitation(PortalInvitationMail mail) {
+        sender.sendPortalInvitation(mail);
     }
 
     @Override

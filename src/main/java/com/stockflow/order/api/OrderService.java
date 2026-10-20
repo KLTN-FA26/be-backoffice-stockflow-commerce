@@ -23,26 +23,69 @@ public interface OrderService {
      */
     OrderSummary placeOrder(PlaceOrderCommand command);
 
-    /** Guest checkout with immutable contact/address snapshots and no customer account. */
+    /** Retained for caller compatibility; always refuses guest checkout under the B2B policy. */
     OrderSummary placeGuestOrder(PlaceGuestOrderCommand command);
 
     Optional<OrderSummary> findById(UUID orderId);
 
-    /** Cancel an order and release whatever stock it was holding. */
+    /**
+     * Cancel an order and release whatever stock it was holding; {@code OrderCancelled} tells payment,
+     * fulfillment and production (SCRUM-460).
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code ORDER_NOT_CANCELLABLE} from SHIPPED on
+     */
+    OrderSummary cancel(UUID orderId, CancelOrderCommand command);
+
+    /** {@link #cancel(UUID, CancelOrderCommand)} with a free-text reason, read by {@link CancelOrderCommand#fromText}. */
     void cancel(UUID orderId, String reason);
 
     /**
-     * A customer cancelling their own order. {@code customerId} is the customer profile id that
-     * orders are stored under, not the sign-in id, so the ownership check is made here explicitly
-     * rather than through the ambient data scope (which compares against the sign-in id).
+     * A customer cancelling their own order: at once while nothing has been released, otherwise as a
+     * request Sales decides (kltn-docs 17 §2, §4.4). {@code customerId} is the customer profile id
+     * that orders are stored under, not the sign-in id, so the ownership check is made here
+     * explicitly rather than through the ambient data scope (which compares against the sign-in id).
      *
+     * @param requestedBy the signed-in user, recorded on a request
      * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND} if the order is not this
-     *         customer's, so the existence of another customer's order is not revealed
+     *         customer's, so the existence of another customer's order is not revealed;
+     *         {@code ORDER_CANCELLATION_REQUEST_PENDING} when a request is already waiting
      */
-    void cancelOwn(UUID orderId, UUID customerId, String reason);
+    CancellationOutcome cancelOwn(UUID orderId, UUID customerId, CancellationReasonCode reasonCode, String note,
+                                  UUID requestedBy);
 
     OrderSummary releaseToFulfillment(UUID orderId);
+
+    /**
+     * The carrier reported the order delivered (kltn-docs 09 §4.3): SHIPPED → DELIVERED, announced as
+     * {@code OrderDelivered}. Idempotent for an order already delivered. Shipping (SCRUM-294) calls
+     * this when it records the shipment's outcome.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code CONFLICT} when it
+     *         is not SHIPPED
+     */
+    OrderSummary recordDelivery(UUID orderId);
     void putOnDesignHold(UUID orderId, String reason);
+
+    /**
+     * Production started printing for the order - an in-house run, or work sent to a subcontractor. Joins the caller's
+     * transaction and takes the order's row lock, so a cancellation in flight either came first (this is refused,
+     * {@code ORDER_CANCELLED}, and nothing is printed) or comes after and may keep an agreed fee (03 §9). Idempotent.
+     */
+    void recordPrintingStarted(UUID orderId);
+
+    /**
+     * Fulfillment completed a package of the order. Joins the caller's transaction and takes the order's row lock,
+     * so a cancellation in flight either came first ({@code ORDER_CANCELLED}: the package is not completed, nothing
+     * is deducted) or is refused afterwards: a packed order goes through a return (03 §9). Idempotent.
+     */
+    void recordPacked(UUID orderId);
+
+    /**
+     * The order's status read under its row lock, in the caller's transaction: what production checks before it
+     * completes, releases or carries on work for the order, so a cancellation cannot slip in between the check and
+     * the work (audit of #109). Empty for an unknown order.
+     */
+    Optional<OrderStatus> lockedStatus(UUID orderId);
     void resolveDesignHold(UUID orderId, UUID resolvedBy, String note);
 
     /**

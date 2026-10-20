@@ -31,9 +31,19 @@ import java.util.UUID;
 class OrderReleaseController {
 
     private final OrderReleases releases;
+    private final com.stockflow.order.api.OrderService orders;
 
-    OrderReleaseController(OrderReleases releases) {
+    OrderReleaseController(OrderReleases releases, com.stockflow.order.api.OrderService orders) {
         this.releases = releases;
+        this.orders = orders;
+    }
+
+    @PostMapping("/{orderId}/delivery")
+    @Operation(summary = "Record that the carrier delivered the order (SHIPPED → DELIVERED); a credit order's "
+            + "receivable opens, due after its days to pay")
+    @RequiresPermission(resource = OrderResources.ORDERS, action = Action.APPROVE, scope = DataScope.ALL)
+    public ApiResponse<OrderResponse> delivered(@PathVariable UUID orderId) {
+        return ApiResponse.ok(OrderWebMapper.toResponse(orders.recordDelivery(orderId)));
     }
 
     @PostMapping("/{orderId}/release")

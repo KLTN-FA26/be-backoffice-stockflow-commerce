@@ -11,20 +11,25 @@ name: build
 
 on:
   push:
-    # infra/deploy deploys too: it is where changes to the deployment itself (deploy/, this file)
-    # are tried against the VPS before they reach develop.
+    # develop is the only branch that deploys (SCRUM-463: the old infra/deploy branch was never a
+    # trigger, so the conditions that still named it were dead).
     branches: [develop]
   pull_request:
 
 # A new push to the same branch cancels the previous run. Without this a busy branch queues five
 # builds of superseded commits and the useful one waits behind them.
 #
-# Except on the branches that deploy: cancelling there could kill a run in the middle of its deploy
+# Except on develop, which deploys: cancelling there could kill a run in the middle of its deploy
 # job, between replacing the container and confirming it is healthy. A newer push waits instead
 # (GitHub keeps only the newest pending run, so superseded commits are still skipped).
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/develop' && github.ref != 'refs/heads/infra/deploy' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/develop' }}
+
+# The token reads the repository and nothing else unless a job asks for more (docker: packages:
+# write, deploy: packages: read). Without this block it inherits the repository default.
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -50,6 +55,19 @@ jobs:
           # would still be saved and restored, and Maven would ignore it, so every run
           # re-downloads every dependency while the cache step reports success.
           cache: maven
+
+      # ---------------------------------------------------------------------
+      # The repository's own static checks (tools/verify.py, CLAUDE.md §1): module boundaries by
+      # import, DTO and pagination conventions, migration naming. No Maven, no network, about a
+      # second - so it goes first, and a violation fails here rather than after the test suite.
+      # ---------------------------------------------------------------------
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Static checks (verify.py)
+        run: python3 tools/verify.py
 
       # ---------------------------------------------------------------------
       # Compile first, on its own. A compile error should fail in thirty seconds with a clear
@@ -145,7 +163,7 @@ jobs:
       - uses: actions/checkout@v4
 
       # GHCR rejects upper-case repository names, and the organisation is KLTN-FA26. A tag may not
-      # contain '/', so the branch infra/deploy is tagged infra-deploy.
+      # contain '/', so a branch name's slashes become dashes.
       - name: Image name and tag
         id: meta
         run: |
@@ -153,16 +171,17 @@ jobs:
           echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
           echo "branch=${GITHUB_REF_NAME//\//-}" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/setup-buildx-action@v3
+      # Third-party actions are pinned to a commit: a tag can be moved to other code, a SHA cannot.
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           push: true
@@ -178,8 +197,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   # -------------------------------------------------------------------------
-  # develop and infra/deploy -> the VPS. deploy/README.md describes the server side and the
-  # secrets this needs. Both deploy to the SAME server, so whichever pushed last is what runs.
+  # develop -> the VPS. deploy/README.md describes the server side and the secrets this needs.
   #
   # The `vps` environment holds the secrets; add required reviewers to it in the repository
   # settings to turn this into a manual approval step without touching this file.
@@ -189,7 +207,7 @@ jobs:
     needs: docker
     if: >-
       github.event_name == 'push' &&
-      (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/infra/deploy')
+      github.ref == 'refs/heads/develop'
     timeout-minutes: 15
     environment:
       name: vps

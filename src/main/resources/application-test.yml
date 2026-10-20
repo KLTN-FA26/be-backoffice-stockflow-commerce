@@ -1,6 +1,13 @@
 # Used by integration tests. Testcontainers supplies the datasource URL at runtime, so nothing
 # here points at a real database - a test run can never touch a developer's local data.
 spring:
+  datasource:
+    hikari:
+      # Every cached test context keeps a pool open on the one shared test Postgres. Five idle
+      # connections each, times the cached contexts, was most of the server's memory and connection
+      # slots for nothing; no test runs more than four threads against the database at once.
+      minimum-idle: 1
+      maximum-pool-size: 10
   jpa:
     hibernate:
       ddl-auto: validate
@@ -26,6 +33,12 @@ spring:
         max-size: 1
 
 stockflow:
+  inventory:
+    # The alert jobs are driven by the tests, not by the clock: nothing may drain, reconcile or sweep behind their back.
+    alert-drain-interval: PT24H
+    alert-drain-initial-delay: PT24H
+    alert-reconcile-cron: "-"
+    expiry-sweep-cron: "-"
   storage:
     # No MinIO container in tests; the filesystem implementation exercises the same port.
     provider: local

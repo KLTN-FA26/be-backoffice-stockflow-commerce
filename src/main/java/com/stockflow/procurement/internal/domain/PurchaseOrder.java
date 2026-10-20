@@ -10,8 +10,12 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Currency;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -26,8 +30,11 @@ import java.util.UUID;
  * received may be cancelled. Receiving is not here: a goods receipt moves CONFIRMED and
  * PARTIALLY_RECEIVED forward through its own port.</p>
  *
- * <p>Supplier, warehouse and number are fixed at creation ({@code tg_purchase_orders_immutable}).
- * {@code totalAmount} is derived from the lines and cannot be set on its own.</p>
+ * <p>Supplier and number are fixed at creation ({@code tg_purchase_orders_immutable}); the warehouse,
+ * date, note and lines change only while a standard order is DRAFT ({@link #reviseDraft}, SCRUM-462,
+ * stated again by {@code tg_purchase_orders_warehouse_draft_only} and
+ * {@code tg_purchase_order_lines_draft_content}). {@code totalAmount} is derived from the lines and
+ * cannot be set on its own.</p>
  *
  * <p>No Spring, no JPA, no annotations — {@code ArchitectureTest.domainDoesNotDependOnFrameworks}.</p>
  */
@@ -40,15 +47,16 @@ public final class PurchaseOrder extends AggregateRoot {
     private final Type type;
     private final UUID productionOrderId;
     private final UUID supplierId;
-    private final UUID warehouseId;
+    private UUID warehouseId;
     private PurchaseOrderStatus status;
     private final Currency currency;
     private final List<PoLine> lines;
     private final LocalDate orderDate;
     private LocalDate expectedAt;
-    private final String note;
+    private String note;
     private final int paymentTermDays;
-    private final int leadTimeDays;
+    /** The slowest line's lead time; a draft edit recomputes it from the lines as edited (SCRUM-78). */
+    private int leadTimeDays;
 
     private long revisionNo;
     private UUID activeRevisionId;
@@ -179,6 +187,89 @@ public final class PurchaseOrder extends AggregateRoot {
                               String description, int quantity, Money unitPrice, BigDecimal taxRate) {
         return PoLine.draft(com.stockflow.common.id.Identifiers.newId(), lineNo, inventoryItemId, sku, uom,
                 description, quantity, unitPrice, taxRate);
+    }
+
+    // ------------------------------------------------------------------ editing a draft (SCRUM-462)
+
+    /**
+     * One line of a draft as the buyer now wants it. {@code lineId} names a line the draft already
+     * has, which keeps its number and its item; null is a new line.
+     */
+    public record DraftLine(UUID lineId, UUID inventoryItemId, com.stockflow.common.domain.Sku sku, String uom,
+                            String description, int quantity, Money unitPrice, BigDecimal taxRate) {
+    }
+
+    /**
+     * kltn-docs 02 §5: a DRAFT is changed freely — warehouse, delivery date, note and lines — and
+     * only a DRAFT; from submission on, what was ordered changes through a revision (BR-02). A
+     * SUBCONTRACT order is not edited here: its line follows the production split (BR-10).
+     *
+     * <p>A line the draft had and {@code lines} does not name leaves the order; the repository keeps
+     * its row as WITHDRAWN when a revision already froze it. New lines are numbered from
+     * {@code firstNewLineNo}, past every number the order has ever used, so a number is never
+     * reused.</p>
+     *
+     * <p>{@code leadTimeDays} is the slowest line's as the catalog has it now, which the service works out:
+     * the lines change, so the lead time they need does too.</p>
+     */
+    public void reviseDraft(UUID warehouseId, LocalDate expectedAt, String note, List<DraftLine> lines,
+                            int firstNewLineNo, int leadTimeDays) {
+        if (status != PurchaseOrderStatus.DRAFT || type != Type.STANDARD) {
+            throw new BusinessException(ErrorCode.PURCHASE_ORDER_NOT_EDITABLE,
+                    "Purchase order %s is %s %s".formatted(poNumber, status, type));
+        }
+        Objects.requireNonNull(warehouseId, "warehouseId");
+        if (expectedAt == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The expected delivery date is required");
+        }
+        if (expectedAt.isBefore(orderDate)) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "The expected delivery date cannot be before the order date");
+        }
+        if (lines == null || lines.isEmpty()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A purchase order must have at least one line");
+        }
+        Map<UUID, PoLine> current = new HashMap<>();
+        this.lines.forEach(line -> current.put(line.id(), line));
+        Set<UUID> kept = new HashSet<>();
+        Set<UUID> items = new HashSet<>();
+        int nextLineNo = Math.max(firstNewLineNo,
+                this.lines.stream().mapToInt(PoLine::lineNo).max().orElse(0) + 1);
+        List<PoLine> revised = new ArrayList<>();
+        for (DraftLine wanted : lines) {
+            if (!wanted.unitPrice().currency().equals(currency)) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                        "Every line is priced in the order's currency " + currency.getCurrencyCode());
+            }
+            if (!items.add(wanted.inventoryItemId())) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                        "SKU " + wanted.sku().code() + " appears twice; put the whole quantity on one line");
+            }
+            if (wanted.lineId() == null) {
+                revised.add(PoLine.draft(com.stockflow.common.id.Identifiers.newId(), nextLineNo++,
+                        wanted.inventoryItemId(), wanted.sku(), wanted.uom(), wanted.description(), wanted.quantity(),
+                        wanted.unitPrice(), wanted.taxRate()));
+                continue;
+            }
+            PoLine existing = current.get(wanted.lineId());
+            if (existing == null || !kept.add(wanted.lineId())) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                        "Line " + wanted.lineId() + " is not a line of " + poNumber + ", or is named twice");
+            }
+            if (!existing.inventoryItemId().equals(wanted.inventoryItemId())) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                        "Line %d orders %s; to order another SKU, remove the line and add a new one"
+                                .formatted(existing.lineNo(), existing.sku().code()));
+            }
+            revised.add(PoLine.draft(existing.id(), existing.lineNo(), existing.inventoryItemId(), existing.sku(),
+                    existing.uom(), wanted.description(), wanted.quantity(), wanted.unitPrice(), wanted.taxRate()));
+        }
+        this.warehouseId = warehouseId;
+        this.expectedAt = expectedAt;
+        this.note = note;
+        this.leadTimeDays = leadTimeDays;
+        this.lines.clear();
+        this.lines.addAll(revised);
     }
 
     // ------------------------------------------------------------------ approval

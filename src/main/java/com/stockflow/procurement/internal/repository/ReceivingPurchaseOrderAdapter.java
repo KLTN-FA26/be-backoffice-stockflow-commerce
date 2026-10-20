@@ -95,11 +95,14 @@ class ReceivingPurchaseOrderAdapter implements ReceivingPurchaseOrders {
                 ReceivingPurchaseOrder.Status.valueOf(order.getStatus().name()), order.getSupplierId(),
                 order.getWarehouseId(), order.getActiveRevisionId(), tolerance,
                 order.getSupplierConfirmationStatus() == SupplierConfirmationStatus.REJECTED,
+                // A line withdrawn from a draft is no longer part of the order (SCRUM-462).
                 order.getLines().stream()
+                        .filter(line -> line.getStatus() != PoLineStatus.WITHDRAWN)
                         .sorted(Comparator.comparingInt(PoLineJpaEntity::getLineNo))
                         .map(line -> new ReceivingPurchaseOrder.Line(line.getId(), line.getLineNo(),
                                 line.getInventoryItemId(), line.getOrderedQuantity(),
                                 ReceivingPurchaseOrder.LineStatus.valueOf(line.getStatus().name())))
-                        .toList());
+                        .toList(),
+                order.getType() == com.stockflow.procurement.internal.domain.PurchaseOrder.Type.SUBCONTRACT);
     }
 }

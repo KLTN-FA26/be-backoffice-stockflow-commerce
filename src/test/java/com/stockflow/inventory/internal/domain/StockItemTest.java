@@ -235,9 +235,70 @@ class StockItemTest {
                     item.reserve(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), Quantity.of(4), NOW);
             item.releaseReservation(reservation.id(), ReleaseReason.ORDER_CANCELLED, NOW);
 
+            // SCRUM-267: a business refusal (409 RESERVATION_NOT_ACTIVE), no longer an IllegalStateException
+            // that the exception handler turned into a 400.
             assertThatThrownBy(() -> item.consumeReservation(reservation.id(), NOW))
-                    .isInstanceOf(IllegalStateException.class)
+                    .isInstanceOfSatisfying(com.stockflow.common.error.BusinessException.class, refusal ->
+                            assertThat(refusal.errorCode())
+                                    .isEqualTo(com.stockflow.common.error.ErrorCode.RESERVATION_NOT_ACTIVE))
                     .hasMessageContaining("already RELEASED");
+            assertThat(item.onHand()).isEqualTo(Quantity.of(10));
+        }
+
+        @Test
+        @DisplayName("a hold consumed once cannot be consumed again")
+        void consumingTwiceIsRejected() {
+            StockItem item = availableWith(10);
+            Reservation reservation =
+                    item.reserve(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), Quantity.of(4), NOW);
+            item.consumeReservation(reservation.id(), NOW);
+
+            assertThatThrownBy(() -> item.consumeReservation(reservation.id(), NOW))
+                    .isInstanceOfSatisfying(com.stockflow.common.error.BusinessException.class, refusal ->
+                            assertThat(refusal.errorCode())
+                                    .isEqualTo(com.stockflow.common.error.ErrorCode.RESERVATION_NOT_ACTIVE));
+            assertThat(item.onHand()).isEqualTo(Quantity.of(6));
+        }
+
+        @Test
+        @DisplayName("a hold past its payment deadline is not consumed, even before the sweeper closes it")
+        void consumingAHoldPastItsDeadlineIsRejected() {
+            StockItem item = availableWith(10);
+            Reservation reservation = item.reserve(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
+                    Quantity.of(4), NOW, Duration.ofMinutes(30));
+
+            assertThatThrownBy(() -> item.consumeReservation(reservation.id(), NOW.plus(Duration.ofMinutes(31))))
+                    .isInstanceOfSatisfying(com.stockflow.common.error.BusinessException.class, refusal ->
+                            assertThat(refusal.errorCode())
+                                    .isEqualTo(com.stockflow.common.error.ErrorCode.RESERVATION_NOT_ACTIVE));
+            assertThat(item.onHand()).isEqualTo(Quantity.of(10));
+        }
+
+        @Test
+        @DisplayName("a hold of another stock item is not found here")
+        void consumingAnUnknownHoldIsNotFound() {
+            StockItem item = availableWith(10);
+
+            assertThatThrownBy(() -> item.consumeReservation(ReservationId.newId(), NOW))
+                    .isInstanceOfSatisfying(com.stockflow.common.error.BusinessException.class, refusal ->
+                            assertThat(refusal.errorCode())
+                                    .isEqualTo(com.stockflow.common.error.ErrorCode.RESERVATION_NOT_FOUND));
+        }
+
+        @Test
+        @DisplayName("put-back: picked goods come back onto sellable stock only")
+        void putBackAddsToAvailableStockOnly() {
+            StockItem item = availableWith(10);
+            item.putBack(Quantity.of(3));
+            assertThat(item.onHand()).isEqualTo(Quantity.of(13));
+
+            StockItem quarantined = new StockItem(StockItemId.newId(), SKU, LOCATION, null, null,
+                    Quantity.of(5), StockStatus.QUARANTINE, List.of(), 0L);
+            assertThatThrownBy(() -> quarantined.putBack(Quantity.of(1)))
+                    .isInstanceOfSatisfying(com.stockflow.common.error.BusinessException.class, refusal ->
+                            assertThat(refusal.errorCode())
+                                    .isEqualTo(com.stockflow.common.error.ErrorCode.STOCK_STATUS_MISMATCH));
+            assertThat(quarantined.onHand()).isEqualTo(Quantity.of(5));
         }
     }
 
@@ -281,5 +342,61 @@ class StockItemTest {
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("Invariant violated");
         }
+    }
+
+    // ---- SCRUM-465: a hold expires only while its order waits for payment (kltn-docs 14 BR-07) ----
+
+    @Test
+    @DisplayName("pinning an order's holds stops them expiring; other orders' holds still expire")
+    void pinnedHoldsDoNotExpire() {
+        StockItem item = availableWith(10);
+        UUID paid = UUID.randomUUID();
+        UUID unpaid = UUID.randomUUID();
+        Reservation kept = item.reserve(paid, UUID.randomUUID(), UUID.randomUUID(), Quantity.of(3), NOW);
+        item.reserve(unpaid, UUID.randomUUID(), UUID.randomUUID(), Quantity.of(2), NOW);
+
+        assertThat(item.pinReservationsOf(paid)).isEqualTo(1);
+        assertThat(item.pinReservationsOf(paid)).isZero();   // idempotent
+        assertThat(kept.isPinned()).isTrue();
+        assertThat(kept.expiresAt()).isNull();
+
+        int released = item.releaseExpired(NOW.plus(java.time.Duration.ofDays(30)));
+
+        assertThat(released).isEqualTo(1);
+        assertThat(kept.status()).isEqualTo(ReservationStatus.HELD);
+        assertThat(item.reserved()).isEqualTo(Quantity.of(3));
+    }
+
+    @Test
+    @DisplayName("SCRUM-427: an order waiting for payment again gets a deadline on its pinned holds")
+    void rearmedHoldsExpireAgain() {
+        StockItem item = availableWith(10);
+        UUID orderId = UUID.randomUUID();
+        Reservation hold = item.reserve(orderId, UUID.randomUUID(), UUID.randomUUID(), Quantity.of(3), NOW);
+        item.pinReservationsOf(orderId);
+        java.time.Instant deadline = NOW.plus(java.time.Duration.ofMinutes(30));
+
+        assertThat(item.rearmReservationsOf(orderId, deadline)).isEqualTo(1);
+        assertThat(item.rearmReservationsOf(orderId, deadline.plusSeconds(60))).isZero();   // idempotent
+        assertThat(hold.expiresAt()).isEqualTo(deadline);
+        assertThat(item.releaseExpired(deadline)).isEqualTo(1);
+        assertThat(hold.status()).isEqualTo(ReservationStatus.EXPIRED);
+    }
+
+    @Test
+    @DisplayName("a closed hold is not pinned, and a pinned hold can still be released or consumed")
+    void pinOnlyTouchesActiveHolds() {
+        StockItem item = availableWith(10);
+        UUID orderId = UUID.randomUUID();
+        Reservation cancelled = item.reserve(orderId, UUID.randomUUID(), UUID.randomUUID(), Quantity.of(2), NOW);
+        item.releaseReservation(cancelled.id(), ReleaseReason.ORDER_CANCELLED, NOW);
+        Reservation live = item.reserve(orderId, UUID.randomUUID(), UUID.randomUUID(), Quantity.of(3), NOW);
+
+        assertThat(item.pinReservationsOf(orderId)).isEqualTo(1);
+        assertThat(cancelled.expiresAt()).isNotNull();
+
+        item.releaseReservation(live.id(), ReleaseReason.ORDER_CANCELLED, NOW);
+        assertThat(live.status()).isEqualTo(ReservationStatus.RELEASED);
+        assertThat(item.reserved()).isEqualTo(Quantity.ZERO);
     }
 }

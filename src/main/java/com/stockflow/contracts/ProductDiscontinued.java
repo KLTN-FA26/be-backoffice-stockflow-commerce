@@ -9,9 +9,10 @@ import java.util.UUID;
  * durable by Spring Modulith's event publication registry. See {@code package-info.java} for the
  * rules on changing this contract.
  *
- * <p>No listener exists yet — {@code catalog}, {@code procurement} and {@code reporting} are still
- * skeletons — so this event is inert today, the same position {@code ProductApproved} was in
- * before this story.</p>
+ * <p>The catalog listens to hide the product; a purchase order or an order that still references the
+ * product is unaffected (kltn-docs 01 step 12, 02 edge cases). The reason stays with the product module
+ * ({@code products.discontinue_reason} and its change log): a contract carries facts and codes, never
+ * text a user typed.</p>
  */
 public record ProductDiscontinued(UUID productId, Instant discontinuedAt) {
 }

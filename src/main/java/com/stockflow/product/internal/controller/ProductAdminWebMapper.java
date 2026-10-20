@@ -1,35 +1,40 @@
 package com.stockflow.product.internal.controller;
 
 import com.stockflow.common.storage.DownloadLink;
-import com.stockflow.inventory.api.InventoryItemLogistics;
-import com.stockflow.inventory.api.ItemLogistics;
 import com.stockflow.product.internal.controller.dto.BrandResponse;
 import com.stockflow.product.internal.controller.dto.CategoryResponse;
+import com.stockflow.product.internal.controller.dto.GeneratedVariantsResponse;
 import com.stockflow.product.internal.controller.dto.ImageDownloadResponse;
 import com.stockflow.product.internal.controller.dto.MediaResponse;
 import com.stockflow.product.internal.controller.dto.PublicGalleryResponse;
-import com.stockflow.product.internal.controller.dto.SkuLogisticsRequest;
-import com.stockflow.product.internal.controller.dto.SkuLogisticsResponse;
+import com.stockflow.product.internal.controller.dto.VariantOptionResponse;
 import com.stockflow.product.internal.controller.dto.VariantResponse;
 import com.stockflow.product.internal.service.ProductMediaService;
 import com.stockflow.product.internal.service.ProductTaxonomyService;
 import com.stockflow.product.internal.service.ProductVariantService;
 import org.springframework.stereotype.Component;
 
-import java.util.Objects;
+import java.util.Map;
 import java.util.UUID;
 
 /**
  * Hand-written DTO mapping for the product module's secondary resources: variants, media, brands,
- * categories, SKU logistics. Each is a one-to-one copy of a service view that MapStruct would not
+ * categories. Each is a one-to-one copy of a service view that MapStruct would not
  * make shorter, and the media one has to unwrap the stored file.
  */
 @Component
 class ProductAdminWebMapper {
 
-    VariantResponse toResponse(ProductVariantService.VariantView v) {
+    VariantResponse toResponse(ProductVariantService.VariantView v, UUID inventoryItemId) {
         return new VariantResponse(v.id(), v.productId(), v.sku(), v.name(), v.status().name(), v.defaultVariant(),
-                v.attributeSignature(), v.position(), v.obsoletedAt(), v.version());
+                v.attributeSignature(), v.position(), v.obsoletedAt(), v.version(),
+                v.options().stream().map(o -> new VariantOptionResponse(o.attributeId(), o.attributeCode(),
+                        o.valueId(), o.valueCode(), o.label())).toList(), inventoryItemId);
+    }
+
+    GeneratedVariantsResponse toResponse(ProductVariantService.Generated g, Map<String, UUID> inventoryItemIds) {
+        return new GeneratedVariantsResponse(
+                g.created().stream().map(v -> toResponse(v, inventoryItemIds.get(v.sku()))).toList(), g.skipped());
     }
 
     MediaResponse toResponse(ProductMediaService.MediaView m) {
@@ -62,20 +67,5 @@ class ProductAdminWebMapper {
 
     ImageDownloadResponse toResponse(DownloadLink link) {
         return new ImageDownloadResponse(link.url(), link.expiresAt());
-    }
-
-    SkuLogisticsResponse toResponse(UUID skuId, InventoryItemLogistics item) {
-        ItemLogistics l = item.logistics();
-        return new SkuLogisticsResponse(skuId, item.sku(), item.version(), l.unitOfMeasure(), l.barcode(),
-                l.weightKg(), l.lengthCm(), l.widthCm(), l.heightCm(), l.packageWeightKg(), l.packageLengthCm(),
-                l.packageWidthCm(), l.packageHeightCm(), l.packageCount(), l.packSize(), l.storageClass(),
-                l.requiresAdultSignature(), l.shippingRestrictionNote(), l.qcRequired());
-    }
-
-    ItemLogistics toLogistics(SkuLogisticsRequest r) {
-        return new ItemLogistics(r.unitOfMeasure(), r.barcode(), r.weightKg(), r.lengthCm(), r.widthCm(),
-                r.heightCm(), r.packageWeightKg(), r.packageLengthCm(), r.packageWidthCm(), r.packageHeightCm(),
-                Objects.requireNonNullElse(r.packageCount(), 1), Objects.requireNonNullElse(r.packSize(), 1),
-                r.storageClass(), r.requiresAdultSignature(), r.shippingRestrictionNote(), r.qcRequired());
     }
 }

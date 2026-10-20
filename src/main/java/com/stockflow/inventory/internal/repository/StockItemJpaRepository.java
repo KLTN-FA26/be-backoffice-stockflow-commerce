@@ -3,6 +3,7 @@ package com.stockflow.inventory.internal.repository;
 import com.stockflow.inventory.internal.entity.StockItemJpaEntity;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -27,7 +28,8 @@ import java.util.UUID;
  * past two conditions ({@code findByStatusAndReservationsStatusAndReservationsExpiresAtBefore}),
  * and cannot express the fetch joins and lock modes these need.</p>
  */
-interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID> {
+interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>,
+        JpaSpecificationExecutor<StockItemJpaEntity> {
 
     interface AvailableTotal {
         String getSku();
@@ -153,6 +155,39 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
             """)
     List<UUID> findStockItemIdsHoldingOrder(@Param("orderId") UUID orderId);
 
+    @Query("""
+            select new com.stockflow.inventory.internal.domain.HeldStock(s.sku, s.locationCode, r.quantity)
+            from ReservationJpaEntity r join r.stockItem s
+            where r.orderId = :orderId
+              and r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
+            order by s.sku, s.locationCode
+            """)
+    List<com.stockflow.inventory.internal.domain.HeldStock> findHeldForOrder(@Param("orderId") UUID orderId);
+
+    @Query("""
+            select new com.stockflow.inventory.internal.domain.HoldDetail(r.id, s.sku, s.locationCode, s.lotNumber,
+                   r.quantity, r.status, r.expiresAt, s.expiryDate)
+            from ReservationJpaEntity r join r.stockItem s
+            where r.id in :ids
+            """)
+    List<com.stockflow.inventory.internal.domain.HoldDetail> findHolds(@Param("ids") java.util.Collection<UUID> ids);
+
     @Query("select r.stockItem.id from ReservationJpaEntity r where r.id = :reservationId")
     Optional<UUID> findStockItemIdByReservationId(@Param("reservationId") UUID reservationId);
+
+    @Query("""
+            select distinct r.stockItem.id from ReservationJpaEntity r
+            where r.productionOrderId = :productionOrderId
+              and r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
+            """)
+    List<UUID> findStockItemIdsHoldingProductionOrder(@Param("productionOrderId") UUID productionOrderId);
+
+    /** The live holds of a production order, oldest first; nothing is locked. */
+    @Query("""
+            select r.id from ReservationJpaEntity r
+            where r.productionOrderId = :productionOrderId
+              and r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
+            order by r.reservedAt, r.id
+            """)
+    List<UUID> findHeldReservationIdsOfProductionOrder(@Param("productionOrderId") UUID productionOrderId);
 }

@@ -1,12 +1,19 @@
 package com.stockflow.order.internal.domain;
 
+import com.stockflow.contracts.OrderCancelled;
 import com.stockflow.contracts.OrderPlaced;
+import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.OrderStatus;
+import com.stockflow.order.api.PaymentStatus;
 import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.common.domain.AggregateRoot;
 import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -22,7 +29,10 @@ import java.util.UUID;
  *   <li>{@code total} is derived from the lines and can never be set independently of them;</li>
  *   <li>status only ever moves along the edges {@link OrderStatus#canTransitionTo} allows;</li>
  *   <li>an order cannot be submitted until every line holds a reservation — the rule that stops a
- *       customer paying for stock nobody set aside.</li>
+ *       customer paying for stock nobody set aside;</li>
+ *   <li>it is CONFIRMED only once the prepayment, or the deposit, is in (kltn-docs 15 BR-02), and
+ *       the money received only ever grows;</li>
+ *   <li>a cancellation names a reason code and keeps no more than was paid (15 BR-05).</li>
  * </ul>
  *
  * <p>The last one is worth dwelling on, because it is the invariant a distributed system cannot
@@ -32,6 +42,8 @@ import java.util.UUID;
  * can simply be checked and enforced.</p>
  */
 public final class Order extends AggregateRoot {
+
+    private static final BigDecimal HUNDRED = BigDecimal.valueOf(100);
 
     private final OrderId id;
     private final OrderNumber orderNumber;
@@ -47,9 +59,30 @@ public final class Order extends AggregateRoot {
 
     private OrderStatus status;
     private String cancellationReason;
+    private CancellationReasonCode cancellationReasonCode;
+    private BigDecimal cancellationRetainedAmount;
+    /** Decision Q2: why and on what terms an agreed amount was kept; null when a percentage (or nothing) was. */
+    private String cancellationFeeReason;
+    /** Decision Q6a: the whole agreed amount; above {@code paidAmount} the rest is owed (a receivable). */
+    private BigDecimal cancellationFeeAmount;
+    private String cancellationFeeDetail;
+    /**
+     * When the first production order of the order started printing - in house, or sent to a subcontractor (audit of
+     * #109, decision 2026-10-17). Before it a cancellation is refunded in full; from it Sales may keep an agreed fee.
+     * Written by production in its own transaction, under this order's row lock, so a cancellation sees it or not.
+     */
+    private Instant printingStartedAt;
+    /**
+     * When a package of the order was completed (03 §9: PACKED and later is not cancelled, it goes through a return).
+     * Written by fulfillment in the transaction that completes the package, under this order's row lock.
+     */
+    private Instant packedAt;
     private PaymentTerm paymentTerm = PaymentTerm.PREPAID;
     private java.math.BigDecimal depositRequired;
     private Instant depositReceivedAt;
+    private BigDecimal paidAmount = BigDecimal.ZERO;
+    private Instant paidInFullAt;
+    private Integer creditTermDays;
     private UUID warehouseId;
     private Instant releasedAt;
     private UUID releasedBy;
@@ -173,6 +206,21 @@ public final class Order extends AggregateRoot {
     }
 
     /**
+     * Holds production hands to a line after checkout (reprints, subcontracted children); see
+     * {@code OrderReservations}. Idempotent.
+     *
+     * @return whether a hold was added
+     */
+    public boolean addProductionHolds(UUID lineId, List<UUID> reservationIds) {
+        boolean known = lines.stream().anyMatch(line -> line.id().equals(lineId));
+        if (!known) {
+            throw new BusinessException(ErrorCode.NOT_FOUND,
+                    "Line %s does not belong to order %s".formatted(lineId, orderNumber));
+        }
+        return lineOf(lineId).addHolds(reservationIds);
+    }
+
+    /**
      * Submit the order for payment.
      *
      * <p>Refuses unless every line holds a reservation. The application service calls this only
@@ -185,6 +233,12 @@ public final class Order extends AggregateRoot {
         // would roll back anyway: a caller that catches this exception - a test, a batch importer -
         // would otherwise hold an aggregate that says PENDING_PAYMENT while nothing is reserved,
         // which is precisely the state this method exists to make impossible.
+        requireEveryLineReserved();
+        transitionTo(OrderStatus.PENDING_PAYMENT);
+        registerPlaced();
+    }
+
+    private void requireEveryLineReserved() {
         List<OrderLine> unreserved = lines.stream()
                 .filter(line -> !line.isReserved())
                 .toList();
@@ -193,7 +247,9 @@ public final class Order extends AggregateRoot {
                     "Cannot submit order %s: %d line(s) hold no stock reservation"
                             .formatted(orderNumber, unreserved.size()));
         }
-        transitionTo(OrderStatus.PENDING_PAYMENT);
+    }
+
+    private void registerPlaced() {
         registerEvent(new OrderEvent.Placed(new OrderPlaced(
                 id.value(),
                 customerId,
@@ -208,18 +264,165 @@ public final class Order extends AggregateRoot {
                 total().currency().getCurrencyCode())));
     }
 
-    /** Payment captured. Called from the listener on {@code PaymentCaptured}. */
-    public void markPaid() {
-        transitionTo(OrderStatus.PAID);
+    /** {@link #applyTerms(PaymentTerm, BigDecimal, Integer)} for prepaid and deposit orders. */
+    public void applyTerms(PaymentTerm term, BigDecimal depositPercent) {
+        applyTerms(term, depositPercent, null);
     }
 
     /**
-     * Fulfilment takes the order on (picking starts). From READY_TO_FULFILL, or from PAID for an
-     * order with nothing to print — an order with print lines that skipped production would ship
+     * The payment terms the order is sold on, fixed before it is submitted (kltn-docs 15 §3: the
+     * term of the order, and the deposit percentage of the customer's terms or the quote). Whether
+     * the customer may use the term (15 BR-01) is the caller's to check — it needs their terms.
+     *
+     * <p>A deposit is {@code depositPercent} of the total, rounded to the currency's whole unit. A
+     * credit order keeps {@code creditTermDays}, the days it has to be paid after delivery (SCRUM-427).</p>
+     */
+    public void applyTerms(PaymentTerm term, BigDecimal depositPercent, Integer creditTermDays) {
+        if (status != OrderStatus.DRAFT) {
+            throw new IllegalStateException("Terms are fixed when the order is placed");
+        }
+        assignTerms(term, depositPercent, creditTermDays);
+    }
+
+    /** Validates everything first, then assigns: a refused change leaves the order as it was. */
+    private void assignTerms(PaymentTerm term, BigDecimal depositPercent, Integer creditTermDays) {
+        PaymentTerm chosen = term == null ? PaymentTerm.PREPAID : term;
+        if ((chosen == PaymentTerm.CREDIT) != (creditTermDays != null)) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Only a credit order has days to pay");
+        }
+        BigDecimal deposit = null;
+        if (chosen == PaymentTerm.DEPOSIT) {
+            if (depositPercent == null || depositPercent.signum() <= 0 || depositPercent.compareTo(HUNDRED) >= 0) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                        "A deposit order needs a deposit percentage above 0 and below 100");
+            }
+            Money total = total();
+            deposit = total.amount().multiply(depositPercent)
+                    .divide(HUNDRED, total.currency().getDefaultFractionDigits(), RoundingMode.HALF_UP);
+        } else if (depositPercent != null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Only a deposit order takes a deposit percentage");
+        }
+        this.paymentTerm = chosen;
+        this.depositRequired = deposit;
+        this.creditTermDays = creditTermDays;
+    }
+
+
+    /**
+     * Money received for the order, as payment reports it (one call per captured payment; the
+     * caller makes a redelivered payment arrive once).
+     *
+     * <p>kltn-docs 15 BR-02: a prepaid order is CONFIRMED once paid in full, a deposit order once its
+     * deposit is in. Later money — the balance of a deposit order arriving while it is in production —
+     * only adds up: it never moves the order, so a payment can never fail on an order that has moved
+     * on. Money for a cancelled order is recorded and left for Sales to settle with the customer
+     * (15, "tiền về sau khi đơn đã huỷ").</p>
+     *
+     * @return whether this payment confirmed the order
+     */
+    public boolean recordPayment(Money amount, Instant now) {
+        java.util.Objects.requireNonNull(amount, "amount");
+        if (!amount.currency().equals(total().currency())) {
+            throw new IllegalArgumentException("Order %s is in %s, not %s"
+                    .formatted(orderNumber, total().currency(), amount.currency()));
+        }
+        if (amount.amount().signum() <= 0) {
+            throw new IllegalArgumentException("A payment adds money");
+        }
+        this.paidAmount = paidAmount.add(amount.amount());
+        if (status == OrderStatus.CANCELLED && cancellationFeeAmount != null) {
+            // Q6a: money arriving after a cancellation with an agreed fee pays that fee first - the receivable its
+            // shortfall became, or a late transfer - so what is kept stays LEAST(fee, paid), as
+            // ck_order_cancellation_fee says. Anything above the fee is the customer's, settled as before.
+            this.cancellationRetainedAmount = cancellationFeeAmount.min(paidAmount);
+        }
+        if (paidInFullAt == null && paidAmount.compareTo(total().amount()) >= 0) {
+            this.paidInFullAt = now;
+        }
+        if (paymentTerm == PaymentTerm.DEPOSIT && depositReceivedAt == null
+                && paidAmount.compareTo(depositRequired) >= 0) {
+            this.depositReceivedAt = now;
+        }
+        if (status != OrderStatus.PENDING_PAYMENT) {
+            return false;
+        }
+        boolean cleared = switch (paymentTerm) {
+            case PREPAID -> paidInFullAt != null;
+            case DEPOSIT -> depositReceivedAt != null;
+            case CREDIT -> false;
+        };
+        if (cleared) {
+            transitionTo(OrderStatus.CONFIRMED);
+        }
+        return cleared;
+    }
+
+    /**
+     * Submit a credit order (kltn-docs 15 §4.3, 17 §5; SCRUM-427): it skips PENDING_PAYMENT and is
+     * CONFIRMED within the customer's limit, or ON_HOLD until whoever approves credit decides.
+     * Whether it is within the limit is the caller's to decide — it needs the exposure.
+     */
+    public void submitOnCredit(boolean withinLimit) {
+        if (paymentTerm != PaymentTerm.CREDIT) {
+            throw new IllegalStateException("Order %s is not a credit order".formatted(orderNumber));
+        }
+        requireEveryLineReserved();
+        transitionTo(withinLimit ? OrderStatus.CONFIRMED : OrderStatus.ON_HOLD);
+        registerPlaced();
+    }
+
+    /** Over the limit, approved by whoever approves credit (15 BR-03): ON_HOLD → CONFIRMED. */
+    public void approveCredit() {
+        requireCreditHold();
+        transitionTo(OrderStatus.CONFIRMED);
+    }
+
+    /**
+     * Over the limit and refused, but the customer pays another way (15 §4.3): the order leaves the
+     * hold for PENDING_PAYMENT on its new terms, like any prepaid or deposit order.
+     */
+    public void switchTermsAfterCreditRefusal(PaymentTerm term, BigDecimal depositPercent) {
+        requireCreditHold();
+        if (term == null || term == PaymentTerm.CREDIT) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Switch to PREPAID or DEPOSIT");
+        }
+        assignTerms(term, depositPercent, null);
+        transitionTo(OrderStatus.PENDING_PAYMENT);
+    }
+
+    private void requireCreditHold() {
+        if (status != OrderStatus.ON_HOLD || paymentTerm != PaymentTerm.CREDIT) {
+            throw new BusinessException(ErrorCode.ORDER_NOT_ON_CREDIT_HOLD,
+                    "Order %s is %s on %s terms, not waiting for a credit decision"
+                            .formatted(orderNumber, status, paymentTerm));
+        }
+    }
+
+    /**
+     * The carrier delivered it, as the Order Coordinator records when the carrier reports back
+     * (kltn-docs 09 §4.3, 17 §4.3): SHIPPED → DELIVERED. Payment opens the receivable of a credit
+     * order from the event (15 §4.3 step 2).
+     */
+    public void markDelivered(Instant now) {
+        transitionTo(OrderStatus.DELIVERED);
+        Money total = total();
+        registerEvent(new OrderEvent.Delivered(new com.stockflow.contracts.OrderDelivered(id.value(),
+                orderNumber.value(), customerId, paymentTerm.name(), total.amount(), paidAmount,
+                total.currency().getCurrencyCode(), creditTermDays, now)));
+    }
+
+    /** kltn-docs 15 §5.2, derived from the term and the money received. */
+    public PaymentStatus paymentStatus() {
+        return PaymentStatus.of(paymentTerm, paidAmount, paidInFullAt);
+    }
+
+    /**
+     * Fulfilment takes the order on (picking starts). From READY_TO_FULFILL, or from CONFIRMED for
+     * an order with nothing to print — an order with print lines that skipped production would ship
      * blank cups (BR-PRD-06).
      */
     public void startFulfilment() {
-        if (status == OrderStatus.PAID && hasPrintLines()) {
+        if (status == OrderStatus.CONFIRMED && hasPrintLines()) {
             throw new InvalidOrderTransitionException(orderNumber, status,
                     "release it to production first: it has lines to print");
         }
@@ -231,29 +434,24 @@ public final class Order extends AggregateRoot {
      * print it goes to IN_PRODUCTION and asks production for them, otherwise straight to
      * READY_TO_FULFILL.
      *
-     * <p>A PAID order may be released; so may a DEPOSIT order still awaiting the balance, once its
-     * deposit has arrived (BR-PRD-09). Whether every new design has an approved sample (BR-PRD-08) is
-     * the caller's to check — it needs the sample records — and {@code approvedSamples} carries the
-     * answer per print line: the sample id, or null for a repeat design.</p>
+     * <p>Only a CONFIRMED order may be released: paid in full, or for a deposit order once the deposit
+     * is in (kltn-docs 15 §4.2, BR-PRD-09); its balance is collected later, at the latest on delivery
+     * (17 §4.3). Whether every new design has an approved sample (BR-PRD-08) is the caller's to check
+     * — it needs the sample records — and {@code approvedSamples} carries the answer per print line:
+     * the sample id, or null for a repeat design.</p>
      */
     public void release(UUID warehouse, String warehouseCode, UUID by, Instant now,
                         java.util.Map<UUID, UUID> approvedSamples) {
         java.util.Objects.requireNonNull(warehouse, "warehouse");
         java.util.Objects.requireNonNull(by, "by");
-        boolean depositOrderAwaitingBalance = status == OrderStatus.PENDING_PAYMENT && paymentTerm == PaymentTerm.DEPOSIT;
-        if (status != OrderStatus.PAID && !depositOrderAwaitingBalance) {
-            throw new InvalidOrderTransitionException(orderNumber, status, "only a paid order can be released");
+        if (status == OrderStatus.PENDING_PAYMENT && paymentTerm == PaymentTerm.DEPOSIT) {
+            throw new BusinessException(ErrorCode.ORDER_DEPOSIT_NOT_RECEIVED,
+                    "Order %s cannot be released before its deposit arrives (BR-PRD-09)".formatted(orderNumber));
         }
-        if (paymentTerm == PaymentTerm.DEPOSIT && depositReceivedAt == null && hasPrintLines()) {
-            throw new com.stockflow.common.error.BusinessException(
-                    com.stockflow.common.error.ErrorCode.ORDER_DEPOSIT_NOT_RECEIVED,
-                    "Order %s cannot go to production before its deposit arrives (BR-PRD-09)".formatted(orderNumber));
+        if (status != OrderStatus.CONFIRMED) {
+            throw new InvalidOrderTransitionException(orderNumber, status, "only a confirmed order can be released");
         }
         OrderStatus target = hasPrintLines() ? OrderStatus.IN_PRODUCTION : OrderStatus.READY_TO_FULFILL;
-        if (depositOrderAwaitingBalance && target != OrderStatus.IN_PRODUCTION) {
-            throw new InvalidOrderTransitionException(orderNumber, status,
-                    "a deposit order with nothing to print is released once paid in full");
-        }
         transitionTo(target);
         this.warehouseId = warehouse;
         this.releasedAt = now;
@@ -310,6 +508,21 @@ public final class Order extends AggregateRoot {
         this.releasedBy = releasedByUser;
     }
 
+    /** Rehydration of the money received and how the order was cancelled, from the row. */
+    public void restorePaymentAndCancellation(BigDecimal paid, Instant paidInFull, CancellationReasonCode code,
+                                              BigDecimal retained) {
+        restorePaymentAndCancellation(paid, paidInFull, code, retained, null);
+    }
+
+    public void restorePaymentAndCancellation(BigDecimal paid, Instant paidInFull, CancellationReasonCode code,
+                                              BigDecimal retained, Integer creditDays) {
+        this.creditTermDays = creditDays;
+        this.paidAmount = paid == null ? BigDecimal.ZERO : paid;
+        this.paidInFullAt = paidInFull;
+        this.cancellationReasonCode = code;
+        this.cancellationRetainedAmount = retained;
+    }
+
     public void putOnHold() {
         if (status != OrderStatus.ON_HOLD) { transitionTo(OrderStatus.ON_HOLD); }
     }
@@ -317,24 +530,100 @@ public final class Order extends AggregateRoot {
     public void resumeFromHold() { transitionTo(OrderStatus.IN_FULFILMENT); }
 
     /**
-     * Cancel.
+     * Cancel, and announce it so the money and the work in progress follow (kltn-docs 17 §4.5,
+     * BR-03; SCRUM-460).
      *
      * <p>Refused from SHIPPED onwards (BR-031): the goods are with the carrier and the correct
-     * process is a return. The exception names the current status so the caller can tell the user
-     * why rather than showing a generic failure.</p>
+     * process is a return — {@code ORDER_NOT_CANCELLABLE}, naming the current status so the caller
+     * can tell the user why.</p>
+     *
+     * <p>{@code retainedPercent} is the share of the money received kept for work already done — a
+     * print run under way (17 §4.4, 15 §4.4); the rest is refundable. 0 or null keeps nothing.</p>
+     *
+     * @param by who cancelled; null when the system did (payment failed, hold expired)
      */
-    public void cancel(String reason) {
-        // The database has CHECK (status <> 'CANCELLED' OR cancellation_reason IS NOT NULL).
-        // Rejecting a blank reason here turns what would be a ConstraintViolationException at
-        // flush time - thrown far from the call that caused it - into an immediate, obvious error.
-        if (reason == null || reason.isBlank()) {
-            throw new IllegalArgumentException("A cancellation must record a reason");
+    public void cancel(CancellationReasonCode code, String note, BigDecimal retainedPercent, UUID by, Instant now) {
+        cancel(code, note, retainedPercent, null, by, now);
+    }
+
+    /**
+     * The same, keeping either a percentage or an amount agreed with the customer (decision Q2: Sales enters it,
+     * nothing computes it), whole units of the currency, more than zero, with its reason and detail. The money
+     * received pays it first: what is left of it is refunded (Q6b), and what it does not cover is owed — the
+     * cancellation announces it and payment records a receivable (Q6a). Nothing is collected or marked paid.
+     */
+    public void cancel(CancellationReasonCode code, String note, BigDecimal retainedPercent,
+                       com.stockflow.order.api.CancellationFee agreedFee, UUID by, Instant now) {
+        java.util.Objects.requireNonNull(code, "code");
+        if (agreedFee != null) {
+            requireAgreedFee(agreedFee, retainedPercent);
+        }
+        String trimmed = note == null || note.isBlank() ? null : note.trim();
+        // ck_order_cancellation_code says it again in the table.
+        if (code == CancellationReasonCode.OTHER && trimmed == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A cancellation for OTHER must say why in the note");
+        }
+        if (retainedPercent != null && (retainedPercent.signum() < 0 || retainedPercent.compareTo(HUNDRED) > 0)) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The retained share is between 0 and 100 percent");
         }
         if (!status.canTransitionTo(OrderStatus.CANCELLED)) {
-            throw new InvalidOrderTransitionException(orderNumber, status, "raise a return instead");
+            throw new BusinessException(ErrorCode.ORDER_NOT_CANCELLABLE,
+                    "Order %s is %s and can no longer be cancelled; raise a return instead".formatted(orderNumber, status));
         }
+        requireNotPacked();
+        // Decision 2026-10-17: once printing started, a person decides - the fee, the blanks, the printed goods - so
+        // the system never cancels such an order on its own (referCancellationToStaff is its way instead).
+        if (by == null && printingStartedAt != null) {
+            throw new BusinessException(ErrorCode.CANCELLATION_NEEDS_STAFF,
+                    "Order %s started printing: staff decide its cancellation".formatted(orderNumber));
+        }
+        // Decision 2026-10-17 (03 §9, BR-ORD-004): before printing nothing is kept - neither an agreed amount nor a
+        // share; from the first print run Sales may keep what was agreed with the customer.
+        boolean keepsSomething = agreedFee != null || retainedPercent != null && retainedPercent.signum() > 0;
+        if (keepsSomething && printingStartedAt == null) {
+            throw new BusinessException(ErrorCode.CANCELLATION_FEE_BEFORE_PRINTING,
+                    "Order %s has not started printing: it is refunded in full and no fee is kept".formatted(orderNumber));
+        }
+        OrderStatus previous = status;
+        int scale = total().currency().getDefaultFractionDigits();
+        BigDecimal agreed = agreedFee == null ? null : agreedFee.amount().setScale(scale);
+        // Q6a/Q6b: what was received pays the agreed amount first; the rest is refunded, a shortfall is owed.
+        BigDecimal retained = agreed != null ? agreed.min(paidAmount)
+                : retainedPercent == null ? BigDecimal.ZERO
+                : paidAmount.multiply(retainedPercent).divide(HUNDRED, scale, RoundingMode.HALF_UP);
+        this.cancellationFeeAmount = agreed;
+        this.cancellationFeeReason = agreedFee == null ? null : agreedFee.reason();
+        this.cancellationFeeDetail = agreedFee == null ? null : agreedFee.detail();
         this.status = OrderStatus.CANCELLED;
-        this.cancellationReason = reason;
+        this.cancellationReasonCode = code;
+        // The free-text column the timeline shows: the code, and the note when there is one.
+        this.cancellationReason = trimmed == null ? code.name() : code.name() + ": " + trimmed;
+        this.cancellationRetainedAmount = retained;
+        registerEvent(new OrderEvent.Cancelled(new OrderCancelled(id.value(), orderNumber.value(), customerId,
+                previous.name(), code.name(), trimmed, paidAmount, paidAmount.subtract(retained),
+                total().currency().getCurrencyCode(), by, now,
+                agreed == null ? BigDecimal.ZERO : agreed.subtract(retained))));
+    }
+
+    private void requireAgreedFee(com.stockflow.order.api.CancellationFee fee, BigDecimal retainedPercent) {
+        if (retainedPercent != null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Keep a percentage or an agreed amount, not both");
+        }
+        int digits = total().currency().getDefaultFractionDigits();
+        if (fee.amount().signum() <= 0 || fee.amount().stripTrailingZeros().scale() > digits) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The agreed amount is more than zero, in whole %s"
+                    .formatted(digits == 0 ? total().currency().getCurrencyCode() : "units of " + total().currency()));
+        }
+        // Decision 2026-10-17: above what was paid the rest is owed, but never above what the order is worth.
+        if (fee.amount().compareTo(total().amount()) > 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The agreed amount is at most the order total, %s %s"
+                    .formatted(total().amount().stripTrailingZeros().toPlainString(), total().currency().getCurrencyCode()));
+        }
+        if (fee.reason() == null || fee.reason().isEmpty() || fee.reason().length() > 500
+                || fee.detail() == null || fee.detail().isEmpty() || fee.detail().length() > 2000) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "An agreed amount needs its reason (at most 500 characters) and its detail (at most 2000)");
+        }
     }
 
     /** Every live hold this order is carrying, across all of its lines. */
@@ -378,6 +667,85 @@ public final class Order extends AggregateRoot {
     public OrderStatus status() { return status; }
     public Instant placedAt() { return placedAt; }
     public String cancellationReason() { return cancellationReason; }
+    public CancellationReasonCode cancellationReasonCode() { return cancellationReasonCode; }
+    public BigDecimal cancellationRetainedAmount() { return cancellationRetainedAmount; }
+    public String cancellationFeeReason() { return cancellationFeeReason; }
+    public BigDecimal cancellationFeeAmount() { return cancellationFeeAmount; }
+    public String cancellationFeeDetail() { return cancellationFeeDetail; }
+
+    /** Rehydration of the production and fulfilment facts the cancellation rules read. */
+    public void restoreFulfilmentFacts(Instant printingStarted, Instant packed) {
+        this.printingStartedAt = printingStarted;
+        this.packedAt = packed;
+    }
+
+    public Instant printingStartedAt() { return printingStartedAt; }
+    public Instant packedAt() { return packedAt; }
+
+    /**
+     * Printing of the order started (production, its own transaction, holding this row's lock). Once is enough; a
+     * cancelled order prints nothing more.
+     *
+     * @return whether this changed the order
+     */
+    public boolean recordPrintingStarted(Instant at) {
+        java.util.Objects.requireNonNull(at, "at");
+        if (status == OrderStatus.CANCELLED) {
+            throw new BusinessException(ErrorCode.ORDER_CANCELLED,
+                    "Order %s is cancelled; nothing more is printed for it".formatted(orderNumber));
+        }
+        if (printingStartedAt != null) {
+            return false;
+        }
+        printingStartedAt = at;
+        return true;
+    }
+
+    /**
+     * A package of the order was completed (fulfillment, the completing transaction, holding this row's lock). From
+     * here the order is not cancelled: it goes through a return (03 §9).
+     *
+     * @return whether this changed the order
+     */
+    public boolean recordPacked(Instant at) {
+        java.util.Objects.requireNonNull(at, "at");
+        if (status == OrderStatus.CANCELLED) {
+            throw new BusinessException(ErrorCode.ORDER_CANCELLED,
+                    "Order %s is cancelled; its package is not completed".formatted(orderNumber));
+        }
+        if (packedAt != null) {
+            return false;
+        }
+        packedAt = at;
+        return true;
+    }
+
+    /**
+     * Decision 2026-10-17: the system would cancel this order (a payment failed, an unpaid hold ran out) but printing
+     * started, so it does not - it hands the order to staff, who settle fee, blanks and printed goods by hand.
+     */
+    public void referCancellationToStaff(CancellationReasonCode wouldHaveBeen, Instant now) {
+        registerEvent(new OrderEvent.CancellationReferred(new com.stockflow.contracts.OrderCancellationReferred(
+                id.value(), orderNumber.value(), wouldHaveBeen.name(), now)));
+    }
+
+    /** 03 §9: a packed order is not cancelled - by anyone, on any path; it goes through a return (RMA). */
+    public void requireNotPacked() {
+        if (packedAt != null) {
+            throw new BusinessException(ErrorCode.ORDER_NOT_CANCELLABLE,
+                    "Order %s is packed; it can no longer be cancelled - raise a return instead".formatted(orderNumber));
+        }
+    }
+
+    /** Rehydration of the agreed amount's terms. */
+    public void restoreCancellationFee(BigDecimal amount, String reason, String detail) {
+        this.cancellationFeeAmount = amount;
+        this.cancellationFeeReason = reason;
+        this.cancellationFeeDetail = detail;
+    }
+    public BigDecimal paidAmount() { return paidAmount; }
+    public Instant paidInFullAt() { return paidInFullAt; }
+    public Integer creditTermDays() { return creditTermDays; }
     public PaymentTerm paymentTerm() { return paymentTerm; }
     public java.math.BigDecimal depositRequired() { return depositRequired; }
     public Instant depositReceivedAt() { return depositReceivedAt; }

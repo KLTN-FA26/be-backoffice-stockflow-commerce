@@ -1,11 +1,15 @@
 package com.stockflow.inventory.api;
 
-/** Why stock is corrected by hand. Production scrap is {@link #DAMAGED} for now. */
+/** Why stock is corrected by hand. {@link #SCRAP} and {@link #SAMPLE} only write stock down. */
 public enum StockAdjustmentReason {
     DAMAGED,
     LOST,
     FOUND,
     EXPIRED,
     DATA_CORRECTION,
-    OTHER
+    SCRAP,
+    SAMPLE,
+    OTHER,
+    /** Blanks spoilt or missing at a print subcontractor (SCRUM-441). Only writes stock down. */
+    SUBCONTRACT_LOSS
 }

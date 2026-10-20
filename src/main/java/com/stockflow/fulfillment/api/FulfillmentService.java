@@ -2,6 +2,7 @@ package com.stockflow.fulfillment.api;
 
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.security.CurrentUser;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -20,15 +21,42 @@ import java.util.UUID;
  * controller — see {@code docs/adding-a-module.md} §4.</p>
  */
 public interface FulfillmentService {
+    /**
+     * Opens the pick and pack task of an order in the warehouse the goods are picked from and assigns it.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code VALIDATION_FAILED} with
+     *         {@code fieldErrors[assignedUserId]} when the assignee is not an active warehouse staff member
+     *         or manager of that warehouse; {@code FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE} when the order's
+     *         stock is held in more than one warehouse or not in the order's own;
+     *         {@code OUT_OF_DATA_SCOPE} for a warehouse the caller is not assigned to
+     */
     FulfillmentTask createTask(UUID orderId, UUID assignedUserId, CurrentUser actor);
-    /** The tasks this actor may see, newest first; the role decides which ones. */
-    PageResponse<FulfillmentTask> listTasks(CurrentUser actor, int page, int size);
+    /**
+     * The tasks this actor may see, newest first; the role decides which ones, the caller's warehouses
+     * narrow them, and the query narrows them further.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code OUT_OF_DATA_SCOPE} when the query names a
+     *         warehouse the caller is not assigned to; {@code UNSUPPORTED_PARAMETER} for an unknown status
+     */
+    PageResponse<FulfillmentTask> listTasks(CurrentUser actor, FulfillmentTaskQuery query);
+    /**
+     * The people a task of {@code warehouseId} can be assigned to, by name. Not paged: bounded by one
+     * warehouse's staff.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code OUT_OF_DATA_SCOPE}, {@code WAREHOUSE_NOT_FOUND}
+     */
+    List<FulfillmentAssignee> assignees(UUID warehouseId, CurrentUser actor);
     FulfillmentTask assign(UUID taskId, UUID assignedUserId, CurrentUser actor);
     FulfillmentTask findTask(UUID taskId, CurrentUser actor);
     FulfillmentTask startPicking(UUID taskId, CurrentUser actor);
     FulfillmentTask completePicking(UUID taskId, CurrentUser actor);
     FulfillmentArtifactAccess artifactDownload(UUID taskId, UUID orderLineId, String role,
                                                 CurrentUser actor);
+    /**
+     * Verifies every print line's design checksum; all matching, the package is complete and the print lines' goods
+     * leave stock with it, in this transaction (decision 2026-10-16) - a mismatch puts it on hold and deducts
+     * nothing. A package already complete is refused ({@code CONFLICT}).
+     */
     FulfillmentTask completePacking(UUID taskId, CurrentUser actor);
     FulfillmentTask reverifyDesignIntegrity(UUID taskId, String resolutionNote, CurrentUser actor);
 }

@@ -5,6 +5,8 @@ import com.stockflow.procurement.api.CreatePurchaseOrderCommand;
 import com.stockflow.procurement.api.POLineSummary;
 import com.stockflow.procurement.api.PurchaseOrderStatusCount;
 import com.stockflow.procurement.api.PurchaseOrderSummary;
+import com.stockflow.procurement.api.RevisePOLineCommand;
+import com.stockflow.procurement.api.RevisePurchaseOrderCommand;
 import com.stockflow.procurement.api.SupplierSpendSummary;
 import com.stockflow.procurement.internal.controller.dto.CreatePOLineRequest;
 import com.stockflow.procurement.internal.controller.dto.CreatePurchaseOrderRequest;
@@ -12,6 +14,8 @@ import com.stockflow.procurement.internal.controller.dto.POLineResponse;
 import com.stockflow.procurement.internal.controller.dto.PurchaseOrderResponse;
 import com.stockflow.procurement.internal.controller.dto.PurchaseOrderStatusCountResponse;
 import com.stockflow.procurement.internal.controller.dto.SupplierSpendResponse;
+import com.stockflow.procurement.internal.controller.dto.UpdatePOLineRequest;
+import com.stockflow.procurement.internal.controller.dto.UpdatePurchaseOrderRequest;
 
 import org.mapstruct.Mapper;
 import org.mapstruct.Mapping;
@@ -30,6 +34,9 @@ interface PurchaseOrderWebMapper {
 
     CreatePOLineCommand toCommand(CreatePOLineRequest request);
 
+    RevisePurchaseOrderCommand toCommand(UpdatePurchaseOrderRequest request);
+
+    RevisePOLineCommand toCommand(UpdatePOLineRequest request);
 
 
     @Mapping(target = "deliveryStatus", source = "deliveryStatus")

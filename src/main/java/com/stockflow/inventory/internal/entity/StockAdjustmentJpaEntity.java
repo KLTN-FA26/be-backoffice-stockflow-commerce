@@ -62,8 +62,33 @@ public class StockAdjustmentJpaEntity extends BaseEntity {
     @Column(name = "posted_at")
     private Instant postedAt;
 
+    @Column(name = "withdrawn_at")
+    private Instant withdrawnAt;
+
+    /** V20261017000420: the receipt layer, when the location holds several layers of the lot. */
+    @Column(name = "received_at", updatable = false)
+    private Instant receivedAt;
+
+    /** V20261017000900: the hold a SCRAP write-off of a cancelled order's printed goods takes. */
+    @Column(name = "reservation_id", updatable = false)
+    private UUID reservationId;
+
     protected StockAdjustmentJpaEntity() {
     }
+
+    public StockAdjustmentJpaEntity atLayer(Instant receivedAt) {
+        this.receivedAt = receivedAt;
+        return this;
+    }
+
+    public Instant getReceivedAt() { return receivedAt; }
+
+    public StockAdjustmentJpaEntity forHold(UUID reservationId) {
+        this.reservationId = reservationId;
+        return this;
+    }
+
+    public UUID getReservationId() { return reservationId; }
 
     public StockAdjustmentJpaEntity(UUID id, String adjustmentNumber, String locationCode, String sku,
                                     String lotNumber, int quantityDelta, AdjustmentReason reasonCode,
@@ -81,12 +106,13 @@ public class StockAdjustmentJpaEntity extends BaseEntity {
     }
 
     public void decide(AdjustmentStatus status, UUID decidedBy, Instant decidedAt, String rejectionReason,
-                       Instant postedAt) {
+                       Instant postedAt, Instant withdrawnAt) {
         this.status = status;
         this.decidedBy = decidedBy;
         this.decidedAt = decidedAt;
         this.rejectionReason = rejectionReason;
         this.postedAt = postedAt;
+        this.withdrawnAt = withdrawnAt;
     }
 
     public String getAdjustmentNumber() { return adjustmentNumber; }
@@ -102,4 +128,5 @@ public class StockAdjustmentJpaEntity extends BaseEntity {
     public Instant getDecidedAt() { return decidedAt; }
     public String getRejectionReason() { return rejectionReason; }
     public Instant getPostedAt() { return postedAt; }
+    public Instant getWithdrawnAt() { return withdrawnAt; }
 }

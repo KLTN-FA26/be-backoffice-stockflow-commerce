@@ -51,8 +51,37 @@ public record OrderResponse(
         @Schema(description = "The warehouse the order was released from; null until released (SCRUM-423)")
         UUID warehouseId,
 
-        Instant releasedAt
+        Instant releasedAt,
+
+        @Schema(description = "Money received so far; null on rows that do not carry it")
+        BigDecimal paidAmount,
+
+        @Schema(description = "The deposit a DEPOSIT order needs before it is confirmed; null otherwise")
+        BigDecimal depositRequired,
+
+        Instant depositReceivedAt,
+        Instant paidInFullAt,
+
+        @Schema(example = "PARTIALLY_PAID", description = "UNPAID, PARTIALLY_PAID, ON_CREDIT or PAID (kltn-docs 15 §5.2)")
+        String paymentStatus,
+
+        @Schema(description = "A credit order's days to pay after delivery; null otherwise")
+        Integer creditTermDays,
+
+        @Schema(description = "Set when the order is CANCELLED")
+        Cancellation cancellation
 ) {
+
+    @Schema(name = "OrderCancellation")
+    public record Cancellation(
+            @Schema(example = "CUSTOMER_REQUEST") String reasonCode,
+            String reason,
+            @Schema(description = "Kept from the money received for work already done") BigDecimal retainedAmount,
+            @Schema(description = "Why an agreed amount was kept (decision Q2)") String feeReason,
+            @Schema(description = "What was agreed") String feeDetail,
+            @Schema(description = "The agreed amount; above retainedAmount the rest is owed as a receivable")
+            BigDecimal feeAmount) {
+    }
 
     public record Address(String recipientName, String phone, String line1, String line2,
                           String wardCode, String wardName, String provinceCode,

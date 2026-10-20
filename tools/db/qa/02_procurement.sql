@@ -244,9 +244,10 @@ SELECT pg_temp.expect_ok('R42 closing the old period, then the new price', $q$
     UPDATE procurement.supplier_item_prices SET effective_to = '2026-10-01T00:00:00Z' WHERE id = md5('demo:sip:SOFA')::uuid;
     INSERT INTO procurement.supplier_item_prices (id, supplier_item_id, unit_price, effective_from)
     VALUES (gen_random_uuid(), md5('demo:si:GOVIET:SOFA')::uuid, 5200000, '2026-10-01T00:00:00Z') $q$);
-SELECT pg_temp.expect_fail('R43 two preferred suppliers for one item', $q$
-    INSERT INTO procurement.supplier_items (id, supplier_id, inventory_item_id, current_price, is_preferred)
-    VALUES (gen_random_uuid(), md5('qa:supplier:OTHER')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 1, TRUE) $q$);
+-- One preferred supplier per item: it is the item's default_supplier_id (V20261019000600), one column.
+SELECT pg_temp.expect_fail('R43 an item''s default (preferred) supplier must exist', $q$
+    UPDATE inventory.inventory_items SET default_supplier_id = gen_random_uuid()
+     WHERE id = md5('demo:item:SOFA-3S-GREY')::uuid $q$);
 SELECT pg_temp.expect_fail('R44 two suppliers with one tax id', $q$
     INSERT INTO procurement.suppliers (id, code, name, tax_id) VALUES (gen_random_uuid(), 'DUP', 'x', '0300000001') $q$);
 SELECT pg_temp.expect_fail('R45 proposal line flagged converted without a PO', $q$
@@ -395,6 +396,30 @@ SELECT pg_temp.expect_ok('R55 supplier confirmation with time and reference', $q
      WHERE id = md5('demo:po:1')::uuid $q$);
 SELECT pg_temp.expect_fail('R56 negative lead time snapshot', $q$
     UPDATE procurement.purchase_orders SET lead_time_days = -1 WHERE id = md5('demo:po:1')::uuid $q$);
+
+\echo '--- editing a draft (SCRUM-462, V20261013000600)'
+INSERT INTO procurement.purchase_orders (id, po_number, supplier_id, warehouse_id, currency, order_date)
+VALUES (md5('qa:po:3')::uuid, 'PO-QA-3', md5('demo:supplier:GOVIET')::uuid, md5('demo:wh:HCM')::uuid, 'VND', CURRENT_DATE);
+INSERT INTO procurement.purchase_order_lines (id, po_id, line_no, inventory_item_id, ordered_qty, unit_price, line_subtotal, line_net, line_total)
+VALUES (md5('qa:po:3:line:1')::uuid, md5('qa:po:3')::uuid, 1, md5('demo:item:SOFA-3S-GREY')::uuid, 1, 1, 1, 1, 1);
+SELECT pg_temp.expect_ok('R57 a standard DRAFT moves to another receiving warehouse (SCRUM-390)', $q$
+    UPDATE procurement.purchase_orders SET warehouse_id = md5('qa:wh:HN')::uuid WHERE id = md5('qa:po:3')::uuid $q$);
+SELECT pg_temp.expect_fail('R58 the receiving warehouse of a PO past DRAFT', $q$
+    UPDATE procurement.purchase_orders SET warehouse_id = md5('qa:wh:HN')::uuid WHERE id = md5('demo:po:1')::uuid $q$);
+SELECT pg_temp.expect_ok('R59 a DRAFT line gets a new quantity and price', $q$
+    UPDATE procurement.purchase_order_lines SET ordered_qty = 4, unit_price = 2, line_subtotal = 8, line_net = 8, line_total = 8
+     WHERE id = md5('qa:po:3:line:1')::uuid $q$);
+SELECT pg_temp.expect_fail('R60 what was ordered changes on a PO past DRAFT (BR-02)', $q$
+    UPDATE procurement.purchase_order_lines SET note = 'changed after sending' WHERE id = md5('demo:po:1:line:1')::uuid $q$);
+SELECT pg_temp.expect_ok('R61 a line of a PO past DRAFT still moves status', $q$
+    UPDATE procurement.purchase_order_lines SET status = 'CLOSED' WHERE id = md5('demo:po:1:line:1')::uuid $q$);
+SELECT pg_temp.expect_fail('R62 a line WITHDRAWN that no revision froze (it is deleted instead)', $q$
+    UPDATE procurement.purchase_order_lines SET status = 'WITHDRAWN' WHERE id = md5('qa:po:3:line:1')::uuid $q$);
+SELECT pg_temp.expect_ok('R63 a line frozen by a rejected revision is WITHDRAWN from the draft', $q$
+    INSERT INTO procurement.purchase_order_revisions (id, po_id, revision_no, snapshot_header, changed_by)
+    VALUES (md5('qa:po:3:rev0')::uuid, md5('qa:po:3')::uuid, 0, '{}', md5('demo:user:editor')::uuid);
+    UPDATE procurement.purchase_order_lines SET po_revision_id = md5('qa:po:3:rev0')::uuid WHERE id = md5('qa:po:3:line:1')::uuid;
+    UPDATE procurement.purchase_order_lines SET status = 'WITHDRAWN' WHERE id = md5('qa:po:3:line:1')::uuid $q$);
 
 ROLLBACK;
 \echo 'PASS 02_procurement'

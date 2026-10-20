@@ -5,12 +5,21 @@ import com.stockflow.inventory.api.ReserveStockResult;
 import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.internal.service.StockConsumption;
 import com.stockflow.inventory.internal.controller.dto.ReservationResponse;
+import com.stockflow.inventory.internal.controller.dto.ReservationRowResponse;
+import com.stockflow.inventory.internal.controller.dto.WarehouseStockItemResponse;
+import com.stockflow.inventory.internal.domain.ReservationStatus;
+import com.stockflow.inventory.internal.domain.StockStatus;
+import com.stockflow.inventory.internal.service.StockBrowsing;
 import com.stockflow.inventory.internal.controller.dto.ReserveStockRequest;
 import com.stockflow.inventory.internal.controller.dto.StockItemResponse;
 import com.stockflow.inventory.internal.controller.dto.StockLevelResponse;
 import com.stockflow.common.api.ApiResponse;
+import com.stockflow.common.api.PageResponse;
+import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.security.Action;
+import com.stockflow.common.security.AuthenticatedUser;
+import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
@@ -66,12 +75,14 @@ class InventoryController {
 
     private final InventoryService inventoryService;
     private final StockConsumption stockConsumption;
+    private final StockBrowsing browsing;
     private final InventoryWebMapper mapper;
 
     InventoryController(InventoryService inventoryService, StockConsumption stockConsumption,
-                        InventoryWebMapper mapper) {
+                        StockBrowsing browsing, InventoryWebMapper mapper) {
         this.inventoryService = inventoryService;
         this.stockConsumption = stockConsumption;
+        this.browsing = browsing;
         this.mapper = mapper;
     }
 
@@ -81,6 +92,28 @@ class InventoryController {
             action = Action.READ, scope = DataScope.WAREHOUSE)
     public ApiResponse<List<StockItemResponse>> stockItems(@RequestParam("sku") String sku) {
         return ApiResponse.ok(mapper.toResponses(inventoryService.availabilityOf(new Sku(sku))));
+    }
+
+    @GetMapping("/warehouses/{warehouseId}/stock-items")
+    @Operation(summary = "Every stock row of one warehouse, in any status, page by page (SCRUM-462)",
+            description = "location narrows to a location code prefix inside the warehouse (HCM-A01); rows with"
+                    + " nothing on hand are left out unless includeEmpty=true. Sort: locationCode (default), sku,"
+                    + " lotNumber, expiryDate, onHand, receivedAt.")
+    @RequiresPermission(resource = InventoryResources.STOCK_ITEMS,
+            action = Action.READ, scope = DataScope.WAREHOUSE)
+    public ApiResponse<PageResponse<WarehouseStockItemResponse>> warehouseStock(
+            @PathVariable UUID warehouseId,
+            @RequestParam(required = false) String location,
+            @RequestParam(required = false) String sku,
+            @RequestParam(name = "lot", required = false) String lotNumber,
+            @RequestParam(name = "status", required = false) List<StockStatus> statuses,
+            @RequestParam(defaultValue = "false") boolean includeEmpty,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(required = false) Integer size,
+            @RequestParam(required = false) String sort) {
+        return ApiResponse.ok(browsing.warehouseStock(warehouseId, new StockBrowsing.StockQuery(location, sku,
+                lotNumber, statuses, includeEmpty, page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort))
+                .map(mapper::toResponse));
     }
 
     @GetMapping("/stock-levels")
@@ -119,30 +152,58 @@ class InventoryController {
         return ApiResponse.ok(mapper.toResponse(result));
     }
 
+    @GetMapping("/reservations")
+    @Operation(summary = "Holds, newest first: by order, SKU, status or warehouse (SCRUM-462)")
+    @RequiresPermission(resource = InventoryResources.RESERVATIONS,
+            action = Action.READ, scope = DataScope.WAREHOUSE)
+    public ApiResponse<PageResponse<ReservationRowResponse>> reservations(
+            @RequestParam(required = false) UUID orderId,
+            @RequestParam(required = false) String sku,
+            @RequestParam(name = "status", required = false) List<ReservationStatus> statuses,
+            @RequestParam(required = false) String warehouse,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(required = false) Integer size) {
+        return ApiResponse.ok(browsing.reservations(new StockBrowsing.ReservationQuery(orderId, sku, statuses,
+                warehouse, page, size == null ? Pages.DEFAULT_PAGE_SIZE : size)).map(mapper::toResponse));
+    }
+
+    @GetMapping("/reservations/{reservationId}")
+    @Operation(summary = "One hold")
+    @RequiresPermission(resource = InventoryResources.RESERVATIONS,
+            action = Action.READ, scope = DataScope.WAREHOUSE)
+    public ApiResponse<ReservationRowResponse> reservation(@PathVariable UUID reservationId) {
+        return ApiResponse.ok(mapper.toResponse(browsing.reservation(reservationId)));
+    }
+
     /**
-     * Confirm a pick: the goods have left the shelf, so deduct them for real.
+     * Close a hold by hand: the goods have left the shelf, so deduct them for real.
      *
-     * <p>Called by {@code fulfillment} over HTTP rather than as a Java call, because unlike the
-     * checkout reservation it does <b>not</b> need to be atomic with anything on the caller's side.
-     * The pick already happened physically; recording it is a fact, not a negotiation. Guarded by
-     * {@code UPDATE} rather than {@code CREATE}: it changes an existing hold, it does not make one.
+     * <p><b>For operations, not for picking.</b> A pick line deducts its hold in-process, in its own
+     * transaction, through {@code inventory :: consumption} (SCRUM-275): {@code fulfillment} never
+     * calls this endpoint. It stays for an operator who has to consume a hold outside a pick task, and
+     * runs the same implementation — the hold becomes CONSUMED, {@code on_hand} falls, one {@code PICK}
+     * ledger row names the order and {@code StockDeducted} is published. A hold that is no longer HELD
+     * is a 409 {@code RESERVATION_NOT_ACTIVE}. Guarded by {@code UPDATE} rather than {@code CREATE}: it
+     * changes an existing hold, it does not make one.</p>
      *
      * <p>A sub-resource ({@code /consumption}) rather than {@code PATCH /reservations/{id}} with a
      * status field, so the permission model can distinguish "may confirm a pick" from "may edit a
      * reservation" — those are different people in a warehouse.</p>
      */
     @PostMapping("/reservations/{reservationId}/consumption")
-    @Operation(summary = "Deduct the stock a reservation was holding, after picking")
+    @Operation(summary = "Deduct the stock a reservation was holding, outside a pick task")
     @RequiresPermission(resource = InventoryResources.RESERVATIONS,
             action = Action.UPDATE, scope = DataScope.WAREHOUSE)
-    public ApiResponse<Void> consume(@PathVariable UUID reservationId) {
-        stockConsumption.consume(reservationId);
+    public ApiResponse<Void> consume(@PathVariable UUID reservationId,
+                                     @AuthenticatedUser CurrentUser actor) {
+        stockConsumption.consume(reservationId, actor.userId());
         return ApiResponse.ok(null);
     }
 
     @DeleteMapping("/reservations/{reservationId}")
     @Operation(summary = "Release a hold")
-    @RequiresPermission(resource = InventoryResources.RESERVATIONS, action = Action.DELETE)
+    @RequiresPermission(resource = InventoryResources.RESERVATIONS,
+            action = Action.DELETE, scope = DataScope.WAREHOUSE)
     public ApiResponse<Void> release(@PathVariable UUID reservationId,
                               @RequestParam(value = "reason", required = false) String reason) {
         inventoryService.release(reservationId, reason);

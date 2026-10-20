@@ -23,9 +23,13 @@ import java.util.UUID;
  */
 public interface CustomerService {
 
+    /** Retained for caller compatibility; always refuses self-registration under the B2B policy. */
     CustomerRegistration register(RegisterCustomerCommand command);
 
     Optional<CustomerSummary> findById(UUID customerId);
+
+    /** Whether this customer group ({@code customer.segment}) exists: catalog prices groups (P7). */
+    boolean segmentExists(UUID segmentId);
 
     Optional<CustomerSummary> findByUserId(UUID userId);
 
@@ -33,7 +37,18 @@ public interface CustomerService {
 
     CustomerSummary update(UpdateCustomerCommand command);
 
-    CustomerSummary changeStatus(UUID customerId, String status);
+    /**
+     * @throws com.stockflow.common.error.BusinessException {@code INVALID_CUSTOMER_STATUS_TRANSITION};
+     *         {@code VALIDATION_FAILED} when reopening a closed customer without a reason;
+     *         {@code CUSTOMER_TAX_CODE_ALREADY_EXISTS} when the code is held by another live customer
+     */
+    CustomerSummary changeStatus(ChangeCustomerStatusCommand command);
+
+    /** Oldest first. @throws com.stockflow.common.error.BusinessException {@code CUSTOMER_NOT_FOUND} */
+    List<CustomerStatusEntry> statusHistory(UUID customerId);
+
+    /** Every change of the customer's company name and tax code, oldest first (decision 2026-10-17). */
+    List<CustomerChangeEntry> changeHistory(UUID customerId);
 
     List<CustomerAddressSummary> listAddresses(UUID customerId, UUID actorUserId, boolean privileged);
 
@@ -50,4 +65,26 @@ public interface CustomerService {
 
     /** Resolves defaults and returns immutable checkout data without exposing internal entities. */
     CheckoutCustomer resolveCheckout(UUID customerId, UUID shippingAddressId, UUID billingAddressId);
+
+    /**
+     * The customer's commercial terms (kltn-docs 18 §3); prepaid only when none were set (SCRUM-427).
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code CUSTOMER_NOT_FOUND}
+     */
+    CreditTerms creditTerms(UUID customerId);
+
+    /**
+     * {@link #creditTerms}, with the customer row locked for the rest of the caller's transaction: two
+     * credit orders of one customer are checked against the limit one after the other, never on the
+     * same exposure (kltn-docs 15 BR-03).
+     */
+    CreditTerms lockCreditTerms(UUID customerId);
+
+    /**
+     * Set the terms; whoever approves credit only (18 BR-02), recorded with who and when.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code CREDIT_PROFILE_INVALID},
+     *         {@code CUSTOMER_NOT_FOUND}, {@code OPTIMISTIC_LOCK} when they changed since read
+     */
+    CreditTerms saveCreditTerms(SaveCreditTermsCommand command);
 }

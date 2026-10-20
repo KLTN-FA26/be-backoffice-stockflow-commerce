@@ -26,6 +26,12 @@ spring:
       mail.smtp.connectiontimeout: 5000
       mail.smtp.timeout: 10000
       mail.smtp.writetimeout: 10000
+      # JavaMail otherwise derives the Message-ID and the EHLO name from this machine's canonical host
+      # name, a reverse DNS lookup that took ~10 s per e-mail on a developer laptop. mail.from covers
+      # the Message-ID (the sender header is still set per message); MAIL_SMTP_LOCALHOST names the
+      # host in EHLO when the deployment's DNS is slow. Blank keeps JavaMail's own lookup.
+      mail.from: ${MAIL_FROM:noreply@stockflow.local}
+      mail.smtp.localhost: ${MAIL_SMTP_LOCALHOST:}
 
   # ---------------------------------------------------------------------------
   # ONE datasource. This single block is what replaced fourteen of them.
@@ -344,6 +350,19 @@ stockflow:
     supplier-api-allowed-hosts: ${SUPPLIER_API_ALLOWED_HOSTS:}
     mail-from: ${MAIL_FROM:noreply@stockflow.local}
     po-retry-interval: PT1M
+    # In-app inbox: read messages older than this are deleted by the nightly purge (unread ones are kept).
+    inbox-retention-days: 90
+    inbox-purge-cron: "0 45 3 * * *"
+    # Language of system-generated inbox messages (the bundle i18n/messages_<locale>.properties).
+    inbox-locale: vi
+    # Stock alerts: who is told, by staff role. The scope (all warehouses, or the ones a person is assigned to) and the
+    # exclusion of customers are applied by IdentityService.notificationRecipients.
+    inventory-alert:
+      stock-level-roles: INVENTORY_PLANNER,SYSTEM_ADMIN
+      expiry-roles: WAREHOUSE_MANAGER,INVENTORY_PLANNER,SYSTEM_ADMIN
+    # Open question Q3: also e-mail the same text to the people newly told in-app. Off until an SMTP server is configured.
+    inventory-alert-email:
+      enabled: false
 
   # ---------------------------------------------------------------------------
   # File storage. 's3' talks to MinIO locally and to S3 in a deployment - the same code path.
@@ -371,6 +390,17 @@ stockflow:
       low-stock-threshold: ${CATALOG_LOW_STOCK_THRESHOLD:5}
       # SKUs one availability call may ask about: a page's worth, not the whole catalogue.
       max-skus-per-request: 50
+    search:
+      # Ranking weights (SCRUM-182): score = text-rank*w1 + title-similarity*w2 + exact-SKU*w3 + in-stock*w4.
+      # Text rank and similarity are 0..1, so an exact SKU always wins and stock only breaks near ties.
+      text-rank-weight: 1.0
+      similarity-weight: 1.0
+      exact-sku-weight: 10.0
+      in-stock-weight: 0.25
+      # Typo fallback when nothing matches exactly: minimum trigram similarity with the title.
+      fallback-similarity: 0.2
+      # Best matches that are ranked and pageable (stock is ranked in memory, over this many).
+      ranking-window: 500
 
   product-media:
     # Public CloudFront/custom-domain origin. Blank keeps private upload working but public gallery returns 503.
@@ -383,10 +413,29 @@ stockflow:
   inventory:
     # How often the sweeper looks for holds that outlived their expiry. ISO-8601 duration.
     reservation-sweep-interval: PT1M
-  checkout:
-    # Public checkout without an account. Server-side catalog pricing is enforced. Keep OFF until
-    # published data and deployment checkout UAT are verified. Local enables it for development.
-    guest-enabled: false
+    # A lot that expires within this many days of the day it is received, or of today, is "near expiry"
+    # (docs 03 BR-06; plan G5a-3 §6 #11): goods receipts warn, the expiry alerts use the same window.
+    expiry-warning-days: 30
+    # Stock alerts (SCRUM-147). The drain evaluates the SKUs whose stock changed (a trigger on stock_item queues them).
+    alert-drain-interval: PT30S
+    alert-drain-initial-delay: PT30S
+    # A condition that clears and returns inside this window reopens its alert row but is not announced again.
+    alert-reopen-cooldown: PT6H
+    # Nightly net under the drain (01:30) and the expiry sweep that moves expired stock to EXPIRED (02:00), business time.
+    alert-reconcile-cron: "0 30 1 * * *"
+    expiry-sweep-cron: "0 0 2 * * *"
+
+  customer:
+    # Where the portal invitation e-mail sends the customer's contact (SCRUM-450); the token is
+    # appended as a URL fragment, which browsers never send to a server. Blank switches invitations
+    # off (503 PORTAL_INVITATION_UNAVAILABLE) rather than failing startup. Set it per deployment.
+    portal-activation-url: ${PORTAL_ACTIVATION_URL:}
+
+  identity:
+    portal-invitation:
+      # How long an invitation link works, and how soon Sales may replace an open one.
+      lifetime: ${PORTAL_INVITATION_LIFETIME:PT72H}
+      resend-cooldown: ${PORTAL_INVITATION_RESEND_COOLDOWN:PT1M}
 
   security:
     # Turns on the resource-server filter chain AND RequiresPermissionAspect. Both are behind the

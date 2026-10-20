@@ -147,6 +147,42 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "released_by")
     private UUID releasedBy;
 
+    /** Money received so far (SCRUM-460); the payment status is derived from it. */
+    @Column(name = "paid_amount", nullable = false, precision = 19, scale = 4)
+    private java.math.BigDecimal paidAmount = java.math.BigDecimal.ZERO;
+
+    @Column(name = "paid_in_full_at")
+    private Instant paidInFullAt;
+
+    @jakarta.persistence.Enumerated(jakarta.persistence.EnumType.STRING)
+    @Column(name = "cancellation_reason_code", length = 32)
+    private com.stockflow.order.api.CancellationReasonCode cancellationReasonCode;
+
+    @Column(name = "cancellation_retained_amount", precision = 19, scale = 4)
+    private java.math.BigDecimal cancellationRetainedAmount;
+
+    /** V20261017001000: production started printing for the order (the cancellation rules read it). */
+    @Column(name = "printing_started_at")
+    private Instant printingStartedAt;
+
+    /** V20261017001000: a package of the order was completed (03 §9: no cancellation from here). */
+    @Column(name = "packed_at")
+    private Instant packedAt;
+
+    /** V20261017000430, decision Q2: the terms of an agreed amount kept on cancellation. */
+    @Column(name = "cancellation_fee_amount", precision = 19, scale = 4)
+    private java.math.BigDecimal cancellationFeeAmount;
+
+    @Column(name = "cancellation_fee_reason", length = 500)
+    private String cancellationFeeReason;
+
+    @Column(name = "cancellation_fee_detail", length = 2000)
+    private String cancellationFeeDetail;
+
+    /** A credit order's days to pay after delivery, as sold (SCRUM-427). */
+    @Column(name = "credit_term_days")
+    private Integer creditTermDays;
+
     @OneToMany(mappedBy = "order", cascade = CascadeType.ALL,
             orphanRemoval = true, fetch = FetchType.LAZY)
     @org.hibernate.annotations.BatchSize(size = 50)
@@ -202,6 +238,16 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
         this.releasedBy = releasedBy;
     }
 
+    public void applyPaymentAndCancellation(java.math.BigDecimal paidAmount, Instant paidInFullAt,
+                                            com.stockflow.order.api.CancellationReasonCode code,
+                                            java.math.BigDecimal retained, Integer creditTermDays) {
+        this.creditTermDays = creditTermDays;
+        this.paidAmount = paidAmount == null ? java.math.BigDecimal.ZERO : paidAmount;
+        this.paidInFullAt = paidInFullAt;
+        this.cancellationReasonCode = code;
+        this.cancellationRetainedAmount = retained;
+    }
+
     public void replaceLines(List<OrderLineJpaEntity> replacement) {
         this.lines.clear();
         replacement.forEach(child -> {
@@ -229,6 +275,28 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     public UUID getWarehouseId() { return warehouseId; }
     public Instant getReleasedAt() { return releasedAt; }
     public UUID getReleasedBy() { return releasedBy; }
+    public java.math.BigDecimal getPaidAmount() { return paidAmount; }
+    public Instant getPaidInFullAt() { return paidInFullAt; }
+    public com.stockflow.order.api.CancellationReasonCode getCancellationReasonCode() { return cancellationReasonCode; }
+    public java.math.BigDecimal getCancellationRetainedAmount() { return cancellationRetainedAmount; }
+    public String getCancellationFeeReason() { return cancellationFeeReason; }
+    public java.math.BigDecimal getCancellationFeeAmount() { return cancellationFeeAmount; }
+    public String getCancellationFeeDetail() { return cancellationFeeDetail; }
+
+    public void applyFulfilmentFacts(Instant printingStarted, Instant packed) {
+        this.printingStartedAt = printingStarted;
+        this.packedAt = packed;
+    }
+
+    public Instant getPrintingStartedAt() { return printingStartedAt; }
+    public Instant getPackedAt() { return packedAt; }
+
+    public void applyCancellationFee(java.math.BigDecimal amount, String reason, String detail) {
+        this.cancellationFeeAmount = amount;
+        this.cancellationFeeReason = reason;
+        this.cancellationFeeDetail = detail;
+    }
+    public Integer getCreditTermDays() { return creditTermDays; }
     public List<OrderLineJpaEntity> getLines() { return lines; }
 
     /**

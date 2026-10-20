@@ -11,9 +11,8 @@ import java.util.UUID;
 /**
  * JPA mapping of a customer segment row (table {@code customer.segment}). Not the domain model.
  *
- * <p>STARTER ENTITY. The columns here are the ones a segment cannot be without; anything richer
- * (pricing rules, membership criteria) is a later migration. See {@code docs/adding-a-module.md} §4.3
- * and {@code inventory.internal.entity.StockItemJpaEntity} for the worked example.</p>
+ * <p>A customer group (P7): managed from the back office through {@code CustomerSegmentService}; its prices are
+ * catalog's {@code pricing_rule} rows keyed by the group.</p>
  */
 @Entity
 @Table(name = "segment", schema = "customer",
@@ -40,9 +39,13 @@ public class SegmentJpaEntity extends BaseEntity {
         this.description = description;
     }
 
+    /** The code is the group's identity and is never rewritten; name and description are. */
+    public void apply(String name, String description) {
+        this.name = name;
+        this.description = description;
+    }
+
     public String getCode() { return code; }
     public String getName() { return name; }
     public String getDescription() { return description; }
-
-    // TODO: add pricing-tier / discount fields when the pricing rules are designed.
 }

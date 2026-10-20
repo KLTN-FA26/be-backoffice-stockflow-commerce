@@ -34,6 +34,8 @@ WHAT IT CHECKS
   14   @Transactional / @Scheduled / @ApplicationModuleListener methods are public, because a
        Spring proxy cannot intercept a non-public method and ignores the annotation in silence
   15   api/ carries @NamedInterface("api") and the module base package holds only package-info
+  16   no new free-text component (note, body, comment, message, reason) in a contracts/ record,
+       and no personal data (e-mail, phone, address, person or customer name, tax code, personal id)
 
 The comment on strip_java() is worth reading before touching the parser.
 """
@@ -304,6 +306,109 @@ for mod in sorted(MODULES):
     elif 'NamedInterface("api")' not in open(api_pi).read():
         problems.append(f"{mod}/api/package-info.java lacks @NamedInterface(\"api\") - "
                         f"the package is private without it")
+
+# 16. Contracts carry facts, not free text.
+#     A record under contracts/ is serialised into the event publication table, copied into every
+#     listener's logs and metrics on failure, and read by modules that never saw the user who typed
+#     it. A component named note / body / comment / message / reason (alone or as the last word of a
+#     camelCase name: cancelNote, failureMessage, cancellationReason) is free text by convention, so
+#     it is refused here. Send an enum code (reasonCode) and let the owning module keep the text
+#     behind its own permission check. Only String-like components count: an enum named reason is
+#     a code. The three existing ones are listed below so the build stays
+#     green; the list only ever shrinks. An entry that no longer matches a component is reported
+#     too, so removing the field means removing its line.
+FREE_TEXT_WORDS = {"note", "body", "comment", "message", "reason"}
+FREE_TEXT_ALLOWED = {
+    # Record.component: why it exists today.
+    "OrderCancelled.note":                # what the customer or Sales typed when cancelling an order.
+        "cancellation note shown to payment and fulfillment staff",
+    "PaymentFailed.failureMessage":       # the payment provider's own failure text.
+        "provider failure text, shown to staff only",
+    "PurchaseOrderSent.cancellationReason":  # what purchasing typed when cancelling a purchase order.
+        "reason printed in the supplier cancellation mail and sent to the supplier API",
+}
+
+def camel_words(name):
+    return [w.lower() for w in re.findall(r'[A-Z]?[a-z0-9]+|[A-Z]+(?![a-z])', name)]
+
+def record_components(src):
+    """(record, component name, declared type) for every record in already-stripped Java source, nested included."""
+    found = []
+    for m in re.finditer(r'\brecord\s+(\w+)\s*(?:<[^>(]*>)?\s*\(', src):
+        depth, i, start, parts = 1, m.end(), m.end(), []
+        while i < len(src) and depth:
+            c = src[i]
+            if c in "(<[":
+                depth += 1
+            elif c in ")>]":
+                depth -= 1
+            elif c == "," and depth == 1:
+                parts.append(src[start:i])
+                start = i + 1
+            i += 1
+        parts.append(src[start:i - 1])
+        for part in parts:
+            part = re.sub(r'@\w+(?:\.\w+)*(?:\([^)]*\))?', ' ', part)   # annotations on the component
+            ident = re.findall(r'\w+', part)
+            if ident:
+                found.append((m.group(1), ident[-1], part.strip()[:part.rstrip().rfind(ident[-1])]))
+    return found
+
+seen_free_text = set()
+for f in files:
+    if "/src/main/java/com/stockflow/contracts/" not in f:
+        continue
+    for record, component, ctype in record_components(strip_java(open(f, encoding="utf-8").read())):
+        words = camel_words(component)
+        last = words[-1] if words else ""
+        # An enum or a typed value named "reason" is a code, not typed text; only text-carrying types count.
+        carries_text = re.search(r'\b(String|CharSequence|Object)\b', ctype)
+        if carries_text and (last in FREE_TEXT_WORDS or last.removesuffix("s") in FREE_TEXT_WORDS):
+            key = f"{record}.{component}"
+            seen_free_text.add(key)
+            if key not in FREE_TEXT_ALLOWED:
+                problems.append(f"FREE TEXT IN CONTRACT {f}: {key} - events carry facts and enum codes, "
+                                f"not typed text; send a code or an id and let the owning module hold the text")
+# 16b. Nor personal data (review of #109, item 10). The same table keeps what an event says long after it
+#      is delivered: a person's e-mail, phone, address, full or customer name, tax code or personal id has
+#      no place there. Send the id; the listener looks the person up when it delivers, behind its own rules.
+PII_LAST_WORDS = {"email", "emails", "phone", "phones", "address"}
+PII_NAMES = {"fullname", "customername", "contactname", "username", "taxcode", "personalid", "cccd", "recipientname"}
+PII_ALLOWED = {
+    # Record.component: why it exists today. The list only ever shrinks.
+    "OrderPlaced.contactEmail":           # develop: the order confirmation mail goes to the customer's contact.
+        "customer contact e-mail for the order confirmation mail (follow-up: resolve it in the listener)",
+    "Buyer.companyAddress":               # PurchaseOrderSent.Buyer: our own company, printed on the PO mail.
+        "our company's address on the purchase order sent to the supplier",
+    "Buyer.receivingAddress":
+        "our warehouse's receiving address on the purchase order sent to the supplier",
+    "Buyer.contactName":
+        "our purchasing contact named on the purchase order sent to the supplier",
+    "Buyer.phone":
+        "our purchasing contact's phone on the purchase order sent to the supplier",
+    "Buyer.email":
+        "our purchasing contact's e-mail on the purchase order sent to the supplier",
+}
+seen_pii = set()
+for f in files:
+    if "/src/main/java/com/stockflow/contracts/" not in f:
+        continue
+    for record, component, ctype in record_components(strip_java(open(f, encoding="utf-8").read())):
+        words = camel_words(component)
+        if not words or not re.search(r'\b(String|CharSequence|Object|List|Set|Collection)\b', ctype):
+            continue
+        if words[-1] in PII_LAST_WORDS or "".join(words) in PII_NAMES or "".join(words[-2:]) in PII_NAMES:
+            key = f"{record}.{component}"
+            seen_pii.add(key)
+            if key not in PII_ALLOWED:
+                problems.append(f"PERSONAL DATA IN CONTRACT {f}: {key} - events are stored in event_publication; "
+                                f"send the id and let the listener look the person up when it delivers")
+for key in sorted(set(PII_ALLOWED) - seen_pii):
+    problems.append(f"STALE ALLOW-LIST ENTRY in verify.py check 16b: {key} is no longer a contracts/ component")
+for key in sorted(set(FREE_TEXT_ALLOWED) - seen_free_text):
+    problems.append(f"STALE ALLOW-LIST ENTRY in verify.py check 16: {key} is no longer a contracts/ component - "
+                    f"remove it from FREE_TEXT_ALLOWED")
+
 
 print(f"scanned {len(files)} java files, {len(tables)} tables")
 if problems:

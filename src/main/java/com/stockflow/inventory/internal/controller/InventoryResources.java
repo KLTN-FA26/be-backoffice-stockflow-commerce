@@ -22,6 +22,8 @@ public final class InventoryResources {
     public static final String STOCK_MOVEMENTS = "inventory-stock-movements";
     public static final String STOCK_ADJUSTMENTS = "inventory-stock-adjustments";
     public static final String TRANSFER_ORDERS = "inventory-transfer-orders";
+    public static final String ALERTS = "inventory-alerts";
+    public static final String INVENTORY_ITEMS = "inventory-inventory-items";
 
     private InventoryResources() {
     }

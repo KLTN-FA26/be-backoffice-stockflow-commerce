@@ -33,8 +33,10 @@ SELECT md5('qa:draft:1')::uuid, id, (SELECT p.id FROM product.products p ORDER B
        '{}'::jsonb FROM customer.customer LIMIT 1;
 INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at, artifact_manifest)
 VALUES (md5('qa:snap:1')::uuid, md5('qa:draft:1')::uuid, repeat('a', 64), 'https://example.com/a.pdf', NOW(), NOW(), '[]'::jsonb);
-INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at, created_at)
-SELECT md5('qa:order:1')::uuid, 'ORD-QA-PRD-1', id, gen_random_uuid(), 'PAID', 1000000, 'VND', NOW(), NOW() FROM customer.customer LIMIT 1;
+INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at, created_at,
+                                     paid_amount, paid_in_full_at)
+SELECT md5('qa:order:1')::uuid, 'ORD-QA-PRD-1', id, gen_random_uuid(), 'CONFIRMED', 1000000, 'VND', NOW(), NOW(), 1000000, NOW()
+  FROM customer.customer LIMIT 1;
 INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency, design_snapshot_id, design_checksum)
 VALUES (md5('qa:oline:1')::uuid, md5('qa:order:1')::uuid, 'SOFA-3S-GREY', 500, 2000, 'VND', md5('qa:snap:1')::uuid, repeat('a', 64));
 
@@ -88,17 +90,27 @@ SELECT pg_temp.expect_ok('PR14 split: parent planned 300, SUBCONTRACTED child 20
     UPDATE production.production_order SET planned_quantity = 300 WHERE id = md5('qa:lsx:1')::uuid;
     INSERT INTO production.production_order (id, order_number, type, mode, status, warehouse_id, blank_sku, design_snapshot_id,
                                              design_checksum, planned_quantity, sales_order_id, sales_order_line_id, parent_id,
-                                             subcontract_method, subcontractor_id, subcontract_unit_price, subcontract_currency)
+                                             origin, subcontract_method, subcontractor_id, subcontract_unit_price,
+                                             subcontract_currency)
     VALUES (md5('qa:lsx:1c')::uuid, 'LSX-QA-1C', 'ORDER', 'SUBCONTRACTED', 'PENDING_PREPRESS', md5('demo:wh:HCM')::uuid,
             'SOFA-3S-GREY', md5('qa:snap:1')::uuid, repeat('a', 64), 200, md5('qa:order:1')::uuid,
-            md5('qa:oline:1')::uuid, md5('qa:lsx:1')::uuid, 'SUPPLIED_BLANKS', md5('demo:supplier:GOVIET')::uuid, 800, 'VND') $q$);
+            md5('qa:oline:1')::uuid, md5('qa:lsx:1')::uuid, 'SPLIT', 'SUPPLIED_BLANKS', md5('demo:supplier:GOVIET')::uuid,
+            800, 'VND') $q$);
 SELECT pg_temp.expect_fail('PR15 a subcontracted child without a subcontractor', $q$
     INSERT INTO production.production_order (id, order_number, type, mode, status, warehouse_id, blank_sku, design_snapshot_id,
                                              design_checksum, planned_quantity, sales_order_id, sales_order_line_id, parent_id,
-                                             subcontract_method)
+                                             origin, subcontract_method)
     VALUES (gen_random_uuid(), 'LSX-QA-1D', 'ORDER', 'SUBCONTRACTED', 'PENDING_PREPRESS', md5('demo:wh:HCM')::uuid,
             'SOFA-3S-GREY', md5('qa:snap:1')::uuid, repeat('a', 64), 10, md5('qa:order:1')::uuid,
-            md5('qa:oline:1')::uuid, md5('qa:lsx:1')::uuid, 'FULL_SERVICE') $q$);
+            md5('qa:oline:1')::uuid, md5('qa:lsx:1')::uuid, 'SPLIT', 'FULL_SERVICE') $q$);
+SELECT pg_temp.expect_fail('PR15b a child without an origin (a CHECK passes on NULL unless it says IS NOT NULL)', $q$
+    INSERT INTO production.production_order (id, order_number, type, mode, status, warehouse_id, blank_sku, design_snapshot_id,
+                                             design_checksum, planned_quantity, sales_order_id, sales_order_line_id, parent_id,
+                                             subcontract_method, subcontractor_id, subcontract_unit_price, subcontract_currency)
+    VALUES (gen_random_uuid(), 'LSX-QA-1E', 'ORDER', 'SUBCONTRACTED', 'PENDING_PREPRESS', md5('demo:wh:HCM')::uuid,
+            'SOFA-3S-GREY', md5('qa:snap:1')::uuid, repeat('a', 64), 10, md5('qa:order:1')::uuid,
+            md5('qa:oline:1')::uuid, md5('qa:lsx:1')::uuid, 'SUPPLIED_BLANKS', md5('demo:supplier:GOVIET')::uuid, 800,
+            'VND') $q$);
 SELECT pg_temp.expect_fail('PR16 scrap OTHER without a note (BR-04)', $q$
     INSERT INTO production.production_scrap (id, production_order_id, quantity, reason, recorded_at, recorded_by)
     VALUES (gen_random_uuid(), md5('qa:lsx:1')::uuid, 3, 'OTHER', NOW(), md5('demo:user:editor')::uuid) $q$);
@@ -202,6 +214,13 @@ SELECT pg_temp.expect_ok('PR29 PRODUCTION_STAFF exists; WAREHOUSE_MANAGER reads 
             RAISE EXCEPTION 'grants missing';
         END IF;
     END $d$ $q$);
+
+\echo '--- a SUBCONTRACT draft keeps its warehouse (SCRUM-462, BR-10)'
+SELECT pg_temp.expect_ok('PR36 a second warehouse to move to', $q$
+    INSERT INTO warehouse.warehouse (id, name, status, prefix, address, map_unit, map_width, map_height, created_at)
+    VALUES (md5('qa:wh:SC')::uuid, 'QASC', 'ACTIVE', 'QASC', 'QA', 'M', 10, 10, NOW()) $q$);
+SELECT pg_temp.expect_fail('PR37 the warehouse of a SUBCONTRACT draft', $q$
+    UPDATE procurement.purchase_orders SET warehouse_id = md5('qa:wh:SC')::uuid WHERE id = md5('qa:po:sc')::uuid $q$);
 
 ROLLBACK;
 \echo 'PASS 05_production'

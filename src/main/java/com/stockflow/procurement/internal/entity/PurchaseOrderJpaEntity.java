@@ -24,9 +24,10 @@ import java.util.UUID;
 /**
  * JPA mapping of a purchase order (table {@code procurement.purchase_orders}). Not the domain model.
  *
- * <p>Number, supplier, warehouse, type and production order are fixed at creation — the
+ * <p>Number, supplier, type and production order are fixed at creation — the
  * {@code tg_purchase_orders_immutable} triggers state it again, so they are
- * {@code updatable = false} here. Everything else changes through {@link #apply} from the aggregate,
+ * {@code updatable = false} here. The warehouse and note change only while a standard order is DRAFT
+ * (SCRUM-462, {@code tg_purchase_orders_warehouse_draft_only}). Everything else changes through {@link #apply} from the aggregate,
  * except two narrow writers that keep their own view of the order: receiving moves the status with
  * {@link #advanceByReceipt}, and a SUBCONTRACT draft's single line is resized with
  * {@link PoLineJpaEntity#reviseDraftQuantity} and {@link #recomputeDraftTotals}. All of them go
@@ -51,7 +52,7 @@ public class PurchaseOrderJpaEntity extends BaseEntity {
     @Column(name = "supplier_id", nullable = false, updatable = false)
     private UUID supplierId;
 
-    @Column(name = "warehouse_id", nullable = false, updatable = false)
+    @Column(name = "warehouse_id", nullable = false)
     private UUID warehouseId;
 
     @Enumerated(EnumType.STRING)
@@ -157,8 +158,12 @@ public class PurchaseOrderJpaEntity extends BaseEntity {
 
     /** Everything that can change after creation. */
     public void apply(PurchaseOrder o) {
+        this.warehouseId = o.warehouseId();
+        this.note = o.note();
         this.status = o.status();
         this.expectedAt = o.expectedAt();
+        // A draft edit recomputes it from the lines (SCRUM-78); unchanged by every other transition.
+        this.leadTimeDays = o.leadTimeDays();
         this.subtotal = o.subtotal().amount();
         this.taxTotal = o.taxTotal().amount();
         this.totalAmount = o.totalAmount().amount();
@@ -210,6 +215,11 @@ public class PurchaseOrderJpaEntity extends BaseEntity {
     public void addLine(PoLineJpaEntity line) {
         line.attachTo(this);
         lines.add(line);
+    }
+
+    /** A draft line never frozen in a revision, taken off the order: the row goes (orphan removal). */
+    public void removeLine(PoLineJpaEntity line) {
+        lines.remove(line);
     }
 
     public String getPoNumber() { return poNumber; }

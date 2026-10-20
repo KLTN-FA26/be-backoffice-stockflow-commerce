@@ -4,7 +4,12 @@ import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.ReserveStockResult;
 import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.customer.api.CheckoutCustomer;
+import com.stockflow.customer.api.CommercialTerm;
+import com.stockflow.customer.api.CreditTerms;
 import com.stockflow.customer.api.CustomerService;
+import com.stockflow.order.api.CancelOrderCommand;
+import com.stockflow.order.api.CancellationOutcome;
+import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.ListOrdersQuery;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatusChange;
@@ -18,6 +23,12 @@ import com.stockflow.order.internal.domain.OrderLine;
 import com.stockflow.order.internal.domain.OrderNumber;
 import com.stockflow.order.internal.domain.OrderAddressSnapshot;
 import com.stockflow.order.internal.domain.OrderRepository;
+import com.stockflow.order.internal.domain.CancellationRequest;
+import com.stockflow.order.internal.domain.CancellationRequestRepository;
+import com.stockflow.order.internal.domain.OrderPayments;
+import com.stockflow.order.internal.domain.CreditChecks;
+import com.stockflow.order.api.PaymentTerm;
+import java.math.BigDecimal;
 import com.stockflow.order.internal.repository.OrderSearchRepository;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.error.BusinessException;
@@ -45,7 +56,6 @@ import com.stockflow.order.internal.entity.OrderHoldJpaEntity;
 import com.stockflow.order.internal.repository.OrderHoldJpaRepository;
 import java.nio.charset.StandardCharsets;
 import java.time.ZoneId;
-import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Collectors;
 
@@ -85,12 +95,15 @@ import java.util.stream.Collectors;
  */
 @Service
 @Transactional
-class OrderServiceImpl implements OrderService {
+class OrderServiceImpl implements OrderService, QuotedOrders {
 
     private static final Logger log = LoggerFactory.getLogger(OrderServiceImpl.class);
 
     /** The days a coordinator filters by are Saigon days: "placed on the 8th" ends at 17:00 UTC. */
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
+
+    /** {@code ordering.order_hold.reason} of an order over its customer's credit limit (SCRUM-427). */
+    static final String CREDIT_HOLD = "CREDIT";
 
     private static final SortWhitelist LIST_SORT = SortWhitelist.of("orderNumber", "placedAt", "totalAmount", "status")
             .withDefault("placedAt", Sort.Direction.DESC);
@@ -104,13 +117,19 @@ class OrderServiceImpl implements OrderService {
     private final OrderHoldJpaRepository holds;
     private final CustomerService customers;
     private final CatalogService catalog;
+    private final OrderPayments payments;
+    private final CancellationRequestRepository cancellationRequests;
+    private final CreditChecks creditChecks;
+    private final com.stockflow.payment.api.PaymentService paymentService;
 
     OrderServiceImpl(OrderRepository repository, OrderSearchRepository search,
                      InventoryService inventory, OrderEventPublisher events, Clock clock,
             DesignService designs,
             OrderHoldJpaRepository holds,
                      CustomerService customers,
-            CatalogService catalog) {
+            CatalogService catalog, OrderPayments payments,
+                     CancellationRequestRepository cancellationRequests, CreditChecks creditChecks,
+                     com.stockflow.payment.api.PaymentService paymentService) {
         this.repository = repository;
         this.search = search;
         this.inventory = inventory;
@@ -120,6 +139,10 @@ class OrderServiceImpl implements OrderService {
         this.holds = holds;
         this.customers = customers;
         this.catalog = catalog;
+        this.payments = payments;
+        this.cancellationRequests = cancellationRequests;
+        this.creditChecks = creditChecks;
+        this.paymentService = paymentService;
     }
 
     /**
@@ -131,6 +154,23 @@ class OrderServiceImpl implements OrderService {
      */
     @Override
     public OrderSummary placeOrder(PlaceOrderCommand command) {
+        return place(command, false);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The same transaction and steps as {@link #placeOrder}; only the price source differs. Every line
+     * — design lines included — is placed at the price on the command, which the quote service computed
+     * from the accepted quote. This is why the method is on an internal interface and not on
+     * {@code OrderService}: a client-supplied price never reaches it.</p>
+     */
+    @Override
+    public OrderSummary placeQuotedOrder(PlaceOrderCommand command) {
+        return place(command, true);
+    }
+
+    private OrderSummary place(PlaceOrderCommand command, boolean quotePriced) {
         // Idempotency first. A double-clicked "Place order" must not create two orders, and this
         // check is cheap compared to discovering the duplicate after the customer has paid twice.
         Optional<Order> alreadyPlaced = repository.findByRequestId(command.requestId());
@@ -143,18 +183,21 @@ class OrderServiceImpl implements OrderService {
             return toSummary(alreadyPlaced.get());
         }
 
-        // SCRUM-298 is a separate integration: never fall back to a client-supplied design price.
-        if (command.snapshotCustomer()
+        // SCRUM-298 is a separate integration: never fall back to a client-supplied design price. A
+        // design line is priced by an accepted quote (SCRUM-448), which arrives through placeQuotedOrder.
+        if (!quotePriced && command.snapshotCustomer()
                 && command.lines().stream().anyMatch(line -> line.designSnapshotId() != null)) {
             throw new BusinessException(ErrorCode.DESIGN_QUOTE_REQUIRED);
         }
+        // SCRUM-428: the customer's own tier for the order's total of each SKU, else its group's or the
+        // base price (kltn-docs 13 §3); the client's price is only what it expects to pay (agreedPrice).
         var sellingPrices =
-                command.snapshotCustomer()
-                        ? catalog.checkoutPrices(
+                command.snapshotCustomer() && !quotePriced
+                        ? catalog.checkoutPrices(command.customerId(),
                                 command.lines().stream()
                                         .filter(line -> line.designSnapshotId() == null)
-                                        .map(line -> line.sku().code())
-                                        .collect(Collectors.toSet()))
+                                        .collect(Collectors.toMap(line -> line.sku().code(),
+                                                PlaceOrderCommand.Line::quantity, Integer::sum)))
                         : Map.<String, Money>of();
         LocalDate today = LocalDate.ofInstant(clock.instant(), ZoneOffset.UTC);
         OrderNumber orderNumber = repository.nextOrderNumber(today);
@@ -168,7 +211,7 @@ class OrderServiceImpl implements OrderService {
             PlaceOrderCommand.Line line = command.lines().get(index);
             var orderLine = Order.line(deterministicLineId(command.requestId(), index),
                     line.sku(), line.quantity(),
-                            command.snapshotCustomer()
+                            command.snapshotCustomer() && !quotePriced
                                     ? agreedPrice(
                                             line.sku().code(), line.unitPrice(), sellingPrices)
                                     : line.unitPrice(), line.designSnapshotId());
@@ -189,6 +232,16 @@ class OrderServiceImpl implements OrderService {
             order = Order.draft(orderNumber, command.customerId(), command.requestId(),
                     lines, clock.instant());
         }
+        // Before any stock is held: terms that cannot be accepted refuse the order cheaply. The
+        // customer row is locked here, before reserving, so two credit orders of one customer are
+        // checked against the limit one after the other (kltn-docs 15 BR-03) and every checkout takes
+        // its locks in the same order.
+        CreditTerms terms = customers.lockCreditTerms(command.customerId());
+        PaymentTerm term = termFor(command.paymentTerm(), terms);
+        order.applyTerms(term,
+                term == PaymentTerm.DEPOSIT && command.depositPercent() == null ? terms.depositPercent()
+                        : command.depositPercent(),
+                term == PaymentTerm.CREDIT ? terms.creditTermDays() : null);
 
         // Direct in-process call across the module boundary, through inventory's published port.
         // It joins this transaction. If reserve() throws InsufficientStockException on line 3,
@@ -209,91 +262,70 @@ class OrderServiceImpl implements OrderService {
             order.attachReservations(line.id(), reservation.reservationIds());
         }
 
-        order.submit();
-        Order saved = repository.save(order);
+        Order saved;
+        if (term == PaymentTerm.CREDIT) {
+            saved = submitOnCredit(order, terms);
+        } else {
+            order.submit();
+            saved = repository.save(order);
+        }
         events.publishEventsOf(order);
 
-        log.info("Placed order {} for customer {} with {} line(s), total {}",
-                saved.orderNumber(), saved.customerId(), saved.lines().size(), saved.total());
+        log.info("Placed order {} for customer {} with {} line(s), total {}, {} ({})",
+                saved.orderNumber(), saved.customerId(), saved.lines().size(), saved.total(), term, saved.status());
         return toSummary(saved);
+    }
+
+    /** kltn-docs 15 BR-01: the term asked for, or the customer's default, and only one they may use. */
+    private static PaymentTerm termFor(PaymentTerm requested, CreditTerms terms) {
+        PaymentTerm term = requested != null ? requested : PaymentTerm.valueOf(terms.defaultTerm().name());
+        if (!terms.allows(CommercialTerm.valueOf(term.name()))) {
+            throw new BusinessException(ErrorCode.PAYMENT_TERM_NOT_ALLOWED,
+                    "Customer %s may not be sold on %s terms".formatted(terms.customerId(), term));
+        }
+        return term;
+    }
+
+    /**
+     * kltn-docs 15 §4.3 and BR-03: a credit order is CONFIRMED when what the customer already owes plus
+     * this order stays within the limit, otherwise ON_HOLD (hold reason CREDIT) for whoever approves
+     * credit. What the customer owes is the undelivered credit orders plus the open receivables of
+     * delivered ones (SCRUM-431); a customer with an overdue receivable gets no new credit without the
+     * approver (15 §4.3 step 4). Either way the order waits for no payment, so its holds are pinned now.
+     */
+    private Order submitOnCredit(Order order, CreditTerms terms) {
+        var position = paymentService.creditPosition(order.customerId());
+        BigDecimal exposure = creditChecks.undeliveredCreditExposure(order.customerId(), order.id().value())
+                .add(position.outstandingReceivables());
+        BigDecimal amount = order.total().amount();
+        CreditChecks.Outcome outcome = position.hasOverdue() ? CreditChecks.Outcome.OVERDUE
+                : exposure.add(amount).compareTo(terms.creditLimit()) <= 0 ? CreditChecks.Outcome.WITHIN_LIMIT
+                : CreditChecks.Outcome.OVER_LIMIT;
+        boolean within = outcome == CreditChecks.Outcome.WITHIN_LIMIT;
+        order.submitOnCredit(within);
+        Order saved = repository.save(order);
+        java.time.Instant now = clock.instant();
+        creditChecks.record(new CreditChecks.Check(order.id().value(), now, terms.creditLimit(), exposure, amount,
+                outcome, null, null, null));
+        if (!within) {
+            holds.save(new OrderHoldJpaEntity(Identifiers.newId(), order.id().value(), CREDIT_HOLD, now));
+        }
+        inventory.pinReservations(order.id().value());
+        return saved;
     }
 
     @Override
     public OrderSummary placeGuestOrder(PlaceGuestOrderCommand command) {
-        String email = command.email().trim().toLowerCase(Locale.ROOT);
-        // Construct snapshots before the replay lookup as well: a reused request id must not make
-        // malformed address data appear valid merely because an earlier checkout succeeded.
-        var shipping = toSnapshot(command.shippingAddress());
-        var billing = toSnapshot(command.billingAddress());
-        Optional<Order> alreadyPlaced = repository.findByRequestId(command.requestId());
-        if (alreadyPlaced.isPresent()) {
-            if (!sameGuestCheckout(alreadyPlaced.get(), email, shipping, billing, command.lines())) {
-                throw new BusinessException(ErrorCode.IDEMPOTENCY_KEY_REUSED);
-            }
-            return toSummary(alreadyPlaced.get());
-        }
-
-        var sellingPrices =
-                catalog.checkoutPrices(
-                        command.lines().stream()
-                                .map(line -> line.sku().code())
-                                .collect(Collectors.toSet()));
-        LocalDate today = LocalDate.ofInstant(clock.instant(), ZoneOffset.UTC);
-        OrderNumber orderNumber = repository.nextOrderNumber(today);
-        List<OrderLine> lines = new ArrayList<>();
-        for (int index = 0; index < command.lines().size(); index++) {
-            PlaceGuestOrderCommand.Line line = command.lines().get(index);
-            lines.add(Order.line(deterministicLineId(command.requestId(), index), line.sku(),
-                    line.quantity(),
-                            agreedPrice(line.sku().code(), line.unitPrice(), sellingPrices), null));
-        }
-        Order order = Order.guestDraft(orderNumber, command.requestId(), lines, clock.instant(),
-                shipping.recipientName(), email,
-                shipping.phone(), shipping, billing);
-        reserve(order, command.requestId());
-        order.submit();
-        Order saved = repository.save(order);
-        events.publishEventsOf(order);
-        return toSummary(saved);
+        // Guard the module API as well as HTTP: no caller may reserve stock for a guest.
+        throw new BusinessException(ErrorCode.GUEST_CHECKOUT_DISABLED);
     }
 
-    /**
-     * A body {@code requestId} is an idempotency key, not an order lookup key. Returning an old
-     * order for a changed basket or address would make a customer believe the changed checkout was
-     * accepted while fulfilment receives the earlier one. The HTTP idempotency filter protects
-     * normal callers too; this comparison is the durable, service-level backstop for retries that
-     * reach this use case directly.
-     */
+    /** The server price is authoritative; the client's amount is only what it expects to pay. */
     private static Money agreedPrice(String sku, Money expected, Map<String, Money> prices) {
         var actual = prices.get(sku);
         if (actual == null) throw new BusinessException(ErrorCode.PRICE_NOT_AVAILABLE);
         if (!actual.equals(expected)) throw new BusinessException(ErrorCode.CHECKOUT_PRICE_CHANGED);
         return actual;
-    }
-
-    private static boolean sameGuestCheckout(Order order, String email,
-                                             OrderAddressSnapshot shipping,
-                                             OrderAddressSnapshot billing,
-                                             List<PlaceGuestOrderCommand.Line> requestedLines) {
-        if (order.customerId() != null
-                || !email.equals(order.contactEmail())
-                || !shipping.equals(order.shippingAddress())
-                || !billing.equals(order.billingAddress())
-                || order.lines().size() != requestedLines.size()) {
-            return false;
-        }
-        for (int index = 0; index < requestedLines.size(); index++) {
-            PlaceGuestOrderCommand.Line requested = requestedLines.get(index);
-            OrderLine stored = order.lines().get(index);
-            if (!requested.sku().equals(stored.sku())
-                    || requested.quantity() != stored.quantity()
-                    || !requested.unitPrice().equals(stored.unitPrice())
-                    || stored.designSnapshotId() != null
-                    || stored.designChecksum() != null) {
-                return false;
-            }
-        }
-        return true;
     }
 
     @Override
@@ -316,35 +348,132 @@ class OrderServiceImpl implements OrderService {
      * imposes no ownership restriction at all.</p>
      */
     @Override
-    public void cancel(UUID orderId, String reason) {
+    public OrderSummary cancel(UUID orderId, CancelOrderCommand command) {
         Order order = repository.findByIdInScope(new OrderId(orderId))
                 .orElseThrow(() -> new BusinessException(
                         ErrorCode.NOT_FOUND, "No order with id " + orderId));
-        cancelLoaded(order, reason);
+        return toSummary(cancelLoaded(order, command));
     }
 
     @Override
-    public void cancelOwn(UUID orderId, UUID customerId, String reason) {
+    public void cancel(UUID orderId, String reason) {
+        cancel(orderId, CancelOrderCommand.fromText(reason, null));
+    }
+
+    @Override
+    public void recordPrintingStarted(UUID orderId) {
+        Order order = lockOrder(orderId);
+        if (order.recordPrintingStarted(clock.instant())) {
+            repository.save(order);
+            log.info("Order {}: printing started", order.orderNumber());
+        }
+    }
+
+    @Override
+    public void recordPacked(UUID orderId) {
+        Order order = lockOrder(orderId);
+        if (order.recordPacked(clock.instant())) {
+            repository.save(order);
+            log.info("Order {}: packed", order.orderNumber());
+        }
+    }
+
+    @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public Optional<OrderStatus> lockedStatus(UUID orderId) {
+        return repository.findByIdForUpdate(new OrderId(orderId)).map(Order::status);
+    }
+
+    /**
+     * Decision 2026-10-17: a cancellation the system would make on its own is not made once printing started; the
+     * order stays as it is and Sales and the coordinators are told (OrderCancellationReferred), to settle the fee, the
+     * blanks and the printed goods by hand. Once per order and reason: a redelivered event tells nobody twice.
+     */
+    private void referToStaff(Order order, CancellationReasonCode wouldHaveBeen) {
+        order.referCancellationToStaff(wouldHaveBeen, clock.instant());
+        events.publishEventsOf(order);
+        log.warn("Order {}: {} after printing started; not cancelled, referred to staff", order.orderNumber(),
+                wouldHaveBeen);
+    }
+
+    private Order lockOrder(UUID orderId) {
+        return repository.findByIdForUpdate(new OrderId(orderId))
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>A second request while one is pending is refused rather than stacked: the customer has
+     * already asked, and Sales should see one question per order.</p>
+     */
+    @Override
+    public CancellationOutcome cancelOwn(UUID orderId, UUID customerId, CancellationReasonCode reasonCode,
+                                         String note, UUID requestedBy) {
         Order order = repository.findByIdForUpdate(new OrderId(orderId))
                 .filter(found -> customerId != null && customerId.equals(found.customerId()))
                 .orElseThrow(() -> new BusinessException(
                         ErrorCode.NOT_FOUND, "No order with id " + orderId));
-        cancelLoaded(order, reason);
+        CancellationReasonCode code = reasonCode == null ? CancellationReasonCode.CUSTOMER_REQUEST : reasonCode;
+        if (order.status().customerMayCancelDirectly()) {
+            Order cancelled = cancelLoaded(order, new CancelOrderCommand(code, note, null, requestedBy));
+            return new CancellationOutcome(CancellationOutcome.Result.CANCELLED, null, toSummary(cancelled));
+        }
+        if (!order.status().canTransitionTo(OrderStatus.CANCELLED)) {
+            throw new BusinessException(ErrorCode.ORDER_NOT_CANCELLABLE,
+                    "Order %s is %s and can no longer be cancelled; raise a return instead"
+                            .formatted(order.orderNumber(), order.status()));
+        }
+        order.requireNotPacked();
+        if (cancellationRequests.hasPending(order.id().value())) {
+            throw new BusinessException(ErrorCode.ORDER_CANCELLATION_REQUEST_PENDING,
+                    "Order %s already has a cancellation request waiting".formatted(order.orderNumber()));
+        }
+        CancellationRequest request = cancellationRequests.save(
+                CancellationRequest.open(order.id().value(), requestedBy, code, note, clock.instant()));
+        log.info("Cancellation of order {} requested ({})", order.orderNumber(), code);
+        return new CancellationOutcome(CancellationOutcome.Result.REQUESTED, request.id(), toSummary(order));
     }
 
-    private void cancelLoaded(Order order, String reason) {
+    /**
+     * Cancels a loaded, locked order: releases its holds, records the reason and publishes
+     * {@code OrderCancelled}, all in this transaction. Shared by every cancellation path, including
+     * an approved request ({@code CancellationRequestService}).
+     */
+    Order cancelLoaded(Order order, CancelOrderCommand command) {
         boolean wasHoldingStock = order.status().holdsStock();
-        order.cancel(reason);
+        order.cancel(command.reasonCode(), command.note(), command.retainedPercent(), command.agreedFee(),
+                command.cancelledBy(),
+                clock.instant());
 
         if (wasHoldingStock) {
+            // BR-PRD-10 (decision 2026-10-16): goods printed for this order and waiting in packing are scrapped,
+            // never sold - kept under their hold, a SCRAP write-off asked for in the canceller's name. Inventory
+            // decides from the goods' state which holds those are; the release below leaves them alone.
+            String note = "Order %s cancelled: printed custom goods (BR-PRD-10)".formatted(order.orderNumber());
+            // SKU order: each write-off takes its SKU's lock, and checkout takes them sorted too (no deadlock).
+            order.lines().stream().filter(OrderLine::isMadeToOrder)
+                    .sorted(java.util.Comparator.comparing(line -> line.sku().code()))
+                    .flatMap(line -> line.reservationIds().stream())
+                    .forEach(reservationId -> inventory.scrapCancelledPrint(reservationId, order.id().value(), note,
+                            command.cancelledBy()));
             order.reservationIds()
                     .forEach(reservationId -> inventory.release(reservationId, "ORDER_CANCELLED"));
             order.clearReservations();
         }
 
-        repository.save(order);
+        Order saved = repository.save(order);
         events.publishEventsOf(order);
-        log.info("Cancelled order {} ({})", order.orderNumber(), reason);
+        // The code, not the reason text: the text carries the customer's note, and a line break in it
+        // would forge log lines (CodeQL java/log-injection).
+        log.info("Cancelled order {} ({})", order.orderNumber(), order.cancellationReasonCode());
+        return saved;
+    }
+
+    /** For an approved cancellation request: the order, locked. */
+    Order loadForUpdate(UUID orderId) {
+        return repository.findByIdForUpdate(new OrderId(orderId))
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));
     }
 
     /**
@@ -395,28 +524,98 @@ class OrderServiceImpl implements OrderService {
      * but it would encode "what inventory does when a payment fails" inside the order module, and
      * that is inventory's business, not order's.</p>
      */
-    public void cancelAfterPaymentFailure(UUID orderId, String reason) {
+    public void cancelAfterPaymentFailure(UUID orderId, String failureCode) {
         Order order = repository.findByIdForUpdate(new OrderId(orderId))
                 .orElseThrow(() -> new IllegalArgumentException("No order with id " + orderId));
         if (order.status() == OrderStatus.CANCELLED) {
             return; // Redelivered event; already handled.
         }
-        order.cancel(reason);
+        if (order.printingStartedAt() != null && order.status().canTransitionTo(OrderStatus.CANCELLED)) {
+            referToStaff(order, CancellationReasonCode.PAYMENT_FAILED);
+            return;
+        }
+        if (!order.status().canTransitionTo(OrderStatus.CANCELLED) || order.packedAt() != null) {
+            // A listener must not throw for a state it cannot change: the publication would be retried for ever.
+            log.warn("Payment of order {} failed ({}), but the order is {}{}: left for Sales", order.orderNumber(),
+                    failureCode, order.status(), order.packedAt() != null ? " and packed" : "");
+            return;
+        }
+        order.cancel(CancellationReasonCode.PAYMENT_FAILED, failureCode, null, null, clock.instant());
         order.clearReservations();
         repository.save(order);
         events.publishEventsOf(order);
     }
 
-    /** Move an order to PAID. Called by {@code PaymentEventListener}, not exposed on the port. */
-    public void markPaid(UUID orderId) {
+    /**
+     * Count a captured payment, and confirm the order when it is the money its terms ask for (kltn-docs
+     * 15 BR-02). Called by {@code PaymentEventListener}, not exposed on the port.
+     *
+     * <p>Counted once per payment ({@code ordering.order_payment}): the event is delivered at least
+     * once. Confirming pins the holds in this transaction (kltn-docs 14 BR-07, SCRUM-465): a
+     * confirmed order's stock no longer expires, and committing the status and the pins together
+     * leaves the expiry sweep no moment in which the order is confirmed but its holds can still lapse.</p>
+     *
+     * <p>Money in a currency the order is not in is not added up: it is logged for a person to sort
+     * out, not retried forever. Money for an order already cancelled — its hold expired before the
+     * money arrived — is counted and logged for Sales to settle with the customer (kltn-docs 15).</p>
+     */
+    public void recordPayment(UUID orderId, UUID paymentId, java.math.BigDecimal amount, String currency) {
         Order order = repository.findByIdForUpdate(new OrderId(orderId))
                 .orElseThrow(() -> new IllegalArgumentException("No order with id " + orderId));
-        if (order.status() == OrderStatus.PAID) {
-            return; // Redelivered event; nothing to do.
+        if (!order.total().currency().getCurrencyCode().equals(currency)) {
+            log.error("Payment {} for order {} is in {}, the order in {}; not counted",
+                    paymentId, order.orderNumber(), currency, order.total().currency());
+            return;
         }
-        order.markPaid();
+        if (!payments.record(paymentId, orderId, amount, currency, clock.instant())) {
+            return; // Redelivered event; already counted.
+        }
+        boolean confirmed = order.recordPayment(new Money(amount, order.total().currency()), clock.instant());
+        if (confirmed) {
+            inventory.pinReservations(orderId);
+        }
+        if (order.status() == OrderStatus.CANCELLED) {
+            log.warn("Payment {} of {} {} arrived for order {}, already cancelled ({}); settle it with the customer",
+                    paymentId, amount, currency, order.orderNumber(), order.cancellationReasonCode());
+        }
         repository.save(order);
         events.publishEventsOf(order);
+    }
+
+    /**
+     * A hold of the order expired before it was paid: the order is cancelled and its other holds
+     * released (kltn-docs 14 BR-07, 15 step 4). Called by {@code InventoryEventListener} for every
+     * expired hold — the first one cancels, the rest find the order already cancelled. An order that
+     * is no longer waiting for payment is left alone: its holds are pinned and cannot expire, so the
+     * event can only be a late redelivery.
+     */
+    public void cancelAfterHoldExpired(UUID orderId) {
+        Optional<Order> found = repository.findByIdForUpdate(new OrderId(orderId));
+        if (found.isEmpty() || found.get().status() != OrderStatus.PENDING_PAYMENT) {
+            return;
+        }
+        if (found.get().printingStartedAt() != null) {
+            referToStaff(found.get(), CancellationReasonCode.PAYMENT_NOT_RECEIVED);
+            return;
+        }
+        cancelLoaded(found.get(), new CancelOrderCommand(CancellationReasonCode.PAYMENT_NOT_RECEIVED,
+                "not paid before the stock hold ran out", null, null));
+    }
+
+    @Override
+    @com.stockflow.common.audit.Auditable(action = com.stockflow.common.audit.AuditAction.TRANSITION,
+            resourceType = "order", resourceId = "#orderId")
+    public OrderSummary recordDelivery(UUID orderId) {
+        Order order = repository.findByIdForUpdate(new OrderId(orderId))
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));
+        if (order.status() == OrderStatus.DELIVERED) {
+            return toSummary(order);
+        }
+        order.markDelivered(clock.instant());
+        Order saved = repository.save(order);
+        events.publishEventsOf(order);
+        log.info("Order {} delivered", order.orderNumber());
+        return toSummary(saved);
     }
 
     @Override
@@ -489,24 +688,14 @@ class OrderServiceImpl implements OrderService {
                 order.placedAt(), order.createdBy(), order.lastModifiedAt(), order.lastModifiedBy(),
                 order.contactName(), order.contactEmail(), order.contactPhone(),
                 toSummary(order.shippingAddress()), toSummary(order.billingAddress()),
-                order.paymentTerm(), order.warehouseId(), order.releasedAt());
-    }
-
-    private void reserve(Order order, UUID requestId) {
-        inventory.prepareReservation(
-                order.lines().stream().map(OrderLine::sku).collect(Collectors.toSet()));
-        for (OrderLine line : order.lines()) {
-            ReserveStockResult reservation = inventory.reserve(new ReserveStockCommand(
-                    deterministicRequestId(requestId, line.id()), line.sku(), line.quantity(),
-                    order.id().value()));
-            order.attachReservations(line.id(), reservation.reservationIds());
-        }
-    }
-
-    private static OrderAddressSnapshot toSnapshot(PlaceGuestOrderCommand.Address address) {
-        return new OrderAddressSnapshot(address.recipientName(), address.phone(), address.line1(),
-                address.line2(), address.wardCode(), address.wardName(), address.provinceCode(),
-                address.provinceName(), address.countryCode(), address.postalCode());
+                order.paymentTerm(), order.warehouseId(), order.releasedAt(),
+                new OrderSummary.Payment(order.paidAmount(), order.depositRequired(), order.depositReceivedAt(),
+                        order.paidInFullAt(), order.paymentStatus(), order.creditTermDays()),
+                order.status() == OrderStatus.CANCELLED
+                        ? new OrderSummary.Cancellation(order.cancellationReasonCode(), order.cancellationReason(),
+                                order.cancellationRetainedAmount(), order.cancellationFeeReason(),
+                                order.cancellationFeeDetail(), order.cancellationFeeAmount())
+                        : null);
     }
 
     private static OrderAddressSnapshot toSnapshot(CheckoutCustomer.CheckoutAddress address) {

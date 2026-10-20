@@ -20,7 +20,11 @@ public interface VariantJpaRepository extends BaseJpaRepository<VariantJpaEntity
 
     List<VariantJpaEntity> findByProductIdAndStatus(UUID productId, VariantStatus status);
 
+    List<VariantJpaEntity> findByProductIdOrderByPositionAscIdAsc(UUID productId);
+
     boolean existsBySku(String sku);
+
+    boolean existsBySkuAndStatus(String sku, VariantStatus status);
 
     boolean existsByProductIdAndAttributeSignature(UUID productId, String attributeSignature);
 

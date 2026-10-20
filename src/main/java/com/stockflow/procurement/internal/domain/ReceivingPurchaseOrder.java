@@ -16,6 +16,9 @@ import java.util.UUID;
  *
  * @param tolerancePercent the supplier's over-receipt tolerance (BR-02), zero when none is set
  * @param supplierRejected the supplier refused the order (#36): nothing is received against it
+ * @param subcontract      a SUBCONTRACT order (SCRUM-434): its goods are a production order's finished goods, which
+ *                         the production module holds and inspects once against the approved sample (user decision
+ *                         2026-10-13) — receiving counts them and runs no QC of its own on them
  */
 public record ReceivingPurchaseOrder(
         UUID id,
@@ -26,7 +29,8 @@ public record ReceivingPurchaseOrder(
         UUID activeRevisionId,
         BigDecimal tolerancePercent,
         boolean supplierRejected,
-        List<Line> lines
+        List<Line> lines,
+        boolean subcontract
 ) {
 
     public enum Status { DRAFT, PENDING_APPROVAL, APPROVED, CONFIRMED, PARTIALLY_RECEIVED, RECEIVED, CLOSED, CANCELLED }
@@ -50,6 +54,14 @@ public record ReceivingPurchaseOrder(
         Objects.requireNonNull(id, "id");
         tolerancePercent = tolerancePercent == null ? BigDecimal.ZERO : tolerancePercent;
         lines = List.copyOf(lines);
+    }
+
+    /** A STANDARD purchase order. */
+    public ReceivingPurchaseOrder(UUID id, String number, Status status, UUID supplierId, UUID warehouseId,
+                                  UUID activeRevisionId, BigDecimal tolerancePercent, boolean supplierRejected,
+                                  List<Line> lines) {
+        this(id, number, status, supplierId, warehouseId, activeRevisionId, tolerancePercent, supplierRejected, lines,
+                false);
     }
 
     /** BR-01: goods are received only against a confirmed order the supplier did not refuse. */

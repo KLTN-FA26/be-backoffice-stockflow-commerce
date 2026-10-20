@@ -272,6 +272,40 @@ WHERE reference_type = 'STOCK_ADJUSTMENT' AND reference_id = ? AND movement_type
                                         .isTrue());
     }
 
+    @Test
+    @DisplayName("SCRUM-459: a SCRAP write-off posts, and a withdrawn request is stored with its time, undecided")
+    void scrapAndWithdrawal() {
+        StockAdjustmentSummary scrap = inventory.requestAdjustment(new RequestAdjustmentCommand(
+                BIN, sku, lot, -2, StockAdjustmentReason.SCRAP, "Misprint at station 1", clerk));
+        assertThat(operations.approve(scrap.adjustmentId(), manager).status()).isEqualTo(StockAdjustmentStatus.POSTED);
+        assertThat(onHand(BIN)).isEqualTo(8);
+
+        StockAdjustmentSummary sample = inventory.requestAdjustment(new RequestAdjustmentCommand(
+                BIN, sku, lot, -1, StockAdjustmentReason.SAMPLE, null, clerk));
+        assertThatThrownBy(() -> operations.withdraw(sample.adjustmentId(), manager))
+                .extracting(e -> ((BusinessException) e).errorCode())
+                .isEqualTo(ErrorCode.ADJUSTMENT_NOT_REQUESTER);
+
+        StockAdjustmentSummary withdrawn = operations.withdraw(sample.adjustmentId(), clerk);
+        assertThat(withdrawn.status()).isEqualTo(StockAdjustmentStatus.WITHDRAWN);
+        assertThat(withdrawn.withdrawnAt()).isNotNull();
+        assertThat(withdrawn.decidedBy()).isNull();
+        assertThat(onHand(BIN)).isEqualTo(8);
+        assertThatThrownBy(() -> operations.approve(sample.adjustmentId(), manager))
+                .extracting(e -> ((BusinessException) e).errorCode())
+                .isEqualTo(ErrorCode.INVALID_ADJUSTMENT_TRANSITION);
+        assertThat(operations.adjustments(StockAdjustmentStatus.WITHDRAWN, sku.code(), BIN, 0, 50, null).items())
+                .extracting(StockAdjustmentSummary::adjustmentId).containsExactly(sample.adjustmentId());
+    }
+
+    @Test
+    @DisplayName("SCRUM-459: releasing a hold that does not exist is RESERVATION_NOT_FOUND, not a 400")
+    void releasingAnUnknownHold() {
+        assertThatThrownBy(() -> inventory.release(UUID.randomUUID(), "MANUAL_OVERRIDE"))
+                .extracting(e -> ((BusinessException) e).errorCode())
+                .isEqualTo(ErrorCode.RESERVATION_NOT_FOUND);
+    }
+
     // ------------------------------------------------------------------ issue #67
 
     /** Runs {@code body} with a demo row's status changed, and always puts it back. */

@@ -44,4 +44,15 @@ class EffectiveStatusTest {
         assertThat(EffectiveStatus.isUsable(LocationStatus.MAINTENANCE)).isFalse();
         assertThat(EffectiveStatus.isUsable(LocationStatus.INACTIVE)).isFalse();
     }
+
+    @Test
+    @DisplayName("a place is on the layout unless it or its shelf is INACTIVE; the warehouse does not count")
+    void onLayout() {
+        assertThat(EffectiveStatus.isOnLayout(null, LocationStatus.ACTIVE)).isTrue();
+        assertThat(EffectiveStatus.isOnLayout(LocationStatus.ACTIVE, LocationStatus.BLOCKED)).isTrue();
+        assertThat(EffectiveStatus.isOnLayout(LocationStatus.MAINTENANCE, LocationStatus.MAINTENANCE)).isTrue();
+        assertThat(EffectiveStatus.isOnLayout(LocationStatus.INACTIVE, LocationStatus.ACTIVE)).isFalse();
+        assertThat(EffectiveStatus.isOnLayout(LocationStatus.ACTIVE, LocationStatus.INACTIVE)).isFalse();
+        assertThat(EffectiveStatus.isOnLayout(null, LocationStatus.INACTIVE)).isFalse();
+    }
 }

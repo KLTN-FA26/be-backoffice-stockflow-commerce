@@ -45,4 +45,35 @@ public interface SubcontractOrderStore {
      * one REVISED event. Refused (by the entity) once the order has left DRAFT.
      */
     void changeQuantity(Row order, int newQuantity, String reason, UUID actorId);
+
+    /** Units counted in against the order's line by confirmed goods receipts. */
+    int receivedQuantity(UUID purchaseOrderId);
+
+    /** An AMENDMENT revision of an approved order waiting for approval: the quantity it would set, who asked. */
+    record Amendment(UUID revisionId, long revisionNo, int quantity, UUID requestedBy, String reason) {
+    }
+
+    Optional<Amendment> pendingAmendment(UUID purchaseOrderId);
+
+    /**
+     * Freezes {@code newQuantity} as an AMENDMENT revision of the approved order (line revision included, priced at
+     * the line's unit price and tax rate) and makes it the order's pending revision; one AMENDMENT_REQUESTED event.
+     */
+    void requestAmendment(Row order, int newQuantity, String reason, UUID actorId);
+
+    /**
+     * The pending amendment becomes the active revision: the line takes its quantity and amounts, a fully received
+     * line and order are partially received again, header totals follow; one approval row and one event.
+     */
+    void approveAmendment(Row order, Amendment amendment, UUID approverId);
+
+    /** The pending amendment is dropped with an approval row of {@code decision} (REJECTED) and one event. */
+    void dropAmendment(Row order, Amendment amendment, UUID actorId, String decision, String reason);
+
+    Optional<com.stockflow.procurement.api.SubcontractSettlement> settlement(UUID purchaseOrderId, boolean forUpdate);
+
+    void insertSettlement(com.stockflow.procurement.api.SubcontractSettlement settlement);
+
+    void approveSettlement(UUID purchaseOrderId, BigDecimal deductionPerBlank, BigDecimal deductionAmount,
+                           BigDecimal netPayable, String note, UUID approverId, java.time.Instant at);
 }

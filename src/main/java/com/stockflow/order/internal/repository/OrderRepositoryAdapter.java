@@ -18,7 +18,10 @@ import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Repository;
 
 import java.time.LocalDate;
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -31,9 +34,12 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
     private final OrderNumberSequence sequence;
     private final OrderStatusHistoryJpaRepository history;
     private final java.time.Clock clock;
+    private final jakarta.persistence.EntityManager entityManager;
 
     OrderRepositoryAdapter(OrderJpaRepository jpa, OrderNumberSequence sequence,
-                           OrderStatusHistoryJpaRepository history, java.time.Clock clock) {
+                           OrderStatusHistoryJpaRepository history, java.time.Clock clock,
+                           jakarta.persistence.EntityManager entityManager) {
+        this.entityManager = entityManager;
         this.jpa = jpa;
         this.sequence = sequence;
         this.history = history;
@@ -45,9 +51,19 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
         return jpa.findByIdWithLines(id.value()).map(OrderPersistenceMapper::toDomain);
     }
 
+    /**
+     * The row lock, then the row as it is now. A copy already in the persistence context - {@link #findByIdInScope}
+     * reads one before it locks - is not re-read by the locking query, so without the refresh the caller would decide
+     * on the state from before the wait: a cancellation would not see the package completed while it waited (audit
+     * of #109). Pending changes were flushed by the query itself, so the refresh loses nothing.
+     */
     @Override
     public Optional<Order> findByIdForUpdate(OrderId id) {
         return jpa.findByIdForUpdate(id.value())
+                .map(locked -> {
+                    entityManager.refresh(locked);
+                    return locked;
+                })
                 .flatMap(locked -> jpa.findByIdWithLines(locked.getId()))
                 .map(OrderPersistenceMapper::toDomain);
     }
@@ -61,8 +77,14 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
      */
     @Override
     public Optional<Order> findByIdInScope(OrderId id) {
+        // The probe is let go before the lock: kept managed, the locking query would upgrade it with a version check
+        // and answer a concurrent change (a package completed while this waited) with an optimistic-lock failure
+        // instead of the current row the caller must decide on (audit of #109).
         return jpa.findByIdInScope(id.value())
-                .flatMap(scoped -> findByIdForUpdate(new OrderId(scoped.getId())));
+                .flatMap(scoped -> {
+                    entityManager.detach(scoped);
+                    return findByIdForUpdate(new OrderId(scoped.getId()));
+                });
     }
 
     @Override
@@ -133,8 +155,27 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
                 .toList();
     }
 
-    /** A status name this build no longer knows reads as null rather than failing the whole history. */
+    @Override
+    public Map<UUID, Integer> lineCounts(Collection<UUID> orderIds) {
+        if (orderIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<UUID, Integer> counts = new HashMap<>();
+        for (Object[] row : jpa.countLinesByOrder(orderIds)) {
+            counts.put((UUID) row[0], ((Number) row[1]).intValue());
+        }
+        return counts;
+    }
+
+    /**
+     * A status name this build no longer knows reads as null rather than failing the whole history.
+     * PAID, recorded before SCRUM-460, meant what CONFIRMED means now; the append-only history keeps
+     * the word, the timeline shows the state.
+     */
     private static OrderStatus statusOrNull(String name) {
+        if ("PAID".equals(name)) {
+            return OrderStatus.CONFIRMED;
+        }
         try {
             return OrderStatus.valueOf(name);
         } catch (IllegalArgumentException unknown) {

@@ -13,6 +13,7 @@ import com.stockflow.inventory.internal.controller.dto.DispatchTransferRequest;
 import com.stockflow.inventory.internal.controller.dto.ReasonRequest;
 import com.stockflow.inventory.internal.controller.dto.TransferOrderResponse;
 import com.stockflow.inventory.internal.controller.dto.TransferOrderRowResponse;
+import com.stockflow.inventory.internal.controller.dto.UpdateTransferOrderRequest;
 import com.stockflow.inventory.internal.domain.TransferStatus;
 import com.stockflow.inventory.internal.service.TransferOrders;
 import io.swagger.v3.oas.annotations.Operation;
@@ -22,6 +23,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -36,6 +38,10 @@ import java.util.UUID;
 /**
  * Inter-warehouse transfer orders (SCRUM-326/327). One verb per transition, so each carries its own
  * permission: approving needs {@code APPROVE}, which the planner who creates a transfer does not hold.
+ *
+ * <p>Editing a draft, submitting and cancelling need {@code CREATE}, like drafting: kltn-docs 10 §5 gives them to the
+ * planner (and cancelling to the approver too), while the source warehouse only picks and dispatches
+ * ({@code UPDATE}). Whoever may raise a transfer may put it forward or call it off (SCRUM-459).</p>
  */
 @RestController
 @RequestMapping("/api/v1/inventory/transfer-orders")
@@ -89,9 +95,23 @@ class TransferOrderController {
         return ApiResponse.ok(mapper.toResponse(transfers.get(transferId)));
     }
 
+    @PutMapping("/{transferId}")
+    @Operation(summary = "Edit a DRAFT transfer (new, or rejected back to DRAFT): warehouses, reason, date, lines",
+            description = "Send the whole transfer with the version you read; the lines replace the old ones and must"
+                    + " be available at the source now. 409 TRANSFER_ORDER_NOT_EDITABLE outside DRAFT, 409"
+                    + " OPTIMISTIC_LOCK when it changed since, 409 WAREHOUSE_INACTIVE, 409 INSUFFICIENT_STOCK.")
+    @RequiresPermission(resource = InventoryResources.TRANSFER_ORDERS, action = Action.CREATE)
+    public ApiResponse<TransferOrderResponse> update(@PathVariable UUID transferId,
+                                                       @Valid @RequestBody UpdateTransferOrderRequest request) {
+        return ApiResponse.ok(mapper.toResponse(transfers.reviseDraft(transferId, new TransferOrders.Revise(
+                request.version(), request.fromWarehouseId(), request.toWarehouseId(), request.reason(),
+                request.expectedDate(), request.lines().stream()
+                        .map(l -> new TransferOrders.NewLine(l.sku(), l.lotNumber(), l.quantity())).toList()))));
+    }
+
     @PostMapping("/{transferId}/submission")
     @Operation(summary = "Submit: approved at once at or under the threshold, otherwise PENDING_APPROVAL")
-    @RequiresPermission(resource = InventoryResources.TRANSFER_ORDERS, action = Action.UPDATE)
+    @RequiresPermission(resource = InventoryResources.TRANSFER_ORDERS, action = Action.CREATE)
     public ApiResponse<TransferOrderResponse> submit(@PathVariable UUID transferId,
                                                        @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(mapper.toResponse(transfers.submit(transferId, user.userId())));
@@ -141,7 +161,7 @@ class TransferOrderController {
 
     @PostMapping("/{transferId}/cancellation")
     @Operation(summary = "Cancel; only before dispatch (BR-04)")
-    @RequiresPermission(resource = InventoryResources.TRANSFER_ORDERS, action = Action.UPDATE)
+    @RequiresPermission(resource = InventoryResources.TRANSFER_ORDERS, action = Action.CREATE)
     public ApiResponse<TransferOrderResponse> cancel(@PathVariable UUID transferId,
                                                        @Valid @RequestBody ReasonRequest request) {
         return ApiResponse.ok(mapper.toResponse(transfers.cancel(transferId, request.reason())));

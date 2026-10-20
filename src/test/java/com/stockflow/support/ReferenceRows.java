@@ -74,4 +74,58 @@ public final class ReferenceRows {
                 .executeUpdate();
         return new ProductRow(productId, variantId, code);
     }
+
+    /**
+     * An APPROVED {@code product.products} row, approved by someone other than who submitted it, with its default
+     * ACTIVE variant: a SKU a purchase order line may take (kltn-docs 02 BR-01, SCRUM-461). {@link #product} is a DRAFT,
+     * which a purchase order refuses.
+     */
+    public static ProductRow approvedProduct(EntityManager em) {
+        ProductRow row = product(em);
+        UUID submitter = user(em);
+        UUID approver = user(em);
+        em.createNativeQuery("""
+                        UPDATE product.products SET status = 'APPROVED', submitted_by = ?1, submitted_at = NOW(),
+                               approved_by = ?2, approved_at = NOW() WHERE id = ?3""")
+                .setParameter(1, submitter)
+                .setParameter(2, approver)
+                .setParameter(3, row.productId())
+                .executeUpdate();
+        return row;
+    }
+
+    /**
+     * A placed order with one line of {@code sku}, in {@code status}, on credit (the payment term every status
+     * accepts); {@code releasedBy} and {@code warehouseId} are what an order that has been released needs.
+     * Returns the order id. For tests of what refers to a SKU.
+     */
+    public static UUID orderWithLine(EntityManager em, String sku, String status, UUID customerId, UUID releasedBy,
+                                     UUID warehouseId) {
+        UUID order = Identifiers.newId();
+        boolean released = status.equals("IN_PRODUCTION") || status.equals("READY_TO_FULFILL");
+        boolean cancelled = status.equals("CANCELLED");
+        em.createNativeQuery("""
+                        INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
+                            currency, placed_at, payment_term, credit_term_days, released_at, released_by, warehouse_id,
+                            cancellation_reason, cancellation_reason_code, version, created_at)
+                        VALUES (?1, ?2, ?3, ?4, ?5, 1000, 'VND', NOW(), 'CREDIT', 30, ?6, ?7, ?8, ?9, ?10, 0, NOW())""")
+                .setParameter(1, order)
+                .setParameter(2, "SO-RR-" + order.toString().substring(24))
+                .setParameter(3, customerId)
+                .setParameter(4, Identifiers.newId())
+                .setParameter(5, status)
+                .setParameter(6, released ? java.sql.Timestamp.from(java.time.Instant.now()) : null)
+                .setParameter(7, released ? releasedBy : null)
+                .setParameter(8, released ? warehouseId : null)
+                .setParameter(9, cancelled ? "x" : null)
+                .setParameter(10, cancelled ? "OTHER" : null)
+                .executeUpdate();
+        em.createNativeQuery("INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency) "
+                        + "VALUES (?1, ?2, ?3, 1, 1000, 'VND')")
+                .setParameter(1, Identifiers.newId())
+                .setParameter(2, order)
+                .setParameter(3, sku)
+                .executeUpdate();
+        return order;
+    }
 }

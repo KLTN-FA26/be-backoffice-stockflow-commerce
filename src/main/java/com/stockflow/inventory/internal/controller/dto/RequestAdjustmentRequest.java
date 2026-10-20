@@ -1,12 +1,12 @@
 package com.stockflow.inventory.internal.controller.dto;
 
+import com.stockflow.common.validation.ValidSku;
 import com.stockflow.inventory.api.StockAdjustmentReason;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
-import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
 @Schema(description = "Ask for one stock item to be corrected; a different person approves it")
@@ -19,7 +19,7 @@ public record RequestAdjustmentRequest(
 
         @Schema(example = "CUP-PP-500")
         @NotBlank(message = "sku is required")
-        @Pattern(regexp = "[A-Za-z0-9\\-]{3,64}", message = "malformed SKU")
+        @ValidSku
         String sku,
 
         @Size(max = 64, message = "lotNumber is at most 64 characters")

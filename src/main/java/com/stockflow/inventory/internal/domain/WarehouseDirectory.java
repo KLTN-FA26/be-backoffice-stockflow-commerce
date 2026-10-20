@@ -14,4 +14,7 @@ public interface WarehouseDirectory {
 
     /** Empty when no warehouse has this id. */
     Optional<String> prefixOf(UUID warehouseId);
+
+    /** False when the warehouse is not ACTIVE, or does not exist. */
+    boolean isActive(UUID warehouseId);
 }

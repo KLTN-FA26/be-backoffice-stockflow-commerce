@@ -12,11 +12,15 @@ import com.stockflow.procurement.api.CreatePOLineCommand;
 import com.stockflow.procurement.api.CreatePurchaseOrderCommand;
 import com.stockflow.procurement.api.PurchaseOrderSummary;
 import com.stockflow.procurement.api.SendPurchaseOrderCommand;
+import com.stockflow.procurement.internal.domain.CatalogSupplier;
 import com.stockflow.procurement.internal.domain.PurchaseOrder;
 import com.stockflow.procurement.internal.domain.PurchaseOrderRepository;
 import com.stockflow.procurement.internal.domain.Supplier;
 import com.stockflow.procurement.internal.domain.SupplierCommunicationChannel;
 import com.stockflow.procurement.internal.domain.SupplierDetails;
+import com.stockflow.procurement.internal.domain.SupplierItem;
+import com.stockflow.procurement.internal.domain.SupplierItemRepository;
+import com.stockflow.procurement.internal.domain.SupplierItemTerms;
 import com.stockflow.procurement.internal.domain.SupplierRepository;
 import com.stockflow.procurement.internal.domain.SupplierStatus;
 import com.stockflow.procurement.internal.repository.PoDeliveryDecisionRepository;
@@ -36,11 +40,13 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
@@ -58,6 +64,7 @@ class ProcurementBusinessDateTest {
     private final InventoryService inventory = mock(InventoryService.class);
     private final InventoryControlService inventoryControl = mock(InventoryControlService.class);
     private final WarehouseService warehouses = mock(WarehouseService.class);
+    private final SupplierItemRepository supplierItems = mock(SupplierItemRepository.class);
 
     private ProcurementServiceImpl service(Clock clock) {
         var supplier = new Supplier(supplierId, new SupplierDetails("SUP", "Supplier", null, "s@example.com", null, null,
@@ -72,11 +79,18 @@ class ProcurementBusinessDateTest {
         when(inventory.itemPolicy(any(Sku.class)))
                 .thenReturn(Optional.of(new InventoryItemPolicy(item, "CHAIR-01", false, false, false)));
         when(inventoryControl.item(any())).thenReturn(new InventoryControlItem("CHAIR-01", "EACH", 0, null));
+        // Listed with moq 1 in packs of 1 and no lead time of its own: the supplier's 7 days apply.
+        when(supplierItems.findSupplier(supplierId)).thenReturn(Optional.of(
+                new CatalogSupplier(supplierId, "SUP", "Supplier", SupplierStatus.ACTIVE, Money.VND, 7)));
+        when(supplierItems.listedForShare(any(), anyCollection())).thenReturn(Map.of(item, new SupplierItem(
+                UUID.randomUUID(), supplierId, item, SupplierItemTerms.stored(null, Money.vnd(100), 1, 1, null), 0,
+                null, null)));
         return new ProcurementServiceImpl(orders, search, null, clock, suppliers, mock(ApplicationEventPublisher.class),
                 mock(NotificationService.class), mock(PoDeliveryDecisionRepository.class),
                 new PoCommunicationProfile("Buyer", "Address", "Buyer contact", "0901234567", "buyer@example.com",
                         "Warehouse"),
-                mock(ProductService.class), inventory, inventoryControl, warehouses, mock(CurrentUserProvider.class));
+                mock(ProductService.class), inventory, inventoryControl, warehouses, mock(CurrentUserProvider.class),
+                supplierItems);
     }
 
     private PurchaseOrder saved() {

@@ -309,15 +309,15 @@ values ('00000000-0000-0000-0000-000000000070','legacy-slug','Preserved SEO','Pr
                 try (var row =
                         sql.executeQuery(
                                 "select"
-                                    + " safety_stock,reorder_point,min_qty,max_qty,version,max_shelf_life_days"
+                                    + " safety_stock,reorder_point,max_qty,version,max_shelf_life_days"
                                     + " from inventory.inventory_items where sku='UPGRADE-SKU'")) {
+                    // min_qty is gone (V20261019000500): the minimum threshold is the reorder point.
                     assertThat(row.next()).isTrue();
                     assertThat(row.getInt(1)).isEqualTo(5);
                     assertThat(row.getInt(2)).isEqualTo(10);
-                    assertThat(row.getInt(3)).isEqualTo(3);
-                    assertThat(row.getInt(4)).isEqualTo(50);
-                    assertThat(row.getLong(5)).isEqualTo(1);
-                    assertThat(row.getInt(6)).isEqualTo(30);
+                    assertThat(row.getInt(3)).isEqualTo(50);
+                    assertThat(row.getLong(4)).isEqualTo(1);
+                    assertThat(row.getInt(5)).isEqualTo(30);
                 }
                 try (var row =
                         sql.executeQuery(

@@ -28,6 +28,7 @@ import com.stockflow.procurement.internal.controller.dto.RecoverPurchaseOrderDel
 import com.stockflow.procurement.internal.controller.dto.SendPurchaseOrderRequest;
 import com.stockflow.procurement.internal.controller.dto.SupplierConfirmationRequest;
 import com.stockflow.procurement.internal.controller.dto.SupplierSpendResponse;
+import com.stockflow.procurement.internal.controller.dto.UpdatePurchaseOrderRequest;
 
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -39,6 +40,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -52,7 +54,7 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * HTTP entry point for purchase orders (SCRUM-113/114/115/116/390): create, submit, approve or
+ * HTTP entry point for purchase orders (SCRUM-113/114/115/116/390/462): create, edit a draft, submit, approve or
  * reject, confirm (= send to the supplier), record the supplier's answer, cancel, close. Receiving is
  * {@code /api/v1/goods-receipts}.
  *
@@ -83,16 +85,22 @@ class PurchaseOrderController {
     private final PurchaseOrderWebMapper mapper;
     private final NotificationService notifications;
     private final Clock clock;
+    private final com.stockflow.procurement.internal.service.SubcontractAmendments amendments;
+    private final com.stockflow.procurement.api.SubcontractPurchasing subcontracting;
 
     PurchaseOrderController(
             ProcurementService procurementService,
             PurchaseOrderWebMapper mapper,
             NotificationService notifications,
-            Clock clock) {
+            Clock clock,
+            com.stockflow.procurement.internal.service.SubcontractAmendments amendments,
+            com.stockflow.procurement.api.SubcontractPurchasing subcontracting) {
         this.procurementService = procurementService;
         this.mapper = mapper;
         this.notifications = notifications;
         this.clock = clock;
+        this.amendments = amendments;
+        this.subcontracting = subcontracting;
     }
 
     @PostMapping
@@ -103,6 +111,20 @@ class PurchaseOrderController {
             @Valid @RequestBody CreatePurchaseOrderRequest request) {
         return ApiResponse.ok(
                 toResponse(procurementService.createPurchaseOrder(mapper.toCommand(request))));
+    }
+
+    @PutMapping("/{purchaseOrderId}")
+    @Operation(
+            summary = "Edit a DRAFT standard purchase order: warehouse, delivery date, note, lines",
+            description =
+                    "Send the whole draft with the version you read. Lines not listed leave the order;"
+                        + " a listed lineId keeps its SKU. 409 PURCHASE_ORDER_NOT_EDITABLE once it left"
+                        + " DRAFT or for a SUBCONTRACT order; 409 OPTIMISTIC_LOCK when it changed since.")
+    @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.UPDATE)
+    public ApiResponse<PurchaseOrderResponse> update(
+            @PathVariable UUID purchaseOrderId, @Valid @RequestBody UpdatePurchaseOrderRequest request) {
+        return ApiResponse.ok(
+                toResponse(procurementService.reviseDraft(purchaseOrderId, mapper.toCommand(request))));
     }
 
     @GetMapping("/{purchaseOrderId}")
@@ -177,6 +199,42 @@ class PurchaseOrderController {
                                                      @AuthenticatedUser CurrentUser user,
                                                      @Valid @RequestBody CancelPurchaseOrderRequest request) {
         return ApiResponse.ok(toResponse(procurementService.reject(purchaseOrderId, user.userId(), request.reason())));
+    }
+
+    /**
+     * BR-02, 03 §16 "PO supplement": a SUBCONTRACT order already approved got more quantity for a resend after a QC
+     * shortfall; the amendment is approved by someone other than who asked for it, with the approval permission.
+     */
+    @PostMapping("/{purchaseOrderId}/amendment/approval")
+    @Operation(summary = "Approve the amendment waiting on an approved SUBCONTRACT purchase order (four eyes)")
+    @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.APPROVE)
+    public ApiResponse<PurchaseOrderResponse> approveAmendment(@PathVariable UUID purchaseOrderId,
+                                                               @AuthenticatedUser CurrentUser user) {
+        amendments.approveAmendment(purchaseOrderId, user.userId());
+        return ApiResponse.ok(toResponse(procurementService.findById(purchaseOrderId).orElseThrow()));
+    }
+
+    @PostMapping("/{purchaseOrderId}/amendment/rejection")
+    @Operation(summary = "Reject the amendment waiting on an approved SUBCONTRACT purchase order, with a reason")
+    @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.APPROVE)
+    public ApiResponse<PurchaseOrderResponse> rejectAmendment(@PathVariable UUID purchaseOrderId,
+                                                              @AuthenticatedUser CurrentUser user,
+                                                              @Valid @RequestBody CancelPurchaseOrderRequest request) {
+        amendments.rejectAmendment(purchaseOrderId, user.userId(), request.reason());
+        return ApiResponse.ok(toResponse(procurementService.findById(purchaseOrderId).orElseThrow()));
+    }
+
+    /**
+     * BR-PRD-17, 04c G10: what a SUBCONTRACT order owes once its production order ended - QC-passed units paid,
+     * failed ones not, approved excess loss deducted, an agreed cancellation fee added. The basis of the invoice match.
+     */
+    @GetMapping("/{purchaseOrderId}/subcontract-settlement")
+    @Operation(summary = "The settlement of a SUBCONTRACT purchase order (BR-PRD-17)")
+    @RequiresPermission(resource = PurchaseOrderResources.PURCHASE_ORDERS, action = Action.READ)
+    public ApiResponse<com.stockflow.procurement.api.SubcontractSettlement> subcontractSettlement(
+            @PathVariable UUID purchaseOrderId) {
+        return ApiResponse.ok(subcontracting.settlement(purchaseOrderId).orElseThrow(() ->
+                new com.stockflow.common.error.NotFoundException("subcontract-settlement", purchaseOrderId)));
     }
 
     /** {@code /sending} is the old name, kept while the screens move to {@code /confirmation}. */

@@ -1,16 +1,23 @@
 package com.stockflow.product.internal.controller;
 
-import com.stockflow.common.audit.AuditEntry;
 import com.stockflow.product.api.CreateProductCommand;
+import com.stockflow.product.api.OpenReferences;
+import com.stockflow.product.api.ProductChange;
+import com.stockflow.product.api.ProductDiscontinuation;
 import com.stockflow.product.api.ProductSummary;
+import com.stockflow.product.api.SkuReference;
 import com.stockflow.product.api.UpdateProductCommand;
 import com.stockflow.product.internal.controller.dto.CreateProductRequest;
+import com.stockflow.product.internal.controller.dto.OpenReferenceResponse;
+import com.stockflow.product.internal.controller.dto.OpenReferencesResponse;
+import com.stockflow.product.internal.controller.dto.ProductDiscontinuationResponse;
 import com.stockflow.product.internal.controller.dto.ProductResponse;
 import com.stockflow.product.internal.controller.dto.ProductVersionResponse;
 import com.stockflow.product.internal.controller.dto.UpdateProductRequest;
 
 import org.mapstruct.Mapper;
 import org.mapstruct.Mapping;
+import org.mapstruct.Named;
 import org.mapstruct.ReportingPolicy;
 
 import java.util.UUID;
@@ -23,7 +30,7 @@ import java.util.UUID;
 interface ProductWebMapper {
 
     /** The code is upper-cased here: {@code ck_products_code} accepts upper case only, and a code is
-     *  also the default variant's SKU. */
+     *  also the stem of every variant SKU. */
     @Mapping(target = "code",
             expression = "java(request.code() == null ? null : request.code().strip().toUpperCase(java.util.Locale.ROOT))")
     CreateProductCommand toCommand(CreateProductRequest request);
@@ -35,7 +42,33 @@ interface ProductWebMapper {
      *  generates the {@code .name()} conversion automatically since the field name matches. */
     ProductResponse toResponse(ProductSummary summary);
 
-    /** {@code action}/{@code outcome} are enums on {@link AuditEntry}, strings on the wire — same
-     *  automatic {@code .name()} conversion as {@code toResponse(ProductSummary)} above. */
-    ProductVersionResponse toResponse(AuditEntry entry);
+    /**
+     * {@code action} and {@code outcome} are what history entries carried when they came from the audit trail,
+     * kept for the screens that show them: the action is derived from the change type, and the outcome is
+     * always SUCCESS, because only a change that happened is in the history.
+     */
+    @Mapping(target = "action", source = "changeType", qualifiedByName = "auditActionOf")
+    @Mapping(target = "outcome", constant = "SUCCESS")
+    ProductVersionResponse toResponse(ProductChange change);
+
+    @Named("auditActionOf")
+    default String auditActionOf(String changeType) {
+        return switch (changeType) {
+            case "CREATED", "VARIANT_ADDED" -> "CREATE";
+            case "APPROVED" -> "APPROVE";
+            case "REJECTED" -> "REJECT";
+            case "SUBMITTED", "SUSPENDED", "RESUMED", "DISCONTINUED", "VARIANT_STATUS" -> "TRANSITION";
+            default -> "UPDATE";
+        };
+    }
+
+    @Mapping(target = "product", source = "product")
+    @Mapping(target = "warnings", source = "warnings")
+    @Mapping(target = "openReferences", source = "references.references")
+    @Mapping(target = "openReferencesTruncated", source = "references.truncated")
+    ProductDiscontinuationResponse toResponse(ProductDiscontinuation discontinuation);
+
+    OpenReferencesResponse toResponse(OpenReferences references);
+
+    OpenReferenceResponse toResponse(SkuReference reference);
 }

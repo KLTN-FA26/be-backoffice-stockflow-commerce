@@ -12,7 +12,7 @@ import java.util.UUID;
 public interface OrderReleases {
 
     /**
-     * Release a paid order (or a deposit order whose deposit is in) from a warehouse: to IN_PRODUCTION
+     * Release a CONFIRMED order (paid in full, or a deposit order whose deposit is in) from a warehouse: to IN_PRODUCTION
      * when it has print lines, READY_TO_FULFILL otherwise.
      *
      * @throws com.stockflow.common.error.BusinessException {@code WAREHOUSE_NOT_FOUND},

@@ -4,6 +4,7 @@ import com.stockflow.common.domain.AggregateRepository;
 
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -36,6 +37,12 @@ public interface PurchaseOrderRepository extends AggregateRepository<PurchaseOrd
     /** A goods receipt of this order is still being counted (DRAFT): the order cannot be cancelled under it. */
     boolean hasReceiptInProgress(PurchaseOrderId id);
 
+    /**
+     * The number a new line of this order gets: one past every number it has used, withdrawn lines
+     * included ({@code uk_purchase_order_lines_no}).
+     */
+    int nextLineNo(PurchaseOrderId id);
+
     /** The next revision number: 0 for an order never submitted. */
     long nextRevisionNo(PurchaseOrderId id);
 
@@ -51,4 +58,8 @@ public interface PurchaseOrderRepository extends AggregateRepository<PurchaseOrd
     /** One line of the order's history; {@code action} is one of {@code ck_purchase_order_events_action}. */
     void recordEvent(PurchaseOrderId id, UUID revisionId, String action, UUID actorId, PurchaseOrderStatus from,
                      PurchaseOrderStatus to, String reason);
+
+    /** As above, with facts for the timeline ({@code payload}): what a draft edit changed. */
+    void recordEvent(PurchaseOrderId id, UUID revisionId, String action, UUID actorId, PurchaseOrderStatus from,
+                     PurchaseOrderStatus to, String reason, Map<String, String> payload);
 }

@@ -2,6 +2,8 @@ package com.stockflow.identity.internal.service;
 
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.persistence.Pages;
+import com.stockflow.identity.api.AssignableUser;
+import com.stockflow.identity.api.StaffContact;
 import com.stockflow.identity.api.ChangePasswordCommand;
 import com.stockflow.identity.api.CreateRoleCommand;
 import com.stockflow.identity.api.CreateStaffUserCommand;
@@ -597,6 +599,19 @@ class IdentityServiceImpl implements IdentityService {
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public java.util.Map<UUID, String> displayNames(java.util.Collection<UUID> userIds) {
+        var ids = userIds.stream().filter(java.util.Objects::nonNull).distinct().toList();
+        if (ids.isEmpty()) {
+            return java.util.Map.of();
+        }
+        var names = new java.util.HashMap<UUID, String>();
+        users.findAllById(ids).forEach(user -> names.put(user.getId(),
+                user.getFullName() == null || user.getFullName().isBlank() ? user.getUsername() : user.getFullName()));
+        return names;
+    }
+
+    @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "user", resourceId = "#result?.user()?.userId()")
     public CreatedStaffUser createStaffUser(CreateStaffUserCommand command) {
         String username = command.username().trim();
@@ -833,6 +848,32 @@ class IdentityServiceImpl implements IdentityService {
 
     @Override
     @Transactional(readOnly = true)
+    public List<AssignableUser> assignableUsers(java.util.Set<String> roleCodes, UUID warehouseId) {
+        if (roleCodes == null || roleCodes.isEmpty() || warehouseId == null) {
+            return List.of();
+        }
+        List<UserJpaEntity> found = users.findAssignable(warehouseId, roleCodes);
+        Map<UUID, List<String>> held = roleCodesOf(found.stream().map(UserJpaEntity::getId).toList());
+        return found.stream()
+                .map(user -> new AssignableUser(user.getId(),
+                        user.getFullName() == null || user.getFullName().isBlank()
+                                ? user.getUsername() : user.getFullName(),
+                        held.getOrDefault(user.getId(), List.of()).stream().filter(roleCodes::contains).toList()))
+                .toList();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<StaffContact> notificationRecipients(java.util.Set<String> roleCodes, UUID warehouseId) {
+        if (roleCodes == null || roleCodes.isEmpty()) {
+            return List.of();
+        }
+        return users.findStaffWithRolesFor(roleCodes, warehouseId).stream()
+                .map(user -> new StaffContact(user.getId(), user.getEmail())).toList();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public boolean isActiveUserWithAnyRole(UUID userId, String... roleCodes) {
         if (userId == null || roleCodes == null || roleCodes.length == 0) {
             return false;
@@ -860,9 +901,13 @@ class IdentityServiceImpl implements IdentityService {
     public TokenResponse login(LoginCommand command) {
         String loginName = command.username() == null ? "" : command.username().trim();
         Optional<User> found = userRepository.findByUsername(loginName);
-        String hashToCheck = found.map(User::passwordHash).orElse(dummyPasswordHash);
+        // An invited account has no password yet (SCRUM-450): it costs the same bcrypt work as an
+        // unknown name and gets the same answer. Its invitation credential must never reach the
+        // encoder: no delegate is registered for that prefix, so matching it would throw.
+        Optional<User> withPassword = found.filter(user -> !user.awaitingActivation());
+        String hashToCheck = withPassword.map(User::passwordHash).orElse(dummyPasswordHash);
         boolean passwordMatches = passwordEncoder.matches(command.password(), hashToCheck);
-        if (found.isEmpty()) {
+        if (withPassword.isEmpty()) {
             throw new BusinessException(ErrorCode.UNAUTHORIZED, "Invalid username or password");
         }
         User user = found.get();
@@ -936,7 +981,8 @@ class IdentityServiceImpl implements IdentityService {
         if (user.status() != com.stockflow.identity.internal.domain.UserStatus.ACTIVE) {
             throw new BusinessException(ErrorCode.ACCOUNT_NOT_ACTIVE);
         }
-        if (!passwordEncoder.matches(command.currentPassword(), user.passwordHash())) {
+        if (user.awaitingActivation()
+                || !passwordEncoder.matches(command.currentPassword(), user.passwordHash())) {
             throw new BusinessException(ErrorCode.INVALID_CURRENT_PASSWORD);
         }
         PasswordPolicy.violation(command.newPassword()).ifPresent(reason -> {

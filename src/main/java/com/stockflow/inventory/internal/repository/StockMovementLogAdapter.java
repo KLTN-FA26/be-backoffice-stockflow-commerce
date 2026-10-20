@@ -70,4 +70,13 @@ class StockMovementLogAdapter implements StockMovementLog, StockLedgerSearch {
                 e.getToStatus() != null ? e.getToStatus() : e.getFromStatus(),
                 e.getReferenceType(), e.getReferenceId(), e.getReason(), e.getActorId(), e.getOccurredAt());
     }
+
+    @Override
+    public boolean handedOverFromProduction(com.stockflow.inventory.internal.domain.ReservationId hold,
+                                            com.stockflow.inventory.internal.domain.LocationId location) {
+        return jpa.existsByMovementTypeAndReferenceTypeAndReasonAndToLocationCodeAndFromStatusAndToStatus(
+                StockMovement.MovementType.MOVE, StockMovement.ReferenceType.PRODUCTION_ORDER, "Hold " + hold.value(),
+                location.code(), com.stockflow.inventory.internal.domain.StockStatus.IN_PRODUCTION,
+                com.stockflow.inventory.internal.domain.StockStatus.AVAILABLE);
+    }
 }

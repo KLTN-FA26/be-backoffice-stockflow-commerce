@@ -1,27 +1,36 @@
 package com.stockflow.product.internal.controller.dto;
 
+import com.stockflow.common.validation.ValidSku;
 import io.swagger.v3.oas.annotations.media.Schema;
-import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.PositiveOrZero;
 import jakarta.validation.constraints.Size;
 
-/** A variant to add, or the new state of one. The SKU can change only while the variant is DRAFT. */
+import java.util.List;
+import java.util.UUID;
+
+/**
+ * A variant to add, or the new state of one.
+ *
+ * <p>Every field is optional at this edge because the service decides what is required: on a product
+ * with axes the options are required and the SKU and name are generated when absent; on a product
+ * without axes the SKU is required. On an update, a null {@code optionValueIds} keeps the options and a
+ * missing sku or name keeps the current one. The SKU can change only while the variant is DRAFT, and so
+ * can the options.</p>
+ */
 public record VariantRequest(
-        @Schema(example = "CUP-12OZ-WHITE")
-        @NotBlank(message = "sku is required")
-        @Pattern(regexp = "[A-Za-z0-9][A-Za-z0-9._-]{0,63}",
-                message = "sku is 1-64 letters, digits, '.', '_' or '-', starting with a letter or digit")
+        @Schema(example = "CUP-12OZ-WHITE",
+                description = "Optional on a product with axes (built from the product code and the option codes).")
+        @ValidSku
+        @Size(max = 64, message = "sku must be at most 64 characters")
         String sku,
 
-        @NotBlank(message = "name is required")
         @Size(max = 255, message = "name must be at most 255 characters")
         String name,
 
-        @Schema(description = "The attribute combination, e.g. COLOR=WHITE;SIZE=12OZ; unique per product. "
-                + "Absent: SKU=<sku>.")
-        @Size(max = 512, message = "attributeSignature must be at most 512 characters")
-        String attributeSignature,
+        @Schema(description = "Exactly one dictionary value per axis of the product; the signature is derived "
+                + "from them. Null on an update keeps the current options.")
+        List<@NotNull UUID> optionValueIds,
 
         @PositiveOrZero(message = "position must not be negative")
         Integer position

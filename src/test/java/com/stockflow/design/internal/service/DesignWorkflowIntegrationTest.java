@@ -13,16 +13,14 @@ import com.stockflow.product.api.ProductService;
 import com.stockflow.product.api.ProductSummary;
 import com.stockflow.support.ReferenceRows;
 import org.junit.jupiter.api.BeforeEach;
+import com.stockflow.support.PostgresContainer;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.context.annotation.Import;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import java.io.ByteArrayInputStream;
 import java.time.Instant;
@@ -36,10 +34,9 @@ import static org.mockito.Mockito.when;
 
 @DataJpaTest(properties = "spring.jpa.hibernate.ddl-auto=validate")
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import({JpaAuditingConfig.class, DesignWorkflowService.class, DesignServiceImpl.class})
+@Import({JpaAuditingConfig.class, DesignWorkflowService.class, DesignServiceImpl.class, PostgresContainer.class})
 @Testcontainers(disabledWithoutDocker = true)
 class DesignWorkflowIntegrationTest {
-    @Container @ServiceConnection static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine");
     @Autowired DesignWorkflowService workflow;
     @Autowired DesignDraftJpaRepository drafts;
     @Autowired DesignArtifactJpaRepository artifacts;
@@ -53,6 +50,7 @@ class DesignWorkflowIntegrationTest {
     @MockitoBean com.stockflow.common.storage.UploadInspection inspection;
     @MockitoBean com.stockflow.common.storage.FileTransfers files;
     @MockitoBean com.stockflow.identity.api.IdentityService identities;
+    @MockitoBean com.stockflow.customer.api.CustomerService customers;
     /** Real rows: the draft's customer, every actor and (since C1) its product are foreign keys. */
     private UUID owner, editor, reviewer, customer, product;
 
@@ -66,6 +64,7 @@ class DesignWorkflowIntegrationTest {
 
     private DesignWorkflowService.DraftView draftWithArtifact() throws Exception {
         when(identities.isActiveUserWithAnyRole(any(), any(String[].class))).thenReturn(true);
+        ownerProfile(owner, customer);
         org.mockito.Mockito.doAnswer(call -> {
             ((java.io.InputStream) call.getArgument(0)).readAllBytes();
             return null;
@@ -84,6 +83,33 @@ class DesignWorkflowIntegrationTest {
         drafts.saveAndFlush(row);
         when(storage.download("design-renders/test.pdf")).thenAnswer(call -> new ByteArrayInputStream(bytes));
         return workflow.get(draft.id(), owner);
+    }
+
+    /** The owner's own customer profile, as the customer module answers it. */
+    private void ownerProfile(UUID user, UUID customerId) {
+        when(customers.findByUserId(user)).thenReturn(Optional.of(new com.stockflow.customer.api.CustomerSummary(
+                customerId, user, "Owner", "owner@example.com", null, null, null, "ACTIVE", 0, Instant.EPOCH)));
+    }
+
+    @Test void ownerOfAnotherCustomerIsRefusedAtCreate() {
+        when(identities.isActiveUserWithAnyRole(any(), any(String[].class))).thenReturn(true);
+        when(products.findById(any())).thenReturn(Optional.of(mock(ProductSummary.class)));
+        UUID otherCustomer = ReferenceRows.customer(entityManager);
+        ownerProfile(owner, otherCustomer);
+        assertThatThrownBy(() -> workflow.create(customer, product, owner, editor, reviewer, "Cabinet", "spec", editor))
+                .isInstanceOfSatisfying(BusinessException.class, e -> {
+                    assertThat(e.errorCode()).isEqualTo(com.stockflow.common.error.ErrorCode.DESIGN_OWNER_CUSTOMER_MISMATCH);
+                    assertThat(e.fieldErrors()).extracting(com.stockflow.common.api.FieldError::field).containsExactly("ownerUserId");
+                });
+    }
+
+    @Test void ownerWithoutCustomerProfileIsRefusedAtCreate() {
+        when(identities.isActiveUserWithAnyRole(any(), any(String[].class))).thenReturn(true);
+        when(products.findById(any())).thenReturn(Optional.of(mock(ProductSummary.class)));
+        when(customers.findByUserId(owner)).thenReturn(Optional.empty());
+        assertThatThrownBy(() -> workflow.create(customer, product, owner, editor, reviewer, "Cabinet", "spec", editor))
+                .isInstanceOfSatisfying(BusinessException.class, e ->
+                        assertThat(e.errorCode()).isEqualTo(com.stockflow.common.error.ErrorCode.DESIGN_OWNER_CUSTOMER_MISMATCH));
     }
 
     @Test void reviewCustomerConfirmationAndReplayPreserveExactSnapshot() throws Exception {

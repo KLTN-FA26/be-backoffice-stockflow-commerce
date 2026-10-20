@@ -130,7 +130,24 @@ class GoodsReceiptRepositoryAdapter implements GoodsReceiptRepository, GoodsRece
                 .and(com.stockflow.common.security.WarehouseScope.warehousesIn("warehouseId"));
         return jpa.findAll(spec, pageable).map(e -> new Row(e.getId(), e.getReceiptNumber(), e.getPurchaseOrderId(),
                 e.getWarehouseId(), e.getStatus(), e.getDeliveryNote(), e.getReceivedAt(), e.getReceivedBy(),
-                e.getConfirmedAt(), e.getClosedAt()));
+                e.getConfirmedAt(), e.getConfirmedBy(), e.getClosedAt()));
+    }
+
+    @Override
+    public Map<UUID, OrderLabel> orderLabels(java.util.Collection<UUID> purchaseOrderIds) {
+        if (purchaseOrderIds.isEmpty()) {
+            return Map.of();
+        }
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = entityManager.createNativeQuery("""
+                        SELECT p.id, p.po_number, s.id, s.name
+                          FROM procurement.purchase_orders p JOIN procurement.suppliers s ON s.id = p.supplier_id
+                         WHERE p.id IN (:ids)""")
+                .setParameter("ids", java.util.Set.copyOf(purchaseOrderIds))
+                .getResultList();
+        Map<UUID, OrderLabel> labels = new HashMap<>();
+        rows.forEach(r -> labels.put((UUID) r[0], new OrderLabel((String) r[1], (UUID) r[2], (String) r[3])));
+        return labels;
     }
 
     private static Specification<GoodsReceiptJpaEntity> receivedBetween(Instant from, Instant to) {

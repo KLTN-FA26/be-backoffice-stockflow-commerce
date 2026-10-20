@@ -3,7 +3,7 @@
  *
  * <p>WBS 3.18 · database schema {@code customer}</p>
  *
- * <p><b>May depend on:</b> identity. Plus {@code common} and {@code contracts}, which are
+ * <p><b>May depend on:</b> identity, notification (the portal invitation e-mail). Plus {@code common} and {@code contracts}, which are
  * available to every module.</p>
  *
  * <p>The module has two packages and the split is the whole point:</p>
@@ -14,5 +14,5 @@
  *       you reaching in; {@code ModularityTest} will.</li>
  * </ul>
  */
-@org.springframework.modulith.ApplicationModule(allowedDependencies = {"identity :: api"})
+@org.springframework.modulith.ApplicationModule(allowedDependencies = {"identity :: api", "notification :: api"})
 package com.stockflow.customer;

@@ -84,6 +84,14 @@ public interface IdentityService {
     StaffUser user(UUID userId);
 
     /**
+     * The name to show for each user that exists — full name, or the username when none was given —
+     * in one query (SCRUM-464). For screens that show who did something; it reveals nothing a
+     * user's own id does not, so it needs no admin permission, unlike {@link #user}. Locked and
+     * disabled users keep their name.
+     */
+    java.util.Map<UUID, String> displayNames(java.util.Collection<UUID> userIds);
+
+    /**
      * Create a staff account with its roles. The password is temporary: the user must change it.
      *
      * @throws com.stockflow.common.error.BusinessException {@code USERNAME_ALREADY_EXISTS},
@@ -126,6 +134,23 @@ public interface IdentityService {
      * @throws com.stockflow.common.error.BusinessException {@code USER_NOT_FOUND}
      */
     UserProfile profile(UUID userId);
+
+    /**
+     * The ACTIVE staff assigned to {@code warehouseId} who hold at least one of {@code roleCodes}, by
+     * name, for a screen that picks who a task goes to (SCRUM-466). Returns only id, display name and
+     * the matching roles: it needs no user-management permission because it reveals no e-mail, phone
+     * or status. Not paged on purpose: the answer is bounded by one warehouse's staff.
+     */
+    List<AssignableUser> assignableUsers(java.util.Set<String> roleCodes, UUID warehouseId);
+
+    /**
+     * The ACTIVE staff to notify about something in {@code warehouseId} (or system-wide when it is {@code null}),
+     * by role (SCRUM-147): holders of at least one of {@code roleCodes} whose data scope reaches it - everyone whose
+     * broadest role scope is ALL, plus, for a warehouse, those assigned to it. System-wide ({@code null}) means ALL only.
+     * Anybody who holds the CUSTOMER role is never returned, whatever {@code roleCodes} says. One query, not paged:
+     * bounded by the staff of the business.
+     */
+    java.util.List<StaffContact> notificationRecipients(java.util.Set<String> roleCodes, UUID warehouseId);
 
     /** Used by task assignment to reject inactive users and users outside an operational role. */
     boolean isActiveUserWithAnyRole(UUID userId, String... roleCodes);

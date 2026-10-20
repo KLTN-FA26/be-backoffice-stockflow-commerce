@@ -35,26 +35,40 @@ public interface GoodsReceipts {
     }
 
     /** Where a line is in the 3-step flow (docs 03 §5.2). */
-    enum QcProgress { NOT_REQUIRED, AWAITING_MOVE_TO_QC, IN_QC_AREA, INSPECTED }
+    /**
+     * {@code PRODUCTION_QC}: a SUBCONTRACT order's goods, which the production module holds for its production order
+     * and inspects once against the approved sample — receiving runs no QC on them and puts none of them away.
+     */
+    enum QcProgress { NOT_REQUIRED, AWAITING_MOVE_TO_QC, IN_QC_AREA, INSPECTED, PRODUCTION_QC }
 
     record InspectionView(UUID id, QcOutcome outcome, int quantity, String locationCode, String reason,
-                          UUID inspectedBy, Instant inspectedAt) {
+                          UUID inspectedBy, String inspectedByName, Instant inspectedAt) {
     }
 
     record LineView(UUID id, UUID purchaseOrderLineId, Integer purchaseOrderLineNo, UUID inventoryItemId, String sku,
                     int quantity, String lotNumber, LocalDate expiryDate, String locationCode, String note,
-                    boolean qcRequired, QcProgress qcProgress, String qcLocationCode, Instant movedToQcAt,
-                    int quantityForPutaway, List<InspectionView> inspections) {
+                    boolean qcRequired, boolean lotTracked, boolean expiryTracked, QcProgress qcProgress,
+                    String qcLocationCode, Instant movedToQcAt, int quantityForPutaway,
+                    List<InspectionView> inspections, List<String> warnings) {
     }
 
-    record ReceiptView(UUID id, String number, UUID purchaseOrderId, String purchaseOrderNumber, UUID warehouseId,
+    /**
+     * The names next to the ids are for display (SCRUM-464); a name is null when its row is gone.
+     * {@code warnings} are non-blocking business warnings (docs 03 BR-06): {@code EXPIRY_NEAR} when a line's
+     * expiry is within the configured window of the receiving date. Empty on a cancelled receipt.
+     */
+    record ReceiptView(UUID id, String number, UUID purchaseOrderId, String purchaseOrderNumber, UUID supplierId,
+                       String supplierName, UUID warehouseId, String warehouseCode, String warehouseName,
                        GoodsReceiptStatus status, String deliveryNote, String note, Instant receivedAt,
-                       UUID receivedBy, Instant confirmedAt, UUID confirmedBy, Instant closedAt,
-                       List<LineView> lines) {
+                       UUID receivedBy, String receivedByName, Instant confirmedAt, UUID confirmedBy,
+                       String confirmedByName, Instant closedAt, List<LineView> lines, List<String> warnings) {
     }
 
-    record Row(UUID id, String number, UUID purchaseOrderId, UUID warehouseId, GoodsReceiptStatus status,
-               String deliveryNote, Instant receivedAt, UUID receivedBy, Instant confirmedAt, Instant closedAt) {
+    record Row(UUID id, String number, UUID purchaseOrderId, String purchaseOrderNumber, UUID supplierId,
+               String supplierName, UUID warehouseId, String warehouseCode, String warehouseName,
+               GoodsReceiptStatus status, String deliveryNote, Instant receivedAt, UUID receivedBy,
+               String receivedByName, Instant confirmedAt, UUID confirmedBy, String confirmedByName,
+               Instant closedAt) {
     }
 
     /** A DRAFT receipt for a CONFIRMED or PARTIALLY_RECEIVED order (BR-01), into the order's warehouse. */

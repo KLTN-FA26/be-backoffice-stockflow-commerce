@@ -40,10 +40,11 @@ class PaymentEventListener {
         this.orders = orders;
     }
 
+    /** Money in: counted once per payment; confirms the order when its terms are met (SCRUM-460). */
     @ApplicationModuleListener
     public void on(PaymentCaptured event) {
-        orders.markPaid(event.orderId());
-        log.info("Order {} marked PAID after payment {} captured {} {}",
+        orders.recordPayment(event.orderId(), event.paymentId(), event.amount(), event.currency());
+        log.info("Order {}: payment {} captured {} {}",
                 event.orderId(), event.paymentId(), event.amount(), event.currency());
     }
 
@@ -56,7 +57,7 @@ class PaymentEventListener {
      */
     @ApplicationModuleListener
     public void on(PaymentFailed event) {
-        orders.cancelAfterPaymentFailure(event.orderId(), "PAYMENT_FAILED: " + event.failureCode());
+        orders.cancelAfterPaymentFailure(event.orderId(), event.failureCode());
         log.info("Order {} cancelled after payment {} failed ({})",
                 event.orderId(), event.paymentId(), event.failureMessage());
     }

@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * ProductionCompleted through its asynchronous listeners and moves to READY_TO_FULFILL only when the
  * good units cover every print line (BR-PRD-06), counting a redelivered event once.
  *
- * <p>Orders are inserted as rows already PAID: how an order gets paid is not what is tested here, and
+ * <p>Orders are inserted as rows already CONFIRMED (paid in full): how an order gets paid is not what is tested here, and
  * a checkout with a design line needs the whole design approval flow.</p>
  */
 @IntegrationTest
@@ -81,15 +81,16 @@ class OrderReleaseIntegrationTest {
         return snapshot;
     }
 
-    /** A PAID order: one print line of 10 with this design, one stock line. Returns {orderId, printLineId}. */
-    private UUID[] paidOrder(UUID design) {
+    /** A CONFIRMED, paid order: one print line of 10 with this design, one stock line. Returns {orderId, printLineId}. */
+    private UUID[] confirmedOrder(UUID design) {
         UUID order = Identifiers.newId();
         UUID printLine = Identifiers.newId();
         tx.executeWithoutResult(s -> {
             jdbc.update("""
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
-                                                         currency, placed_at, version, created_at)
-                    VALUES (?, ?, ?, ?, 'PAID', 30000, 'VND', NOW(), 0, NOW())""",
+                                                         currency, placed_at, version, created_at, paid_amount,
+                                                         paid_in_full_at)
+                    VALUES (?, ?, ?, ?, 'CONFIRMED', 30000, 'VND', NOW(), 0, NOW(), 30000, NOW())""",
                     order, orderNumber(), DemoData.CUSTOMER_ID, UUID.randomUUID());
             jdbc.update("""
                     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency, design_snapshot_id,
@@ -108,11 +109,11 @@ class OrderReleaseIntegrationTest {
         tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO production.production_order (id, order_number, type, mode, status, warehouse_id, blank_sku,
                     design_snapshot_id, design_checksum, planned_quantity, sales_order_id, sales_order_line_id, parent_id,
-                    subcontract_method, subcontractor_id, subcontract_unit_price, subcontract_currency)
-                SELECT ?, ?, 'ORDER', ?, 'PENDING_PREPRESS', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    origin, subcontract_method, subcontractor_id, subcontract_unit_price, subcontract_currency)
+                SELECT ?, ?, 'ORDER', ?, 'PENDING_PREPRESS', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                   FROM procurement.suppliers s WHERE s.code = 'GOVIET'""",
                 id, "LSX-IT-" + id.toString().substring(24), parent == null ? "IN_HOUSE" : "SUBCONTRACTED", hcm, CUP,
-                design, "a".repeat(64), planned, order, line, parent,
+                design, "a".repeat(64), planned, order, line, parent, parent == null ? null : "SPLIT",
                 parent == null ? null : "SUPPLIED_BLANKS", parent == null ? null : jdbc.queryForObject(
                         "SELECT id FROM procurement.suppliers WHERE code = 'GOVIET'", UUID.class),
                 parent == null ? null : new java.math.BigDecimal("800"), parent == null ? null : "VND"));
@@ -140,7 +141,7 @@ class OrderReleaseIntegrationTest {
     @DisplayName("no approved sample -> refused; after SampleApproved -> IN_PRODUCTION; both LSX finished -> READY_TO_FULFILL")
     void releaseThroughProduction() {
         UUID design = snapshot();
-        UUID[] ids = paidOrder(design);
+        UUID[] ids = confirmedOrder(design);
         UUID order = ids[0];
         UUID line = ids[1];
 
@@ -148,7 +149,7 @@ class OrderReleaseIntegrationTest {
                 .extracting(OrderReleaseIntegrationTest::code).isEqualTo(ErrorCode.DESIGN_SAMPLE_NOT_APPROVED);
         assertThatThrownBy(() -> releases.release(order, UUID.randomUUID(), coordinator))
                 .extracting(OrderReleaseIntegrationTest::code).isEqualTo(ErrorCode.WAREHOUSE_NOT_FOUND);
-        assertThat(status(order)).isEqualTo("PAID");
+        assertThat(status(order)).isEqualTo("CONFIRMED");
 
         // The customer approves a sample; production announces it.
         UUID sample = Identifiers.newId();
@@ -176,8 +177,19 @@ class OrderReleaseIntegrationTest {
         assertThat(jdbc.queryForList("SELECT to_status FROM ordering.order_status_history WHERE order_id = ?",
                 String.class, order)).contains("IN_PRODUCTION");
 
-        // Production splits the line: 6 in house, 4 subcontracted. The first one finishing is not enough.
-        UUID root = productionOrder(order, line, design, null, 6);
+        // The production module turns the release into the line's root production order (SCRUM-405);
+        // inserting a second root here would break BR-PRD-01. Production then splits the line:
+        // 6 in house, 4 subcontracted. The first one finishing is not enough.
+        Await.until("the release becomes the line's production order", Duration.ofSeconds(10), () -> jdbc.queryForObject(
+                "SELECT count(*) FROM production.production_order WHERE sales_order_line_id = ? AND parent_id IS NULL",
+                Integer.class, line) == 1);
+        UUID root = jdbc.queryForObject(
+                "SELECT id FROM production.production_order WHERE sales_order_line_id = ? AND parent_id IS NULL",
+                UUID.class, line);
+        assertThat(jdbc.queryForObject("SELECT approved_sample_id FROM production.production_order WHERE id = ?",
+                UUID.class, root)).isEqualTo(sample);
+        tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE production.production_order SET planned_quantity = 6 WHERE id = ?", root));
         UUID child = productionOrder(order, line, design, root, 4);
         publish(new ProductionCompleted(order, line, root, 6));
         Await.until("the first production order is recorded", Duration.ofSeconds(10), () -> jdbc.queryForObject(
@@ -199,13 +211,13 @@ class OrderReleaseIntegrationTest {
     @DisplayName("a design already printed to completion for another order is a repeat: no sample needed")
     void repeatDesign() {
         UUID design = snapshot();
-        UUID[] earlier = paidOrder(design);
+        UUID[] earlier = confirmedOrder(design);
         UUID earlierProduction = productionOrder(earlier[0], earlier[1], design, null, 10);
         tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO ordering.order_line_production (production_order_id, order_line_id, good_quantity, completed_at)
                 VALUES (?, ?, 10, NOW())""", earlierProduction, earlier[1]));
 
-        UUID[] repeat = paidOrder(design);
+        UUID[] repeat = confirmedOrder(design);
         OrderSummary released = releases.release(repeat[0], hcm, coordinator);
 
         assertThat(released.status()).isEqualTo(OrderStatus.IN_PRODUCTION);
@@ -220,8 +232,9 @@ class OrderReleaseIntegrationTest {
         tx.executeWithoutResult(s -> {
             jdbc.update("""
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
-                                                         currency, placed_at, version, created_at)
-                    VALUES (?, ?, ?, ?, 'PAID', 10000, 'VND', NOW(), 0, NOW())""",
+                                                         currency, placed_at, version, created_at, paid_amount,
+                                                         paid_in_full_at)
+                    VALUES (?, ?, ?, ?, 'CONFIRMED', 10000, 'VND', NOW(), 0, NOW(), 10000, NOW())""",
                     order, orderNumber(), DemoData.CUSTOMER_ID, UUID.randomUUID());
             jdbc.update("""
                     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)

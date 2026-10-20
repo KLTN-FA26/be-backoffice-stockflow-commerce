@@ -23,6 +23,7 @@ import com.stockflow.product.api.ProductKind;
 import com.stockflow.product.api.ProductService;
 import com.stockflow.product.api.TaxClass;
 import com.stockflow.support.DemoData;
+import com.stockflow.support.SupplierItemFixtures;
 import com.stockflow.support.ReferenceRows;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
@@ -79,6 +80,7 @@ import java.util.concurrent.TimeoutException;
         })
 class SupplierProcurementIntegrationTest {
     @Autowired SupplierService suppliers;
+    @Autowired SupplierItemService supplierItems;
     @Autowired ProcurementService orders;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate transactions;
@@ -356,12 +358,25 @@ from procurement.po_delivery_decision where purchase_order_id=?
     void missingDescriptionComesFromProductMasterAndRecoveryKeepsSnapshot() {
         String sku = "PO-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
         var productId = products.create(new CreateProductCommand(sku, "Original product name", "Original", null,
-                null, null, null, null, TaxClass.STANDARD, ProductKind.STANDARD)).productId();
+                null, null, null, null, TaxClass.STANDARD, ProductKind.STANDARD, List.of())).productId();
         assertThat(products.nameForSku(sku)).contains("Original product name");
+        // A purchase order line takes only an active SKU (SCRUM-461): approved product, active variant.
+        transactions.executeWithoutResult(
+                tx -> {
+                    jdbc.update(
+                            "update product.products set status='APPROVED',"
+                                    + " submitted_by=md5('demo:user:editor')::uuid, submitted_at=now(),"
+                                    + " approved_by=md5('demo:user:approver')::uuid, approved_at=now()"
+                                    + " where id=?",
+                            productId);
+                    jdbc.update("update product.variants set status='ACTIVE' where product_id=?", productId);
+                });
+        var supplierId = supplier().supplierId();
+        SupplierItemFixtures.list(supplierItems, supplierId, sku);
         var po =
                 orders.createPurchaseOrder(
                         new CreatePurchaseOrderCommand(
-                                supplier().supplierId(), DemoData.WAREHOUSE_HCM,
+                                supplierId, DemoData.WAREHOUSE_HCM,
                                 "VND",
                                 null, null,
                                 List.of(new CreatePOLineCommand(sku, null, 1, BigDecimal.TEN))));
@@ -843,10 +858,10 @@ from procurement.po_delivery_decision where purchase_order_id=?
                 ErrorCode.INVENTORY_ITEM_NOT_FOUND);
         for (var line :
                 List.of(
-                        new CreatePOLineCommand("CHAIR-01", "Chair", 1, new BigDecimal("1000.5")),
-                        new CreatePOLineCommand("CHAIR-01", "Chair", 1_000_001, BigDecimal.ONE),
+                        new CreatePOLineCommand("SOFA-3S-GREY", "Sofa", 1, new BigDecimal("1000.5")),
+                        new CreatePOLineCommand("SOFA-3S-GREY", "Sofa", 1_000_001, BigDecimal.ONE),
                         new CreatePOLineCommand(
-                                "CHAIR-01", "Chair", 2, new BigDecimal("9999999999999999")))) {
+                                "SOFA-3S-GREY", "Sofa", 2, new BigDecimal("9999999999999999")))) {
             expectCode(
                     () ->
                             orders.createPurchaseOrder(
@@ -953,8 +968,11 @@ from procurement.po_delivery_decision where purchase_order_id=?
                 null, null, false, null);
     }
 
+    /** An ACTIVE supplier listing the SKU these tests order (BR-PO-001), at moq 1 and pack 1. */
     private SupplierSummary supplier() {
-        return suppliers.create(command("S-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(), "ACTIVE", 45, 12));
+        var created = suppliers.create(command("S-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(), "ACTIVE", 45, 12));
+        SupplierItemFixtures.list(supplierItems, created.supplierId(), "SOFA-3S-GREY");
+        return created;
     }
 
     private PurchaseOrderSummary order(UUID supplier) {
