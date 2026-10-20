@@ -237,8 +237,8 @@ class GoodsReceiptIntegrationTest {
         List<UUID> first = lineIds(draft.id(), lot);
         List<UUID> other = lineIds(draft.id(), second);
 
-        // 8 + 2 to 2 + 8 and back. Whichever row were written first, raising before lowering would pass
-        // 10 × 1.05 on the way, and check_goods_receipt_line checks every row as it is written.
+        // 8 + 2 to 2 + 8 and back: whichever row is written first, the PO line passes 8 + 8 on the way. The
+        // tolerance is checked on the final totals (tg_goods_receipt_lines_tolerance, V20261020000800).
         receipts.replaceLines(draft.id(), List.of(tableLot(line, 2, lot, "short"), tableLot(line, 8, second, null)));
         receipts.replaceLines(draft.id(), List.of(tableLot(line, 8, lot, null), tableLot(line, 2, second, "short")));
         assertThat(lineIds(draft.id(), lot)).as("stock packages point at the line").isEqualTo(first);
