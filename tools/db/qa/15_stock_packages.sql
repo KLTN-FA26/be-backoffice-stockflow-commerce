@@ -45,6 +45,9 @@ INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, f
 VALUES (md5('qa:unit:SOFA-CARTON')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 'CARTON', 10, 60, 40, 50, 12),
        (md5('qa:unit:TABLE-CARTON')::uuid, md5('demo:item:TABLE-OAK-160')::uuid, 'CARTON', 5, 80, 60, 40, 30),
        (md5('qa:unit:SOFA-CASE')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 'CASE', 4, NULL, NULL, NULL, NULL);
+-- The supplier's old carton of 10 sofas, retired during the run (docs 01 edge case "NCC đổi quy cách thùng").
+INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
+VALUES (md5('qa:unit:SOFA-OLD')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 'OLDCTN', 10);
 
 
 \echo '--- a stock package and its stock rows (V20261020000100, 0200)'
@@ -185,6 +188,19 @@ SELECT pg_temp.expect_fail('U8 a revision whose unit quantity does not convert',
         unit_price, tax_rate, discount_rate, line_subtotal, line_net, line_tax, line_total, uom_conversion_id, unit_qty)
     VALUES (gen_random_uuid(), md5('qa:pk:po:line:1')::uuid, md5('qa:pk:po:rev0')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 'EACH', 30,
         1, 0, 0, 30, 30, 0, 30, md5('qa:unit:SOFA-CARTON')::uuid, 4) $q$);
+SELECT pg_temp.expect_ok('U8a a draft line in the old carton, before it is retired', $q$
+    INSERT INTO procurement.purchase_order_lines (id, po_id, line_no, inventory_item_id, ordered_qty, unit_price, line_subtotal, line_net, line_total, uom_conversion_id, unit_qty)
+    VALUES (md5('qa:pk:po:line:old')::uuid, md5('qa:pk:po:draft')::uuid, 3, md5('demo:item:SOFA-3S-GREY')::uuid, 20, 1, 20, 20, 20, md5('qa:unit:SOFA-OLD')::uuid, 2);
+    UPDATE inventory.uom_conversions SET active = FALSE WHERE id = md5('qa:unit:SOFA-OLD')::uuid $q$);
+SELECT pg_temp.expect_fail('U8b a new line in a retired unit', $q$
+    INSERT INTO procurement.purchase_order_lines (id, po_id, line_no, inventory_item_id, ordered_qty, unit_price, line_subtotal, line_net, line_total, uom_conversion_id, unit_qty)
+    VALUES (gen_random_uuid(), md5('qa:pk:po:draft')::uuid, 4, md5('demo:item:SOFA-3S-GREY')::uuid, 10, 1, 10, 10, 10, md5('qa:unit:SOFA-OLD')::uuid, 1) $q$);
+SELECT pg_temp.expect_fail('U8c a line moved onto a retired unit', $q$
+    UPDATE procurement.purchase_order_lines SET uom_conversion_id = md5('qa:unit:SOFA-OLD')::uuid, unit_qty = 3
+     WHERE id = md5('qa:pk:po:line:1')::uuid $q$);
+SELECT pg_temp.expect_ok('U8d a line already in the retired unit keeps it and is recounted', $q$
+    UPDATE procurement.purchase_order_lines SET unit_qty = 3, ordered_qty = 30, line_subtotal = 30, line_net = 30, line_total = 30
+     WHERE id = md5('qa:pk:po:line:old')::uuid $q$);
 
 \echo '--- receiving by the carton, putaway by the stock package (V20261020000400, 0500)'
 -- demo:po:1 (10 sofas) submitted, approved and confirmed, as 02_procurement.sql does.
@@ -231,6 +247,22 @@ SELECT pg_temp.expect_fail('K33 a second open putaway task for it', $q$
     INSERT INTO warehouse.putaway_task (id, goods_receipt_id, goods_receipt_line_id, sku, quantity, status, created_at, stock_package_id)
     VALUES (gen_random_uuid(), md5('qa:pk:gr')::uuid, md5('qa:pk:grl')::uuid, 'SOFA-3S-GREY', 10, 'PENDING', NOW(), md5('qa:pk:30')::uuid) $q$);
 
+\echo '--- a retired unit stays for the documents already in it (V20261020000100, 0400)'
+SELECT pg_temp.expect_fail('U11 a receipt line newly put in a retired unit its PO line was not ordered in', $q$
+    UPDATE procurement.goods_receipt_lines SET uom_conversion_id = md5('qa:unit:SOFA-OLD')::uuid WHERE id = md5('qa:pk:grl')::uuid $q$);
+SELECT pg_temp.expect_fail('K34 a stock package in a retired unit, made in the warehouse', $q$
+    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code)
+    VALUES (gen_random_uuid(), 'QA-LPN-34', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa:unit:SOFA-OLD')::uuid, 10, 'HCM-RCV01') $q$);
+SELECT pg_temp.expect_fail('K35 a stock package in a retired unit its receipt line was not received in', $q$
+    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code, goods_receipt_line_id)
+    VALUES (gen_random_uuid(), 'QA-LPN-35', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa:unit:SOFA-OLD')::uuid, 10, 'HCM-RCV01', md5('qa:pk:grl')::uuid) $q$);
+SELECT pg_temp.expect_ok('K36 cartons received in the old unit before it was retired are still packed in it', $q$
+    UPDATE inventory.uom_conversions SET active = TRUE WHERE id = md5('qa:unit:SOFA-OLD')::uuid;
+    UPDATE procurement.goods_receipt_lines SET uom_conversion_id = md5('qa:unit:SOFA-OLD')::uuid WHERE id = md5('qa:pk:grl')::uuid;
+    UPDATE inventory.uom_conversions SET active = FALSE WHERE id = md5('qa:unit:SOFA-OLD')::uuid;
+    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code, goods_receipt_line_id)
+    VALUES (gen_random_uuid(), 'QA-LPN-36', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa:unit:SOFA-OLD')::uuid, 10, 'HCM-RCV01', md5('qa:pk:grl')::uuid) $q$);
+
 \echo '--- a unit a document counts in keeps its factor (V20261020000600)'
 SELECT pg_temp.expect_true('F1 the carton unit is in use', $c$ inventory.unit_in_use(md5('qa:unit:SOFA-CARTON')::uuid) $c$);
 SELECT pg_temp.expect_true('F2 the case unit is not', $c$ NOT inventory.unit_in_use(md5('qa:unit:SOFA-CASE')::uuid) $c$);
@@ -240,6 +272,13 @@ SELECT pg_temp.expect_ok('F4 the factor of an unused unit changed', $q$
     UPDATE inventory.uom_conversions SET factor = 6 WHERE id = md5('qa:unit:SOFA-CASE')::uuid $q$);
 SELECT pg_temp.expect_fail('F5 a unit in use deleted', $q$
     DELETE FROM inventory.uom_conversions WHERE id = md5('qa:unit:SOFA-CARTON')::uuid $q$);
+SELECT pg_temp.expect_fail('F5a a unit in use moved to another item', $q$
+    UPDATE inventory.uom_conversions SET inventory_item_id = md5('demo:item:TABLE-OAK-160')::uuid
+     WHERE id = md5('qa:unit:SOFA-CARTON')::uuid $q$);
+SELECT pg_temp.expect_fail('F5b a unit in use renamed', $q$
+    UPDATE inventory.uom_conversions SET unit_of_measure = 'BOX' WHERE id = md5('qa:unit:SOFA-CARTON')::uuid $q$);
+SELECT pg_temp.expect_ok('F5c an unused unit renamed', $q$
+    UPDATE inventory.uom_conversions SET unit_of_measure = 'PACK' WHERE id = md5('qa:unit:SOFA-CASE')::uuid $q$);
 SELECT pg_temp.expect_true('F6 an item with stock packages is in use', $c$
     inventory.item_in_use(md5('demo:item:SOFA-3S-GREY')::uuid, 'SOFA-3S-GREY') $c$);
 

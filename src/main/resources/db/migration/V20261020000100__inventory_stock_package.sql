@@ -124,9 +124,18 @@ CREATE TRIGGER tg_stock_package_immutable BEFORE UPDATE ON inventory.stock_packa
         'lpn', 'inventory_item_id', 'uom_conversion_id', 'nominal_qty', 'goods_receipt_line_id');
 
 
--- At creation: made in an active packing unit of its own item, never in the base unit (a "carton"
--- of one is the item itself); nominal_qty is that unit's factor; a receipt line, when named,
--- received this item; and it starts RECEIVING or IN_STOCK.
+-- At creation: made in a packing unit of its own item, never in the base unit (a "carton" of one is
+-- the item itself); nominal_qty is that unit's factor; a receipt line, when named, received this
+-- item; and it starts RECEIVING or IN_STOCK.
+--
+-- The unit is active, or it is the unit the stock package's receipt line was received in. A retired
+-- unit "stays for the documents that already used it" (V20261019000300): goods of an order placed
+-- before the supplier changed its carton still arrive in the old carton. (goods_receipt_lines gets
+-- uom_conversion_id in V20261020000400; PL/pgSQL resolves the column when the function runs.)
+--
+-- The unit row is read FOR SHARE. The foreign key alone takes KEY SHARE, which does not conflict
+-- with an UPDATE of the factor; FOR SHARE does, so a factor change (V20261020000600) waits for this
+-- transaction and then sees the unit in use, instead of both committing.
 CREATE FUNCTION inventory.check_stock_package_created()
     RETURNS trigger
     LANGUAGE plpgsql AS
@@ -138,7 +147,7 @@ BEGIN
         RAISE EXCEPTION 'stock package % is created RECEIVING or IN_STOCK, not %', NEW.lpn, NEW.status
             USING ERRCODE = 'check_violation';
     END IF;
-    SELECT * INTO unit FROM inventory.uom_conversions WHERE id = NEW.uom_conversion_id;
+    SELECT * INTO unit FROM inventory.uom_conversions WHERE id = NEW.uom_conversion_id FOR SHARE;
     IF NOT FOUND THEN
         RETURN NEW; -- fk_stock_package_unit reports it
     END IF;
@@ -146,10 +155,15 @@ BEGIN
         RAISE EXCEPTION 'stock package %: unit % is not a unit of its item', NEW.lpn, unit.unit_of_measure
             USING ERRCODE = 'check_violation';
     END IF;
-    IF unit.is_base OR NOT unit.active THEN
-        RAISE EXCEPTION 'stock package % must be made in an active packing unit, not % (%)', NEW.lpn,
-            unit.unit_of_measure, CASE WHEN unit.is_base THEN 'the base unit' ELSE 'retired' END
-            USING ERRCODE = 'check_violation';
+    IF unit.is_base THEN
+        RAISE EXCEPTION 'stock package % must be made in a packing unit, not the base unit %', NEW.lpn,
+            unit.unit_of_measure USING ERRCODE = 'check_violation';
+    END IF;
+    IF NOT unit.active AND NOT EXISTS (SELECT 1 FROM procurement.goods_receipt_lines
+                                        WHERE id = NEW.goods_receipt_line_id
+                                          AND uom_conversion_id = NEW.uom_conversion_id) THEN
+        RAISE EXCEPTION 'stock package %: unit % is retired; only goods received in it are still packed in it',
+            NEW.lpn, unit.unit_of_measure USING ERRCODE = 'check_violation';
     END IF;
     IF NEW.nominal_qty <> unit.factor THEN
         RAISE EXCEPTION 'stock package % holds % per %, not %', NEW.lpn, unit.factor, unit.unit_of_measure,

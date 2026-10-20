@@ -63,14 +63,22 @@ COMMENT ON COLUMN procurement.purchase_order_line_revisions.unit_qty IS
 
 -- The unit is one of the line item's units, and the base-unit quantity is the unit quantity times
 -- its factor. Shared by the line and its revision, which have the same columns.
+--
+-- A line is not newly put in a retired unit: ordering is choosing a unit, and a retired one "cannot
+-- be the default purchase unit any more" (V20261019000300). A line already in it keeps it, and so do
+-- its revisions (a frozen copy), so an approved amendment of an old line still goes through.
+--
+-- The unit row is read FOR SHARE, so a factor change waits for this transaction and then sees the
+-- unit in use (see check_stock_package_created, V20261020000100).
 CREATE FUNCTION procurement.check_po_line_unit()
     RETURNS trigger
     LANGUAGE plpgsql AS
 $$
 DECLARE
-    unit inventory.uom_conversions%ROWTYPE;
+    unit     inventory.uom_conversions%ROWTYPE;
+    new_unit BOOLEAN;
 BEGIN
-    SELECT * INTO unit FROM inventory.uom_conversions WHERE id = NEW.uom_conversion_id;
+    SELECT * INTO unit FROM inventory.uom_conversions WHERE id = NEW.uom_conversion_id FOR SHARE;
     IF NOT FOUND THEN
         RETURN NEW; -- the foreign key reports it
     END IF;
@@ -78,9 +86,20 @@ BEGIN
         RAISE EXCEPTION 'unit % is not a unit of the line''s item', unit.unit_of_measure
             USING ERRCODE = 'check_violation';
     END IF;
+    IF TG_TABLE_NAME = 'purchase_order_lines' AND NOT unit.active THEN
+        IF TG_OP = 'INSERT' THEN
+            new_unit := TRUE;
+        ELSE
+            new_unit := NEW.uom_conversion_id IS DISTINCT FROM OLD.uom_conversion_id;
+        END IF;
+        IF new_unit THEN
+            RAISE EXCEPTION 'unit % is retired; order in the unit that replaced it', unit.unit_of_measure
+                USING ERRCODE = 'check_violation';
+        END IF;
+    END IF;
     IF NEW.ordered_qty <> NEW.unit_qty::NUMERIC * unit.factor THEN
         RAISE EXCEPTION '% % of % is %, not %', NEW.unit_qty, unit.unit_of_measure, unit.factor,
-            NEW.unit_qty * unit.factor, NEW.ordered_qty USING ERRCODE = 'check_violation';
+            NEW.unit_qty::NUMERIC * unit.factor, NEW.ordered_qty USING ERRCODE = 'check_violation';
     END IF;
     RETURN NEW;
 END
@@ -155,16 +174,37 @@ CREATE INDEX ix_goods_receipt_lines_unit ON procurement.goods_receipt_lines (uom
 COMMENT ON COLUMN procurement.goods_receipt_lines.uom_conversion_id IS
     'The unit the goods were received in; NULL = the base unit. The cartons are the line''s stock packages.';
 
--- The unit is one of the received item's units.
+-- The unit is one of the received item's units. A line is newly put in a retired unit only when its
+-- PO line was ordered in it: goods ordered before the supplier changed its carton still arrive in the
+-- old one, and a retired unit "stays for the documents that already used it" (V20261019000300). A
+-- line already in a unit keeps it when the unit is retired later. The unit row is read FOR SHARE, as
+-- in check_po_line_unit.
 CREATE FUNCTION procurement.check_goods_receipt_line_unit()
     RETURNS trigger
     LANGUAGE plpgsql AS
 $$
+DECLARE
+    unit     inventory.uom_conversions%ROWTYPE;
+    new_unit BOOLEAN;
 BEGIN
-    IF EXISTS (SELECT 1 FROM inventory.uom_conversions
-                WHERE id = NEW.uom_conversion_id AND inventory_item_id <> NEW.inventory_item_id) THEN
+    SELECT * INTO unit FROM inventory.uom_conversions WHERE id = NEW.uom_conversion_id FOR SHARE;
+    IF NOT FOUND THEN
+        RETURN NEW; -- the foreign key reports it
+    END IF;
+    IF unit.inventory_item_id <> NEW.inventory_item_id THEN
         RAISE EXCEPTION 'receipt line: the unit is not a unit of the received item'
             USING ERRCODE = 'check_violation';
+    END IF;
+    IF TG_OP = 'INSERT' THEN
+        new_unit := TRUE;
+    ELSE
+        new_unit := NEW.uom_conversion_id IS DISTINCT FROM OLD.uom_conversion_id;
+    END IF;
+    IF new_unit AND NOT unit.active
+       AND NOT EXISTS (SELECT 1 FROM procurement.purchase_order_lines
+                        WHERE id = NEW.po_line_id AND uom_conversion_id = NEW.uom_conversion_id) THEN
+        RAISE EXCEPTION 'receipt line: unit % is retired; only goods ordered in it are still received in it',
+            unit.unit_of_measure USING ERRCODE = 'check_violation';
     END IF;
     RETURN NEW;
 END

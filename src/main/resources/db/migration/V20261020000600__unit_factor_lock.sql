@@ -1,5 +1,5 @@
 -- =============================================================================
--- A packing unit that a document counts in keeps its factor.
+-- A packing unit that a document counts in keeps its factor, its item and its name.
 -- Module: inventory   Issue: GitHub #125, Jira SCRUM-473 (docs 01 BR-10)
 --
 -- docs 01 BR-10: "hệ số quy đổi đã phát sinh giao dịch không được sửa". Once a stock package, a
@@ -8,14 +8,26 @@
 -- gets a new unit, and the old one is retired (uom_conversions.active), as V20261019000300 says.
 -- Deleting such a unit is already refused by the foreign keys of V20261020000100 and 0400.
 --
+-- The documents copy neither the unit's item nor its name either, so those are locked the same way.
+-- The checks that a document's unit is a unit of the document's item run on the document tables only
+-- (V20261020000100, 0400): moving a unit in use to another item would leave every one of them
+-- pointing at another item's unit, and nothing would fire. Renaming CARTON to BOX
+-- (UomConversionServiceImpl.change allows it) would rewrite what a confirmed receipt was counted in.
+--
+-- The documents' triggers read the unit row FOR SHARE (V20261020000100, 0400). Their foreign keys
+-- alone take KEY SHARE, which an UPDATE of these columns does not wait for: a factor change would not
+-- see a document still being written, and both would commit. With FOR SHARE the change waits for that
+-- transaction and then finds the unit in use.
+--
 -- "Is this unit used by a document?" is answered in one place, inventory.unit_in_use, like
 -- inventory.item_in_use (V20261016000100): the trigger asks it, and UomConversionServiceImpl must ask
--- it too before it changes a factor or deletes a unit, so the user gets UOM_CONVERSION_IN_USE
--- instead of the generic 409 a refused statement turns into. That service check does not exist yet;
--- it has to land before any code writes a unit onto a document.
+-- it too before it changes a factor, an item or a name or deletes a unit, so the user gets
+-- UOM_CONVERSION_IN_USE instead of the generic 409 a refused statement turns into. That service check
+-- does not exist yet; it has to land before any code writes a unit onto a document.
 --
--- The base unit of an item (inventory_items.unit_of_measure) is not locked here: that is GitHub #122,
--- the schema owner's decision.
+-- The base unit's name is not locked here. It follows inventory_items.unit_of_measure
+-- (inventory.follow_base_uom, V20261019000300), and whether that may change once used is GitHub #122,
+-- the schema owner's decision. Its item and factor are locked like any other unit's.
 -- =============================================================================
 
 CREATE FUNCTION inventory.unit_in_use(p_uom_conversion_id UUID) RETURNS BOOLEAN
@@ -29,7 +41,7 @@ $$;
 COMMENT ON FUNCTION inventory.unit_in_use(UUID) IS
     'Whether a document counts in this unit: such a unit keeps its factor and is retired, never deleted (BR-10).';
 
-CREATE FUNCTION inventory.guard_unit_factor_change()
+CREATE FUNCTION inventory.guard_unit_in_use_change()
     RETURNS trigger
     LANGUAGE plpgsql AS
 $$
@@ -42,6 +54,9 @@ BEGIN
 END
 $$;
 
-CREATE TRIGGER tg_uom_conversions_factor_locked BEFORE UPDATE OF factor ON inventory.uom_conversions
-    FOR EACH ROW WHEN (NEW.factor IS DISTINCT FROM OLD.factor)
-    EXECUTE FUNCTION inventory.guard_unit_factor_change();
+CREATE TRIGGER tg_uom_conversions_locked_in_use
+    BEFORE UPDATE OF factor, inventory_item_id, unit_of_measure ON inventory.uom_conversions
+    FOR EACH ROW WHEN (NEW.factor IS DISTINCT FROM OLD.factor
+                       OR NEW.inventory_item_id IS DISTINCT FROM OLD.inventory_item_id
+                       OR (NOT OLD.is_base AND NEW.unit_of_measure IS DISTINCT FROM OLD.unit_of_measure))
+    EXECUTE FUNCTION inventory.guard_unit_in_use_change();
