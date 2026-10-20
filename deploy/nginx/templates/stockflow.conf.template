@@ -2,12 +2,18 @@
 # Sites. ${DOMAIN} and ${S3_BUCKET} are substituted at container start; every other $variable is
 # nginx's own and is left alone (the entrypoint only substitutes variables that are set).
 #
-#   api.${DOMAIN}    the application
-#   s3.${DOMAIN}     MinIO's S3 API - presigned downloads, and the application's own uploads
-#   media.${DOMAIN}  published product images only, cached by Cloudflare
-#   jaeger.${DOMAIN} trace UI, behind basic auth
-#   mail.${DOMAIN}   Mailpit, every email the application sent, behind basic auth
-#   logs.${DOMAIN}   Dozzle, live container logs of this stack, behind basic auth
+#   api.${DOMAIN}    DNS-only  the application
+#   s3.${DOMAIN}     DNS-only  MinIO's S3 API - presigned downloads, and the application's own uploads
+#   media.${DOMAIN}  DNS-only  published product images only
+#   jaeger.${DOMAIN} proxied   trace UI, behind basic auth
+#   mail.${DOMAIN}   proxied   Mailpit, every email the application sent, behind basic auth
+#   logs.${DOMAIN}   proxied   Dozzle, live container logs of this stack, behind basic auth
+#
+# DNS-only (grey cloud) for what a browser or the frontend calls: Cloudflare Free sends Vietnamese
+# ISPs to PoPs as far as Europe and back to a VPS in Vietnam, adding up to seconds per request.
+# Those servers carry no origin lock and get the edge_req/edge_conn limits instead. The internal
+# UIs stay proxied and locked: nobody needs them fast, and the lock keeps them off the open
+# internet even though the VPS address is now public.
 # =============================================================================
 
 # Mailpit's UI updates live over a WebSocket; the upgrade headers must be forwarded for it.
@@ -45,7 +51,8 @@ map "$stockflow_bff_trusted:$http_x_stockflow_client_ip" $effective_client_ip {
 
 # Product image keys contain a UUIDv7 and are never overwritten, so a successful response may be
 # cached for a year. Anything else - a 404 for an image not uploaded yet, a 403 - must not be,
-# or Cloudflare would serve the error for a year after the image appears.
+# or a browser (or a CDN, if media is ever proxied again) would serve the error for a year after
+# the image appears.
 map $upstream_status $media_cache_control {
     200     "public, max-age=31536000, immutable";
     default "no-store";
@@ -53,12 +60,19 @@ map $upstream_status $media_cache_control {
 
 # -----------------------------------------------------------------------------
 # Plain HTTP: redirect only. With Cloudflare in "Full (strict)" the edge always connects on 443;
-# this catches anything else.
+# this catches anything else. The DNS-only hosts get their own redirect without the lock - a
+# browser that types http://api... reaches the VPS directly, not through Cloudflare.
 # -----------------------------------------------------------------------------
 server {
     listen 80 default_server;
     server_name _;
     include /etc/nginx/snippets/cloudflare-only.conf;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 80;
+    server_name api.${DOMAIN} s3.${DOMAIN} media.${DOMAIN};
     return 301 https://$host$request_uri;
 }
 
@@ -77,7 +91,9 @@ server {
     server_name api.${DOMAIN};
 
     include /etc/nginx/snippets/tls.conf;
-    include /etc/nginx/snippets/cloudflare-only.conf;
+
+    limit_req  zone=edge_req burst=40 nodelay;
+    limit_conn edge_conn 50;
 
     # nginx's default is 1 MB. The application accepts 50 MB design renders
     # (spring.servlet.multipart.max-request-size: 51MB); this sits just above it so the
@@ -111,12 +127,15 @@ server {
     server_name s3.${DOMAIN};
 
     include /etc/nginx/snippets/tls.conf;
-    include /etc/nginx/snippets/cloudflare-only.conf;
+
+    # A page of design renders fetches many presigned links at once, hence the larger burst.
+    limit_req  zone=edge_req burst=100 nodelay;
+    limit_conn edge_conn 50;
 
     client_max_body_size 52m;
 
-    # Presigned links are short-lived credentials for PRIVATE files. If Cloudflare or a browser
-    # cached one, the file would stay reachable after the link expired.
+    # Presigned links are short-lived credentials for PRIVATE files. If a CDN or a browser cached
+    # one, the file would stay reachable after the link expired.
     proxy_hide_header Cache-Control;
     add_header Cache-Control "private, no-store" always;
 
@@ -151,7 +170,10 @@ server {
     server_name media.${DOMAIN};
 
     include /etc/nginx/snippets/tls.conf;
-    include /etc/nginx/snippets/cloudflare-only.conf;
+
+    # A catalogue page loads every thumbnail at once. No limit_conn: over HTTP/2 nginx counts each
+    # concurrent request as a connection, and fifty images on one page would trip it.
+    limit_req zone=edge_req burst=200 nodelay;
 
     location /product-images/ {
         limit_except GET {
