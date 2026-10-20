@@ -59,10 +59,16 @@ class GoodsReceiptRepositoryAdapter implements GoodsReceiptRepository, GoodsRece
     }
 
     /**
-     * Lines are synchronised by id. A draft whose lines were replaced removes the old rows and
-     * flushes BEFORE inserting the new ones: Hibernate orders inserts ahead of deletes, and a new line
-     * for the same PO line and lot would otherwise collide with the old one on
-     * {@code uk_goods_receipt_lines_lot} — and be counted twice by the tolerance trigger.
+     * Lines are synchronised by id. A line the draft recounted keeps its id (stock packages point at
+     * it) and its row is updated in place. Removed rows are flushed before new ones are inserted:
+     * Hibernate orders inserts ahead of deletes, and a new line for the PO line and lot of a removed one
+     * would otherwise collide with it on {@code uk_goods_receipt_lines_lot}.
+     *
+     * <p>The over-receipt tolerance is a deferred constraint trigger
+     * ({@code tg_goods_receipt_lines_tolerance}, V20261020000800): it checks the PO line's totals as
+     * they end up, so the order of the updates does not matter. Setting it IMMEDIATE once the lines are
+     * flushed runs it here, and a refusal is a {@code DataIntegrityViolationException} from this call
+     * (a 409) rather than a failed commit (a 500).</p>
      */
     @Override
     public GoodsReceipt save(GoodsReceipt receipt) {
@@ -84,6 +90,9 @@ class GoodsReceiptRepositoryAdapter implements GoodsReceiptRepository, GoodsRece
                         line.locationId(), BigDecimal.valueOf(line.receivedQuantity()), line.lotNumber(),
                         line.expiryDate(), line.note(), line.qcRequired());
                 entity.addLine(row);
+            } else if (receipt.status() == GoodsReceiptStatus.DRAFT) {
+                row.recount(line.locationId(), BigDecimal.valueOf(line.receivedQuantity()), line.expiryDate(),
+                        line.note(), line.qcRequired());
             }
             if (line.movedToQc() && row.getMovedToQcAt() == null) {
                 row.movedToQc(line.qcLocationId(), line.movedToQcAt(), line.movedToQcBy());
@@ -99,7 +108,14 @@ class GoodsReceiptRepositoryAdapter implements GoodsReceiptRepository, GoodsRece
             }
         }
         entity.apply(receipt.status(), receipt.confirmedAt(), receipt.confirmedBy(), receipt.closedAt());
-        return toDomain(jpa.saveAndFlush(entity));
+        GoodsReceiptJpaEntity saved = jpa.saveAndFlush(entity);
+        // IMMEDIATE runs the pending checks now; DEFERRED again, so a later save in this transaction is
+        // checked on its final totals too, not row by row.
+        entityManager.createNativeQuery("SET CONSTRAINTS procurement.tg_goods_receipt_lines_tolerance IMMEDIATE")
+                .executeUpdate();
+        entityManager.createNativeQuery("SET CONSTRAINTS procurement.tg_goods_receipt_lines_tolerance DEFERRED")
+                .executeUpdate();
+        return toDomain(saved);
     }
 
     @Override

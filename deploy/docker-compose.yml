@@ -59,6 +59,10 @@ services:
       # $remote_addr etc. pass through untouched.
       DOMAIN: ${DOMAIN:?DOMAIN is required}
       S3_BUCKET: ${S3_BUCKET:?S3_BUCKET is required}
+      # Shared with the back-office BFF (Vercel server env, same name). A request carrying it may
+      # set the login rate-limit identity (X-Stockflow-Client-IP). `:?` rejects unset AND empty,
+      # so the trust path can never open on an empty match. Hex only: openssl rand -hex 32.
+      BFF_ORIGIN_SECRET: ${BFF_ORIGIN_SECRET:?BFF_ORIGIN_SECRET is required - openssl rand -hex 32}
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/snippets:/etc/nginx/snippets:ro

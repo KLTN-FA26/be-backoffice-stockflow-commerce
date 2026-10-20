@@ -279,9 +279,10 @@ CREATE TRIGGER tg_stock_reservation_order_number BEFORE INSERT OR UPDATE ON inve
     FOR EACH ROW EXECUTE FUNCTION inventory.snapshot_order_number();
 
 -- ---- the SKU rename guard and the draft product delete know the two new references --------------
--- inventory.item_in_use (V20261016000100, V20261017001200) answers "does a document use this item?" so a rename or a
+-- inventory.item_in_use (V20261016000100, V20261017001200, V20261020000100) answers "does a document use this item?" so a rename or a
 -- delete is refused with "this SKU is referenced" instead of a foreign-key error. A SKU reservation and a lot both
--- name the SKU (fk_stock_reservation_sku, fk_stock_lot_item); the body is V20261017001200's with those two lines added.
+-- name the SKU (fk_stock_reservation_sku, fk_stock_lot_item); the body is V20261020000100's
+-- (develop's newest, which added stock_package) with those two lines added.
 CREATE OR REPLACE FUNCTION inventory.item_in_use(p_item_id UUID, p_sku VARCHAR) RETURNS BOOLEAN
     LANGUAGE sql STABLE AS $$
     SELECT EXISTS (SELECT 1 FROM inventory.stock_item WHERE sku = p_sku)
@@ -289,6 +290,7 @@ CREATE OR REPLACE FUNCTION inventory.item_in_use(p_item_id UUID, p_sku VARCHAR) 
         OR EXISTS (SELECT 1 FROM inventory.stock_adjustment WHERE sku = p_sku)
         OR EXISTS (SELECT 1 FROM inventory.cycle_count_line WHERE sku = p_sku)
         OR EXISTS (SELECT 1 FROM inventory.transfer_order_line WHERE sku = p_sku)
+        OR EXISTS (SELECT 1 FROM inventory.stock_package WHERE inventory_item_id = p_item_id)
         OR EXISTS (SELECT 1 FROM warehouse.putaway_task WHERE sku = p_sku)
         OR EXISTS (SELECT 1 FROM warehouse.move_task WHERE sku = p_sku)
         OR EXISTS (SELECT 1 FROM fulfillment.pick_line WHERE sku = p_sku)
