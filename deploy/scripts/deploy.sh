@@ -17,9 +17,8 @@
 #
 # Expect a short outage on every deploy (Flyway + JVM start, one to two minutes on 2 vCPUs): there
 # is one application container and it is replaced, not run side by side - a second JVM would not
-# fit in 4 GB. Side by side would not help yet anyway: JwtKeysConfig generates a fresh signing key
-# at startup, so a new instance cannot validate the old one's tokens, and every deploy signs every
-# user out.
+# fit in 4 GB. Users stay signed in across it: the JWT signing key is kept in ./jwt (see
+# prepare_jwt_key_dir), not generated per start.
 # =============================================================================
 set -euo pipefail
 
@@ -149,6 +148,16 @@ backup_database() {
   ls -1t backups/pre-deploy-*.dump 2>/dev/null | tail -n +11 | xargs -r rm -f
 }
 
+# The JWT signing key's directory (JWT_PRIVATE_KEY_PATH in docker-compose.yml). The application runs as the image's
+# unprivileged `stockflow` user and writes the key there on its first start, so the directory must be that user's -
+# whose uid only the image knows. A throwaway root container of the same image sets it, which needs no sudo here.
+# Owner-only: whoever reads the key can sign a token for any account. Idempotent; run on every deploy.
+prepare_jwt_key_dir() {
+  mkdir -p jwt
+  docker run --rm --user 0 --entrypoint sh -v "$(pwd)/jwt:/keys" "$app_image:$IMAGE_TAG" -c \
+    'chown -R stockflow:stockflow /keys && chmod 700 /keys && find /keys -type f -exec chmod 600 {} +'
+}
+
 # Fresh Cloudflare ranges on every deploy; a failed fetch keeps the current lists.
 bash scripts/refresh-cloudflare-ips.sh || echo "WARN: could not refresh Cloudflare ranges; keeping the current lists."
 
@@ -162,6 +171,10 @@ if [ -n "$app_image" ] && docker image inspect "$app_image:$IMAGE_TAG" >/dev/nul
   echo "==> $app_image:$IMAGE_TAG is already here; not pulling."
 else
   docker compose pull app
+fi
+if ! prepare_jwt_key_dir; then
+  echo "==> Could not prepare ./jwt for the JWT signing key; nothing was deployed." >&2
+  exit 1
 fi
 docker compose up -d --remove-orphans
 
