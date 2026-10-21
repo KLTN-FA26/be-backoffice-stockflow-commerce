@@ -14,6 +14,7 @@ import com.stockflow.common.persistence.Pages;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.product.api.CategoryNavigation;
 import com.stockflow.product.api.ProductPublication;
+import com.stockflow.product.api.PublishedProductCard;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -162,8 +163,14 @@ public class CatalogSearchService {
 
         int from = (int) Math.min(paging.getOffset(), ordered.size());
         int to = Math.min(from + paging.getPageSize(), ordered.size());
+        List<Candidate> pageRows = ordered.subList(from, to);
+        // One lookup for the whole page: the card's image and variants, not one detail/gallery read per card.
+        var details = products.cards(pageRows.stream().map(Candidate::productId).collect(Collectors.toSet()));
+        // A product unpublished (or left without a sellable variant) since the visibility check has no card to
+        // show: the row is dropped, so the storefront never lists a live card it cannot price.
         return PageResponse.of(
-                ordered.subList(from, to).stream().map(CatalogSearchService::card).toList(),
+                pageRows.stream().filter(c -> sellable(details.get(c.productId())))
+                        .map(c -> card(c, details.get(c.productId()))).toList(),
                 page, size, ordered.size());
     }
 
@@ -234,7 +241,13 @@ public class CatalogSearchService {
         return new Weights(properties.textRankWeight(), properties.similarityWeight(), properties.exactSkuWeight());
     }
 
-    private static CatalogCommerceService.Card card(Candidate c) {
-        return new CatalogCommerceService.Card(c.productId(), c.slug(), c.title(), c.seoTitle());
+    private static boolean sellable(PublishedProductCard details) {
+        return details != null && !details.skus().isEmpty();
+    }
+
+    private static CatalogCommerceService.Card card(Candidate c, PublishedProductCard details) {
+        return new CatalogCommerceService.Card(c.productId(), c.slug(), c.title(), c.seoTitle(),
+                details.primaryImageUrl(),
+                details.skus().stream().map(s -> new CatalogCommerceService.CardSku(s.sku(), s.name())).toList());
     }
 }

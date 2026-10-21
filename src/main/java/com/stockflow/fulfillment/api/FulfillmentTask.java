@@ -11,6 +11,11 @@ import java.util.UUID;
  * @param warehouseId      the warehouse the goods are picked in (BR-SEC-002)
  * @param assignedUserName display name of the assignee; null while nobody is assigned
  * @param lines            what to pick, set only when one task is read by id; null on list rows
+ * @param paymentDue       set on the answer to completing the package when the order still owes money that must be
+ *                         paid before its goods leave (G3-Q4, G2-3): the early warning - the handover will be refused
+ *                         until it is paid; null otherwise
+ * @param shipmentId       set on the answer to completing packing: the shipment the sealed packages now make up
+ *                         (READY_TO_DISPATCH, G4-5); null otherwise, also when a design check put packing on hold
  */
 public record FulfillmentTask(
         UUID taskId,
@@ -26,12 +31,37 @@ public record FulfillmentTask(
         Instant pickedAt,
         Instant packedAt,
         List<IntegrityEvidence> integrityEvidence,
-        List<Line> lines
+        List<Line> lines,
+        PaymentDue paymentDue,
+        UUID shipmentId
 ) {
     public FulfillmentTask {
         integrityEvidence = integrityEvidence == null ? List.of() : List.copyOf(integrityEvidence);
         lines = lines == null ? null : List.copyOf(lines);
     }
+
+    public FulfillmentTask(UUID taskId, UUID orderId, String orderNumber, UUID warehouseId, UUID assignedUserId,
+                           String assignedUserName, String pickStatus, String packStatus, Instant assignedAt,
+                           Instant startedAt, Instant pickedAt, Instant packedAt,
+                           List<IntegrityEvidence> integrityEvidence, List<Line> lines) {
+        this(taskId, orderId, orderNumber, warehouseId, assignedUserId, assignedUserName, pickStatus, packStatus,
+                assignedAt, startedAt, pickedAt, packedAt, integrityEvidence, lines, null, null);
+    }
+
+    public FulfillmentTask withPaymentDue(PaymentDue due) {
+        return new FulfillmentTask(taskId, orderId, orderNumber, warehouseId, assignedUserId, assignedUserName,
+                pickStatus, packStatus, assignedAt, startedAt, pickedAt, packedAt, integrityEvidence, lines, due,
+                shipmentId);
+    }
+
+    public FulfillmentTask withShipment(UUID shipment) {
+        return new FulfillmentTask(taskId, orderId, orderNumber, warehouseId, assignedUserId, assignedUserName,
+                pickStatus, packStatus, assignedAt, startedAt, pickedAt, packedAt, integrityEvidence, lines, paymentDue,
+                shipment);
+    }
+
+    /** Money the order must receive before its goods may be handed to the carrier. */
+    public record PaymentDue(java.math.BigDecimal amountDueBeforeHandover, String currency) { }
 
     public record IntegrityEvidence(UUID orderLineId, UUID snapshotId, String expectedChecksum,
                                     String actualChecksum, boolean matching, Instant verifiedAt) { }

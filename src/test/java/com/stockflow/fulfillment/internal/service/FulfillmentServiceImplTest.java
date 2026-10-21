@@ -7,7 +7,6 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.Role;
 import com.stockflow.design.api.DesignService;
-import com.stockflow.design.api.DesignVerification;
 import com.stockflow.fulfillment.api.FulfillmentTaskQuery;
 import com.stockflow.fulfillment.internal.domain.PackStatus;
 import com.stockflow.fulfillment.internal.domain.PickStatus;
@@ -59,10 +58,10 @@ class FulfillmentServiceImplTest {
     private final InventoryService inventory = mock(InventoryService.class);
     private final WarehouseService warehouses = mock(WarehouseService.class);
     private final PickListService pickLists = mock(PickListService.class);
+    private final PackingService packing = mock(PackingService.class);
     private final Instant now = Instant.parse("2026-09-18T08:00:00Z");
     private final FulfillmentServiceImpl service = new FulfillmentServiceImpl(
-            picks, packs, evidence, orders, designs, identities, inventory, warehouses, pickLists,
-            mock(com.stockflow.inventory.consumption.PickConsumption.class),
+            picks, packs, evidence, orders, designs, identities, inventory, warehouses, pickLists, packing,
             Clock.fixed(now, ZoneOffset.UTC));
     private final List<DesignVerificationJpaEntity> recorded = new ArrayList<>();
 
@@ -74,70 +73,115 @@ class FulfillmentServiceImplTest {
             return value;
         });
         when(evidence.findByPackIdOrderByVerifiedAtDesc(any())).thenAnswer(call -> List.copyOf(recorded));
-        // The order as it reads after entering fulfillment (and, for a never-released order, after allocation).
-        when(orders.releaseToFulfillment(any(), any())).thenAnswer(call ->
-                orders.findById(call.getArgument(0)).orElseThrow());
+    }
+
+    /**
+     * G4-5: completing packing is the packing service's (its rules are PackingSessionTest's, its flow the packing
+     * station integration test's); the task service answers with the task, the shipment and the payment warning.
+     */
+    @Test
+    void completingPackingAnswersWithTheShipmentAndThePaymentWarning() {
+        UUID packer = UUID.randomUUID();
+        var pick = pickedTask(UUID.randomUUID());
+        var pack = new PackJpaEntity(UUID.randomUUID(), pick.getId(), PackStatus.PACKED, now);
+        var order = order(pick.getOrderId(), "a".repeat(64));
+        var owing = new OrderSummary(order.orderId(), order.orderNumber(), order.customerId(), OrderStatus.PACKED,
+                order.total(), order.lines(), order.placedAt(), null, null, null, null, null, null, null, null, null,
+                null, null, null, null, new OrderSummary.Lifecycle(null, null, null, now, null, null, null, null, null,
+                java.math.BigDecimal.ZERO, order.total().amount(), order.total().amount(), new java.math.BigDecimal("700"),
+                List.of(), List.of()));
+        UUID shipment = UUID.randomUUID();
+        when(picks.findById(pick.getId())).thenReturn(Optional.of(pick));
+        when(packs.findByPickId(pick.getId())).thenReturn(Optional.of(pack));
+        when(packing.complete(eq(pick.getId()), any(), any())).thenReturn(new PackingService.Completed(shipment, owing));
+
+        var result = service.completePacking(pick.getId(), user(packer, Role.WAREHOUSE_STAFF));
+
+        assertThat(result.shipmentId()).isEqualTo(shipment);
+        assertThat(result.paymentDue()).isNotNull();
+        assertThat(result.paymentDue().amountDueBeforeHandover()).isEqualByComparingTo("700");
     }
 
     @Test
-    void checksumMismatchPutsPackageAndOrderOnHoldWithoutLosingEvidence() {
-        UUID assigned = UUID.randomUUID();
-        var pick = pickedTask(assigned);
-        var pack = new PackJpaEntity(UUID.randomUUID(), pick.getId(), PackStatus.PENDING, null);
-        String expected = "a".repeat(64);
-        String actual = "b".repeat(64);
-        var order = order(pick.getOrderId(), expected);
-        when(picks.lockById(pick.getId())).thenReturn(Optional.of(pick));
+    void aDesignHoldAnswersWithoutAShipment() {
+        var pick = pickedTask(UUID.randomUUID());
+        var pack = new PackJpaEntity(UUID.randomUUID(), pick.getId(), PackStatus.ON_HOLD, null);
+        when(picks.findById(pick.getId())).thenReturn(Optional.of(pick));
         when(packs.findByPickId(pick.getId())).thenReturn(Optional.of(pack));
-        when(orders.findById(pick.getOrderId())).thenReturn(Optional.of(order));
-        when(designs.verifyForFulfillment(order.lines().getFirst().designSnapshotId(), expected))
-                .thenReturn(new DesignVerification(order.lines().getFirst().designSnapshotId(), expected, actual, false));
+        when(packing.complete(eq(pick.getId()), any(), any()))
+                .thenReturn(new PackingService.Completed(null, order(pick.getOrderId(), "a".repeat(64))));
 
-        var result = service.completePacking(pick.getId(), user(assigned, Role.WAREHOUSE_STAFF));
+        var result = service.completePacking(pick.getId(), user(UUID.randomUUID(), Role.WAREHOUSE_MANAGER));
 
         assertThat(result.packStatus()).isEqualTo("ON_HOLD");
-        assertThat(result.integrityEvidence()).singleElement().satisfies(item -> {
-            assertThat(item.matching()).isFalse();
-            assertThat(item.actualChecksum()).isEqualTo(actual);
-        });
-        verify(orders).putOnDesignHold(pick.getOrderId(), "DESIGN_MISMATCH");
-        verify(orders, never()).resolveDesignHold(any(), any(), any());
+        assertThat(result.shipmentId()).isNull();
+        assertThat(result.paymentDue()).isNull();
     }
 
     @Test
-    void onlySuccessfulQcReverificationCompletesHeldPackageAndResolvesOrder() {
-        UUID assigned = UUID.randomUUID();
-        UUID qc = UUID.randomUUID();
-        var pick = pickedTask(assigned);
-        var pack = new PackJpaEntity(UUID.randomUUID(), pick.getId(), PackStatus.ON_HOLD, null);
-        String expected = "c".repeat(64);
-        var order = order(pick.getOrderId(), expected);
-        when(picks.lockById(pick.getId())).thenReturn(Optional.of(pick));
-        when(packs.findByPickId(pick.getId())).thenReturn(Optional.of(pack));
-        when(orders.findById(pick.getOrderId())).thenReturn(Optional.of(order));
-        when(designs.verifyForFulfillment(order.lines().getFirst().designSnapshotId(), expected))
-                .thenReturn(new DesignVerification(order.lines().getFirst().designSnapshotId(), expected, expected, true));
-
-        var result = service.reverifyDesignIntegrity(
-                pick.getId(), "Artifact restored from the confirmed immutable version", user(qc, Role.QC_STAFF));
-
-        assertThat(result.packStatus()).isEqualTo("PACKED");
-        verify(orders).resolveDesignHold(pick.getOrderId(), qc,
-                "Artifact restored from the confirmed immutable version");
-    }
-
-    @Test
-    void unrelatedWarehouseUserCannotSeeTaskOrDownloadArtifact() {
+    void onlyQcOrAManagerReverifiesAndOnlyWarehouseStaffPack() {
         var pick = pickedTask(UUID.randomUUID());
+        assertThatThrownBy(() -> service.reverifyDesignIntegrity(pick.getId(), "note",
+                user(UUID.randomUUID(), Role.WAREHOUSE_STAFF))).isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> service.completePacking(pick.getId(), user(UUID.randomUUID(), Role.QC_STAFF)))
+                .isInstanceOf(BusinessException.class);
+        verify(packing, never()).reverify(any(), any(), any());
+        verify(packing, never()).complete(any(), any(), any());
+    }
+
+    @Test
+    void aStaffMemberWhoIsNotTheAssigneeCannotSeeATaskStillBeingPicked() {
+        var pick = new PickJpaEntity(UUID.randomUUID(), null, UUID.randomUUID(), "SO-TEST", UUID.randomUUID(),
+                PickStatus.PENDING);
+        pick.assign(UUID.randomUUID(), now.minusSeconds(120));
+        pick.start(pick.getAssignedUserId(), now.minusSeconds(60));
         when(picks.findById(pick.getId())).thenReturn(Optional.of(pick));
 
         var unrelated = user(UUID.randomUUID(), Role.WAREHOUSE_STAFF);
-        assertThatThrownBy(() -> service.findTask(pick.getId(), unrelated))
-                .isInstanceOf(BusinessException.class);
-        assertThatThrownBy(() -> service.artifactDownload(
-                pick.getId(), UUID.randomUUID(), "PRINT_READY", unrelated))
-                .isInstanceOf(BusinessException.class);
+        assertThat(refusal(() -> service.findTask(pick.getId(), unrelated)).errorCode()).isEqualTo(ErrorCode.NOT_FOUND);
+        assertThat(refusal(() -> service.artifactDownload(pick.getId(), UUID.randomUUID(), "PRINT_READY", unrelated))
+                .errorCode()).isEqualTo(ErrorCode.NOT_FOUND);
         verify(designs, never()).fulfillmentDownload(any(), any(), any());
+    }
+
+    /**
+     * G4-5 (FE #58): once picking is done the packer - any staff member of the task's warehouse - reads the task and
+     * the locked design files the printed goods are checked against (docs 08 step 2); staff of another warehouse do
+     * not.
+     */
+    @Test
+    void thePackerOfTheTasksWarehouseReadsItAndItsDesignFilesOthersDoNot() {
+        UUID picker = UUID.randomUUID();
+        var pick = new PickJpaEntity(UUID.randomUUID(), null, UUID.randomUUID(), "SO-TEST", HCM, PickStatus.PENDING);
+        pick.assign(picker, now.minusSeconds(120));
+        pick.start(picker, now.minusSeconds(60));
+        pick.complete(picker, now.minusSeconds(30));
+        var order = order(pick.getOrderId(), "e".repeat(64));
+        var line = order.lines().getFirst();
+        when(picks.findById(pick.getId())).thenReturn(Optional.of(pick));
+        when(packs.findByPickId(pick.getId())).thenReturn(Optional.of(new PackJpaEntity(UUID.randomUUID(),
+                pick.getId(), PackStatus.PACKING, null)));
+        when(orders.findById(pick.getOrderId())).thenReturn(Optional.of(order));
+        when(designs.fulfillmentDownload(line.designSnapshotId(), line.designChecksum(),
+                com.stockflow.design.api.DesignArtifactRole.CUSTOMER_PREVIEW)).thenReturn(
+                new com.stockflow.design.api.FulfillmentArtifact(UUID.randomUUID(),
+                        com.stockflow.design.api.DesignArtifactRole.CUSTOMER_PREVIEW, "preview.png", "image/png", 10,
+                        "f".repeat(64), "https://files/preview", now.plusSeconds(300)));
+        var packer = staffOf(HCM);
+        var elsewhere = staffOf(HN);
+
+        assertThat(asScoped(packer, () -> service.findTask(pick.getId(), packer)).taskId()).isEqualTo(pick.getId());
+        assertThat(asScoped(packer, () -> service.artifactDownload(pick.getId(), line.lineId(), "customer_preview",
+                packer)).url()).isEqualTo("https://files/preview");
+        assertThat(refusal(() -> asScoped(elsewhere, () -> service.findTask(pick.getId(), elsewhere))).errorCode())
+                .isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE);
+        assertThat(refusal(() -> asScoped(elsewhere, () -> service.artifactDownload(pick.getId(), line.lineId(),
+                "customer_preview", elsewhere))).errorCode()).isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE);
+    }
+
+    private CurrentUser staffOf(UUID... warehouseIds) {
+        return new CurrentUser(UUID.randomUUID(), "packer", Set.of(Role.WAREHOUSE_STAFF), Set.of(),
+                DataScope.WAREHOUSE, Set.of(), Set.of(warehouseIds));
     }
 
     @Test
@@ -158,9 +202,6 @@ class FulfillmentServiceImplTest {
 
         assertThatThrownBy(() -> service.startPicking(pick.getId(), worker)).isInstanceOf(BusinessException.class);
         assertThatThrownBy(() -> service.completePicking(pick.getId(), worker)).isInstanceOf(BusinessException.class);
-        assertThatThrownBy(() -> service.completePacking(pick.getId(), worker)).isInstanceOf(BusinessException.class);
-        assertThatThrownBy(() -> service.reverifyDesignIntegrity(pick.getId(), "note", qc))
-                .isInstanceOf(BusinessException.class);
         assertThatThrownBy(() -> service.artifactDownload(pick.getId(), live.lines().getFirst().lineId(), "PRINT_READY", qc))
                 .isInstanceOf(BusinessException.class);
 
@@ -221,8 +262,24 @@ class FulfillmentServiceImplTest {
     }
 
     @Test
-    void aConfirmedOrderNotYetReleasedTakesTheWarehouseWhereItsHoldsAre() {
+    void aConfirmedOrderNotYetReleasedIsSentToReleaseFirst() {
+        // G3-2 (kltn-docs 17 BR-02): only a released order - its warehouse chosen - enters fulfillment.
         var order = orderIn(OrderStatus.CONFIRMED, null);
+        holdsAt(order, "HN-A01-1-A=SOFA-3S-GREY");
+        when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
+        when(picks.findByOrderId(order.orderId())).thenReturn(Optional.empty());
+
+        var thrown = refusal(() -> service.createTask(order.orderId(), UUID.randomUUID(), coordinator()));
+
+        assertThat(thrown.errorCode()).isEqualTo(ErrorCode.PICK_TASK_STATE_CONFLICT);
+        assertThat(thrown.getMessage()).contains("READY_TO_FULFILL", "CONFIRMED");
+        verify(orders, never()).startPicking(any(), any());
+        verify(picks, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void aReleasedOrderStartsPickingInTheSameTransaction() {
+        var order = orderIn(OrderStatus.READY_TO_FULFILL, HN);
         UUID picker = UUID.randomUUID();
         holdsAt(order, "HN-A01-1-A=SOFA-3S-GREY", "HN-A01-2-B=SOFA-3S-GREY");
         assignable(HN, picker);
@@ -238,61 +295,13 @@ class FulfillmentServiceImplTest {
         assertThat(task.warehouseId()).isEqualTo(HN);
         assertThat(task.assignedUserName()).isEqualTo("Kho Nam");
         assertThat(task.lines()).isNull();
-        verify(orders).releaseToFulfillment(order.orderId(), HN);
+        verify(orders).startPicking(eq(order.orderId()), any());
         org.mockito.ArgumentCaptor<PickJpaEntity> saved = org.mockito.ArgumentCaptor.forClass(PickJpaEntity.class);
         verify(picks).saveAndFlush(saved.capture());
         assertThat(saved.getValue().getOrderNumber()).isEqualTo("SO-20261014-0001");
         assertThat(saved.getValue().getWarehouseId()).isEqualTo(HN);
         // SCRUM-267: the lines are planned with the task, from the order's holds.
         verify(pickLists).planLines(saved.getValue(), order);
-    }
-
-    @Test
-    void aNeverReleasedOrderOfSkuReservationsIsAllocatedInTheOneWarehouseThatCanCoverIt() {
-        var order = orderIn(OrderStatus.CONFIRMED, null);
-        UUID picker = UUID.randomUUID();
-        when(inventory.holdsOf(order.orderId())).thenReturn(List.of(new OrderHold("SOFA-3S-GREY", null, 2)));
-        when(inventory.warehousesAbleToAllocate(order.orderId())).thenReturn(List.of(HCM, HN));
-        assignable(HN, picker);
-        assignable(HCM);
-        when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
-        when(picks.findByOrderId(order.orderId())).thenReturn(Optional.empty());
-        when(packs.findByPickId(any())).thenReturn(Optional.of(new PackJpaEntity(UUID.randomUUID(), UUID.randomUUID(),
-                PackStatus.PENDING, null)));
-
-        // SCRUM-152: both warehouses hold enough, only HN has the assignee - the order is allocated there.
-        assertThat(service.createTask(order.orderId(), picker, coordinator()).warehouseId()).isEqualTo(HN);
-        verify(orders).releaseToFulfillment(order.orderId(), HN);
-    }
-
-    @Test
-    void aNeverReleasedOrderNoWarehouseCanCoverIsRefusedAndNothingIsAllocated() {
-        var order = orderIn(OrderStatus.CONFIRMED, null);
-        when(inventory.holdsOf(order.orderId())).thenReturn(List.of(new OrderHold("SOFA-3S-GREY", null, 2)));
-        when(inventory.warehousesAbleToAllocate(order.orderId())).thenReturn(List.of());
-        when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
-        when(picks.findByOrderId(order.orderId())).thenReturn(Optional.empty());
-
-        assertThat(refusal(() -> service.createTask(order.orderId(), UUID.randomUUID(), coordinator())).errorCode())
-                .isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
-        verify(orders, never()).releaseToFulfillment(any(), any());
-        verify(picks, never()).saveAndFlush(any());
-    }
-
-    @Test
-    void aNeverReleasedOrderTwoWarehousesCouldPickWithTheSameAssigneeMustBeReleasedFirst() {
-        var order = orderIn(OrderStatus.CONFIRMED, null);
-        UUID picker = UUID.randomUUID();
-        when(inventory.holdsOf(order.orderId())).thenReturn(List.of(new OrderHold("SOFA-3S-GREY", null, 2)));
-        when(inventory.warehousesAbleToAllocate(order.orderId())).thenReturn(List.of(HCM, HN));
-        assignable(HN, picker);
-        assignable(HCM, picker);
-        when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
-        when(picks.findByOrderId(order.orderId())).thenReturn(Optional.empty());
-
-        assertThat(refusal(() -> service.createTask(order.orderId(), picker, coordinator())).errorCode())
-                .isEqualTo(ErrorCode.PICK_TASK_STATE_CONFLICT);
-        verify(orders, never()).releaseToFulfillment(any(), any());
     }
 
     @Test
@@ -321,22 +330,6 @@ class FulfillmentServiceImplTest {
                 PackStatus.PENDING, null)));
 
         assertThat(service.createTask(order.orderId(), picker, coordinator()).warehouseId()).isEqualTo(HCM);
-    }
-
-    @Test
-    void holdsInTwoWarehousesAreRefusedWithTheSkusInTheMessage() {
-        var order = orderIn(OrderStatus.CONFIRMED, null);
-        holdsAt(order, "HN-A01-1-A=SOFA-3S-GREY", "HCM-B01-1-A=TABLE-OAK-160");
-        when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
-        when(picks.findByOrderId(order.orderId())).thenReturn(Optional.empty());
-
-        var thrown = refusal(() -> service.createTask(order.orderId(), UUID.randomUUID(), coordinator()));
-
-        assertThat(thrown.errorCode()).isEqualTo(ErrorCode.FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE);
-        assertThat(thrown.getMessage()).contains("SOFA-3S-GREY", "TABLE-OAK-160");
-        verify(orders, never()).releaseToFulfillment(any(), any());
-        verify(picks, never()).save(any());
-        verify(picks, never()).saveAndFlush(any());
     }
 
     @Test
@@ -381,7 +374,7 @@ class FulfillmentServiceImplTest {
             assertThat(error.field()).isEqualTo("assignedUserId");
             assertThat(error.code()).isEqualTo("NotAssignable");
         });
-        verify(orders, never()).releaseToFulfillment(any(), any());
+        verify(orders, never()).startPicking(any(), any());
         verify(picks, never()).save(any());
         verify(picks, never()).saveAndFlush(any());
     }
@@ -588,7 +581,7 @@ class FulfillmentServiceImplTest {
         UUID snapshot = UUID.randomUUID();
         var line = new OrderSummary.LineSummary(UUID.randomUUID(), "CUSTOM-SKU", 1,
                 Money.vnd(100_000), Money.vnd(100_000), List.of(), snapshot, checksum);
-        return new OrderSummary(orderId, "SO-TEST", UUID.randomUUID(), OrderStatus.IN_FULFILMENT,
+        return new OrderSummary(orderId, "SO-TEST", UUID.randomUUID(), OrderStatus.PICKING,
                 Money.vnd(100_000), List.of(line), now.minusSeconds(600), null, null, null, null, null, null, null, null);
     }
 

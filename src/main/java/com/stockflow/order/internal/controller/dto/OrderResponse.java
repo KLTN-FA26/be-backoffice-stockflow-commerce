@@ -68,9 +68,85 @@ public record OrderResponse(
         @Schema(description = "A credit order's days to pay after delivery; null otherwise")
         Integer creditTermDays,
 
+        @Schema(example = "BEFORE_DELIVERY", description = "A deposit order's way of collecting the balance: "
+                + "BEFORE_DELIVERY (by transfer, before the handover) or ON_DELIVERY (the carrier collects it); null "
+                + "for other terms (G2-3)")
+        String balancePolicy,
+
         @Schema(description = "Set when the order is CANCELLED")
-        Cancellation cancellation
+        Cancellation cancellation,
+
+        @Schema(example = "ADDRESS", description = "Staff only. Set while ON_HOLD: CREDIT, DESIGN_MISMATCH, PAYMENT, "
+                + "ADDRESS, INVENTORY, CUSTOMER, FRAUD or OTHER (G3-2); null for a customer, who gets holdReasonPublic")
+        String holdReason,
+
+        @Schema(example = "PICKING", description = "Staff only. Where resolving the hold goes back to; null for a "
+                + "credit hold")
+        String statusBeforeHold,
+
+        @Schema(example = "UNDER_REVIEW", description = "Set while ON_HOLD, for everyone: AWAITING_CREDIT_APPROVAL or "
+                + "UNDER_REVIEW - the wording a customer may read")
+        String holdReasonPublic,
+
+        @Schema(description = "What the coordinator wrote when holding it; staff only, null for a customer")
+        String holdNote,
+
+        @Schema(description = "When a package of the order was first completed: from then on it is returned, not "
+                + "cancelled")
+        Instant packedAt,
+
+        @Schema(description = "When the order last became SHIPPED")
+        Instant shippedAt,
+
+        @Schema(description = "When every shipment had arrived (the order became DELIVERED)")
+        Instant deliveredAt,
+
+        @Schema(example = "CUSTOMER_ABSENT", description = "Set while DELIVERY_FAILED: CUSTOMER_ABSENT, REFUSED, "
+                + "WRONG_ADDRESS, LOST, DAMAGED or OTHER")
+        String deliveryFailureReason,
+
+        Instant completedAt,
+        Instant closedAt,
+
+        @Schema(description = "What deliveries billed as receivables (a credit order)")
+        BigDecimal billedAmount,
+
+        @Schema(description = "The total less the units closed out of a partly fulfilled order")
+        BigDecimal effectiveTotal,
+
+        @Schema(description = "What the customer still owes on the order (effectiveTotal - paidAmount, never below 0)")
+        BigDecimal amountDue,
+
+        @Schema(description = "What must be paid before the goods may leave (G3-Q4): packing warns, handover refuses "
+                + "while it is above 0")
+        BigDecimal amountDueBeforeHandover,
+
+        @Schema(description = "The shipments handed to the carrier, oldest first (split shipments, G4-Q3)")
+        List<Shipment> shipments,
+
+        @Schema(description = "What carriers are to collect on delivery: the unpaid balance of an ON_DELIVERY deposit "
+                + "order, 0 otherwise (G2-3)")
+        BigDecimal amountDueOnDelivery
 ) {
+
+    @Schema(name = "OrderShipment")
+    public record Shipment(
+            UUID shipmentId,
+            @Schema(example = "HANDED_OVER", description = "HANDED_OVER, DELIVERED, DELIVERY_FAILED or RETURNED")
+            String status,
+            @Schema(description = "The goods' value at the order's prices") BigDecimal amount,
+            @Schema(description = "What its delivery billed a credit order") BigDecimal billedAmount,
+            Instant handedOverAt,
+            Instant outcomeAt,
+            String failureReason,
+            List<ShipmentLine> lines,
+            @Schema(description = "What the carrier collects on delivering it (ON_DELIVERY), fixed at the handover; "
+                    + "the amount printed on the label (kltn-docs 15 BR-08)") BigDecimal codAmount) {
+    }
+
+    @Schema(name = "OrderShipmentLine")
+    public record ShipmentLine(UUID lineId, int quantity) {
+    }
 
     @Schema(name = "OrderCancellation")
     public record Cancellation(
@@ -99,7 +175,16 @@ public record OrderResponse(
             @Schema(description = "The stock holds backing this line - one per lot it is drawn from")
             List<UUID> reservationIds,
             UUID designSnapshotId,
-            String designChecksum
+            String designChecksum,
+
+            @Schema(description = "Units in shipments still with the carrier or the customer")
+            Integer shippedQuantity,
+
+            @Schema(description = "Units in delivered shipments")
+            Integer deliveredQuantity,
+
+            @Schema(description = "Units closed out of a partly fulfilled order: they will not be delivered")
+            Integer cancelledQuantity
     ) {
     }
 }

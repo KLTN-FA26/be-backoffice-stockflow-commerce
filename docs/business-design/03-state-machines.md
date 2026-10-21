@@ -343,64 +343,87 @@ sends print lines to production **before** the order is ready to fulfil: `CONFIR
 IN_PRODUCTION → READY_TO_FULFILL`, and the order leaves `IN_PRODUCTION` only when every production
 order of the order is completed (machine 16).
 
+**Implemented 2026-10-19 (G3-2, SCRUM-239/246/247).** The statuses of kltn-docs 17 §5, written twice: the
+exhaustive switch `OrderStatus.canTransitionTo` and the table `ordering.order_status_transition`, which the trigger
+`tg_order_status_transition` enforces on every `UPDATE` of a status (the two are compared by
+`OrderStatusTest`, `OrderLifecycleIntegrationTest` and `OrderLifecycleMigrationUpgradeTest`). `IN_FULFILMENT` is gone
+(rows became `PICKING`, or `PACKED` when a package was completed); there is no `PAYMENT_FAILED` (G3-Q2: a bank
+transfer that never comes is a cancellation when the hold runs out). Every change writes a history row with who made
+it and why (`order_status_history.actor_id`, `reason`).
+
 ```mermaid
 stateDiagram-v2
     [*] --> PENDING_PAYMENT: prepay / deposit order placed
     [*] --> CONFIRMED: credit order within limit
-    [*] --> ON_HOLD: credit order over limit
-    PENDING_PAYMENT --> CONFIRMED: payment / deposit captured
-    PENDING_PAYMENT --> PAYMENT_FAILED: payment declined or timed out
-    PAYMENT_FAILED --> [*]
+    [*] --> ON_HOLD: credit order over limit (hold CREDIT)
+    PENDING_PAYMENT --> CONFIRMED: paid in full / deposit in
     CONFIRMED --> IN_PRODUCTION: released, has print lines
     CONFIRMED --> READY_TO_FULFILL: released, no print lines
     IN_PRODUCTION --> READY_TO_FULFILL: every production order completed
-    READY_TO_FULFILL --> PICKING: pick list generated
-    PICKING --> PACKED: packing confirmed
-    PACKED --> SHIPPED: handed to carrier
-    SHIPPED --> DELIVERED: carrier reports delivered
-    SHIPPED --> RTO: parcel returned to the warehouse
-    DELIVERED --> COMPLETED: return window closes
-    DELIVERED --> RETURN_REQUESTED: customer opens RMA
-    RETURN_REQUESTED --> DELIVERED: RMA rejected
-    RETURN_REQUESTED --> RETURNED: return received
-    RETURNED --> [*]
-    RTO --> [*]
-    COMPLETED --> [*]
-
-    PENDING_PAYMENT --> CANCELLED: cancel
-    CONFIRMED --> CANCELLED: cancel
-    READY_TO_FULFILL --> CANCELLED: cancel
-    IN_PRODUCTION --> CANCELLED: cancel
-    PICKING --> CANCELLED: cancel
+    READY_TO_FULFILL --> PICKING: task created (startPicking)
+    READY_TO_FULFILL --> PACKED: printed goods only (17 §4.2.6)
+    PICKING --> PACKED: everything packed (markPacked)
+    PICKING --> PARTIALLY_FULFILLED: part handed over
+    PACKED --> PARTIALLY_FULFILLED: part handed over
+    PACKED --> SHIPPED: everything handed over
+    PARTIALLY_FULFILLED --> PACKED: the rest packed
+    PARTIALLY_FULFILLED --> SHIPPED: the rest handed over / closed
+    PARTIALLY_FULFILLED --> DELIVERED: rest closed, every shipment arrived
+    PARTIALLY_FULFILLED --> DELIVERY_FAILED: rest closed, a shipment failed
+    PARTIALLY_FULFILLED --> RETURNED: rest closed, everything came back
+    SHIPPED --> DELIVERED: every shipment arrived
+    SHIPPED --> DELIVERY_FAILED: all have an outcome, one failed
+    SHIPPED --> PARTIALLY_FULFILLED: a shipment came back
+    DELIVERY_FAILED --> DELIVERED: delivered on a retry
+    DELIVERY_FAILED --> RETURNED: back at the warehouse (RTO)
+    DELIVERY_FAILED --> PARTIALLY_FULFILLED: one came back, others arrived
+    DELIVERED --> COMPLETED: return window passed, paid, no RMA open
+    DELIVERED --> RETURN_REQUESTED: RMA
+    RETURN_REQUESTED --> RETURNED
+    RETURN_REQUESTED --> DELIVERED: RMA refused (decision 2026-10-21)
+    RETURNED --> REFUNDED
+    RETURNED --> PARTIALLY_REFUNDED
+    COMPLETED --> CLOSED: after 30 days
+    REFUNDED --> CLOSED: after 30 days
+    PARTIALLY_REFUNDED --> CLOSED: after 30 days
+    CONFIRMED --> ON_HOLD
+    IN_PRODUCTION --> ON_HOLD
+    READY_TO_FULFILL --> ON_HOLD
+    PICKING --> ON_HOLD
+    PARTIALLY_FULFILLED --> ON_HOLD
+    PACKED --> ON_HOLD
+    ON_HOLD --> CONFIRMED: back where held from / credit approved
+    ON_HOLD --> PENDING_PAYMENT: credit refused, re-termed
+    PENDING_PAYMENT --> CANCELLED
+    CONFIRMED --> CANCELLED
+    IN_PRODUCTION --> CANCELLED
+    READY_TO_FULFILL --> CANCELLED
+    PICKING --> CANCELLED
+    ON_HOLD --> CANCELLED
     CANCELLED --> [*]
-
-    CONFIRMED --> ON_HOLD: exception raised
-    READY_TO_FULFILL --> ON_HOLD: exception raised
-    IN_PRODUCTION --> ON_HOLD: exception raised
-    ON_HOLD --> CONFIRMED: resolved
-    ON_HOLD --> CANCELLED: unresolvable
+    CLOSED --> [*]
 ```
 
-| From | To | Trigger | Actor | Guard | Event |
-|---|---|---|---|---|---|
-| — | PENDING_PAYMENT | order placed (prepay / deposit) | Customer / Sales staff | active B2B customer; every line reserved (BR-ORD-001); quantity ≥ MOQ (BR-ORD-007) | `OrderPlaced` |
-| — | CONFIRMED | order placed (credit) | Customer / Sales staff | outstanding balance + order total ≤ credit limit (BR-PAY-005) | `OrderPlaced`, `OrderConfirmed` |
-| — | ON_HOLD | order placed (credit) | system | over the credit limit; reason `CREDIT` | `OrderPlaced`, `OrderPutOnHold` |
-| PENDING_PAYMENT | CONFIRMED | payment captured | system | amount = order total, or deposit rule met (BR-PAY-002) | `OrderConfirmed` |
-| PENDING_PAYMENT | PAYMENT_FAILED | declined or timed out | system | reservations released first | `OrderPaymentFailed` |
-| CONFIRMED | IN_PRODUCTION | release | Order coordinator | warehouse chosen; ≥1 print line; every new design has an APPROVED sample (BR-PRD-08); deposit received (BR-PRD-09) | `OrderLinesReleasedForProduction` |
-| CONFIRMED | READY_TO_FULFILL | release | Order coordinator | warehouse chosen; no print lines; stock allocated (BR-ORD-002) | `OrderReleased` |
-| IN_PRODUCTION | READY_TO_FULFILL | production completed | system | every production order of the order COMPLETED (BR-PRD-06) | `OrderReleased` |
-| READY_TO_FULFILL | PICKING | pick list generated | system | stock lines allocated; print output already in the PACKING area | `PickListGenerated` |
-| PICKING | PACKED | packing confirmed | Warehouse staff | every line picked; design checksums match (BR-DSG-003) | `OrderPacked` |
-| PACKED | SHIPPED | handover | Warehouse staff | manifest signed by carrier | `ShipmentDispatched` |
-| SHIPPED | DELIVERED | carrier reports delivered | Order coordinator | every shipment of the order DELIVERED; recorded with who and when (no carrier integration) | `OrderDelivered` |
-| SHIPPED | RTO | parcel back at the warehouse | Warehouse staff | received through the returns receipt (BR-06 of docs 09) | `OrderReturnedToOrigin` |
-| DELIVERED | COMPLETED | window closes | system | 7 days after delivery, no open RMA (BR-ORD-005) | `OrderCompleted` |
-| DELIVERED | RETURN_REQUESTED | open RMA | Customer / Sales staff | within return window | `RmaRequested` |
-| any of PENDING_PAYMENT…PICKING | CANCELLED | cancel | see below | see BR-ORD-003 | `OrderCancelled` |
-| CONFIRMED / READY_TO_FULFILL / IN_PRODUCTION | ON_HOLD | raise exception | Order coordinator, or system | reason is one of PAYMENT / ADDRESS / INVENTORY / CREDIT (WBS 3.17.6.1) | `OrderPutOnHold` |
-| ON_HOLD | CONFIRMED | resolve | Order coordinator; for `CREDIT` the credit-limit approver | resolution note recorded | `OrderHoldResolved` |
+| From | To | Called by | Guard |
+|---|---|---|---|
+| READY_TO_FULFILL | PICKING | fulfillment `createTask` → `OrderService.startPicking` (same transaction, A1) | released; IN_PRODUCTION is a no-op (stock lines picked in parallel, 17 §4.2.5) |
+| READY_TO_FULFILL / PICKING / PARTIALLY_FULFILLED | PACKED | fulfillment `completePacking` → `markPacked` | not ON_HOLD (resolve first); records `packed_at` |
+| PICKING / PACKED / PARTIALLY_FULFILLED | PARTIALLY_FULFILLED / SHIPPED | G4-2a handover → `recordHandover(shipment, lines)` | `ORDER_BALANCE_NOT_PAID` when money is due before the goods leave (G3-Q4); units ≤ what is left; everything at once from PICKING is refused (pack first) |
+| PACKED | SHIPPED | `markShipped` (whole order, no shipment recorded) | as above |
+| SHIPPED … | DELIVERED / DELIVERY_FAILED / RETURNED / PARTIALLY_FULFILLED | `recordShipmentDelivered / …DeliveryFailed / …Returned` per shipment; `POST /orders/{id}/delivery`, `/delivery-failure` for an order without shipments (`ORDER_DELIVERY_VIA_SHIPMENT` otherwise, G4-Q5) | failure needs a reason (09 BR-02) |
+| PARTIALLY_FULFILLED | the shipments' status | `POST /orders/{id}/remainder-closure` (Sales / coordinator) | the unshipped units are closed (`order_line.cancelled_quantity`), their holds released, `OrderRemainderClosed` asks payment to refund what was received above the order's new worth |
+| CONFIRMED … PACKED, PARTIALLY_FULFILLED | ON_HOLD | `POST /orders/{id}/hold` (coordinator), design mismatch at packing (system), credit check (system) | reasons PAYMENT, ADDRESS, INVENTORY, CUSTOMER, FRAUD, OTHER (with note) by hand; CREDIT, DESIGN_MISMATCH by the system |
+| ON_HOLD | `status_before_hold` | `POST /orders/{id}/hold/resolution` | note required; a CREDIT hold → `ORDER_CREDIT_HOLD_USE_APPROVAL`; the trigger refuses leaving a hold anywhere else |
+| DELIVERED | COMPLETED | `OrderSettlementJob` nightly | `delivered_at` + `stockflow.order.return-window-days` (7, BR-ORD-005) passed, nothing owed, no return request open |
+| COMPLETED / REFUNDED / PARTIALLY_REFUNDED | CLOSED | `OrderSettlementJob` | `stockflow.order.close-after-days` (30, G3-Q1) passed |
+
+**Split shipments (decision G4-Q3, 2026-10-19).** The order records each shipment it is told of
+(`ordering.order_shipment`, `_line`): the units, their value, the outcome. A credit order bills each delivered
+shipment (`OrderDelivered.shipmentId`, `billedAmount` → one `payment.receivable` per shipment); the credit exposure
+counts, per order, what is still unbilled - total less closed units less billed less money paid outside receivables -
+for the statuses `OrderStatus.countsTowardCreditExposure` names, plus the open receivables, so a split order is counted
+once and a new status cannot leak out of the limit. A deposit order's balance policy (before / on delivery / credit)
+comes with G2-3; until then nothing is billed per shipment for it and nothing blocks its handover.
 
 ### Who may cancel, and until when
 
@@ -444,8 +467,9 @@ artwork and cannot be resold.
 - **Every cancellation names a reason code** — CUSTOMER_REQUEST, PAYMENT_NOT_RECEIVED, PAYMENT_FAILED,
   OUT_OF_STOCK, SUSPECTED_FRAUD, CREDIT_REJECTED, DUPLICATE_ORDER, PRODUCTION_ISSUE, or OTHER with a note.
 - **When the customer cancels directly:** in DRAFT / PENDING_PAYMENT / CONFIRMED, at once. From
-  IN_PRODUCTION / READY_TO_FULFILL / IN_FULFILMENT / ON_HOLD the customer opens a **cancellation
-  request**, one pending at a time.
+  IN_PRODUCTION / READY_TO_FULFILL / PICKING / ON_HOLD (no package completed) the customer opens a **cancellation
+  request**, one pending at a time, with one of their own reasons (CUSTOMER_REQUEST, DUPLICATE_ORDER, OTHER; G3-2).
+  The portal shows the latest request and its decision.
 - **Who decides a request:** Sales or the coordinator approve or reject it with
   `sales-order-cancellations:UPDATE` (kltn-docs 17 §2), the permission that also cancels from the back
   office.
@@ -576,10 +600,24 @@ parcel under a heavier one (docs 09 BR-02).
 `RETURNED` triggers a **re-putaway** (WBS 3.9.7.2): the goods return to stock through the
 same putaway machine, in condition GOOD if the parcel is intact and QUARANTINE otherwise.
 
-> **Schema gap (DB owner):** `fulfillment.shipment_status` today is `PENDING, DISPATCHED, DELIVERED,
-> RETURNED`. It needs `DELIVERY_FAILED` and `CANCELLED`, plus tables for the vehicle-type catalogue,
-> the load plan and the load with its parcels. `shipment.tracking_number` and the carrier-sourced
-> `shipment_event` rows lose their purpose and go in a later contract step.
+> **Implemented (G4-5, `V20261021000300`):** `fulfillment.shipment` carries the six statuses above
+> (old `PENDING` → `READY_TO_DISPATCH`, `DISPATCHED` → `HANDED_OVER`), a number per order
+> (`<order>-S<n>`), its warehouse, delivery mode, package count, COD amount (09 BR-04) and the
+> handover / outcome / cancellation facts, each step also a `MANUAL` `shipment_event` row naming who
+> recorded it (09 BR-02). The domain is `fulfillment.internal.domain.Shipment`; G4-5 creates shipments
+> (READY_TO_DISPATCH) and cancels them with their order, G4-2a hands them over, SCRUM-294/295 record
+> outcomes. Still to come (G4-1/G4-2a): the vehicle-type catalogue, the load plan and the load.
+> `tracking_number` and carrier-sourced events are unused (no carrier API).
+
+**Packing session (G4-5, kltn-docs 08 §5).** One per task (`fulfillment.pack`):
+`PENDING → PACKING` (a packer takes the order; another packer is refused, a manager is not) `→ PACKED`
+(nothing the order wants is left unshipped), `PACKING ⇄ ON_HOLD` (a printed design does not match its
+snapshot, BR-DSG-003; QC or a manager re-verifies and packing is back in progress — docs 08
+"Verification Failed → In Progress"), `→ CANCELLED` with the order. Its parcels (`fulfillment.package`)
+go `OPEN → SEALED` (weight and size required, 08 BR-03) `→` in a shipment; before that a parcel may be
+re-opened or `VOIDED`. Every scan is kept (`fulfillment.package_scan`, append-only). Completing ships
+every sealed parcel not yet shipped as one shipment; part of the order may ship first (split shipments,
+G4-Q3; a mixed order's stock lines first, decision 2026-10-21) with a reason, the rest later.
 
 ---
 

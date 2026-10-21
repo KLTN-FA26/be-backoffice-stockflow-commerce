@@ -119,6 +119,7 @@ class PickConfirmationIntegrationTest {
     @Autowired MockMvc mvc;
     @MockitoBean JwtDecoder decoder;
     @Autowired OrderService orders;
+    @Autowired com.stockflow.order.internal.service.OrderReleases releases;
     @Autowired InventoryService inventory;
     @Autowired PickLists pickLists;
     @Autowired JdbcTemplate jdbc;
@@ -241,7 +242,7 @@ class PickConfirmationIntegrationTest {
         return "Bearer " + value;
     }
 
-    /** A paid stock-only order of the demo customer, CONFIRMED, its stock held at HCM. */
+    /** A paid stock-only order of the demo customer, its stock held at HCM, released there (READY_TO_FULFILL). */
     private OrderSummary confirmedOrder(PlaceOrderCommand.Line... lines) {
         OrderSummary order = orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), DemoData.CUSTOMER_ID,
                 List.of(lines)));
@@ -255,7 +256,8 @@ class PickConfirmationIntegrationTest {
                 PaymentMethod.BANK_TRANSFER)));
         Await.until("order confirmed", ASYNC,
                 () -> orders.findById(order.orderId()).orElseThrow().status() == OrderStatus.CONFIRMED);
-        return orders.findById(order.orderId()).orElseThrow();
+        // G3-2 (kltn-docs 17 BR-02): only a released order enters fulfillment.
+        return releases.release(order.orderId(), DemoData.WAREHOUSE_HCM, coordinator);
     }
 
     private static PlaceOrderCommand.Line sofa(int quantity) {
@@ -341,6 +343,8 @@ class PickConfirmationIntegrationTest {
                 .andExpect(jsonPath("$.data.status").value("SHORT"))
                 .andExpect(jsonPath("$.data.shortQty").value(1));
         assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.ON_HOLD);
+        assertThat(orders.findById(order.orderId()).orElseThrow().lifecycle().holdReason())
+                .as("X-SHORT: held for stock, not for a design").isEqualTo(com.stockflow.order.api.HoldReason.INVENTORY);
         assertThat(onHand(location, SOFA)).as("nothing deducted").isEqualTo(before);
         assertThat(ledgerRows("PICK", lineId)).isZero();
         // X-SHORT step 03: a blind recount of that bin and SKU, opened once even if the short is reported again.
@@ -363,7 +367,8 @@ class PickConfirmationIntegrationTest {
         assertThat(newLocation).as("never the short bin").isNotEqualTo(location);
         assertThat(lineStatus(lineId)).isEqualTo("CANCELLED");
         assertThat(holdStatus(lineId)).isEqualTo("RELEASED");
-        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.IN_FULFILMENT);
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).as("back where it was held from")
+                .isEqualTo(OrderStatus.PICKING);
         assertThat(orders.findById(order.orderId()).orElseThrow().lines().get(0).reservationIds())
                 .containsExactly(UUID.fromString(jdbc.queryForObject(
                         "SELECT reservation_id::text FROM fulfillment.pick_line WHERE id = ?::uuid", String.class, newLine)));

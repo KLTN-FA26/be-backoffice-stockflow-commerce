@@ -10,10 +10,14 @@ import java.util.Objects;
 import java.util.UUID;
 
 /**
- * What a customer owes for one delivered credit order (kltn-docs 15 §4.3, §5.3; SCRUM-431): opened
+ * What is owed for one delivered credit order (kltn-docs 15 §4.3, §5.3; SCRUM-431): opened
  * at delivery, due on the delivery day plus the order's days to pay, paid by the customer's
  * transfers. The money received never exceeds what is owed ({@code ck_receivable_amounts}) and the
  * status always says what the money says ({@code ck_receivable_status_amounts}).
+ *
+ * <p>G2-3: also the balance of a deposit order the carrier collected on delivery ({@code DEPOSIT_BALANCE},
+ * {@link Collector#CARRIER}, due on the delivery day), paid by the carrier's remittance (09 §4.3 step 4). A short
+ * remittance leaves it PARTIALLY_PAID: the carrier's debt, and the order is not closed (09 edge "tiền thu hộ").</p>
  */
 public final class Receivable extends AggregateRoot {
 
@@ -30,6 +34,10 @@ public final class Receivable extends AggregateRoot {
     private final long version;
     /** {@code CREDIT_ORDER} (a delivered credit order) or {@code CANCELLATION_FEE} (decision Q6a). */
     private String kind = "CREDIT_ORDER";
+    /** G3-2: the delivered shipment of a split order this bills; null for a whole-order delivery or a fee. */
+    private UUID shipmentId;
+    /** G2-3: who pays it; CARRIER only for a deposit balance collected on delivery. */
+    private Collector collector = Collector.CUSTOMER;
 
     public Receivable(UUID id, UUID orderId, UUID customerId, BigDecimal amount, BigDecimal paidAmount, String currency,
                       Instant issuedAt, LocalDate dueDate, ReceivableStatus status, Instant settledAt, long version) {
@@ -67,12 +75,40 @@ public final class Receivable extends AggregateRoot {
         return fee;
     }
 
+    /**
+     * G2-3: the balance of a deposit order the carrier collected on delivery (kltn-docs 09 §2, 15 BR-08): due on the
+     * delivery day, paid by the carrier's remittance, never by the customer's transfers.
+     */
+    public static Receivable openCarrierCollected(UUID orderId, UUID customerId, BigDecimal amount, String currency,
+                                                  Instant deliveredAt, LocalDate deliveryDay) {
+        Receivable balance = open(orderId, customerId, amount, currency, deliveredAt, deliveryDay);
+        balance.kind = "DEPOSIT_BALANCE";
+        balance.collector = Collector.CARRIER;
+        return balance;
+    }
+
+    public Receivable collectedBy(Collector who) {
+        this.collector = Objects.requireNonNull(who, "collector");
+        return this;
+    }
+
+    public Collector collector() { return collector; }
+
+    public boolean carrierCollected() { return collector == Collector.CARRIER; }
+
     public Receivable withKind(String kind) {
         this.kind = Objects.requireNonNull(kind, "kind");
         return this;
     }
 
     public String kind() { return kind; }
+
+    public Receivable forShipment(UUID shipment) {
+        this.shipmentId = shipment;
+        return this;
+    }
+
+    public UUID shipmentId() { return shipmentId; }
 
     public BigDecimal outstanding() {
         return amount.subtract(paidAmount);
@@ -97,6 +133,24 @@ public final class Receivable extends AggregateRoot {
             this.status = ReceivableStatus.PARTIALLY_PAID;
         }
         return applied;
+    }
+
+    /**
+     * Takes back {@code amount} of what was paid: an allocation reversed by the accountant (15 BR-06). The status
+     * follows the money again: unpaid past its due date is OVERDUE, part paid PARTIALLY_PAID, nothing paid OPEN.
+     */
+    public void unallocate(BigDecimal amount, LocalDate today) {
+        if (amount == null || amount.signum() <= 0 || amount.compareTo(paidAmount) > 0) {
+            throw new IllegalStateException("Receivable %s cannot give back %s of the %s paid".formatted(id, amount,
+                    paidAmount));
+        }
+        this.paidAmount = paidAmount.subtract(amount);
+        this.settledAt = null;
+        if (dueDate.isBefore(today)) {
+            this.status = ReceivableStatus.OVERDUE;
+        } else {
+            this.status = paidAmount.signum() == 0 ? ReceivableStatus.OPEN : ReceivableStatus.PARTIALLY_PAID;
+        }
     }
 
     /** OPEN or PARTIALLY_PAID past its due date becomes OVERDUE (15 §4.3 step 4). */

@@ -33,6 +33,23 @@ class CancellationRequestRepositoryAdapter implements CancellationRequestReposit
     }
 
     @Override
+    public Optional<CancellationRequest> latestOf(UUID orderId) {
+        return jpa.findFirstByOrderIdOrderByRequestedAtDescIdDesc(orderId)
+                .map(CancellationRequestRepositoryAdapter::toDomain);
+    }
+
+    @Override
+    public java.util.Map<UUID, CancellationRequestStatus> latestStatuses(java.util.Collection<UUID> orderIds) {
+        java.util.Map<UUID, CancellationRequestStatus> latest = new java.util.HashMap<>();
+        if (orderIds.isEmpty()) {
+            return latest;
+        }
+        // Newest first: the first row of each order is its latest request.
+        jpa.findByOrderIdsNewestFirst(orderIds).forEach(row -> latest.putIfAbsent(row.getOrderId(), row.getStatus()));
+        return latest;
+    }
+
+    @Override
     public CancellationRequest save(CancellationRequest request) {
         OrderCancellationRequestJpaEntity entity = jpa.findById(request.id()).orElseGet(() ->
                 new OrderCancellationRequestJpaEntity(request.id(), request.orderId(), request.requestedBy(),

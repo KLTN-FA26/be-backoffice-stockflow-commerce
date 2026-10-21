@@ -20,15 +20,21 @@ class OrderCancelledListener {
     private static final Logger log = LoggerFactory.getLogger(OrderCancelledListener.class);
 
     private final CancelledOrderSettlement settlement;
+    private final com.stockflow.payment.api.OrderPayables orders;
     private final ReceivableService receivables;
 
-    OrderCancelledListener(CancelledOrderSettlement settlement, ReceivableService receivables) {
+    OrderCancelledListener(CancelledOrderSettlement settlement, com.stockflow.payment.api.OrderPayables orders,
+                           ReceivableService receivables) {
         this.settlement = settlement;
+        this.orders = orders;
         this.receivables = receivables;
     }
 
     @ApplicationModuleListener
     public void on(OrderCancelled event) {
+        // G2-3: the order's lock, as an allocation or a reversal takes it - a reversal of the same money waits, then
+        // finds the refund (and refuses), or went first and its allocation is skipped here.
+        orders.lockForPayment(event.orderId());
         int cancelled = settlement.cancelAwaitedPayments(event.orderId());
         BigDecimal refundable = event.refundableAmount() == null ? BigDecimal.ZERO : event.refundableAmount();
         if (refundable.signum() > 0) {

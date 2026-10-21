@@ -191,8 +191,8 @@ class PermissionMatrixTest {
                     INSERT INTO design.design_draft (id, customer_id, product_id, owner_user_id, status, created_at, current_artifacts)
                     VALUES (?, ?, ?, ?, 'DRAFT', NOW(), '{}'::jsonb)""", victimDesign, victimCustomer, DemoData.PRODUCT_SOFA, victimUser);
             jdbc.update("""
-                    INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at, version, created_at)
-                    VALUES (?, ?, ?, ?, 'ON_HOLD', 1000, 'VND', NOW(), 0, NOW())""",
+                    INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at, version, created_at, hold_reason, payment_term, credit_term_days)
+                    VALUES (?, ?, ?, ?, 'ON_HOLD', 1000, 'VND', NOW(), 0, NOW(), 'CREDIT', 'CREDIT', 30)""",
                     victimOrder, "SO-20991231-%06d".formatted(ThreadLocalRandom.current().nextInt(1_000_000)), victimCustomer, UUID.randomUUID());
             jdbc.update("INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency) VALUES (?, ?, 'TABLE-OAK-160', 1, 1000, 'VND')",
                     Identifiers.newId(), victimOrder);

@@ -44,6 +44,18 @@ public final class OrderLine {
 
     private final List<UUID> reservationIds;
 
+    /** Units staff closed out of a partly fulfilled order (17 edge "short pick"): they will not be delivered. */
+    private int cancelledQuantity;
+
+    public OrderLine(UUID id, Sku sku, int quantity, Money unitPrice,
+                     UUID designSnapshotId, List<UUID> reservationIds, int cancelledQuantity) {
+        this(id, sku, quantity, unitPrice, designSnapshotId, reservationIds);
+        if (cancelledQuantity < 0 || cancelledQuantity > quantity) {
+            throw new IllegalArgumentException("Closed units are between 0 and the line's quantity");
+        }
+        this.cancelledQuantity = cancelledQuantity;
+    }
+
     public OrderLine(UUID id, Sku sku, int quantity, Money unitPrice,
                      UUID designSnapshotId, List<UUID> reservationIds) {
         this.id = java.util.Objects.requireNonNull(id, "id");
@@ -126,6 +138,18 @@ public final class OrderLine {
     /** Unmodifiable: holds are attached and cleared through this class's own methods. */
     public List<UUID> reservationIds() {
         return java.util.Collections.unmodifiableList(reservationIds);
+    }
+
+    /** Package-private: only {@link Order#closeRemainder} closes units. */
+    void closeUnits(int units) {
+        if (units <= 0 || cancelledQuantity + units > quantity) {
+            throw new IllegalArgumentException("Cannot close %d more of line %s".formatted(units, id));
+        }
+        cancelledQuantity += units;
+    }
+
+    public int cancelledQuantity() {
+        return cancelledQuantity;
     }
 
     public boolean isMadeToOrder() {

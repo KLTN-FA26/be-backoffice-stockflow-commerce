@@ -37,6 +37,9 @@ public interface OrderRepository {
 
     List<Order> findByCustomerId(UUID customerId);
 
+    /** The status and hold reason of each order among {@code ids} that exists, in one query, without its lines. */
+    List<com.stockflow.order.api.OrderHoldState> holdStates(java.util.Collection<UUID> ids);
+
     OrderNumber nextOrderNumber(LocalDate date);
 
     Order save(Order order);

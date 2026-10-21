@@ -43,6 +43,19 @@ class CatalogSearchServiceTest {
                 List.of(sku), null, listedAt);
     }
 
+    /** Unless a test says otherwise, every product is still sellable when its card is read: one SKU each. */
+    @org.junit.jupiter.api.BeforeEach
+    void everyProductIsSellable() {
+        // every product is still sellable when its card is read: one SKU each
+        when(products.cards(any())).thenAnswer(i -> {
+            Set<UUID> ids = i.getArgument(0);
+            var map = new java.util.HashMap<UUID, com.stockflow.product.api.PublishedProductCard>();
+            ids.forEach(id -> map.put(id, new com.stockflow.product.api.PublishedProductCard(null,
+                    List.of(new com.stockflow.product.api.PublishedProductCard.Sku("S-" + id, "Name")))));
+            return map;
+        });
+    }
+
     private void everythingPublished(Candidate... all) {
         when(products.published(any())).thenAnswer(i -> i.getArgument(0));
     }
@@ -277,5 +290,73 @@ class CatalogSearchServiceTest {
 
         assertThat(service.suggest("ly", 3)).extracting(s -> s.title()).containsExactly("Ly 1", "Ly 2", "Ly 3");
         verifyNoInteractions(inventory);
+    }
+
+    // ---- card fields ----------------------------------------------------------------------
+
+    @Test
+    void aPageAsksForItsCardDetailsOnceNotOncePerCard() {
+        var rows = IntStream.range(0, 5).mapToObj(i -> candidate("Ly " + i, 1, "L-" + i, null)).toList();
+        when(repository.listAll(any(), anyInt())).thenReturn(rows);
+        everythingPublished();
+        org.mockito.Mockito.doAnswer(i -> {
+            Set<UUID> ids = i.getArgument(0);
+            var map = new java.util.HashMap<UUID, com.stockflow.product.api.PublishedProductCard>();
+            ids.forEach(id -> map.put(id, new com.stockflow.product.api.PublishedProductCard("https://img/" + id,
+                    List.of(new com.stockflow.product.api.PublishedProductCard.Sku("S-" + id, "Name " + id)))));
+            return map;
+        }).when(products).cards(any());
+
+        var page = service.search(null, null, 0, 20);
+
+        assertThat(page.items()).hasSize(5).allSatisfy(c -> {
+            assertThat(c.primaryImageUrl()).isEqualTo("https://img/" + c.productId());
+            assertThat(c.skus()).containsExactly(
+                    new com.stockflow.catalog.internal.service.CatalogCommerceService.CardSku("S-" + c.productId(), "Name " + c.productId()));
+        });
+        org.mockito.Mockito.verify(products, org.mockito.Mockito.times(1)).cards(any());
+        org.mockito.Mockito.verify(products, org.mockito.Mockito.never()).publishedImages(any());
+        org.mockito.Mockito.verify(products, org.mockito.Mockito.never()).read(any());
+    }
+
+    @Test
+    void onlyTheRequestedPageIsLookedUp() {
+        var rows = IntStream.range(0, 5).mapToObj(i -> candidate("Ly " + i, 1, "L-" + i, null)).toList();
+        when(repository.listAll(any(), anyInt())).thenReturn(rows);
+        everythingPublished();
+        var asked = new java.util.ArrayList<Set<UUID>>();
+        org.mockito.Mockito.doAnswer(i -> {
+            Set<UUID> ids = i.getArgument(0);
+            asked.add(ids);
+            var map = new java.util.HashMap<UUID, com.stockflow.product.api.PublishedProductCard>();
+            ids.forEach(id -> map.put(id, new com.stockflow.product.api.PublishedProductCard(null,
+                    List.of(new com.stockflow.product.api.PublishedProductCard.Sku("S-" + id, "Name")))));
+            return map;
+        }).when(products).cards(any());
+
+        var page = service.search(null, null, 1, 2);
+
+        assertThat(page.items()).hasSize(2);
+        assertThat(asked).hasSize(1);
+        assertThat(asked.getFirst()).hasSize(2)
+                .isEqualTo(page.items().stream().map(c -> c.productId()).collect(java.util.stream.Collectors.toSet()));
+    }
+
+    @Test
+    void aRowWhoseProductWasUnpublishedMeanwhileIsDroppedNotShownWithoutSkus() {
+        var gone = candidate("Ly gone", 1, "G-1", null);
+        var live = candidate("Ly live", 1, "L-1", null);
+        var unsellable = candidate("Ly none", 1, "N-1", null);
+        when(repository.listAll(any(), anyInt())).thenReturn(List.of(gone, live, unsellable));
+        everythingPublished();
+        org.mockito.Mockito.doReturn(Map.of(
+                live.productId(), new com.stockflow.product.api.PublishedProductCard("https://img/live",
+                        List.of(new com.stockflow.product.api.PublishedProductCard.Sku("L-1", "Live"))),
+                unsellable.productId(), new com.stockflow.product.api.PublishedProductCard(null, List.of())))
+                .when(products).cards(any());
+
+        var items = service.search(null, null, 0, 20).items();
+
+        assertThat(items).extracting(c -> c.title()).containsExactly("Ly live");
     }
 }

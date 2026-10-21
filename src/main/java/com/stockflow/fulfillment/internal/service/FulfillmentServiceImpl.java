@@ -14,10 +14,10 @@ import com.stockflow.fulfillment.api.FulfillmentAssignee;
 import com.stockflow.fulfillment.api.FulfillmentService;
 import com.stockflow.fulfillment.api.FulfillmentTask;
 import com.stockflow.fulfillment.api.FulfillmentTaskQuery;
+import com.stockflow.fulfillment.api.PackingCompletion;
 import com.stockflow.fulfillment.internal.domain.DesignVerificationResult;
 import com.stockflow.fulfillment.internal.domain.PackStatus;
 import com.stockflow.fulfillment.internal.domain.PickStatus;
-import com.stockflow.fulfillment.internal.entity.DesignVerificationJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PackJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PickJpaEntity;
 import com.stockflow.fulfillment.internal.repository.DesignVerificationJpaRepository;
@@ -29,8 +29,6 @@ import com.stockflow.order.api.OrderSummary;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.OrderHold;
-import com.stockflow.inventory.api.StockReservation;
-import com.stockflow.inventory.consumption.PickConsumption;
 import com.stockflow.warehouse.api.StorageLocationView;
 import com.stockflow.warehouse.api.WarehouseService;
 import java.time.Clock;
@@ -69,13 +67,13 @@ class FulfillmentServiceImpl implements FulfillmentService {
     private final InventoryService inventory;
     private final WarehouseService warehouses;
     private final PickListService pickLists;
-    private final PickConsumption consumption;
+    private final PackingService packing;
 
     FulfillmentServiceImpl(PickJpaRepository picks, PackJpaRepository packs,
             DesignVerificationJpaRepository verifications, OrderService orders,
             DesignService designs, IdentityService identities, InventoryService inventory,
-            WarehouseService warehouses, PickListService pickLists, PickConsumption consumption, Clock clock) {
-        this.consumption = consumption;
+            WarehouseService warehouses, PickListService pickLists, PackingService packing, Clock clock) {
+        this.packing = packing;
         this.picks = picks;
         this.packs = packs;
         this.verifications = verifications;
@@ -98,18 +96,17 @@ class FulfillmentServiceImpl implements FulfillmentService {
             return toTask(existing.get());
         }
         OrderSummary order = requireOrder(orderId);
-        // READY_TO_FULFILL: released, and production (if any) delivered (SCRUM-423). CONFIRMED: a stock-only
-        // order nobody released yet, as before release existed; the order refuses one with print lines.
-        if (order.status() != OrderStatus.CONFIRMED && order.status() != OrderStatus.READY_TO_FULFILL) {
+        // READY_TO_FULFILL only: released - its warehouse chosen - and production (if any) delivered (SCRUM-423,
+        // kltn-docs 17 BR-02). A CONFIRMED order is released by the coordinator first (G3-2).
+        if (order.status() != OrderStatus.READY_TO_FULFILL) {
             throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT,
-                    "Only a confirmed or released order can enter fulfillment; it is " + order.status());
+                    "Only a released order (READY_TO_FULFILL) can enter fulfillment; it is " + order.status());
         }
-        UUID warehouseId = pickingWarehouse(order, assignedUserId);
+        UUID warehouseId = pickingWarehouse(order);
         WarehouseScope.requireWarehouse(warehouseId);
         requireWarehouseAssignee(assignedUserId, warehouseId);
-        // SKU reservations still unallocated become allocations in this warehouse now (SCRUM-152, F-FUL step 02);
-        // the lines are planned from the allocations, so from the order as it reads afterwards.
-        order = orders.releaseToFulfillment(orderId, warehouseId);
+        // In this transaction, under the order's row lock (A1): READY_TO_FULFILL → PICKING.
+        orders.startPicking(orderId, actor.userId());
         var now = clock.instant();
         var pick = new PickJpaEntity(Identifiers.newId(), null, orderId, order.orderNumber(), warehouseId,
                 PickStatus.PENDING);
@@ -230,7 +227,7 @@ class FulfillmentServiceImpl implements FulfillmentService {
     public FulfillmentArtifactAccess artifactDownload(UUID taskId, UUID orderLineId, String role,
                                                        CurrentUser actor) {
         var pick = requirePick(taskId);
-        requireArtifactAccess(pick, actor);
+        TaskAccess.requireArtifactAccess(pick, actor);
         var line = requireOrderInFulfilment(pick).lines().stream()
                 .filter(value -> value.lineId().equals(orderLineId))
                 .findFirst().orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
@@ -252,91 +249,25 @@ class FulfillmentServiceImpl implements FulfillmentService {
 
     @Override
     public FulfillmentTask completePacking(UUID taskId, CurrentUser actor) {
-        var pick = lockPick(taskId);
-        pick.requireAssigned(actor.userId());
-        if (pick.getStatus() != PickStatus.PICKED) {
-            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT, "Picking must finish before packing");
-        }
-        var order = requireOrderInFulfilment(pick);
-        var pack = requirePack(pick.getId());
-        if (pack.getStatus() == PackStatus.ON_HOLD) {
-            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT,
-                    "A checksum hold requires QC or warehouse-manager reverification");
-        }
-        boolean matching = verifyAll(pack, order, actor.userId());
-        if (!matching) {
-            pack.hold();
-            packs.save(pack);
-            orders.putOnDesignHold(pick.getOrderId(), "DESIGN_MISMATCH");
-            return toTask(pick);
-        }
-        // Under the order's row lock: a cancellation came first (refused, nothing deducted) or is refused after (03 §9).
-        orders.recordPacked(pick.getOrderId());
-        pack.complete(clock.instant());
-        deductPrintedGoods(pack, order, actor.userId());
-        packs.save(pack);
-        return toTask(pick);
+        return completePacking(taskId, PackingCompletion.whole(), actor);
+    }
+
+    /** G4-5: see {@link PackingService#complete}; the answer is the task, with the shipment and the payment warning. */
+    @Override
+    public FulfillmentTask completePacking(UUID taskId, PackingCompletion completion, CurrentUser actor) {
+        requireRole(actor, Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER);
+        PackingService.Completed outcome = packing.complete(taskId, completion == null ? PackingCompletion.whole()
+                : completion, actor);
+        FulfillmentTask task = toTask(requirePick(taskId));
+        return outcome.shipmentId() == null ? task
+                : withPaymentWarning(task, outcome.order()).withShipment(outcome.shipmentId());
     }
 
     @Override
     public FulfillmentTask reverifyDesignIntegrity(UUID taskId, String resolutionNote, CurrentUser actor) {
         requireRole(actor, Role.QC_STAFF, Role.WAREHOUSE_MANAGER);
-        var pick = lockPick(taskId);
-        var pack = requirePack(pick.getId());
-        if (pack.getStatus() != PackStatus.ON_HOLD) {
-            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT, "The package has no design-integrity hold");
-        }
-        OrderSummary order = requireOrderInFulfilment(pick);
-        if (!verifyAll(pack, order, actor.userId())) {
-            return toTask(pick);
-        }
-        orders.recordPacked(pick.getOrderId());
-        pack.complete(clock.instant());
-        deductPrintedGoods(pack, order, actor.userId());
-        packs.save(pack);
-        orders.resolveDesignHold(pick.getOrderId(), actor.userId(), resolutionNote);
-        return toTask(pick);
-    }
-
-    /**
-     * Decision 2026-10-16 (docs 04b §15-18, 04c F-FUL): the order's custom-printed goods leave stock with their
-     * package, in the transaction that records it complete - after every design checksum matched, so a mismatch or
-     * any failure leaves the holds and the goods where they are. Stock lines were deducted when picked; a print line
-     * is never picked (production hands its goods to packing, still held for the order), so this is its one
-     * deduction, and dispatch deducts nothing. A completed package is not completed again ({@code CONFLICT}), and
-     * inventory answers a package it already deducted for as done.
-     */
-    private void deductPrintedGoods(PackJpaEntity pack, OrderSummary order, UUID actor) {
-        List<UUID> printHolds = order.lines().stream().filter(line -> line.designSnapshotId() != null)
-                .flatMap(line -> line.reservationIds().stream()).toList();
-        if (printHolds.isEmpty()) {
-            return;
-        }
-        List<UUID> live = inventory.liveHolds(printHolds).stream().map(StockReservation::reservationId).toList();
-        consumption.consumeForPack(pack.getId(), order.orderId(), live, actor);
-    }
-
-    private boolean verifyAll(PackJpaEntity pack, OrderSummary order, UUID actor) {
-        boolean allMatch = true;
-        for (var line : order.lines()) {
-            if (line.designSnapshotId() == null) {
-                continue;
-            }
-            var check = designs.verifyForFulfillment(line.designSnapshotId(), line.designChecksum());
-            var result = check.matching() ? DesignVerificationResult.MATCH : DesignVerificationResult.MISMATCH;
-            verifications.save(new DesignVerificationJpaEntity(Identifiers.newId(), pack.getId(), order.orderId(),
-                    line.lineId(), line.designSnapshotId(), check.expectedChecksum(), check.actualChecksum(),
-                    result, actor, clock.instant()));
-            allMatch &= check.matching();
-        }
-        return allMatch;
-    }
-
-    private void requireArtifactAccess(PickJpaEntity pick, CurrentUser actor) {
-        if (!java.util.Objects.equals(pick.getAssignedUserId(), actor.userId())
-                && !actor.hasAnyRole(Role.WAREHOUSE_MANAGER, Role.QC_STAFF)) {
-            throw new BusinessException(ErrorCode.NOT_FOUND);
-        }
+        packing.reverify(taskId, resolutionNote, actor);
+        return toTask(requirePick(taskId));
     }
 
     private FulfillmentTask toTask(PickJpaEntity pick) {
@@ -354,6 +285,18 @@ class FulfillmentServiceImpl implements FulfillmentService {
         return new FulfillmentTask(pick.getId(), pick.getOrderId(), pick.getOrderNumber(), pick.getWarehouseId(),
                 pick.getAssignedUserId(), assignedUserName, pick.getStatus().name(), pack.getStatus().name(),
                 pick.getAssignedAt(), pick.getStartedAt(), pick.getPickedAt(), pack.getPackedAt(), evidence, lines);
+    }
+
+    /**
+     * G3-Q4 / G2-3: the early warning at packing - the order still owes money its terms want before the goods leave,
+     * so the handover will be refused until the accountant records it.
+     */
+    private static FulfillmentTask withPaymentWarning(FulfillmentTask task, OrderSummary packed) {
+        var due = packed == null || packed.lifecycle() == null ? null : packed.lifecycle().amountDueBeforeHandover();
+        if (due == null || due.signum() <= 0) {
+            return task;
+        }
+        return task.withPaymentDue(new FulfillmentTask.PaymentDue(due, packed.total().currency().getCurrencyCode()));
     }
 
     private String nameOf(UUID userId) {
@@ -379,29 +322,6 @@ class FulfillmentServiceImpl implements FulfillmentService {
                             + java.util.Arrays.stream(PickStatus.values()).map(Enum::name)
                             .collect(Collectors.joining(", ")))));
         }
-    }
-
-    private UUID warehouseToAllocate(OrderSummary order, UUID assignedUserId) {
-        List<UUID> able = inventory.warehousesAbleToAllocate(order.orderId());
-        if (able.isEmpty()) {
-            throw new BusinessException(ErrorCode.INSUFFICIENT_STOCK,
-                    "No warehouse holds enough pickable stock for every line of order %s".formatted(order.orderNumber()));
-        }
-        List<UUID> usable = able.stream()
-                .filter(warehouse -> WarehouseScope.restriction().map(scope -> scope.ids().contains(warehouse)).orElse(true))
-                .filter(warehouse -> assignedUserId != null && identities.assignableUsers(ASSIGNEE_ROLES, warehouse)
-                        .stream().anyMatch(user -> user.userId().equals(assignedUserId)))
-                .toList();
-        if (usable.size() == 1) {
-            return usable.get(0);
-        }
-        if (usable.isEmpty()) {
-            // The assignee check that follows names the real problem (BR-SEC-002) for the one warehouse there is.
-            return able.get(0);
-        }
-        throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT,
-                "Order %s can be picked in %d warehouses; release it to one of them first".formatted(
-                        order.orderNumber(), usable.size()));
     }
 
     private PickJpaEntity requirePick(UUID taskId) {
@@ -450,21 +370,14 @@ class FulfillmentServiceImpl implements FulfillmentService {
      * order picked straight from CONFIRMED, where its holds are. Release does not check where the holds
      * sit, so they are checked here: stock in two warehouses, or outside the order's, cannot be picked as
      * one task (the goods would have to be moved by a transfer order first, docs 11 BR-01).
-     *
-     * <p>An order never released whose holds are still SKU reservations (SCRUM-152) sits in no warehouse yet. It
-     * is picked in the one warehouse that can allocate every line now, that the caller may work in and that the
-     * assignee belongs to (OQ-04: one order, one warehouse). None is {@code INSUFFICIENT_STOCK}; several is a
-     * choice for the coordinator, who releases the order to one of them first.</p>
      */
-    private UUID pickingWarehouse(OrderSummary order, UUID assignedUserId) {
+    private UUID pickingWarehouse(OrderSummary order) {
         List<OrderHold> holds = inventory.holdsOf(order.orderId());
-        if (order.warehouseId() == null && holds.stream().anyMatch(hold -> hold.locationCode() == null)) {
-            return warehouseToAllocate(order, assignedUserId);
-        }
         Map<UUID, Set<String>> skusByWarehouse = new java.util.LinkedHashMap<>();
         for (OrderHold hold : holds) {
             if (hold.locationCode() == null) {
-                continue;   // a SKU reservation of a released order: allocated in that warehouse by the task
+                // A SKU reservation (SCRUM-152): the release turned it into allocations, which name the bins.
+                continue;
             }
             UUID where = warehouses.findLocation(hold.locationCode()).map(StorageLocationView::warehouseId)
                     .orElseThrow(() -> new BusinessException(ErrorCode.LOCATION_NOT_FOUND,

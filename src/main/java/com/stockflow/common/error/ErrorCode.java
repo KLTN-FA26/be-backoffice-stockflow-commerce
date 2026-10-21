@@ -91,6 +91,9 @@ public enum ErrorCode {
     CUSTOMER_NOT_FOUND("Customer not found", 404),
     ADDRESS_NOT_FOUND("Address not found", 404),
     WAREHOUSE_NOT_FOUND("Warehouse not found", 404),
+    /** G4-5: a parcel of another task is not found either. */
+    PACKAGE_NOT_FOUND("Package not found", 404),
+    SHIPMENT_NOT_FOUND("Shipment not found", 404),
     GOODS_RECEIPT_NOT_FOUND("Goods receipt not found", 404),
     /** Also the answer for a message of another user: an inbox id is only meaningful to its recipient. */
     NOTIFICATION_NOT_FOUND("Notification not found", 404),
@@ -262,11 +265,57 @@ public enum ErrorCode {
     PAYMENT_TERM_NOT_ALLOWED("This payment term is not available for this order", 409),
     /** SCRUM-427: credit approval or refusal on an order that is not waiting for one. */
     ORDER_NOT_ON_CREDIT_HOLD("This order is not waiting for a credit decision", 409),
+    /** G3-2 (SCRUM-246/247): the order's lifecycle has no edge from its status to the one asked for. */
+    ORDER_INVALID_TRANSITION("This order cannot move to that status now", 409),
+    /** G3-2: resolving a hold on an order that is not on hold. */
+    ORDER_NOT_ON_HOLD("This order is not on hold", 409),
+    /** G3-2: a credit hold is decided through credit approval, not resolved like the others. */
+    ORDER_CREDIT_HOLD_USE_APPROVAL("A credit hold is decided through credit approval", 409),
+    /** G3-2 review: a design-mismatch hold is resolved by QC reverifying the package, which releases both. */
+    ORDER_DESIGN_HOLD_USE_REVERIFICATION("A design hold is resolved by reverifying the package", 409),
+    /** G4-Q5: an order with shipments records its delivery outcome per shipment, not for the whole order. */
+    ORDER_DELIVERY_VIA_SHIPMENT("This order's delivery is recorded per shipment", 409),
+    /** G3-Q4: money due before the goods leave has not all arrived; the handover waits for it. */
+    ORDER_BALANCE_NOT_PAID("This order must be paid before its goods leave", 409),
+    /** G3-2 (split shipments): no shipment by that id was handed over for this order. */
+    ORDER_SHIPMENT_NOT_FOUND("This order has no such shipment", 404),
+    /** G3-2: the same shipment handed over again with other goods. */
+    ORDER_SHIPMENT_CONFLICT("This shipment was already handed over with other goods", 409),
+    /** G3-2: more units would leave than the order line has left to ship. */
+    ORDER_SHIPMENT_QUANTITY_EXCEEDED("More than this order line has left to ship", 409),
+    /** G3-2: a shipment outcome its status does not allow (kltn-docs 09 §5). */
+    ORDER_SHIPMENT_INVALID_TRANSITION("This shipment cannot move to that status now", 409),
     /** SCRUM-431, kltn-docs 15 BR-07: one bank statement line is recorded once. */
     TRANSFER_REFERENCE_ALREADY_RECORDED("This transfer was already recorded", 409),
-    ALLOCATION_CUSTOMER_MISMATCH("This receivable belongs to another customer", 409),
+    ALLOCATION_CUSTOMER_MISMATCH("This receivable or order belongs to another customer", 409),
     /** SCRUM-431, kltn-docs 15 §4.3 step 4: an overdue customer gets no new credit until they pay. */
     CUSTOMER_CREDIT_OVERDUE("The customer has overdue receivables", 409),
+    /** G2-3 (the money ledger): no recorded transfer by that id. */
+    TRANSFER_NOT_FOUND("Transfer not found", 404),
+    /** G2-3: no allocation by that id on this transfer. */
+    ALLOCATION_NOT_FOUND("Allocation not found", 404),
+    /** G2-3: more than the transfer still has unallocated (15 BR-05: money is never spent twice). */
+    ALLOCATION_EXCEEDS_TRANSFER("More than this transfer has left to allocate", 409),
+    /** G2-3: more than the order may still take - its value less what it holds, owes on receivables or pays the carrier. */
+    ALLOCATION_EXCEEDS_AMOUNT_DUE("More than this order still has to be paid", 409),
+    /** G2-3, 15 edge "tiền về sau khi đơn đã huỷ": the money stays the customer's credit, for another order or a refund. */
+    ALLOCATION_ORDER_CANCELLED("This order is cancelled: keep the money as the customer's credit or refund it", 409),
+    /** G2-3: a draft, settled or credit order takes no money by allocation (a credit order is paid on its receivables). */
+    ALLOCATION_ORDER_NOT_PAYABLE("This order does not take a payment now", 409),
+    /** G2-3, 15 BR-06: an allocation is reversed once, and a reversal is not reversed. */
+    ALLOCATION_ALREADY_REVERSED("This allocation was already reversed", 409),
+    /** G2-3: taking the money back would leave a confirmed order unpaid; the accountant must agree to hold it. */
+    PAYMENT_REVERSAL_NEEDS_HOLD("Taking this money back leaves a confirmed order unpaid: confirm putting it on hold", 409),
+    /** G2-3: money already refunded, or the order settled, closed or cancelled: the reversal would rewrite history. */
+    PAYMENT_REVERSAL_NOT_ALLOWED("This payment can no longer be taken back", 409),
+    /** G2-3 (15 §4.2 step 3): the customer's terms do not let the balance be collected that way. */
+    BALANCE_POLICY_NOT_ALLOWED("This customer may not use that way of paying the balance", 409),
+    /** G2-3: a carrier remittance names a receivable the customer pays themselves. */
+    RECEIVABLE_NOT_CARRIER_COLLECTED("This receivable is not collected by a carrier", 409),
+    /** G2-3: the customer paid this balance to the carrier; record the carrier's remittance instead. */
+    RECEIVABLE_CARRIER_COLLECTED("The carrier collects this amount; record the carrier's remittance instead", 409),
+    /** G2-3: nothing is outstanding on this receivable; money for it again would be collected twice. */
+    RECEIVABLE_SETTLED("This receivable is paid in full", 409),
     /** SCRUM-466: a task is picked in one warehouse; the order's stock is held in more than one, or elsewhere. */
     FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE("Stock held for this order is in another warehouse", 409),
     /** SCRUM-267 (docs 07 step 6): the bin scanned is not the one this pick line takes its goods from. */
@@ -290,6 +339,37 @@ public enum ErrorCode {
     /** Docs 07 BR-05: only goods picked for an order cancelled afterwards go back to a bin. */
     PUT_BACK_NOT_REQUIRED("Nothing on this line needs putting back", 409),
     PUT_BACK_LOCATION_INVALID("Put back onto an active bin of the task's warehouse", 409),
+    /** G4-5 (docs 08 step 1): packing starts once picking is complete. */
+    PACKING_NOT_READY("Picking must finish before packing starts", 409),
+    /** G4-5: another packer took this order at the packing table; a warehouse manager may step in. */
+    PACKING_TAKEN("Another packer is packing this order", 409),
+    PACK_STATE_CONFLICT("Packing cannot do that in its current status", 409),
+    /** Docs 08 step 2, BR-01: the scanned item is not on the order (a wrong item). */
+    PACK_ITEM_NOT_IN_ORDER("This item is not in the order", 409),
+    /** The scanned code is on two lines of the order (a plain and a printed cup of one SKU): name the line. */
+    /** G4-5: a scan id already recorded on another package or task: the client reused it; send a new one. */
+    PACK_SCAN_ID_CONFLICT("This scan id was already used for another package", 409),
+    PACK_SCAN_AMBIGUOUS("This item is on several lines of the order: name the line", 409),
+    /** Docs 08 BR-01: an over-scan, more than the order line still wants. */
+    PACK_QUANTITY_EXCEEDS_ORDER("More than the order line still wants", 409),
+    /** More than was picked (or produced) for the line: the rest has not reached packing. */
+    PACK_QUANTITY_EXCEEDS_PICKED("More than reached packing for this line", 409),
+    /** Docs 08 BR-01: the lot scanned was not picked for this line, or more of it than was picked. */
+    PACK_LOT_MISMATCH("This lot was not picked for this line", 409),
+    /** Docs 08 step 2: the serial scanned was not picked for this line, or is packed already. */
+    PACK_SERIAL_MISMATCH("This serial number was not picked for this line, or is packed already", 409),
+    PACKAGE_SEALED("The package is already sealed", 409),
+    PACKAGE_EMPTY("The package has nothing in it", 409),
+    /** Docs 08 BR-03, 09 BR-01: a package with goods in it is weighed, measured and sealed before it ships. */
+    PACKAGE_NOT_SEALED("A package is still open: seal it or take it apart", 409),
+    PACKAGE_SHIPPED("The package is in a shipment already", 409),
+    /** Docs 08 BR-01: everything the order still wants must be packed, or a partial shipment asked for. */
+    PACKING_INCOMPLETE("Not everything is packed yet", 409),
+    /** The split-shipment policy is off (stockflow.fulfillment.packing.partial-shipments). */
+    PACK_PARTIAL_NOT_ALLOWED("Partial shipments are not allowed", 409),
+    PACK_NOTHING_TO_SHIP("No sealed package is waiting to ship", 409),
+    /** Docs 09 §5: the shipment's status does not allow the step. */
+    SHIPMENT_STATE_CONFLICT("The shipment cannot do that in its current status", 409),
     OPTIMISTIC_LOCK("The record changed meanwhile, please retry", 409),
     /** Two writers reached the same row; the loser waited for the lock and gave up. Retryable. */
     LOCK_TIMEOUT("The record is busy, please retry", 409),

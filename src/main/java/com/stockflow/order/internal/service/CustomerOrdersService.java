@@ -42,9 +42,10 @@ class CustomerOrdersService implements CustomerOrders {
             .withDefault("placedAt", Sort.Direction.DESC);
 
     /** Statuses from which the goods are released to the warehouse or beyond: printing, if any, is over. */
-    private static final Set<OrderStatus> PAST_PRODUCTION = Set.of(OrderStatus.READY_TO_FULFILL,
-            OrderStatus.IN_FULFILMENT, OrderStatus.SHIPPED, OrderStatus.DELIVERED, OrderStatus.COMPLETED,
-            OrderStatus.RETURNED);
+    private static final Set<OrderStatus> PAST_PRODUCTION = java.util.EnumSet.of(OrderStatus.READY_TO_FULFILL,
+            OrderStatus.PICKING, OrderStatus.PARTIALLY_FULFILLED, OrderStatus.PACKED, OrderStatus.SHIPPED,
+            OrderStatus.DELIVERY_FAILED, OrderStatus.DELIVERED, OrderStatus.RETURN_REQUESTED, OrderStatus.RETURNED,
+            OrderStatus.REFUNDED, OrderStatus.PARTIALLY_REFUNDED, OrderStatus.COMPLETED, OrderStatus.CLOSED);
 
     static final String AWAITING_CREDIT_APPROVAL = "AWAITING_CREDIT_APPROVAL";
     static final String UNDER_REVIEW = "UNDER_REVIEW";
@@ -53,9 +54,15 @@ class CustomerOrdersService implements CustomerOrders {
     private final OrderService orders;
     private final ProductionRecords productionRecords;
     private final CreditChecks creditChecks;
+    private final com.stockflow.order.internal.domain.CancellationRequestRepository cancellationRequests;
+    private final com.stockflow.order.internal.domain.QuoteRepository quotes;
 
     CustomerOrdersService(OrderSearchRepository search, OrderService orders, ProductionRecords productionRecords,
-                          CreditChecks creditChecks) {
+                          CreditChecks creditChecks,
+                          com.stockflow.order.internal.domain.CancellationRequestRepository cancellationRequests,
+                          com.stockflow.order.internal.domain.QuoteRepository quotes) {
+        this.cancellationRequests = cancellationRequests;
+        this.quotes = quotes;
         this.search = search;
         this.orders = orders;
         this.productionRecords = productionRecords;
@@ -71,10 +78,14 @@ class CustomerOrdersService implements CustomerOrders {
                 query.placedFrom() == null ? null : query.placedFrom().atStartOfDay(BUSINESS_ZONE).toInstant(),
                 query.placedTo() == null ? null : query.placedTo().plusDays(1).atStartOfDay(BUSINESS_ZONE).toInstant());
         var page = search.search(criteria, Pages.of(query.page(), query.size(), SORT.parse(query.sort())));
-        Map<UUID, Integer> lineCounts = search.lineCounts(page.getContent().stream().map(OrderSummary::orderId).toList());
+        List<UUID> ids = page.getContent().stream().map(OrderSummary::orderId).toList();
+        Map<UUID, Integer> lineCounts = search.lineCounts(ids);
+        var requests = cancellationRequests.latestStatuses(ids);
         return Pages.toResponse(page, row -> new Card(row.orderId(), row.orderNumber(), row.status(),
-                statusGroup(row.status()), row.total().amount(), row.total().currency().getCurrencyCode(),
-                row.placedAt(), lineCounts.getOrDefault(row.orderId(), 0), deliveryState(row.status())));
+                statusGroup(row.status(), row.lifecycle()), row.total().amount(),
+                row.total().currency().getCurrencyCode(), row.placedAt(), lineCounts.getOrDefault(row.orderId(), 0),
+                deliveryState(row.status(), row.lifecycle()),
+                requests.containsKey(row.orderId()) ? requests.get(row.orderId()).name() : null));
     }
 
     @Override
@@ -93,35 +104,84 @@ class CustomerOrdersService implements CustomerOrders {
         Optional<CreditChecks.Check> latestCheck = summary.status() == OrderStatus.ON_HOLD
                 ? creditChecks.latest(orderId)
                 : Optional.empty();
-        return new Detail(summary.orderId(), summary.orderNumber(), summary.status(), statusGroup(summary.status()),
+        return new Detail(summary.orderId(), summary.orderNumber(), summary.status(),
+                statusGroup(summary.status(), summary.lifecycle()),
                 holdReasonPublic(summary.status(), latestCheck), summary.paymentTerm(), summary.total().amount(),
                 summary.total().currency().getCurrencyCode(), summary.placedAt(), summary.shippingAddress(),
                 payment(summary), lines, timeline(summary, orders.history(orderId)),
-                deliveryState(summary.status()));
+                deliveryState(summary.status(), summary.lifecycle()), allowedActions(summary),
+                cancellationRequests.latestOf(orderId)
+                        .map(r -> new CancellationRequestView(r.status().name(), r.reasonCode(), r.note(),
+                                r.requestedAt(), r.decidedAt(), r.decisionNote()))
+                        .orElse(null));
+    }
+
+    /**
+     * G3-2: what the portal may offer, from the same rules the order applies - so the portal stops keeping its own
+     * list of cancellable statuses. A customer cancels at once until the order is released; after that, up to the
+     * first completed package, asks (one request at a time); reorders an order that came from a quote.
+     */
+    private AllowedActions allowedActions(OrderSummary summary) {
+        OrderStatus status = summary.status();
+        boolean cancel = status.customerMayCancelDirectly();
+        boolean packed = summary.lifecycle() != null && summary.lifecycle().packedAt() != null;
+        boolean request = !cancel && !packed && status.canTransitionTo(OrderStatus.CANCELLED)
+                && !cancellationRequests.hasPending(summary.orderId());
+        return new AllowedActions(cancel, request, quotes.findByConvertedOrderId(summary.orderId()).isPresent());
     }
 
     static StatusGroup statusGroup(OrderStatus status) {
+        return statusGroup(status, null);
+    }
+
+    /** {@code lifecycle} tells a CLOSED order that was refunded from one that was completed; null reads as completed. */
+    static StatusGroup statusGroup(OrderStatus status, OrderSummary.Lifecycle lifecycle) {
         return switch (status) {
             case DRAFT, PENDING_PAYMENT -> StatusGroup.AWAITING_PAYMENT;
             case ON_HOLD -> StatusGroup.UNDER_REVIEW;
             case CONFIRMED -> StatusGroup.CONFIRMED;
             case IN_PRODUCTION -> StatusGroup.IN_PRODUCTION;
-            case READY_TO_FULFILL, IN_FULFILMENT -> StatusGroup.PREPARING;
-            case SHIPPED -> StatusGroup.SHIPPING;
+            case READY_TO_FULFILL, PICKING, PARTIALLY_FULFILLED, PACKED -> StatusGroup.PREPARING;
+            case SHIPPED, DELIVERY_FAILED -> StatusGroup.SHIPPING;
             case DELIVERED, COMPLETED -> StatusGroup.DELIVERED;
+            // Closed after a refund (never completed) is a return; closed after completion a delivery.
+            case CLOSED -> lifecycle != null && lifecycle.completedAt() == null ? StatusGroup.RETURNED
+                    : StatusGroup.DELIVERED;
             case CANCELLED -> StatusGroup.CANCELLED;
-            case RETURNED -> StatusGroup.RETURNED;
+            case RETURN_REQUESTED, RETURNED, REFUNDED, PARTIALLY_REFUNDED -> StatusGroup.RETURNED;
         };
     }
 
-    /** Only what staff recorded: a shipped order is in transit until someone records its delivery. */
     static DeliveryState deliveryState(OrderStatus status) {
+        return deliveryState(status, null);
+    }
+
+    /**
+     * Only what staff recorded: a shipped order is in transit until someone records its delivery. With shipments
+     * (split, G4-Q3) it sums them up (09 BR-05): partly delivered once one arrived and another has not.
+     * {@code lifecycle} may be null (a list row without its shipments): the status alone decides then.
+     */
+    static DeliveryState deliveryState(OrderStatus status, OrderSummary.Lifecycle lifecycle) {
+        List<OrderSummary.Shipment> shipments = lifecycle == null ? List.of() : lifecycle.shipments();
+        boolean anyDelivered = shipments.stream()
+                .anyMatch(s -> s.status() == com.stockflow.order.api.OrderShipmentStatus.DELIVERED);
+        boolean anyInTransit = shipments.stream()
+                .anyMatch(s -> s.status() == com.stockflow.order.api.OrderShipmentStatus.HANDED_OVER);
+        boolean anyFailed = shipments.stream()
+                .anyMatch(s -> s.status() == com.stockflow.order.api.OrderShipmentStatus.DELIVERY_FAILED);
         return switch (status) {
-            case SHIPPED -> DeliveryState.IN_TRANSIT;
-            case DELIVERED, COMPLETED -> DeliveryState.DELIVERED;
-            case RETURNED -> DeliveryState.RETURNED;
-            case DRAFT, PENDING_PAYMENT, ON_HOLD, CONFIRMED, IN_PRODUCTION, READY_TO_FULFILL, IN_FULFILMENT,
-                 CANCELLED -> DeliveryState.NOT_SHIPPED;
+            case SHIPPED -> anyDelivered ? DeliveryState.PARTIALLY_DELIVERED : DeliveryState.IN_TRANSIT;
+            case DELIVERY_FAILED -> anyDelivered ? DeliveryState.PARTIALLY_DELIVERED : DeliveryState.DELIVERY_FAILED;
+            case PARTIALLY_FULFILLED, PACKED, ON_HOLD -> anyDelivered ? DeliveryState.PARTIALLY_DELIVERED
+                    : anyInTransit || status == OrderStatus.PARTIALLY_FULFILLED && shipments.isEmpty()
+                    ? DeliveryState.IN_TRANSIT
+                    : anyFailed ? DeliveryState.DELIVERY_FAILED : DeliveryState.NOT_SHIPPED;
+            case DELIVERED, COMPLETED, RETURN_REQUESTED -> DeliveryState.DELIVERED;
+            case CLOSED -> statusGroup(status, lifecycle) == StatusGroup.RETURNED ? DeliveryState.RETURNED
+                    : DeliveryState.DELIVERED;
+            case RETURNED, REFUNDED, PARTIALLY_REFUNDED -> DeliveryState.RETURNED;
+            case DRAFT, PENDING_PAYMENT, CONFIRMED, IN_PRODUCTION, READY_TO_FULFILL, PICKING, CANCELLED ->
+                    DeliveryState.NOT_SHIPPED;
         };
     }
 

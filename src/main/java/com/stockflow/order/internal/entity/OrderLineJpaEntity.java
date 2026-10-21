@@ -61,6 +61,12 @@ public class OrderLineJpaEntity {
 
     @Column(name = "design_checksum", length = 64)
     private String designChecksum;
+
+    /** V20261021000100: units closed out of a partly fulfilled order (split shipments, G3-2). */
+    @Column(name = "cancelled_quantity", nullable = false)
+    private int cancelledQuantity;
+    public int getCancelledQuantity() { return cancelledQuantity; }
+    public void setCancelledQuantity(int value) { cancelledQuantity = value; }
     public String getDesignChecksum() { return designChecksum; }
     public void setDesignChecksum(String value) { designChecksum = value; }
 

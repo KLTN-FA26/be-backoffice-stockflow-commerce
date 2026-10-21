@@ -101,12 +101,6 @@ public interface InventoryService {
     AllocateStockResult allocate(AllocateStockCommand command);
 
     /**
-     * The warehouses that could {@link #allocate} every live SKU reservation of the order right now, by id. Empty
-     * when the order has none, or no single warehouse holds enough (OQ-04: one order, one warehouse). Read-only.
-     */
-    List<UUID> warehousesAbleToAllocate(UUID orderId);
-
-    /**
      * X-SHORT reallocation: the allocation came up short at its bin. It is released, and the same quantity is
      * allocated again in the same warehouse, FEFO, from any pickable bin but that one. Joins the caller's
      * transaction. Idempotent on the command's request id.

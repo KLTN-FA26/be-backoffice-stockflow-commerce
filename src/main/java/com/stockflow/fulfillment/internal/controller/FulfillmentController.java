@@ -13,10 +13,12 @@ import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.common.security.Roles;
 import com.stockflow.fulfillment.api.FulfillmentService;
 import com.stockflow.fulfillment.api.FulfillmentTaskQuery;
+import com.stockflow.fulfillment.api.PackingCompletion;
 import com.stockflow.fulfillment.internal.controller.dto.AssigneeResponse;
 import com.stockflow.fulfillment.internal.controller.dto.ConfirmPickRequest;
 import com.stockflow.fulfillment.internal.controller.dto.FulfillmentArtifactAccessResponse;
 import com.stockflow.fulfillment.internal.controller.dto.FulfillmentTaskResponse;
+import com.stockflow.fulfillment.internal.controller.dto.PackingCompletionRequest;
 import com.stockflow.fulfillment.internal.controller.dto.PickLineResponse;
 import com.stockflow.fulfillment.internal.controller.dto.PutBackRequest;
 import com.stockflow.fulfillment.internal.controller.dto.PutBackRowResponse;
@@ -199,7 +201,7 @@ class FulfillmentController {
 
     /**
      * X-SHORT (docs 04c): the assignee is at the line's bin and finds fewer units than allocated. The line turns
-     * SHORT, nothing is deducted, and the order goes ON_HOLD ({@code INVENTORY_ISSUE}) for the coordinator. The
+     * SHORT, nothing is deducted, and the order goes ON_HOLD ({@code INVENTORY}) for the coordinator. The
      * same report again answers 200 with the line unchanged.
      */
     @PostMapping("/tasks/{taskId}/pick-lines/{lineId}/short")
@@ -238,13 +240,22 @@ class FulfillmentController {
                 .body(ApiResponse.ok(mapper.toResponse(fulfillment.artifactDownload(taskId, lineId, role, actor))));
     }
 
+    /**
+     * Completes packing (G4-5, docs 08 step 7-9): every sealed package not shipped yet becomes one shipment,
+     * READY_TO_DISPATCH ({@code shipmentId} in the answer). Without a body, everything the order wants must be packed
+     * (409 PACKING_INCOMPLETE); {@code partial} ships what is sealed and leaves the rest for later. A printed design
+     * that no longer matches answers 200 with {@code packStatus} ON_HOLD and no shipment. Completed again, the same.
+     */
     @PostMapping("/tasks/{taskId}/packing-completion")
     @RequiresPermission(resource = FulfillmentResources.PACKAGES, action = Action.CREATE)
     @PreAuthorize("hasAnyAuthority('" + Roles.WAREHOUSE_STAFF + "','" + Roles.WAREHOUSE_MANAGER + "')")
     @Auditable(action = AuditAction.TRANSITION, resourceType = "fulfillment-task", resourceId = "#taskId")
     public ApiResponse<FulfillmentTaskResponse> completePacking(@PathVariable UUID taskId,
-                                                        @AuthenticatedUser CurrentUser actor) {
-        return ApiResponse.ok(mapper.toResponse(fulfillment.completePacking(taskId, actor)));
+            @Valid @RequestBody(required = false) PackingCompletionRequest request,
+            @AuthenticatedUser CurrentUser actor) {
+        PackingCompletion completion = request == null ? PackingCompletion.whole()
+                : new PackingCompletion(request.requestId(), request.partial(), request.note());
+        return ApiResponse.ok(mapper.toResponse(fulfillment.completePacking(taskId, completion, actor)));
     }
 
     @PostMapping("/tasks/{taskId}/design-integrity-reverification")

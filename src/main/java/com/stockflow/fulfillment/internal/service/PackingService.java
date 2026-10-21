@@ -1,0 +1,805 @@
+package com.stockflow.fulfillment.internal.service;
+
+import com.stockflow.common.api.FieldError;
+import com.stockflow.common.api.PageResponse;
+import com.stockflow.common.domain.Sku;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
+import com.stockflow.common.id.Identifiers;
+import com.stockflow.common.persistence.Pages;
+import com.stockflow.common.security.CurrentUser;
+import com.stockflow.common.security.Role;
+import com.stockflow.common.security.WarehouseScope;
+import com.stockflow.design.api.DesignService;
+import com.stockflow.fulfillment.api.PackingCompletion;
+import com.stockflow.fulfillment.internal.domain.DeliveryMode;
+import com.stockflow.fulfillment.internal.domain.DesignVerificationResult;
+import com.stockflow.fulfillment.internal.domain.PackStatus;
+import com.stockflow.fulfillment.internal.domain.PackageStatus;
+import com.stockflow.fulfillment.internal.domain.PackageType;
+import com.stockflow.fulfillment.internal.domain.PackingSession;
+import com.stockflow.fulfillment.internal.domain.PickLineStatus;
+import com.stockflow.fulfillment.internal.domain.PickStatus;
+import com.stockflow.fulfillment.internal.domain.Shipment;
+import com.stockflow.fulfillment.internal.domain.ShipmentStatus;
+import com.stockflow.fulfillment.internal.entity.DesignVerificationJpaEntity;
+import com.stockflow.fulfillment.internal.entity.PackJpaEntity;
+import com.stockflow.fulfillment.internal.entity.PackageJpaEntity;
+import com.stockflow.fulfillment.internal.entity.PickJpaEntity;
+import com.stockflow.fulfillment.internal.entity.PickLineJpaEntity;
+import com.stockflow.fulfillment.internal.entity.ShipmentEventJpaEntity;
+import com.stockflow.fulfillment.internal.entity.ShipmentJpaEntity;
+import com.stockflow.fulfillment.internal.repository.DesignVerificationJpaRepository;
+import com.stockflow.fulfillment.internal.repository.PackJpaRepository;
+import com.stockflow.fulfillment.internal.repository.PackageJpaRepository;
+import com.stockflow.fulfillment.internal.repository.PackingSessionStore;
+import com.stockflow.fulfillment.internal.repository.PickJpaRepository;
+import com.stockflow.fulfillment.internal.repository.PickLineJpaRepository;
+import com.stockflow.fulfillment.internal.repository.ShipmentEventJpaRepository;
+import com.stockflow.fulfillment.internal.repository.ShipmentJpaRepository;
+import com.stockflow.identity.api.IdentityService;
+import com.stockflow.inventory.api.HoldView;
+import com.stockflow.inventory.api.InventoryControlService;
+import com.stockflow.inventory.api.InventoryService;
+import com.stockflow.inventory.api.ItemLogistics;
+import com.stockflow.inventory.api.StockReservation;
+import com.stockflow.inventory.api.StorageClass;
+import com.stockflow.inventory.consumption.PickConsumption;
+import com.stockflow.order.api.OrderService;
+import com.stockflow.order.api.OrderStatus;
+import com.stockflow.order.api.OrderSummary;
+import com.stockflow.order.api.ShipmentHandover;
+import com.stockflow.warehouse.api.WarehouseService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.jpa.domain.Specification;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.math.BigDecimal;
+import java.time.Clock;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.EnumSet;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.TreeMap;
+import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+
+/**
+ * The packing station (G4-5): the queue, the packing session and its parcels, the label, and completing packing into
+ * a shipment. See {@link Packing} for the contract and {@link PackingSession} for the rules.
+ *
+ * <p><b>Lock order</b>, as everywhere in fulfillment: the pick first ({@code SELECT … FOR UPDATE}), then the order (its
+ * service takes the order's row lock), then stock rows (the deduction of printed goods). Cancelling an order takes the
+ * order and stock locks in its own transaction and reaches the pick only afterwards, in the listener.</p>
+ */
+@Service
+@Transactional
+class PackingService implements Packing {
+
+    private static final Logger log = LoggerFactory.getLogger(PackingService.class);
+
+    /** The order statuses packing may change parcels in: released, picking, or the rest of a split order. */
+    private static final Set<OrderStatus> PACKABLE = EnumSet.of(OrderStatus.READY_TO_FULFILL, OrderStatus.PICKING,
+            OrderStatus.PARTIALLY_FULFILLED);
+    private static final EnumSet<PackStatus> QUEUED = EnumSet.of(PackStatus.PENDING, PackStatus.PACKING,
+            PackStatus.ON_HOLD);
+    /** The most picked-but-unpacked tasks the queue reads at once; far above what one warehouse has waiting. */
+    private static final int QUEUE_WORKING_SET = Pages.MAX_PAGE_SIZE * 10;
+
+    private final PickJpaRepository picks;
+    private final PickLineJpaRepository pickLines;
+    private final PackJpaRepository packs;
+    private final PackageJpaRepository packages;
+    private final ShipmentJpaRepository shipments;
+    private final ShipmentEventJpaRepository shipmentEvents;
+    private final DesignVerificationJpaRepository verifications;
+    private final PackingSessionStore store;
+    private final com.stockflow.fulfillment.internal.repository.PackageScanJpaRepository scans;
+    private final OrderService orders;
+    private final InventoryService inventory;
+    private final InventoryControlService itemControls;
+    private final PickConsumption consumption;
+    private final DesignService designs;
+    private final IdentityService identities;
+    private final WarehouseService warehouses;
+    private final Clock clock;
+    private final int dimDivisor;
+    private final boolean partialShipmentsAllowed;
+
+    @SuppressWarnings("java:S107")
+    PackingService(PickJpaRepository picks, PickLineJpaRepository pickLines, PackJpaRepository packs,
+                   PackageJpaRepository packages, ShipmentJpaRepository shipments,
+                   ShipmentEventJpaRepository shipmentEvents, DesignVerificationJpaRepository verifications,
+                   PackingSessionStore store,
+                   com.stockflow.fulfillment.internal.repository.PackageScanJpaRepository scans,
+                   OrderService orders, InventoryService inventory,
+                   InventoryControlService itemControls, PickConsumption consumption, DesignService designs,
+                   IdentityService identities, WarehouseService warehouses, Clock clock,
+                   @Value("${stockflow.fulfillment.packing.dim-divisor:6000}") int dimDivisor,
+                   @Value("${stockflow.fulfillment.packing.partial-shipments:true}") boolean partialShipmentsAllowed) {
+        this.picks = picks;
+        this.pickLines = pickLines;
+        this.packs = packs;
+        this.packages = packages;
+        this.shipments = shipments;
+        this.shipmentEvents = shipmentEvents;
+        this.verifications = verifications;
+        this.store = store;
+        this.scans = scans;
+        this.orders = orders;
+        this.inventory = inventory;
+        this.itemControls = itemControls;
+        this.consumption = consumption;
+        this.designs = designs;
+        this.identities = identities;
+        this.warehouses = warehouses;
+        this.clock = clock;
+        this.dimDivisor = dimDivisor;
+        this.partialShipmentsAllowed = partialShipmentsAllowed;
+    }
+
+    // ------------------------------------------------------------------ the queue
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<QueueRow> queue(UUID warehouseId, String status, int page, int size, CurrentUser actor) {
+        if (warehouseId != null) {
+            WarehouseScope.requireWarehouse(warehouseId);
+        }
+        Set<PackStatus> statuses = status == null || status.isBlank() ? QUEUED : EnumSet.of(parse(status));
+        var filters = new ArrayList<Specification<PickJpaEntity>>();
+        filters.add(WarehouseScope.warehousesIn("warehouseId"));
+        filters.add((root, q, cb) -> cb.equal(root.get("status"), PickStatus.PICKED));
+        if (warehouseId != null) {
+            filters.add((root, q, cb) -> cb.equal(root.get("warehouseId"), warehouseId));
+        }
+        filters.add((root, q, cb) -> {
+            var waiting = q.subquery(UUID.class);
+            var pack = waiting.from(PackJpaEntity.class);
+            waiting.select(pack.get("pickId")).where(cb.equal(pack.get("pickId"), root.get("id")),
+                    pack.get("status").in(statuses));
+            return cb.exists(waiting);
+        });
+        // Oldest pick first: the goods have waited longest at the packing area. The orders' own status decides the
+        // rest (spec §5.5): an order on hold for anything but its design check, or one packing can no longer work on,
+        // is left out. Orders live in another module, so the candidates - picked, not yet packed, in the caller's
+        // warehouses: a bounded working set - are read whole, asked about in one call, and paged here.
+        List<PickJpaEntity> candidates = picks.findAll(Specification.allOf(filters),
+                org.springframework.data.domain.PageRequest.of(0, QUEUE_WORKING_SET,
+                        Sort.by(Sort.Direction.ASC, "pickedAt", "id"))).getContent();
+        Map<UUID, com.stockflow.order.api.OrderHoldState> states = orders.holdStates(candidates.stream()
+                .map(PickJpaEntity::getOrderId).toList()).stream()
+                .collect(Collectors.toMap(com.stockflow.order.api.OrderHoldState::orderId, Function.identity()));
+        List<PickJpaEntity> shown = candidates.stream().filter(pick -> queueable(states.get(pick.getOrderId())))
+                .toList();
+        var pageable = Pages.of(page, size, Sort.by(Sort.Direction.ASC, "pickedAt", "id"));
+        int from = (int) Math.min(pageable.getOffset(), shown.size());
+        Page<PickJpaEntity> found = new org.springframework.data.domain.PageImpl<>(
+                shown.subList(from, Math.min(from + pageable.getPageSize(), shown.size())), pageable, shown.size());
+        List<UUID> pickIds = found.getContent().stream().map(PickJpaEntity::getId).toList();
+        Map<UUID, PackJpaEntity> packByPick = pickIds.isEmpty() ? Map.of() : packs.findByPickIdIn(pickIds).stream()
+                .collect(Collectors.toMap(PackJpaEntity::getPickId, Function.identity()));
+        List<UUID> packIds = packByPick.values().stream().map(PackJpaEntity::getId).toList();
+        Map<UUID, List<PackageJpaEntity>> parcelsByPack = packIds.isEmpty() ? Map.of()
+                : packages.findByPackIdIn(packIds).stream().collect(Collectors.groupingBy(PackageJpaEntity::getPackId));
+        Map<UUID, Long> shipmentsByPack = packIds.isEmpty() ? Map.of() : shipments.findByPackIdIn(packIds).stream()
+                .filter(s -> s.getStatus() != ShipmentStatus.CANCELLED)
+                .collect(Collectors.groupingBy(ShipmentJpaEntity::getPackId, Collectors.counting()));
+        List<UUID> people = new ArrayList<>();
+        found.getContent().forEach(pick -> people.add(pick.getAssignedUserId()));
+        packByPick.values().forEach(pack -> people.add(pack.getStartedBy()));
+        Map<UUID, String> names = identities.displayNames(people.stream().filter(Objects::nonNull).distinct().toList());
+        return Pages.toResponse(found, pick -> {
+            PackJpaEntity pack = packByPick.get(pick.getId());
+            List<PackageJpaEntity> parcels = parcelsByPack.getOrDefault(pack.getId(), List.of()).stream()
+                    .filter(p -> p.getStatus() != PackageStatus.VOIDED).toList();
+            return new QueueRow(pick.getId(), pick.getOrderId(), pick.getOrderNumber(), pick.getWarehouseId(),
+                    pack.getStatus().name(), pick.getPickedAt(), names.get(pick.getAssignedUserId()),
+                    pack.getStartedBy(), names.get(pack.getStartedBy()), pack.getStartedAt(), parcels.size(),
+                    (int) parcels.stream().filter(p -> p.getStatus() == PackageStatus.SEALED).count(),
+                    shipmentsByPack.getOrDefault(pack.getId(), 0L).intValue());
+        });
+    }
+
+    // ------------------------------------------------------------------ the session
+
+    @Override
+    public Session start(UUID taskId, CurrentUser actor) {
+        Context ctx = forWork(taskId);
+        requirePackable(ctx.order());
+        PackingSession session = load(ctx);
+        if (session.start(actor.userId(), isManager(actor), clock.instant())) {
+            store.save(session, ctx.pack());
+            log.info("Packing of order {} started by {}", ctx.pick().getOrderNumber(), actor.userId());
+        }
+        return view(ctx, session);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Session session(UUID taskId, CurrentUser actor) {
+        PickJpaEntity pick = picks.findById(taskId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+        WarehouseScope.requireWarehouse(pick.getWarehouseId());
+        OrderSummary order = requireOrder(pick.getOrderId());
+        Context ctx = new Context(pick, requirePack(pick), order);
+        return view(ctx, load(ctx));
+    }
+
+    @Override
+    public Parcel openPackage(UUID taskId, String type, CurrentUser actor) {
+        Context ctx = forWork(taskId);
+        requirePackable(ctx.order());
+        PackingSession session = load(ctx);
+        session.requireWorkable(actor.userId(), isManager(actor));
+        PackingSession.Parcel parcel = session.openPackage(Identifiers.newId(), packageType(type), clock.instant());
+        store.save(session, ctx.pack());
+        return parcelView(parcel, skus(session));
+    }
+
+    @Override
+    public Session scan(UUID taskId, UUID packageId, Scan scan, CurrentUser actor) {
+        Context ctx = forWork(taskId);
+        if (isReplay(ctx, packageId, scan.scanId())) {
+            return view(ctx, load(ctx));
+        }
+        requirePackable(ctx.order());
+        PackingSession session = load(ctx);
+        session.requireWorkable(actor.userId(), isManager(actor));
+        if (session.scan(scan.scanId(), packageId, scan.scannedCode(), scan.lotNumber(), scan.serialNumber(),
+                scan.quantity(), scan.orderLineId(), actor.userId(), clock.instant())) {
+            store.save(session, ctx.pack());
+        }
+        return view(ctx, session);
+    }
+
+    @Override
+    public Session removeUnits(UUID taskId, UUID packageId, UUID orderLineId, String lotNumber, String serialNumber,
+                               int quantity, UUID scanId, CurrentUser actor) {
+        Context ctx = forWork(taskId);
+        UUID id = scanId == null ? Identifiers.newId() : scanId;
+        if (isReplay(ctx, packageId, id)) {
+            return view(ctx, load(ctx));
+        }
+        requirePackable(ctx.order());
+        PackingSession session = load(ctx);
+        session.requireWorkable(actor.userId(), isManager(actor));
+        session.remove(id, packageId, orderLineId, lotNumber, serialNumber, quantity, actor.userId(), clock.instant());
+        store.save(session, ctx.pack());
+        return view(ctx, session);
+    }
+
+    /**
+     * A scan id is answered before anything else is checked (a retry after the package was sealed, or packing
+     * completed, gets the answer it would have got): the same id on the same package is a replay; on another package or
+     * another task it is a client error, refused before the database's primary key would be.
+     */
+    private boolean isReplay(Context ctx, UUID packageId, UUID scanId) {
+        if (scanId == null) {
+            return false;
+        }
+        return scans.findById(scanId).map(recorded -> {
+            boolean ours = recorded.getPackageId().equals(packageId) && packages.findById(packageId)
+                    .map(parcel -> parcel.getPackId().equals(ctx.pack().getId())).orElse(false);
+            if (!ours) {
+                throw new BusinessException(ErrorCode.PACK_SCAN_ID_CONFLICT,
+                        "Scan %s was already recorded for another package; send a new scanId".formatted(scanId));
+            }
+            return true;
+        }).orElse(false);
+    }
+
+    @Override
+    public Parcel seal(UUID taskId, UUID packageId, Seal seal, CurrentUser actor) {
+        Context ctx = forWork(taskId);
+        requirePackable(ctx.order());
+        PackingSession session = load(ctx);
+        session.requireWorkable(actor.userId(), isManager(actor));
+        PackingSession.Parcel parcel = session.seal(packageId, new PackingSession.Measures(seal.weightKg(),
+                        seal.lengthCm(), seal.widthCm(), seal.heightCm()), seal.rotatable(), seal.fragile(),
+                seal.packageType() == null ? null : packageType(seal.packageType()), dimDivisor, actor.userId(),
+                clock.instant());
+        store.save(session, ctx.pack());
+        return parcelView(parcel, skus(session));
+    }
+
+    @Override
+    public Parcel reopen(UUID taskId, UUID packageId, CurrentUser actor) {
+        Context ctx = forWork(taskId);
+        requirePackable(ctx.order());
+        PackingSession session = load(ctx);
+        session.requireWorkable(actor.userId(), isManager(actor));
+        PackingSession.Parcel parcel = session.reopen(packageId);
+        store.save(session, ctx.pack());
+        return parcelView(parcel, skus(session));
+    }
+
+    @Override
+    public Session voidPackage(UUID taskId, UUID packageId, CurrentUser actor) {
+        Context ctx = forWork(taskId);
+        requirePackable(ctx.order());
+        PackingSession session = load(ctx);
+        session.requireWorkable(actor.userId(), isManager(actor));
+        session.voidPackage(packageId, actor.userId(), clock.instant());
+        store.save(session, ctx.pack());
+        return view(ctx, session);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Label label(UUID taskId, UUID packageId, CurrentUser actor) {
+        PickJpaEntity pick = picks.findById(taskId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+        WarehouseScope.requireWarehouse(pick.getWarehouseId());
+        OrderSummary order = requireOrder(pick.getOrderId());
+        Context ctx = new Context(pick, requirePack(pick), order);
+        PackingSession session = load(ctx);
+        PackingSession.Parcel parcel = session.parcel(packageId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.PACKAGE_NOT_FOUND));
+        if (parcel.status() != PackageStatus.SEALED) {
+            throw new BusinessException(ErrorCode.PACK_STATE_CONFLICT, parcel.status() == PackageStatus.OPEN
+                    ? "Seal package %d first: the label carries its weight and size".formatted(parcel.packageNo())
+                    : "Package %d was voided; its label is void (08 BR-05)".formatted(parcel.packageNo()));
+        }
+        List<PackingSession.Parcel> together;
+        ShipmentJpaEntity shipment = null;
+        if (parcel.shipmentId() != null) {
+            shipment = shipments.findById(parcel.shipmentId()).orElseThrow();
+            UUID shipmentId = parcel.shipmentId();
+            together = session.parcels().stream().filter(p -> shipmentId.equals(p.shipmentId())).toList();
+        } else {
+            together = session.parcels().stream()
+                    .filter(p -> p.status() == PackageStatus.SEALED && p.shipmentId() == null).toList();
+        }
+        BigDecimal cod = shipment != null && shipment.getStatus() != ShipmentStatus.READY_TO_DISPATCH
+                ? shipment.getCodAmount() : orders.codFor(order.orderId(), handoverLines(together),
+                pendingLines(session, shipments.findByPackIdOrderByReadyAtAscIdAsc(ctx.pack().getId()), shipment));
+        var address = order.shippingAddress();
+        Address recipient = address == null ? new Address(order.contactName(), order.contactPhone(), null, null, null,
+                null, null, null) : new Address(address.recipientName() == null ? order.contactName()
+                : address.recipientName(), address.phone() == null ? order.contactPhone() : address.phone(),
+                address.line1(), address.line2(), address.wardName(), address.provinceName(), address.countryCode(),
+                address.postalCode());
+        var warehouse = warehouses.findWarehouse(pick.getWarehouseId());
+        var m = parcel.measures();
+        Map<UUID, String> skus = skus(session);
+        return new Label(parcel.labelCode(), parcel.id(), order.orderNumber(), shipment == null ? null : shipment.getId(),
+                shipment == null ? null : shipment.getCode(), together.indexOf(parcel) + 1, together.size(),
+                shipment == null, cod, order.total().currency().getCurrencyCode(), recipient,
+                warehouse.map(w -> w.name()).orElse(null), warehouse.map(w -> w.address()).orElse(null),
+                parcel.type().name(), m.weightKg(), m.lengthCm(), m.widthCm(), m.heightCm(), parcel.dimWeightKg(),
+                parcel.fragile(), parcel.rotatable(), contents(parcel, skus));
+    }
+
+    // ------------------------------------------------------------------ completing
+
+    /** What a completion did: the shipment made, or null when a design check put packing on hold. */
+    record Completed(UUID shipmentId, OrderSummary order) { }
+
+    /**
+     * See {@code FulfillmentService.completePacking}. The pick is locked first; the order's row lock is taken by its
+     * service; printed goods leave stock last.
+     */
+    public Completed complete(UUID taskId, PackingCompletion request, CurrentUser actor) {
+        Context ctx = forWork(taskId);
+        if (request.requestId() != null) {
+            var replay = shipments.findByRequestId(request.requestId());
+            if (replay.isPresent()) {
+                if (!ctx.pack().getId().equals(replay.get().getPackId())) {
+                    throw new BusinessException(ErrorCode.CONFLICT, "That request id completed another task");
+                }
+                return new Completed(replay.get().getId(), ctx.order());
+            }
+        }
+        if (request.requestId() != null && ctx.pack().getStatus() == PackStatus.ON_HOLD
+                && request.requestId().equals(ctx.pack().getHeldRequestId())) {
+            // The same completion again after its design check put packing on hold: the same answer.
+            return new Completed(null, ctx.order());
+        }
+        if (ctx.pack().getStatus() == PackStatus.PACKED) {
+            // Completed before: answered as it is (a retried completion), with the last shipment it made.
+            List<ShipmentJpaEntity> made = shipments.findByPackIdOrderByReadyAtAscIdAsc(ctx.pack().getId());
+            return new Completed(made.isEmpty() ? null : made.get(made.size() - 1).getId(), ctx.order());
+        }
+        PackingSession session = load(ctx);
+        session.requireWorkable(actor.userId(), isManager(actor));
+        requirePackable(ctx.order());
+        Instant now = clock.instant();
+        PackingSession.Completion completion = session.complete(request.partial(), request.note(),
+                partialShipmentsAllowed, actor.userId(), now);
+        // BR-DSG-003, 08 BR-02: the printed goods leaving now are checked against their design first.
+        List<PackingSession.Line> printed = session.printLinesIn(completion.lines().keySet());
+        if (!verifyDesigns(ctx.pack(), ctx.order(), printed.stream().map(PackingSession.Line::orderLineId).toList(),
+                actor.userId())) {
+            session.hold();
+            ctx.pack().holdFor(request.requestId());
+            store.save(session, ctx.pack());
+            orders.putOnDesignHold(ctx.order().orderId(), "DESIGN_MISMATCH");
+            log.warn("Packing of order {} held: a printed design does not match", ctx.pick().getOrderNumber());
+            return new Completed(null, ctx.order());
+        }
+        OrderSummary after;
+        if (completion.partial()) {
+            // Part of the order: it is no longer cancelled (decision 2026-10-17); its status follows the handover.
+            orders.recordPacked(ctx.order().orderId());
+            after = requireOrder(ctx.order().orderId());
+        } else {
+            after = orders.markPacked(ctx.order().orderId(), actor.userId());
+        }
+        List<ShipmentHandover.Line> lines = completion.lines().entrySet().stream()
+                .map(e -> new ShipmentHandover.Line(e.getKey(), e.getValue())).toList();
+        // The money paid ahead goes to the shipments waiting for dispatch first, in the order they were made.
+        BigDecimal cod = orders.codFor(ctx.order().orderId(), lines, pendingLines(session,
+                shipments.findByPackIdOrderByReadyAtAscIdAsc(ctx.pack().getId()), null));
+        long before = shipments.countByOrderId(ctx.order().orderId());
+        Shipment shipment = Shipment.ready(Identifiers.newId(), ctx.order().orderNumber() + "-S" + (before + 1),
+                ctx.order().orderId(), ctx.pack().getId(), ctx.pick().getWarehouseId(), request.requestId(),
+                DeliveryMode.PARCEL, completion.parcels().size(), cod,
+                completion.partial() ? request.note().trim() : null, actor.userId(), now);
+        shipments.saveAndFlush(ShipmentJpaEntity.of(shipment));
+        recordSteps(shipment);
+        session.ship(completion, shipment.id(), actor.userId(), now);
+        store.save(session, ctx.pack());
+        deductPrintedGoods(session, completion, ctx.order(), actor.userId());
+        log.info("Order {}: shipment {} ready to dispatch, {} package(s){}", ctx.pick().getOrderNumber(),
+                shipment.code(), shipment.packageCount(), completion.partial() ? ", part of the order" : "");
+        return new Completed(shipment.id(), after);
+    }
+
+    /**
+     * QC or a warehouse manager re-verifies held packing (08 §5 Verification Failed → In Progress): every print line
+     * of the order is checked again; all matching, the order's design hold is resolved and the packer completes again.
+     *
+     * @return whether packing is back in progress
+     */
+    public boolean reverify(UUID taskId, String resolutionNote, CurrentUser actor) {
+        PickJpaEntity pick = lockPick(taskId);
+        WarehouseScope.requireWarehouse(pick.getWarehouseId());
+        PackJpaEntity pack = requirePack(pick);
+        if (pack.getStatus() != PackStatus.ON_HOLD) {
+            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT, "The package has no design-integrity hold");
+        }
+        OrderSummary order = TaskAccess.orderInFulfilment(orders, pick);
+        List<UUID> printLines = order.lines().stream().filter(line -> line.designSnapshotId() != null)
+                .map(OrderSummary.LineSummary::lineId).toList();
+        if (!verifyDesigns(pack, order, printLines, actor.userId())) {
+            return false;
+        }
+        orders.resolveDesignHold(order.orderId(), actor.userId(), resolutionNote);
+        PackingSession session = load(new Context(pick, pack, order));
+        session.resume();
+        store.save(session, pack);
+        return true;
+    }
+
+    /**
+     * The order was cancelled (08 BR-05, 17 §4.5 step 15): parcels that did not ship are voided with their labels, a
+     * shipment still waiting for dispatch is cancelled. The goods in them were picked: the pick's put-back covers them.
+     */
+    public void cancelForOrder(PickJpaEntity pick, PackJpaEntity pack) {
+        Instant now = clock.instant();
+        for (ShipmentJpaEntity row : shipments.findByPackIdOrderByReadyAtAscIdAsc(pack.getId())) {
+            Shipment shipment = row.toDomain();
+            if (shipment.status() == ShipmentStatus.READY_TO_DISPATCH) {
+                shipment.cancel("The order was cancelled", null, now);
+                row.apply(shipment);
+                shipments.save(row);
+                recordSteps(shipment);
+                packages.findByShipmentIdOrderByPackageNoAsc(row.getId()).forEach(parcel -> {
+                    parcel.apply(parcel.getShipmentId(), parcel.getPackageType(), PackageStatus.VOIDED, parcel.getWeightKg(),
+                            parcel.getLengthCm(), parcel.getWidthCm(), parcel.getHeightCm(), parcel.getDimWeightKg(),
+                            parcel.isRotatable(), parcel.isRotatableOverridden(), parcel.isFragile(),
+                            parcel.isFragileOverridden(), parcel.getSealedAt(), parcel.getSealedBy(), now, null);
+                    packages.save(parcel);
+                });
+            }
+        }
+        for (PackageJpaEntity parcel : packages.findByPackIdOrderByPackageNoAsc(pack.getId())) {
+            if (parcel.getStatus() != PackageStatus.VOIDED && parcel.getShipmentId() == null) {
+                parcel.apply(null, parcel.getPackageType(), PackageStatus.VOIDED, parcel.getWeightKg(),
+                        parcel.getLengthCm(), parcel.getWidthCm(), parcel.getHeightCm(), parcel.getDimWeightKg(),
+                        parcel.isRotatable(), parcel.isRotatableOverridden(), parcel.isFragile(),
+                        parcel.isFragileOverridden(), parcel.getSealedAt(), parcel.getSealedBy(), now, null);
+                packages.save(parcel);
+            }
+        }
+        log.info("Packing of cancelled order {}: open parcels voided", pick.getOrderNumber());
+    }
+
+    // ------------------------------------------------------------------ internals
+
+    private record Context(PickJpaEntity pick, PackJpaEntity pack, OrderSummary order) { }
+
+    /** Locks the pick, checks the warehouse, needs picking done and the order still in fulfilment. */
+    private Context forWork(UUID taskId) {
+        PickJpaEntity pick = lockPick(taskId);
+        WarehouseScope.requireWarehouse(pick.getWarehouseId());
+        if (pick.getStatus() == PickStatus.CANCELLED) {
+            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT, "The task was cancelled with its order");
+        }
+        if (pick.getStatus() != PickStatus.PICKED) {
+            throw new BusinessException(ErrorCode.PACKING_NOT_READY,
+                    "Picking is %s; packing starts once it is complete (08 step 1)".formatted(pick.getStatus()));
+        }
+        OrderSummary order = TaskAccess.orderInFulfilment(orders, pick);
+        return new Context(pick, requirePack(pick), order);
+    }
+
+    /** Shown in the queue: an order packing may work on, or one held only for its design check (QC's work). */
+    private static boolean queueable(com.stockflow.order.api.OrderHoldState state) {
+        if (state == null) {
+            return false;
+        }
+        return PACKABLE.contains(state.status()) || (state.status() == OrderStatus.ON_HOLD
+                && state.holdReason() == com.stockflow.order.api.HoldReason.DESIGN_MISMATCH);
+    }
+
+    private static void requirePackable(OrderSummary order) {
+        if (!PACKABLE.contains(order.status())) {
+            String why = order.status() == OrderStatus.ON_HOLD && order.lifecycle() != null
+                    && order.lifecycle().holdReason() != null ? " (" + order.lifecycle().holdReason() + ")" : "";
+            throw new BusinessException(ErrorCode.PACK_STATE_CONFLICT,
+                    "The order is %s%s; its parcels cannot change now".formatted(order.status(), why));
+        }
+    }
+
+    private PackingSession load(Context ctx) {
+        return store.load(ctx.pack(), ctx.pick().getOrderNumber(), facts(ctx.pick(), ctx.order()));
+    }
+
+    /**
+     * The order's lines as the packing table sees them: what the order still wants (its quantity less units closed),
+     * what reached packing (a stock line: what was picked and not put back; a print line: everything, production
+     * delivered it before the order was released to the warehouse), the lots and serials of those goods, and the SKU's
+     * barcode, rotatable flag and storage class.
+     */
+    private List<PackingSession.Line> facts(PickJpaEntity pick, OrderSummary order) {
+        Map<UUID, Integer> closed = new HashMap<>();
+        if (order.lifecycle() != null) {
+            order.lifecycle().lines().forEach(p -> closed.put(p.lineId(), p.cancelledQuantity()));
+        }
+        Map<UUID, List<PickLineJpaEntity>> picked = pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId())
+                .stream().filter(line -> line.getStatus() == PickLineStatus.PICKED)
+                .collect(Collectors.groupingBy(PickLineJpaEntity::getOrderLineId));
+        List<UUID> holdIds = new ArrayList<>();
+        picked.values().forEach(lines -> lines.forEach(line -> {
+            if (line.getReservationId() != null) {
+                holdIds.add(line.getReservationId());
+            }
+        }));
+        order.lines().stream().filter(line -> line.designSnapshotId() != null)
+                .forEach(line -> holdIds.addAll(line.reservationIds()));
+        Map<UUID, HoldView> holds = holdIds.isEmpty() ? Map.of() : inventory.holds(holdIds).stream()
+                .collect(Collectors.toMap(HoldView::reservationId, Function.identity()));
+        Map<String, ItemLogistics> logistics = new HashMap<>();
+        List<PackingSession.Line> lines = new ArrayList<>();
+        for (OrderSummary.LineSummary line : order.lines()) {
+            ItemLogistics item = logistics.computeIfAbsent(line.sku(),
+                    sku -> itemControls.logistics(new Sku(sku)).logistics());
+            int wanted = line.quantity() - closed.getOrDefault(line.lineId(), 0);
+            boolean print = line.designSnapshotId() != null;
+            Map<String, Integer> lots = new TreeMap<>();
+            java.util.Set<String> serials = new java.util.TreeSet<>();
+            int available;
+            if (print) {
+                available = wanted;
+                for (UUID id : line.reservationIds()) {
+                    HoldView hold = holds.get(id);
+                    if (hold != null && (hold.status() == HoldView.Status.HELD
+                            || hold.status() == HoldView.Status.CONSUMED)) {
+                        collect(lots, serials, hold.lotNumber(), hold.serialNumber(), hold.quantity());
+                    }
+                }
+            } else {
+                List<PickLineJpaEntity> rows = picked.getOrDefault(line.lineId(), List.of());
+                available = rows.stream().mapToInt(PickLineJpaEntity::getPickedQty).sum();
+                for (PickLineJpaEntity row : rows) {
+                    HoldView hold = row.getReservationId() == null ? null : holds.get(row.getReservationId());
+                    collect(lots, serials, row.getLotNumber(), hold == null ? null : hold.serialNumber(),
+                            row.getPickedQty());
+                }
+            }
+            if (lots.keySet().equals(Set.of(PackingSession.NO_LOT))) {
+                lots.clear();     // none of them has a lot: the line is not tracked by lot
+            }
+            lines.add(new PackingSession.Line(line.lineId(), line.sku(), item.barcode(), wanted, available, print,
+                    line.designSnapshotId(), lots, serials, item.rotatable(),
+                    item.storageClass() == StorageClass.FRAGILE));
+        }
+        return lines;
+    }
+
+    private static void collect(Map<String, Integer> lots, Set<String> serials, String lot, String serial,
+                                int quantity) {
+        lots.merge(lot == null || lot.isBlank() ? PackingSession.NO_LOT : lot, quantity, Integer::sum);
+        if (serial != null && !serial.isBlank()) {
+            serials.add(serial);
+        }
+    }
+
+    /**
+     * BR-DSG-003: the design file of each print line among {@code lineIds} against the checksum the order confirmed.
+     * Every attempt is kept ({@code design_verification}, append-only), matching or not.
+     */
+    private boolean verifyDesigns(PackJpaEntity pack, OrderSummary order, List<UUID> lineIds, UUID actor) {
+        boolean allMatch = true;
+        for (var line : order.lines()) {
+            if (line.designSnapshotId() == null || !lineIds.contains(line.lineId())) {
+                continue;
+            }
+            var check = designs.verifyForFulfillment(line.designSnapshotId(), line.designChecksum());
+            var result = check.matching() ? DesignVerificationResult.MATCH : DesignVerificationResult.MISMATCH;
+            verifications.save(new DesignVerificationJpaEntity(Identifiers.newId(), pack.getId(), order.orderId(),
+                    line.lineId(), line.designSnapshotId(), check.expectedChecksum(), check.actualChecksum(), result,
+                    actor, clock.instant()));
+            allMatch &= check.matching();
+        }
+        return allMatch;
+    }
+
+    /**
+     * Decision 2026-10-16: a print line's goods - never picked, held for the order in the packing area - leave stock
+     * with the shipment that completes the line, in this transaction (the deduction is keyed by that shipment's first
+     * package, so a second shipment of the same order is a new deduction). A line split across shipments is deducted
+     * with its last part. Lead's decision G4-Q2 moves this to production completion; see the open question.
+     */
+    private void deductPrintedGoods(PackingSession session, PackingSession.Completion completion, OrderSummary order,
+                                    UUID actor) {
+        List<UUID> done = session.printLinesIn(completion.lines().keySet()).stream()
+                .filter(line -> session.shippedOf(line.orderLineId()) >= line.wanted())
+                .map(PackingSession.Line::orderLineId).toList();
+        if (done.isEmpty()) {
+            return;
+        }
+        List<UUID> holdIds = order.lines().stream().filter(line -> done.contains(line.lineId()))
+                .flatMap(line -> line.reservationIds().stream()).toList();
+        List<UUID> live = inventory.liveHolds(holdIds).stream().map(StockReservation::reservationId).toList();
+        if (live.isEmpty()) {
+            return;
+        }
+        UUID firstPackage = completion.parcels().stream().min(Comparator.comparingInt(PackingSession.Parcel::packageNo))
+                .orElseThrow().id();
+        consumption.consumeForPack(firstPackage, order.orderId(), live, actor);
+    }
+
+    private void recordSteps(Shipment shipment) {
+        for (Shipment.Step step : shipment.pullRecorded()) {
+            shipmentEvents.save(new ShipmentEventJpaEntity(Identifiers.newId(), shipment.id(), step.status().name(),
+                    step.at(), step.note(), step.by()));
+        }
+    }
+
+    /**
+     * The units of the shipments waiting for dispatch that were made before {@code before} (all of them when null): the
+     * paid-ahead money is theirs first (09 BR-04), at the label as at the handover.
+     */
+    private static List<ShipmentHandover.Line> pendingLines(PackingSession session, List<ShipmentJpaEntity> made,
+                                                            ShipmentJpaEntity before) {
+        java.util.Set<UUID> earlier = new java.util.HashSet<>();
+        for (ShipmentJpaEntity row : made) {
+            if (before != null && row.getId().equals(before.getId())) {
+                break;
+            }
+            if (row.getStatus() == ShipmentStatus.READY_TO_DISPATCH) {
+                earlier.add(row.getId());
+            }
+        }
+        return handoverLines(session.parcels().stream().filter(p -> p.status() == PackageStatus.SEALED
+                && p.shipmentId() != null && earlier.contains(p.shipmentId())).toList());
+    }
+
+    private static List<ShipmentHandover.Line> handoverLines(List<PackingSession.Parcel> parcels) {
+        Map<UUID, Integer> totals = new LinkedHashMap<>();
+        parcels.forEach(parcel -> parcel.lineTotals().forEach((line, quantity) -> totals.merge(line, quantity,
+                Integer::sum)));
+        return totals.entrySet().stream().map(e -> new ShipmentHandover.Line(e.getKey(), e.getValue())).toList();
+    }
+
+    private Session view(Context ctx, PackingSession session) {
+        Map<UUID, String> skus = skus(session);
+        List<Line> lines = session.lines().stream().map(line -> {
+            int packed = session.packedOf(line.orderLineId());
+            List<Lot> lots = line.lots().entrySet().stream().map(e -> {
+                String lot = PackingSession.NO_LOT.equals(e.getKey()) ? null : e.getKey();
+                return new Lot(lot, e.getValue(), session.parcels().stream()
+                        .filter(p -> p.status() != PackageStatus.VOIDED)
+                        .flatMap(p -> p.contents().entrySet().stream())
+                        .filter(c -> c.getKey().orderLineId().equals(line.orderLineId())
+                                && Objects.equals(lot, c.getKey().lotNumber()))
+                        .mapToInt(Map.Entry::getValue).sum());
+            }).toList();
+            return new Line(line.orderLineId(), line.sku(), line.barcode(), line.printLine(), line.designSnapshotId(),
+                    line.wanted(), line.available(), packed, session.shippedOf(line.orderLineId()),
+                    Math.max(0, line.wanted() - packed), line.lots().keySet().stream()
+                    .anyMatch(lot -> !PackingSession.NO_LOT.equals(lot)), !line.serials().isEmpty(), lots);
+        }).toList();
+        List<Parcel> parcels = session.parcels().stream().map(parcel -> parcelView(parcel, skus)).toList();
+        List<ShipmentSummary> made = shipments.findByPackIdOrderByReadyAtAscIdAsc(ctx.pack().getId()).stream()
+                .map(row -> new ShipmentSummary(row.getId(), row.getCode(), row.getStatus().name(),
+                        row.getDeliveryMode().name(), row.getPackageCount(), row.getCodAmount(),
+                        ctx.order().total().currency().getCurrencyCode(), row.isPartial(),
+                        row.getPartialNote(), row.getReadyAt())).toList();
+        String packerName = session.startedBy() == null ? null
+                : identities.displayNames(List.of(session.startedBy())).get(session.startedBy());
+        return new Session(ctx.pick().getId(), ctx.order().orderId(), ctx.order().orderNumber(),
+                ctx.pick().getWarehouseId(), session.status().name(), session.startedBy(), packerName,
+                session.startedAt(), session.packedAt(), lines, parcels, made, paymentDue(ctx.order()));
+    }
+
+    /** G3-Q4, G2-3: money the order's terms want before its goods leave - the handover will be refused until paid. */
+    private static PaymentDue paymentDue(OrderSummary order) {
+        BigDecimal due = order.lifecycle() == null ? null : order.lifecycle().amountDueBeforeHandover();
+        return due == null || due.signum() <= 0 ? null
+                : new PaymentDue(due, order.total().currency().getCurrencyCode());
+    }
+
+    private static Parcel parcelView(PackingSession.Parcel parcel, Map<UUID, String> skus) {
+        var m = parcel.measures();
+        return new Parcel(parcel.id(), parcel.packageNo(), parcel.labelCode(), parcel.type().name(),
+                parcel.status().name(), parcel.shipmentId(), m == null ? null : m.weightKg(),
+                m == null ? null : m.lengthCm(), m == null ? null : m.widthCm(), m == null ? null : m.heightCm(),
+                parcel.dimWeightKg(), parcel.rotatable(), parcel.rotatableOverridden(), parcel.fragile(),
+                parcel.fragileOverridden(), parcel.sealedAt(), contents(parcel, skus));
+    }
+
+    private static List<Content> contents(PackingSession.Parcel parcel, Map<UUID, String> skus) {
+        return parcel.contents().entrySet().stream().map(e -> new Content(e.getKey().orderLineId(),
+                skus.get(e.getKey().orderLineId()), e.getKey().lotNumber(), e.getKey().serialNumber(),
+                e.getValue())).toList();
+    }
+
+    private static Map<UUID, String> skus(PackingSession session) {
+        return session.lines().stream().collect(Collectors.toMap(PackingSession.Line::orderLineId,
+                PackingSession.Line::sku));
+    }
+
+    private static boolean isManager(CurrentUser actor) {
+        return actor.hasRole(Role.WAREHOUSE_MANAGER);
+    }
+
+    private static PackageType packageType(String type) {
+        if (type == null || type.isBlank()) {
+            return PackageType.CARTON;
+        }
+        try {
+            return PackageType.valueOf(type.trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Unknown package type",
+                    List.of(FieldError.of("packageType", "must be one of " + java.util.Arrays.toString(
+                            PackageType.values()))));
+        }
+    }
+
+    private static PackStatus parse(String status) {
+        try {
+            return PackStatus.valueOf(status.trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            throw new BusinessException(ErrorCode.UNSUPPORTED_PARAMETER, "Unknown packing status",
+                    List.of(FieldError.of("status", "must be one of " + java.util.Arrays.toString(
+                            PackStatus.values()))));
+        }
+    }
+
+    private PickJpaEntity lockPick(UUID taskId) {
+        return picks.lockById(taskId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+    }
+
+    private PackJpaEntity requirePack(PickJpaEntity pick) {
+        return packs.findByPickId(pick.getId()).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+    }
+
+    private OrderSummary requireOrder(UUID orderId) {
+        return orders.findById(orderId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+    }
+}

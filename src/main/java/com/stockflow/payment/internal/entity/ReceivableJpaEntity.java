@@ -1,6 +1,7 @@
 package com.stockflow.payment.internal.entity;
 
 import com.stockflow.common.persistence.BaseEntity;
+import com.stockflow.payment.internal.domain.Collector;
 import com.stockflow.payment.internal.domain.ReceivableStatus;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -26,6 +27,15 @@ public class ReceivableJpaEntity extends BaseEntity {
 
     @Column(name = "kind", nullable = false, length = 16, updatable = false)
     private String kind;
+
+    /** G3-2: the delivered shipment of a split order this bills; null for a whole-order delivery or a fee. */
+    @Column(name = "shipment_id", updatable = false)
+    private UUID shipmentId;
+
+    /** G2-3: CARRIER for a deposit balance the carrier collected on delivery. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "collector", nullable = false, length = 16, updatable = false)
+    private Collector collector = Collector.CUSTOMER;
 
     @Column(name = "amount", nullable = false, precision = 19, scale = 4, updatable = false)
     private BigDecimal amount;
@@ -72,6 +82,20 @@ public class ReceivableJpaEntity extends BaseEntity {
     }
 
     public String getKind() { return kind; }
+
+    public ReceivableJpaEntity ofShipment(UUID shipment) {
+        this.shipmentId = shipment;
+        return this;
+    }
+
+    public UUID getShipmentId() { return shipmentId; }
+
+    public ReceivableJpaEntity collectedBy(Collector who) {
+        this.collector = who;
+        return this;
+    }
+
+    public Collector getCollector() { return collector; }
 
     public void apply(BigDecimal paidAmount, ReceivableStatus status, Instant settledAt) {
         this.paidAmount = paidAmount;

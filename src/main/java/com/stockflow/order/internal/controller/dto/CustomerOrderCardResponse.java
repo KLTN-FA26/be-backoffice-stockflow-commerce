@@ -33,8 +33,13 @@ public record CustomerOrderCardResponse(
 
         int lineCount,
 
-        @Schema(example = "NOT_SHIPPED", description = "NOT_SHIPPED, IN_TRANSIT, DELIVERED or RETURNED - only what "
-                + "staff have recorded; nothing is tracked after handover to the carrier")
-        String deliveryState
+        @Schema(example = "NOT_SHIPPED", description = "NOT_SHIPPED, IN_TRANSIT, PARTIALLY_DELIVERED, DELIVERY_FAILED, "
+                + "DELIVERED or RETURNED - only what staff have recorded; nothing is tracked after handover to the carrier. "
+                + "Parse tolerantly: more may come")
+        String deliveryState,
+
+        @Schema(example = "PENDING", description = "The customer's latest cancellation request: PENDING, APPROVED or "
+                + "REJECTED; null when they never asked (G3-2)")
+        String cancellationRequestStatus
 ) {
 }

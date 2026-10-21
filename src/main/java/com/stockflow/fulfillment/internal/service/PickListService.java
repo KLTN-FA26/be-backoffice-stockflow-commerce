@@ -84,8 +84,6 @@ class PickListService implements PickLists {
     private final Clock clock;
     private final OrderReservations orderReservations;
 
-    /** The hold reason X-SHORT puts the order ON_HOLD with (docs 04c, 03 order machine). */
-    static final String INVENTORY_ISSUE = "INVENTORY_ISSUE";
 
     PickListService(PickJpaRepository picks, PickLineJpaRepository pickLines, OrderService orders,
                     InventoryService inventory, InventoryControlService itemControls, PickConsumption consumption,
@@ -267,7 +265,8 @@ class PickListService implements PickLists {
         }
         writeBack(list, stored, Set.of(line.id()));
         // X-SHORT step 02: the order stops; it does not cancel, and no stock is deducted (docs 04c).
-        orders.putOnDesignHold(pick.getOrderId(), INVENTORY_ISSUE);
+        holdForInventory(pick.getOrderId(), actor.userId(), "Short pick: %d of %s x %s missing at %s".formatted(
+                line.shortQty(), line.allocatedQty(), line.sku(), line.locationCode()));
         // X-SHORT step 03: the books and the shelf disagree, so the bin is counted again.
         if (line.reservationId() != null) {
             var recount = consumption.requestRecount(line.reservationId(), line.id(),
@@ -309,8 +308,7 @@ class PickListService implements PickLists {
         writeBack(list, stored, Set.of(lineId));
         pickLines.saveAll(added.stream().map(line -> PickLineMapper.toNewEntity(pick.getId(), line)).toList());
         if (!list.hasShortLines()) {
-            orders.resolveDesignHold(pick.getOrderId(), actor.userId(),
-                    "Short pick reallocated: line %s".formatted(lineId));
+            resumeAfterInventory(pick.getOrderId(), actor.userId(), "Short pick reallocated: line %s".formatted(lineId));
         }
         log.info("Short line {} of task {} reallocated to {} new line(s)", lineId, taskId, added.size());
         Map<String, String> barcodes = barcodesOf(List.of(shortLine.sku()));
@@ -318,6 +316,27 @@ class PickListService implements PickLists {
     }
 
     // ------------------------------------------------------------------ helpers
+
+    /**
+     * X-SHORT step 02: ON_HOLD with reason INVENTORY (kltn-docs 17 edge "short pick"). An order already ON_HOLD - a
+     * second short line, or held for another reason by the coordinator - is stopped already and stays as it is: a
+     * hold is not stacked on a hold. Locks the order, so the caller keeps the order pick, order, stock rows.
+     */
+    private void holdForInventory(UUID orderId, UUID by, String note) {
+        orders.lockedStatus(orderId);
+        if (orders.findById(orderId).orElseThrow().status() != com.stockflow.order.api.OrderStatus.ON_HOLD) {
+            orders.putOnHold(orderId, com.stockflow.order.api.HoldReason.INVENTORY, note, by);
+        }
+    }
+
+    /** The last short line reallocated: the INVENTORY hold, and only that one, is resolved back to where it was. */
+    private void resumeAfterInventory(UUID orderId, UUID by, String note) {
+        OrderSummary order = orders.findById(orderId).orElseThrow();
+        if (order.status() == com.stockflow.order.api.OrderStatus.ON_HOLD && order.lifecycle() != null
+                && order.lifecycle().holdReason() == com.stockflow.order.api.HoldReason.INVENTORY) {
+            orders.resolveHold(orderId, note, by);
+        }
+    }
 
     private PickJpaEntity lockPick(UUID taskId) {
         return picks.lockById(taskId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));

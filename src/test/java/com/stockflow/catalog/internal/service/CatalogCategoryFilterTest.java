@@ -45,6 +45,10 @@ class CatalogCategoryFilterTest {
         var card = new Candidate(product, "ly-giay", "Ly giấy", null, 0, List.of("CUP-1"), null, null);
         when(repository.listAll(any(), anyInt(), eq(Set.of(product)))).thenReturn(List.of(card));
         when(products.published(any())).thenAnswer(call -> call.getArgument(0));
+        // Still sellable when the page's cards are read (#134): one active SKU.
+        when(products.cards(Set.of(product))).thenReturn(java.util.Map.of(product,
+                new com.stockflow.product.api.PublishedProductCard(null,
+                        List.of(new com.stockflow.product.api.PublishedProductCard.Sku("CUP-1", "Ly giấy")))));
 
         var page = service.search(null, null, 0, 20, "cups");
 

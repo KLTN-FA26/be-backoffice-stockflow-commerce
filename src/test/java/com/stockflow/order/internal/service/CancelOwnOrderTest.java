@@ -50,8 +50,7 @@ class CancelOwnOrderTest {
             mock(DesignService.class), mock(OrderHoldJpaRepository.class), mock(CustomerService.class),
             mock(com.stockflow.catalog.api.CatalogService.class), mock(OrderPayments.class), requests,
             mock(com.stockflow.order.internal.domain.CreditChecks.class),
-                mock(com.stockflow.payment.api.PaymentService.class),
-                mock(OrderStockAllocation.class), mock(com.stockflow.order.internal.domain.WarehouseDirectory.class));
+                mock(com.stockflow.payment.api.PaymentService.class));
 
     private Order orderOf(UUID customerId) {
         var order = Order.draft(OrderNumber.of(LocalDate.of(2026, 9, 20), 7), customerId, UUID.randomUUID(),
@@ -108,6 +107,33 @@ class CancelOwnOrderTest {
                 OrderStatus.IN_PRODUCTION, NOW, null, 0L);
         when(repository.findByIdForUpdate(order.id())).thenReturn(Optional.of(order));
         return order;
+    }
+
+    @Test
+    void aCustomerGivesOnlyTheirOwnReasons() {
+        UUID customer = UUID.randomUUID();
+        var order = released(customer);
+        for (CancellationReasonCode shops : List.of(CancellationReasonCode.SUSPECTED_FRAUD,
+                CancellationReasonCode.PAYMENT_FAILED, CancellationReasonCode.PAYMENT_NOT_RECEIVED,
+                CancellationReasonCode.OUT_OF_STOCK, CancellationReasonCode.CREDIT_REJECTED,
+                CancellationReasonCode.PRODUCTION_ISSUE)) {
+            assertThatThrownBy(() -> service.cancelOwn(order.id().value(), customer, shops, "x", UUID.randomUUID()))
+                    .as(shops.name())
+                    .isInstanceOfSatisfying(BusinessException.class, ex -> {
+                        assertThat(ex.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+                        assertThat(ex.fieldErrors()).singleElement()
+                                .satisfies(error -> assertThat(error.field()).isEqualTo("reasonCode"));
+                    });
+        }
+        verify(requests, never()).save(any());
+        assertThat(java.util.Arrays.stream(CancellationReasonCode.values())
+                .filter(CancellationReasonCode::customerMayGive))
+                .containsExactly(CancellationReasonCode.CUSTOMER_REQUEST, CancellationReasonCode.DUPLICATE_ORDER,
+                        CancellationReasonCode.OTHER);
+        when(requests.save(any())).thenAnswer(call -> call.getArgument(0));
+        var outcome = service.cancelOwn(order.id().value(), customer, CancellationReasonCode.DUPLICATE_ORDER, null,
+                UUID.randomUUID());
+        assertThat(outcome.result()).isEqualTo(com.stockflow.order.api.CancellationOutcome.Result.REQUESTED);
     }
 
     @Test

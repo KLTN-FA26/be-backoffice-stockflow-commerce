@@ -29,12 +29,14 @@ class CreditProfileRepositoryAdapter implements CreditProfileRepository {
         entity.apply(profile.allowPrepaid(), profile.allowDeposit(), profile.allowCredit(), profile.defaultTerm(),
                 profile.depositPercent(), profile.creditLimit(), profile.creditTermDays(), profile.approvedBy(),
                 profile.approvedAt(), profile.note());
+        entity.applyBalancePolicy(profile.depositBalancePolicy());
         return toDomain(jpa.saveAndFlush(entity));
     }
 
     private static CreditProfile toDomain(CreditProfileJpaEntity e) {
         return new CreditProfile(e.getId(), e.getCustomerId(), e.isAllowPrepaid(), e.isAllowDeposit(), e.isAllowCredit(),
                 e.getDefaultPaymentTerm(), e.getDepositPercent(), e.getCreditLimit(), e.getCreditTermDays(),
-                e.getCurrency(), e.getApprovedBy(), e.getApprovedAt(), e.getNote(), e.getVersion());
+                e.getDepositBalancePolicy(), e.getCurrency(), e.getApprovedBy(), e.getApprovedAt(), e.getNote(),
+                e.getVersion());
     }
 }

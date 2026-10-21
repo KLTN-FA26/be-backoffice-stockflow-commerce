@@ -81,21 +81,21 @@ SELECT pg_temp.expect_ok('O11 picked in full', $q$
      WHERE id = md5('qa:pl:1')::uuid $q$);
 
 \echo '--- packing and shipping (docs 08, 09)'
-INSERT INTO fulfillment.pack (id, pick_id, status, created_at) VALUES (md5('qa:pack:1')::uuid, md5('qa:pick:1')::uuid, 'PACKING', NOW());
-INSERT INTO fulfillment.shipment (id, pack_id, order_id, carrier, status, created_at)
-VALUES (md5('qa:ship:1')::uuid, md5('qa:pack:1')::uuid, md5('qa:order:1')::uuid, 'GHN', 'PENDING', NOW());
+INSERT INTO fulfillment.pack (id, pick_id, status, started_at, created_at) VALUES (md5('qa:pack:1')::uuid, md5('qa:pick:1')::uuid, 'PACKING', NOW(), NOW());
+INSERT INTO fulfillment.shipment (id, pack_id, order_id, carrier, status, code, warehouse_id, ready_at, created_at)
+VALUES (md5('qa:ship:1')::uuid, md5('qa:pack:1')::uuid, md5('qa:order:1')::uuid, 'GHN', 'READY_TO_DISPATCH', 'SO-QA-1-S1', md5('demo:wh:HCM')::uuid, NOW(), NOW());
 SELECT pg_temp.expect_fail('O12 sealed parcel that was never weighed', $q$
-    INSERT INTO fulfillment.package (id, pack_id, package_no, status, sealed_at) VALUES (gen_random_uuid(), md5('qa:pack:1')::uuid, 1, 'SEALED', NOW()) $q$);
+    INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, status, sealed_at) VALUES (gen_random_uuid(), md5('qa:pack:1')::uuid, 1, 'PKG-QA-1-1', 'SEALED', NOW()) $q$);
 SELECT pg_temp.expect_ok('O13 two parcels (a sofa ships in two boxes), one shipment', $q$
-    INSERT INTO fulfillment.package (id, pack_id, shipment_id, package_no, weight_kg, length_cm, width_cm, height_cm, tracking_number, status, sealed_at)
-    VALUES (md5('qa:pkg:1')::uuid, md5('qa:pack:1')::uuid, md5('qa:ship:1')::uuid, 1, 30, 215, 95, 90, 'GHN001', 'SEALED', NOW()),
-           (md5('qa:pkg:2')::uuid, md5('qa:pack:1')::uuid, md5('qa:ship:1')::uuid, 2, 25, 215, 95, 45, 'GHN002', 'SEALED', NOW());
+    INSERT INTO fulfillment.package (id, pack_id, shipment_id, package_no, label_code, weight_kg, length_cm, width_cm, height_cm, tracking_number, status, sealed_at)
+    VALUES (md5('qa:pkg:1')::uuid, md5('qa:pack:1')::uuid, md5('qa:ship:1')::uuid, 1, 'PKG-QA-1-1', 30, 215, 95, 90, 'GHN001', 'SEALED', NOW()),
+           (md5('qa:pkg:2')::uuid, md5('qa:pack:1')::uuid, md5('qa:ship:1')::uuid, 2, 'PKG-QA-1-2', 25, 215, 95, 45, 'GHN002', 'SEALED', NOW());
     INSERT INTO fulfillment.package_line (id, package_id, order_line_id, quantity)
     VALUES (gen_random_uuid(), md5('qa:pkg:1')::uuid, md5('qa:ol:1')::uuid, 2) $q$);
 SELECT pg_temp.expect_fail('O14 a parcel holding a line of another order (BR-04)', $q$
     INSERT INTO fulfillment.package_line (id, package_id, order_line_id, quantity) VALUES (gen_random_uuid(), md5('qa:pkg:2')::uuid, md5('qa:ol:2')::uuid, 1) $q$);
 SELECT pg_temp.expect_fail('O15 one tracking number on two live parcels', $q$
-    INSERT INTO fulfillment.package (id, pack_id, package_no, tracking_number) VALUES (gen_random_uuid(), md5('qa:pack:1')::uuid, 3, 'GHN001') $q$);
+    INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, tracking_number) VALUES (gen_random_uuid(), md5('qa:pack:1')::uuid, 3, 'PKG-QA-1-3', 'GHN001') $q$);
 SELECT pg_temp.expect_ok('O16 tracking timeline from the carrier', $q$
     INSERT INTO fulfillment.shipment_event (id, shipment_id, status, occurred_at, source, carrier_event_id)
     VALUES (gen_random_uuid(), md5('qa:ship:1')::uuid, 'HANDED_OVER', NOW(), 'CARRIER_WEBHOOK', 'evt-1'),
@@ -229,6 +229,116 @@ SELECT pg_temp.expect_fail('O55 the same payment asked back twice for the cancel
 SELECT pg_temp.expect_fail('O56 a cancellation refund naming no order', $q$
     INSERT INTO payment.refund (id, payment_id, amount, status, created_at, source)
     VALUES (gen_random_uuid(), md5('qa:pay:c2')::uuid, 1, 'PENDING', NOW(), 'ORDER_CANCELLED') $q$);
+
+\echo '--- order lifecycle: fulfilment states, hold, delivery outcome, split shipments (G3-2, V20261021000100)'
+INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at,
+                                     created_at, paid_amount, paid_in_full_at)
+VALUES (md5('qa:order:l1')::uuid, 'SO-QA-L1', 'c0000000-0000-4000-8000-000000000001', gen_random_uuid(), 'CONFIRMED',
+        1000000, 'VND', NOW(), NOW(), 1000000, NOW());
+INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
+VALUES (md5('qa:order:l1:line')::uuid, md5('qa:order:l1')::uuid, 'TABLE-OAK-160', 10, 100000, 'VND');
+SELECT pg_temp.expect_fail('O57 the retired IN_FULFILMENT', $q$
+    UPDATE ordering.customer_order SET status = 'IN_FULFILMENT' WHERE id = md5('qa:order:l1')::uuid $q$);
+SELECT pg_temp.expect_fail('O58 CONFIRMED straight to PICKING (no release)', $q$
+    UPDATE ordering.customer_order SET status = 'PICKING' WHERE id = md5('qa:order:l1')::uuid $q$);
+SELECT pg_temp.expect_ok('O59 released, READY_TO_FULFILL → PACKED (printed goods only, 17 §4.2.6)', $q$
+    UPDATE ordering.customer_order SET status = 'READY_TO_FULFILL', warehouse_id = md5('demo:wh:HCM')::uuid,
+           released_at = NOW(), released_by = md5('demo:user:editor')::uuid WHERE id = md5('qa:order:l1')::uuid;
+    UPDATE ordering.customer_order SET status = 'PACKED', packed_at = NOW() WHERE id = md5('qa:order:l1')::uuid $q$);
+SELECT pg_temp.expect_fail('O60 PACKED → CANCELLED (a packed order goes through a return, 2026-10-17)', $q$
+    UPDATE ordering.customer_order SET status = 'CANCELLED', cancellation_reason_code = 'CUSTOMER_REQUEST',
+           cancellation_reason = 'x' WHERE id = md5('qa:order:l1')::uuid $q$);
+SELECT pg_temp.expect_fail('O61 ON_HOLD without a hold reason', $q$
+    UPDATE ordering.customer_order SET status = 'ON_HOLD' WHERE id = md5('qa:order:l1')::uuid $q$);
+SELECT pg_temp.expect_fail('O62 an ADDRESS hold that does not say where it goes back', $q$
+    UPDATE ordering.customer_order SET status = 'ON_HOLD', hold_reason = 'ADDRESS' WHERE id = md5('qa:order:l1')::uuid $q$);
+SELECT pg_temp.expect_ok('O62b an ADDRESS hold from PACKED', $q$
+    UPDATE ordering.customer_order SET status = 'ON_HOLD', hold_reason = 'ADDRESS', status_before_hold = 'PACKED',
+           hold_note = 'sai phường' WHERE id = md5('qa:order:l1')::uuid $q$);
+SELECT pg_temp.expect_fail('O63 leaving the hold somewhere else than where it was held from', $q$
+    UPDATE ordering.customer_order SET status = 'PICKING', hold_reason = NULL, status_before_hold = NULL, hold_note = NULL
+     WHERE id = md5('qa:order:l1')::uuid $q$);
+SELECT pg_temp.expect_ok('O63b resolved back to PACKED, then shipped', $q$
+    UPDATE ordering.customer_order SET status = 'PACKED', hold_reason = NULL, status_before_hold = NULL, hold_note = NULL
+     WHERE id = md5('qa:order:l1')::uuid;
+    UPDATE ordering.customer_order SET status = 'SHIPPED', shipped_at = NOW() WHERE id = md5('qa:order:l1')::uuid $q$);
+SELECT pg_temp.expect_fail('O64 a failed delivery without a reason', $q$
+    UPDATE ordering.customer_order SET status = 'DELIVERY_FAILED' WHERE id = md5('qa:order:l1')::uuid $q$);
+SELECT pg_temp.expect_fail('O64b SHIPPED → CANCELLED (BR-031: after shipping, a return)', $q$
+    UPDATE ordering.customer_order SET status = 'CANCELLED', cancellation_reason_code = 'CUSTOMER_REQUEST',
+           cancellation_reason = 'x' WHERE id = md5('qa:order:l1')::uuid $q$);
+SELECT pg_temp.expect_fail('O65 DELIVERED without delivered_at', $q$
+    UPDATE ordering.customer_order SET status = 'DELIVERED' WHERE id = md5('qa:order:l1')::uuid $q$);
+SELECT pg_temp.expect_ok('O65b failed, then delivered on a retry', $q$
+    UPDATE ordering.customer_order SET status = 'DELIVERY_FAILED', delivery_failure_reason = 'CUSTOMER_ABSENT'
+     WHERE id = md5('qa:order:l1')::uuid;
+    UPDATE ordering.customer_order SET status = 'DELIVERED', delivery_failure_reason = NULL, delivered_at = NOW()
+     WHERE id = md5('qa:order:l1')::uuid $q$);
+SELECT pg_temp.expect_fail('O66 COMPLETED without completed_at', $q$
+    UPDATE ordering.customer_order SET status = 'COMPLETED' WHERE id = md5('qa:order:l1')::uuid $q$);
+SELECT pg_temp.expect_fail('O67 an unknown hold reason on order_hold', $q$
+    INSERT INTO ordering.order_hold (id, order_id, reason, raised_at, created_at)
+    VALUES (gen_random_uuid(), md5('qa:order:l1')::uuid, 'FOO', NOW(), NOW()) $q$);
+SELECT pg_temp.expect_fail('O67b an OTHER hold without a note', $q$
+    INSERT INTO ordering.order_hold (id, order_id, reason, raised_at, created_at)
+    VALUES (gen_random_uuid(), md5('qa:order:l1')::uuid, 'OTHER', NOW(), NOW()) $q$);
+SELECT pg_temp.expect_fail('O68 CLOSED without closed_at', $q$
+    UPDATE ordering.customer_order SET status = 'COMPLETED', completed_at = NOW() WHERE id = md5('qa:order:l1')::uuid;
+    UPDATE ordering.customer_order SET status = 'CLOSED' WHERE id = md5('qa:order:l1')::uuid $q$);
+SELECT pg_temp.expect_ok('O69 the happy path to the end: COMPLETED → CLOSED', $q$
+    UPDATE ordering.customer_order SET status = 'COMPLETED', completed_at = NOW() WHERE id = md5('qa:order:l1')::uuid;
+    UPDATE ordering.customer_order SET status = 'CLOSED', closed_at = NOW() WHERE id = md5('qa:order:l1')::uuid $q$);
+SELECT pg_temp.expect_fail('O70 CLOSED is terminal', $q$
+    UPDATE ordering.customer_order SET status = 'COMPLETED', closed_at = NULL WHERE id = md5('qa:order:l1')::uuid $q$);
+SELECT pg_temp.expect_fail('O71 a shipment billing more than it carried', $q$
+    INSERT INTO ordering.order_shipment (id, order_id, status, amount, billed_amount, handed_over_at, outcome_at)
+    VALUES (gen_random_uuid(), md5('qa:order:l1')::uuid, 'DELIVERED', 100000, 100001, NOW(), NOW()) $q$);
+SELECT pg_temp.expect_fail('O72 a returned shipment that billed', $q$
+    INSERT INTO ordering.order_shipment (id, order_id, status, amount, billed_amount, handed_over_at, outcome_at,
+                                         failure_reason)
+    VALUES (gen_random_uuid(), md5('qa:order:l1')::uuid, 'RETURNED', 100000, 1, NOW(), NOW(), 'REFUSED') $q$);
+SELECT pg_temp.expect_fail('O73 a failed shipment without a reason', $q$
+    INSERT INTO ordering.order_shipment (id, order_id, status, amount, handed_over_at, outcome_at)
+    VALUES (gen_random_uuid(), md5('qa:order:l1')::uuid, 'DELIVERY_FAILED', 100000, NOW(), NOW()) $q$);
+SELECT pg_temp.expect_ok('O74 a shipment of 4 units handed over', $q$
+    INSERT INTO ordering.order_shipment (id, order_id, status, amount, handed_over_at)
+    VALUES (md5('qa:shipment:l1')::uuid, md5('qa:order:l1')::uuid, 'HANDED_OVER', 400000, NOW());
+    INSERT INTO ordering.order_shipment_line (shipment_id, order_line_id, quantity)
+    VALUES (md5('qa:shipment:l1')::uuid, md5('qa:order:l1:line')::uuid, 4) $q$);
+SELECT pg_temp.expect_fail('O75 a shipment line of no units', $q$
+    INSERT INTO ordering.order_shipment_line (shipment_id, order_line_id, quantity)
+    VALUES (md5('qa:shipment:l1')::uuid, md5('qa:order:l1:line')::uuid, 0) $q$);
+SELECT pg_temp.expect_fail('O76 closing more units than the line has', $q$
+    UPDATE ordering.order_line SET cancelled_quantity = 11 WHERE id = md5('qa:order:l1:line')::uuid $q$);
+SELECT pg_temp.expect_fail('O77 a second receivable for the same delivered shipment', $q$
+    INSERT INTO payment.receivable (id, order_id, customer_id, amount, currency, issued_at, due_date, shipment_id)
+    VALUES (gen_random_uuid(), md5('qa:order:l1')::uuid, 'c0000000-0000-4000-8000-000000000001', 1, 'VND', NOW(),
+            CURRENT_DATE, md5('qa:shipment:l1')::uuid),
+           (gen_random_uuid(), md5('qa:order:l1')::uuid, 'c0000000-0000-4000-8000-000000000001', 1, 'VND', NOW(),
+            CURRENT_DATE, md5('qa:shipment:l1')::uuid) $q$);
+SELECT pg_temp.expect_ok('O78 one receivable per delivered shipment of a split order', $q$
+    INSERT INTO payment.receivable (id, order_id, customer_id, amount, currency, issued_at, due_date, shipment_id)
+    VALUES (gen_random_uuid(), md5('qa:order:l1')::uuid, 'c0000000-0000-4000-8000-000000000001', 1, 'VND', NOW(),
+            CURRENT_DATE, md5('qa:shipment:l1')::uuid),
+           (gen_random_uuid(), md5('qa:order:l1')::uuid, 'c0000000-0000-4000-8000-000000000001', 1, 'VND', NOW(),
+            CURRENT_DATE, gen_random_uuid()) $q$);
+SELECT pg_temp.expect_fail('O79 the transition table and the trigger agree: an edge removed is refused', $q$
+    UPDATE ordering.customer_order SET status = 'PENDING_PAYMENT' WHERE id = md5('qa:order:c1')::uuid $q$);
+
+SELECT pg_temp.expect_ok('O80 two closures of one order each refund the same payment', $q$
+    INSERT INTO payment.refund (id, payment_id, amount, status, created_at, order_id, source, remainder_closure_id)
+    VALUES (gen_random_uuid(), md5('qa:pay:c2')::uuid, 1, 'PENDING', NOW(), md5('qa:order:c1')::uuid,
+            'ORDER_REMAINDER_CLOSED', md5('qa:closure:1')::uuid),
+           (gen_random_uuid(), md5('qa:pay:c2')::uuid, 1, 'PENDING', NOW(), md5('qa:order:c1')::uuid,
+            'ORDER_REMAINDER_CLOSED', md5('qa:closure:2')::uuid) $q$);
+SELECT pg_temp.expect_fail('O81 the same closure asks the same payment twice', $q$
+    INSERT INTO payment.refund (id, payment_id, amount, status, created_at, order_id, source, remainder_closure_id)
+    VALUES (gen_random_uuid(), md5('qa:pay:c2')::uuid, 1, 'PENDING', NOW(), md5('qa:order:c1')::uuid,
+            'ORDER_REMAINDER_CLOSED', md5('qa:closure:1')::uuid) $q$);
+SELECT pg_temp.expect_fail('O82 a remainder refund naming no closure', $q$
+    INSERT INTO payment.refund (id, payment_id, amount, status, created_at, order_id, source)
+    VALUES (gen_random_uuid(), md5('qa:pay:c2')::uuid, 1, 'PENDING', NOW(), md5('qa:order:c1')::uuid,
+            'ORDER_REMAINDER_CLOSED') $q$);
 
 ROLLBACK;
 \echo 'PASS 04_orders_fulfillment'

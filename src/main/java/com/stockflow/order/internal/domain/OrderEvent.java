@@ -96,4 +96,18 @@ public sealed interface OrderEvent extends DomainEvent {
             return payload.orderId().toString();
         }
     }
+
+    /** The rest of a partly fulfilled order was closed: payment refunds, fulfillment stops (G4-Q3). */
+    record RemainderClosed(UUID eventId, Instant occurredAt, com.stockflow.contracts.OrderRemainderClosed payload)
+            implements OrderEvent {
+
+        public RemainderClosed(com.stockflow.contracts.OrderRemainderClosed payload) {
+            this(UUID.randomUUID(), Instant.now(), payload);
+        }
+
+        @Override
+        public String aggregateId() {
+            return payload.orderId().toString();
+        }
+    }
 }

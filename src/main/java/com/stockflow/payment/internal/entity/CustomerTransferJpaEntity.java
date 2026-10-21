@@ -1,8 +1,11 @@
 package com.stockflow.payment.internal.entity;
 
 import com.stockflow.common.persistence.BaseEntity;
+import com.stockflow.payment.internal.domain.TransferChannel;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.Table;
 
 import java.math.BigDecimal;
@@ -10,7 +13,10 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.util.UUID;
 
-/** {@code payment.customer_transfer} (SCRUM-431). Only the money not yet allocated changes. */
+/**
+ * {@code payment.customer_transfer} (SCRUM-431, G2-3). Only the money not yet allocated, and the credit refunded,
+ * change.
+ */
 @Entity
 @Table(name = "customer_transfer", schema = "payment")
 public class CustomerTransferJpaEntity extends BaseEntity {
@@ -42,6 +48,16 @@ public class CustomerTransferJpaEntity extends BaseEntity {
     @Column(name = "note", length = 1000, updatable = false)
     private String note;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "channel", nullable = false, length = 24, updatable = false)
+    private TransferChannel channel = TransferChannel.BANK_TRANSFER;
+
+    @Column(name = "carrier_name", length = 120, updatable = false)
+    private String carrierName;
+
+    @Column(name = "refunded_amount", nullable = false, precision = 19, scale = 4)
+    private BigDecimal refundedAmount = BigDecimal.ZERO;
+
     protected CustomerTransferJpaEntity() {
     }
 
@@ -59,8 +75,15 @@ public class CustomerTransferJpaEntity extends BaseEntity {
         this.note = note;
     }
 
-    public void apply(BigDecimal unallocatedAmount) {
+    public CustomerTransferJpaEntity viaChannel(TransferChannel channel, String carrierName) {
+        this.channel = channel;
+        this.carrierName = carrierName;
+        return this;
+    }
+
+    public void apply(BigDecimal unallocatedAmount, BigDecimal refundedAmount) {
         this.unallocatedAmount = unallocatedAmount;
+        this.refundedAmount = refundedAmount;
     }
 
     public UUID getCustomerId() { return customerId; }
@@ -72,4 +95,7 @@ public class CustomerTransferJpaEntity extends BaseEntity {
     public UUID getRecordedBy() { return recordedBy; }
     public Instant getRecordedAt() { return recordedAt; }
     public String getNote() { return note; }
+    public TransferChannel getChannel() { return channel; }
+    public String getCarrierName() { return carrierName; }
+    public BigDecimal getRefundedAmount() { return refundedAmount; }
 }

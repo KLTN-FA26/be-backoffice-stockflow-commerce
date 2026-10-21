@@ -17,7 +17,8 @@ import java.util.UUID;
 @Table(name = "refund", schema = "payment")
 public class RefundJpaEntity extends BaseEntity {
 
-    @Column(name = "payment_id", nullable = false)
+    /** Null when the money is given back from an allocation or a transfer's credit (G2-3, the ledger). */
+    @Column(name = "payment_id")
     private UUID paymentId;
 
     @Column(name = "amount", nullable = false, precision = 18, scale = 2)

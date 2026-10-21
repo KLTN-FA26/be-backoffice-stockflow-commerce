@@ -504,36 +504,6 @@ class InventoryServiceImpl implements InventoryService {
         return new AllocateStockResult(command.orderId(), warehouse, allocations);
     }
 
-    @Override
-    @Transactional(readOnly = true)
-    public List<UUID> warehousesAbleToAllocate(UUID orderId) {
-        Map<Sku, Integer> needed = new TreeMap<>(Comparator.comparing(Sku::code));
-        skuReservations.findHeldForOrder(orderId)
-                .forEach(r -> needed.merge(r.sku(), r.quantity().value(), Integer::sum));
-        if (needed.isEmpty()) {
-            return List.of();
-        }
-        LocalDate today = BusinessCalendar.date(clock.instant());
-        Set<UUID> able = null;
-        for (Map.Entry<Sku, Integer> want : needed.entrySet()) {
-            List<StockAllocator.Candidate> candidates = repository.findAvailabilityBySku(want.getKey()).stream()
-                    .filter(c -> c.expiryDate() == null || !c.expiryDate().isBefore(today))
-                    .toList();
-            Map<String, UUID> pickable = locations.pickable(candidates.stream().map(c -> c.location().code()).toList());
-            Map<UUID, Integer> free = new java.util.HashMap<>();
-            candidates.stream().filter(c -> pickable.containsKey(c.location().code()))
-                    .forEach(c -> free.merge(pickable.get(c.location().code()), c.available().value(), Integer::sum));
-            Set<UUID> enough = free.entrySet().stream().filter(e -> e.getValue() >= want.getValue())
-                    .map(Map.Entry::getKey).collect(Collectors.toSet());
-            if (able == null) {
-                able = new java.util.HashSet<>(enough);
-            } else {
-                able.retainAll(enough);
-            }
-        }
-        return able.stream().sorted(Comparator.comparing(UUID::toString)).toList();
-    }
-
     /**
      * {@inheritDoc}
      *
@@ -947,12 +917,13 @@ class InventoryServiceImpl implements InventoryService {
                 repository.findHolds(Set.copyOf(reservationIds)).stream()
                 .map(hold -> new com.stockflow.inventory.api.HoldView(hold.reservationId(), hold.sku(),
                         hold.locationCode(), hold.lotNumber(), hold.quantity(),
-                        com.stockflow.inventory.api.HoldView.Status.valueOf(hold.status().name()), hold.expiresAt(), hold.expiryDate()))
+                        com.stockflow.inventory.api.HoldView.Status.valueOf(hold.status().name()), hold.expiresAt(),
+                        hold.expiryDate(), hold.serialNumber()))
                 .toList());
         skuReservations.findAll(Set.copyOf(reservationIds)).forEach(r -> views.add(
                 new com.stockflow.inventory.api.HoldView(r.id().value(), r.sku().code(), null, null,
                         r.quantity().value(), com.stockflow.inventory.api.HoldView.Status.valueOf(r.status().name()),
-                        r.expiresAt(), null)));
+                        r.expiresAt(), null, null)));
         return views;
     }
 

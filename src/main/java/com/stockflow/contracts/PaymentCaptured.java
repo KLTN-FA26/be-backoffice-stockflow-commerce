@@ -12,8 +12,10 @@ import java.util.UUID;
  * @param paymentId unique per money movement counted for the order: the payment, or the allocation of
  *                  a customer transfer to the order's receivable
  * @param source    where the money came from: null for a payment of the order, {@code
- *                  RECEIVABLE_ALLOCATION} for a customer transfer paying a credit order (SCRUM-431);
- *                  added as a nullable field, as the contract rules allow
+ *                  RECEIVABLE_ALLOCATION} for a customer transfer (or a carrier's remittance) paying a receivable of
+ *                  the order (SCRUM-431), {@code ORDER_ALLOCATION} for a customer transfer paying the order itself -
+ *                  prepaid, deposit or the balance before delivery (G2-3); added as a nullable field, as the
+ *                  contract rules allow
  */
 public record PaymentCaptured(
         UUID orderId,

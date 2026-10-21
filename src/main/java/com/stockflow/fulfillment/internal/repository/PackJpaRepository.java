@@ -7,4 +7,6 @@ import com.stockflow.common.persistence.BaseJpaRepository;
 public interface PackJpaRepository extends BaseJpaRepository<PackJpaEntity> {
 
     java.util.Optional<PackJpaEntity> findByPickId(java.util.UUID pickId);
+
+    java.util.List<PackJpaEntity> findByPickIdIn(java.util.Collection<java.util.UUID> pickIds);
 }

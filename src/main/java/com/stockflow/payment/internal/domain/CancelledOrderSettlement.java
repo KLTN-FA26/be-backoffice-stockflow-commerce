@@ -21,4 +21,14 @@ public interface CancelledOrderSettlement {
      * @return what could not be placed on a captured payment of this order (0 when all of it was)
      */
     BigDecimal requestRefunds(UUID orderId, BigDecimal refundable, String currency, String reason);
+
+    /**
+     * The same for the rest of a partly fulfilled order closed by staff (G3-2): refunds of source
+     * {@code ORDER_REMAINDER_CLOSED}, newest captured payment first, never more of a payment than is left of it after
+     * the refunds it already has. Once per closure: a redelivered event (same {@code closureId}) asks nothing again.
+     *
+     * @return what could not be placed on a captured payment
+     */
+    BigDecimal requestRemainderRefunds(UUID orderId, UUID closureId, BigDecimal refundable, String currency,
+                                       String reason);
 }

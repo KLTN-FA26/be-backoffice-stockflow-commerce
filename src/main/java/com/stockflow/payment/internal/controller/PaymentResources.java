@@ -7,6 +7,8 @@ final class PaymentResources {
     static final String RECEIVABLES = "payment-receivables";
     /** Money customers sent to pay what they owe, as recorded from the bank statement. */
     static final String CUSTOMER_TRANSFERS = "payment-customer-transfers";
+    /** G2-3: one order's payment history - not the list of every customer's transfers. */
+    static final String ORDER_PAYMENTS = "payment-order-payments";
 
     private PaymentResources() {
     }

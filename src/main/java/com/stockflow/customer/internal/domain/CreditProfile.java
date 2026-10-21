@@ -5,6 +5,7 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.customer.api.CommercialTerm;
+import com.stockflow.customer.api.DepositBalancePolicy;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -14,7 +15,7 @@ import java.util.UUID;
 /**
  * The commercial terms of one customer (kltn-docs 18 §3, 15 §3; SCRUM-427): which payment terms
  * the customer may use, the default deposit share, the credit limit and how many days a credit
- * order has to be paid after delivery.
+ * order has to be paid after delivery. G2-3: with deposits, how the balance is collected (15 §4.2 step 3).
  *
  * <p>Every change names who approved it and when (18 BR-02). The table says the same rules again
  * ({@code ck_credit_profile_*}).</p>
@@ -32,6 +33,7 @@ public final class CreditProfile extends AggregateRoot {
     private BigDecimal depositPercent;
     private BigDecimal creditLimit;
     private Integer creditTermDays;
+    private DepositBalancePolicy depositBalancePolicy;
     private final String currency;
     private UUID approvedBy;
     private Instant approvedAt;
@@ -42,19 +44,35 @@ public final class CreditProfile extends AggregateRoot {
                          CommercialTerm defaultTerm, BigDecimal depositPercent, BigDecimal creditLimit,
                          Integer creditTermDays, String currency, UUID approvedBy, Instant approvedAt, String note,
                          long version) {
+        this(id, customerId, allowPrepaid, allowDeposit, allowCredit, defaultTerm, depositPercent, creditLimit,
+                creditTermDays, null, currency, approvedBy, approvedAt, note, version);
+    }
+
+    public CreditProfile(UUID id, UUID customerId, boolean allowPrepaid, boolean allowDeposit, boolean allowCredit,
+                         CommercialTerm defaultTerm, BigDecimal depositPercent, BigDecimal creditLimit,
+                         Integer creditTermDays, DepositBalancePolicy balancePolicy, String currency, UUID approvedBy,
+                         Instant approvedAt, String note, long version) {
         this.id = Objects.requireNonNull(id, "id");
         this.customerId = Objects.requireNonNull(customerId, "customerId");
         this.currency = currency == null ? "VND" : currency;
         this.version = version;
         apply(allowPrepaid, allowDeposit, allowCredit, defaultTerm, depositPercent, creditLimit, creditTermDays,
-                approvedBy, approvedAt, note);
+                balancePolicy, approvedBy, approvedAt, note);
     }
 
     public static CreditProfile create(UUID customerId, boolean allowPrepaid, boolean allowDeposit, boolean allowCredit,
                                        CommercialTerm defaultTerm, BigDecimal depositPercent, BigDecimal creditLimit,
                                        Integer creditTermDays, UUID approvedBy, Instant now, String note) {
+        return create(customerId, allowPrepaid, allowDeposit, allowCredit, defaultTerm, depositPercent, creditLimit,
+                creditTermDays, null, approvedBy, now, note);
+    }
+
+    public static CreditProfile create(UUID customerId, boolean allowPrepaid, boolean allowDeposit, boolean allowCredit,
+                                       CommercialTerm defaultTerm, BigDecimal depositPercent, BigDecimal creditLimit,
+                                       Integer creditTermDays, DepositBalancePolicy balancePolicy, UUID approvedBy,
+                                       Instant now, String note) {
         return new CreditProfile(Identifiers.newId(), customerId, allowPrepaid, allowDeposit, allowCredit, defaultTerm,
-                depositPercent, creditLimit, creditTermDays, "VND", approvedBy, now, note, 0L);
+                depositPercent, creditLimit, creditTermDays, balancePolicy, "VND", approvedBy, now, note, 0L);
     }
 
     /**
@@ -65,12 +83,24 @@ public final class CreditProfile extends AggregateRoot {
     public void change(boolean allowPrepaid, boolean allowDeposit, boolean allowCredit, CommercialTerm defaultTerm,
                        BigDecimal depositPercent, BigDecimal creditLimit, Integer creditTermDays, UUID approvedBy,
                        Instant now, String note) {
-        apply(allowPrepaid, allowDeposit, allowCredit, defaultTerm, depositPercent, creditLimit, creditTermDays,
+        change(allowPrepaid, allowDeposit, allowCredit, defaultTerm, depositPercent, creditLimit, creditTermDays, null,
                 approvedBy, now, note);
     }
 
+    /**
+     * @param balancePolicy null with deposits allowed keeps the policy the terms had, or BEFORE_DELIVERY - the policy
+     *                      that never lets unpaid goods leave - when they had none; without deposits there is no
+     *                      balance to collect, and a policy is refused
+     */
+    public void change(boolean allowPrepaid, boolean allowDeposit, boolean allowCredit, CommercialTerm defaultTerm,
+                       BigDecimal depositPercent, BigDecimal creditLimit, Integer creditTermDays,
+                       DepositBalancePolicy balancePolicy, UUID approvedBy, Instant now, String note) {
+        apply(allowPrepaid, allowDeposit, allowCredit, defaultTerm, depositPercent, creditLimit, creditTermDays,
+                balancePolicy, approvedBy, now, note);
+    }
+
     private void apply(boolean prepaid, boolean deposit, boolean credit, CommercialTerm term, BigDecimal percent,
-                       BigDecimal limit, Integer days, UUID by, Instant at, String text) {
+                       BigDecimal limit, Integer days, DepositBalancePolicy policy, UUID by, Instant at, String text) {
         if (!prepaid && !deposit && !credit) {
             throw invalid("At least one payment term must be allowed");
         }
@@ -89,6 +119,9 @@ public final class CreditProfile extends AggregateRoot {
         if (percent != null && (percent.signum() <= 0 || percent.compareTo(HUNDRED) >= 0)) {
             throw invalid("The deposit percentage is above 0 and below 100");
         }
+        if (!deposit && policy != null) {
+            throw invalid("A balance policy is given only when deposits are allowed");
+        }
         if (credit != (limit != null && days != null)) {
             throw invalid("A credit limit and the days to pay are given exactly when credit is allowed");
         }
@@ -105,6 +138,8 @@ public final class CreditProfile extends AggregateRoot {
         this.depositPercent = percent;
         this.creditLimit = limit;
         this.creditTermDays = days;
+        this.depositBalancePolicy = !deposit ? null : policy != null ? policy
+                : depositBalancePolicy != null ? depositBalancePolicy : DepositBalancePolicy.BEFORE_DELIVERY;
         this.approvedBy = Objects.requireNonNull(by, "approvedBy");
         this.approvedAt = Objects.requireNonNull(at, "approvedAt");
         this.note = text == null || text.isBlank() ? null : text.trim();
@@ -123,6 +158,7 @@ public final class CreditProfile extends AggregateRoot {
     public BigDecimal depositPercent() { return depositPercent; }
     public BigDecimal creditLimit() { return creditLimit; }
     public Integer creditTermDays() { return creditTermDays; }
+    public DepositBalancePolicy depositBalancePolicy() { return depositBalancePolicy; }
     public String currency() { return currency; }
     public UUID approvedBy() { return approvedBy; }
     public Instant approvedAt() { return approvedAt; }

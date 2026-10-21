@@ -23,6 +23,10 @@ public record CreditPositionResponse(
         BigDecimal availableCredit,
         String currency,
         @Schema(description = "An overdue receivable: new credit orders wait for the credit approver")
-        boolean hasOverdue
+        boolean hasOverdue,
+        @Schema(example = "BEFORE_DELIVERY", description = "How a deposit order's balance is collected: "
+                + "BEFORE_DELIVERY (by transfer, before the goods leave) or ON_DELIVERY (the carrier collects it); null "
+                + "without deposits (G2-3)")
+        String depositBalancePolicy
 ) {
 }

@@ -722,7 +722,7 @@ for i, (code, company, contact, seg, region, status, terms) in enumerate(CUSTOME
                                    "ward_code": w2c, "recipient_name": "Quản lý chi nhánh 2"})
     if terms:
         kind = terms[0]
-        add("customer.credit_profile", id=uid("credit:" + code), customer_id=cid, allow_prepaid=True,
+        profile = add("customer.credit_profile", id=uid("credit:" + code), customer_id=cid, allow_prepaid=True,
             allow_deposit=kind == "DEPOSIT" or kind == "CREDIT" and i % 2 == 0,
             allow_credit=kind == "CREDIT", default_payment_term=kind,
             deposit_percent=terms[1] if kind == "DEPOSIT" else (30 if kind == "CREDIT" and i % 2 == 0 else None),
@@ -730,8 +730,12 @@ for i, (code, company, contact, seg, region, status, terms) in enumerate(CUSTOME
             currency="VND", approved_by=U["ketoan"], approved_at=created + timedelta(days=2),
             note="Hạn mức duyệt theo doanh số 6 tháng" if kind == "CREDIT" else "Khách mới, đặt cọc trước khi sản xuất",
             created_at=created + timedelta(days=2))
+        # G2-3: a deposit customer pays the balance before delivery unless an order of theirs lets the carrier
+        # collect it (set below, when such an order is placed).
+        profile["deposit_balance_policy"] = "BEFORE_DELIVERY" if profile["allow_deposit"] else None
     CUST[code] = dict(id=cid, company=company, contact=contact, seg=seg, wh=region, status=status, terms=terms,
-                      email=email, phone=phone, addr=addr, user=U.get("kh." + code))
+                      email=email, phone=phone, addr=addr, user=U.get("kh." + code),
+                      profile=profile if terms else None)
 
 # selling prices
 SEG_DISCOUNT = {"DISTRIBUTOR": 0.92, "CHAIN": 0.96}
@@ -1365,7 +1369,11 @@ def status_path(custom, credit, final):
     path += ["CONFIRMED"]
     if custom:
         path += ["IN_PRODUCTION"]
-    path += ["READY_TO_FULFILL", "IN_FULFILMENT", "SHIPPED", "DELIVERED", "COMPLETED"]
+    # G3-2 (V20261021000100): IN_FULFILMENT became PICKING and PACKED; PACKED is inserted by place_order, without a
+    # random draw, so the rest of the data set stays what it was.
+    path += ["READY_TO_FULFILL", "PICKING", "SHIPPED", "DELIVERED", "COMPLETED"]
+    if final == "PACKED":
+        final = "PICKING"
     if final in path:
         return path[:path.index(final) + 1]
     return path
@@ -1434,6 +1442,11 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
         times.append(t)
         t = t + timedelta(days=random.choice([1, 1, 2]), hours=random.randint(1, 5))
     when = dict(zip(path, times))
+    if "PICKING" in path and ("SHIPPED" in path or final == "PACKED") and not cancel and not hold:
+        # Packed four hours after picking started, as the pack row says (packed_at = t_pick + 4h).
+        path.insert(path.index("PICKING") + 1, "PACKED")
+        when["PACKED"] = when["PICKING"] + timedelta(hours=4)
+        times = [when[s] for s in path]
     cur = path[-1]
     if hold:
         cur = "ON_HOLD"
@@ -1460,7 +1473,20 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
               deposit_received_at=None, warehouse_id=WH[p] if final != "DRAFT" else None,
               released_at=rel_at if released else None, released_by=U["dieuphoi"] if released else None,
               paid_amount=0, paid_in_full_at=None, cancellation_reason_code=None, cancellation_retained_amount=None,
-              credit_term_days=terms[2] if credit else None, created_at=placed)
+              credit_term_days=terms[2] if credit else None, created_at=placed,
+              # G2-3: the carrier collects the balance of a subcontracted deposit order on delivery (COD below);
+              # every other deposit order pays it by transfer before the handover.
+              balance_policy=("ON_DELIVERY" if sub else "BEFORE_DELIVERY") if term == "DEPOSIT" else None)
+    if term == "DEPOSIT" and sub and c.get("profile") is not None:
+        c["profile"]["deposit_balance_policy"] = "ON_DELIVERY"
+    # G3-2: the hold on the order, and the milestones the lifecycle CHECKs ask for.
+    row.update(hold_reason=hold[1] if hold else None,
+               status_before_hold=(None if hold[1] == "CREDIT" else hold[0]) if hold else None,
+               hold_note=hold[2] if hold else None,
+               shipped_at=when.get("SHIPPED") if cur in ("SHIPPED", "DELIVERED", "COMPLETED", "RETURNED") else None,
+               delivered_at=when.get("DELIVERED") if cur in ("DELIVERED", "COMPLETED", "RETURNED") else None,
+               completed_at=when.get("COMPLETED") if cur == "COMPLETED" else None,
+               packed_at=when.get("PACKED"), billed_amount=0, receivable_paid_amount=0)
     for ln in lines:
         add("ordering.order_line", id=ln["id"], order_id=oid, sku=ln["sku"], quantity=ln["qty"], unit_price=ln["price"],
             currency="VND", design_snapshot_id=ln["design"]["snapshot"] if ln["design"] else None,
@@ -1478,7 +1504,8 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
         hist.append("RETURNED")
         when["RETURNED"] = when["DELIVERED"] + timedelta(days=4)
     actors = {"PENDING_PAYMENT": c["user"], "DRAFT": c["user"], "CONFIRMED": None, "IN_PRODUCTION": U["dieuphoi"],
-              "READY_TO_FULFILL": U["dieuphoi"], "IN_FULFILMENT": U[staff_of(p)[0]], "SHIPPED": U[staff_of(p)[0]],
+              "READY_TO_FULFILL": U["dieuphoi"], "PICKING": U[staff_of(p)[0]], "PACKED": U[staff_of(p)[0]],
+              "SHIPPED": U[staff_of(p)[0]],
               "DELIVERED": None, "COMPLETED": None, "ON_HOLD": U["dieuphoi"], "CANCELLED": U["dieuphoi"],
               "RETURNED": U[staff_of(p)[2]]}
     for k, s in enumerate(hist):
@@ -1493,21 +1520,38 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
     if final == "DRAFT":
         return o
     # payments --------------------------------------------------------------------------------
+    # G2-3 (decision G3-Q3): a bank transfer is recorded once in the ledger - payment.customer_transfer, read from the
+    # statement by the accountant - and allocated to the order (transfer_allocation without a receivable); the order
+    # counts the allocation (ordering.order_payment). Money still awaited is not a row: the order says what it waits
+    # for. Only the carrier's COD of a subcontracted deposit order stays a payment.payment row, as the COD remittances
+    # (payment.cod_remittance_line.payment_id) recorded it.
     paid = 0
-    pays = []
+    pays = []    # (refund column, id): where a refund of this money is placed
 
     def pay(tag, amount, method, at_, status="CAPTURED"):
         nonlocal paid
-        pid_ = uid(f"pay:{key}:{tag}")
-        add("payment.payment", id=pid_, order_id=oid, amount=amount, currency="VND", method=method, status=status,
-            provider_ref=(f"VCB{at_.strftime('%y%m%d')}{len(ROWS.get('payment.payment', [])):05d}"
-                          if method == "BANK_TRANSFER" else (f"COD-{number}" if method == "COD" else None)),
-            captured_at=at_ if status in ("CAPTURED", "REFUNDED") else None, created_at=at_ - timedelta(hours=2))
-        if status in ("CAPTURED", "REFUNDED"):
-            add("ordering.order_payment", payment_id=pid_, order_id=oid, amount=amount, currency="VND",
-                captured_at=at_)
-            paid += amount
-        pays.append(pid_)
+        if status not in ("CAPTURED", "REFUNDED"):
+            return None
+        if method == "BANK_TRANSFER":
+            tid = uid(f"transfer:{key}:{tag}")
+            aid = uid(f"alloc:{key}:{tag}")
+            n = len(ROWS.get("payment.customer_transfer", []))
+            add("payment.customer_transfer", id=tid, customer_id=c["id"],
+                reference=f"VCB{at_.strftime('%y%m%d')}{n:05d}", amount=amount, unallocated_amount=0,
+                currency="VND", received_on=at_.date(), recorded_by=U["ketoan"], recorded_at=at_,
+                note=f"Chuyển khoản {number} theo sao kê Vietcombank", created_at=at_)
+            add("payment.transfer_allocation", id=aid, transfer_id=tid, order_id=oid, receivable_id=None,
+                amount=amount, allocated_at=at_, allocated_by=U["ketoan"])
+            pid_, col = aid, "allocation_id"
+        else:
+            pid_ = uid(f"pay:{key}:{tag}")
+            add("payment.payment", id=pid_, order_id=oid, amount=amount, currency="VND", method=method,
+                status=status, provider_ref=f"COD-{number}" if method == "COD" else None, captured_at=at_,
+                created_at=at_ - timedelta(hours=2))
+            col = "payment_id"
+        add("ordering.order_payment", payment_id=pid_, order_id=oid, amount=amount, currency="VND", captured_at=at_)
+        paid += amount
+        pays.append((col, pid_))
         return pid_
 
     confirmed = "CONFIRMED" in when
@@ -1522,13 +1566,18 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
         if confirmed:
             pay("deposit", deposit, "BANK_TRANSFER", when["CONFIRMED"])
             row["deposit_received_at"] = when["CONFIRMED"]
-            if "DELIVERED" in when:
-                cod = sub
-                pid_ = pay("rest", total - deposit, "COD" if cod else "BANK_TRANSFER",
-                           when["DELIVERED"] if cod else when["DELIVERED"] + timedelta(days=1))
-                row["paid_in_full_at"] = when["DELIVERED"] if cod else when["DELIVERED"] + timedelta(days=1)
-                if cod:
+            if sub and "SHIPPED" in when:
+                # ON_DELIVERY: the carrier collects the balance - fixed at the handover - and remits it.
+                row["cod_amount"] = total - deposit
+                if "DELIVERED" in when:
+                    pid_ = pay("rest", total - deposit, "COD", when["DELIVERED"])
+                    row["paid_in_full_at"] = when["DELIVERED"]
                     SHIPMENTS_COD.append((o, pid_, total - deposit))
+            elif "SHIPPED" in when:
+                # BEFORE_DELIVERY: the balance arrives before the handover (decision G3-Q4).
+                rest_at = when["SHIPPED"] - timedelta(hours=3)
+                pay("rest", total - deposit, "BANK_TRANSFER", rest_at)
+                row["paid_in_full_at"] = rest_at
         else:
             pay("deposit", deposit, "BANK_TRANSFER", placed + timedelta(minutes=5),
                 status="CANCELLED" if cancel else "PENDING")
@@ -1545,13 +1594,14 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
             due = issued.date() + timedelta(days=terms[2])
             r = dict(id=uid(f"recv:{key}"), order=oid, cust=cust_code, amount=total, paid=0, issued=issued, due=due,
                      order_row=row)
+            row["billed_amount"] = total
             RECEIVABLES.append(r)
     row["paid_amount"] = paid
     # reservations ------------------------------------------------------------------------------
     picked_state = None
-    if "IN_FULFILMENT" in when and not (cancel and cancel[0] == "IN_FULFILMENT"):
-        picked_state = "PICKING" if (cur == "IN_FULFILMENT" and pick_partial) else "PICKED"
-    if cur == "ON_HOLD" and "IN_FULFILMENT" in when:
+    if "PICKING" in when and not (cancel and cancel[0] == "PICKING"):
+        picked_state = "PICKING" if (cur == "PICKING" and pick_partial) else "PICKED"
+    if cur == "ON_HOLD" and "PICKING" in when:
         picked_state = "PICKING"
     consumed = picked_state == "PICKED"
     res_rows = []
@@ -1563,7 +1613,7 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
                                            placed + timedelta(days=2)) if cancel[1] == "PAYMENT_NOT_RECEIVED" else \
                     ("RELEASED", when["CANCELLED"], "ORDER_CANCELLED", None)
             elif consumed or (picked_state == "PICKING" and k == 0 and ln is lines[0] and cur != "ON_HOLD"):
-                st, closed, reason, exp = "CONSUMED", when["IN_FULFILMENT"] + timedelta(hours=2), None, None
+                st, closed, reason, exp = "CONSUMED", when["PICKING"] + timedelta(hours=2), None, None
             else:
                 st, closed, reason = "HELD", None, None
                 exp = placed + timedelta(days=7) if cur == "PENDING_PAYMENT" else None
@@ -1590,7 +1640,7 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
     # fulfilment ----------------------------------------------------------------------------------
     if picked_state:
         staff, staff2, mgr, qcu = staff_of(p)
-        t_pick = when["IN_FULFILMENT"]
+        t_pick = when["PICKING"]
         wave_id = WAVES.get((p, t_pick.date()))
         if wave_id is None:
             wave_id = uid(f"wave:{p}:{t_pick.date()}")
@@ -1619,11 +1669,15 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
         if pick_done:
             shipped = "SHIPPED" in when
             pack_id = uid(f"pack:{key}")
-            pack_status = "PACKED" if shipped or cur == "IN_FULFILMENT" and not pick_partial else "PACKING"
+            pack_status = "PACKED" if shipped or cur == "PACKED" else "PACKING"
             if cur == "ON_HOLD":
                 pack_status = "ON_HOLD"
+            packer = U[staff2]
             add("fulfillment.pack", id=pack_id, pick_id=pick_id, status=pack_status,
                 packed_at=t_pick + timedelta(hours=4) if pack_status == "PACKED" else None,
+                # G4-5: the packer who took the order at the packing table and completed it.
+                started_at=t_pick + timedelta(hours=2, minutes=30), started_by=packer,
+                packed_by=packer if pack_status == "PACKED" else None,
                 created_at=t_pick + timedelta(hours=2))
             for n, ln in enumerate(lines):
                 if ln["design"]:
@@ -1632,45 +1686,61 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
                         expected_checksum=ln["design"]["checksum"], actual_checksum=ln["design"]["checksum"],
                         result="MATCH", verified_by=U[staff2], verified_at=t_pick + timedelta(hours=3),
                         created_at=t_pick + timedelta(hours=3))
-            ship_id = uid(f"ship:{key}") if shipped else None
-            carrier = CARRIERS[len(ORDERS) % 4]
-            tracking = f"{carrier[:3].upper().replace(' ', '')}{number[-6:]}{len(ORDERS):03d}VN" if shipped else None
-            if shipped:
-                sstatus = "DELIVERED" if "DELIVERED" in when else "DISPATCHED"
+            # G4-5 (V20261021000300): a completed packing is one shipment READY_TO_DISPATCH (09 §5); the handover
+            # makes it HANDED_OVER, the coordinator records DELIVERED. No carrier is called (09 §1): no tracking number,
+            # no carrier feed - the timeline is the MANUAL steps, each naming who recorded it (BR-02).
+            packed = pack_status == "PACKED"
+            ship_id = uid(f"ship:{key}") if packed else None
+            t_ready = t_pick + timedelta(hours=4)
+            n_pk = 2 if sum(ln["qty"] for ln in lines) > 40 else 1
+            if packed:
+                sstatus = "DELIVERED" if "DELIVERED" in when else "HANDED_OVER" if shipped else "READY_TO_DISPATCH"
+                carrier = CARRIERS[len(ORDERS) % 4] if shipped else None
+                # 09 BR-04: what the carrier collects - the balance of an ON_DELIVERY deposit order.
+                cod = row.get("cod_amount") or ((total - deposit) if term == "DEPOSIT" and sub else 0)
                 add("fulfillment.shipment", id=ship_id, pack_id=pack_id, order_id=oid, carrier=carrier,
-                    tracking_number=tracking, status=sstatus, dispatched_at=when["SHIPPED"], created_at=when["SHIPPED"])
-                evs = [("LABEL_CREATED", when["SHIPPED"] - timedelta(hours=2)), ("HANDED_OVER", when["SHIPPED"]),
-                       ("IN_TRANSIT", when["SHIPPED"] + timedelta(hours=6))]
+                    tracking_number=None, status=sstatus, dispatched_at=when.get("SHIPPED") if shipped else None,
+                    code=f"{number}-S1", warehouse_id=WH[p], delivery_mode="PARCEL", package_count=n_pk,
+                    cod_amount=cod, partial=False, ready_at=t_ready, ready_by=packer,
+                    handed_over_at=when["SHIPPED"] if shipped else None,
+                    handed_over_by=U[staff] if shipped else None,
+                    outcome_at=when["DELIVERED"] if "DELIVERED" in when else None,
+                    outcome_by=U["dieuphoi"] if "DELIVERED" in when else None, created_at=t_ready)
+                evs = [("READY_TO_DISPATCH", t_ready, packer)]
+                if shipped:
+                    evs.append(("HANDED_OVER", when["SHIPPED"], U[staff]))
                 if "DELIVERED" in when:
-                    evs += [("OUT_FOR_DELIVERY", when["DELIVERED"] - timedelta(hours=4)),
-                            ("DELIVERED", when["DELIVERED"])]
-                for k, (es, et) in enumerate(evs):
+                    evs.append(("DELIVERED", when["DELIVERED"], U["dieuphoi"]))
+                for k, (es, et, who) in enumerate(evs):
                     add("fulfillment.shipment_event", id=uid(f"sev:{key}:{k}"), shipment_id=ship_id, status=es,
-                        occurred_at=et, source="CARRIER_WEBHOOK" if k else "MANUAL",
-                        carrier_event_id=f"{tracking}-{k}" if k else None,
-                        location_text=["Kho " + p, "Bưu cục " + p, "Trung tâm phân loại", "Bưu cục phát",
-                                       ship["province"]][k],
-                        note=None, raw_payload={"status": es, "tracking": tracking} if k else None, created_at=et)
+                        occurred_at=et, source="MANUAL", carrier_event_id=None, location_text="Kho " + p,
+                        note=None, raw_payload=None, recorded_by=who, created_at=et)
+            if shipped:
                 add("notification.delivery_log", id=uid(f"mail:ship:{key}"), template_code="shipment.dispatched",
                     channel="EMAIL", recipient=c["email"], status="SENT", error=None, sent_at=when["SHIPPED"],
                     external_reference=None, operation_reference=f"shipment:{ship_id}", terminal=True,
                     delivery_generation=0, attempt_number=1, created_at=when["SHIPPED"])
-            o["shipment"] = ship_id
-            n_pk = 2 if sum(ln["qty"] for ln in lines) > 40 else 1
+            o["shipment"] = ship_id if shipped else None
             for k in range(n_pk):
                 pk = uid(f"pkg:{key}:{k}")
-                sealed = pack_status == "PACKED"
+                inside = [ln for m, ln in enumerate(lines) if m % n_pk == k]
                 add("fulfillment.package", id=pk, pack_id=pack_id, shipment_id=ship_id, package_no=k + 1,
+                    label_code=f"PKG-{number}-{k + 1}", package_type="PALLET" if n_pk > 1 else "CARTON",
                     weight_kg=round(sum(VAR[ln["sku"]]["dims"][0] * ln["qty"] for ln in lines) / n_pk, 3),
                     length_cm=120, width_cm=100, height_cm=150, dim_weight_kg=300.0,
-                    tracking_number=f"{tracking}-{k + 1}" if tracking else None,
-                    label_url=f"https://labels.stockflow.example/{tracking}-{k + 1}.pdf" if tracking else None,
-                    status="SEALED" if sealed else "OPEN", sealed_at=t_pick + timedelta(hours=4) if sealed else None,
-                    created_at=t_pick + timedelta(hours=3))
+                    tracking_number=None, label_url=None, rotatable=True, rotatable_overridden=False,
+                    fragile=False, fragile_overridden=False,
+                    status="SEALED" if packed else "OPEN", sealed_at=t_ready if packed else None,
+                    sealed_by=packer if packed else None, created_at=t_pick + timedelta(hours=3))
                 for m, ln in enumerate(lines):
                     if m % n_pk == k:
                         add("fulfillment.package_line", id=uid(f"pkgl:{key}:{k}:{m}"), package_id=pk,
                             order_line_id=ln["id"], quantity=ln["qty"], created_at=t_pick + timedelta(hours=3))
+                        # G4-5: the scan that put the goods in (append-only); package_line is its running total.
+                        add("fulfillment.package_scan", id=uid(f"pscan:{key}:{k}:{m}"), package_id=pk,
+                            order_line_id=ln["id"], scanned_code=ln["sku"], lot_number=None, serial_number=None,
+                            quantity=ln["qty"], scanned_by=packer, scanned_at=t_pick + timedelta(hours=3),
+                            created_at=t_pick + timedelta(hours=3))
     # hold, cancellation -----------------------------------------------------------------------
     if hold:
         add("ordering.order_hold", id=uid(f"hold:{key}"), order_id=oid, reason=hold[1], raised_at=when["ON_HOLD"],
@@ -1687,7 +1757,7 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
             retained = money(paid * pct / 100)
             row["cancellation_retained_amount"] = retained
             if paid:
-                add("payment.refund", id=uid(f"refund:{key}"), payment_id=pays[0], amount=paid - retained,
+                add("payment.refund", id=uid(f"refund:{key}"), **{pays[0][0]: pays[0][1]}, amount=paid - retained,
                     currency="VND", reason="Hoàn tiền hủy đơn (trừ phí)", status="COMPLETED",
                     refunded_at=when["CANCELLED"] + timedelta(days=1), order_id=oid, source="ORDER_CANCELLED",
                     created_at=when["CANCELLED"])
@@ -1702,7 +1772,7 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
         rqty = max(1, ln["qty"] // 5)
         if rstatus == "REFUNDED":
             ref = uid(f"refund:rma:{key}")
-            add("payment.refund", id=ref, payment_id=pays[0], amount=rqty * ln["price"], currency="VND",
+            add("payment.refund", id=ref, **{pays[0][0]: pays[0][1]}, amount=rqty * ln["price"], currency="VND",
                 reason="Hoàn tiền hàng trả lại lỗi", status="COMPLETED", refunded_at=rq + timedelta(days=3),
                 order_id=oid, source="RETURN", created_at=rq + timedelta(days=2))
         add("ordering.return_request", id=rr, rma_number=next_no("RMA", rq.date()), order_id=oid, customer_id=c["id"],
@@ -1753,8 +1823,8 @@ for i in range(5):
     pool = [PREPAID, CREDIT, DEPOSIT, PREPAID, CREDIT][i]
     plan.append(dict(cust=pool[(i + 1) % len(pool)], d=day(48 + i), final="SHIPPED", custom=i == 3))
 for i in range(4):
-    plan.append(dict(cust=[PREPAID, CREDIT, DEPOSIT, CREDIT][i][i % 3], d=day(52 + i), final="IN_FULFILMENT",
-                     pick_partial=i % 2 == 1))
+    plan.append(dict(cust=[PREPAID, CREDIT, DEPOSIT, CREDIT][i][i % 3], d=day(52 + i),
+                     final="PICKING" if i % 2 == 1 else "PACKED", pick_partial=i % 2 == 1))
 for i in range(3):
     plan.append(dict(cust=[CREDIT, PREPAID, DEPOSIT][i][(i + 2) % 3], d=day(53 + i), final="READY_TO_FULFILL",
                      custom=i == 0))
@@ -1773,8 +1843,8 @@ plan.append(dict(cust=DEPOSIT[2], d=day(60), final="DRAFT"))
 # exceptions
 plan.append(dict(cust=CREDIT[0], d=day(56), final="CONFIRMED", hold=("CONFIRMED", "CREDIT",
                                                                       "Vượt hạn mức tín dụng, chờ kế toán duyệt")))
-plan.append(dict(cust=PREPAID[2], d=day(50), final="IN_FULFILMENT",
-                 hold=("IN_FULFILMENT", "ADDRESS_VERIFICATION", "Địa chỉ giao không liên lạc được, chờ khách xác nhận")))
+plan.append(dict(cust=PREPAID[2], d=day(50), final="PICKING",
+                 hold=("PICKING", "ADDRESS", "Địa chỉ giao không liên lạc được, chờ khách xác nhận")))
 plan.append(dict(cust=PREPAID[3], d=day(20), final="PENDING_PAYMENT",
                  cancel=("PENDING_PAYMENT", "PAYMENT_NOT_RECEIVED", "Quá hạn thanh toán, hệ thống tự hủy")))
 plan.append(dict(cust=PREPAID[4], d=day(30), final="CONFIRMED", cancel_request=10,
@@ -1807,7 +1877,7 @@ add("ordering.order_cancellation_request", id=uid("cxl:rejected"), order_id=inpr
     created_at=inprod["when"]["IN_PRODUCTION"] + timedelta(days=1))
 # a resolved hold in the history of a completed order
 done_o = [o for o in ORDERS if o["status"] == "COMPLETED"][3]
-add("ordering.order_hold", id=uid("hold:resolved"), order_id=done_o["id"], reason="PAYMENT_REVIEW",
+add("ordering.order_hold", id=uid("hold:resolved"), order_id=done_o["id"], reason="PAYMENT",
     raised_at=done_o["when"]["CONFIRMED"] + timedelta(hours=1), resolved_at=done_o["when"]["CONFIRMED"] + timedelta(hours=5),
     resolved_by=U["ketoan"], resolution_note="Đã đối soát sao kê, tiền về đủ",
     created_at=done_o["when"]["CONFIRMED"] + timedelta(hours=1))
@@ -1834,17 +1904,22 @@ for i, r in enumerate(RECEIVABLES):
         amount=r["amount"], paid_amount=r["paid"], currency="VND", issued_at=r["issued"], due_date=r["due"],
         status=status, settled_at=paid_at if status == "PAID" else None, created_at=r["issued"])
     r["order_row"]["paid_amount"] = r["paid"]
+    r["order_row"]["receivable_paid_amount"] = r["paid"]
     if status == "PAID":
         r["order_row"]["paid_in_full_at"] = paid_at
     if r["paid"]:
-        extra = 5000000 if i % 5 == 0 else 0
+        # Credit left over only from a transfer that paid its receivable in full: the application allocates a
+        # transfer to the oldest unpaid receivable first, so a part-paid one never sits next to unallocated money of
+        # the same transfer (that shape made the next delivery's allocation collide on uk_transfer_allocation).
+        extra = 5000000 if i % 5 == 0 and r["paid"] == r["amount"] else 0
         t = uid(f"transfer:{r['id']}")
         add("payment.customer_transfer", id=t, customer_id=CUST[r["cust"]]["id"],
             reference=f"FT{paid_at.strftime('%y%m%d')}{i:06d}", amount=r["paid"] + extra, unallocated_amount=extra,
             currency="VND", received_on=paid_at.date(), recorded_by=U["ketoan"], recorded_at=paid_at + timedelta(hours=2),
             note="Thanh toán công nợ theo sao kê Vietcombank" + (" - dư chuyển kỳ sau" if extra else ""),
             created_at=paid_at + timedelta(hours=2))
-        add("payment.transfer_allocation", id=uid(f"alloc:{r['id']}"), transfer_id=t, receivable_id=r["id"],
+        add("payment.transfer_allocation", id=uid(f"alloc:{r['id']}"), transfer_id=t, order_id=r["order"],
+            receivable_id=r["id"],
             amount=r["paid"], allocated_at=paid_at + timedelta(hours=2), allocated_by=U["ketoan"])
 
 # COD remittances from the carriers
@@ -2282,10 +2357,10 @@ procurement.purchase_order_attachments procurement.replenishment_proposal_lines 
 notification.po_delivery_control procurement.goods_receipts procurement.goods_receipt_lines
 procurement.qc_inspections procurement.supplier_invoices procurement.supplier_invoice_lines
 inventory.stock_item inventory.stock_reservation ordering.order_line_reservation ordering.order_line_production
-payment.payment ordering.order_payment payment.refund payment.receivable payment.customer_transfer
-payment.transfer_allocation
+payment.payment ordering.order_payment payment.receivable payment.customer_transfer
+payment.transfer_allocation payment.refund
 fulfillment.wave fulfillment.pick fulfillment.pick_line fulfillment.pack fulfillment.design_verification
-fulfillment.shipment fulfillment.shipment_event fulfillment.package fulfillment.package_line
+fulfillment.shipment fulfillment.shipment_event fulfillment.package fulfillment.package_line fulfillment.package_scan
 payment.cod_remittance payment.cod_remittance_line
 ordering.return_request ordering.return_request_line
 inventory.cycle_count inventory.cycle_count_line inventory.stock_adjustment production.production_scrap

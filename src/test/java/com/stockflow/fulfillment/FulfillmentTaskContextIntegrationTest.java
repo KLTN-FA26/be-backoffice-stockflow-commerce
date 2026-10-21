@@ -154,8 +154,14 @@ class FulfillmentTaskContextIntegrationTest {
         return "Bearer " + value;
     }
 
-    /** A paid stock-only order of the demo customer, holding one sofa at HCM. */
+    /** A paid stock-only order of the demo customer, holding one sofa at HCM, released there (READY_TO_FULFILL). */
     private OrderSummary confirmedOrder() {
+        // G3-2 (kltn-docs 17 BR-02): only a released order enters fulfillment.
+        return releases.release(paidOrder().orderId(), DemoData.WAREHOUSE_HCM, coordinator);
+    }
+
+    /** Paid and CONFIRMED, not released yet. */
+    private OrderSummary paidOrder() {
         OrderSummary order = orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), DemoData.CUSTOMER_ID,
                 List.of(new PlaceOrderCommand.Line(SOFA, 1, Money.vnd(12_000_000), null))));
         placed.add(order.orderId());
@@ -180,7 +186,7 @@ class FulfillmentTaskContextIntegrationTest {
             jdbc.update("""
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
                                                          currency, placed_at, version, created_at, warehouse_id)
-                    VALUES (?, ?, ?, ?, 'IN_FULFILMENT', 1000, 'VND', NOW(), 0, NOW(), ?)""",
+                    VALUES (?, ?, ?, ?, 'PICKING', 1000, 'VND', NOW(), 0, NOW(), ?)""",
                     order, number, DemoData.CUSTOMER_ID, UUID.randomUUID(), warehouse);
             jdbc.update("""
                     INSERT INTO fulfillment.pick (id, order_id, order_number, warehouse_id, status, assigned_user_id,
@@ -222,7 +228,7 @@ class FulfillmentTaskContextIntegrationTest {
                 order.orderId())).isEqualTo(order.orderNumber());
         assertThat(jdbc.queryForObject("SELECT warehouse_id FROM fulfillment.pick WHERE order_id = ?", UUID.class,
                 order.orderId())).isEqualTo(HCM);
-        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.IN_FULFILMENT);
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.PICKING);
         // The same request again is answered with the same task.
         call(post("/api/v1/fulfillment/tasks").header("Authorization", oc).contentType("application/json")
                 .content(create(order.orderId(), pickerHcm)))
@@ -254,13 +260,13 @@ class FulfillmentTaskContextIntegrationTest {
 
         assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.pick WHERE order_id = ?", Integer.class,
                 order.orderId())).isZero();
-        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.CONFIRMED);
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.READY_TO_FULFILL);
     }
 
     @Test
     @DisplayName("a release to a warehouse that cannot pick the order is refused with 409, and nothing moves")
     void holdsOutsideTheOrderWarehouse() throws Exception {
-        OrderSummary order = confirmedOrder();
+        OrderSummary order = paidOrder();
         // SCRUM-152: the release allocates, so a warehouse without the sofa refuses the release itself - before the
         // order is READY_TO_FULFILL, rather than at task creation as when release did not look at the holds.
         BusinessException refused = (BusinessException) org.assertj.core.api.Assertions.catchThrowable(
@@ -430,7 +436,7 @@ class FulfillmentTaskContextIntegrationTest {
         UUID heldElsewhere = taskRow(hn, pickerHn, "PICKED");
         UUID notHeld = taskRow(HCM, otherPickerHcm, "PICKED");
         tx.executeWithoutResult(s -> jdbc.update(
-                "UPDATE fulfillment.pack SET status = 'ON_HOLD' WHERE pick_id IN (?, ?)", held, heldElsewhere));
+                "UPDATE fulfillment.pack SET status = 'ON_HOLD', started_at = NOW() WHERE pick_id IN (?, ?)", held, heldElsewhere));
 
         call(get("/api/v1/fulfillment/tasks").param("size", "200").header("Authorization", token(qcHcm, "QC_STAFF")))
                 .andExpect(status().isOk())

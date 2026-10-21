@@ -44,11 +44,12 @@ SELECT pg_temp.expect_fail('K4 a deposit of 100 percent', $q$
 SELECT pg_temp.expect_fail('K5 terms nobody approved', $q$
     INSERT INTO customer.credit_profile (id, customer_id, approved_at)
     VALUES (gen_random_uuid(), 'c0000000-0000-4000-8000-000000000001', NOW()) $q$);
-SELECT pg_temp.expect_ok('K6 prepaid, deposit 30% and credit 50M over 30 days', $q$
+SELECT pg_temp.expect_ok('K6 prepaid, deposit 30% (balance before delivery) and credit 50M over 30 days', $q$
     INSERT INTO customer.credit_profile (id, customer_id, allow_prepaid, allow_deposit, allow_credit, default_payment_term,
-                                         deposit_percent, credit_limit, credit_term_days, approved_by, approved_at)
+                                         deposit_percent, credit_limit, credit_term_days, approved_by, approved_at,
+                                         deposit_balance_policy)
     VALUES (md5('qa:cp:1')::uuid, 'c0000000-0000-4000-8000-000000000001', TRUE, TRUE, TRUE, 'CREDIT', 30, 50000000, 30,
-            md5('demo:user:approver')::uuid, NOW()) $q$);
+            md5('demo:user:approver')::uuid, NOW(), 'BEFORE_DELIVERY') $q$);
 SELECT pg_temp.expect_fail('K7 a second set of terms for the same customer', $q$
     INSERT INTO customer.credit_profile (id, customer_id, approved_by, approved_at)
     VALUES (gen_random_uuid(), 'c0000000-0000-4000-8000-000000000001', md5('demo:user:approver')::uuid, NOW()) $q$);
