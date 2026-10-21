@@ -38,9 +38,15 @@ ALTER TABLE ordering.customer_order
 
 -- Review of #150: a fee agreed when print lines are closed after printing started (17 edge "huỷ khi đang In
 -- Production (đã in)", decisions 2026-10-17 / 2026-10-19), kept from the money above the order's worth or owed.
+-- What of the fees the order's money paid at their closure (retained) and what was paid since on their receivables:
+-- a later closure counts only this money as the fees', so a fee still owed is never refunded away (re-review).
 ALTER TABLE ordering.customer_order
-    ADD COLUMN remainder_fee_amount NUMERIC(19, 4) NOT NULL DEFAULT 0,
-    ADD CONSTRAINT ck_order_remainder_fee CHECK (remainder_fee_amount >= 0 AND remainder_fee_amount <= total_amount);
+    ADD COLUMN remainder_fee_amount          NUMERIC(19, 4) NOT NULL DEFAULT 0,
+    ADD COLUMN remainder_fee_retained_amount NUMERIC(19, 4) NOT NULL DEFAULT 0,
+    ADD COLUMN remainder_fee_paid_amount     NUMERIC(19, 4) NOT NULL DEFAULT 0,
+    ADD CONSTRAINT ck_order_remainder_fee CHECK (remainder_fee_amount >= 0 AND remainder_fee_amount <= total_amount
+        AND remainder_fee_retained_amount >= 0 AND remainder_fee_paid_amount >= 0
+        AND remainder_fee_retained_amount + remainder_fee_paid_amount <= remainder_fee_amount);
 
 -- Review of #150 (task candidates, PR #151): when fulfillment opened the order's task - set by createTask through
 -- OrderService.startPicking in the same transaction. The create-task list leaves such orders out whatever their status

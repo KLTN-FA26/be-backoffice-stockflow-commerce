@@ -64,4 +64,20 @@ class RemainderFeeOwedTest {
                 .remainderFeeOwed(closed(UUID.randomUUID(), BigDecimal.ZERO));
         verify(none, never()).save(any(Receivable.class));
     }
+
+    @Test
+    @DisplayName("re-review: a payment of a closure fee's receivable is announced as FEE_RECEIVABLE_ALLOCATION, so the "
+            + "order counts it as the fee's; a delivery's or a cancelled order's fee stays RECEIVABLE_ALLOCATION")
+    void feePaymentsAreAnnouncedApart() {
+        Instant at = Instant.parse("2026-10-22T03:00:00Z");
+        Receivable closureFee = Receivable.openCancellationFee(UUID.randomUUID(), UUID.randomUUID(),
+                new BigDecimal("10"), "VND", at, LocalDate.of(2026, 10, 22)).forShipment(UUID.randomUUID());
+        Receivable cancellationFee = Receivable.openCancellationFee(UUID.randomUUID(), UUID.randomUUID(),
+                new BigDecimal("10"), "VND", at, LocalDate.of(2026, 10, 22));
+        Receivable delivery = Receivable.open(UUID.randomUUID(), UUID.randomUUID(), new BigDecimal("10"), "VND", at,
+                LocalDate.of(2026, 11, 22)).forShipment(UUID.randomUUID());
+        assertThat(ReceivableService.sourceOf(closureFee)).isEqualTo("FEE_RECEIVABLE_ALLOCATION");
+        assertThat(ReceivableService.sourceOf(cancellationFee)).isEqualTo("RECEIVABLE_ALLOCATION");
+        assertThat(ReceivableService.sourceOf(delivery)).isEqualTo("RECEIVABLE_ALLOCATION");
+    }
 }

@@ -1615,7 +1615,10 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
                shipped_at=when.get("SHIPPED") if cur in ("SHIPPED", "DELIVERED", "COMPLETED", "RETURNED") else None,
                delivered_at=when.get("DELIVERED") if cur in ("DELIVERED", "COMPLETED", "RETURNED") else None,
                completed_at=when.get("COMPLETED") if cur == "COMPLETED" else None,
-               packed_at=when.get("PACKED"), billed_amount=0, receivable_paid_amount=0)
+               packed_at=when.get("PACKED"), billed_amount=0, receivable_paid_amount=0,
+               # Review of #150 (V20261022000400): when its fulfillment task was opened - set below with the pick,
+               # as the migration backfills it from fulfillment.pick (the create-task list leaves the order out).
+               fulfilment_started_at=None)
     for ln in lines:
         add("ordering.order_line", id=ln["id"], order_id=oid, sku=ln["sku"], quantity=ln["qty"], unit_price=ln["price"],
             currency="VND", design_snapshot_id=ln["design"]["snapshot"] if ln["design"] else None,
@@ -1794,6 +1797,7 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
                 released_at=at(t_pick.date(), 7, 30), created_at=at(t_pick.date(), 7))
         pick_id = uid(f"pick:{key}")
         pick_done = picked_state == "PICKED"
+        row["fulfilment_started_at"] = t_pick          # the task's creation, as the migration's backfill
         add("fulfillment.pick", id=pick_id, wave_id=wave_id, order_id=oid, order_number=number,
             warehouse_id=WH[p], status=picked_state, assigned_user_id=U[staff], assigned_at=t_pick, started_at=t_pick + timedelta(minutes=20),
             picked_at=t_pick + timedelta(hours=2) if pick_done else None, needs_put_back=False, created_at=t_pick)

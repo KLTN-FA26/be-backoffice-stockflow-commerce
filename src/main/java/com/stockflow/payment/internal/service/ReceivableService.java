@@ -66,6 +66,17 @@ public class ReceivableService {
     private static final Logger log = LoggerFactory.getLogger(ReceivableService.class);
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
     static final String ALLOCATION_SOURCE = "RECEIVABLE_ALLOCATION";
+    /**
+     * Re-review of #150: money paying the receivable of a fee a closure left owed (a CANCELLATION_FEE receivable of an
+     * order that was not cancelled): the order counts it as that fee's, so a later closure does not refund it.
+     */
+    static final String FEE_ALLOCATION_SOURCE = "FEE_RECEIVABLE_ALLOCATION";
+
+    /** The source a receivable's payment is announced with. */
+    static String sourceOf(Receivable receivable) {
+        return "CANCELLATION_FEE".equals(receivable.kind()) && receivable.shipmentId() != null
+                ? FEE_ALLOCATION_SOURCE : ALLOCATION_SOURCE;
+    }
 
     private static final SortWhitelist RECEIVABLE_SORT = SortWhitelist.of("dueDate", "issuedAt", "amount", "status")
             .withDefault("dueDate", Sort.Direction.ASC);
@@ -325,7 +336,7 @@ public class ReceivableService {
                         receivable.id(), applied, now, by);
                 made.add(allocation);
                 events.publishEvent(new PaymentCaptured(receivable.orderId(), allocation.id(), applied,
-                        receivable.currency(), PaymentMethod.BANK_TRANSFER, ALLOCATION_SOURCE));
+                        receivable.currency(), PaymentMethod.BANK_TRANSFER, sourceOf(receivable)));
             }
             book.save(receivable);
         }

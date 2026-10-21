@@ -124,6 +124,13 @@ public final class Order extends AggregateRoot {
     /** Fees agreed when print lines were closed after printing started (review of #150): kept, or owed. */
     private BigDecimal remainderFeeAmount = BigDecimal.ZERO;
     /**
+     * Re-review of #150: what of those fees the order's own money paid at their closure, and what the customer paid
+     * since on the fee receivables ({@code FEE_RECEIVABLE_ALLOCATION}). A later closure counts only this money as the
+     * fees' - a fee still owed is the receivable's to collect, never taken from a refund a second time.
+     */
+    private BigDecimal remainderFeeRetainedAmount = BigDecimal.ZERO;
+    private BigDecimal remainderFeePaidAmount = BigDecimal.ZERO;
+    /**
      * PACK-PARTIAL (lead's decision 2026-10-21): Sales decided the order may ship in parts - a packing completion that
      * leaves goods behind, a handover of part of it, and shipping the stock of a mixed order while it is printed
      * (PACK-EARLY). Off by default: the warehouse ships the order whole.
@@ -406,6 +413,14 @@ public final class Order extends AggregateRoot {
      *                     billed, so it does not lower what the order still has to bill (credit exposure)
      */
     public boolean recordPayment(Money amount, Instant now, boolean ofReceivable) {
+        return recordPayment(amount, now, ofReceivable, false);
+    }
+
+    /**
+     * @param ofFeeReceivable the money paid the receivable of a fee a closure left owed (re-review of #150): it pays
+     *                        that fee, so a later closure does not refund it
+     */
+    public boolean recordPayment(Money amount, Instant now, boolean ofReceivable, boolean ofFeeReceivable) {
         java.util.Objects.requireNonNull(amount, "amount");
         if (!amount.currency().equals(total().currency())) {
             throw new IllegalArgumentException("Order %s is in %s, not %s"
@@ -417,6 +432,9 @@ public final class Order extends AggregateRoot {
         this.paidAmount = paidAmount.add(amount.amount());
         if (ofReceivable) {
             this.receivablePaidAmount = receivablePaidAmount.add(amount.amount());
+        }
+        if (ofFeeReceivable && status != OrderStatus.CANCELLED) {
+            this.remainderFeePaidAmount = remainderFeePaidAmount.add(amount.amount());
         }
         if (status == OrderStatus.CANCELLED && cancellationFeeAmount != null) {
             // Q6a: money arriving after a cancellation with an agreed fee pays that fee first - the receivable its
@@ -460,6 +478,12 @@ public final class Order extends AggregateRoot {
      * @return whether the order was put on hold
      */
     public boolean reversePayment(Money amount, boolean ofReceivable, String reason, UUID by, Instant now) {
+        return reversePayment(amount, ofReceivable, false, reason, by, now);
+    }
+
+    /** @param ofFeeReceivable the money had paid a closure fee's receivable (re-review of #150) */
+    public boolean reversePayment(Money amount, boolean ofReceivable, boolean ofFeeReceivable, String reason, UUID by,
+                                  Instant now) {
         java.util.Objects.requireNonNull(amount, "amount");
         if (!amount.currency().equals(total().currency()) || amount.amount().signum() <= 0) {
             throw new IllegalArgumentException("A reversal takes back money in the order's currency");
@@ -468,6 +492,9 @@ public final class Order extends AggregateRoot {
         this.paidAmount = paidAmount.subtract(back);
         if (ofReceivable) {
             this.receivablePaidAmount = receivablePaidAmount.subtract(back).max(BigDecimal.ZERO);
+        }
+        if (ofFeeReceivable) {
+            this.remainderFeePaidAmount = remainderFeePaidAmount.subtract(back).max(BigDecimal.ZERO);
         }
         if (paidInFullAt != null && paidAmount.compareTo(total().amount()) < 0) {
             this.paidInFullAt = null;
@@ -1379,12 +1406,16 @@ public final class Order extends AggregateRoot {
         this.awaitingProduction = false;
         // Money received above what the order is now worth, less refunds and fees of earlier closures: it pays the fee
         // first (a deposit order's deposit included), the rest is refunded; a fee it does not cover is owed.
-        BigDecimal excess = paidAmount.subtract(billable()).subtract(remainderRefundAmount).subtract(remainderFeeAmount);
+        // Fees of earlier closures count only for the money that paid them (kept, or paid on their receivable): one
+        // still owed is the receivable's, so it is not taken from this refund as well (re-review of #150).
+        BigDecimal excess = paidAmount.subtract(billable()).subtract(remainderRefundAmount)
+                .subtract(remainderFeeRetainedAmount).subtract(remainderFeePaidAmount);
         BigDecimal retained = fee.min(excess.max(BigDecimal.ZERO));
         BigDecimal refundable = excess.subtract(fee).max(BigDecimal.ZERO);
         BigDecimal owed = fee.subtract(retained);
         this.remainderRefundAmount = remainderRefundAmount.add(refundable);
         this.remainderFeeAmount = remainderFeeAmount.add(fee);
+        this.remainderFeeRetainedAmount = remainderFeeRetainedAmount.add(retained);
         String reason = withNote("REMAINDER_CLOSED_" + code.name(), trimmed);
         if (fee.signum() > 0) {
             // The fee and why, in the order's history (the event carries amounts only); the column holds 500.
@@ -1505,10 +1536,24 @@ public final class Order extends AggregateRoot {
     }
 
     public BigDecimal remainderFeeAmount() { return remainderFeeAmount; }
+    public BigDecimal remainderFeeRetainedAmount() { return remainderFeeRetainedAmount; }
+    public BigDecimal remainderFeePaidAmount() { return remainderFeePaidAmount; }
+
+    /** What of the closures' fees is still owed on their receivables, as the order counts it. */
+    public BigDecimal remainderFeeOwed() {
+        return remainderFeeAmount.subtract(remainderFeeRetainedAmount).subtract(remainderFeePaidAmount)
+                .max(BigDecimal.ZERO);
+    }
 
     /** Rehydration of the fees agreed on closures. */
     public void restoreRemainderFee(BigDecimal fee) {
+        restoreRemainderFee(fee, BigDecimal.ZERO, BigDecimal.ZERO);
+    }
+
+    public void restoreRemainderFee(BigDecimal fee, BigDecimal retained, BigDecimal paid) {
         this.remainderFeeAmount = fee == null ? BigDecimal.ZERO : fee;
+        this.remainderFeeRetainedAmount = retained == null ? BigDecimal.ZERO : retained;
+        this.remainderFeePaidAmount = paid == null ? BigDecimal.ZERO : paid;
     }
 
     /**

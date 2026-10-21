@@ -154,6 +154,12 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "remainder_fee_amount", nullable = false, precision = 19, scale = 4)
     private java.math.BigDecimal remainderFeeAmount = java.math.BigDecimal.ZERO;
 
+    @Column(name = "remainder_fee_retained_amount", nullable = false, precision = 19, scale = 4)
+    private java.math.BigDecimal remainderFeeRetainedAmount = java.math.BigDecimal.ZERO;
+
+    @Column(name = "remainder_fee_paid_amount", nullable = false, precision = 19, scale = 4)
+    private java.math.BigDecimal remainderFeePaidAmount = java.math.BigDecimal.ZERO;
+
     @Column(name = "awaiting_production", nullable = false)
     private boolean awaitingProduction;
 
@@ -321,11 +327,15 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
 
     public Instant getFulfilmentStartedAt() { return fulfilmentStartedAt; }
 
-    public void applyRemainderFee(java.math.BigDecimal fee) {
+    public void applyRemainderFee(java.math.BigDecimal fee, java.math.BigDecimal retained, java.math.BigDecimal paid) {
         this.remainderFeeAmount = fee == null ? java.math.BigDecimal.ZERO : fee;
+        this.remainderFeeRetainedAmount = retained == null ? java.math.BigDecimal.ZERO : retained;
+        this.remainderFeePaidAmount = paid == null ? java.math.BigDecimal.ZERO : paid;
     }
 
     public java.math.BigDecimal getRemainderFeeAmount() { return remainderFeeAmount; }
+    public java.math.BigDecimal getRemainderFeeRetainedAmount() { return remainderFeeRetainedAmount; }
+    public java.math.BigDecimal getRemainderFeePaidAmount() { return remainderFeePaidAmount; }
     public boolean isAwaitingProduction() { return awaitingProduction; }
     public java.math.BigDecimal getCodAmount() { return codAmount; }
 

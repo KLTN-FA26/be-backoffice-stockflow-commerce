@@ -705,6 +705,12 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     /** @param ofReceivable the payment paid a receivable of the order (payment's allocation, G3-2 credit exposure) */
     public void recordPayment(UUID orderId, UUID paymentId, java.math.BigDecimal amount, String currency,
                               boolean ofReceivable) {
+        recordPayment(orderId, paymentId, amount, currency, ofReceivable, false);
+    }
+
+    /** @param ofFeeReceivable the money paid a closure fee's receivable (re-review of #150) */
+    public void recordPayment(UUID orderId, UUID paymentId, java.math.BigDecimal amount, String currency,
+                              boolean ofReceivable, boolean ofFeeReceivable) {
         Order order = repository.findByIdForUpdate(new OrderId(orderId))
                 .orElseThrow(() -> new IllegalArgumentException("No order with id " + orderId));
         if (!order.total().currency().getCurrencyCode().equals(currency)) {
@@ -716,7 +722,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
             return; // Redelivered event; already counted.
         }
         boolean confirmed = order.recordPayment(new Money(amount, order.total().currency()), clock.instant(),
-                ofReceivable);
+                ofReceivable, ofFeeReceivable);
         if (confirmed) {
             inventory.pinReservations(orderId);
         }
@@ -736,6 +742,13 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
      */
     public void reversePayment(UUID orderId, UUID reversalId, java.math.BigDecimal amount, String currency,
                                boolean ofReceivable, String reason, UUID by, java.time.Instant at) {
+        reversePayment(orderId, reversalId, amount, currency, ofReceivable, false, reason, by, at);
+    }
+
+    /** @param ofFeeReceivable the money had paid a closure fee's receivable (re-review of #150) */
+    public void reversePayment(UUID orderId, UUID reversalId, java.math.BigDecimal amount, String currency,
+                               boolean ofReceivable, boolean ofFeeReceivable, String reason, UUID by,
+                               java.time.Instant at) {
         Order order = repository.findByIdForUpdate(new OrderId(orderId))
                 .orElseThrow(() -> new IllegalArgumentException("No order with id " + orderId));
         if (!order.total().currency().getCurrencyCode().equals(currency)) {
@@ -746,8 +759,8 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         if (!payments.record(reversalId, orderId, amount.negate(), currency, clock.instant())) {
             return; // Redelivered event; already counted.
         }
-        boolean held = order.reversePayment(new Money(amount, order.total().currency()), ofReceivable, reason, by,
-                at == null ? clock.instant() : at);
+        boolean held = order.reversePayment(new Money(amount, order.total().currency()), ofReceivable,
+                ofFeeReceivable, reason, by, at == null ? clock.instant() : at);
         if (held) {
             log.warn("Order {} put on hold: {} {} of its payment was taken back ({})", order.orderNumber(), amount,
                     currency, reason);

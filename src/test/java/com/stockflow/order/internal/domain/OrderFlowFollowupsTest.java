@@ -430,6 +430,54 @@ class OrderFlowFollowupsTest {
         }
 
         @Test
+        @DisplayName("re-review: paid 100, billable 60, fee 50 - 40 kept, 10 owed; a 30 stock shipment comes back and "
+                + "the rest is closed again: 30 refunded, the 10 still owed on its receivable - once paid, nothing more "
+                + "is refunded (charged once: 30 goods + 50 fee = 80 net)")
+        void secondClosureDoesNotChargeTheFeeTwice() {
+            Order order = Order.draft(NUMBER, UUID.randomUUID(), UUID.randomUUID(), List.of(
+                    Order.line(new Sku("HOP"), 2, Money.vnd(30), null),
+                    Order.line(new Sku("LY-IN"), 1, Money.vnd(50), UUID.randomUUID())), NOW);   // 110
+            order.applyTerms(PaymentTerm.DEPOSIT, new BigDecimal("30"), null, BalancePolicy.ON_DELIVERY);
+            order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
+            order.decidePartialShipment(true);
+            order.submit();
+            order.recordPayment(Money.vnd(100), NOW);                                          // paid 100
+            order.release(HCM, "HCM", STAFF, NOW, Map.of());
+            UUID hop = order.lines().get(0).id();
+            order.recordHandover(handover(S1, hop, 1));
+            order.recordHandover(handover(S2, hop, 1));
+            order.recordShipmentDelivered(S1, NOW, STAFF);
+            order.recordPrintingStarted(NOW);
+            order.pullDomainEvents();
+
+            order.closeRemainder(CancellationReasonCode.CUSTOMER_REQUEST, null, fee(50), STAFF, NOW);
+            var first = closure(order);
+            assertThat(order.billable()).isEqualByComparingTo("60");
+            assertThat(first.retainedFeeAmount()).isEqualByComparingTo("40");
+            assertThat(first.owedAmount()).isEqualByComparingTo("10");
+            assertThat(first.refundableAmount()).isZero();
+
+            order.recordShipmentDeliveryFailed(S2, com.stockflow.order.api.DeliveryFailureReason.CUSTOMER_ABSENT, null,
+                    NOW, STAFF);
+            order.recordShipmentReturned(S2, NOW, STAFF);
+            assertThat(order.status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+            order.closeRemainder(CancellationReasonCode.CUSTOMER_REQUEST, null, STAFF, NOW);
+            var second = closure(order);
+            assertThat(order.billable()).isEqualByComparingTo("30");
+            assertThat(second.refundableAmount()).as("100 paid - 30 goods - 40 of the fee kept")
+                    .isEqualByComparingTo("30");
+            assertThat(second.owedAmount()).as("no new receivable").isZero();
+            assertThat(order.remainderFeeOwed()).as("the first closure's receivable stays open").isEqualByComparingTo("10");
+
+            // The customer pays the fee's receivable: counted as the fee's, so nothing more is refundable.
+            order.recordPayment(Money.vnd(10), NOW, true, true);
+            assertThat(order.remainderFeeOwed()).isZero();
+            assertThat(order.paidAmount().subtract(order.remainderRefundAmount()))
+                    .as("net: 30 goods + 50 fee").isEqualByComparingTo("80");
+            assertThat(order.amountDue()).isZero();
+        }
+
+        @Test
         @DisplayName("2: partial shipment cannot be stopped while the order waits for production after its stock left "
                 + "(409 ORDER_PARTIAL_SHIPMENT_LOCKED); once production completed it can")
         void notStoppedWhileAwaitingProduction() {
