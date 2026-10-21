@@ -610,6 +610,9 @@ class PackingService implements Packing {
                             row.getPickedQty());
                 }
             }
+            if (lots.keySet().equals(Set.of(PackingSession.NO_LOT))) {
+                lots.clear();     // none of them has a lot: the line is not tracked by lot
+            }
             lines.add(new PackingSession.Line(line.lineId(), line.sku(), item.barcode(), wanted, available, print,
                     line.designSnapshotId(), lots, serials, item.rotatable(),
                     item.storageClass() == StorageClass.FRAGILE));
@@ -619,9 +622,7 @@ class PackingService implements Packing {
 
     private static void collect(Map<String, Integer> lots, Set<String> serials, String lot, String serial,
                                 int quantity) {
-        if (lot != null && !lot.isBlank()) {
-            lots.merge(lot, quantity, Integer::sum);
-        }
+        lots.merge(lot == null || lot.isBlank() ? PackingSession.NO_LOT : lot, quantity, Integer::sum);
         if (serial != null && !serial.isBlank()) {
             serials.add(serial);
         }
@@ -709,15 +710,19 @@ class PackingService implements Packing {
         Map<UUID, String> skus = skus(session);
         List<Line> lines = session.lines().stream().map(line -> {
             int packed = session.packedOf(line.orderLineId());
-            List<Lot> lots = line.lots().entrySet().stream().map(e -> new Lot(e.getKey(), e.getValue(),
-                    session.parcels().stream().filter(p -> p.status() != PackageStatus.VOIDED)
-                            .flatMap(p -> p.contents().entrySet().stream())
-                            .filter(c -> c.getKey().orderLineId().equals(line.orderLineId())
-                                    && e.getKey().equals(c.getKey().lotNumber()))
-                            .mapToInt(Map.Entry::getValue).sum())).toList();
+            List<Lot> lots = line.lots().entrySet().stream().map(e -> {
+                String lot = PackingSession.NO_LOT.equals(e.getKey()) ? null : e.getKey();
+                return new Lot(lot, e.getValue(), session.parcels().stream()
+                        .filter(p -> p.status() != PackageStatus.VOIDED)
+                        .flatMap(p -> p.contents().entrySet().stream())
+                        .filter(c -> c.getKey().orderLineId().equals(line.orderLineId())
+                                && Objects.equals(lot, c.getKey().lotNumber()))
+                        .mapToInt(Map.Entry::getValue).sum());
+            }).toList();
             return new Line(line.orderLineId(), line.sku(), line.barcode(), line.printLine(), line.designSnapshotId(),
                     line.wanted(), line.available(), packed, session.shippedOf(line.orderLineId()),
-                    Math.max(0, line.wanted() - packed), !line.lots().isEmpty(), !line.serials().isEmpty(), lots);
+                    Math.max(0, line.wanted() - packed), line.lots().keySet().stream()
+                    .anyMatch(lot -> !PackingSession.NO_LOT.equals(lot)), !line.serials().isEmpty(), lots);
         }).toList();
         List<Parcel> parcels = session.parcels().stream().map(parcel -> parcelView(parcel, skus)).toList();
         List<ShipmentSummary> made = shipments.findByPackIdOrderByReadyAtAscIdAsc(ctx.pack().getId()).stream()

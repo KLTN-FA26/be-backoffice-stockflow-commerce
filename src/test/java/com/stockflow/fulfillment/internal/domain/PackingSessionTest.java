@@ -317,4 +317,24 @@ class PackingSessionTest {
         assertThat(code(catchThrowable(() -> session.remove(UUID.randomUUID(), box.id(), LIDS, null, null,
                 PackingSession.MAX_UNITS_PER_SCAN + 1, PACKER, NOW)))).isEqualTo(ErrorCode.VALIDATION_FAILED);
     }
+
+    @Test
+    @DisplayName("review: a line picked partly with a lot and partly without - the lot-less units are scanned without "
+            + "one, the others with their lot; each kind only up to what was picked of it")
+    void mixedLotAndLotLessUnits() {
+        var cups = new PackingSession.Line(CUPS, "CUP-12OZ", null, 5, 5, false, null,
+                Map.of("L1", 3, PackingSession.NO_LOT, 2), Set.of(), true, false);
+        var session = new PackingSession(UUID.randomUUID(), "SO-1", PackStatus.PACKING, NOW, PACKER, null, null,
+                List.of(cups), List.of(), List.of());
+        var box = session.openPackage(UUID.randomUUID(), null, NOW);
+        session.scan(UUID.randomUUID(), box.id(), "CUP-12OZ", null, null, 2, null, PACKER, NOW);
+        assertThat(code(catchThrowable(() -> session.scan(UUID.randomUUID(), box.id(), "CUP-12OZ", null, null, 1,
+                null, PACKER, NOW)))).as("only 2 came without a lot").isEqualTo(ErrorCode.PACK_LOT_MISMATCH);
+        session.scan(UUID.randomUUID(), box.id(), "CUP-12OZ", "l1", null, 3, null, PACKER, NOW);
+        assertThat(session.packedOf(CUPS)).isEqualTo(5);
+        assertThat(box.contents()).containsEntry(new PackingSession.ContentKey(CUPS, null, null), 2)
+                .containsEntry(new PackingSession.ContentKey(CUPS, "L1", null), 3);
+        assertThat(code(catchThrowable(() -> session.scan(UUID.randomUUID(), box.id(), "CUP-12OZ",
+                PackingSession.NO_LOT, null, 1, null, PACKER, NOW)))).isEqualTo(ErrorCode.PACK_QUANTITY_EXCEEDS_ORDER);
+    }
 }

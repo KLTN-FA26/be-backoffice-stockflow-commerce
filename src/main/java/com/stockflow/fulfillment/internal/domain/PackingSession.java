@@ -45,6 +45,9 @@ import java.util.stream.Collectors;
  */
 public final class PackingSession {
 
+    /** The key of {@link Line#lots} for units picked without a lot, beside others of the same line that have one. */
+    public static final String NO_LOT = "";
+
     /** More units than one scan or one removal ever carries: refused before any arithmetic on it. */
     public static final int MAX_UNITS_PER_SCAN = 1_000_000;
 
@@ -53,7 +56,8 @@ public final class PackingSession {
      *
      * @param wanted    what the order still wants of it: its quantity less units closed out of it
      * @param available what reached the packing area for it: picked (a stock line) or produced (a print line)
-     * @param lots      lot number to the units of it picked or produced; empty when the goods have no lot
+     * @param lots      lot number to the units of it picked or produced; empty when the goods have no lot. When some
+     *                  of them have a lot and some do not, the units without one are under {@link #NO_LOT}
      * @param serials   the serial numbers of the goods; empty when they have none
      * @param fragile   its SKU is stored FRAGILE (docs 01 storage class): a parcel holding it is marked fragile
      */
@@ -619,22 +623,32 @@ public final class PackingSession {
             }
             return null;
         }
+        String lot;
         if (blank(lotNumber)) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, line.sku() + " is tracked by lot: scan the lot",
-                    List.of(FieldError.of("lotNumber", "required for " + line.sku())));
+            // Some of the line's goods were picked without a lot: those are scanned without one.
+            if (!line.lots().containsKey(NO_LOT)) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, line.sku() + " is tracked by lot: scan the lot",
+                        List.of(FieldError.of("lotNumber", "required for " + line.sku())));
+            }
+            lot = NO_LOT;
+        } else {
+            lot = line.lots().keySet().stream().filter(known -> !NO_LOT.equals(known) && same(lotNumber, known))
+                    .findFirst().orElseThrow(() -> new BusinessException(ErrorCode.PACK_LOT_MISMATCH,
+                            "Lot %s was not picked for %s (picked: %s)".formatted(lotNumber.trim(), line.sku(),
+                                    line.lots().keySet().stream().filter(k -> !NO_LOT.equals(k))
+                                            .collect(Collectors.joining(", ")))));
         }
-        String lot = line.lots().keySet().stream().filter(known -> same(lotNumber, known)).findFirst()
-                .orElseThrow(() -> new BusinessException(ErrorCode.PACK_LOT_MISMATCH,
-                        "Lot %s was not picked for %s (picked: %s)".formatted(lotNumber.trim(), line.sku(),
-                                String.join(", ", line.lots().keySet()))));
+        String stored = NO_LOT.equals(lot) ? null : lot;
         int packedOfLot = parcels.stream().filter(Parcel::live).flatMap(p -> p.contents.entrySet().stream())
-                .filter(e -> e.getKey().orderLineId().equals(line.orderLineId()) && lot.equals(e.getKey().lotNumber()))
+                .filter(e -> e.getKey().orderLineId().equals(line.orderLineId())
+                        && Objects.equals(stored, e.getKey().lotNumber()))
                 .mapToInt(Map.Entry::getValue).sum();
-        if (packedOfLot + quantity > line.lots().get(lot)) {
-            throw new BusinessException(ErrorCode.PACK_LOT_MISMATCH, "%d of lot %s were picked for %s; %d packed already"
-                    .formatted(line.lots().get(lot), lot, line.sku(), packedOfLot));
+        if ((long) packedOfLot + quantity > line.lots().get(lot)) {
+            throw new BusinessException(ErrorCode.PACK_LOT_MISMATCH, "%d of %s were picked for %s; %d packed already"
+                    .formatted(line.lots().get(lot), stored == null ? "the units without a lot" : "lot " + lot,
+                            line.sku(), packedOfLot));
         }
-        return lot;
+        return stored;
     }
 
     private String checkSerial(Line line, String serialNumber, int quantity) {
