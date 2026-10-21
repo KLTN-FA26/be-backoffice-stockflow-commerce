@@ -1068,14 +1068,53 @@ public final class Order extends AggregateRoot {
         }
         // G2-3: what the carrier collects for this shipment, fixed at the handover (15 BR-08): its value less the money
         // paid ahead that the shipments before it have not used.
-        BigDecimal cod = carrierCollects() ? value.amount().subtract(availablePaidAhead(ledger)).max(BigDecimal.ZERO)
-                : BigDecimal.ZERO;
+        BigDecimal cod = codOf(value.amount(), valueOf(quantitiesOf(handover.earlierPending())), ledger);
         shipments.add(OrderShipment.handedOver(handover.shipmentId(), quantities, value.amount(),
-                handover.handedOverAt(), handover.handedOverBy(), cod));
+                handover.handedOverAt(), handover.handedOverBy(), cod, handover.carriage()));
         // Goods handed over were packed: from here the order goes through a return, never a cancellation.
         recordPacked(handover.handedOverAt());
         followShipments(ShipmentChange.HANDED_OVER, handover.handedOverAt(), handover.handedOverBy());
         return true;
+    }
+
+    /**
+     * What the carrier would collect for a shipment of these units if it were handed over now (G4-5: the package
+     * label, 08 step 6, 09 BR-04): the same sum {@link #recordHandover} fixes on an ON_DELIVERY deposit order, 0
+     * otherwise. The money paid ahead goes to shipments in the order they were made: the shipments handed over first,
+     * then {@code earlierPending} - the units of shipments made before this one and still waiting - and only what is
+     * left lowers this one. It changes only if money arrives meanwhile; the handover fixes it.
+     */
+    public BigDecimal codFor(Map<UUID, Integer> quantities, Map<UUID, Integer> earlierPending, LedgerMoney ledger) {
+        return codOf(valueOf(quantities), valueOf(earlierPending), ledger);
+    }
+
+    private BigDecimal valueOf(Map<UUID, Integer> quantities) {
+        Money value = Money.zero(total().currency());
+        for (Map.Entry<UUID, Integer> entry : quantities.entrySet()) {
+            OrderLine line = findLine(entry.getKey()).orElseThrow(() -> new BusinessException(
+                    ErrorCode.VALIDATION_FAILED, "Line %s is not on order %s".formatted(entry.getKey(), orderNumber)));
+            value = value.plus(line.unitPrice().times(entry.getValue()));
+        }
+        return value.amount();
+    }
+
+    /** {@code value} less the money paid ahead left after the shipments handed over and {@code heldBack}. */
+    private BigDecimal codOf(BigDecimal value, BigDecimal heldBack, LedgerMoney ledger) {
+        if (!carrierCollects()) {
+            return BigDecimal.ZERO;
+        }
+        BigDecimal ahead = availablePaidAhead(ledger).subtract(heldBack).max(BigDecimal.ZERO);
+        return value.subtract(ahead).max(BigDecimal.ZERO);
+    }
+
+    private static Map<UUID, Integer> quantitiesOf(List<ShipmentHandover.Line> lines) {
+        Map<UUID, Integer> quantities = new LinkedHashMap<>();
+        for (ShipmentHandover.Line line : lines) {
+            if (line.orderLineId() != null && line.quantity() > 0) {
+                quantities.merge(line.orderLineId(), line.quantity(), Integer::sum);
+            }
+        }
+        return quantities;
     }
 
     private static Map<UUID, Integer> quantitiesOf(ShipmentHandover handover) {

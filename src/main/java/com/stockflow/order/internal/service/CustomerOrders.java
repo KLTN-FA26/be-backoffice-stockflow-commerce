@@ -20,8 +20,8 @@ import java.util.UUID;
  *
  * <p>Not on {@code order :: api}: only this module's controller drives it. Nothing here exposes what
  * is internal to the shop — no actors, no hold notes, no stock reservations, no free-text reasons.
- * After handover nothing is tracked beyond what staff recorded (kltn-docs 09 BR-02), so the delivery
- * state comes from the order's status alone.</p>
+ * After handover nothing is tracked beyond what staff recorded (kltn-docs 09 BR-02): the delivery state comes
+ * from the order's status and the outcomes staff recorded per shipment (BR-05).</p>
  *
  * <p>A customer sees only their own orders; someone else's order answers NOT_FOUND exactly as an
  * unknown one does (kltn-docs 18).</p>
@@ -105,15 +105,32 @@ public interface CustomerOrders {
     }
 
     /**
+     * One shipment of the order as the customer reads it (G4-2a, kltn-docs 09 BR-05): from its handover to the carrier
+     * on. Who handed it over or recorded its outcome, the note on a failure, the money it carries: none of it is here.
+     *
+     * @param shipmentCode  null for a shipment recorded before G4-2a (as are packageCount 0, carrier and mode)
+     * @param failureReason set once a delivery failed (kept after a retry delivered it, as the history does)
+     */
+    record Shipment(String shipmentCode, com.stockflow.order.api.OrderShipmentStatus status, int packageCount,
+                    String carrierName, String deliveryMode, Instant handedOverAt, Instant outcomeAt,
+                    com.stockflow.order.api.DeliveryFailureReason failureReason) {
+    }
+
+    /**
      * @param holdReasonPublic null unless the order is ON_HOLD: {@code AWAITING_CREDIT_APPROVAL} or
      *                         {@code UNDER_REVIEW}, never the internal reason
      * @param timeline         oldest first
+     * @param shipments        handed over to a carrier, oldest first; empty before the first handover
      */
     record Detail(UUID orderId, String orderNumber, OrderStatus status, StatusGroup statusGroup,
                   String holdReasonPublic, PaymentTerm paymentTerm, BigDecimal total, String currency,
                   Instant placedAt, OrderSummary.AddressSummary shippingAddress, Payment payment, List<Line> lines,
                   List<TimelineEntry> timeline, DeliveryState deliveryState, AllowedActions allowedActions,
-                  CancellationRequestView cancellationRequest) {
+                  CancellationRequestView cancellationRequest, List<Shipment> shipments) {
+
+        public Detail {
+            shipments = shipments == null ? List.of() : List.copyOf(shipments);
+        }
     }
 
     /**

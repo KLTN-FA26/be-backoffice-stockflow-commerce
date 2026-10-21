@@ -760,6 +760,30 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         return saved(order);
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public java.util.List<com.stockflow.order.api.OrderHoldState> holdStates(java.util.Collection<UUID> orderIds) {
+        return repository.holdStates(orderIds == null ? java.util.List.of() : java.util.Set.copyOf(orderIds));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public java.math.BigDecimal codFor(UUID orderId, java.util.List<com.stockflow.order.api.ShipmentHandover.Line> lines,
+                                       java.util.List<com.stockflow.order.api.ShipmentHandover.Line> earlierPending) {
+        Order order = repository.findById(new OrderId(orderId))
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+        return order.codFor(quantities(lines), quantities(earlierPending), ledgerOf(order));
+    }
+
+    private static java.util.Map<UUID, Integer> quantities(
+            java.util.List<com.stockflow.order.api.ShipmentHandover.Line> lines) {
+        java.util.Map<UUID, Integer> quantities = new java.util.LinkedHashMap<>();
+        if (lines != null) {
+            lines.forEach(line -> quantities.merge(line.orderLineId(), line.quantity(), Integer::sum));
+        }
+        return quantities;
+    }
+
     /**
      * G2-3: the order's money as payment's ledger has it, read under the order's lock (taken by the caller): every
      * allocation takes that lock first, so one committed just before the handover is counted in the COD and the gate.
@@ -949,12 +973,12 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                         s.handedOverAt(), s.outcomeAt(), s.failureReason(),
                         s.quantities().entrySet().stream()
                                 .map(e -> new OrderSummary.ShipmentLine(e.getKey(), e.getValue())).toList(),
-                        s.codAmount()))
+                        s.codAmount(), s.carriage()))
                 .toList();
         return new OrderSummary.Lifecycle(order.holdReason(), order.statusBeforeHold(), order.holdNote(),
                 order.packedAt(), order.shippedAt(), order.deliveredAt(), order.deliveryFailureReason(), order.completedAt(),
                 order.closedAt(), order.billedAmount(), order.billable(), order.amountDue(),
-                order.amountDueBeforeHandover(), progress, shipments, order.amountDueOnDelivery());
+                order.amountDueBeforeHandover(), progress, shipments, order.amountDueOnDelivery(), order.codAmount());
     }
 
     private static OrderAddressSnapshot toSnapshot(CheckoutCustomer.CheckoutAddress address) {

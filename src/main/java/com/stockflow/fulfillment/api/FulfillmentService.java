@@ -52,11 +52,27 @@ public interface FulfillmentService {
     FulfillmentTask completePicking(UUID taskId, CurrentUser actor);
     FulfillmentArtifactAccess artifactDownload(UUID taskId, UUID orderLineId, String role,
                                                 CurrentUser actor);
-    /**
-     * Verifies every print line's design checksum; all matching, the package is complete and the print lines' goods
-     * leave stock with it, in this transaction (decision 2026-10-16) - a mismatch puts it on hold and deducts
-     * nothing. A package already complete is refused ({@code CONFLICT}).
-     */
+    /** {@link #completePacking(UUID, PackingCompletion, CurrentUser)} for the whole order. */
     FulfillmentTask completePacking(UUID taskId, CurrentUser actor);
+
+    /**
+     * Completes packing (G4-5, kltn-docs 08 step 7-9): every sealed package not shipped yet becomes one shipment,
+     * READY_TO_DISPATCH. Everything the order still wants must be in it unless {@code completion.partial()} (08 BR-01).
+     * The print lines it carries are checked against their design first (BR-DSG-003): a mismatch puts packing and the
+     * order on hold and ships nothing. Shipping everything left marks the order PACKED; part of it records that a
+     * package was completed (the order is no longer cancelled, decision 2026-10-17). A print line's goods leave stock
+     * with the shipment that completes the line (decision 2026-10-16). Completed again, it answers as it is.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code PACKING_NOT_READY}, {@code PACK_STATE_CONFLICT},
+     *         {@code PACKING_TAKEN}, {@code PACKAGE_NOT_SEALED}, {@code PACK_NOTHING_TO_SHIP},
+     *         {@code PACKING_INCOMPLETE}, {@code PACK_PARTIAL_NOT_ALLOWED}, {@code ORDER_CANCELLED}
+     */
+    FulfillmentTask completePacking(UUID taskId, PackingCompletion completion, CurrentUser actor);
+
+    /**
+     * QC or a warehouse manager re-verifies the designs of packing held for a mismatch: all matching now, the order's
+     * DESIGN_MISMATCH hold is resolved and packing is back IN PROGRESS for the packer to complete (08 §5 Verification
+     * Failed → In Progress); still mismatching, it stays on hold with the new evidence.
+     */
     FulfillmentTask reverifyDesignIntegrity(UUID taskId, String resolutionNote, CurrentUser actor);
 }

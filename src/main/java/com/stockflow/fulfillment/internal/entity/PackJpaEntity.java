@@ -11,7 +11,10 @@ import jakarta.persistence.Table;
 import java.time.Instant;
 import java.util.UUID;
 
-/** JPA mapping of a pack (table {@code fulfillment.pack}). Not the domain model. STARTER ENTITY. */
+/**
+ * JPA mapping of a pack - the packing session of a task (table {@code fulfillment.pack}). Not the domain model: the
+ * rules are on {@code PackingSession}, which {@link #apply} copies back.
+ */
 @Entity
 @Table(name = "pack", schema = "fulfillment")
 public class PackJpaEntity extends BaseEntity {
@@ -25,6 +28,15 @@ public class PackJpaEntity extends BaseEntity {
 
     @Column(name = "packed_at")
     private Instant packedAt;
+    @Column(name = "started_at")
+    private Instant startedAt;
+    @Column(name = "started_by")
+    private UUID startedBy;
+    @Column(name = "packed_by")
+    private UUID packedBy;
+    /** The request id of a completion a design check put on hold: the same request again gets the same answer. */
+    @Column(name = "held_request_id")
+    private UUID heldRequestId;
 
     protected PackJpaEntity() {
     }
@@ -39,16 +51,21 @@ public class PackJpaEntity extends BaseEntity {
     public UUID getPickId() { return pickId; }
     public PackStatus getStatus() { return status; }
     public Instant getPackedAt() { return packedAt; }
-    public void begin() {
-        if (status == PackStatus.PENDING) { status = PackStatus.PACKING; }
-    }
-    public void hold() { status = PackStatus.ON_HOLD; packedAt = null; }
+    public Instant getStartedAt() { return startedAt; }
+    public UUID getStartedBy() { return startedBy; }
+    public UUID getPackedBy() { return packedBy; }
+    public UUID getHeldRequestId() { return heldRequestId; }
+    public void holdFor(UUID requestId) { this.heldRequestId = requestId; }
+
     /** The order was cancelled (SCRUM-460): any label made for the parcel is void with it. */
     public void cancel() { status = PackStatus.CANCELLED; }
-    public void complete(Instant now) {
-        if (status != PackStatus.PENDING && status != PackStatus.PACKING && status != PackStatus.ON_HOLD) {
-            throw new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.CONFLICT);
-        }
-        status = PackStatus.PACKED; packedAt = now;
+
+    /** What the packing session decided. */
+    public void apply(PackStatus status, Instant startedAt, UUID startedBy, Instant packedAt, UUID packedBy) {
+        this.status = status;
+        this.startedAt = startedAt;
+        this.startedBy = startedBy;
+        this.packedAt = packedAt;
+        this.packedBy = packedBy;
     }
 }

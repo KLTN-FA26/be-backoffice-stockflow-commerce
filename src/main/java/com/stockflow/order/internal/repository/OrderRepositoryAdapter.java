@@ -104,6 +104,11 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
     }
 
     @Override
+    public List<com.stockflow.order.api.OrderHoldState> holdStates(java.util.Collection<UUID> ids) {
+        return ids.isEmpty() ? List.of() : jpa.holdStates(ids);
+    }
+
+    @Override
     public List<Order> findByCustomerId(UUID customerId) {
         return jpa.findByCustomerIdWithLines(customerId).stream()
                 .map(this::toDomain)
@@ -164,7 +169,7 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
         for (OrderShipment shipment : order.shipments()) {
             OrderShipmentJpaEntity row = rows.computeIfAbsent(shipment.id(), id -> new OrderShipmentJpaEntity(id,
                     order.id().value(), shipment.quantities(), shipment.amount(), shipment.handedOverAt(),
-                    shipment.handedOverBy()).withCod(shipment.codAmount()));
+                    shipment.handedOverBy()).withCod(shipment.codAmount()).withCarriage(shipment.carriage()));
             row.apply(shipment.status(), shipment.outcomeAt(), shipment.outcomeBy(), shipment.failureReason(),
                     shipment.failureNote(), shipment.billedAmount());
             shipments.save(row);

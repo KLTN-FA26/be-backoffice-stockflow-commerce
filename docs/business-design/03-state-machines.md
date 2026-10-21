@@ -592,10 +592,24 @@ parcel under a heavier one (docs 09 BR-02).
 `RETURNED` triggers a **re-putaway** (WBS 3.9.7.2): the goods return to stock through the
 same putaway machine, in condition GOOD if the parcel is intact and QUARANTINE otherwise.
 
-> **Schema gap (DB owner):** `fulfillment.shipment_status` today is `PENDING, DISPATCHED, DELIVERED,
-> RETURNED`. It needs `DELIVERY_FAILED` and `CANCELLED`, plus tables for the vehicle-type catalogue,
-> the load plan and the load with its parcels. `shipment.tracking_number` and the carrier-sourced
-> `shipment_event` rows lose their purpose and go in a later contract step.
+> **Implemented (G4-5, `V20261021000300`):** `fulfillment.shipment` carries the six statuses above
+> (old `PENDING` → `READY_TO_DISPATCH`, `DISPATCHED` → `HANDED_OVER`), a number per order
+> (`<order>-S<n>`), its warehouse, delivery mode, package count, COD amount (09 BR-04) and the
+> handover / outcome / cancellation facts, each step also a `MANUAL` `shipment_event` row naming who
+> recorded it (09 BR-02). The domain is `fulfillment.internal.domain.Shipment`; G4-5 creates shipments
+> (READY_TO_DISPATCH) and cancels them with their order, G4-2a hands them over, SCRUM-294/295 record
+> outcomes. Still to come (G4-1/G4-2a): the vehicle-type catalogue, the load plan and the load.
+> `tracking_number` and carrier-sourced events are unused (no carrier API).
+
+**Packing session (G4-5, kltn-docs 08 §5).** One per task (`fulfillment.pack`):
+`PENDING → PACKING` (a packer takes the order; another packer is refused, a manager is not) `→ PACKED`
+(nothing the order wants is left unshipped), `PACKING ⇄ ON_HOLD` (a printed design does not match its
+snapshot, BR-DSG-003; QC or a manager re-verifies and packing is back in progress — docs 08
+"Verification Failed → In Progress"), `→ CANCELLED` with the order. Its parcels (`fulfillment.package`)
+go `OPEN → SEALED` (weight and size required, 08 BR-03) `→` in a shipment; before that a parcel may be
+re-opened or `VOIDED`. Every scan is kept (`fulfillment.package_scan`, append-only). Completing ships
+every sealed parcel not yet shipped as one shipment; part of the order may ship first (split shipments,
+G4-Q3; a mixed order's stock lines first, decision 2026-10-21) with a reason, the rest later.
 
 ---
 

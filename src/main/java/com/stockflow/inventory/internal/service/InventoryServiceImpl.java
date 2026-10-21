@@ -661,7 +661,8 @@ class InventoryServiceImpl implements InventoryService {
         return repository.findHolds(Set.copyOf(reservationIds)).stream()
                 .map(hold -> new com.stockflow.inventory.api.HoldView(hold.reservationId(), hold.sku(),
                         hold.locationCode(), hold.lotNumber(), hold.quantity(),
-                        com.stockflow.inventory.api.HoldView.Status.valueOf(hold.status().name()), hold.expiresAt(), hold.expiryDate()))
+                        com.stockflow.inventory.api.HoldView.Status.valueOf(hold.status().name()), hold.expiresAt(),
+                        hold.expiryDate(), hold.serialNumber()))
                 .toList();
     }
 

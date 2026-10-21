@@ -1240,6 +1240,15 @@ po_rej["row"]["supplier_response_note"] = "Không đáp ứng được hạn gia
 # ============================================================================ 8. sales orders
 ORDERS = []
 CARRIERS = ["GHN", "GHTK", "Viettel Post", "J&T Express"]
+# G4-2a (V20261021000400): the carrier catalogue the migration seeds, by the free-text names used before it.
+CARRIER_CODE = {"GHN": "GHN", "GHTK": "GHTK", "Viettel Post": "VTP", "J&T Express": "JTE"}
+
+
+def carrier_ref(name):
+    return Raw(f"md5('carrier:{CARRIER_CODE[name]}')::uuid")
+
+
+READY_SHIPMENTS = []   # waiting at dispatch: (id, warehouse prefix, carrier name or None, parcel ids, COD, ready at)
 DESIGNS = {}
 
 
@@ -1676,8 +1685,12 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
             pack_status = "PACKED" if shipped or cur == "PACKED" else "PACKING"
             if cur == "ON_HOLD":
                 pack_status = "ON_HOLD"
+            packer = U[staff2]
             add("fulfillment.pack", id=pack_id, pick_id=pick_id, status=pack_status,
                 packed_at=t_pick + timedelta(hours=4) if pack_status == "PACKED" else None,
+                # G4-5: the packer who took the order at the packing table and completed it.
+                started_at=t_pick + timedelta(hours=2, minutes=30), started_by=packer,
+                packed_by=packer if pack_status == "PACKED" else None,
                 created_at=t_pick + timedelta(hours=2))
             for n, ln in enumerate(lines):
                 if ln["design"]:
@@ -1686,45 +1699,70 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
                         expected_checksum=ln["design"]["checksum"], actual_checksum=ln["design"]["checksum"],
                         result="MATCH", verified_by=U[staff2], verified_at=t_pick + timedelta(hours=3),
                         created_at=t_pick + timedelta(hours=3))
-            ship_id = uid(f"ship:{key}") if shipped else None
-            carrier = CARRIERS[len(ORDERS) % 4]
-            tracking = f"{carrier[:3].upper().replace(' ', '')}{number[-6:]}{len(ORDERS):03d}VN" if shipped else None
-            if shipped:
-                sstatus = "DELIVERED" if "DELIVERED" in when else "DISPATCHED"
+            # G4-5 (V20261021000300): a completed packing is one shipment READY_TO_DISPATCH (09 §5); the handover
+            # makes it HANDED_OVER, the coordinator records DELIVERED. No carrier is called (09 §1): no tracking number,
+            # no carrier feed - the timeline is the MANUAL steps, each naming who recorded it (BR-02).
+            packed = pack_status == "PACKED"
+            ship_id = uid(f"ship:{key}") if packed else None
+            t_ready = t_pick + timedelta(hours=4)
+            n_pk = 2 if sum(ln["qty"] for ln in lines) > 40 else 1
+            if packed:
+                sstatus = "DELIVERED" if "DELIVERED" in when else "HANDED_OVER" if shipped else "READY_TO_DISPATCH"
+                carrier = CARRIERS[len(ORDERS) % 4] if shipped else None
+                # G4-2a: every other shipment still waiting at dispatch already has its carrier chosen (09 §4.1
+                # step 2), so a load opened for that carrier takes it.
+                chosen = carrier if shipped else (CARRIERS[len(ORDERS) % 4] if len(ORDERS) % 2 else None)
+                # 09 BR-04: what the carrier collects - the balance of an ON_DELIVERY deposit order.
+                cod = row.get("cod_amount") or ((total - deposit) if term == "DEPOSIT" and sub else 0)
+                if not shipped:
+                    READY_SHIPMENTS.append((ship_id, p, chosen, [uid(f"pkg:{key}:{k}") for k in range(n_pk)],
+                                            cod, t_ready))
+                # Shipments handed over before loads existed are whole_order_handover (V20261021000400): no manifest
+                # names them, and their order was shipped and delivered as a whole (no ordering.order_shipment).
                 add("fulfillment.shipment", id=ship_id, pack_id=pack_id, order_id=oid, carrier=carrier,
-                    tracking_number=tracking, status=sstatus, dispatched_at=when["SHIPPED"], created_at=when["SHIPPED"])
-                evs = [("LABEL_CREATED", when["SHIPPED"] - timedelta(hours=2)), ("HANDED_OVER", when["SHIPPED"]),
-                       ("IN_TRANSIT", when["SHIPPED"] + timedelta(hours=6))]
+                    carrier_id=carrier_ref(chosen) if chosen else None, whole_order_handover=shipped,
+                    tracking_number=None, status=sstatus, dispatched_at=when.get("SHIPPED") if shipped else None,
+                    code=f"{number}-S1", warehouse_id=WH[p], delivery_mode="PARCEL", package_count=n_pk,
+                    cod_amount=cod, label_cod_amount=cod, partial=False, ready_at=t_ready, ready_by=packer,
+                    handed_over_at=when["SHIPPED"] if shipped else None,
+                    handed_over_by=U[staff] if shipped else None,
+                    outcome_at=when["DELIVERED"] if "DELIVERED" in when else None,
+                    outcome_by=U["dieuphoi"] if "DELIVERED" in when else None, created_at=t_ready)
+                evs = [("READY_TO_DISPATCH", t_ready, packer)]
+                if shipped:
+                    evs.append(("HANDED_OVER", when["SHIPPED"], U[staff]))
                 if "DELIVERED" in when:
-                    evs += [("OUT_FOR_DELIVERY", when["DELIVERED"] - timedelta(hours=4)),
-                            ("DELIVERED", when["DELIVERED"])]
-                for k, (es, et) in enumerate(evs):
+                    evs.append(("DELIVERED", when["DELIVERED"], U["dieuphoi"]))
+                for k, (es, et, who) in enumerate(evs):
                     add("fulfillment.shipment_event", id=uid(f"sev:{key}:{k}"), shipment_id=ship_id, status=es,
-                        occurred_at=et, source="CARRIER_WEBHOOK" if k else "MANUAL",
-                        carrier_event_id=f"{tracking}-{k}" if k else None,
-                        location_text=["Kho " + p, "Bưu cục " + p, "Trung tâm phân loại", "Bưu cục phát",
-                                       ship["province"]][k],
-                        note=None, raw_payload={"status": es, "tracking": tracking} if k else None, created_at=et)
+                        occurred_at=et, source="MANUAL", carrier_event_id=None, location_text="Kho " + p,
+                        note=None, raw_payload=None, recorded_by=who, created_at=et)
+            if shipped:
                 add("notification.delivery_log", id=uid(f"mail:ship:{key}"), template_code="shipment.dispatched",
                     channel="EMAIL", recipient=c["email"], status="SENT", error=None, sent_at=when["SHIPPED"],
                     external_reference=None, operation_reference=f"shipment:{ship_id}", terminal=True,
                     delivery_generation=0, attempt_number=1, created_at=when["SHIPPED"])
-            o["shipment"] = ship_id
-            n_pk = 2 if sum(ln["qty"] for ln in lines) > 40 else 1
+            o["shipment"] = ship_id if shipped else None
             for k in range(n_pk):
                 pk = uid(f"pkg:{key}:{k}")
-                sealed = pack_status == "PACKED"
+                inside = [ln for m, ln in enumerate(lines) if m % n_pk == k]
                 add("fulfillment.package", id=pk, pack_id=pack_id, shipment_id=ship_id, package_no=k + 1,
+                    label_code=f"PKG-{number}-{k + 1}", package_type="PALLET" if n_pk > 1 else "CARTON",
                     weight_kg=round(sum(VAR[ln["sku"]]["dims"][0] * ln["qty"] for ln in lines) / n_pk, 3),
                     length_cm=120, width_cm=100, height_cm=150, dim_weight_kg=300.0,
-                    tracking_number=f"{tracking}-{k + 1}" if tracking else None,
-                    label_url=f"https://labels.stockflow.example/{tracking}-{k + 1}.pdf" if tracking else None,
-                    status="SEALED" if sealed else "OPEN", sealed_at=t_pick + timedelta(hours=4) if sealed else None,
-                    created_at=t_pick + timedelta(hours=3))
+                    tracking_number=None, label_url=None, rotatable=True, rotatable_overridden=False,
+                    fragile=False, fragile_overridden=False,
+                    status="SEALED" if packed else "OPEN", sealed_at=t_ready if packed else None,
+                    sealed_by=packer if packed else None, created_at=t_pick + timedelta(hours=3))
                 for m, ln in enumerate(lines):
                     if m % n_pk == k:
                         add("fulfillment.package_line", id=uid(f"pkgl:{key}:{k}:{m}"), package_id=pk,
                             order_line_id=ln["id"], quantity=ln["qty"], created_at=t_pick + timedelta(hours=3))
+                        # G4-5: the scan that put the goods in (append-only); package_line is its running total.
+                        add("fulfillment.package_scan", id=uid(f"pscan:{key}:{k}:{m}"), package_id=pk,
+                            order_line_id=ln["id"], scanned_code=ln["sku"], lot_number=None, serial_number=None,
+                            quantity=ln["qty"], scanned_by=packer, scanned_at=t_pick + timedelta(hours=3),
+                            created_at=t_pick + timedelta(hours=3))
     # hold, cancellation -----------------------------------------------------------------------
     if hold:
         add("ordering.order_hold", id=uid(f"hold:{key}"), order_id=oid, reason=hold[1], raised_at=when["ON_HOLD"],
@@ -1905,6 +1943,25 @@ for i, r in enumerate(RECEIVABLES):
         add("payment.transfer_allocation", id=uid(f"alloc:{r['id']}"), transfer_id=t, order_id=r["order"],
             receivable_id=r["id"],
             amount=r["paid"], allocated_at=paid_at + timedelta(hours=2), allocated_by=U["ketoan"])
+
+# G4-2a: one parcel load open at the dispatch area (09 §4.1 step 3) - the driver of a carrier arrived, the dispatcher
+# put that carrier's waiting shipment on the manifest and scanned its first parcel; the rest is left to scan and sign.
+loading = next((r for r in READY_SHIPMENTS if r[2] is not None), None)
+if loading:
+    ship_id, p, carrier, parcels, label_cod, t_ready = loading
+    load_id = uid("load:open")
+    opened = t_ready + timedelta(hours=1)
+    dispatcher = U[staff_of(p)[0]]
+    add("fulfillment.dispatch_load", id=load_id, code=f"LD-{opened.strftime('%Y%m%d')}-0001",
+        request_id=uid("load:open:request"), warehouse_id=WH[p], mode="PARCEL", carrier_id=carrier_ref(carrier),
+        load_plan_vehicle_id=None, vehicle_plate="29C-456.78", driver_name="Lê Văn Tài", driver_phone="0912345678",
+        status="LOADING", loading_started_at=opened, loading_started_by=dispatcher, shipment_count=1,
+        package_count=1, cod_total=label_cod, created_at=opened)
+    add("fulfillment.dispatch_load_shipment", id=uid("load:open:s"), load_id=load_id, shipment_id=ship_id,
+        active=True, added_at=opened, added_by=dispatcher, label_cod_amount=label_cod, created_at=opened)
+    add("fulfillment.dispatch_load_package", id=uid("load:open:p"), load_id=load_id, package_id=parcels[0],
+        shipment_id=ship_id, scan_id=uid("load:open:scan"), loaded_at=opened + timedelta(minutes=5),
+        loaded_by=dispatcher, active=True, created_at=opened + timedelta(minutes=5))
 
 # COD remittances from the carriers
 for i, chunk in enumerate([SHIPMENTS_COD[:len(SHIPMENTS_COD) // 2], SHIPMENTS_COD[len(SHIPMENTS_COD) // 2:]]):
@@ -2247,9 +2304,12 @@ for code, ch, subject, body in [
      "Chào {{customerName}}, cảm ơn bạn đã đặt hàng. Đơn {{orderNumber}} trị giá {{total}} đã được ghi nhận."),
     ("payment.failed", "EMAIL", "Thanh toán đơn {{orderNumber}} không thành công",
      "Thanh toán cho đơn {{orderNumber}} chưa thành công. Vui lòng thử lại hoặc liên hệ CSKH."),
+    # 09 §4.1 step 3: the customer is told which carrier has the goods - no tracking number exists (09 §1).
     ("shipment.dispatched", "EMAIL", "Đơn {{orderNumber}} đã được giao cho đơn vị vận chuyển",
-     "Đơn {{orderNumber}} đã xuất kho, mã vận đơn {{trackingNumber}} ({{carrier}})."),
-    ("shipment.dispatched", "SMS", None, "SF Pack: don {{orderNumber}} da giao cho {{carrier}}, ma {{trackingNumber}}."),
+     "Lô {{shipmentCode}} của đơn {{orderNumber}} ({{packageCount}} kiện) đã được bàn giao cho {{carrierName}}."),
+    ("shipment.dispatched", "SMS", None, "SF Pack: don {{orderNumber}} da giao cho {{carrierName}}."),
+    ("shipment.delivered", "EMAIL", "Đơn {{orderNumber}} đã giao thành công",
+     "Lô {{shipmentCode}} của đơn {{orderNumber}} đã được giao thành công."),
     ("po.mail", "EMAIL", "Đơn đặt hàng {{poNumber}}", "Kính gửi {{supplierName}}, đính kèm đơn đặt hàng {{poNumber}}."),
     ("design.sent", "EMAIL", "Mời duyệt thiết kế {{designName}}", "Thiết kế {{designName}} đã sẵn sàng để bạn duyệt."),
     ("receivable.overdue", "EMAIL", "Nhắc thanh toán công nợ", "Công nợ đơn {{orderNumber}} đã quá hạn {{days}} ngày."),
@@ -2344,7 +2404,8 @@ inventory.stock_item inventory.stock_reservation ordering.order_line_reservation
 payment.payment ordering.order_payment payment.receivable payment.customer_transfer
 payment.transfer_allocation payment.refund
 fulfillment.wave fulfillment.pick fulfillment.pick_line fulfillment.pack fulfillment.design_verification
-fulfillment.shipment fulfillment.shipment_event fulfillment.package fulfillment.package_line
+fulfillment.shipment fulfillment.shipment_event fulfillment.package fulfillment.package_line fulfillment.package_scan
+fulfillment.dispatch_load fulfillment.dispatch_load_shipment fulfillment.dispatch_load_package
 payment.cod_remittance payment.cod_remittance_line
 ordering.return_request ordering.return_request_line
 inventory.cycle_count inventory.cycle_count_line inventory.stock_adjustment production.production_scrap
@@ -2489,7 +2550,8 @@ SELECT split_part(n, '-', 1), to_date(split_part(n, '-', 2), 'YYYYMMDD'), MAX(sp
         UNION ALL SELECT task_number FROM warehouse.move_task WHERE created_by = 'seed'
         UNION ALL SELECT rma_number FROM ordering.return_request WHERE created_by = 'seed'
         UNION ALL SELECT order_number FROM production.production_order WHERE created_by = 'seed'
-        UNION ALL SELECT request_number FROM production.sample_request WHERE created_by = 'seed') s
+        UNION ALL SELECT request_number FROM production.sample_request WHERE created_by = 'seed'
+        UNION ALL SELECT code FROM fulfillment.dispatch_load WHERE created_by = 'seed') s
  GROUP BY 1, 2
 ON CONFLICT (document_type, sequence_date) DO UPDATE
    SET last_value = GREATEST(platform.document_sequence.last_value, EXCLUDED.last_value);

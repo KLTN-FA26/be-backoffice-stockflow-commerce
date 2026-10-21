@@ -81,21 +81,21 @@ SELECT pg_temp.expect_ok('O11 picked in full', $q$
      WHERE id = md5('qa:pl:1')::uuid $q$);
 
 \echo '--- packing and shipping (docs 08, 09)'
-INSERT INTO fulfillment.pack (id, pick_id, status, created_at) VALUES (md5('qa:pack:1')::uuid, md5('qa:pick:1')::uuid, 'PACKING', NOW());
-INSERT INTO fulfillment.shipment (id, pack_id, order_id, carrier, status, created_at)
-VALUES (md5('qa:ship:1')::uuid, md5('qa:pack:1')::uuid, md5('qa:order:1')::uuid, 'GHN', 'PENDING', NOW());
+INSERT INTO fulfillment.pack (id, pick_id, status, started_at, created_at) VALUES (md5('qa:pack:1')::uuid, md5('qa:pick:1')::uuid, 'PACKING', NOW(), NOW());
+INSERT INTO fulfillment.shipment (id, pack_id, order_id, carrier, status, code, warehouse_id, ready_at, created_at)
+VALUES (md5('qa:ship:1')::uuid, md5('qa:pack:1')::uuid, md5('qa:order:1')::uuid, 'GHN', 'READY_TO_DISPATCH', 'SO-QA-1-S1', md5('demo:wh:HCM')::uuid, NOW(), NOW());
 SELECT pg_temp.expect_fail('O12 sealed parcel that was never weighed', $q$
-    INSERT INTO fulfillment.package (id, pack_id, package_no, status, sealed_at) VALUES (gen_random_uuid(), md5('qa:pack:1')::uuid, 1, 'SEALED', NOW()) $q$);
+    INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, status, sealed_at) VALUES (gen_random_uuid(), md5('qa:pack:1')::uuid, 1, 'PKG-QA-1-1', 'SEALED', NOW()) $q$);
 SELECT pg_temp.expect_ok('O13 two parcels (a sofa ships in two boxes), one shipment', $q$
-    INSERT INTO fulfillment.package (id, pack_id, shipment_id, package_no, weight_kg, length_cm, width_cm, height_cm, tracking_number, status, sealed_at)
-    VALUES (md5('qa:pkg:1')::uuid, md5('qa:pack:1')::uuid, md5('qa:ship:1')::uuid, 1, 30, 215, 95, 90, 'GHN001', 'SEALED', NOW()),
-           (md5('qa:pkg:2')::uuid, md5('qa:pack:1')::uuid, md5('qa:ship:1')::uuid, 2, 25, 215, 95, 45, 'GHN002', 'SEALED', NOW());
+    INSERT INTO fulfillment.package (id, pack_id, shipment_id, package_no, label_code, weight_kg, length_cm, width_cm, height_cm, tracking_number, status, sealed_at)
+    VALUES (md5('qa:pkg:1')::uuid, md5('qa:pack:1')::uuid, md5('qa:ship:1')::uuid, 1, 'PKG-QA-1-1', 30, 215, 95, 90, 'GHN001', 'SEALED', NOW()),
+           (md5('qa:pkg:2')::uuid, md5('qa:pack:1')::uuid, md5('qa:ship:1')::uuid, 2, 'PKG-QA-1-2', 25, 215, 95, 45, 'GHN002', 'SEALED', NOW());
     INSERT INTO fulfillment.package_line (id, package_id, order_line_id, quantity)
     VALUES (gen_random_uuid(), md5('qa:pkg:1')::uuid, md5('qa:ol:1')::uuid, 2) $q$);
 SELECT pg_temp.expect_fail('O14 a parcel holding a line of another order (BR-04)', $q$
     INSERT INTO fulfillment.package_line (id, package_id, order_line_id, quantity) VALUES (gen_random_uuid(), md5('qa:pkg:2')::uuid, md5('qa:ol:2')::uuid, 1) $q$);
 SELECT pg_temp.expect_fail('O15 one tracking number on two live parcels', $q$
-    INSERT INTO fulfillment.package (id, pack_id, package_no, tracking_number) VALUES (gen_random_uuid(), md5('qa:pack:1')::uuid, 3, 'GHN001') $q$);
+    INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, tracking_number) VALUES (gen_random_uuid(), md5('qa:pack:1')::uuid, 3, 'PKG-QA-1-3', 'GHN001') $q$);
 SELECT pg_temp.expect_ok('O16 tracking timeline from the carrier', $q$
     INSERT INTO fulfillment.shipment_event (id, shipment_id, status, occurred_at, source, carrier_event_id)
     VALUES (gen_random_uuid(), md5('qa:ship:1')::uuid, 'HANDED_OVER', NOW(), 'CARRIER_WEBHOOK', 'evt-1'),
@@ -290,16 +290,20 @@ SELECT pg_temp.expect_ok('O69 the happy path to the end: COMPLETED → CLOSED', 
     UPDATE ordering.customer_order SET status = 'CLOSED', closed_at = NOW() WHERE id = md5('qa:order:l1')::uuid $q$);
 SELECT pg_temp.expect_fail('O70 CLOSED is terminal', $q$
     UPDATE ordering.customer_order SET status = 'COMPLETED', closed_at = NULL WHERE id = md5('qa:order:l1')::uuid $q$);
+-- G4-2a: an order's shipment is fulfillment's shipment (fk_order_shipment_shipment, V20261021000500): one to refer to.
+INSERT INTO fulfillment.shipment (id, order_id, status, code, warehouse_id, ready_at, created_at)
+VALUES (md5('qa:shipment:l1')::uuid, md5('qa:order:l1')::uuid, 'READY_TO_DISPATCH', 'SO-QA-L1-S1',
+        md5('demo:wh:HCM')::uuid, NOW(), NOW());
 SELECT pg_temp.expect_fail('O71 a shipment billing more than it carried', $q$
     INSERT INTO ordering.order_shipment (id, order_id, status, amount, billed_amount, handed_over_at, outcome_at)
-    VALUES (gen_random_uuid(), md5('qa:order:l1')::uuid, 'DELIVERED', 100000, 100001, NOW(), NOW()) $q$);
+    VALUES (md5('qa:shipment:l1')::uuid, md5('qa:order:l1')::uuid, 'DELIVERED', 100000, 100001, NOW(), NOW()) $q$);
 SELECT pg_temp.expect_fail('O72 a returned shipment that billed', $q$
     INSERT INTO ordering.order_shipment (id, order_id, status, amount, billed_amount, handed_over_at, outcome_at,
                                          failure_reason)
-    VALUES (gen_random_uuid(), md5('qa:order:l1')::uuid, 'RETURNED', 100000, 1, NOW(), NOW(), 'REFUSED') $q$);
+    VALUES (md5('qa:shipment:l1')::uuid, md5('qa:order:l1')::uuid, 'RETURNED', 100000, 1, NOW(), NOW(), 'REFUSED') $q$);
 SELECT pg_temp.expect_fail('O73 a failed shipment without a reason', $q$
     INSERT INTO ordering.order_shipment (id, order_id, status, amount, handed_over_at, outcome_at)
-    VALUES (gen_random_uuid(), md5('qa:order:l1')::uuid, 'DELIVERY_FAILED', 100000, NOW(), NOW()) $q$);
+    VALUES (md5('qa:shipment:l1')::uuid, md5('qa:order:l1')::uuid, 'DELIVERY_FAILED', 100000, NOW(), NOW()) $q$);
 SELECT pg_temp.expect_ok('O74 a shipment of 4 units handed over', $q$
     INSERT INTO ordering.order_shipment (id, order_id, status, amount, handed_over_at)
     VALUES (md5('qa:shipment:l1')::uuid, md5('qa:order:l1')::uuid, 'HANDED_OVER', 400000, NOW());
