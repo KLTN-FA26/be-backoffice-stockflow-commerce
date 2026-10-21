@@ -48,8 +48,9 @@ import java.util.UUID;
 @Tag(name = "Fulfillment - dispatch")
 class DispatchController {
 
+    /** SYSTEM_ADMIN holds every permission (V20260929000200) and passes every role gate of this module too. */
     private static final String DISPATCHERS = "hasAnyAuthority('" + Roles.WAREHOUSE_STAFF + "','"
-            + Roles.WAREHOUSE_MANAGER + "')";
+            + Roles.WAREHOUSE_MANAGER + "','" + Roles.SYSTEM_ADMIN + "')";
 
     private final Dispatching dispatching;
     private final DispatchWebMapper mapper;
@@ -162,7 +163,7 @@ class DispatchController {
     @PostMapping("/{loadId}/cancellation")
     @Operation(summary = "Call a load off before it left; its shipments and parcels go back to the dispatch area")
     @RequiresPermission(resource = FulfillmentResources.SHIPMENTS, action = Action.UPDATE)
-    @PreAuthorize("hasAnyAuthority('" + Roles.WAREHOUSE_MANAGER + "')")
+    @PreAuthorize("hasAnyAuthority('" + Roles.WAREHOUSE_MANAGER + "','" + Roles.SYSTEM_ADMIN + "')")
     @Auditable(action = AuditAction.TRANSITION, resourceType = "dispatch-load", resourceId = "#loadId")
     public ApiResponse<LoadResponse> cancel(@PathVariable UUID loadId, @Valid @RequestBody CancelLoadRequest request,
                                             @AuthenticatedUser CurrentUser actor) {

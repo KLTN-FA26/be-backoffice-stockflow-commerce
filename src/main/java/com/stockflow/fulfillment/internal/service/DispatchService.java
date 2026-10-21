@@ -92,6 +92,7 @@ class DispatchService implements Dispatching {
     private final PickJpaRepository picks;
     private final CarrierJpaRepository carriers;
     private final ShipmentTimeline timeline;
+    private final ShipmentContext context;
     private final OrderService orders;
     private final WarehouseService warehouses;
     private final IdentityService identities;
@@ -103,7 +104,8 @@ class DispatchService implements Dispatching {
                     ShipmentJpaRepository shipments, com.stockflow.fulfillment.internal.repository.ShipmentLocks locks,
                     PackageJpaRepository packages,
                     PackageLineJpaRepository packageLines, PickJpaRepository picks, CarrierJpaRepository carriers,
-                    ShipmentTimeline timeline, OrderService orders, WarehouseService warehouses,
+                    ShipmentTimeline timeline, ShipmentContext context, OrderService orders,
+                    WarehouseService warehouses,
                     IdentityService identities, Clock clock) {
         this.loads = loads;
         this.members = members;
@@ -117,6 +119,7 @@ class DispatchService implements Dispatching {
         this.picks = picks;
         this.carriers = carriers;
         this.timeline = timeline;
+        this.context = context;
         this.orders = orders;
         this.warehouses = warehouses;
         this.identities = identities;
@@ -587,6 +590,9 @@ class DispatchService implements Dispatching {
                 .map(ShipmentJpaEntity::getOrderId).collect(Collectors.toSet())).stream()
                 .collect(Collectors.toMap(PickJpaEntity::getOrderId, PickJpaEntity::getOrderNumber, (a, b) -> a));
         List<LoadShipment> lines = new ArrayList<>();
+        Map<UUID, UUID> tasks = context.tasks(rows.values());
+        Map<UUID, String> currencies = context.currencies(rows.values().stream().map(ShipmentJpaEntity::getOrderId)
+                .toList());
         int expected = 0;
         for (DispatchLoad.Member member : active) {
             ShipmentJpaEntity row = rows.get(member.shipmentId());
@@ -597,9 +603,9 @@ class DispatchService implements Dispatching {
             }).toList();
             expected += own.size();
             lines.add(new LoadShipment(row.getId(), row.getCode(), row.getOrderId(),
-                    orderNumbers.get(row.getOrderId()), row.getStatus().name(), own.size(),
+                    orderNumbers.get(row.getOrderId()), tasks.get(row.getId()), row.getStatus().name(), own.size(),
                     (int) own.stream().filter(LoadParcel::loaded).count(), member.labelCodAmount(),
-                    member.codAmount(), own));
+                    member.codAmount(), currencies.get(row.getOrderId()), own));
         }
         CarrierJpaEntity carrier = header.getCarrierId() == null ? null
                 : carriers.findById(header.getCarrierId()).orElse(null);
@@ -615,7 +621,8 @@ class DispatchService implements Dispatching {
                 header.getDispatchedAt(), header.getDispatchedBy(), names.get(header.getDispatchedBy()),
                 header.getCarrierRepresentative(), header.getSignatureRef(), header.getHandoverNote(),
                 header.getCancelledAt(), header.getCancelReason(), lines.size(), expected, onVehicle.size(),
-                load.codTotal(), DEFAULT_CURRENCY, header.getVersion(), lines);
+                load.codTotal(), currencies.values().stream().findFirst().orElse(DEFAULT_CURRENCY), header.getVersion(),
+                lines);
     }
 
     private static LoadStatus loadStatus(String raw) {

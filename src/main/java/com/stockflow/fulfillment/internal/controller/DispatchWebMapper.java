@@ -33,8 +33,8 @@ class DispatchWebMapper {
                 d.carrierRepresentative(), d.signatureRef(), d.handoverNote(), d.cancelledAt(), d.cancelReason(),
                 d.shipmentCount(), d.expectedPackageCount(), d.loadedPackageCount(), d.codTotal(), d.currency(),
                 d.version(), d.shipments().stream().map(s -> new LoadResponse.Shipment(s.shipmentId(), s.code(),
-                        s.orderId(), s.orderNumber(), s.status(), s.packageCount(), s.loadedCount(),
-                        s.labelCodAmount(), s.codAmount(), s.packages().stream().map(p -> new LoadResponse.Parcel(
+                        s.orderId(), s.orderNumber(), s.taskId(), s.status(), s.packageCount(), s.loadedCount(),
+                        s.labelCodAmount(), s.codAmount(), s.currency(), s.packages().stream().map(p -> new LoadResponse.Parcel(
                                 p.packageId(), p.labelCode(), p.weightKg(), p.loaded(), p.loadedAt(), p.loadedBy()))
                         .toList())).toList());
     }
@@ -52,8 +52,9 @@ class DispatchWebMapper {
     }
 
     ShipmentRowResponse toResponse(Shipments.ShipmentRow r) {
-        return new ShipmentRowResponse(r.shipmentId(), r.code(), r.orderId(), r.orderNumber(), r.warehouseId(),
-                r.status(), r.deliveryMode(), r.packageCount(), r.codAmount(), r.carrierId(), r.carrierName(),
+        return new ShipmentRowResponse(r.shipmentId(), r.code(), r.orderId(), r.orderNumber(), r.taskId(),
+                r.warehouseId(), r.status(), r.deliveryMode(), r.packageCount(), r.codAmount(), r.currency(),
+                r.carrierId(), r.carrierName(),
                 r.loadId(), r.loadCode(), r.partial(), r.readyAt(), r.handedOverAt(), r.outcomeAt(),
                 r.failureReason(), r.wholeOrderHandover(), r.version());
     }

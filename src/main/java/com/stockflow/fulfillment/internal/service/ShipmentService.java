@@ -65,6 +65,7 @@ class ShipmentService implements Shipments {
     private final DispatchLoadJpaRepository loads;
     private final DispatchLoadShipmentJpaRepository members;
     private final ShipmentTimeline timeline;
+    private final ShipmentContext context;
     private final OrderService orders;
     private final IdentityService identities;
     private final Clock clock;
@@ -73,7 +74,8 @@ class ShipmentService implements Shipments {
     ShipmentService(ShipmentJpaRepository shipments, com.stockflow.fulfillment.internal.repository.ShipmentLocks locks,
                     ShipmentEventJpaRepository events, PackageJpaRepository packages,
                     PickJpaRepository picks, CarrierJpaRepository carriers, DispatchLoadJpaRepository loads,
-                    DispatchLoadShipmentJpaRepository members, ShipmentTimeline timeline, OrderService orders,
+                    DispatchLoadShipmentJpaRepository members, ShipmentTimeline timeline, ShipmentContext context,
+                    OrderService orders,
                     IdentityService identities, Clock clock) {
         this.shipments = shipments;
         this.locks = locks;
@@ -84,6 +86,7 @@ class ShipmentService implements Shipments {
         this.loads = loads;
         this.members = members;
         this.timeline = timeline;
+        this.context = context;
         this.orders = orders;
         this.identities = identities;
         this.clock = clock;
@@ -276,9 +279,12 @@ class ShipmentService implements Shipments {
         if (!loadOf.isEmpty()) {
             loads.findByIdIn(Set.copyOf(loadOf.values())).forEach(l -> loadCodes.put(l.getId(), l.getCode()));
         }
+        Map<UUID, UUID> tasks = context.tasks(found);
+        Map<UUID, String> currencies = context.currencies(found.stream().map(ShipmentJpaEntity::getOrderId).toList());
         return found.stream().map(s -> new ShipmentRow(s.getId(), s.getCode(), s.getOrderId(),
-                numbers.get(s.getOrderId()), s.getWarehouseId(), s.getStatus().name(), s.getDeliveryMode().name(),
-                s.getPackageCount(), s.getCodAmount(), s.getCarrierId(), carrierNames.get(s.getCarrierId()),
+                numbers.get(s.getOrderId()), tasks.get(s.getId()), s.getWarehouseId(), s.getStatus().name(),
+                s.getDeliveryMode().name(), s.getPackageCount(), s.getCodAmount(), currencies.get(s.getOrderId()),
+                s.getCarrierId(), carrierNames.get(s.getCarrierId()),
                 loadOf.get(s.getId()), loadCodes.get(loadOf.get(s.getId())), s.isPartial(), s.getReadyAt(),
                 s.getHandedOverAt(), s.getOutcomeAt(), s.getFailureReason() == null ? null : s.getFailureReason().name(),
                 s.isWholeOrderHandover(), s.getVersion())).toList();

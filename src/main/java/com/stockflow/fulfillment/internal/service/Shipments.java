@@ -19,11 +19,14 @@ import java.util.UUID;
 public interface Shipments {
 
     /**
+     * @param taskId     the fulfillment task it was packed in (where its label is reprinted); null for none
      * @param loadCode   the open or dispatched load it is on; null when on none
      * @param codAmount  what the carrier collects: the label's figure until the handover fixes it (09 BR-04)
+     * @param currency   of {@code codAmount}: the order's
      */
-    record ShipmentRow(UUID shipmentId, String code, UUID orderId, String orderNumber, UUID warehouseId, String status,
-                       String deliveryMode, int packageCount, BigDecimal codAmount, UUID carrierId, String carrierName,
+    record ShipmentRow(UUID shipmentId, String code, UUID orderId, String orderNumber, UUID taskId, UUID warehouseId,
+                       String status, String deliveryMode, int packageCount, BigDecimal codAmount, String currency,
+                       UUID carrierId, String carrierName,
                        UUID loadId, String loadCode, boolean partial, Instant readyAt, Instant handedOverAt,
                        Instant outcomeAt, String failureReason, boolean wholeOrderHandover, long version) { }
 

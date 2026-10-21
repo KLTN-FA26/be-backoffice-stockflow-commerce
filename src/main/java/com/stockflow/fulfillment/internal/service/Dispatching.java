@@ -33,12 +33,14 @@ public interface Dispatching {
     /**
      * A shipment on the manifest.
      *
+     * @param taskId         the fulfillment task it was packed in: where its label is reprinted ({@code LABEL_OUTDATED})
      * @param labelCodAmount what its label says the carrier collects
      * @param codAmount      what the order fixed at the handover; null before
+     * @param currency       of both amounts: the order's
      */
-    record LoadShipment(UUID shipmentId, String code, UUID orderId, String orderNumber, String status,
+    record LoadShipment(UUID shipmentId, String code, UUID orderId, String orderNumber, UUID taskId, String status,
                         int packageCount, int loadedCount, BigDecimal labelCodAmount, BigDecimal codAmount,
-                        List<LoadParcel> packages) { }
+                        String currency, List<LoadParcel> packages) { }
 
     record LoadDetail(UUID loadId, String code, UUID warehouseId, String mode, String status, UUID carrierId,
                       String carrierCode, String carrierName, String vehiclePlate, String driverName,

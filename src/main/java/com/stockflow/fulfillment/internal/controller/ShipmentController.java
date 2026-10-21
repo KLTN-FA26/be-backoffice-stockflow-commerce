@@ -78,7 +78,8 @@ class ShipmentController {
     @Operation(summary = "Choose the carrier of a shipment waiting for dispatch (null clears it); 409 "
             + "SHIPMENT_ON_ANOTHER_LOAD, SHIPMENT_STATE_CONFLICT, CARRIER_INACTIVE")
     @RequiresPermission(resource = FulfillmentResources.SHIPMENTS, action = Action.UPDATE)
-    @PreAuthorize("hasAnyAuthority('" + Roles.WAREHOUSE_STAFF + "','" + Roles.WAREHOUSE_MANAGER + "')")
+    @PreAuthorize("hasAnyAuthority('" + Roles.WAREHOUSE_STAFF + "','" + Roles.WAREHOUSE_MANAGER + "','"
+            + Roles.SYSTEM_ADMIN + "')")
     @Auditable(action = AuditAction.UPDATE, resourceType = "shipment", resourceId = "#shipmentId")
     public ApiResponse<ShipmentResponse> assignCarrier(@PathVariable UUID shipmentId,
             @RequestBody AssignCarrierRequest request, @AuthenticatedUser CurrentUser actor) {
@@ -90,12 +91,14 @@ class ShipmentController {
             + "a note) or RETURNED; the order follows and bills a delivered shipment. Order Coordinator; RETURNED also "
             + "the warehouse manager. 409 SHIPMENT_STATE_CONFLICT")
     @RequiresPermission(resource = FulfillmentResources.SHIPMENTS, action = Action.UPDATE)
-    @PreAuthorize("hasAnyAuthority('" + Roles.ORDER_COORDINATOR + "','" + Roles.WAREHOUSE_MANAGER + "')")
+    @PreAuthorize("hasAnyAuthority('" + Roles.ORDER_COORDINATOR + "','" + Roles.WAREHOUSE_MANAGER + "','"
+            + Roles.SYSTEM_ADMIN + "')")
     @Auditable(action = AuditAction.TRANSITION, resourceType = "shipment", resourceId = "#shipmentId")
     public ApiResponse<ShipmentResponse> recordOutcome(@PathVariable UUID shipmentId,
             @Valid @RequestBody DeliveryOutcomeRequest request, @AuthenticatedUser CurrentUser actor) {
-        // 09 BR-02: delivered / not delivered are recorded by the Order Coordinator only.
-        if (!"RETURNED".equals(request.outcome()) && !actor.hasRole(Role.ORDER_COORDINATOR)) {
+        // 09 BR-02: delivered / not delivered are recorded by the Order Coordinator only (and the system admin, who
+        // holds every grant).
+        if (!"RETURNED".equals(request.outcome()) && !actor.hasAnyRole(Role.ORDER_COORDINATOR, Role.SYSTEM_ADMIN)) {
             throw new AccessDeniedException("Only the Order Coordinator records a delivery outcome (09 BR-02)");
         }
         return ApiResponse.ok(mapper.toResponse(shipments.recordOutcome(shipmentId, new Shipments.Outcome(

@@ -902,6 +902,45 @@ class DispatchHandoverIntegrationTest {
     }
 
     @Test
+    @DisplayName("FE #61: SYSTEM_ADMIN passes every role gate (carrier edit, load, scan, sign, cancel, outcome); "
+            + "shipments carry their task (label reprint) and the currency of their COD")
+    void systemAdminAndShipmentContext() throws Exception {
+        UUID admin = staff("SYSTEM_ADMIN");
+        OrderSummary order = order(PaymentTerm.PREPAID, null, 1, 1_000_000);
+        UUID task = pickedTask(order);
+        UUID shipment = ship(task, false, 1);
+        JsonNode carrier = data(as(admin, "SYSTEM_ADMIN", body(post(BASE + "/carriers"),
+                "{\"code\":\"SYSADM\",\"name\":\"Admin carrier\"}")).andExpect(status().isCreated()));
+        as(admin, "SYSTEM_ADMIN", body(put(BASE + "/carriers/" + carrier.path("carrierId").asText()),
+                "{\"code\":\"SYSADM\",\"name\":\"Admin carrier 2\",\"version\":" + carrier.path("version").asLong()
+                        + "}")).andExpect(status().isOk());
+        as(admin, "SYSTEM_ADMIN", body(put(BASE + "/shipments/" + shipment + "/carrier"), "{\"carrierId\":\"" + ghn
+                + "\"}")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.shipment.taskId").value(task.toString()))
+                .andExpect(jsonPath("$.data.shipment.currency").value("VND"));
+        JsonNode load = data(as(admin, "SYSTEM_ADMIN", body(post(BASE + "/loads"), "{\"requestId\":\""
+                + UUID.randomUUID() + "\",\"warehouseId\":\"" + HCM + "\",\"carrierId\":\"" + ghn + "\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.shipments[0].taskId").value(task.toString()))
+                .andExpect(jsonPath("$.data.shipments[0].currency").value("VND")));
+        String loadId = load.path("loadId").asText();
+        as(admin, "SYSTEM_ADMIN", body(post(BASE + "/loads/" + loadId + "/scans"), "{\"packageCode\":\""
+                + labels(shipment).getFirst() + "\"}")).andExpect(status().isOk());
+        as(admin, "SYSTEM_ADMIN", body(post(BASE + "/loads/" + loadId + "/handover"), "{\"version\":"
+                + version(loadId) + ",\"carrierRepresentative\":\"Tai\",\"vehiclePlate\":\"51C\",\"signed\":true}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("DISPATCHED"));
+        as(admin, "SYSTEM_ADMIN", body(post(BASE + "/shipments/" + shipment + "/delivery-outcome"),
+                "{\"outcome\":\"DELIVERED\"}")).andExpect(status().isOk());
+        dispatch(get(BASE + "/shipments?orderId=" + order.orderId())).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].taskId").value(task.toString()))
+                .andExpect(jsonPath("$.data.items[0].currency").value("VND"));
+        String empty = openLoad(ghn).path("loadId").asText();
+        as(admin, "SYSTEM_ADMIN", body(post(BASE + "/loads/" + empty + "/cancellation"), "{\"reason\":\"test\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("CANCELLED"));
+        assertThat(statusOf(order)).isEqualTo(OrderStatus.DELIVERED);
+    }
+
+    @Test
     @DisplayName("carriers: the manager declares and edits them (409 on a taken code, stale version); staff read only; "
             + "an inactive carrier takes no new load")
     void theCarrierCatalogue() throws Exception {
