@@ -2,7 +2,8 @@
 -- Outbound fulfillment: the order number and warehouse a task carries (SCRUM-466,
 -- V20261014000100; kltn-docs 07 §4, BR-SEC-002); pick confirmation, deduction and put-back
 -- (SCRUM-267/274/275, V20261014001000; docs 07 step 6, BR-04, BR-05); the packing station's parcels, scans and
--- shipments (G4-5, V20261021000300; docs 08 BR-01/03/04, 09 §5). Needs the demo seed.
+-- shipments (G4-5, V20261021000300; docs 08 BR-01/03/04, 09 §5); carriers, loads and the handover (G4-2a,
+-- V20261021000400/500; docs 09 §4.1, BR-01/03/04). Needs the demo seed.
 -- Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
@@ -193,6 +194,71 @@ SELECT pg_temp.expect_fail('F32 one parcel, one order (BR-04): a scan of another
     INSERT INTO fulfillment.package_scan (id, package_id, order_line_id, scanned_code, quantity, scanned_by, scanned_at)
     VALUES (gen_random_uuid(), md5('qa:pkg:f20')::uuid, md5('qa:ol:f32')::uuid, 'SOFA-3S-GREY', 1,
             md5('demo:user:editor')::uuid, NOW()) $q$);
+
+
+\echo '--- loading and handover, parcel branch (G4-2a, V20261021000400; docs 09 §4.1, BR-01/03/04)'
+SELECT pg_temp.expect_fail('F33 a parcel load LOADING without its carrier', $q$
+    INSERT INTO fulfillment.dispatch_load (id, code, request_id, warehouse_id, mode, status, loading_started_at)
+    VALUES (gen_random_uuid(), 'LD-QA-F33', gen_random_uuid(), md5('demo:wh:HCM')::uuid, 'PARCEL', 'LOADING',
+            NOW()) $q$);
+SELECT pg_temp.expect_fail('F34 a parcel load PLANNED (only a load plan plans a vehicle, BR-08)', $q$
+    INSERT INTO fulfillment.dispatch_load (id, code, request_id, warehouse_id, mode, carrier_id, status)
+    VALUES (gen_random_uuid(), 'LD-QA-F34', gen_random_uuid(), md5('demo:wh:HCM')::uuid, 'PARCEL',
+            md5('carrier:GHN')::uuid, 'PLANNED') $q$);
+SELECT pg_temp.expect_ok('F35 a parcel load opened for GHN at HCM', $q$
+    INSERT INTO fulfillment.dispatch_load (id, code, request_id, warehouse_id, mode, carrier_id, status,
+                                           loading_started_at, loading_started_by)
+    VALUES (md5('qa:load:f35')::uuid, 'LD-QA-F35', gen_random_uuid(), md5('demo:wh:HCM')::uuid, 'PARCEL',
+            md5('carrier:GHN')::uuid, 'LOADING', NOW(), md5('demo:user:editor')::uuid) $q$);
+SELECT pg_temp.expect_fail('F36 a shipment chosen for another carrier put on the manifest', $q$
+    UPDATE fulfillment.shipment SET carrier_id = md5('carrier:GHTK')::uuid WHERE id = md5('qa:ship:f26')::uuid;
+    INSERT INTO fulfillment.dispatch_load_shipment (id, load_id, shipment_id, added_at, added_by)
+    VALUES (gen_random_uuid(), md5('qa:load:f35')::uuid, md5('qa:ship:f26')::uuid, NOW(),
+            md5('demo:user:editor')::uuid) $q$);
+SELECT pg_temp.expect_fail('F37 a parcel loaded without its shipment on the manifest', $q$
+    INSERT INTO fulfillment.dispatch_load_package (id, load_id, package_id, shipment_id, scan_id, loaded_at, loaded_by)
+    VALUES (gen_random_uuid(), md5('qa:load:f35')::uuid, md5('qa:pkg:f20')::uuid, md5('qa:ship:f26')::uuid,
+            gen_random_uuid(), NOW(), md5('demo:user:editor')::uuid) $q$);
+SELECT pg_temp.expect_ok('F38 the shipment on the manifest, its sealed parcel scanned onto the vehicle', $q$
+    INSERT INTO fulfillment.dispatch_load_shipment (id, load_id, shipment_id, added_at, added_by, label_cod_amount)
+    VALUES (md5('qa:ls:f38')::uuid, md5('qa:load:f35')::uuid, md5('qa:ship:f26')::uuid, NOW(),
+            md5('demo:user:editor')::uuid, 0);
+    INSERT INTO fulfillment.dispatch_load_package (id, load_id, package_id, shipment_id, scan_id, loaded_at, loaded_by)
+    VALUES (md5('qa:lp:f38')::uuid, md5('qa:load:f35')::uuid, md5('qa:pkg:f20')::uuid, md5('qa:ship:f26')::uuid,
+            gen_random_uuid(), NOW(), md5('demo:user:editor')::uuid) $q$);
+SELECT pg_temp.expect_fail('F39 one shipment on two open manifests at once', $q$
+    INSERT INTO fulfillment.dispatch_load (id, code, request_id, warehouse_id, mode, carrier_id, status,
+                                           loading_started_at)
+    VALUES (md5('qa:load:f39')::uuid, 'LD-QA-F39', gen_random_uuid(), md5('demo:wh:HCM')::uuid, 'PARCEL',
+            md5('carrier:GHN')::uuid, 'LOADING', NOW());
+    INSERT INTO fulfillment.dispatch_load_shipment (id, load_id, shipment_id, added_at, added_by)
+    VALUES (gen_random_uuid(), md5('qa:load:f39')::uuid, md5('qa:ship:f26')::uuid, NOW(),
+            md5('demo:user:editor')::uuid) $q$);
+SELECT pg_temp.expect_fail('F40 dispatched without who signed for the carrier and the plate', $q$
+    UPDATE fulfillment.dispatch_load SET status = 'DISPATCHED', dispatched_at = NOW(),
+           dispatched_by = md5('demo:user:editor')::uuid, shipment_count = 1, package_count = 1
+     WHERE id = md5('qa:load:f35')::uuid $q$);
+SELECT pg_temp.expect_fail('F41 a shipment handed over on no manifest (not a legacy one)', $q$
+    UPDATE fulfillment.shipment SET status = 'HANDED_OVER', handed_over_at = NOW(),
+           handed_over_by = md5('demo:user:editor')::uuid WHERE id = md5('qa:ship:f26')::uuid $q$);
+SELECT pg_temp.expect_fail('F42 a full truckload carrying COD (lead decision 2026-10-21)', $q$
+    UPDATE fulfillment.shipment SET delivery_mode = 'FULL_TRUCKLOAD', cod_amount = 1
+     WHERE id = md5('qa:ship:f26')::uuid $q$);
+SELECT pg_temp.expect_fail('F43 the order told of a shipment fulfillment never made', $q$
+    INSERT INTO ordering.order_shipment (id, order_id, status, amount, handed_over_at)
+    VALUES (gen_random_uuid(), md5('qa:order:f1')::uuid, 'HANDED_OVER', 1, NOW()) $q$);
+SELECT pg_temp.expect_ok('F44 signed: the load DISPATCHED, the shipment HANDED_OVER on it with its carrier', $q$
+    UPDATE fulfillment.dispatch_load SET status = 'DISPATCHED', dispatched_at = NOW(),
+           dispatched_by = md5('demo:user:editor')::uuid, carrier_representative = 'Driver', vehicle_plate = '51C-1',
+           shipment_count = 1, package_count = 1
+     WHERE id = md5('qa:load:f35')::uuid;
+    UPDATE fulfillment.shipment SET status = 'HANDED_OVER', handed_over_at = NOW(),
+           handed_over_by = md5('demo:user:editor')::uuid, load_id = md5('qa:load:f35')::uuid,
+           carrier_id = md5('carrier:GHN')::uuid
+     WHERE id = md5('qa:ship:f26')::uuid $q$);
+SELECT pg_temp.expect_fail('F45 a parcel loaded once its load left', $q$
+    UPDATE fulfillment.dispatch_load_package SET active = FALSE, removed_at = NOW() WHERE id = md5('qa:lp:f38')::uuid;
+    UPDATE fulfillment.dispatch_load_package SET active = TRUE, removed_at = NULL WHERE id = md5('qa:lp:f38')::uuid $q$);
 
 ROLLBACK;
 \echo 'PASS 09_outbound'

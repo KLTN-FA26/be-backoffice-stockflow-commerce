@@ -113,7 +113,41 @@ class CustomerOrdersService implements CustomerOrders {
                 cancellationRequests.latestOf(orderId)
                         .map(r -> new CancellationRequestView(r.status().name(), r.reasonCode(), r.note(),
                                 r.requestedAt(), r.decidedAt(), r.decisionNote()))
-                        .orElse(null));
+                        .orElse(null),
+                shipments(summary));
+    }
+
+    /**
+     * G4-2a (09 BR-05): the shipments handed over, oldest first, with nothing internal - no actor, note or money. An
+     * order whose goods left as a whole, with no shipment recorded on it (before G4-2a, or a parcel packed before
+     * parcels recorded their contents), shows one shipment made from the order's own milestones: no number, carrier or
+     * parcel count, because the order never learnt them.
+     */
+    static List<Shipment> shipments(OrderSummary summary) {
+        var lifecycle = summary.lifecycle();
+        if (lifecycle == null) {
+            return List.of();
+        }
+        if (lifecycle.shipments().isEmpty()) {
+            com.stockflow.order.api.OrderShipmentStatus whole = wholeOrderShipmentStatus(summary.status());
+            return whole == null || lifecycle.shippedAt() == null ? List.of()
+                    : List.of(new Shipment(null, whole, 0, null, null, lifecycle.shippedAt(),
+                    whole == com.stockflow.order.api.OrderShipmentStatus.HANDED_OVER ? null
+                            : whole == com.stockflow.order.api.OrderShipmentStatus.DELIVERED ? lifecycle.deliveredAt()
+                            : null,
+                    lifecycle.deliveryFailureReason()));
+        }
+        return lifecycle.shipments().stream()
+                .sorted(java.util.Comparator.comparing(OrderSummary.Shipment::handedOverAt))
+                .map(s -> {
+                    var carriage = s.carriage();
+                    return new Shipment(carriage == null ? null : carriage.shipmentCode(), s.status(),
+                            carriage == null ? 0 : carriage.packageCount(),
+                            carriage == null ? null : carriage.carrierName(),
+                            carriage == null ? null : carriage.deliveryMode(), s.handedOverAt(), s.outcomeAt(),
+                            s.failureReason());
+                })
+                .toList();
     }
 
     /**
@@ -149,6 +183,17 @@ class CustomerOrdersService implements CustomerOrders {
                     : StatusGroup.DELIVERED;
             case CANCELLED -> StatusGroup.CANCELLED;
             case RETURN_REQUESTED, RETURNED, REFUNDED, PARTIALLY_REFUNDED -> StatusGroup.RETURNED;
+        };
+    }
+
+    /** Where an order that left as a whole stands, read as one shipment; null before it left or once cancelled. */
+    private static com.stockflow.order.api.OrderShipmentStatus wholeOrderShipmentStatus(OrderStatus status) {
+        return switch (status) {
+            case SHIPPED -> com.stockflow.order.api.OrderShipmentStatus.HANDED_OVER;
+            case DELIVERY_FAILED -> com.stockflow.order.api.OrderShipmentStatus.DELIVERY_FAILED;
+            case DELIVERED, RETURN_REQUESTED, COMPLETED, CLOSED -> com.stockflow.order.api.OrderShipmentStatus.DELIVERED;
+            case RETURNED, REFUNDED, PARTIALLY_REFUNDED -> com.stockflow.order.api.OrderShipmentStatus.RETURNED;
+            default -> null;
         };
     }
 

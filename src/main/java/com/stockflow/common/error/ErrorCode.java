@@ -370,6 +370,32 @@ public enum ErrorCode {
     PACK_NOTHING_TO_SHIP("No sealed package is waiting to ship", 409),
     /** Docs 09 §5: the shipment's status does not allow the step. */
     SHIPMENT_STATE_CONFLICT("The shipment cannot do that in its current status", 409),
+    // ---- G4-2a loading and handover (kltn-docs 09 §4.1, §5): 404 / 400 / 409 kept together with the flow
+    /** G4-2a: a load (manifest) of a warehouse outside the caller's scope is OUT_OF_DATA_SCOPE, not this. */
+    LOAD_NOT_FOUND("Load not found", 404),
+    CARRIER_NOT_FOUND("Carrier not found", 404),
+    /** Docs 09 §4.1 step 3: the manifest is signed by the warehouse and the carrier's driver. */
+    HANDOVER_NOT_SIGNED("Both sides must sign the manifest", 400),
+    CARRIER_CODE_EXISTS("Carrier code already exists", 409),
+    CARRIER_INACTIVE("This carrier is no longer in use", 409),
+    INVALID_LOAD_TRANSITION("The load cannot do that in its current status", 409),
+    /** Docs 09 edge: a parcel of another shipment, warehouse or load scanned by mistake; the message names where it belongs. */
+    PACKAGE_NOT_IN_LOAD("This package is not on this load's manifest", 409),
+    PACKAGE_ALREADY_LOADED("This package is already on another load", 409),
+    /** Docs 09 BR-01: not sealed, in no shipment, or its shipment no longer waits for dispatch (cancelled, left). */
+    PACKAGE_NOT_READY("The package is not ready to hand over", 409),
+    PACKAGE_OTHER_CARRIER("This package goes with another carrier", 409),
+    /** Docs 09 BR-08: a full truckload is loaded from its load plan, not onto a parcel load. */
+    PACKAGE_REQUIRES_LOAD_PLAN("Full-truckload packages go through a load plan", 409),
+    SHIPMENT_NOT_FOR_LOAD("This shipment does not leave on this load", 409),
+    SHIPMENT_OTHER_CARRIER("This shipment goes with another carrier", 409),
+    SHIPMENT_ON_ANOTHER_LOAD("This shipment is on another load", 409),
+    /** Docs 09 BR-03: a shipment leaves with all its parcels; take it off the manifest to let the rest go. */
+    LOAD_NOT_FULLY_LOADED("Some packages on the manifest are not scanned yet", 409),
+    LOAD_EMPTY("Nothing is on this load's manifest", 409),
+    /** Docs 09 BR-04: the COD the order fixes at the handover is not the one on the parcels' label: reprint it. */
+    LABEL_OUTDATED("The package label shows another COD amount than the order now fixes; reprint it", 409),
+    LOAD_SCAN_ID_CONFLICT("This scan id was already used for another package or load", 409),
     OPTIMISTIC_LOCK("The record changed meanwhile, please retry", 409),
     /** Two writers reached the same row; the loser waited for the lock and gave up. Retryable. */
     LOCK_TIMEOUT("The record is busy, please retry", 409),

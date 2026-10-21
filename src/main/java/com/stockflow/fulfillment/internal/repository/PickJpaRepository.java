@@ -15,4 +15,7 @@ public interface PickJpaRepository extends BaseJpaRepository<PickJpaEntity> {
     @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
     @org.springframework.data.jpa.repository.Query("select p from PickJpaEntity p where p.orderId = :orderId")
     java.util.Optional<PickJpaEntity> lockByOrderId(@org.springframework.data.repository.query.Param("orderId") java.util.UUID orderId);
+
+    /** G4-2a: the order numbers of a page of shipments, in one read. */
+    java.util.List<PickJpaEntity> findByOrderIdIn(java.util.Collection<java.util.UUID> orderIds);
 }

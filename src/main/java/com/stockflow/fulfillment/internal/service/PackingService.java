@@ -27,7 +27,6 @@ import com.stockflow.fulfillment.internal.entity.PackJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PackageJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PickJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PickLineJpaEntity;
-import com.stockflow.fulfillment.internal.entity.ShipmentEventJpaEntity;
 import com.stockflow.fulfillment.internal.entity.ShipmentJpaEntity;
 import com.stockflow.fulfillment.internal.repository.DesignVerificationJpaRepository;
 import com.stockflow.fulfillment.internal.repository.PackJpaRepository;
@@ -35,7 +34,6 @@ import com.stockflow.fulfillment.internal.repository.PackageJpaRepository;
 import com.stockflow.fulfillment.internal.repository.PackingSessionStore;
 import com.stockflow.fulfillment.internal.repository.PickJpaRepository;
 import com.stockflow.fulfillment.internal.repository.PickLineJpaRepository;
-import com.stockflow.fulfillment.internal.repository.ShipmentEventJpaRepository;
 import com.stockflow.fulfillment.internal.repository.ShipmentJpaRepository;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.inventory.api.HoldView;
@@ -104,7 +102,6 @@ class PackingService implements Packing {
     private final PackJpaRepository packs;
     private final PackageJpaRepository packages;
     private final ShipmentJpaRepository shipments;
-    private final ShipmentEventJpaRepository shipmentEvents;
     private final DesignVerificationJpaRepository verifications;
     private final PackingSessionStore store;
     private final com.stockflow.fulfillment.internal.repository.PackageScanJpaRepository scans;
@@ -115,6 +112,10 @@ class PackingService implements Packing {
     private final DesignService designs;
     private final IdentityService identities;
     private final WarehouseService warehouses;
+    private final ShipmentTimeline timeline;
+    private final com.stockflow.fulfillment.internal.repository.DispatchLoadShipmentJpaRepository loadMembers;
+    private final com.stockflow.fulfillment.internal.repository.DispatchLoadJpaRepository loads;
+    private final com.stockflow.fulfillment.internal.repository.DispatchLoadStore loadStore;
     private final Clock clock;
     private final int dimDivisor;
     private final boolean partialShipmentsAllowed;
@@ -122,12 +123,15 @@ class PackingService implements Packing {
     @SuppressWarnings("java:S107")
     PackingService(PickJpaRepository picks, PickLineJpaRepository pickLines, PackJpaRepository packs,
                    PackageJpaRepository packages, ShipmentJpaRepository shipments,
-                   ShipmentEventJpaRepository shipmentEvents, DesignVerificationJpaRepository verifications,
+                   DesignVerificationJpaRepository verifications,
                    PackingSessionStore store,
                    com.stockflow.fulfillment.internal.repository.PackageScanJpaRepository scans,
                    OrderService orders, InventoryService inventory,
                    InventoryControlService itemControls, PickConsumption consumption, DesignService designs,
-                   IdentityService identities, WarehouseService warehouses, Clock clock,
+                   IdentityService identities, WarehouseService warehouses, ShipmentTimeline timeline,
+                   com.stockflow.fulfillment.internal.repository.DispatchLoadShipmentJpaRepository loadMembers,
+                   com.stockflow.fulfillment.internal.repository.DispatchLoadJpaRepository loads,
+                   com.stockflow.fulfillment.internal.repository.DispatchLoadStore loadStore, Clock clock,
                    @Value("${stockflow.fulfillment.packing.dim-divisor:6000}") int dimDivisor,
                    @Value("${stockflow.fulfillment.packing.partial-shipments:true}") boolean partialShipmentsAllowed) {
         this.picks = picks;
@@ -135,7 +139,6 @@ class PackingService implements Packing {
         this.packs = packs;
         this.packages = packages;
         this.shipments = shipments;
-        this.shipmentEvents = shipmentEvents;
         this.verifications = verifications;
         this.store = store;
         this.scans = scans;
@@ -146,6 +149,10 @@ class PackingService implements Packing {
         this.designs = designs;
         this.identities = identities;
         this.warehouses = warehouses;
+        this.timeline = timeline;
+        this.loadMembers = loadMembers;
+        this.loads = loads;
+        this.loadStore = loadStore;
         this.clock = clock;
         this.dimDivisor = dimDivisor;
         this.partialShipmentsAllowed = partialShipmentsAllowed;
@@ -337,8 +344,12 @@ class PackingService implements Packing {
         return view(ctx, session);
     }
 
+    /**
+     * The label as it prints now. For a shipment waiting for dispatch the COD is what the carrier would collect if it
+     * left now, and printing records it on the shipment (09 BR-04): the handover is refused while the order fixes
+     * another figure than the last label printed ({@code LABEL_OUTDATED}), so a reprint is what lets it go.
+     */
     @Override
-    @Transactional(readOnly = true)
     public Label label(UUID taskId, UUID packageId, CurrentUser actor) {
         PickJpaEntity pick = picks.findById(taskId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         WarehouseScope.requireWarehouse(pick.getWarehouseId());
@@ -362,9 +373,26 @@ class PackingService implements Packing {
             together = session.parcels().stream()
                     .filter(p -> p.status() == PackageStatus.SEALED && p.shipmentId() == null).toList();
         }
-        BigDecimal cod = shipment != null && shipment.getStatus() != ShipmentStatus.READY_TO_DISPATCH
-                ? shipment.getCodAmount() : orders.codFor(order.orderId(), handoverLines(together),
-                pendingLines(session, shipments.findByPackIdOrderByReadyAtAscIdAsc(ctx.pack().getId()), shipment));
+        List<ShipmentHandover.Line> contents = handoverLines(together);
+        BigDecimal cod;
+        if (shipment != null && shipment.getStatus() != ShipmentStatus.READY_TO_DISPATCH) {
+            cod = shipment.getCodAmount();
+        } else if (shipment != null && contents.isEmpty()) {
+            // Parcels packed before they recorded their contents leave as the whole order: its balance (G4-2a).
+            cod = order.lifecycle() == null || order.lifecycle().amountDueOnDelivery() == null ? shipment.getCodAmount()
+                    : order.lifecycle().amountDueOnDelivery();
+        } else {
+            cod = orders.codFor(order.orderId(), contents, pendingLines(session,
+                    shipments.findByPackIdOrderByReadyAtAscIdAsc(ctx.pack().getId()), shipment));
+        }
+        if (shipment != null && shipment.getStatus() == ShipmentStatus.READY_TO_DISPATCH) {
+            Shipment printed = shipment.toDomain();
+            if (printed.labelPrinted(cod, clock.instant())) {
+                log.info("Shipment {}: label reprinted, the carrier now collects {}", shipment.getCode(), cod);
+            }
+            shipment.apply(printed);
+            shipments.saveAndFlush(shipment);
+        }
         var address = order.shippingAddress();
         Address recipient = address == null ? new Address(order.contactName(), order.contactPhone(), null, null, null,
                 null, null, null) : new Address(address.recipientName() == null ? order.contactName()
@@ -448,7 +476,7 @@ class PackingService implements Packing {
                 DeliveryMode.PARCEL, completion.parcels().size(), cod,
                 completion.partial() ? request.note().trim() : null, actor.userId(), now);
         shipments.saveAndFlush(ShipmentJpaEntity.of(shipment));
-        recordSteps(shipment);
+        timeline.record(shipment, null, ctx.order(), null, null, null);
         session.ship(completion, shipment.id(), actor.userId(), now);
         store.save(session, ctx.pack());
         deductPrintedGoods(session, completion, ctx.order(), actor.userId());
@@ -492,10 +520,11 @@ class PackingService implements Packing {
         for (ShipmentJpaEntity row : shipments.findByPackIdOrderByReadyAtAscIdAsc(pack.getId())) {
             Shipment shipment = row.toDomain();
             if (shipment.status() == ShipmentStatus.READY_TO_DISPATCH) {
+                takeOffLoad(row.getId(), now);
                 shipment.cancel("The order was cancelled", null, now);
                 row.apply(shipment);
                 shipments.save(row);
-                recordSteps(shipment);
+                timeline.record(shipment, ShipmentStatus.READY_TO_DISPATCH, null, pick.getOrderNumber(), null, null);
                 packages.findByShipmentIdOrderByPackageNoAsc(row.getId()).forEach(parcel -> {
                     parcel.apply(parcel.getShipmentId(), parcel.getPackageType(), PackageStatus.VOIDED, parcel.getWeightKg(),
                             parcel.getLengthCm(), parcel.getWidthCm(), parcel.getHeightCm(), parcel.getDimWeightKg(),
@@ -673,11 +702,20 @@ class PackingService implements Packing {
         consumption.consumeForPack(firstPackage, order.orderId(), live, actor);
     }
 
-    private void recordSteps(Shipment shipment) {
-        for (Shipment.Step step : shipment.pullRecorded()) {
-            shipmentEvents.save(new ShipmentEventJpaEntity(Identifiers.newId(), shipment.id(), step.status().name(),
-                    step.at(), step.note(), step.by()));
-        }
+    /**
+     * G4-2a (09 edge "đơn bị huỷ khi kiện đã nằm trong chuyến xe, chưa xếp lên xe"): a shipment cancelled while on an
+     * open load leaves its manifest with its scanned parcels, so the signature skips it. The load's lock is taken
+     * here, after the pick's and before the shipment's row changes - the order the handover takes them in.
+     */
+    private void takeOffLoad(UUID shipmentId, Instant now) {
+        loadMembers.findByShipmentIdInAndActiveTrue(List.of(shipmentId)).stream().findFirst().ifPresent(member ->
+                loads.lockById(member.getLoadId()).ifPresent(header -> {
+                    var load = loadStore.load(header);
+                    if (load.status().isOpen() && load.removeShipment(shipmentId, null, now)) {
+                        loadStore.save(load, header);
+                        log.info("Shipment {} of a cancelled order taken off load {}", shipmentId, load.code());
+                    }
+                }));
     }
 
     /**

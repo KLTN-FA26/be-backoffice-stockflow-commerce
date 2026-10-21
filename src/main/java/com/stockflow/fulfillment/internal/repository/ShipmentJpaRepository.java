@@ -19,4 +19,6 @@ public interface ShipmentJpaRepository extends BaseJpaRepository<ShipmentJpaEnti
     long countByOrderId(UUID orderId);
 
     List<ShipmentJpaEntity> findByPackIdIn(java.util.Collection<UUID> packIds);
+
+    List<ShipmentJpaEntity> findByIdIn(java.util.Collection<UUID> ids);
 }

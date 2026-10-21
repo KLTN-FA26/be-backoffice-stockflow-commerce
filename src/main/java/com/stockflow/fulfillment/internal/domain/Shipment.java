@@ -15,8 +15,14 @@ import java.util.UUID;
  * order may have several (split shipments, G4-Q3; a mixed order's ready stock lines first, decision 2026-10-21), but a
  * parcel belongs to one order only (08 BR-04).
  *
- * <p>Born READY_TO_DISPATCH when packing completes (G4-5); the handover (G4-2a) and the outcomes the Order Coordinator
- * records (09 §4.3, BR-02) move it on through {@link ShipmentStatus}. Every step names who took it and when, and is
+ * <p>Born READY_TO_DISPATCH when packing completes (G4-5); the handover on a signed manifest (G4-2a: a
+ * {@link DispatchLoad} of one carrier) and the outcomes staff record (09 §4.3, BR-02) move it on through
+ * {@link ShipmentStatus}. It is handed over with its carrier, its load and the COD the order fixed for it (BR-04); a
+ * full truckload never carries COD (lead decision 2026-10-21). That COD must be the one its label was last printed with
+ * (BR-04: label, manifest and order agree): otherwise the handover is refused until the label is reprinted
+ * ({@code LABEL_OUTDATED}). {@code wholeOrderHandover}: the order knows the shipment only as the whole order - handed
+ * over before loads existed, or packed before parcels recorded their contents - so its outcomes are the order's own.
+ * Every step names who took it and when, and is
  * kept as a timeline row ({@link #pullRecorded}); a step to the status the shipment already has changes nothing, so a
  * retried call is harmless.</p>
  *
@@ -33,7 +39,34 @@ public final class Shipment {
                            String partialNote, ShipmentStatus status, Instant readyAt, UUID readyBy,
                            Instant handedOverAt, UUID handedOverBy, Instant outcomeAt, UUID outcomeBy,
                            DeliveryFailureReason failureReason, String failureNote, Instant cancelledAt,
-                           String cancelReason) { }
+                           String cancelReason, UUID carrierId, UUID loadId, boolean wholeOrderHandover,
+                           BigDecimal labelCodAmount, Instant labelPrintedAt) {
+
+        /** Without the label's COD (callers written before it): the label said what the shipment holds. */
+        public Snapshot(UUID id, String code, UUID orderId, UUID packId, UUID warehouseId, UUID requestId,
+                        DeliveryMode deliveryMode, int packageCount, BigDecimal codAmount, boolean partial,
+                        String partialNote, ShipmentStatus status, Instant readyAt, UUID readyBy,
+                        Instant handedOverAt, UUID handedOverBy, Instant outcomeAt, UUID outcomeBy,
+                        DeliveryFailureReason failureReason, String failureNote, Instant cancelledAt,
+                        String cancelReason, UUID carrierId, UUID loadId, boolean wholeOrderHandover) {
+            this(id, code, orderId, packId, warehouseId, requestId, deliveryMode, packageCount, codAmount, partial,
+                    partialNote, status, readyAt, readyBy, handedOverAt, handedOverBy, outcomeAt, outcomeBy,
+                    failureReason, failureNote, cancelledAt, cancelReason, carrierId, loadId, wholeOrderHandover,
+                    codAmount, null);
+        }
+
+        /** Without carrier and load (shipments as G4-5 made them). */
+        public Snapshot(UUID id, String code, UUID orderId, UUID packId, UUID warehouseId, UUID requestId,
+                        DeliveryMode deliveryMode, int packageCount, BigDecimal codAmount, boolean partial,
+                        String partialNote, ShipmentStatus status, Instant readyAt, UUID readyBy,
+                        Instant handedOverAt, UUID handedOverBy, Instant outcomeAt, UUID outcomeBy,
+                        DeliveryFailureReason failureReason, String failureNote, Instant cancelledAt,
+                        String cancelReason) {
+            this(id, code, orderId, packId, warehouseId, requestId, deliveryMode, packageCount, codAmount, partial,
+                    partialNote, status, readyAt, readyBy, handedOverAt, handedOverBy, outcomeAt, outcomeBy,
+                    failureReason, failureNote, cancelledAt, cancelReason, null, null, false);
+        }
+    }
 
     private final UUID id;
     private final String code;
@@ -57,6 +90,11 @@ public final class Shipment {
     private String failureNote;
     private Instant cancelledAt;
     private String cancelReason;
+    private UUID carrierId;
+    private UUID loadId;
+    private boolean wholeOrderHandover;
+    private BigDecimal labelCodAmount;
+    private Instant labelPrintedAt;
     private final List<Step> recorded = new ArrayList<>();
 
     private Shipment(Snapshot s) {
@@ -82,6 +120,14 @@ public final class Shipment {
         this.failureNote = s.failureNote();
         this.cancelledAt = s.cancelledAt();
         this.cancelReason = s.cancelReason();
+        this.carrierId = s.carrierId();
+        this.loadId = s.loadId();
+        this.wholeOrderHandover = s.wholeOrderHandover();
+        this.labelCodAmount = s.labelCodAmount() == null ? this.codAmount : s.labelCodAmount();
+        this.labelPrintedAt = s.labelPrintedAt();
+        if (deliveryMode == DeliveryMode.FULL_TRUCKLOAD && codAmount.signum() > 0) {
+            throw new IllegalArgumentException("A full-truckload shipment carries no COD");
+        }
     }
 
     /**
@@ -111,15 +157,81 @@ public final class Shipment {
         return new Shipment(snapshot);
     }
 
-    /** Handed to the carrier with a signed manifest (09 §4.1 step 3, §4.2 step 5). */
-    public boolean handOver(UUID by, Instant at) {
+    /**
+     * Handed to the carrier on the signed manifest of {@code loadId} (09 §4.1 step 3, §4.2 step 5), with the COD the
+     * order fixed for it at this moment (BR-04, 15 BR-08) - what the manifest prints. Again: nothing changes.
+     *
+     * @param cod        what the order fixed; null keeps the shipment's
+     * @param wholeOrder the order took it as the whole order (it records no shipment of it)
+     * @throws BusinessException {@code LABEL_OUTDATED} when {@code cod} is not what the label was last printed with:
+     *         the carrier would collect a figure the parcel does not show (BR-04); reprint the label first
+     */
+    public boolean handOver(UUID loadId, UUID carrierId, BigDecimal cod, boolean wholeOrder, UUID by, Instant at) {
+        Objects.requireNonNull(loadId, "the manifest it leaves on");
+        Objects.requireNonNull(carrierId, "the carrier it is handed to");
+        if (status == ShipmentStatus.HANDED_OVER && loadId.equals(this.loadId)) {
+            return false;
+        }
+        if (this.carrierId != null && !this.carrierId.equals(carrierId)) {
+            throw new BusinessException(ErrorCode.SHIPMENT_OTHER_CARRIER,
+                    "Shipment %s goes with another carrier".formatted(code));
+        }
+        if (cod != null && cod.signum() > 0 && deliveryMode == DeliveryMode.FULL_TRUCKLOAD) {
+            throw new BusinessException(ErrorCode.SHIPMENT_STATE_CONFLICT,
+                    "Shipment %s is a full truckload: no COD is collected on it".formatted(code));
+        }
+        if (cod != null && cod.compareTo(labelCodAmount) != 0 && status == ShipmentStatus.READY_TO_DISPATCH) {
+            throw new BusinessException(ErrorCode.LABEL_OUTDATED, ("Shipment %s: its label says the carrier collects %s "
+                    + "but the order now fixes %s - reprint the labels of its parcels, then sign again").formatted(code,
+                    labelCodAmount.stripTrailingZeros().toPlainString(), cod.stripTrailingZeros().toPlainString()));
+        }
         if (!move(ShipmentStatus.HANDED_OVER, by)) {
             return false;
         }
+        if (cod != null) {
+            fixCodAmount(cod);
+        }
+        this.wholeOrderHandover = this.wholeOrderHandover || wholeOrder;
+        this.loadId = loadId;
+        this.carrierId = carrierId;
         handedOverAt = at;
         handedOverBy = by;
         recorded.add(new Step(status, at, by, null));
         return true;
+    }
+
+    /**
+     * The carrier chosen for it before the handover (09 §4.1 step 2: parcels are grouped by carrier); null clears it.
+     *
+     * @return whether it changed
+     */
+    public boolean assignCarrier(UUID carrier) {
+        if (Objects.equals(carrierId, carrier)) {
+            return false;
+        }
+        if (status != ShipmentStatus.READY_TO_DISPATCH) {
+            throw new BusinessException(ErrorCode.SHIPMENT_STATE_CONFLICT,
+                    "Shipment %s is %s; its carrier is chosen before the handover".formatted(code, status));
+        }
+        this.carrierId = carrier;
+        return true;
+    }
+
+    /**
+     * The label of its parcels was (re)printed with {@code cod}, what the carrier would collect if it left now (BR-04):
+     * the handover compares the order's figure with this one. Only while it waits for dispatch.
+     *
+     * @return whether the label's figure changed
+     */
+    public boolean labelPrinted(BigDecimal cod, Instant at) {
+        if (status != ShipmentStatus.READY_TO_DISPATCH || cod == null) {
+            return false;
+        }
+        boolean changed = cod.compareTo(labelCodAmount) != 0;
+        labelCodAmount = cod;
+        codAmount = cod;
+        labelPrintedAt = at;
+        return changed;
     }
 
     /** The carrier reported it delivered, on the first try or a retry (09 §4.3 step 1-2). */
@@ -208,7 +320,8 @@ public final class Shipment {
     public Snapshot snapshot() {
         return new Snapshot(id, code, orderId, packId, warehouseId, requestId, deliveryMode, packageCount, codAmount,
                 partial, partialNote, status, readyAt, readyBy, handedOverAt, handedOverBy, outcomeAt, outcomeBy,
-                failureReason, failureNote, cancelledAt, cancelReason);
+                failureReason, failureNote, cancelledAt, cancelReason, carrierId, loadId, wholeOrderHandover,
+                labelCodAmount, labelPrintedAt);
     }
 
     public UUID id() { return id; }
@@ -218,4 +331,12 @@ public final class Shipment {
     public int packageCount() { return packageCount; }
     public BigDecimal codAmount() { return codAmount; }
     public boolean partial() { return partial; }
+    public UUID warehouseId() { return warehouseId; }
+    public DeliveryMode deliveryMode() { return deliveryMode; }
+    public Instant readyAt() { return readyAt; }
+    public UUID carrierId() { return carrierId; }
+    public UUID loadId() { return loadId; }
+    public boolean wholeOrderHandover() { return wholeOrderHandover; }
+    public BigDecimal labelCodAmount() { return labelCodAmount; }
+    public DeliveryFailureReason failureReason() { return failureReason; }
 }

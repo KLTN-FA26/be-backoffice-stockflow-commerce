@@ -152,6 +152,7 @@ class OrderLifecycleIntegrationTest {
     }
 
     private ShipmentHandover handover(OrderSummary order, UUID shipment, int units) {
+        com.stockflow.support.ShipmentRows.ready(jdbc, tx, order.orderId(), shipment);
         return new ShipmentHandover(shipment, List.of(new ShipmentHandover.Line(order.lines().getFirst().lineId(), units)),
                 java.time.Instant.now(), staff);
     }

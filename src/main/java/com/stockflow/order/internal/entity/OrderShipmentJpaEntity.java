@@ -72,7 +72,37 @@ public class OrderShipmentJpaEntity extends BaseEntity {
     @Column(name = "cod_amount", nullable = false, precision = 19, scale = 4, updatable = false)
     private BigDecimal codAmount = BigDecimal.ZERO;
 
+    /** G4-2a: what the customer portal shows of the shipment, written once at the handover. */
+    @Column(name = "shipment_code", updatable = false, length = 48)
+    private String shipmentCode;
+
+    @Column(name = "package_count", updatable = false)
+    private Integer packageCount;
+
+    @Column(name = "carrier_name", updatable = false, length = 120)
+    private String carrierName;
+
+    @Column(name = "delivery_mode", updatable = false, length = 16)
+    private String deliveryMode;
+
     protected OrderShipmentJpaEntity() {
+    }
+
+    public OrderShipmentJpaEntity withCarriage(com.stockflow.order.api.ShipmentHandover.Carriage carriage) {
+        if (carriage != null) {
+            this.shipmentCode = carriage.shipmentCode();
+            this.packageCount = carriage.packageCount();
+            this.carrierName = carriage.carrierName();
+            this.deliveryMode = carriage.deliveryMode();
+        }
+        return this;
+    }
+
+    /** Null for a shipment recorded before G4-2a. */
+    public com.stockflow.order.api.ShipmentHandover.Carriage getCarriage() {
+        return shipmentCode == null && packageCount == null ? null
+                : new com.stockflow.order.api.ShipmentHandover.Carriage(shipmentCode,
+                        packageCount == null ? 0 : packageCount, carrierName, deliveryMode);
     }
 
     public OrderShipmentJpaEntity(UUID id, UUID orderId, Map<UUID, Integer> quantities, BigDecimal amount,

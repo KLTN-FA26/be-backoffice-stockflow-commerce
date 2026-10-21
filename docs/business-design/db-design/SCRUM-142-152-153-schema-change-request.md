@@ -3,7 +3,7 @@
 Ngày đề xuất: 19/10/2026. Người duyệt schema: **Tú**. Nhánh `feature/sprint3-batch-fefo-traceability-category`,
 rebase trên develop `5f00ef5a`, sau đó merge develop `535e6c38` (19/10) `1407fff5` và `db9a3df9` (21/10). Chi tiết nghiệp vụ và API: `docs/SCRUM-142-152-153-171-183-backend.md`.
 
-Ba migration mới, version cao hơn bản mới nhất trên develop (`V20261021000300`) và cao hơn `000400`/`000500` của PR #137 đang mở. Không sửa migration đã áp,
+Ba migration mới, version cao hơn bản mới nhất trên develop (`V20261021000500`, PR #137). PR #144 đang mở dùng `001100`/`001200`: nhánh này cần merge trước, nếu không phải đổi số. Không sửa migration đã áp,
 không reset dữ liệu, không kích hoạt gì trong `db/pending`.
 
 ## 1. `V20261021000600__inventory_sku_reservation_and_allocation.sql` (SCRUM-152)
@@ -43,9 +43,8 @@ Cấp `inventory-cycle-counts:VIEW_PAGE`, `READ` cho `WAREHOUSE_STAFF` (docs 04c
 
 ## 4. Đã kiểm tra
 
-- Full `mvn test` (Testcontainers) sau khi merge develop `db9a3df9` (21/10): 2.639 test, 1 lỗi ở test mock của nhánh
-  (đã sửa, chạy lại đạt); `SkuReservationLotMigrationUpgradeTest` nâng cấp từ `20261021000300` có dữ liệu cũ.
-- Docker, DB trống: 160 migration lên `20261021000800`; bộ QA `tools/db/qa/run.sh` 01–17 (thêm
+- Full `mvn test` (Testcontainers) sau khi merge develop `59fa5359` (21/10): 2.664 test, 0 lỗi; `SkuReservationLotMigrationUpgradeTest` nâng cấp từ `20261021000300` có dữ liệu cũ.
+- Docker, DB trống: 162 migration lên `20261021000800`; bộ QA `tools/db/qa/run.sh` 01–17 (thêm
   `15_sku_reservation_and_lots.sql`) không FAIL.
 - `schema.dbml`: phần bảng của nhánh đã có; không sinh lại cả file vì bản trên develop có ghi chú viết tay.
 

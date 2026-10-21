@@ -1087,7 +1087,7 @@ public final class Order extends AggregateRoot {
         // paid ahead that the shipments before it have not used.
         BigDecimal cod = codOf(value.amount(), valueOf(quantitiesOf(handover.earlierPending())), ledger);
         shipments.add(OrderShipment.handedOver(handover.shipmentId(), quantities, value.amount(),
-                handover.handedOverAt(), handover.handedOverBy(), cod));
+                handover.handedOverAt(), handover.handedOverBy(), cod, handover.carriage()));
         // Goods handed over were packed: from here the order goes through a return, never a cancellation.
         recordPacked(handover.handedOverAt());
         followShipments(ShipmentChange.HANDED_OVER, handover.handedOverAt(), handover.handedOverBy());

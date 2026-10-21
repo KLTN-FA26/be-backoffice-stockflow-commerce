@@ -61,7 +61,7 @@ copy rather than a decision.
 | `inventory` | Implemented end to end. **This is the reference module — copy it.** |
 | `order` | Implemented end to end, demonstrates the collapsed saga |
 | `common`, `contracts` | Implemented: the shared base layer (~9,400 LOC) and the event records |
-| `notification` | **Partial** — `OrderNotificationListener` (listens to `OrderPlaced`, `PaymentFailed`, `ShipmentDispatched`) and `NotificationSender`. No api, no persistence. |
+| `notification` | **Partial** — `OrderNotificationListener` (listens to `OrderPlaced`, `PaymentFailed`, `ShipmentStatusChanged`) and `NotificationSender`. No api, no persistence. |
 | the other 11 | Skeleton only |
 
 The shared base layer in `common/` is finished and deliberately thorough — security, caching,
