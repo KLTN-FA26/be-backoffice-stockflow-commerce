@@ -590,7 +590,7 @@ class FulfillmentServiceImplTest {
     }
 
     /**
-     * The fulfillment permissions a service checks, as V20261021001300 seeds them for the role (the endpoint guards are
+     * The fulfillment permissions a service checks, as V20261022000200 seeds them for the role (the endpoint guards are
      * PermissionMatrixTest's): the service asks for permissions, never for role names.
      */
     private static Set<com.stockflow.common.security.PermissionCode> seeded(Role role) {

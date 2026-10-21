@@ -1,7 +1,7 @@
 package com.stockflow.common.security;
 
 /**
- * The permissions that open the operational actuator endpoints to a signed-in caller (V20261021001300, seeded for the
+ * The permissions that open the operational actuator endpoints to a signed-in caller (V20261022000200, seeded for the
  * roles that reached them before: ECOMMERCE_ADMIN and SYSTEM_ADMIN). {@code platform-actuator:READ} covers GET and HEAD
  * on every exposed endpoint - the aggregate health with its details ({@code management.endpoint.health.roles}),
  * metrics, Prometheus, the module map; {@code platform-actuator:UPDATE} covers every other method on any of them (a

@@ -2,7 +2,7 @@ package com.stockflow.fulfillment.internal.service;
 
 /**
  * Permission resources of the fulfillment module that a service checks as well as a controller (seeded by
- * V20261021001300). The controller layer reads them through {@code FulfillmentResources}; they live here because a
+ * V20261022000200). The controller layer reads them through {@code FulfillmentResources}; they live here because a
  * service may not depend on the controller package.
  *
  * <p>Every check is a permission, never a role name: an administrator who ticks one of these for another role in the

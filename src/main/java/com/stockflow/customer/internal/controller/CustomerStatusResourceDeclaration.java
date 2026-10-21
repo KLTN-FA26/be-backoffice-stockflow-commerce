@@ -4,7 +4,7 @@ import com.stockflow.common.security.Action;
 import com.stockflow.common.security.PermissionResource;
 
 /**
- * Catalog declaration of {@code customer-status} (V20261021001300): activating, suspending and closing a customer
+ * Catalog declaration of {@code customer-status} (V20261022000200): activating, suspending and closing a customer
  * account, {@code POST /api/v1/customers/{customerId}/status}. Its own resource because {@code
  * customer-customers:APPROVE} is also held by Sales, who do not change a customer's status.
  */

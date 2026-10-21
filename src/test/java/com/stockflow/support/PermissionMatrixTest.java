@@ -129,7 +129,7 @@ class PermissionMatrixTest {
 
     /**
      * The endpoints that were guarded by a role list (a {@code @PreAuthorize} or a role check in the code) until the
-     * lead's rule of 2026-10-22, and the permission each needs now (V20261021001300). Endpoints whose permission was
+     * lead's rule of 2026-10-22, and the permission each needs now (V20261022000200). Endpoints whose permission was
      * already held by exactly the listed roles kept it.
      */
     private static final Map<String, String> FORMER_ROLE_GATES = Map.ofEntries(

@@ -5,7 +5,7 @@ import com.stockflow.common.security.PermissionResource;
 
 /**
  * Catalog declarations of the fulfillment permissions that replaced the role lists of the pick, pack and dispatch
- * endpoints (V20261021001300). One class per resource, as {@link PermissionResource} is not repeatable; each is seeded
+ * endpoints (V20261022000200). One class per resource, as {@link PermissionResource} is not repeatable; each is seeded
  * to exactly the roles the old role list let through, SYSTEM_ADMIN included.
  */
 final class FulfillmentWorkResourceDeclarations {

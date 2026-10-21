@@ -33,7 +33,7 @@ import java.util.UUID;
  * Customers' requests to cancel orders already released to production or the warehouse (SCRUM-460).
  * kltn-docs 17 §2: Sales handle them, so deciding is {@code sales-order-cancellations:UPDATE} — the
  * permission that already cancels an order from the back office (SCRUM-459), held by Sales and the
- * coordinator. The queue is read with {@code sales-order-cancellations:READ} (V20261021001300), not with
+ * coordinator. The queue is read with {@code sales-order-cancellations:READ} (V20261022000200), not with
  * {@code sales-orders:READ}, which also lets the Accountant read orders.
  */
 @RestController

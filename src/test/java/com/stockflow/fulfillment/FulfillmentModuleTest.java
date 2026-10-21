@@ -44,7 +44,7 @@ class FulfillmentModuleTest {
     @Test
     @DisplayName("fulfillment starts and answers through its api with the other modules absent")
     void bootsInIsolation() {
-        // Services ask for permissions, not role names: the manager's oversight grant (V20261021001300).
+        // Services ask for permissions, not role names: the manager's oversight grant (V20261022000200).
         var manager = TestUsers.builder().role(Role.WAREHOUSE_MANAGER).scope(DataScope.ALL)
                 .can(com.stockflow.fulfillment.internal.service.FulfillmentPermissions.TASK_OVERSIGHT,
                         com.stockflow.common.security.Action.READ)
