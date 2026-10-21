@@ -96,12 +96,18 @@ class PickConsumptionServiceTest {
     private final PickConsumptionService service = new PickConsumptionService(stockItems, ledger,
             new InventoryEventPublisher(publisher), locations, policies, Clock.fixed(NOW, ZoneOffset.UTC));
     private final List<StockItem> saved = new ArrayList<>();
+    private final List<StockItem> merged = new ArrayList<>();
 
     @BeforeEach
     void storeSaves() {
         when(stockItems.save(any())).thenAnswer(call -> {
             StockItem item = call.getArgument(0);
             saved.add(item);
+            return item;
+        });
+        when(stockItems.saveMerged(any())).thenAnswer(call -> {
+            StockItem item = call.getArgument(0);
+            merged.add(item);
             return item;
         });
         when(locations.stateOf(any())).thenReturn(LocationDirectory.LocationState.USABLE);
@@ -297,7 +303,8 @@ class PickConsumptionServiceTest {
             service.putBack(command(line, hold, BIN, 3));
 
             assertThat(item.onHand()).isEqualTo(Quantity.of(10));
-            assertThat(saved).containsExactly(item);
+            assertThat(merged).as("a raise of an existing layer is a same-receipt merge").containsExactly(item);
+            assertThat(saved).isEmpty();
             assertThat(ledgerRows).singleElement().satisfies(row -> {
                 assertThat(row.type()).isEqualTo(StockMovement.MovementType.PUT_BACK);
                 assertThat(row.referenceType()).isEqualTo(StockMovement.ReferenceType.PICK_LINE);
@@ -316,7 +323,7 @@ class PickConsumptionServiceTest {
         void createsTheLayerElsewhere() {
             UUID hold = UUID.randomUUID();
             StockItem source = stockWithHold(BIN, 0, 3, ReservationStatus.CONSUMED, hold);
-            when(stockItems.findBySkuAndLocation(SOFA, OTHER_BIN)).thenReturn(List.of());
+            when(stockItems.findLooseBySkuAndLocation(SOFA, OTHER_BIN)).thenReturn(List.of());
 
             service.putBack(command(UUID.randomUUID(), hold, OTHER_BIN, 3));
 
@@ -330,6 +337,7 @@ class PickConsumptionServiceTest {
                 assertThat(created.status()).isEqualTo(StockStatus.AVAILABLE);
                 assertThat(created.onHand()).isEqualTo(Quantity.of(3));
             });
+            assertThat(merged).as("a new layer is an INSERT, nothing to merge").isEmpty();
             assertThat(source.onHand()).isEqualTo(Quantity.ZERO);
             assertThat(ledgerRows).singleElement().satisfies(row -> assertThat(row.to()).isEqualTo(OTHER_BIN));
         }
@@ -341,13 +349,14 @@ class PickConsumptionServiceTest {
             StockItem source = stockWithHold(BIN, 0, 3, ReservationStatus.CONSUMED, hold);
             StockItem there = new StockItem(StockItemId.newId(), SOFA, OTHER_BIN, "LOT-1", source.expiryDate(),
                     Quantity.of(5), StockStatus.AVAILABLE, List.of(), 0L, source.receivedAt(), null);
-            when(stockItems.findBySkuAndLocation(SOFA, OTHER_BIN)).thenReturn(List.of(there));
+            when(stockItems.findLooseBySkuAndLocation(SOFA, OTHER_BIN)).thenReturn(List.of(there));
             when(stockItems.findByIdForUpdate(there.id())).thenReturn(Optional.of(there));
 
             service.putBack(command(UUID.randomUUID(), hold, OTHER_BIN, 3));
 
             assertThat(there.onHand()).isEqualTo(Quantity.of(8));
-            assertThat(saved).containsExactly(there);
+            assertThat(merged).containsExactly(there);
+            assertThat(saved).isEmpty();
         }
 
         @Test
@@ -357,7 +366,7 @@ class PickConsumptionServiceTest {
             StockItem source = stockWithHold(BIN, 0, 3, ReservationStatus.CONSUMED, hold);
             StockItem quarantined = new StockItem(StockItemId.newId(), SOFA, OTHER_BIN, "LOT-1", source.expiryDate(),
                     Quantity.of(5), StockStatus.QUARANTINE, List.of(), 0L, source.receivedAt(), null);
-            when(stockItems.findBySkuAndLocation(SOFA, OTHER_BIN)).thenReturn(List.of(quarantined));
+            when(stockItems.findLooseBySkuAndLocation(SOFA, OTHER_BIN)).thenReturn(List.of(quarantined));
             when(stockItems.findByIdForUpdate(quarantined.id())).thenReturn(Optional.of(quarantined));
 
             assertThat(refusal(() -> service.putBack(command(UUID.randomUUID(), hold, OTHER_BIN, 3))))
@@ -373,12 +382,13 @@ class PickConsumptionServiceTest {
             UUID line = UUID.randomUUID();
             StockItem item = stockWithHold(BIN, 7, 3, ReservationStatus.CONSUMED, hold);
             service.putBack(command(line, hold, BIN, 3));
-            saved.clear();
+            merged.clear();
 
             service.putBack(command(line, hold, BIN, 3));
 
             assertThat(item.onHand()).isEqualTo(Quantity.of(10));
             assertThat(ledgerRows).hasSize(1);
+            assertThat(merged).isEmpty();
             assertThat(saved).isEmpty();
         }
 
@@ -398,6 +408,7 @@ class PickConsumptionServiceTest {
             assertThat(item.onHand()).isEqualTo(Quantity.of(7));
             assertThat(ledgerRows).isEmpty();
             assertThat(saved).isEmpty();
+            assertThat(merged).isEmpty();
         }
     }
 }
