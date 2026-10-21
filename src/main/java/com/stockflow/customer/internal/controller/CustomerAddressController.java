@@ -5,7 +5,7 @@ import com.stockflow.common.security.Action;
 import com.stockflow.common.security.AuthenticatedUser;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.RequiresPermission;
-import com.stockflow.common.security.Role;
+import com.stockflow.common.security.ScopeGuards;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.internal.controller.dto.CustomerAddressResponse;
 import com.stockflow.customer.internal.controller.dto.SaveAddressRequest;
@@ -78,7 +78,8 @@ class CustomerAddressController {
                 addressId, user.userId(), privileged(user))));
     }
 
+    /** Data scope: the back office manages any customer's addresses, a portal customer only its own. */
     private static boolean privileged(CurrentUser user) {
-        return user.hasAnyRole(Role.ECOMMERCE_ADMIN, Role.SALES_STAFF);
+        return ScopeGuards.isBackOffice(user);
     }
 }

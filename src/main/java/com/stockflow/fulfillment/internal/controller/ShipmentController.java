@@ -9,8 +9,6 @@ import com.stockflow.common.security.Action;
 import com.stockflow.common.security.AuthenticatedUser;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.RequiresPermission;
-import com.stockflow.common.security.Role;
-import com.stockflow.common.security.Roles;
 import com.stockflow.fulfillment.internal.controller.dto.AssignCarrierRequest;
 import com.stockflow.fulfillment.internal.controller.dto.DeliveryOutcomeRequest;
 import com.stockflow.fulfillment.internal.controller.dto.ShipmentResponse;
@@ -19,8 +17,6 @@ import com.stockflow.fulfillment.internal.service.Shipments;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
-import org.springframework.security.access.AccessDeniedException;
-import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -36,10 +32,10 @@ import java.util.UUID;
  * Shipments in the back office (G4-2a; kltn-docs 09 §5): the list dispatch builds loads from, a shipment's parcels and
  * timeline, the carrier chosen for it, and the outcome recorded when the carrier reports back (§4.3).
  *
- * <p>Delivered / not delivered are the Order Coordinator's to record (09 BR-02), and warehouse staff hold UPDATE on
- * this resource for loading - so the outcome is limited by role here, not only by permission. A shipment back at the
- * warehouse (RETURNED, 09 §5 "Warehouse") may also be recorded by the warehouse manager until the returns receipt
- * (SCRUM-295) records it itself.</p>
+ * <p>Outcomes have a resource of their own, {@code fulfillment-delivery-outcomes}: UPDATE records one, and on its own
+ * only RETURNED (09 §5 "Warehouse": the warehouse manager may record a shipment back at the warehouse until the
+ * returns receipt, SCRUM-295, records it itself); DELIVERED and DELIVERY_FAILED also need APPROVE, the Order
+ * Coordinator's (09 BR-02), as they move the order and bill it.</p>
  */
 @RestController
 @RequestMapping("/api/v1/fulfillment/shipments")
@@ -77,9 +73,7 @@ class ShipmentController {
     @PutMapping("/{shipmentId}/carrier")
     @Operation(summary = "Choose the carrier of a shipment waiting for dispatch (null clears it); 409 "
             + "SHIPMENT_ON_ANOTHER_LOAD, SHIPMENT_STATE_CONFLICT, CARRIER_INACTIVE")
-    @RequiresPermission(resource = FulfillmentResources.SHIPMENTS, action = Action.UPDATE)
-    @PreAuthorize("hasAnyAuthority('" + Roles.WAREHOUSE_STAFF + "','" + Roles.WAREHOUSE_MANAGER + "','"
-            + Roles.SYSTEM_ADMIN + "')")
+    @RequiresPermission(resource = FulfillmentResources.DISPATCH, action = Action.UPDATE)
     @Auditable(action = AuditAction.UPDATE, resourceType = "shipment", resourceId = "#shipmentId")
     public ApiResponse<ShipmentResponse> assignCarrier(@PathVariable UUID shipmentId,
             @RequestBody AssignCarrierRequest request, @AuthenticatedUser CurrentUser actor) {
@@ -88,18 +82,15 @@ class ShipmentController {
 
     @PostMapping("/{shipmentId}/delivery-outcome")
     @Operation(summary = "Record what the carrier reported: DELIVERED, DELIVERY_FAILED (with failureReason; OTHER needs "
-            + "a note) or RETURNED; the order follows and bills a delivered shipment. Order Coordinator; RETURNED also "
-            + "the warehouse manager. 409 SHIPMENT_STATE_CONFLICT")
-    @RequiresPermission(resource = FulfillmentResources.SHIPMENTS, action = Action.UPDATE)
-    @PreAuthorize("hasAnyAuthority('" + Roles.ORDER_COORDINATOR + "','" + Roles.WAREHOUSE_MANAGER + "','"
-            + Roles.SYSTEM_ADMIN + "')")
+            + "a note) or RETURNED; the order follows and bills a delivered shipment. fulfillment-delivery-outcomes:UPDATE; "
+            + "DELIVERED / DELIVERY_FAILED also :APPROVE. 409 SHIPMENT_STATE_CONFLICT")
+    @RequiresPermission(resource = FulfillmentResources.DELIVERY_OUTCOMES, action = Action.UPDATE)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "shipment", resourceId = "#shipmentId")
     public ApiResponse<ShipmentResponse> recordOutcome(@PathVariable UUID shipmentId,
             @Valid @RequestBody DeliveryOutcomeRequest request, @AuthenticatedUser CurrentUser actor) {
-        // 09 BR-02: delivered / not delivered are recorded by the Order Coordinator only (and the system admin, who
-        // holds every grant).
-        if (!"RETURNED".equals(request.outcome()) && !actor.hasAnyRole(Role.ORDER_COORDINATOR, Role.SYSTEM_ADMIN)) {
-            throw new AccessDeniedException("Only the Order Coordinator records a delivery outcome (09 BR-02)");
+        // 09 BR-02: delivered / not delivered are the Order Coordinator's; the grant says who that is.
+        if (!"RETURNED".equals(request.outcome())) {
+            actor.require(FulfillmentResources.DELIVERY_OUTCOMES, Action.APPROVE);
         }
         return ApiResponse.ok(mapper.toResponse(shipments.recordOutcome(shipmentId, new Shipments.Outcome(
                 request.outcome(), request.failureReason(), request.note()), actor)));

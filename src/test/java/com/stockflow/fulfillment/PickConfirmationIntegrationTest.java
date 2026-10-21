@@ -87,6 +87,14 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @TestPropertySource(properties = {"stockflow.security.enabled=true", "stockflow.catalog.projection-retry-ms=3600000"})
 class PickConfirmationIntegrationTest {
 
+    @org.springframework.beans.factory.annotation.Autowired
+    com.stockflow.common.security.RoleAuthorizationLookup grants;
+
+    /** The role's permissions as seeded: services check permissions, not role names. */
+    private java.util.Set<com.stockflow.common.security.PermissionCode> seeded(Role role) {
+        return grants.resolve(java.util.List.of(role.authority())).permissions();
+    }
+
     private static final Sku SOFA = new Sku("SOFA-3S-GREY");
     private static final Sku TABLE = new Sku("TABLE-OAK-160");
     private static final String SOFA_BARCODE = "8930000000011";
@@ -199,7 +207,7 @@ class PickConfirmationIntegrationTest {
                 orders.cancel(id, "TEST_CLEANUP");
             }
         }));
-        CurrentUser system = new CurrentUser(managerHcm, "cleanup", Set.of(Role.WAREHOUSE_MANAGER), Set.of(),
+        CurrentUser system = new CurrentUser(managerHcm, "cleanup", Set.of(Role.WAREHOUSE_MANAGER), seeded(Role.WAREHOUSE_MANAGER),
                 DataScope.ALL, Set.of());
         for (UUID order : placed) {
             List<Map<String, Object>> picked = jdbc.queryForList("""

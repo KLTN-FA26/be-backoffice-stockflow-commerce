@@ -80,6 +80,14 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 @TestPropertySource(properties = "stockflow.upload-inspection.enabled=false")
 class PrintedGoodsAtPackingIntegrationTest {
 
+    @org.springframework.beans.factory.annotation.Autowired
+    com.stockflow.common.security.RoleAuthorizationLookup grants;
+
+    /** The role's permissions as seeded: services check permissions, not role names. */
+    private java.util.Set<com.stockflow.common.security.PermissionCode> seeded(Role role) {
+        return grants.resolve(java.util.List.of(role.authority())).permissions();
+    }
+
     private static final String PRINT_SHOP = "HCM-PRD01";
     private static final String PACKING = "HCM-PACK01";
     private static final Sku BLANK = new Sku(ProductionFixtures.BLANK);
@@ -137,7 +145,7 @@ class PrintedGoodsAtPackingIntegrationTest {
     }
 
     private CurrentUser as(UUID id, Role role) {
-        return new CurrentUser(id, role.name() + "-" + id, Set.of(role), Set.of(), DataScope.WAREHOUSE, Set.of("HCM"),
+        return new CurrentUser(id, role.name() + "-" + id, Set.of(role), seeded(role), DataScope.WAREHOUSE, Set.of("HCM"),
                 Set.of(hcm));
     }
 
@@ -474,7 +482,7 @@ class PrintedGoodsAtPackingIntegrationTest {
         // Assigned to another warehouse only (the scope compares prefixes; the warehouse need not exist here).
         UUID otherWarehouse = UUID.randomUUID();
         String otherPrefix = "ZZ";
-        CurrentUser elsewhere = new CurrentUser(manager.userId(), "elsewhere", Set.of(Role.WAREHOUSE_MANAGER), Set.of(),
+        CurrentUser elsewhere = new CurrentUser(manager.userId(), "elsewhere", Set.of(Role.WAREHOUSE_MANAGER), seeded(Role.WAREHOUSE_MANAGER),
                 DataScope.WAREHOUSE, Set.of(otherPrefix), Set.of(otherWarehouse));
 
         Throwable refused = catchThrowable(() -> WithCurrentUser.run(elsewhere, DataScope.WAREHOUSE,

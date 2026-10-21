@@ -119,6 +119,6 @@ class StockflowJwtAuthenticationConverterTest {
         // Read from the claim this would be OWN, narrowing every scoped query for every user.
         assertThat(user.scope()).isEqualTo(DataScope.ALL);
         assertThat(user.permissions()).containsExactly(PO_READ);
-        assertThat(user.hasRole(Role.PROCUREMENT_STAFF)).isTrue();
+        assertThat(user.roles()).containsExactly(Role.PROCUREMENT_STAFF);
     }
 }

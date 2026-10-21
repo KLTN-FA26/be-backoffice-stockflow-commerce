@@ -1,14 +1,12 @@
 package com.stockflow.customer.internal.controller;
 
 import com.stockflow.common.api.ApiResponse;
-import com.stockflow.common.error.BusinessException;
-import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.ratelimit.RateLimit;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.AuthenticatedUser;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.RequiresPermission;
-import com.stockflow.common.security.Role;
+import com.stockflow.common.security.ScopeGuards;
 import com.stockflow.customer.internal.controller.dto.ActivatePortalAccountRequest;
 import com.stockflow.customer.internal.controller.dto.CreateBusinessCustomerRequest;
 import com.stockflow.customer.internal.controller.dto.InvitedCustomerResponse;
@@ -88,14 +86,13 @@ class CustomerOnboardingController {
         return ApiResponse.ok(new PortalActivationResponse(onboarding.activate(request.token(), request.password())));
     }
 
+    /** Data scope: a portal customer never onboards or reads another customer, whatever it was granted. */
     private static void refuseCustomers(CurrentUser user) {
-        if (user.roles().contains(Role.CUSTOMER)) throw new BusinessException(ErrorCode.FORBIDDEN);
+        ScopeGuards.requireBackOffice(user);
     }
 
     private static void requireSales(CurrentUser user) {
-        if (!user.hasAnyRole(Role.ECOMMERCE_ADMIN, Role.SALES_STAFF)) {
-            throw new BusinessException(ErrorCode.FORBIDDEN);
-        }
+        ScopeGuards.requireBackOffice(user);
     }
 
     private static InvitedCustomerResponse toResponse(CustomerOnboardingService.Invited invited) {

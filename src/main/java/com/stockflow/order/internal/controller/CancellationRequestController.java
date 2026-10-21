@@ -33,7 +33,8 @@ import java.util.UUID;
  * Customers' requests to cancel orders already released to production or the warehouse (SCRUM-460).
  * kltn-docs 17 §2: Sales handle them, so deciding is {@code sales-order-cancellations:UPDATE} — the
  * permission that already cancels an order from the back office (SCRUM-459), held by Sales and the
- * coordinator. The queue is read with {@code sales-orders:READ}.
+ * coordinator. The queue is read with {@code sales-order-cancellations:READ} (V20261022000200), not with
+ * {@code sales-orders:READ}, which also lets the Accountant read orders.
  */
 @RestController
 @RequestMapping("/api/v1/orders")
@@ -48,7 +49,7 @@ class CancellationRequestController {
 
     @GetMapping("/cancellation-requests")
     @Operation(summary = "Cancellation requests, newest first; status=PENDING is the queue to decide")
-    @RequiresPermission(resource = OrderResources.ORDERS, action = Action.READ, scope = DataScope.ALL)
+    @RequiresPermission(resource = OrderResources.ORDER_CANCELLATIONS, action = Action.READ, scope = DataScope.ALL)
     public ApiResponse<PageResponse<CancellationRequestResponse>> list(
             @RequestParam(required = false) CancellationRequestStatus status,
             @RequestParam(required = false) UUID orderId,
@@ -56,7 +57,7 @@ class CancellationRequestController {
             @RequestParam(required = false) Integer size,
             @RequestParam(required = false) String sort,
             @AuthenticatedUser CurrentUser user) {
-        // Customers hold sales-orders:READ for their own orders; this queue is every customer's.
+        // Every customer's requests: the back office's, whatever a portal account was granted.
         ScopeGuards.requireBackOffice(user);
         return ApiResponse.ok(requests.list(status, orderId, page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort)
                 .map(CancellationRequestController::toResponse));

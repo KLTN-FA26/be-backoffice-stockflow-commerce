@@ -31,7 +31,7 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
-import com.stockflow.common.security.Role;
+import com.stockflow.common.security.ScopeGuards;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.order.internal.service.CustomerOrders;
 import io.swagger.v3.oas.annotations.Operation;
@@ -100,8 +100,9 @@ class OrderController {
             action = Action.CREATE, scope = DataScope.OWN)
     public ApiResponse<OrderResponse> place(@Valid @RequestBody PlaceOrderRequest request,
                                             @AuthenticatedUser CurrentUser user) {
-        boolean mayPlaceForAnotherCustomer = user.hasAnyRole(
-                Role.SALES_STAFF, Role.ORDER_COORDINATOR, Role.ECOMMERCE_ADMIN);
+        // Who may place at all is sales-orders:CREATE; for whom is data scope: the back office for any customer (an
+        // assisted order), a portal account for its own customer only.
+        boolean mayPlaceForAnotherCustomer = ScopeGuards.isBackOffice(user);
         if (!mayPlaceForAnotherCustomer) {
             UUID ownCustomerId = requiredOwnCustomerId(user);
             if (!ownCustomerId.equals(request.customerId())) {
@@ -251,7 +252,7 @@ class OrderController {
     public ApiResponse<OrderResponse> closeRemainder(@PathVariable UUID orderId,
                                                      @Valid @RequestBody CloseRemainderRequest request,
                                                      @AuthenticatedUser CurrentUser user) {
-        com.stockflow.common.security.ScopeGuards.requireBackOffice(user);
+        ScopeGuards.requireBackOffice(user);
         return ApiResponse.ok(OrderWebMapper.toResponse(orderService.closeRemainder(orderId, request.reasonCode(),
                 request.note(), user.userId())));
     }
@@ -274,7 +275,8 @@ class OrderController {
             @RequestParam(required = false) LocalDate placedFrom,
             @RequestParam(required = false) LocalDate placedTo,
             @RequestParam(required = false) String sort) {
-        requireStaff(user);
+        // Customers hold sales-orders:READ for their own orders; this list is every customer's.
+        ScopeGuards.requireBackOffice(user);
         return ApiResponse.ok(orderService.list(new ListOrdersQuery(page,
                         size == null ? Pages.DEFAULT_PAGE_SIZE : size, search, OrderStatusFilter.parse(statuses),
                         customerId,
@@ -362,16 +364,13 @@ class OrderController {
      * so "my orders" has to go through the profile: comparing an order's customer with the sign-in id
      * never matches once a customer has a profile of their own.
      *
-     * @return null for staff, who may see and cancel any order
+     * <p>Data scope, not access: the endpoint's permission already decided the caller may act. The back office
+     * acts on any customer's order; a portal account on its own customer's only.</p>
+     *
+     * @return null for the back office, who may see and cancel any order
      */
-    private static void requireStaff(CurrentUser user) {
-        if (!user.hasAnyRole(Role.SALES_STAFF, Role.ORDER_COORDINATOR, Role.ECOMMERCE_ADMIN)) {
-            throw new BusinessException(ErrorCode.FORBIDDEN, "The order list is for back-office staff");
-        }
-    }
-
     private UUID ownCustomerIdOrNull(CurrentUser user) {
-        if (user.hasAnyRole(Role.SALES_STAFF, Role.ORDER_COORDINATOR, Role.ECOMMERCE_ADMIN)) {
+        if (ScopeGuards.isBackOffice(user)) {
             return null;
         }
         return requiredOwnCustomerId(user);
