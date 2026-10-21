@@ -12,7 +12,6 @@ import java.nio.file.AccessDeniedException;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
@@ -144,16 +143,15 @@ final class JwtSigningKey {
             Files.writeString(temp, toPem(key), StandardCharsets.US_ASCII);
             try {
                 // A hard link creates the name only if it is free, atomically: of two instances starting together
-                // exactly one wins, and the loser reads the winner's key instead of replacing it.
+                // exactly one wins, and the loser reads the winner's key instead of replacing it. No fallback to a
+                // rename when links are unsupported: a rename replaces a key another instance just stored.
                 Files.createLink(target, temp);
             } catch (FileAlreadyExistsException ex) {
                 return false;
-            } catch (UnsupportedOperationException | IOException noHardLinks) {
-                if (Files.exists(target)) {
-                    return false;
-                }
-                Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE);
-                temp = null;
+            } catch (UnsupportedOperationException ex) {
+                throw new IllegalStateException("Cannot create the JWT signing key at " + path + ": the file system "
+                        + "does not support hard links; generate the key yourself (openssl genpkey -algorithm RSA "
+                        + "-pkeyopt rsa_keygen_bits:2048) and put it there, or use JWT_PRIVATE_KEY", ex);
             }
             return true;
         } catch (AccessDeniedException ex) {

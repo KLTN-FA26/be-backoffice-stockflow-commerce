@@ -101,6 +101,23 @@ class CancelOwnOrderTest {
         verify(requests, never()).save(any());
     }
 
+    @Test
+    void aPaymentFailureCancellationClosesThePendingRequest() {
+        var order = released(UUID.randomUUID());
+        when(repository.save(any())).thenAnswer(call -> call.getArgument(0));
+        var pending = com.stockflow.order.internal.domain.CancellationRequest.open(order.id().value(),
+                UUID.randomUUID(), CancellationReasonCode.CUSTOMER_REQUEST, null, NOW);
+        when(requests.findPending(order.id().value())).thenReturn(Optional.of(pending));
+
+        service.cancelAfterPaymentFailure(order.id().value(), "BANK_REJECTED");
+
+        assertThat(order.status()).isEqualTo(OrderStatus.CANCELLED);
+        verify(requests).save(pending);
+        assertThat(pending.status()).isEqualTo(com.stockflow.order.internal.domain.CancellationRequestStatus.EXPIRED);
+        assertThat(pending.decidedBy()).isNull();
+        assertThat(pending.decisionNote()).isEqualTo("Closed: the order was cancelled.");
+    }
+
     private Order released(UUID customerId) {
         var order = new Order(OrderId.newId(), OrderNumber.of(LocalDate.of(2026, 9, 20), 8), customerId,
                 UUID.randomUUID(), List.of(Order.line(new Sku("CUP-12OZ-WHITE"), 500, Money.vnd(2_000), UUID.randomUUID())),

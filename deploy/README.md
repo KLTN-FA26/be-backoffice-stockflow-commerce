@@ -237,20 +237,24 @@ token. A token lasts 8 hours, across deploys and restarts.
 Tokens are signed with an RSA key kept in `/opt/stockflow/jwt/signing-key.pem` on the host, mounted into the
 application container (`JWT_PRIVATE_KEY_PATH` in `docker-compose.yml`). Nothing to do by hand:
 
-- `scripts/deploy.sh` creates `jwt/` if missing and gives it to the image's `stockflow` user (mode 700, the key
-  600) through a throwaway root container of the same image - no sudo needed.
+- `scripts/deploy.sh` creates `jwt/` if missing and gives it to the image's `stockflow` user - uid/gid **10001**,
+  pinned in the Dockerfile - (mode 700, the key 600) through a throwaway root container of the same image - no sudo
+  needed. The `deploy` user can therefore not read, copy or delete anything in `jwt/` itself: use the commands
+  below.
 - The first start after that writes a new 2048-bit key there; every later start reads it. **The first deploy that
   brings this in signs every user out once** (the old per-start key is gone); after that, deploys and restarts keep
   everyone signed in.
 - CI's rsync excludes `jwt/` (`.github/workflows/build.yml`), so `--delete` never removes it. It is not in the
   database dumps either.
 - Whoever has the file can sign a token for any account: never copy it off the server or into the repository.
-- **Rotate** (a leaked key, say): `rm jwt/signing-key.pem && bash scripts/deploy.sh` - a new key is written and
-  everyone is signed out once. A file that exists but is unreadable or not a PKCS#8 RSA key stops the application
-  at startup with the reason in `docker compose logs app` (and deploy.sh rolls back); it never falls back to a
-  throwaway key.
-- To bring your own key instead: `openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out signing-key.pem`,
-  put it at that path, and run deploy.sh (it fixes the owner).
+- **Rotate** (a leaked key, say): `bash scripts/deploy.sh --rotate-jwt-key`. It removes the key through a root
+  container of the running image and restarts the application, which writes a new one; everyone signs in again once.
+- **Bring your own key**: `openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out signing-key.pem`, copy
+  it to the server, then `bash scripts/deploy.sh --install-jwt-key signing-key.pem && shred -u signing-key.pem`. The
+  key is written owner-only into `jwt/` the same way and the application restarted; everyone signs in again once.
+- Both commands keep the previous key until the application is healthy with the new one; if it is not (a bad key
+  file stops startup with the reason in `docker compose logs app` - it never falls back to a throwaway key), the
+  previous key is put back and the application restarted with it. Neither pulls an image or runs migrations.
 
 Check:
 

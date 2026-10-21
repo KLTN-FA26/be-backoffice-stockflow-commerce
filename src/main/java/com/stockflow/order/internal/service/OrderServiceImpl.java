@@ -585,6 +585,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         order.cancel(CancellationReasonCode.PAYMENT_FAILED, failureCode, null, null, clock.instant());
         order.clearReservations();
         repository.save(order);
+        closeUndecidableCancellationRequest(order);
         events.publishEventsOf(order);
     }
 
