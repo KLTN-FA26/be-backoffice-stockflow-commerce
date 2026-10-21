@@ -36,11 +36,15 @@
 --   fulfillment-delivery-outcomes:APPROVE       ... outcome DELIVERED / DELIVERY_FAILED (09 BR-02)    shipments:UPDATE + OC
 --   customer-status:APPROVE                     POST /customers/{id}/status                           customer-customers:APPROVE + ECOMMERCE_ADMIN
 --   catalog-storefront:READ                     GET /catalog/products/availability, /prices           role CUSTOMER
---   platform-actuator:READ                      /actuator/** (probes and info stay anonymous)         role ECOMMERCE_ADMIN
+--   platform-actuator:READ                      GET/HEAD /actuator/**, health details (probes and      role ECOMMERCE_ADMIN
+--                                               info stay anonymous)
+--   platform-actuator:UPDATE                    every other method on /actuator/**                    role ECOMMERCE_ADMIN
+--   sales-order-cancellations:READ              GET /orders/cancellation-requests                     sales-orders:READ + back office
 --
 -- (OC order coordinator, WM warehouse manager, WS warehouse staff, QC QC staff.) Each grant below goes to a listed
 -- role only while it still holds the permission the endpoint needed before, so a matrix edited at run time keeps
--- exactly the access it had. Every new permission goes to SYSTEM_ADMIN (V20260929000200; SystemAdminRoleIntegrationTest).
+-- exactly the access it had. The two READ codes checked inside the task services (oversight, design re-verification)
+-- serve endpoints of both fulfillment-pick-lists:READ and fulfillment-packages:READ, so either one qualifies. Every new permission goes to SYSTEM_ADMIN (V20260929000200; SystemAdminRoleIntegrationTest).
 --
 -- Unchanged: which rows (warehouse scope, a portal customer's own customer, assignee and session owner checks).
 --
@@ -69,7 +73,9 @@ FROM (VALUES
           ('fulfillment-delivery-outcomes', 'APPROVE'),
           ('customer-status', 'APPROVE'),
           ('catalog-storefront', 'READ'),
-          ('platform-actuator', 'READ')
+          ('platform-actuator', 'READ'),
+          ('platform-actuator', 'UPDATE'),
+          ('sales-order-cancellations', 'READ')
      ) AS p(resource, action)
 ON CONFLICT (code) DO NOTHING;
 
@@ -77,49 +83,71 @@ ON CONFLICT (code) DO NOTHING;
 INSERT INTO identity.role_permission (id, role_id, permission_id, version, created_at, created_by)
 SELECT gen_random_uuid(), role.id, permission.id, 0, NOW(), 'flyway'
 FROM (VALUES
-          ('ORDER_COORDINATOR', 'fulfillment-task-assignment:CREATE',      'fulfillment-pick-lists:UPDATE'),
-          ('WAREHOUSE_MANAGER', 'fulfillment-task-assignment:CREATE',      'fulfillment-pick-lists:UPDATE'),
-          ('ORDER_COORDINATOR', 'fulfillment-task-assignment:UPDATE',      'fulfillment-pick-lists:UPDATE'),
-          ('WAREHOUSE_MANAGER', 'fulfillment-task-assignment:UPDATE',      'fulfillment-pick-lists:UPDATE'),
-          ('ORDER_COORDINATOR', 'fulfillment-task-oversight:READ',         'fulfillment-pick-lists:READ'),
-          ('WAREHOUSE_MANAGER', 'fulfillment-task-oversight:READ',         'fulfillment-pick-lists:READ'),
-          ('WAREHOUSE_STAFF',   'fulfillment-picking:UPDATE',              'fulfillment-pick-lists:UPDATE'),
-          ('WAREHOUSE_MANAGER', 'fulfillment-picking:UPDATE',              'fulfillment-pick-lists:UPDATE'),
-          ('WAREHOUSE_STAFF',   'fulfillment-picking:READ',                'fulfillment-pick-lists:READ'),
-          ('WAREHOUSE_MANAGER', 'fulfillment-picking:READ',                'fulfillment-pick-lists:READ'),
-          ('WAREHOUSE_STAFF',   'fulfillment-packing:UPDATE',              'fulfillment-packages:CREATE'),
-          ('WAREHOUSE_MANAGER', 'fulfillment-packing:UPDATE',              'fulfillment-packages:CREATE'),
-          ('WAREHOUSE_STAFF',   'fulfillment-packing:READ',                'fulfillment-packages:READ'),
-          ('WAREHOUSE_MANAGER', 'fulfillment-packing:READ',                'fulfillment-packages:READ'),
-          ('WAREHOUSE_MANAGER', 'fulfillment-packing:APPROVE',             'fulfillment-packages:CREATE'),
-          ('QC_STAFF',          'fulfillment-design-reverification:UPDATE', 'fulfillment-packages:CREATE'),
-          ('WAREHOUSE_MANAGER', 'fulfillment-design-reverification:UPDATE', 'fulfillment-packages:CREATE'),
-          ('QC_STAFF',          'fulfillment-design-reverification:READ', 'fulfillment-pick-lists:READ'),
-          ('WAREHOUSE_MANAGER', 'fulfillment-design-reverification:READ', 'fulfillment-pick-lists:READ'),
-          ('WAREHOUSE_MANAGER', 'fulfillment-carriers:UPDATE',             'fulfillment-shipments:UPDATE'),
-          ('WAREHOUSE_STAFF',   'fulfillment-dispatch:CREATE',             'fulfillment-shipments:CREATE'),
-          ('WAREHOUSE_MANAGER', 'fulfillment-dispatch:CREATE',             'fulfillment-shipments:CREATE'),
-          ('WAREHOUSE_STAFF',   'fulfillment-dispatch:UPDATE',             'fulfillment-shipments:UPDATE'),
-          ('WAREHOUSE_MANAGER', 'fulfillment-dispatch:UPDATE',             'fulfillment-shipments:UPDATE'),
-          ('WAREHOUSE_MANAGER', 'fulfillment-load-cancellations:UPDATE',   'fulfillment-shipments:UPDATE'),
-          ('ORDER_COORDINATOR', 'fulfillment-delivery-outcomes:UPDATE',    'fulfillment-shipments:UPDATE'),
-          ('WAREHOUSE_MANAGER', 'fulfillment-delivery-outcomes:UPDATE',    'fulfillment-shipments:UPDATE'),
-          ('ORDER_COORDINATOR', 'fulfillment-delivery-outcomes:APPROVE',   'fulfillment-shipments:UPDATE'),
-          ('ECOMMERCE_ADMIN',   'customer-status:APPROVE',                 'customer-customers:APPROVE'),
+          ('ORDER_COORDINATOR', 'fulfillment-task-assignment:CREATE',      ARRAY['fulfillment-pick-lists:UPDATE']),
+          ('WAREHOUSE_MANAGER', 'fulfillment-task-assignment:CREATE',      ARRAY['fulfillment-pick-lists:UPDATE']),
+          ('ORDER_COORDINATOR', 'fulfillment-task-assignment:UPDATE',      ARRAY['fulfillment-pick-lists:UPDATE']),
+          ('WAREHOUSE_MANAGER', 'fulfillment-task-assignment:UPDATE',      ARRAY['fulfillment-pick-lists:UPDATE']),
+          ('ORDER_COORDINATOR', 'fulfillment-task-oversight:READ',         ARRAY['fulfillment-pick-lists:READ', 'fulfillment-packages:READ']),
+          ('WAREHOUSE_MANAGER', 'fulfillment-task-oversight:READ',         ARRAY['fulfillment-pick-lists:READ', 'fulfillment-packages:READ']),
+          ('WAREHOUSE_STAFF',   'fulfillment-picking:UPDATE',              ARRAY['fulfillment-pick-lists:UPDATE']),
+          ('WAREHOUSE_MANAGER', 'fulfillment-picking:UPDATE',              ARRAY['fulfillment-pick-lists:UPDATE']),
+          ('WAREHOUSE_STAFF',   'fulfillment-picking:READ',                ARRAY['fulfillment-pick-lists:READ']),
+          ('WAREHOUSE_MANAGER', 'fulfillment-picking:READ',                ARRAY['fulfillment-pick-lists:READ']),
+          ('WAREHOUSE_STAFF',   'fulfillment-packing:UPDATE',              ARRAY['fulfillment-packages:CREATE']),
+          ('WAREHOUSE_MANAGER', 'fulfillment-packing:UPDATE',              ARRAY['fulfillment-packages:CREATE']),
+          ('WAREHOUSE_STAFF',   'fulfillment-packing:READ',                ARRAY['fulfillment-packages:READ']),
+          ('WAREHOUSE_MANAGER', 'fulfillment-packing:READ',                ARRAY['fulfillment-packages:READ']),
+          ('WAREHOUSE_MANAGER', 'fulfillment-packing:APPROVE',             ARRAY['fulfillment-packages:CREATE']),
+          ('QC_STAFF',          'fulfillment-design-reverification:UPDATE', ARRAY['fulfillment-packages:CREATE']),
+          ('WAREHOUSE_MANAGER', 'fulfillment-design-reverification:UPDATE', ARRAY['fulfillment-packages:CREATE']),
+          ('QC_STAFF',          'fulfillment-design-reverification:READ', ARRAY['fulfillment-pick-lists:READ', 'fulfillment-packages:READ']),
+          ('WAREHOUSE_MANAGER', 'fulfillment-design-reverification:READ', ARRAY['fulfillment-pick-lists:READ', 'fulfillment-packages:READ']),
+          ('WAREHOUSE_MANAGER', 'fulfillment-carriers:UPDATE',             ARRAY['fulfillment-shipments:UPDATE']),
+          ('WAREHOUSE_STAFF',   'fulfillment-dispatch:CREATE',             ARRAY['fulfillment-shipments:CREATE']),
+          ('WAREHOUSE_MANAGER', 'fulfillment-dispatch:CREATE',             ARRAY['fulfillment-shipments:CREATE']),
+          ('WAREHOUSE_STAFF',   'fulfillment-dispatch:UPDATE',             ARRAY['fulfillment-shipments:UPDATE']),
+          ('WAREHOUSE_MANAGER', 'fulfillment-dispatch:UPDATE',             ARRAY['fulfillment-shipments:UPDATE']),
+          ('WAREHOUSE_MANAGER', 'fulfillment-load-cancellations:UPDATE',   ARRAY['fulfillment-shipments:UPDATE']),
+          ('ORDER_COORDINATOR', 'fulfillment-delivery-outcomes:UPDATE',    ARRAY['fulfillment-shipments:UPDATE']),
+          ('WAREHOUSE_MANAGER', 'fulfillment-delivery-outcomes:UPDATE',    ARRAY['fulfillment-shipments:UPDATE']),
+          ('ORDER_COORDINATOR', 'fulfillment-delivery-outcomes:APPROVE',   ARRAY['fulfillment-shipments:UPDATE']),
+          ('ECOMMERCE_ADMIN',   'customer-status:APPROVE',                 ARRAY['customer-customers:APPROVE']),
           ('CUSTOMER',          'catalog-storefront:READ',                 NULL),
           ('ECOMMERCE_ADMIN',   'platform-actuator:READ',                  NULL),
-          -- ACCREAD (2026-10-21): the Accountant reads orders.
-          ('ACCOUNTANT',        'sales-orders:VIEW_PAGE',                  NULL),
-          ('ACCOUNTANT',        'sales-orders:READ',                       NULL)
-     ) AS g(role_code, permission_code, required_code)
+          ('ECOMMERCE_ADMIN',   'platform-actuator:UPDATE',                NULL)
+     ) AS g(role_code, permission_code, required_codes)
 JOIN identity.app_role role ON role.code = g.role_code
 JOIN identity.permission permission ON permission.code = g.permission_code
-WHERE g.required_code IS NULL
+WHERE g.required_codes IS NULL
    OR EXISTS (SELECT 1
                 FROM identity.role_permission held
                 JOIN identity.permission old ON old.id = held.permission_id
                WHERE held.role_id = role.id
-                 AND old.code = g.required_code)
+                 AND old.code = ANY (g.required_codes))
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+-- The cancellation-request queue (GET /orders/cancellation-requests) needed sales-orders:READ and a back-office
+-- account. It gets its own code so that the Accountant's new sales-orders:READ (ACCREAD, below) does not open it: every
+-- role that holds sales-orders:READ now - which is before the Accountant's grant - except CUSTOMER, which was always
+-- refused there (ScopeGuards.requireBackOffice). Roles created at run time included.
+INSERT INTO identity.role_permission (id, role_id, permission_id, version, created_at, created_by)
+SELECT gen_random_uuid(), role.id, queue.id, 0, NOW(), 'flyway'
+FROM identity.app_role role
+JOIN identity.permission queue ON queue.code = 'sales-order-cancellations:READ'
+WHERE role.code NOT IN ('CUSTOMER', 'ACCOUNTANT')
+  AND EXISTS (SELECT 1
+                FROM identity.role_permission held
+                JOIN identity.permission old ON old.id = held.permission_id
+               WHERE held.role_id = role.id
+                 AND old.code = 'sales-orders:READ')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+-- ACCREAD (2026-10-21): the Accountant reads orders - the back-office list, an order's detail and history.
+INSERT INTO identity.role_permission (id, role_id, permission_id, version, created_at, created_by)
+SELECT gen_random_uuid(), role.id, permission.id, 0, NOW(), 'flyway'
+FROM identity.app_role role
+JOIN identity.permission permission ON permission.code IN ('sales-orders:VIEW_PAGE', 'sales-orders:READ')
+WHERE role.code = 'ACCOUNTANT'
 ON CONFLICT (role_id, permission_id) DO NOTHING;
 
 INSERT INTO identity.role_permission (id, role_id, permission_id, version, created_at, created_by)
@@ -133,4 +161,6 @@ ON CONFLICT (role_id, permission_id) DO NOTHING;
 UPDATE identity.app_role
 SET version = version + 1, last_modified_at = NOW(), last_modified_by = 'flyway'
 WHERE code IN ('ORDER_COORDINATOR', 'WAREHOUSE_MANAGER', 'WAREHOUSE_STAFF', 'QC_STAFF', 'ECOMMERCE_ADMIN', 'CUSTOMER',
-               'ACCOUNTANT', 'SYSTEM_ADMIN');
+               'ACCOUNTANT', 'SALES_STAFF', 'SYSTEM_ADMIN')
+   OR id IN (SELECT rp.role_id FROM identity.role_permission rp JOIN identity.permission p ON p.id = rp.permission_id
+              WHERE p.code = 'sales-order-cancellations:READ');

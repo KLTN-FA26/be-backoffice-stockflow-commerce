@@ -172,7 +172,9 @@ class PermissionMatrixTest {
             Map.entry("POST /api/v1/fulfillment/shipments/{shipmentId}/delivery-outcome", "fulfillment-delivery-outcomes:UPDATE"),
             Map.entry("POST /api/v1/customers/{customerId}/status", "customer-status:APPROVE"),
             Map.entry("GET /api/v1/catalog/products/availability", "catalog-storefront:READ"),
-            Map.entry("GET /api/v1/catalog/products/prices", "catalog-storefront:READ"));
+            Map.entry("GET /api/v1/catalog/products/prices", "catalog-storefront:READ"),
+            // Was sales-orders:READ + back office; its own code so ACCREAD does not open the queue.
+            Map.entry("GET /api/v1/orders/cancellation-requests", "sales-order-cancellations:READ"));
 
     /**
      * Who holds each permission that replaced a role list, as seeded: exactly the roles the list let through, which
@@ -202,6 +204,8 @@ class PermissionMatrixTest {
             Map.entry("customer-status:APPROVE", Set.of(Role.ECOMMERCE_ADMIN, Role.SYSTEM_ADMIN)),
             Map.entry("catalog-storefront:READ", Set.of(Role.CUSTOMER, Role.SYSTEM_ADMIN)),
             Map.entry("platform-actuator:READ", Set.of(Role.ECOMMERCE_ADMIN, Role.SYSTEM_ADMIN)),
+            Map.entry("platform-actuator:UPDATE", Set.of(Role.ECOMMERCE_ADMIN, Role.SYSTEM_ADMIN)),
+            Map.entry("sales-order-cancellations:READ", Set.of(Role.SALES_STAFF, Role.ORDER_COORDINATOR, Role.SYSTEM_ADMIN)),
             Map.entry("sales-orders:READ", Set.of(Role.CUSTOMER, Role.SALES_STAFF, Role.ORDER_COORDINATOR, Role.ACCOUNTANT,
                     Role.SYSTEM_ADMIN)),
             Map.entry("sales-orders:VIEW_PAGE", Set.of(Role.CUSTOMER, Role.SALES_STAFF, Role.ORDER_COORDINATOR,
@@ -532,6 +536,52 @@ class PermissionMatrixTest {
             }
             assertThat(holders).as("roles holding " + code).isEqualTo(expected);
         });
+    }
+
+    /**
+     * A role created at run time (ADR-0008) is no {@link Role} constant, so it never shows in {@code CurrentUser.roles()}.
+     * It must still be served by exactly what its permissions allow: the back-office customer screens (whose "which
+     * rows" check is ScopeGuards.isBackOffice, "not a portal customer"), and nothing it was not granted.
+     */
+    @Test
+    void aRoleCreatedAtRunTimeIsServedByItsPermissionsAlone() throws Exception {
+        String code = "FIELD_SALES_" + ThreadLocalRandom.current().nextInt(1_000_000);
+        UUID role = Identifiers.newId();
+        UUID user = tx.execute(s -> ReferenceRows.user(entityManager));
+        tx.executeWithoutResult(s -> {
+            jdbc.update("""
+                    INSERT INTO identity.app_role (id, code, name, version, created_at, is_system, data_scope)
+                    VALUES (?, ?, 'Field sales', 0, NOW(), FALSE, 'ALL')""", role, code);
+            jdbc.update("""
+                    INSERT INTO identity.role_permission (id, role_id, permission_id, version, created_at)
+                    SELECT gen_random_uuid(), ?, id, 0, NOW() FROM identity.permission
+                     WHERE code IN ('customer-customers:READ', 'customer-addresses:READ')""", role);
+            jdbc.update("""
+                    INSERT INTO identity.user_role (id, user_id, role_id, version, created_at)
+                    VALUES (gen_random_uuid(), ?, ?, 0, NOW())""", user, role);
+        });
+        String token = UUID.randomUUID().toString();
+        org.mockito.Mockito.when(decoder.decode(token)).thenReturn(Jwt.withTokenValue(token).header("alg", "RS256")
+                .subject(user.toString()).claim("roles", List.of(code)).build());
+        java.util.function.Function<MockHttpServletRequestBuilder, Integer> as = request -> {
+            try {
+                return mvc.perform(request.header("Authorization", "Bearer " + token)).andReturn().getResponse()
+                        .getStatus();
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+        };
+
+        assertThat(as.apply(MockMvcRequestBuilders.get("/api/v1/customers"))).as("customer list").isEqualTo(200);
+        assertThat(as.apply(MockMvcRequestBuilders.get("/api/v1/customers/" + victimCustomer))).as("a customer")
+                .isEqualTo(200);
+        assertThat(as.apply(MockMvcRequestBuilders.get("/api/v1/customers/" + victimCustomer + "/addresses")))
+                .as("any customer's addresses (back office)").isEqualTo(200);
+        assertThat(as.apply(MockMvcRequestBuilders.post("/api/v1/customers/" + victimCustomer + "/status")
+                .contentType(MediaType.APPLICATION_JSON).content("{\"status\":\"INACTIVE\"}")))
+                .as("customer-status:APPROVE was not granted").isEqualTo(403);
+        assertThat(as.apply(MockMvcRequestBuilders.get("/api/v1/orders"))).as("sales-orders:READ was not granted")
+                .isEqualTo(403);
     }
 
     @Test

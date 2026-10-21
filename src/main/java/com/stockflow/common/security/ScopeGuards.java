@@ -25,11 +25,17 @@ public final class ScopeGuards {
     }
 
     /**
-     * Whether the caller works for the shop rather than for one customer: true for any role other than CUSTOMER. A
-     * data-scope answer - every customer's rows, or only the caller's own customer's - for an endpoint whose permission
-     * a customer may hold too. Whether the caller may act at all is the endpoint's permission, never this.
+     * Whether the caller works for the shop rather than for one customer: anyone signed in who is not a portal
+     * customer ({@link CurrentUser#isPortalCustomer}). A data-scope answer - every customer's rows, or only the caller's
+     * own customer's - for an endpoint whose permission a customer may hold too. Whether the caller may act at all is
+     * the endpoint's permission, never this.
+     *
+     * <p>Defined as "not a portal customer" rather than "holds a known staff role" because roles created at run time
+     * (ADR-0008) are not {@link Role} constants: {@code CurrentUserProvider} leaves them out of {@code roles()}, and a
+     * staff member holding only such a role must still be served by whatever its permissions allow. CUSTOMER is never
+     * combined with another role (IdentityServiceImpl refuses it: ROLE_NOT_ASSIGNABLE), so the two cannot overlap.</p>
      */
     public static boolean isBackOffice(CurrentUser user) {
-        return user != null && user.roles().stream().anyMatch(role -> role != Role.CUSTOMER);
+        return user != null && !user.isPortalCustomer();
     }
 }
