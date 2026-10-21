@@ -181,10 +181,11 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
                         "No reservation with id " + command.reservationId()));
         // The goods come back as the layer they left: same SKU, lot, expiry and receipt time, so FEFO and
         // FIFO still see them in their place. At the bin they left, that layer is the source row itself
-        // (one row per SKU, location, lot, serial and receipt); elsewhere it may already exist too.
+        // (one row per SKU, location, lot, serial and receipt); elsewhere it may already exist too, as loose
+        // stock - never a carton's row there, whose counted quantity loose units would break.
         Optional<StockItem> destinationView = sourceView.location().equals(target)
                 ? Optional.of(sourceView)
-                : stockItems.findBySkuAndLocation(sourceView.sku(), target).stream()
+                : stockItems.findLooseBySkuAndLocation(sourceView.sku(), target).stream()
                         .filter(item -> Objects.equals(item.lotNumber(), sourceView.lotNumber())
                                 && Objects.equals(item.receivedAt(), sourceView.receivedAt())
                                 && Objects.equals(item.serialNumber(), sourceView.serialNumber()))

@@ -37,8 +37,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * V20261017000450 against a real PostgreSQL: units of one FIFO receipt layer may be moved into a layer of the
  * same receipt elsewhere, in parts — two moves to the same bin, two holds issued to the print shop, picked
- * goods put back after a cancellation — keeping the receipt time, lot and total; replenishing an existing FIFO layer (a FOUND adjustment) is still refused,
- * and so is a receipt dated more than a minute ahead of the database clock.
+ * goods put back after a cancellation — keeping the receipt time, lot and total; replenishing an existing FIFO
+ * layer (a FOUND adjustment) is still refused, and so is a receipt dated more than a minute ahead of the
+ * database clock. A put-back never merges into a carton's row.
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
@@ -195,6 +196,45 @@ class SameReceiptMergeIntegrationTest {
                 select count(*) from inventory.stock_movement
                  where movement_type = 'PUT_BACK' and reference_type = 'PICK_LINE' and reference_id in (?, ?)""",
                 Integer.class, lines.get(0), lines.get(1))).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("put back onto a bin holding an unopened carton of the same receipt: a loose layer, the carton untouched")
+    void putBackLeavesCartonsAlone() {
+        UUID order = confirmedOrder();
+        UUID hold = tx.execute(s -> {
+            UUID id = inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), 3, order))
+                    .reservationIds().getFirst();
+            inventory.pinReservations(order);
+            return id;
+        });
+        UUID line = Identifiers.newId();
+        tx.executeWithoutResult(s -> pickConsumption.consumeForPick(hold, line, clerk));
+        // After the pick, so the hold was drawn from the shelf: a carton of 5, of the very receipt, on the target.
+        UUID carton = Identifiers.newId();
+        tx.executeWithoutResult(s -> {
+            UUID item = jdbc.queryForObject("select id from inventory.inventory_items where sku = ?", UUID.class, sku);
+            UUID unit = Identifiers.newId();
+            jdbc.update("insert into inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)"
+                    + " values (?, ?, 'CARTON', 5)", unit, item);
+            jdbc.update("""
+                    insert into inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,
+                        received_qty, location_code, status) values (?, ?, ?, ?, 5, 5, ?, 'IN_STOCK')""",
+                    carton, "LPN-" + sku, item, unit, OTHER_BIN);
+            jdbc.update("""
+                    insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand, reserved,
+                        status, version, created_at, stock_package_id) values (?, ?, ?, ?, ?, 5, 0, 'AVAILABLE', 0, now(), ?)""",
+                    Identifiers.newId(), sku, OTHER_BIN, lot, java.sql.Timestamp.from(RECEIVED), carton);
+        });
+
+        tx.executeWithoutResult(s -> pickConsumption.putBack(
+                new PutBackCommand(line, hold, sku, lot, OTHER_BIN, 3, clerk)));
+
+        assertThat(jdbc.queryForList("""
+                select on_hand, stock_package_id from inventory.stock_item
+                 where sku = ? and location_code = ? order by on_hand""", sku, OTHER_BIN))
+                .extracting(row -> row.get("on_hand") + ":" + row.get("stock_package_id"))
+                .containsExactly("3:null", "5:" + carton);
     }
 
     @Test

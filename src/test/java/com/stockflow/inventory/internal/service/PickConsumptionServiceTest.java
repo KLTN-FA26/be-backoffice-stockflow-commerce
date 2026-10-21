@@ -311,7 +311,7 @@ class PickConsumptionServiceTest {
         void createsTheLayerElsewhere() {
             UUID hold = UUID.randomUUID();
             StockItem source = stockWithHold(BIN, 0, 3, ReservationStatus.CONSUMED, hold);
-            when(stockItems.findBySkuAndLocation(SOFA, OTHER_BIN)).thenReturn(List.of());
+            when(stockItems.findLooseBySkuAndLocation(SOFA, OTHER_BIN)).thenReturn(List.of());
 
             service.putBack(command(UUID.randomUUID(), hold, OTHER_BIN, 3));
 
@@ -337,7 +337,7 @@ class PickConsumptionServiceTest {
             StockItem source = stockWithHold(BIN, 0, 3, ReservationStatus.CONSUMED, hold);
             StockItem there = new StockItem(StockItemId.newId(), SOFA, OTHER_BIN, "LOT-1", source.expiryDate(),
                     Quantity.of(5), StockStatus.AVAILABLE, List.of(), 0L, source.receivedAt(), null);
-            when(stockItems.findBySkuAndLocation(SOFA, OTHER_BIN)).thenReturn(List.of(there));
+            when(stockItems.findLooseBySkuAndLocation(SOFA, OTHER_BIN)).thenReturn(List.of(there));
             when(stockItems.findByIdForUpdate(there.id())).thenReturn(Optional.of(there));
 
             service.putBack(command(UUID.randomUUID(), hold, OTHER_BIN, 3));
@@ -354,7 +354,7 @@ class PickConsumptionServiceTest {
             StockItem source = stockWithHold(BIN, 0, 3, ReservationStatus.CONSUMED, hold);
             StockItem quarantined = new StockItem(StockItemId.newId(), SOFA, OTHER_BIN, "LOT-1", source.expiryDate(),
                     Quantity.of(5), StockStatus.QUARANTINE, List.of(), 0L, source.receivedAt(), null);
-            when(stockItems.findBySkuAndLocation(SOFA, OTHER_BIN)).thenReturn(List.of(quarantined));
+            when(stockItems.findLooseBySkuAndLocation(SOFA, OTHER_BIN)).thenReturn(List.of(quarantined));
             when(stockItems.findByIdForUpdate(quarantined.id())).thenReturn(Optional.of(quarantined));
 
             assertThat(refusal(() -> service.putBack(command(UUID.randomUUID(), hold, OTHER_BIN, 3))))

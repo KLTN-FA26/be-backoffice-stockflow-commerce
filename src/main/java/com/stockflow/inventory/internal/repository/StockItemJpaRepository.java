@@ -132,6 +132,14 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
     List<StockItemJpaEntity> findBySkuAndLocation(@Param("sku") String sku,
                                                   @Param("locationCode") String locationCode);
 
+    @Query("""
+            select distinct s from StockItemJpaEntity s
+            left join fetch s.reservations
+            where s.sku = :sku and s.locationCode = :locationCode and s.stockPackageId is null
+            """)
+    List<StockItemJpaEntity> findLooseBySkuAndLocation(@Param("sku") String sku,
+                                                       @Param("locationCode") String locationCode);
+
     /** Ids only, so the sweeper can page through the backlog before locking anything. */
     @Query("""
             select distinct r.stockItem.id from ReservationJpaEntity r
