@@ -22,14 +22,19 @@ class OrderRemainderClosedListener {
 
     private final CancelledOrderSettlement settlement;
     private final com.stockflow.payment.api.OrderPayables orders;
+    private final ReceivableService receivables;
 
-    OrderRemainderClosedListener(CancelledOrderSettlement settlement, com.stockflow.payment.api.OrderPayables orders) {
+    OrderRemainderClosedListener(CancelledOrderSettlement settlement, com.stockflow.payment.api.OrderPayables orders,
+                                 ReceivableService receivables) {
         this.settlement = settlement;
         this.orders = orders;
+        this.receivables = receivables;
     }
 
     @ApplicationModuleListener
     public void on(OrderRemainderClosed event) {
+        // Review of #150: a fee for print lines closed after printing that the money received did not cover is owed.
+        receivables.remainderFeeOwed(event);
         BigDecimal refundable = event.refundableAmount() == null ? BigDecimal.ZERO : event.refundableAmount();
         if (refundable.signum() <= 0) {
             return;

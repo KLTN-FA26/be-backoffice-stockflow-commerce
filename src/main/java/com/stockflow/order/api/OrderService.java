@@ -169,7 +169,20 @@ public interface OrderService {
      * delivered; their stock holds are released, payment refunds money received above what the order is now worth
      * ({@code OrderRemainderClosed}). Only from PARTIALLY_FULFILLED.
      */
-    OrderSummary closeRemainder(UUID orderId, CancellationReasonCode reasonCode, String note, UUID by);
+    default OrderSummary closeRemainder(UUID orderId, CancellationReasonCode reasonCode, String note, UUID by) {
+        return closeRemainder(orderId, reasonCode, note, null, by);
+    }
+
+    /**
+     * The same, keeping {@code fee} - an amount agreed with the customer for print lines closed after printing
+     * started, at most their value (review of #150): the money received pays it first, the rest is refunded, what it
+     * does not cover is owed. Printed goods not shipped are scrapped; production stops the closed lines' jobs.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code CANCELLATION_FEE_BEFORE_PRINTING},
+     *         {@code VALIDATION_FAILED}, {@code ORDER_INVALID_TRANSITION}
+     */
+    OrderSummary closeRemainder(UUID orderId, CancellationReasonCode reasonCode, String note, CancellationFee fee,
+                                UUID by);
 
     /** A printed design did not match at packing (BR-DSG-003): ON_HOLD for QC, reason DESIGN_MISMATCH. */
     void putOnDesignHold(UUID orderId, String reason);

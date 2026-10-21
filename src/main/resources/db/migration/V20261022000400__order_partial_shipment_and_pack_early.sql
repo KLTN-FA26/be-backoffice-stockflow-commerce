@@ -36,6 +36,12 @@ ALTER TABLE ordering.customer_order
     ADD CONSTRAINT ck_order_awaiting_production CHECK (NOT awaiting_production
         OR (allow_partial_shipment AND status IN ('PARTIALLY_FULFILLED', 'ON_HOLD')));
 
+-- Review of #150: a fee agreed when print lines are closed after printing started (17 edge "huỷ khi đang In
+-- Production (đã in)", decisions 2026-10-17 / 2026-10-19), kept from the money above the order's worth or owed.
+ALTER TABLE ordering.customer_order
+    ADD COLUMN remainder_fee_amount NUMERIC(19, 4) NOT NULL DEFAULT 0,
+    ADD CONSTRAINT ck_order_remainder_fee CHECK (remainder_fee_amount >= 0 AND remainder_fee_amount <= total_amount);
+
 COMMENT ON COLUMN ordering.customer_order.allow_partial_shipment IS
     'Sales allowed the order to ship in parts (PACK-PARTIAL); the warehouse ships it whole otherwise.';
 COMMENT ON COLUMN ordering.customer_order.awaiting_production IS

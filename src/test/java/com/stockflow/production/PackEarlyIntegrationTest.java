@@ -150,6 +150,10 @@ class PackEarlyIntegrationTest {
      * blanks issued - not printing yet.
      */
     private Mixed inProduction(int printed, int stocked) throws Exception {
+        return inProduction(printed, stocked, 2000, 2000);
+    }
+
+    private Mixed inProduction(int printed, int stocked, long printPrice, long stockPrice) throws Exception {
         ProductionFixtures.Design design = fixtures.confirmedDesign();
         SampleRequests.Sample draft = samples.create(sales, new SampleRequests.Create(DemoData.CUSTOMER_ID, null,
                 new SampleRequests.Draft(design.snapshotId(), ProductionFixtures.BLANK, 1, null)));
@@ -161,7 +165,7 @@ class PackEarlyIntegrationTest {
         UUID orderId = Identifiers.newId();
         UUID printLine = Identifiers.newId();
         UUID stockLine = Identifiers.newId();
-        int total = (printed + stocked) * 2000;
+        long total = printed * printPrice + stocked * stockPrice;
         String number = "SO-20991231-%06d".formatted(java.util.concurrent.ThreadLocalRandom.current().nextInt(1_000_000));
         tx.executeWithoutResult(s -> {
             jdbc.update("""
@@ -172,11 +176,12 @@ class PackEarlyIntegrationTest {
                     orderId, number, DemoData.CUSTOMER_ID, UUID.randomUUID(), total, total, hcm, sales.userId());
             jdbc.update("""
                     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency,
-                        design_snapshot_id, design_checksum) VALUES (?, ?, ?, ?, 2000, 'VND', ?, ?)""",
-                    printLine, orderId, ProductionFixtures.BLANK, printed, design.snapshotId(), design.checksum());
+                        design_snapshot_id, design_checksum) VALUES (?, ?, ?, ?, ?, 'VND', ?, ?)""",
+                    printLine, orderId, ProductionFixtures.BLANK, printed, printPrice, design.snapshotId(),
+                    design.checksum());
             jdbc.update("""
                     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
-                    VALUES (?, ?, ?, ?, 2000, 'VND')""", stockLine, orderId, ProductionFixtures.BLANK, stocked);
+                    VALUES (?, ?, ?, ?, ?, 'VND')""", stockLine, orderId, ProductionFixtures.BLANK, stocked, stockPrice);
             inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), BLANK, printed, orderId)).reservationIds()
                     .forEach(id -> jdbc.update("INSERT INTO ordering.order_line_reservation (order_line_id, "
                             + "reservation_id) VALUES (?, ?)", printLine, id));
@@ -391,16 +396,14 @@ class PackEarlyIntegrationTest {
         partialShipments.decide(order.orderId(), false, "Khách muốn nhận một lần", sales.userId());
 
         UUID ghn = jdbc.queryForObject("SELECT id FROM fulfillment.carrier WHERE code = 'GHN'", UUID.class);
-        Dispatching.LoadDetail opened = dispatching.open(new Dispatching.OpenLoad(UUID.randomUUID(), hcm, ghn,
-                List.of(stock.shipmentId()), "51C-999.99", "Driver", "0900000000"), picker);
-        for (String label : jdbc.queryForList("SELECT label_code FROM fulfillment.package WHERE shipment_id = ?",
-                String.class, stock.shipmentId())) {
-            opened = dispatching.scan(opened.loadId(), UUID.randomUUID(), label, picker);
-        }
-        Dispatching.LoadDetail load = opened;
-        assertThat(code(catchThrowable(() -> dispatching.handOver(load.loadId(), new Dispatching.Handover(
-                load.version(), "Nguyen Van Tai", "51C-999.99", "0900000000", "MF-1", true, null), picker))))
+        // Review of #150, item 5: refused when the shipment is put on the manifest, not at the signature.
+        assertThat(code(catchThrowable(() -> dispatching.open(new Dispatching.OpenLoad(UUID.randomUUID(), hcm, ghn,
+                List.of(stock.shipmentId()), "51C-999.99", "Driver", "0900000000"), picker))))
                 .isEqualTo(ErrorCode.ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED);
+        Dispatching.LoadDetail load = dispatching.open(new Dispatching.OpenLoad(UUID.randomUUID(), hcm, ghn, List.of(),
+                "51C-999.99", "Driver", "0900000000"), picker);
+        assertThat(code(catchThrowable(() -> dispatching.addShipments(load.loadId(), List.of(stock.shipmentId()),
+                picker)))).isEqualTo(ErrorCode.ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED);
         assertThat(order(order).status()).isEqualTo(OrderStatus.IN_PRODUCTION);
         assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.shipment WHERE id = ?", String.class,
                 stock.shipmentId())).isEqualTo("READY_TO_DISPATCH");
@@ -410,9 +413,10 @@ class PackEarlyIntegrationTest {
         Await.until("ready to fulfil", ASYNC, () -> order(order).status() == OrderStatus.READY_TO_FULFILL);
         sealed(task, order.printLine(), 2);
         FulfillmentTask prints = fulfillment.completePacking(task, picker);
-        Dispatching.LoadDetail both = dispatching.addShipments(load.loadId(), List.of(prints.shipmentId()), picker);
-        for (String label : jdbc.queryForList("SELECT label_code FROM fulfillment.package WHERE shipment_id = ?",
-                String.class, prints.shipmentId())) {
+        Dispatching.LoadDetail both = dispatching.addShipments(load.loadId(), List.of(stock.shipmentId(),
+                prints.shipmentId()), picker);
+        for (String label : jdbc.queryForList("SELECT label_code FROM fulfillment.package WHERE shipment_id IN (?, ?)",
+                String.class, stock.shipmentId(), prints.shipmentId())) {
             both = dispatching.scan(both.loadId(), UUID.randomUUID(), label, picker);
         }
         dispatching.handOver(both.loadId(), new Dispatching.Handover(both.version(), "Nguyen Van Tai", "51C-999.99",
@@ -420,5 +424,68 @@ class PackEarlyIntegrationTest {
         assertThat(order(order).status()).as("both in one signature: nothing left behind").isEqualTo(OrderStatus.SHIPPED);
         assertThat(code(catchThrowable(() -> partialShipments.decide(order.orderId(), true, null, sales.userId()))))
                 .isEqualTo(ErrorCode.ORDER_PARTIAL_SHIPMENT_LOCKED);
+    }
+
+    @Test
+    @DisplayName("review of #150, item 1: prepaid 10M (2M stock, 8M prints), stock shipped early, prints printed, the "
+            + "rest closed with a 3M fee: 3M kept, 5M asked back, the 4 printed units asked to be scrapped")
+    void closedPrintsKeepTheFeeAndAreScrapped() throws Exception {
+        Mixed order = inProduction(4, 10, 2_000_000, 200_000);
+        partialShipments.decide(order.orderId(), true, null, sales.userId());
+        UUID task = pickedStock(order);
+        packing.start(task, picker);
+        sealed(task, order.stockLine(), 10);
+        FulfillmentTask stock = fulfillment.completePacking(task,
+                new PackingCompletion(UUID.randomUUID(), true, "Hàng sẵn đi trước"), picker);
+        handOver(stock.shipmentId());
+        finishProduction(order, 4);
+        Await.until("the prints are at packing", ASYNC, () -> order(order).lifecycle().printLinesReady());
+
+        OrderSummary closed = WithCurrentUser.call(TestUsers.admin(), DataScope.ALL, () -> salesOrders.closeRemainder(
+                order.orderId(), CancellationReasonCode.CUSTOMER_REQUEST, "Khách không lấy ly in",
+                new com.stockflow.order.api.CancellationFee(new BigDecimal("3000000"), "Phí in",
+                        "4 ly đã in theo thiết kế"), sales.userId()));
+
+        assertThat(closed.status()).isEqualTo(OrderStatus.SHIPPED);
+        assertThat(closed.lifecycle().amountDue()).isZero();
+        assertThat(jdbc.queryForMap("SELECT remainder_refund_amount::bigint AS refund, remainder_fee_amount::bigint "
+                + "AS fee FROM ordering.customer_order WHERE id = ?", order.orderId()))
+                .containsEntry("refund", 5_000_000L).containsEntry("fee", 3_000_000L);
+        Await.until("the printed units are asked to be scrapped", ASYNC, () -> jdbc.queryForObject("""
+                SELECT COALESCE(SUM(-quantity_delta), 0)::int FROM inventory.stock_adjustment
+                 WHERE reason_code = 'SCRAP' AND status = 'PENDING_APPROVAL' AND note LIKE ?""", Integer.class,
+                "%" + order.orderNumber() + "%") == 4);
+    }
+
+    @Test
+    @DisplayName("review of #150, item 4: stock packed ahead of the prints, nothing handed over: the order is still "
+            + "cancelled with the printing fee - its shipment cancelled, parcels voided, picked stock to put back, "
+            + "the running print job held")
+    void packedAheadOfThePrintsIsCancelledWithAFee() throws Exception {
+        Mixed order = inProduction(2, 3);
+        partialShipments.decide(order.orderId(), true, null, sales.userId());
+        UUID task = pickedStock(order);
+        packing.start(task, picker);
+        sealed(task, order.stockLine(), 3);
+        FulfillmentTask stock = fulfillment.completePacking(task,
+                new PackingCompletion(UUID.randomUUID(), true, "Hàng sẵn đi trước"), picker);
+        runs.startPrinting(printer, order.productionOrderId());
+
+        OrderSummary cancelled = WithCurrentUser.call(TestUsers.admin(), DataScope.ALL, () -> salesOrders.cancel(
+                order.orderId(), new com.stockflow.order.api.CancelOrderCommand(CancellationReasonCode.CUSTOMER_REQUEST,
+                        "Khách huỷ", null, sales.userId(), new com.stockflow.order.api.CancellationFee(
+                        new BigDecimal("4000"), "Phí in", "2 ly đang in"))));
+
+        assertThat(cancelled.status()).isEqualTo(OrderStatus.CANCELLED);
+        assertThat(cancelled.cancellation().retainedAmount()).isEqualByComparingTo("4000");
+        Await.until("the shipment is cancelled", ASYNC, () -> "CANCELLED".equals(jdbc.queryForObject(
+                "SELECT status FROM fulfillment.shipment WHERE id = ?", String.class, stock.shipmentId())));
+        assertThat(jdbc.queryForList("SELECT status FROM fulfillment.package WHERE shipment_id = ?", String.class,
+                stock.shipmentId())).containsOnly("VOIDED");
+        Await.until("the picked stock waits to be put back", ASYNC, () -> Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT needs_put_back FROM fulfillment.pick WHERE id = ?", Boolean.class, task)));
+        Await.until("the print job is held", ASYNC, () -> "ON_HOLD".equals(jdbc.queryForObject(
+                "SELECT status FROM production.production_order WHERE id = ?", String.class,
+                order.productionOrderId())));
     }
 }

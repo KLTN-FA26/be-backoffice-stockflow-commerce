@@ -422,9 +422,12 @@ comes with G2-3; until then nothing is billed per shipment for it and nothing bl
 **Partial shipments are Sales' decision (PACK-PARTIAL, lead 2026-10-21).** `customer_order.allow_partial_shipment`,
 false by default, set by `PUT /orders/{id}/partial-shipment` (`sales-order-partial-shipments:UPDATE`, SALES_STAFF)
 until the order is SHIPPED or later (`ORDER_PARTIAL_SHIPMENT_LOCKED`); each decision is a row of
-`ordering.order_partial_shipment_decision`, shown to staff in `GET /orders/{id}/history` as an entry `from = to` with
-reason `PARTIAL_SHIPMENT_ALLOWED` / `PARTIAL_SHIPMENT_STOPPED`. Without it the packer cannot complete part of the order
-and the dispatcher cannot hand over part of it; the packer still says why when completing a part.
+`ordering.order_partial_shipment_decision`, shown to staff in `GET /orders/{id}/history` as an entry of
+`type = PARTIAL_SHIPMENT_DECISION` (`partialShipmentAllowed`, the note as `reason`; status changes are
+`type = STATUS_CHANGE`). Without it the packer cannot complete part of the order and the dispatcher cannot put part of
+it on a load (refused when the shipment is added, 409 `ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED`) or hand it over; the packer
+still says why when completing a part. It cannot be stopped while the order waits for production after its stock left
+(409 `ORDER_PARTIAL_SHIPMENT_LOCKED`).
 
 **Stock first, prints later (PACK-EARLY, lead 2026-10-21; 17 BR-06 "trừ khi chính sách split-ship", D9).** A mixed
 order IN_PRODUCTION gets its fulfillment task for the stock lines (the order stays IN_PRODUCTION). With partial
@@ -432,7 +435,12 @@ shipments allowed, the stock is packed as a partial shipment (the print lines ar
 `OrderSummary.Lifecycle.printLinesReady` is false) and handed over: IN_PRODUCTION → PARTIALLY_FULFILLED with
 `awaiting_production`. When production completes the flag clears (the status stays), the printed goods are at packing,
 and the rest follows the split-order path: PARTIALLY_FULFILLED → PACKED → SHIPPED. Staff may instead close the print
-lines (`remainder-closure`): production stops their jobs as on a cancellation (`OrderRemainderClosed`). Production
+lines (`remainder-closure`): production stops their jobs as on a cancellation (`OrderRemainderClosed`), printed goods
+not shipped are scrapped, and after printing started Sales may keep an agreed fee (at most the value of the print units
+closed; the money above the order's new worth pays it first - a deposit included - the rest is refunded, a shortfall is a
+receivable, decisions 2026-10-17 / 2026-10-19). Stock packed while printing but not handed over does not stop a
+cancellation (with the printing fee rules): its shipment is cancelled, parcels voided, the picked stock put back
+(17 §4.5 step 15); once a shipment left, the order is returned. Production
 completing before the stock left takes the order to READY_TO_FULFILL as usual; its packed stock may still leave first
 (READY_TO_FULFILL → PARTIALLY_FULFILLED). Money per shipment as for any split order: a credit (or ON_CREDIT) delivery
 bills its shipment, the carrier collects each ON_DELIVERY shipment's COD, money paid ahead goes to the earliest
@@ -441,7 +449,9 @@ shipments first.
 **Deposit balance on credit (BALCREDIT, lead 2026-10-21; 15 §4.2 step 3).** `balance_policy = ON_CREDIT`, for a
 customer allowed CREDIT: placement checks the remaining balance (total − deposit) plus what the customer owes on credit
 against the limit, and an overdue customer, and refuses with 409 (`BALANCE_CREDIT_LIMIT_EXCEEDED`,
-`CUSTOMER_CREDIT_OVERDUE`) rather than holding the order. Only the deposit is wanted before the handover; each delivery
+`CUSTOMER_CREDIT_OVERDUE`) rather than holding the order - when Sales asked for ON_CREDIT; when it came from the
+customer's terms (a portal checkout cannot choose), the order falls back to BEFORE_DELIVERY. An overdue customer's
+ON_CREDIT order is not released, as a credit order is not. Only the deposit is wanted before the handover; each delivery
 bills its goods less the deposit not yet used as a DEPOSIT_BALANCE receivable of the customer, due after
 `credit_term_days`. The exposure counts such an order from PENDING_PAYMENT, its deposit as paid ahead, so the balance is
 counted once: here until delivered, then as the receivable.

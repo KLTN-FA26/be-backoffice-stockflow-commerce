@@ -158,7 +158,12 @@ class CustomerOrdersService implements CustomerOrders {
     private AllowedActions allowedActions(OrderSummary summary) {
         OrderStatus status = summary.status();
         boolean cancel = status.customerMayCancelDirectly();
-        boolean packed = summary.lifecycle() != null && summary.lifecycle().packedAt() != null;
+        var lifecycle = summary.lifecycle();
+        // Review of #150: stock packed ahead of the prints, nothing handed over, is still cancelled (Order#packedForGood).
+        boolean printing = status == OrderStatus.IN_PRODUCTION || lifecycle != null
+                && status == OrderStatus.ON_HOLD && lifecycle.statusBeforeHold() == OrderStatus.IN_PRODUCTION;
+        boolean packed = lifecycle != null && lifecycle.packedAt() != null
+                && !(printing && lifecycle.shipments().isEmpty());
         boolean request = !cancel && !packed && status.canTransitionTo(OrderStatus.CANCELLED)
                 && !cancellationRequests.hasPending(summary.orderId());
         return new AllowedActions(cancel, request, quotes.findByConvertedOrderId(summary.orderId()).isPresent());

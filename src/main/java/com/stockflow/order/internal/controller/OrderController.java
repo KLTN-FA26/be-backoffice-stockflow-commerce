@@ -258,7 +258,7 @@ class OrderController {
                                                      @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
         return ApiResponse.ok(OrderWebMapper.toResponse(orderService.closeRemainder(orderId, request.reasonCode(),
-                request.note(), user.userId())));
+                request.note(), OrderWebMapper.toFee(request.agreedFee()), user.userId())));
     }
 
     /**
@@ -306,8 +306,8 @@ class OrderController {
                             null, null))
                     .toList());
         }
-        // PACK-PARTIAL: Sales' decisions on shipping in parts are part of the order's history for staff - an entry that
-        // does not move the status (from = to), its reason PARTIAL_SHIPMENT_ALLOWED / PARTIAL_SHIPMENT_STOPPED.
+        // PACK-PARTIAL: Sales' decisions on shipping in parts are part of the order's history for staff - entries of
+        // their own type (PARTIAL_SHIPMENT_DECISION), not status changes.
         List<com.stockflow.order.api.PartialShipmentDecision> decisions = partialShipments.decisions(orderId);
         java.util.Map<UUID, String> names = identities.displayNames(java.util.stream.Stream.concat(
                         changes.stream().map(com.stockflow.order.api.OrderStatusChange::actorId),
@@ -317,10 +317,10 @@ class OrderController {
                         .map(change -> new OrderStatusChangeResponse(change.from(), change.to(), change.reason(),
                                 change.occurredAt(), change.actorId(),
                                 change.actorId() == null ? null : names.get(change.actorId()))),
-                decisions.stream().map(decision -> new OrderStatusChangeResponse(decision.orderStatus(),
-                        decision.orderStatus(), (decision.allowed() ? "PARTIAL_SHIPMENT_ALLOWED" : "PARTIAL_SHIPMENT_STOPPED")
-                        + (decision.note() == null ? "" : ": " + decision.note()), decision.decidedAt(),
-                        decision.decidedBy(), decision.decidedBy() == null ? null : names.get(decision.decidedBy()))))
+                decisions.stream().map(decision -> new OrderStatusChangeResponse(
+                        OrderStatusChangeResponse.PARTIAL_SHIPMENT_DECISION, null, null, decision.note(),
+                        decision.decidedAt(), decision.decidedBy(),
+                        decision.decidedBy() == null ? null : names.get(decision.decidedBy()), decision.allowed())))
                 .sorted(java.util.Comparator.comparing(OrderStatusChangeResponse::occurredAt))
                 .toList());
     }

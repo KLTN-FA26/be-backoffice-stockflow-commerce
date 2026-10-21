@@ -89,8 +89,9 @@ class OrderReleaseService implements OrderReleases {
                             .formatted(order.orderNumber(), String.join(", ", missing)));
         }
 
-        // kltn-docs 15 §4.3 step 4, 17 BR-02: no credit order is released for a customer who is overdue.
-        if (order.paymentTerm() == com.stockflow.order.api.PaymentTerm.CREDIT
+        // kltn-docs 15 §4.3 step 4, 17 BR-02: no credit order is released for a customer who is overdue - nor a deposit
+        // order whose balance goes on credit (BALCREDIT, review of #150): it gives the same credit on delivery.
+        if ((order.paymentTerm() == com.stockflow.order.api.PaymentTerm.CREDIT || order.balanceOnCredit())
                 && paymentService.creditPosition(order.customerId()).hasOverdue()) {
             throw new BusinessException(ErrorCode.CUSTOMER_CREDIT_OVERDUE,
                     "Order %s is on credit and its customer has overdue receivables".formatted(order.orderNumber()));

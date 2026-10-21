@@ -121,6 +121,8 @@ public final class Order extends AggregateRoot {
     private BigDecimal receivablePaidAmount = BigDecimal.ZERO;
     /** Refunds asked for when a remainder was closed, so a second closure asks only for the difference. */
     private BigDecimal remainderRefundAmount = BigDecimal.ZERO;
+    /** Fees agreed when print lines were closed after printing started (review of #150): kept, or owed. */
+    private BigDecimal remainderFeeAmount = BigDecimal.ZERO;
     /**
      * PACK-PARTIAL (lead's decision 2026-10-21): Sales decided the order may ship in parts - a packing completion that
      * leaves goods behind, a handover of part of it, and shipping the stock of a mixed order while it is printed
@@ -848,6 +850,12 @@ public final class Order extends AggregateRoot {
             throw new BusinessException(ErrorCode.ORDER_PARTIAL_SHIPMENT_LOCKED,
                     "Order %s is %s: whether it ships in parts can no longer change".formatted(orderNumber, status));
         }
+        if (!allowed && awaitingProduction) {
+            // Its stock already left ahead of the prints: the order is split for good (ck_order_awaiting_production).
+            throw new BusinessException(ErrorCode.ORDER_PARTIAL_SHIPMENT_LOCKED, ("Order %s already shipped its stock "
+                    + "ahead of its prints: partial shipment stays allowed until the prints follow or are closed")
+                    .formatted(orderNumber));
+        }
         if (allowPartialShipment == allowed) {
             return false;
         }
@@ -1079,6 +1087,30 @@ public final class Order extends AggregateRoot {
         }
     }
 
+    /** The agreed amount of a closure: after printing started, more than zero, whole units, at most the prints closed. */
+    private BigDecimal requireRemainderFee(com.stockflow.order.api.CancellationFee fee, BigDecimal closedPrints) {
+        if (printingStartedAt == null) {
+            throw new BusinessException(ErrorCode.CANCELLATION_FEE_BEFORE_PRINTING,
+                    "Order %s has not started printing: its rest is closed without a fee".formatted(orderNumber));
+        }
+        int digits = total().currency().getDefaultFractionDigits();
+        if (fee.amount().signum() <= 0 || fee.amount().stripTrailingZeros().scale() > digits) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The agreed amount is more than zero, in whole %s"
+                    .formatted(digits == 0 ? total().currency().getCurrencyCode() : "units of " + total().currency()));
+        }
+        if (fee.amount().compareTo(closedPrints) > 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("The agreed amount is at most the value of the "
+                    + "print units closed, %s %s").formatted(closedPrints.stripTrailingZeros().toPlainString(),
+                    total().currency().getCurrencyCode()));
+        }
+        if (fee.reason() == null || fee.reason().isEmpty() || fee.reason().length() > 500
+                || fee.detail() == null || fee.detail().isEmpty() || fee.detail().length() > 2000) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "An agreed amount needs its reason (at most 500 characters) and its detail (at most 2000)");
+        }
+        return fee.amount().setScale(digits);
+    }
+
     // ---- split shipments (decision G4-Q3) ----------------------------------------------------------------------
 
     /** What made the order look at its shipments again. */
@@ -1285,6 +1317,19 @@ public final class Order extends AggregateRoot {
      * @return the value of the units closed
      */
     public BigDecimal closeRemainder(CancellationReasonCode code, String note, UUID by, Instant at) {
+        return closeRemainder(code, note, null, by, at);
+    }
+
+    /**
+     * The same, keeping an amount agreed with the customer for print lines closed after printing started (review of
+     * #150; decisions 2026-10-17 / 2026-10-19: cancelling after printing is allowed with a production fee, the printed
+     * goods are scrapped; 17 edge "khách huỷ khi đang In Production (đã in)"). The fee is at most the value of the print
+     * units closed. The money received above what the order is now worth pays it first - for a deposit order the
+     * deposit - and only the rest is refunded; what it does not cover is owed ({@code OrderRemainderClosed.owedAmount},
+     * a receivable). Before printing nothing is kept ({@code CANCELLATION_FEE_BEFORE_PRINTING}).
+     */
+    public BigDecimal closeRemainder(CancellationReasonCode code, String note,
+                                     com.stockflow.order.api.CancellationFee agreedFee, UUID by, Instant at) {
         java.util.Objects.requireNonNull(code, "code");
         String trimmed = trimmed(note);
         if (code == CancellationReasonCode.OTHER && trimmed == null) {
@@ -1295,6 +1340,15 @@ public final class Order extends AggregateRoot {
                     status == OrderStatus.ON_HOLD ? "resolve the hold before closing the rest"
                             : "only a partly fulfilled order has a rest to close");
         }
+        // Validated before anything changes: a refused fee leaves the order as it was.
+        Money closedPrints = Money.zero(total().currency());
+        for (OrderLine line : lines) {
+            int left = line.quantity() - line.cancelledQuantity() - shippedUnits(line.id(), false);
+            if (left > 0 && line.isMadeToOrder()) {
+                closedPrints = closedPrints.plus(line.unitPrice().times(left));
+            }
+        }
+        BigDecimal fee = agreedFee == null ? BigDecimal.ZERO : requireRemainderFee(agreedFee, closedPrints.amount());
         Money closed = Money.zero(total().currency());
         List<com.stockflow.contracts.OrderRemainderClosed.Line> closedLines = new ArrayList<>();
         for (OrderLine line : lines) {
@@ -1307,14 +1361,24 @@ public final class Order extends AggregateRoot {
         }
         // PACK-EARLY: every unit not shipped is closed, the print lines' too - nothing printed is left to wait for.
         this.awaitingProduction = false;
-        BigDecimal refundable = paidAmount.subtract(billable()).max(BigDecimal.ZERO).subtract(remainderRefundAmount)
-                .max(BigDecimal.ZERO);
+        // Money received above what the order is now worth, less refunds and fees of earlier closures: it pays the fee
+        // first (a deposit order's deposit included), the rest is refunded; a fee it does not cover is owed.
+        BigDecimal excess = paidAmount.subtract(billable()).subtract(remainderRefundAmount).subtract(remainderFeeAmount);
+        BigDecimal retained = fee.min(excess.max(BigDecimal.ZERO));
+        BigDecimal refundable = excess.subtract(fee).max(BigDecimal.ZERO);
+        BigDecimal owed = fee.subtract(retained);
         this.remainderRefundAmount = remainderRefundAmount.add(refundable);
+        this.remainderFeeAmount = remainderFeeAmount.add(fee);
         String reason = withNote("REMAINDER_CLOSED_" + code.name(), trimmed);
+        if (fee.signum() > 0) {
+            // The fee and why, in the order's history (the event carries amounts only); the column holds 500.
+            reason = reason + " (fee " + fee.stripTrailingZeros().toPlainString() + ": " + agreedFee.reason() + ")";
+            reason = reason.length() > 500 ? reason.substring(0, 500) : reason;
+        }
         followShipments(ShipmentChange.CLOSED, at, by, reason);
         registerEvent(new OrderEvent.RemainderClosed(new com.stockflow.contracts.OrderRemainderClosed(id.value(),
                 orderNumber.value(), customerId, code.name(), closedLines, closed.amount(), billable(), paidAmount,
-                refundable, total().currency().getCurrencyCode(), by, at, UUID.randomUUID())));
+                refundable, total().currency().getCurrencyCode(), by, at, UUID.randomUUID(), fee, retained, owed)));
         return closed.amount();
     }
 
@@ -1421,7 +1485,14 @@ public final class Order extends AggregateRoot {
 
     /** What the customer still owes on the order (never below zero; above, a refund is the payment module's). */
     public BigDecimal amountDue() {
-        return billable().subtract(paidAmount).max(BigDecimal.ZERO);
+        return billable().add(remainderFeeAmount).subtract(paidAmount).max(BigDecimal.ZERO);
+    }
+
+    public BigDecimal remainderFeeAmount() { return remainderFeeAmount; }
+
+    /** Rehydration of the fees agreed on closures. */
+    public void restoreRemainderFee(BigDecimal fee) {
+        this.remainderFeeAmount = fee == null ? BigDecimal.ZERO : fee;
     }
 
     /**
@@ -1825,10 +1896,36 @@ public final class Order extends AggregateRoot {
 
     /** 03 §9: a packed order is not cancelled - by anyone, on any path; it goes through a return (RMA). */
     public void requireNotPacked() {
-        if (packedAt != null) {
+        if (packedAt != null && !packedOnlyAheadOfPrints()) {
             throw new BusinessException(ErrorCode.ORDER_NOT_CANCELLABLE,
                     "Order %s is packed; it can no longer be cancelled - raise a return instead".formatted(orderNumber));
         }
+    }
+
+    /**
+     * Review of #150 (PACK-EARLY): the stock of an order still printed was packed as a partial shipment but nothing was
+     * handed over yet. The goods are still in the warehouse and the package reversible - 17 §4.5 step 15: labels void,
+     * shipment off its load, stock put back - so the order is cancelled like any order in production, with the fee
+     * rules of printing (decision 2026-10-17). Once a shipment left, or the order is PACKED or past it, it is returned.
+     */
+    public boolean packedOnlyAheadOfPrints() {
+        boolean printing = status == OrderStatus.IN_PRODUCTION
+                || status == OrderStatus.ON_HOLD && statusBeforeHold == OrderStatus.IN_PRODUCTION;
+        return packedAt != null && printing && shipments.isEmpty();
+    }
+
+    /** Whether a package of the order binds it to a return instead of a cancellation (03 §9). */
+    public boolean packedForGood() {
+        return packedAt != null && !packedOnlyAheadOfPrints();
+    }
+
+    /**
+     * Whether the line's goods are still wanted from production (review of #150): units neither closed nor in a
+     * shipment still with the carrier or the customer.
+     */
+    public boolean lineWithdrawn(UUID lineId) {
+        return findLine(lineId).map(line -> line.quantity() - line.cancelledQuantity() - shippedUnits(line.id(), false)
+                <= 0).orElse(true);
     }
 
     /** Rehydration of the agreed amount's terms. */

@@ -188,15 +188,15 @@ class DepositBalanceOnCreditIntegrationTest {
     }
 
     @Test
-    @DisplayName("over the limit: 409 BALANCE_CREDIT_LIMIT_EXCEEDED, no order, no hold; with other credit already "
-            + "used, a balance that alone fits is refused too; BEFORE_DELIVERY is placed instead")
+    @DisplayName("over the limit, ON_CREDIT asked for: 409 BALANCE_CREDIT_LIMIT_EXCEEDED, no order, no hold; with other "
+            + "credit already used, a balance that alone fits is refused too; BEFORE_DELIVERY is placed instead")
     void overTheLimitIsRefused() {
         UUID request = UUID.randomUUID();
         int heldBefore = jdbc.queryForObject("SELECT count(*)::int FROM inventory.stock_reservation WHERE status = "
                 + "'HELD'", Integer.class);
         Throwable refused = catchThrowable(() -> orders.placeOrder(new PlaceOrderCommand(request, customer, null, null,
                 false, List.of(new PlaceOrderCommand.Line(SOFA, 6, Money.vnd(PRICE), null)), PaymentTerm.DEPOSIT,
-                null, null)));                                           // 30M, balance 21M > 20M
+                null, BalancePolicy.ON_CREDIT)));                        // 30M, balance 21M > 20M
         assertThat(code(refused)).isEqualTo(ErrorCode.BALANCE_CREDIT_LIMIT_EXCEEDED);
         assertThat(refused.getMessage()).contains("21000000").contains("20000000");
         assertThat(heldFor(request)).isZero();
@@ -205,7 +205,7 @@ class DepositBalanceOnCreditIntegrationTest {
 
         OrderSummary credit = place(PaymentTerm.CREDIT, 3, null);         // 15M on credit, confirmed
         assertThat(credit.status()).isEqualTo(OrderStatus.CONFIRMED);
-        assertThat(code(catchThrowable(() -> place(PaymentTerm.DEPOSIT, 2, null)))).as("15M + 7M > 20M")
+        assertThat(code(catchThrowable(() -> place(PaymentTerm.DEPOSIT, 2, BalancePolicy.ON_CREDIT)))).as("15M + 7M > 20M")
                 .isEqualTo(ErrorCode.BALANCE_CREDIT_LIMIT_EXCEEDED);
         OrderSummary paidFirst = place(PaymentTerm.DEPOSIT, 2, BalancePolicy.BEFORE_DELIVERY);
         assertThat(paidFirst.status()).isEqualTo(OrderStatus.PENDING_PAYMENT);
@@ -223,8 +223,12 @@ class DepositBalanceOnCreditIntegrationTest {
                 VALUES (gen_random_uuid(), ?, ?, 1000000, 0, 'VND', NOW() - INTERVAL '40 days', CURRENT_DATE - 10,
                        'OVERDUE')""", earlier.orderId(), customer));
         assertThat(payments.creditPosition(customer).hasOverdue()).isTrue();
-        assertThat(code(catchThrowable(() -> place(PaymentTerm.DEPOSIT, 1, null))))
+        assertThat(code(catchThrowable(() -> place(PaymentTerm.DEPOSIT, 1, BalancePolicy.ON_CREDIT))))
                 .isEqualTo(ErrorCode.CUSTOMER_CREDIT_OVERDUE);
+        // Review of #150, item 3: ON_CREDIT from the customer's terms (a portal checkout cannot choose) falls back.
+        OrderSummary fallback = place(PaymentTerm.DEPOSIT, 1, null);
+        assertThat(fallback.payment().balancePolicy()).isEqualTo(BalancePolicy.BEFORE_DELIVERY);
+        assertThat(fallback.payment().creditTermDays()).isNull();
 
         UUID cash = tx.execute(s -> ReferenceRows.customer(entityManager));
         UUID other = customer;
@@ -235,5 +239,39 @@ class DepositBalanceOnCreditIntegrationTest {
         assertThat(code(catchThrowable(() -> terms(cash, false, null, DepositBalancePolicy.ON_CREDIT))))
                 .isEqualTo(ErrorCode.CREDIT_PROFILE_INVALID);
         customer = other;
+    }
+
+    @Test
+    @DisplayName("review of #150, item 3: the customer's default ON_CREDIT over the limit falls back to BEFORE_DELIVERY "
+            + "(placed, nothing on credit); Sales asking for ON_CREDIT explicitly still gets 409")
+    void defaultOnCreditFallsBack() {
+        OrderSummary order = place(PaymentTerm.DEPOSIT, 6, null);         // 30M, balance 21M > 20M
+        assertThat(order.status()).isEqualTo(OrderStatus.PENDING_PAYMENT);
+        assertThat(order.payment().balancePolicy()).isEqualTo(BalancePolicy.BEFORE_DELIVERY);
+        assertThat(order.payment().creditTermDays()).isNull();
+        assertThat(exposure()).as("nothing on credit").isZero();
+        assertThat(code(catchThrowable(() -> place(PaymentTerm.DEPOSIT, 6, BalancePolicy.ON_CREDIT))))
+                .isEqualTo(ErrorCode.BALANCE_CREDIT_LIMIT_EXCEEDED);
+    }
+
+    @Test
+    @DisplayName("review of #150, item 6: an ON_CREDIT deposit order is not released while its customer is overdue "
+            + "(409 CUSTOMER_CREDIT_OVERDUE)")
+    void releaseRefusedWhenOverdue() {
+        OrderSummary order = place(PaymentTerm.DEPOSIT, 2, BalancePolicy.ON_CREDIT);
+        receivables.recordTransfer(new ReceivableService.RecordTransferCommand(customer, "FT" + UUID.randomUUID()
+                .toString().replace("-", "").substring(0, 12), BigDecimal.valueOf(3_000_000), "VND", TODAY, null,
+                "deposit", accountant, List.of(new ReceivableService.OrderPayment(order.orderId(),
+                BigDecimal.valueOf(3_000_000)))));
+        Await.until("deposit confirms it", ASYNC, () -> reload(order).status() == OrderStatus.CONFIRMED);
+        OrderSummary earlier = place(PaymentTerm.PREPAID, 1, null);
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO payment.receivable (id, order_id, customer_id, amount, paid_amount, currency, issued_at,
+                    due_date, status)
+                VALUES (gen_random_uuid(), ?, ?, 1000000, 0, 'VND', NOW() - INTERVAL '40 days', CURRENT_DATE - 10,
+                       'OVERDUE')""", earlier.orderId(), customer));
+        assertThat(code(catchThrowable(() -> releases.release(order.orderId(), DemoData.WAREHOUSE_HCM, accountant))))
+                .isEqualTo(ErrorCode.CUSTOMER_CREDIT_OVERDUE);
+        assertThat(reload(order).status()).isEqualTo(OrderStatus.CONFIRMED);
     }
 }

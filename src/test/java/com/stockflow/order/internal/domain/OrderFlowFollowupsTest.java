@@ -345,4 +345,134 @@ class OrderFlowFollowupsTest {
                     .isInstanceOf(BusinessException.class);
         }
     }
+
+    @Nested
+    @DisplayName("review of #150")
+    class Review {
+
+        /** Stock 10 x 200 000 (2M) and 4 printed x 2 000 000 (8M): 10M, released, IN_PRODUCTION, may ship in parts. */
+        private Order tenMillion(PaymentTerm term, BalancePolicy policy) {
+            Order order = Order.draft(NUMBER, UUID.randomUUID(), UUID.randomUUID(), List.of(
+                    Order.line(new Sku("HOP-PIZZA"), 10, Money.vnd(200_000), null),
+                    Order.line(new Sku("LY-IN"), 4, Money.vnd(2_000_000), UUID.randomUUID())), NOW);
+            order.applyTerms(term, term == PaymentTerm.DEPOSIT ? new BigDecimal("30") : null, null, policy);
+            order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
+            order.decidePartialShipment(true);
+            order.submit();
+            order.recordPayment(term == PaymentTerm.PREPAID ? order.total() : Money.vnd(3_000_000), NOW);
+            order.release(HCM, "HCM", STAFF, NOW, Map.of());
+            order.pullDomainEvents();
+            return order;
+        }
+
+        private com.stockflow.contracts.OrderRemainderClosed closure(Order order) {
+            return order.pullDomainEvents().stream().filter(OrderEvent.RemainderClosed.class::isInstance)
+                    .map(e -> ((OrderEvent.RemainderClosed) e).payload()).findFirst().orElseThrow();
+        }
+
+        private com.stockflow.order.api.CancellationFee fee(long amount) {
+            return new com.stockflow.order.api.CancellationFee(BigDecimal.valueOf(amount), "Phí in đã thực hiện",
+                    "4 ly đã in theo thiết kế, huỷ theo yêu cầu khách");
+        }
+
+        @Test
+        @DisplayName("1: prepaid 10M, the 2M stock shipped early, the 8M prints printed, rest closed with a 3M fee: "
+                + "3M kept, 5M refunded, nothing owed")
+        void closureKeepsTheProductionFee() {
+            Order order = tenMillion(PaymentTerm.PREPAID, null);
+            order.recordHandover(handover(S1, stock(order), 10));
+            order.recordPrintingStarted(NOW);
+            order.completeProduction(Map.of(print(order), 4), "HCM", NOW);
+            order.pullDomainEvents();
+
+            assertThat(order.closeRemainder(CancellationReasonCode.CUSTOMER_REQUEST, null, fee(3_000_000), STAFF, NOW))
+                    .isEqualByComparingTo("8000000");
+            var closed = closure(order);
+            assertThat(closed.feeAmount()).isEqualByComparingTo("3000000");
+            assertThat(closed.retainedFeeAmount()).isEqualByComparingTo("3000000");
+            assertThat(closed.refundableAmount()).isEqualByComparingTo("5000000");
+            assertThat(closed.owedAmount()).isZero();
+            assertThat(order.remainderFeeAmount()).isEqualByComparingTo("3000000");
+            assertThat(order.amountDue()).isZero();
+            assertThat(order.status()).isEqualTo(OrderStatus.SHIPPED);
+        }
+
+        @Test
+        @DisplayName("1: no fee before printing (409 CANCELLATION_FEE_BEFORE_PRINTING), none above the 8M of prints "
+                + "closed (400) - the order is left as it was")
+        void closureFeeRefusals() {
+            Order order = tenMillion(PaymentTerm.PREPAID, null);
+            order.recordHandover(handover(S1, stock(order), 10));
+            assertThat(code(catchThrowable(() -> order.closeRemainder(CancellationReasonCode.CUSTOMER_REQUEST, null,
+                    fee(1_000_000), STAFF, NOW)))).isEqualTo(ErrorCode.CANCELLATION_FEE_BEFORE_PRINTING);
+            order.recordPrintingStarted(NOW);
+            assertThat(code(catchThrowable(() -> order.closeRemainder(CancellationReasonCode.CUSTOMER_REQUEST, null,
+                    fee(9_000_000), STAFF, NOW)))).isEqualTo(ErrorCode.VALIDATION_FAILED);
+            assertThat(order.status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+            assertThat(order.lines()).allMatch(line -> line.cancelledQuantity() == 0);
+            assertThat(order.remainderFeeAmount()).isZero();
+        }
+
+        @Test
+        @DisplayName("1: deposit 3M of 10M (carrier collects), 2M stock shipped with no COD, prints closed with a 2M "
+                + "fee: the deposit keeps 1M of it, 1M is owed, nothing refunded")
+        void depositKeepsTheFeeFirst() {
+            Order order = tenMillion(PaymentTerm.DEPOSIT, BalancePolicy.ON_DELIVERY);
+            order.recordHandover(handover(S1, stock(order), 10));
+            assertThat(order.shipments().getFirst().codAmount()).isZero();
+            order.recordPrintingStarted(NOW);
+            order.closeRemainder(CancellationReasonCode.CUSTOMER_REQUEST, null, fee(2_000_000), STAFF, NOW);
+            var closed = closure(order);
+            assertThat(closed.retainedFeeAmount()).isEqualByComparingTo("1000000");
+            assertThat(closed.owedAmount()).isEqualByComparingTo("1000000");
+            assertThat(closed.refundableAmount()).isZero();
+            assertThat(order.amountDue()).as("2M goods + 2M fee - 3M paid").isEqualByComparingTo("1000000");
+        }
+
+        @Test
+        @DisplayName("2: partial shipment cannot be stopped while the order waits for production after its stock left "
+                + "(409 ORDER_PARTIAL_SHIPMENT_LOCKED); once production completed it can")
+        void notStoppedWhileAwaitingProduction() {
+            Order order = tenMillion(PaymentTerm.PREPAID, null);
+            order.recordHandover(handover(S1, stock(order), 10));
+            assertThat(code(catchThrowable(() -> order.decidePartialShipment(false))))
+                    .isEqualTo(ErrorCode.ORDER_PARTIAL_SHIPMENT_LOCKED);
+            assertThat(order.allowPartialShipment()).isTrue();
+            order.completeProduction(Map.of(print(order), 4), "HCM", NOW);
+            assertThat(order.decidePartialShipment(false)).isTrue();
+        }
+
+        @Test
+        @DisplayName("4: stock packed ahead of the prints, nothing handed over: cancelled with the printing fee; once a "
+                + "shipment left it is returned instead")
+        void packedAheadOfThePrintsIsStillCancelled() {
+            Order order = tenMillion(PaymentTerm.PREPAID, null);
+            order.recordPacked(NOW);
+            order.recordPrintingStarted(NOW);
+            assertThat(order.packedOnlyAheadOfPrints()).isTrue();
+            assertThat(order.packedForGood()).isFalse();
+            order.cancel(CancellationReasonCode.CUSTOMER_REQUEST, null, null, fee(2_000_000), STAFF, NOW);
+            assertThat(order.status()).isEqualTo(OrderStatus.CANCELLED);
+            assertThat(order.cancellationRetainedAmount()).isEqualByComparingTo("2000000");
+
+            Order shipped = tenMillion(PaymentTerm.PREPAID, null);
+            shipped.recordHandover(handover(S1, stock(shipped), 10));
+            assertThat(shipped.packedForGood()).isTrue();
+            assertThat(code(catchThrowable(shipped::requireNotPacked))).isEqualTo(ErrorCode.ORDER_NOT_CANCELLABLE);
+        }
+
+        @Test
+        @DisplayName("7: a print line is withdrawn once every unit is shipped or closed, not before")
+        void lineWithdrawnCountsShippedUnits() {
+            Order order = tenMillion(PaymentTerm.PREPAID, null);
+            assertThat(order.lineWithdrawn(print(order))).isFalse();
+            order.recordHandover(handover(S1, stock(order), 10));
+            order.completeProduction(Map.of(print(order), 4), "HCM", NOW);
+            order.markPacked(NOW, STAFF);
+            order.recordHandover(handover(S2, print(order), 3));
+            assertThat(order.lineWithdrawn(print(order))).as("1 left").isFalse();
+            order.closeRemainder(CancellationReasonCode.OUT_OF_STOCK, null, STAFF, NOW);
+            assertThat(order.lineWithdrawn(print(order))).as("3 shipped + 1 closed").isTrue();
+        }
+    }
 }

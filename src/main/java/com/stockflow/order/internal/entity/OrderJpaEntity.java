@@ -150,6 +150,10 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "allow_partial_shipment", nullable = false)
     private boolean allowPartialShipment;
 
+    /** V20261022000400 (review of #150): fees agreed when print lines were closed after printing started. */
+    @Column(name = "remainder_fee_amount", nullable = false, precision = 19, scale = 4)
+    private java.math.BigDecimal remainderFeeAmount = java.math.BigDecimal.ZERO;
+
     @Column(name = "awaiting_production", nullable = false)
     private boolean awaitingProduction;
 
@@ -306,6 +310,12 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     }
 
     public boolean isAllowPartialShipment() { return allowPartialShipment; }
+
+    public void applyRemainderFee(java.math.BigDecimal fee) {
+        this.remainderFeeAmount = fee == null ? java.math.BigDecimal.ZERO : fee;
+    }
+
+    public java.math.BigDecimal getRemainderFeeAmount() { return remainderFeeAmount; }
     public boolean isAwaitingProduction() { return awaitingProduction; }
     public java.math.BigDecimal getCodAmount() { return codAmount; }
 

@@ -240,13 +240,30 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         PaymentTerm term = termFor(command.paymentTerm(), terms);
         com.stockflow.order.api.BalancePolicy policy = balancePolicyFor(term, command.balancePolicy(), terms);
         boolean balanceOnCredit = policy == com.stockflow.order.api.BalancePolicy.ON_CREDIT;
-        order.applyTerms(term,
-                term == PaymentTerm.DEPOSIT && command.depositPercent() == null ? terms.depositPercent()
-                        : command.depositPercent(),
+        BigDecimal depositPercent = term == PaymentTerm.DEPOSIT && command.depositPercent() == null
+                ? terms.depositPercent() : command.depositPercent();
+        order.applyTerms(term, depositPercent,
                 term == PaymentTerm.CREDIT || balanceOnCredit ? terms.creditTermDays() : null,
                 policy);
-        // BALCREDIT: the balance goes on credit only within the limit - refused here, before any stock is held.
-        BalanceCredit balanceCredit = balanceOnCredit ? requireBalanceWithinLimit(order, terms) : null;
+        // BALCREDIT: the balance goes on credit only within the limit - checked here, before any stock is held.
+        BalanceCredit balanceCredit = null;
+        if (balanceOnCredit) {
+            try {
+                balanceCredit = requireBalanceWithinLimit(order, terms);
+            } catch (BusinessException refused) {
+                boolean creditRefusal = refused.errorCode() == ErrorCode.BALANCE_CREDIT_LIMIT_EXCEEDED
+                        || refused.errorCode() == ErrorCode.CUSTOMER_CREDIT_OVERDUE;
+                if (!creditRefusal || command.balancePolicy() != null) {
+                    throw refused;          // Sales asked for ON_CREDIT: Sales changes the terms (409)
+                }
+                // Review of #150: ON_CREDIT came from the customer's terms (the portal cannot choose a policy) - the
+                // balance is then paid before delivery, the policy that never lets unpaid goods leave, instead of
+                // refusing an order the customer could not have placed any other way.
+                order.applyTerms(term, depositPercent, null, com.stockflow.order.api.BalancePolicy.BEFORE_DELIVERY);
+                log.info("Order {}: the balance of customer {} does not fit on credit ({}); paid before delivery instead",
+                        orderNumber, command.customerId(), refused.errorCode());
+            }
+        }
 
         // Direct in-process call across the module boundary, through inventory's published port.
         // It joins this transaction. If reserve() throws InsufficientStockException on line 3,
@@ -477,8 +494,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
     public boolean lockedLineWithdrawn(UUID orderId, UUID lineId) {
         return repository.findByIdForUpdate(new OrderId(orderId))
-                .map(order -> order.status() == OrderStatus.CANCELLED || order.findLine(lineId)
-                        .map(line -> line.cancelledQuantity() >= line.quantity()).orElse(true))
+                .map(order -> order.status() == OrderStatus.CANCELLED || order.lineWithdrawn(lineId))
                 .orElse(true);
     }
 
@@ -656,10 +672,10 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
             referToStaff(order, CancellationReasonCode.PAYMENT_FAILED);
             return;
         }
-        if (!order.status().canTransitionTo(OrderStatus.CANCELLED) || order.packedAt() != null) {
+        if (!order.status().canTransitionTo(OrderStatus.CANCELLED) || order.packedForGood()) {
             // A listener must not throw for a state it cannot change: the publication would be retried for ever.
             log.warn("Payment of order {} failed ({}), but the order is {}{}: left for Sales", order.orderNumber(),
-                    failureCode, order.status(), order.packedAt() != null ? " and packed" : "");
+                    failureCode, order.status(), order.packedForGood() ? " and packed" : "");
             return;
         }
         order.cancel(CancellationReasonCode.PAYMENT_FAILED, failureCode, null, null, clock.instant());
@@ -938,10 +954,19 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     @com.stockflow.common.audit.Auditable(action = com.stockflow.common.audit.AuditAction.TRANSITION,
             resourceType = "order", resourceId = "#orderId")
     public OrderSummary closeRemainder(UUID orderId, CancellationReasonCode reasonCode, String note, UUID by) {
+        // Declared here, not left to the interface's default: the class's @Transactional must cover it.
+        return closeRemainder(orderId, reasonCode, note, null, by);
+    }
+
+    @Override
+    @com.stockflow.common.audit.Auditable(action = com.stockflow.common.audit.AuditAction.TRANSITION,
+            resourceType = "order", resourceId = "#orderId")
+    public OrderSummary closeRemainder(UUID orderId, CancellationReasonCode reasonCode, String note,
+                                       com.stockflow.order.api.CancellationFee fee, UUID by) {
         Order order = lockOrder(orderId);
         java.util.Map<UUID, Integer> closedBefore = order.lines().stream()
                 .collect(Collectors.toMap(OrderLine::id, OrderLine::cancelledQuantity));
-        BigDecimal closed = order.closeRemainder(reasonCode, note, by, clock.instant());
+        BigDecimal closed = order.closeRemainder(reasonCode, note, fee, by, clock.instant());
         java.util.Map<OrderLine, Integer> closedLines = order.lines().stream()
                 .filter(line -> line.cancelledQuantity() > closedBefore.get(line.id()))
                 .collect(Collectors.toMap(line -> line, line -> line.cancelledQuantity() - closedBefore.get(line.id()),
@@ -975,9 +1000,9 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         String why;
         if (status == OrderStatus.CANCELLED) {
             why = "Closed: the order was cancelled.";
-        } else if (order.packedAt() != null || !status.canTransitionTo(OrderStatus.CANCELLED)) {
+        } else if (order.packedForGood() || !status.canTransitionTo(OrderStatus.CANCELLED)) {
             why = "Closed: the order is %s and can no longer be cancelled; ask for a return instead."
-                    .formatted(order.packedAt() != null && status.canTransitionTo(OrderStatus.CANCELLED)
+                    .formatted(order.packedForGood() && status.canTransitionTo(OrderStatus.CANCELLED)
                             ? OrderStatus.PACKED : status);
         } else {
             return;

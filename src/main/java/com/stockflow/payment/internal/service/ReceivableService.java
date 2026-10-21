@@ -142,6 +142,27 @@ public class ReceivableService {
     }
 
     /**
+     * Review of #150: the part of a fee agreed when print lines were closed after printing started that the money
+     * received did not cover ({@code OrderRemainderClosed.owedAmount}) is owed from the closing day, as a cancellation
+     * fee is (decision Q6a). One receivable per closure: its {@code shipment_id} carries the closure id (the column has
+     * no foreign key; a closure is the unit a fee belongs to, as a shipment is for a delivery). Idempotent.
+     */
+    public void remainderFeeOwed(com.stockflow.contracts.OrderRemainderClosed event) {
+        BigDecimal owed = event.owedAmount() == null ? BigDecimal.ZERO : event.owedAmount();
+        if (owed.signum() <= 0 || event.customerId() == null || event.closureId() == null) {
+            return;
+        }
+        if (book.findReceivableOfShipment(event.orderId(), event.closureId()).isPresent()) {
+            return;
+        }
+        LocalDate due = LocalDate.ofInstant(event.closedAt(), BUSINESS_ZONE);
+        Receivable fee = book.save(Receivable.openCancellationFee(event.orderId(), event.customerId(), owed,
+                event.currency(), event.closedAt(), due).forShipment(event.closureId()));
+        log.info("Receivable {} opened for the fee of the rest closed of order {}: {} {} owed", fee.id(),
+                event.orderNumber(), owed, event.currency());
+    }
+
+    /**
      * Idempotent: a redelivered event finds the receivable already open. G3-2 (split shipments): one receivable per
      * delivered shipment, for what the order billed for it ({@code billedAmount}); an event without it - the whole
      * order delivered, written before G3-2 - bills what the order still owes, as before.
