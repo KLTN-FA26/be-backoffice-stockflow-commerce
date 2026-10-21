@@ -1,0 +1,102 @@
+package com.stockflow.fulfillment.internal.entity;
+
+import com.stockflow.common.persistence.BaseEntity;
+import com.stockflow.fulfillment.internal.domain.PackageStatus;
+import com.stockflow.fulfillment.internal.domain.PackageType;
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
+import jakarta.persistence.Table;
+
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.util.UUID;
+
+/**
+ * JPA mapping of a parcel (table {@code fulfillment.package}). Not the domain model: {@code PackingSession.Parcel}
+ * holds the rules; the repository adapter copies between the two. {@code tracking_number} and {@code label_url} are
+ * not mapped: the system calls no carrier (kltn-docs 09 §1), the label is the internal one ({@code label_code}).
+ */
+@Entity
+@Table(name = "package", schema = "fulfillment")
+public class PackageJpaEntity extends BaseEntity {
+
+    @Column(name = "pack_id", nullable = false, updatable = false) private UUID packId;
+    @Column(name = "shipment_id") private UUID shipmentId;
+    @Column(name = "package_no", nullable = false, updatable = false) private int packageNo;
+    @Column(name = "label_code", nullable = false, updatable = false, length = 48) private String labelCode;
+    @Enumerated(EnumType.STRING)
+    @Column(name = "package_type", nullable = false, length = 16) private PackageType packageType;
+    @Enumerated(EnumType.STRING)
+    @Column(name = "status", nullable = false, length = 16) private PackageStatus status;
+    @Column(name = "weight_kg", precision = 10, scale = 3) private BigDecimal weightKg;
+    @Column(name = "length_cm", precision = 10, scale = 2) private BigDecimal lengthCm;
+    @Column(name = "width_cm", precision = 10, scale = 2) private BigDecimal widthCm;
+    @Column(name = "height_cm", precision = 10, scale = 2) private BigDecimal heightCm;
+    @Column(name = "dim_weight_kg", precision = 10, scale = 3) private BigDecimal dimWeightKg;
+    @Column(name = "rotatable", nullable = false) private boolean rotatable;
+    @Column(name = "rotatable_overridden", nullable = false) private boolean rotatableOverridden;
+    @Column(name = "fragile", nullable = false) private boolean fragile;
+    @Column(name = "fragile_overridden", nullable = false) private boolean fragileOverridden;
+    @Column(name = "sealed_at") private Instant sealedAt;
+    @Column(name = "sealed_by") private UUID sealedBy;
+    @Column(name = "voided_at") private Instant voidedAt;
+    @Column(name = "voided_by") private UUID voidedBy;
+
+    protected PackageJpaEntity() {
+    }
+
+    public PackageJpaEntity(UUID id, UUID packId, int packageNo, String labelCode) {
+        super(id);
+        this.packId = packId;
+        this.packageNo = packageNo;
+        this.labelCode = labelCode;
+        this.packageType = PackageType.CARTON;
+        this.status = PackageStatus.OPEN;
+        this.rotatable = true;
+    }
+
+    @SuppressWarnings("java:S107")
+    public void apply(UUID shipmentId, PackageType type, PackageStatus status, BigDecimal weightKg,
+                      BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm, BigDecimal dimWeightKg,
+                      boolean rotatable, boolean rotatableOverridden, boolean fragile, boolean fragileOverridden,
+                      Instant sealedAt, UUID sealedBy, Instant voidedAt, UUID voidedBy) {
+        this.shipmentId = shipmentId;
+        this.packageType = type;
+        this.status = status;
+        this.weightKg = weightKg;
+        this.lengthCm = lengthCm;
+        this.widthCm = widthCm;
+        this.heightCm = heightCm;
+        this.dimWeightKg = dimWeightKg;
+        this.rotatable = rotatable;
+        this.rotatableOverridden = rotatableOverridden;
+        this.fragile = fragile;
+        this.fragileOverridden = fragileOverridden;
+        this.sealedAt = sealedAt;
+        this.sealedBy = sealedBy;
+        this.voidedAt = voidedAt;
+        this.voidedBy = voidedBy;
+    }
+
+    public UUID getPackId() { return packId; }
+    public UUID getShipmentId() { return shipmentId; }
+    public int getPackageNo() { return packageNo; }
+    public String getLabelCode() { return labelCode; }
+    public PackageType getPackageType() { return packageType; }
+    public PackageStatus getStatus() { return status; }
+    public BigDecimal getWeightKg() { return weightKg; }
+    public BigDecimal getLengthCm() { return lengthCm; }
+    public BigDecimal getWidthCm() { return widthCm; }
+    public BigDecimal getHeightCm() { return heightCm; }
+    public BigDecimal getDimWeightKg() { return dimWeightKg; }
+    public boolean isRotatable() { return rotatable; }
+    public boolean isRotatableOverridden() { return rotatableOverridden; }
+    public boolean isFragile() { return fragile; }
+    public boolean isFragileOverridden() { return fragileOverridden; }
+    public Instant getSealedAt() { return sealedAt; }
+    public UUID getSealedBy() { return sealedBy; }
+    public Instant getVoidedAt() { return voidedAt; }
+    public UUID getVoidedBy() { return voidedBy; }
+}

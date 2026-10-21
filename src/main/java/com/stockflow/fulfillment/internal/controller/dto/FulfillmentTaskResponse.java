@@ -9,14 +9,16 @@ import java.util.UUID;
  * A pick/pack task with the design-integrity evidence gathered for it. No storage keys.
  *
  * <p>{@code lines} is present only when one task is read by id ({@code GET /tasks/{taskId}}); list rows
- * and the answers of the write endpoints leave it out.</p>
+ * and the answers of the write endpoints leave it out. {@code shipmentId} is present on the answer to completing
+ * packing: the shipment the sealed packages became (G4-5).</p>
  */
 public record FulfillmentTaskResponse(UUID taskId, UUID orderId, String orderNumber, UUID warehouseId,
                                       UUID assignedUserId, String assignedUserName, String pickStatus,
                                       String packStatus, Instant assignedAt, Instant startedAt,
                                       Instant pickedAt, Instant packedAt, List<IntegrityEvidence> integrityEvidence,
                                       @JsonInclude(JsonInclude.Include.NON_NULL) List<TaskLine> lines,
-                                      @JsonInclude(JsonInclude.Include.NON_NULL) PaymentDue paymentDue) {
+                                      @JsonInclude(JsonInclude.Include.NON_NULL) PaymentDue paymentDue,
+                                      @JsonInclude(JsonInclude.Include.NON_NULL) UUID shipmentId) {
 
     /**
      * Set when completing the package of an order that still owes money due before the handover (G3-Q4, G2-3): the

@@ -11,6 +11,9 @@ import com.stockflow.common.storage.FileStorage;
 import com.stockflow.contracts.OrderLinesReleasedForProduction;
 import com.stockflow.fulfillment.api.FulfillmentService;
 import com.stockflow.fulfillment.api.FulfillmentTask;
+import com.stockflow.fulfillment.api.PackingCompletion;
+import com.stockflow.fulfillment.internal.service.Packing;
+import com.stockflow.fulfillment.internal.service.PickLists;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.api.ReserveStockResult;
@@ -94,6 +97,8 @@ class PrintedGoodsAtPackingIntegrationTest {
     @Autowired StockOperations stockOperations;
     @Autowired PickConsumption consumption;
     @Autowired FulfillmentService fulfillment;
+    @Autowired Packing packing;
+    @Autowired PickLists pickLists;
     @Autowired FileStorage storage;
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager entityManager;
@@ -169,6 +174,14 @@ class PrintedGoodsAtPackingIntegrationTest {
      * READY_TO_FULFILL.
      */
     private Line inPacking(int quantity) throws Exception {
+        return inPacking(quantity, 0, null);
+    }
+
+    /**
+     * The same order with a second, plain line of {@code stockQuantity} units of the same SKU held in storage: a mixed
+     * order (kltn-docs 17 §4.2 step 5). {@code stockLine} receives that line's id.
+     */
+    private Line inPacking(int quantity, int stockQuantity, UUID[] stockLine) throws Exception {
         ProductionFixtures.Design design = fixtures.confirmedDesign();
         UUID sample = approvedSample(design);
         UUID orderId = Identifiers.newId();
@@ -187,12 +200,28 @@ class PrintedGoodsAtPackingIntegrationTest {
                         design_snapshot_id, design_checksum) VALUES (?, ?, ?, ?, 2000, 'VND', ?, ?)""",
                     lineId, orderId, ProductionFixtures.BLANK, quantity, design.snapshotId(), design.checksum());
         });
+        UUID plainLine = Identifiers.newId();
+        if (stockQuantity > 0) {
+            stockLine[0] = plainLine;
+            tx.executeWithoutResult(s -> {
+                jdbc.update("UPDATE ordering.customer_order SET total_amount = total_amount + ?, paid_amount = "
+                        + "paid_amount + ? WHERE id = ?", stockQuantity * 2000, stockQuantity * 2000, orderId);
+                jdbc.update("""
+                        INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
+                        VALUES (?, ?, ?, ?, 2000, 'VND')""", plainLine, orderId, ProductionFixtures.BLANK, stockQuantity);
+            });
+        }
         tx.executeWithoutResult(s -> {
             ReserveStockResult held = inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), BLANK, quantity,
                     orderId));
             held.reservationIds().forEach(id -> jdbc.update(
                     "INSERT INTO ordering.order_line_reservation (order_line_id, reservation_id) VALUES (?, ?)",
                     lineId, id));
+            if (stockQuantity > 0) {
+                inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), BLANK, stockQuantity, orderId))
+                        .reservationIds().forEach(id -> jdbc.update("INSERT INTO ordering.order_line_reservation "
+                                + "(order_line_id, reservation_id) VALUES (?, ?)", plainLine, id));
+            }
             inventory.pinReservations(orderId);
         });
         UUID productionOrderId = orderProduction.createFor(new OrderLinesReleasedForProduction(orderId, number, hcm,
@@ -220,6 +249,20 @@ class PrintedGoodsAtPackingIntegrationTest {
         fulfillment.startPicking(task, picker);
         fulfillment.completePicking(task, picker);
         return task;
+    }
+
+    /**
+     * G4-5: the packer takes the order at the packing table, scans {@code quantity} units of {@code lineId} into a new
+     * package and seals it with its weight and size. Returns the package.
+     */
+    private UUID sealedPackage(UUID task, UUID lineId, int quantity) {
+        packing.start(task, picker);
+        UUID parcel = packing.openPackage(task, null, picker).packageId();
+        packing.scan(task, parcel, new Packing.Scan(UUID.randomUUID(), BLANK.code(), null, null, quantity, lineId),
+                picker);
+        packing.seal(task, parcel, new Packing.Seal(new java.math.BigDecimal("3.5"), new java.math.BigDecimal("40"),
+                new java.math.BigDecimal("30"), new java.math.BigDecimal("30"), null, null, null), picker);
+        return parcel;
     }
 
     private List<UUID> holdsOf(Line line) {
@@ -277,29 +320,32 @@ class PrintedGoodsAtPackingIntegrationTest {
         int before = onHandAtPacking();
         UUID task = picked(line);
         assertThat(onHandAtPacking()).as("picking takes nothing of a print line").isEqualTo(before);
+        UUID parcel = sealedPackage(task, line.lineId(), 3);
 
         FulfillmentTask packed = fulfillment.completePacking(task, picker);
 
         assertThat(packed.packStatus()).isEqualTo("PACKED");
+        assertThat(packed.shipmentId()).isNotNull();
         assertThat(onHandAtPacking()).isEqualTo(before - 3);
-        UUID pack = packOf(task);
         List<String> statuses = holdStatuses(holds);
         assertThat(statuses).contains("CONSUMED").allMatch(s -> s.equals("CONSUMED") || s.equals("RELEASED"));
-        assertThat(packageLedgerRows(pack)).isEqualTo(statuses.stream().filter("CONSUMED"::equals).count());
+        // G4-5: the deduction names the shipment's first package (fulfillment.package), one row per hold.
+        assertThat(packageLedgerRows(parcel)).isEqualTo(statuses.stream().filter("CONSUMED"::equals).count());
         assertThat(jdbc.queryForObject("""
                 SELECT COALESCE(SUM(quantity), 0)::int FROM inventory.stock_movement
                  WHERE movement_type = 'PICK' AND reference_type = 'PACKAGE' AND reference_id = ?""", Integer.class,
-                pack)).isEqualTo(3);
+                parcel)).isEqualTo(3);
 
-        assertThat(code(catchThrowable(() -> fulfillment.completePacking(task, picker)))).isEqualTo(ErrorCode.CONFLICT);
+        // Completed again (a retried request): answered as it is, the same shipment, nothing deducted twice.
+        assertThat(fulfillment.completePacking(task, picker).shipmentId()).isEqualTo(packed.shipmentId());
         List<UUID> consumedHolds = holds.stream().filter(id -> "CONSUMED".equals(jdbc.queryForObject(
                 "SELECT status FROM inventory.stock_reservation WHERE id = ?", String.class, id))).toList();
-        List<com.stockflow.inventory.consumption.ConsumedPick> replay = tx.execute(s -> consumption.consumeForPack(pack,
+        List<com.stockflow.inventory.consumption.ConsumedPick> replay = tx.execute(s -> consumption.consumeForPack(parcel,
                 line.orderId(), consumedHolds, picker.userId()));
         assertThat(replay).as("a replay for the package is answered as done").isNotEmpty()
                 .allSatisfy(consumed -> assertThat(consumed.alreadyConsumed()).isTrue());
         assertThat(onHandAtPacking()).as("deducted once").isEqualTo(before - 3);
-        assertThat(packageLedgerRows(pack)).isEqualTo(statuses.stream().filter("CONSUMED"::equals).count());
+        assertThat(packageLedgerRows(parcel)).isEqualTo(statuses.stream().filter("CONSUMED"::equals).count());
     }
 
     @Test
@@ -316,12 +362,21 @@ class PrintedGoodsAtPackingIntegrationTest {
             jdbc.update("UPDATE ordering.order_line SET design_checksum = ? WHERE id = ?", "0".repeat(64), line.lineId());
         });
 
-        FulfillmentTask held = fulfillment.completePacking(task, picker);
+        UUID parcel = sealedPackage(task, line.lineId(), 2);
+        PackingCompletion request = new PackingCompletion(UUID.randomUUID(), false, null);
+        FulfillmentTask held = fulfillment.completePacking(task, request, picker);
 
         assertThat(held.packStatus()).isEqualTo("ON_HOLD");
+        assertThat(held.shipmentId()).isNull();
+        // Review #3: the same request again (a retry) gets the same answer, not a state conflict.
+        FulfillmentTask retried = fulfillment.completePacking(task, request, picker);
+        assertThat(retried.packStatus()).isEqualTo("ON_HOLD");
+        assertThat(retried.shipmentId()).isNull();
         assertThat(onHandAtPacking()).isEqualTo(before);
         assertThat(holdStatuses(holds)).doesNotContain("CONSUMED");
-        assertThat(packageLedgerRows(packOf(task))).isZero();
+        assertThat(packageLedgerRows(parcel)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.shipment WHERE order_id = ?", Integer.class,
+                line.orderId())).as("nothing ships").isZero();
         assertThat(code(catchThrowable(() -> stockOperations.askScrapAgain(holds.get(0), "Scrap it", manager.userId()))))
                 .as("a live order's goods are nobody's to scrap").isEqualTo(ErrorCode.CONFLICT);
         assertThat(scrapOf(holds)).isEmpty();
@@ -463,6 +518,7 @@ class PrintedGoodsAtPackingIntegrationTest {
         List<UUID> holds = holdsOf(line);
         int before = onHandAtPacking();
         UUID task = picked(line);
+        sealedPackage(task, line.lineId(), 2);
         fulfillment.completePacking(task, picker);
         int atp = inventory.availableToPromise(BLANK);
         assertThat(jdbc.queryForObject("SELECT packed_at FROM ordering.customer_order WHERE id = ?",
@@ -517,5 +573,103 @@ class PrintedGoodsAtPackingIntegrationTest {
         assertThat(catchThrowable(() -> fulfillment.completePacking(otherTask, picker)))
                 .as("a cancelled order's package is not completed").isInstanceOf(BusinessException.class);
         assertThat(packageLedgerRows(packOf(otherTask))).isZero();
+    }
+
+    // ------------------------------------------------------------------------------------------- G4-5
+
+    @Test
+    @DisplayName("G4-5: a design hold during packing - QC re-verifies, packing is back in progress (08 §5), the packer "
+            + "completes and only then the goods are deducted")
+    void aDesignHoldIsReverifiedThenPacked() throws Exception {
+        Line line = inPacking(2);
+        int before = onHandAtPacking();
+        UUID task = picked(line);
+        String confirmed = jdbc.queryForObject("SELECT design_checksum FROM ordering.order_line WHERE id = ?",
+                String.class, line.lineId());
+        tx.executeWithoutResult(s -> {
+            jdbc.execute("SET LOCAL session_replication_role = replica");
+            jdbc.update("UPDATE ordering.order_line SET design_checksum = ? WHERE id = ?", "0".repeat(64), line.lineId());
+        });
+        UUID parcel = sealedPackage(task, line.lineId(), 2);
+        assertThat(fulfillment.completePacking(task, picker).packStatus()).isEqualTo("ON_HOLD");
+        assertThat(salesOrders.findById(line.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.ON_HOLD);
+        assertThat(code(catchThrowable(() -> packing.openPackage(task, null, picker))))
+                .as("nothing changes while held").isEqualTo(ErrorCode.PACK_STATE_CONFLICT);
+
+        // Still wrong: QC's attempt is kept as evidence, the hold stays.
+        assertThat(fulfillment.reverifyDesignIntegrity(task, "checked", inspector).packStatus()).isEqualTo("ON_HOLD");
+        tx.executeWithoutResult(s -> {
+            jdbc.execute("SET LOCAL session_replication_role = replica");
+            jdbc.update("UPDATE ordering.order_line SET design_checksum = ? WHERE id = ?", confirmed, line.lineId());
+        });
+        FulfillmentTask resumed = fulfillment.reverifyDesignIntegrity(task, "Artwork restored", inspector);
+
+        assertThat(resumed.packStatus()).isEqualTo("PACKING");
+        assertThat(salesOrders.findById(line.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.PICKING);
+        assertThat(onHandAtPacking()).as("nothing deducted yet").isEqualTo(before);
+        FulfillmentTask packed = fulfillment.completePacking(task, picker);
+        assertThat(packed.packStatus()).isEqualTo("PACKED");
+        assertThat(packed.shipmentId()).isNotNull();
+        assertThat(onHandAtPacking()).isEqualTo(before - 2);
+        assertThat(packageLedgerRows(parcel)).isPositive();
+        assertThat(salesOrders.findById(line.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.PACKED);
+    }
+
+    @Test
+    @DisplayName("G4-5, decision 2026-10-21 (D9): a mixed order ships its stock line first and its printed line later - "
+            + "two shipments; not cancellable after the first; the print line deducted with the second; PACKED only then")
+    void aMixedOrderShipsItsStockFirst() throws Exception {
+        UUID[] stock = new UUID[1];
+        Line line = inPacking(2, 3, stock);
+        UUID stockLine = stock[0];
+        List<UUID> printHolds = holdsOf(line);
+        int before = onHandAtPacking();
+        UUID task = fulfillment.createTask(line.orderId(), picker.userId(), coordinator).taskId();
+        fulfillment.startPicking(task, picker);
+        for (Map<String, Object> pickLine : jdbc.queryForList("""
+                SELECT id, location_code, allocated_qty FROM fulfillment.pick_line WHERE pick_id = ?""", task)) {
+            pickLists.confirm(task, (UUID) pickLine.get("id"), (String) pickLine.get("location_code"), BLANK.code(),
+                    (Integer) pickLine.get("allocated_qty"), picker);
+        }
+        fulfillment.completePicking(task, picker);
+
+        packing.start(task, picker);
+        UUID first = packing.openPackage(task, null, picker).packageId();
+        assertThat(code(catchThrowable(() -> packing.scan(task, first, new Packing.Scan(UUID.randomUUID(), BLANK.code(),
+                null, null, 1, null), picker)))).as("the SKU is on both lines").isEqualTo(ErrorCode.PACK_SCAN_AMBIGUOUS);
+        packing.scan(task, first, new Packing.Scan(UUID.randomUUID(), BLANK.code(), null, null, 3, stockLine), picker);
+        packing.seal(task, first, new Packing.Seal(new java.math.BigDecimal("2"), new java.math.BigDecimal("30"),
+                new java.math.BigDecimal("30"), new java.math.BigDecimal("30"), null, null, null), picker);
+        assertThat(code(catchThrowable(() -> fulfillment.completePacking(task, picker))))
+                .as("the whole order is expected unless partial").isEqualTo(ErrorCode.PACKING_INCOMPLETE);
+
+        FulfillmentTask stockFirst = fulfillment.completePacking(task,
+                new PackingCompletion(UUID.randomUUID(), true, "Sale ships the stock cups first"), picker);
+
+        assertThat(stockFirst.shipmentId()).isNotNull();
+        assertThat(stockFirst.packStatus()).isEqualTo("PACKING");
+        assertThat(salesOrders.findById(line.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.PICKING);
+        assertThat(holdStatuses(printHolds)).as("the printed goods wait for their own shipment").doesNotContain("CONSUMED");
+        assertThat(code(catchThrowable(() -> cancel(line)))).as("a package was completed")
+                .isEqualTo(ErrorCode.ORDER_NOT_CANCELLABLE);
+
+        UUID second = packing.openPackage(task, null, picker).packageId();
+        // The stock line is full: the SKU now means the printed line.
+        packing.scan(task, second, new Packing.Scan(UUID.randomUUID(), BLANK.code(), null, null, 2, null), picker);
+        packing.seal(task, second, new Packing.Seal(new java.math.BigDecimal("1.5"), new java.math.BigDecimal("30"),
+                new java.math.BigDecimal("30"), new java.math.BigDecimal("20"), null, null, null), picker);
+        FulfillmentTask printedLater = fulfillment.completePacking(task, picker);
+
+        assertThat(printedLater.packStatus()).isEqualTo("PACKED");
+        assertThat(printedLater.shipmentId()).isNotEqualTo(stockFirst.shipmentId());
+        assertThat(salesOrders.findById(line.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.PACKED);
+        assertThat(onHandAtPacking()).isEqualTo(before - 2);
+        assertThat(packageLedgerRows(second)).isPositive();
+        assertThat(packageLedgerRows(first)).as("the stock line was deducted when picked").isZero();
+        assertThat(jdbc.queryForList("""
+                SELECT code || ':' || status || ':' || partial || ':' || package_count FROM fulfillment.shipment
+                 WHERE order_id = ? ORDER BY ready_at, code""", String.class, line.orderId()))
+                .containsExactly(line.orderNumber() + "-S1:READY_TO_DISPATCH:true:1",
+                        line.orderNumber() + "-S2:READY_TO_DISPATCH:false:1");
     }
 }

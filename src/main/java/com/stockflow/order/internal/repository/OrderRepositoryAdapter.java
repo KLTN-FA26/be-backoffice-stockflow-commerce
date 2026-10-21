@@ -104,6 +104,11 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
     }
 
     @Override
+    public List<com.stockflow.order.api.OrderHoldState> holdStates(java.util.Collection<UUID> ids) {
+        return ids.isEmpty() ? List.of() : jpa.holdStates(ids);
+    }
+
+    @Override
     public List<Order> findByCustomerId(UUID customerId) {
         return jpa.findByCustomerIdWithLines(customerId).stream()
                 .map(this::toDomain)

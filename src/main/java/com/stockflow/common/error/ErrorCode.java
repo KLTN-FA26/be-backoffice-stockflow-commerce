@@ -91,6 +91,9 @@ public enum ErrorCode {
     CUSTOMER_NOT_FOUND("Customer not found", 404),
     ADDRESS_NOT_FOUND("Address not found", 404),
     WAREHOUSE_NOT_FOUND("Warehouse not found", 404),
+    /** G4-5: a parcel of another task is not found either. */
+    PACKAGE_NOT_FOUND("Package not found", 404),
+    SHIPMENT_NOT_FOUND("Shipment not found", 404),
     GOODS_RECEIPT_NOT_FOUND("Goods receipt not found", 404),
     /** Also the answer for a message of another user: an inbox id is only meaningful to its recipient. */
     NOTIFICATION_NOT_FOUND("Notification not found", 404),
@@ -334,6 +337,37 @@ public enum ErrorCode {
     /** Docs 07 BR-05: only goods picked for an order cancelled afterwards go back to a bin. */
     PUT_BACK_NOT_REQUIRED("Nothing on this line needs putting back", 409),
     PUT_BACK_LOCATION_INVALID("Put back onto an active bin of the task's warehouse", 409),
+    /** G4-5 (docs 08 step 1): packing starts once picking is complete. */
+    PACKING_NOT_READY("Picking must finish before packing starts", 409),
+    /** G4-5: another packer took this order at the packing table; a warehouse manager may step in. */
+    PACKING_TAKEN("Another packer is packing this order", 409),
+    PACK_STATE_CONFLICT("Packing cannot do that in its current status", 409),
+    /** Docs 08 step 2, BR-01: the scanned item is not on the order (a wrong item). */
+    PACK_ITEM_NOT_IN_ORDER("This item is not in the order", 409),
+    /** The scanned code is on two lines of the order (a plain and a printed cup of one SKU): name the line. */
+    /** G4-5: a scan id already recorded on another package or task: the client reused it; send a new one. */
+    PACK_SCAN_ID_CONFLICT("This scan id was already used for another package", 409),
+    PACK_SCAN_AMBIGUOUS("This item is on several lines of the order: name the line", 409),
+    /** Docs 08 BR-01: an over-scan, more than the order line still wants. */
+    PACK_QUANTITY_EXCEEDS_ORDER("More than the order line still wants", 409),
+    /** More than was picked (or produced) for the line: the rest has not reached packing. */
+    PACK_QUANTITY_EXCEEDS_PICKED("More than reached packing for this line", 409),
+    /** Docs 08 BR-01: the lot scanned was not picked for this line, or more of it than was picked. */
+    PACK_LOT_MISMATCH("This lot was not picked for this line", 409),
+    /** Docs 08 step 2: the serial scanned was not picked for this line, or is packed already. */
+    PACK_SERIAL_MISMATCH("This serial number was not picked for this line, or is packed already", 409),
+    PACKAGE_SEALED("The package is already sealed", 409),
+    PACKAGE_EMPTY("The package has nothing in it", 409),
+    /** Docs 08 BR-03, 09 BR-01: a package with goods in it is weighed, measured and sealed before it ships. */
+    PACKAGE_NOT_SEALED("A package is still open: seal it or take it apart", 409),
+    PACKAGE_SHIPPED("The package is in a shipment already", 409),
+    /** Docs 08 BR-01: everything the order still wants must be packed, or a partial shipment asked for. */
+    PACKING_INCOMPLETE("Not everything is packed yet", 409),
+    /** The split-shipment policy is off (stockflow.fulfillment.packing.partial-shipments). */
+    PACK_PARTIAL_NOT_ALLOWED("Partial shipments are not allowed", 409),
+    PACK_NOTHING_TO_SHIP("No sealed package is waiting to ship", 409),
+    /** Docs 09 §5: the shipment's status does not allow the step. */
+    SHIPMENT_STATE_CONFLICT("The shipment cannot do that in its current status", 409),
     OPTIMISTIC_LOCK("The record changed meanwhile, please retry", 409),
     /** Two writers reached the same row; the loser waited for the lock and gave up. Retryable. */
     LOCK_TIMEOUT("The record is busy, please retry", 409),

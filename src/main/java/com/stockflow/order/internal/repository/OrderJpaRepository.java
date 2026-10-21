@@ -70,6 +70,10 @@ interface OrderJpaRepository extends ScopedJpaRepository<OrderJpaEntity> {
             """)
     List<OrderJpaEntity> findByCustomerIdWithLines(@Param("customerId") UUID customerId);
 
+    @Query("select new com.stockflow.order.api.OrderHoldState(o.id, o.status, o.holdReason) "
+            + "from OrderJpaEntity o where o.id in :ids")
+    List<com.stockflow.order.api.OrderHoldState> holdStates(@Param("ids") java.util.Collection<UUID> ids);
+
     /** {@code [orderId, lineCount]} per order, for a list that shows how many lines each order has. */
     @Query("""
             select l.order.id, count(l) from OrderLineJpaEntity l

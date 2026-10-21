@@ -100,6 +100,25 @@ public interface OrderService {
      */
     OrderSummary recordHandover(UUID orderId, ShipmentHandover handover);
 
+    /**
+     * What the carrier would collect for a shipment of these units if it were handed over now (G4-5: the package label
+     * and the shipment, 08 step 6, 09 BR-04): the sum {@link #recordHandover} fixes, from the same formula and the
+     * payment ledger. {@code earlierPending}: the units of the order's shipments made before this one and not handed
+     * over yet - the money paid ahead goes to them first, as it will at their handovers. Read-only; 0 for an order whose
+     * carrier collects nothing (not an ON_DELIVERY deposit order).
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code VALIDATION_FAILED} for a line not
+     *         on the order
+     */
+    java.math.BigDecimal codFor(UUID orderId, java.util.List<ShipmentHandover.Line> lines,
+                                java.util.List<ShipmentHandover.Line> earlierPending);
+
+    /**
+     * The status and hold reason of each of {@code orderIds} that exists, in one read (G4-5: the packing queue leaves
+     * out orders held for anything but their design check, and orders packing can no longer work on).
+     */
+    java.util.List<OrderHoldState> holdStates(java.util.Collection<UUID> orderIds);
+
     /** The carrier delivered one shipment (09 §4.3 step 1); a credit order bills it ({@code OrderDelivered}). */
     OrderSummary recordShipmentDelivered(UUID orderId, UUID shipmentId, UUID by);
 

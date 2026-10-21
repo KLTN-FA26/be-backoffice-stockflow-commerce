@@ -429,7 +429,7 @@ class FulfillmentTaskContextIntegrationTest {
         UUID heldElsewhere = taskRow(hn, pickerHn, "PICKED");
         UUID notHeld = taskRow(HCM, otherPickerHcm, "PICKED");
         tx.executeWithoutResult(s -> jdbc.update(
-                "UPDATE fulfillment.pack SET status = 'ON_HOLD' WHERE pick_id IN (?, ?)", held, heldElsewhere));
+                "UPDATE fulfillment.pack SET status = 'ON_HOLD', started_at = NOW() WHERE pick_id IN (?, ?)", held, heldElsewhere));
 
         call(get("/api/v1/fulfillment/tasks").param("size", "200").header("Authorization", token(qcHcm, "QC_STAFF")))
                 .andExpect(status().isOk())

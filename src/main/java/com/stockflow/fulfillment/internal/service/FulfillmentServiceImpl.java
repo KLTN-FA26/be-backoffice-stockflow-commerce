@@ -14,10 +14,10 @@ import com.stockflow.fulfillment.api.FulfillmentAssignee;
 import com.stockflow.fulfillment.api.FulfillmentService;
 import com.stockflow.fulfillment.api.FulfillmentTask;
 import com.stockflow.fulfillment.api.FulfillmentTaskQuery;
+import com.stockflow.fulfillment.api.PackingCompletion;
 import com.stockflow.fulfillment.internal.domain.DesignVerificationResult;
 import com.stockflow.fulfillment.internal.domain.PackStatus;
 import com.stockflow.fulfillment.internal.domain.PickStatus;
-import com.stockflow.fulfillment.internal.entity.DesignVerificationJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PackJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PickJpaEntity;
 import com.stockflow.fulfillment.internal.repository.DesignVerificationJpaRepository;
@@ -29,8 +29,6 @@ import com.stockflow.order.api.OrderSummary;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.OrderHold;
-import com.stockflow.inventory.api.StockReservation;
-import com.stockflow.inventory.consumption.PickConsumption;
 import com.stockflow.warehouse.api.StorageLocationView;
 import com.stockflow.warehouse.api.WarehouseService;
 import java.time.Clock;
@@ -69,13 +67,13 @@ class FulfillmentServiceImpl implements FulfillmentService {
     private final InventoryService inventory;
     private final WarehouseService warehouses;
     private final PickListService pickLists;
-    private final PickConsumption consumption;
+    private final PackingService packing;
 
     FulfillmentServiceImpl(PickJpaRepository picks, PackJpaRepository packs,
             DesignVerificationJpaRepository verifications, OrderService orders,
             DesignService designs, IdentityService identities, InventoryService inventory,
-            WarehouseService warehouses, PickListService pickLists, PickConsumption consumption, Clock clock) {
-        this.consumption = consumption;
+            WarehouseService warehouses, PickListService pickLists, PackingService packing, Clock clock) {
+        this.packing = packing;
         this.picks = picks;
         this.packs = packs;
         this.verifications = verifications;
@@ -229,7 +227,7 @@ class FulfillmentServiceImpl implements FulfillmentService {
     public FulfillmentArtifactAccess artifactDownload(UUID taskId, UUID orderLineId, String role,
                                                        CurrentUser actor) {
         var pick = requirePick(taskId);
-        requireArtifactAccess(pick, actor);
+        TaskAccess.requireArtifactAccess(pick, actor);
         var line = requireOrderInFulfilment(pick).lines().stream()
                 .filter(value -> value.lineId().equals(orderLineId))
                 .findFirst().orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
@@ -251,93 +249,25 @@ class FulfillmentServiceImpl implements FulfillmentService {
 
     @Override
     public FulfillmentTask completePacking(UUID taskId, CurrentUser actor) {
-        var pick = lockPick(taskId);
-        pick.requireAssigned(actor.userId());
-        if (pick.getStatus() != PickStatus.PICKED) {
-            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT, "Picking must finish before packing");
-        }
-        var order = requireOrderInFulfilment(pick);
-        var pack = requirePack(pick.getId());
-        if (pack.getStatus() == PackStatus.ON_HOLD) {
-            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT,
-                    "A checksum hold requires QC or warehouse-manager reverification");
-        }
-        boolean matching = verifyAll(pack, order, actor.userId());
-        if (!matching) {
-            pack.hold();
-            packs.save(pack);
-            orders.putOnDesignHold(pick.getOrderId(), "DESIGN_MISMATCH");
-            return toTask(pick);
-        }
-        // Under the order's row lock: a cancellation came first (refused, nothing deducted) or is refused after (03 §9).
-        // G3-2: the order becomes PACKED in this transaction (A1); an order on hold is resolved first (409).
-        OrderSummary packed = orders.markPacked(pick.getOrderId(), actor.userId());
-        pack.complete(clock.instant());
-        deductPrintedGoods(pack, order, actor.userId());
-        packs.save(pack);
-        return withPaymentWarning(toTask(pick), packed);
+        return completePacking(taskId, PackingCompletion.whole(), actor);
+    }
+
+    /** G4-5: see {@link PackingService#complete}; the answer is the task, with the shipment and the payment warning. */
+    @Override
+    public FulfillmentTask completePacking(UUID taskId, PackingCompletion completion, CurrentUser actor) {
+        requireRole(actor, Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER);
+        PackingService.Completed outcome = packing.complete(taskId, completion == null ? PackingCompletion.whole()
+                : completion, actor);
+        FulfillmentTask task = toTask(requirePick(taskId));
+        return outcome.shipmentId() == null ? task
+                : withPaymentWarning(task, outcome.order()).withShipment(outcome.shipmentId());
     }
 
     @Override
     public FulfillmentTask reverifyDesignIntegrity(UUID taskId, String resolutionNote, CurrentUser actor) {
         requireRole(actor, Role.QC_STAFF, Role.WAREHOUSE_MANAGER);
-        var pick = lockPick(taskId);
-        var pack = requirePack(pick.getId());
-        if (pack.getStatus() != PackStatus.ON_HOLD) {
-            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT, "The package has no design-integrity hold");
-        }
-        OrderSummary order = requireOrderInFulfilment(pick);
-        if (!verifyAll(pack, order, actor.userId())) {
-            return toTask(pick);
-        }
-        // The design hold first - back to where it was held from - then packed (G3-2: a held order is not packed).
-        orders.resolveDesignHold(pick.getOrderId(), actor.userId(), resolutionNote);
-        OrderSummary packed = orders.markPacked(pick.getOrderId(), actor.userId());
-        pack.complete(clock.instant());
-        deductPrintedGoods(pack, order, actor.userId());
-        packs.save(pack);
-        return withPaymentWarning(toTask(pick), packed);
-    }
-
-    /**
-     * Decision 2026-10-16 (docs 04b §15-18, 04c F-FUL): the order's custom-printed goods leave stock with their
-     * package, in the transaction that records it complete - after every design checksum matched, so a mismatch or
-     * any failure leaves the holds and the goods where they are. Stock lines were deducted when picked; a print line
-     * is never picked (production hands its goods to packing, still held for the order), so this is its one
-     * deduction, and dispatch deducts nothing. A completed package is not completed again ({@code CONFLICT}), and
-     * inventory answers a package it already deducted for as done.
-     */
-    private void deductPrintedGoods(PackJpaEntity pack, OrderSummary order, UUID actor) {
-        List<UUID> printHolds = order.lines().stream().filter(line -> line.designSnapshotId() != null)
-                .flatMap(line -> line.reservationIds().stream()).toList();
-        if (printHolds.isEmpty()) {
-            return;
-        }
-        List<UUID> live = inventory.liveHolds(printHolds).stream().map(StockReservation::reservationId).toList();
-        consumption.consumeForPack(pack.getId(), order.orderId(), live, actor);
-    }
-
-    private boolean verifyAll(PackJpaEntity pack, OrderSummary order, UUID actor) {
-        boolean allMatch = true;
-        for (var line : order.lines()) {
-            if (line.designSnapshotId() == null) {
-                continue;
-            }
-            var check = designs.verifyForFulfillment(line.designSnapshotId(), line.designChecksum());
-            var result = check.matching() ? DesignVerificationResult.MATCH : DesignVerificationResult.MISMATCH;
-            verifications.save(new DesignVerificationJpaEntity(Identifiers.newId(), pack.getId(), order.orderId(),
-                    line.lineId(), line.designSnapshotId(), check.expectedChecksum(), check.actualChecksum(),
-                    result, actor, clock.instant()));
-            allMatch &= check.matching();
-        }
-        return allMatch;
-    }
-
-    private void requireArtifactAccess(PickJpaEntity pick, CurrentUser actor) {
-        if (!java.util.Objects.equals(pick.getAssignedUserId(), actor.userId())
-                && !actor.hasAnyRole(Role.WAREHOUSE_MANAGER, Role.QC_STAFF)) {
-            throw new BusinessException(ErrorCode.NOT_FOUND);
-        }
+        packing.reverify(taskId, resolutionNote, actor);
+        return toTask(requirePick(taskId));
     }
 
     private FulfillmentTask toTask(PickJpaEntity pick) {
