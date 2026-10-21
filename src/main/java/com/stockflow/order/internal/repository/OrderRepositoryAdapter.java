@@ -214,6 +214,32 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
                 .toList();
     }
 
+    /**
+     * The warehouse scope is applied here, by the order's warehouse ({@code WarehouseScope.warehousesIn}): the order
+     * row has no warehouse attribute for the generic data-scope filter, since an order has no warehouse until it is
+     * released, and every candidate is released.
+     */
+    @Override
+    public Page<com.stockflow.order.api.FulfillmentCandidate> readyToFulfill(UUID warehouseId, Pageable pageable) {
+        Specification<OrderJpaEntity> spec = Specification.<OrderJpaEntity>where(
+                        Specs.eq("status", OrderStatus.READY_TO_FULFILL))
+                .and(Specs.eq("warehouseId", warehouseId))
+                .and(com.stockflow.common.security.WarehouseScope.warehousesIn("warehouseId"));
+        Page<OrderJpaEntity> orders = jpa.findAll(spec, pageable);
+        Map<UUID, List<com.stockflow.order.api.FulfillmentCandidate.Line>> lines = new HashMap<>();
+        List<UUID> ids = orders.getContent().stream().map(OrderJpaEntity::getId).toList();
+        if (!ids.isEmpty()) {
+            for (Object[] row : jpa.findLineRowsByOrder(ids)) {
+                lines.computeIfAbsent((UUID) row[0], id -> new java.util.ArrayList<>())
+                        .add(new com.stockflow.order.api.FulfillmentCandidate.Line((UUID) row[1], (String) row[2],
+                                ((Number) row[3]).intValue(), row[4] != null));
+            }
+        }
+        return orders.map(order -> new com.stockflow.order.api.FulfillmentCandidate(order.getId(),
+                order.getOrderNumber(), order.getCustomerId(), null, order.getWarehouseId(), order.getPlacedAt(),
+                order.getReleasedAt(), lines.getOrDefault(order.getId(), List.of())));
+    }
+
     @Override
     public Map<UUID, Integer> lineCounts(Collection<UUID> orderIds) {
         if (orderIds.isEmpty()) {

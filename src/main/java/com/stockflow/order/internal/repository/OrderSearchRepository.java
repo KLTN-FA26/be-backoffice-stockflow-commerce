@@ -35,6 +35,12 @@ public interface OrderSearchRepository {
     List<OrderStatusChange> history(UUID orderId);
 
     /**
+     * READY_TO_FULFILL orders of {@code warehouseId} (any when null) within the caller's warehouse scope, each with
+     * its lines; the customer's name is left for the service to resolve.
+     */
+    Page<com.stockflow.order.api.FulfillmentCandidate> readyToFulfill(UUID warehouseId, Pageable pageable);
+
+    /**
      * How many lines each of these orders has, in one query. An order with no lines is absent from the
      * map; empty input gives an empty map without touching the database.
      */
