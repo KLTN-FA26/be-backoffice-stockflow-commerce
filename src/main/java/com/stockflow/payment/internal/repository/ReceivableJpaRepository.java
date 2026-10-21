@@ -15,7 +15,11 @@ import java.util.UUID;
 interface ReceivableJpaRepository extends BaseJpaRepository<ReceivableJpaEntity>,
         JpaSpecificationExecutor<ReceivableJpaEntity> {
 
-    Optional<ReceivableJpaEntity> findByOrderId(UUID orderId);
+    /** The order's receivable not tied to a shipment: a whole-order delivery's, or a cancellation fee's. */
+    Optional<ReceivableJpaEntity> findByOrderIdAndShipmentIdIsNull(UUID orderId);
+
+    /** G3-2: one receivable per delivered shipment of a split order. */
+    Optional<ReceivableJpaEntity> findByOrderIdAndShipmentId(UUID orderId, UUID shipmentId);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("""

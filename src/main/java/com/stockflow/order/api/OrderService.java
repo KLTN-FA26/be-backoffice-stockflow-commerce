@@ -46,24 +46,113 @@ public interface OrderService {
      * explicitly rather than through the ambient data scope (which compares against the sign-in id).
      *
      * @param requestedBy the signed-in user, recorded on a request
-     * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND} if the order is not this
-     *         customer's, so the existence of another customer's order is not revealed;
+     * @throws com.stockflow.common.error.BusinessException {@code VALIDATION_FAILED} for a reason that is not the
+     *         customer's to give ({@link CancellationReasonCode#customerMayGive}); {@code NOT_FOUND} if the order is not
+     *         this customer's, so the existence of another customer's order is not revealed;
      *         {@code ORDER_CANCELLATION_REQUEST_PENDING} when a request is already waiting
      */
     CancellationOutcome cancelOwn(UUID orderId, UUID customerId, CancellationReasonCode reasonCode, String note,
                                   UUID requestedBy);
 
+    /**
+     * @deprecated since G3-2: {@link #startPicking(UUID, UUID)}. Kept one sprint for callers written before it.
+     */
+    @Deprecated(forRemoval = true)
     OrderSummary releaseToFulfillment(UUID orderId);
 
+    // ---- the warehouse and the carrier (G3-2). Every method joins the caller's transaction, takes the order's row
+    // lock and is idempotent when the order is already where the call would take it (architecture decision A1).
+
     /**
-     * The carrier reported the order delivered (kltn-docs 09 §4.3): SHIPPED → DELIVERED, announced as
-     * {@code OrderDelivered}. Idempotent for an order already delivered. Shipping (SCRUM-294) calls
-     * this when it records the shipment's outcome.
+     * The warehouse starts picking: READY_TO_FULFILL → PICKING (kltn-docs 17 §4.2 step 6). An order already picking,
+     * packed or partly shipped is left alone, and so is one IN_PRODUCTION: picking its stock lines in parallel does
+     * not change it (17 §4.2 step 5).
      *
-     * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code CONFLICT} when it
-     *         is not SHIPPED
+     * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code ORDER_INVALID_TRANSITION} from
+     *         any other status
+     */
+    OrderSummary startPicking(UUID orderId, UUID by);
+
+    /**
+     * Everything still to ship is packed: READY_TO_FULFILL (printed goods only), PICKING or PARTIALLY_FULFILLED →
+     * PACKED (kltn-docs 08, 17 §5). Also records that a package was completed (the cancellation rules read it).
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code ORDER_CANCELLED}; {@code ORDER_INVALID_TRANSITION},
+     *         also while the order is ON_HOLD
+     */
+    OrderSummary markPacked(UUID orderId, UUID by);
+
+    /**
+     * Everything handed to the carrier at once, no shipment recorded on the order: PACKED → SHIPPED (09 BR-03).
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code ORDER_BALANCE_NOT_PAID} when money due before the
+     *         goods leave has not all arrived (G3-Q4); {@code ORDER_DELIVERY_VIA_SHIPMENT} for an order with shipments
+     */
+    OrderSummary markShipped(UUID orderId, java.time.Instant handedOverAt, UUID by);
+
+    /**
+     * A shipment of the order was handed to the carrier (09 §4.1 step 3; split shipments, G4-Q3): PICKING / PACKED /
+     * PARTIALLY_FULFILLED → PARTIALLY_FULFILLED while units are left, → SHIPPED once every unit is shipped or closed.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code ORDER_BALANCE_NOT_PAID};
+     *         {@code ORDER_SHIPMENT_QUANTITY_EXCEEDED}; {@code ORDER_SHIPMENT_CONFLICT} when the same shipment id comes
+     *         with other units; {@code ORDER_INVALID_TRANSITION}, also while ON_HOLD; {@code ORDER_CANCELLED}
+     */
+    OrderSummary recordHandover(UUID orderId, ShipmentHandover handover);
+
+    /** The carrier delivered one shipment (09 §4.3 step 1); a credit order bills it ({@code OrderDelivered}). */
+    OrderSummary recordShipmentDelivered(UUID orderId, UUID shipmentId, UUID by);
+
+    /** The carrier could not deliver one shipment (09 §4.3 step 2); OTHER needs a note. */
+    OrderSummary recordShipmentDeliveryFailed(UUID orderId, UUID shipmentId, DeliveryFailureReason reason, String note,
+                                              UUID by);
+
+    /** A failed shipment came back to the warehouse through the returns receipt (09 §4.3 step 3, BR-06). */
+    OrderSummary recordShipmentReturned(UUID orderId, UUID shipmentId, UUID by);
+
+    /**
+     * The carrier reported the order delivered (kltn-docs 09 §4.3): SHIPPED or DELIVERY_FAILED → DELIVERED, announced
+     * as {@code OrderDelivered}. Idempotent for an order already delivered. Only for an order without shipments
+     * (G4-Q5): one with shipments is delivered shipment by shipment.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code ORDER_INVALID_TRANSITION} when it
+     *         is not SHIPPED or DELIVERY_FAILED; {@code ORDER_DELIVERY_VIA_SHIPMENT} when it has shipments
      */
     OrderSummary recordDelivery(UUID orderId);
+
+    OrderSummary recordDelivery(UUID orderId, UUID by);
+
+    /** The whole order could not be delivered: SHIPPED → DELIVERY_FAILED; only without shipments (G4-Q5). */
+    OrderSummary recordDeliveryFailure(UUID orderId, DeliveryFailureReason reason, String note, UUID by);
+
+    /** The whole order came back (RTO through the returns receipt): DELIVERY_FAILED → RETURNED; without shipments. */
+    OrderSummary recordReturnedToOrigin(UUID orderId, UUID by);
+
+    /**
+     * Put the order on hold (17 §5; WBS 3.17.6): from CONFIRMED up to PACKED, and a partly shipped order.
+     * {@code CREDIT} is placed by the credit check only; OTHER needs a note.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code ORDER_INVALID_TRANSITION} from any other status,
+     *         including ON_HOLD
+     */
+    OrderSummary putOnHold(UUID orderId, HoldReason reason, String note, UUID by);
+
+    /**
+     * Resolve a hold: back to the status it was entered from, then on with what its shipments reported meanwhile.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code ORDER_NOT_ON_HOLD};
+     *         {@code ORDER_CREDIT_HOLD_USE_APPROVAL} for a credit hold
+     */
+    OrderSummary resolveHold(UUID orderId, String note, UUID by);
+
+    /**
+     * Close what is left of a partly fulfilled order (17 edge "short pick"): its units not shipped will not be
+     * delivered; their stock holds are released, payment refunds money received above what the order is now worth
+     * ({@code OrderRemainderClosed}). Only from PARTIALLY_FULFILLED.
+     */
+    OrderSummary closeRemainder(UUID orderId, CancellationReasonCode reasonCode, String note, UUID by);
+
+    /** A printed design did not match at packing (BR-DSG-003): ON_HOLD for QC, reason DESIGN_MISMATCH. */
     void putOnDesignHold(UUID orderId, String reason);
 
     /**
@@ -86,6 +175,8 @@ public interface OrderService {
      * the work (audit of #109). Empty for an unknown order.
      */
     Optional<OrderStatus> lockedStatus(UUID orderId);
+
+    /** QC reverified the design: the DESIGN_MISMATCH hold is resolved back to where it was held from. */
     void resolveDesignHold(UUID orderId, UUID resolvedBy, String note);
 
     /**

@@ -30,6 +30,8 @@ public final class Receivable extends AggregateRoot {
     private final long version;
     /** {@code CREDIT_ORDER} (a delivered credit order) or {@code CANCELLATION_FEE} (decision Q6a). */
     private String kind = "CREDIT_ORDER";
+    /** G3-2: the delivered shipment of a split order this bills; null for a whole-order delivery or a fee. */
+    private UUID shipmentId;
 
     public Receivable(UUID id, UUID orderId, UUID customerId, BigDecimal amount, BigDecimal paidAmount, String currency,
                       Instant issuedAt, LocalDate dueDate, ReceivableStatus status, Instant settledAt, long version) {
@@ -73,6 +75,13 @@ public final class Receivable extends AggregateRoot {
     }
 
     public String kind() { return kind; }
+
+    public Receivable forShipment(UUID shipment) {
+        this.shipmentId = shipment;
+        return this;
+    }
+
+    public UUID shipmentId() { return shipmentId; }
 
     public BigDecimal outstanding() {
         return amount.subtract(paidAmount);

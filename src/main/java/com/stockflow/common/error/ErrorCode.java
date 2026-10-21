@@ -262,6 +262,26 @@ public enum ErrorCode {
     PAYMENT_TERM_NOT_ALLOWED("This payment term is not available for this order", 409),
     /** SCRUM-427: credit approval or refusal on an order that is not waiting for one. */
     ORDER_NOT_ON_CREDIT_HOLD("This order is not waiting for a credit decision", 409),
+    /** G3-2 (SCRUM-246/247): the order's lifecycle has no edge from its status to the one asked for. */
+    ORDER_INVALID_TRANSITION("This order cannot move to that status now", 409),
+    /** G3-2: resolving a hold on an order that is not on hold. */
+    ORDER_NOT_ON_HOLD("This order is not on hold", 409),
+    /** G3-2: a credit hold is decided through credit approval, not resolved like the others. */
+    ORDER_CREDIT_HOLD_USE_APPROVAL("A credit hold is decided through credit approval", 409),
+    /** G3-2 review: a design-mismatch hold is resolved by QC reverifying the package, which releases both. */
+    ORDER_DESIGN_HOLD_USE_REVERIFICATION("A design hold is resolved by reverifying the package", 409),
+    /** G4-Q5: an order with shipments records its delivery outcome per shipment, not for the whole order. */
+    ORDER_DELIVERY_VIA_SHIPMENT("This order's delivery is recorded per shipment", 409),
+    /** G3-Q4: money due before the goods leave has not all arrived; the handover waits for it. */
+    ORDER_BALANCE_NOT_PAID("This order must be paid before its goods leave", 409),
+    /** G3-2 (split shipments): no shipment by that id was handed over for this order. */
+    ORDER_SHIPMENT_NOT_FOUND("This order has no such shipment", 404),
+    /** G3-2: the same shipment handed over again with other goods. */
+    ORDER_SHIPMENT_CONFLICT("This shipment was already handed over with other goods", 409),
+    /** G3-2: more units would leave than the order line has left to ship. */
+    ORDER_SHIPMENT_QUANTITY_EXCEEDED("More than this order line has left to ship", 409),
+    /** G3-2: a shipment outcome its status does not allow (kltn-docs 09 §5). */
+    ORDER_SHIPMENT_INVALID_TRANSITION("This shipment cannot move to that status now", 409),
     /** SCRUM-431, kltn-docs 15 BR-07: one bank statement line is recorded once. */
     TRANSFER_REFERENCE_ALREADY_RECORDED("This transfer was already recorded", 409),
     ALLOCATION_CUSTOMER_MISMATCH("This receivable belongs to another customer", 409),

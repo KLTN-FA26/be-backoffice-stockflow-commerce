@@ -18,6 +18,9 @@ final class TaskAccess {
     private TaskAccess() {
     }
 
+    private static final java.util.Set<OrderStatus> WORKABLE = java.util.EnumSet.of(OrderStatus.PICKING,
+            OrderStatus.PACKED, OrderStatus.PARTIALLY_FULFILLED, OrderStatus.ON_HOLD);
+
     /**
      * The assignee sees the task; managers, QC and coordinators see the tasks of the warehouses they are
      * assigned to (BR-SEC-002: a coordinator is not limited, as their scope is ALL).
@@ -39,7 +42,8 @@ final class TaskAccess {
      */
     static OrderSummary orderInFulfilment(OrderService orders, PickJpaEntity pick) {
         var order = orders.findById(pick.getOrderId()).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
-        if (order.status() != OrderStatus.IN_FULFILMENT && order.status() != OrderStatus.ON_HOLD) {
+        // G3-2: the warehouse's statuses - picking, packed, the rest of a split order - or held from one of them.
+        if (!WORKABLE.contains(order.status())) {
             throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT,
                     "The order is " + order.status() + "; this fulfillment task is closed");
         }

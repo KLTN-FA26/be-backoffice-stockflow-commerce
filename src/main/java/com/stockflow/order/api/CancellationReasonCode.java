@@ -20,5 +20,13 @@ public enum CancellationReasonCode {
     DUPLICATE_ORDER,
     PRODUCTION_ISSUE,
     /** Needs a note: "other" with no explanation is not a reason. */
-    OTHER
+    OTHER;
+
+    /**
+     * Whether a customer may give it when cancelling their own order or asking to: their own reasons only. Payment,
+     * stock, fraud, credit and production reasons are the shop's or the system's to record (G3-2).
+     */
+    public boolean customerMayGive() {
+        return this == CUSTOMER_REQUEST || this == DUPLICATE_ORDER || this == OTHER;
+    }
 }

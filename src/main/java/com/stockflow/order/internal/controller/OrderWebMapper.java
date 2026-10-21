@@ -88,6 +88,10 @@ final class OrderWebMapper {
      * office's note (review of #109, nit).
      */
     static OrderResponse toResponse(OrderSummary summary, boolean internal) {
+        OrderSummary.Lifecycle lifecycle = summary.lifecycle();
+        java.util.Map<java.util.UUID, OrderSummary.LineProgress> progress = lifecycle == null ? java.util.Map.of()
+                : lifecycle.lines().stream().collect(java.util.stream.Collectors.toMap(OrderSummary.LineProgress::lineId,
+                        line -> line));
         return new OrderResponse(
                 summary.orderId(),
                 summary.orderNumber(),
@@ -106,7 +110,13 @@ final class OrderWebMapper {
                                                 line.lineTotal().amount(),
                                                 line.reservationIds(),
                                                 line.designSnapshotId(),
-                                                line.designChecksum()))
+                                                line.designChecksum(),
+                                                progress.containsKey(line.lineId())
+                                                        ? progress.get(line.lineId()).shippedQuantity() : null,
+                                                progress.containsKey(line.lineId())
+                                                        ? progress.get(line.lineId()).deliveredQuantity() : null,
+                                                progress.containsKey(line.lineId())
+                                                        ? progress.get(line.lineId()).cancelledQuantity() : null))
                         .toList(),
                 summary.placedAt(), summary.createdBy(), summary.lastModifiedAt(), summary.lastModifiedBy(),
                 summary.contactName(), summary.contactEmail(), summary.contactPhone(),
@@ -123,7 +133,36 @@ final class OrderWebMapper {
                         summary.cancellation().reasonCode() == null ? null : summary.cancellation().reasonCode().name(),
                         summary.cancellation().reason(), summary.cancellation().retainedAmount(),
                         summary.cancellation().feeReason(), internal ? summary.cancellation().feeDetail() : null,
-                        summary.cancellation().feeAmount()));
+                        summary.cancellation().feeAmount()),
+                // A customer never reads why the shop holds the order (FRAUD...) nor where it goes back: only the
+                // public wording, as on GET /orders/me/{id} (review of G3-2).
+                lifecycle == null || !internal || lifecycle.holdReason() == null ? null : lifecycle.holdReason().name(),
+                lifecycle == null || !internal || lifecycle.statusBeforeHold() == null ? null
+                        : lifecycle.statusBeforeHold().name(),
+                lifecycle == null || lifecycle.holdReason() == null ? null
+                        : lifecycle.holdReason() == com.stockflow.order.api.HoldReason.CREDIT
+                        ? "AWAITING_CREDIT_APPROVAL" : "UNDER_REVIEW",
+                lifecycle == null || !internal ? null : lifecycle.holdNote(),
+                lifecycle == null ? null : lifecycle.packedAt(),
+                lifecycle == null ? null : lifecycle.shippedAt(),
+                lifecycle == null ? null : lifecycle.deliveredAt(),
+                lifecycle == null || lifecycle.deliveryFailureReason() == null ? null
+                        : lifecycle.deliveryFailureReason().name(),
+                lifecycle == null ? null : lifecycle.completedAt(),
+                lifecycle == null ? null : lifecycle.closedAt(),
+                lifecycle == null ? null : lifecycle.billedAmount(),
+                lifecycle == null ? null : lifecycle.effectiveTotal(),
+                lifecycle == null ? null : lifecycle.amountDue(),
+                lifecycle == null ? null : lifecycle.amountDueBeforeHandover(),
+                lifecycle == null ? List.of() : lifecycle.shipments().stream()
+                        .map(shipment -> new OrderResponse.Shipment(shipment.shipmentId(), shipment.status().name(),
+                                shipment.amount(), shipment.billedAmount(), shipment.handedOverAt(),
+                                shipment.outcomeAt(),
+                                shipment.failureReason() == null ? null : shipment.failureReason().name(),
+                                shipment.lines().stream()
+                                        .map(line -> new OrderResponse.ShipmentLine(line.lineId(), line.quantity()))
+                                        .toList()))
+                        .toList());
     }
 
     private static PlaceGuestOrderCommand.Address toCommand(

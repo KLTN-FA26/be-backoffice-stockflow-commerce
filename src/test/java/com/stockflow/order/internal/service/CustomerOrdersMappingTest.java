@@ -24,6 +24,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /** What a customer reads of an order (SCRUM-245/264): the folded status, delivery, production and hold wording. */
 class CustomerOrdersMappingTest {
 
+    private static final java.time.Instant NOW = java.time.Instant.parse("2026-10-19T03:00:00Z");
+
     private static final Instant T0 = Instant.parse("2026-09-20T03:00:00Z");
     private static final UUID DESIGN = UUID.randomUUID();
 
@@ -58,7 +60,7 @@ class CustomerOrdersMappingTest {
         assertThat(CustomerOrdersService.statusGroup(OrderStatus.CONFIRMED)).isEqualTo(StatusGroup.CONFIRMED);
         assertThat(CustomerOrdersService.statusGroup(OrderStatus.IN_PRODUCTION)).isEqualTo(StatusGroup.IN_PRODUCTION);
         assertThat(CustomerOrdersService.statusGroup(OrderStatus.READY_TO_FULFILL)).isEqualTo(StatusGroup.PREPARING);
-        assertThat(CustomerOrdersService.statusGroup(OrderStatus.IN_FULFILMENT)).isEqualTo(StatusGroup.PREPARING);
+        assertThat(CustomerOrdersService.statusGroup(OrderStatus.PICKING)).isEqualTo(StatusGroup.PREPARING);
         assertThat(CustomerOrdersService.statusGroup(OrderStatus.SHIPPED)).isEqualTo(StatusGroup.SHIPPING);
         assertThat(CustomerOrdersService.statusGroup(OrderStatus.DELIVERED)).isEqualTo(StatusGroup.DELIVERED);
         assertThat(CustomerOrdersService.statusGroup(OrderStatus.COMPLETED)).isEqualTo(StatusGroup.DELIVERED);
@@ -67,17 +69,68 @@ class CustomerOrdersMappingTest {
     }
 
     @Test
-    @DisplayName("delivery state is only what the status records")
+    @DisplayName("delivery state is only what the status records, when no shipment is known")
     void deliveryStates() {
         for (OrderStatus status : OrderStatus.values()) {
             DeliveryState expected = switch (status) {
-                case SHIPPED -> DeliveryState.IN_TRANSIT;
-                case DELIVERED, COMPLETED -> DeliveryState.DELIVERED;
-                case RETURNED -> DeliveryState.RETURNED;
+                case SHIPPED, PARTIALLY_FULFILLED -> DeliveryState.IN_TRANSIT;
+                case DELIVERY_FAILED -> DeliveryState.DELIVERY_FAILED;
+                case DELIVERED, COMPLETED, RETURN_REQUESTED, CLOSED -> DeliveryState.DELIVERED;
+                case RETURNED, REFUNDED, PARTIALLY_REFUNDED -> DeliveryState.RETURNED;
                 default -> DeliveryState.NOT_SHIPPED;
             };
             assertThat(CustomerOrdersService.deliveryState(status)).as(status.name()).isEqualTo(expected);
         }
+    }
+
+    @Test
+    @DisplayName("G3-2: every status has a group the portal knows; new ones fold into the old set")
+    void newStatusesFoldIntoTheOldGroups() {
+        assertThat(CustomerOrdersService.statusGroup(OrderStatus.PARTIALLY_FULFILLED)).isEqualTo(StatusGroup.PREPARING);
+        assertThat(CustomerOrdersService.statusGroup(OrderStatus.PACKED)).isEqualTo(StatusGroup.PREPARING);
+        assertThat(CustomerOrdersService.statusGroup(OrderStatus.DELIVERY_FAILED)).isEqualTo(StatusGroup.SHIPPING);
+        assertThat(CustomerOrdersService.statusGroup(OrderStatus.RETURN_REQUESTED)).isEqualTo(StatusGroup.RETURNED);
+        assertThat(CustomerOrdersService.statusGroup(OrderStatus.REFUNDED)).isEqualTo(StatusGroup.RETURNED);
+        assertThat(CustomerOrdersService.statusGroup(OrderStatus.PARTIALLY_REFUNDED)).isEqualTo(StatusGroup.RETURNED);
+        assertThat(CustomerOrdersService.statusGroup(OrderStatus.CLOSED)).isEqualTo(StatusGroup.DELIVERED);
+        assertThat(CustomerOrdersService.statusGroup(OrderStatus.CLOSED, lifecycle(null, List.of())))
+                .as("closed after a refund, never completed").isEqualTo(StatusGroup.RETURNED);
+        assertThat(CustomerOrdersService.statusGroup(OrderStatus.CLOSED, lifecycle(NOW, List.of())))
+                .as("closed after completion").isEqualTo(StatusGroup.DELIVERED);
+    }
+
+    @Test
+    @DisplayName("G3-2 split shipments: the delivery state sums the shipments up (09 BR-05)")
+    void deliveryStateOfSplitShipments() {
+        var delivered = shipment(com.stockflow.order.api.OrderShipmentStatus.DELIVERED);
+        var inTransit = shipment(com.stockflow.order.api.OrderShipmentStatus.HANDED_OVER);
+        var failed = shipment(com.stockflow.order.api.OrderShipmentStatus.DELIVERY_FAILED);
+        assertThat(CustomerOrdersService.deliveryState(OrderStatus.SHIPPED, lifecycle(null, List.of(delivered, inTransit))))
+                .isEqualTo(DeliveryState.PARTIALLY_DELIVERED);
+        assertThat(CustomerOrdersService.deliveryState(OrderStatus.SHIPPED, lifecycle(null, List.of(inTransit))))
+                .isEqualTo(DeliveryState.IN_TRANSIT);
+        assertThat(CustomerOrdersService.deliveryState(OrderStatus.DELIVERY_FAILED, lifecycle(null, List.of(delivered, failed))))
+                .isEqualTo(DeliveryState.PARTIALLY_DELIVERED);
+        assertThat(CustomerOrdersService.deliveryState(OrderStatus.DELIVERY_FAILED, lifecycle(null, List.of(failed))))
+                .isEqualTo(DeliveryState.DELIVERY_FAILED);
+        assertThat(CustomerOrdersService.deliveryState(OrderStatus.PARTIALLY_FULFILLED, lifecycle(null, List.of(inTransit))))
+                .isEqualTo(DeliveryState.IN_TRANSIT);
+        assertThat(CustomerOrdersService.deliveryState(OrderStatus.ON_HOLD, lifecycle(null, List.of(delivered))))
+                .isEqualTo(DeliveryState.PARTIALLY_DELIVERED);
+        assertThat(CustomerOrdersService.deliveryState(OrderStatus.ON_HOLD, lifecycle(null, List.of())))
+                .isEqualTo(DeliveryState.NOT_SHIPPED);
+    }
+
+    private static com.stockflow.order.api.OrderSummary.Lifecycle lifecycle(java.time.Instant completedAt,
+            List<com.stockflow.order.api.OrderSummary.Shipment> shipments) {
+        return new com.stockflow.order.api.OrderSummary.Lifecycle(null, null, null, null, null, null, null, completedAt,
+                null, null, null, null, null, List.of(), shipments);
+    }
+
+    private static com.stockflow.order.api.OrderSummary.Shipment shipment(
+            com.stockflow.order.api.OrderShipmentStatus status) {
+        return new com.stockflow.order.api.OrderSummary.Shipment(UUID.randomUUID(), status, java.math.BigDecimal.TEN,
+                java.math.BigDecimal.ZERO, NOW, null, null, List.of());
     }
 
     @Test

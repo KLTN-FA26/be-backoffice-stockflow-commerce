@@ -2,6 +2,8 @@ package com.stockflow.order.internal.repository;
 
 import com.stockflow.order.internal.entity.OrderJpaEntity;
 import com.stockflow.order.internal.entity.OrderLineJpaEntity;
+import com.stockflow.order.internal.entity.OrderShipmentJpaEntity;
+import com.stockflow.order.internal.domain.OrderShipment;
 import com.stockflow.order.internal.entity.OrderAddressJpaEmbeddable;
 
 import com.stockflow.order.api.OrderStatus;
@@ -25,6 +27,10 @@ final class OrderPersistenceMapper {
     }
 
     static Order toDomain(OrderJpaEntity entity) {
+        return toDomain(entity, List.of());
+    }
+
+    static Order toDomain(OrderJpaEntity entity, List<OrderShipmentJpaEntity> shipmentRows) {
         List<OrderLine> lines = entity.getLines().stream()
                 .map(line -> {
                     var mapped = new OrderLine(
@@ -33,7 +39,8 @@ final class OrderPersistenceMapper {
                         line.getQuantity(),
                         new Money(line.getUnitPrice(), Currency.getInstance(line.getCurrency())),
                         line.getDesignSnapshotId(),
-                        List.copyOf(line.getReservationIds()));
+                        List.copyOf(line.getReservationIds()),
+                        line.getCancelledQuantity());
                     if (line.getDesignChecksum() != null) { mapped.recordDesignChecksum(line.getDesignChecksum()); }
                     return mapped;
                 })
@@ -60,6 +67,15 @@ final class OrderPersistenceMapper {
         order.restoreCancellationFee(entity.getCancellationFeeAmount(), entity.getCancellationFeeReason(),
                 entity.getCancellationFeeDetail());
         order.restoreFulfilmentFacts(entity.getPrintingStartedAt(), entity.getPackedAt());
+        order.restoreLifecycle(entity.getHoldReason(), entity.getStatusBeforeHold(), entity.getHoldNote(),
+                entity.getShippedAt(), entity.getDeliveredAt(), entity.getDeliveryFailureReason(),
+                entity.getCompletedAt(), entity.getRefundedAt(), entity.getClosedAt(), entity.getBilledAmount(),
+                entity.getReceivablePaidAmount(), entity.getRemainderRefundAmount());
+        order.restoreShipments(shipmentRows.stream()
+                .map(row -> new OrderShipment(row.getId(), row.getQuantities(), row.getAmount(), row.getHandedOverAt(),
+                        row.getHandedOverBy(), row.getStatus(), row.getOutcomeAt(), row.getOutcomeBy(),
+                        row.getFailureReason(), row.getFailureNote(), row.getBilledAmount()))
+                .toList());
         return order;
     }
 
@@ -90,6 +106,9 @@ final class OrderPersistenceMapper {
         entity.applyCancellationFee(order.cancellationFeeAmount(), order.cancellationFeeReason(),
                 order.cancellationFeeDetail());
         entity.applyFulfilmentFacts(order.printingStartedAt(), order.packedAt());
+        entity.applyLifecycle(order.holdReason(), order.statusBeforeHold(), order.holdNote(), order.shippedAt(),
+                order.deliveredAt(), order.deliveryFailureReason(), order.completedAt(), order.refundedAt(),
+                order.closedAt(), order.billedAmount(), order.receivablePaidAmount(), order.remainderRefundAmount());
     }
 
     /** For the paginated order-history query only. Deliberately never touches {@code
@@ -135,7 +154,12 @@ final class OrderPersistenceMapper {
                                 entity.getCancellationReason(), entity.getCancellationRetainedAmount(),
                                 entity.getCancellationFeeReason(), entity.getCancellationFeeDetail(),
                                 entity.getCancellationFeeAmount())
-                        : null);
+                        : null,
+                // A list row: the hold and the milestones; no lines, no shipments, no derived money.
+                new OrderSummary.Lifecycle(entity.getHoldReason(), entity.getStatusBeforeHold(), entity.getHoldNote(),
+                        entity.getPackedAt(), entity.getShippedAt(), entity.getDeliveredAt(),
+                        entity.getDeliveryFailureReason(), entity.getCompletedAt(), entity.getClosedAt(),
+                        entity.getBilledAmount(), null, null, null, List.of(), List.of()));
     }
 
     private static OrderSummary.AddressSummary toSummary(OrderAddressJpaEmbeddable a) {
@@ -167,6 +191,7 @@ final class OrderPersistenceMapper {
                         line.designSnapshotId(),
                         line.reservationIds());
                     mapped.setDesignChecksum(line.designChecksum());
+                    mapped.setCancelledQuantity(line.cancelledQuantity());
                     return mapped;
                 })
                 .toList();

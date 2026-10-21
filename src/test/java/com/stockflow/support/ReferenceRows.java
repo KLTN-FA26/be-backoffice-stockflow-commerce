@@ -107,8 +107,13 @@ public final class ReferenceRows {
         em.createNativeQuery("""
                         INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
                             currency, placed_at, payment_term, credit_term_days, released_at, released_by, warehouse_id,
-                            cancellation_reason, cancellation_reason_code, version, created_at)
-                        VALUES (?1, ?2, ?3, ?4, ?5, 1000, 'VND', NOW(), 'CREDIT', 30, ?6, ?7, ?8, ?9, ?10, 0, NOW())""")
+                            cancellation_reason, cancellation_reason_code, hold_reason, shipped_at, delivered_at,
+                            completed_at, version, created_at)
+                        VALUES (?1, ?2, ?3, ?4, ?5, 1000, 'VND', NOW(), 'CREDIT', 30, ?6, ?7, ?8, ?9, ?10,
+                                CASE WHEN ?5 = 'ON_HOLD' THEN 'CREDIT' END,
+                                CASE WHEN ?5 IN ('SHIPPED', 'DELIVERY_FAILED', 'DELIVERED', 'COMPLETED') THEN NOW() END,
+                                CASE WHEN ?5 IN ('DELIVERED', 'COMPLETED') THEN NOW() END,
+                                CASE WHEN ?5 = 'COMPLETED' THEN NOW() END, 0, NOW())""")
                 .setParameter(1, order)
                 .setParameter(2, "SO-RR-" + order.toString().substring(24))
                 .setParameter(3, customerId)

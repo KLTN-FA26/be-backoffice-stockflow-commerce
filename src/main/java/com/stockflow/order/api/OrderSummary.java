@@ -34,8 +34,64 @@ public record OrderSummary(
         UUID warehouseId,
         Instant releasedAt,
         Payment payment,
-        Cancellation cancellation
+        Cancellation cancellation,
+        Lifecycle lifecycle
 ) {
+
+    /** Without the lifecycle block (G3-2): callers written before it. */
+    public OrderSummary(UUID orderId, String orderNumber, UUID customerId, OrderStatus status, Money total,
+                        List<LineSummary> lines, Instant placedAt, String createdBy, Instant lastModifiedAt,
+                        String lastModifiedBy, String contactName, String contactEmail, String contactPhone,
+                        AddressSummary shippingAddress, AddressSummary billingAddress, PaymentTerm paymentTerm,
+                        UUID warehouseId, Instant releasedAt, Payment payment, Cancellation cancellation) {
+        this(orderId, orderNumber, customerId, status, total, lines, placedAt, createdBy, lastModifiedAt,
+                lastModifiedBy, contactName, contactEmail, contactPhone, shippingAddress, billingAddress,
+                paymentTerm, warehouseId, releasedAt, payment, cancellation, null);
+    }
+
+    /**
+     * Hold, milestones, shipments and the money of a partly fulfilled order (G3-2; split shipments, G4-Q3). Null on
+     * rows that do not carry it.
+     *
+     * @param holdReason             set while ON_HOLD
+     * @param statusBeforeHold       where resolving the hold goes back to; null for a credit hold
+     * @param holdNote               what the coordinator wrote; staff only
+     * @param packedAt               when a package of the order was first completed: from then on it is not cancelled
+     * @param deliveryFailureReason  set while DELIVERY_FAILED
+     * @param billedAmount           what deliveries billed as receivables (a credit order)
+     * @param effectiveTotal         the total less the units closed out of a partly fulfilled order
+     * @param amountDue              what the customer still owes on it, never below zero
+     * @param amountDueBeforeHandover what must be paid before the goods may leave (G3-Q4): fulfillment warns at
+     *                               packing and the handover is refused while it is above zero
+     */
+    public record Lifecycle(HoldReason holdReason, OrderStatus statusBeforeHold, String holdNote, Instant packedAt,
+                            Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason, Instant completedAt,
+                            Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal, BigDecimal amountDue,
+                            BigDecimal amountDueBeforeHandover, List<LineProgress> lines, List<Shipment> shipments) {
+
+        public Lifecycle {
+            lines = lines == null ? List.of() : List.copyOf(lines);
+            shipments = shipments == null ? List.of() : List.copyOf(shipments);
+        }
+    }
+
+    /** How much of one line went out: in shipments not returned, delivered, and closed. */
+    public record LineProgress(UUID lineId, int shippedQuantity, int deliveredQuantity, int cancelledQuantity) {
+    }
+
+    /** Units of one order line in one shipment. */
+    public record ShipmentLine(UUID lineId, int quantity) {
+    }
+
+    /** One shipment of the order, as the order knows it (from its handover). */
+    public record Shipment(UUID shipmentId, OrderShipmentStatus status, BigDecimal amount, BigDecimal billedAmount,
+                           Instant handedOverAt, Instant outcomeAt, DeliveryFailureReason failureReason,
+                           List<ShipmentLine> lines) {
+
+        public Shipment {
+            lines = lines == null ? List.of() : List.copyOf(lines);
+        }
+    }
 
     /** With the release block but without money and cancellation: list rows of other modules. */
     public OrderSummary(UUID orderId, String orderNumber, UUID customerId, OrderStatus status, Money total,

@@ -11,7 +11,10 @@ import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.persistence.Specs;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderStatusChange;
+import com.stockflow.order.internal.entity.OrderShipmentJpaEntity;
 import com.stockflow.order.internal.entity.OrderStatusHistoryJpaEntity;
+import com.stockflow.order.internal.domain.OrderShipment;
+import com.stockflow.order.internal.domain.OrderTransition;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
@@ -33,13 +36,15 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
     private final OrderJpaRepository jpa;
     private final OrderNumberSequence sequence;
     private final OrderStatusHistoryJpaRepository history;
+    private final OrderShipmentJpaRepository shipments;
     private final java.time.Clock clock;
     private final jakarta.persistence.EntityManager entityManager;
 
     OrderRepositoryAdapter(OrderJpaRepository jpa, OrderNumberSequence sequence,
-                           OrderStatusHistoryJpaRepository history, java.time.Clock clock,
-                           jakarta.persistence.EntityManager entityManager) {
+                           OrderStatusHistoryJpaRepository history, OrderShipmentJpaRepository shipments,
+                           java.time.Clock clock, jakarta.persistence.EntityManager entityManager) {
         this.entityManager = entityManager;
+        this.shipments = shipments;
         this.jpa = jpa;
         this.sequence = sequence;
         this.history = history;
@@ -48,7 +53,13 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
 
     @Override
     public Optional<Order> findById(OrderId id) {
-        return jpa.findByIdWithLines(id.value()).map(OrderPersistenceMapper::toDomain);
+        return jpa.findByIdWithLines(id.value()).map(this::toDomain);
+    }
+
+    /** The order with its shipments (G3-2): a second, small query; most orders have none or one. */
+    private Order toDomain(OrderJpaEntity entity) {
+        return OrderPersistenceMapper.toDomain(entity,
+                shipments.findByOrderIdOrderByHandedOverAtAscIdAsc(entity.getId()));
     }
 
     /**
@@ -65,7 +76,7 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
                     return locked;
                 })
                 .flatMap(locked -> jpa.findByIdWithLines(locked.getId()))
-                .map(OrderPersistenceMapper::toDomain);
+                .map(this::toDomain);
     }
 
     /**
@@ -89,13 +100,13 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
 
     @Override
     public Optional<Order> findByRequestId(UUID requestId) {
-        return jpa.findByRequestIdWithLines(requestId).map(OrderPersistenceMapper::toDomain);
+        return jpa.findByRequestIdWithLines(requestId).map(this::toDomain);
     }
 
     @Override
     public List<Order> findByCustomerId(UUID customerId) {
         return jpa.findByCustomerIdWithLines(customerId).stream()
-                .map(OrderPersistenceMapper::toDomain)
+                .map(this::toDomain)
                 .toList();
     }
 
@@ -107,33 +118,76 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
     @Override
     public Order save(Order order) {
         Optional<OrderJpaEntity> existing = jpa.findByIdWithLines(order.id().value());
+        List<OrderTransition> steps = order.pullTransitions();
         if (existing.isPresent()) {
             OrderJpaEntity managed = existing.get();
-            recordTransition(order, managed.getStatus());
+            OrderStatus previous = managed.getStatus();
             OrderPersistenceMapper.applyToEntity(order, managed);
+            boolean stepwise = !steps.isEmpty() && steps.getFirst().from() == previous
+                    && steps.getLast().to() == order.status();
+            if (stepwise) {
+                // The row passes through every edge, so tg_order_status_transition checks each one: resolving a hold
+                // may move the order on at once (ON_HOLD → PARTIALLY_FULFILLED → DELIVERED), and ON_HOLD → DELIVERED
+                // is no edge. Every other column already holds its final value, which every step's CHECKs accept.
+                for (int i = 0; i < steps.size() - 1; i++) {
+                    managed.moveTo(steps.get(i).to());
+                    jpa.saveAndFlush(managed);
+                }
+                managed.moveTo(order.status());
+                steps.forEach(step -> recordTransition(order, step));
+            } else if (previous != order.status()) {
+                recordTransition(order, new OrderTransition(previous, order.status(), null, null, null));
+            }
             // saveAndFlush, not save: @PreUpdate (which sets lastModifiedAt/lastModifiedBy) only
             // runs at flush time, so reading the entity back from a plain save() here would return
-            // its stale pre-update audit fields even though the eventual UPDATE is correct.
-            return OrderPersistenceMapper.toDomain(jpa.saveAndFlush(managed));
+            // its stale pre-update audit fields even though the eventual UPDATE is correct. Flushed before the
+            // shipments are read, so the replaced lines are written first.
+            OrderJpaEntity saved = jpa.saveAndFlush(managed);
+            saveShipments(order);
+            return toDomain(saved);
         }
-        Order saved = OrderPersistenceMapper.toDomain(
-                jpa.save(OrderPersistenceMapper.toNewEntity(order)));
-        recordTransition(order, null);
-        return saved;
+        OrderJpaEntity inserted = jpa.save(OrderPersistenceMapper.toNewEntity(order));
+        // A new order is inserted in the status it was placed in: one history row, from nothing.
+        recordTransition(order, new OrderTransition(null, order.status(), null, null, null));
+        saveShipments(order);
+        return toDomain(inserted);
+    }
+
+    /** The order's shipments: a new one is inserted with its units, a known one takes its status and outcome. */
+    private void saveShipments(Order order) {
+        if (order.shipments().isEmpty()) {
+            return;
+        }
+        Map<UUID, OrderShipmentJpaEntity> rows = new HashMap<>();
+        shipments.findByOrderIdOrderByHandedOverAtAscIdAsc(order.id().value())
+                .forEach(row -> rows.put(row.getId(), row));
+        for (OrderShipment shipment : order.shipments()) {
+            OrderShipmentJpaEntity row = rows.computeIfAbsent(shipment.id(), id -> new OrderShipmentJpaEntity(id,
+                    order.id().value(), shipment.quantities(), shipment.amount(), shipment.handedOverAt(),
+                    shipment.handedOverBy()));
+            row.apply(shipment.status(), shipment.outcomeAt(), shipment.outcomeBy(), shipment.failureReason(),
+                    shipment.failureNote(), shipment.billedAmount());
+            shipments.save(row);
+        }
+        shipments.flush();
     }
 
     /**
      * Status history is written here, where every save passes, rather than at each transition in
-     * the service: a transition added later is recorded without anyone remembering to.
+     * the service: a transition added later is recorded without anyone remembering to. Each change carries who made
+     * it and why (SCRUM-247): a cancellation's reason, a hold's reason and note, a failed delivery's reason.
      */
-    private void recordTransition(Order order, OrderStatus previous) {
-        if (order.status() == previous) {
-            return;
+    private void recordTransition(Order order, OrderTransition step) {
+        String reason = step.reason();
+        if (reason == null && step.to() == OrderStatus.CANCELLED) {
+            reason = order.cancellationReason();
+        }
+        if (reason != null && reason.length() > 500) {
+            reason = reason.substring(0, 500);
         }
         history.save(new OrderStatusHistoryJpaEntity(Identifiers.newId(), order.id().value(),
-                previous == null ? null : previous.name(), order.status().name(),
-                order.status() == OrderStatus.CANCELLED ? order.cancellationReason() : null,
-                clock.instant()));
+                step.from() == null ? null : step.from().name(), step.to().name(), reason, step.actorId(),
+                step.at() == null ? clock.instant() : step.at()));
     }
 
     @Override
@@ -151,7 +205,7 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
         return history.findByOrderIdOrderByOccurredAtAscCreatedAtAsc(orderId).stream()
                 .map(row -> new OrderStatusChange(
                         row.getFromStatus() == null ? null : statusOrNull(row.getFromStatus()),
-                        statusOrNull(row.getToStatus()), row.getReason(), row.getOccurredAt()))
+                        statusOrNull(row.getToStatus()), row.getReason(), row.getOccurredAt(), row.getActorId()))
                 .toList();
     }
 
@@ -175,6 +229,11 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
     private static OrderStatus statusOrNull(String name) {
         if ("PAID".equals(name)) {
             return OrderStatus.CONFIRMED;
+        }
+        // IN_FULFILMENT, recorded before G3-2, was the warehouse working on the order: picking, as far as history
+        // can tell (V20261021000100 moved live rows to PICKING or PACKED).
+        if ("IN_FULFILMENT".equals(name)) {
+            return OrderStatus.PICKING;
         }
         try {
             return OrderStatus.valueOf(name);

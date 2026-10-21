@@ -43,7 +43,10 @@ class PaymentEventListener {
     /** Money in: counted once per payment; confirms the order when its terms are met (SCRUM-460). */
     @ApplicationModuleListener
     public void on(PaymentCaptured event) {
-        orders.recordPayment(event.orderId(), event.paymentId(), event.amount(), event.currency());
+        // A receivable's payment pays what a delivery billed: the order keeps it apart, so what it still has to bill
+        // (credit exposure, G3-2) is not lowered twice.
+        orders.recordPayment(event.orderId(), event.paymentId(), event.amount(), event.currency(),
+                "RECEIVABLE_ALLOCATION".equals(event.source()));
         log.info("Order {}: payment {} captured {} {}",
                 event.orderId(), event.paymentId(), event.amount(), event.currency());
     }
