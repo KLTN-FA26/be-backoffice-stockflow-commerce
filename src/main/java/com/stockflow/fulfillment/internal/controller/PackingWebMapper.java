@@ -15,7 +15,7 @@ class PackingWebMapper {
 
     PackingQueueRowResponse toResponse(Packing.QueueRow row) {
         return new PackingQueueRowResponse(row.taskId(), row.orderId(), row.orderNumber(), row.warehouseId(),
-                row.packStatus(), row.pickedAt(), row.pickerName(), row.packerId(), row.packerName(),
+                row.packStatus(), row.packStatus(), row.pickedAt(), row.pickerName(), row.packerId(), row.packerName(),
                 row.packingStartedAt(), row.packageCount(), row.sealedPackageCount(), row.shipmentCount());
     }
 

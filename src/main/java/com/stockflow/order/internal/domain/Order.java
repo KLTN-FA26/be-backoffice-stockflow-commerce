@@ -1368,9 +1368,22 @@ public final class Order extends AggregateRoot {
         return ledger == null || ledger.collected() == null ? paidAmount : paidAmount.max(ledger.collected());
     }
 
-    /** What carriers are to collect on delivery (G2-3): the balance not yet paid of an ON_DELIVERY order, else 0. */
+    /**
+     * What carriers are to collect on delivery (G2-3): the balance of an ON_DELIVERY order, else 0.
+     *
+     * <p>kltn-docs 15 BR-08: the amount collected on delivery is what the order still owes <i>after the deposit</i>
+     * ("phần còn phải thu của đơn (đã trừ cọc)"); the deposit itself is paid before - it confirms the order (15 §4.2,
+     * BR-02) and the handover is refused without it ({@link #amountDueBeforeHandover}). So until the deposit is in,
+     * the deposit is counted as paid here: an order of 900,000 with a 270,000 deposit shows 630,000 to collect on
+     * delivery from the start, not 900,000 (E2E QA 2026-10-21), and the figure only falls when more than the deposit
+     * is paid. Once the deposit is in, it is simply the unpaid balance, as before.</p>
+     */
     public BigDecimal amountDueOnDelivery() {
-        return carrierCollects() ? amountDue() : BigDecimal.ZERO;
+        if (!carrierCollects()) {
+            return BigDecimal.ZERO;
+        }
+        BigDecimal deposit = depositRequired == null ? BigDecimal.ZERO : depositRequired;
+        return billable().subtract(paidAmount.max(deposit)).max(BigDecimal.ZERO);
     }
 
     /**

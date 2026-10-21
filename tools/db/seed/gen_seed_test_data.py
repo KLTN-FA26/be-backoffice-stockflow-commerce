@@ -1675,6 +1675,11 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
             if done:
                 move("PICK", r["line"]["sku"], r["qty"], "PICK_LINE", plid, t_pick + timedelta(hours=2), staff,
                      frm=r["stock"].loc, lot=r["stock"].lot, fs="AVAILABLE")
+        if not pick_done:
+            # The application opens the pack row together with the pick (FulfillmentServiceImpl.createTask): a task
+            # still being picked has a PENDING pack - packing not started. Without it the task list cannot show it.
+            add("fulfillment.pack", id=uid(f"pack:{key}"), pick_id=pick_id, status="PENDING", packed_at=None,
+                created_at=t_pick)
         if pick_done:
             shipped = "SHIPPED" in when
             pack_id = uid(f"pack:{key}")
