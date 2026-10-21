@@ -81,4 +81,12 @@ interface OrderJpaRepository extends ScopedJpaRepository<OrderJpaEntity> {
             group by l.order.id
             """)
     List<Object[]> countLinesByOrder(@Param("orderIds") Collection<UUID> orderIds);
+
+    /** {@code [orderId, lineId, sku, quantity, designSnapshotId]} of these orders' lines, for a list showing them. */
+    @Query("""
+            select l.order.id, l.id, l.sku, l.quantity, l.designSnapshotId from OrderLineJpaEntity l
+            where l.order.id in :orderIds
+            order by l.order.id, l.id
+            """)
+    List<Object[]> findLineRowsByOrder(@Param("orderIds") Collection<UUID> orderIds);
 }
