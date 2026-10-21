@@ -197,6 +197,7 @@ last_modified_at=now(),last_modified_by=? where id=?
     }
 
     public record PublishedMedia(
+            UUID productId,
             UUID id,
             UUID variantId,
             String sku,
@@ -209,32 +210,54 @@ last_modified_at=now(),last_modified_by=? where id=?
             UUID publishedBy) {}
 
     public List<PublishedMedia> publishedMedia(UUID id) {
+        return publishedMedia(List.of(id));
+    }
+
+    /** The published images of many products in one query, each product's in gallery order. */
+    public List<PublishedMedia> publishedMedia(Collection<UUID> productIds) {
+        if (productIds.isEmpty()) return List.of();
+        String placeholders = String.join(",", Collections.nCopies(productIds.size(), "?"));
         return jdbc.query(
                 """
-select m.id,m.variant_id,v.sku,m.url,
+select v.product_id,m.id,m.variant_id,v.sku,m.url,
                     (select rendition->'file'->>'key' from jsonb_array_elements(m.renditions) rendition
                      order by (rendition->>'edge')::integer desc limit 1),
                     m.alt_text,m.sort_order,m.is_primary,m.created_by,m.published_by
 from product.media m join product.variants v on v.id=m.variant_id
-where v.product_id=? and v.status='ACTIVE' and m.kind='IMAGE' and m.is_published
+where v.product_id in (%s) and v.status='ACTIVE' and m.kind='IMAGE' and m.is_published
 and m.published_by is not null and m.published_at is not null
 and m.created_by is not null
                 and (m.storage_key is null or jsonb_array_length(m.renditions)>0)
-order by v.position,v.id,m.sort_order,m.id
-""",
+order by v.product_id,v.position,v.id,m.sort_order,m.id
+""".formatted(placeholders),
                 (r, n) ->
                         new PublishedMedia(
                                 r.getObject(1, UUID.class),
                                 r.getObject(2, UUID.class),
-                                r.getString(3),
+                                r.getObject(3, UUID.class),
                                 r.getString(4),
                                 r.getString(5),
                                 r.getString(6),
-                                r.getInt(7),
-                                r.getBoolean(8),
-                                r.getString(9),
-                                r.getObject(10, UUID.class)),
-                id);
+                                r.getString(7),
+                                r.getInt(8),
+                                r.getBoolean(9),
+                                r.getString(10),
+                                r.getObject(11, UUID.class)),
+                productIds.toArray());
+    }
+
+    /** One ACTIVE variant of a product: SKU code and name. */
+    public record ActiveVariant(UUID productId, String sku, String name) {}
+
+    /** The ACTIVE variants of many products in one query, each product's in display order. */
+    public List<ActiveVariant> activeVariants(Collection<UUID> productIds) {
+        if (productIds.isEmpty()) return List.of();
+        String placeholders = String.join(",", Collections.nCopies(productIds.size(), "?"));
+        return jdbc.query(
+                "select product_id,sku,name from product.variants where status='ACTIVE' and product_id in ("
+                        + placeholders + ") order by product_id,position,id",
+                (r, n) -> new ActiveVariant(r.getObject(1, UUID.class), r.getString(2), r.getString(3)),
+                productIds.toArray());
     }
 
     public void publication(UUID id, boolean published, String actor) {

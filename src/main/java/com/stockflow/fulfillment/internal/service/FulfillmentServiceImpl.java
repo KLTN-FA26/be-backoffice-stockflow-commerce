@@ -98,16 +98,17 @@ class FulfillmentServiceImpl implements FulfillmentService {
             return toTask(existing.get());
         }
         OrderSummary order = requireOrder(orderId);
-        // READY_TO_FULFILL: released, and production (if any) delivered (SCRUM-423). CONFIRMED: a stock-only
-        // order nobody released yet, as before release existed; the order refuses one with print lines.
-        if (order.status() != OrderStatus.CONFIRMED && order.status() != OrderStatus.READY_TO_FULFILL) {
+        // READY_TO_FULFILL only: released - its warehouse chosen - and production (if any) delivered (SCRUM-423,
+        // kltn-docs 17 BR-02). A CONFIRMED order is released by the coordinator first (G3-2).
+        if (order.status() != OrderStatus.READY_TO_FULFILL) {
             throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT,
-                    "Only a confirmed or released order can enter fulfillment; it is " + order.status());
+                    "Only a released order (READY_TO_FULFILL) can enter fulfillment; it is " + order.status());
         }
         UUID warehouseId = pickingWarehouse(order);
         WarehouseScope.requireWarehouse(warehouseId);
         requireWarehouseAssignee(assignedUserId, warehouseId);
-        orders.releaseToFulfillment(orderId);
+        // In this transaction, under the order's row lock (A1): READY_TO_FULFILL → PICKING.
+        orders.startPicking(orderId, actor.userId());
         var now = clock.instant();
         var pick = new PickJpaEntity(Identifiers.newId(), null, orderId, order.orderNumber(), warehouseId,
                 PickStatus.PENDING);
@@ -269,11 +270,12 @@ class FulfillmentServiceImpl implements FulfillmentService {
             return toTask(pick);
         }
         // Under the order's row lock: a cancellation came first (refused, nothing deducted) or is refused after (03 §9).
-        orders.recordPacked(pick.getOrderId());
+        // G3-2: the order becomes PACKED in this transaction (A1); an order on hold is resolved first (409).
+        OrderSummary packed = orders.markPacked(pick.getOrderId(), actor.userId());
         pack.complete(clock.instant());
         deductPrintedGoods(pack, order, actor.userId());
         packs.save(pack);
-        return toTask(pick);
+        return withPaymentWarning(toTask(pick), packed);
     }
 
     @Override
@@ -288,12 +290,13 @@ class FulfillmentServiceImpl implements FulfillmentService {
         if (!verifyAll(pack, order, actor.userId())) {
             return toTask(pick);
         }
-        orders.recordPacked(pick.getOrderId());
+        // The design hold first - back to where it was held from - then packed (G3-2: a held order is not packed).
+        orders.resolveDesignHold(pick.getOrderId(), actor.userId(), resolutionNote);
+        OrderSummary packed = orders.markPacked(pick.getOrderId(), actor.userId());
         pack.complete(clock.instant());
         deductPrintedGoods(pack, order, actor.userId());
         packs.save(pack);
-        orders.resolveDesignHold(pick.getOrderId(), actor.userId(), resolutionNote);
-        return toTask(pick);
+        return withPaymentWarning(toTask(pick), packed);
     }
 
     /**
@@ -352,6 +355,18 @@ class FulfillmentServiceImpl implements FulfillmentService {
         return new FulfillmentTask(pick.getId(), pick.getOrderId(), pick.getOrderNumber(), pick.getWarehouseId(),
                 pick.getAssignedUserId(), assignedUserName, pick.getStatus().name(), pack.getStatus().name(),
                 pick.getAssignedAt(), pick.getStartedAt(), pick.getPickedAt(), pack.getPackedAt(), evidence, lines);
+    }
+
+    /**
+     * G3-Q4 / G2-3: the early warning at packing - the order still owes money its terms want before the goods leave,
+     * so the handover will be refused until the accountant records it.
+     */
+    private static FulfillmentTask withPaymentWarning(FulfillmentTask task, OrderSummary packed) {
+        var due = packed == null || packed.lifecycle() == null ? null : packed.lifecycle().amountDueBeforeHandover();
+        if (due == null || due.signum() <= 0) {
+            return task;
+        }
+        return task.withPaymentDue(new FulfillmentTask.PaymentDue(due, packed.total().currency().getCurrencyCode()));
     }
 
     private String nameOf(UUID userId) {

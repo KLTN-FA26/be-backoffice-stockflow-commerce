@@ -21,7 +21,7 @@ class RecordTransferRequestValidationTest {
 
     private Set<String> invalid(String reference, String currency) {
         return validator.validate(new RecordTransferRequest(UUID.randomUUID(), reference, new BigDecimal("1000"),
-                        currency, LocalDate.now().minusDays(1), null, null)).stream()
+                        currency, LocalDate.now().minusDays(1), null, null, null)).stream()
                 .map(violation -> violation.getPropertyPath().toString())
                 .collect(Collectors.toSet());
     }

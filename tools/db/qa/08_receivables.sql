@@ -29,9 +29,9 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at,
-                                     created_at, payment_term, credit_term_days)
+                                     created_at, payment_term, credit_term_days, shipped_at, delivered_at)
 VALUES (md5('qa:order:r1')::uuid, 'SO-QA-R1', 'c0000000-0000-4000-8000-000000000001', gen_random_uuid(), 'DELIVERED',
-        12000000, 'VND', NOW(), NOW(), 'CREDIT', 30);
+        12000000, 'VND', NOW(), NOW(), 'CREDIT', 30, NOW(), NOW());
 
 \echo '--- receivables (payment.receivable)'
 SELECT pg_temp.expect_ok('R1 a receivable opened at delivery', $q$
@@ -69,12 +69,13 @@ SELECT pg_temp.expect_fail('R9 the same statement line twice (BR-07)', $q$
 SELECT pg_temp.expect_fail('R10 more left unallocated than was sent', $q$
     UPDATE payment.customer_transfer SET unallocated_amount = 10000001 WHERE id = md5('qa:tr:1')::uuid $q$);
 SELECT pg_temp.expect_ok('R11 an allocation', $q$
-    INSERT INTO payment.transfer_allocation (id, transfer_id, receivable_id, amount, allocated_at, allocated_by)
-    VALUES (md5('qa:al:1')::uuid, md5('qa:tr:1')::uuid, md5('qa:rcv:1')::uuid, 7000000, NOW(),
-            md5('demo:user:approver')::uuid) $q$);
+    INSERT INTO payment.transfer_allocation (id, transfer_id, order_id, receivable_id, amount, allocated_at,
+                                             allocated_by)
+    VALUES (md5('qa:al:1')::uuid, md5('qa:tr:1')::uuid, md5('qa:order:r1')::uuid, md5('qa:rcv:1')::uuid, 7000000,
+            NOW(), md5('demo:user:approver')::uuid) $q$);
 SELECT pg_temp.expect_fail('R12 an allocation of nothing', $q$
-    INSERT INTO payment.transfer_allocation (id, transfer_id, receivable_id, amount, allocated_at)
-    VALUES (gen_random_uuid(), md5('qa:tr:1')::uuid, md5('qa:rcv:1')::uuid, 0, NOW()) $q$);
+    INSERT INTO payment.transfer_allocation (id, transfer_id, order_id, receivable_id, amount, allocated_at)
+    VALUES (gen_random_uuid(), md5('qa:tr:1')::uuid, md5('qa:order:r1')::uuid, md5('qa:rcv:1')::uuid, 0, NOW()) $q$);
 SELECT pg_temp.expect_fail('R13 an allocation edited afterwards (BR-06)', $q$
     UPDATE payment.transfer_allocation SET amount = 1 WHERE id = md5('qa:al:1')::uuid $q$);
 SELECT pg_temp.expect_fail('R14 an allocation deleted (BR-06)', $q$

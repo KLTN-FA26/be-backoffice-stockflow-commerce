@@ -17,6 +17,10 @@ interface CustomerTransferJpaRepository extends BaseJpaRepository<CustomerTransf
     boolean existsByReference(String reference);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT t FROM CustomerTransferJpaEntity t WHERE t.id = :id")
+    java.util.Optional<CustomerTransferJpaEntity> lockById(@Param("id") UUID id);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("""
             SELECT t FROM CustomerTransferJpaEntity t
              WHERE t.customerId = :customer AND t.unallocatedAmount > 0

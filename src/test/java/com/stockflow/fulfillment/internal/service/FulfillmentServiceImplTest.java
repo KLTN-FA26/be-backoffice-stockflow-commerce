@@ -218,8 +218,24 @@ class FulfillmentServiceImplTest {
     }
 
     @Test
-    void aConfirmedOrderNotYetReleasedTakesTheWarehouseWhereItsHoldsAre() {
+    void aConfirmedOrderNotYetReleasedIsSentToReleaseFirst() {
+        // G3-2 (kltn-docs 17 BR-02): only a released order - its warehouse chosen - enters fulfillment.
         var order = orderIn(OrderStatus.CONFIRMED, null);
+        holdsAt(order, "HN-A01-1-A=SOFA-3S-GREY");
+        when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
+        when(picks.findByOrderId(order.orderId())).thenReturn(Optional.empty());
+
+        var thrown = refusal(() -> service.createTask(order.orderId(), UUID.randomUUID(), coordinator()));
+
+        assertThat(thrown.errorCode()).isEqualTo(ErrorCode.PICK_TASK_STATE_CONFLICT);
+        assertThat(thrown.getMessage()).contains("READY_TO_FULFILL", "CONFIRMED");
+        verify(orders, never()).startPicking(any(), any());
+        verify(picks, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void aReleasedOrderStartsPickingInTheSameTransaction() {
+        var order = orderIn(OrderStatus.READY_TO_FULFILL, HN);
         UUID picker = UUID.randomUUID();
         holdsAt(order, "HN-A01-1-A=SOFA-3S-GREY", "HN-A01-2-B=SOFA-3S-GREY");
         assignable(HN, picker);
@@ -235,7 +251,7 @@ class FulfillmentServiceImplTest {
         assertThat(task.warehouseId()).isEqualTo(HN);
         assertThat(task.assignedUserName()).isEqualTo("Kho Nam");
         assertThat(task.lines()).isNull();
-        verify(orders).releaseToFulfillment(order.orderId());
+        verify(orders).startPicking(eq(order.orderId()), any());
         org.mockito.ArgumentCaptor<PickJpaEntity> saved = org.mockito.ArgumentCaptor.forClass(PickJpaEntity.class);
         verify(picks).saveAndFlush(saved.capture());
         assertThat(saved.getValue().getOrderNumber()).isEqualTo("SO-20261014-0001");
@@ -270,22 +286,6 @@ class FulfillmentServiceImplTest {
                 PackStatus.PENDING, null)));
 
         assertThat(service.createTask(order.orderId(), picker, coordinator()).warehouseId()).isEqualTo(HCM);
-    }
-
-    @Test
-    void holdsInTwoWarehousesAreRefusedWithTheSkusInTheMessage() {
-        var order = orderIn(OrderStatus.CONFIRMED, null);
-        holdsAt(order, "HN-A01-1-A=SOFA-3S-GREY", "HCM-B01-1-A=TABLE-OAK-160");
-        when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
-        when(picks.findByOrderId(order.orderId())).thenReturn(Optional.empty());
-
-        var thrown = refusal(() -> service.createTask(order.orderId(), UUID.randomUUID(), coordinator()));
-
-        assertThat(thrown.errorCode()).isEqualTo(ErrorCode.FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE);
-        assertThat(thrown.getMessage()).contains("SOFA-3S-GREY", "TABLE-OAK-160");
-        verify(orders, never()).releaseToFulfillment(any());
-        verify(picks, never()).save(any());
-        verify(picks, never()).saveAndFlush(any());
     }
 
     @Test
@@ -330,7 +330,7 @@ class FulfillmentServiceImplTest {
             assertThat(error.field()).isEqualTo("assignedUserId");
             assertThat(error.code()).isEqualTo("NotAssignable");
         });
-        verify(orders, never()).releaseToFulfillment(any());
+        verify(orders, never()).startPicking(any(), any());
         verify(picks, never()).save(any());
         verify(picks, never()).saveAndFlush(any());
     }
@@ -537,7 +537,7 @@ class FulfillmentServiceImplTest {
         UUID snapshot = UUID.randomUUID();
         var line = new OrderSummary.LineSummary(UUID.randomUUID(), "CUSTOM-SKU", 1,
                 Money.vnd(100_000), Money.vnd(100_000), List.of(), snapshot, checksum);
-        return new OrderSummary(orderId, "SO-TEST", UUID.randomUUID(), OrderStatus.IN_FULFILMENT,
+        return new OrderSummary(orderId, "SO-TEST", UUID.randomUUID(), OrderStatus.PICKING,
                 Money.vnd(100_000), List.of(line), now.minusSeconds(600), null, null, null, null, null, null, null, null);
     }
 

@@ -180,7 +180,16 @@ public class CatalogCommerceService {
             String seoDescription,
             List<Variant> variants) {}
 
-    public record Card(UUID productId, String slug, String title, String seoTitle) {}
+    /**
+     * One storefront list card. {@code primaryImageUrl} and {@code skus} spare the page a detail call and a
+     * gallery call per card; neither carries a price or a stock figure (those stay on the CUSTOMER-only
+     * prices and availability endpoints).
+     */
+    public record Card(UUID productId, String slug, String title, String seoTitle, String primaryImageUrl,
+                       List<CardSku> skus) {}
+
+    /** A variant of a card: its SKU code and name. */
+    public record CardSku(String sku, String name) {}
 
     @Transactional(readOnly = true)
     public PublicView detail(String slug) {

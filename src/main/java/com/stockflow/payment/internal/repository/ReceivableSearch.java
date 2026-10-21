@@ -1,5 +1,6 @@
 package com.stockflow.payment.internal.repository;
 
+import com.stockflow.payment.internal.domain.Collector;
 import com.stockflow.payment.internal.domain.CustomerTransfer;
 import com.stockflow.payment.internal.domain.Receivable;
 import com.stockflow.payment.internal.domain.ReceivableStatus;
@@ -13,7 +14,9 @@ import java.util.UUID;
 public interface ReceivableSearch {
 
     /** Every filter null means "any"; {@code dueBefore} keeps receivables due before that day. */
-    Page<Receivable> receivables(UUID customerId, ReceivableStatus status, LocalDate dueBefore, Pageable pageable);
+    Page<Receivable> receivables(UUID customerId, ReceivableStatus status, LocalDate dueBefore, Collector collector,
+                                 String kind, Pageable pageable);
 
-    Page<CustomerTransfer> transfers(UUID customerId, Pageable pageable);
+    /** {@code withCreditOnly}: only transfers with money not yet allocated (the customer's credit, G2-3). */
+    Page<CustomerTransfer> transfers(UUID customerId, boolean withCreditOnly, Pageable pageable);
 }

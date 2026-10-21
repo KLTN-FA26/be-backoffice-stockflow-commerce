@@ -114,6 +114,7 @@ class CreditHoldController {
         return new CreditPositionResponse(t.customerId(),
                 Arrays.stream(CommercialTerm.values()).filter(t::allows).map(Enum::name).toList(),
                 t.defaultTerm().name(), t.depositPercent(), t.creditLimit(), t.creditTermDays(), p.exposure(),
-                p.available(), t.currency(), p.hasOverdue());
+                p.available(), t.currency(), p.hasOverdue(),
+                t.depositBalancePolicy() == null ? null : t.depositBalancePolicy().name());
     }
 }

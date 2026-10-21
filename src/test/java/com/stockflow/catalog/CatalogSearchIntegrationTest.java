@@ -520,7 +520,7 @@ class CatalogSearchIntegrationTest {
         asCustomer(SUGGEST, "q", m).andExpect(header().string("Cache-Control", "no-store"));
         asCustomer(LIST, "q", "!!").andExpect(header().string("Cache-Control", "no-store"));
         var card = body(asCustomer(LIST, "q", m)).at("/data/items/0");
-        assertThat(card.fieldNames()).toIterable().containsExactlyInAnyOrder("productId", "slug", "title", "seoTitle");
+        assertThat(card.fieldNames()).toIterable().containsExactlyInAnyOrder("productId", "slug", "title", "seoTitle", "primaryImageUrl", "skus");
         assertThat(body(asCustomer(LIST, "q", m)).toString()).doesNotContain("price", "stock", "atp", "quantity");
     }
 
@@ -558,6 +558,111 @@ class CatalogSearchIntegrationTest {
                     where catalog.immutable_unaccent(lower(published_title)) operator(public.%) 'ban go'""", String.class));
         });
         assertThat(titlePlan).contains("ix_product_listing_title_trgm");
+    }
+
+    // ---- card fields (primaryImageUrl, skus) ----------------------------------------------
+
+    private JsonNode row(JsonNode page, UUID productId) {
+        for (JsonNode n : page.at("/data/items")) if (n.get("productId").asText().equals(productId.toString())) return n;
+        throw new AssertionError("no row for " + productId);
+    }
+
+    /** A second ACTIVE variant of a published product with one published image. */
+    private void addVariant(UUID product, String sku, String name, int position, String url, boolean primary, int sort) {
+        UUID variant = UUID.randomUUID();
+        tx.executeWithoutResult(s -> {
+            jdbc.update("insert into product.variants(id,product_id,sku,name,status,attribute_signature,position)"
+                    + " values (?,?,?,?,'ACTIVE',?,?)", variant, product, sku, name, "sig-" + sku, position);
+            jdbc.update("""
+                    insert into product.media(id,variant_id,url,is_published,published_at,published_by,created_by,is_primary,sort_order)
+                    values (?,?,?,true,now(),md5('demo:user:approver')::uuid,md5('demo:user:editor')::uuid::text,?,?)
+                    """, UUID.randomUUID(), variant, url, primary, sort);
+            jdbc.update("insert into catalog.pricing_rule(id,name,sku,price,currency,active,created_at)"
+                    + " values (?,?,?,100,'VND',true,now())", UUID.randomUUID(), "BASE:" + sku, sku);
+        });
+    }
+
+    @Test
+    void aCardCarriesThePrimaryImageAndTheVariantsButNoPriceOrStock() throws Exception {
+        String m = marker();
+        UUID id = publish("Cốc " + m, null, sku(m, 1));
+        addVariant(id, sku(m, 2), "Cốc lớn", 1, "https://example.test/primary.jpg", true, 5);
+        var out = body(asCustomer(LIST, "q", m).andExpect(status().isOk()));
+        var card = row(out, id);
+        assertThat(card.get("primaryImageUrl").asText()).isEqualTo("https://example.test/primary.jpg");
+        var skus = new ArrayList<String>();
+        card.get("skus").forEach(n -> skus.add(n.get("sku").asText() + "|" + n.get("name").asText()));
+        assertThat(skus).containsExactlyInAnyOrder(sku(m, 1) + "|Search fixture", sku(m, 2) + "|Cốc lớn");
+        assertThat(card.get("skus").get(0).fieldNames()).toIterable().containsExactlyInAnyOrder("sku", "name");
+        assertThat(card.fieldNames()).toIterable()
+                .containsExactlyInAnyOrder("productId", "slug", "title", "seoTitle", "primaryImageUrl", "skus");
+    }
+
+    @Test
+    void theCardImageIsTheOneTheGalleryEndpointMarksPrimary() throws Exception {
+        String m = marker();
+        UUID id = publish("Hộp " + m, null, sku(m, 1));
+        addVariant(id, sku(m, 2), "Hộp B", 1, "https://example.test/b-primary.jpg", true, 3);
+        String slug = jdbc.queryForObject("select slug from catalog.product_listing where product_id=?", String.class, id);
+        var gallery = body(asCustomer("/api/v1/catalog/products/" + slug + "/gallery").andExpect(status().isOk()));
+        String galleryPrimary = null;
+        for (JsonNode image : gallery.at("/data/images")) if (image.get("primary").asBoolean()) galleryPrimary = image.get("url").asText();
+        var card = row(body(asCustomer(LIST, "q", m).andExpect(status().isOk())), id);
+        assertThat(card.get("primaryImageUrl").asText()).isEqualTo(galleryPrimary).isEqualTo("https://example.test/b-primary.jpg");
+    }
+
+    @Test
+    void severalPrimariesAcrossVariantsLeadByPrimaryThenSortOrderNotByVariantPosition() throws Exception {
+        String m = marker();
+        UUID id = publish("Cốc đôi " + m, null, sku(m, 1));
+        // The primary flag is unique per variant, so each variant may have one: A (position 0) with sort order 5,
+        // B (position 1) with sort order 1. The product page leads with B; the card must too.
+        tx.executeWithoutResult(s -> jdbc.update("update product.media set is_primary=true, sort_order=5"
+                + " where variant_id in (select id from product.variants where product_id=?)", id));
+        addVariant(id, sku(m, 2), "Cốc B", 1, "https://example.test/b-first.jpg", true, 1);
+        String slug = jdbc.queryForObject("select slug from catalog.product_listing where product_id=?", String.class, id);
+        var gallery = body(asCustomer("/api/v1/catalog/products/" + slug + "/gallery").andExpect(status().isOk()));
+        var primaries = new ArrayList<JsonNode>();
+        for (JsonNode image : gallery.at("/data/images")) if (image.get("primary").asBoolean()) primaries.add(image);
+        assertThat(primaries).hasSize(2);
+        String pageLead = primaries.stream().min(java.util.Comparator.comparingInt(n -> n.get("sortOrder").asInt()))
+                .orElseThrow().get("url").asText();
+        var card = row(body(asCustomer(LIST, "q", m).andExpect(status().isOk())), id);
+        assertThat(card.get("primaryImageUrl").asText()).isEqualTo(pageLead).isEqualTo("https://example.test/b-first.jpg");
+    }
+
+    @Test
+    void withoutAPrimaryImageTheFirstOneIsUsed() throws Exception {
+        String m = marker();
+        UUID id = publish("Khay " + m, null, sku(m, 1));
+        var card = row(body(asCustomer(LIST, "q", m).andExpect(status().isOk())), id);
+        assertThat(card.get("primaryImageUrl").asText()).isEqualTo("https://example.test/search.jpg");
+    }
+
+    @Test
+    void aProductWithNoApprovedImageHasNoPrimaryImageUrlAndOnlyActiveVariantsAreListed() throws Exception {
+        String m = marker();
+        UUID id = publish("Nắp " + m, null, sku(m, 1));
+        addVariant(id, sku(m, 2), "Nắp cũ", 1, "https://example.test/old.jpg", false, 0);
+        tx.executeWithoutResult(s -> {
+            // self-approved image (creator = approver) never reaches the storefront; an OBSOLETE variant is not sold
+            jdbc.update("update product.media set created_by = published_by::text where variant_id in"
+                    + " (select id from product.variants where product_id=?)", id);
+            jdbc.update("update product.variants set status='OBSOLETE', obsoleted_at=now() where sku=?", sku(m, 2));
+        });
+        var card = row(body(asCustomer(LIST, "q", m).andExpect(status().isOk())), id);
+        assertThat(card.has("primaryImageUrl")).isFalse();
+        assertThat(card.get("skus")).hasSize(1);
+        assertThat(card.get("skus").get(0).get("sku").asText()).isEqualTo(sku(m, 1));
+    }
+
+    @Test
+    void staffReadTheSameFieldsAndAnonymousIsRefused() throws Exception {
+        String m = marker();
+        UUID id = publish("Đĩa " + m, null, sku(m, 1));
+        var card = row(body(asStaff(LIST, "q", m).andExpect(status().isOk())), id);
+        assertThat(card.get("primaryImageUrl").asText()).isEqualTo("https://example.test/search.jpg");
+        http().anonymous(get(LIST)).andExpect(status().isUnauthorized());
     }
 
     // ---- logging --------------------------------------------------------------------------

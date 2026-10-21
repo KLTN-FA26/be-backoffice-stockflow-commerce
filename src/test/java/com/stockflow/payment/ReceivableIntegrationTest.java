@@ -105,11 +105,16 @@ class ReceivableIntegrationTest {
         return order;
     }
 
-    /** Handed over to the carrier: shipping records it (SCRUM-289/294); here the row is set directly. */
+    /**
+     * Released, picked, packed and handed to the carrier along the lifecycle's edges (G3-2: the transition trigger
+     * refuses a jump), then delivered as a whole order.
+     */
     private OrderSummary delivered(long price) {
         OrderSummary order = creditOrder(price);
-        tx.executeWithoutResult(s -> jdbc.update("UPDATE ordering.customer_order SET status = 'SHIPPED' WHERE id = ?",
-                order.orderId()));
+        releases.release(order.orderId(), DemoData.WAREHOUSE_HCM, accountant);
+        orders.startPicking(order.orderId(), accountant);
+        orders.markPacked(order.orderId(), accountant);
+        orders.markShipped(order.orderId(), null, accountant);
         return orders.recordDelivery(order.orderId());
     }
 

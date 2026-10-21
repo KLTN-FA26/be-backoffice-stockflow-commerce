@@ -124,7 +124,8 @@ class OrderTest {
     void cannotCancelAfterShipment() {
         Order order = submittedOrder();
         paidInFull(order);
-        order.startFulfilment();
+        order.release(HCM, "HCM", COORDINATOR, NOW, java.util.Map.of());
+        order.startPicking(COORDINATOR, NOW);
         order.pullDomainEvents();
 
         assertThat(order.status().canTransitionTo(OrderStatus.CANCELLED)).isTrue();
@@ -362,7 +363,7 @@ class OrderTest {
         assertThat(OrderStatus.PENDING_PAYMENT.customerMayCancelDirectly()).isTrue();
         assertThat(OrderStatus.CONFIRMED.customerMayCancelDirectly()).isTrue();
         for (OrderStatus later : List.of(OrderStatus.IN_PRODUCTION, OrderStatus.READY_TO_FULFILL,
-                OrderStatus.IN_FULFILMENT, OrderStatus.ON_HOLD, OrderStatus.SHIPPED)) {
+                OrderStatus.PICKING, OrderStatus.PACKED, OrderStatus.ON_HOLD, OrderStatus.SHIPPED)) {
             assertThat(later.customerMayCancelDirectly()).as(later.name()).isFalse();
         }
     }
@@ -370,8 +371,7 @@ class OrderTest {
     @Test
     @DisplayName("the status machine has no path out of a terminal state")
     void terminalStatesAreTerminal() {
-        for (OrderStatus terminal : List.of(OrderStatus.COMPLETED, OrderStatus.CANCELLED,
-                OrderStatus.RETURNED)) {
+        for (OrderStatus terminal : List.of(OrderStatus.CLOSED, OrderStatus.CANCELLED)) {
             assertThat(terminal.isTerminal()).isTrue();
             for (OrderStatus target : OrderStatus.values()) {
                 assertThat(terminal.canTransitionTo(target))
@@ -444,8 +444,9 @@ class OrderTest {
                 assertThat(l.approvedSampleId()).isEqualTo(sample);
             });
         });
-        // Fulfilment waits for production (BR-PRD-06).
-        assertThatThrownBy(order::startFulfilment).isInstanceOf(InvalidOrderTransitionException.class);
+        // Fulfilment waits for production (BR-PRD-06): picking the stock lines in parallel changes nothing.
+        assertThat(order.startPicking(COORDINATOR, NOW)).isFalse();
+        assertThat(order.status()).isEqualTo(OrderStatus.IN_PRODUCTION);
     }
 
     @Test
@@ -456,8 +457,8 @@ class OrderTest {
         assertThat(order.status()).isEqualTo(OrderStatus.READY_TO_FULFILL);
         assertThat(order.pullDomainEvents()).singleElement().isInstanceOfSatisfying(OrderEvent.Released.class,
                 e -> assertThat(e.payload().warehouseCode()).isEqualTo("HCM"));
-        order.startFulfilment();
-        assertThat(order.status()).isEqualTo(OrderStatus.IN_FULFILMENT);
+        order.startPicking(COORDINATOR, NOW);
+        assertThat(order.status()).isEqualTo(OrderStatus.PICKING);
     }
 
     @Test
@@ -470,7 +471,8 @@ class OrderTest {
                 .isInstanceOf(InvalidOrderTransitionException.class);
 
         Order printed = paidOrder(true);
-        assertThatThrownBy(printed::startFulfilment).isInstanceOf(InvalidOrderTransitionException.class);
+        assertThatThrownBy(() -> printed.startPicking(COORDINATOR, NOW))
+                .isInstanceOf(InvalidOrderTransitionException.class);
 
         Order released = paidOrder(false);
         released.release(HCM, "HCM", COORDINATOR, NOW, java.util.Map.of());

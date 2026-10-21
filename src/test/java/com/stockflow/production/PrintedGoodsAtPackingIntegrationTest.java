@@ -470,7 +470,7 @@ class PrintedGoodsAtPackingIntegrationTest {
 
         assertThat(code(catchThrowable(() -> cancel(line)))).isEqualTo(ErrorCode.ORDER_NOT_CANCELLABLE);
 
-        assertThat(salesOrders.findById(line.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.IN_FULFILMENT);
+        assertThat(salesOrders.findById(line.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.PACKED);
         assertThat(jdbc.queryForObject("SELECT p.status FROM fulfillment.pack p WHERE p.pick_id = ?", String.class, task))
                 .isEqualTo("PACKED");
         assertThat(onHandAtPacking()).isEqualTo(before - 2);

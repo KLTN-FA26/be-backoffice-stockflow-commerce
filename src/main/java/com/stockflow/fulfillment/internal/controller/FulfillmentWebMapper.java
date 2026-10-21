@@ -24,7 +24,9 @@ class FulfillmentWebMapper {
                 task.lines() == null ? null : task.lines().stream()
                         .map(l -> new FulfillmentTaskResponse.TaskLine(l.lineId(), l.sku(), l.quantity(),
                                 l.designSnapshotId(), l.printLine()))
-                        .toList());
+                        .toList(),
+                task.paymentDue() == null ? null : new FulfillmentTaskResponse.PaymentDue(
+                        task.paymentDue().amountDueBeforeHandover(), task.paymentDue().currency()));
     }
 
     AssigneeResponse toResponse(FulfillmentAssignee assignee) {

@@ -188,8 +188,9 @@ class CustomerOrderPortalIntegrationTest {
         tx.executeWithoutResult(s -> {
             jdbc.update("""
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
-                                                         currency, placed_at, version, created_at)
-                    VALUES (?, ?, ?, ?, 'ON_HOLD', 1000, 'VND', NOW(), 0, NOW())""",
+                                                         currency, placed_at, version, created_at, hold_reason,
+                                                         payment_term, credit_term_days)
+                    VALUES (?, ?, ?, ?, 'ON_HOLD', 1000, 'VND', NOW(), 0, NOW(), 'CREDIT', 'CREDIT', 30)""",
                     order, orderNumber(), customerA, UUID.randomUUID());
             jdbc.update("""
                     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)

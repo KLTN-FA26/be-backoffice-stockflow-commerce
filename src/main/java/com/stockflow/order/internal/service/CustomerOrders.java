@@ -37,8 +37,18 @@ public interface CustomerOrders {
         RETURNED
     }
 
-    /** Where the parcel is, as far as staff have recorded it. */
-    enum DeliveryState { NOT_SHIPPED, IN_TRANSIT, DELIVERED, RETURNED }
+    /**
+     * Where the parcels are, as far as staff have recorded it. With several shipments (G4-Q3) it sums them up
+     * (kltn-docs 09 BR-05): PARTIALLY_DELIVERED once one arrived while another has not.
+     */
+    enum DeliveryState { NOT_SHIPPED, IN_TRANSIT, PARTIALLY_DELIVERED, DELIVERY_FAILED, DELIVERED, RETURNED }
+
+    /**
+     * What the customer may do with the order now, so the portal does not keep its own copy of the rules (G3-2):
+     * cancel at once, ask for a cancellation, or order the same again.
+     */
+    record AllowedActions(boolean cancel, boolean requestCancellation, boolean reorder) {
+    }
 
     /** Where printing a line stands. {@code NOT_REQUIRED} for a line of stock goods. */
     enum ProductionState { NOT_REQUIRED, NOT_STARTED, IN_PROGRESS, DONE, CANCELLED }
@@ -55,8 +65,22 @@ public interface CustomerOrders {
     }
 
     /** One row of the list. */
+    /**
+     * @param cancellationRequestStatus the status of the customer's latest cancellation request (PENDING, APPROVED
+     *                                  or REJECTED); null when they never asked
+     */
     record Card(UUID orderId, String orderNumber, OrderStatus status, StatusGroup statusGroup, BigDecimal total,
-                String currency, Instant placedAt, int lineCount, DeliveryState deliveryState) {
+                String currency, Instant placedAt, int lineCount, DeliveryState deliveryState,
+                String cancellationRequestStatus) {
+    }
+
+    /**
+     * The customer's latest cancellation request of the order and how it was decided, so the portal remembers it
+     * across reloads and shows a rejection. {@code note} is what the customer wrote; {@code decisionNote} what Sales
+     * answered. Who decided is the shop's and is not shown.
+     */
+    record CancellationRequestView(String status, CancellationReasonCode reasonCode, String note, Instant requestedAt,
+                                   Instant decidedAt, String decisionNote) {
     }
 
     /** @param goodQuantity good units printed so far, as the production module reported them */
@@ -88,7 +112,8 @@ public interface CustomerOrders {
     record Detail(UUID orderId, String orderNumber, OrderStatus status, StatusGroup statusGroup,
                   String holdReasonPublic, PaymentTerm paymentTerm, BigDecimal total, String currency,
                   Instant placedAt, OrderSummary.AddressSummary shippingAddress, Payment payment, List<Line> lines,
-                  List<TimelineEntry> timeline, DeliveryState deliveryState) {
+                  List<TimelineEntry> timeline, DeliveryState deliveryState, AllowedActions allowedActions,
+                  CancellationRequestView cancellationRequest) {
     }
 
     /**
