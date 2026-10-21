@@ -386,6 +386,9 @@ class PackingService implements Packing {
             if (printed.labelPrinted(cod, clock.instant())) {
                 log.info("Shipment {}: label reprinted, the carrier now collects {}", shipment.getCode(), cod);
             }
+            // Before the shipment's row changes: the load's lock first, the order the handover takes them in. Also when
+            // the figure did not change here: a load that copied an older one is brought in line by the reprint.
+            relabelOnLoad(shipment.getId(), cod);
             shipment.apply(printed);
             shipments.saveAndFlush(shipment);
         }
@@ -684,6 +687,23 @@ class PackingService implements Packing {
                     if (load.status().isOpen() && load.removeShipment(shipmentId, null, now)) {
                         loadStore.save(load, header);
                         log.info("Shipment {} of a cancelled order taken off load {}", shipmentId, load.code());
+                    }
+                }));
+    }
+
+    /**
+     * E2E QA 2026-10-21 (F2): a label reprinted with another COD while its shipment is on an open load - the
+     * {@code LABEL_OUTDATED} way out - updates the load's copy of the label's figure, so the load, the handover answer
+     * and the signed manifest show what the parcels say. The load's lock is taken before the shipment's row changes,
+     * the order the handover takes them in.
+     */
+    private void relabelOnLoad(UUID shipmentId, BigDecimal cod) {
+        loadMembers.findByShipmentIdInAndActiveTrue(List.of(shipmentId)).stream().findFirst().ifPresent(member ->
+                loads.lockById(member.getLoadId()).ifPresent(header -> {
+                    var load = loadStore.load(header);
+                    if (load.relabel(shipmentId, cod)) {
+                        loadStore.save(load, header);
+                        log.info("Load {}: label COD of shipment {} is now {}", load.code(), shipmentId, cod);
                     }
                 }));
     }

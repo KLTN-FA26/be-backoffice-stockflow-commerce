@@ -10,6 +10,9 @@ public interface CancellationRequestRepository {
 
     boolean hasPending(UUID orderId);
 
+    /** The order's request waiting for a decision, if any (there is at most one). */
+    Optional<CancellationRequest> findPending(UUID orderId);
+
     /** The order's most recent request, if it has one (what the customer's portal shows, G3-2). */
     Optional<CancellationRequest> latestOf(UUID orderId);
 

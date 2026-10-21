@@ -53,6 +53,8 @@ import org.springframework.transaction.annotation.Transactional;
 @Transactional
 class FulfillmentServiceImpl implements FulfillmentService {
 
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(FulfillmentServiceImpl.class);
+
     /** Who a pick can be given to: the two warehouse roles that work orders. */
     private static final Set<String> ASSIGNEE_ROLES = Set.of(
             Role.WAREHOUSE_STAFF.authority(), Role.WAREHOUSE_MANAGER.authority());
@@ -158,7 +160,11 @@ class FulfillmentServiceImpl implements FulfillmentService {
                 Pages.of(query.page(), query.size(), newestFirst));
         Map<UUID, String> names = identities.displayNames(selected.getContent().stream()
                 .map(PickJpaEntity::getAssignedUserId).toList());
-        return Pages.toResponse(selected, pick -> toTask(pick, names.get(pick.getAssignedUserId()), null));
+        List<UUID> pickIds = selected.getContent().stream().map(PickJpaEntity::getId).toList();
+        Map<UUID, PackJpaEntity> packByPick = pickIds.isEmpty() ? Map.of() : packs.findByPickIdIn(pickIds).stream()
+                .collect(Collectors.toMap(PackJpaEntity::getPickId, java.util.function.Function.identity()));
+        return Pages.toResponse(selected, pick -> toTask(pick, packByPick.get(pick.getId()),
+                names.get(pick.getAssignedUserId()), null));
     }
 
     @Override
@@ -276,15 +282,32 @@ class FulfillmentServiceImpl implements FulfillmentService {
 
     private FulfillmentTask toTask(PickJpaEntity pick, String assignedUserName,
                                    List<FulfillmentTask.Line> lines) {
-        var pack = requirePack(pick.getId());
-        var evidence = verifications.findByPackIdOrderByVerifiedAtDesc(pack.getId()).stream()
+        return toTask(pick, packs.findByPickId(pick.getId()).orElse(null), assignedUserName, lines);
+    }
+
+    /**
+     * A task as the API shows it. {@code pack} null - a pick without its pack row, which {@link #createTask} never
+     * leaves but data loaded around it did (E2E QA 2026-10-21: three seeded picks made {@code GET /tasks} 404 for
+     * everyone) - reads as packing not started ({@code PENDING}), logged, rather than failing the task or, worse, a
+     * whole list of tasks for one row. Packing itself still requires the row ({@code PackingService}).
+     */
+    private FulfillmentTask toTask(PickJpaEntity pick, PackJpaEntity pack, String assignedUserName,
+                                   List<FulfillmentTask.Line> lines) {
+        if (pack == null) {
+            log.warn("Fulfillment task {} (order {}) has no pack row; shown as packing not started", pick.getId(),
+                    pick.getOrderNumber());
+        }
+        var evidence = pack == null ? List.<FulfillmentTask.IntegrityEvidence>of()
+                : verifications.findByPackIdOrderByVerifiedAtDesc(pack.getId()).stream()
                 .map(value -> new FulfillmentTask.IntegrityEvidence(value.getOrderLineId(), value.getSnapshotId(),
                         value.getExpectedChecksum(), value.getActualChecksum(),
                         value.getResult() == DesignVerificationResult.MATCH, value.getVerifiedAt()))
                 .toList();
         return new FulfillmentTask(pick.getId(), pick.getOrderId(), pick.getOrderNumber(), pick.getWarehouseId(),
-                pick.getAssignedUserId(), assignedUserName, pick.getStatus().name(), pack.getStatus().name(),
-                pick.getAssignedAt(), pick.getStartedAt(), pick.getPickedAt(), pack.getPackedAt(), evidence, lines);
+                pick.getAssignedUserId(), assignedUserName, pick.getStatus().name(),
+                (pack == null ? PackStatus.PENDING : pack.getStatus()).name(),
+                pick.getAssignedAt(), pick.getStartedAt(), pick.getPickedAt(), pack == null ? null : pack.getPackedAt(),
+                evidence, lines);
     }
 
     /**
@@ -330,10 +353,6 @@ class FulfillmentServiceImpl implements FulfillmentService {
 
     private PickJpaEntity lockPick(UUID taskId) {
         return picks.lockById(taskId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
-    }
-
-    private PackJpaEntity requirePack(UUID pickId) {
-        return packs.findByPickId(pickId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
     }
 
     private OrderSummary requireOrderInFulfilment(PickJpaEntity pick) {

@@ -12,6 +12,9 @@ interface OrderCancellationRequestJpaRepository extends BaseJpaRepository<OrderC
 
     boolean existsByOrderIdAndStatus(UUID orderId, CancellationRequestStatus status);
 
+    java.util.Optional<OrderCancellationRequestJpaEntity> findFirstByOrderIdAndStatus(UUID orderId,
+                                                                                     CancellationRequestStatus status);
+
     java.util.Optional<OrderCancellationRequestJpaEntity> findFirstByOrderIdOrderByRequestedAtDescIdDesc(UUID orderId);
 
     @org.springframework.data.jpa.repository.Query("""

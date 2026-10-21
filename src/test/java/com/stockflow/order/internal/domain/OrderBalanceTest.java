@@ -106,6 +106,30 @@ class OrderBalanceTest {
         }
     }
 
+    @Test
+    @DisplayName("E2E QA 2026-10-21 (15 BR-08): before the deposit is in, ON_DELIVERY already shows the balance after "
+            + "the deposit (total - deposit), not the whole total; a part of the deposit changes nothing; money beyond "
+            + "the deposit lowers it; BEFORE_DELIVERY and other terms collect nothing on delivery")
+    void amountDueOnDeliveryCountsTheDepositFromTheStart() {
+        Order order = placed(PaymentTerm.DEPOSIT, BalancePolicy.ON_DELIVERY);       // 1 100 000, deposit 330 000
+        assertThat(order.depositReceivedAt()).isNull();
+        assertThat(order.amountDueOnDelivery()).isEqualByComparingTo("770000");
+        assertThat(order.amountDueBeforeHandover()).as("the deposit is still owed before the goods leave")
+                .isEqualByComparingTo("330000");
+        order.recordPayment(Money.vnd(100_000), NOW);
+        assertThat(order.amountDueOnDelivery()).isEqualByComparingTo("770000");
+        order.recordPayment(Money.vnd(230_000), NOW);
+        assertThat(order.depositReceivedAt()).isNotNull();
+        assertThat(order.amountDueOnDelivery()).isEqualByComparingTo("770000");
+        order.recordPayment(Money.vnd(200_000), NOW);
+        assertThat(order.amountDueOnDelivery()).isEqualByComparingTo("570000");
+        order.recordPayment(Money.vnd(570_000), NOW);
+        assertThat(order.amountDueOnDelivery()).isZero();
+
+        assertThat(placed(PaymentTerm.DEPOSIT, BalancePolicy.BEFORE_DELIVERY).amountDueOnDelivery()).isZero();
+        assertThat(placed(PaymentTerm.PREPAID, null).amountDueOnDelivery()).isZero();
+    }
+
     @Nested
     @DisplayName("the handover (G3-Q4)")
     class Handover {

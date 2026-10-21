@@ -5,6 +5,13 @@
 #
 #   bash scripts/deploy.sh sha-1a2b3c4   # deploy that tag (what CI runs)
 #   bash scripts/deploy.sh               # re-apply the running tag, e.g. after editing .env
+#   bash scripts/deploy.sh --rotate-jwt-key              # new JWT signing key; everyone signs in again
+#   bash scripts/deploy.sh --install-jwt-key <pem-file>  # use this PKCS#8 key instead; everyone signs in again
+#
+# The two key commands touch only ./jwt and restart the running tag; nothing is pulled or migrated. ./jwt belongs to
+# the container user (uid 10001, mode 700), so the deploy user cannot rm or copy there itself: both go through a
+# throwaway root container of the running image. If the application does not come back healthy with the new key, the
+# previous key is put back and the application restarted with it.
 #
 # Run from /opt/stockflow. GHCR login is needed only when the tag is not already on this machine;
 # CI logs in for its own run and out again afterwards.
@@ -17,9 +24,8 @@
 #
 # Expect a short outage on every deploy (Flyway + JVM start, one to two minutes on 2 vCPUs): there
 # is one application container and it is replaced, not run side by side - a second JVM would not
-# fit in 4 GB. Side by side would not help yet anyway: JwtKeysConfig generates a fresh signing key
-# at startup, so a new instance cannot validate the old one's tokens, and every deploy signs every
-# user out.
+# fit in 4 GB. Users stay signed in across it: the JWT signing key is kept in ./jwt (see
+# prepare_jwt_key_dir), not generated per start.
 # =============================================================================
 set -euo pipefail
 
@@ -63,6 +69,29 @@ app_image=$(env_value APP_IMAGE)
 previous_tag=$(env_value IMAGE_TAG)
 [ -n "$previous_tag" ] || previous_tag=$(cat .deployed-tag 2>/dev/null || true)
 rollback_tag=$(env_value ROLLBACK_TAG)
+key_action=
+key_source=
+case "${1:-}" in
+  --rotate-jwt-key)
+    key_action=rotate; shift ;;
+  --install-jwt-key)
+    key_action=install; key_source=${2:-}; shift $(( $# < 2 ? $# : 2 ))
+    if [ -z "$key_source" ] || [ ! -r "$key_source" ]; then
+      echo "Usage: bash scripts/deploy.sh --install-jwt-key <readable PKCS#8 PEM file>" >&2
+      exit 1
+    fi
+    if ! grep -q -- '-----BEGIN PRIVATE KEY-----' "$key_source"; then
+      echo "$key_source is not a PKCS#8 PEM key (BEGIN PRIVATE KEY). Make one with:" >&2
+      echo "  openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out signing-key.pem" >&2
+      exit 1
+    fi ;;
+  --*)
+    echo "Unknown option $1" >&2; exit 1 ;;
+esac
+if [ -n "$key_action" ] && [ $# -gt 0 ]; then
+  echo "The key commands restart the running tag; they take no tag." >&2
+  exit 1
+fi
 export IMAGE_TAG=${1:-$previous_tag}
 if [ -z "$IMAGE_TAG" ]; then
   echo "No tag given and none recorded in .env." >&2
@@ -149,6 +178,60 @@ backup_database() {
   ls -1t backups/pre-deploy-*.dump 2>/dev/null | tail -n +11 | xargs -r rm -f
 }
 
+# The JWT signing key's directory (JWT_PRIVATE_KEY_PATH in docker-compose.yml). The application runs as the image's
+# unprivileged user, uid/gid 10001 (pinned in the Dockerfile so it survives base-image bumps), and writes the key there
+# on its first start, so the directory must be that user's. A throwaway root container of the same image sets it,
+# which needs no sudo here. Owner-only: whoever reads the key can sign a token for any account. Idempotent; run on
+# every deploy.
+JWT_KEY_OWNER=10001:10001
+jwt_root() { # runs a shell command as root in a throwaway container of the running image, ./jwt at /keys
+  docker run --rm -i --user 0 --entrypoint sh -v "$(pwd)/jwt:/keys" "$app_image:$IMAGE_TAG" -c "$1"
+}
+prepare_jwt_key_dir() {
+  mkdir -p jwt
+  jwt_root "chown -R $JWT_KEY_OWNER /keys && chmod 700 /keys && find /keys -type f -exec chmod 600 {} +" </dev/null
+}
+
+# --rotate-jwt-key / --install-jwt-key: see the header. The previous key is kept as signing-key.pem.previous until the
+# application is healthy with the new one, then removed (a leaked key must not linger).
+change_jwt_key() {
+  prepare_jwt_key_dir
+  jwt_root 'if [ -f /keys/signing-key.pem ]; then mv -f /keys/signing-key.pem /keys/signing-key.pem.previous; fi' \
+    </dev/null
+  if [ "$key_action" = install ]; then
+    jwt_root 'umask 077 && cat > /keys/signing-key.pem.new && mv -f /keys/signing-key.pem.new /keys/signing-key.pem' \
+      < "$key_source"
+  fi
+  # rotate: no key file - the application generates a new one on start.
+  prepare_jwt_key_dir
+  docker compose restart app
+  if wait_until_healthy; then
+    jwt_root 'rm -f /keys/signing-key.pem.previous' </dev/null
+    echo "==> New JWT signing key in use ($key_action); every user signs in again once."
+    return 0
+  fi
+  echo "==> The application did not become healthy with the new key. Last log lines:" >&2
+  docker compose logs --tail=60 app >&2 || true
+  jwt_root 'if [ -f /keys/signing-key.pem.previous ]; then mv -f /keys/signing-key.pem.previous /keys/signing-key.pem; fi' \
+    </dev/null
+  docker compose restart app
+  if wait_until_healthy; then
+    echo "==> Previous key restored; nothing changed." >&2
+  else
+    echo "==> The application is not healthy with the previous key either. Investigate: docker compose logs app" >&2
+  fi
+  return 1
+}
+
+if [ -n "$key_action" ]; then
+  if [ -z "$(docker compose ps -q app 2>/dev/null)" ]; then
+    echo "The application is not running; deploy a tag first." >&2
+    exit 1
+  fi
+  change_jwt_key
+  exit $?
+fi
+
 # Fresh Cloudflare ranges on every deploy; a failed fetch keeps the current lists.
 bash scripts/refresh-cloudflare-ips.sh || echo "WARN: could not refresh Cloudflare ranges; keeping the current lists."
 
@@ -162,6 +245,10 @@ if [ -n "$app_image" ] && docker image inspect "$app_image:$IMAGE_TAG" >/dev/nul
   echo "==> $app_image:$IMAGE_TAG is already here; not pulling."
 else
   docker compose pull app
+fi
+if ! prepare_jwt_key_dir; then
+  echo "==> Could not prepare ./jwt for the JWT signing key; nothing was deployed." >&2
+  exit 1
 fi
 docker compose up -d --remove-orphans
 
