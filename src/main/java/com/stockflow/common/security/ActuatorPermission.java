@@ -2,7 +2,7 @@ package com.stockflow.common.security;
 
 /**
  * The permission that opens the operational actuator endpoints - the aggregate health with its details, metrics,
- * Prometheus, the module map - to a signed-in caller (V20261021000600, seeded for the roles that reached them before:
+ * Prometheus, the module map - to a signed-in caller (V20261021001300, seeded for the roles that reached them before:
  * ECOMMERCE_ADMIN and SYSTEM_ADMIN). The liveness and readiness probes and {@code /actuator/info} stay anonymous on
  * their own filter chain ({@link ResourceServerSecurityConfig#docsAndProbesFilterChain}).
  *

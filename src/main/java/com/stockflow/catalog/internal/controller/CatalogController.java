@@ -31,7 +31,7 @@ import java.util.List;
  * commercially sensitive — a competitor polling an open endpoint could read a customer's run
  * rate off them. Both the authenticated subject and its customer profile are checked.</p>
  *
- * <p>Guarded by {@code catalog-storefront:READ} (V20261021000600), seeded for the CUSTOMER role, scope OWN as
+ * <p>Guarded by {@code catalog-storefront:READ} (V20261021001300), seeded for the CUSTOMER role, scope OWN as
  * {@code /orders/me}: the answer is about the caller's own customer, taken from the token. Staff keep their
  * permission-guarded inventory and price APIs; a caller without an ACTIVE customer profile is refused in the service
  * whatever it was granted. The indicator never includes quantities or prices.</p>
