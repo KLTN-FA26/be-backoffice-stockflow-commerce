@@ -68,6 +68,7 @@ final class OrderPersistenceMapper {
                 entity.getCancellationFeeDetail());
         order.restoreFulfilmentFacts(entity.getPrintingStartedAt(), entity.getPackedAt());
         order.restoreBalance(entity.getBalancePolicy(), entity.getCodAmount());
+        order.restorePartialShipment(entity.isAllowPartialShipment(), entity.isAwaitingProduction());
         order.restoreLifecycle(entity.getHoldReason(), entity.getStatusBeforeHold(), entity.getHoldNote(),
                 entity.getShippedAt(), entity.getDeliveredAt(), entity.getDeliveryFailureReason(),
                 entity.getCompletedAt(), entity.getRefundedAt(), entity.getClosedAt(), entity.getBilledAmount(),
@@ -109,6 +110,7 @@ final class OrderPersistenceMapper {
                 order.cancellationFeeDetail());
         entity.applyFulfilmentFacts(order.printingStartedAt(), order.packedAt());
         entity.applyBalance(order.balancePolicy(), order.codAmount());
+        entity.applyPartialShipment(order.allowPartialShipment(), order.awaitingProduction());
         entity.applyLifecycle(order.holdReason(), order.statusBeforeHold(), order.holdNote(), order.shippedAt(),
                 order.deliveredAt(), order.deliveryFailureReason(), order.completedAt(), order.refundedAt(),
                 order.closedAt(), order.billedAmount(), order.receivablePaidAmount(), order.remainderRefundAmount());
@@ -162,7 +164,9 @@ final class OrderPersistenceMapper {
                 new OrderSummary.Lifecycle(entity.getHoldReason(), entity.getStatusBeforeHold(), entity.getHoldNote(),
                         entity.getPackedAt(), entity.getShippedAt(), entity.getDeliveredAt(),
                         entity.getDeliveryFailureReason(), entity.getCompletedAt(), entity.getClosedAt(),
-                        entity.getBilledAmount(), null, null, null, List.of(), List.of()));
+                        entity.getBilledAmount(), null, null, null, List.of(), List.of(), null, null,
+                        entity.isAllowPartialShipment(), !entity.isAwaitingProduction()
+                                && entity.getStatus() != OrderStatus.IN_PRODUCTION));
     }
 
     private static OrderSummary.AddressSummary toSummary(OrderAddressJpaEmbeddable a) {

@@ -205,8 +205,8 @@ class PrintedGoodsAtPackingIntegrationTest {
             jdbc.update("""
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
                         currency, placed_at, version, created_at, paid_amount, paid_in_full_at, warehouse_id,
-                        released_at, released_by)
-                    VALUES (?, ?, ?, ?, 'IN_PRODUCTION', ?, 'VND', NOW(), 0, NOW(), ?, NOW(), ?, NOW(), ?)""",
+                        released_at, released_by, allow_partial_shipment)
+                    VALUES (?, ?, ?, ?, 'IN_PRODUCTION', ?, 'VND', NOW(), 0, NOW(), ?, NOW(), ?, NOW(), ?, TRUE)""",
                     orderId, number, DemoData.CUSTOMER_ID, UUID.randomUUID(), quantity * 2000, quantity * 2000, hcm,
                     sales.userId());
             jdbc.update("""

@@ -126,6 +126,9 @@ class MoneyLedgerIntegrationTest {
         OrderSummary order = orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), who, null, null, false,
                 List.of(new PlaceOrderCommand.Line(SOFA, units, Money.vnd(PRICE), null)), term, null, policy));
         placed.add(order.orderId());
+        // Split shipments throughout: Sales allowed them on the order (PACK-PARTIAL, lead's decision 2026-10-21).
+        tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE ordering.customer_order SET allow_partial_shipment = TRUE WHERE id = ?", order.orderId()));
         return order;
     }
 
@@ -137,6 +140,9 @@ class MoneyLedgerIntegrationTest {
         OrderSummary order = orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), customer, null, null, false,
                 List.of(new PlaceOrderCommand.Line(SOFA, 1, Money.vnd(price), null)), term, depositPercent, null));
         placed.add(order.orderId());
+        // Split shipments throughout: Sales allowed them on the order (PACK-PARTIAL, lead's decision 2026-10-21).
+        tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE ordering.customer_order SET allow_partial_shipment = TRUE WHERE id = ?", order.orderId()));
         return order;
     }
 

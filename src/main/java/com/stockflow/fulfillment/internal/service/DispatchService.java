@@ -363,8 +363,17 @@ class DispatchService implements Dispatching {
                 .sorted(Comparator.comparing(ShipmentJpaEntity::getOrderId).thenComparing(ShipmentJpaEntity::getReadyAt)
                         .thenComparing(ShipmentJpaEntity::getId))
                 .toList();
-        for (ShipmentJpaEntity row : ordered) {
-            handOver(row, load, carrier, linesByShipment.getOrDefault(row.getId(), List.of()),
+        for (int i = 0; i < ordered.size(); i++) {
+            ShipmentJpaEntity row = ordered.get(i);
+            // PACK-PARTIAL: the order's shipments signed over after this one leave with it - an order that does not
+            // allow partial shipments lets this one go when, with them, nothing of it is left behind.
+            List<ShipmentHandover.Line> leavingWith = new ArrayList<>();
+            for (ShipmentJpaEntity later : ordered.subList(i + 1, ordered.size())) {
+                if (later.getOrderId().equals(row.getOrderId())) {
+                    leavingWith.addAll(linesByShipment.getOrDefault(later.getId(), List.of()));
+                }
+            }
+            handOver(row, load, carrier, linesByShipment.getOrDefault(row.getId(), List.of()), leavingWith,
                     parcelsByShipment.get(row.getId()).size(), by, now);
         }
         header = store.save(load, header);
@@ -385,7 +394,8 @@ class DispatchService implements Dispatching {
      * order's own.</p>
      */
     private void handOver(ShipmentJpaEntity row, DispatchLoad load, CarrierJpaEntity carrier,
-                          List<ShipmentHandover.Line> lines, int parcels, UUID by, Instant at) {
+                          List<ShipmentHandover.Line> lines, List<ShipmentHandover.Line> leavingWith, int parcels,
+                          UUID by, Instant at) {
         Shipment shipment = row.toDomain();
         boolean wholeOrder = lines.isEmpty();
         OrderSummary order;
@@ -398,7 +408,7 @@ class DispatchService implements Dispatching {
             } else {
                 order = orders.recordHandover(row.getOrderId(), new ShipmentHandover(row.getId(), lines, at, by,
                         earlierPending(row), new ShipmentHandover.Carriage(row.getCode(), parcels, carrier.getName(),
-                        row.getDeliveryMode().name())));
+                        row.getDeliveryMode().name()), leavingWith));
                 cod = order.lifecycle().shipments().stream().filter(s -> s.shipmentId().equals(row.getId()))
                         .findFirst().map(OrderSummary.Shipment::codAmount).orElseThrow();
             }

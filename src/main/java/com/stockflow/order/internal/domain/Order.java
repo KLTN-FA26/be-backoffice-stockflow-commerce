@@ -121,6 +121,18 @@ public final class Order extends AggregateRoot {
     private BigDecimal receivablePaidAmount = BigDecimal.ZERO;
     /** Refunds asked for when a remainder was closed, so a second closure asks only for the difference. */
     private BigDecimal remainderRefundAmount = BigDecimal.ZERO;
+    /**
+     * PACK-PARTIAL (lead's decision 2026-10-21): Sales decided the order may ship in parts - a packing completion that
+     * leaves goods behind, a handover of part of it, and shipping the stock of a mixed order while it is printed
+     * (PACK-EARLY). Off by default: the warehouse ships the order whole.
+     */
+    private boolean allowPartialShipment;
+    /**
+     * PACK-EARLY: part of the order was handed over while it was IN_PRODUCTION, so it is PARTIALLY_FULFILLED (or held
+     * from there) while its print lines are still printed; cleared when production completes or the print lines are
+     * closed. Its print lines are not at packing until then ({@link #printLinesReady()}).
+     */
+    private boolean awaitingProduction;
     private final List<OrderShipment> shipments = new ArrayList<>();
     /** Status changes not saved yet, with who and why; drained by the repository. */
     private final List<OrderTransition> transitions = new ArrayList<>();
@@ -335,11 +347,15 @@ public final class Order extends AggregateRoot {
     private void assignTerms(PaymentTerm term, BigDecimal depositPercent, Integer creditTermDays,
                              BalancePolicy policy) {
         PaymentTerm chosen = term == null ? PaymentTerm.PREPAID : term;
-        if ((chosen == PaymentTerm.CREDIT) != (creditTermDays != null)) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Only a credit order has days to pay");
-        }
         if (chosen != PaymentTerm.DEPOSIT && policy != null) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Only a deposit order has a balance policy");
+        }
+        // BALCREDIT: a deposit order whose balance goes on credit keeps the days to pay it, as a credit order does.
+        boolean onCredit = chosen == PaymentTerm.CREDIT
+                || chosen == PaymentTerm.DEPOSIT && policy == BalancePolicy.ON_CREDIT;
+        if (onCredit != (creditTermDays != null)) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "Only a credit order, or a deposit order with its balance on credit, has days to pay");
         }
         BigDecimal deposit = null;
         if (chosen == PaymentTerm.DEPOSIT) {
@@ -761,13 +777,22 @@ public final class Order extends AggregateRoot {
      */
     public boolean completeProduction(java.util.Map<UUID, Integer> producedByLine, String warehouseCode, Instant now) {
         boolean heldInProduction = status == OrderStatus.ON_HOLD && statusBeforeHold == OrderStatus.IN_PRODUCTION;
-        if (status != OrderStatus.IN_PRODUCTION && !heldInProduction) {
+        if (status != OrderStatus.IN_PRODUCTION && !heldInProduction && !awaitingProduction) {
             return false;
         }
+        // Units closed out of a line are not printed for (closeRemainder after an early shipment).
         boolean allDone = printLines().stream()
-                .allMatch(line -> producedByLine.getOrDefault(line.id(), 0) >= line.quantity());
+                .allMatch(line -> producedByLine.getOrDefault(line.id(), 0) >= line.quantity() - line.cancelledQuantity());
         if (!allDone) {
             return false;
+        }
+        if (awaitingProduction) {
+            // PACK-EARLY: its stock already left, partly fulfilled (or held from there): the printed goods are now at
+            // packing and go as the rest of the split order. The status does not move.
+            this.awaitingProduction = false;
+            registerEvent(new OrderEvent.Released(new com.stockflow.contracts.OrderReleased(id.value(), warehouseCode,
+                    now)));
+            return true;
         }
         if (heldInProduction) {
             // Production finished while the order was held: resolving the hold takes it to READY_TO_FULFILL, not back
@@ -789,6 +814,54 @@ public final class Order extends AggregateRoot {
 
     public boolean hasPrintLines() {
         return lines.stream().anyMatch(OrderLine::isMadeToOrder);
+    }
+
+    /**
+     * Whether the printed goods of the order have reached packing (PACK-EARLY): an order without print lines, or one
+     * whose production completed. While IN_PRODUCTION (or held from it), or partly fulfilled before its production
+     * completed, the warehouse packs only its stock lines.
+     */
+    public boolean printLinesReady() {
+        if (!hasPrintLines()) {
+            return true;
+        }
+        boolean printing = status == OrderStatus.IN_PRODUCTION
+                || status == OrderStatus.ON_HOLD && statusBeforeHold == OrderStatus.IN_PRODUCTION;
+        return !printing && !awaitingProduction;
+    }
+
+    /**
+     * PACK-PARTIAL (lead's decision 2026-10-21): Sales decides whether the order may ship in parts - the warehouse no
+     * longer does. Possible until everything left or the order is closed ({@code ORDER_PARTIAL_SHIPMENT_LOCKED});
+     * turning it off on a partly fulfilled order means the rest goes in one handover.
+     *
+     * @return whether this changed the order
+     */
+    public boolean decidePartialShipment(boolean allowed) {
+        boolean open = switch (status) {
+            case DRAFT, PENDING_PAYMENT, CONFIRMED, IN_PRODUCTION, READY_TO_FULFILL, PICKING, PARTIALLY_FULFILLED,
+                 PACKED, ON_HOLD -> true;
+            case SHIPPED, DELIVERY_FAILED, DELIVERED, RETURN_REQUESTED, RETURNED, REFUNDED, PARTIALLY_REFUNDED,
+                 COMPLETED, CANCELLED, CLOSED -> false;
+        };
+        if (!open) {
+            throw new BusinessException(ErrorCode.ORDER_PARTIAL_SHIPMENT_LOCKED,
+                    "Order %s is %s: whether it ships in parts can no longer change".formatted(orderNumber, status));
+        }
+        if (allowPartialShipment == allowed) {
+            return false;
+        }
+        this.allowPartialShipment = allowed;
+        return true;
+    }
+
+    public boolean allowPartialShipment() { return allowPartialShipment; }
+    public boolean awaitingProduction() { return awaitingProduction; }
+
+    /** Rehydration of the partial-shipment decision and the early shipment's wait for production. */
+    public void restorePartialShipment(boolean allowed, boolean awaiting) {
+        this.allowPartialShipment = allowed;
+        this.awaitingProduction = awaiting;
     }
 
     /** Rehydration of the payment terms and the release, from the row. */
@@ -1042,7 +1115,11 @@ public final class Order extends AggregateRoot {
             return false;
         }
         requireNotCancelled("its goods are not handed over");
-        if (status != OrderStatus.PICKING && status != OrderStatus.PACKED && status != OrderStatus.PARTIALLY_FULFILLED) {
+        // PACK-EARLY: IN_PRODUCTION / READY_TO_FULFILL hand over the stock packed while the order was printed - only
+        // part of the order, so only when it allows partial shipments (checked below with what is left behind).
+        boolean early = status == OrderStatus.IN_PRODUCTION || status == OrderStatus.READY_TO_FULFILL;
+        if (status != OrderStatus.PICKING && status != OrderStatus.PACKED && status != OrderStatus.PARTIALLY_FULFILLED
+                && !early) {
             throw new InvalidOrderTransitionException(orderNumber, status,
                     status == OrderStatus.ON_HOLD ? "resolve the hold before handing goods over"
                             : "only a picking, packed or partly shipped order hands goods over");
@@ -1062,9 +1139,19 @@ public final class Order extends AggregateRoot {
             }
             value = value.plus(line.unitPrice().times(entry.getValue()));
         }
-        boolean everythingGoes = outstandingUnits() == quantities.values().stream().mapToInt(Integer::intValue).sum();
-        if (status == OrderStatus.PICKING && everythingGoes) {
+        int leaving = quantities.values().stream().mapToInt(Integer::intValue).sum();
+        boolean everythingGoes = outstandingUnits() == leaving;
+        if ((status == OrderStatus.PICKING || early) && everythingGoes) {
             throw new InvalidOrderTransitionException(orderNumber, status, "pack it before handing everything over");
+        }
+        // PACK-PARTIAL (lead's decision 2026-10-21): goods left behind - not in this shipment nor in the others signed
+        // over with it - make this a partial shipment, which Sales decides on the order, not the warehouse.
+        int leavingWith = quantitiesOf(handover.leavingWith()).values().stream().mapToInt(Integer::intValue).sum();
+        if (!allowPartialShipment && outstandingUnits() > leaving + leavingWith) {
+            throw new BusinessException(ErrorCode.ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED,
+                    "Order %s does not allow partial shipments: %d unit(s) would stay behind. Hand everything over "
+                            .formatted(orderNumber, outstandingUnits() - leaving - leavingWith)
+                            + "together, or ask Sales to allow partial shipment on the order");
         }
         // G2-3: what the carrier collects for this shipment, fixed at the handover (15 BR-08): its value less the money
         // paid ahead that the shipments before it have not used.
@@ -1073,6 +1160,10 @@ public final class Order extends AggregateRoot {
                 handover.handedOverAt(), handover.handedOverBy(), cod, handover.carriage()));
         // Goods handed over were packed: from here the order goes through a return, never a cancellation.
         recordPacked(handover.handedOverAt());
+        // PACK-EARLY: handed over while printed - the order goes on waiting for production, partly fulfilled.
+        if (status == OrderStatus.IN_PRODUCTION) {
+            this.awaitingProduction = true;
+        }
         followShipments(ShipmentChange.HANDED_OVER, handover.handedOverAt(), handover.handedOverBy());
         return true;
     }
@@ -1214,6 +1305,8 @@ public final class Order extends AggregateRoot {
                 closedLines.add(new com.stockflow.contracts.OrderRemainderClosed.Line(line.id(), line.sku().code(), left));
             }
         }
+        // PACK-EARLY: every unit not shipped is closed, the print lines' too - nothing printed is left to wait for.
+        this.awaitingProduction = false;
         BigDecimal refundable = paidAmount.subtract(billable()).max(BigDecimal.ZERO).subtract(remainderRefundAmount)
                 .max(BigDecimal.ZERO);
         this.remainderRefundAmount = remainderRefundAmount.add(refundable);
@@ -1346,7 +1439,10 @@ public final class Order extends AggregateRoot {
         BigDecimal due = billable().subtract(paid).max(BigDecimal.ZERO);
         return switch (paymentTerm) {
             case PREPAID -> due;
-            case DEPOSIT -> carrierCollects() ? depositRequired.subtract(paid).max(BigDecimal.ZERO).min(due) : due;
+            // The balance is collected on delivery - by the carrier (ON_DELIVERY) or as a receivable (ON_CREDIT): only
+            // the deposit is wanted before the goods leave.
+            case DEPOSIT -> carrierCollects() || balanceOnCredit()
+                    ? depositRequired.subtract(paid).max(BigDecimal.ZERO).min(due) : due;
             case CREDIT -> BigDecimal.ZERO;
         };
     }
@@ -1407,6 +1503,23 @@ public final class Order extends AggregateRoot {
         return paymentTerm == PaymentTerm.DEPOSIT && balancePolicy == BalancePolicy.ON_DELIVERY;
     }
 
+    /** BALCREDIT: a deposit order whose balance becomes the customer's receivable on delivery. */
+    public boolean balanceOnCredit() {
+        return paymentTerm == PaymentTerm.DEPOSIT && balancePolicy == BalancePolicy.ON_CREDIT;
+    }
+
+    /**
+     * BALCREDIT: the part of the order its customer is given credit for - the whole order on credit terms, the
+     * balance after the deposit for a deposit order whose balance goes on credit - as checked against the credit limit
+     * when it is placed; 0 for any other order.
+     */
+    public BigDecimal creditAmount() {
+        if (paymentTerm == PaymentTerm.CREDIT) {
+            return total().amount();
+        }
+        return balanceOnCredit() ? total().amount().subtract(depositRequired).max(BigDecimal.ZERO) : BigDecimal.ZERO;
+    }
+
     /**
      * Money paid ahead (not against a receivable) that no shipment still out or delivered has counted on (G2-3,
      * ON_DELIVERY): it pays the earliest shipments first, as for credit orders (G3-2). A shipment that came back
@@ -1439,11 +1552,14 @@ public final class Order extends AggregateRoot {
     }
 
     /**
-     * Bills a delivery of goods worth {@code worth} (a credit order only, kltn-docs 15 §4.3 step 2): at most what the
+     * Bills a delivery of goods worth {@code worth} (a credit order, or the balance of an ON_CREDIT deposit order;
+     * kltn-docs 15 §4.3 step 2, §4.2 step 3): at most what the
      * order has left to bill, which money paid ahead - not against a receivable - already covers.
      */
     private BigDecimal billNow(BigDecimal worth) {
-        if (paymentTerm != PaymentTerm.CREDIT) {
+        // BALCREDIT: a deposit order whose balance goes on credit bills its deliveries as a credit order does - the
+        // deposit, paid ahead, pays the earliest of them first.
+        if (paymentTerm != PaymentTerm.CREDIT && !balanceOnCredit()) {
             return BigDecimal.ZERO;
         }
         // Money paid ahead pays the earliest deliveries first: a later shipment that comes back, and is then closed,

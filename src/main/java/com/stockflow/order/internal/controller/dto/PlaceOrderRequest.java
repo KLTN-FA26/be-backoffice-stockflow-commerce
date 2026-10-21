@@ -50,7 +50,9 @@ public record PlaceOrderRequest(
         BigDecimal depositPercent,
 
         @Schema(description = "DEPOSIT orders, staff only: BEFORE_DELIVERY to make the customer pay the balance before "
-                + "the handover even if their terms let the carrier collect it; omit for the customer's terms (G2-3). "
+                + "the handover even if their terms let the carrier collect it, or ON_CREDIT to put the balance on the "
+                + "customer's credit (they must be allowed CREDIT; the balance is checked against their credit limit, "
+                + "409 BALANCE_CREDIT_LIMIT_EXCEEDED over it); omit for the customer's terms (G2-3). "
                 + "Ignored when a customer places the order", example = "BEFORE_DELIVERY")
         com.stockflow.order.api.BalancePolicy balancePolicy
 ) {

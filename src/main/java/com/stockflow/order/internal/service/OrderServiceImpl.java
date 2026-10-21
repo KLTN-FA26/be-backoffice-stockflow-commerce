@@ -238,11 +238,15 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         // its locks in the same order.
         CreditTerms terms = customers.lockCreditTerms(command.customerId());
         PaymentTerm term = termFor(command.paymentTerm(), terms);
+        com.stockflow.order.api.BalancePolicy policy = balancePolicyFor(term, command.balancePolicy(), terms);
+        boolean balanceOnCredit = policy == com.stockflow.order.api.BalancePolicy.ON_CREDIT;
         order.applyTerms(term,
                 term == PaymentTerm.DEPOSIT && command.depositPercent() == null ? terms.depositPercent()
                         : command.depositPercent(),
-                term == PaymentTerm.CREDIT ? terms.creditTermDays() : null,
-                balancePolicyFor(term, command.balancePolicy(), terms));
+                term == PaymentTerm.CREDIT || balanceOnCredit ? terms.creditTermDays() : null,
+                policy);
+        // BALCREDIT: the balance goes on credit only within the limit - refused here, before any stock is held.
+        BalanceCredit balanceCredit = balanceOnCredit ? requireBalanceWithinLimit(order, terms) : null;
 
         // Direct in-process call across the module boundary, through inventory's published port.
         // It joins this transaction. If reserve() throws InsufficientStockException on line 3,
@@ -270,6 +274,11 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
             order.submit();
             saved = repository.save(order);
         }
+        if (balanceCredit != null) {
+            creditChecks.record(new CreditChecks.Check(order.id().value(), clock.instant(), terms.creditLimit(),
+                    balanceCredit.exposure(), balanceCredit.amount(), CreditChecks.Outcome.WITHIN_LIMIT, null, null,
+                    "Deposit balance on credit"));
+        }
         events.publishEventsOf(order);
 
         log.info("Placed order {} for customer {} with {} line(s), total {}, {} ({})",
@@ -278,9 +287,10 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     }
 
     /**
-     * G2-3 (15 §4.2 step 3, "theo chính sách của khách"): a deposit order's balance is collected as the customer's terms
+    * G2-3 (15 §4.2 step 3, "theo chính sách của khách"): a deposit order's balance is collected as the customer's terms
      * say. Staff may tighten it to BEFORE_DELIVERY - goods leave only paid - but not collect on delivery for a customer
-     * whose terms do not allow it ({@code BALANCE_POLICY_NOT_ALLOWED}). Other terms have no balance to collect.
+     * whose terms do not allow it ({@code BALANCE_POLICY_NOT_ALLOWED}). ON_CREDIT (BALCREDIT) needs a customer allowed
+     * credit, whether their terms or Sales chose it. Other terms have no balance to collect.
      */
     static com.stockflow.order.api.BalancePolicy balancePolicyFor(PaymentTerm term,
                                                                   com.stockflow.order.api.BalancePolicy requested,
@@ -294,6 +304,16 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         com.stockflow.order.api.BalancePolicy customers = terms.depositBalancePolicy() == null
                 ? com.stockflow.order.api.BalancePolicy.BEFORE_DELIVERY
                 : com.stockflow.order.api.BalancePolicy.valueOf(terms.depositBalancePolicy().name());
+        com.stockflow.order.api.BalancePolicy chosen = requested == null ? customers : requested;
+        if (chosen == com.stockflow.order.api.BalancePolicy.ON_CREDIT) {
+            // BALCREDIT: the balance on credit is the customer's debt - only for a customer allowed credit (Sales may
+            // choose it for one; the limit is checked when the order is placed).
+            if (!terms.allowCredit()) {
+                throw new BusinessException(ErrorCode.BALANCE_POLICY_NOT_ALLOWED,
+                        "Customer %s is not allowed credit: the balance cannot go on credit".formatted(terms.customerId()));
+            }
+            return chosen;
+        }
         if (requested == null || requested == customers) {
             return customers;
         }
@@ -302,6 +322,46 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         }
         throw new BusinessException(ErrorCode.BALANCE_POLICY_NOT_ALLOWED,
                 "Customer %s pays the balance of a deposit order %s".formatted(terms.customerId(), customers));
+    }
+
+    /** What the customer owed on credit before the order, and the balance it puts on credit. */
+    private record BalanceCredit(BigDecimal exposure, BigDecimal amount) {
+    }
+
+    /**
+     * BALCREDIT (lead's decision 2026-10-21; kltn-docs 15 §4.2 step 3, BR-03): a deposit order's balance goes on credit
+     * only when what the customer already owes on credit - undelivered credit (orders on credit, balances on credit) and
+     * open receivables - plus this balance stays within their limit, and they are not overdue (15 §4.3 step 4). Over
+     * it the order is refused, never held: Sales changes the terms (409 {@code BALANCE_CREDIT_LIMIT_EXCEEDED},
+     * {@code CUSTOMER_CREDIT_OVERDUE}). The customer's row is locked (lockCreditTerms), so two orders are checked one
+     * after the other.
+     */
+    private BalanceCredit requireBalanceWithinLimit(Order order, CreditTerms terms) {
+        var position = paymentService.creditPosition(order.customerId());
+        BigDecimal amount = order.creditAmount();
+        if (position.hasOverdue()) {
+            throw new BusinessException(ErrorCode.CUSTOMER_CREDIT_OVERDUE, ("Customer %s has overdue receivables: the "
+                    + "balance of a deposit order cannot go on credit; choose BEFORE_DELIVERY or ON_DELIVERY")
+                    .formatted(terms.customerId()), List.of(new com.stockflow.common.api.FieldError("balancePolicy",
+                    "the customer is overdue", "CreditOverdue")));
+        }
+        BigDecimal exposure = creditChecks.undeliveredCreditExposure(order.customerId(), order.id().value())
+                .add(position.outstandingReceivables());
+        if (exposure.add(amount).compareTo(terms.creditLimit()) > 0) {
+            String currency = order.total().currency().getCurrencyCode();
+            throw new BusinessException(ErrorCode.BALANCE_CREDIT_LIMIT_EXCEEDED, ("The balance on credit, %s %s, would "
+                    + "take customer %s to %s %s owed on credit, above their limit of %s %s (%s %s available): change "
+                    + "the balance policy or the deposit").formatted(plain(amount), currency, terms.customerId(),
+                    plain(exposure.add(amount)), currency, plain(terms.creditLimit()), currency,
+                    plain(terms.creditLimit().subtract(exposure).max(BigDecimal.ZERO)), currency),
+                    List.of(new com.stockflow.common.api.FieldError("balancePolicy",
+                            "over the customer's credit limit", "CreditLimitExceeded")));
+        }
+        return new BalanceCredit(exposure, amount);
+    }
+
+    private static String plain(BigDecimal value) {
+        return value.stripTrailingZeros().toPlainString();
     }
 
     /** kltn-docs 15 BR-01: the term asked for, or the customer's default, and only one they may use. */
@@ -411,6 +471,15 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
     public Optional<OrderStatus> lockedStatus(UUID orderId) {
         return repository.findByIdForUpdate(new OrderId(orderId)).map(Order::status);
+    }
+
+    @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public boolean lockedLineWithdrawn(UUID orderId, UUID lineId) {
+        return repository.findByIdForUpdate(new OrderId(orderId))
+                .map(order -> order.status() == OrderStatus.CANCELLED || order.findLine(lineId)
+                        .map(line -> line.cancelledQuantity() >= line.quantity()).orElse(true))
+                .orElse(true);
     }
 
     /**
@@ -1022,7 +1091,8 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         return new OrderSummary.Lifecycle(order.holdReason(), order.statusBeforeHold(), order.holdNote(),
                 order.packedAt(), order.shippedAt(), order.deliveredAt(), order.deliveryFailureReason(), order.completedAt(),
                 order.closedAt(), order.billedAmount(), order.billable(), order.amountDue(),
-                order.amountDueBeforeHandover(), progress, shipments, order.amountDueOnDelivery(), order.codAmount());
+                order.amountDueBeforeHandover(), progress, shipments, order.amountDueOnDelivery(), order.codAmount(),
+                order.allowPartialShipment(), order.printLinesReady());
     }
 
     private static OrderAddressSnapshot toSnapshot(CheckoutCustomer.CheckoutAddress address) {

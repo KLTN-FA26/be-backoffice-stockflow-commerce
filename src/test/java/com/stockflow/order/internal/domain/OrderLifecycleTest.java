@@ -53,6 +53,8 @@ class OrderLifecycleTest {
                 term == PaymentTerm.CREDIT ? 30 : null,
                 term == PaymentTerm.DEPOSIT ? com.stockflow.order.api.BalancePolicy.ON_DELIVERY : null);
         order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
+        // Split shipments throughout: Sales allowed them (PACK-PARTIAL); OrderPartialShipmentTest covers the refusals.
+        order.decidePartialShipment(true);
         if (term == PaymentTerm.CREDIT) {
             order.submitOnCredit(true);
         } else {

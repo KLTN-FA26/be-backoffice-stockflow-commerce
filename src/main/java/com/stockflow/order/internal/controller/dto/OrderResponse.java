@@ -65,12 +65,13 @@ public record OrderResponse(
         @Schema(example = "PARTIALLY_PAID", description = "UNPAID, PARTIALLY_PAID, ON_CREDIT or PAID (kltn-docs 15 §5.2)")
         String paymentStatus,
 
-        @Schema(description = "A credit order's days to pay after delivery; null otherwise")
+        @Schema(description = "Days to pay after delivery: a credit order's, or an ON_CREDIT deposit order's for its "
+                + "balance; null otherwise")
         Integer creditTermDays,
 
         @Schema(example = "BEFORE_DELIVERY", description = "A deposit order's way of collecting the balance: "
-                + "BEFORE_DELIVERY (by transfer, before the handover) or ON_DELIVERY (the carrier collects it); null "
-                + "for other terms (G2-3)")
+                + "BEFORE_DELIVERY (by transfer, before the handover), ON_DELIVERY (the carrier collects it) or "
+                + "ON_CREDIT (a receivable on delivery, due after creditTermDays); null for other terms (G2-3)")
         String balancePolicy,
 
         @Schema(description = "Set when the order is CANCELLED")
@@ -126,7 +127,18 @@ public record OrderResponse(
 
         @Schema(description = "What carriers are to collect on delivery: the unpaid balance of an ON_DELIVERY deposit "
                 + "order, 0 otherwise (G2-3)")
-        BigDecimal amountDueOnDelivery
+        BigDecimal amountDueOnDelivery,
+
+        @Schema(description = "Sales allowed the order to ship in parts (PACK-PARTIAL): packing may complete part of "
+                + "it, part of it may be handed over, and a mixed order's stock may ship while its prints are made "
+                + "(PACK-EARLY). False by default; set with PUT /orders/{orderId}/partial-shipment; null on rows that "
+                + "do not carry it")
+        Boolean allowPartialShipment,
+
+        @Schema(description = "Its printed goods are at packing: no print lines, or production completed. False while "
+                + "the order is printed, or partly shipped before production completed (PACK-EARLY); null on rows "
+                + "that do not carry it")
+        Boolean printLinesReady
 ) {
 
     @Schema(name = "OrderShipment")

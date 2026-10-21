@@ -127,6 +127,9 @@ class OrderLifecycleIntegrationTest {
         OrderSummary order = orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), customer, null, null, false,
                 List.of(new PlaceOrderCommand.Line(SOFA, units, Money.vnd(PRICE), null)), term,
                 term == PaymentTerm.DEPOSIT ? new BigDecimal("30") : null));
+        // Split shipments throughout: Sales allowed them on the order (PACK-PARTIAL, lead's decision 2026-10-21).
+        tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE ordering.customer_order SET allow_partial_shipment = TRUE WHERE id = ?", order.orderId()));
         placed.add(order.orderId());
         return order;
     }

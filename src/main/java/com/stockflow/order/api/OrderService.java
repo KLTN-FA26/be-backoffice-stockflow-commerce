@@ -195,6 +195,14 @@ public interface OrderService {
      */
     Optional<OrderStatus> lockedStatus(UUID orderId);
 
+    /**
+     * Whether a line's goods are no longer wanted, read under the order's row lock in the caller's transaction: the
+     * order is cancelled (or unknown), or every unit of the line was closed out of it ({@link #closeRemainder}, e.g.
+     * the print lines of a mixed order whose stock already shipped, PACK-EARLY). Production stops the line's work then,
+     * as for a cancelled order.
+     */
+    boolean lockedLineWithdrawn(UUID orderId, UUID lineId);
+
     /** QC reverified the design: the DESIGN_MISMATCH hold is resolved back to where it was held from. */
     void resolveDesignHold(UUID orderId, UUID resolvedBy, String note);
 

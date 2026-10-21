@@ -197,6 +197,9 @@ class PackingStationIntegrationTest {
         OrderSummary order = orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), DemoData.CUSTOMER_ID,
                 List.of(lines)));
         placed.add(order.orderId());
+        // Split shipments throughout: Sales allowed them on the order (PACK-PARTIAL, lead's decision 2026-10-21).
+        tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE ordering.customer_order SET allow_partial_shipment = TRUE WHERE id = ?", order.orderId()));
         BigDecimal total = order.total().amount();
         UUID payment = Identifiers.newId();
         tx.executeWithoutResult(s -> jdbc.update("""
@@ -226,6 +229,9 @@ class PackingStationIntegrationTest {
                 List.of(new PlaceOrderCommand.Line(SOFA, sofas, Money.vnd(price), null)), PaymentTerm.DEPOSIT, null,
                 null));
         placed.add(order.orderId());
+        // Split shipments throughout: Sales allowed them on the order (PACK-PARTIAL, lead's decision 2026-10-21).
+        tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE ordering.customer_order SET allow_partial_shipment = TRUE WHERE id = ?", order.orderId()));
         BigDecimal deposit = order.total().amount().multiply(new BigDecimal("0.3"));
         receivables.recordTransfer(new ReceivableService.RecordTransferCommand(customer,
                 "FT" + UUID.randomUUID().toString().replace("-", "").substring(0, 12).toUpperCase(), deposit, "VND",

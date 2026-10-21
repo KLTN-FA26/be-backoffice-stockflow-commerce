@@ -146,6 +146,13 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "cod_amount", nullable = false, precision = 19, scale = 4)
     private java.math.BigDecimal codAmount = java.math.BigDecimal.ZERO;
 
+    /** V20261022000400 (PACK-PARTIAL / PACK-EARLY): Sales allowed shipping in parts; shipped early, printing goes on. */
+    @Column(name = "allow_partial_shipment", nullable = false)
+    private boolean allowPartialShipment;
+
+    @Column(name = "awaiting_production", nullable = false)
+    private boolean awaitingProduction;
+
     @Column(name = "warehouse_id")
     private UUID warehouseId;
 
@@ -292,6 +299,14 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     }
 
     public com.stockflow.order.api.BalancePolicy getBalancePolicy() { return balancePolicy; }
+
+    public void applyPartialShipment(boolean allowed, boolean awaiting) {
+        this.allowPartialShipment = allowed;
+        this.awaitingProduction = awaiting;
+    }
+
+    public boolean isAllowPartialShipment() { return allowPartialShipment; }
+    public boolean isAwaitingProduction() { return awaitingProduction; }
     public java.math.BigDecimal getCodAmount() { return codAmount; }
 
     public void applyPaymentAndCancellation(java.math.BigDecimal paidAmount, Instant paidInFullAt,

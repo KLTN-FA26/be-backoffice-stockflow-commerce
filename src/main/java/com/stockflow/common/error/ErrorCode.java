@@ -316,6 +316,15 @@ public enum ErrorCode {
     PAYMENT_REVERSAL_NOT_ALLOWED("This payment can no longer be taken back", 409),
     /** G2-3 (15 §4.2 step 3): the customer's terms do not let the balance be collected that way. */
     BALANCE_POLICY_NOT_ALLOWED("This customer may not use that way of paying the balance", 409),
+    /**
+     * BALCREDIT (lead's decision 2026-10-21): a deposit order's balance on credit would take the customer past their
+     * credit limit, or they are overdue. Refused at placement, never held: Sales changes the terms.
+     */
+    BALANCE_CREDIT_LIMIT_EXCEEDED("The balance on credit would exceed the customer's credit limit", 409),
+    /** PACK-PARTIAL (lead's decision 2026-10-21): the order does not allow a partial shipment; Sales decides. */
+    ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED("This order does not allow partial shipments", 409),
+    /** PACK-PARTIAL: whether the order may ship in parts can no longer change once everything left or it is closed. */
+    ORDER_PARTIAL_SHIPMENT_LOCKED("Partial shipment can no longer be changed on this order", 409),
     /** G2-3: a carrier remittance names a receivable the customer pays themselves. */
     RECEIVABLE_NOT_CARRIER_COLLECTED("This receivable is not collected by a carrier", 409),
     /** G2-3: the customer paid this balance to the carrier; record the carrier's remittance instead. */
@@ -369,7 +378,7 @@ public enum ErrorCode {
     PACKAGE_SHIPPED("The package is in a shipment already", 409),
     /** Docs 08 BR-01: everything the order still wants must be packed, or a partial shipment asked for. */
     PACKING_INCOMPLETE("Not everything is packed yet", 409),
-    /** The split-shipment policy is off (stockflow.fulfillment.packing.partial-shipments). */
+    /** PACK-PARTIAL (lead's decision 2026-10-21): the order does not allow a partial shipment; Sales decides. */
     PACK_PARTIAL_NOT_ALLOWED("Partial shipments are not allowed", 409),
     PACK_NOTHING_TO_SHIP("No sealed package is waiting to ship", 409),
     /** Docs 09 §5: the shipment's status does not allow the step. */

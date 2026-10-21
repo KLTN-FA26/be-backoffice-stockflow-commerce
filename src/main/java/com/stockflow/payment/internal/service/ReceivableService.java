@@ -149,6 +149,10 @@ public class ReceivableService {
      * <p>G2-3: a deposit order whose balance the carrier collects (ON_DELIVERY) bills what the carrier collected on
      * delivery - the amount fixed at the handover (15 BR-08) - as a carrier-collected receivable due that day; the
      * carrier's remittance pays it (09 §4.3 step 4). A deposit order paid before delivery bills nothing.</p>
+     *
+     * <p>BALCREDIT: a deposit order whose balance goes on credit (ON_CREDIT) bills what the order billed for the delivery
+     * - the goods less the deposit not yet used - as the customer's DEPOSIT_BALANCE receivable, due after their days to
+     * pay; their unallocated credit pays it first, as for a credit order.</p>
      */
     public void orderDelivered(OrderDelivered event) {
         if (event.customerId() == null) {
@@ -157,6 +161,9 @@ public class ReceivableService {
         boolean credit = "CREDIT".equals(event.paymentTerm());
         boolean deposit = "DEPOSIT".equals(event.paymentTerm());
         boolean carrierCollects = deposit && "ON_DELIVERY".equals(event.balancePolicy());
+        // BALCREDIT: the balance of a deposit order on credit is billed per delivery as a credit order's is, due after
+        // the customer's days to pay, the customer's own debt (counted in their credit position).
+        boolean balanceOnCredit = deposit && "ON_CREDIT".equals(event.balancePolicy());
         if (!credit && !deposit) {
             return;
         }
@@ -166,7 +173,7 @@ public class ReceivableService {
             return;
         }
         LocalDate deliveryDay = LocalDate.ofInstant(event.deliveredAt(), BUSINESS_ZONE);
-        if (deposit && !carrierCollects) {
+        if (deposit && !carrierCollects && !balanceOnCredit) {
             balanceDeliveredUnpaid(event, deliveryDay);
             return;
         }
@@ -184,8 +191,9 @@ public class ReceivableService {
         }
         int days = event.creditTermDays() == null ? 0 : event.creditTermDays();
         LocalDate due = deliveryDay.plusDays(days);
-        Receivable receivable = book.save(Receivable.open(event.orderId(), event.customerId(), owed, event.currency(),
-                event.deliveredAt(), due).forShipment(event.shipmentId()));
+        Receivable opened = Receivable.open(event.orderId(), event.customerId(), owed, event.currency(),
+                event.deliveredAt(), due).forShipment(event.shipmentId());
+        Receivable receivable = book.save(balanceOnCredit ? opened.withKind("DEPOSIT_BALANCE") : opened);
         log.info("Receivable {} opened for order {}: {} {} due {}", receivable.id(), event.orderNumber(), owed,
                 event.currency(), due);
         // The customer's unallocated credit pays it first.

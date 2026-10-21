@@ -89,8 +89,9 @@ public final class CreditProfile extends AggregateRoot {
 
     /**
      * @param balancePolicy null with deposits allowed keeps the policy the terms had, or BEFORE_DELIVERY - the policy
-     *                      that never lets unpaid goods leave - when they had none; without deposits there is no
-     *                      balance to collect, and a policy is refused
+     *                      that never lets unpaid goods leave - when they had none, or had ON_CREDIT and lose credit;
+     *                      without deposits there is no balance to collect, and a policy is refused. ON_CREDIT needs
+     *                      credit allowed (BALCREDIT)
      */
     public void change(boolean allowPrepaid, boolean allowDeposit, boolean allowCredit, CommercialTerm defaultTerm,
                        BigDecimal depositPercent, BigDecimal creditLimit, Integer creditTermDays,
@@ -122,6 +123,10 @@ public final class CreditProfile extends AggregateRoot {
         if (!deposit && policy != null) {
             throw invalid("A balance policy is given only when deposits are allowed");
         }
+        if (deposit && policy == DepositBalancePolicy.ON_CREDIT && !credit) {
+            // BALCREDIT: the balance becomes a receivable on the customer's credit, so they must be allowed credit.
+            throw invalid("A deposit balance on credit needs CREDIT among the allowed terms");
+        }
         if (credit != (limit != null && days != null)) {
             throw invalid("A credit limit and the days to pay are given exactly when credit is allowed");
         }
@@ -138,8 +143,10 @@ public final class CreditProfile extends AggregateRoot {
         this.depositPercent = percent;
         this.creditLimit = limit;
         this.creditTermDays = days;
+        DepositBalancePolicy kept = depositBalancePolicy == DepositBalancePolicy.ON_CREDIT && !credit ? null
+                : depositBalancePolicy;
         this.depositBalancePolicy = !deposit ? null : policy != null ? policy
-                : depositBalancePolicy != null ? depositBalancePolicy : DepositBalancePolicy.BEFORE_DELIVERY;
+                : kept != null ? kept : DepositBalancePolicy.BEFORE_DELIVERY;
         this.approvedBy = Objects.requireNonNull(by, "approvedBy");
         this.approvedAt = Objects.requireNonNull(at, "approvedAt");
         this.note = text == null || text.isBlank() ? null : text.trim();
