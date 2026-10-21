@@ -17,13 +17,10 @@ import org.springframework.security.oauth2.jwt.JwtClaimsSet;
 import org.springframework.security.oauth2.jwt.JwtEncoder;
 import org.springframework.security.oauth2.jwt.JwtEncoderParameters;
 
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
-import java.security.KeyPairGenerator;
 import java.time.Instant;
-import java.util.Base64;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -36,6 +33,18 @@ import static org.assertj.core.api.Assumptions.assumeThat;
  * is created owner-only; a configured key that is unusable stops startup with the reason.
  */
 class JwtSigningKeyTest {
+
+    /** A throwaway 1024-bit RSA key, PKCS#8 body only: the weak-key refusal needs one, and it signs nothing. */
+    private static final String WEAK_1024_BIT_PKCS8 =
+            "MIICdQIBADANBgkqhkiG9w0BAQEFAASCAl8wggJbAgEAAoGBAK1cnf8jaqpnEeLZEePzjgbwIZXsJn3RzFS1gCiOMPeEfiE9" +
+            "3XTwJgaQv3/4sOI3B8P7+Q+Oi6UZRr6YejGK+KAS4L0iObcWBu2Zgs6YLyXdkfyF01XgfbKzf6K9MSAcB52n6LdXVroJgIrz" +
+            "n05eQtNCYUdA/N4WmA4Hh06YHsylAgMBAAECgYA0KhJAm1+VNr5jC/4eIUMzQz5X5l8OrPpW4uZVTbPeRrfNONhSP5CxmQyG" +
+            "bUaMSxLDHiarT7ElVJ287BSYo8B7q2bjEJUt7FkACy6ApMW5XAtnqxGFGXIZD20fRk9qtBaV6uRGwdrHBPZBPWQqsPd6Th9n" +
+            "/4NbE/n9LQD3QlNsAQJBANXjFtcErWPOSJNk5NGIkcZcVaO6zKXezWOaO4jAtpXYAjstwzcf7xQyf2AB4h+HTtbCHcjMJq6U" +
+            "vc84U2TbYcUCQQDPft0is3KRoAayOML+9fJ4kA9741xTWS1d8KLgVZrPLbYzKq3XSeP9i3I9qFOQpSVs2IOGX++0LQw1bLtk" +
+            "JM1hAkBnL3w4VWBU8xLeUOF3GLzDBo6mQ5sxNnC96Y1pJxeu6JwC8svoDzbm9omuxpnRfhSR1OpLkfnjZYzAqLrKwG/FAkAv" +
+            "t03lL/0VzgYcL/9voGGNJhvZcpSFukk7hB4Als8N+8YdiCAIFT7vzISN90qYRdIQcM32NdOqzH01P/br9aahAkAKUpXzWzYn" +
+            "OjSfTlOTSG2ZIPHItjB+e+o5iz8NRhYS120R2DVxeRKSFLifk0Tdv81ptiUfUOOYljP6/Q2w0Ygi";
 
     @TempDir
     Path dir;
@@ -137,12 +146,8 @@ class JwtSigningKeyTest {
     @Test
     @DisplayName("a key shorter than 2048 bits is refused")
     void weakKeyRefused() throws Exception {
-        KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
-        generator.initialize(1024);
-        String body = Base64.getMimeEncoder(64, "\n".getBytes(StandardCharsets.US_ASCII))
-                .encodeToString(generator.generateKeyPair().getPrivate().getEncoded());
         Path file = dir.resolve("weak.pem");
-        Files.writeString(file, "-----BEGIN PRIVATE KEY-----\n" + body + "\n-----END PRIVATE KEY-----\n");
+        Files.writeString(file, "-----BEGIN PRIVATE KEY-----\n" + WEAK_1024_BIT_PKCS8 + "\n-----END PRIVATE KEY-----\n");
         assertThatThrownBy(() -> JwtSigningKey.fromFile(file)).hasMessageContaining("1024-bit")
                 .hasMessageContaining("2048");
     }

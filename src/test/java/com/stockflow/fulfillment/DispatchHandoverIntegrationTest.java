@@ -1013,14 +1013,13 @@ class DispatchHandoverIntegrationTest {
         try {
             for (String query : List.of("", "?status=PICKING", "?size=100")) {
                 JsonNode page = data(oc(get(BASE + "/tasks" + query)).andExpect(status().isOk()));
-                JsonNode row = null;
+                List<String> packStatuses = new ArrayList<>();
                 for (JsonNode item : page.path("items")) {
                     if (item.path("taskId").asText().equals(task.toString())) {
-                        row = item;
+                        packStatuses.add(item.path("packStatus").asText());
                     }
                 }
-                assertThat(row).as("the task is listed (%s)", query).isNotNull();
-                assertThat(row.path("packStatus").asText()).isEqualTo("PENDING");
+                assertThat(packStatuses).as("the task is listed (%s)", query).containsExactly("PENDING");
             }
             as(picker, "WAREHOUSE_STAFF", get(BASE + "/tasks")).andExpect(status().isOk());
             oc(get(BASE + "/tasks/" + task)).andExpect(status().isOk())
