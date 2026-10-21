@@ -70,6 +70,7 @@ final class OrderPersistenceMapper {
         order.restoreBalance(entity.getBalancePolicy(), entity.getCodAmount());
         order.restorePartialShipment(entity.isAllowPartialShipment(), entity.isAwaitingProduction());
         order.restoreRemainderFee(entity.getRemainderFeeAmount());
+        order.restoreFulfilmentStarted(entity.getFulfilmentStartedAt());
         order.restoreLifecycle(entity.getHoldReason(), entity.getStatusBeforeHold(), entity.getHoldNote(),
                 entity.getShippedAt(), entity.getDeliveredAt(), entity.getDeliveryFailureReason(),
                 entity.getCompletedAt(), entity.getRefundedAt(), entity.getClosedAt(), entity.getBilledAmount(),
@@ -113,6 +114,7 @@ final class OrderPersistenceMapper {
         entity.applyBalance(order.balancePolicy(), order.codAmount());
         entity.applyPartialShipment(order.allowPartialShipment(), order.awaitingProduction());
         entity.applyRemainderFee(order.remainderFeeAmount());
+        entity.applyFulfilmentStarted(order.fulfilmentStartedAt());
         entity.applyLifecycle(order.holdReason(), order.statusBeforeHold(), order.holdNote(), order.shippedAt(),
                 order.deliveredAt(), order.deliveryFailureReason(), order.completedAt(), order.refundedAt(),
                 order.closedAt(), order.billedAmount(), order.receivablePaidAmount(), order.remainderRefundAmount());

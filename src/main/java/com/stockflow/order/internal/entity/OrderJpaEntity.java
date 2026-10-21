@@ -157,6 +157,10 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "awaiting_production", nullable = false)
     private boolean awaitingProduction;
 
+    /** V20261022000400 (review of #150): when fulfillment opened the order's task. */
+    @Column(name = "fulfilment_started_at")
+    private Instant fulfilmentStartedAt;
+
     @Column(name = "warehouse_id")
     private UUID warehouseId;
 
@@ -310,6 +314,12 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     }
 
     public boolean isAllowPartialShipment() { return allowPartialShipment; }
+
+    public void applyFulfilmentStarted(Instant at) {
+        this.fulfilmentStartedAt = at;
+    }
+
+    public Instant getFulfilmentStartedAt() { return fulfilmentStartedAt; }
 
     public void applyRemainderFee(java.math.BigDecimal fee) {
         this.remainderFeeAmount = fee == null ? java.math.BigDecimal.ZERO : fee;

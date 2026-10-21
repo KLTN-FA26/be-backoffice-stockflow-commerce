@@ -38,6 +38,6 @@ class TaskCandidateService implements TaskCandidates {
                 throw new BusinessException(ErrorCode.WAREHOUSE_NOT_FOUND);
             }
         }
-        return orders.readyToFulfill(warehouseId, page, size);
+        return orders.awaitingTask(warehouseId, page, size);
     }
 }

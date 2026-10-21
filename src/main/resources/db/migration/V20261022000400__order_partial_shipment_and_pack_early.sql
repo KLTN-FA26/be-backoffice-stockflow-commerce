@@ -42,6 +42,15 @@ ALTER TABLE ordering.customer_order
     ADD COLUMN remainder_fee_amount NUMERIC(19, 4) NOT NULL DEFAULT 0,
     ADD CONSTRAINT ck_order_remainder_fee CHECK (remainder_fee_amount >= 0 AND remainder_fee_amount <= total_amount);
 
+-- Review of #150 (task candidates, PR #151): when fulfillment opened the order's task - set by createTask through
+-- OrderService.startPicking in the same transaction. The create-task list leaves such orders out whatever their status
+-- does next (a mixed order picked while printing goes back to READY_TO_FULFILL). Backfilled from the existing tasks.
+ALTER TABLE ordering.customer_order ADD COLUMN fulfilment_started_at TIMESTAMPTZ;
+UPDATE ordering.customer_order o
+   SET fulfilment_started_at = p.created_at
+  FROM (SELECT order_id, MIN(created_at) AS created_at FROM fulfillment.pick GROUP BY order_id) p
+ WHERE p.order_id = o.id;
+
 COMMENT ON COLUMN ordering.customer_order.allow_partial_shipment IS
     'Sales allowed the order to ship in parts (PACK-PARTIAL); the warehouse ships it whole otherwise.';
 COMMENT ON COLUMN ordering.customer_order.awaiting_production IS

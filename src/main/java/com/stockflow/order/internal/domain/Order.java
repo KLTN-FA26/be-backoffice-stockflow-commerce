@@ -135,6 +135,12 @@ public final class Order extends AggregateRoot {
      * closed. Its print lines are not at packing until then ({@link #printLinesReady()}).
      */
     private boolean awaitingProduction;
+    /**
+     * Review of #150 (task candidates): when fulfillment opened the order's task ({@link #startPicking}), in the same
+     * transaction (A1). A published fact of the order's own: the create-task list leaves the order out from then on,
+     * whatever its status does next (a mixed order printed in parallel goes back to READY_TO_FULFILL).
+     */
+    private Instant fulfilmentStartedAt;
     private final List<OrderShipment> shipments = new ArrayList<>();
     /** Status changes not saved yet, with who and why; drained by the repository. */
     private final List<OrderTransition> transitions = new ArrayList<>();
@@ -695,9 +701,13 @@ public final class Order extends AggregateRoot {
      * @return whether this changed the order
      */
     public boolean startPicking(UUID by, Instant at) {
+        boolean first = fulfilmentStartedAt == null;
+        if (first) {
+            this.fulfilmentStartedAt = at;
+        }
         switch (status) {
             case PICKING, PACKED, PARTIALLY_FULFILLED, IN_PRODUCTION -> {
-                return false;
+                return first;
             }
             case READY_TO_FULFILL -> {
                 transitionTo(OrderStatus.PICKING, by, null, at);
@@ -864,6 +874,12 @@ public final class Order extends AggregateRoot {
     }
 
     public boolean allowPartialShipment() { return allowPartialShipment; }
+    public Instant fulfilmentStartedAt() { return fulfilmentStartedAt; }
+
+    /** Rehydration of when fulfillment opened the order's task. */
+    public void restoreFulfilmentStarted(Instant at) {
+        this.fulfilmentStartedAt = at;
+    }
     public boolean awaitingProduction() { return awaitingProduction; }
 
     /** Rehydration of the partial-shipment decision and the early shipment's wait for production. */
