@@ -110,6 +110,8 @@ public enum ErrorCode {
     LOCATION_NOT_FOUND("Location not found", 404),
     /** No stock of this SKU (and lot) is held at this location. */
     STOCK_ITEM_NOT_FOUND("No such stock at this location", 404),
+    /** No stock package (carton) with this id or LPN (SCRUM-473). */
+    STOCK_PACKAGE_NOT_FOUND("No such stock package", 404),
     STOCK_ADJUSTMENT_NOT_FOUND("Stock adjustment not found", 404),
     CANCELLATION_REQUEST_NOT_FOUND("Cancellation request not found", 404),
     RECEIVABLE_NOT_FOUND("Receivable not found", 404),
@@ -188,6 +190,8 @@ public enum ErrorCode {
     ADJUSTMENT_SELF_APPROVAL("A stock adjustment cannot be decided by the person who requested it", 409),
     INVALID_ADJUSTMENT_TRANSITION("This stock adjustment has already been decided", 409),
     INVALID_TRANSFER_TRANSITION("This transfer order cannot move to that status right now", 409),
+    /** The life of a stock package (V20261020000100): RECEIVING → IN_STOCK | VOID, IN_STOCK → CONSUMED | LOST, LOST → IN_STOCK. */
+    INVALID_STOCK_PACKAGE_TRANSITION("This stock package cannot do that in its current status", 409),
     /** Four eyes on a transfer above the approval threshold. */
     TRANSFER_SELF_APPROVAL("A transfer order cannot be decided by the person who submitted it", 409),
     /** BR-01 (docs 03): goods are received only against a CONFIRMED or PARTIALLY_RECEIVED purchase order. */
@@ -208,6 +212,8 @@ public enum ErrorCode {
     /** Two receipt lines for the same PO line and lot (uk_goods_receipt_lines_lot). */
     DUPLICATE_RECEIPT_LINE("The same purchase order line and lot appear twice on this receipt", 409),
     RECEIPT_LINE_NOT_ON_PO("This line is not a line of the receipt's purchase order", 409),
+    /** Cartons were labelled on the line (SCRUM-473): void or recount them before the line is dropped. */
+    RECEIPT_LINE_HAS_PACKAGES("This receipt line has labelled cartons", 409),
     /** The PO line is closed, cancelled or fully received: nothing more is received against it. */
     PO_LINE_NOT_OPEN("This purchase order line is no longer open for receiving", 409),
     /** One stock row per SKU, location and lot: quarantined and rejected goods need two areas. */

@@ -29,10 +29,23 @@ public class InventoryPolicyRepository {
         jdbc.query("select pg_advisory_xact_lock(hashtextextended(?, 701))", rs -> {}, sku);
     }
 
+    /**
+     * The SKU locks (sorted), then these SKUs' cartons in stock, then every stock row of them, each in id order: the
+     * lock order of V20261020000100. The cartons come before the rows because a caller here may take units out of a
+     * carton's row (a transfer dispatch), and every carton writer takes the carton first; locking the rows first
+     * would wait in a circle with a pick holding a carton and waiting for its row.
+     */
     public void lockReservationStock(Set<String> skus) {
         if (skus.isEmpty()) return;
         skus.stream().sorted().forEach(this::lock);
         String placeholders = String.join(",", Collections.nCopies(skus.size(), "?"));
+        jdbc.query("""
+                        select p.id from inventory.stock_package p
+                          join inventory.inventory_items i on i.id = p.inventory_item_id
+                         where i.sku in (""" + placeholders + """
+                        ) and p.status = 'IN_STOCK' order by p.id for update of p""",
+                r -> {},
+                skus.toArray());
         jdbc.query(
                 "select id from inventory.stock_item where sku in ("
                         + placeholders

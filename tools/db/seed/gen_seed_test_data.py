@@ -1675,9 +1675,13 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
             if done:
                 move("PICK", r["line"]["sku"], r["qty"], "PICK_LINE", plid, t_pick + timedelta(hours=2), staff,
                      frm=r["stock"].loc, lot=r["stock"].lot, fs="AVAILABLE")
-        if pick_done:
+        pack_id = uid(f"pack:{key}")
+        if not pick_done:
+            # The application opens a pick and its pack together (FulfillmentServiceImpl.createTask); the task
+            # list reads the pack of every pick and answers 404 for the whole page if one is missing.
+            add("fulfillment.pack", id=pack_id, pick_id=pick_id, status="PENDING", packed_at=None, created_at=t_pick)
+        else:
             shipped = "SHIPPED" in when
-            pack_id = uid(f"pack:{key}")
             pack_status = "PACKED" if shipped or cur == "PACKED" else "PACKING"
             if cur == "ON_HOLD":
                 pack_status = "ON_HOLD"

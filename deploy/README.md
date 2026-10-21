@@ -230,7 +230,31 @@ POST https://api.<domain>/api/v1/identity/auth/login
 ```
 
 Send `Authorization: Bearer <accessToken>` on every call. In Swagger UI: **Authorize**, paste the
-token. A token lasts 8 hours - and ends at the next deploy, which signs everyone out.
+token. A token lasts 8 hours, across deploys and restarts.
+
+### The JWT signing key (`/opt/stockflow/jwt`)
+
+Tokens are signed with an RSA key kept in `/opt/stockflow/jwt/signing-key.pem` on the host, mounted into the
+application container (`JWT_PRIVATE_KEY_PATH` in `docker-compose.yml`). Nothing to do by hand:
+
+- `scripts/deploy.sh` creates `jwt/` if missing and gives it to the image's `stockflow` user - uid/gid **10001**,
+  pinned in the Dockerfile - (mode 700, the key 600) through a throwaway root container of the same image - no sudo
+  needed. The `deploy` user can therefore not read, copy or delete anything in `jwt/` itself: use the commands
+  below.
+- The first start after that writes a new 2048-bit key there; every later start reads it. **The first deploy that
+  brings this in signs every user out once** (the old per-start key is gone); after that, deploys and restarts keep
+  everyone signed in.
+- CI's rsync excludes `jwt/` (`.github/workflows/build.yml`), so `--delete` never removes it. It is not in the
+  database dumps either.
+- Whoever has the file can sign a token for any account: never copy it off the server or into the repository.
+- **Rotate** (a leaked key, say): `bash scripts/deploy.sh --rotate-jwt-key`. It removes the key through a root
+  container of the running image and restarts the application, which writes a new one; everyone signs in again once.
+- **Bring your own key**: `openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out signing-key.pem`, copy
+  it to the server, then `bash scripts/deploy.sh --install-jwt-key signing-key.pem && shred -u signing-key.pem`. The
+  key is written owner-only into `jwt/` the same way and the application restarted; everyone signs in again once.
+- Both commands keep the previous key until the application is healthy with the new one; if it is not (a bad key
+  file stops startup with the reason in `docker compose logs app` - it never falls back to a throwaway key), the
+  previous key is put back and the application restarted with it. Neither pulls an image or runs migrations.
 
 Check:
 
@@ -314,9 +338,8 @@ the uploaded files matter.
 
 ## 6. Known limits
 
-- **Every deploy signs every user out and has downtime.** `JwtKeysConfig` generates a new signing
-  key at startup, so tokens do not survive a restart. Fix that first (load the key from a mounted
-  secret) before attempting zero-downtime deploys - which a 4 GB machine could not run anyway.
+- **Every deploy has downtime** (one application container, replaced). Users stay signed in across it: the signing
+  key is persisted in `jwt/` (section "The JWT signing key").
 - **CORS**: only the origins in `CORS_ALLOWED_ORIGIN_PATTERNS` (`.env`) may call the API from a
   browser. `http://localhost:*` lets the frontend team run their dev server against this backend;
   add the host a deployed frontend is served from (`https://*.<domain>` covers every subdomain) and
@@ -332,5 +355,5 @@ the uploaded files matter.
 
 `SPRING_PROFILES_ACTIVE=prod` (10% trace sampling, no SQL logging, narrower actuator), ClamAV back
 in with `STOCKFLOW_UPLOAD_INSPECTION_ENABLED` removed (`docker-compose.media.yml` has the service
-definition and its limits), `/actuator/` returning 404 in nginx, a persisted JWT signing key, and
-a machine with at least 8 GB.
+definition and its limits), `/actuator/` returning 404 in nginx, the JWT signing key from a real secret store (`JWT_PRIVATE_KEY`, PEM
+content) rather than a file on the host, and a machine with at least 8 GB.
