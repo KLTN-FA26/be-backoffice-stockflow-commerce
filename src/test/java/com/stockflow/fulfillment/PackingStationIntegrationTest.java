@@ -655,4 +655,40 @@ class PackingStationIntegrationTest {
                 coordinator));
         assertThat(data(packer(get(queue))).path("items").findValuesAsText("taskId")).contains(task.toString());
     }
+
+    @Test
+    @DisplayName("FE #58: the packer, not the picker, reads the task once picking is done; not before; staff of another "
+            + "warehouse are refused; the session's shipments carry the COD currency")
+    void thePackerReadsTheTask() throws Exception {
+        OrderSummary order = paidOrder(sofa(1));
+        UUID task = UUID.fromString(data(as(coordinator, "ORDER_COORDINATOR", post(BASE + "/tasks")
+                .contentType("application/json").content("{\"orderId\":\"" + order.orderId()
+                        + "\",\"assignedUserId\":\"" + pickerHcm + "\"}"))
+                .andExpect(status().isCreated())).path("taskId").asText());
+        packer(get(BASE + "/tasks/" + task)).andExpect(status().isNotFound());
+        as(pickerHcm, "WAREHOUSE_STAFF", post(BASE + "/tasks/" + task + "/picking-start")).andExpect(status().isOk());
+        Map<String, Object> line = jdbc.queryForMap(
+                "SELECT id, location_code FROM fulfillment.pick_line WHERE pick_id = ?", task);
+        as(pickerHcm, "WAREHOUSE_STAFF", post(BASE + "/tasks/" + task + "/pick-lines/" + line.get("id")
+                + "/confirmation").contentType("application/json").content("{\"locationCode\":\""
+                + line.get("location_code") + "\",\"scannedCode\":\"SOFA-3S-GREY\",\"quantity\":1}"))
+                .andExpect(status().isOk());
+        as(pickerHcm, "WAREHOUSE_STAFF", post(BASE + "/tasks/" + task + "/picking-completion"))
+                .andExpect(status().isOk());
+
+        packer(get(BASE + "/tasks/" + task)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.orderNumber").value(order.orderNumber()))
+                .andExpect(jsonPath("$.data.lines[0].sku").value("SOFA-3S-GREY"));
+        as(packerElsewhere, "WAREHOUSE_STAFF", get(BASE + "/tasks/" + task)).andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.errorCode").value("OUT_OF_DATA_SCOPE"));
+
+        packer(post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());
+        UUID parcel = openPackage(task);
+        scanAs(packerHcm, task, parcel, scan(UUID.randomUUID(), SOFA.code(), null, 1)).andExpect(status().isOk());
+        seal(task, parcel, MEASURES).andExpect(status().isOk());
+        packer(post(BASE + "/tasks/" + task + "/packing-completion")).andExpect(status().isOk());
+        packer(get(BASE + "/tasks/" + task + "/packing-session")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.shipments[0].currency").value("VND"))
+                .andExpect(jsonPath("$.data.shipments[0].codAmount").value(0));
+    }
 }

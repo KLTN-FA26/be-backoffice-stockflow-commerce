@@ -30,7 +30,8 @@ class PackingWebMapper {
                                 lot.packed())).toList())).toList(),
                 session.packages().stream().map(this::toResponse).toList(),
                 session.shipments().stream().map(s -> new PackingSessionResponse.Shipment(s.shipmentId(), s.code(),
-                        s.status(), s.deliveryMode(), s.packageCount(), s.codAmount(), s.partial(), s.partialNote(),
+                        s.status(), s.deliveryMode(), s.packageCount(), s.codAmount(), s.currency(), s.partial(),
+                        s.partialNote(),
                         s.readyAt())).toList(),
                 session.paymentDue() == null ? null : new PackingSessionResponse.PaymentDue(
                         session.paymentDue().amountDueBeforeHandover(), session.paymentDue().currency()));

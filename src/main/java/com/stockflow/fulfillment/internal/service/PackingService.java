@@ -722,7 +722,8 @@ class PackingService implements Packing {
         List<Parcel> parcels = session.parcels().stream().map(parcel -> parcelView(parcel, skus)).toList();
         List<ShipmentSummary> made = shipments.findByPackIdOrderByReadyAtAscIdAsc(ctx.pack().getId()).stream()
                 .map(row -> new ShipmentSummary(row.getId(), row.getCode(), row.getStatus().name(),
-                        row.getDeliveryMode().name(), row.getPackageCount(), row.getCodAmount(), row.isPartial(),
+                        row.getDeliveryMode().name(), row.getPackageCount(), row.getCodAmount(),
+                        ctx.order().total().currency().getCurrencyCode(), row.isPartial(),
                         row.getPartialNote(), row.getReadyAt())).toList();
         String packerName = session.startedBy() == null ? null
                 : identities.displayNames(List.of(session.startedBy())).get(session.startedBy());

@@ -227,7 +227,7 @@ class FulfillmentServiceImpl implements FulfillmentService {
     public FulfillmentArtifactAccess artifactDownload(UUID taskId, UUID orderLineId, String role,
                                                        CurrentUser actor) {
         var pick = requirePick(taskId);
-        requireArtifactAccess(pick, actor);
+        TaskAccess.requireArtifactAccess(pick, actor);
         var line = requireOrderInFulfilment(pick).lines().stream()
                 .filter(value -> value.lineId().equals(orderLineId))
                 .findFirst().orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
@@ -268,13 +268,6 @@ class FulfillmentServiceImpl implements FulfillmentService {
         requireRole(actor, Role.QC_STAFF, Role.WAREHOUSE_MANAGER);
         packing.reverify(taskId, resolutionNote, actor);
         return toTask(requirePick(taskId));
-    }
-
-    private void requireArtifactAccess(PickJpaEntity pick, CurrentUser actor) {
-        if (!java.util.Objects.equals(pick.getAssignedUserId(), actor.userId())
-                && !actor.hasAnyRole(Role.WAREHOUSE_MANAGER, Role.QC_STAFF)) {
-            throw new BusinessException(ErrorCode.NOT_FOUND);
-        }
     }
 
     private FulfillmentTask toTask(PickJpaEntity pick) {

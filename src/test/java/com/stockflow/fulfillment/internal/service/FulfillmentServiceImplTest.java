@@ -130,17 +130,58 @@ class FulfillmentServiceImplTest {
     }
 
     @Test
-    void unrelatedWarehouseUserCannotSeeTaskOrDownloadArtifact() {
-        var pick = pickedTask(UUID.randomUUID());
+    void aStaffMemberWhoIsNotTheAssigneeCannotSeeATaskStillBeingPicked() {
+        var pick = new PickJpaEntity(UUID.randomUUID(), null, UUID.randomUUID(), "SO-TEST", UUID.randomUUID(),
+                PickStatus.PENDING);
+        pick.assign(UUID.randomUUID(), now.minusSeconds(120));
+        pick.start(pick.getAssignedUserId(), now.minusSeconds(60));
         when(picks.findById(pick.getId())).thenReturn(Optional.of(pick));
 
         var unrelated = user(UUID.randomUUID(), Role.WAREHOUSE_STAFF);
-        assertThatThrownBy(() -> service.findTask(pick.getId(), unrelated))
-                .isInstanceOf(BusinessException.class);
-        assertThatThrownBy(() -> service.artifactDownload(
-                pick.getId(), UUID.randomUUID(), "PRINT_READY", unrelated))
-                .isInstanceOf(BusinessException.class);
+        assertThat(refusal(() -> service.findTask(pick.getId(), unrelated)).errorCode()).isEqualTo(ErrorCode.NOT_FOUND);
+        assertThat(refusal(() -> service.artifactDownload(pick.getId(), UUID.randomUUID(), "PRINT_READY", unrelated))
+                .errorCode()).isEqualTo(ErrorCode.NOT_FOUND);
         verify(designs, never()).fulfillmentDownload(any(), any(), any());
+    }
+
+    /**
+     * G4-5 (FE #58): once picking is done the packer - any staff member of the task's warehouse - reads the task and
+     * the locked design files the printed goods are checked against (docs 08 step 2); staff of another warehouse do
+     * not.
+     */
+    @Test
+    void thePackerOfTheTasksWarehouseReadsItAndItsDesignFilesOthersDoNot() {
+        UUID picker = UUID.randomUUID();
+        var pick = new PickJpaEntity(UUID.randomUUID(), null, UUID.randomUUID(), "SO-TEST", HCM, PickStatus.PENDING);
+        pick.assign(picker, now.minusSeconds(120));
+        pick.start(picker, now.minusSeconds(60));
+        pick.complete(picker, now.minusSeconds(30));
+        var order = order(pick.getOrderId(), "e".repeat(64));
+        var line = order.lines().getFirst();
+        when(picks.findById(pick.getId())).thenReturn(Optional.of(pick));
+        when(packs.findByPickId(pick.getId())).thenReturn(Optional.of(new PackJpaEntity(UUID.randomUUID(),
+                pick.getId(), PackStatus.PACKING, null)));
+        when(orders.findById(pick.getOrderId())).thenReturn(Optional.of(order));
+        when(designs.fulfillmentDownload(line.designSnapshotId(), line.designChecksum(),
+                com.stockflow.design.api.DesignArtifactRole.CUSTOMER_PREVIEW)).thenReturn(
+                new com.stockflow.design.api.FulfillmentArtifact(UUID.randomUUID(),
+                        com.stockflow.design.api.DesignArtifactRole.CUSTOMER_PREVIEW, "preview.png", "image/png", 10,
+                        "f".repeat(64), "https://files/preview", now.plusSeconds(300)));
+        var packer = staffOf(HCM);
+        var elsewhere = staffOf(HN);
+
+        assertThat(asScoped(packer, () -> service.findTask(pick.getId(), packer)).taskId()).isEqualTo(pick.getId());
+        assertThat(asScoped(packer, () -> service.artifactDownload(pick.getId(), line.lineId(), "customer_preview",
+                packer)).url()).isEqualTo("https://files/preview");
+        assertThat(refusal(() -> asScoped(elsewhere, () -> service.findTask(pick.getId(), elsewhere))).errorCode())
+                .isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE);
+        assertThat(refusal(() -> asScoped(elsewhere, () -> service.artifactDownload(pick.getId(), line.lineId(),
+                "customer_preview", elsewhere))).errorCode()).isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE);
+    }
+
+    private CurrentUser staffOf(UUID... warehouseIds) {
+        return new CurrentUser(UUID.randomUUID(), "packer", Set.of(Role.WAREHOUSE_STAFF), Set.of(),
+                DataScope.WAREHOUSE, Set.of(), Set.of(warehouseIds));
     }
 
     @Test

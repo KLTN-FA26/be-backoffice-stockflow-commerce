@@ -121,7 +121,8 @@ public interface Packing {
                   boolean fragileOverridden, Instant sealedAt, List<Content> contents) { }
 
     record ShipmentSummary(UUID shipmentId, String code, String status, String deliveryMode, int packageCount,
-                    BigDecimal codAmount, boolean partial, String partialNote, Instant readyAt) { }
+                           BigDecimal codAmount, String currency, boolean partial, String partialNote,
+                           Instant readyAt) { }
 
     /** Money the order must receive before its goods may be handed over (G3-Q4): the packer's early warning. */
     record PaymentDue(BigDecimal amountDueBeforeHandover, String currency) { }

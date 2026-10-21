@@ -43,9 +43,11 @@ public record PackingSessionResponse(UUID taskId, UUID orderId, String orderNumb
     /**
      * @param status   {@code READY_TO_DISPATCH} ... {@code CANCELLED} (kltn-docs 09 §5)
      * @param codAmount what the carrier collects for it as of packing (09 BR-04); fixed at the handover
+     * @param currency  the order's currency, of {@code codAmount}
      */
     public record Shipment(UUID shipmentId, String code, String status, String deliveryMode, int packageCount,
-                           BigDecimal codAmount, boolean partial, String partialNote, Instant readyAt) { }
+                           BigDecimal codAmount, String currency, boolean partial, String partialNote,
+                           Instant readyAt) { }
 
     public record PaymentDue(BigDecimal amountDueBeforeHandover, String currency) { }
 }
