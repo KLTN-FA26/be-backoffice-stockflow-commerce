@@ -64,10 +64,12 @@ class ReceivableController {
     }
 
     @GetMapping
-    @Operation(summary = "Receivables, earliest due first; filter by customer, status, due date, collector and kind")
+    @Operation(summary = "Receivables, earliest due first; filter by customer, order, status, due date, collector "
+            + "and kind")
     @RequiresPermission(resource = PaymentResources.RECEIVABLES, action = Action.READ, scope = DataScope.ALL)
     public ApiResponse<PageResponse<ReceivableResponse>> list(
             @RequestParam(required = false) UUID customerId,
+            @RequestParam(required = false) UUID orderId,
             @RequestParam(required = false) ReceivableStatus status,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate dueBefore,
             @RequestParam(required = false) Collector collector,
@@ -78,7 +80,7 @@ class ReceivableController {
             @AuthenticatedUser CurrentUser user) {
         // Customers hold payment-receivables:READ for /me; this list is every customer's.
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(receivables.receivables(customerId, status, dueBefore, collector,
+        return ApiResponse.ok(receivables.receivables(customerId, orderId, status, dueBefore, collector,
                 kind == null ? null : kind.name(), page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort)
                 .map(r -> PaymentWebMapper.toResponse(r, null)));
     }

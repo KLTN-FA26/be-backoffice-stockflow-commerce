@@ -5,49 +5,36 @@ import com.nimbusds.jose.jwk.RSAKey;
 import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
 import com.nimbusds.jose.jwk.source.JWKSource;
 import com.nimbusds.jose.proc.SecurityContext;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.oauth2.jwt.JwtEncoder;
 import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
 
-import java.security.KeyPair;
-import java.security.KeyPairGenerator;
-import java.security.NoSuchAlgorithmException;
-import java.security.interfaces.RSAPrivateKey;
-import java.security.interfaces.RSAPublicKey;
-import java.util.UUID;
-
 /**
- * The RSA key pair this instance signs staff tokens with, and the JOSE plumbing built on it.
+ * The RSA key pair this instance signs tokens with, and the JOSE plumbing built on it.
  *
- * <p>SCRUM-378 (WBS 3.19.7): the resource server already expects a real JWKS endpoint at
- * {@code jwk-set-uri} ({@code application.yml}) — this is where the key it will fetch comes from.
+ * <p>SCRUM-378 (WBS 3.19.7): the resource server expects a real JWKS endpoint at {@code jwk-set-uri}
+ * ({@code application.yml}) - this is where the key it fetches comes from.</p>
  *
- * <h2>One key, generated at startup, kept for the process lifetime</h2>
+ * <h2>One key, kept across restarts when a location is configured</h2>
  *
- * <p>Deliberately minimal, per this story's own scope note ("the minimum to issue and validate a
- * real staff token"): a fresh 2048-bit RSA key is generated every time the application starts,
- * which is exactly right for local development and this sprint's demo — every token this instance
- * issues remains valid until it restarts, and {@link com.stockflow.identity.internal.controller.JwksController}
- * always publishes the matching public key.</p>
+ * <p>The key used to be generated at every start, so every deploy of the dev server signed every user out (E2E QA
+ * 2026-10-21). It is now loaded from {@code stockflow.security.jwt.private-key} ({@code JWT_PRIVATE_KEY}, PEM
+ * content) or {@code stockflow.security.jwt.key-path} ({@code JWT_PRIVATE_KEY_PATH}, created on first start); with
+ * neither, a per-process key as before. {@link JwtSigningKey} has the rules, including why a configured key that
+ * cannot be read stops the application instead of falling back.</p>
  *
- * <p><b>What this does not do, on purpose:</b> persist the private key, rotate it, or support more
- * than one signing instance behind a load balancer — a restart or a second instance invalidates
- * every previously issued token. That is an acceptable gap for a single-instance sprint demo and
- * an explicit follow-up before a real multi-instance deployment (load the key from a mounted
- * secret instead of generating one, the same "externalize for prod" pattern
- * {@code JWT_JWK_SET_URI} already uses elsewhere in {@code application.yml}).</p>
+ * <p>Still not done, on purpose: rotation, or publishing more than one key. A rotation is replacing the file and
+ * restarting, which signs everyone out once.</p>
  */
 @Configuration(proxyBeanMethods = false)
 class JwtKeysConfig {
 
     @Bean
-    RSAKey rsaJwk() {
-        KeyPair keyPair = generateRsaKeyPair();
-        return new RSAKey.Builder((RSAPublicKey) keyPair.getPublic())
-                .privateKey((RSAPrivateKey) keyPair.getPrivate())
-                .keyID(UUID.randomUUID().toString())
-                .build();
+    RSAKey rsaJwk(@Value("${stockflow.security.jwt.private-key:}") String privateKeyPem,
+                  @Value("${stockflow.security.jwt.key-path:}") String keyPath) {
+        return JwtSigningKey.resolve(privateKeyPem, keyPath);
     }
 
     @Bean
@@ -58,16 +45,5 @@ class JwtKeysConfig {
     @Bean
     JwtEncoder jwtEncoder(JWKSource<SecurityContext> jwkSource) {
         return new NimbusJwtEncoder(jwkSource);
-    }
-
-    private static KeyPair generateRsaKeyPair() {
-        try {
-            KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
-            generator.initialize(2048);
-            return generator.generateKeyPair();
-        } catch (NoSuchAlgorithmException ex) {
-            // RSA is a mandatory algorithm for every JCE provider - this cannot happen in practice.
-            throw new IllegalStateException("JVM does not support RSA key generation", ex);
-        }
     }
 }

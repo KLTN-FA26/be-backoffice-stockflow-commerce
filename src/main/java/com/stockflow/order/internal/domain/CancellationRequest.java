@@ -83,6 +83,18 @@ public final class CancellationRequest extends AggregateRoot {
         this.decisionNote = note.trim();
     }
 
+    /**
+     * The order moved past the point where cancelling it can be decided (packed, handed over, delivered) or was
+     * cancelled another way: the request closes with {@code why}, which the customer reads, and nobody as its decider.
+     */
+    public void expire(String why, Instant now) {
+        requirePending();
+        this.status = CancellationRequestStatus.EXPIRED;
+        this.decidedBy = null;
+        this.decidedAt = Objects.requireNonNull(now, "now");
+        this.decisionNote = Objects.requireNonNull(why, "why");
+    }
+
     private void requirePending() {
         if (status != CancellationRequestStatus.PENDING) {
             throw new BusinessException(ErrorCode.ORDER_CANCELLATION_REQUEST_NOT_PENDING,

@@ -26,8 +26,8 @@ import java.util.Map;
 @Tag(name = "Auth", description = "Staff sign-in")
 class JwksController {
 
-    /** Computed once at startup — the key pair is generated once per process, so the public JWK
-     *  set never changes while this instance is running. */
+    /** Computed once at startup — the signing key is loaded once per process (JwtKeysConfig), so
+     *  the public JWK set never changes while this instance is running. */
     private final Map<String, Object> jwkSet;
 
     JwksController(RSAKey rsaJwk) {

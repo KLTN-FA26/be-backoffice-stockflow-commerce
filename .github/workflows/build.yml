@@ -246,7 +246,7 @@ jobs:
       - name: Sync deploy files
         run: >-
           rsync -az --delete
-          --exclude='.env' --exclude='certs/' --exclude='auth/' --exclude='backups/'
+          --exclude='.env' --exclude='certs/' --exclude='auth/' --exclude='backups/' --exclude='jwt/'
           --exclude='.nginx-config-hash'
           deploy/ "vps:$DEPLOY_PATH/"
 

@@ -76,9 +76,11 @@ public class CancellationRequestService {
         CancellationRequest request = load(orderId, requestId);
         request.approve(by, retainedPercent, note, clock.instant());
         Order order = orders.loadForUpdate(orderId);
+        // Saved before the order is cancelled: cancelling closes a request still pending (as EXPIRED), and this one is
+        // decided. A refusal below rolls both back.
+        requests.save(request);
         orders.cancelLoaded(order, new CancelOrderCommand(request.reasonCode(), request.note(), retainedPercent, by,
                 agreedFee));
-        requests.save(request);
         log.info("Cancellation request {} approved; order {} cancelled", requestId, order.orderNumber());
         return orderService.findById(orderId).orElseThrow();
     }
