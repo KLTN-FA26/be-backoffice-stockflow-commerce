@@ -11,6 +11,9 @@ public interface StockPackageRepository {
 
     Optional<StockPackage> findByLpn(String lpn);
 
+    /** The cartons labelled on these goods receipt lines, read without locking. */
+    List<StockPackage> findByReceiptLines(Collection<java.util.UUID> goodsReceiptLineIds);
+
     /**
      * The stock packages with these ids, locked {@code FOR UPDATE} in id order and read after the lock.
      *

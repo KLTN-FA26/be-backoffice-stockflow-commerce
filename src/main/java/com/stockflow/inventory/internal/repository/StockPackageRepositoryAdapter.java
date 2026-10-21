@@ -37,6 +37,15 @@ class StockPackageRepositoryAdapter implements StockPackageRepository {
         return jpa.findByLpn(lpn).map(StockPackageRepositoryAdapter::toDomain);
     }
 
+    @Override
+    public List<StockPackage> findByReceiptLines(Collection<UUID> goodsReceiptLineIds) {
+        if (goodsReceiptLineIds.isEmpty()) {
+            return List.of();
+        }
+        return jpa.findByGoodsReceiptLineIdIn(goodsReceiptLineIds).stream()
+                .map(StockPackageRepositoryAdapter::toDomain).toList();
+    }
+
     /**
      * Locked by one native {@code FOR UPDATE} in the database's id order, then refreshed: a JPA read hands back
      * whatever copy the persistence context already holds, so without the refresh the lock would guard stale
