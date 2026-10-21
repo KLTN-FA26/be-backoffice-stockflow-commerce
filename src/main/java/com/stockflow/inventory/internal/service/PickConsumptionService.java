@@ -181,10 +181,11 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
                         "No reservation with id " + command.reservationId()));
         // The goods come back as the layer they left: same SKU, lot, expiry and receipt time, so FEFO and
         // FIFO still see them in their place. At the bin they left, that layer is the source row itself
-        // (one row per SKU, location, lot, serial and receipt); elsewhere it may already exist too.
+        // (one row per SKU, location, lot, serial and receipt); elsewhere it may already exist too, as loose
+        // stock - never a carton's row there, whose counted quantity loose units would break.
         Optional<StockItem> destinationView = sourceView.location().equals(target)
                 ? Optional.of(sourceView)
-                : stockItems.findBySkuAndLocation(sourceView.sku(), target).stream()
+                : stockItems.findLooseBySkuAndLocation(sourceView.sku(), target).stream()
                         .filter(item -> Objects.equals(item.lotNumber(), sourceView.lotNumber())
                                 && Objects.equals(item.receivedAt(), sourceView.receivedAt())
                                 && Objects.equals(item.serialNumber(), sourceView.serialNumber()))
@@ -207,11 +208,13 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
         Objects.requireNonNull(source, "source");
         Quantity quantity = Quantity.of(command.quantity());
         if (destination == null) {
-            destination = StockItem.arrivedAs(source, target, quantity, StockStatus.AVAILABLE);
+            stockItems.save(StockItem.arrivedAs(source, target, quantity, StockStatus.AVAILABLE));
         } else {
+            // Units rejoining their own receipt layer, not replenishment: a FIFO SKU's policy trigger refuses
+            // the raised on_hand unless the row is named as a same-receipt merge (V20261017000450).
             destination.putBack(quantity);
+            stockItems.saveMerged(destination);
         }
-        stockItems.save(destination);
 
         Instant now = clock.instant();
         ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.PUT_BACK,
