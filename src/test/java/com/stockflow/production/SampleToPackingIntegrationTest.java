@@ -264,15 +264,20 @@ class SampleToPackingIntegrationTest {
                 });
         assertThat(productionOrders.get(manager, sampleLsx).summary().packingLocation())
                 .as("a SAMPLE's units are written off, not handed to packing").isNull();
+        // G4-Q2 (2026-10-21): handed to packing and deducted there as the order completed - one CONSUMPTION row per
+        // hold naming the production order; the holds stay the order line's, consumed.
         List<UUID> packed = jdbc.queryForList("""
                 SELECT r.id FROM inventory.stock_reservation r JOIN inventory.stock_item s ON s.id = r.stock_item_id
-                 WHERE r.status = 'HELD' AND r.order_id = ? AND s.location_code = ? AND s.status = 'AVAILABLE'""",
-                UUID.class, orderId, PACKING);
+                 WHERE r.status = 'CONSUMED' AND r.order_id = ? AND s.location_code = ?""", UUID.class, orderId, PACKING);
         assertThat(jdbc.queryForObject("SELECT COALESCE(SUM(quantity), 0) FROM inventory.stock_reservation WHERE id = ANY(?)",
-                Integer.class, (Object) packed.toArray(UUID[]::new))).as("3 printed cups, the order's, in packing")
+                Integer.class, (Object) packed.toArray(UUID[]::new))).as("3 printed cups, the order's, consumed in packing")
                 .isEqualTo(3);
+        assertThat(jdbc.queryForObject("""
+                SELECT COALESCE(SUM(quantity), 0) FROM inventory.stock_movement WHERE movement_type = 'CONSUMPTION'
+                   AND reference_type = 'PRODUCTION_ORDER' AND reference_id = ? AND from_location_code = ?""",
+                Integer.class, lsx, PACKING)).isEqualTo(3);
         assertThat(orders.findById(orderId).orElseThrow().lines().getFirst().reservationIds()).containsAll(packed);
-        assertThat(inventory.availableToPromise(new Sku(BLANK))).as("nobody else can take them").isEqualTo(atp);
+        assertThat(inventory.availableToPromise(new Sku(BLANK))).as("nobody else could take them").isEqualTo(atp);
         assertThat(recorded.matching(ProductionCompleted.class, e -> e.productionOrderId().equals(lsx)))
                 .singleElement().isEqualTo(new ProductionCompleted(orderId, lineId, lsx, 3));
         Await.until("the order is ready to fulfil", ASYNC,

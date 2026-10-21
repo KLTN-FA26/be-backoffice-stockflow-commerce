@@ -116,46 +116,6 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
         return cartons.lockFor(reservationIds.stream().map(row).flatMap(Optional::stream).toList());
     }
 
-    @Override
-    public List<ConsumedPick> consumeForPack(UUID packId, UUID orderId, java.util.Collection<UUID> reservationIds,
-                                             UUID actorId) {
-        Objects.requireNonNull(packId, "packId");
-        Objects.requireNonNull(orderId, "orderId");
-        boolean packed = ledger.findByReference(StockMovement.MovementType.PICK, StockMovement.ReferenceType.PACKAGE,
-                packId).isPresent();
-        StockPackageContents.LockedCartons locked = lockSkusAndCartons(reservationIds);
-        // Stock rows in id order: two packages sharing rows never lock them in opposite orders.
-        List<UUID> ordered = reservationIds.stream().distinct()
-                .sorted(Comparator.comparing((UUID id) -> stockItems.findIdByReservationId(ReservationId.of(id))
-                        .map(item -> item.value().toString()).orElse("")).thenComparing(UUID::toString))
-                .toList();
-        List<ConsumedPick> consumed = new java.util.ArrayList<>();
-        for (UUID reservationId : ordered) {
-            StockItem item = holderOf(reservationId);
-            Reservation hold = item.findReservation(ReservationId.of(reservationId)).orElseThrow();
-            requireOrderStock(item, hold);
-            if (!orderId.equals(hold.orderId())) {
-                throw new BusinessException(ErrorCode.RESERVATION_NOT_ACTIVE,
-                        "Hold %s is not order %s's".formatted(reservationId, orderId));
-            }
-            if (!packed && !locations.isPackingArea(item.location())) {
-                // A package takes the printed goods waiting in packing - never blanks still on a storage bin.
-                throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH, "Hold %s is at %s, not in a packing area"
-                        .formatted(reservationId, item.location()));
-            }
-            if (packed) {
-                consumed.add(toConsumed(item, hold, true));
-                continue;
-            }
-            deduct(item, reservationId, StockMovement.ReferenceType.PACKAGE, packId, actorId, locked);
-            consumed.add(toConsumed(item, hold, false));
-            log.info("Package {} consumed hold {}: {} x {} off {}", packId, reservationId, hold.quantity(), item.sku(),
-                    item.location());
-        }
-        cartons.settle(locked, clock.instant());
-        return consumed;
-    }
-
     /**
      * {@inheritDoc}
      *

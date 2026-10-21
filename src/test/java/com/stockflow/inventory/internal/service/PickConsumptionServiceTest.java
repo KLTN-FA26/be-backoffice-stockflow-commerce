@@ -77,6 +77,18 @@ class PickConsumptionServiceTest {
             return ledgerRows.stream().anyMatch(row -> row.type() == StockMovement.MovementType.MOVE
                     && row.referenceType() == StockMovement.ReferenceType.PRODUCTION_ORDER);
         }
+
+        @Override
+        public boolean consumedAtCompletion(com.stockflow.inventory.internal.domain.ReservationId hold,
+                                            LocationId location) {
+            return false;
+        }
+
+        @Override
+        public boolean bookedBackForScrap(com.stockflow.inventory.internal.domain.ReservationId hold,
+                                          LocationId location) {
+            return false;
+        }
     };
     private final ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
     private final LocationDirectory locations = mock(LocationDirectory.class);

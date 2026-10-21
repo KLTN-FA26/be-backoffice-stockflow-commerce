@@ -327,6 +327,16 @@ class WorkshopStock {
         return handed;
     }
 
+    /**
+     * Decision G4-Q2 (lead, 2026-10-21): the finished goods leave stock now, as the production order completes - one
+     * CONSUMPTION ledger line per hold, the production order as source - not when they are packed. Packing only puts
+     * them into parcels, as it does with picked goods. {@code holds} are the holds {@link #finishToPacking} just moved
+     * to the packing area, every one of them the sales order's by now.
+     */
+    void consumeFinishedGoods(ProductionOrder order, List<UUID> holds, UUID by) {
+        holds.forEach(hold -> inventory.consumeFinishedGoods(hold, order.salesOrderId(), order.id(), by));
+    }
+
     /** The PACKING area named, or the warehouse's only usable one. */
     private String packingArea(ProductionOrder order, String requested) {
         if (requested != null && !requested.isBlank()) {

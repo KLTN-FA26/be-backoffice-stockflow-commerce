@@ -82,7 +82,11 @@ public record StockMovement(
     public enum ReferenceType {
         MOVE_TASK, PUTAWAY_TASK, TRANSFER_ORDER_LINE, ORDER, STOCK_ADJUSTMENT, GOODS_RECEIPT_LINE, QC_INSPECTION, PICK_LINE,
         PRODUCTION_ORDER, EXPIRY_SWEEP,
-        /** A completed package: its custom-printed goods leave stock with it (decision 2026-10-16). */
+        /**
+         * A completed package whose custom-printed goods left stock with it (decision 2026-10-16). Historical only:
+         * since G4-Q2 (2026-10-21) printed goods leave when their production order completes and no line names a
+         * package any more; the value stays for the lines written before.
+         */
         PACKAGE
     }
 }

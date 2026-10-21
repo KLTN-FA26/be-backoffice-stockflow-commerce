@@ -547,6 +547,17 @@ class InventoryServiceImpl implements InventoryService {
     }
 
     @Override
+    public List<StockAdjustmentSummary> scrapCancelledPrint(
+            com.stockflow.inventory.api.ScrapCancelledPrintCommand command) {
+        return operations.scrapCancelledPrint(command);
+    }
+
+    @Override
+    public StockMove consumeFinishedGoods(UUID reservationId, UUID orderId, UUID productionOrderId, UUID actorId) {
+        return operations.consumeFinishedGoods(reservationId, orderId, productionOrderId, actorId);
+    }
+
+    @Override
     public StockMove returnHeld(com.stockflow.inventory.api.ReturnHeldStockCommand command) {
         return operations.returnHeld(command);
     }

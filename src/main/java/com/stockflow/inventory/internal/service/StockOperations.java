@@ -12,6 +12,7 @@ import com.stockflow.inventory.api.StockAdjustmentSummary;
 import com.stockflow.inventory.api.StockMove;
 import com.stockflow.inventory.internal.domain.StockMovement;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -44,6 +45,12 @@ public interface StockOperations {
     /** See {@code InventoryService#scrapCancelledPrint}. */
     Optional<StockAdjustmentSummary> scrapCancelledPrint(UUID reservationId, UUID orderId, String note,
                                                          UUID requestedBy);
+
+    /** See {@code InventoryService#scrapCancelledPrint(ScrapCancelledPrintCommand)}. */
+    List<StockAdjustmentSummary> scrapCancelledPrint(com.stockflow.inventory.api.ScrapCancelledPrintCommand command);
+
+    /** See {@code InventoryService#consumeFinishedGoods}. */
+    StockMove consumeFinishedGoods(UUID reservationId, UUID orderId, UUID productionOrderId, UUID actorId);
 
     /**
      * BR-PRD-10: the write-off of a cancelled order's printed goods was rejected or withdrawn; the goods are still

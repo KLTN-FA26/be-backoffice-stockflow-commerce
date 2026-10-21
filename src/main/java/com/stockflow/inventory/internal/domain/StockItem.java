@@ -517,6 +517,54 @@ public final class StockItem extends AggregateRoot {
     }
 
     /**
+     * Decision G4-Q2 (2026-10-21), kltn-docs 19 BR-10: printed goods consumed on this layer when their production
+     * order completed belong to an order that has since been cancelled (or whose unshipped rest was closed). They
+     * cannot go back on sale, so they come back onto the books here only to be written off as SCRAP: {@code onHand}
+     * grows by the units and a new hold of exactly them is opened for {@code orderId}, pinned, so nothing can take
+     * them before the write-off is decided.
+     *
+     * <p>The new hold carries the consumed hold's id as its {@code rootRequestId}, so the units already brought back
+     * from that hold are known: no more than it consumed ever come back, however many closures ask. Idempotent on
+     * {@code requestId}.</p>
+     *
+     * @return the new hold, or empty when everything the consumed hold took has been brought back already
+     */
+    public Optional<Reservation> bookBackForScrap(ReservationId consumed, UUID orderId, UUID requestId,
+                                                  Quantity wanted, Instant now) {
+        Objects.requireNonNull(orderId, "orderId");
+        Optional<Reservation> alreadyServed = reservations.stream().filter(r -> r.requestId().equals(requestId))
+                .findFirst();
+        if (alreadyServed.isPresent()) {
+            return alreadyServed;
+        }
+        Reservation source = findReservation(consumed).orElseThrow(() -> new IllegalArgumentException(
+                "Reservation %s does not belong to stock item %s".formatted(consumed, id)));
+        if (source.status() != ReservationStatus.CONSUMED || !orderId.equals(source.orderId())) {
+            throw new IllegalArgumentException("Reservation %s is not order %s's consumed goods".formatted(consumed,
+                    orderId));
+        }
+        if (status != StockStatus.AVAILABLE || stockPackageId != null) {
+            // Finished goods reach packing as loose stock (emptyLayerOf); a carton never takes printed goods back.
+            throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH,
+                    "Stock item %s is %s%s; printed goods come back onto their loose AVAILABLE layer".formatted(id,
+                            status, stockPackageId == null ? "" : " in a carton"));
+        }
+        int back = reservations.stream().filter(r -> r != source && consumed.value().equals(r.rootRequestId()))
+                .mapToInt(r -> r.quantity().value()).sum();
+        int take = Math.min(wanted.value(), source.quantity().value() - back);
+        if (take <= 0) {
+            return Optional.empty();
+        }
+        Quantity quantity = Quantity.of(take);
+        this.onHand = onHand.plus(quantity);
+        Reservation hold = new Reservation(ReservationId.newId(), orderId, null, consumed.value(), requestId, quantity,
+                now, null, ReservationStatus.HELD, null, null);
+        reservations.add(hold);
+        checkInvariants();
+        return Optional.of(hold);
+    }
+
+    /**
      * Goods picked for an order that was cancelled afterwards come back onto this stock item (docs 07
      * BR-05, SCRUM-275): {@code onHand} grows by what the pick took. Only sellable stock takes them —
      * a put-back is not how goods get into a quarantined or blocked lot.

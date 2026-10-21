@@ -40,9 +40,7 @@ import com.stockflow.inventory.api.HoldView;
 import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.ItemLogistics;
-import com.stockflow.inventory.api.StockReservation;
 import com.stockflow.inventory.api.StorageClass;
-import com.stockflow.inventory.consumption.PickConsumption;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
@@ -61,7 +59,6 @@ import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -80,8 +77,9 @@ import java.util.stream.Collectors;
  * a shipment. See {@link Packing} for the contract and {@link PackingSession} for the rules.
  *
  * <p><b>Lock order</b>, as everywhere in fulfillment: the pick first ({@code SELECT … FOR UPDATE}), then the order (its
- * service takes the order's row lock), then stock rows (the deduction of printed goods). Cancelling an order takes the
- * order and stock locks in its own transaction and reaches the pick only afterwards, in the listener.</p>
+ * service takes the order's row lock). Packing changes no stock: picked goods left it when they were picked, printed
+ * goods when their production order completed (decision G4-Q2, 2026-10-21). Cancelling an order takes the order and
+ * stock locks in its own transaction and reaches the pick only afterwards, in the listener.</p>
  */
 @Service
 @Transactional
@@ -108,7 +106,6 @@ class PackingService implements Packing {
     private final OrderService orders;
     private final InventoryService inventory;
     private final InventoryControlService itemControls;
-    private final PickConsumption consumption;
     private final DesignService designs;
     private final IdentityService identities;
     private final WarehouseService warehouses;
@@ -127,7 +124,7 @@ class PackingService implements Packing {
                    PackingSessionStore store,
                    com.stockflow.fulfillment.internal.repository.PackageScanJpaRepository scans,
                    OrderService orders, InventoryService inventory,
-                   InventoryControlService itemControls, PickConsumption consumption, DesignService designs,
+                   InventoryControlService itemControls, DesignService designs,
                    IdentityService identities, WarehouseService warehouses, ShipmentTimeline timeline,
                    com.stockflow.fulfillment.internal.repository.DispatchLoadShipmentJpaRepository loadMembers,
                    com.stockflow.fulfillment.internal.repository.DispatchLoadJpaRepository loads,
@@ -145,7 +142,6 @@ class PackingService implements Packing {
         this.orders = orders;
         this.inventory = inventory;
         this.itemControls = itemControls;
-        this.consumption = consumption;
         this.designs = designs;
         this.identities = identities;
         this.warehouses = warehouses;
@@ -420,7 +416,7 @@ class PackingService implements Packing {
 
     /**
      * See {@code FulfillmentService.completePacking}. The pick is locked first; the order's row lock is taken by its
-     * service; printed goods leave stock last.
+     * service. Nothing leaves stock here, a print line included: its goods left when production completed (G4-Q2).
      */
     public Completed complete(UUID taskId, PackingCompletion request, CurrentUser actor) {
         Context ctx = forWork(taskId);
@@ -482,7 +478,6 @@ class PackingService implements Packing {
         timeline.record(shipment, null, ctx.order(), null, null, null);
         session.ship(completion, shipment.id(), actor.userId(), now);
         store.save(session, ctx.pack());
-        deductPrintedGoods(session, completion, ctx.order(), actor.userId());
         log.info("Order {}: shipment {} ready to dispatch, {} package(s){}", ctx.pick().getOrderNumber(),
                 shipment.code(), shipment.packageCount(), completion.partial() ? ", part of the order" : "");
         return new Completed(shipment.id(), after);
@@ -678,31 +673,6 @@ class PackingService implements Packing {
             allMatch &= check.matching();
         }
         return allMatch;
-    }
-
-    /**
-     * Decision 2026-10-16: a print line's goods - never picked, held for the order in the packing area - leave stock
-     * with the shipment that completes the line, in this transaction (the deduction is keyed by that shipment's first
-     * package, so a second shipment of the same order is a new deduction). A line split across shipments is deducted
-     * with its last part. Lead's decision G4-Q2 moves this to production completion; see the open question.
-     */
-    private void deductPrintedGoods(PackingSession session, PackingSession.Completion completion, OrderSummary order,
-                                    UUID actor) {
-        List<UUID> done = session.printLinesIn(completion.lines().keySet()).stream()
-                .filter(line -> session.shippedOf(line.orderLineId()) >= line.wanted())
-                .map(PackingSession.Line::orderLineId).toList();
-        if (done.isEmpty()) {
-            return;
-        }
-        List<UUID> holdIds = order.lines().stream().filter(line -> done.contains(line.lineId()))
-                .flatMap(line -> line.reservationIds().stream()).toList();
-        List<UUID> live = inventory.liveHolds(holdIds).stream().map(StockReservation::reservationId).toList();
-        if (live.isEmpty()) {
-            return;
-        }
-        UUID firstPackage = completion.parcels().stream().min(Comparator.comparingInt(PackingSession.Parcel::packageNo))
-                .orElseThrow().id();
-        consumption.consumeForPack(firstPackage, order.orderId(), live, actor);
     }
 
     /**
