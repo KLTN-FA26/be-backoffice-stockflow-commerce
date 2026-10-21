@@ -87,7 +87,10 @@ class PackingService implements Packing {
 
     private static final Logger log = LoggerFactory.getLogger(PackingService.class);
 
-    /** The order statuses packing may change parcels in: released, picking, or the rest of a split order. */
+    /**
+     * The order statuses packing may change parcels in: released, picking, or the rest of a split order - and
+     * IN_PRODUCTION, its stock packed ahead of the prints, when Sales allowed partial shipments (PACK-EARLY).
+     */
     private static final Set<OrderStatus> PACKABLE = EnumSet.of(OrderStatus.READY_TO_FULFILL, OrderStatus.PICKING,
             OrderStatus.PARTIALLY_FULFILLED);
     private static final EnumSet<PackStatus> QUEUED = EnumSet.of(PackStatus.PENDING, PackStatus.PACKING,
@@ -115,7 +118,6 @@ class PackingService implements Packing {
     private final com.stockflow.fulfillment.internal.repository.DispatchLoadStore loadStore;
     private final Clock clock;
     private final int dimDivisor;
-    private final boolean partialShipmentsAllowed;
 
     @SuppressWarnings("java:S107")
     PackingService(PickJpaRepository picks, PickLineJpaRepository pickLines, PackJpaRepository packs,
@@ -129,8 +131,7 @@ class PackingService implements Packing {
                    com.stockflow.fulfillment.internal.repository.DispatchLoadShipmentJpaRepository loadMembers,
                    com.stockflow.fulfillment.internal.repository.DispatchLoadJpaRepository loads,
                    com.stockflow.fulfillment.internal.repository.DispatchLoadStore loadStore, Clock clock,
-                   @Value("${stockflow.fulfillment.packing.dim-divisor:6000}") int dimDivisor,
-                   @Value("${stockflow.fulfillment.packing.partial-shipments:true}") boolean partialShipmentsAllowed) {
+                   @Value("${stockflow.fulfillment.packing.dim-divisor:6000}") int dimDivisor) {
         this.picks = picks;
         this.pickLines = pickLines;
         this.packs = packs;
@@ -151,7 +152,6 @@ class PackingService implements Packing {
         this.loadStore = loadStore;
         this.clock = clock;
         this.dimDivisor = dimDivisor;
-        this.partialShipmentsAllowed = partialShipmentsAllowed;
     }
 
     // ------------------------------------------------------------------ the queue
@@ -443,8 +443,9 @@ class PackingService implements Packing {
         session.requireWorkable(actor.userId(), isManager(actor));
         requirePackable(ctx.order());
         Instant now = clock.instant();
+        // PACK-PARTIAL (lead's decision 2026-10-21): Sales decides on the order whether part of it may ship.
         PackingSession.Completion completion = session.complete(request.partial(), request.note(),
-                partialShipmentsAllowed, actor.userId(), now);
+                allowsPartialShipment(ctx.order()), actor.userId(), now);
         // BR-DSG-003, 08 BR-02: the printed goods leaving now are checked against their design first.
         List<PackingSession.Line> printed = session.printLinesIn(completion.lines().keySet());
         if (!verifyDesigns(ctx.pack(), ctx.order(), printed.stream().map(PackingSession.Line::orderLineId).toList(),
@@ -569,10 +570,24 @@ class PackingService implements Packing {
             return false;
         }
         return PACKABLE.contains(state.status()) || (state.status() == OrderStatus.ON_HOLD
-                && state.holdReason() == com.stockflow.order.api.HoldReason.DESIGN_MISMATCH);
+                && state.holdReason() == com.stockflow.order.api.HoldReason.DESIGN_MISMATCH)
+                || state.status() == OrderStatus.IN_PRODUCTION && state.allowPartialShipment();
+    }
+
+    private static boolean allowsPartialShipment(OrderSummary order) {
+        return order.lifecycle() != null && order.lifecycle().allowPartialShipment();
     }
 
     private static void requirePackable(OrderSummary order) {
+        if (order.status() == OrderStatus.IN_PRODUCTION) {
+            // PACK-EARLY: packing the stock while the prints are made ships part of the order - Sales' decision.
+            if (!allowsPartialShipment(order)) {
+                throw new BusinessException(ErrorCode.PACK_PARTIAL_NOT_ALLOWED, ("Order %s is still printed: its stock "
+                        + "is packed ahead of the prints only when Sales allows partial shipments on the order; "
+                        + "otherwise it waits at packing until production completes").formatted(order.orderNumber()));
+            }
+            return;
+        }
         if (!PACKABLE.contains(order.status())) {
             String why = order.status() == OrderStatus.ON_HOLD && order.lifecycle() != null
                     && order.lifecycle().holdReason() != null ? " (" + order.lifecycle().holdReason() + ")" : "";
@@ -620,7 +635,9 @@ class PackingService implements Packing {
             java.util.Set<String> serials = new java.util.TreeSet<>();
             int available;
             if (print) {
-                available = wanted;
+                // PACK-EARLY: while the order is printed (or shipped its stock before production completed) its printed
+                // goods are not at packing yet; once production completed, everything it wants is.
+                available = order.lifecycle() == null || order.lifecycle().printLinesReady() ? wanted : 0;
                 for (UUID id : line.reservationIds()) {
                     HoldView hold = holds.get(id);
                     if (hold != null && (hold.status() == HoldView.Status.HELD

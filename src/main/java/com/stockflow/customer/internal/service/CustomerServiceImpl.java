@@ -135,6 +135,12 @@ class CustomerServiceImpl implements CustomerService {
 
     @Override
     @Transactional(readOnly = true)
+    public java.util.Map<UUID, String> fullNames(java.util.Collection<UUID> customerIds) {
+        return search.fullNames(customerIds);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public boolean segmentExists(UUID segmentId) {
         return customers.segmentExists(segmentId);
     }

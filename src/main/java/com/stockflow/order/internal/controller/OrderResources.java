@@ -26,6 +26,13 @@ public final class OrderResources {
      */
     public static final String QUOTE_CONVERSIONS = "sales-quote-conversions";
 
+    /**
+     * PACK-PARTIAL (lead's decision 2026-10-21): Sales decides whether an order may ship in parts. Its own resource,
+     * not {@code sales-orders:UPDATE}, which the portal customer holds for their own orders. Seeded by V20261022000400
+     * for SALES_STAFF (and SYSTEM_ADMIN, who holds everything).
+     */
+    public static final String PARTIAL_SHIPMENTS = "sales-order-partial-shipments";
+
     private OrderResources() {
     }
 }

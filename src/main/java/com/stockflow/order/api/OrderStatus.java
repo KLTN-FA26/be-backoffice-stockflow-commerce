@@ -21,6 +21,7 @@ import java.util.stream.Collectors;
  *   READY_TO_FULFILL ─▶ PICKING ─▶ PACKED ─handover─▶ SHIPPED ─▶ DELIVERED ─▶ COMPLETED ─▶ CLOSED
  *          └──── print only ────▶ PACKED      │                   └─▶ DELIVERY_FAILED ─▶ DELIVERED / RETURNED
  *                     PICKING / PACKED ─part handed over─▶ PARTIALLY_FULFILLED ─rest packed─▶ PACKED
+ *   IN_PRODUCTION / READY_TO_FULFILL ─stock handed over before the prints (PACK-EARLY)─▶ PARTIALLY_FULFILLED
  *   DELIVERED ─▶ RETURN_REQUESTED ─▶ RETURNED ─▶ REFUNDED / PARTIALLY_REFUNDED ─▶ CLOSED
  * </pre>
  *
@@ -32,6 +33,14 @@ import java.util.stream.Collectors;
  * unit in a shipment follows its shipments: in transit while one is, {@code DELIVERY_FAILED} once all have an outcome and
  * one failed, {@code DELIVERED} when all arrived; a shipment that comes back while others arrived makes the order
  * partial again.</p>
+ *
+ * <p><b>Shipping the stock first</b> (PACK-EARLY / PACK-PARTIAL, lead's decisions 2026-10-21; kltn-docs 17 BR-06
+ * "trừ khi chính sách split-ship", open question D9). A mixed order whose Sales allowed partial shipments may have its
+ * stock lines picked, packed and handed over while its print lines are still printed: IN_PRODUCTION →
+ * PARTIALLY_FULFILLED, the order then waiting for production ({@code awaitingProduction}). When production completes
+ * the print lines are packed and handed over as the rest of a split order (PARTIALLY_FULFILLED → PACKED → SHIPPED), or
+ * staff close them ({@code closeRemainder}). The same from READY_TO_FULFILL when production finished after the stock
+ * was packed but before it was handed over. An order that does not allow partial shipments ships whole, as before.</p>
  *
  * <p><b>Hold</b> (17 §5, 09 edge). {@code ON_HOLD} is entered from any status up to {@code PACKED} (and
  * {@code PARTIALLY_FULFILLED}) and left back to the status it was entered from, or to {@code CANCELLED}; a credit hold
@@ -178,9 +187,14 @@ public enum OrderStatus {
             case PENDING_PAYMENT -> target == CONFIRMED || target == CANCELLED;
             case CONFIRMED -> target == IN_PRODUCTION || target == READY_TO_FULFILL || target == ON_HOLD
                     || target == CANCELLED;
-            case IN_PRODUCTION -> target == READY_TO_FULFILL || target == ON_HOLD || target == CANCELLED;
+            // PARTIALLY_FULFILLED: PACK-EARLY (lead's decision 2026-10-21) - the stock lines of a mixed order that allows
+            // partial shipments were packed and handed over while its print lines are still printed.
+            case IN_PRODUCTION -> target == READY_TO_FULFILL || target == PARTIALLY_FULFILLED || target == ON_HOLD
+                    || target == CANCELLED;
             // PACKED directly: an order of printed goods only, or whose stock was picked while it was printed (17 §4.2.6).
-            case READY_TO_FULFILL -> target == PICKING || target == PACKED || target == ON_HOLD || target == CANCELLED;
+            // PARTIALLY_FULFILLED: PACK-EARLY - its stock, packed while it was printed, handed over before the prints.
+            case READY_TO_FULFILL -> target == PICKING || target == PACKED || target == PARTIALLY_FULFILLED
+                    || target == ON_HOLD || target == CANCELLED;
             case PICKING -> target == PACKED || target == PARTIALLY_FULFILLED || target == ON_HOLD
                     || target == CANCELLED;
             // PACKED: the rest packed (17 §5). SHIPPED: the rest handed over. SHIPPED / DELIVERY_FAILED / DELIVERED /

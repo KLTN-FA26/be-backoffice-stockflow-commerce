@@ -13,7 +13,8 @@ import java.util.UUID;
  * @param reversalId  the reversal row: unique per reversal, so a redelivered event is counted once
  * @param allocationId the allocation reversed (the {@code paymentId} of the {@link PaymentCaptured} that brought it)
  * @param amount      positive: the money taken back
- * @param source      as {@link PaymentCaptured#source()}: {@code ORDER_ALLOCATION} or {@code RECEIVABLE_ALLOCATION}
+ * @param source      as {@link PaymentCaptured#source()}: {@code ORDER_ALLOCATION}, {@code RECEIVABLE_ALLOCATION} or
+ *                    {@code FEE_RECEIVABLE_ALLOCATION}
  * <p>The accountant's reason stays with the reversal row in payment's ledger ({@code transfer_allocation.note}); the
  * event carries the ids that find it.</p>
  */

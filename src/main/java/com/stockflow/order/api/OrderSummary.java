@@ -67,16 +67,33 @@ public record OrderSummary(
      *                               yet paid; 0 for every other policy and term
      * @param wholeOrderCodAmount    what the carrier collects for an order handed over whole, without shipments
      *                               recorded on it ({@code markShipped}): fixed at that handover; 0 otherwise (G4-2a)
+     * @param allowPartialShipment   Sales allowed the order to ship in parts (PACK-PARTIAL, lead's decision
+     *                               2026-10-21): packing may complete part of it and part of it may be handed over -
+     *                               for a mixed order, its stock while the prints are made (PACK-EARLY)
+     * @param printLinesReady        its printed goods are at packing: no print lines, or production completed. False
+     *                               while it is printed, or partly fulfilled before production completed (PACK-EARLY)
      */
     public record Lifecycle(HoldReason holdReason, OrderStatus statusBeforeHold, String holdNote, Instant packedAt,
                             Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason, Instant completedAt,
                             Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal, BigDecimal amountDue,
                             BigDecimal amountDueBeforeHandover, List<LineProgress> lines, List<Shipment> shipments,
-                            BigDecimal amountDueOnDelivery, BigDecimal wholeOrderCodAmount) {
+                            BigDecimal amountDueOnDelivery, BigDecimal wholeOrderCodAmount, boolean allowPartialShipment,
+                            boolean printLinesReady) {
 
         public Lifecycle {
             lines = lines == null ? List.of() : List.copyOf(lines);
             shipments = shipments == null ? List.of() : List.copyOf(shipments);
+        }
+
+        /** Without the partial-shipment block (callers written before PACK-PARTIAL): not allowed, prints ready. */
+        public Lifecycle(HoldReason holdReason, OrderStatus statusBeforeHold, String holdNote, Instant packedAt,
+                         Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason,
+                         Instant completedAt, Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal,
+                         BigDecimal amountDue, BigDecimal amountDueBeforeHandover, List<LineProgress> lines,
+                         List<Shipment> shipments, BigDecimal amountDueOnDelivery, BigDecimal wholeOrderCodAmount) {
+            this(holdReason, statusBeforeHold, holdNote, packedAt, shippedAt, deliveredAt, deliveryFailureReason,
+                    completedAt, closedAt, billedAmount, effectiveTotal, amountDue, amountDueBeforeHandover, lines,
+                    shipments, amountDueOnDelivery, wholeOrderCodAmount, false, true);
         }
 
         /** Without the whole-order COD (callers written before G4-2a). */

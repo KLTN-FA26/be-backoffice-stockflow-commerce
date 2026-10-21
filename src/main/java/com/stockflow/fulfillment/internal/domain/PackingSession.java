@@ -452,7 +452,7 @@ public final class PackingSession {
      * What completing would ship: every sealed parcel not shipped yet. Open parcels with goods in them stop it
      * ({@code PACKAGE_NOT_SEALED}, 09 BR-01: only measured, labelled parcels leave); empty open ones are voided.
      * Everything the order still wants must be in it ({@code PACKING_INCOMPLETE}, 08 BR-01) unless a partial shipment
-     * is asked for, with a reason, and allowed.
+     * is asked for, with a reason, and allowed - by Sales, on the order ({@code partialAllowed}, PACK-PARTIAL).
      */
     public Completion complete(boolean partialRequested, String reason, boolean partialAllowed, UUID actor,
                                Instant now) {
@@ -485,8 +485,9 @@ public final class PackingSession {
                         "Missing")).toList());
             }
             if (!partialAllowed) {
-                throw new BusinessException(ErrorCode.PACK_PARTIAL_NOT_ALLOWED,
-                        "Partial shipments are not allowed: pack the whole order");
+                throw new BusinessException(ErrorCode.PACK_PARTIAL_NOT_ALLOWED, ("Order %s does not allow partial "
+                        + "shipments: pack the whole order, or ask Sales to allow partial shipment on the order")
+                        .formatted(orderNumber));
             }
             if (blank(reason)) {
                 throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A partial shipment says why",

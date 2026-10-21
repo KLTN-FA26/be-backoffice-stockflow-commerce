@@ -121,9 +121,12 @@ public class CreditHoldService {
                 throw new BusinessException(ErrorCode.PAYMENT_TERM_NOT_ALLOWED,
                         "Customer %s may not be sold on %s terms".formatted(order.customerId(), term));
             }
+            com.stockflow.order.api.BalancePolicy policy = OrderServiceImpl.balancePolicyFor(term, null, terms);
             order.switchTermsAfterCreditRefusal(term,
                     term == PaymentTerm.DEPOSIT && depositPercent == null ? terms.depositPercent() : depositPercent,
-                    OrderServiceImpl.balancePolicyFor(term, null, terms));
+                    // Credit was just refused: a balance on credit (BALCREDIT) is not the way out, it is paid first.
+                    policy == com.stockflow.order.api.BalancePolicy.ON_CREDIT
+                            ? com.stockflow.order.api.BalancePolicy.BEFORE_DELIVERY : policy);
             decide(order, CreditChecks.Outcome.REJECTED, note, by);
             // Waiting for payment again: its holds get a deadline, as at checkout (kltn-docs 14 BR-07).
             inventory.rearmReservations(orderId);

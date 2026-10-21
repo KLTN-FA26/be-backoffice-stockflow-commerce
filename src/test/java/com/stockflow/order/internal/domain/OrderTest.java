@@ -444,9 +444,13 @@ class OrderTest {
                 assertThat(l.approvedSampleId()).isEqualTo(sample);
             });
         });
-        // Fulfilment waits for production (BR-PRD-06): picking the stock lines in parallel changes nothing.
-        assertThat(order.startPicking(COORDINATOR, NOW)).isFalse();
+        // Fulfilment waits for production (BR-PRD-06): picking the stock lines in parallel leaves the status as it is,
+        // and records once that the order's task is open (review of #150: it leaves the create-task list).
+        assertThat(order.startPicking(COORDINATOR, NOW)).isTrue();
         assertThat(order.status()).isEqualTo(OrderStatus.IN_PRODUCTION);
+        assertThat(order.fulfilmentStartedAt()).isEqualTo(NOW);
+        assertThat(order.startPicking(COORDINATOR, NOW.plusSeconds(60))).isFalse();
+        assertThat(order.fulfilmentStartedAt()).isEqualTo(NOW);
     }
 
     @Test

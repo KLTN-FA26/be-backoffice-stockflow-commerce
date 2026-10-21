@@ -146,6 +146,27 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "cod_amount", nullable = false, precision = 19, scale = 4)
     private java.math.BigDecimal codAmount = java.math.BigDecimal.ZERO;
 
+    /** V20261022000400 (PACK-PARTIAL / PACK-EARLY): Sales allowed shipping in parts; shipped early, printing goes on. */
+    @Column(name = "allow_partial_shipment", nullable = false)
+    private boolean allowPartialShipment;
+
+    /** V20261022000400 (review of #150): fees agreed when print lines were closed after printing started. */
+    @Column(name = "remainder_fee_amount", nullable = false, precision = 19, scale = 4)
+    private java.math.BigDecimal remainderFeeAmount = java.math.BigDecimal.ZERO;
+
+    @Column(name = "remainder_fee_retained_amount", nullable = false, precision = 19, scale = 4)
+    private java.math.BigDecimal remainderFeeRetainedAmount = java.math.BigDecimal.ZERO;
+
+    @Column(name = "remainder_fee_paid_amount", nullable = false, precision = 19, scale = 4)
+    private java.math.BigDecimal remainderFeePaidAmount = java.math.BigDecimal.ZERO;
+
+    @Column(name = "awaiting_production", nullable = false)
+    private boolean awaitingProduction;
+
+    /** V20261022000400 (review of #150): when fulfillment opened the order's task. */
+    @Column(name = "fulfilment_started_at")
+    private Instant fulfilmentStartedAt;
+
     @Column(name = "warehouse_id")
     private UUID warehouseId;
 
@@ -292,6 +313,30 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     }
 
     public com.stockflow.order.api.BalancePolicy getBalancePolicy() { return balancePolicy; }
+
+    public void applyPartialShipment(boolean allowed, boolean awaiting) {
+        this.allowPartialShipment = allowed;
+        this.awaitingProduction = awaiting;
+    }
+
+    public boolean isAllowPartialShipment() { return allowPartialShipment; }
+
+    public void applyFulfilmentStarted(Instant at) {
+        this.fulfilmentStartedAt = at;
+    }
+
+    public Instant getFulfilmentStartedAt() { return fulfilmentStartedAt; }
+
+    public void applyRemainderFee(java.math.BigDecimal fee, java.math.BigDecimal retained, java.math.BigDecimal paid) {
+        this.remainderFeeAmount = fee == null ? java.math.BigDecimal.ZERO : fee;
+        this.remainderFeeRetainedAmount = retained == null ? java.math.BigDecimal.ZERO : retained;
+        this.remainderFeePaidAmount = paid == null ? java.math.BigDecimal.ZERO : paid;
+    }
+
+    public java.math.BigDecimal getRemainderFeeAmount() { return remainderFeeAmount; }
+    public java.math.BigDecimal getRemainderFeeRetainedAmount() { return remainderFeeRetainedAmount; }
+    public java.math.BigDecimal getRemainderFeePaidAmount() { return remainderFeePaidAmount; }
+    public boolean isAwaitingProduction() { return awaitingProduction; }
     public java.math.BigDecimal getCodAmount() { return codAmount; }
 
     public void applyPaymentAndCancellation(java.math.BigDecimal paidAmount, Instant paidInFullAt,

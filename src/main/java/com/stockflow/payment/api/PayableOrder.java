@@ -9,7 +9,8 @@ import java.util.UUID;
  *
  * @param status                the order's status, e.g. {@code PENDING_PAYMENT}, {@code CANCELLED}
  * @param paymentTerm           {@code PREPAID}, {@code DEPOSIT} or {@code CREDIT}
- * @param balancePolicy         how a deposit order's balance is collected ({@code BEFORE_DELIVERY}, {@code ON_DELIVERY});
+ * @param balancePolicy         how a deposit order's balance is collected ({@code BEFORE_DELIVERY}, {@code ON_DELIVERY},
+ *                              {@code ON_CREDIT});
  *                              null for other terms
  * @param billable              what the order is worth to the customer now: its total less units closed out of it
  * @param depositRequired       null unless DEPOSIT

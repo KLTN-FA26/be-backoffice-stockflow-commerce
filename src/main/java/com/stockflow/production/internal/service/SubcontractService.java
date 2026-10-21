@@ -614,8 +614,12 @@ class SubcontractService implements Subcontracting {
      * completion's stock locks follow.
      */
     private boolean salesOrderCancelled(ProductionOrder order) {
-        return salesOrders.lockedStatus(order.salesOrderId())
-                .map(status -> status == OrderStatus.CANCELLED).orElse(true);
+        if (order.salesOrderLineId() == null) {
+            return salesOrders.lockedStatus(order.salesOrderId())
+                    .map(status -> status == OrderStatus.CANCELLED).orElse(true);
+        }
+        // PACK-EARLY: the line closed out of an order whose stock shipped first is withdrawn just the same.
+        return salesOrders.lockedLineWithdrawn(order.salesOrderId(), order.salesOrderLineId());
     }
 
     private ProductionOrder lock(CurrentUser user, UUID productionOrderId) {

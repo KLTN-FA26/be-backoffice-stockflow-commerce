@@ -18,8 +18,14 @@ final class TaskAccess {
     private TaskAccess() {
     }
 
-    private static final java.util.Set<OrderStatus> WORKABLE = java.util.EnumSet.of(OrderStatus.PICKING,
-            OrderStatus.PACKED, OrderStatus.PARTIALLY_FULFILLED, OrderStatus.ON_HOLD);
+    /**
+     * IN_PRODUCTION: the stock lines of a mixed order picked (and, with partial shipments allowed, packed) while it is
+     * printed; READY_TO_FULFILL: such an order whose production completed meanwhile (17 §4.2 step 6, "hàng sẵn đã pick
+     * song song" - packing completes it to PACKED). PACK-EARLY.
+     */
+    private static final java.util.Set<OrderStatus> WORKABLE = java.util.EnumSet.of(OrderStatus.IN_PRODUCTION,
+            OrderStatus.READY_TO_FULFILL, OrderStatus.PICKING, OrderStatus.PACKED, OrderStatus.PARTIALLY_FULFILLED,
+            OrderStatus.ON_HOLD);
 
     /**
      * The assignee sees the task; so does whoever oversees tasks or re-verifies designs, for the warehouses they are

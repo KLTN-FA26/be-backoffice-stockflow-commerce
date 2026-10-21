@@ -86,4 +86,22 @@ class CreditProfileTest {
                 null, DepositBalancePolicy.ON_DELIVERY, ACCOUNTANT, NOW, null)))
                 .isEqualTo(ErrorCode.CREDIT_PROFILE_INVALID);
     }
+
+    @org.junit.jupiter.api.Test
+    @org.junit.jupiter.api.DisplayName("BALCREDIT: the balance on credit needs credit allowed; losing credit falls back to "
+            + "BEFORE_DELIVERY when no policy is sent, and is refused when ON_CREDIT is sent again")
+    void balanceOnCredit() {
+        assertThat(refused(() -> CreditProfile.create(CUSTOMER, true, true, false, CommercialTerm.DEPOSIT,
+                new BigDecimal("30"), null, null, DepositBalancePolicy.ON_CREDIT, ACCOUNTANT, NOW, null)))
+                .isEqualTo(ErrorCode.CREDIT_PROFILE_INVALID);
+        CreditProfile both = CreditProfile.create(CUSTOMER, true, true, true, CommercialTerm.DEPOSIT,
+                new BigDecimal("30"), new BigDecimal("50000000"), 30, DepositBalancePolicy.ON_CREDIT, ACCOUNTANT, NOW,
+                null);
+        assertThat(both.depositBalancePolicy()).isEqualTo(DepositBalancePolicy.ON_CREDIT);
+        assertThat(refused(() -> both.change(true, true, false, CommercialTerm.DEPOSIT, new BigDecimal("30"), null,
+                null, DepositBalancePolicy.ON_CREDIT, ACCOUNTANT, NOW, null))).isEqualTo(ErrorCode.CREDIT_PROFILE_INVALID);
+        both.change(true, true, false, CommercialTerm.DEPOSIT, new BigDecimal("30"), null, null, ACCOUNTANT, NOW,
+                "credit withdrawn");
+        assertThat(both.depositBalancePolicy()).isEqualTo(DepositBalancePolicy.BEFORE_DELIVERY);
+    }
 }

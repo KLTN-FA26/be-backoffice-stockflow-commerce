@@ -166,7 +166,9 @@ final class OrderWebMapper {
                                         .map(line -> new OrderResponse.ShipmentLine(line.lineId(), line.quantity()))
                                         .toList(), shipment.codAmount()))
                         .toList(),
-                lifecycle == null ? null : lifecycle.amountDueOnDelivery());
+                lifecycle == null ? null : lifecycle.amountDueOnDelivery(),
+                lifecycle == null ? null : lifecycle.allowPartialShipment(),
+                lifecycle == null ? null : lifecycle.printLinesReady());
     }
 
     private static PlaceGuestOrderCommand.Address toCommand(

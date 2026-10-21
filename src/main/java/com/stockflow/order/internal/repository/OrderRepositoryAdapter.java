@@ -220,9 +220,18 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
      * released, and every candidate is released.
      */
     @Override
-    public Page<com.stockflow.order.api.FulfillmentCandidate> readyToFulfill(UUID warehouseId, Pageable pageable) {
-        Specification<OrderJpaEntity> spec = Specification.<OrderJpaEntity>where(
-                        Specs.eq("status", OrderStatus.READY_TO_FULFILL))
+    public Page<com.stockflow.order.api.FulfillmentCandidate> awaitingTask(UUID warehouseId, Pageable pageable) {
+        // createTask's rule (review of #150): READY_TO_FULFILL, or IN_PRODUCTION with a stock line - and no task yet.
+        Specification<OrderJpaEntity> openable = (root, query, cb) -> {
+            var stockLine = query.subquery(UUID.class);
+            var line = stockLine.from(com.stockflow.order.internal.entity.OrderLineJpaEntity.class);
+            stockLine.select(line.get("id")).where(cb.equal(line.get("order").get("id"), root.get("id")),
+                    cb.isNull(line.get("designSnapshotId")));
+            return cb.and(cb.isNull(root.get("fulfilmentStartedAt")), cb.or(
+                    cb.equal(root.get("status"), OrderStatus.READY_TO_FULFILL),
+                    cb.and(cb.equal(root.get("status"), OrderStatus.IN_PRODUCTION), cb.exists(stockLine))));
+        };
+        Specification<OrderJpaEntity> spec = Specification.<OrderJpaEntity>where(openable)
                 .and(Specs.eq("warehouseId", warehouseId))
                 .and(com.stockflow.common.security.WarehouseScope.warehousesIn("warehouseId"));
         Page<OrderJpaEntity> orders = jpa.findAll(spec, pageable);

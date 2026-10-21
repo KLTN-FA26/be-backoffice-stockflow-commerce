@@ -24,7 +24,8 @@ public record SaveCreditProfileRequest(
         @Size(max = 1000, message = "note is at most 1000 characters") String note,
         @Schema(description = "The version read; omit when the customer has no terms yet") Long expectedVersion,
         @Schema(description = "How a deposit order's balance is collected: BEFORE_DELIVERY (by transfer, before the "
-                + "handover) or ON_DELIVERY (the carrier collects it); only with allowDeposit. Omit to keep the current "
+                + "handover), ON_DELIVERY (the carrier collects it) or ON_CREDIT (a receivable on the customer's credit, due "
+                + "after creditTermDays; needs allowCredit); only with allowDeposit. Omit to keep the current "
                 + "policy (BEFORE_DELIVERY for new deposit terms)", example = "BEFORE_DELIVERY")
         com.stockflow.customer.api.DepositBalancePolicy depositBalancePolicy
 ) {

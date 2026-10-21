@@ -99,16 +99,23 @@ class FulfillmentServiceImpl implements FulfillmentService {
             return toTask(existing.get());
         }
         OrderSummary order = requireOrder(orderId);
-        // READY_TO_FULFILL only: released - its warehouse chosen - and production (if any) delivered (SCRUM-423,
-        // kltn-docs 17 BR-02). A CONFIRMED order is released by the coordinator first (G3-2).
-        if (order.status() != OrderStatus.READY_TO_FULFILL) {
-            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT,
-                    "Only a released order (READY_TO_FULFILL) can enter fulfillment; it is " + order.status());
+        // Released - its warehouse chosen - and production (if any) delivered: READY_TO_FULFILL (SCRUM-423, kltn-docs
+        // 17 BR-02). A CONFIRMED order is released by the coordinator first (G3-2). A mixed order IN_PRODUCTION has its
+        // stock lines picked in parallel (17 §4.2 step 5, PACK-EARLY); the order stays IN_PRODUCTION meanwhile and the
+        // goods wait at packing - or, when Sales allowed partial shipments, are packed and shipped ahead of the prints.
+        boolean parallel = order.status() == OrderStatus.IN_PRODUCTION
+                && order.lines().stream().anyMatch(line -> line.designSnapshotId() == null);
+        if (order.status() != OrderStatus.READY_TO_FULFILL && !parallel) {
+            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT, order.status() == OrderStatus.IN_PRODUCTION
+                    ? "Order %s has only print lines: its task opens when production completes".formatted(
+                            order.orderNumber())
+                    : "Only a released order (READY_TO_FULFILL, or IN_PRODUCTION with stock lines) can enter "
+                            + "fulfillment; it is " + order.status());
         }
         UUID warehouseId = pickingWarehouse(order);
         WarehouseScope.requireWarehouse(warehouseId);
         requireWarehouseAssignee(assignedUserId, warehouseId);
-        // In this transaction, under the order's row lock (A1): READY_TO_FULFILL → PICKING.
+        // In this transaction, under the order's row lock (A1): READY_TO_FULFILL → PICKING; IN_PRODUCTION stays.
         orders.startPicking(orderId, actor.userId());
         var now = clock.instant();
         var pick = new PickJpaEntity(Identifiers.newId(), null, orderId, order.orderNumber(), warehouseId,

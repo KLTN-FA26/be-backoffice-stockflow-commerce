@@ -76,8 +76,12 @@ class OrderController {
     private final CustomerOrders customerOrders;
     private final com.stockflow.identity.api.IdentityService identities;
 
+    private final com.stockflow.order.internal.service.PartialShipments partialShipments;
+
     OrderController(OrderService orderService, CustomerService customerService, Quotes quotes,
-                    CustomerOrders customerOrders, com.stockflow.identity.api.IdentityService identities) {
+                    CustomerOrders customerOrders, com.stockflow.identity.api.IdentityService identities,
+                    com.stockflow.order.internal.service.PartialShipments partialShipments) {
+        this.partialShipments = partialShipments;
         this.identities = identities;
         this.orderService = orderService;
         this.customerService = customerService;
@@ -254,7 +258,7 @@ class OrderController {
                                                      @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
         return ApiResponse.ok(OrderWebMapper.toResponse(orderService.closeRemainder(orderId, request.reasonCode(),
-                request.note(), user.userId())));
+                request.note(), OrderWebMapper.toFee(request.agreedFee()), user.userId())));
     }
 
     /**
@@ -302,13 +306,22 @@ class OrderController {
                             null, null))
                     .toList());
         }
-        java.util.Map<UUID, String> names = identities.displayNames(changes.stream()
-                .map(com.stockflow.order.api.OrderStatusChange::actorId).filter(java.util.Objects::nonNull)
-                .distinct().toList());
-        return ApiResponse.ok(changes.stream()
-                .map(change -> new OrderStatusChangeResponse(change.from(), change.to(), change.reason(),
-                        change.occurredAt(), change.actorId(),
-                        change.actorId() == null ? null : names.get(change.actorId())))
+        // PACK-PARTIAL: Sales' decisions on shipping in parts are part of the order's history for staff - entries of
+        // their own type (PARTIAL_SHIPMENT_DECISION), not status changes.
+        List<com.stockflow.order.api.PartialShipmentDecision> decisions = partialShipments.decisions(orderId);
+        java.util.Map<UUID, String> names = identities.displayNames(java.util.stream.Stream.concat(
+                        changes.stream().map(com.stockflow.order.api.OrderStatusChange::actorId),
+                        decisions.stream().map(com.stockflow.order.api.PartialShipmentDecision::decidedBy))
+                .filter(java.util.Objects::nonNull).distinct().toList());
+        return ApiResponse.ok(java.util.stream.Stream.concat(changes.stream()
+                        .map(change -> new OrderStatusChangeResponse(change.from(), change.to(), change.reason(),
+                                change.occurredAt(), change.actorId(),
+                                change.actorId() == null ? null : names.get(change.actorId()))),
+                decisions.stream().map(decision -> new OrderStatusChangeResponse(
+                        OrderStatusChangeResponse.PARTIAL_SHIPMENT_DECISION, null, null, decision.note(),
+                        decision.decidedAt(), decision.decidedBy(),
+                        decision.decidedBy() == null ? null : names.get(decision.decidedBy()), decision.allowed())))
+                .sorted(java.util.Comparator.comparing(OrderStatusChangeResponse::occurredAt))
                 .toList());
     }
 
