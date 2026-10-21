@@ -266,6 +266,36 @@ class PurchaseOrderDraftEditIntegrationTest {
     }
 
     @Test
+    @DisplayName("SCRUM-473: a draft line in a packing unit is edited in whole units, and its unit quantity follows")
+    void draftEditKeepsTheLineUnit() {
+        PurchaseOrderSummary order = draft(DemoData.WAREHOUSE_HCM);
+        UUID lineA = line(order, skuA).lineId();
+        UUID pair = Identifiers.newId();
+        // The application does not order in a packing unit yet; the line is put in one as a draft may be.
+        tx.executeWithoutResult(s -> {
+            jdbc.update("""
+                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
+                    SELECT ?, id, 'PAIR', 2 FROM inventory.inventory_items WHERE sku = ?""", pair, skuA);
+            jdbc.update("UPDATE procurement.purchase_order_lines SET uom_conversion_id = ?, unit_qty = 1 WHERE id = ?",
+                    pair, lineA);
+        });
+        java.util.function.IntFunction<RevisePurchaseOrderCommand> withQuantityA = quantity -> {
+            PurchaseOrderSummary current = procurement.findById(order.purchaseOrderId()).orElseThrow();
+            return new RevisePurchaseOrderCommand(current.version(), DemoData.WAREHOUSE_HCM, current.expectedAt(), null,
+                    current.lines().stream().map(l -> new RevisePOLineCommand(l.lineId(), l.sku(), l.description(),
+                            l.lineId().equals(lineA) ? quantity : l.quantityOrdered(), l.unitPrice(), l.taxRate()))
+                            .toList());
+        };
+
+        assertThat(codeOf(catchThrowable(() -> procurement.reviseDraft(order.purchaseOrderId(), withQuantityA.apply(5)))))
+                .isEqualTo(ErrorCode.PO_LINE_UNIT_NOT_MULTIPLE);
+
+        procurement.reviseDraft(order.purchaseOrderId(), withQuantityA.apply(6));
+        assertThat(jdbc.queryForMap("SELECT uom_conversion_id, unit_qty FROM procurement.purchase_order_lines WHERE id = ?",
+                lineA)).containsEntry("uom_conversion_id", pair).containsEntry("unit_qty", 3);
+    }
+
+    @Test
     @DisplayName("SCRUM-462: a warehouse-bound clerk edits only within their warehouses, old and new")
     void clerkIsLimitedToTheirWarehouses() {
         UUID clerkId = tx.execute(s -> ReferenceRows.user(entityManager));

@@ -74,19 +74,21 @@ class PurchaseOrderRepositoryAdapter
     private final InventoryService inventory;
     private final WarehouseService warehouses;
     private final PurchaseOrderEventLog events;
+    private final PoLineUnits lineUnits;
 
     @PersistenceContext
     private EntityManager entityManager;
 
     PurchaseOrderRepositoryAdapter(PurchaseOrderJpaRepository jpa, SupplierJpaRepository suppliers,
                                    PoNumberSequence poNumberSequence, InventoryService inventory,
-                                   WarehouseService warehouses, PurchaseOrderEventLog events) {
+                                   WarehouseService warehouses, PurchaseOrderEventLog events, PoLineUnits lineUnits) {
         this.jpa = jpa;
         this.suppliers = suppliers;
         this.poNumberSequence = poNumberSequence;
         this.inventory = inventory;
         this.warehouses = warehouses;
         this.events = events;
+        this.lineUnits = lineUnits;
     }
 
     // ------------------------------------------------------------------ aggregate
@@ -151,6 +153,7 @@ class PurchaseOrderRepositoryAdapter
                 entityManager.lock(entity, LockModeType.PESSIMISTIC_FORCE_INCREMENT);
             }
             Set<UUID> frozen = draft ? frozenLines(order.id().value()) : Set.of();
+            Map<UUID, Integer> unitFactors = draft ? lineUnits.factors(entity.getLines()) : Map.of();
             Set<UUID> stored = new HashSet<>();
             for (PoLineJpaEntity line : List.copyOf(entity.getLines())) {
                 if (line.getStatus() == PoLineStatus.WITHDRAWN) {
@@ -166,7 +169,7 @@ class PurchaseOrderRepositoryAdapter
                     }
                 } else if (current != null) {
                     if (draft) {
-                        line.reviseDraft(current);
+                        line.reviseDraft(current, unitFactors.getOrDefault(line.getId(), 1));
                     }
                     line.setStatus(current.status());
                 }

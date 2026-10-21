@@ -230,6 +230,32 @@ class SubcontractPurchasingIntegrationTest {
     }
 
     @Test
+    @DisplayName("SCRUM-473: a draft line in a packing unit is resized in whole units, and its unit quantity follows")
+    void draftResizeKeepsTheLineUnit() {
+        SubcontractOrder created = subcontracting.create(command(innhanh, CUP, 400));
+        UUID line = jdbc.queryForObject("SELECT id FROM procurement.purchase_order_lines WHERE po_id = ?", UUID.class,
+                created.purchaseOrderId());
+        UUID carton = Identifiers.newId();
+        tx.executeWithoutResult(s -> {
+            // Subcontract lines are written in the base unit; a line in a carton of 10 is put there as a draft.
+            jdbc.update("""
+                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
+                    SELECT ?, id, ?, 10 FROM inventory.inventory_items WHERE sku = ?""",
+                    carton, "C" + carton.toString().substring(24).toUpperCase(), CUP.code());
+            jdbc.update("UPDATE procurement.purchase_order_lines SET uom_conversion_id = ?, unit_qty = 40 WHERE id = ?",
+                    carton, line);
+        });
+
+        assertThatThrownBy(() -> subcontracting.supplement(created.purchaseOrderId(), 15, "resend", manager))
+                .extracting(SubcontractPurchasingIntegrationTest::code).isEqualTo(ErrorCode.PO_LINE_UNIT_NOT_MULTIPLE);
+
+        assertThat(subcontracting.supplement(created.purchaseOrderId(), 20, "resend", manager).quantity()).isEqualTo(420);
+        assertThat(jdbc.queryForMap(
+                "SELECT uom_conversion_id, unit_qty, ordered_qty FROM procurement.purchase_order_lines WHERE id = ?", line))
+                .containsEntry("uom_conversion_id", carton).containsEntry("unit_qty", 42);
+    }
+
+    @Test
     @DisplayName("SCRUM-473: a line ordered in a packing unit keeps it through an amendment, in whole units only")
     void amendmentKeepsTheLineUnit() {
         SubcontractOrder created = subcontracting.create(command(innhanh, CUP, 400));
@@ -243,7 +269,7 @@ class SubcontractPurchasingIntegrationTest {
             jdbc.update("""
                     INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
                     SELECT ?, id, ?, 10 FROM inventory.inventory_items WHERE sku = ?""",
-                    carton, "C" + carton.toString().substring(0, 8).toUpperCase(), CUP.code());
+                    carton, "C" + carton.toString().substring(24).toUpperCase(), CUP.code());
             jdbc.update("UPDATE procurement.purchase_order_lines SET uom_conversion_id = ?, unit_qty = 40 WHERE id = ?",
                     carton, line);
             jdbc.update("""
