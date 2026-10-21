@@ -33,6 +33,12 @@ class CancellationRequestRepositoryAdapter implements CancellationRequestReposit
     }
 
     @Override
+    public Optional<CancellationRequest> findPending(UUID orderId) {
+        return jpa.findFirstByOrderIdAndStatus(orderId, CancellationRequestStatus.PENDING)
+                .map(CancellationRequestRepositoryAdapter::toDomain);
+    }
+
+    @Override
     public Optional<CancellationRequest> latestOf(UUID orderId) {
         return jpa.findFirstByOrderIdOrderByRequestedAtDescIdDesc(orderId)
                 .map(CancellationRequestRepositoryAdapter::toDomain);

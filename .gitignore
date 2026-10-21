@@ -21,9 +21,10 @@ target/
 .env
 .env.*
 !.env.example
-# Server-only state of deploy/ (TLS key, database dumps, the running tag) - never committed.
+# Server-only state of deploy/ (TLS key, JWT signing key, database dumps, the running tag) - never committed.
 deploy/certs/
 deploy/auth/
+deploy/jwt/
 deploy/backups/
 deploy/.nginx-config-hash
 

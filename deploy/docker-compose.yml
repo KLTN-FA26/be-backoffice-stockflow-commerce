@@ -103,6 +103,9 @@ services:
       REDIS_PASSWORD: ${REDIS_PASSWORD}
       # The application validates its own tokens against the keys it publishes itself.
       JWT_JWK_SET_URI: http://localhost:8080/oauth2/jwks
+      # The signing key lives on the host (./jwt, mounted below), so tokens survive a deploy or a restart. The first
+      # start writes a new key there; scripts/deploy.sh gives the directory to the container user beforehand.
+      JWT_PRIVATE_KEY_PATH: /var/lib/stockflow/jwt/signing-key.pem
       S3_BUCKET: ${S3_BUCKET}
       S3_ACCESS_KEY: ${S3_ACCESS_KEY}
       S3_SECRET_KEY: ${S3_SECRET_KEY}
@@ -152,6 +155,10 @@ services:
         -XX:+ExitOnOutOfMemoryError
         -Djava.security.egd=file:/dev/./urandom
         -Duser.timezone=UTC
+    volumes:
+      # Read-write: the key is created here on the first start. Owner-only (700 / 600), owned by the image's
+      # `stockflow` user; never rsynced (.github/workflows/build.yml excludes jwt/) and never in a backup dump.
+      - ./jwt:/var/lib/stockflow/jwt
     mem_limit: 1400m
     # Graceful shutdown needs time to finish in-flight requests before Docker sends SIGKILL.
     stop_grace_period: 40s
