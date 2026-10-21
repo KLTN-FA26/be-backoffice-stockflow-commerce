@@ -69,6 +69,14 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @TestPropertySource(properties = "stockflow.upload-inspection.enabled=false")
 class SampleToPackingIntegrationTest {
 
+    @org.springframework.beans.factory.annotation.Autowired
+    com.stockflow.common.security.RoleAuthorizationLookup grants;
+
+    /** The role's permissions as seeded: services check permissions, not role names. */
+    private java.util.Set<com.stockflow.common.security.PermissionCode> seeded(Role role) {
+        return grants.resolve(java.util.List.of(role.authority())).permissions();
+    }
+
     private static final String BLANK = ConfirmedDesigns.BLANK;
     private static final String PRINT_SHOP = "HCM-PRD01";
     private static final String PACKING = "HCM-PACK01";
@@ -109,7 +117,7 @@ class SampleToPackingIntegrationTest {
         hcm = jdbc.queryForObject("SELECT id FROM warehouse.warehouse WHERE prefix = 'HCM'", UUID.class);
         ConfirmedDesigns.stockBlanks(jdbc, tx, 40);
         UUID salesId = tx.execute(s -> ReferenceRows.user(entityManager));
-        sales = new CurrentUser(salesId, "sales-" + salesId, Set.of(Role.SALES_STAFF), Set.of(), DataScope.ALL,
+        sales = new CurrentUser(salesId, "sales-" + salesId, Set.of(Role.SALES_STAFF), seeded(Role.SALES_STAFF), DataScope.ALL,
                 Set.of(), Set.of());
         UUID portalUser = tx.execute(s -> ReferenceRows.user(entityManager));
         customerId = Identifiers.newId();
@@ -119,7 +127,7 @@ class SampleToPackingIntegrationTest {
                 customerId, portalUser, "c-" + customerId + "@example.com"));
         customers.addAddress(customerId, salesId, true, new SaveAddressCommand("SHIPPING", "Nguyen Van C",
                 "0901234568", "3 Le Loi", null, "26734", "Ben Nghe", "79", "Ho Chi Minh", "VN", null, true, null));
-        portal = new CurrentUser(portalUser, "portal-" + portalUser, Set.of(Role.CUSTOMER), Set.of(), DataScope.ALL,
+        portal = new CurrentUser(portalUser, "portal-" + portalUser, Set.of(Role.CUSTOMER), seeded(Role.CUSTOMER), DataScope.ALL,
                 Set.of(), Set.of());
         printer = staff(Role.PRODUCTION_STAFF);
         storekeeper = staff(Role.WAREHOUSE_STAFF);
@@ -130,7 +138,7 @@ class SampleToPackingIntegrationTest {
 
     private CurrentUser staff(Role role) {
         UUID id = tx.execute(s -> ReferenceRows.user(entityManager));
-        return new CurrentUser(id, role.name() + "-" + id, Set.of(role), Set.of(), DataScope.WAREHOUSE, Set.of("HCM"),
+        return new CurrentUser(id, role.name() + "-" + id, Set.of(role), seeded(role), DataScope.WAREHOUSE, Set.of("HCM"),
                 Set.of(hcm));
     }
 

@@ -10,7 +10,6 @@ import com.stockflow.common.security.AuthenticatedUser;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
-import com.stockflow.common.security.Roles;
 import com.stockflow.fulfillment.api.FulfillmentService;
 import com.stockflow.fulfillment.api.FulfillmentTaskQuery;
 import com.stockflow.fulfillment.api.PackingCompletion;
@@ -32,7 +31,6 @@ import java.util.UUID;
 import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -63,8 +61,7 @@ class FulfillmentController {
 
     @PostMapping("/tasks")
     @ResponseStatus(HttpStatus.CREATED)
-    @RequiresPermission(resource = FulfillmentResources.PICK_LISTS, action = Action.UPDATE)
-    @PreAuthorize("hasAnyAuthority('" + Roles.ORDER_COORDINATOR + "','" + Roles.WAREHOUSE_MANAGER + "')")
+    @RequiresPermission(resource = FulfillmentResources.TASK_ASSIGNMENT, action = Action.CREATE)
     @Auditable(action = AuditAction.CREATE, resourceType = "fulfillment-task", resourceId = "#result?.data()?.taskId()")
     public ApiResponse<FulfillmentTaskResponse> create(@Valid @RequestBody CreateTaskRequest request,
                                                @AuthenticatedUser CurrentUser actor) {
@@ -73,8 +70,6 @@ class FulfillmentController {
 
     @GetMapping("/tasks")
     @RequiresPermission(resource = FulfillmentResources.PICK_LISTS, action = Action.READ)
-    @PreAuthorize("hasAnyAuthority('" + Roles.WAREHOUSE_STAFF + "','" + Roles.WAREHOUSE_MANAGER
-            + "','" + Roles.QC_STAFF + "','" + Roles.ORDER_COORDINATOR + "')")
     public ApiResponse<PageResponse<FulfillmentTaskResponse>> list(@AuthenticatedUser CurrentUser actor,
             @RequestParam(required = false) String status,
             @RequestParam(required = false) UUID warehouseId,
@@ -93,16 +88,14 @@ class FulfillmentController {
      * paged: it is bounded by one warehouse's staff, and the screen needs all of them to pick from.
      */
     @GetMapping("/assignees")
-    @RequiresPermission(resource = FulfillmentResources.PICK_LISTS, action = Action.UPDATE)
-    @PreAuthorize("hasAnyAuthority('" + Roles.ORDER_COORDINATOR + "','" + Roles.WAREHOUSE_MANAGER + "')")
+    @RequiresPermission(resource = FulfillmentResources.TASK_ASSIGNMENT, action = Action.UPDATE)
     public ApiResponse<List<AssigneeResponse>> assignees(@RequestParam UUID warehouseId,
                                                          @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(fulfillment.assignees(warehouseId, actor).stream().map(mapper::toResponse).toList());
     }
 
     @PutMapping("/tasks/{taskId}/assignment")
-    @RequiresPermission(resource = FulfillmentResources.PICK_LISTS, action = Action.UPDATE)
-    @PreAuthorize("hasAnyAuthority('" + Roles.ORDER_COORDINATOR + "','" + Roles.WAREHOUSE_MANAGER + "')")
+    @RequiresPermission(resource = FulfillmentResources.TASK_ASSIGNMENT, action = Action.UPDATE)
     @Auditable(action = AuditAction.UPDATE, resourceType = "fulfillment-task", resourceId = "#taskId")
     public ApiResponse<FulfillmentTaskResponse> assign(@PathVariable UUID taskId,
             @Valid @RequestBody AssignmentRequest request, @AuthenticatedUser CurrentUser actor) {
@@ -121,8 +114,7 @@ class FulfillmentController {
      * Starting a task already PICKING answers with it unchanged.
      */
     @PostMapping("/tasks/{taskId}/picking-start")
-    @RequiresPermission(resource = FulfillmentResources.PICK_LISTS, action = Action.UPDATE)
-    @PreAuthorize("hasAnyAuthority('" + Roles.WAREHOUSE_STAFF + "','" + Roles.WAREHOUSE_MANAGER + "')")
+    @RequiresPermission(resource = FulfillmentResources.PICKING, action = Action.UPDATE)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "fulfillment-task", resourceId = "#taskId")
     public ApiResponse<FulfillmentTaskResponse> startPicking(@PathVariable UUID taskId,
                                                      @AuthenticatedUser CurrentUser actor) {
@@ -131,8 +123,7 @@ class FulfillmentController {
 
     /** Closes picking once every line is PICKED: {@code 409 PICK_LINES_INCOMPLETE} otherwise (docs 07 step 9). */
     @PostMapping("/tasks/{taskId}/picking-completion")
-    @RequiresPermission(resource = FulfillmentResources.PICK_LISTS, action = Action.UPDATE)
-    @PreAuthorize("hasAnyAuthority('" + Roles.WAREHOUSE_STAFF + "','" + Roles.WAREHOUSE_MANAGER + "')")
+    @RequiresPermission(resource = FulfillmentResources.PICKING, action = Action.UPDATE)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "fulfillment-task", resourceId = "#taskId")
     public ApiResponse<FulfillmentTaskResponse> completePicking(@PathVariable UUID taskId,
                                                         @AuthenticatedUser CurrentUser actor) {
@@ -145,8 +136,6 @@ class FulfillmentController {
      */
     @GetMapping("/tasks/{taskId}/pick-lines")
     @RequiresPermission(resource = FulfillmentResources.PICK_LISTS, action = Action.READ)
-    @PreAuthorize("hasAnyAuthority('" + Roles.WAREHOUSE_STAFF + "','" + Roles.WAREHOUSE_MANAGER
-            + "','" + Roles.QC_STAFF + "','" + Roles.ORDER_COORDINATOR + "')")
     public ApiResponse<PageResponse<PickLineResponse>> pickLines(@PathVariable UUID taskId,
             @RequestParam(defaultValue = "0") int page, @RequestParam(required = false) Integer size,
             @AuthenticatedUser CurrentUser actor) {
@@ -161,8 +150,7 @@ class FulfillmentController {
      * with the line unchanged. Send an {@code Idempotency-Key} per scan.
      */
     @PostMapping("/tasks/{taskId}/pick-lines/{lineId}/confirmation")
-    @RequiresPermission(resource = FulfillmentResources.PICK_LISTS, action = Action.UPDATE)
-    @PreAuthorize("hasAnyAuthority('" + Roles.WAREHOUSE_STAFF + "','" + Roles.WAREHOUSE_MANAGER + "')")
+    @RequiresPermission(resource = FulfillmentResources.PICKING, action = Action.UPDATE)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "fulfillment-task", resourceId = "#taskId")
     public ApiResponse<PickLineResponse> confirmPick(@PathVariable UUID taskId, @PathVariable UUID lineId,
             @Valid @RequestBody ConfirmPickRequest request, @AuthenticatedUser CurrentUser actor) {
@@ -175,8 +163,7 @@ class FulfillmentController {
      * the put-back screen's queue. Limited to the caller's warehouses; {@code warehouseId} narrows it to one.
      */
     @GetMapping("/put-backs")
-    @RequiresPermission(resource = FulfillmentResources.PICK_LISTS, action = Action.READ)
-    @PreAuthorize("hasAnyAuthority('" + Roles.WAREHOUSE_STAFF + "','" + Roles.WAREHOUSE_MANAGER + "')")
+    @RequiresPermission(resource = FulfillmentResources.PICKING, action = Action.READ)
     public ApiResponse<PageResponse<PutBackRowResponse>> putBacks(
             @RequestParam(required = false) UUID warehouseId,
             @RequestParam(defaultValue = "0") int page, @RequestParam(required = false) Integer size,
@@ -191,8 +178,7 @@ class FulfillmentController {
      * same line again answers 200 with the line unchanged.
      */
     @PostMapping("/tasks/{taskId}/pick-lines/{lineId}/put-back")
-    @RequiresPermission(resource = FulfillmentResources.PICK_LISTS, action = Action.UPDATE)
-    @PreAuthorize("hasAnyAuthority('" + Roles.WAREHOUSE_STAFF + "','" + Roles.WAREHOUSE_MANAGER + "')")
+    @RequiresPermission(resource = FulfillmentResources.PICKING, action = Action.UPDATE)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "fulfillment-task", resourceId = "#taskId")
     public ApiResponse<PickLineResponse> putBack(@PathVariable UUID taskId, @PathVariable UUID lineId,
             @Valid @RequestBody PutBackRequest request, @AuthenticatedUser CurrentUser actor) {
@@ -201,8 +187,6 @@ class FulfillmentController {
 
     @GetMapping("/tasks/{taskId}/lines/{lineId}/design-artifacts/{role}/download-url")
     @RequiresPermission(resource = FulfillmentResources.PACKAGES, action = Action.READ)
-    @PreAuthorize("hasAnyAuthority('" + Roles.WAREHOUSE_STAFF + "','" + Roles.WAREHOUSE_MANAGER
-            + "','" + Roles.QC_STAFF + "')")
     public ResponseEntity<ApiResponse<FulfillmentArtifactAccessResponse>> artifactDownload(
             @PathVariable UUID taskId, @PathVariable UUID lineId, @PathVariable String role,
             @AuthenticatedUser CurrentUser actor) {
@@ -217,8 +201,7 @@ class FulfillmentController {
      * that no longer matches answers 200 with {@code packStatus} ON_HOLD and no shipment. Completed again, the same.
      */
     @PostMapping("/tasks/{taskId}/packing-completion")
-    @RequiresPermission(resource = FulfillmentResources.PACKAGES, action = Action.CREATE)
-    @PreAuthorize("hasAnyAuthority('" + Roles.WAREHOUSE_STAFF + "','" + Roles.WAREHOUSE_MANAGER + "')")
+    @RequiresPermission(resource = FulfillmentResources.PACKING, action = Action.UPDATE)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "fulfillment-task", resourceId = "#taskId")
     public ApiResponse<FulfillmentTaskResponse> completePacking(@PathVariable UUID taskId,
             @Valid @RequestBody(required = false) PackingCompletionRequest request,
@@ -229,8 +212,7 @@ class FulfillmentController {
     }
 
     @PostMapping("/tasks/{taskId}/design-integrity-reverification")
-    @RequiresPermission(resource = FulfillmentResources.PACKAGES, action = Action.CREATE)
-    @PreAuthorize("hasAnyAuthority('" + Roles.QC_STAFF + "','" + Roles.WAREHOUSE_MANAGER + "')")
+    @RequiresPermission(resource = FulfillmentResources.DESIGN_REVERIFICATION, action = Action.UPDATE)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "fulfillment-task", resourceId = "#taskId")
     public ApiResponse<FulfillmentTaskResponse> reverify(@PathVariable UUID taskId,
             @Valid @RequestBody ReverificationRequest request, @AuthenticatedUser CurrentUser actor) {

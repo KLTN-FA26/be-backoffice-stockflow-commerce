@@ -7,7 +7,6 @@ import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.RequiresPermission;
-import com.stockflow.common.security.Roles;
 import com.stockflow.fulfillment.internal.controller.dto.CarrierRequest;
 import com.stockflow.fulfillment.internal.controller.dto.CarrierResponse;
 import com.stockflow.fulfillment.internal.service.Carriers;
@@ -15,7 +14,6 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
-import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -29,17 +27,14 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.UUID;
 
 /**
- * The carrier catalogue (G4-2a; kltn-docs 09 §3). Resource {@code fulfillment-shipments}: READ to list (dispatch staff
- * choose from it, coordinators read it), UPDATE to keep it - the warehouse manager only (spec G4 §6.4), by
- * {@code @PreAuthorize}, as warehouse staff hold UPDATE for loading.
+ * The carrier catalogue (G4-2a; kltn-docs 09 §3). {@code fulfillment-shipments:READ} to list (dispatch staff choose
+ * from it, coordinators read it); {@code fulfillment-carriers:UPDATE} to keep it - seeded for the warehouse manager
+ * (spec G4 §6.4).
  */
 @RestController
 @RequestMapping("/api/v1/fulfillment/carriers")
 @Tag(name = "Fulfillment - dispatch")
 class CarrierController {
-
-    private static final String KEEPERS = "hasAnyAuthority('" + Roles.WAREHOUSE_MANAGER + "','" + Roles.SYSTEM_ADMIN
-            + "')";
 
     private final Carriers carriers;
     private final DispatchWebMapper mapper;
@@ -68,8 +63,7 @@ class CarrierController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     @Operation(summary = "Declare a carrier; 409 CARRIER_CODE_EXISTS")
-    @RequiresPermission(resource = FulfillmentResources.SHIPMENTS, action = Action.UPDATE)
-    @PreAuthorize(KEEPERS)
+    @RequiresPermission(resource = FulfillmentResources.CARRIERS, action = Action.UPDATE)
     @Auditable(action = AuditAction.CREATE, resourceType = "carrier", resourceId = "#result?.data()?.carrierId()")
     public ApiResponse<CarrierResponse> create(@Valid @RequestBody CarrierRequest request) {
         return ApiResponse.ok(mapper.toResponse(carriers.create(new Carriers.SaveCarrier(request.code(),
@@ -79,8 +73,7 @@ class CarrierController {
     @PutMapping("/{carrierId}")
     @Operation(summary = "Change a carrier (send the version read); INACTIVE takes no new load. 409 OPTIMISTIC_LOCK, "
             + "CARRIER_CODE_EXISTS")
-    @RequiresPermission(resource = FulfillmentResources.SHIPMENTS, action = Action.UPDATE)
-    @PreAuthorize(KEEPERS)
+    @RequiresPermission(resource = FulfillmentResources.CARRIERS, action = Action.UPDATE)
     @Auditable(action = AuditAction.UPDATE, resourceType = "carrier", resourceId = "#carrierId")
     public ApiResponse<CarrierResponse> update(@PathVariable UUID carrierId,
                                                @Valid @RequestBody CarrierRequest request) {

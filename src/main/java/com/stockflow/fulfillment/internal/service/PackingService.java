@@ -7,8 +7,8 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.persistence.Pages;
+import com.stockflow.common.security.Action;
 import com.stockflow.common.security.CurrentUser;
-import com.stockflow.common.security.Role;
 import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.design.api.DesignService;
 import com.stockflow.fulfillment.api.PackingCompletion;
@@ -792,8 +792,9 @@ class PackingService implements Packing {
                 PackingSession.Line::sku));
     }
 
+    /** May work, or take over, a session another packer started: {@code fulfillment-packing:APPROVE}. */
     private static boolean isManager(CurrentUser actor) {
-        return actor.hasRole(Role.WAREHOUSE_MANAGER);
+        return actor.can(FulfillmentPermissions.PACKING, Action.APPROVE);
     }
 
     private static PackageType packageType(String type) {

@@ -221,8 +221,10 @@ management:
     health:
       show-details: when-authorized
       # when-authorized alone means ANY authenticated user - a CUSTOMER - sees every detail,
-      # including the storage bucket and endpoint. Naming the role narrows it to administrators.
-      roles: ECOMMERCE_ADMIN
+      # including the storage bucket and endpoint. Boot matches these against the caller's
+      # authorities, so a permission works here: whoever holds platform-actuator:READ
+      # (ActuatorPermission, granted in the role matrix) - never a role name.
+      roles: platform-actuator:READ
       probes:
         # /actuator/health/liveness and /readiness, which is what Kubernetes probes.
         enabled: true

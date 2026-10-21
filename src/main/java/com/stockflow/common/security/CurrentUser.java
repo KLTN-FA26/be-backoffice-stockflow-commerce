@@ -34,33 +34,27 @@ public record CurrentUser(
     }
 
     /**
-     * Whether the caller may act as {@code role}. {@link Role#SYSTEM_ADMIN} may act as any role:
-     * code across several modules still gates actions on role names rather than on permissions, and
-     * the role that holds every permission must not be turned away by those checks. The same rule
-     * reaches {@code @PreAuthorize} and URL rules through {@link RoleHierarchyConfig}.
-     *
-     * <p>This answers "may the caller do what a holder of this role may do", never "does the caller
-     * belong to this role" for data purposes: nothing may use it to narrow a query to the caller's
-     * own rows, or the administrator would be narrowed with everyone else.</p>
+     * Whether the caller holds {@code resource:action}. Access is always asked this way, never by role name: the
+     * grants are data (ADR-0008), so ticking a permission for another role widens the rule without a code change.
      */
-    public boolean hasRole(Role role) {
-        return roles.contains(role) || roles.contains(Role.SYSTEM_ADMIN);
-    }
-
-    public boolean hasAnyRole(Role... candidates) {
-        if (roles.contains(Role.SYSTEM_ADMIN)) {
-            return true;
-        }
-        for (Role candidate : candidates) {
-            if (roles.contains(candidate)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     public boolean can(String resource, Action action) {
         return permissions.contains(PermissionCode.of(resource, action));
+    }
+
+    /** {@link #can}, or 403 {@link PermissionDeniedException} - for checks a service makes beyond the endpoint's. */
+    public void require(String resource, Action action) {
+        if (!can(resource, action)) {
+            throw new PermissionDeniedException(PermissionCode.of(resource, action));
+        }
+    }
+
+    /**
+     * True for a storefront (portal) account: one whose every role is {@link Role#CUSTOMER}. Such an account holds some
+     * of the same permissions as staff - {@code sales-orders:READ} for its own orders - so this answers WHICH rows
+     * (its own customer's), never WHETHER an action is allowed; that is the permission's job. See {@link ScopeGuards}.
+     */
+    public boolean isPortalCustomer() {
+        return !roles.isEmpty() && roles.stream().allMatch(role -> role == Role.CUSTOMER);
     }
 
     /** True when the user may see rows outside their own records. */
