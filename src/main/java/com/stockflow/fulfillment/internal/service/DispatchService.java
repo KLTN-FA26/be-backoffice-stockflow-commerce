@@ -249,7 +249,7 @@ class DispatchService implements Dispatching {
             if (row == null) {
                 throw new BusinessException(ErrorCode.SHIPMENT_NOT_FOUND, "No shipment " + id);
             }
-            changed |= load.addShipment(facts(row, elsewhere.get(id)), row.getCodAmount(), by, at);
+            changed |= load.addShipment(facts(row, elsewhere.get(id)), row.getLabelCodAmount(), by, at);
         }
         return changed;
     }
@@ -341,6 +341,9 @@ class DispatchService implements Dispatching {
                 throw new BusinessException(ErrorCode.PACKAGE_NOT_READY, "Shipment %s is %s; take it off the manifest"
                         .formatted(row.getCode(), row.getStatus()));
             }
+            // The label as last printed, read under the shipment's lock: what the signed manifest compares the fixed
+            // COD with (a load recorded before reprints refreshed it may still hold an older figure).
+            load.relabel(id, row.getLabelCodAmount());
         }
         List<PackageJpaEntity> sealed = onManifest.isEmpty() ? List.of() : packages.findByShipmentIdIn(onManifest)
                 .stream().filter(p -> p.getStatus() == PackageStatus.SEALED).toList();
