@@ -15,4 +15,9 @@ public interface PackageJpaRepository extends BaseJpaRepository<PackageJpaEntity
     List<PackageJpaEntity> findByShipmentIdOrderByPackageNoAsc(UUID shipmentId);
 
     List<PackageJpaEntity> findByPackIdIn(Collection<UUID> packIds);
+
+    /** G4-2a: the parcel a loader scanned, by the code on its label. */
+    java.util.Optional<PackageJpaEntity> findByLabelCode(String labelCode);
+
+    List<PackageJpaEntity> findByShipmentIdIn(Collection<UUID> shipmentIds);
 }

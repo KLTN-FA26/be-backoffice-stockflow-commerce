@@ -19,7 +19,7 @@ import java.util.UUID;
  * JPA mapping of a shipment (table {@code fulfillment.shipment}). Not the domain model: {@link Shipment} holds the
  * 09 §5 lifecycle; {@link #toDomain} and {@link #apply} copy between the two. The legacy carrier columns
  * ({@code carrier}, {@code tracking_number}, {@code dispatched_at}) are not mapped: no carrier is called (09 §1); the
- * carrier catalogue and the load come with G4-2a.
+ * carrier is {@code carrier_id} from the catalogue (G4-2a), the free text was carried over by V20261021000400.
  */
 @Entity
 @Table(name = "shipment", schema = "fulfillment")
@@ -49,6 +49,11 @@ public class ShipmentJpaEntity extends BaseEntity {
     @Column(name = "failure_note", length = 500) private String failureNote;
     @Column(name = "cancelled_at") private Instant cancelledAt;
     @Column(name = "cancel_reason", length = 500) private String cancelReason;
+    @Column(name = "carrier_id") private UUID carrierId;
+    @Column(name = "load_id") private UUID loadId;
+    @Column(name = "whole_order_handover", nullable = false) private boolean wholeOrderHandover;
+    @Column(name = "label_cod_amount", nullable = false, precision = 19, scale = 4) private BigDecimal labelCodAmount;
+    @Column(name = "label_printed_at") private Instant labelPrintedAt;
 
     protected ShipmentJpaEntity() {
     }
@@ -89,12 +94,18 @@ public class ShipmentJpaEntity extends BaseEntity {
         this.failureNote = s.failureNote();
         this.cancelledAt = s.cancelledAt();
         this.cancelReason = s.cancelReason();
+        this.carrierId = s.carrierId();
+        this.loadId = s.loadId();
+        this.wholeOrderHandover = s.wholeOrderHandover();
+        this.labelCodAmount = s.labelCodAmount();
+        this.labelPrintedAt = s.labelPrintedAt();
     }
 
     public Shipment toDomain() {
         return Shipment.restore(new Shipment.Snapshot(getId(), code, orderId, packId, warehouseId, requestId,
                 deliveryMode, packageCount, codAmount, partial, partialNote, status, readyAt, readyBy, handedOverAt,
-                handedOverBy, outcomeAt, outcomeBy, failureReason, failureNote, cancelledAt, cancelReason));
+                handedOverBy, outcomeAt, outcomeBy, failureReason, failureNote, cancelledAt, cancelReason, carrierId,
+                loadId, wholeOrderHandover, labelCodAmount, labelPrintedAt));
     }
 
     public UUID getPackId() { return packId; }
@@ -110,4 +121,15 @@ public class ShipmentJpaEntity extends BaseEntity {
     public ShipmentStatus getStatus() { return status; }
     public Instant getReadyAt() { return readyAt; }
     public UUID getReadyBy() { return readyBy; }
+    public UUID getCarrierId() { return carrierId; }
+    public UUID getLoadId() { return loadId; }
+    public boolean isWholeOrderHandover() { return wholeOrderHandover; }
+    public BigDecimal getLabelCodAmount() { return labelCodAmount; }
+    public Instant getLabelPrintedAt() { return labelPrintedAt; }
+    public Instant getHandedOverAt() { return handedOverAt; }
+    public UUID getHandedOverBy() { return handedOverBy; }
+    public Instant getOutcomeAt() { return outcomeAt; }
+    public DeliveryFailureReason getFailureReason() { return failureReason; }
+    public String getFailureNote() { return failureNote; }
+    public Instant getCancelledAt() { return cancelledAt; }
 }

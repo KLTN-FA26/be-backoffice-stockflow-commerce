@@ -7,7 +7,7 @@ import ch.qos.logback.core.read.ListAppender;
 import com.stockflow.common.http.RestClientFactory;
 import com.stockflow.contracts.OrderPlaced;
 import com.stockflow.contracts.PaymentFailed;
-import com.stockflow.contracts.ShipmentDispatched;
+import com.stockflow.contracts.ShipmentStatusChanged;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -82,11 +82,13 @@ class NotificationSenderLoggingTest {
         listener.on(new OrderPlaced(UUID.randomUUID(), UUID.randomUUID(), "buyer-secret@example.com", "SO-1",
                 List.of(), BigDecimal.TEN, "VND"));
         listener.on(new PaymentFailed(UUID.randomUUID(), UUID.randomUUID(), "DECLINED", failure));
-        listener.on(new ShipmentDispatched(UUID.randomUUID(), UUID.randomUUID(), "GHN", "TRACK-777"));
+        listener.on(new ShipmentStatusChanged(UUID.randomUUID(), UUID.randomUUID(), "SO-1-S1", UUID.randomUUID(),
+                "SO-1", UUID.randomUUID(), UUID.randomUUID(), "PARCEL", "READY_TO_DISPATCH", "HANDED_OVER", null, 2,
+                "TRACK-777 Express", "LD-20261021-0001", UUID.randomUUID(), java.time.Instant.now()));
 
         assertThat(appender.list).isNotEmpty();
         assertThat(logged()).contains("order.placed", "payment.failed", "shipment.dispatched");
         assertThat(logged()).doesNotContain("Tran Thi B", "back door", "Card declined", "buyer-secret@example.com",
-                "TRACK-777", "We have received", "Your order is on its way");
+                "TRACK-777", "We have received", "handed to");
     }
 }

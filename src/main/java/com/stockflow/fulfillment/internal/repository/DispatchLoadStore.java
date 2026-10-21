@@ -1,0 +1,111 @@
+package com.stockflow.fulfillment.internal.repository;
+
+import com.stockflow.common.id.Identifiers;
+import com.stockflow.fulfillment.internal.domain.DispatchLoad;
+import com.stockflow.fulfillment.internal.entity.DispatchLoadJpaEntity;
+import com.stockflow.fulfillment.internal.entity.DispatchLoadPackageJpaEntity;
+import com.stockflow.fulfillment.internal.entity.DispatchLoadShipmentJpaEntity;
+import org.springframework.stereotype.Component;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+
+/**
+ * Reads a {@link DispatchLoad} from its header, manifest rows and loaded parcels, and writes it back. A load holds a
+ * few dozen rows at most, so every row is written on save; rows taken off are kept inactive, never deleted (who took
+ * a parcel off and when stays on record).
+ *
+ * <p>Order of writes: rows going inactive before rows going active, then the header - the partial unique indexes
+ * ({@code uk_dispatch_load_*_active}) and the triggers see the state each statement leaves behind.</p>
+ */
+@Component
+public class DispatchLoadStore {
+
+    private final DispatchLoadJpaRepository loads;
+    private final DispatchLoadShipmentJpaRepository members;
+    private final DispatchLoadPackageJpaRepository parcels;
+
+    DispatchLoadStore(DispatchLoadJpaRepository loads, DispatchLoadShipmentJpaRepository members,
+                      DispatchLoadPackageJpaRepository parcels) {
+        this.loads = loads;
+        this.members = members;
+        this.parcels = parcels;
+    }
+
+    public DispatchLoad load(DispatchLoadJpaEntity header) {
+        List<DispatchLoad.Member> onManifest = members.findByLoadIdOrderByAddedAtAscIdAsc(header.getId()).stream()
+                .map(r -> new DispatchLoad.Member(r.getShipmentId(), r.isActive(), r.getAddedAt(), r.getAddedBy(),
+                        r.getRemovedAt(), r.getRemovedBy(), r.getLabelCodAmount(), r.getCodAmount()))
+                .toList();
+        List<DispatchLoad.Loaded> onVehicle = parcels.findByLoadIdOrderByLoadedAtAscIdAsc(header.getId()).stream()
+                .map(r -> new DispatchLoad.Loaded(r.getPackageId(), r.getShipmentId(), r.getScanId(), r.getLoadedAt(),
+                        r.getLoadedBy(), r.isActive(), r.getRemovedAt(), r.getRemovedBy()))
+                .toList();
+        return DispatchLoad.restore(new DispatchLoad.Snapshot(header.getId(), header.getCode(), header.getRequestId(),
+                header.getWarehouseId(), header.getMode(), header.getCarrierId(), header.getLoadPlanVehicleId(),
+                header.getVehiclePlate(), header.getDriverName(), header.getDriverPhone(), header.getStatus(),
+                header.getLoadingStartedAt(), header.getLoadingStartedBy(), header.getDispatchedAt(),
+                header.getDispatchedBy(), header.getCarrierRepresentative(), header.getSignatureRef(),
+                header.getHandoverNote(), header.getCodTotal(), header.getCancelledAt(), header.getCancelledBy(),
+                header.getCancelReason(), header.getVersion(), onManifest, onVehicle));
+    }
+
+    /** Inserts a new load (header first: the manifest rows reference it). */
+    public DispatchLoadJpaEntity insert(DispatchLoad load) {
+        DispatchLoad.Snapshot s = load.snapshot();
+        DispatchLoadJpaEntity header = new DispatchLoadJpaEntity(s);
+        header.apply(s);
+        header = loads.saveAndFlush(header);
+        writeRows(s);
+        return header;
+    }
+
+    public DispatchLoadJpaEntity save(DispatchLoad load, DispatchLoadJpaEntity header) {
+        DispatchLoad.Snapshot s = load.snapshot();
+        writeRows(s);
+        header.apply(s);
+        return loads.saveAndFlush(header);
+    }
+
+    private void writeRows(DispatchLoad.Snapshot s) {
+        Map<UUID, DispatchLoadShipmentJpaEntity> manifest = members.findByLoadIdOrderByAddedAtAscIdAsc(s.id()).stream()
+                .collect(Collectors.toMap(DispatchLoadShipmentJpaEntity::getShipmentId, Function.identity()));
+        Map<UUID, DispatchLoadPackageJpaEntity> vehicle = parcels.findByLoadIdOrderByLoadedAtAscIdAsc(s.id()).stream()
+                .collect(Collectors.toMap(DispatchLoadPackageJpaEntity::getPackageId, Function.identity()));
+        List<DispatchLoadPackageJpaEntity> parcelsOff = new ArrayList<>();
+        List<DispatchLoadPackageJpaEntity> parcelsOn = new ArrayList<>();
+        for (DispatchLoad.Loaded l : s.loaded()) {
+            DispatchLoadPackageJpaEntity row = vehicle.get(l.packageId());
+            if (row != null && row.isActive() == l.active() && row.getScanId().equals(l.scanId())) {
+                continue;
+            }
+            if (row == null) {
+                row = new DispatchLoadPackageJpaEntity(Identifiers.newId(), s.id(), l.packageId(), l.shipmentId());
+            }
+            row.apply(l.scanId(), l.loadedAt(), l.loadedBy(), l.active(), l.removedAt(), l.removedBy());
+            (l.active() ? parcelsOn : parcelsOff).add(row);
+        }
+        List<DispatchLoadShipmentJpaEntity> shipmentsOff = new ArrayList<>();
+        List<DispatchLoadShipmentJpaEntity> shipmentsOn = new ArrayList<>();
+        for (DispatchLoad.Member m : s.members()) {
+            DispatchLoadShipmentJpaEntity row = manifest.get(m.shipmentId());
+            if (row == null) {
+                row = new DispatchLoadShipmentJpaEntity(Identifiers.newId(), s.id(), m.shipmentId());
+            }
+            boolean wasActive = row.isActive();
+            row.apply(m.active(), m.addedAt(), m.addedBy(), m.removedAt(), m.removedBy(), m.labelCodAmount(),
+                    m.codAmount());
+            (m.active() && !wasActive ? shipmentsOn : shipmentsOff).add(row);
+        }
+        // Off before on: a parcel off the vehicle before its shipment leaves the manifest, a shipment on the manifest
+        // before its parcels are loaded (fk_dispatch_load_package_shipment, tg_dispatch_load_package_check).
+        parcels.saveAllAndFlush(parcelsOff);
+        members.saveAllAndFlush(shipmentsOff);
+        members.saveAllAndFlush(shipmentsOn);
+        parcels.saveAllAndFlush(parcelsOn);
+    }
+}

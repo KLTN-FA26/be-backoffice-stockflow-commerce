@@ -290,16 +290,20 @@ SELECT pg_temp.expect_ok('O69 the happy path to the end: COMPLETED → CLOSED', 
     UPDATE ordering.customer_order SET status = 'CLOSED', closed_at = NOW() WHERE id = md5('qa:order:l1')::uuid $q$);
 SELECT pg_temp.expect_fail('O70 CLOSED is terminal', $q$
     UPDATE ordering.customer_order SET status = 'COMPLETED', closed_at = NULL WHERE id = md5('qa:order:l1')::uuid $q$);
+-- G4-2a: an order's shipment is fulfillment's shipment (fk_order_shipment_shipment, V20261021000500): one to refer to.
+INSERT INTO fulfillment.shipment (id, order_id, status, code, warehouse_id, ready_at, created_at)
+VALUES (md5('qa:shipment:l1')::uuid, md5('qa:order:l1')::uuid, 'READY_TO_DISPATCH', 'SO-QA-L1-S1',
+        md5('demo:wh:HCM')::uuid, NOW(), NOW());
 SELECT pg_temp.expect_fail('O71 a shipment billing more than it carried', $q$
     INSERT INTO ordering.order_shipment (id, order_id, status, amount, billed_amount, handed_over_at, outcome_at)
-    VALUES (gen_random_uuid(), md5('qa:order:l1')::uuid, 'DELIVERED', 100000, 100001, NOW(), NOW()) $q$);
+    VALUES (md5('qa:shipment:l1')::uuid, md5('qa:order:l1')::uuid, 'DELIVERED', 100000, 100001, NOW(), NOW()) $q$);
 SELECT pg_temp.expect_fail('O72 a returned shipment that billed', $q$
     INSERT INTO ordering.order_shipment (id, order_id, status, amount, billed_amount, handed_over_at, outcome_at,
                                          failure_reason)
-    VALUES (gen_random_uuid(), md5('qa:order:l1')::uuid, 'RETURNED', 100000, 1, NOW(), NOW(), 'REFUSED') $q$);
+    VALUES (md5('qa:shipment:l1')::uuid, md5('qa:order:l1')::uuid, 'RETURNED', 100000, 1, NOW(), NOW(), 'REFUSED') $q$);
 SELECT pg_temp.expect_fail('O73 a failed shipment without a reason', $q$
     INSERT INTO ordering.order_shipment (id, order_id, status, amount, handed_over_at, outcome_at)
-    VALUES (gen_random_uuid(), md5('qa:order:l1')::uuid, 'DELIVERY_FAILED', 100000, NOW(), NOW()) $q$);
+    VALUES (md5('qa:shipment:l1')::uuid, md5('qa:order:l1')::uuid, 'DELIVERY_FAILED', 100000, NOW(), NOW()) $q$);
 SELECT pg_temp.expect_ok('O74 a shipment of 4 units handed over', $q$
     INSERT INTO ordering.order_shipment (id, order_id, status, amount, handed_over_at)
     VALUES (md5('qa:shipment:l1')::uuid, md5('qa:order:l1')::uuid, 'HANDED_OVER', 400000, NOW());
