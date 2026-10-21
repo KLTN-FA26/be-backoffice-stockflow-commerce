@@ -83,7 +83,7 @@ class OrderLifecycleTest {
 
     private static ShipmentHandover handover(UUID shipment, Object... lineAndQuantity) {
         List<ShipmentHandover.Line> lines = new java.util.ArrayList<>();
-        for (int i = 0; i < lineAndQuantity.length; i += 2) {
+        for (int i = 0; i + 1 < lineAndQuantity.length; i += 2) {
             lines.add(new ShipmentHandover.Line((UUID) lineAndQuantity[i], (Integer) lineAndQuantity[i + 1]));
         }
         return new ShipmentHandover(shipment, lines, NOW, STAFF);
