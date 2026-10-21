@@ -240,6 +240,32 @@ class PurchaseOrderDraftEditIntegrationTest {
     }
 
     @Test
+    @DisplayName("SCRUM-473: a revision freezes the unit a line was entered in, as V20261020000400 matches amendments on it")
+    void revisionFreezesTheLineUnit() {
+        UUID submitter = tx.execute(s -> ReferenceRows.user(entityManager));
+        PurchaseOrderSummary order = draft(DemoData.WAREHOUSE_HCM);
+        UUID lineA = line(order, skuA).lineId();
+        UUID pair = Identifiers.newId();
+        // The application does not order in a packing unit yet; the line is put in one as a draft may be.
+        tx.executeWithoutResult(s -> {
+            jdbc.update("""
+                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
+                    SELECT ?, id, 'PAIR', 2 FROM inventory.inventory_items WHERE sku = ?""", pair, skuA);
+            jdbc.update("UPDATE procurement.purchase_order_lines SET uom_conversion_id = ?, unit_qty = 1 WHERE id = ?",
+                    pair, lineA);
+        });
+
+        procurement.submit(order.purchaseOrderId(), submitter);
+
+        assertThat(jdbc.queryForMap("""
+                SELECT uom_conversion_id, unit_qty FROM procurement.purchase_order_line_revisions WHERE po_line_id = ?""",
+                lineA)).containsEntry("uom_conversion_id", pair).containsEntry("unit_qty", 1);
+        assertThat(jdbc.queryForMap("""
+                SELECT uom_conversion_id, unit_qty FROM procurement.purchase_order_line_revisions WHERE po_line_id = ?""",
+                line(order, skuB).lineId())).containsEntry("uom_conversion_id", null).containsEntry("unit_qty", null);
+    }
+
+    @Test
     @DisplayName("SCRUM-462: a warehouse-bound clerk edits only within their warehouses, old and new")
     void clerkIsLimitedToTheirWarehouses() {
         UUID clerkId = tx.execute(s -> ReferenceRows.user(entityManager));

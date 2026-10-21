@@ -1,6 +1,8 @@
 package com.stockflow.procurement.internal.repository;
 
 import com.stockflow.common.domain.Money;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.procurement.internal.domain.PoLine;
@@ -137,6 +139,21 @@ class SubcontractOrderStoreAdapter implements SubcontractOrderStore {
     @Override
     public void requestAmendment(Row row, int newQuantity, String reason, UUID actorId) {
         entityManager.flush();
+        // Subcontract lines are written in the base unit (SubcontractPurchasingImpl), but a line entered in a
+        // packing unit keeps it, and its quantity stays a whole number of that unit (V20261020000400).
+        @SuppressWarnings("unchecked")
+        java.util.List<Number> factors = entityManager.createNativeQuery("""
+                        SELECT c.factor FROM procurement.purchase_order_lines l
+                          JOIN inventory.uom_conversions c ON c.id = l.uom_conversion_id
+                         WHERE l.po_id = :po""")
+                .setParameter("po", row.id()).getResultList();
+        for (Number factor : factors) {
+            if (newQuantity % factor.intValue() != 0) {
+                throw new BusinessException(ErrorCode.PO_LINE_UNIT_NOT_MULTIPLE,
+                        "%s is ordered in units of %d; %d is not a whole number of them"
+                                .formatted(row.poNumber(), factor.intValue(), newQuantity));
+            }
+        }
         UUID revisionId = Identifiers.newId();
         entityManager.createNativeQuery("""
                         INSERT INTO procurement.purchase_order_revisions
@@ -171,10 +188,12 @@ class SubcontractOrderStoreAdapter implements SubcontractOrderStore {
                         INSERT INTO procurement.purchase_order_line_revisions
                                (id, po_line_id, po_revision_id, inventory_item_id, uom, ordered_qty, unit_price,
                                 tax_rate, discount_rate, line_subtotal, line_discount_amount, line_net, line_tax,
-                                line_total, note)
+                                line_total, note, uom_conversion_id, unit_qty)
                         SELECT :id, l.id, :revision, l.inventory_item_id, l.uom, :qty, l.unit_price, l.tax_rate, 0,
-                               s.subtotal, 0, s.subtotal, s.tax, s.subtotal + s.tax, l.note
+                               s.subtotal, 0, s.subtotal, s.tax, s.subtotal + s.tax, l.note,
+                               l.uom_conversion_id, CAST(:qty AS integer) / c.factor
                           FROM procurement.purchase_order_lines l
+                          LEFT JOIN inventory.uom_conversions c ON c.id = l.uom_conversion_id
                          CROSS JOIN LATERAL (SELECT ROUND(CAST(:qty AS numeric) * l.unit_price, 2) AS subtotal) b
                          CROSS JOIN LATERAL (SELECT b.subtotal, ROUND(b.subtotal * l.tax_rate / 100, 2) AS tax) s
                          WHERE l.po_id = :po""")
@@ -198,7 +217,9 @@ class SubcontractOrderStoreAdapter implements SubcontractOrderStore {
         entityManager.flush();
         entityManager.createNativeQuery("""
                         UPDATE procurement.purchase_order_lines l
-                           SET ordered_qty = lr.ordered_qty, line_subtotal = lr.line_subtotal, line_net = lr.line_net,
+                           SET ordered_qty = lr.ordered_qty, unit_qty = lr.unit_qty,
+                               uom_conversion_id = lr.uom_conversion_id,
+                               line_subtotal = lr.line_subtotal, line_net = lr.line_net,
                                line_tax = lr.line_tax, line_total = lr.line_total, po_revision_id = lr.po_revision_id,
                                status = CASE WHEN l.status = 'RECEIVED' THEN 'PARTIALLY_RECEIVED' ELSE l.status END,
                                version = l.version + 1, last_modified_at = NOW()

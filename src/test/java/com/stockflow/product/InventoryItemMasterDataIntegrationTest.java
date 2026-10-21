@@ -202,6 +202,35 @@ class InventoryItemMasterDataIntegrationTest {
         assertThat(history()).contains("UOM_CONVERSION");
     }
 
+    @Test
+    @DisplayName("a unit a document counts in keeps its factor and code (BR-10): it is retired, never changed or deleted")
+    void unitInUse() {
+        UomConversion carton = units.addConversion(productId, variantId, packing("CARTON", 1000, true, true));
+        // A stock package is one of the documents inventory.unit_in_use asks about (V20261020000600).
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,
+                                                     location_code)
+                VALUES (?, ?, ?, ?, 1000, 'HCM-A01-1-A')""", Identifiers.newId(), "IT-" + suffix, itemId(),
+                carton.id()));
+
+        assertCode(() -> units.changeConversion(productId, variantId, carton.id(), carton.version(),
+                packing("CARTON", 500, true, true)), ErrorCode.UOM_CONVERSION_IN_USE);
+        assertCode(() -> units.changeConversion(productId, variantId, carton.id(), carton.version(),
+                packing("BOX", 1000, true, true)), ErrorCode.UOM_CONVERSION_IN_USE);
+        assertCode(() -> units.removeConversion(productId, variantId, carton.id(), carton.version()),
+                ErrorCode.UOM_CONVERSION_IN_USE);
+
+        // Its size and weight are not what a document was converted with, and retiring it is BR-10's way out.
+        UomConversion resized = units.changeConversion(productId, variantId, carton.id(), carton.version(),
+                new UomConversionDraft("CARTON", 1000, new BigDecimal("7"), new BigDecimal("52"),
+                        new BigDecimal("42"), new BigDecimal("60"), true, true));
+        assertThat(resized.weightKg()).isEqualByComparingTo("7");
+        UomConversion retired = units.changeConversion(productId, variantId, carton.id(), resized.version(),
+                packing("CARTON", 1000, false, false));
+        assertThat(retired.active()).isFalse();
+        assertThat(retired.factor()).isEqualTo(1000);
+    }
+
     // ---- sales units -----------------------------------------------------------------------------------------
 
     @Test

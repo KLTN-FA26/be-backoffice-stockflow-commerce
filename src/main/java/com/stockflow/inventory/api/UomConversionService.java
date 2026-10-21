@@ -38,9 +38,11 @@ public interface UomConversionService {
     /**
      * Replace a unit. Unmarking the default purchase unit hands the mark back to the base unit; a retired
      * unit cannot be the default purchase unit; on the base unit only the default purchase mark changes.
+     * {@code UOM_CONVERSION_IN_USE} when the factor or code of a unit a document counts in would change
+     * (BR-10): retire it and declare a new one instead.
      */
     UomConversion change(Sku sku, UUID id, long expectedVersion, UomConversionDraft draft);
 
-    /** Delete a packing unit; {@code UOM_CONVERSION_IN_USE} for the base unit. */
+    /** Delete a packing unit; {@code UOM_CONVERSION_IN_USE} for the base unit and for a unit a document counts in. */
     void remove(Sku sku, UUID id, long expectedVersion);
 }
