@@ -197,4 +197,59 @@ class StockPackageSchemaMigrationTest {
                     + " WHERE stock_package_id = " + pkg)).isEqualTo("2 rows at HCM-A01-1-A");
         }
     }
+
+    @Test
+    void anAdjustmentOrACountLineNamesACartonOfItsSkuAtItsLocation() throws Exception {
+        try (Connection db = connect()) {
+            String pkg = inStock(db, "DOC", unit(db, "DOC"), "HCM-A01-1-A", 6);
+            String user = "(SELECT id FROM identity.app_user ORDER BY id LIMIT 1)";
+            String adjustment = "INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku,"
+                    + " quantity_delta, reason_code, requested_by, stock_package_id) VALUES (gen_random_uuid(), '%s', '%s',"
+                    + " '%s', -1, 'DAMAGED', " + user + ", " + pkg + ")";
+            refused(db, "an adjustment naming a carton of another SKU",
+                    adjustment.formatted("ADJ-IT-DOC-1", "HCM-A01-1-A", "TABLE-OAK-160"));
+            refused(db, "an adjustment naming a carton at another bin",
+                    adjustment.formatted("ADJ-IT-DOC-2", "HCM-A01-1-B", "SOFA-3S-GREY"));
+            update(db, adjustment.formatted("ADJ-IT-DOC-3", "HCM-A01-1-A", "SOFA-3S-GREY"));
+
+            // One count line per carton: two cartons of one SKU, bin and lot are two lines; the loose slot keeps one.
+            String count = "md5('it:count:DOC')::uuid";
+            update(db, "INSERT INTO inventory.cycle_count (id, count_number, warehouse_id, trigger_type) SELECT " + count
+                    + ", 'CC-IT-DOC', id, 'MANUAL' FROM warehouse.warehouse WHERE prefix = 'HCM'");
+            String other = inStock(db, "DOC2", unit(db, "DOC2"), "HCM-A01-1-A", 6);
+            String line = "INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty,"
+                    + " stock_package_id) VALUES (gen_random_uuid(), " + count + ", '%s', 'SOFA-3S-GREY', 6, %s)";
+            update(db, line.formatted("HCM-A01-1-A", pkg));
+            update(db, line.formatted("HCM-A01-1-A", other));
+            refused(db, "the same carton twice in one count", line.formatted("HCM-A01-1-A", pkg));
+            refused(db, "a count line naming a carton at another bin", line.formatted("HCM-A01-1-B", pkg));
+            update(db, line.formatted("HCM-A01-1-A", "NULL"));
+            refused(db, "a second loose line of the same slot", line.formatted("HCM-A01-1-A", "NULL"));
+        }
+    }
+
+    @Test
+    void aCartonHoldsNoMoreThanWasCountedIntoItAndReadsAsOneRow() throws Exception {
+        try (Connection db = connect()) {
+            String unit = unit(db, "FULL");
+            String pkg = "md5('it:pk:FULL')::uuid";
+            String carton = "INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id,"
+                    + " nominal_qty, received_qty, location_code, status, unopened) VALUES (" + pkg + ", 'IT-FULL', "
+                    + SOFA + ", " + unit + ", 10, 6, 'HCM-A01-1-A', 'IN_STOCK', FALSE)";
+            String row = "INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at,"
+                    + " received_at, stock_package_id) VALUES (md5('it:pk:FULL:row')::uuid, 'SOFA-3S-GREY',"
+                    + " 'HCM-A01-1-A', %d, 0, 'AVAILABLE', NOW(), NOW() - interval '1 day', " + pkg + ")";
+
+            SQLException overfilled = catchThrowableOfType(SQLException.class,
+                    () -> transaction(db, carton, row.formatted(7)));
+            assertThat((Throwable) overfilled).as("an opened carton counted in at 6 holding 7")
+                    .hasMessageContaining("cannot hold");
+
+            transaction(db, carton, row.formatted(6));
+            assertThat(text(db, "SELECT lpn || ':' || sku || ':' || unit_of_measure || ':' || received_qty || ':'"
+                    + " || on_hand || ':' || reserved || ':' || available || ':' || status || ':' || unopened"
+                    + " FROM inventory.stock_package_balance WHERE stock_package_id = " + pkg))
+                    .isEqualTo("IT-FULL:SOFA-3S-GREY:FULL:6:6:0:6:IN_STOCK:false");
+        }
+    }
 }

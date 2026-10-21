@@ -15,6 +15,9 @@ import java.util.UUID;
  * @param status   the status the units had before the line; for a receipt, the status they arrived in
  * @param toStatus the status they have after it. Equal to {@code status} except when a QC decision or
  *                 a putaway changes it on the way (INBOUND to QUARANTINE, BLOCKED or AVAILABLE)
+ * @param fromStockPackage the stock package (carton) the units left, if any (V20261020000300); only on a line
+ *                 with a {@code from}
+ * @param toStockPackage   the stock package they went into, if any; only on a line with a {@code to}
  */
 public record StockMovement(
         UUID id,
@@ -30,14 +33,34 @@ public record StockMovement(
         UUID referenceId,
         String reason,
         UUID actorId,
-        Instant occurredAt
+        Instant occurredAt,
+        StockPackageId fromStockPackage,
+        StockPackageId toStockPackage
 ) {
 
     public StockMovement {
         if (quantity <= 0) {
             throw new IllegalArgumentException("A ledger line moves a positive quantity");
         }
+        // ck_stock_movement_package_side: a side's stock package belongs to that side's location.
+        if ((fromStockPackage != null && from == null) || (toStockPackage != null && to == null)) {
+            throw new IllegalArgumentException("A stock package is named only on a side that has a location");
+        }
         toStatus = toStatus == null ? status : toStatus;
+    }
+
+    /** A line that names no stock package: loose stock on both sides. */
+    public StockMovement(UUID id, MovementType type, Sku sku, String lotNumber, LocationId from, LocationId to,
+                         int quantity, StockStatus status, StockStatus toStatus, ReferenceType referenceType,
+                         UUID referenceId, String reason, UUID actorId, Instant occurredAt) {
+        this(id, type, sku, lotNumber, from, to, quantity, status, toStatus, referenceType, referenceId, reason,
+                actorId, occurredAt, null, null);
+    }
+
+    /** The same line, the units having left this stock package ({@code null}: loose stock). */
+    public StockMovement leaving(StockPackageId stockPackage) {
+        return new StockMovement(id, type, sku, lotNumber, from, to, quantity, status, toStatus, referenceType,
+                referenceId, reason, actorId, occurredAt, stockPackage, toStockPackage);
     }
 
     /** A line that does not change the status of what it moves. */
