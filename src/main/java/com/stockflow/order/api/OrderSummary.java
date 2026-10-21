@@ -65,16 +65,29 @@ public record OrderSummary(
      *                               packing and the handover is refused while it is above zero
      * @param amountDueOnDelivery    what carriers are to collect on delivery (G2-3, ON_DELIVERY): the balance not
      *                               yet paid; 0 for every other policy and term
+     * @param wholeOrderCodAmount    what the carrier collects for an order handed over whole, without shipments
+     *                               recorded on it ({@code markShipped}): fixed at that handover; 0 otherwise (G4-2a)
      */
     public record Lifecycle(HoldReason holdReason, OrderStatus statusBeforeHold, String holdNote, Instant packedAt,
                             Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason, Instant completedAt,
                             Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal, BigDecimal amountDue,
                             BigDecimal amountDueBeforeHandover, List<LineProgress> lines, List<Shipment> shipments,
-                            BigDecimal amountDueOnDelivery) {
+                            BigDecimal amountDueOnDelivery, BigDecimal wholeOrderCodAmount) {
 
         public Lifecycle {
             lines = lines == null ? List.of() : List.copyOf(lines);
             shipments = shipments == null ? List.of() : List.copyOf(shipments);
+        }
+
+        /** Without the whole-order COD (callers written before G4-2a). */
+        public Lifecycle(HoldReason holdReason, OrderStatus statusBeforeHold, String holdNote, Instant packedAt,
+                         Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason,
+                         Instant completedAt, Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal,
+                         BigDecimal amountDue, BigDecimal amountDueBeforeHandover, List<LineProgress> lines,
+                         List<Shipment> shipments, BigDecimal amountDueOnDelivery) {
+            this(holdReason, statusBeforeHold, holdNote, packedAt, shippedAt, deliveredAt, deliveryFailureReason,
+                    completedAt, closedAt, billedAmount, effectiveTotal, amountDue, amountDueBeforeHandover, lines,
+                    shipments, amountDueOnDelivery, null);
         }
 
         public Lifecycle(HoldReason holdReason, OrderStatus statusBeforeHold, String holdNote, Instant packedAt,
@@ -101,14 +114,23 @@ public record OrderSummary(
      *
      * @param codAmount what the carrier collects on delivering it (G2-3, ON_DELIVERY): fixed at the handover, printed on
      *                  the label and the manifest (15 BR-08, 09 BR-04); 0 otherwise
+     * @param carriage  number, parcels, carrier and mode as fulfillment handed it over (G4-2a); null before that
      */
     public record Shipment(UUID shipmentId, OrderShipmentStatus status, BigDecimal amount, BigDecimal billedAmount,
                            Instant handedOverAt, Instant outcomeAt, DeliveryFailureReason failureReason,
-                           List<ShipmentLine> lines, BigDecimal codAmount) {
+                           List<ShipmentLine> lines, BigDecimal codAmount, ShipmentHandover.Carriage carriage) {
 
         public Shipment {
             lines = lines == null ? List.of() : List.copyOf(lines);
             codAmount = codAmount == null ? BigDecimal.ZERO : codAmount;
+        }
+
+        /** Without the carriage (G4-2a): callers written before it. */
+        public Shipment(UUID shipmentId, OrderShipmentStatus status, BigDecimal amount, BigDecimal billedAmount,
+                        Instant handedOverAt, Instant outcomeAt, DeliveryFailureReason failureReason,
+                        List<ShipmentLine> lines, BigDecimal codAmount) {
+            this(shipmentId, status, amount, billedAmount, handedOverAt, outcomeAt, failureReason, lines, codAmount,
+                    null);
         }
 
         public Shipment(UUID shipmentId, OrderShipmentStatus status, BigDecimal amount, BigDecimal billedAmount,

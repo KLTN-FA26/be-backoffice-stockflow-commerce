@@ -2,7 +2,7 @@ package com.stockflow.notification.internal.service;
 
 import com.stockflow.contracts.OrderPlaced;
 import com.stockflow.contracts.PaymentFailed;
-import com.stockflow.contracts.ShipmentDispatched;
+import com.stockflow.contracts.ShipmentStatusChanged;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.modulith.events.ApplicationModuleListener;
@@ -63,10 +63,22 @@ class OrderNotificationListener {
                         .formatted(event.failureMessage()));
     }
 
+    /**
+     * kltn-docs 09 §4.1 step 3: the customer is told when their goods are handed to the carrier - which carrier, no
+     * tracking number (none exists, 09 §1) - and when staff record them delivered. The other steps are the shop's.
+     */
     @ApplicationModuleListener
-    public void on(ShipmentDispatched event) {
-        sender.send(null, "shipment.dispatched",
-                "Your order is on its way",
-                "Tracking number %s with %s.".formatted(event.trackingNumber(), event.carrierCode()));
+    public void on(ShipmentStatusChanged event) {
+        switch (event.status()) {
+            case "HANDED_OVER" -> sender.send(event.customerId(), "shipment.dispatched",
+                    "Order %s has been handed to the carrier".formatted(event.orderNumber()),
+                    "Shipment %s of order %s (%d package(s)) was handed to %s.".formatted(event.shipmentCode(),
+                            event.orderNumber(), event.packageCount(),
+                            event.carrierName() == null ? "the carrier" : event.carrierName()));
+            case "DELIVERED" -> sender.send(event.customerId(), "shipment.delivered",
+                    "Order %s delivered".formatted(event.orderNumber()),
+                    "Shipment %s of order %s was delivered.".formatted(event.shipmentCode(), event.orderNumber()));
+            default -> log.debug("Shipment {} is {}: no customer message", event.shipmentCode(), event.status());
+        }
     }
 }

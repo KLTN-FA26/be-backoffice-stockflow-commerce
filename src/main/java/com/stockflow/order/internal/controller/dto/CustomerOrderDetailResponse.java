@@ -62,8 +62,33 @@ public record CustomerOrderDetailResponse(
         AllowedActions allowedActions,
 
         @Schema(description = "The customer's latest cancellation request and its decision; null when they never asked")
-        CancellationRequest cancellationRequest
+        CancellationRequest cancellationRequest,
+
+        @Schema(description = "G4-2a: the shipments handed over to a carrier, oldest first (kltn-docs 09 BR-05); empty "
+                + "until the first handover. Nothing is tracked between handover and the outcome staff record")
+        List<Shipment> shipments
 ) {
+
+    @Schema(name = "CustomerOrderShipment")
+    public record Shipment(
+            @Schema(example = "SO-20261021-000123-S1", description = "Null for a shipment recorded before 2026-10-21")
+            String shipmentCode,
+            @Schema(example = "HANDED_OVER", description = "HANDED_OVER (with the carrier), DELIVERED, DELIVERY_FAILED or "
+                    + "RETURNED")
+            String status,
+            @Schema(example = "2", description = "Parcels in it; 0 when not recorded")
+            int packageCount,
+            @Schema(example = "Giao Hàng Nhanh")
+            String carrierName,
+            @Schema(example = "PARCEL", description = "PARCEL or FULL_TRUCKLOAD")
+            String deliveryMode,
+            Instant handedOverAt,
+            @Schema(description = "When staff recorded the latest outcome; null while with the carrier")
+            Instant outcomeAt,
+            @Schema(example = "CUSTOMER_ABSENT", description = "Why a delivery failed: CUSTOMER_ABSENT, REFUSED, "
+                    + "WRONG_ADDRESS, LOST, DAMAGED or OTHER; stays after a retry delivered it")
+            String failureReason) {
+    }
 
     @Schema(name = "CustomerOrderCancellationRequest")
     public record CancellationRequest(
