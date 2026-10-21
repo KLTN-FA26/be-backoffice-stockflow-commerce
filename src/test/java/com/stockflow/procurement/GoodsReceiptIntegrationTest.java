@@ -258,6 +258,39 @@ class GoodsReceiptIntegrationTest {
     }
 
     @Test
+    @DisplayName("SCRUM-473: a draft line with labelled cartons is not dropped from the count; cancelling voids them")
+    void labelledCartons() {
+        UUID po = confirmedOrder(TABLE, 10);
+        UUID line = poLine(po, TABLE);
+        String second = lot + "-B";
+        GoodsReceipts.ReceiptView draft = receipts.create(new GoodsReceipts.Create(po, null, null), clerk);
+        receipts.replaceLines(draft.id(), List.of(tableLot(line, 5, lot, null), tableLot(line, 5, second, null)));
+        UUID labelledLine = lineIds(draft.id(), second).getFirst();
+        UUID carton = Identifiers.newId();
+        tx.executeWithoutResult(s -> {
+            UUID unit = Identifiers.newId();
+            jdbc.update("""
+                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
+                    SELECT ?, id, ?, 5 FROM inventory.inventory_items WHERE sku = ?""",
+                    unit, "C" + unit.toString().substring(0, 8).toUpperCase(), TABLE);
+            jdbc.update("""
+                    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,
+                                                         location_code, goods_receipt_line_id)
+                    SELECT ?, ?, id, ?, 5, 'HCM-RCV01', ? FROM inventory.inventory_items WHERE sku = ?""",
+                    carton, "IT-" + lot.toUpperCase(), unit, labelledLine, TABLE);
+        });
+
+        assertThatThrownBy(() -> receipts.replaceLines(draft.id(), List.of(tableLot(line, 10, lot, null))))
+                .extracting(GoodsReceiptIntegrationTest::code).isEqualTo(ErrorCode.RECEIPT_LINE_HAS_PACKAGES);
+        assertThat(lineIds(draft.id(), second)).containsExactly(labelledLine);
+
+        receipts.cancel(draft.id());
+        assertThat(jdbc.queryForMap("""
+                SELECT status, closed_at IS NOT NULL AS closed FROM inventory.stock_package WHERE id = ?""", carton))
+                .containsEntry("status", "VOID").containsEntry("closed", true);
+    }
+
+    @Test
     @DisplayName("partial receipts move the PO on; the supplier's 5% tolerance caps the total (BR-02)")
     void partialAndTolerance() {
         UUID po = confirmedOrder(SOFA, 10);

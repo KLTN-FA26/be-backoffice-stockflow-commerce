@@ -90,11 +90,20 @@ public class StockItemJpaEntity extends BaseEntity {
     private StockStatus status;
 
     /**
-     * The stock package (carton) the row sits in; null for loose stock (V20261020000200). Read-only: no code
-     * puts stock into a package yet, but a lookup of a loose layer must not land in a carton's row.
+     * The stock package (carton) the row is the contents of; null for loose stock (V20261020000200). Written
+     * when the row is made and not changed afterwards: moving a carton moves its rows, it does not re-parent them.
      */
-    @Column(name = "stock_package_id", insertable = false, updatable = false)
+    @Column(name = "stock_package_id", updatable = false)
     private UUID stockPackageId;
+
+    public StockItemJpaEntity(UUID id, String sku, String locationCode, String lotNumber,
+                              LocalDate expiryDate, int onHand, int reserved, StockStatus status,
+                              java.time.Instant receivedAt, String serialNumber, UUID stockPackageId) {
+        this(id, sku, locationCode, lotNumber, expiryDate, onHand, reserved, status, receivedAt, serialNumber);
+        this.stockPackageId = stockPackageId;
+    }
+
+    public UUID getStockPackageId() { return stockPackageId; }
 
     /**
      * Reservations are part of the aggregate, so they are loaded and saved with it —
