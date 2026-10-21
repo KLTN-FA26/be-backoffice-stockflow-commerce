@@ -54,11 +54,12 @@ class OrderSkuReferenceProbeIntegrationTest {
     }
 
     @Test
-    @DisplayName("PENDING_PAYMENT to ON_HOLD count; DRAFT, SHIPPED, DELIVERED, COMPLETED, CANCELLED and RETURNED do not")
+    @DisplayName("every status still holding stock counts (G3-2: from the state machine); DRAFT, SHIPPED, DELIVERED, "
+            + "COMPLETED, CANCELLED and RETURNED do not")
     void everyOrderStatus() {
         Map<String, UUID> expected = new LinkedHashMap<>();
-        List<String> counted = List.of("PENDING_PAYMENT", "CONFIRMED", "IN_PRODUCTION", "READY_TO_FULFILL", "IN_FULFILMENT",
-                "ON_HOLD");
+        List<String> counted = List.of("PENDING_PAYMENT", "CONFIRMED", "IN_PRODUCTION", "READY_TO_FULFILL", "PICKING",
+                "PARTIALLY_FULFILLED", "PACKED", "ON_HOLD");
         List<String> notCounted = List.of("DRAFT", "SHIPPED", "DELIVERED", "COMPLETED", "CANCELLED", "RETURNED");
         counted.forEach(status -> expected.put(status, order(status, sku)));
         notCounted.forEach(status -> order(status, sku));

@@ -179,6 +179,46 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "cancellation_fee_detail", length = 2000)
     private String cancellationFeeDetail;
 
+    /** V20261021000100 (G3-2): why it is on hold and where it goes back; the milestones; the money billed. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "hold_reason", length = 24)
+    private com.stockflow.order.api.HoldReason holdReason;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "status_before_hold", length = 32)
+    private OrderStatus statusBeforeHold;
+
+    @Column(name = "hold_note", length = 1000)
+    private String holdNote;
+
+    @Column(name = "shipped_at")
+    private Instant shippedAt;
+
+    @Column(name = "delivered_at")
+    private Instant deliveredAt;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "delivery_failure_reason", length = 24)
+    private com.stockflow.order.api.DeliveryFailureReason deliveryFailureReason;
+
+    @Column(name = "completed_at")
+    private Instant completedAt;
+
+    @Column(name = "refunded_at")
+    private Instant refundedAt;
+
+    @Column(name = "closed_at")
+    private Instant closedAt;
+
+    @Column(name = "billed_amount", nullable = false, precision = 19, scale = 4)
+    private java.math.BigDecimal billedAmount = java.math.BigDecimal.ZERO;
+
+    @Column(name = "receivable_paid_amount", nullable = false, precision = 19, scale = 4)
+    private java.math.BigDecimal receivablePaidAmount = java.math.BigDecimal.ZERO;
+
+    @Column(name = "remainder_refund_amount", nullable = false, precision = 19, scale = 4)
+    private java.math.BigDecimal remainderRefundAmount = java.math.BigDecimal.ZERO;
+
     /** A credit order's days to pay after delivery, as sold (SCRUM-427). */
     @Column(name = "credit_term_days")
     private Integer creditTermDays;
@@ -296,6 +336,43 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
         this.cancellationFeeReason = reason;
         this.cancellationFeeDetail = detail;
     }
+    public void applyLifecycle(com.stockflow.order.api.HoldReason holdReason, OrderStatus statusBeforeHold,
+                               String holdNote, Instant shippedAt, Instant deliveredAt,
+                               com.stockflow.order.api.DeliveryFailureReason deliveryFailureReason,
+                               Instant completedAt, Instant refundedAt, Instant closedAt,
+                               java.math.BigDecimal billedAmount, java.math.BigDecimal receivablePaidAmount,
+                               java.math.BigDecimal remainderRefundAmount) {
+        this.holdReason = holdReason;
+        this.statusBeforeHold = statusBeforeHold;
+        this.holdNote = holdNote;
+        this.shippedAt = shippedAt;
+        this.deliveredAt = deliveredAt;
+        this.deliveryFailureReason = deliveryFailureReason;
+        this.completedAt = completedAt;
+        this.refundedAt = refundedAt;
+        this.closedAt = closedAt;
+        this.billedAmount = billedAmount;
+        this.receivablePaidAmount = receivablePaidAmount;
+        this.remainderRefundAmount = remainderRefundAmount;
+    }
+
+    /** One step of a status change: the row passes through each edge, so the transition trigger sees every one. */
+    public void moveTo(OrderStatus next) {
+        this.status = next;
+    }
+
+    public com.stockflow.order.api.HoldReason getHoldReason() { return holdReason; }
+    public OrderStatus getStatusBeforeHold() { return statusBeforeHold; }
+    public String getHoldNote() { return holdNote; }
+    public Instant getShippedAt() { return shippedAt; }
+    public Instant getDeliveredAt() { return deliveredAt; }
+    public com.stockflow.order.api.DeliveryFailureReason getDeliveryFailureReason() { return deliveryFailureReason; }
+    public Instant getCompletedAt() { return completedAt; }
+    public Instant getRefundedAt() { return refundedAt; }
+    public Instant getClosedAt() { return closedAt; }
+    public java.math.BigDecimal getBilledAmount() { return billedAmount; }
+    public java.math.BigDecimal getReceivablePaidAmount() { return receivablePaidAmount; }
+    public java.math.BigDecimal getRemainderRefundAmount() { return remainderRefundAmount; }
     public Integer getCreditTermDays() { return creditTermDays; }
     public List<OrderLineJpaEntity> getLines() { return lines; }
 

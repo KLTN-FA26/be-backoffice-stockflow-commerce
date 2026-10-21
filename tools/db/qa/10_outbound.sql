@@ -33,7 +33,7 @@ END $$;
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at,
                                      created_at, warehouse_id)
 VALUES (md5('qa:order:f1')::uuid, 'SO-QA-F1', 'c0000000-0000-4000-8000-000000000001', gen_random_uuid(),
-        'IN_FULFILMENT', 12000000, 'VND', NOW(), NOW(), md5('demo:wh:HCM')::uuid);
+        'PICKING', 12000000, 'VND', NOW(), NOW(), md5('demo:wh:HCM')::uuid);
 
 \echo '--- the task carries its order number and warehouse (fulfillment.pick)'
 SELECT pg_temp.expect_fail('F1 a pick with no warehouse', $q$

@@ -52,10 +52,35 @@ public record CustomerOrderDetailResponse(
         @Schema(description = "Oldest first")
         List<TimelineEntry> timeline,
 
-        @Schema(example = "NOT_SHIPPED", description = "NOT_SHIPPED, IN_TRANSIT, DELIVERED or RETURNED - only what "
-                + "staff have recorded; nothing is tracked after handover to the carrier")
-        String deliveryState
+        @Schema(example = "NOT_SHIPPED", description = "NOT_SHIPPED, IN_TRANSIT, PARTIALLY_DELIVERED, DELIVERY_FAILED, "
+                + "DELIVERED or RETURNED - only what staff have recorded; nothing is tracked after handover to the "
+                + "carrier. Parse tolerantly: more may come")
+        String deliveryState,
+
+        @Schema(description = "What the customer may do now (G3-2): the portal shows these buttons instead of keeping "
+                + "its own list of statuses")
+        AllowedActions allowedActions,
+
+        @Schema(description = "The customer's latest cancellation request and its decision; null when they never asked")
+        CancellationRequest cancellationRequest
 ) {
+
+    @Schema(name = "CustomerOrderCancellationRequest")
+    public record CancellationRequest(
+            @Schema(example = "PENDING", description = "PENDING, APPROVED or REJECTED") String status,
+            @Schema(example = "CUSTOMER_REQUEST") String reasonCode,
+            @Schema(description = "What the customer wrote") String note,
+            Instant requestedAt,
+            @Schema(description = "Set once Sales decided") Instant decidedAt,
+            @Schema(description = "What Sales answered, e.g. why it was rejected") String decisionNote) {
+    }
+
+    @Schema(name = "CustomerOrderAllowedActions")
+    public record AllowedActions(
+            @Schema(description = "Cancel at once (POST /orders/{id}/cancellation answers 200)") boolean cancel,
+            @Schema(description = "Ask for a cancellation (the same endpoint answers 202)") boolean requestCancellation,
+            @Schema(description = "Order the same again (POST /orders/{id}/reorder)") boolean reorder) {
+    }
 
     @Schema(name = "CustomerOrderPayment")
     public record Payment(

@@ -14,7 +14,7 @@ final class CustomerOrderWebMapper {
     static CustomerOrderCardResponse toResponse(CustomerOrders.Card card) {
         return new CustomerOrderCardResponse(card.orderId(), card.orderNumber(), card.status().name(),
                 card.statusGroup().name(), card.total(), card.currency(), card.placedAt(), card.lineCount(),
-                card.deliveryState().name());
+                card.deliveryState().name(), card.cancellationRequestStatus());
     }
 
     static CustomerOrderDetailResponse toResponse(CustomerOrders.Detail detail) {
@@ -24,7 +24,15 @@ final class CustomerOrderWebMapper {
                 detail.placedAt(), toResponse(detail.shippingAddress()), toResponse(detail.payment()),
                 detail.lines().stream().map(CustomerOrderWebMapper::toResponse).toList(),
                 detail.timeline().stream().map(CustomerOrderWebMapper::toResponse).toList(),
-                detail.deliveryState().name());
+                detail.deliveryState().name(), detail.allowedActions() == null ? null
+                        : new CustomerOrderDetailResponse.AllowedActions(detail.allowedActions().cancel(),
+                                detail.allowedActions().requestCancellation(), detail.allowedActions().reorder()),
+                detail.cancellationRequest() == null ? null : new CustomerOrderDetailResponse.CancellationRequest(
+                        detail.cancellationRequest().status(),
+                        detail.cancellationRequest().reasonCode() == null ? null
+                                : detail.cancellationRequest().reasonCode().name(),
+                        detail.cancellationRequest().note(), detail.cancellationRequest().requestedAt(),
+                        detail.cancellationRequest().decidedAt(), detail.cancellationRequest().decisionNote()));
     }
 
     private static CustomerOrderDetailResponse.Payment toResponse(CustomerOrders.Payment payment) {

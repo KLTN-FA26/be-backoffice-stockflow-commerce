@@ -29,7 +29,7 @@ public class OrderStatusHistoryJpaEntity extends BaseEntity {
     @Column(name = "reason", length = 500, updatable = false)
     private String reason;
 
-    /** Who made the change. Left null for now: the audit log records the actor of every guarded call. */
+    /** Who made the change (G3-2); null when the system made it. */
     @Column(name = "actor_id", updatable = false)
     private UUID actorId;
 
@@ -41,7 +41,13 @@ public class OrderStatusHistoryJpaEntity extends BaseEntity {
 
     public OrderStatusHistoryJpaEntity(UUID id, UUID orderId, String fromStatus, String toStatus,
                                        String reason, Instant occurredAt) {
+        this(id, orderId, fromStatus, toStatus, reason, null, occurredAt);
+    }
+
+    public OrderStatusHistoryJpaEntity(UUID id, UUID orderId, String fromStatus, String toStatus,
+                                       String reason, UUID actorId, Instant occurredAt) {
         super(id);
+        this.actorId = actorId;
         this.orderId = orderId;
         this.fromStatus = fromStatus;
         this.toStatus = toStatus;

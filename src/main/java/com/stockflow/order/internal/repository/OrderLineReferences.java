@@ -38,10 +38,13 @@ public class OrderLineReferences {
                           FROM ordering.order_line l
                           JOIN ordering.customer_order o ON o.id = l.order_id
                          WHERE l.sku IN (:skus)
-                           AND o.status IN ('PENDING_PAYMENT', 'CONFIRMED', 'IN_PRODUCTION', 'READY_TO_FULFILL',
-                                            'IN_FULFILMENT', 'ON_HOLD')
+                           AND o.status IN (:unshipped)
                          ORDER BY o.placed_at DESC, o.id, l.sku""")
                 .setParameter("skus", skus)
+                // From the state machine (G3-2): every status that still holds stock for the order, so a status
+                // added later is not forgotten here.
+                .setParameter("unshipped", java.util.Arrays.stream(com.stockflow.order.api.OrderStatus.values())
+                        .filter(com.stockflow.order.api.OrderStatus::holdsStock).map(Enum::name).toList())
                 .setMaxResults(limit)
                 .getResultList();
         return rows.stream()

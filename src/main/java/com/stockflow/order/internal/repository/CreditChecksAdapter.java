@@ -1,6 +1,7 @@
 package com.stockflow.order.internal.repository;
 
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.internal.domain.CreditChecks;
 import jakarta.persistence.EntityManager;
 import org.springframework.stereotype.Repository;
@@ -22,19 +23,31 @@ class CreditChecksAdapter implements CreditChecks, CreditHoldSearch {
         this.entityManager = entityManager;
     }
 
+    /**
+     * The order side of a customer's credit exposure (kltn-docs 15 BR-03): for every credit order in a status
+     * {@link OrderStatus#countsTowardCreditExposure} names - the list comes from the state machine, never typed here,
+     * so a new status cannot leak an order out of it - what the order has still to bill: its total, less the units
+     * closed out of it, less what its deliveries billed (the receivables count that), less money paid ahead outside
+     * receivables. A split order is counted once: its delivered shipments as receivables, the rest here. An order on
+     * a credit hold is not credit given yet.
+     */
     @Override
     public BigDecimal undeliveredCreditExposure(UUID customerId, UUID excludingOrderId) {
         Object sum = entityManager.createNativeQuery("""
-                        SELECT COALESCE(SUM(o.total_amount - o.paid_amount), 0)
+                        SELECT COALESCE(SUM(GREATEST(0,
+                                   o.total_amount
+                                 - COALESCE((SELECT SUM(l.cancelled_quantity * l.unit_price)
+                                               FROM ordering.order_line l WHERE l.order_id = o.id), 0)
+                                 - o.billed_amount
+                                 - GREATEST(0, o.paid_amount - o.receivable_paid_amount))), 0)
                           FROM ordering.customer_order o
                          WHERE o.customer_id = :customer
                            AND o.payment_term = 'CREDIT'
-                           AND o.status IN ('CONFIRMED', 'IN_PRODUCTION', 'READY_TO_FULFILL', 'IN_FULFILMENT',
-                                            'ON_HOLD', 'SHIPPED')
+                           AND o.status IN (:statuses)
                            AND o.id <> :excluding
-                           AND NOT EXISTS (SELECT 1 FROM ordering.order_hold h
-                                            WHERE h.order_id = o.id AND h.reason = 'CREDIT' AND h.resolved_at IS NULL)""")
+                           AND o.hold_reason IS DISTINCT FROM 'CREDIT'""")
                 .setParameter("customer", customerId)
+                .setParameter("statuses", OrderStatus.creditExposureStatuses().stream().map(Enum::name).toList())
                 .setParameter("excluding", excludingOrderId == null ? new UUID(0, 0) : excludingOrderId)
                 .getSingleResult();
         return sum instanceof BigDecimal value ? value : new BigDecimal(sum.toString());
@@ -79,7 +92,7 @@ class CreditChecksAdapter implements CreditChecks, CreditHoldSearch {
     public org.springframework.data.domain.Page<UUID> heldOrders(org.springframework.data.domain.Pageable pageable) {
         String held = " FROM ordering.customer_order o"
                 + " JOIN ordering.order_hold h ON h.order_id = o.id AND h.reason = 'CREDIT' AND h.resolved_at IS NULL"
-                + " WHERE o.status = 'ON_HOLD'";
+                + " WHERE o.status = 'ON_HOLD' AND o.hold_reason = 'CREDIT'";
         @SuppressWarnings("unchecked")
         List<UUID> ids = entityManager.createNativeQuery("SELECT o.id" + held + " ORDER BY h.raised_at, o.id")
                 .setFirstResult((int) pageable.getOffset())

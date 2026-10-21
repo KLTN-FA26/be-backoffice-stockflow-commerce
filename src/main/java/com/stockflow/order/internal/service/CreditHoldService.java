@@ -99,7 +99,7 @@ public class CreditHoldService {
     public OrderSummary approve(UUID orderId, String note, UUID by) {
         requireNote(note);
         Order order = lockHeld(orderId);
-        order.approveCredit();
+        order.approveCredit(by, clock.instant());
         decide(order, CreditChecks.Outcome.APPROVED, note, by);
         repository.save(order);
         events.publishEventsOf(order);

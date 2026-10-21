@@ -109,19 +109,26 @@ public class ReceivableService {
                 event.orderNumber(), owed, event.currency());
     }
 
-    /** Idempotent: a redelivered event finds the receivable already open. */
+    /**
+     * Idempotent: a redelivered event finds the receivable already open. G3-2 (split shipments): one receivable per
+     * delivered shipment, for what the order billed for it ({@code billedAmount}); an event without it - the whole
+     * order delivered, written before G3-2 - bills what the order still owes, as before.
+     */
     public void orderDelivered(OrderDelivered event) {
         if (!"CREDIT".equals(event.paymentTerm()) || event.customerId() == null) {
             return;
         }
-        BigDecimal owed = event.orderTotal().subtract(event.paidAmount() == null ? BigDecimal.ZERO : event.paidAmount());
-        if (owed.signum() <= 0 || book.findReceivableOfOrder(event.orderId()).isPresent()) {
+        BigDecimal owed = event.billedAmount() != null ? event.billedAmount()
+                : event.orderTotal().subtract(event.paidAmount() == null ? BigDecimal.ZERO : event.paidAmount());
+        Optional<Receivable> existing = event.shipmentId() == null ? book.findReceivableOfOrder(event.orderId())
+                : book.findReceivableOfShipment(event.orderId(), event.shipmentId());
+        if (owed.signum() <= 0 || existing.isPresent()) {
             return;
         }
         int days = event.creditTermDays() == null ? 0 : event.creditTermDays();
         LocalDate due = LocalDate.ofInstant(event.deliveredAt(), BUSINESS_ZONE).plusDays(days);
         Receivable receivable = book.save(Receivable.open(event.orderId(), event.customerId(), owed, event.currency(),
-                event.deliveredAt(), due));
+                event.deliveredAt(), due).forShipment(event.shipmentId()));
         log.info("Receivable {} opened for order {}: {} {} due {}", receivable.id(), event.orderNumber(), owed,
                 event.currency(), due);
         // The customer's unallocated credit pays it first.

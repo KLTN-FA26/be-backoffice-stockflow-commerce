@@ -20,7 +20,11 @@ public interface ReceivableBook {
 
     Optional<Receivable> findReceivable(UUID id);
 
+    /** The order's receivable not tied to a shipment: a whole-order delivery's, or a cancellation fee's. */
     Optional<Receivable> findReceivableOfOrder(UUID orderId);
+
+    /** G3-2: the receivable of one delivered shipment of a split order. */
+    Optional<Receivable> findReceivableOfShipment(UUID orderId, UUID shipmentId);
 
     /** The customer's unpaid receivables, locked, earliest due first (15 BR-09). */
     List<Receivable> lockUnpaid(UUID customerId);

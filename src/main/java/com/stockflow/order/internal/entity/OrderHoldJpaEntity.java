@@ -18,9 +18,18 @@ public class OrderHoldJpaEntity extends BaseEntity {
     @Column(name = "resolved_by") private UUID resolvedBy;
     @Column(name = "resolution_note", length = 1000) private String resolutionNote;
     protected OrderHoldJpaEntity() { }
+    /** V20261021000100: what the coordinator wrote when raising it, and who raised it (null: the system). */
+    @Column(name = "note", length = 1000, updatable = false) private String note;
+    @Column(name = "raised_by", updatable = false) private UUID raisedBy;
     public OrderHoldJpaEntity(UUID id, UUID orderId, String reason, Instant raisedAt) {
-        super(id); this.orderId = orderId; this.reason = reason; this.raisedAt = raisedAt;
+        this(id, orderId, reason, raisedAt, null, null);
     }
+    public OrderHoldJpaEntity(UUID id, UUID orderId, String reason, Instant raisedAt, String note, UUID raisedBy) {
+        super(id); this.orderId = orderId; this.reason = reason; this.raisedAt = raisedAt;
+        this.note = note == null || note.isBlank() ? null : note.trim(); this.raisedBy = raisedBy;
+    }
+    public String getNote() { return note; }
+    public UUID getRaisedBy() { return raisedBy; }
     public UUID getOrderId() { return orderId; }
     public String getReason() { return reason; }
     public Instant getRaisedAt() { return raisedAt; }

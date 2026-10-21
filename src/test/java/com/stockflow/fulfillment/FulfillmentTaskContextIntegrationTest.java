@@ -152,8 +152,14 @@ class FulfillmentTaskContextIntegrationTest {
         return "Bearer " + value;
     }
 
-    /** A paid stock-only order of the demo customer, holding one sofa at HCM. */
+    /** A paid stock-only order of the demo customer, holding one sofa at HCM, released there (READY_TO_FULFILL). */
     private OrderSummary confirmedOrder() {
+        // G3-2 (kltn-docs 17 BR-02): only a released order enters fulfillment.
+        return releases.release(paidOrder().orderId(), DemoData.WAREHOUSE_HCM, coordinator);
+    }
+
+    /** Paid and CONFIRMED, not released yet. */
+    private OrderSummary paidOrder() {
         OrderSummary order = orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), DemoData.CUSTOMER_ID,
                 List.of(new PlaceOrderCommand.Line(SOFA, 1, Money.vnd(12_000_000), null))));
         placed.add(order.orderId());
@@ -178,7 +184,7 @@ class FulfillmentTaskContextIntegrationTest {
             jdbc.update("""
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
                                                          currency, placed_at, version, created_at, warehouse_id)
-                    VALUES (?, ?, ?, ?, 'IN_FULFILMENT', 1000, 'VND', NOW(), 0, NOW(), ?)""",
+                    VALUES (?, ?, ?, ?, 'PICKING', 1000, 'VND', NOW(), 0, NOW(), ?)""",
                     order, number, DemoData.CUSTOMER_ID, UUID.randomUUID(), warehouse);
             jdbc.update("""
                     INSERT INTO fulfillment.pick (id, order_id, order_number, warehouse_id, status, assigned_user_id,
@@ -220,7 +226,7 @@ class FulfillmentTaskContextIntegrationTest {
                 order.orderId())).isEqualTo(order.orderNumber());
         assertThat(jdbc.queryForObject("SELECT warehouse_id FROM fulfillment.pick WHERE order_id = ?", UUID.class,
                 order.orderId())).isEqualTo(HCM);
-        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.IN_FULFILMENT);
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.PICKING);
         // The same request again is answered with the same task.
         call(post("/api/v1/fulfillment/tasks").header("Authorization", oc).contentType("application/json")
                 .content(create(order.orderId(), pickerHcm)))
@@ -252,13 +258,13 @@ class FulfillmentTaskContextIntegrationTest {
 
         assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.pick WHERE order_id = ?", Integer.class,
                 order.orderId())).isZero();
-        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.CONFIRMED);
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.READY_TO_FULFILL);
     }
 
     @Test
     @DisplayName("holds in another warehouse than the order was released from are refused with 409")
     void holdsOutsideTheOrderWarehouse() throws Exception {
-        OrderSummary order = confirmedOrder();
+        OrderSummary order = paidOrder();
         // Released from HN while its sofa is held at HCM: release does not look at where the holds are.
         releases.release(order.orderId(), hn, coordinator);
         assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.READY_TO_FULFILL);

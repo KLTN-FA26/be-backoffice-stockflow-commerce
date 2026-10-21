@@ -4,6 +4,7 @@ import com.stockflow.order.api.ListOrdersQuery;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.internal.controller.dto.OrderStatusChangeResponse;
+import com.stockflow.order.internal.controller.dto.CloseRemainderRequest;
 import com.stockflow.order.api.CancelOrderCommand;
 import com.stockflow.order.api.CancellationOutcome;
 import com.stockflow.order.api.CancellationReasonCode;
@@ -73,9 +74,11 @@ class OrderController {
     private final CustomerService customerService;
     private final Quotes quotes;
     private final CustomerOrders customerOrders;
+    private final com.stockflow.identity.api.IdentityService identities;
 
     OrderController(OrderService orderService, CustomerService customerService, Quotes quotes,
-                    CustomerOrders customerOrders) {
+                    CustomerOrders customerOrders, com.stockflow.identity.api.IdentityService identities) {
+        this.identities = identities;
         this.orderService = orderService;
         this.customerService = customerService;
         this.quotes = quotes;
@@ -235,6 +238,25 @@ class OrderController {
     }
 
     /**
+     * G3-2 (split shipments, G4-Q3): close what is left of a partly fulfilled order - the units not shipped will not
+     * be delivered (kltn-docs 17 edge "short pick: phần còn lại huỷ + hoàn tiền phần thiếu"). Sales or the coordinator
+     * decide it, as a cancellation: {@code sales-order-cancellations:UPDATE}. The money received above what the order
+     * is now worth is asked back as PENDING refunds.
+     */
+    @PostMapping("/{orderId}/remainder-closure")
+    @Operation(summary = "Close the rest of a partly fulfilled order: its unshipped units are not delivered; the "
+            + "order shows its shipments and refunds what was paid for the rest")
+    @RequiresPermission(resource = OrderResources.ORDER_CANCELLATIONS,
+            action = Action.UPDATE, scope = DataScope.ALL)
+    public ApiResponse<OrderResponse> closeRemainder(@PathVariable UUID orderId,
+                                                     @Valid @RequestBody CloseRemainderRequest request,
+                                                     @AuthenticatedUser CurrentUser user) {
+        com.stockflow.common.security.ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(OrderWebMapper.toResponse(orderService.closeRemainder(orderId, request.reasonCode(),
+                request.note(), user.userId())));
+    }
+
+    /**
      * The back-office order list (SCRUM-443, FE 440). Staff only: a customer holds
      * {@code sales-orders:READ} too, for their own orders, and gets a 403 here rather than everyone's.
      * Parameters follow FE #12: {@code search}, {@code status} repeated, {@code sort=field,dir}.
@@ -247,14 +269,15 @@ class OrderController {
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size,
             @RequestParam(required = false) String search,
-            @RequestParam(name = "status", required = false) List<OrderStatus> statuses,
+            @RequestParam(name = "status", required = false) List<String> statuses,
             @RequestParam(required = false) UUID customerId,
             @RequestParam(required = false) LocalDate placedFrom,
             @RequestParam(required = false) LocalDate placedTo,
             @RequestParam(required = false) String sort) {
         requireStaff(user);
         return ApiResponse.ok(orderService.list(new ListOrdersQuery(page,
-                        size == null ? Pages.DEFAULT_PAGE_SIZE : size, search, statuses, customerId,
+                        size == null ? Pages.DEFAULT_PAGE_SIZE : size, search, OrderStatusFilter.parse(statuses),
+                        customerId,
                         placedFrom, placedTo, sort))
                 .map(OrderWebMapper::toResponse));
     }
@@ -268,9 +291,22 @@ class OrderController {
         orderService.findById(orderId)
                 .filter(order -> ownCustomerId == null || ownCustomerId.equals(order.customerId()))
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));
-        return ApiResponse.ok(orderService.history(orderId).stream()
+        List<com.stockflow.order.api.OrderStatusChange> changes = orderService.history(orderId);
+        if (ownCustomerId != null) {
+            // A customer reads why their order was cancelled; a hold's note and who did what are the shop's (G3-2).
+            return ApiResponse.ok(changes.stream()
+                    .map(change -> new OrderStatusChangeResponse(change.from(), change.to(),
+                            change.to() == OrderStatus.CANCELLED ? change.reason() : null, change.occurredAt(),
+                            null, null))
+                    .toList());
+        }
+        java.util.Map<UUID, String> names = identities.displayNames(changes.stream()
+                .map(com.stockflow.order.api.OrderStatusChange::actorId).filter(java.util.Objects::nonNull)
+                .distinct().toList());
+        return ApiResponse.ok(changes.stream()
                 .map(change -> new OrderStatusChangeResponse(change.from(), change.to(), change.reason(),
-                        change.occurredAt()))
+                        change.occurredAt(), change.actorId(),
+                        change.actorId() == null ? null : names.get(change.actorId())))
                 .toList());
     }
 
@@ -292,14 +328,15 @@ class OrderController {
             @AuthenticatedUser CurrentUser user,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size,
-            @RequestParam(name = "status", required = false) List<OrderStatus> statuses,
+            @RequestParam(name = "status", required = false) List<String> statuses,
             @RequestParam(required = false) String search,
             @RequestParam(required = false) LocalDate placedFrom,
             @RequestParam(required = false) LocalDate placedTo,
             @RequestParam(required = false) String sort) {
         return ApiResponse.ok(customerOrders
                 .myOrders(requiredOwnCustomerId(user), new CustomerOrders.Query(page,
-                        size == null ? Pages.DEFAULT_PAGE_SIZE : size, statuses, search, placedFrom, placedTo, sort))
+                        size == null ? Pages.DEFAULT_PAGE_SIZE : size, OrderStatusFilter.parse(statuses), search,
+                        placedFrom, placedTo, sort))
                 .map(CustomerOrderWebMapper::toResponse));
     }
 

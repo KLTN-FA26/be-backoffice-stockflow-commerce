@@ -244,6 +244,6 @@ class OrderReleaseIntegrationTest {
         assertThat(releases.release(order, hcm, coordinator).status()).isEqualTo(OrderStatus.READY_TO_FULFILL);
         assertThat(recorded.matching(OrderReleased.class, e -> e.orderId().equals(order))).hasSize(1);
         assertThatThrownBy(() -> releases.release(order, hcm, coordinator))
-                .extracting(OrderReleaseIntegrationTest::code).isEqualTo(ErrorCode.CONFLICT);
+                .extracting(OrderReleaseIntegrationTest::code).isEqualTo(ErrorCode.ORDER_INVALID_TRANSITION);
     }
 }
