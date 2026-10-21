@@ -87,7 +87,7 @@ INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_l
                                       occurred_at, created_by)
 SELECT gen_random_uuid(), 'CONSUMPTION', f.sku, f.lot_number, f.location_code, NULL, f.quantity, 'AVAILABLE',
        'AVAILABLE', 'PRODUCTION_ORDER', f.production_order_id, 'Hold ' || f.reservation_id, f.actor_id, NOW(),
-       'V20261021001300'
+       'V20261022000200'
   FROM g4q2_finished f;
 
 UPDATE inventory.stock_item si
@@ -95,7 +95,7 @@ UPDATE inventory.stock_item si
        reserved         = si.reserved - t.quantity,
        version          = si.version + 1,
        last_modified_at = NOW(),
-       last_modified_by = 'V20261021001300'
+       last_modified_by = 'V20261022000200'
   FROM (SELECT stock_item_id, SUM(quantity) AS quantity FROM g4q2_finished GROUP BY stock_item_id) t
  WHERE si.id = t.stock_item_id;
 

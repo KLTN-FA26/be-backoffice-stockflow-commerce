@@ -314,6 +314,40 @@ SELECT pg_temp.expect_ok('F5c an unused unit renamed', $q$
 SELECT pg_temp.expect_true('F6 an item with stock packages is in use', $c$
     inventory.item_in_use(md5('demo:item:SOFA-3S-GREY')::uuid, 'SOFA-3S-GREY') $c$);
 
+\echo '--- documents name their carton; a carton holds no more than was counted; one row per carton (V20261022000100)'
+SELECT pg_temp.expect_ok('D1 an opened carton counted in at 6, holding 6, on HCM-A01-1-A', $q$
+    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status, unopened)
+    VALUES (md5('qa:pk:doc')::uuid, 'QA-LPN-D1', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa:unit:SOFA-CARTON')::uuid, 10, 6, 'HCM-A01-1-A', 'IN_STOCK', FALSE);
+    INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at, received_at, stock_package_id)
+    VALUES (md5('qa:pk:doc:row')::uuid, 'SOFA-3S-GREY', 'HCM-A01-1-A', 6, 0, 'AVAILABLE', NOW(), NOW() - interval '3 day', md5('qa:pk:doc')::uuid) $q$);
+SELECT pg_temp.expect_fail('D2 an adjustment naming a carton of another SKU', $q$
+    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by, stock_package_id)
+    VALUES (gen_random_uuid(), 'QA-ADJ-D2', 'HCM-A01-1-A', 'TABLE-OAK-160', -1, 'DAMAGED',
+            (SELECT id FROM identity.app_user ORDER BY id LIMIT 1), md5('qa:pk:doc')::uuid) $q$);
+SELECT pg_temp.expect_fail('D3 an adjustment naming a carton at another bin', $q$
+    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by, stock_package_id)
+    VALUES (gen_random_uuid(), 'QA-ADJ-D3', 'HCM-A01-1-B', 'SOFA-3S-GREY', -1, 'DAMAGED',
+            (SELECT id FROM identity.app_user ORDER BY id LIMIT 1), md5('qa:pk:doc')::uuid) $q$);
+SELECT pg_temp.expect_ok('D4 an adjustment of that carton', $q$
+    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by, stock_package_id)
+    VALUES (gen_random_uuid(), 'QA-ADJ-D4', 'HCM-A01-1-A', 'SOFA-3S-GREY', -1, 'DAMAGED',
+            (SELECT id FROM identity.app_user ORDER BY id LIMIT 1), md5('qa:pk:doc')::uuid) $q$);
+SELECT pg_temp.expect_ok('D5 a count with a line for the carton and one for the loose slot of the same bin', $q$
+    INSERT INTO inventory.cycle_count (id, count_number, warehouse_id, trigger_type)
+    SELECT md5('qa:cc:doc')::uuid, 'QA-CC-D5', id, 'MANUAL' FROM warehouse.warehouse WHERE prefix = 'HCM';
+    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty, stock_package_id)
+    VALUES (gen_random_uuid(), md5('qa:cc:doc')::uuid, 'HCM-A01-1-A', 'SOFA-3S-GREY', 6, md5('qa:pk:doc')::uuid),
+           (gen_random_uuid(), md5('qa:cc:doc')::uuid, 'HCM-A01-1-A', 'SOFA-3S-GREY', 0, NULL) $q$);
+SELECT pg_temp.expect_fail('D6 the same carton counted twice in one count', $q$
+    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty, stock_package_id)
+    VALUES (gen_random_uuid(), md5('qa:cc:doc')::uuid, 'HCM-A01-1-A', 'SOFA-3S-GREY', 6, md5('qa:pk:doc')::uuid) $q$);
+SELECT pg_temp.expect_fail('D7 an opened carton filled past what was counted into it', $q$
+    INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at, received_at, stock_package_id)
+    VALUES (gen_random_uuid(), 'SOFA-3S-GREY', 'HCM-A01-1-A', 1, 0, 'AVAILABLE', NOW(), NOW() - interval '2 day', md5('qa:pk:doc')::uuid) $q$);
+SELECT pg_temp.expect_true('D8 the balance view reads the carton as one row', $c$
+    (SELECT lpn || ':' || on_hand || ':' || reserved || ':' || available || ':' || unit_of_measure
+       FROM inventory.stock_package_balance WHERE stock_package_id = md5('qa:pk:doc')::uuid) = 'QA-LPN-D1:6:0:6:CARTON' $c$);
+
 \echo '--- permissions (V20261020000700)'
 SELECT pg_temp.expect_true('P1 SYSTEM_ADMIN holds every inventory-stock-packages permission', $c$
     (SELECT count(*) FROM identity.role_permission rp JOIN identity.app_role r ON r.id = rp.role_id

@@ -40,8 +40,13 @@ import java.util.UUID;
  * three imports from {@code contracts}: the aggregate names the events it causes, which is domain
  * knowledge, and {@code contracts} holds nothing but flat records.
  *
- * <p><b>Known limit — one order line can span several stock items.</b> The aggregate is keyed by
- * (SKU, location, lot), so 100 units spread over three locations means mutating three aggregates in
+ * <p><b>Loose stock or the contents of one stock package.</b> A row with no {@link #stockPackageId()} is loose
+ * and keyed by (SKU, location, lot, serial, receipt time); a row in a stock package (a carton, V20261020000200)
+ * is keyed by the package instead, so a bin may hold a loose layer and several cartons of the very same receipt.
+ * A lookup of one must never land on the other.</p>
+ *
+ * <p><b>Known limit — one order line can span several stock items.</b> The aggregate is keyed per
+ * location and layer, so 100 units spread over three locations means mutating three aggregates in
  * one transaction. {@link StockAllocator} owns the choice of which ones and in what order (FEFO),
  * and keeps that decision out of the caller. Within a single-database monolith that multi-aggregate
  * transaction is correct and atomic; it is recorded here because it is the assumption that would
@@ -68,6 +73,7 @@ public final class StockItem extends AggregateRoot {
     private final LocalDate expiryDate;
     private Instant receivedAt;
     private String serialNumber;
+    private StockPackageId stockPackageId;
 
     public Instant receivedAt() {
         return receivedAt;
@@ -75,6 +81,42 @@ public final class StockItem extends AggregateRoot {
 
     public String serialNumber() {
         return serialNumber;
+    }
+
+    /** The stock package this row is the contents of; {@code null} for loose stock. */
+    public StockPackageId stockPackageId() {
+        return stockPackageId;
+    }
+
+    public boolean isLoose() {
+        return stockPackageId == null;
+    }
+
+    /**
+     * Whether this row is the layer of these goods: same lot, serial and receipt time ({@code null}: none). Among
+     * the loose rows of one SKU at one bin at most one answers yes ({@code uk_stock_item_sku_location_lot}).
+     */
+    public boolean isLayer(String lot, String serial, Instant receipt) {
+        return Objects.equals(lotNumber, lot) && Objects.equals(serialNumber, serial)
+                && Objects.equals(receivedAt, receipt);
+    }
+
+    /** A row rehydrated with its stock package ({@code null}: loose). */
+    public StockItem(
+            StockItemId id,
+            Sku sku,
+            LocationId location,
+            String lotNumber,
+            LocalDate expiryDate,
+            Quantity onHand,
+            StockStatus status,
+            List<Reservation> reservations,
+            long version,
+            Instant receivedAt,
+            String serialNumber,
+            StockPackageId stockPackageId) {
+        this(id, sku, location, lotNumber, expiryDate, onHand, status, reservations, version, receivedAt, serialNumber);
+        this.stockPackageId = stockPackageId;
     }
 
     public StockItem(
@@ -501,9 +543,11 @@ public final class StockItem extends AggregateRoot {
             throw new IllegalArgumentException("Reservation %s is not order %s's consumed goods".formatted(consumed,
                     orderId));
         }
-        if (status != StockStatus.AVAILABLE) {
+        if (status != StockStatus.AVAILABLE || stockPackageId != null) {
+            // Finished goods reach packing as loose stock (emptyLayerOf); a carton never takes printed goods back.
             throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH,
-                    "Stock item %s is %s; printed goods come back onto their AVAILABLE layer".formatted(id, status));
+                    "Stock item %s is %s%s; printed goods come back onto their loose AVAILABLE layer".formatted(id,
+                            status, stockPackageId == null ? "" : " in a carton"));
         }
         int back = reservations.stream().filter(r -> r != source && consumed.value().equals(r.rootRequestId()))
                 .mapToInt(r -> r.quantity().value()).sum();

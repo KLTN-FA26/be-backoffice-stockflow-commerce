@@ -336,4 +336,17 @@ public interface InventoryService {
      * different person approves it; production records scrapped blanks through this.
      */
     StockAdjustmentSummary requestAdjustment(RequestAdjustmentCommand command);
+
+    /**
+     * The goods receipt lines among {@code receiptLineIds} that cartons (stock packages) were labelled on
+     * ({@code inventory.stock_package.goods_receipt_line_id}, V20261020000100). Such a line is not deleted: the
+     * carton points at it with a restricting foreign key (SCRUM-473).
+     */
+    java.util.Set<UUID> receiptLinesWithStockPackages(java.util.Collection<UUID> receiptLineIds);
+
+    /**
+     * A receipt cancelled before it was posted: the cartons labelled on these lines and still being received are
+     * voided (RECEIVING → VOID), in the caller's transaction. They held no stock; their labels are never valid.
+     */
+    void voidStockPackagesOfReceiptLines(java.util.Collection<UUID> receiptLineIds);
 }

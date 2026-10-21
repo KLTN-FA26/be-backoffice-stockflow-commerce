@@ -92,6 +92,7 @@ class InventoryServiceImpl implements InventoryService {
     private final Clock clock;
     private final InventoryControlService controls;
     private final InventoryPolicyRepository policies;
+    private final com.stockflow.inventory.internal.domain.StockPackageRepository stockPackages;
 
     /** How long a hold lasts while its order waits for payment (kltn-docs 14: set by the business). */
     private final java.time.Duration reservationTtl;
@@ -99,11 +100,13 @@ class InventoryServiceImpl implements InventoryService {
     InventoryServiceImpl(StockItemRepository repository, InventoryEventPublisher events,
                          StockOperations operations, InventoryItemDirectory items, Clock clock,
                          InventoryControlService controls, InventoryPolicyRepository policies,
+                         com.stockflow.inventory.internal.domain.StockPackageRepository stockPackages,
                          @org.springframework.beans.factory.annotation.Value(
                                  "${stockflow.inventory.reservation-ttl:PT30M}") java.time.Duration reservationTtl) {
         if (reservationTtl == null || reservationTtl.isZero() || reservationTtl.isNegative()) {
             throw new IllegalArgumentException("stockflow.inventory.reservation-ttl must be positive");
         }
+        this.stockPackages = stockPackages;
         this.reservationTtl = reservationTtl;
         this.repository = repository;
         this.events = events;
@@ -210,6 +213,31 @@ class InventoryServiceImpl implements InventoryService {
     @Override
     public StockAdjustmentSummary requestAdjustment(RequestAdjustmentCommand command) {
         return operations.requestAdjustment(command);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public java.util.Set<UUID> receiptLinesWithStockPackages(java.util.Collection<UUID> receiptLineIds) {
+        return stockPackages.findByReceiptLines(receiptLineIds).stream()
+                .map(com.stockflow.inventory.internal.domain.StockPackage::goodsReceiptLineId)
+                .collect(java.util.stream.Collectors.toSet());
+    }
+
+    /**
+     * Locked like every carton write (V20261020000100), though a carton being received holds no stock row to lock
+     * after it: the receipt's own lock keeps two edits of it apart, this keeps the cartons' rule in one place.
+     */
+    @Override
+    public void voidStockPackagesOfReceiptLines(java.util.Collection<UUID> receiptLineIds) {
+        Instant now = clock.instant();
+        var ids = stockPackages.findByReceiptLines(receiptLineIds).stream()
+                .map(com.stockflow.inventory.internal.domain.StockPackage::id).toList();
+        for (var carton : stockPackages.findAllByIdForUpdate(ids)) {
+            if (carton.status() == com.stockflow.inventory.internal.domain.StockPackageStatus.RECEIVING) {
+                carton.cancel(now);
+                stockPackages.save(carton);
+            }
+        }
     }
 
     @Override

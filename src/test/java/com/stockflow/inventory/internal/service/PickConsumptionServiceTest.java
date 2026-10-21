@@ -94,7 +94,9 @@ class PickConsumptionServiceTest {
     private final LocationDirectory locations = mock(LocationDirectory.class);
     private final InventoryPolicyRepository policies = mock(InventoryPolicyRepository.class);
     private final PickConsumptionService service = new PickConsumptionService(stockItems, ledger,
-            new InventoryEventPublisher(publisher), locations, policies, Clock.fixed(NOW, ZoneOffset.UTC));
+            new InventoryEventPublisher(publisher), locations, policies,
+            new StockPackageContents(mock(com.stockflow.inventory.internal.domain.StockPackageRepository.class),
+                    stockItems), Clock.fixed(NOW, ZoneOffset.UTC));
     private final List<StockItem> saved = new ArrayList<>();
     private final List<StockItem> merged = new ArrayList<>();
 

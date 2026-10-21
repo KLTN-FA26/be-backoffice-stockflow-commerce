@@ -14,7 +14,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * V20261021001300 (G4-Q2 / PACK-PRINT) on a database holding printed goods handed to packing under the old model -
+ * V20261022000200 (G4-Q2 / PACK-PRINT) on a database holding printed goods handed to packing under the old model -
  * HELD for their order in a PACKING area, the hand-over MOVE in the ledger - which the new packing would never deduct.
  * The in-flight order's holds are consumed exactly as the completion now does it (one CONSUMPTION row naming the
  * production order, on_hand and reserved down by the hold); a cancelled order's goods, goods already asked to be
@@ -23,7 +23,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class PrintGoodsDeductedAtProductionMigrationTest {
 
-    private static final String BEFORE = "20261021001200";
+    private static final String BEFORE = "20261022000100";
     private static final String HCM = "md5('demo:wh:HCM')::uuid";
     private static final String EDITOR = "md5('demo:user:editor')::uuid";
     private static final String SKU = "SOFA-3S-GREY";
