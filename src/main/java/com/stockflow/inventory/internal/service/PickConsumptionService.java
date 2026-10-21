@@ -207,11 +207,13 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
         Objects.requireNonNull(source, "source");
         Quantity quantity = Quantity.of(command.quantity());
         if (destination == null) {
-            destination = StockItem.arrivedAs(source, target, quantity, StockStatus.AVAILABLE);
+            stockItems.save(StockItem.arrivedAs(source, target, quantity, StockStatus.AVAILABLE));
         } else {
+            // Units rejoining their own receipt layer, not replenishment: a FIFO SKU's policy trigger refuses
+            // the raised on_hand unless the row is named as a same-receipt merge (V20261017000450).
             destination.putBack(quantity);
+            stockItems.saveMerged(destination);
         }
-        stockItems.save(destination);
 
         Instant now = clock.instant();
         ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.PUT_BACK,

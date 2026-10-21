@@ -9,6 +9,8 @@ import com.stockflow.inventory.api.MoveStockCommand;
 import com.stockflow.inventory.api.RequestAdjustmentCommand;
 import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.api.StockAdjustmentReason;
+import com.stockflow.inventory.consumption.PickConsumption;
+import com.stockflow.inventory.consumption.PutBackCommand;
 import com.stockflow.inventory.internal.service.StockOperations;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
@@ -34,8 +36,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * V20261017000450 against a real PostgreSQL: units of one FIFO receipt layer may be moved into a layer of the
- * same receipt elsewhere, in parts — two moves to the same bin, two holds issued to the print shop — keeping
- * the receipt time, lot and total; replenishing an existing FIFO layer (a FOUND adjustment) is still refused,
+ * same receipt elsewhere, in parts — two moves to the same bin, two holds issued to the print shop, picked
+ * goods put back after a cancellation — keeping the receipt time, lot and total; replenishing an existing FIFO layer (a FOUND adjustment) is still refused,
  * and so is a receipt dated more than a minute ahead of the database clock.
  */
 @IntegrationTest
@@ -49,6 +51,7 @@ class SameReceiptMergeIntegrationTest {
 
     @Autowired InventoryService inventory;
     @Autowired StockOperations operations;
+    @Autowired PickConsumption pickConsumption;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
@@ -115,9 +118,7 @@ class SameReceiptMergeIntegrationTest {
         assertThat(layers()).singleElement().satisfies(row -> assertThat(row).containsEntry("on_hand", 10));
     }
 
-    @Test
-    @DisplayName("two holds of one FIFO receipt issued to the print shop land in one layer there, both still held")
-    void secondIssueMerges() {
+    private UUID confirmedOrder() {
         UUID order = Identifiers.newId();
         tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
@@ -125,6 +126,13 @@ class SameReceiptMergeIntegrationTest {
                 VALUES (?, ?, ?, ?, 'CONFIRMED', 1, 'VND', NOW(), 0, NOW(), 1, NOW())""", order,
                 "SO-20991226-%06d".formatted(java.util.concurrent.ThreadLocalRandom.current().nextInt(1_000_000)),
                 DemoData.CUSTOMER_ID, UUID.randomUUID()));
+        return order;
+    }
+
+    @Test
+    @DisplayName("two holds of one FIFO receipt issued to the print shop land in one layer there, both still held")
+    void secondIssueMerges() {
+        UUID order = confirmedOrder();
         List<UUID> holds = tx.execute(s -> {
             List<UUID> ids = new java.util.ArrayList<>();
             ids.addAll(inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), 3, order)).reservationIds());
@@ -140,6 +148,53 @@ class SameReceiptMergeIntegrationTest {
         assertThat(layers()).extracting(row -> row.get("location_code") + ":" + row.get("on_hand") + ":"
                         + row.get("reserved") + ":" + row.get("status"))
                 .containsExactly(SHELF + ":3:0:AVAILABLE", PRINT_SHOP + ":7:7:IN_PRODUCTION");
+    }
+
+    @Test
+    @DisplayName("picked FIFO goods put back rejoin their receipt layer, at the bin they left and at another; once per line")
+    void putBackMerges() {
+        UUID order = confirmedOrder();
+        List<UUID> holds = tx.execute(s -> {
+            UUID first = inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), 3, order))
+                    .reservationIds().getFirst();
+            UUID second = inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), 4, order))
+                    .reservationIds().getFirst();
+            inventory.pinReservations(order);
+            return List.of(first, second);
+        });
+        List<UUID> lines = List.of(Identifiers.newId(), Identifiers.newId());
+        for (int i = 0; i < holds.size(); i++) {
+            UUID hold = holds.get(i);
+            UUID line = lines.get(i);
+            tx.executeWithoutResult(s -> pickConsumption.consumeForPick(hold, line, clerk));
+        }
+        // After the picks, so the holds above were drawn from the shelf alone: a layer of the same receipt
+        // elsewhere for the second put-back to merge into.
+        move(1, OTHER_BIN);
+        assertThat(layers()).extracting(row -> row.get("location_code") + ":" + row.get("on_hand"))
+                .containsExactly(SHELF + ":2", OTHER_BIN + ":1");
+
+        // The order was cancelled after picking (V20261017000450 refused both raises before the fix: 409).
+        tx.executeWithoutResult(s -> pickConsumption.putBack(
+                new PutBackCommand(lines.get(0), holds.get(0), sku, lot, SHELF, 3, clerk)));
+        tx.executeWithoutResult(s -> pickConsumption.putBack(
+                new PutBackCommand(lines.get(1), holds.get(1), sku, lot, OTHER_BIN, 4, clerk)));
+        // The same line again changes nothing.
+        tx.executeWithoutResult(s -> pickConsumption.putBack(
+                new PutBackCommand(lines.get(0), holds.get(0), sku, lot, SHELF, 3, clerk)));
+
+        assertThat(layers()).extracting(row -> row.get("location_code") + ":" + row.get("on_hand") + ":"
+                        + row.get("reserved") + ":" + row.get("status"))
+                .containsExactly(SHELF + ":5:0:AVAILABLE", OTHER_BIN + ":5:0:AVAILABLE");
+        assertThat(layers()).allSatisfy(row -> {
+            assertThat(row).containsEntry("lot_number", lot);
+            assertThat(((java.sql.Timestamp) row.get("received_at")).toInstant()).as("the receipt's age is kept")
+                    .isEqualTo(RECEIVED);
+        });
+        assertThat(jdbc.queryForObject("""
+                select count(*) from inventory.stock_movement
+                 where movement_type = 'PUT_BACK' and reference_type = 'PICK_LINE' and reference_id in (?, ?)""",
+                Integer.class, lines.get(0), lines.get(1))).isEqualTo(2);
     }
 
     @Test
