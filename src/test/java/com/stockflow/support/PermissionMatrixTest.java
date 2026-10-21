@@ -486,6 +486,27 @@ class PermissionMatrixTest {
     }
 
     /**
+     * The create-task dialog's order list answers to the permission that opens the task, warehouse-scoped - not to the
+     * sales order list's {@code sales-orders:READ}, which the warehouse manager who opens tasks does not hold. Granting
+     * task creation to another role opens the list to it with no code change.
+     */
+    @Test
+    void theTaskCandidateListNeedsWhatOpeningATaskNeeds() {
+        Map<String, Handler> byKey = new HashMap<>();
+        handlers().forEach(h -> byKey.put(h.key(), h));
+        RequiresPermission candidates = byKey.get("GET /api/v1/fulfillment/task-candidates").rp();
+        RequiresPermission create = byKey.get("POST /api/v1/fulfillment/tasks").rp();
+        assertThat(candidates).as("GET /api/v1/fulfillment/task-candidates is guarded").isNotNull();
+        assertThat(PermissionCode.of(candidates.resource(), candidates.action()))
+                .isEqualTo(PermissionCode.of(create.resource(), create.action()))
+                .isEqualTo(PermissionCode.parse("fulfillment-task-assignment:CREATE"));
+        assertThat(candidates.scope()).isEqualTo(DataScope.WAREHOUSE);
+        ResolvedAuthorization manager = roles.resolve(List.of(Role.WAREHOUSE_MANAGER.authority()));
+        assertThat(manager.permissions()).contains(PermissionCode.parse("fulfillment-task-assignment:CREATE"))
+                .doesNotContain(PermissionCode.parse("sales-orders:READ"));
+    }
+
+    /**
      * kltn-docs 01 §5.1: suspending, resuming and discontinuing a product are the System Admin's. The three handlers
      * need {@code product-lifecycle:APPROVE}, and the seeded matrix grants it to SYSTEM_ADMIN and nobody else - not
      * the E-commerce Admin, who approves and publishes with {@code product-products:APPROVE}.
