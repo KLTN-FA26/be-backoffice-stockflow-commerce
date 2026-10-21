@@ -402,6 +402,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         Order order = lockOrder(orderId);
         if (order.recordPacked(clock.instant())) {
             repository.save(order);
+            closeUndecidableCancellationRequest(order);
             log.info("Order {}: packed", order.orderNumber());
         }
     }
@@ -486,6 +487,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         }
 
         Order saved = repository.save(order);
+        closeUndecidableCancellationRequest(order);
         events.publishEventsOf(order);
         // The code, not the reason text: the text carries the customer's note, and a line break in it
         // would forge log lines (CodeQL java/log-injection).
@@ -873,8 +875,36 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
 
     private OrderSummary saved(Order order) {
         Order saved = repository.save(order);
+        closeUndecidableCancellationRequest(order);
         events.publishEventsOf(order);
         return toSummary(saved);
+    }
+
+    /**
+     * E2E QA 2026-10-21: a customer's cancellation request still waiting when the order passes the point where
+     * cancelling can be decided - its first package completed (decision 2026-10-17), handed over, delivered - or is
+     * cancelled another way, could only ever be refused ({@code ORDER_NOT_CANCELLABLE}), and the customer saw it pending
+     * for good. It closes here, in the transaction that moved the order, as {@code EXPIRED} with a note the customer
+     * reads on the order. Called after every save that may move the order; nothing to do in the common case.
+     */
+    private void closeUndecidableCancellationRequest(Order order) {
+        OrderStatus status = order.status();
+        String why;
+        if (status == OrderStatus.CANCELLED) {
+            why = "Closed: the order was cancelled.";
+        } else if (order.packedAt() != null || !status.canTransitionTo(OrderStatus.CANCELLED)) {
+            why = "Closed: the order is %s and can no longer be cancelled; ask for a return instead."
+                    .formatted(order.packedAt() != null && status.canTransitionTo(OrderStatus.CANCELLED)
+                            ? OrderStatus.PACKED : status);
+        } else {
+            return;
+        }
+        cancellationRequests.findPending(order.id().value()).ifPresent(request -> {
+            request.expire(why, clock.instant());
+            cancellationRequests.save(request);
+            log.info("Order {}: cancellation request {} closed as EXPIRED ({})", order.orderNumber(), request.id(),
+                    status);
+        });
     }
 
     @Override

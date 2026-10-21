@@ -311,8 +311,8 @@ class OrderLifecycleIntegrationTest {
     }
 
     @Test
-    @DisplayName("a cancellation request made while picking cannot be approved after part was handed over; "
-            + "the customer sees the request and its rejection")
+    @DisplayName("a cancellation request made while picking closes as EXPIRED once part is handed over (E2E QA "
+            + "2026-10-21: it stayed pending for good); the customer sees the request and why it closed")
     void cancellationRequestAfterPartialShipment() {
         OrderSummary order = picking(PaymentTerm.PREPAID, 2);
         CancellationOutcome asked = orders.cancelOwn(order.orderId(), customer, CancellationReasonCode.CUSTOMER_REQUEST,
@@ -331,14 +331,16 @@ class OrderLifecycleIntegrationTest {
                 .singleElement().satisfies(card -> assertThat(card.cancellationRequestStatus()).isEqualTo("PENDING"));
 
         orders.recordHandover(order.orderId(), handover(order, UUID.randomUUID(), 1));
-        assertThat(code(catchThrowable(() -> cancellationRequests.approve(order.orderId(), asked.requestId(), null,
-                "ok", staff)))).isEqualTo(ErrorCode.ORDER_NOT_CANCELLABLE);
-        cancellationRequests.reject(order.orderId(), asked.requestId(), "Một phần đã giao cho hãng", staff);
         assertThat(customerOrders.myOrder(customer, order.orderId()).cancellationRequest()).satisfies(r -> {
-            assertThat(r.status()).isEqualTo("REJECTED");
-            assertThat(r.decisionNote()).isEqualTo("Một phần đã giao cho hãng");
+            assertThat(r.status()).isEqualTo("EXPIRED");
+            assertThat(r.decisionNote()).isEqualTo("Closed: the order is PARTIALLY_FULFILLED and can no longer be "
+                    + "cancelled; ask for a return instead.");
             assertThat(r.decidedAt()).isNotNull();
         });
+        assertThat(code(catchThrowable(() -> cancellationRequests.approve(order.orderId(), asked.requestId(), null,
+                "ok", staff)))).isEqualTo(ErrorCode.ORDER_CANCELLATION_REQUEST_NOT_PENDING);
+        assertThat(code(catchThrowable(() -> cancellationRequests.reject(order.orderId(), asked.requestId(),
+                "Một phần đã giao cho hãng", staff)))).isEqualTo(ErrorCode.ORDER_CANCELLATION_REQUEST_NOT_PENDING);
         assertThat(code(catchThrowable(() -> orders.cancelOwn(order.orderId(), customer,
                 CancellationReasonCode.CUSTOMER_REQUEST, null, staff)))).isEqualTo(ErrorCode.ORDER_NOT_CANCELLABLE);
         assertThat(customerOrders.myOrder(customer, order.orderId()).allowedActions())

@@ -971,6 +971,217 @@ class DispatchHandoverIntegrationTest {
                 .andExpect(status().isForbidden());
     }
 
+    // ---- E2E QA 2026-10-21 ---------------------------------------------------------------------------
+
+    /**
+     * Brings its own sofas: this class shares one database and the demo stock is counted by the tests above, so each
+     * of these adds what it is about to use instead of eating theirs.
+     */
+    private void stock(int sofas) {
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version,
+                    created_at, received_at)
+                VALUES (?, ?, 'HCM-A02-1-A', ?, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '400 days')""",
+                Identifiers.newId(), SOFA.code(), sofas));
+    }
+
+    /** Opens, labels, loads and delivers one credit order: its delivery opens one receivable. */
+    private OrderSummary deliveredOnCredit(long price) throws Exception {
+        OrderSummary order = order(PaymentTerm.CREDIT, null, 1, price);
+        UUID shipment = ship(pickedTask(order), false, 1);
+        String load = openLoad(ghn, shipment).path("loadId").asText();
+        scan(load, labels(shipment).getFirst()).andExpect(status().isOk());
+        handOver(load).andExpect(status().isOk());
+        outcome(shipment, "{\"outcome\":\"DELIVERED\"}").andExpect(status().isOk());
+        Await.until("credit receivable", ASYNC, () -> jdbc.queryForObject(
+                "SELECT count(*) FROM payment.receivable WHERE order_id = ?", Long.class, order.orderId()) == 1);
+        return order;
+    }
+
+    @Test
+    @DisplayName("E2E F1: a pick without its pack row (seeded data) no longer 404s the task list - it reads as packing "
+            + "not started, in the list, the PICKING filter and the task itself")
+    void aTaskWithoutItsPackRowDoesNotBreakTheList() throws Exception {
+        stock(1);
+        OrderSummary order = order(PaymentTerm.PREPAID, null, 1, 1_000_000);
+        UUID task = UUID.fromString(data(oc(body(post(BASE + "/tasks"), "{\"orderId\":\"" + order.orderId()
+                + "\",\"assignedUserId\":\"" + picker + "\"}")).andExpect(status().isCreated())).path("taskId").asText());
+        as(picker, "WAREHOUSE_STAFF", post(BASE + "/tasks/" + task + "/picking-start")).andExpect(status().isOk());
+        Map<String, Object> pack = jdbc.queryForMap("SELECT id, created_at FROM fulfillment.pack WHERE pick_id = ?",
+                task);
+        tx.executeWithoutResult(s -> jdbc.update("DELETE FROM fulfillment.pack WHERE pick_id = ?", task));
+        try {
+            for (String query : List.of("", "?status=PICKING", "?size=100")) {
+                JsonNode page = data(oc(get(BASE + "/tasks" + query)).andExpect(status().isOk()));
+                JsonNode row = null;
+                for (JsonNode item : page.path("items")) {
+                    if (item.path("taskId").asText().equals(task.toString())) {
+                        row = item;
+                    }
+                }
+                assertThat(row).as("the task is listed (%s)", query).isNotNull();
+                assertThat(row.path("packStatus").asText()).isEqualTo("PENDING");
+            }
+            as(picker, "WAREHOUSE_STAFF", get(BASE + "/tasks")).andExpect(status().isOk());
+            oc(get(BASE + "/tasks/" + task)).andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.pickStatus").value("PICKING"))
+                    .andExpect(jsonPath("$.data.packStatus").value("PENDING"));
+        } finally {
+            tx.executeWithoutResult(s -> jdbc.update("INSERT INTO fulfillment.pack (id, pick_id, status, created_at) "
+                    + "VALUES (?, ?, 'PENDING', ?)", pack.get("id"), task, pack.get("created_at")));
+        }
+    }
+
+    @Test
+    @DisplayName("E2E F2: the label reprinted after LABEL_OUTDATED (630 000 -> 430 000) is what the load, the handover "
+            + "answer and the signed manifest show - no 'COD changed since label'; a load holding an older copy is "
+            + "corrected at the signature")
+    void aReprintedLabelIsWhatTheManifestShows() throws Exception {
+        stock(1);
+        OrderSummary order = order(PaymentTerm.DEPOSIT, DepositBalancePolicy.ON_DELIVERY, 1, 900_000); // 270 000 paid
+        UUID shipment = ship(pickedTask(order), false, 1);
+        assertThat(printLabel(shipment).path("codAmount").decimalValue()).isEqualByComparingTo("630000");
+        String load = openLoad(ghn, shipment).path("loadId").asText();
+        dispatch(get(BASE + "/loads/" + load)).andExpect(jsonPath("$.data.shipments[0].labelCodAmount").value(630_000));
+        pay(order, new BigDecimal("200000"));
+        scan(load, labels(shipment).getFirst()).andExpect(status().isOk());
+        handOver(load).andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("LABEL_OUTDATED"));
+
+        assertThat(printLabel(shipment).path("codAmount").decimalValue()).isEqualByComparingTo("430000");
+        dispatch(get(BASE + "/loads/" + load)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.shipments[0].labelCodAmount").value(430_000))
+                .andExpect(jsonPath("$.data.codTotal").value(430_000));
+        assertThat(jdbc.queryForObject("SELECT label_cod_amount::bigint FROM fulfillment.dispatch_load_shipment "
+                + "WHERE shipment_id = ? AND active", Long.class, shipment)).isEqualTo(430_000L);
+        JsonNode before = data(dispatch(get(BASE + "/loads/" + load + "/manifest")));
+        assertThat(before.path("shipments").get(0).path("codAmount").decimalValue()).isEqualByComparingTo("430000");
+
+        // A load recorded before reprints refreshed it still holds the old figure: the signature corrects it.
+        tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE fulfillment.dispatch_load_shipment SET label_cod_amount = 630000 WHERE shipment_id = ?",
+                shipment));
+        handOver(load).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.shipments[0].labelCodAmount").value(430_000))
+                .andExpect(jsonPath("$.data.shipments[0].codAmount").value(430_000))
+                .andExpect(jsonPath("$.data.codTotal").value(430_000));
+        JsonNode manifest = data(dispatch(get(BASE + "/loads/" + load + "/manifest")));
+        assertThat(manifest.path("shipments").get(0).path("codAmount").decimalValue()).isEqualByComparingTo("430000");
+        assertThat(manifest.path("shipments").get(0).path("codChangedSinceLabel").asBoolean()).isFalse();
+        assertThat(cod(shipment)).isEqualTo(430_000L);
+    }
+
+    @Test
+    @DisplayName("E2E: a second cancellation request (the first rejected) closes as EXPIRED, with a note the customer "
+            + "reads, when the order is packed - it can no longer be approved; handover and delivery leave it so")
+    void aPendingCancellationRequestClosesWhenTheOrderIsPacked() throws Exception {
+        stock(1);
+        OrderSummary order = order(PaymentTerm.PREPAID, null, 1, 1_000_000);
+        String cancel = "/api/v1/orders/" + order.orderId() + "/cancellation";
+        String first = data(as(customerUser, "CUSTOMER", body(post(cancel), "{\"reasonCode\":\"CUSTOMER_REQUEST\"}"))
+                .andExpect(status().isAccepted())).path("requestId").asText();
+        oc(body(post("/api/v1/orders/" + order.orderId() + "/cancellation-requests/" + first + "/rejection"),
+                "{\"note\":\"already printed for you\"}")).andExpect(status().isOk());
+        String second = data(as(customerUser, "CUSTOMER", body(post(cancel), "{\"reasonCode\":\"CUSTOMER_REQUEST\"}"))
+                .andExpect(status().isAccepted())).path("requestId").asText();
+
+        UUID task = pickedTask(order);
+        assertThat(jdbc.queryForObject("SELECT status FROM ordering.order_cancellation_request WHERE id = ?::uuid",
+                String.class, second)).as("still deciding while picked").isEqualTo("PENDING");
+        UUID shipment = ship(task, false, 1);
+        Map<String, Object> closed = jdbc.queryForMap("SELECT status, decided_by, decided_at, decision_note "
+                + "FROM ordering.order_cancellation_request WHERE id = ?::uuid", second);
+        assertThat(closed.get("status")).isEqualTo("EXPIRED");
+        assertThat(closed.get("decided_by")).isNull();
+        assertThat(closed.get("decided_at")).isNotNull();
+        assertThat((String) closed.get("decision_note")).contains("PACKED").contains("can no longer be cancelled");
+        oc(body(post("/api/v1/orders/" + order.orderId() + "/cancellation-requests/" + second + "/approval"), "{}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("ORDER_CANCELLATION_REQUEST_NOT_PENDING"));
+
+        String load = openLoad(ghn, shipment).path("loadId").asText();
+        scan(load, labels(shipment).getFirst()).andExpect(status().isOk());
+        handOver(load).andExpect(status().isOk());
+        outcome(shipment, "{\"outcome\":\"DELIVERED\"}").andExpect(status().isOk());
+        as(customerUser, "CUSTOMER", get("/api/v1/orders/me/" + order.orderId())).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.cancellationRequest.status").value("EXPIRED"))
+                .andExpect(jsonPath("$.data.cancellationRequest.decisionNote").value(
+                        org.hamcrest.Matchers.containsString("can no longer be cancelled")));
+        assertThat(jdbc.queryForList("SELECT status FROM ordering.order_cancellation_request WHERE order_id = ? "
+                + "ORDER BY requested_at", String.class, order.orderId())).containsExactly("REJECTED", "EXPIRED");
+    }
+
+    @Test
+    @DisplayName("E2E: a request still pending when staff cancel the order closes as EXPIRED; an approved one stays "
+            + "APPROVED (the approval is saved before the cancellation that closes pending ones)")
+    void cancellingTheOrderClosesAPendingRequestButNotTheApprovedOne() throws Exception {
+        stock(2);
+        OrderSummary approved = order(PaymentTerm.PREPAID, null, 1, 1_000_000);
+        String request = data(as(customerUser, "CUSTOMER", body(post("/api/v1/orders/" + approved.orderId()
+                + "/cancellation"), "{\"reasonCode\":\"CUSTOMER_REQUEST\"}")).andExpect(status().isAccepted()))
+                .path("requestId").asText();
+        oc(body(post("/api/v1/orders/" + approved.orderId() + "/cancellation-requests/" + request + "/approval"), "{}"))
+                .andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("SELECT status FROM ordering.order_cancellation_request WHERE id = ?::uuid",
+                String.class, request)).isEqualTo("APPROVED");
+
+        OrderSummary cancelled = order(PaymentTerm.PREPAID, null, 1, 1_000_000);
+        String pending = data(as(customerUser, "CUSTOMER", body(post("/api/v1/orders/" + cancelled.orderId()
+                + "/cancellation"), "{\"reasonCode\":\"CUSTOMER_REQUEST\"}")).andExpect(status().isAccepted()))
+                .path("requestId").asText();
+        oc(body(post("/api/v1/orders/" + cancelled.orderId() + "/admin-cancellation"),
+                "{\"reasonCode\":\"OUT_OF_STOCK\"}")).andExpect(status().isOk());
+        assertThat(jdbc.queryForMap("SELECT status, decision_note FROM ordering.order_cancellation_request "
+                + "WHERE id = ?::uuid", pending)).containsEntry("status", "EXPIRED")
+                .containsEntry("decision_note", "Closed: the order was cancelled.");
+    }
+
+    @Test
+    @DisplayName("E2E: GET /receivables?orderId= returns that order's receivables only (it used to ignore the filter)")
+    void receivablesFilterByOrder() throws Exception {
+        stock(2);
+        OrderSummary one = deliveredOnCredit(1_000_000);
+        OrderSummary two = deliveredOnCredit(2_000_000);
+        JsonNode page = data(as(accountant, "ACCOUNTANT", get("/api/v1/receivables?orderId=" + one.orderId()))
+                .andExpect(status().isOk()));
+        assertThat(page.path("items")).hasSize(1);
+        assertThat(page.path("items").get(0).path("orderId").asText()).isEqualTo(one.orderId().toString());
+        as(accountant, "ACCOUNTANT", get("/api/v1/receivables?orderId=" + two.orderId() + "&customerId=" + customer))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.items.length()").value(1))
+                .andExpect(jsonPath("$.data.items[0].orderId").value(two.orderId().toString()));
+        as(accountant, "ACCOUNTANT", get("/api/v1/receivables?orderId=" + UUID.randomUUID()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.items.length()").value(0));
+        as(accountant, "ACCOUNTANT", get("/api/v1/receivables?orderId=not-a-uuid")).andExpect(status().isBadRequest());
+        as(customerUser, "CUSTOMER", get("/api/v1/receivables?orderId=" + one.orderId()))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @DisplayName("E2E: packing-queue rows carry their status (the value the status filter matches): PENDING until a "
+            + "packer takes the order, PACKING after")
+    void packingQueueRowsCarryTheirStatus() throws Exception {
+        stock(1);
+        OrderSummary order = order(PaymentTerm.PREPAID, null, 1, 1_000_000);
+        UUID task = pickedTask(order);
+        java.util.function.Function<String, JsonNode> row = query -> {
+            try {
+                for (JsonNode item : data(as(picker, "WAREHOUSE_STAFF", get(BASE + "/packing-queue?size=100" + query))
+                        .andExpect(status().isOk())).path("items")) {
+                    if (item.path("taskId").asText().equals(task.toString())) {
+                        return item;
+                    }
+                }
+                return null;
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+        };
+        assertThat(row.apply("").path("status").asText()).isEqualTo("PENDING");
+        assertThat(row.apply("").path("packStatus").asText()).isEqualTo("PENDING");
+        as(picker, "WAREHOUSE_STAFF", post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());
+        assertThat(row.apply("&status=PACKING").path("status").asText()).isEqualTo("PACKING");
+        assertThat(row.apply("&status=PENDING")).isNull();
+    }
+
     private String opened(String token, String open) throws Exception {
         var response = mvc.perform(body(post(BASE + "/loads"), open).header("Authorization", token)).andReturn()
                 .getResponse();

@@ -291,10 +291,11 @@ class ReceivableBookAdapter implements ReceivableBook, ReceivableSearch {
     }
 
     @Override
-    public Page<Receivable> receivables(UUID customerId, ReceivableStatus status, LocalDate dueBefore,
+    public Page<Receivable> receivables(UUID customerId, UUID orderId, ReceivableStatus status, LocalDate dueBefore,
                                         Collector collector, String kind, Pageable pageable) {
         Specification<ReceivableJpaEntity> spec = Specification
                 .<ReceivableJpaEntity>where(Specs.eq("customerId", customerId))
+                .and(Specs.eq("orderId", orderId))
                 .and(Specs.eq("status", status))
                 .and(Specs.eq("collector", collector))
                 .and(Specs.eq("kind", kind))

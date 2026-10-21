@@ -314,7 +314,15 @@ public class ReceivableService {
     @Transactional(readOnly = true)
     public PageResponse<Receivable> receivables(UUID customerId, ReceivableStatus status, LocalDate dueBefore,
                                                 Collector collector, String kind, int page, int size, String sort) {
-        return Pages.toResponse(search.receivables(customerId, status, dueBefore, collector, kind,
+        return receivables(customerId, null, status, dueBefore, collector, kind, page, size, sort);
+    }
+
+    /** The same, narrowed to one order when {@code orderId} is set (E2E QA 2026-10-21: it used to be ignored). */
+    @Transactional(readOnly = true)
+    public PageResponse<Receivable> receivables(UUID customerId, UUID orderId, ReceivableStatus status,
+                                                LocalDate dueBefore, Collector collector, String kind, int page,
+                                                int size, String sort) {
+        return Pages.toResponse(search.receivables(customerId, orderId, status, dueBefore, collector, kind,
                 Pages.of(page, size, RECEIVABLE_SORT.parse(sort))));
     }
 

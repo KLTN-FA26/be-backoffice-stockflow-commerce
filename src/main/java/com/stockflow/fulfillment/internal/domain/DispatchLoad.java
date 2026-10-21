@@ -330,6 +330,25 @@ public final class DispatchLoad {
         return leaving;
     }
 
+    /**
+     * The label of a shipment on this manifest was reprinted with another COD ({@code LABEL_OUTDATED}, 09 BR-04): the
+     * manifest's copy of the label's figure follows, so the load, the handover and the signed manifest show what the
+     * parcels' labels say (E2E QA 2026-10-21: they kept the figure from when the shipment was put on the load and
+     * flagged the COD as changed since the label). Only before the handover; otherwise nothing changes.
+     *
+     * @return whether it changed the load
+     */
+    public boolean relabel(UUID shipmentId, BigDecimal labelCod) {
+        Member member = members.get(shipmentId);
+        if (!status.isOpen() || member == null || !member.active() || member.codAmount() != null || labelCod == null
+                || member.labelCodAmount() != null && member.labelCodAmount().compareTo(labelCod) == 0) {
+            return false;
+        }
+        members.put(shipmentId, new Member(shipmentId, true, member.addedAt(), member.addedBy(), member.removedAt(),
+                member.removedBy(), labelCod, null));
+        return true;
+    }
+
     /** The COD the order fixed for a shipment at the handover (09 BR-04): the manifest prints it. */
     public void fixCod(UUID shipmentId, BigDecimal cod) {
         Member member = members.get(shipmentId);
