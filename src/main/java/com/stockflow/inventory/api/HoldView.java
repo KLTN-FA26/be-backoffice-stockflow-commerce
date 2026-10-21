@@ -11,9 +11,18 @@ import java.util.UUID;
  * @param expiresAt  null once pinned: the hold no longer waits for payment
  * @param expiryDate the goods' own expiry (their lot's), null for a SKU without one; past it they cannot move to a
  *                   storage, packing or print-shop location, only be written off
+ * @param serialNumber the unit's serial number for a serial-tracked SKU (one unit per stock row), else null; packing
+ *                     checks a scanned serial against it (kltn-docs 08 step 2)
  */
 public record HoldView(UUID reservationId, String sku, String locationCode, String lotNumber, int quantity,
-                       Status status, Instant expiresAt, java.time.LocalDate expiryDate) {
+                       Status status, Instant expiresAt, java.time.LocalDate expiryDate, String serialNumber) {
+
+    /** Without the serial number: goods that have none. */
+    public HoldView(UUID reservationId, String sku, String locationCode, String lotNumber, int quantity,
+                    Status status, Instant expiresAt, java.time.LocalDate expiryDate) {
+        this(reservationId, sku, locationCode, lotNumber, quantity, status, expiresAt, expiryDate, null);
+    }
+
 
     /** The hold's lifecycle; only {@code HELD} still keeps stock back. */
     public enum Status { HELD, CONSUMED, RELEASED, EXPIRED }

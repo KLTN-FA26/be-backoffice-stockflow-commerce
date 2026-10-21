@@ -131,6 +131,35 @@ class OrderBalanceTest {
         }
 
         @Test
+        @DisplayName("G4-5 review: shipments made while others wait keep the advance in the order they were made - 10M, "
+                + "3M ahead: S1 4M is COD 1M, S2 6M made before S1 leaves is COD 6M, at the label and at either handover")
+        void advanceGoesToShipmentsInTheOrderTheyWereMade() {
+            Order order = Order.draft(NUMBER, UUID.randomUUID(), UUID.randomUUID(), List.of(
+                    Order.line(new Sku("CUP-12OZ"), 10, Money.vnd(1_000_000), null)), NOW);
+            order.applyTerms(PaymentTerm.DEPOSIT, new BigDecimal("30"), null, BalancePolicy.ON_DELIVERY);
+            order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
+            order.submit();
+            order.recordPayment(Money.vnd(3_000_000), NOW);
+            order.release(HCM, "HCM", STAFF, NOW, Map.of());
+            order.startPicking(STAFF, NOW);
+            order.markPacked(NOW, STAFF);
+            UUID cups = cups(order);
+
+            assertThat(order.codFor(Map.of(cups, 4), Map.of(), null)).isEqualByComparingTo("1000000");
+            assertThat(order.codFor(Map.of(cups, 6), Map.of(cups, 4), null)).as("S1 waits and keeps the 3M")
+                    .isEqualByComparingTo("6000000");
+
+            // S2 leaves first: it is told S1 was made before it and still waits - the label's 6M, not 3M.
+            order.recordHandover(new ShipmentHandover(S2, List.of(new ShipmentHandover.Line(cups, 6)), NOW, STAFF,
+                    List.of(new ShipmentHandover.Line(cups, 4))));
+            order.recordHandover(handover(S1, cups, 4));
+            assertThat(order.shipments()).extracting(OrderShipment::codAmount)
+                    .usingComparatorForType(java.math.BigDecimal::compareTo, java.math.BigDecimal.class)
+                    .containsExactly(new BigDecimal("6000000"), new BigDecimal("1000000"));
+            assertThat(order.codInTransit()).as("the balance, once").isEqualByComparingTo("7000000");
+        }
+
+        @Test
         @DisplayName("ON_DELIVERY, split: the deposit lets the goods go; each shipment's COD is its value less the money "
                 + "paid ahead the earlier ones did not use; delivery bills exactly the COD; a return bills nothing")
         void onDeliverySplit() {

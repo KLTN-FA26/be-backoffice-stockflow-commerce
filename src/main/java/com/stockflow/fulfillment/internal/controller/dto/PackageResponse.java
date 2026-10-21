@@ -1,0 +1,24 @@
+package com.stockflow.fulfillment.internal.controller.dto;
+
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.util.List;
+import java.util.UUID;
+
+/**
+ * A package (parcel) at the packing station.
+ *
+ * @param labelCode  {@code PKG-<order number>-<n>}: on the label, what loading scans
+ * @param status     {@code OPEN}, {@code SEALED} or {@code VOIDED}
+ * @param shipmentId set once packing completed it into a shipment
+ * @param rotatableOverridden the packer set the flag against what its SKUs say (E13); likewise {@code fragileOverridden}
+ */
+public record PackageResponse(UUID packageId, int packageNo, String labelCode, String packageType, String status,
+                              UUID shipmentId, BigDecimal weightKg, BigDecimal lengthCm, BigDecimal widthCm,
+                              BigDecimal heightCm, BigDecimal dimWeightKg, boolean rotatable,
+                              boolean rotatableOverridden, boolean fragile, boolean fragileOverridden,
+                              Instant sealedAt, List<Content> contents) {
+
+    /** Units of one order line in it, per lot and serial as scanned. */
+    public record Content(UUID orderLineId, String sku, String lotNumber, String serialNumber, int quantity) { }
+}

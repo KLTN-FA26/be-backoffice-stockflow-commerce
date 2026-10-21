@@ -26,7 +26,8 @@ class FulfillmentWebMapper {
                                 l.designSnapshotId(), l.printLine()))
                         .toList(),
                 task.paymentDue() == null ? null : new FulfillmentTaskResponse.PaymentDue(
-                        task.paymentDue().amountDueBeforeHandover(), task.paymentDue().currency()));
+                        task.paymentDue().amountDueBeforeHandover(), task.paymentDue().currency()),
+                task.shipmentId());
     }
 
     AssigneeResponse toResponse(FulfillmentAssignee assignee) {
