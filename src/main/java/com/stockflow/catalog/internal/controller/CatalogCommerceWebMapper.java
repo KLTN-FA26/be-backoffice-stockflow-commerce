@@ -40,7 +40,8 @@ public class CatalogCommerceWebMapper {
     }
 
     public CatalogCardResponse toResponse(CatalogCommerceService.Card c) {
-        return new CatalogCardResponse(c.productId(), c.slug(), c.title(), c.seoTitle());
+        return new CatalogCardResponse(c.productId(), c.slug(), c.title(), c.seoTitle(), c.primaryImageUrl(),
+                c.skus().stream().map(s -> new CatalogCardResponse.CardSku(s.sku(), s.name())).toList());
     }
 
     public SearchSuggestionResponse toResponse(CatalogSearchService.Suggestion s) {
