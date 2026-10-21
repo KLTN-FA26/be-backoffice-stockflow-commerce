@@ -480,8 +480,11 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                 clock.instant());
 
         if (wasHoldingStock) {
-            releaseHolds(order, order.lines(), "Order %s cancelled: printed custom goods (BR-PRD-10)"
-                    .formatted(order.orderNumber()), command.cancelledBy());
+            // Nothing has shipped (a cancellation after a package is refused): every open unit of a print line is scrap.
+            releaseHolds(order, order.lines().stream().collect(Collectors.toMap(line -> line,
+                            line -> line.quantity() - line.cancelledQuantity(), (a, b) -> a, java.util.LinkedHashMap::new)),
+                    "cancel", "Order %s cancelled: printed custom goods (BR-PRD-10)".formatted(order.orderNumber()),
+                    command.cancelledBy());
             order.clearReservations();
         }
 
@@ -494,19 +497,27 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     }
 
     /**
-     * Frees the stock holds of {@code lines}. BR-PRD-10 (decision 2026-10-16): goods printed for this order and waiting
-     * in packing are scrapped, never sold - kept under their hold, a SCRAP write-off asked for in {@code by}'s name.
-     * Inventory decides from the goods' state which holds those are; the release leaves them alone, and releasing a
-     * hold already consumed or closed does nothing.
+     * Frees the stock holds of {@code closed}'s lines. BR-PRD-10 (decision 2026-10-16, 19/10: cancel allowed with a
+     * production fee, the printed cups are SCRAP): the printed goods of a print line that will not ship - as many as
+     * {@code closed} says for it - are scrapped, never sold: since G4-Q2 (2026-10-21) they left stock when production
+     * completed, so inventory books exactly those units back under a hold of their own and asks a SCRAP write-off of
+     * them in {@code by}'s name. Inventory decides from the goods' state which holds are printed goods; the release
+     * leaves those alone, and releasing a hold already consumed or closed does nothing.
+     *
+     * @param step what closes the units ("cancel", "closure"): with the line and its closed count after the step, the
+     *             idempotency key of the write-off
      */
-    private void releaseHolds(Order order, List<OrderLine> lines, String scrapNote, UUID by) {
+    private void releaseHolds(Order order, java.util.Map<OrderLine, Integer> closed, String step, String scrapNote,
+                              UUID by) {
         // SKU order: each write-off takes its SKU's lock, and checkout takes them sorted too (no deadlock).
-        lines.stream().filter(OrderLine::isMadeToOrder)
-                .sorted(java.util.Comparator.comparing(line -> line.sku().code()))
-                .flatMap(line -> line.reservationIds().stream())
-                .forEach(reservationId -> inventory.scrapCancelledPrint(reservationId, order.id().value(), scrapNote,
-                        by));
-        lines.stream().flatMap(line -> line.reservationIds().stream())
+        closed.entrySet().stream().filter(entry -> entry.getKey().isMadeToOrder() && entry.getValue() > 0)
+                .sorted(java.util.Comparator.comparing(entry -> entry.getKey().sku().code()))
+                .forEach(entry -> inventory.scrapCancelledPrint(new com.stockflow.inventory.api.ScrapCancelledPrintCommand(
+                        order.id().value(), UUID.nameUUIDFromBytes("print-scrap:%s:%s:%d".formatted(step,
+                                entry.getKey().id(), entry.getKey().cancelledQuantity())
+                                .getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+                        entry.getKey().reservationIds(), entry.getValue(), scrapNote, by)));
+        closed.keySet().stream().flatMap(line -> line.reservationIds().stream())
                 .forEach(reservationId -> inventory.release(reservationId, "ORDER_CANCELLED"));
     }
 
@@ -859,12 +870,14 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         java.util.Map<UUID, Integer> closedBefore = order.lines().stream()
                 .collect(Collectors.toMap(OrderLine::id, OrderLine::cancelledQuantity));
         BigDecimal closed = order.closeRemainder(reasonCode, note, by, clock.instant());
-        List<OrderLine> closedLines = order.lines().stream()
+        java.util.Map<OrderLine, Integer> closedLines = order.lines().stream()
                 .filter(line -> line.cancelledQuantity() > closedBefore.get(line.id()))
-                .toList();
-        // The holds of the units that will not go: still held stock is freed, printed goods are scrapped (BR-PRD-10),
-        // a hold already consumed by a pick is left as it is (its goods are fulfillment's to put back, G4-4).
-        releaseHolds(order, closedLines, "Order %s: rest closed, printed custom goods (BR-PRD-10)"
+                .collect(Collectors.toMap(line -> line, line -> line.cancelledQuantity() - closedBefore.get(line.id()),
+                        (a, b) -> a, java.util.LinkedHashMap::new));
+        // The holds of the units that will not go: still held stock is freed, printed goods not shipped are scrapped
+        // (BR-PRD-10) - only the closed units, the shipped ones are the customer's - and a hold already consumed by a
+        // pick is left as it is (its goods are fulfillment's to put back, G4-4).
+        releaseHolds(order, closedLines, "closure", "Order %s: rest closed, printed custom goods (BR-PRD-10)"
                 .formatted(order.orderNumber()), by);
         log.info("Order {}: rest closed ({}), {} {} worth; now {}", order.orderNumber(), reasonCode, closed,
                 order.total().currency(), order.status());

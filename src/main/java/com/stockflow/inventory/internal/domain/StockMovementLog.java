@@ -21,4 +21,18 @@ public interface StockMovementLog {
      * IN_PRODUCTION to AVAILABLE). Tells printed goods in a packing area from free stock somebody moved there.
      */
     boolean handedOverFromProduction(ReservationId hold, LocationId location);
+
+    /**
+     * Decision G4-Q2 (2026-10-21): whether {@code hold}'s goods left stock at {@code location} because their production
+     * order completed: a {@code CONSUMPTION} line, reference {@code PRODUCTION_ORDER}, "Hold &lt;id&gt;", from that
+     * location. Tells printed goods consumed for their order from
+     * a hold a pick or anything else closed.
+     */
+    boolean consumedAtCompletion(ReservationId hold, LocationId location);
+
+    /**
+     * Whether {@code hold} was opened to bring a cancelled order's consumed printed goods back onto {@code location}
+     * for their SCRAP write-off ({@code PUT_BACK}, reference {@code ORDER}, "Hold &lt;id&gt;", to that location).
+     */
+    boolean bookedBackForScrap(ReservationId hold, LocationId location);
 }

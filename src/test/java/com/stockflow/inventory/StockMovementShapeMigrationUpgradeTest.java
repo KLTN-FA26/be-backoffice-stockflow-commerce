@@ -65,7 +65,10 @@ class StockMovementShapeMigrationUpgradeTest {
     private static void assertShape(Connection db) throws SQLException {
         update(db, INSERT, "PUT_BACK", SKU, null, BIN, "PICK_LINE");
         update(db, INSERT, "PUT_BACK", SKU, OTHER_BIN, BIN, "MOVE_TASK");
-        refused(db, "a put-back from nowhere that is not a pick line's", INSERT, "PUT_BACK", SKU, null, BIN, "ORDER");
+        refused(db, "a put-back from nowhere that is neither a pick line's nor an order's", INSERT, "PUT_BACK", SKU,
+                null, BIN, "MOVE_TASK");
+        // V20261021001300 (G4-Q2): a cancelled order's printed goods, consumed at completion, come back for their scrap.
+        update(db, INSERT, "PUT_BACK", SKU, null, BIN, "ORDER");
         refused(db, "a put-back onto nowhere", INSERT, "PUT_BACK", SKU, BIN, null, "PICK_LINE");
         refused(db, "a put-back onto the bin it came from", INSERT, "PUT_BACK", SKU, BIN, BIN, "MOVE_TASK");
 

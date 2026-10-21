@@ -399,4 +399,70 @@ class StockItemTest {
         assertThat(live.status()).isEqualTo(ReservationStatus.RELEASED);
         assertThat(item.reserved()).isEqualTo(Quantity.ZERO);
     }
+
+    @Nested
+    @DisplayName("G4-Q2: printed goods consumed at completion, booked back for their scrap (BR-10)")
+    class BookingBackForScrap {
+
+        private final UUID order = UUID.randomUUID();
+
+        /** 5 on hand, a hold of 3 for the order consumed (on hand 2 left): the goods left stock at completion. */
+        private StockItem consumed(Reservation[] hold) {
+            StockItem item = availableWith(5);
+            hold[0] = item.reserve(order, UUID.randomUUID(), UUID.randomUUID(), Quantity.of(3), NOW);
+            item.pinReservationsOf(order);
+            item.consumeReservation(hold[0].id(), NOW);
+            item.pullDomainEvents();
+            return item;
+        }
+
+        @Test
+        @DisplayName("brings the units back under a new pinned hold of the order - out of ATP - never more than consumed")
+        void backUnderAHoldNeverMoreThanConsumed() {
+            Reservation[] source = new Reservation[1];
+            StockItem item = consumed(source);
+
+            Reservation first = item.bookBackForScrap(source[0].id(), order, UUID.randomUUID(), Quantity.of(2), NOW)
+                    .orElseThrow();
+
+            assertThat(item.onHand()).isEqualTo(Quantity.of(4));
+            assertThat(item.available()).as("held for its scrap, never on sale").isEqualTo(Quantity.of(2));
+            assertThat(first.status()).isEqualTo(ReservationStatus.HELD);
+            assertThat(first.isPinned()).isTrue();
+            assertThat(first.orderId()).isEqualTo(order);
+            assertThat(first.rootRequestId()).isEqualTo(source[0].id().value());
+            // A second closure asks for 5: only the 1 unit the hold consumed and is not back yet comes.
+            Reservation second = item.bookBackForScrap(source[0].id(), order, UUID.randomUUID(), Quantity.of(5), NOW)
+                    .orElseThrow();
+            assertThat(second.quantity()).isEqualTo(Quantity.of(1));
+            assertThat(item.bookBackForScrap(source[0].id(), order, UUID.randomUUID(), Quantity.of(1), NOW)).isEmpty();
+            assertThat(item.onHand()).isEqualTo(Quantity.of(5));
+        }
+
+        @Test
+        @DisplayName("idempotent on the request id, also once the hold was closed by its write-off")
+        void idempotentOnTheRequestId() {
+            Reservation[] source = new Reservation[1];
+            StockItem item = consumed(source);
+            UUID request = UUID.randomUUID();
+            Reservation back = item.bookBackForScrap(source[0].id(), order, request, Quantity.of(3), NOW).orElseThrow();
+            item.releaseReservation(back.id(), ReleaseReason.SCRAPPED, NOW);
+
+            assertThat(item.bookBackForScrap(source[0].id(), order, request, Quantity.of(3), NOW)).containsSame(back);
+            assertThat(item.onHand()).isEqualTo(Quantity.of(5));
+        }
+
+        @Test
+        @DisplayName("only another order's, or a live hold, is refused")
+        void onlyTheOrdersConsumedGoods() {
+            Reservation[] source = new Reservation[1];
+            StockItem item = consumed(source);
+            Reservation live = item.reserve(order, UUID.randomUUID(), UUID.randomUUID(), Quantity.of(1), NOW);
+
+            assertThatThrownBy(() -> item.bookBackForScrap(source[0].id(), UUID.randomUUID(), UUID.randomUUID(),
+                    Quantity.of(1), NOW)).isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> item.bookBackForScrap(live.id(), order, UUID.randomUUID(), Quantity.of(1), NOW))
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+    }
 }

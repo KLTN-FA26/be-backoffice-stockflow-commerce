@@ -80,11 +80,13 @@ class StockOperationsServiceImpl implements StockOperations {
     private final LocationDirectory locations;
     private final Clock clock;
     private final InventoryPolicyRepository policies;
+    private final InventoryEventPublisher events;
 
     StockOperationsServiceImpl(StockItemRepository stockItems, StockAdjustmentRepository adjustments,
                                StockAdjustmentSearch adjustmentSearch, StockMovementLog ledger,
                                StockLedgerSearch ledgerSearch, LocationDirectory locations, Clock clock,
-                               InventoryPolicyRepository policies) {
+                               InventoryPolicyRepository policies, InventoryEventPublisher events) {
+        this.events = events;
         this.stockItems = stockItems;
         this.adjustments = adjustments;
         this.adjustmentSearch = adjustmentSearch;
@@ -409,7 +411,130 @@ class StockOperationsServiceImpl implements StockOperations {
     public boolean isFinishedCustomGoods(StockItem item, Reservation hold) {
         return hold.status().isActive() && hold.orderId() != null && hold.productionOrderId() == null
                 && item.status() == StockStatus.AVAILABLE && locations.isPackingArea(item.location())
-                && ledger.handedOverFromProduction(hold.id(), item.location());
+                && (ledger.handedOverFromProduction(hold.id(), item.location())
+                        // G4-Q2: a cancelled order's consumed printed goods, brought back only to be scrapped.
+                        || ledger.bookedBackForScrap(hold.id(), item.location()));
+    }
+
+    /**
+     * Decision G4-Q2: under the SKU lock, then the row's, as every hold step. The hold must be live finished goods of
+     * {@code orderId} that production handed to a packing area - never free stock somebody moved there, never blanks.
+     */
+    @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "stock-move", resourceId = "#reservationId")
+    public StockMove consumeFinishedGoods(UUID reservationId, UUID orderId, UUID productionOrderId, UUID actorId) {
+        Objects.requireNonNull(orderId, "orderId");
+        Objects.requireNonNull(productionOrderId, "productionOrderId");
+        ReservationId id = ReservationId.of(reservationId);
+        policies.lock(holder(id).sku().code());
+        StockItem view = holder(id);
+        WarehouseScope.requireLocation(view.location().code());
+        StockItem item = stockItems.findByIdForUpdate(view.id()).orElseThrow();
+        Reservation hold = owned(item, id, orderId, null);
+        if (!hold.status().isActive()) {
+            throw new BusinessException(ErrorCode.RESERVATION_NOT_ACTIVE,
+                    "Hold %s is already %s".formatted(reservationId, hold.status()));
+        }
+        if (!isFinishedCustomGoods(item, hold)) {
+            throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH, ("Hold %s (%s at %s) is not finished goods "
+                    + "production handed to a packing area").formatted(reservationId, item.status(), item.location()));
+        }
+        Instant now = clock.instant();
+        StockStatus status = item.status();
+        item.consumeReservation(id, now);
+        stockItems.save(item);
+        events.publishEventsOf(item);
+        StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.CONSUMPTION, item.sku(),
+                item.lotNumber(), item.location(), null, hold.quantity().value(), status,
+                StockMovement.ReferenceType.PRODUCTION_ORDER, productionOrderId, "Hold " + reservationId, actorId, now);
+        ledger.append(line);
+        log.info("Production order {} completed: hold {} ({} x {}) consumed at {}", productionOrderId, reservationId,
+                hold.quantity(), item.sku(), item.location());
+        return toMove(line);
+    }
+
+    /**
+     * BR-10 for goods consumed at completion (G4-Q2). Each hold is taken under the SKU lock and its row's, in stock
+     * row id order, so two cancellations sharing rows never lock them in opposite orders.
+     */
+    @Override
+    @Auditable(action = AuditAction.CREATE, resourceType = "stock-adjustment", resourceId = "#command.orderId()")
+    public List<StockAdjustmentSummary> scrapCancelledPrint(com.stockflow.inventory.api.ScrapCancelledPrintCommand command) {
+        List<StockAdjustmentSummary> asked = new java.util.ArrayList<>();
+        int remaining = command.quantity();
+        List<UUID> ordered = command.reservationIds().stream().distinct()
+                .sorted(Comparator.comparing((UUID id) -> stockItems.findIdByReservationId(ReservationId.of(id))
+                        .map(item -> item.value().toString()).orElse("")).thenComparing(UUID::toString))
+                .toList();
+        for (UUID reservationId : ordered) {
+            if (remaining <= 0) {
+                break;
+            }
+            ReservationId id = ReservationId.of(reservationId);
+            Optional<StockItem> first = stockItems.findIdByReservationId(id).flatMap(stockItems::findById);
+            if (first.isEmpty()) {
+                continue;
+            }
+            policies.lock(first.get().sku().code());
+            StockItem view = holder(id);
+            WarehouseScope.requireLocation(view.location().code());
+            StockItem item = stockItems.findByIdForUpdate(view.id()).orElseThrow();
+            Reservation hold = item.findReservation(id).orElseThrow();
+            if (!command.orderId().equals(hold.orderId())) {
+                continue;
+            }
+            if (isFinishedCustomGoods(item, hold)) {
+                // Handed over before G4-Q2 and never consumed: scrapped whole, as before.
+                scrapCancelledPrint(reservationId, command.orderId(), command.note(), command.requestedBy())
+                        .ifPresent(asked::add);
+                remaining -= hold.quantity().value();
+                continue;
+            }
+            if (hold.status() != com.stockflow.inventory.internal.domain.ReservationStatus.CONSUMED
+                    || !ledger.consumedAtCompletion(id, item.location())) {
+                continue;   // never printed, picked, or released: not printed goods of this order
+            }
+            UUID requestId = UUID.nameUUIDFromBytes((command.requestId() + ":" + reservationId)
+                    .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            Optional<Reservation> standing = item.reservations().stream()
+                    .filter(r -> r.requestId().equals(requestId)).findFirst();
+            if (standing.isPresent()) {
+                // The same cancellation or closure again: its write-off as it stands, nothing brought back twice.
+                adjustments.findLatestForHold(standing.get().id().value()).map(StockOperationsServiceImpl::toSummary)
+                        .ifPresent(asked::add);
+                remaining -= standing.get().quantity().value();
+                continue;
+            }
+            if (command.requestedBy() == null) {
+                log.warn("Hold {}: printed goods of cancelled order {} were consumed at completion; nobody to ask "
+                        + "their SCRAP write-off in the name of, nothing booked back", reservationId, command.orderId());
+                continue;
+            }
+            Instant now = clock.instant();
+            Optional<Reservation> back = item.bookBackForScrap(id, command.orderId(), requestId,
+                    Quantity.of(remaining), now);
+            if (back.isEmpty()) {
+                continue;   // everything this hold consumed is already back for scrap
+            }
+            Reservation scrapHold = back.get();
+            int quantity = scrapHold.quantity().value();
+            stockItems.save(item);
+            ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.PUT_BACK, item.sku(),
+                    item.lotNumber(), null, item.location(), quantity, StockStatus.AVAILABLE,
+                    StockMovement.ReferenceType.ORDER, command.orderId(), "Hold " + scrapHold.id().value(),
+                    command.requestedBy(), now));
+            StockAdjustment adjustment = StockAdjustment.request(adjustments.nextNumber(LocalDate.ofInstant(now,
+                            BUSINESS_ZONE)), item.location(), item.sku(), item.lotNumber(), -quantity,
+                            AdjustmentReason.SCRAP, command.note(), command.requestedBy(), now)
+                    .atLayer(item.receivedAt()).forHold(scrapHold.id().value());
+            StockAdjustmentSummary saved = toSummary(adjustments.save(adjustment));
+            asked.add(saved);
+            remaining -= quantity;
+            log.info("Hold {}: {} x {} printed for order {} and consumed at completion booked back at {} under hold {}; "
+                    + "SCRAP write-off {} asked for", reservationId, quantity, item.sku(), command.orderId(),
+                    item.location(), scrapHold.id().value(), saved.number());
+        }
+        return asked;
     }
 
     /** The same hand-over the other way: finished goods, still held, from the print shop to packing. */
