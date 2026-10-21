@@ -90,7 +90,11 @@ class PermissionMatrixTest {
             Map.entry("GET /api/v1/notifications/me/unread-count", "the caller's own unread count (recipient_id = the token's subject)"),
             Map.entry("POST /api/v1/notifications/me/read-all", "marks only the caller's own inbox read (recipient_id = the token's subject)"),
             Map.entry("GET /api/v1/quotes", "portal list: the caller's own customer's quotes, sent ones only (SCRUM-448)"),
-            Map.entry("GET /api/v1/production/sample-requests", "portal list: the caller's own customer's sample requests (SCRUM-394)"));
+            Map.entry("GET /api/v1/production/sample-requests", "portal list: the caller's own customer's sample requests (SCRUM-394)"),
+            Map.entry("GET /api/v1/catalog/products/availability",
+                    "stock indicator for the caller's own ACTIVE customer, the customer taken from the token (SCRUM-429)"),
+            Map.entry("GET /api/v1/catalog/products/prices",
+                    "the caller's own ACTIVE customer's prices, the customer taken from the token (StorefrontPriceService)"));
 
     /**
      * Handlers with neither {@code @RequiresPermission} nor {@code @PreAuthorize}. They are open to anyone signed in
@@ -103,10 +107,6 @@ class PermissionMatrixTest {
             Map.entry("GET /oauth2/jwks", "public: the signing keys the resource server validates tokens with (permitAll)"),
             Map.entry("GET /api/v1/public/products/{productId}/gallery", "public: published product images (permitAll)"),
             Map.entry("GET /api/v1/catalog/products", "any signed-in user: published storefront catalog, no private data"),
-            Map.entry("GET /api/v1/catalog/products/availability",
-                    "signed-in only (SCRUM-429): stock availability by SKU for an ACTIVE linked customer, checked in the service"),
-            Map.entry("GET /api/v1/catalog/products/prices",
-                    "signed-in CUSTOMER: the caller's own ACTIVE customer's prices, the customer taken from the token; staff 403 (StorefrontPriceService)"),
             Map.entry("GET /api/v1/catalog/products/{slug}", "any signed-in user: one published product"),
             Map.entry("GET /api/v1/catalog/products/{slug}/gallery", "any signed-in user: published images of one product"),
             Map.entry("GET /api/v1/catalog/search/suggestions", "any signed-in user: titles of published products, no price or stock"),
@@ -126,6 +126,86 @@ class PermissionMatrixTest {
     private static final Map<String, String> DEPRECATED_ALIASES = Map.of(
             "GET /api/v1/products/{productId}/skus/{sku}/base-price", "GET /api/v1/products/{productId}/variants/{variantId}/base-price",
             "PUT /api/v1/products/{productId}/skus/{sku}/base-price", "PUT /api/v1/products/{productId}/variants/{variantId}/base-price");
+
+    /**
+     * The endpoints that were guarded by a role list (a {@code @PreAuthorize} or a role check in the code) until the
+     * lead's rule of 2026-10-22, and the permission each needs now (V20261021000600). Endpoints whose permission was
+     * already held by exactly the listed roles kept it.
+     */
+    private static final Map<String, String> FORMER_ROLE_GATES = Map.ofEntries(
+            Map.entry("POST /api/v1/fulfillment/tasks", "fulfillment-task-assignment:CREATE"),
+            Map.entry("GET /api/v1/fulfillment/assignees", "fulfillment-task-assignment:UPDATE"),
+            Map.entry("PUT /api/v1/fulfillment/tasks/{taskId}/assignment", "fulfillment-task-assignment:UPDATE"),
+            Map.entry("GET /api/v1/fulfillment/tasks", "fulfillment-pick-lists:READ"),
+            Map.entry("GET /api/v1/fulfillment/tasks/{taskId}/pick-lines", "fulfillment-pick-lists:READ"),
+            Map.entry("POST /api/v1/fulfillment/tasks/{taskId}/picking-start", "fulfillment-picking:UPDATE"),
+            Map.entry("POST /api/v1/fulfillment/tasks/{taskId}/picking-completion", "fulfillment-picking:UPDATE"),
+            Map.entry("POST /api/v1/fulfillment/tasks/{taskId}/pick-lines/{lineId}/confirmation", "fulfillment-picking:UPDATE"),
+            Map.entry("POST /api/v1/fulfillment/tasks/{taskId}/pick-lines/{lineId}/put-back", "fulfillment-picking:UPDATE"),
+            Map.entry("GET /api/v1/fulfillment/put-backs", "fulfillment-picking:READ"),
+            Map.entry("GET /api/v1/fulfillment/tasks/{taskId}/lines/{lineId}/design-artifacts/{role}/download-url",
+                    "fulfillment-packages:READ"),
+            Map.entry("GET /api/v1/fulfillment/packing-queue", "fulfillment-packages:READ"),
+            Map.entry("GET /api/v1/fulfillment/tasks/{taskId}/packing-session", "fulfillment-packages:READ"),
+            Map.entry("POST /api/v1/fulfillment/tasks/{taskId}/packing-start", "fulfillment-packing:UPDATE"),
+            Map.entry("POST /api/v1/fulfillment/tasks/{taskId}/packages", "fulfillment-packing:UPDATE"),
+            Map.entry("POST /api/v1/fulfillment/tasks/{taskId}/packages/{packageId}/scans", "fulfillment-packing:UPDATE"),
+            Map.entry("DELETE /api/v1/fulfillment/tasks/{taskId}/packages/{packageId}/lines/{orderLineId}",
+                    "fulfillment-packing:UPDATE"),
+            Map.entry("POST /api/v1/fulfillment/tasks/{taskId}/packages/{packageId}/seal", "fulfillment-packing:UPDATE"),
+            Map.entry("POST /api/v1/fulfillment/tasks/{taskId}/packages/{packageId}/reopening", "fulfillment-packing:UPDATE"),
+            Map.entry("DELETE /api/v1/fulfillment/tasks/{taskId}/packages/{packageId}", "fulfillment-packing:UPDATE"),
+            Map.entry("POST /api/v1/fulfillment/tasks/{taskId}/packing-completion", "fulfillment-packing:UPDATE"),
+            Map.entry("GET /api/v1/fulfillment/tasks/{taskId}/packages/{packageId}/label", "fulfillment-packing:READ"),
+            Map.entry("POST /api/v1/fulfillment/tasks/{taskId}/design-integrity-reverification",
+                    "fulfillment-design-reverification:UPDATE"),
+            Map.entry("POST /api/v1/fulfillment/carriers", "fulfillment-carriers:UPDATE"),
+            Map.entry("PUT /api/v1/fulfillment/carriers/{carrierId}", "fulfillment-carriers:UPDATE"),
+            Map.entry("POST /api/v1/fulfillment/loads", "fulfillment-dispatch:CREATE"),
+            Map.entry("POST /api/v1/fulfillment/loads/{loadId}/shipments", "fulfillment-dispatch:UPDATE"),
+            Map.entry("DELETE /api/v1/fulfillment/loads/{loadId}/shipments/{shipmentId}", "fulfillment-dispatch:UPDATE"),
+            Map.entry("POST /api/v1/fulfillment/loads/{loadId}/scans", "fulfillment-dispatch:UPDATE"),
+            Map.entry("DELETE /api/v1/fulfillment/loads/{loadId}/scans/{packageId}", "fulfillment-dispatch:UPDATE"),
+            Map.entry("POST /api/v1/fulfillment/loads/{loadId}/handover", "fulfillment-dispatch:UPDATE"),
+            Map.entry("PUT /api/v1/fulfillment/shipments/{shipmentId}/carrier", "fulfillment-dispatch:UPDATE"),
+            Map.entry("POST /api/v1/fulfillment/loads/{loadId}/cancellation", "fulfillment-load-cancellations:UPDATE"),
+            Map.entry("POST /api/v1/fulfillment/shipments/{shipmentId}/delivery-outcome", "fulfillment-delivery-outcomes:UPDATE"),
+            Map.entry("POST /api/v1/customers/{customerId}/status", "customer-status:APPROVE"),
+            Map.entry("GET /api/v1/catalog/products/availability", "catalog-storefront:READ"),
+            Map.entry("GET /api/v1/catalog/products/prices", "catalog-storefront:READ"));
+
+    /**
+     * Who holds each permission that replaced a role list, as seeded: exactly the roles the list let through, which
+     * always included SYSTEM_ADMIN. Plus the one deliberate change of the same migration (ACCREAD, 2026-10-21).
+     */
+    private static final Map<String, Set<Role>> SEEDED_HOLDERS = Map.ofEntries(
+            Map.entry("fulfillment-task-assignment:CREATE", Set.of(Role.ORDER_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("fulfillment-task-assignment:UPDATE", Set.of(Role.ORDER_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("fulfillment-task-oversight:READ", Set.of(Role.ORDER_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("fulfillment-pick-lists:READ", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER, Role.QC_STAFF,
+                    Role.ORDER_COORDINATOR, Role.SYSTEM_ADMIN)),
+            Map.entry("fulfillment-picking:READ", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("fulfillment-picking:UPDATE", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("fulfillment-packages:READ", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER, Role.QC_STAFF,
+                    Role.SYSTEM_ADMIN)),
+            Map.entry("fulfillment-packing:READ", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("fulfillment-packing:UPDATE", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("fulfillment-packing:APPROVE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("fulfillment-design-reverification:READ", Set.of(Role.QC_STAFF, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("fulfillment-design-reverification:UPDATE", Set.of(Role.QC_STAFF, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("fulfillment-carriers:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("fulfillment-dispatch:CREATE", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("fulfillment-dispatch:UPDATE", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("fulfillment-load-cancellations:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("fulfillment-delivery-outcomes:UPDATE", Set.of(Role.ORDER_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("fulfillment-delivery-outcomes:APPROVE", Set.of(Role.ORDER_COORDINATOR, Role.SYSTEM_ADMIN)),
+            Map.entry("customer-status:APPROVE", Set.of(Role.ECOMMERCE_ADMIN, Role.SYSTEM_ADMIN)),
+            Map.entry("catalog-storefront:READ", Set.of(Role.CUSTOMER, Role.SYSTEM_ADMIN)),
+            Map.entry("platform-actuator:READ", Set.of(Role.ECOMMERCE_ADMIN, Role.SYSTEM_ADMIN)),
+            Map.entry("sales-orders:READ", Set.of(Role.CUSTOMER, Role.SALES_STAFF, Role.ORDER_COORDINATOR, Role.ACCOUNTANT,
+                    Role.SYSTEM_ADMIN)),
+            Map.entry("sales-orders:VIEW_PAGE", Set.of(Role.CUSTOMER, Role.SALES_STAFF, Role.ORDER_COORDINATOR,
+                    Role.ACCOUNTANT, Role.SYSTEM_ADMIN)));
 
     /** A valid body for the customer-reachable write handlers, so validation (400) cannot hide a missing owner check. */
     private Map<String, String> attackBodies() {
@@ -422,6 +502,36 @@ class PermissionMatrixTest {
         assertThat(holders).containsExactly(Role.SYSTEM_ADMIN);
         assertThat(roles.resolve(List.of(Role.ECOMMERCE_ADMIN.authority())).permissions())
                 .contains(PermissionCode.of("product-products", com.stockflow.common.security.Action.APPROVE));
+    }
+
+    /**
+     * The lead's rule (2026-10-22): access is a permission, never a role name. No handler carries a
+     * {@code @PreAuthorize} (role lists lived there); every former role gate needs the permission listed in
+     * {@link #FORMER_ROLE_GATES}; and that permission is seeded to exactly the roles the list let through. Granting it
+     * to another role is then all it takes to open the endpoint to that role - no code change.
+     */
+    @Test
+    void accessIsAPermissionNeverARoleList() {
+        List<String> roleExpressions = handlers().stream().filter(Handler::preAuthorize).map(Handler::key).toList();
+        assertThat(roleExpressions).as("handlers guarded by @PreAuthorize - use @RequiresPermission").isEmpty();
+
+        Map<String, Handler> byKey = new HashMap<>();
+        handlers().forEach(h -> byKey.put(h.key(), h));
+        FORMER_ROLE_GATES.forEach((key, code) -> {
+            assertThat(byKey).as(key).containsKey(key);
+            RequiresPermission rp = byKey.get(key).rp();
+            assertThat(rp).as(key + " is guarded").isNotNull();
+            assertThat(PermissionCode.of(rp.resource(), rp.action())).as(key).isEqualTo(PermissionCode.parse(code));
+        });
+
+        SEEDED_HOLDERS.forEach((code, expected) -> {
+            PermissionCode permission = PermissionCode.parse(code);
+            Set<Role> holders = EnumSet.noneOf(Role.class);
+            for (Role role : Role.values()) {
+                if (roles.resolve(List.of(role.authority())).permissions().contains(permission)) holders.add(role);
+            }
+            assertThat(holders).as("roles holding " + code).isEqualTo(expected);
+        });
     }
 
     @Test

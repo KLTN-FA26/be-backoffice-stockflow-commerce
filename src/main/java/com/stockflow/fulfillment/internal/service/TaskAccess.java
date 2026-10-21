@@ -2,8 +2,8 @@ package com.stockflow.fulfillment.internal.service;
 
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.common.security.Action;
 import com.stockflow.common.security.CurrentUser;
-import com.stockflow.common.security.Role;
 import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.fulfillment.internal.entity.PickJpaEntity;
 import com.stockflow.order.api.OrderService;
@@ -22,17 +22,18 @@ final class TaskAccess {
             OrderStatus.PACKED, OrderStatus.PARTIALLY_FULFILLED, OrderStatus.ON_HOLD);
 
     /**
-     * The assignee sees the task; managers, QC and coordinators see the tasks of the warehouses they are
-     * assigned to (BR-SEC-002: a coordinator is not limited, as their scope is ALL). Once picking is done the task
-     * is at the packing table, where any warehouse staff member of its warehouse may be the packer (G4-5, docs 08):
-     * they see it too.
+     * The assignee sees the task; so does whoever oversees tasks or re-verifies designs, for the warehouses they are
+     * assigned to (BR-SEC-002: a caller whose scope is ALL is not limited). Once picking is done the task is at the
+     * packing table, where any packer of its warehouse may take it (G4-5, docs 08): they see it too. Seeded, that is
+     * managers, QC and coordinators, and warehouse staff at packing (V20261021000600).
      */
     static void requireVisible(PickJpaEntity pick, CurrentUser actor) {
         if (Objects.equals(pick.getAssignedUserId(), actor.userId())) {
             return;
         }
-        if (!actor.hasAnyRole(Role.WAREHOUSE_MANAGER, Role.QC_STAFF, Role.ORDER_COORDINATOR)
-                && !(actor.hasRole(Role.WAREHOUSE_STAFF) && atPacking(pick))) {
+        if (!actor.can(FulfillmentPermissions.TASK_OVERSIGHT, Action.READ)
+                && !actor.can(FulfillmentPermissions.DESIGN_REVERIFICATION, Action.READ)
+                && !(actor.can(FulfillmentPermissions.PACKING, Action.UPDATE) && atPacking(pick))) {
             throw new BusinessException(ErrorCode.NOT_FOUND);
         }
         WarehouseScope.requireWarehouse(pick.getWarehouseId());
@@ -40,15 +41,15 @@ final class TaskAccess {
 
     /**
      * The confirmed design files of a task's print lines (docs 08 step 2: printed goods are checked against the
-     * design at packing): the assignee; managers and QC of the task's warehouse; and, once the task is at the packing
-     * table, warehouse staff of its warehouse - the packer. Anyone else: not found.
+     * design at packing): the assignee; whoever re-verifies designs (managers and QC) in the task's warehouse; and,
+     * once the task is at the packing table, a packer of its warehouse. Anyone else: not found.
      */
     static void requireArtifactAccess(PickJpaEntity pick, CurrentUser actor) {
         if (Objects.equals(pick.getAssignedUserId(), actor.userId())) {
             return;
         }
-        if (!actor.hasAnyRole(Role.WAREHOUSE_MANAGER, Role.QC_STAFF)
-                && !(actor.hasRole(Role.WAREHOUSE_STAFF) && atPacking(pick))) {
+        if (!actor.can(FulfillmentPermissions.DESIGN_REVERIFICATION, Action.READ)
+                && !(actor.can(FulfillmentPermissions.PACKING, Action.UPDATE) && atPacking(pick))) {
             throw new BusinessException(ErrorCode.NOT_FOUND);
         }
         WarehouseScope.requireWarehouse(pick.getWarehouseId());

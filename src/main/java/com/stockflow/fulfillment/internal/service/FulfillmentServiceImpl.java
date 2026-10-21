@@ -4,6 +4,7 @@ import com.stockflow.common.api.FieldError;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.common.security.Action;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.Role;
 import com.stockflow.common.security.WarehouseScope;
@@ -88,7 +89,7 @@ class FulfillmentServiceImpl implements FulfillmentService {
 
     @Override
     public FulfillmentTask createTask(UUID orderId, UUID assignedUserId, CurrentUser actor) {
-        requireRole(actor, Role.ORDER_COORDINATOR, Role.WAREHOUSE_MANAGER);
+        require(actor, FulfillmentPermissions.TASK_ASSIGNMENT, Action.CREATE);
         var existing = picks.findByOrderId(orderId);
         if (existing.isPresent()) {
             requireWarehouseAssignee(assignedUserId, existing.get().getWarehouseId());
@@ -136,11 +137,11 @@ class FulfillmentServiceImpl implements FulfillmentService {
         if (query.assignedUserId() != null) {
             filters.add((root, q, cb) -> cb.equal(root.get("assignedUserId"), query.assignedUserId()));
         }
-        // The role decides whose tasks: managers and coordinators all of them, QC those on a design hold,
-        // a picker their own.
-        if (actor.hasAnyRole(Role.WAREHOUSE_MANAGER, Role.ORDER_COORDINATOR)) {
+        // Whose tasks (data scope, not access - the endpoint's permission decided that): every task of the caller's
+        // warehouses with oversight, those on a design hold for whoever re-verifies designs, otherwise the caller's own.
+        if (actor.can(FulfillmentPermissions.TASK_OVERSIGHT, Action.READ)) {
             // no further filter
-        } else if (actor.hasRole(Role.QC_STAFF)) {
+        } else if (actor.can(FulfillmentPermissions.DESIGN_REVERIFICATION, Action.READ)) {
             filters.add((root, q, cb) -> {
                 var held = q.subquery(UUID.class);
                 var pack = held.from(PackJpaEntity.class);
@@ -148,10 +149,9 @@ class FulfillmentServiceImpl implements FulfillmentService {
                         cb.equal(pack.get("status"), PackStatus.ON_HOLD));
                 return cb.exists(held);
             });
-        } else if (actor.hasRole(Role.WAREHOUSE_STAFF)) {
-            filters.add((root, q, cb) -> cb.equal(root.get("assignedUserId"), actor.userId()));
         } else {
-            throw new BusinessException(ErrorCode.FORBIDDEN);
+            actor.require(FulfillmentPermissions.PICK_LISTS, Action.READ);
+            filters.add((root, q, cb) -> cb.equal(root.get("assignedUserId"), actor.userId()));
         }
         var newestFirst = Sort.by(Sort.Direction.DESC, "createdAt", "id");
         Page<PickJpaEntity> selected = picks.findAll(Specification.allOf(filters),
@@ -164,7 +164,7 @@ class FulfillmentServiceImpl implements FulfillmentService {
     @Override
     @Transactional(readOnly = true)
     public List<FulfillmentAssignee> assignees(UUID warehouseId, CurrentUser actor) {
-        requireRole(actor, Role.ORDER_COORDINATOR, Role.WAREHOUSE_MANAGER);
+        require(actor, FulfillmentPermissions.TASK_ASSIGNMENT, Action.UPDATE);
         WarehouseScope.requireWarehouse(warehouseId);
         if (warehouses.findWarehouse(warehouseId).isEmpty()) {
             throw new BusinessException(ErrorCode.WAREHOUSE_NOT_FOUND);
@@ -176,7 +176,7 @@ class FulfillmentServiceImpl implements FulfillmentService {
 
     @Override
     public FulfillmentTask assign(UUID taskId, UUID assignedUserId, CurrentUser actor) {
-        requireRole(actor, Role.ORDER_COORDINATOR, Role.WAREHOUSE_MANAGER);
+        require(actor, FulfillmentPermissions.TASK_ASSIGNMENT, Action.UPDATE);
         var pick = lockPick(taskId);
         WarehouseScope.requireWarehouse(pick.getWarehouseId());
         requireWarehouseAssignee(assignedUserId, pick.getWarehouseId());
@@ -255,7 +255,7 @@ class FulfillmentServiceImpl implements FulfillmentService {
     /** G4-5: see {@link PackingService#complete}; the answer is the task, with the shipment and the payment warning. */
     @Override
     public FulfillmentTask completePacking(UUID taskId, PackingCompletion completion, CurrentUser actor) {
-        requireRole(actor, Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER);
+        require(actor, FulfillmentPermissions.PACKING, Action.UPDATE);
         PackingService.Completed outcome = packing.complete(taskId, completion == null ? PackingCompletion.whole()
                 : completion, actor);
         FulfillmentTask task = toTask(requirePick(taskId));
@@ -265,7 +265,7 @@ class FulfillmentServiceImpl implements FulfillmentService {
 
     @Override
     public FulfillmentTask reverifyDesignIntegrity(UUID taskId, String resolutionNote, CurrentUser actor) {
-        requireRole(actor, Role.QC_STAFF, Role.WAREHOUSE_MANAGER);
+        require(actor, FulfillmentPermissions.DESIGN_REVERIFICATION, Action.UPDATE);
         packing.reverify(taskId, resolutionNote, actor);
         return toTask(requirePick(taskId));
     }
@@ -344,10 +344,11 @@ class FulfillmentServiceImpl implements FulfillmentService {
         return orders.findById(orderId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
     }
 
-    private static void requireRole(CurrentUser actor, Role... roles) {
-        if (actor == null || !actor.hasAnyRole(roles)) {
+    private static void require(CurrentUser actor, String resource, Action action) {
+        if (actor == null) {
             throw new BusinessException(ErrorCode.FORBIDDEN);
         }
+        actor.require(resource, action);
     }
 
     /**

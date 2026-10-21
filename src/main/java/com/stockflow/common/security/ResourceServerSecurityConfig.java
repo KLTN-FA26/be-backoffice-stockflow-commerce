@@ -133,12 +133,12 @@ public class ResourceServerSecurityConfig {
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .headers(this::applyApiSecurityHeaders)
                 .authorizeHttpRequests(auth -> auth
-                        // No HttpMethod restriction. Scoping the admin authority to GET would leave
-                        // every other method falling through to anyRequest().authenticated() - so
-                        // any holder of any valid token could POST to /actuator/loggers or
-                        // /actuator/shutdown the moment either is exposed. The local profile
-                        // already exposes "*".
-                        .requestMatchers("/actuator/**").hasAuthority(Roles.ECOMMERCE_ADMIN)
+                        // A permission, not a role (ActuatorPermission). No HttpMethod restriction:
+                        // scoping it to GET would leave every other method falling through to
+                        // anyRequest().authenticated() - so any holder of any valid token could POST
+                        // to /actuator/loggers or /actuator/shutdown the moment either is exposed. The
+                        // local profile already exposes "*".
+                        .requestMatchers("/actuator/**").hasAuthority(ActuatorPermission.AUTHORITY)
                         // Retired B2C routes stay denied even if an old client retries an
                         // Idempotency-Key whose successful response is still stored.
                         .requestMatchers("/api/v1/customers/registrations", "/api/v1/customers/registrations/**",

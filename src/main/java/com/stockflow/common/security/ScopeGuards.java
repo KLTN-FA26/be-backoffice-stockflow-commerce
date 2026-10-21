@@ -19,9 +19,17 @@ public final class ScopeGuards {
 
     /** Refuses a caller who is only a customer (403): this endpoint shows other people's records. */
     public static void requireBackOffice(CurrentUser user) {
-        boolean staff = user != null && user.roles().stream().anyMatch(role -> role != Role.CUSTOMER);
-        if (!staff) {
+        if (!isBackOffice(user)) {
             throw new BusinessException(ErrorCode.FORBIDDEN, "This list is for the back office");
         }
+    }
+
+    /**
+     * Whether the caller works for the shop rather than for one customer: true for any role other than CUSTOMER. A
+     * data-scope answer - every customer's rows, or only the caller's own customer's - for an endpoint whose permission
+     * a customer may hold too. Whether the caller may act at all is the endpoint's permission, never this.
+     */
+    public static boolean isBackOffice(CurrentUser user) {
+        return user != null && user.roles().stream().anyMatch(role -> role != Role.CUSTOMER);
     }
 }
