@@ -110,6 +110,8 @@ public enum ErrorCode {
     LOCATION_NOT_FOUND("Location not found", 404),
     /** No stock of this SKU (and lot) is held at this location. */
     STOCK_ITEM_NOT_FOUND("No such stock at this location", 404),
+    /** No stock package (carton) with this id or LPN (SCRUM-473). */
+    STOCK_PACKAGE_NOT_FOUND("No such stock package", 404),
     STOCK_ADJUSTMENT_NOT_FOUND("Stock adjustment not found", 404),
     CANCELLATION_REQUEST_NOT_FOUND("Cancellation request not found", 404),
     RECEIVABLE_NOT_FOUND("Receivable not found", 404),
@@ -183,6 +185,8 @@ public enum ErrorCode {
     ADJUSTMENT_SELF_APPROVAL("A stock adjustment cannot be decided by the person who requested it", 409),
     INVALID_ADJUSTMENT_TRANSITION("This stock adjustment has already been decided", 409),
     INVALID_TRANSFER_TRANSITION("This transfer order cannot move to that status right now", 409),
+    /** The life of a stock package (V20261020000100): RECEIVING → IN_STOCK | VOID, IN_STOCK → CONSUMED | LOST, LOST → IN_STOCK. */
+    INVALID_STOCK_PACKAGE_TRANSITION("This stock package cannot do that in its current status", 409),
     /** Four eyes on a transfer above the approval threshold. */
     TRANSFER_SELF_APPROVAL("A transfer order cannot be decided by the person who submitted it", 409),
     /** BR-01 (docs 03): goods are received only against a CONFIRMED or PARTIALLY_RECEIVED purchase order. */
