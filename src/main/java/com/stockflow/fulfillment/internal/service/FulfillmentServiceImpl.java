@@ -271,11 +271,11 @@ class FulfillmentServiceImpl implements FulfillmentService {
         }
         // Under the order's row lock: a cancellation came first (refused, nothing deducted) or is refused after (03 §9).
         // G3-2: the order becomes PACKED in this transaction (A1); an order on hold is resolved first (409).
-        orders.markPacked(pick.getOrderId(), actor.userId());
+        OrderSummary packed = orders.markPacked(pick.getOrderId(), actor.userId());
         pack.complete(clock.instant());
         deductPrintedGoods(pack, order, actor.userId());
         packs.save(pack);
-        return toTask(pick);
+        return withPaymentWarning(toTask(pick), packed);
     }
 
     @Override
@@ -292,11 +292,11 @@ class FulfillmentServiceImpl implements FulfillmentService {
         }
         // The design hold first - back to where it was held from - then packed (G3-2: a held order is not packed).
         orders.resolveDesignHold(pick.getOrderId(), actor.userId(), resolutionNote);
-        orders.markPacked(pick.getOrderId(), actor.userId());
+        OrderSummary packed = orders.markPacked(pick.getOrderId(), actor.userId());
         pack.complete(clock.instant());
         deductPrintedGoods(pack, order, actor.userId());
         packs.save(pack);
-        return toTask(pick);
+        return withPaymentWarning(toTask(pick), packed);
     }
 
     /**
@@ -355,6 +355,18 @@ class FulfillmentServiceImpl implements FulfillmentService {
         return new FulfillmentTask(pick.getId(), pick.getOrderId(), pick.getOrderNumber(), pick.getWarehouseId(),
                 pick.getAssignedUserId(), assignedUserName, pick.getStatus().name(), pack.getStatus().name(),
                 pick.getAssignedAt(), pick.getStartedAt(), pick.getPickedAt(), pack.getPackedAt(), evidence, lines);
+    }
+
+    /**
+     * G3-Q4 / G2-3: the early warning at packing - the order still owes money its terms want before the goods leave,
+     * so the handover will be refused until the accountant records it.
+     */
+    private static FulfillmentTask withPaymentWarning(FulfillmentTask task, OrderSummary packed) {
+        var due = packed == null || packed.lifecycle() == null ? null : packed.lifecycle().amountDueBeforeHandover();
+        if (due == null || due.signum() <= 0) {
+            return task;
+        }
+        return task.withPaymentDue(new FulfillmentTask.PaymentDue(due, packed.total().currency().getCurrencyCode()));
     }
 
     private String nameOf(UUID userId) {

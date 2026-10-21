@@ -41,13 +41,17 @@ class OrderLifecycleTest {
     private static final UUID S2 = UUID.randomUUID();
     private static final UUID S3 = UUID.randomUUID();
 
-    /** 10 cups at 100 000 and 5 lids at 20 000: 1 100 000 VND. */
+    /**
+     * 10 cups at 100 000 and 5 lids at 20 000: 1 100 000 VND. A deposit order's balance is collected by the carrier
+     * (G2-3, ON_DELIVERY), so it leaves with its deposit only; {@code OrderBalanceTest} covers BEFORE_DELIVERY.
+     */
     private static Order order(PaymentTerm term) {
         Order order = Order.draft(NUMBER, UUID.randomUUID(), UUID.randomUUID(), List.of(
                 Order.line(new Sku("CUP-12OZ"), 10, Money.vnd(100_000), null),
                 Order.line(new Sku("LID-90"), 5, Money.vnd(20_000), null)), NOW);
         order.applyTerms(term, term == PaymentTerm.DEPOSIT ? new BigDecimal("30") : null,
-                term == PaymentTerm.CREDIT ? 30 : null);
+                term == PaymentTerm.CREDIT ? 30 : null,
+                term == PaymentTerm.DEPOSIT ? com.stockflow.order.api.BalancePolicy.ON_DELIVERY : null);
         order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
         if (term == PaymentTerm.CREDIT) {
             order.submitOnCredit(true);
@@ -579,13 +583,15 @@ class OrderLifecycleTest {
         }
 
         @Test
-        @DisplayName("a deposit order's balance does not block the handover until G2-3 brings its policy")
-        void depositBalanceDoesNotBlockYet() {
+        @DisplayName("a deposit order whose carrier collects the balance leaves with its deposit (G2-3); the carrier "
+                + "collects the rest")
+        void depositCarrierCollectsTheBalance() {
             Order order = packed(PaymentTerm.DEPOSIT);
             assertThat(order.amountDue()).isEqualByComparingTo("770000");
             assertThat(order.amountDueBeforeHandover()).isZero();
             order.recordHandover(everything(order, S1));
             assertThat(order.status()).isEqualTo(OrderStatus.SHIPPED);
+            assertThat(order.shipments().getFirst().codAmount()).isEqualByComparingTo("770000");
         }
     }
 
@@ -637,8 +643,8 @@ class OrderLifecycleTest {
         }
 
         @Test
-        @DisplayName("deposit: one shipment delivered, the other back, the rest closed: the balance of what arrived "
-                + "is due, nothing refunded")
+        @DisplayName("deposit (carrier collects): one shipment delivered, the other back, the rest closed: the "
+                + "balance of what arrived is due - billed to the carrier as its COD - nothing refunded")
         void depositDeliveredAndReturned() {
             Order order = packed(PaymentTerm.DEPOSIT);   // 330 000 received
             order.recordHandover(handover(S1, cups(order), 5));
@@ -650,7 +656,8 @@ class OrderLifecycleTest {
             assertThat(order.billable()).isEqualByComparingTo("500000");
             assertThat(order.amountDue()).isEqualByComparingTo("170000");
             assertThat(order.remainderRefundAmount()).isZero();
-            assertThat(order.billedAmount()).isZero();
+            assertThat(order.billedAmount()).as("S1's COD: 500 000 less the 330 000 deposit")
+                    .isEqualByComparingTo("170000");
         }
 
         @Test

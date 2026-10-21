@@ -47,7 +47,12 @@ public record PlaceOrderRequest(
         @DecimalMin(value = "0.0", inclusive = false, message = "depositPercent must be above 0")
         @jakarta.validation.constraints.DecimalMax(value = "100.0", inclusive = false,
                 message = "depositPercent must be below 100")
-        BigDecimal depositPercent
+        BigDecimal depositPercent,
+
+        @Schema(description = "DEPOSIT orders, staff only: BEFORE_DELIVERY to make the customer pay the balance before "
+                + "the handover even if their terms let the carrier collect it; omit for the customer's terms (G2-3). "
+                + "Ignored when a customer places the order", example = "BEFORE_DELIVERY")
+        com.stockflow.order.api.BalancePolicy balancePolicy
 ) {
 
     @Schema(description = "One order line")

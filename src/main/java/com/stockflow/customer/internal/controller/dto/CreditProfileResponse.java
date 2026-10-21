@@ -13,5 +13,9 @@ public record CreditProfileResponse(UUID customerId, boolean configured, boolean
                                     BigDecimal depositPercent, BigDecimal creditLimit, Integer creditTermDays,
                                     String currency, UUID approvedBy, Instant approvedAt, String note,
                                     @Schema(description = "-1 when none were set; send it back as expectedVersion")
-                                    long version) {
+                                    long version,
+                                    @Schema(example = "BEFORE_DELIVERY",
+                                            description = "How a deposit order's balance is collected; null without "
+                                                    + "deposits")
+                                    String depositBalancePolicy) {
 }

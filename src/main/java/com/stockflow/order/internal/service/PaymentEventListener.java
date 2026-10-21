@@ -2,6 +2,7 @@ package com.stockflow.order.internal.service;
 
 import com.stockflow.contracts.PaymentCaptured;
 import com.stockflow.contracts.PaymentFailed;
+import com.stockflow.contracts.PaymentReversed;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.modulith.events.ApplicationModuleListener;
@@ -49,6 +50,20 @@ class PaymentEventListener {
                 "RECEIVABLE_ALLOCATION".equals(event.source()));
         log.info("Order {}: payment {} captured {} {}",
                 event.orderId(), event.paymentId(), event.amount(), event.currency());
+    }
+
+    /**
+     * Money taken back by the accountant (G2-3, 15 BR-06): counted once per reversal; a confirmed order left short of
+     * its terms goes ON_HOLD (reason PAYMENT) rather than silently back to unpaid.
+     */
+    @ApplicationModuleListener
+    public void on(PaymentReversed event) {
+        orders.reversePayment(event.orderId(), event.reversalId(), event.amount(), event.currency(),
+                "RECEIVABLE_ALLOCATION".equals(event.source()),
+                "allocation %s reversed (reversal %s)".formatted(event.allocationId(), event.reversalId()),
+                event.reversedBy(), event.reversedAt());
+        log.info("Order {}: payment {} reversed, {} {} taken back", event.orderId(), event.allocationId(),
+                event.amount(), event.currency());
     }
 
     /**

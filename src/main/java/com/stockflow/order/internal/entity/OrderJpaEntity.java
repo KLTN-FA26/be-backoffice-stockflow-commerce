@@ -138,6 +138,14 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "deposit_received_at")
     private Instant depositReceivedAt;
 
+    /** V20261021000200 (G2-3): how a deposit order's balance is collected; a whole-order handover's COD. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "balance_policy", length = 16)
+    private com.stockflow.order.api.BalancePolicy balancePolicy;
+
+    @Column(name = "cod_amount", nullable = false, precision = 19, scale = 4)
+    private java.math.BigDecimal codAmount = java.math.BigDecimal.ZERO;
+
     @Column(name = "warehouse_id")
     private UUID warehouseId;
 
@@ -277,6 +285,14 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
         this.releasedAt = releasedAt;
         this.releasedBy = releasedBy;
     }
+
+    public void applyBalance(com.stockflow.order.api.BalancePolicy balancePolicy, java.math.BigDecimal codAmount) {
+        this.balancePolicy = balancePolicy;
+        this.codAmount = codAmount == null ? java.math.BigDecimal.ZERO : codAmount;
+    }
+
+    public com.stockflow.order.api.BalancePolicy getBalancePolicy() { return balancePolicy; }
+    public java.math.BigDecimal getCodAmount() { return codAmount; }
 
     public void applyPaymentAndCancellation(java.math.BigDecimal paidAmount, Instant paidInFullAt,
                                             com.stockflow.order.api.CancellationReasonCode code,

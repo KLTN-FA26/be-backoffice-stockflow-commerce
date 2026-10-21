@@ -2,6 +2,7 @@ package com.stockflow.order.internal.domain;
 
 import com.stockflow.contracts.OrderCancelled;
 import com.stockflow.contracts.OrderPlaced;
+import com.stockflow.order.api.BalancePolicy;
 import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.DeliveryFailureReason;
 import com.stockflow.order.api.HoldReason;
@@ -36,8 +37,12 @@ import java.util.UUID;
  *   <li>status only ever moves along the edges {@link OrderStatus#canTransitionTo} allows;</li>
  *   <li>an order cannot be submitted until every line holds a reservation — the rule that stops a
  *       customer paying for stock nobody set aside;</li>
- *   <li>it is CONFIRMED only once the prepayment, or the deposit, is in (kltn-docs 15 BR-02), and
- *       the money received only ever grows;</li>
+ *   <li>it is CONFIRMED only once the prepayment, or the deposit, is in (kltn-docs 15 BR-02). The money received
+ *       grows with every payment and falls only by a reversal the accountant made (G2-3, 15 BR-06): a confirmed order
+ *       left short of its terms by one goes ON_HOLD (reason PAYMENT), never silently back to unpaid;</li>
+ *   <li>its goods leave only once the money its terms want before the handover is in (G3-Q4, G2-3): everything for a
+ *       prepaid order, the balance for a deposit order paid before delivery, the deposit for one the carrier
+ *       collects;</li>
  *   <li>a cancellation names a reason code and keeps no more than was paid (15 BR-05).</li>
  * </ul>
  *
@@ -89,6 +94,10 @@ public final class Order extends AggregateRoot {
     private BigDecimal paidAmount = BigDecimal.ZERO;
     private Instant paidInFullAt;
     private Integer creditTermDays;
+    /** G2-3: how a deposit order's balance is collected; null for other terms. */
+    private BalancePolicy balancePolicy;
+    /** G2-3: what the carrier collects on a whole-order handover (ON_DELIVERY, no shipments recorded). */
+    private BigDecimal codAmount = BigDecimal.ZERO;
     private UUID warehouseId;
     private Instant releasedAt;
     private UUID releasedBy;
@@ -298,26 +307,39 @@ public final class Order extends AggregateRoot {
         applyTerms(term, depositPercent, null);
     }
 
+    /** A deposit order pays its balance before delivery (G2-3), unless {@link #applyTerms(PaymentTerm, BigDecimal,
+     *  Integer, BalancePolicy)} says otherwise. */
+    public void applyTerms(PaymentTerm term, BigDecimal depositPercent, Integer creditTermDays) {
+        applyTerms(term, depositPercent, creditTermDays, null);
+    }
+
     /**
      * The payment terms the order is sold on, fixed before it is submitted (kltn-docs 15 §3: the
      * term of the order, and the deposit percentage of the customer's terms or the quote). Whether
      * the customer may use the term (15 BR-01) is the caller's to check — it needs their terms.
      *
      * <p>A deposit is {@code depositPercent} of the total, rounded to the currency's whole unit. A
-     * credit order keeps {@code creditTermDays}, the days it has to be paid after delivery (SCRUM-427).</p>
+     * credit order keeps {@code creditTermDays}, the days it has to be paid after delivery (SCRUM-427). A deposit order
+     * keeps {@code balancePolicy}, how its balance is collected (G2-3; null: before delivery). Whether the customer may
+     * use the policy is the caller's to check, as for the term.</p>
      */
-    public void applyTerms(PaymentTerm term, BigDecimal depositPercent, Integer creditTermDays) {
+    public void applyTerms(PaymentTerm term, BigDecimal depositPercent, Integer creditTermDays,
+                           BalancePolicy balancePolicy) {
         if (status != OrderStatus.DRAFT) {
             throw new IllegalStateException("Terms are fixed when the order is placed");
         }
-        assignTerms(term, depositPercent, creditTermDays);
+        assignTerms(term, depositPercent, creditTermDays, balancePolicy);
     }
 
     /** Validates everything first, then assigns: a refused change leaves the order as it was. */
-    private void assignTerms(PaymentTerm term, BigDecimal depositPercent, Integer creditTermDays) {
+    private void assignTerms(PaymentTerm term, BigDecimal depositPercent, Integer creditTermDays,
+                             BalancePolicy policy) {
         PaymentTerm chosen = term == null ? PaymentTerm.PREPAID : term;
         if ((chosen == PaymentTerm.CREDIT) != (creditTermDays != null)) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Only a credit order has days to pay");
+        }
+        if (chosen != PaymentTerm.DEPOSIT && policy != null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Only a deposit order has a balance policy");
         }
         BigDecimal deposit = null;
         if (chosen == PaymentTerm.DEPOSIT) {
@@ -334,6 +356,8 @@ public final class Order extends AggregateRoot {
         this.paymentTerm = chosen;
         this.depositRequired = deposit;
         this.creditTermDays = creditTermDays;
+        this.balancePolicy = chosen == PaymentTerm.DEPOSIT
+                ? (policy == null ? BalancePolicy.BEFORE_DELIVERY : policy) : null;
     }
 
 
@@ -398,6 +422,87 @@ public final class Order extends AggregateRoot {
     }
 
     /**
+     * The accountant took back money an allocation had brought (G2-3, 15 BR-06: a reversal row in payment's ledger),
+     * as payment reports it once per reversal. What was paid falls; "paid in full" and "deposit received" are no
+     * longer true when the money no longer says so.
+     *
+     * <p>A confirmed order whose terms are no longer met - a prepaid order not paid in full, a deposit order without
+     * its deposit - goes ON_HOLD with reason PAYMENT and the accountant's reason, so the coordinator sees it: it is never
+     * moved back to PENDING_PAYMENT, and never left looking paid. An order already on hold stays on hold; resolving it
+     * then waits for the money ({@link #resolveHold}). An order still waiting for payment simply waits for more; one
+     * whose goods left owes it again ({@link #amountDue()}).</p>
+     *
+     * @param ofReceivable the money had paid a receivable of the order
+     * @return whether the order was put on hold
+     */
+    public boolean reversePayment(Money amount, boolean ofReceivable, String reason, UUID by, Instant now) {
+        java.util.Objects.requireNonNull(amount, "amount");
+        if (!amount.currency().equals(total().currency()) || amount.amount().signum() <= 0) {
+            throw new IllegalArgumentException("A reversal takes back money in the order's currency");
+        }
+        BigDecimal back = amount.amount().min(paidAmount);
+        this.paidAmount = paidAmount.subtract(back);
+        if (ofReceivable) {
+            this.receivablePaidAmount = receivablePaidAmount.subtract(back).max(BigDecimal.ZERO);
+        }
+        if (paidInFullAt != null && paidAmount.compareTo(total().amount()) < 0) {
+            this.paidInFullAt = null;
+        }
+        if (paymentTerm == PaymentTerm.DEPOSIT && depositReceivedAt != null
+                && paidAmount.compareTo(depositRequired) < 0) {
+            this.depositReceivedAt = null;
+        }
+        // A reversal that raced a cancellation or a closure (the accountant reversed, the order was cancelled before it
+        // heard of it): what was kept, and what was asked back, never exceed what is left of the money (BR-05,
+        // ck_order_cancellation_retained, ck_order_billing). The rest is the accountant's to settle by hand; the
+        // event is consumed, not retried forever.
+        if (cancellationRetainedAmount != null && cancellationRetainedAmount.compareTo(paidAmount) > 0) {
+            this.cancellationRetainedAmount = paidAmount;
+        }
+        if (remainderRefundAmount.compareTo(paidAmount) > 0) {
+            this.remainderRefundAmount = paidAmount;
+        }
+        if (termsMet() || !status.mayBePutOnHold()) {
+            return false;
+        }
+        putOnHold(HoldReason.PAYMENT, "Payment reversed: " + (reason == null || reason.isBlank() ? "no reason given"
+                : reason.trim()), by, now);
+        return true;
+    }
+
+    /**
+     * Whether the money its terms want before the order may go on is in (15 BR-02), measured on what the order is worth
+     * now (units closed out of it are not paid for); a credit order needs none.
+     */
+    public boolean termsMet() {
+        BigDecimal threshold = threshold();
+        return threshold == null || paidAmount.compareTo(threshold) >= 0;
+    }
+
+    /** Everything for a prepaid order, the deposit for a deposit order - both of what it is worth now. */
+    private BigDecimal threshold() {
+        return switch (paymentTerm) {
+            case PREPAID -> billable();
+            case DEPOSIT -> depositRequired.min(billable());
+            case CREDIT -> null;
+        };
+    }
+
+    /**
+     * What a confirmed order must keep received to stay confirmed - its total if prepaid, its deposit if a deposit
+     * order - while it is between confirmation and the handover; null when taking money back cannot un-confirm it
+     * (G2-3: payment asks the accountant to agree to a hold first).
+     */
+    public BigDecimal confirmationThreshold() {
+        boolean confirmedStage = status.mayBePutOnHold()
+                || status == OrderStatus.ON_HOLD && holdReason != HoldReason.CREDIT;
+        if (!confirmedStage) {
+            return null;
+        }
+        return threshold();
+    }
+
+    /**
      * Submit a credit order (kltn-docs 15 §4.3, 17 §5; SCRUM-427): it skips PENDING_PAYMENT and is
      * CONFIRMED within the customer's limit, or ON_HOLD until whoever approves credit decides.
      * Whether it is within the limit is the caller's to decide — it needs the exposure.
@@ -433,11 +538,17 @@ public final class Order extends AggregateRoot {
      * hold for PENDING_PAYMENT on its new terms, like any prepaid or deposit order.
      */
     public void switchTermsAfterCreditRefusal(PaymentTerm term, BigDecimal depositPercent) {
+        switchTermsAfterCreditRefusal(term, depositPercent, null);
+    }
+
+    /** @param balancePolicy for DEPOSIT, the customer's (G2-3); null means before delivery */
+    public void switchTermsAfterCreditRefusal(PaymentTerm term, BigDecimal depositPercent,
+                                              BalancePolicy balancePolicy) {
         requireCreditHold();
         if (term == null || term == PaymentTerm.CREDIT) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Switch to PREPAID or DEPOSIT");
         }
-        assignTerms(term, depositPercent, null);
+        assignTerms(term, depositPercent, null, term == PaymentTerm.DEPOSIT ? balancePolicy : null);
         clearHold();
         transitionTo(OrderStatus.PENDING_PAYMENT, null, "CREDIT_REJECTED", null);
     }
@@ -467,7 +578,7 @@ public final class Order extends AggregateRoot {
         transitionTo(OrderStatus.DELIVERED, by, null, now);
         this.deliveryFailureReason = null;
         this.deliveredAt = now;
-        BigDecimal billed = billNow(billable());
+        BigDecimal billed = carrierCollects() ? billCarrier(codAmount) : billNow(billable());
         registerDelivered(null, billed, now);
     }
 
@@ -515,15 +626,26 @@ public final class Order extends AggregateRoot {
      * @return whether this changed the order
      */
     public boolean markShipped(Instant handedOverAt, UUID by) {
+        return markShipped(handedOverAt, by, null);
+    }
+
+    /**
+     * @param ledger the money payment's ledger holds for the order, read under the order's lock in this transaction
+     *               (G2-3): it counts an allocation committed a moment ago that the order has not heard of yet, so the
+     *               carrier is never told to collect money already paid. Null: the order's own count.
+     */
+    public boolean markShipped(Instant handedOverAt, UUID by, LedgerMoney ledger) {
         java.util.Objects.requireNonNull(handedOverAt, "handedOverAt");
         requireNoShipments();
         if (status == OrderStatus.SHIPPED) {
             return false;
         }
         requireNotCancelled("its goods are not handed over");
-        requireHandoverPaid();
+        requireHandoverPaid(ledger);
         transitionTo(OrderStatus.SHIPPED, by, null, handedOverAt);
         this.shippedAt = handedOverAt;
+        // G2-3: the carrier collects what is left on delivery - fixed now, as the label and the manifest print it.
+        this.codAmount = carrierCollects() ? billable().subtract(paid(ledger)).max(BigDecimal.ZERO) : BigDecimal.ZERO;
         return true;
     }
 
@@ -538,7 +660,8 @@ public final class Order extends AggregateRoot {
         Money total = total();
         registerEvent(new OrderEvent.Delivered(new com.stockflow.contracts.OrderDelivered(id.value(),
                 orderNumber.value(), customerId, paymentTerm.name(), total.amount(), paidAmount,
-                total.currency().getCurrencyCode(), creditTermDays, now, shipmentId, billed)));
+                total.currency().getCurrencyCode(), creditTermDays, now, shipmentId, billed,
+                balancePolicy == null ? null : balancePolicy.name())));
     }
 
     /** kltn-docs 15 §5.2, derived from the term and the money received. */
@@ -764,6 +887,15 @@ public final class Order extends AggregateRoot {
         }
         OrderStatus back = statusBeforeHold;
         HoldReason was = holdReason;
+        // G2-3: a hold the payment reversal raised is resolved by money, not by a note; and production never resumes
+        // for a deposit order whose deposit is gone (ck_order_deposit_before_production says so too).
+        boolean depositGone = back == OrderStatus.IN_PRODUCTION && paymentTerm == PaymentTerm.DEPOSIT
+                && depositReceivedAt == null;
+        if ((was == HoldReason.PAYMENT || depositGone) && !termsMet()) {
+            throw new BusinessException(ErrorCode.ORDER_BALANCE_NOT_PAID,
+                    "Order %s is short of what its %s terms want; record the payment before resolving the hold"
+                            .formatted(orderNumber, paymentTerm));
+        }
         clearHold();
         transitionTo(back, by, withNote("HOLD_RESOLVED_" + was.name(), trimmed), at);
         followShipments(ShipmentChange.RESUMED, at, by);
@@ -893,6 +1025,11 @@ public final class Order extends AggregateRoot {
      * @return whether this changed the order
      */
     public boolean recordHandover(ShipmentHandover handover) {
+        return recordHandover(handover, null);
+    }
+
+    /** @param ledger as for {@link #markShipped(Instant, UUID, LedgerMoney)} */
+    public boolean recordHandover(ShipmentHandover handover, LedgerMoney ledger) {
         java.util.Objects.requireNonNull(handover, "handover");
         Optional<OrderShipment> known = shipment(handover.shipmentId());
         Map<UUID, Integer> quantities = quantitiesOf(handover);
@@ -910,7 +1047,7 @@ public final class Order extends AggregateRoot {
                     status == OrderStatus.ON_HOLD ? "resolve the hold before handing goods over"
                             : "only a picking, packed or partly shipped order hands goods over");
         }
-        requireHandoverPaid();
+        requireHandoverPaid(ledger);
         Money value = Money.zero(total().currency());
         for (Map.Entry<UUID, Integer> entry : quantities.entrySet()) {
             OrderLine line = findLine(entry.getKey()).orElseThrow(() -> new BusinessException(
@@ -929,8 +1066,12 @@ public final class Order extends AggregateRoot {
         if (status == OrderStatus.PICKING && everythingGoes) {
             throw new InvalidOrderTransitionException(orderNumber, status, "pack it before handing everything over");
         }
+        // G2-3: what the carrier collects for this shipment, fixed at the handover (15 BR-08): its value less the money
+        // paid ahead that the shipments before it have not used.
+        BigDecimal cod = carrierCollects() ? value.amount().subtract(availablePaidAhead(ledger)).max(BigDecimal.ZERO)
+                : BigDecimal.ZERO;
         shipments.add(OrderShipment.handedOver(handover.shipmentId(), quantities, value.amount(),
-                handover.handedOverAt(), handover.handedOverBy()));
+                handover.handedOverAt(), handover.handedOverBy(), cod));
         // Goods handed over were packed: from here the order goes through a return, never a cancellation.
         recordPacked(handover.handedOverAt());
         followShipments(ShipmentChange.HANDED_OVER, handover.handedOverAt(), handover.handedOverBy());
@@ -969,7 +1110,7 @@ public final class Order extends AggregateRoot {
             throw new BusinessException(ErrorCode.ORDER_SHIPMENT_INVALID_TRANSITION,
                     "Shipment %s is %s and cannot become DELIVERED".formatted(shipmentId, shipment.status()));
         }
-        BigDecimal billed = billNow(shipment.amount());
+        BigDecimal billed = carrierCollects() ? billCarrier(shipment.codAmount()) : billNow(shipment.amount());
         shipment.delivered(at, by, billed);
         registerDelivered(shipmentId, billed, at);
         followShipments(ShipmentChange.OUTCOME, at, by);
@@ -1152,20 +1293,92 @@ public final class Order extends AggregateRoot {
     }
 
     /**
-     * What must be paid before the goods may leave (G3-Q4: blocked at the handover, warned at packing). A prepaid
-     * order owes everything before; a credit order owes on its due date. A deposit order's balance depends on the
-     * customer's balance policy (before delivery, on delivery, or credit), which the money ledger brings (G2-3):
-     * until then nothing is required before handover, as before.
+     * What must be paid before the goods may leave (G3-Q4: blocked at the handover, warned at packing; G2-3). A prepaid
+     * order owes everything before (15 §4.1); a credit order owes on its due date (15 §4.3). A deposit order paid
+     * before delivery owes its balance before (15 §4.2 step 3); one whose carrier collects the balance owes only the
+     * deposit (normally in long before: it was confirmed by it).
      */
     public BigDecimal amountDueBeforeHandover() {
+        return amountDueBeforeHandover(null);
+    }
+
+    private BigDecimal amountDueBeforeHandover(LedgerMoney ledger) {
+        BigDecimal paid = paid(ledger);
+        BigDecimal due = billable().subtract(paid).max(BigDecimal.ZERO);
         return switch (paymentTerm) {
-            case PREPAID -> amountDue();
-            case DEPOSIT, CREDIT -> BigDecimal.ZERO;
+            case PREPAID -> due;
+            case DEPOSIT -> carrierCollects() ? depositRequired.subtract(paid).max(BigDecimal.ZERO).min(due) : due;
+            case CREDIT -> BigDecimal.ZERO;
         };
     }
 
-    private void requireHandoverPaid() {
-        BigDecimal due = amountDueBeforeHandover();
+    /**
+     * The money payment's ledger holds for the order (G2-3), read synchronously by the caller under the order's lock.
+     *
+     * @param collected net allocations and earlier payments, less refunds asked for
+     * @param paidAhead the part of it not paid against a receivable
+     */
+    public record LedgerMoney(BigDecimal collected, BigDecimal paidAhead) {
+    }
+
+    /**
+     * What was paid, as the order counted it or as the ledger has it, whichever is more: the ledger is ahead of the
+     * order by the events not yet delivered; the order is ahead of the ledger only for money recorded outside it.
+     */
+    private BigDecimal paid(LedgerMoney ledger) {
+        return ledger == null || ledger.collected() == null ? paidAmount : paidAmount.max(ledger.collected());
+    }
+
+    /** What carriers are to collect on delivery (G2-3): the balance not yet paid of an ON_DELIVERY order, else 0. */
+    public BigDecimal amountDueOnDelivery() {
+        return carrierCollects() ? amountDue() : BigDecimal.ZERO;
+    }
+
+    /**
+     * What carriers are collecting now for goods they carry (G2-3): the COD of shipments handed over and not yet
+     * delivered or returned, or of a whole-order handover still in transit. A transfer must not pay it as well.
+     */
+    public BigDecimal codInTransit() {
+        if (!carrierCollects()) {
+            return BigDecimal.ZERO;
+        }
+        if (shipments.isEmpty()) {
+            return status == OrderStatus.SHIPPED || status == OrderStatus.DELIVERY_FAILED ? codAmount : BigDecimal.ZERO;
+        }
+        return shipments.stream()
+                .filter(s -> s.status() == OrderShipmentStatus.HANDED_OVER
+                        || s.status() == OrderShipmentStatus.DELIVERY_FAILED)
+                .map(OrderShipment::codAmount).reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    private boolean carrierCollects() {
+        return paymentTerm == PaymentTerm.DEPOSIT && balancePolicy == BalancePolicy.ON_DELIVERY;
+    }
+
+    /**
+     * Money paid ahead (not against a receivable) that no shipment still out or delivered has counted on (G2-3,
+     * ON_DELIVERY): it pays the earliest shipments first, as for credit orders (G3-2). A shipment that came back
+     * gives back what it counted on.
+     */
+    private BigDecimal availablePaidAhead(LedgerMoney ledger) {
+        BigDecimal paidAhead = paidAmount.subtract(receivablePaidAmount).max(BigDecimal.ZERO);
+        if (ledger != null && ledger.paidAhead() != null) {
+            paidAhead = paidAhead.max(ledger.paidAhead());
+        }
+        BigDecimal counted = shipments.stream().filter(s -> !s.isReturned())
+                .map(s -> s.amount().subtract(s.codAmount())).reduce(BigDecimal.ZERO, BigDecimal::add);
+        return paidAhead.subtract(counted).max(BigDecimal.ZERO);
+    }
+
+    /** A delivery the carrier collected for bills exactly what it collected (09 BR-04): payment opens its receivable. */
+    private BigDecimal billCarrier(BigDecimal collected) {
+        BigDecimal billed = collected == null ? BigDecimal.ZERO : collected;
+        this.billedAmount = billedAmount.add(billed);
+        return billed;
+    }
+
+    private void requireHandoverPaid(LedgerMoney ledger) {
+        BigDecimal due = amountDueBeforeHandover(ledger);
         if (due.signum() > 0) {
             throw new BusinessException(ErrorCode.ORDER_BALANCE_NOT_PAID,
                     "Order %s still owes %s %s before its goods may leave".formatted(orderNumber,
@@ -1456,6 +1669,14 @@ public final class Order extends AggregateRoot {
         this.cancellationFeeReason = reason;
         this.cancellationFeeDetail = detail;
     }
+    /** Rehydration of the balance policy and a whole-order handover's COD (G2-3). */
+    public void restoreBalance(BalancePolicy policy, BigDecimal cod) {
+        this.balancePolicy = policy;
+        this.codAmount = cod == null ? BigDecimal.ZERO : cod;
+    }
+
+    public BalancePolicy balancePolicy() { return balancePolicy; }
+    public BigDecimal codAmount() { return codAmount; }
     public BigDecimal paidAmount() { return paidAmount; }
     public Instant paidInFullAt() { return paidInFullAt; }
     public Integer creditTermDays() { return creditTermDays; }

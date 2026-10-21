@@ -100,8 +100,10 @@ class OrderLifecycleIntegrationTest {
     void customerWithEveryTerm() {
         customer = tx.execute(s -> ReferenceRows.customer(entityManager));
         staff = tx.execute(s -> ReferenceRows.user(entityManager));
+        // G2-3: the carrier collects a deposit order's balance, so a deposit order leaves with its deposit only.
         customers.saveCreditTerms(new SaveCreditTermsCommand(customer, true, true, true, CommercialTerm.CREDIT,
-                new BigDecimal("30"), new BigDecimal("10000000"), 30, "test terms", staff, null));
+                new BigDecimal("30"), new BigDecimal("10000000"), 30, "test terms", staff, null,
+                com.stockflow.customer.api.DepositBalancePolicy.ON_DELIVERY));
     }
 
     @AfterEach
@@ -292,8 +294,8 @@ class OrderLifecycleIntegrationTest {
     }
 
     @Test
-    @DisplayName("deposit + partial shipment: nothing billed, the rest closed: what was received above the goods is "
-            + "the refund asked")
+    @DisplayName("deposit (carrier collects) + partial shipment: the deposit covers it, nothing billed; the rest closed: "
+            + "what was received above the goods is the refund asked")
     void depositPartialShipment() {
         OrderSummary order = picking(PaymentTerm.DEPOSIT, 4);   // 1.2M deposit of 4M
         UUID s1 = UUID.randomUUID();
@@ -460,7 +462,8 @@ class OrderLifecycleIntegrationTest {
     }
 
     @Test
-    @DisplayName("deposit 30%: A delivered, B back, the rest closed: the balance of A is due, nothing refunded")
+    @DisplayName("deposit 30%, carrier collects: A delivered bills its COD (2M less the 1.2M deposit) to the carrier, B "
+            + "back, the rest closed: the balance of A is due, nothing refunded")
     void depositDeliveredAndReturned() {
         OrderSummary order = picking(PaymentTerm.DEPOSIT, 4);       // 1.2M received
         UUID a = UUID.randomUUID();
@@ -475,7 +478,10 @@ class OrderLifecycleIntegrationTest {
         assertThat(closed.lifecycle().amountDue()).isEqualByComparingTo("800000");
         assertThat(jdbc.queryForObject("SELECT remainder_refund_amount::bigint FROM ordering.customer_order WHERE id = ?",
                 Long.class, order.orderId())).isZero();
-        assertThat(receivablesOf(order)).isEmpty();
+        Await.until("carrier receivable", ASYNC, () -> !receivablesOf(order).isEmpty());
+        assertThat(receivablesOf(order)).containsExactly("800000 true");
+        assertThat(jdbc.queryForObject("SELECT collector || ' ' || kind FROM payment.receivable WHERE order_id = ?",
+                String.class, order.orderId())).isEqualTo("CARRIER DEPOSIT_BALANCE");
     }
 
     @Test

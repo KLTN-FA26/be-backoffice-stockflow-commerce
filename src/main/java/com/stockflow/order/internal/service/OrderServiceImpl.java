@@ -241,7 +241,8 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         order.applyTerms(term,
                 term == PaymentTerm.DEPOSIT && command.depositPercent() == null ? terms.depositPercent()
                         : command.depositPercent(),
-                term == PaymentTerm.CREDIT ? terms.creditTermDays() : null);
+                term == PaymentTerm.CREDIT ? terms.creditTermDays() : null,
+                balancePolicyFor(term, command.balancePolicy(), terms));
 
         // Direct in-process call across the module boundary, through inventory's published port.
         // It joins this transaction. If reserve() throws InsufficientStockException on line 3,
@@ -274,6 +275,33 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         log.info("Placed order {} for customer {} with {} line(s), total {}, {} ({})",
                 saved.orderNumber(), saved.customerId(), saved.lines().size(), saved.total(), term, saved.status());
         return toSummary(saved);
+    }
+
+    /**
+     * G2-3 (15 §4.2 step 3, "theo chính sách của khách"): a deposit order's balance is collected as the customer's terms
+     * say. Staff may tighten it to BEFORE_DELIVERY - goods leave only paid - but not collect on delivery for a customer
+     * whose terms do not allow it ({@code BALANCE_POLICY_NOT_ALLOWED}). Other terms have no balance to collect.
+     */
+    static com.stockflow.order.api.BalancePolicy balancePolicyFor(PaymentTerm term,
+                                                                  com.stockflow.order.api.BalancePolicy requested,
+                                                                  CreditTerms terms) {
+        if (term != PaymentTerm.DEPOSIT) {
+            if (requested != null) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Only a deposit order has a balance policy");
+            }
+            return null;
+        }
+        com.stockflow.order.api.BalancePolicy customers = terms.depositBalancePolicy() == null
+                ? com.stockflow.order.api.BalancePolicy.BEFORE_DELIVERY
+                : com.stockflow.order.api.BalancePolicy.valueOf(terms.depositBalancePolicy().name());
+        if (requested == null || requested == customers) {
+            return customers;
+        }
+        if (requested == com.stockflow.order.api.BalancePolicy.BEFORE_DELIVERY) {
+            return requested;
+        }
+        throw new BusinessException(ErrorCode.BALANCE_POLICY_NOT_ALLOWED,
+                "Customer %s pays the balance of a deposit order %s".formatted(terms.customerId(), customers));
     }
 
     /** kltn-docs 15 BR-01: the term asked for, or the customer's default, and only one they may use. */
@@ -602,6 +630,37 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     }
 
     /**
+     * The accountant took back money an allocation had brought (G2-3, {@code PaymentReversed}): counted once per
+     * reversal ({@code ordering.order_payment}, a negative row). A confirmed order left short of its terms goes ON_HOLD
+     * with reason PAYMENT ({@link Order#reversePayment}); never silently un-confirmed. Called by
+     * {@code PaymentEventListener}, not exposed on the port.
+     */
+    public void reversePayment(UUID orderId, UUID reversalId, java.math.BigDecimal amount, String currency,
+                               boolean ofReceivable, String reason, UUID by, java.time.Instant at) {
+        Order order = repository.findByIdForUpdate(new OrderId(orderId))
+                .orElseThrow(() -> new IllegalArgumentException("No order with id " + orderId));
+        if (!order.total().currency().getCurrencyCode().equals(currency)) {
+            log.error("Reversal {} for order {} is in {}, the order in {}; not counted", reversalId,
+                    order.orderNumber(), currency, order.total().currency());
+            return;
+        }
+        if (!payments.record(reversalId, orderId, amount.negate(), currency, clock.instant())) {
+            return; // Redelivered event; already counted.
+        }
+        boolean held = order.reversePayment(new Money(amount, order.total().currency()), ofReceivable, reason, by,
+                at == null ? clock.instant() : at);
+        if (held) {
+            log.warn("Order {} put on hold: {} {} of its payment was taken back ({})", order.orderNumber(), amount,
+                    currency, reason);
+        } else if (!order.termsMet()) {
+            log.warn("Order {} is {} and short of its {} terms after a reversal of {} {}", order.orderNumber(),
+                    order.status(), order.paymentTerm(), amount, currency);
+        }
+        repository.save(order);
+        events.publishEventsOf(order);
+    }
+
+    /**
      * A hold of the order expired before it was paid: the order is cancelled and its other holds
      * released (kltn-docs 14 BR-07, 15 step 4). Called by {@code InventoryEventListener} for every
      * expired hold — the first one cancels, the rest find the order already cancelled. An order that
@@ -683,7 +742,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     @Override
     public OrderSummary markShipped(UUID orderId, java.time.Instant handedOverAt, UUID by) {
         Order order = lockOrder(orderId);
-        if (!order.markShipped(handedOverAt == null ? clock.instant() : handedOverAt, by)) {
+        if (!order.markShipped(handedOverAt == null ? clock.instant() : handedOverAt, by, ledgerOf(order))) {
             return toSummary(order);
         }
         log.info("Order {}: shipped", order.orderNumber());
@@ -693,12 +752,21 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     @Override
     public OrderSummary recordHandover(UUID orderId, com.stockflow.order.api.ShipmentHandover handover) {
         Order order = lockOrder(orderId);
-        if (!order.recordHandover(handover)) {
+        if (!order.recordHandover(handover, ledgerOf(order))) {
             return toSummary(order);
         }
         log.info("Order {}: shipment {} handed over, order {}", order.orderNumber(), handover.shipmentId(),
                 order.status());
         return saved(order);
+    }
+
+    /**
+     * G2-3: the order's money as payment's ledger has it, read under the order's lock (taken by the caller): every
+     * allocation takes that lock first, so one committed just before the handover is counted in the COD and the gate.
+     */
+    private Order.LedgerMoney ledgerOf(Order order) {
+        com.stockflow.payment.api.OrderLedger ledger = paymentService.ledgerOf(order.id().value());
+        return new Order.LedgerMoney(ledger.collected(), ledger.paidAhead());
     }
 
     @Override
@@ -856,7 +924,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                 toSummary(order.shippingAddress()), toSummary(order.billingAddress()),
                 order.paymentTerm(), order.warehouseId(), order.releasedAt(),
                 new OrderSummary.Payment(order.paidAmount(), order.depositRequired(), order.depositReceivedAt(),
-                        order.paidInFullAt(), order.paymentStatus(), order.creditTermDays()),
+                        order.paidInFullAt(), order.paymentStatus(), order.creditTermDays(), order.balancePolicy()),
                 order.status() == OrderStatus.CANCELLED
                         ? new OrderSummary.Cancellation(order.cancellationReasonCode(), order.cancellationReason(),
                                 order.cancellationRetainedAmount(), order.cancellationFeeReason(),
@@ -880,12 +948,13 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                 .map(s -> new OrderSummary.Shipment(s.id(), s.status(), s.amount(), s.billedAmount(),
                         s.handedOverAt(), s.outcomeAt(), s.failureReason(),
                         s.quantities().entrySet().stream()
-                                .map(e -> new OrderSummary.ShipmentLine(e.getKey(), e.getValue())).toList()))
+                                .map(e -> new OrderSummary.ShipmentLine(e.getKey(), e.getValue())).toList(),
+                        s.codAmount()))
                 .toList();
         return new OrderSummary.Lifecycle(order.holdReason(), order.statusBeforeHold(), order.holdNote(),
                 order.packedAt(), order.shippedAt(), order.deliveredAt(), order.deliveryFailureReason(), order.completedAt(),
                 order.closedAt(), order.billedAmount(), order.billable(), order.amountDue(),
-                order.amountDueBeforeHandover(), progress, shipments);
+                order.amountDueBeforeHandover(), progress, shipments, order.amountDueOnDelivery());
     }
 
     private static OrderAddressSnapshot toSnapshot(CheckoutCustomer.CheckoutAddress address) {

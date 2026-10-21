@@ -36,6 +36,11 @@ public class CreditProfileJpaEntity extends BaseEntity {
     @Column(name = "deposit_percent", precision = 5, scale = 2)
     private BigDecimal depositPercent;
 
+    /** G2-3: how a deposit order's balance is collected; set exactly when deposits are allowed. */
+    @jakarta.persistence.Enumerated(jakarta.persistence.EnumType.STRING)
+    @Column(name = "deposit_balance_policy", length = 16)
+    private com.stockflow.customer.api.DepositBalancePolicy depositBalancePolicy;
+
     @Column(name = "credit_limit", precision = 19, scale = 4)
     private BigDecimal creditLimit;
 
@@ -77,6 +82,12 @@ public class CreditProfileJpaEntity extends BaseEntity {
         this.approvedAt = approvedAt;
         this.note = note;
     }
+
+    public void applyBalancePolicy(com.stockflow.customer.api.DepositBalancePolicy policy) {
+        this.depositBalancePolicy = policy;
+    }
+
+    public com.stockflow.customer.api.DepositBalancePolicy getDepositBalancePolicy() { return depositBalancePolicy; }
 
     public UUID getCustomerId() { return customerId; }
     public boolean isAllowPrepaid() { return allowPrepaid; }

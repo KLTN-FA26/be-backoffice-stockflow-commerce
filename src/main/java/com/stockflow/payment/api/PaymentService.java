@@ -12,4 +12,10 @@ public interface PaymentService {
 
     /** What the customer owes on receivables and whether any is overdue (SCRUM-431). */
     CreditPosition creditPosition(UUID customerId);
+
+    /**
+     * The order's money in the ledger now (G2-3). The order module reads it under the order's row lock at the handover:
+     * every allocation takes that lock first, so one committed a moment ago is counted.
+     */
+    OrderLedger ledgerOf(UUID orderId);
 }

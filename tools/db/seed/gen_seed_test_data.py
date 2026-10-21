@@ -722,7 +722,7 @@ for i, (code, company, contact, seg, region, status, terms) in enumerate(CUSTOME
                                    "ward_code": w2c, "recipient_name": "Quản lý chi nhánh 2"})
     if terms:
         kind = terms[0]
-        add("customer.credit_profile", id=uid("credit:" + code), customer_id=cid, allow_prepaid=True,
+        profile = add("customer.credit_profile", id=uid("credit:" + code), customer_id=cid, allow_prepaid=True,
             allow_deposit=kind == "DEPOSIT" or kind == "CREDIT" and i % 2 == 0,
             allow_credit=kind == "CREDIT", default_payment_term=kind,
             deposit_percent=terms[1] if kind == "DEPOSIT" else (30 if kind == "CREDIT" and i % 2 == 0 else None),
@@ -730,8 +730,12 @@ for i, (code, company, contact, seg, region, status, terms) in enumerate(CUSTOME
             currency="VND", approved_by=U["ketoan"], approved_at=created + timedelta(days=2),
             note="Hạn mức duyệt theo doanh số 6 tháng" if kind == "CREDIT" else "Khách mới, đặt cọc trước khi sản xuất",
             created_at=created + timedelta(days=2))
+        # G2-3: a deposit customer pays the balance before delivery unless an order of theirs lets the carrier
+        # collect it (set below, when such an order is placed).
+        profile["deposit_balance_policy"] = "BEFORE_DELIVERY" if profile["allow_deposit"] else None
     CUST[code] = dict(id=cid, company=company, contact=contact, seg=seg, wh=region, status=status, terms=terms,
-                      email=email, phone=phone, addr=addr, user=U.get("kh." + code))
+                      email=email, phone=phone, addr=addr, user=U.get("kh." + code),
+                      profile=profile if terms else None)
 
 # selling prices
 SEG_DISCOUNT = {"DISTRIBUTOR": 0.92, "CHAIN": 0.96}
@@ -1469,7 +1473,12 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
               deposit_received_at=None, warehouse_id=WH[p] if final != "DRAFT" else None,
               released_at=rel_at if released else None, released_by=U["dieuphoi"] if released else None,
               paid_amount=0, paid_in_full_at=None, cancellation_reason_code=None, cancellation_retained_amount=None,
-              credit_term_days=terms[2] if credit else None, created_at=placed)
+              credit_term_days=terms[2] if credit else None, created_at=placed,
+              # G2-3: the carrier collects the balance of a subcontracted deposit order on delivery (COD below);
+              # every other deposit order pays it by transfer before the handover.
+              balance_policy=("ON_DELIVERY" if sub else "BEFORE_DELIVERY") if term == "DEPOSIT" else None)
+    if term == "DEPOSIT" and sub and c.get("profile") is not None:
+        c["profile"]["deposit_balance_policy"] = "ON_DELIVERY"
     # G3-2: the hold on the order, and the milestones the lifecycle CHECKs ask for.
     row.update(hold_reason=hold[1] if hold else None,
                status_before_hold=(None if hold[1] == "CREDIT" else hold[0]) if hold else None,
@@ -1511,21 +1520,38 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
     if final == "DRAFT":
         return o
     # payments --------------------------------------------------------------------------------
+    # G2-3 (decision G3-Q3): a bank transfer is recorded once in the ledger - payment.customer_transfer, read from the
+    # statement by the accountant - and allocated to the order (transfer_allocation without a receivable); the order
+    # counts the allocation (ordering.order_payment). Money still awaited is not a row: the order says what it waits
+    # for. Only the carrier's COD of a subcontracted deposit order stays a payment.payment row, as the COD remittances
+    # (payment.cod_remittance_line.payment_id) recorded it.
     paid = 0
-    pays = []
+    pays = []    # (refund column, id): where a refund of this money is placed
 
     def pay(tag, amount, method, at_, status="CAPTURED"):
         nonlocal paid
-        pid_ = uid(f"pay:{key}:{tag}")
-        add("payment.payment", id=pid_, order_id=oid, amount=amount, currency="VND", method=method, status=status,
-            provider_ref=(f"VCB{at_.strftime('%y%m%d')}{len(ROWS.get('payment.payment', [])):05d}"
-                          if method == "BANK_TRANSFER" else (f"COD-{number}" if method == "COD" else None)),
-            captured_at=at_ if status in ("CAPTURED", "REFUNDED") else None, created_at=at_ - timedelta(hours=2))
-        if status in ("CAPTURED", "REFUNDED"):
-            add("ordering.order_payment", payment_id=pid_, order_id=oid, amount=amount, currency="VND",
-                captured_at=at_)
-            paid += amount
-        pays.append(pid_)
+        if status not in ("CAPTURED", "REFUNDED"):
+            return None
+        if method == "BANK_TRANSFER":
+            tid = uid(f"transfer:{key}:{tag}")
+            aid = uid(f"alloc:{key}:{tag}")
+            n = len(ROWS.get("payment.customer_transfer", []))
+            add("payment.customer_transfer", id=tid, customer_id=c["id"],
+                reference=f"VCB{at_.strftime('%y%m%d')}{n:05d}", amount=amount, unallocated_amount=0,
+                currency="VND", received_on=at_.date(), recorded_by=U["ketoan"], recorded_at=at_,
+                note=f"Chuyển khoản {number} theo sao kê Vietcombank", created_at=at_)
+            add("payment.transfer_allocation", id=aid, transfer_id=tid, order_id=oid, receivable_id=None,
+                amount=amount, allocated_at=at_, allocated_by=U["ketoan"])
+            pid_, col = aid, "allocation_id"
+        else:
+            pid_ = uid(f"pay:{key}:{tag}")
+            add("payment.payment", id=pid_, order_id=oid, amount=amount, currency="VND", method=method,
+                status=status, provider_ref=f"COD-{number}" if method == "COD" else None, captured_at=at_,
+                created_at=at_ - timedelta(hours=2))
+            col = "payment_id"
+        add("ordering.order_payment", payment_id=pid_, order_id=oid, amount=amount, currency="VND", captured_at=at_)
+        paid += amount
+        pays.append((col, pid_))
         return pid_
 
     confirmed = "CONFIRMED" in when
@@ -1540,13 +1566,18 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
         if confirmed:
             pay("deposit", deposit, "BANK_TRANSFER", when["CONFIRMED"])
             row["deposit_received_at"] = when["CONFIRMED"]
-            if "DELIVERED" in when:
-                cod = sub
-                pid_ = pay("rest", total - deposit, "COD" if cod else "BANK_TRANSFER",
-                           when["DELIVERED"] if cod else when["DELIVERED"] + timedelta(days=1))
-                row["paid_in_full_at"] = when["DELIVERED"] if cod else when["DELIVERED"] + timedelta(days=1)
-                if cod:
+            if sub and "SHIPPED" in when:
+                # ON_DELIVERY: the carrier collects the balance - fixed at the handover - and remits it.
+                row["cod_amount"] = total - deposit
+                if "DELIVERED" in when:
+                    pid_ = pay("rest", total - deposit, "COD", when["DELIVERED"])
+                    row["paid_in_full_at"] = when["DELIVERED"]
                     SHIPMENTS_COD.append((o, pid_, total - deposit))
+            elif "SHIPPED" in when:
+                # BEFORE_DELIVERY: the balance arrives before the handover (decision G3-Q4).
+                rest_at = when["SHIPPED"] - timedelta(hours=3)
+                pay("rest", total - deposit, "BANK_TRANSFER", rest_at)
+                row["paid_in_full_at"] = rest_at
         else:
             pay("deposit", deposit, "BANK_TRANSFER", placed + timedelta(minutes=5),
                 status="CANCELLED" if cancel else "PENDING")
@@ -1706,7 +1737,7 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
             retained = money(paid * pct / 100)
             row["cancellation_retained_amount"] = retained
             if paid:
-                add("payment.refund", id=uid(f"refund:{key}"), payment_id=pays[0], amount=paid - retained,
+                add("payment.refund", id=uid(f"refund:{key}"), **{pays[0][0]: pays[0][1]}, amount=paid - retained,
                     currency="VND", reason="Hoàn tiền hủy đơn (trừ phí)", status="COMPLETED",
                     refunded_at=when["CANCELLED"] + timedelta(days=1), order_id=oid, source="ORDER_CANCELLED",
                     created_at=when["CANCELLED"])
@@ -1721,7 +1752,7 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
         rqty = max(1, ln["qty"] // 5)
         if rstatus == "REFUNDED":
             ref = uid(f"refund:rma:{key}")
-            add("payment.refund", id=ref, payment_id=pays[0], amount=rqty * ln["price"], currency="VND",
+            add("payment.refund", id=ref, **{pays[0][0]: pays[0][1]}, amount=rqty * ln["price"], currency="VND",
                 reason="Hoàn tiền hàng trả lại lỗi", status="COMPLETED", refunded_at=rq + timedelta(days=3),
                 order_id=oid, source="RETURN", created_at=rq + timedelta(days=2))
         add("ordering.return_request", id=rr, rma_number=next_no("RMA", rq.date()), order_id=oid, customer_id=c["id"],
@@ -1867,7 +1898,8 @@ for i, r in enumerate(RECEIVABLES):
             currency="VND", received_on=paid_at.date(), recorded_by=U["ketoan"], recorded_at=paid_at + timedelta(hours=2),
             note="Thanh toán công nợ theo sao kê Vietcombank" + (" - dư chuyển kỳ sau" if extra else ""),
             created_at=paid_at + timedelta(hours=2))
-        add("payment.transfer_allocation", id=uid(f"alloc:{r['id']}"), transfer_id=t, receivable_id=r["id"],
+        add("payment.transfer_allocation", id=uid(f"alloc:{r['id']}"), transfer_id=t, order_id=r["order"],
+            receivable_id=r["id"],
             amount=r["paid"], allocated_at=paid_at + timedelta(hours=2), allocated_by=U["ketoan"])
 
 # COD remittances from the carriers
@@ -2305,8 +2337,8 @@ procurement.purchase_order_attachments procurement.replenishment_proposal_lines 
 notification.po_delivery_control procurement.goods_receipts procurement.goods_receipt_lines
 procurement.qc_inspections procurement.supplier_invoices procurement.supplier_invoice_lines
 inventory.stock_item inventory.stock_reservation ordering.order_line_reservation ordering.order_line_production
-payment.payment ordering.order_payment payment.refund payment.receivable payment.customer_transfer
-payment.transfer_allocation
+payment.payment ordering.order_payment payment.receivable payment.customer_transfer
+payment.transfer_allocation payment.refund
 fulfillment.wave fulfillment.pick fulfillment.pick_line fulfillment.pack fulfillment.design_verification
 fulfillment.shipment fulfillment.shipment_event fulfillment.package fulfillment.package_line
 payment.cod_remittance payment.cod_remittance_line

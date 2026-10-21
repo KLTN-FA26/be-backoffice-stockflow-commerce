@@ -21,9 +21,11 @@ class OrderRemainderClosedListener {
     private static final Logger log = LoggerFactory.getLogger(OrderRemainderClosedListener.class);
 
     private final CancelledOrderSettlement settlement;
+    private final com.stockflow.payment.api.OrderPayables orders;
 
-    OrderRemainderClosedListener(CancelledOrderSettlement settlement) {
+    OrderRemainderClosedListener(CancelledOrderSettlement settlement, com.stockflow.payment.api.OrderPayables orders) {
         this.settlement = settlement;
+        this.orders = orders;
     }
 
     @ApplicationModuleListener
@@ -32,6 +34,8 @@ class OrderRemainderClosedListener {
         if (refundable.signum() <= 0) {
             return;
         }
+        // G2-3: the order's lock, as a reversal takes it (see OrderCancelledListener).
+        orders.lockForPayment(event.orderId());
         BigDecimal unplaced = settlement.requestRemainderRefunds(event.orderId(),
                 event.closureId() == null ? event.orderId() : event.closureId(), refundable, event.currency(),
                 "Order %s: rest closed (%s)".formatted(event.orderNumber(), event.reasonCode()));
