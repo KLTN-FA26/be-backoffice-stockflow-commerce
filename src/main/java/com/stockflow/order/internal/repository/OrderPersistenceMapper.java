@@ -67,6 +67,7 @@ final class OrderPersistenceMapper {
         order.restoreCancellationFee(entity.getCancellationFeeAmount(), entity.getCancellationFeeReason(),
                 entity.getCancellationFeeDetail());
         order.restoreFulfilmentFacts(entity.getPrintingStartedAt(), entity.getPackedAt());
+        order.restoreBalance(entity.getBalancePolicy(), entity.getCodAmount());
         order.restoreLifecycle(entity.getHoldReason(), entity.getStatusBeforeHold(), entity.getHoldNote(),
                 entity.getShippedAt(), entity.getDeliveredAt(), entity.getDeliveryFailureReason(),
                 entity.getCompletedAt(), entity.getRefundedAt(), entity.getClosedAt(), entity.getBilledAmount(),
@@ -74,7 +75,7 @@ final class OrderPersistenceMapper {
         order.restoreShipments(shipmentRows.stream()
                 .map(row -> new OrderShipment(row.getId(), row.getQuantities(), row.getAmount(), row.getHandedOverAt(),
                         row.getHandedOverBy(), row.getStatus(), row.getOutcomeAt(), row.getOutcomeBy(),
-                        row.getFailureReason(), row.getFailureNote(), row.getBilledAmount()))
+                        row.getFailureReason(), row.getFailureNote(), row.getBilledAmount(), row.getCodAmount()))
                 .toList());
         return order;
     }
@@ -106,6 +107,7 @@ final class OrderPersistenceMapper {
         entity.applyCancellationFee(order.cancellationFeeAmount(), order.cancellationFeeReason(),
                 order.cancellationFeeDetail());
         entity.applyFulfilmentFacts(order.printingStartedAt(), order.packedAt());
+        entity.applyBalance(order.balancePolicy(), order.codAmount());
         entity.applyLifecycle(order.holdReason(), order.statusBeforeHold(), order.holdNote(), order.shippedAt(),
                 order.deliveredAt(), order.deliveryFailureReason(), order.completedAt(), order.refundedAt(),
                 order.closedAt(), order.billedAmount(), order.receivablePaidAmount(), order.remainderRefundAmount());
@@ -148,7 +150,7 @@ final class OrderPersistenceMapper {
                 new OrderSummary.Payment(entity.getPaidAmount(), entity.getDepositRequired(),
                         entity.getDepositReceivedAt(), entity.getPaidInFullAt(),
                         PaymentStatus.of(entity.getPaymentTerm(), entity.getPaidAmount(), entity.getPaidInFullAt()),
-                        entity.getCreditTermDays()),
+                        entity.getCreditTermDays(), entity.getBalancePolicy()),
                 entity.getStatus() == OrderStatus.CANCELLED
                         ? new OrderSummary.Cancellation(entity.getCancellationReasonCode(),
                                 entity.getCancellationReason(), entity.getCancellationRetainedAmount(),

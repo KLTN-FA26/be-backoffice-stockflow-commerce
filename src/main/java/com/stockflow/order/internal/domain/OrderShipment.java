@@ -21,6 +21,10 @@ import java.util.UUID;
  * <p>{@code amount} is the goods' value at the order's prices, fixed at the handover. {@code billedAmount} is what its
  * delivery billed a credit order (a receivable): at most {@code amount}, less when money the customer paid ahead
  * covers part of it. Returned goods are never billed.</p>
+ *
+ * <p>G2-3: {@code codAmount} is what the carrier collects on delivering it, for a deposit order whose balance the
+ * carrier collects (ON_DELIVERY): fixed at the handover (it is printed on the label and the manifest, kltn-docs 15
+ * BR-08, 09 BR-04) and billed at delivery as a carrier-collected receivable.</p>
  */
 public final class OrderShipment {
 
@@ -35,10 +39,19 @@ public final class OrderShipment {
     private DeliveryFailureReason failureReason;
     private String failureNote;
     private BigDecimal billedAmount;
+    private final BigDecimal codAmount;
 
     public OrderShipment(UUID id, Map<UUID, Integer> quantities, BigDecimal amount, Instant handedOverAt,
                          UUID handedOverBy, OrderShipmentStatus status, Instant outcomeAt, UUID outcomeBy,
                          DeliveryFailureReason failureReason, String failureNote, BigDecimal billedAmount) {
+        this(id, quantities, amount, handedOverAt, handedOverBy, status, outcomeAt, outcomeBy, failureReason,
+                failureNote, billedAmount, null);
+    }
+
+    public OrderShipment(UUID id, Map<UUID, Integer> quantities, BigDecimal amount, Instant handedOverAt,
+                         UUID handedOverBy, OrderShipmentStatus status, Instant outcomeAt, UUID outcomeBy,
+                         DeliveryFailureReason failureReason, String failureNote, BigDecimal billedAmount,
+                         BigDecimal codAmount) {
         this.id = Objects.requireNonNull(id, "id");
         this.quantities = Collections.unmodifiableMap(new LinkedHashMap<>(quantities));
         this.amount = Objects.requireNonNull(amount, "amount");
@@ -50,11 +63,16 @@ public final class OrderShipment {
         this.failureReason = failureReason;
         this.failureNote = failureNote;
         this.billedAmount = billedAmount == null ? BigDecimal.ZERO : billedAmount;
+        this.codAmount = codAmount == null ? BigDecimal.ZERO : codAmount;
+        if (this.codAmount.signum() < 0 || this.codAmount.compareTo(amount) > 0) {
+            throw new IllegalArgumentException("A shipment's COD lies between 0 and its value");
+        }
     }
 
-    static OrderShipment handedOver(UUID id, Map<UUID, Integer> quantities, BigDecimal amount, Instant at, UUID by) {
+    static OrderShipment handedOver(UUID id, Map<UUID, Integer> quantities, BigDecimal amount, Instant at, UUID by,
+                                    BigDecimal codAmount) {
         return new OrderShipment(id, quantities, amount, at, by, OrderShipmentStatus.HANDED_OVER, null, null, null,
-                null, BigDecimal.ZERO);
+                null, BigDecimal.ZERO, codAmount);
     }
 
     /** @return false when it already was delivered */
@@ -121,4 +139,5 @@ public final class OrderShipment {
     public DeliveryFailureReason failureReason() { return failureReason; }
     public String failureNote() { return failureNote; }
     public BigDecimal billedAmount() { return billedAmount; }
+    public BigDecimal codAmount() { return codAmount; }
 }

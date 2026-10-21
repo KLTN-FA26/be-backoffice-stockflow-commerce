@@ -3,6 +3,7 @@ package com.stockflow.customer.internal.domain;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.customer.api.CommercialTerm;
+import com.stockflow.customer.api.DepositBalancePolicy;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -65,5 +66,24 @@ class CreditProfileTest {
         assertThatThrownBy(() -> profile.change(true, false, true, CommercialTerm.PREPAID, null, null, 30, ACCOUNTANT,
                 NOW, null)).isInstanceOf(BusinessException.class);
         assertThat(profile.creditLimit()).isEqualByComparingTo("1000");
+    }
+
+    @Test
+    @DisplayName("G2-3: deposits come with a balance policy, BEFORE_DELIVERY unless told; none without deposits")
+    void balancePolicy() {
+        CreditProfile deposit = CreditProfile.create(CUSTOMER, true, true, false, CommercialTerm.DEPOSIT,
+                new BigDecimal("30"), null, null, ACCOUNTANT, NOW, null);
+        assertThat(deposit.depositBalancePolicy()).isEqualTo(DepositBalancePolicy.BEFORE_DELIVERY);
+        deposit.change(true, true, false, CommercialTerm.DEPOSIT, new BigDecimal("30"), null, null,
+                DepositBalancePolicy.ON_DELIVERY, ACCOUNTANT, NOW, null);
+        assertThat(deposit.depositBalancePolicy()).isEqualTo(DepositBalancePolicy.ON_DELIVERY);
+        deposit.change(true, true, false, CommercialTerm.DEPOSIT, new BigDecimal("40"), null, null, ACCOUNTANT, NOW,
+                "share changed, policy not sent");
+        assertThat(deposit.depositBalancePolicy()).as("kept when not sent").isEqualTo(DepositBalancePolicy.ON_DELIVERY);
+        deposit.change(true, false, false, CommercialTerm.PREPAID, null, null, null, ACCOUNTANT, NOW, null);
+        assertThat(deposit.depositBalancePolicy()).as("no deposits, no balance").isNull();
+        assertThat(refused(() -> CreditProfile.create(CUSTOMER, true, false, false, CommercialTerm.PREPAID, null, null,
+                null, DepositBalancePolicy.ON_DELIVERY, ACCOUNTANT, NOW, null)))
+                .isEqualTo(ErrorCode.CREDIT_PROFILE_INVALID);
     }
 }

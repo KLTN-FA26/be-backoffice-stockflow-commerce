@@ -11,6 +11,8 @@ import com.stockflow.contracts.OrderCancelled;
 import com.stockflow.contracts.OrderDelivered;
 import com.stockflow.contracts.PaymentCaptured;
 import com.stockflow.contracts.PaymentMethod;
+import com.stockflow.payment.api.PayableOrder;
+import com.stockflow.payment.internal.domain.Collector;
 import com.stockflow.payment.internal.domain.CustomerTransfer;
 import com.stockflow.payment.internal.domain.Receivable;
 import com.stockflow.payment.internal.domain.ReceivableBook;
@@ -30,12 +32,15 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Receivables of credit orders and the transfers that pay them (SCRUM-431, kltn-docs 15 §4.3).
+ * Receivables of credit orders and the transfers that pay them (SCRUM-431, kltn-docs 15 §4.3); since G2-3 the one
+ * ledger of incoming money: a transfer pays orders (prepaid, deposit, balance before delivery) as well.
  *
  * <ul>
  *   <li>Delivered credit order → a receivable for what it still owes, due on the delivery day (Saigon)
@@ -45,10 +50,14 @@ import java.util.UUID;
  *       left stays as the customer's credit.</li>
  *   <li>Every allocation is announced as {@code PaymentCaptured} for its order (source
  *       RECEIVABLE_ALLOCATION), so the order knows what it has been paid.</li>
+ *   <li>G2-3: a transfer may name orders it pays, with the amount for each ({@link OrderAllocator}); the rest pays the
+ *       receivables named, or - when neither orders nor receivables are named - the earliest due first.</li>
+ *   <li>G2-3: a delivered deposit order whose balance the carrier collected (ON_DELIVERY) becomes a carrier-collected
+ *       receivable, due on the delivery day; the customer's transfers and credit never touch it.</li>
  * </ul>
  *
- * <p>Locks are always taken receivables first, then transfers, so a delivery and a transfer of the same
- * customer never deadlock.</p>
+ * <p>Locks are always taken orders first, then receivables, then transfers, so a delivery, an allocation and a
+ * transfer of the same customer never deadlock.</p>
  */
 @Service
 @Transactional
@@ -63,9 +72,27 @@ public class ReceivableService {
     private static final SortWhitelist TRANSFER_SORT = SortWhitelist.of("receivedOn", "recordedAt", "amount")
             .withDefault("receivedOn", Sort.Direction.DESC);
 
-    /** Record a transfer; {@code allocateTo} empty means earliest due first. */
+    /**
+     * Record a transfer. {@code orders}: what it pays to which orders (G2-3). {@code allocateTo}: the receivables it
+     * pays with the rest. Neither named: the earliest due receivables first (BR-09); orders named but no receivables:
+     * the rest stays as the customer's credit.
+     */
     public record RecordTransferCommand(UUID customerId, String reference, BigDecimal amount, String currency,
-                                        LocalDate receivedOn, List<UUID> allocateTo, String note, UUID recordedBy) {
+                                        LocalDate receivedOn, List<UUID> allocateTo, String note, UUID recordedBy,
+                                        List<OrderPayment> orders) {
+
+        public RecordTransferCommand(UUID customerId, String reference, BigDecimal amount, String currency,
+                                     LocalDate receivedOn, List<UUID> allocateTo, String note, UUID recordedBy) {
+            this(customerId, reference, amount, currency, receivedOn, allocateTo, note, recordedBy, List.of());
+        }
+
+        public RecordTransferCommand {
+            orders = orders == null ? List.of() : List.copyOf(orders);
+        }
+    }
+
+    /** Part of a transfer paid to one order. */
+    public record OrderPayment(UUID orderId, BigDecimal amount) {
     }
 
     public record TransferResult(CustomerTransfer transfer, List<ReceivableBook.Allocation> allocations) {
@@ -73,12 +100,17 @@ public class ReceivableService {
 
     private final ReceivableBook book;
     private final ReceivableSearch search;
+    private final OrderAllocator orderAllocator;
+    private final com.stockflow.payment.api.OrderPayables orders;
     private final ApplicationEventPublisher events;
     private final Clock clock;
 
-    ReceivableService(ReceivableBook book, ReceivableSearch search, ApplicationEventPublisher events, Clock clock) {
+    ReceivableService(ReceivableBook book, ReceivableSearch search, OrderAllocator orderAllocator,
+                      com.stockflow.payment.api.OrderPayables orders, ApplicationEventPublisher events, Clock clock) {
         this.book = book;
         this.search = search;
+        this.orderAllocator = orderAllocator;
+        this.orders = orders;
         this.events = events;
         this.clock = clock;
     }
@@ -113,20 +145,45 @@ public class ReceivableService {
      * Idempotent: a redelivered event finds the receivable already open. G3-2 (split shipments): one receivable per
      * delivered shipment, for what the order billed for it ({@code billedAmount}); an event without it - the whole
      * order delivered, written before G3-2 - bills what the order still owes, as before.
+     *
+     * <p>G2-3: a deposit order whose balance the carrier collects (ON_DELIVERY) bills what the carrier collected on
+     * delivery - the amount fixed at the handover (15 BR-08) - as a carrier-collected receivable due that day; the
+     * carrier's remittance pays it (09 §4.3 step 4). A deposit order paid before delivery bills nothing.</p>
      */
     public void orderDelivered(OrderDelivered event) {
-        if (!"CREDIT".equals(event.paymentTerm()) || event.customerId() == null) {
+        if (event.customerId() == null) {
+            return;
+        }
+        boolean credit = "CREDIT".equals(event.paymentTerm());
+        boolean deposit = "DEPOSIT".equals(event.paymentTerm());
+        boolean carrierCollects = deposit && "ON_DELIVERY".equals(event.balancePolicy());
+        if (!credit && !deposit) {
+            return;
+        }
+        Optional<Receivable> existing = event.shipmentId() == null ? book.findReceivableOfOrder(event.orderId())
+                : book.findReceivableOfShipment(event.orderId(), event.shipmentId());
+        if (existing.isPresent()) {
+            return;
+        }
+        LocalDate deliveryDay = LocalDate.ofInstant(event.deliveredAt(), BUSINESS_ZONE);
+        if (deposit && !carrierCollects) {
+            balanceDeliveredUnpaid(event, deliveryDay);
             return;
         }
         BigDecimal owed = event.billedAmount() != null ? event.billedAmount()
                 : event.orderTotal().subtract(event.paidAmount() == null ? BigDecimal.ZERO : event.paidAmount());
-        Optional<Receivable> existing = event.shipmentId() == null ? book.findReceivableOfOrder(event.orderId())
-                : book.findReceivableOfShipment(event.orderId(), event.shipmentId());
-        if (owed.signum() <= 0 || existing.isPresent()) {
+        if (owed.signum() <= 0) {
+            return;
+        }
+        if (carrierCollects) {
+            Receivable balance = book.save(Receivable.openCarrierCollected(event.orderId(), event.customerId(), owed,
+                    event.currency(), event.deliveredAt(), deliveryDay).forShipment(event.shipmentId()));
+            log.info("Receivable {} opened for order {}: the carrier collected {} {} on delivery", balance.id(),
+                    event.orderNumber(), owed, event.currency());
             return;
         }
         int days = event.creditTermDays() == null ? 0 : event.creditTermDays();
-        LocalDate due = LocalDate.ofInstant(event.deliveredAt(), BUSINESS_ZONE).plusDays(days);
+        LocalDate due = deliveryDay.plusDays(days);
         Receivable receivable = book.save(Receivable.open(event.orderId(), event.customerId(), owed, event.currency(),
                 event.deliveredAt(), due).forShipment(event.shipmentId()));
         log.info("Receivable {} opened for order {}: {} {} due {}", receivable.id(), event.orderNumber(), owed,
@@ -137,16 +194,51 @@ public class ReceivableService {
     }
 
     /**
+     * A deposit order whose balance was to be paid before delivery, delivered without it (G3 §4: the handover gate
+     * should not let it happen - goods that left before G2-3, or money reversed after the handover). What it still owes
+     * becomes the customer's receivable, due on the delivery day, and the accountant is warned. Measured on the ledger,
+     * not on the event: the order's count of the money may be behind. A later shipment bills only what no receivable
+     * of the order already holds.
+     */
+    private void balanceDeliveredUnpaid(OrderDelivered event, LocalDate deliveryDay) {
+        BigDecimal billable = orders.find(event.orderId()).map(PayableOrder::billable).orElse(event.orderTotal());
+        BigDecimal owed = billable.subtract(book.collectedFor(event.orderId()))
+                .subtract(book.outstandingReceivablesOf(event.orderId()));
+        if (owed.signum() <= 0) {
+            return;
+        }
+        Receivable balance = book.save(Receivable.open(event.orderId(), event.customerId(), owed, event.currency(),
+                event.deliveredAt(), deliveryDay).withKind("DEPOSIT_BALANCE").forShipment(event.shipmentId()));
+        log.warn("Order {} was delivered with {} {} of its balance unpaid (to be paid before delivery): receivable {} "
+                + "opened, due {}", event.orderNumber(), owed, event.currency(), balance.id(), deliveryDay);
+        List<Receivable> unpaid = book.lockUnpaid(event.customerId());
+        allocate(book.lockWithCredit(event.customerId()), unpaid, null);
+    }
+
+    /**
      * @throws BusinessException {@code TRANSFER_REFERENCE_ALREADY_RECORDED} (BR-07);
-     *         {@code RECEIVABLE_NOT_FOUND}; {@code ALLOCATION_CUSTOMER_MISMATCH}
+     *         {@code RECEIVABLE_NOT_FOUND}; {@code ALLOCATION_CUSTOMER_MISMATCH}; {@code RECEIVABLE_CARRIER_COLLECTED};
+     *         for orders, those of {@link OrderAllocator}: {@code ALLOCATION_EXCEEDS_AMOUNT_DUE},
+     *         {@code ALLOCATION_ORDER_CANCELLED}, {@code ALLOCATION_ORDER_NOT_PAYABLE}, and
+     *         {@code ALLOCATION_EXCEEDS_TRANSFER} when the orders ask for more than the transfer brings
      */
     @Auditable(action = AuditAction.CREATE, resourceType = "customer-transfer", resourceId = "#result?.transfer()?.id()")
     public TransferResult recordTransfer(RecordTransferCommand command) {
         if (book.referenceRecorded(command.reference())) {
             throw alreadyRecorded(command.reference());
         }
+        // Orders first, by id: the lock order every money path takes (orders, receivables, transfers).
+        List<OrderPayment> toOrders = new ArrayList<>(command.orders());
+        if (new HashSet<>(toOrders.stream().map(OrderPayment::orderId).toList()).size() != toOrders.size()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Name each order once");
+        }
+        toOrders.sort(Comparator.comparing(OrderPayment::orderId));
+        List<PayableOrder> payable = new ArrayList<>();
+        for (OrderPayment wanted : toOrders) {
+            payable.add(orderAllocator.lockPayable(wanted.orderId(), command.customerId()));
+        }
         List<Receivable> unpaid = book.lockUnpaid(command.customerId());
-        List<Receivable> targets = unpaid;
+        List<Receivable> targets = toOrders.isEmpty() ? unpaid : List.of();
         if (command.allocateTo() != null && !command.allocateTo().isEmpty()) {
             targets = new ArrayList<>();
             for (UUID id : command.allocateTo()) {
@@ -155,6 +247,11 @@ public class ReceivableService {
                 if (!named.customerId().equals(command.customerId())) {
                     throw new BusinessException(ErrorCode.ALLOCATION_CUSTOMER_MISMATCH,
                             "Receivable %s belongs to another customer".formatted(id));
+                }
+                if (named.carrierCollected()) {
+                    // 09 §2: the customer paid it to the carrier; paying it again would collect it twice.
+                    throw new BusinessException(ErrorCode.RECEIVABLE_CARRIER_COLLECTED,
+                            "Receivable %s is collected by the carrier".formatted(id));
                 }
                 unpaid.stream().filter(r -> r.id().equals(id)).findFirst().ifPresent(targets::add);
             }
@@ -167,7 +264,12 @@ public class ReceivableService {
         } catch (DataIntegrityViolationException duplicate) {
             throw alreadyRecorded(command.reference());
         }
-        List<ReceivableBook.Allocation> made = allocate(new ArrayList<>(List.of(transfer)), targets, command.recordedBy());
+        List<ReceivableBook.Allocation> made = new ArrayList<>();
+        for (int i = 0; i < toOrders.size(); i++) {
+            made.add(orderAllocator.allocate(transfer, payable.get(i), toOrders.get(i).amount(), command.recordedBy()));
+        }
+        // Saves the transfer with what is left of it, whether or not a receivable took any.
+        made.addAll(allocate(new ArrayList<>(List.of(transfer)), targets, command.recordedBy()));
         // The id, not the statement reference the accountant typed (log injection).
         log.info("Transfer {} of {} {} recorded for customer {}: {} allocation(s), {} left as credit",
                 transfer.id(), command.amount(), transfer.currency(), command.customerId(), made.size(),
@@ -190,8 +292,8 @@ public class ReceivableService {
                 }
                 BigDecimal taken = transfer.take(receivable.outstanding());
                 BigDecimal applied = receivable.allocate(taken, now);
-                ReceivableBook.Allocation allocation = book.recordAllocation(transfer.id(), receivable.id(), applied,
-                        now, by);
+                ReceivableBook.Allocation allocation = book.recordAllocation(transfer.id(), receivable.orderId(),
+                        receivable.id(), applied, now, by);
                 made.add(allocation);
                 events.publishEvent(new PaymentCaptured(receivable.orderId(), allocation.id(), applied,
                         receivable.currency(), PaymentMethod.BANK_TRANSFER, ALLOCATION_SOURCE));
@@ -205,7 +307,14 @@ public class ReceivableService {
     @Transactional(readOnly = true)
     public PageResponse<Receivable> receivables(UUID customerId, ReceivableStatus status, LocalDate dueBefore, int page,
                                                 int size, String sort) {
-        return Pages.toResponse(search.receivables(customerId, status, dueBefore,
+        return receivables(customerId, status, dueBefore, null, null, page, size, sort);
+    }
+
+    /** G2-3: {@code collector} and {@code kind} null mean any. */
+    @Transactional(readOnly = true)
+    public PageResponse<Receivable> receivables(UUID customerId, ReceivableStatus status, LocalDate dueBefore,
+                                                Collector collector, String kind, int page, int size, String sort) {
+        return Pages.toResponse(search.receivables(customerId, status, dueBefore, collector, kind,
                 Pages.of(page, size, RECEIVABLE_SORT.parse(sort))));
     }
 
@@ -222,7 +331,15 @@ public class ReceivableService {
 
     @Transactional(readOnly = true)
     public PageResponse<CustomerTransfer> transfers(UUID customerId, int page, int size, String sort) {
-        return Pages.toResponse(search.transfers(customerId, Pages.of(page, size, TRANSFER_SORT.parse(sort))));
+        return transfers(customerId, false, page, size, sort);
+    }
+
+    /** G2-3: {@code withCreditOnly} lists the money not yet allocated - the customer's credit. */
+    @Transactional(readOnly = true)
+    public PageResponse<CustomerTransfer> transfers(UUID customerId, boolean withCreditOnly, int page, int size,
+                                                    String sort) {
+        return Pages.toResponse(search.transfers(customerId, withCreditOnly,
+                Pages.of(page, size, TRANSFER_SORT.parse(sort))));
     }
 
     /** OPEN / PARTIALLY_PAID past due become OVERDUE; run daily by {@code ReceivableOverdueJob}. */

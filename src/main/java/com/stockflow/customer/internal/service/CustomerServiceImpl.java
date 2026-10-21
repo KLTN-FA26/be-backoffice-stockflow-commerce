@@ -102,12 +102,12 @@ class CustomerServiceImpl implements CustomerService {
         var now = clock.instant();
         CreditProfile profile = existing.map(found -> {
             found.change(command.allowPrepaid(), command.allowDeposit(), command.allowCredit(), command.defaultTerm(),
-                    command.depositPercent(), command.creditLimit(), command.creditTermDays(), command.approvedBy(),
-                    now, command.note());
+                    command.depositPercent(), command.creditLimit(), command.creditTermDays(),
+                    command.depositBalancePolicy(), command.approvedBy(), now, command.note());
             return found;
         }).orElseGet(() -> CreditProfile.create(command.customerId(), command.allowPrepaid(), command.allowDeposit(),
                 command.allowCredit(), command.defaultTerm(), command.depositPercent(), command.creditLimit(),
-                command.creditTermDays(), command.approvedBy(), now, command.note()));
+                command.creditTermDays(), command.depositBalancePolicy(), command.approvedBy(), now, command.note()));
         return toTerms(creditProfiles.save(profile));
     }
 
@@ -119,7 +119,7 @@ class CustomerServiceImpl implements CustomerService {
     private static CreditTerms toTerms(CreditProfile p) {
         return new CreditTerms(p.customerId(), true, p.allowPrepaid(), p.allowDeposit(), p.allowCredit(), p.defaultTerm(),
                 p.depositPercent(), p.creditLimit(), p.creditTermDays(), p.currency(), p.approvedBy(), p.approvedAt(),
-                p.note(), p.version());
+                p.note(), p.version(), p.depositBalancePolicy());
     }
 
     @Override

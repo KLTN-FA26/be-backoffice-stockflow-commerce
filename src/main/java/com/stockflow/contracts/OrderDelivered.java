@@ -17,6 +17,10 @@ import java.util.UUID;
  * receivable per shipment for exactly that. Both are null when the whole order was delivered at once without
  * shipments, and payment then bills {@code orderTotal - paidAmount} as before.</p>
  *
+ * <p>G2-3: {@code balancePolicy} (nullable, added as the contract rules allow) names how a DEPOSIT order's balance is
+ * collected. {@code ON_DELIVERY}: {@code billedAmount} is what the carrier collected for the shipment (fixed at the
+ * handover, printed on the label, 15 BR-08 / 09 BR-04), and payment opens a carrier-collected receivable for it.</p>
+ *
  * Consumers receive it in-process through {@code @ApplicationModuleListener}; delivery is made
  * durable by Spring Modulith's event publication registry, so a listener that crashes mid-handling
  * gets the event again. See {@code package-info.java} for the rules on changing this contract.
@@ -32,8 +36,17 @@ public record OrderDelivered(
         Integer creditTermDays,
         Instant deliveredAt,
         UUID shipmentId,
-        BigDecimal billedAmount
+        BigDecimal billedAmount,
+        String balancePolicy
 ) {
+
+    /** Before G2-3: no balance policy. */
+    public OrderDelivered(UUID orderId, String orderNumber, UUID customerId, String paymentTerm, BigDecimal orderTotal,
+                          BigDecimal paidAmount, String currency, Integer creditTermDays, Instant deliveredAt,
+                          UUID shipmentId, BigDecimal billedAmount) {
+        this(orderId, orderNumber, customerId, paymentTerm, orderTotal, paidAmount, currency, creditTermDays,
+                deliveredAt, shipmentId, billedAmount, null);
+    }
 
     /**
      * The whole order delivered at once, as before split shipments: payment bills what it still owes. Events stored
@@ -42,6 +55,6 @@ public record OrderDelivered(
     public OrderDelivered(UUID orderId, String orderNumber, UUID customerId, String paymentTerm, BigDecimal orderTotal,
                           BigDecimal paidAmount, String currency, Integer creditTermDays, Instant deliveredAt) {
         this(orderId, orderNumber, customerId, paymentTerm, orderTotal, paidAmount, currency, creditTermDays,
-                deliveredAt, null, null);
+                deliveredAt, null, null, null);
     }
 }

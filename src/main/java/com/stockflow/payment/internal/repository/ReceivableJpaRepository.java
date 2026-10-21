@@ -21,10 +21,18 @@ interface ReceivableJpaRepository extends BaseJpaRepository<ReceivableJpaEntity>
     /** G3-2: one receivable per delivered shipment of a split order. */
     Optional<ReceivableJpaEntity> findByOrderIdAndShipmentId(UUID orderId, UUID shipmentId);
 
+    List<ReceivableJpaEntity> findByOrderIdOrderByDueDateAscIssuedAtAsc(UUID orderId);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT r FROM ReceivableJpaEntity r WHERE r.id = :id")
+    Optional<ReceivableJpaEntity> lockById(@Param("id") UUID id);
+
+    /** G2-3: the customer's own receivables only; a carrier-collected balance is the carrier's to pay. */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("""
             SELECT r FROM ReceivableJpaEntity r
              WHERE r.customerId = :customer
+               AND r.collector = com.stockflow.payment.internal.domain.Collector.CUSTOMER
                AND r.status <> com.stockflow.payment.internal.domain.ReceivableStatus.PAID
              ORDER BY r.dueDate, r.issuedAt, r.id""")
     List<ReceivableJpaEntity> lockUnpaid(@Param("customer") UUID customerId);

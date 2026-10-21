@@ -1,6 +1,7 @@
 package com.stockflow.payment.internal.controller.dto;
 
 import io.swagger.v3.oas.annotations.media.Schema;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -14,8 +15,10 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * A transfer the customer sent, as read on the bank statement (kltn-docs 15 BR-04). It pays the
- * receivables listed in {@code allocateTo}, or the earliest due first (BR-09).
+ * A transfer the customer sent, as read on the bank statement (kltn-docs 15 BR-04). It pays the orders listed in
+ * {@code orders}, each the amount named (G2-3: prepaid, deposit, balance before delivery), then the receivables listed
+ * in {@code allocateTo}. With neither, the earliest due receivables first (BR-09); with orders only, the rest stays as
+ * the customer's credit.
  */
 @Schema(description = "Record a customer transfer paying what they owe")
 public record RecordTransferRequest(
@@ -43,6 +46,10 @@ public record RecordTransferRequest(
         @Size(max = 100, message = "at most 100 receivables")
         List<UUID> allocateTo,
 
-        @Size(max = 1000, message = "note is at most 1000 characters") String note
+        @Size(max = 1000, message = "note is at most 1000 characters") String note,
+
+        @Schema(description = "Orders the transfer pays, and how much to each (the statement line names the order)")
+        @Size(max = 50, message = "at most 50 orders")
+        List<@Valid OrderAllocationRequest> orders
 ) {
 }

@@ -48,7 +48,8 @@ final class OrderWebMapper {
                 true,
                 lines,
                 request.paymentTerm(),
-                request.depositPercent());
+                request.depositPercent(),
+                request.balancePolicy());
     }
 
     static PlaceGuestOrderCommand toCommand(PlaceGuestOrderRequest request) {
@@ -129,6 +130,8 @@ final class OrderWebMapper {
                 summary.payment() == null ? null : summary.payment().paidInFullAt(),
                 summary.payment() == null ? null : summary.payment().status().name(),
                 summary.payment() == null ? null : summary.payment().creditTermDays(),
+                summary.payment() == null || summary.payment().balancePolicy() == null ? null
+                        : summary.payment().balancePolicy().name(),
                 summary.cancellation() == null ? null : new OrderResponse.Cancellation(
                         summary.cancellation().reasonCode() == null ? null : summary.cancellation().reasonCode().name(),
                         summary.cancellation().reason(), summary.cancellation().retainedAmount(),
@@ -161,8 +164,9 @@ final class OrderWebMapper {
                                 shipment.failureReason() == null ? null : shipment.failureReason().name(),
                                 shipment.lines().stream()
                                         .map(line -> new OrderResponse.ShipmentLine(line.lineId(), line.quantity()))
-                                        .toList()))
-                        .toList());
+                                        .toList(), shipment.codAmount()))
+                        .toList(),
+                lifecycle == null ? null : lifecycle.amountDueOnDelivery());
     }
 
     private static PlaceGuestOrderCommand.Address toCommand(

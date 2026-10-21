@@ -63,15 +63,28 @@ public record OrderSummary(
      * @param amountDue              what the customer still owes on it, never below zero
      * @param amountDueBeforeHandover what must be paid before the goods may leave (G3-Q4): fulfillment warns at
      *                               packing and the handover is refused while it is above zero
+     * @param amountDueOnDelivery    what carriers are to collect on delivery (G2-3, ON_DELIVERY): the balance not
+     *                               yet paid; 0 for every other policy and term
      */
     public record Lifecycle(HoldReason holdReason, OrderStatus statusBeforeHold, String holdNote, Instant packedAt,
                             Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason, Instant completedAt,
                             Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal, BigDecimal amountDue,
-                            BigDecimal amountDueBeforeHandover, List<LineProgress> lines, List<Shipment> shipments) {
+                            BigDecimal amountDueBeforeHandover, List<LineProgress> lines, List<Shipment> shipments,
+                            BigDecimal amountDueOnDelivery) {
 
         public Lifecycle {
             lines = lines == null ? List.of() : List.copyOf(lines);
             shipments = shipments == null ? List.of() : List.copyOf(shipments);
+        }
+
+        public Lifecycle(HoldReason holdReason, OrderStatus statusBeforeHold, String holdNote, Instant packedAt,
+                         Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason,
+                         Instant completedAt, Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal,
+                         BigDecimal amountDue, BigDecimal amountDueBeforeHandover, List<LineProgress> lines,
+                         List<Shipment> shipments) {
+            this(holdReason, statusBeforeHold, holdNote, packedAt, shippedAt, deliveredAt, deliveryFailureReason,
+                    completedAt, closedAt, billedAmount, effectiveTotal, amountDue, amountDueBeforeHandover, lines,
+                    shipments, null);
         }
     }
 
@@ -83,13 +96,25 @@ public record OrderSummary(
     public record ShipmentLine(UUID lineId, int quantity) {
     }
 
-    /** One shipment of the order, as the order knows it (from its handover). */
+    /**
+     * One shipment of the order, as the order knows it (from its handover).
+     *
+     * @param codAmount what the carrier collects on delivering it (G2-3, ON_DELIVERY): fixed at the handover, printed on
+     *                  the label and the manifest (15 BR-08, 09 BR-04); 0 otherwise
+     */
     public record Shipment(UUID shipmentId, OrderShipmentStatus status, BigDecimal amount, BigDecimal billedAmount,
                            Instant handedOverAt, Instant outcomeAt, DeliveryFailureReason failureReason,
-                           List<ShipmentLine> lines) {
+                           List<ShipmentLine> lines, BigDecimal codAmount) {
 
         public Shipment {
             lines = lines == null ? List.of() : List.copyOf(lines);
+            codAmount = codAmount == null ? BigDecimal.ZERO : codAmount;
+        }
+
+        public Shipment(UUID shipmentId, OrderShipmentStatus status, BigDecimal amount, BigDecimal billedAmount,
+                        Instant handedOverAt, Instant outcomeAt, DeliveryFailureReason failureReason,
+                        List<ShipmentLine> lines) {
+            this(shipmentId, status, amount, billedAmount, handedOverAt, outcomeAt, failureReason, lines, null);
         }
     }
 
@@ -108,13 +133,20 @@ public record OrderSummary(
      * The money side of the order (SCRUM-460, kltn-docs 15 §5.2).
      *
      * @param depositRequired null unless the order is on DEPOSIT terms
+     * @param balancePolicy   null unless the order is on DEPOSIT terms: how its balance is collected (G2-3)
      */
     public record Payment(BigDecimal paidAmount, BigDecimal depositRequired, Instant depositReceivedAt,
-                          Instant paidInFullAt, PaymentStatus status, Integer creditTermDays) {
+                          Instant paidInFullAt, PaymentStatus status, Integer creditTermDays,
+                          BalancePolicy balancePolicy) {
+
+        public Payment(BigDecimal paidAmount, BigDecimal depositRequired, Instant depositReceivedAt,
+                       Instant paidInFullAt, PaymentStatus status, Integer creditTermDays) {
+            this(paidAmount, depositRequired, depositReceivedAt, paidInFullAt, status, creditTermDays, null);
+        }
 
         public Payment(BigDecimal paidAmount, BigDecimal depositRequired, Instant depositReceivedAt,
                        Instant paidInFullAt, PaymentStatus status) {
-            this(paidAmount, depositRequired, depositReceivedAt, paidInFullAt, status, null);
+            this(paidAmount, depositRequired, depositReceivedAt, paidInFullAt, status, null, null);
         }
     }
 

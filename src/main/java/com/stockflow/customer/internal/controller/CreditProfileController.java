@@ -58,12 +58,13 @@ class CreditProfileController {
         return ApiResponse.ok(toResponse(customers.saveCreditTerms(new SaveCreditTermsCommand(customerId,
                 request.allowPrepaid(), request.allowDeposit(), request.allowCredit(), request.defaultPaymentTerm(),
                 request.depositPercent(), request.creditLimit(), request.creditTermDays(), request.note(),
-                user.userId(), request.expectedVersion()))));
+                user.userId(), request.expectedVersion(), request.depositBalancePolicy()))));
     }
 
     static CreditProfileResponse toResponse(CreditTerms t) {
         return new CreditProfileResponse(t.customerId(), t.configured(), t.allowPrepaid(), t.allowDeposit(),
                 t.allowCredit(), t.defaultTerm().name(), t.depositPercent(), t.creditLimit(), t.creditTermDays(),
-                t.currency(), t.approvedBy(), t.approvedAt(), t.note(), t.configured() ? t.version() : -1L);
+                t.currency(), t.approvedBy(), t.approvedAt(), t.note(), t.configured() ? t.version() : -1L,
+                t.depositBalancePolicy() == null ? null : t.depositBalancePolicy().name());
     }
 }

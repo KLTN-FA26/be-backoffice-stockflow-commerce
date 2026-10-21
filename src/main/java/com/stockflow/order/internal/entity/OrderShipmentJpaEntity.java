@@ -68,6 +68,10 @@ public class OrderShipmentJpaEntity extends BaseEntity {
     @Column(name = "billed_amount", nullable = false, precision = 19, scale = 4)
     private BigDecimal billedAmount = BigDecimal.ZERO;
 
+    /** G2-3: what the carrier collects on delivering it, fixed at the handover. */
+    @Column(name = "cod_amount", nullable = false, precision = 19, scale = 4, updatable = false)
+    private BigDecimal codAmount = BigDecimal.ZERO;
+
     protected OrderShipmentJpaEntity() {
     }
 
@@ -79,6 +83,11 @@ public class OrderShipmentJpaEntity extends BaseEntity {
         this.amount = amount;
         this.handedOverAt = handedOverAt;
         this.handedOverBy = handedOverBy;
+    }
+
+    public OrderShipmentJpaEntity withCod(BigDecimal cod) {
+        this.codAmount = cod == null ? BigDecimal.ZERO : cod;
+        return this;
     }
 
     public void apply(OrderShipmentStatus status, Instant outcomeAt, UUID outcomeBy, DeliveryFailureReason failureReason,
@@ -102,4 +111,5 @@ public class OrderShipmentJpaEntity extends BaseEntity {
     public DeliveryFailureReason getFailureReason() { return failureReason; }
     public String getFailureNote() { return failureNote; }
     public BigDecimal getBilledAmount() { return billedAmount; }
+    public BigDecimal getCodAmount() { return codAmount; }
 }

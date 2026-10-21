@@ -68,6 +68,11 @@ public record OrderResponse(
         @Schema(description = "A credit order's days to pay after delivery; null otherwise")
         Integer creditTermDays,
 
+        @Schema(example = "BEFORE_DELIVERY", description = "A deposit order's way of collecting the balance: "
+                + "BEFORE_DELIVERY (by transfer, before the handover) or ON_DELIVERY (the carrier collects it); null "
+                + "for other terms (G2-3)")
+        String balancePolicy,
+
         @Schema(description = "Set when the order is CANCELLED")
         Cancellation cancellation,
 
@@ -117,7 +122,11 @@ public record OrderResponse(
         BigDecimal amountDueBeforeHandover,
 
         @Schema(description = "The shipments handed to the carrier, oldest first (split shipments, G4-Q3)")
-        List<Shipment> shipments
+        List<Shipment> shipments,
+
+        @Schema(description = "What carriers are to collect on delivery: the unpaid balance of an ON_DELIVERY deposit "
+                + "order, 0 otherwise (G2-3)")
+        BigDecimal amountDueOnDelivery
 ) {
 
     @Schema(name = "OrderShipment")
@@ -130,7 +139,9 @@ public record OrderResponse(
             Instant handedOverAt,
             Instant outcomeAt,
             String failureReason,
-            List<ShipmentLine> lines) {
+            List<ShipmentLine> lines,
+            @Schema(description = "What the carrier collects on delivering it (ON_DELIVERY), fixed at the handover; "
+                    + "the amount printed on the label (kltn-docs 15 BR-08)") BigDecimal codAmount) {
     }
 
     @Schema(name = "OrderShipmentLine")

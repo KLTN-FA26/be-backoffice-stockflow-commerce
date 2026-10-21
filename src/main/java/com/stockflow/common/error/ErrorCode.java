@@ -284,9 +284,35 @@ public enum ErrorCode {
     ORDER_SHIPMENT_INVALID_TRANSITION("This shipment cannot move to that status now", 409),
     /** SCRUM-431, kltn-docs 15 BR-07: one bank statement line is recorded once. */
     TRANSFER_REFERENCE_ALREADY_RECORDED("This transfer was already recorded", 409),
-    ALLOCATION_CUSTOMER_MISMATCH("This receivable belongs to another customer", 409),
+    ALLOCATION_CUSTOMER_MISMATCH("This receivable or order belongs to another customer", 409),
     /** SCRUM-431, kltn-docs 15 §4.3 step 4: an overdue customer gets no new credit until they pay. */
     CUSTOMER_CREDIT_OVERDUE("The customer has overdue receivables", 409),
+    /** G2-3 (the money ledger): no recorded transfer by that id. */
+    TRANSFER_NOT_FOUND("Transfer not found", 404),
+    /** G2-3: no allocation by that id on this transfer. */
+    ALLOCATION_NOT_FOUND("Allocation not found", 404),
+    /** G2-3: more than the transfer still has unallocated (15 BR-05: money is never spent twice). */
+    ALLOCATION_EXCEEDS_TRANSFER("More than this transfer has left to allocate", 409),
+    /** G2-3: more than the order may still take - its value less what it holds, owes on receivables or pays the carrier. */
+    ALLOCATION_EXCEEDS_AMOUNT_DUE("More than this order still has to be paid", 409),
+    /** G2-3, 15 edge "tiền về sau khi đơn đã huỷ": the money stays the customer's credit, for another order or a refund. */
+    ALLOCATION_ORDER_CANCELLED("This order is cancelled: keep the money as the customer's credit or refund it", 409),
+    /** G2-3: a draft, settled or credit order takes no money by allocation (a credit order is paid on its receivables). */
+    ALLOCATION_ORDER_NOT_PAYABLE("This order does not take a payment now", 409),
+    /** G2-3, 15 BR-06: an allocation is reversed once, and a reversal is not reversed. */
+    ALLOCATION_ALREADY_REVERSED("This allocation was already reversed", 409),
+    /** G2-3: taking the money back would leave a confirmed order unpaid; the accountant must agree to hold it. */
+    PAYMENT_REVERSAL_NEEDS_HOLD("Taking this money back leaves a confirmed order unpaid: confirm putting it on hold", 409),
+    /** G2-3: money already refunded, or the order settled, closed or cancelled: the reversal would rewrite history. */
+    PAYMENT_REVERSAL_NOT_ALLOWED("This payment can no longer be taken back", 409),
+    /** G2-3 (15 §4.2 step 3): the customer's terms do not let the balance be collected that way. */
+    BALANCE_POLICY_NOT_ALLOWED("This customer may not use that way of paying the balance", 409),
+    /** G2-3: a carrier remittance names a receivable the customer pays themselves. */
+    RECEIVABLE_NOT_CARRIER_COLLECTED("This receivable is not collected by a carrier", 409),
+    /** G2-3: the customer paid this balance to the carrier; record the carrier's remittance instead. */
+    RECEIVABLE_CARRIER_COLLECTED("The carrier collects this amount; record the carrier's remittance instead", 409),
+    /** G2-3: nothing is outstanding on this receivable; money for it again would be collected twice. */
+    RECEIVABLE_SETTLED("This receivable is paid in full", 409),
     /** SCRUM-466: a task is picked in one warehouse; the order's stock is held in more than one, or elsewhere. */
     FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE("Stock held for this order is in another warehouse", 409),
     /** SCRUM-267 (docs 07 step 6): the bin scanned is not the one this pick line takes its goods from. */

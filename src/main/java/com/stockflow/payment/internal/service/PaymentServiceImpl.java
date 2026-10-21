@@ -27,4 +27,12 @@ class PaymentServiceImpl implements PaymentService {
     public CreditPosition creditPosition(UUID customerId) {
         return new CreditPosition(book.outstanding(customerId), book.hasOverdue(customerId));
     }
+
+    @Override
+    @Transactional(readOnly = true)
+    public com.stockflow.payment.api.OrderLedger ledgerOf(UUID orderId) {
+        java.math.BigDecimal collected = book.collectedFor(orderId);
+        return new com.stockflow.payment.api.OrderLedger(collected,
+                collected.subtract(book.collectedOnReceivablesOf(orderId)).max(java.math.BigDecimal.ZERO));
+    }
 }

@@ -110,12 +110,12 @@ class OrderController {
             }
         }
         var command = OrderWebMapper.toCommand(request);
-        if (!mayPlaceForAnotherCustomer && command.depositPercent() != null) {
-            // The deposit share is the customer's terms, or a quote's (kltn-docs 15 §3) — never the
-            // customer's own pick: their configured share is used.
+        if (!mayPlaceForAnotherCustomer && (command.depositPercent() != null || command.balancePolicy() != null)) {
+            // The deposit share and how the balance is collected are the customer's terms, or a quote's (kltn-docs
+            // 15 §3, §4.2 step 3) — never the customer's own pick: their configured terms are used.
             command = new com.stockflow.order.api.PlaceOrderCommand(command.requestId(), command.customerId(),
                     command.shippingAddressId(), command.billingAddressId(), command.snapshotCustomer(),
-                    command.lines(), command.paymentTerm(), null);
+                    command.lines(), command.paymentTerm(), null, null);
         }
         return ApiResponse.ok(OrderWebMapper.toResponse(orderService.placeOrder(command)));
     }

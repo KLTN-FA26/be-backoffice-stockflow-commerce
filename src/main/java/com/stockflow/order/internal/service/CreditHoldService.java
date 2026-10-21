@@ -122,7 +122,8 @@ public class CreditHoldService {
                         "Customer %s may not be sold on %s terms".formatted(order.customerId(), term));
             }
             order.switchTermsAfterCreditRefusal(term,
-                    term == PaymentTerm.DEPOSIT && depositPercent == null ? terms.depositPercent() : depositPercent);
+                    term == PaymentTerm.DEPOSIT && depositPercent == null ? terms.depositPercent() : depositPercent,
+                    OrderServiceImpl.balancePolicyFor(term, null, terms));
             decide(order, CreditChecks.Outcome.REJECTED, note, by);
             // Waiting for payment again: its holds get a deadline, as at checkout (kltn-docs 14 BR-07).
             inventory.rearmReservations(orderId);
