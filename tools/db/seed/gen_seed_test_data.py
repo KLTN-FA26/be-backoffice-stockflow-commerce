@@ -1621,7 +1621,7 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
             # The application opens a pick and its pack together (FulfillmentServiceImpl.createTask); the task
             # list reads the pack of every pick and answers 404 for the whole page if one is missing.
             add("fulfillment.pack", id=pack_id, pick_id=pick_id, status="PENDING", packed_at=None, created_at=t_pick)
-        if pick_done:
+        else:
             shipped = "SHIPPED" in when
             pack_status = "PACKED" if shipped or cur == "IN_FULFILMENT" and not pick_partial else "PACKING"
             if cur == "ON_HOLD":

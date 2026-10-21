@@ -9,9 +9,16 @@
 -- The missing pack is written as the application would have left it: PENDING from the pick's creation,
 -- or CANCELLED when the pick was (OrderCancellationListener cancels both). Ids are derived from the
 -- pick's id, so a second run inserts nothing (uk_fulfillment_pack_pick as well). Data only, no schema
--- change; run it on a deployed database once:
+-- change; run it on a deployed database once. From a checkout, against the VPS (deploy/README.md
+-- "Database access"); the container's own POSTGRES_USER / POSTGRES_DB are DB_USER / DB_NAME of its .env:
 --
---   docker exec -i stockflow-postgres psql -U stockflow -d stockflow -v ON_ERROR_STOP=1 \
+--   ssh deploy@<vps-ip> 'cd /opt/stockflow && docker compose exec -T postgres \
+--       sh -c "psql -v ON_ERROR_STOP=1 -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\""' \
+--       < tools/db/fixes/2026-10-21_pack_for_every_pick.sql
+--
+-- Against the local docker compose database:
+--
+--   docker exec -i stockflow-postgres psql -v ON_ERROR_STOP=1 -U stockflow -d stockflow \
 --       < tools/db/fixes/2026-10-21_pack_for_every_pick.sql
 -- =============================================================================
 
