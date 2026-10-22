@@ -14,8 +14,8 @@
 --                           #147's holds (V20261023000100): a transfer's hold is a hold on one stock row (bin and lot),
 --                           like a production hold - never a SKU reservation, never an allocation of one, never
 --                           expiring; released when picking is cancelled, consumed at dispatch.
---   transfer_order          gains delivery_mode (LP2-8: FULL_TRUCKLOAD by default; PARCEL keeps the manual dispatch
---                           of SCRUM-327), packed_at (its packing completed: ready for a load plan) and goods_left_at
+--   transfer_order          gains delivery_mode (LP2-8: FULL_TRUCKLOAD by default for new transfers; PARCEL keeps the
+--                           manual dispatch of SCRUM-327 - every transfer existing before this version is PARCEL), packed_at (its packing completed: ready for a load plan) and goods_left_at
 --                           (goods of it first left on a plan's vehicle, before the last vehicle's signature moves it to
 --                           IN_TRANSIT - from then picking is no longer cancelled, BR-04, as ordering.goods_left_at for
 --                           orders since V20261022001400).
@@ -42,8 +42,11 @@
 
 
 -- ----------------------------------------------------------------------------- inventory.transfer_order
+-- Transfers that exist already keep travelling as they did - dispatched by hand (PARCEL): an APPROVED or PICKING one
+-- must not be stranded behind a packing screen it was never planned for (review of #164). New ones default to
+-- FULL_TRUCKLOAD (LP2-8), set just below.
 ALTER TABLE inventory.transfer_order
-    ADD COLUMN delivery_mode VARCHAR(16) NOT NULL DEFAULT 'FULL_TRUCKLOAD',
+    ADD COLUMN delivery_mode VARCHAR(16) NOT NULL DEFAULT 'PARCEL',
     ADD COLUMN packed_at     TIMESTAMPTZ,
     ADD COLUMN goods_left_at TIMESTAMPTZ,
     ADD CONSTRAINT ck_transfer_order_delivery_mode CHECK (delivery_mode IN ('PARCEL', 'FULL_TRUCKLOAD')),
@@ -52,6 +55,8 @@ ALTER TABLE inventory.transfer_order
         OR status NOT IN ('DRAFT', 'PENDING_APPROVAL', 'APPROVED', 'CANCELLED')),
     ADD CONSTRAINT ck_transfer_order_goods_left CHECK (goods_left_at IS NULL
         OR status NOT IN ('DRAFT', 'PENDING_APPROVAL', 'APPROVED', 'CANCELLED'));
+
+ALTER TABLE inventory.transfer_order ALTER COLUMN delivery_mode SET DEFAULT 'FULL_TRUCKLOAD';
 
 COMMENT ON COLUMN inventory.transfer_order.delivery_mode IS
     'LP2-8: FULL_TRUCKLOAD (packed, load-planned, dispatched at the last vehicle''s signature) or PARCEL (manual dispatch)';

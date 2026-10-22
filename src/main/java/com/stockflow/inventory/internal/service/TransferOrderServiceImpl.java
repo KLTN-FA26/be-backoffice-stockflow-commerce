@@ -448,35 +448,58 @@ class TransferOrderServiceImpl implements TransferOrders, TransferFulfillment {
     }
 
     /**
-     * 10 step 4, BR-02/03 (review of #164): the packed units are allocated to the transfer - held at the source, so no
-     * order can reserve them while the transfer waits for and travels on its trucks. A carton shipped as it is holds
-     * its own rows, whole and free, or nothing ({@code STOCK_CARTON_NOT_SHIPPABLE}: never another carton's units in
-     * its place); the rest of a line by the item's removal policy ({@code INSUFFICIENT_STOCK} when the source no longer
-     * has it free). Each hold's root request id is its transfer line, so the dispatch knows which line it ships.
-     * Lock order as {@code reserve()}: the SKUs' advisory locks, then the rows in id order.
+     * 10 step 4, BR-02/03 (review of #164): the transfer's units are held at the source while it is packed and until it
+     * leaves, so no order can reserve them. See {@link #rehold}.
      */
+    @Override
+    public TransferView holdForPacking(UUID transferId, Map<UUID, Integer> unitsByLine,
+                                       Map<UUID, List<UUID>> cartonsByLine, Instant at) {
+        TransferOrder order = loadAtSource(transferId);
+        if (order.status() != TransferStatus.PICKING) {
+            throw new BusinessException(ErrorCode.INVALID_TRANSFER_TRANSITION,
+                    "Transfer %s is %s; its stock is held while it is picked".formatted(order.number(), order.status()));
+        }
+        rehold(order, unitsByLine, cartonsByLine, at);
+        return fulfillmentView(order);
+    }
+
+    /** Its packing completed: what was packed stays held (the rest is let go), and it is ready for a load plan. */
     @Override
     public TransferView markPacked(UUID transferId, Map<UUID, Integer> packedByLine,
                                    Map<UUID, List<UUID>> cartonsByLine, Instant at) {
         TransferOrder order = loadAtSource(transferId);
         order.markPacked(at);
+        rehold(order, packedByLine, cartonsByLine, at);
+        return fulfillmentView(transfers.save(order));
+    }
+
+    /**
+     * The transfer's holds become exactly {@code unitsByLine} per line: its live holds are released first, then held
+     * again. An unopened carton shipped as it is ({@code cartonsByLine}) holds its own rows and lot, whole and free -
+     * free of any hold but this transfer's, which were just released - or nothing ({@code STOCK_CARTON_NOT_SHIPPABLE}:
+     * never another carton's units in its place); the rest of a line by the item's removal policy
+     * ({@code INSUFFICIENT_STOCK} when the source no longer has it free). #147's rule holds too: units promised to live
+     * SKU reservations are never held. Each hold's root request id is its transfer line, so the dispatch knows which
+     * line it ships. Lock order as {@code reserve()}: the SKUs' advisory locks, then the rows in id order.
+     */
+    private void rehold(TransferOrder order, Map<UUID, Integer> unitsByLine, Map<UUID, List<UUID>> cartonsByLine,
+                        Instant at) {
         String sourcePrefix = prefixOf(order.fromWarehouseId());
-        policies.lockReservationStock(order.lines().stream().filter(l -> packedByLine.getOrDefault(l.id(), 0) > 0)
-                .map(l -> l.sku().code()).collect(Collectors.toSet()));
+        releaseHolds(order, at);
         record Hold(TransferLine line, StockItemId row, Quantity quantity) {
         }
         List<Hold> holds = new ArrayList<>();
         for (TransferLine line : order.lines()) {
-            int packed = packedByLine.getOrDefault(line.id(), 0);
-            if (packed <= 0) {
+            int units = unitsByLine.getOrDefault(line.id(), 0);
+            if (units <= 0) {
                 continue;
             }
-            int left = packed;
+            int left = units;
             Set<StockItemId> cartonRows = new HashSet<>();
             for (UUID cartonId : cartonsByLine.getOrDefault(line.id(), List.of())) {
                 StockPackage carton = stockPackages.findById(new StockPackageId(cartonId)).orElse(null);
                 List<StockItemId> rowIds = stockItems.findIdsInStockPackage(new StockPackageId(cartonId));
-                int units = 0;
+                int inCarton = 0;
                 for (StockItemId rowId : rowIds) {
                     StockItem row = stockItems.findById(rowId).orElseThrow();
                     if (!row.sku().equals(line.sku()) || !row.location().warehouseCode().equals(sourcePrefix)
@@ -486,13 +509,13 @@ class TransferOrderServiceImpl implements TransferOrders, TransferFulfillment {
                     }
                     holds.add(new Hold(line, rowId, row.onHand()));
                     cartonRows.add(rowId);
-                    units += row.onHand().value();
+                    inCarton += row.onHand().value();
                 }
                 if (carton == null || !carton.unopened() || carton.status() != StockPackageStatus.IN_STOCK
-                        || rowIds.isEmpty() || units > left) {
+                        || rowIds.isEmpty() || inCarton > left) {
                     throw notShippable(carton, order);
                 }
-                left -= units;
+                left -= inCarton;
             }
             if (left == 0) {
                 continue;
@@ -505,25 +528,23 @@ class TransferOrderServiceImpl implements TransferOrders, TransferFulfillment {
             }
         }
         // #147 (SCRUM-152): checkout reservations sit on no row - holding these units must not take ones promised to
-        // them, so the packed units must be covered by what is left once the live SKU reservations are counted. After
-        // the cartons' own check, which names the carton when it is the one in the way.
-        Map<com.stockflow.common.domain.Sku, Integer> packedBySku = new LinkedHashMap<>();
-        order.lines().forEach(line -> packedBySku.merge(line.sku(), packedByLine.getOrDefault(line.id(), 0),
-                Integer::sum));
-        requireSkuReservationsCovered(packedBySku, BusinessCalendar.date(at));
+        // them. After the cartons' own check, which names the carton when it is the one in the way.
+        Map<com.stockflow.common.domain.Sku, Integer> bySku = new LinkedHashMap<>();
+        order.lines().forEach(line -> bySku.merge(line.sku(), unitsByLine.getOrDefault(line.id(), 0), Integer::sum));
+        requireSkuReservationsCovered(bySku, BusinessCalendar.date(at));
         Map<StockItemId, StockItem> locked = new LinkedHashMap<>();
         holds.stream().map(Hold::row).distinct().sorted(Comparator.comparing(id -> id.value().toString()))
                 .forEach(id -> locked.put(id, stockItems.findByIdForUpdate(id).orElseThrow(() ->
                         new IllegalStateException("Stock item %s vanished while it was held".formatted(id)))));
+        UUID round = Identifiers.newId();
         for (Hold hold : holds) {
             UUID requestId = UUID.nameUUIDFromBytes(("transfer-hold:%s:%s:%s:%s".formatted(order.id(),
-                    hold.line().id(), hold.row().value(), at.toEpochMilli())).getBytes(StandardCharsets.UTF_8));
+                    hold.line().id(), hold.row().value(), round)).getBytes(StandardCharsets.UTF_8));
             locked.get(hold.row()).reserveForTransfer(order.id(), hold.line().id(), requestId, hold.quantity(), at);
         }
         locked.values().forEach(stockItems::save);
-        log.info("Transfer {} packed: {} unit(s) held on {} stock row(s) at the source", order.number(),
+        log.info("Transfer {}: {} unit(s) held on {} stock row(s) at the source", order.number(),
                 holds.stream().mapToInt(h -> h.quantity().value()).sum(), locked.size());
-        return fulfillmentView(transfers.save(order));
     }
 
     private static BusinessException notShippable(StockPackage carton, TransferOrder order) {

@@ -64,8 +64,19 @@ public interface TransferFulfillment {
     TransferView beginPacking(UUID transferId);
 
     /**
-     * Its packing completed (10 step 4-5, BR-02/03): the packed units are allocated to the transfer - held at the
-     * source so no order can sell them - and it is ready for a load plan. An unopened carton shipped as it is
+     * While it is packed (10 step 4, BR-02/03): the transfer's holds at the source become exactly {@code unitsByLine}
+     * per line - all requested units when packing starts, a carton shipped as it is ({@code cartonsByLine}) holding its
+     * own rows and lot - so no order can sell them. PICKING only.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code INSUFFICIENT_STOCK}, {@code STOCK_CARTON_NOT_SHIPPABLE}
+     *         as {@link #markPacked}
+     */
+    TransferView holdForPacking(UUID transferId, Map<UUID, Integer> unitsByLine, Map<UUID, List<UUID>> cartonsByLine,
+                                Instant at);
+
+    /**
+     * Its packing completed (10 step 4-5, BR-02/03): exactly the packed units stay held at the source (a partial pack
+     * lets the rest go) and it is ready for a load plan. An unopened carton shipped as it is
      * ({@code cartonsByLine}: line id to stock package ids) holds its own rows, whole; the rest of each line is held by
      * the item's removal policy. PICKING only.
      *

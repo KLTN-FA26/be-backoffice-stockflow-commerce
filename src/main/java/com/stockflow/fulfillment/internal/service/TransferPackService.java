@@ -96,7 +96,12 @@ class TransferPackService implements TransferPacks {
         if (live == null) {
             transfer = transfers.beginPacking(transferOrderId);
             live = packs.saveAndFlush(PackJpaEntity.forTransfer(Identifiers.newId(), transferOrderId));
-            log.info("Transfer {}: packing session opened at the source", transfer.number());
+            // 10 step 4, BR-02/03 (review of #164): from the moment packing starts, every requested unit is held at
+            // the source - no order can take what the packer is about to put in a box.
+            Map<UUID, Integer> requested = new HashMap<>();
+            transfer.lines().forEach(l -> requested.put(l.lineId(), l.requested()));
+            transfers.holdForPacking(transferOrderId, requested, Map.of(), clock.instant());
+            log.info("Transfer {}: packing session opened at the source, its stock held", transfer.number());
         }
         Context ctx = new Context(packs.lockById(live.getId()).orElseThrow(), transfer);
         PackingSession session = load(ctx);
@@ -179,6 +184,8 @@ class TransferPackService implements TransferPacks {
         PackingSession session = workable(ctx, actor);
         session.voidPackage(packageId, actor.userId(), clock.instant());
         store.save(session, ctx.pack());
+        // A carton taken apart lets its own rows go; its units are held from the line's stock again (LP2-8).
+        rehold(ctx, session);
         return view(ctx, session);
     }
 
@@ -191,8 +198,8 @@ class TransferPackService implements TransferPacks {
         TransferFulfillment.Carton carton = transfers.carton(lpn, ctx.transfer().fromWarehouseId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No stock carton labelled " + lpn));
         String code = carton.lpn();
-        if (!carton.unopened() || !carton.inStock() || !carton.atWarehouse() || !carton.sellable()
-                || carton.quantity() < 1) {
+        // Whether its rows are free of every hold but this transfer's is inventory's to say when it holds them (below).
+        if (!carton.unopened() || !carton.inStock() || !carton.atWarehouse() || carton.quantity() < 1) {
             throw new BusinessException(ErrorCode.STOCK_CARTON_NOT_SHIPPABLE, ("Carton %s is not an unopened carton "
                     + "in stock at the source warehouse with all of it sellable: open it and pack its units at the "
                     + "table").formatted(code));
@@ -219,6 +226,8 @@ class TransferPackService implements TransferPacks {
         PackageJpaEntity row = packages.findById(parcel.id()).orElseThrow();
         row.shipsCarton(carton.stockPackageId());
         packages.saveAndFlush(row);
+        // LP2-8, review of #164: the carton's own rows and lot are held for the transfer now - or 409, never swapped.
+        rehold(ctx, session);
         Measures suggested = packaging.unitCarton(new Sku(line.sku()), carton.uomConversionId())
                 .map(TransferPackService::measures).orElse(null);
         log.info("Transfer {}: carton {} ({} x {}) opened as package {} - weigh and measure it to seal",
@@ -250,7 +259,7 @@ class TransferPackService implements TransferPacks {
         PackingSession.Completion completion = session.complete(partial, note, true, actor.userId(), now);
         session.finishTransfer(actor.userId(), now);
         store.save(session, ctx.pack());
-        // 10 step 4, BR-02/03: what was packed is held at the source from now (a carton as it is, its own rows).
+        // 10 step 4, BR-02/03: exactly what was packed stays held (a partial pack lets the rest go).
         Map<UUID, Integer> packedByLine = new HashMap<>();
         session.lines().forEach(l -> {
             int units = session.packedOf(l.orderLineId());
@@ -258,13 +267,8 @@ class TransferPackService implements TransferPacks {
                 packedByLine.put(l.orderLineId(), units);
             }
         });
-        Map<UUID, UUID> cartons = cartonsOf(session.parcels());
-        Map<UUID, List<UUID>> cartonsByLine = new HashMap<>();
-        session.parcels().stream().filter(p -> p.status() == PackageStatus.SEALED && cartons.containsKey(p.id()))
-                .forEach(p -> p.lineTotals().keySet().forEach(line -> cartonsByLine
-                        .computeIfAbsent(line, k -> new ArrayList<>()).add(cartons.get(p.id()))));
         TransferFulfillment.TransferView packed = transfers.markPacked(ctx.transfer().transferId(), packedByLine,
-                cartonsByLine, now);
+                cartonsByLine(session), now);
         log.info("Transfer {} packed: {} package(s){} - ready for a load plan", packed.number(),
                 completion.parcels().size(), completion.partial() ? ", short of the request: " + note.trim() : "");
         return view(new Context(ctx.pack(), packed), session);
@@ -369,6 +373,23 @@ class TransferPackService implements TransferPacks {
                 t.status(), t.deliveryMode().name(), session.status().name(), session.startedBy(),
                 session.startedAt(), session.packedAt(), lines,
                 session.parcels().stream().map(p -> parcelView(p, skus, cartons)).toList());
+    }
+
+    /** Every requested unit held, the cartons in the session's live parcels holding their own rows (LP2-8). */
+    private void rehold(Context ctx, PackingSession session) {
+        Map<UUID, Integer> requested = new HashMap<>();
+        ctx.transfer().lines().forEach(l -> requested.put(l.lineId(), l.requested()));
+        transfers.holdForPacking(ctx.transfer().transferId(), requested, cartonsByLine(session), clock.instant());
+    }
+
+    /** The stock cartons of the session's parcels not voided, by the transfer line they ship. */
+    private Map<UUID, List<UUID>> cartonsByLine(PackingSession session) {
+        Map<UUID, UUID> cartons = cartonsOf(session.parcels());
+        Map<UUID, List<UUID>> out = new HashMap<>();
+        session.parcels().stream().filter(p -> p.status() != PackageStatus.VOIDED && cartons.containsKey(p.id()))
+                .forEach(p -> p.lineTotals().keySet().forEach(line -> out.computeIfAbsent(line,
+                        k -> new ArrayList<>()).add(cartons.get(p.id()))));
+        return out;
     }
 
     private Map<UUID, UUID> cartonsOf(List<PackingSession.Parcel> parcels) {
