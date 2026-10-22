@@ -15,6 +15,7 @@ final class FulfillmentResources {
     static final String DESIGN_REVERIFICATION = FulfillmentPermissions.DESIGN_REVERIFICATION;
     static final String CARRIERS = FulfillmentPermissions.CARRIERS;
     static final String VEHICLE_TYPES = FulfillmentPermissions.VEHICLE_TYPES;
+    static final String LOAD_ESTIMATES = FulfillmentPermissions.LOAD_ESTIMATES;
     static final String DISPATCH = FulfillmentPermissions.DISPATCH;
     static final String LOAD_CANCELLATIONS = FulfillmentPermissions.LOAD_CANCELLATIONS;
     static final String DELIVERY_OUTCOMES = FulfillmentPermissions.DELIVERY_OUTCOMES;
