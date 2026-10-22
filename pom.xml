@@ -67,6 +67,15 @@
 
     <!-- Filled in by jacoco:prepare-agent; empty so @{argLine} below still resolves with -Djacoco.skip=true. -->
     <argLine></argLine>
+
+    <!--
+      SonarQube Cloud (.github/workflows/build.yml, step "SonarQube Cloud analysis"). The organisation
+      is NOT here: CI passes it from the SONAR_ORGANIZATION repository variable, and the JaCoCo XML
+      path (target/site/jacoco/jacoco.xml, written by jacoco:report in the `test` phase) is passed
+      on the command line next to it.
+    -->
+    <sonar.projectKey>KLTN-FA26_be-backoffice-stockflow-commerce</sonar.projectKey>
+    <sonar.host.url>https://sonarcloud.io</sonar.host.url>
   </properties>
 
   <dependencyManagement>

@@ -142,6 +142,47 @@ jobs:
           path: target/spring-modulith-docs/
           retention-days: 30
 
+      # ---------------------------------------------------------------------
+      # SonarQube Cloud. Reuses the classes, test reports and JaCoCo XML the steps above already
+      # produced - the tests are NOT run a second time.
+      #
+      # Warning-only for the first week: continue-on-error keeps a Sonar outage or a misconfigured
+      # project from turning the required `build` check red, and the quality gate is not awaited
+      # (no sonar.qualitygate.wait). Once the gate has proved stable, drop continue-on-error and
+      # consider -Dsonar.qualitygate.wait=true.
+      #
+      # Skips cleanly until the repository owner has added the SONAR_TOKEN secret and the
+      # SONAR_ORGANIZATION variable. Also skipped for fork and Dependabot pull requests, which GitHub
+      # runs without repository secrets. The secret is read by the one shell step below, not by the
+      # whole job, and reaches Maven only through that step's env.
+      # ---------------------------------------------------------------------
+      - name: Check SonarQube Cloud is configured
+        id: sonar
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
+        run: |
+          if [ -n "$SONAR_TOKEN" ] && [ -n "$SONAR_ORGANIZATION" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::SonarQube Cloud analysis skipped: SONAR_TOKEN secret or SONAR_ORGANIZATION variable is not available."
+          fi
+
+      # Version pinned: sonar-maven-plugin 5.8.0.7211. fetch-depth: 0 above gives Sonar the history
+      # it needs for blame and new-code detection; setup-java above caches ~/.m2.
+      - name: SonarQube Cloud analysis
+        if: steps.sonar.outputs.enabled == 'true'
+        continue-on-error: true
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
+        run: >-
+          mvn -B -ntp
+          org.sonarsource.scanner.maven:sonar-maven-plugin:5.8.0.7211:sonar
+          -Dsonar.organization="$SONAR_ORGANIZATION"
+          -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
+
   # -------------------------------------------------------------------------
   # The image is built on every push to a protected branch, not only at release. An image that is
   # only built at release time is one whose Dockerfile breaks silently for weeks.
@@ -157,6 +198,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # Only for uploading the Trivy SARIF to code scanning (step below).
+      security-events: write
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
     steps:
@@ -195,6 +238,40 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # ---------------------------------------------------------------------
+      # Image vulnerability scan, after the push and before deploy (deploy needs this job).
+      #
+      # WARNING-ONLY: exit-code is 0, so findings never block a deploy yet. Switch exit-code to '1'
+      # after one week (and drop continue-on-error on the scan step) once the existing findings
+      # have been triaged. Results go to code scanning (Security tab) as SARIF.
+      #
+      # continue-on-error covers infrastructure trouble (Trivy DB download, a registry hiccup) so
+      # the scanner can never stop a deploy while it is still in its trial week.
+      # ---------------------------------------------------------------------
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        continue-on-error: true
+        env:
+          # The image lives in GHCR; the scanner pulls it from the registry.
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          image-ref: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          # TODO: one week after this landed, change to '1' so fixable CRITICAL/HIGH findings block deploy.
+          exit-code: '0'
+
+      - name: Upload Trivy results to code scanning
+        if: always() && hashFiles('trivy-results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
+        continue-on-error: true
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-image
 
   # -------------------------------------------------------------------------
   # develop -> the VPS. deploy/README.md describes the server side and the secrets this needs.
