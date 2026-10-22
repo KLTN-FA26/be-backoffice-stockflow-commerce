@@ -5,6 +5,7 @@ import com.stockflow.contracts.OrderPlaced;
 import com.stockflow.order.api.BalancePolicy;
 import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.DeliveryFailureReason;
+import com.stockflow.order.api.DeliveryMode;
 import com.stockflow.order.api.HoldReason;
 import com.stockflow.order.api.OrderShipmentStatus;
 import com.stockflow.order.api.OrderStatus;
@@ -148,6 +149,16 @@ public final class Order extends AggregateRoot {
      * whatever its status does next (a mixed order printed in parallel goes back to READY_TO_FULFILL).
      */
     private Instant fulfilmentStartedAt;
+    /**
+     * LP-1 (lead's decision 2026-10-22): how the order travels - parcels by default, or a full truckload the Order
+     * Coordinator chose at release or since. Locked once packing started ({@link #deliveryModeLocked()}).
+     */
+    private DeliveryMode deliveryMode = DeliveryMode.PARCEL;
+    /**
+     * LP-1: when fulfillment opened the order's first package, in the same transaction under this order's row lock
+     * ({@link #recordPackingStarted}). From then on the delivery mode is what packing copies onto the shipments.
+     */
+    private Instant packingStartedAt;
     private final List<OrderShipment> shipments = new ArrayList<>();
     /** Status changes not saved yet, with who and why; drained by the repository. */
     private final List<OrderTransition> transitions = new ArrayList<>();
@@ -384,11 +395,17 @@ public final class Order extends AggregateRoot {
         } else if (depositPercent != null) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Only a deposit order takes a deposit percentage");
         }
+        BalancePolicy resolved = chosen == PaymentTerm.DEPOSIT
+                ? (policy == null ? BalancePolicy.BEFORE_DELIVERY : policy) : null;
+        if (resolved == BalancePolicy.ON_DELIVERY && deliveryMode == DeliveryMode.FULL_TRUCKLOAD) {
+            // LP-2: the other way round of changeDeliveryMode - a full truckload has no carrier collecting on delivery.
+            throw new BusinessException(ErrorCode.DELIVERY_MODE_FTL_NO_COD, ("Order %s goes as a full truckload: its "
+                    + "balance cannot be collected on delivery").formatted(orderNumber));
+        }
         this.paymentTerm = chosen;
         this.depositRequired = deposit;
         this.creditTermDays = creditTermDays;
-        this.balancePolicy = chosen == PaymentTerm.DEPOSIT
-                ? (policy == null ? BalancePolicy.BEFORE_DELIVERY : policy) : null;
+        this.balancePolicy = resolved;
     }
 
 
@@ -908,6 +925,88 @@ public final class Order extends AggregateRoot {
         this.fulfilmentStartedAt = at;
     }
     public boolean awaitingProduction() { return awaitingProduction; }
+
+    /**
+     * LP-1 / LP-2 (lead's decisions 2026-10-22): the Order Coordinator chooses how the order travels - at release, or
+     * since, until packing starts. A full truckload is refused while the carrier would collect the balance on delivery
+     * ({@code DELIVERY_MODE_FTL_NO_COD}): Sales changes the balance policy first.
+     *
+     * @return whether this changed the order
+     * @throws BusinessException {@code DELIVERY_MODE_LOCKED} once packing started, or the order is past packing,
+     *         cancelled or closed; {@code DELIVERY_MODE_FTL_NO_COD}
+     */
+    public boolean changeDeliveryMode(DeliveryMode mode) {
+        java.util.Objects.requireNonNull(mode, "mode");
+        if (deliveryModeLocked()) {
+            throw new BusinessException(ErrorCode.DELIVERY_MODE_LOCKED, ("Order %s is %s%s: how it travels can no "
+                    + "longer change").formatted(orderNumber, status,
+                    packingStartedAt != null || packedAt != null ? " and its packing started" : ""));
+        }
+        if (mode == DeliveryMode.FULL_TRUCKLOAD && carrierCollects()) {
+            throw new BusinessException(ErrorCode.DELIVERY_MODE_FTL_NO_COD, ("Order %s has its balance collected on "
+                    + "delivery: a full truckload needs another balance policy first").formatted(orderNumber));
+        }
+        if (deliveryMode == mode) {
+            return false;
+        }
+        this.deliveryMode = mode;
+        return true;
+    }
+
+    /** LP-1: whether the delivery mode can no longer change - see {@link #deliveryModeLocked(OrderStatus, OrderStatus,
+     *  Instant, Instant)}. */
+    public boolean deliveryModeLocked() {
+        return deliveryModeLocked(status, statusBeforeHold, packingStartedAt, packedAt);
+    }
+
+    /**
+     * LP-1: the delivery mode is open until packing starts - the order's first package opened, or (rows packed before
+     * LP-1) a package completed - and only while the order is not yet past packing: up to PICKING, or on hold from
+     * there (a credit hold, which names no status to go back to, included). PARTIALLY_FULFILLED and later, cancelled
+     * and closed orders are locked whatever their packing facts say. Also the list row's reading.
+     */
+    public static boolean deliveryModeLocked(OrderStatus status, OrderStatus statusBeforeHold, Instant packingStarted,
+                                             Instant packed) {
+        if (packingStarted != null || packed != null) {
+            return true;
+        }
+        OrderStatus effective = status == OrderStatus.ON_HOLD ? statusBeforeHold : status;
+        if (effective == null) {
+            return false;
+        }
+        return switch (effective) {
+            case DRAFT, PENDING_PAYMENT, CONFIRMED, IN_PRODUCTION, READY_TO_FULFILL, PICKING -> false;
+            default -> true;
+        };
+    }
+
+    /**
+     * LP-1: fulfillment opened a package of the order - packing started, the delivery mode is locked from now on.
+     * Idempotent.
+     *
+     * @return whether this was the first package
+     */
+    public boolean recordPackingStarted(Instant at) {
+        java.util.Objects.requireNonNull(at, "at");
+        if (status == OrderStatus.CANCELLED) {
+            throw new BusinessException(ErrorCode.ORDER_CANCELLED,
+                    "Order %s is cancelled; nothing of it is packed".formatted(orderNumber));
+        }
+        if (packingStartedAt != null) {
+            return false;
+        }
+        packingStartedAt = at;
+        return true;
+    }
+
+    public DeliveryMode deliveryMode() { return deliveryMode; }
+    public Instant packingStartedAt() { return packingStartedAt; }
+
+    /** Rehydration of the delivery mode and when packing started. */
+    public void restoreDeliveryMode(DeliveryMode mode, Instant packingStarted) {
+        this.deliveryMode = mode == null ? DeliveryMode.PARCEL : mode;
+        this.packingStartedAt = packingStarted;
+    }
 
     /** Rehydration of the partial-shipment decision and the early shipment's wait for production. */
     public void restorePartialShipment(boolean allowed, boolean awaiting) {

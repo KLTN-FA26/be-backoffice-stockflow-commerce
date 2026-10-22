@@ -72,6 +72,7 @@ final class OrderPersistenceMapper {
         order.restoreRemainderFee(entity.getRemainderFeeAmount(), entity.getRemainderFeeRetainedAmount(),
                 entity.getRemainderFeePaidAmount());
         order.restoreFulfilmentStarted(entity.getFulfilmentStartedAt());
+        order.restoreDeliveryMode(entity.getDeliveryMode(), entity.getPackingStartedAt());
         order.restoreLifecycle(entity.getHoldReason(), entity.getStatusBeforeHold(), entity.getHoldNote(),
                 entity.getShippedAt(), entity.getDeliveredAt(), entity.getDeliveryFailureReason(),
                 entity.getCompletedAt(), entity.getRefundedAt(), entity.getClosedAt(), entity.getBilledAmount(),
@@ -117,6 +118,7 @@ final class OrderPersistenceMapper {
         entity.applyRemainderFee(order.remainderFeeAmount(), order.remainderFeeRetainedAmount(),
                 order.remainderFeePaidAmount());
         entity.applyFulfilmentStarted(order.fulfilmentStartedAt());
+        entity.applyDeliveryMode(order.deliveryMode(), order.packingStartedAt());
         entity.applyLifecycle(order.holdReason(), order.statusBeforeHold(), order.holdNote(), order.shippedAt(),
                 order.deliveredAt(), order.deliveryFailureReason(), order.completedAt(), order.refundedAt(),
                 order.closedAt(), order.billedAmount(), order.receivablePaidAmount(), order.remainderRefundAmount());
@@ -171,7 +173,9 @@ final class OrderPersistenceMapper {
                         entity.getPackedAt(), entity.getShippedAt(), entity.getDeliveredAt(),
                         entity.getDeliveryFailureReason(), entity.getCompletedAt(), entity.getClosedAt(),
                         entity.getBilledAmount(), null, null, null, List.of(), List.of(), null, null,
-                        entity.isAllowPartialShipment(), printLinesReady(entity)));
+                        entity.isAllowPartialShipment(), printLinesReady(entity), entity.getDeliveryMode(),
+                        com.stockflow.order.internal.domain.Order.deliveryModeLocked(entity.getStatus(),
+                                entity.getStatusBeforeHold(), entity.getPackingStartedAt(), entity.getPackedAt())));
     }
 
     /**

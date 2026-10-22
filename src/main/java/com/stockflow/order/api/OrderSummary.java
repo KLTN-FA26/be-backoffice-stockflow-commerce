@@ -72,17 +72,35 @@ public record OrderSummary(
      *                               for a mixed order, its stock while the prints are made (PACK-EARLY)
      * @param printLinesReady        its printed goods are at packing: no print lines, or production completed. False
      *                               while it is printed, or partly fulfilled before production completed (PACK-EARLY)
+     * @param deliveryMode           how it travels (LP-1, lead's decision 2026-10-22): PARCEL unless the Order
+     *                               Coordinator chose a full truckload; packing copies it onto every shipment
+     * @param deliveryModeLocked     packing started (or the order is past it, cancelled or closed): the delivery mode
+     *                               can no longer change
      */
     public record Lifecycle(HoldReason holdReason, OrderStatus statusBeforeHold, String holdNote, Instant packedAt,
                             Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason, Instant completedAt,
                             Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal, BigDecimal amountDue,
                             BigDecimal amountDueBeforeHandover, List<LineProgress> lines, List<Shipment> shipments,
                             BigDecimal amountDueOnDelivery, BigDecimal wholeOrderCodAmount, boolean allowPartialShipment,
-                            boolean printLinesReady) {
+                            boolean printLinesReady, DeliveryMode deliveryMode, boolean deliveryModeLocked) {
 
         public Lifecycle {
             lines = lines == null ? List.of() : List.copyOf(lines);
             shipments = shipments == null ? List.of() : List.copyOf(shipments);
+            deliveryMode = deliveryMode == null ? DeliveryMode.PARCEL : deliveryMode;
+        }
+
+        /** Without the delivery mode (callers written before LP-1): a parcel order, still open. */
+        public Lifecycle(HoldReason holdReason, OrderStatus statusBeforeHold, String holdNote, Instant packedAt,
+                         Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason,
+                         Instant completedAt, Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal,
+                         BigDecimal amountDue, BigDecimal amountDueBeforeHandover, List<LineProgress> lines,
+                         List<Shipment> shipments, BigDecimal amountDueOnDelivery, BigDecimal wholeOrderCodAmount,
+                         boolean allowPartialShipment, boolean printLinesReady) {
+            this(holdReason, statusBeforeHold, holdNote, packedAt, shippedAt, deliveredAt, deliveryFailureReason,
+                    completedAt, closedAt, billedAmount, effectiveTotal, amountDue, amountDueBeforeHandover, lines,
+                    shipments, amountDueOnDelivery, wholeOrderCodAmount, allowPartialShipment, printLinesReady,
+                    DeliveryMode.PARCEL, false);
         }
 
         /** Without the partial-shipment block (callers written before PACK-PARTIAL): not allowed, prints ready. */

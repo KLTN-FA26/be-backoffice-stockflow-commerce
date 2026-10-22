@@ -429,6 +429,21 @@ it on a load (refused when the shipment is added, 409 `ORDER_PARTIAL_SHIPMENT_NO
 still says why when completing a part. It cannot be stopped while the order waits for production after its stock left
 (409 `ORDER_PARTIAL_SHIPMENT_LOCKED`).
 
+**Delivery mode is the coordinator's, until packing starts (LP-1 / LP-2, lead 2026-10-22; 09 §3, 17 §4.2 step 4).**
+`customer_order.delivery_mode` is `PARCEL` (default; every order before V20261022000800) or `FULL_TRUCKLOAD`. The Order
+Coordinator sets it with the release (`POST /orders/{id}/release {warehouseId, deliveryMode?}`; a mode other than the
+order's needs `sales-order-delivery-modes:UPDATE` besides `sales-orders:APPROVE`) or with
+`PUT /orders/{id}/delivery-mode {deliveryMode, note?}` (`sales-order-delivery-modes:UPDATE`: ORDER_COORDINATOR,
+SYSTEM_ADMIN). Open while the order is DRAFT..PICKING (or on hold from there) and no package of it was opened yet:
+fulfillment records `packing_started_at` (`OrderService.recordPackingStarted`, under the order's row lock) when it opens
+the first package; from then on, and from PARTIALLY_FULFILLED on, 409 `DELIVERY_MODE_LOCKED`. A full truckload is never
+collected on delivery: `FULL_TRUCKLOAD` on a DEPOSIT / ON_DELIVERY order, and ON_DELIVERY terms on a full-truckload
+order (a draft's terms, a switch after a credit refusal), are 409 `DELIVERY_MODE_FTL_NO_COD` (DB: `ck_order_ftl_no_cod`,
+twin of `ck_shipment_ftl_no_cod`). Each change is a row of `ordering.order_delivery_mode_change`, shown to staff as
+`type = DELIVERY_MODE_CHANGE` (`deliveryMode`, `previousDeliveryMode`, note as `reason`). Packing copies the mode onto
+every shipment; a FULL_TRUCKLOAD shipment is refused on a parcel load (409 `PACKAGE_REQUIRES_LOAD_PLAN`, and a load
+opened without ids picks PARCEL shipments only), so it waits at READY_TO_DISPATCH until load-plan dispatch (PR E).
+
 **Stock first, prints later (PACK-EARLY, lead 2026-10-21; 17 BR-06 "trừ khi chính sách split-ship", D9).** A mixed
 order IN_PRODUCTION gets its fulfillment task for the stock lines (the order stays IN_PRODUCTION). With partial
 shipments allowed, the stock is packed as a partial shipment (the print lines are not at packing:

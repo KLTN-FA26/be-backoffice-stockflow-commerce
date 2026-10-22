@@ -202,6 +202,16 @@ public interface OrderService {
     void recordPacked(UUID orderId);
 
     /**
+     * LP-1 (lead's decision 2026-10-22): fulfillment opened a package of the order - packing started, and the order's
+     * delivery mode is locked from now on. Joins the caller's transaction and takes the order's row lock, so a change of
+     * the mode in flight either came first (packing goes on with the new mode) or is refused afterwards
+     * ({@code DELIVERY_MODE_LOCKED}). Idempotent.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code ORDER_CANCELLED}
+     */
+    void recordPackingStarted(UUID orderId);
+
+    /**
      * The order's status read under its row lock, in the caller's transaction: what production checks before it
      * completes, releases or carries on work for the order, so a cancellation cannot slip in between the check and
      * the work (audit of #109). Empty for an unknown order.
