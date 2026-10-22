@@ -6,8 +6,11 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
 
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -71,15 +74,15 @@ public class UomConversionRepository {
     }
 
     /** The units of each of these SKUs, the base unit first, then by code; a SKU without units is absent. */
-    public java.util.Map<String, List<UomConversion>> bySkus(Collection<String> skus) {
+    public Map<String, List<UomConversion>> bySkus(Collection<String> skus) {
         if (skus.isEmpty()) {
-            return java.util.Map.of();
+            return Map.of();
         }
         List<UomConversion> rows = jdbc.query(
                 SELECT + " where i.sku = any (?) order by i.sku, c.is_base desc, c.unit_of_measure", ps ->
                         ps.setArray(1, ps.getConnection().createArrayOf("text", skus.toArray())), ROW);
-        java.util.Map<String, List<UomConversion>> out = new java.util.HashMap<>();
-        rows.forEach(u -> out.computeIfAbsent(u.sku(), k -> new java.util.ArrayList<>()).add(u));
+        Map<String, List<UomConversion>> out = new HashMap<>();
+        rows.forEach(u -> out.computeIfAbsent(u.sku(), k -> new ArrayList<>()).add(u));
         return out;
     }
 

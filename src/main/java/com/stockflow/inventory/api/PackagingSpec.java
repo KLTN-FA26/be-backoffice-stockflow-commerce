@@ -63,6 +63,8 @@ public record PackagingSpec(
         ITEM_BOX_INCOMPLETE,
         /** The item has no unit weight, so the partial carton's weight is the carton's pro rata. */
         UNIT_WEIGHT_UNKNOWN,
+        /** The unit is declared lighter than the units it holds; the partial carton was capped at its weight. */
+        CARTON_WEIGHT_BELOW_CONTENTS,
         /** The item's unit size was used although it ships as several boxes; they were counted as one. */
         PACKAGE_COUNT_IGNORED
     }

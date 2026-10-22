@@ -213,16 +213,16 @@ class PackagingSpecResolverIntegrationTest {
 
         // A packing unit with its size: the largest one.
         units.add(sku, pack("BOX", 10, "5.5", false));
-        UomConversion pallet = units.add(sku, pack("PALLET", 100, "55", false));
+        UomConversion pallet = units.add(sku, pack("PALLET", 100, "80", false));
         PackagingSpec largest = resolver.resolve(sku, 250);
         assertThat(largest.level()).isEqualTo(RuleLevel.LARGEST_PACKING_UNIT);
         assertThat(largest.unitOfMeasure()).isEqualTo("PALLET");
         assertThat(largest.fullCartons()).isEqualTo(2);
         assertThat(largest.partialCarton().units()).isEqualTo(50);
-        assertThat(largest.partialCarton().weightKg()).isEqualByComparingTo("30.000");   // 50 * 0.5 + (55 - 100 * 0.5)
+        assertThat(largest.partialCarton().weightKg()).isEqualByComparingTo("45.000");   // 50 * 0.7 + (80 - 100 * 0.7)
 
         // The mark beats the largest unit.
-        units.change(sku, pallet.id(), units.conversion(sku, pallet.id()).version(), pack("PALLET", 100, "55", false));
+        units.change(sku, pallet.id(), units.conversion(sku, pallet.id()).version(), pack("PALLET", 100, "80", false));
         UomConversion box10 = units.conversions(sku, 0, 20).items().stream()
                 .filter(u -> u.unitOfMeasure().equals("BOX")).findFirst().orElseThrow();
         units.change(sku, box10.id(), box10.version(), pack("BOX", 10, "5.5", true));

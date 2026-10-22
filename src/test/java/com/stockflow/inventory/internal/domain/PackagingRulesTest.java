@@ -123,14 +123,18 @@ class PackagingRulesTest {
     }
 
     @Test
-    @DisplayName("level 1 on the base unit without any size: skipped with a warning")
+    @DisplayName("level 1 on the base unit without any size: MISSING (LP2-3), a larger unit is not a substitute")
     void baseUnitAsDefaultShippingWithoutData() {
         List<UomConversion> units = List.of(baseShipping(), carton("CTN", 10));
         PackagingSpec spec = PackagingRules.resolve(ITEM, "SKU",
                 item("0.5", null, null, null, null, null, null, null, 1, true), units, 25);
-        assertThat(spec.level()).isEqualTo(RuleLevel.LARGEST_PACKING_UNIT);
-        assertThat(spec.warnings()).extracting(PackagingSpec.SpecWarning::code)
-                .containsExactly(WarningCode.SHIPPING_UNIT_INCOMPLETE);
+        assertThat(spec.status()).isEqualTo(PackagingSpec.Status.MISSING);
+        assertThat(spec.carton()).isNull();
+        assertThat(spec.missing().fields()).containsExactly("lengthCm", "widthCm", "heightCm");
+        assertThat(spec.warnings()).singleElement().satisfies(w -> {
+            assertThat(w.code()).isEqualTo(WarningCode.SHIPPING_UNIT_INCOMPLETE);
+            assertThat(w.unitOfMeasure()).isEqualTo("EACH");
+        });
     }
 
     // ---- level 2: the largest packing unit with a full size ------------------------------------------------------
@@ -169,15 +173,48 @@ class PackagingRulesTest {
     // ---- the remainder carton (LP2-4) ---------------------------------------------------------------------------
 
     @Test
-    @DisplayName("cartons = ceil(qty / factor): the remainder is one full-size carton, weighed pro rata plus packaging")
+    @DisplayName("cartons = ceil(qty / factor): the remainder is one full-size carton, contents pro rata, tare once")
     void remainderCarton() {
-        // Item unit 0.5 kg; a carton of 10 weighs 6.0 kg: 5.0 for the units, 1.0 for the packaging.
-        PackagingSpec spec = resolve(withBox(), 27, pack("CTN", 10, "6.0", "50", "40", "30", true, false));
+        // Each unit ships at 0.7 kg (its box, net 0.5 kg inside); a carton of 10 weighs 8.0 kg: 7.0 for the
+        // units, 1.0 of tare.
+        PackagingSpec spec = resolve(withBox(), 27, pack("CTN", 10, "8.0", "50", "40", "30", true, false));
         assertThat(spec.fullCartons()).isEqualTo(2);
         assertThat(spec.partialCarton().units()).isEqualTo(7);
-        assertThat(spec.partialCarton().weightKg()).isEqualByComparingTo("4.500");   // 7 * 0.5 + 1.0
+        assertThat(spec.partialCarton().weightKg()).isEqualByComparingTo("5.900");   // 7 * 0.7 + 1.0
         assertThat(spec.totalCartons()).isEqualTo(3);
-        assertThat(spec.carton().weightKg()).isEqualByComparingTo("6.000");
+        assertThat(spec.carton().weightKg()).isEqualByComparingTo("8.000");
+        assertThat(spec.warnings()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("seeded LYG-1L-12OZ, 25 units on a 24-carton pallet: the remainder is 31.5 kg, not 43.46")
+    void remainderOfTheSeededPallet() {
+        // Seed: carton net 5.98 kg, shipped box 6.5 kg (52 x 42 x 60); pallet of 24 weighs 181 kg = 24 * 6.5 + 25.
+        ItemLogistics seeded = item("5.98", "50", "40", "58", "6.5", "52", "42", "60", 1, true);
+        PackagingSpec spec = resolve(seeded, 25, pack("PALLET", 24, "181", "120", "100", "150", true, true));
+        assertThat(spec.level()).isEqualTo(RuleLevel.DEFAULT_SHIPPING_UNIT);
+        assertThat(spec.fullCartons()).isEqualTo(1);
+        assertThat(spec.partialCarton().units()).isEqualTo(1);
+        assertThat(spec.partialCarton().weightKg()).isEqualByComparingTo("31.500");   // 1 * 6.5 + (181 - 24 * 6.5)
+        assertThat(spec.warnings()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a unit that ships as N boxes weighs packageWeightKg x N gross; the packaging tare still counts once")
+    void remainderOfAMultiBoxUnit() {
+        // 2 boxes of 1.5 kg per unit = 3.0 kg gross; a carton of 4 weighs 14.0 kg: 12.0 for the units, 2.0 of tare.
+        ItemLogistics kit = item("2.0", "60", "40", "30", "1.5", "62", "42", "32", 2, true);
+        PackagingSpec spec = resolve(kit, 6, pack("CTN", 4, "14.0", "130", "90", "70", true, false));
+        assertThat(spec.partialCarton().units()).isEqualTo(2);
+        assertThat(spec.partialCarton().weightKg()).isEqualByComparingTo("8.000");   // 2 * 3.0 + 2.0
+    }
+
+    @Test
+    @DisplayName("without a declared package weight the net unit weight is the gross")
+    void remainderFallsBackToNetWeight() {
+        // Net 0.5 kg, no package weight; a carton of 10 weighs 6.0 kg: 5.0 for the units, 1.0 of tare.
+        PackagingSpec spec = resolve(unitOnly(), 27, pack("CTN", 10, "6.0", "50", "40", "30", true, false));
+        assertThat(spec.partialCarton().weightKg()).isEqualByComparingTo("4.500");   // 7 * 0.5 + 1.0
     }
 
     @Test
@@ -193,7 +230,7 @@ class PackagingRulesTest {
     @Test
     @DisplayName("without a unit weight the partial carton is the carton's weight pro rata, with a warning")
     void remainderWithoutUnitWeight() {
-        PackagingSpec spec = resolve(item(null, "10", "8", "6", "0.7", "12", "9", "7", 1, true), 5,
+        PackagingSpec spec = resolve(item(null, "10", "8", "6", null, "12", "9", "7", 1, true), 5,
                 pack("CTN", 8, "4.0", "50", "40", "30", true, false));
         assertThat(spec.partialCarton().weightKg()).isEqualByComparingTo("2.500");   // 4.0 * 5 / 8
         assertThat(spec.warnings()).extracting(PackagingSpec.SpecWarning::code)
@@ -201,11 +238,23 @@ class PackagingRulesTest {
     }
 
     @Test
-    @DisplayName("a carton lighter than its units adds no packaging and the partial never outweighs a full carton")
+    @DisplayName("a carton lighter than its units adds no tare, is capped at the carton weight, and says so")
     void remainderNeverAboveFullCarton() {
-        // 10 units of 0.5 kg = 5.0 kg but the carton is declared 4.0 kg.
+        // 10 units of 0.7 kg = 7.0 kg but the carton is declared 4.0 kg; 9 of them would be 6.3 kg.
         PackagingSpec spec = resolve(withBox(), 19, pack("CTN", 10, "4.0", "50", "40", "30", true, false));
         assertThat(spec.partialCarton().weightKg()).isEqualByComparingTo("4.000");
+        assertThat(spec.warnings()).singleElement().satisfies(w -> {
+            assertThat(w.code()).isEqualTo(WarningCode.CARTON_WEIGHT_BELOW_CONTENTS);
+            assertThat(w.unitOfMeasure()).isEqualTo("CTN");
+        });
+    }
+
+    @Test
+    @DisplayName("a carton exactly as heavy as its contents has no tare and no warning")
+    void cartonEqualToContentsIsFine() {
+        PackagingSpec spec = resolve(withBox(), 13, pack("CTN", 10, "7.0", "50", "40", "30", true, false));
+        assertThat(spec.partialCarton().weightKg()).isEqualByComparingTo("2.100");   // 3 * 0.7
+        assertThat(spec.warnings()).isEmpty();
     }
 
     // ---- level 3: the item's box and kits (LP2-5) ----------------------------------------------------------------
