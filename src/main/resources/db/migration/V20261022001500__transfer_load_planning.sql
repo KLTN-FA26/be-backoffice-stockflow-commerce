@@ -8,6 +8,10 @@
 -- plans the parcels "của các đơn giao nguyên chuyến hoặc của MỘT lệnh chuyển kho": a TRANSFER plan holds the parcels of
 -- one transfer order, whole, and nothing of a customer order (and the other way round).
 --
+--   stock_reservation       a hold belongs to an order, a production order OR a transfer order (10 step 4, BR-02/03:
+--                           the source's stock is allocated to the transfer at picking - here when its packing
+--                           completes, an unopened carton shipped as it is holding its own rows). A transfer's hold
+--                           never expires; it is released when picking is cancelled and consumed at dispatch.
 --   transfer_order          gains delivery_mode (LP2-8: FULL_TRUCKLOAD by default; PARCEL keeps the manual dispatch
 --                           of SCRUM-327), packed_at (its packing completed: ready for a load plan) and goods_left_at
 --                           (goods of it first left on a plan's vehicle, before the last vehicle's signature moves it to
@@ -52,6 +56,19 @@ COMMENT ON COLUMN inventory.transfer_order.delivery_mode IS
 COMMENT ON COLUMN inventory.transfer_order.packed_at IS 'Its packing completed: ready for a load plan (10 step 5)';
 COMMENT ON COLUMN inventory.transfer_order.goods_left_at IS
     'Goods of it first left on a load plan''s vehicle; from then picking is not cancelled (10 BR-04)';
+
+
+-- ----------------------------------------------------------------------------- stock_reservation: a third owner
+ALTER TABLE inventory.stock_reservation
+    ADD COLUMN transfer_order_id UUID,
+    ADD CONSTRAINT fk_stock_reservation_transfer_order FOREIGN KEY (transfer_order_id)
+        REFERENCES inventory.transfer_order (id) ON DELETE RESTRICT,
+    ADD CONSTRAINT ck_stock_reservation_transfer_pinned CHECK (transfer_order_id IS NULL OR expires_at IS NULL);
+ALTER TABLE inventory.stock_reservation DROP CONSTRAINT ck_stock_reservation_owner;
+ALTER TABLE inventory.stock_reservation
+    ADD CONSTRAINT ck_stock_reservation_owner CHECK (num_nonnulls(order_id, production_order_id, transfer_order_id) = 1);
+CREATE INDEX ix_stock_reservation_transfer_order ON inventory.stock_reservation (transfer_order_id)
+    WHERE transfer_order_id IS NOT NULL;
 
 
 -- ----------------------------------------------------------------------------- pack

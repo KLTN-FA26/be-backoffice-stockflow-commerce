@@ -37,6 +37,17 @@ class TransferOrderRepositoryAdapter implements TransferOrderRepository, Transfe
         return jpa.findByIdWithLines(id).map(TransferOrderRepositoryAdapter::toDomain);
     }
 
+    @Override
+    public List<TransferOrder> findAllById(java.util.Collection<UUID> ids) {
+        return ids.isEmpty() ? List.of() : jpa.findAllWithLines(ids).stream()
+                .map(TransferOrderRepositoryAdapter::toDomain).toList();
+    }
+
+    @Override
+    public List<TransferOrder> findAwaitingDispatch(UUID warehouseId) {
+        return jpa.findAwaitingDispatch(warehouseId).stream().map(TransferOrderRepositoryAdapter::toDomain).toList();
+    }
+
     /** Same counter table and upsert as stock adjustment numbers; see StockAdjustmentRepositoryAdapter. */
     @Override
     public String nextNumber(LocalDate day) {

@@ -218,11 +218,16 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
      * the warehouse, with their sealed parcels - whole: one with a parcel another live plan holds is not offered.
      */
     private List<CandidateShipment> transferCandidates(UUID warehouseId, UUID loadPlanId) {
-        List<UUID> packed = packs.findByTransferOrderIdNotNullAndStatus(
+        // Review of #164: the transfers waiting at this warehouse first (one query), then their packed sessions (one).
+        List<com.stockflow.inventory.api.TransferFulfillment.TransferView> waiting = transfers.awaitingDispatch(
+                warehouseId);
+        Set<UUID> packed = waiting.isEmpty() ? Set.of() : packs.findByTransferOrderIdInAndStatus(waiting.stream()
+                        .map(com.stockflow.inventory.api.TransferFulfillment.TransferView::transferId).toList(),
                 com.stockflow.fulfillment.internal.domain.PackStatus.PACKED).stream()
-                .map(com.stockflow.fulfillment.internal.entity.PackJpaEntity::getTransferOrderId).distinct().toList();
-        List<com.stockflow.inventory.api.TransferFulfillment.TransferView> ready = transfers.findAll(packed).stream()
-                .filter(t -> t.fromWarehouseId().equals(warehouseId) && readyToPlan(t))
+                .map(com.stockflow.fulfillment.internal.entity.PackJpaEntity::getTransferOrderId)
+                .collect(Collectors.toSet());
+        List<com.stockflow.inventory.api.TransferFulfillment.TransferView> ready = waiting.stream()
+                .filter(t -> packed.contains(t.transferId()) && readyToPlan(t))
                 .sorted(Comparator.comparing(com.stockflow.inventory.api.TransferFulfillment.TransferView::packedAt)
                         .thenComparing(com.stockflow.inventory.api.TransferFulfillment.TransferView::transferId))
                 .toList();

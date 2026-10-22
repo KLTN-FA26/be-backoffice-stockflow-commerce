@@ -1,7 +1,5 @@
 package com.stockflow.fulfillment.internal.service;
 
-import com.stockflow.common.error.BusinessException;
-import com.stockflow.common.error.ErrorCode;
 import com.stockflow.fulfillment.internal.domain.PackStatus;
 import com.stockflow.fulfillment.internal.domain.PackingSession;
 import com.stockflow.fulfillment.internal.entity.PackJpaEntity;
@@ -18,8 +16,8 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Fulfillment's answer to inventory before a transfer's picking is cancelled or the transfer is dispatched by hand
- * (SCRUM-287 PR T; kltn-docs 10 §5, BR-04; 09 BR-14). Runs in inventory's transaction.
+ * Fulfillment's answer to inventory before a transfer's picking is cancelled (SCRUM-287 PR T; kltn-docs 10 §5, BR-04;
+ * 09 BR-14). Runs in inventory's transaction; inventory then releases the transfer's holds on its source stock.
  *
  * <ul>
  *   <li>Picking cancelled before anything left (inventory refused it already once goods left, {@code
@@ -27,8 +25,6 @@ import java.util.UUID;
  *       ({@code LOAD_PLAN_LOADING_STARTED}: only the controlled unloading of BR-14, not built yet) - then its parcels
  *       are voided with their labels and the packing session is CANCELLED (08 BR-05/06). The goods were never taken from
  *       stock: nothing is put back.</li>
- *   <li>A transfer being packed for a load plan is dispatched by its plan's last vehicle, not by hand
- *       ({@code TRANSFER_DISPATCH_BY_LOAD_PLAN}).</li>
  * </ul>
  *
  * <p>Lock order: the packing session's row, then (through {@link LoadPlanReleases}) the plans' and the loads'.</p>
@@ -60,15 +56,6 @@ class TransferDispatchGuardService implements TransferDispatchGuard {
             store.save(session, pack);
             log.info("Transfer {}: picking cancelled - packing session {} cancelled, {} package(s) voided",
                     transferId, pack.getId(), voided);
-        }
-    }
-
-    @Override
-    @Transactional(readOnly = true)
-    public void requireManualDispatch(UUID transferId) {
-        if (!live(transferId).isEmpty()) {
-            throw new BusinessException(ErrorCode.TRANSFER_DISPATCH_BY_LOAD_PLAN, ("The transfer is packed for a load "
-                    + "plan: it is dispatched when the plan's last vehicle is signed for (09 §4.2 step 5)"));
         }
     }
 

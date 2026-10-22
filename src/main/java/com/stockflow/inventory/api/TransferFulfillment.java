@@ -63,23 +63,37 @@ public interface TransferFulfillment {
      */
     TransferView beginPacking(UUID transferId);
 
-    /** Its packing completed: ready for a load plan. PICKING only. */
-    TransferView markPacked(UUID transferId, Instant at);
+    /**
+     * Its packing completed (10 step 4-5, BR-02/03): the packed units are allocated to the transfer - held at the
+     * source so no order can sell them - and it is ready for a load plan. An unopened carton shipped as it is
+     * ({@code cartonsByLine}: line id to stock package ids) holds its own rows, whole; the rest of each line is held by
+     * the item's removal policy. PICKING only.
+     *
+     * @param packedByLine line id to the units packed of it (a line not named holds nothing)
+     * @throws com.stockflow.common.error.BusinessException {@code INSUFFICIENT_STOCK} when the source no longer has the
+     *         units free; {@code STOCK_CARTON_NOT_SHIPPABLE} when a carton is no longer whole, free and at the source
+     */
+    TransferView markPacked(UUID transferId, Map<UUID, Integer> packedByLine, Map<UUID, List<UUID>> cartonsByLine,
+                            Instant at);
 
     /** Goods of it left on a load plan's vehicle; the first time is kept. PICKING only. */
     TransferView recordGoodsLeft(UUID transferId, Instant at);
 
     /**
      * The last vehicle signed (10 step 5, 09 §4.2 step 5): the transfer is dispatched with the packed quantities -
-     * the stock leaves the source and is In-Transit, owned by the transfer. The units of an unopened carton shipped as
-     * it is ({@code cartonsByLine}: line id to stock package ids) are taken from that carton; the rest by the item's
-     * removal policy, as a manual dispatch does.
+     * exactly the units allocated to it at packing leave the source (the carton's own rows for a carton shipped as it
+     * is), and are In-Transit, owned by the transfer. Nothing is substituted.
      *
-     * @throws com.stockflow.common.error.BusinessException {@code INVALID_TRANSFER_TRANSITION} unless PICKING and
-     *         packed; {@code INSUFFICIENT_STOCK} when the source no longer holds the units
+     * @throws com.stockflow.common.error.BusinessException {@code TRANSFER_NOT_PACKED} unless PICKING and packed, or
+     *         when what is held is not what ships; {@code RESERVATION_NOT_ACTIVE} for a hold no longer live
      */
-    TransferView dispatchLoaded(UUID transferId, UUID userId, Map<UUID, Integer> shippedByLine,
-                                Map<UUID, List<UUID>> cartonsByLine);
+    TransferView dispatchLoaded(UUID transferId, UUID userId, Map<UUID, Integer> shippedByLine);
+
+    /**
+     * The transfers leaving from {@code warehouseId} that wait for their load plan: packed, still being picked,
+     * travelling as a full truckload. One query.
+     */
+    List<TransferView> awaitingDispatch(UUID warehouseId);
 
     /** The stock carton labelled {@code lpn}, if there is one, and whether it stands in {@code warehouseId}. */
     Optional<Carton> carton(String lpn, UUID warehouseId);

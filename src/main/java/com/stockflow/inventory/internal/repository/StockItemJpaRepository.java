@@ -191,6 +191,14 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
             """)
     List<UUID> findStockItemIdsHoldingProductionOrder(@Param("productionOrderId") UUID productionOrderId);
 
+    /** SCRUM-287 PR T: the stock rows holding a transfer order's live allocation. */
+    @Query("""
+            select distinct r.stockItem.id from ReservationJpaEntity r
+            where r.transferOrderId = :transferOrderId
+              and r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
+            """)
+    List<UUID> findStockItemIdsHoldingTransferOrder(@Param("transferOrderId") UUID transferOrderId);
+
     /** The live holds of a production order, oldest first; nothing is locked. */
     @Query("""
             select r.id from ReservationJpaEntity r

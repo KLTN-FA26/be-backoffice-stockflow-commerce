@@ -116,7 +116,10 @@ class TransferOrderIntegrationTest {
                         other,
                         TransferReason.REBALANCING,
                         null,
-                        List.of(new TransferOrders.NewLine(sku, lot, quantity))));
+                        List.of(new TransferOrders.NewLine(sku, lot, quantity)),
+                        // Dispatched by hand here: a PARCEL transfer (a full truckload is dispatched by its load
+                        // plan's last vehicle, SCRUM-287 PR T).
+                        com.stockflow.inventory.api.TransferDeliveryMode.PARCEL));
     }
 
     private int onHand(String location) {

@@ -22,9 +22,7 @@ public interface PackJpaRepository extends BaseJpaRepository<PackJpaEntity> {
     /** SCRUM-287 PR T: the transfer's packing sessions, newest first (at most one not CANCELLED). */
     java.util.List<PackJpaEntity> findByTransferOrderIdOrderByCreatedAtDesc(java.util.UUID transferOrderId);
 
-    java.util.List<PackJpaEntity> findByTransferOrderIdIn(java.util.Collection<java.util.UUID> transferOrderIds);
-
-    /** SCRUM-287 PR T: the transfers' packing sessions in a status (PACKED: ready for a load plan). */
-    java.util.List<PackJpaEntity> findByTransferOrderIdNotNullAndStatus(
+    /** SCRUM-287 PR T: these transfers' packing sessions in a status (PACKED: ready for a load plan). */
+    java.util.List<PackJpaEntity> findByTransferOrderIdInAndStatus(java.util.Collection<java.util.UUID> transferOrderIds,
             com.stockflow.fulfillment.internal.domain.PackStatus status);
 }

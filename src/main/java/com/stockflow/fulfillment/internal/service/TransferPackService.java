@@ -250,7 +250,21 @@ class TransferPackService implements TransferPacks {
         PackingSession.Completion completion = session.complete(partial, note, true, actor.userId(), now);
         session.finishTransfer(actor.userId(), now);
         store.save(session, ctx.pack());
-        TransferFulfillment.TransferView packed = transfers.markPacked(ctx.transfer().transferId(), now);
+        // 10 step 4, BR-02/03: what was packed is held at the source from now (a carton as it is, its own rows).
+        Map<UUID, Integer> packedByLine = new HashMap<>();
+        session.lines().forEach(l -> {
+            int units = session.packedOf(l.orderLineId());
+            if (units > 0) {
+                packedByLine.put(l.orderLineId(), units);
+            }
+        });
+        Map<UUID, UUID> cartons = cartonsOf(session.parcels());
+        Map<UUID, List<UUID>> cartonsByLine = new HashMap<>();
+        session.parcels().stream().filter(p -> p.status() == PackageStatus.SEALED && cartons.containsKey(p.id()))
+                .forEach(p -> p.lineTotals().keySet().forEach(line -> cartonsByLine
+                        .computeIfAbsent(line, k -> new ArrayList<>()).add(cartons.get(p.id()))));
+        TransferFulfillment.TransferView packed = transfers.markPacked(ctx.transfer().transferId(), packedByLine,
+                cartonsByLine, now);
         log.info("Transfer {} packed: {} package(s){} - ready for a load plan", packed.number(),
                 completion.parcels().size(), completion.partial() ? ", short of the request: " + note.trim() : "");
         return view(new Context(ctx.pack(), packed), session);

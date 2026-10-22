@@ -59,6 +59,10 @@ public class ReservationJpaEntity {
     @Column(name = "production_order_id")
     private UUID productionOrderId;
 
+    /** SCRUM-287 PR T: the transfer order the stock is allocated to. */
+    @Column(name = "transfer_order_id")
+    private UUID transferOrderId;
+
     /**
      * The caller's own idempotency key. Indexed but NOT unique: one reservation call can produce
      * several holds, one per lot the line was drawn from.
@@ -124,6 +128,13 @@ public class ReservationJpaEntity {
     public UUID getId() { return id; }
     public UUID getOrderId() { return orderId; }
     public UUID getProductionOrderId() { return productionOrderId; }
+    public UUID getTransferOrderId() { return transferOrderId; }
+
+    /** SCRUM-287 PR T: the hold is a transfer order's. */
+    public ReservationJpaEntity forTransfer(UUID transferOrderId) {
+        this.transferOrderId = transferOrderId;
+        return this;
+    }
     public UUID getRootRequestId() { return rootRequestId; }
     public UUID getRequestId() { return requestId; }
     public int getQuantity() { return quantity; }

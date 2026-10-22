@@ -979,29 +979,16 @@ class DispatchService implements Dispatching {
 
     /**
      * The transfer leaves with what its plan carried: per line, the units of its sealed parcels placed in the plan (a
-     * TRANSFER plan leaves nothing behind); a carton shipped as it is gives its own stock rows (LP2-8).
+     * TRANSFER plan leaves nothing behind) - exactly what was held for it at packing (inventory consumes those holds).
      */
     private void dispatchTransfer(UUID transferId, LoadPlan plan, UUID by) {
-        Set<UUID> placed = plan.placedPackageIds();
-        Map<UUID, UUID> cartonOfPackage = new HashMap<>();
-        packages.findAllById(placed).forEach(p -> {
-            if (p.getStockPackageId() != null) {
-                cartonOfPackage.put(p.getId(), p.getStockPackageId());
-            }
-        });
         Map<UUID, Integer> shipped = new LinkedHashMap<>();
-        Map<UUID, List<UUID>> cartons = new HashMap<>();
-        for (PackageLineJpaEntity line : packageLines.findByPackageIdIn(placed)) {
-            if (line.getTransferLineId() == null) {
-                continue;
-            }
-            shipped.merge(line.getTransferLineId(), line.getQuantity(), Integer::sum);
-            UUID carton = cartonOfPackage.get(line.getPackageId());
-            if (carton != null) {
-                cartons.computeIfAbsent(line.getTransferLineId(), k -> new ArrayList<>()).add(carton);
+        for (PackageLineJpaEntity line : packageLines.findByPackageIdIn(plan.placedPackageIds())) {
+            if (line.getTransferLineId() != null) {
+                shipped.merge(line.getTransferLineId(), line.getQuantity(), Integer::sum);
             }
         }
-        transfers.dispatchLoaded(transferId, by, shipped, cartons);
+        transfers.dispatchLoaded(transferId, by, shipped);
     }
 
     /** A TRANSFER plan's vehicle as the load screen shows it: its transfer order and the parcels placed on it. */

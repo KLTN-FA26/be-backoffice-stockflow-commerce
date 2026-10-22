@@ -409,6 +409,24 @@ public final class StockItem extends AggregateRoot {
         return reservation;
     }
 
+    /**
+     * Allocate stock to a transfer order at its source (SCRUM-287 PR T; kltn-docs 10 step 4, BR-02/03): the same checks
+     * as {@link #reserve}; pinned from the start, announced to nobody - no order has a stake in it. Consumed when the
+     * transfer is dispatched, released when its picking is cancelled.
+     */
+    public Reservation reserveForTransfer(UUID transferOrderId, UUID rootRequestId, UUID requestId, Quantity quantity,
+                                          Instant now) {
+        Optional<Reservation> alreadyServed = findByRequestId(requestId);
+        if (alreadyServed.isPresent()) {
+            return alreadyServed.get();
+        }
+        requireHoldable(quantity, now, "transfer order " + transferOrderId);
+        Reservation reservation = Reservation.openForTransfer(transferOrderId, rootRequestId, requestId, quantity, now);
+        reservations.add(reservation);
+        checkInvariants();
+        return reservation;
+    }
+
     private void requireHoldable(Quantity quantity, Instant now, String holder) {
         if (expiryDate != null && expiryDate.isBefore(BusinessCalendar.date(now))) {
             throw new BusinessException(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT);

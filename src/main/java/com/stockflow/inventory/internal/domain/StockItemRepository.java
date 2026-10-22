@@ -111,6 +111,12 @@ public interface StockItemRepository {
     /** The same for a production order's live holds, locked in id order. */
     List<StockItem> findWithReservationsForProductionOrder(java.util.UUID productionOrderId);
 
+    /**
+     * SCRUM-287 PR T: the stock rows holding a transfer order's live allocation, locked in id order (the caller holds
+     * the SKUs' advisory locks first).
+     */
+    List<StockItem> findWithReservationsForTransferOrder(java.util.UUID transferOrderId);
+
     /** The ids of a production order's live holds, oldest first, read without locking (a screen's view). */
     List<java.util.UUID> findHeldReservationIdsOfProductionOrder(java.util.UUID productionOrderId);
 

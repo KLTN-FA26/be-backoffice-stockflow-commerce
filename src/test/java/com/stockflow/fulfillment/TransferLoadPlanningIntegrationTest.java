@@ -80,6 +80,7 @@ class TransferLoadPlanningIntegrationTest {
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
     @Autowired ObjectMapper json;
+    @Autowired com.stockflow.inventory.api.InventoryService inventory;
 
     private UUID packer;
     private UUID dispatcher;
@@ -246,6 +247,11 @@ class TransferLoadPlanningIntegrationTest {
                 .andExpect(status().isOk());
         packer(body(post(PACKS + "/" + pack + "/packages/" + part2 + "/seal"), PART2_MEASURES))
                 .andExpect(status().isOk());
+        if (lpn == null) {
+            // Only the sofa: the carton SKU stays behind, said so (10 step 8 "chênh lệch").
+            return data(packer(body(post(PACKS + "/" + pack + "/completion"),
+                    "{\"partial\":true,\"note\":\"carton not ready\"}")).andExpect(status().isOk()));
+        }
         JsonNode carton = data(packer(body(post(PACKS + "/" + pack + "/cartons"), "{\"lpn\":\"" + lpn + "\"}"))
                 .andExpect(status().isCreated()));
         packer(body(post(PACKS + "/" + pack + "/packages/" + carton.path("parcel").path("packageId").asText()
@@ -505,6 +511,7 @@ class TransferLoadPlanningIntegrationTest {
         UUID loading = approvedTransfer("FULL_TRUCKLOAD");
         packed(loading, lpnA);
         JsonNode planA = confirmed(loading);
+        assertThat(holds(loading, "HELD")).isEqualTo(11);
         bookAndLoad(loadOf(planA, 1), "51C-333.33");
         dispatch(post(TRANSFERS + "/" + loading + "/picking-cancellation")).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("LOAD_PLAN_LOADING_STARTED"));
@@ -529,6 +536,9 @@ class TransferLoadPlanningIntegrationTest {
                 + "status <> 'VOIDED'", Integer.class, booked)).isZero();
         assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.pack WHERE transfer_order_id = ?",
                 String.class, booked)).isEqualTo("CANCELLED");
+        // Its allocation is released: the source's units are free again (10 BR-02).
+        assertThat(holds(booked, "HELD")).isZero();
+        assertThat(holds(booked, "RELEASED")).isEqualTo(11);
         // Packed again from scratch: the carton ships as it is again.
         JsonNode again = packed(booked, lpnB);
         assertThat(again.path("packStatus").asText()).isEqualTo("PACKED");
@@ -599,6 +609,163 @@ class TransferLoadPlanningIntegrationTest {
         // Completing with the sofa missing: everything requested, or a partial with a note.
         packer(post(PACKS + "/" + pack + "/completion")).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("PACKAGE_NOT_SEALED"));
+    }
+
+    private int holds(UUID transfer, String status) {
+        return jdbc.queryForObject("SELECT COALESCE(SUM(quantity), 0) FROM inventory.stock_reservation WHERE "
+                + "transfer_order_id = ? AND status = ?", Integer.class, transfer, status);
+    }
+
+    private UUID confirmedOrder() {
+        UUID order = Identifiers.newId();
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
+                    currency, placed_at, version, created_at, paid_amount, paid_in_full_at)
+                VALUES (?, ?, ?, ?, 'CONFIRMED', 1, 'VND', NOW(), 0, NOW(), 1, NOW())""", order,
+                "SO-20991230-%06d".formatted(ThreadLocalRandom.current().nextInt(1_000_000)), DemoData.CUSTOMER_ID,
+                UUID.randomUUID()));
+        return order;
+    }
+
+    /** Both vehicles (or the one) of a confirmed plan booked, loaded, scanned and signed for, in seq order. */
+    private void shipAll(JsonNode plan) throws Exception {
+        int seq = 0;
+        for (JsonNode v : plan.path("vehicles")) {
+            String loadId = v.path("load").path("loadId").asText();
+            bookAndLoad(loadId, "51C-9%02d.11".formatted(seq++));
+            scanAll(loadId);
+            handOver(loadId).andExpect(status().isOk());
+        }
+    }
+
+    // ---- review of #164 --------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("10 step 4, BR-02/03: packing completed holds the packed units at the source - the carton's own rows "
+            + "and the sofa - so an order cannot reserve them (only the 5 loose units are free); the last signature "
+            + "consumes exactly those holds: IN_TRANSIT, the carton CONSUMED, the loose units still the order's")
+    void stockHeldFromPackingToDispatch() throws Exception {
+        String lpn = stock();
+        UUID transfer = approvedTransfer("FULL_TRUCKLOAD");
+        packer(body(post(PACKS), "{\"transferOrderId\":\"" + transfer + "\"}")).andExpect(status().isCreated());
+        assertThat(holds(transfer, "HELD")).isZero();     // held once its packing completes (markPacked)
+        packed(transfer, lpn);
+        assertThat(holds(transfer, "HELD")).isEqualTo(11);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_reservation r JOIN inventory.stock_item s "
+                + "ON s.id = r.stock_item_id JOIN inventory.stock_package p ON p.id = s.stock_package_id WHERE "
+                + "r.transfer_order_id = ? AND r.status = 'HELD' AND p.lpn = ?", Integer.class, transfer, lpn))
+                .isEqualTo(1);
+
+        // An order now finds only the 5 loose units of the carton SKU free: the 10 in the carton are the transfer's.
+        UUID order = confirmedOrder();
+        Throwable tooMany = catchThrowable(() -> tx.executeWithoutResult(s -> inventory.reserve(
+                new com.stockflow.inventory.api.ReserveStockCommand(UUID.randomUUID(),
+                        new com.stockflow.common.domain.Sku(cartonSku), 6, order))));
+        assertThat(tooMany).isNotNull();
+        tx.executeWithoutResult(s -> inventory.reserve(new com.stockflow.inventory.api.ReserveStockCommand(
+                UUID.randomUUID(), new com.stockflow.common.domain.Sku(cartonSku), 5, order)));
+
+        shipAll(confirmed(transfer));
+        assertThat(transferStatus(transfer)).isEqualTo("IN_TRANSIT");
+        assertThat(holds(transfer, "HELD")).isZero();
+        assertThat(holds(transfer, "CONSUMED")).isEqualTo(11);
+        assertThat(jdbc.queryForObject("SELECT status FROM inventory.stock_package WHERE lpn = ?", String.class, lpn))
+                .isEqualTo("CONSUMED");
+        assertThat(jdbc.queryForObject("SELECT reserved FROM inventory.stock_item WHERE sku = ? AND location_code = "
+                + "'HCM-A01-1-B'", Integer.class, cartonSku)).isEqualTo(5);
+    }
+
+    @Test
+    @DisplayName("LP2-8, review of #164: a carton shipped as it is whose rows an order reserved meanwhile is never "
+            + "swapped for other stock - completing is STOCK_CARTON_NOT_SHIPPABLE and nothing is held")
+    void aReservedCartonIsNotSwapped() throws Exception {
+        String lpn = stock();
+        UUID transfer = approvedTransfer("FULL_TRUCKLOAD");
+        String pack = data(packer(body(post(PACKS), "{\"transferOrderId\":\"" + transfer + "\"}"))
+                .andExpect(status().isCreated())).path("packId").asText();
+        JsonNode kit = data(packer(body(post(PACKS + "/" + pack + "/package-kits"), "{\"transferLineId\":\""
+                + lineOf(transfer, 1) + "\"}")).andExpect(status().isCreated()));
+        String part1 = kit.path("packages").get(0).path("packageId").asText();
+        packer(body(post(PACKS + "/" + pack + "/packages/" + part1 + "/scans"), "{\"scanId\":\"" + UUID.randomUUID()
+                + "\",\"scannedCode\":\"" + SOFA_BARCODE + "\",\"quantity\":1}")).andExpect(status().isOk());
+        packer(body(post(PACKS + "/" + pack + "/packages/" + part1 + "/seal"), SOFA_MEASURES)).andExpect(status().isOk());
+        packer(body(post(PACKS + "/" + pack + "/packages/" + kit.path("packages").get(1).path("packageId").asText()
+                + "/seal"), PART2_MEASURES)).andExpect(status().isOk());
+        JsonNode carton = data(packer(body(post(PACKS + "/" + pack + "/cartons"), "{\"lpn\":\"" + lpn + "\"}"))
+                .andExpect(status().isCreated()));
+        packer(body(post(PACKS + "/" + pack + "/packages/" + carton.path("parcel").path("packageId").asText()
+                + "/seal"), CARTON_MEASURES)).andExpect(status().isOk());
+        // Meanwhile an order reserves all 15 of the SKU at HCM: the carton's 10 among them.
+        UUID order = confirmedOrder();
+        tx.executeWithoutResult(s -> inventory.reserve(new com.stockflow.inventory.api.ReserveStockCommand(
+                UUID.randomUUID(), new com.stockflow.common.domain.Sku(cartonSku), 15, order)));
+        packer(post(PACKS + "/" + pack + "/completion")).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("STOCK_CARTON_NOT_SHIPPABLE"));
+        assertThat(holds(transfer, "HELD")).isZero();
+        assertThat(jdbc.queryForObject("SELECT packed_at IS NULL FROM inventory.transfer_order WHERE id = ?",
+                Boolean.class, transfer)).isTrue();
+    }
+
+    @Test
+    @DisplayName("09 §4.2 step 1 / 10 step 5: a TRANSFER plan leaves nothing behind - a pickup cannot take the 1.2 t "
+            + "carton, and acknowledging or confirming with it unplaced is TRANSFER_SHIPS_WHOLE")
+    void transferShipsWhole() throws Exception {
+        String lpn = stock();
+        UUID transfer = approvedTransfer("FULL_TRUCKLOAD");
+        packed(transfer, lpn);
+        UUID pickup = jdbc.queryForObject("SELECT id FROM fulfillment.vehicle_type WHERE code = 'PICKUP'", UUID.class);
+        JsonNode plan = data(dispatch(body(post(PLANS), "{\"requestId\":\"" + UUID.randomUUID() + "\",\"warehouseId\":\""
+                + HCM + "\",\"sourceType\":\"TRANSFER\",\"transferOrderIds\":[\"" + transfer
+                + "\"],\"vehicleTypeIds\":[\"" + pickup + "\"]}")).andExpect(status().isCreated()));
+        plan = step(plan, "/calculation", version(plan));
+        assertThat(plan.path("unplacedCount").asInt()).isPositive();
+        String id = plan.path("loadPlanId").asText();
+        dispatch(body(post(PLANS + "/" + id + "/unplaced-acknowledgement"), version(plan)))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("TRANSFER_SHIPS_WHOLE"));
+        dispatch(body(post(PLANS + "/" + id + "/confirmation"), version(plan)))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("TRANSFER_SHIPS_WHOLE"));
+    }
+
+    @Test
+    @DisplayName("10 step 8: a transfer packed in part (with a note) holds and ships only what was packed - the sofa; "
+            + "the carton SKU's line ships 0 and its stock stays at the source")
+    void partialPackingShipsWhatWasPacked() throws Exception {
+        String lpn = stock();
+        UUID transfer = approvedTransfer("FULL_TRUCKLOAD");
+        int cartonSkuBefore = onHand(cartonSku);
+        JsonNode session = packed(transfer, null);
+        assertThat(session.path("packStatus").asText()).isEqualTo("PACKED");
+        assertThat(holds(transfer, "HELD")).isEqualTo(1);
+        JsonNode plan = confirmed(transfer);
+        assertThat(plan.path("vehicles")).hasSize(1);
+        shipAll(plan);
+        assertThat(transferStatus(transfer)).isEqualTo("IN_TRANSIT");
+        Map<String, Object> shipped = new java.util.HashMap<>();
+        jdbc.queryForList("SELECT sku, shipped_qty FROM inventory.transfer_order_line WHERE transfer_order_id = ?",
+                transfer).forEach(row -> shipped.put((String) row.get("sku"), row.get("shipped_qty")));
+        assertThat(shipped).containsEntry(SOFA, 1).containsEntry(cartonSku, 0);
+        assertThat(onHand(cartonSku)).isEqualTo(cartonSkuBefore);
+        assertThat(jdbc.queryForObject("SELECT status FROM inventory.stock_package WHERE lpn = ?", String.class, lpn))
+                .isEqualTo("IN_STOCK");
+    }
+
+    @Test
+    @DisplayName("10 step 5: a FULL_TRUCKLOAD transfer is never dispatched by hand - not even after the old "
+            + "start-picking endpoint, with no packing session (TRANSFER_DISPATCH_BY_LOAD_PLAN); a PARCEL one is")
+    void noManualDispatchOfAFullTruckload() throws Exception {
+        stock();
+        UUID transfer = approvedTransfer("FULL_TRUCKLOAD");
+        dispatch(post(TRANSFERS + "/" + transfer + "/picking")).andExpect(status().isOk());
+        dispatch(body(post(TRANSFERS + "/" + transfer + "/dispatch"), "{\"lines\":[{\"lineId\":\""
+                + lineOf(transfer, 1) + "\",\"shippedQuantity\":1}]}")).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("TRANSFER_DISPATCH_BY_LOAD_PLAN"));
+        assertThat(transferStatus(transfer)).isEqualTo("PICKING");
+
+        UUID parcel = approvedTransfer("PARCEL");
+        dispatch(post(TRANSFERS + "/" + parcel + "/picking")).andExpect(status().isOk());
+        dispatch(body(post(TRANSFERS + "/" + parcel + "/dispatch"), "{\"lines\":[{\"lineId\":\""
+                + lineOf(parcel, 1) + "\",\"shippedQuantity\":1}]}")).andExpect(status().isOk());
+        assertThat(transferStatus(parcel)).isEqualTo("IN_TRANSIT");
     }
 
     private static MockHttpServletRequestBuilder put(String url) {
