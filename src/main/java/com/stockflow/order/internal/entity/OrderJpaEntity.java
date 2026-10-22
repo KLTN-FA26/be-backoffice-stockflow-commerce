@@ -206,6 +206,10 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "packed_at")
     private Instant packedAt;
 
+    /** V20261022001400 (SCRUM-392): goods first left on a load plan's vehicle (no cancellation from here). */
+    @Column(name = "goods_left_at")
+    private Instant goodsLeftAt;
+
     /** V20261017000430, decision Q2: the terms of an agreed amount kept on cancellation. */
     @Column(name = "cancellation_fee_amount", precision = 19, scale = 4)
     private java.math.BigDecimal cancellationFeeAmount;
@@ -407,6 +411,12 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
 
     public Instant getPrintingStartedAt() { return printingStartedAt; }
     public Instant getPackedAt() { return packedAt; }
+
+    public void applyGoodsLeft(Instant at) {
+        this.goodsLeftAt = at;
+    }
+
+    public Instant getGoodsLeftAt() { return goodsLeftAt; }
 
     public void applyCancellationFee(java.math.BigDecimal amount, String reason, String detail) {
         this.cancellationFeeAmount = amount;

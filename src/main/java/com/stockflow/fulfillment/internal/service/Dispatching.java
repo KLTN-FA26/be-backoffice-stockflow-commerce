@@ -57,7 +57,8 @@ public interface Dispatching {
                       int expectedPackageCount, int loadedPackageCount, BigDecimal codTotal, String currency,
                       long version, List<LoadShipment> shipments, UUID loadPlanId, String loadPlanCode,
                       Integer vehicleSeq, String vehicleTypeCode, Instant bookedAt, UUID bookedBy,
-                      Instant bookingCancelledAt, String bookingCancelReason, List<PendingUnload> pendingUnloads) { }
+                      Instant bookingCancelledAt, String bookingCancelReason, List<PendingUnload> pendingUnloads,
+                      boolean carrierBookingToCancel) { }
 
     /** The printable manifest (09 §3 Output "Biên bản bàn giao"): what both sides sign. */
     record Manifest(String loadCode, String status, String warehouseName, String warehouseAddress, String carrierCode,

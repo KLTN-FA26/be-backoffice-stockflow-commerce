@@ -40,7 +40,8 @@ class DispatchWebMapper {
                         .toList())).toList(), d.loadPlanId(), d.loadPlanCode(), d.vehicleSeq(), d.vehicleTypeCode(),
                 d.bookedAt(), d.bookedBy(), d.bookingCancelledAt(), d.bookingCancelReason(),
                 d.pendingUnloads().stream().map(u -> new LoadResponse.PendingUnload(u.packageId(), u.labelCode(),
-                        u.shipmentId(), u.shipmentCode(), u.reason(), u.requestedAt())).toList());
+                        u.shipmentId(), u.shipmentCode(), u.reason(), u.requestedAt())).toList(),
+                d.carrierBookingToCancel());
     }
 
     ManifestResponse toResponse(Dispatching.Manifest m) {

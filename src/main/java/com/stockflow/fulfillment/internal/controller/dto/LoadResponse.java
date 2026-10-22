@@ -19,6 +19,9 @@ import java.util.UUID;
  *                             cancellation, whose time and reason are kept in {@code bookingCancelledAt/Reason}
  * @param pendingUnloads       parcels of cancelled orders still on the vehicle: unload them (POST .../unloads) before
  *                             the handover (409 LOAD_UNLOAD_PENDING)
+ * @param carrierBookingToCancel CANCELLED after it was booked (the plan reopened or cancelled, or the system called it
+ *                             off with nothing left to carry - {@code cancelReason} "auto-cancelled: ..."): the
+ *                             booking made with the carrier outside the system still exists - cancel it there
  */
 public record LoadResponse(UUID loadId, String code, UUID warehouseId, String mode, String status, UUID carrierId,
                            String carrierCode, String carrierName, String vehiclePlate, String driverName,
@@ -29,7 +32,7 @@ public record LoadResponse(UUID loadId, String code, UUID warehouseId, String mo
                            String currency, long version, List<Shipment> shipments, UUID loadPlanId,
                            String loadPlanCode, Integer vehicleSeq, String vehicleTypeCode, Instant bookedAt,
                            UUID bookedBy, Instant bookingCancelledAt, String bookingCancelReason,
-                           List<PendingUnload> pendingUnloads) {
+                           List<PendingUnload> pendingUnloads, boolean carrierBookingToCancel) {
 
     /** A parcel of a cancelled order to take off the vehicle (SCRUM-392). */
     public record PendingUnload(UUID packageId, String labelCode, UUID shipmentId, String shipmentCode, String reason,

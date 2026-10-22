@@ -199,7 +199,7 @@ class PlanVehicles {
                 if (!load.withdrawShipment(shipmentId, "The order was cancelled", at)) {
                     return;
                 }
-                if (callOffIfEmpty(load, "Nothing left to carry: the order(s) on it were cancelled", at)) {
+                if (callOffIfEmpty(load, at)) {
                     touchedPlans.add(header.getLoadPlanVehicleId());
                 }
                 loadStore.save(load, header);
@@ -217,10 +217,16 @@ class PlanVehicles {
      *
      * @return whether it was called off
      */
-    static boolean callOffIfEmpty(DispatchLoad load, String reason, Instant at) {
+    static boolean callOffIfEmpty(DispatchLoad load, Instant at) {
         return load.mode() == DeliveryMode.FULL_TRUCKLOAD && load.status().isOpen() && load.activeShipments().isEmpty()
-                && load.pendingUnloads().isEmpty() && load.cancel(reason, null, at);
+                && load.pendingUnloads().isEmpty() && load.cancel(AUTO_CANCELLED, null, at);
     }
+
+    /**
+     * Decision 7 (review of #162): the reason of a vehicle called off by the system. A booked one shows
+     * {@code carrierBookingToCancel}: the booking with the carrier, made outside the system, is still to be cancelled.
+     */
+    static final String AUTO_CANCELLED = "auto-cancelled: nothing to carry - the order(s) on it were cancelled";
 
     /** BR-15 for the plans of these vehicles (their rows are locked first, in id order). */
     void completePlansOf(Collection<UUID> vehicleIds, Instant at) {

@@ -20,6 +20,13 @@
 --                           tg_dispatch_load_unload_pending is the net). The goods go back through the pick's put-back
 --                           queue (08, SCRUM-275) as for any cancelled order.
 --
+--   ordering.customer_order  gains goods_left_at: goods of the order first left on a load plan's vehicle, before
+--                           the shipment is handed over at its last vehicle (LP-3). From then the order is no longer
+--                           cancelled, only its remainder closed or returned (review of #162, lead's #150 rule).
+--   package                 gains label_outdated_at: the parcel moved to another shipment (left-behind parcels split
+--                           off when the plan's first vehicle starts loading) - its label names the old shipment and
+--                           n/N, so it is reprinted before it is scanned onto a vehicle (409 LABEL_OUTDATED).
+--
 -- No permission changes: booking, loading, unloading and the booking cancellation are the dispatcher's loading work,
 -- fulfillment-dispatch:UPDATE (seeded for WAREHOUSE_STAFF / WAREHOUSE_MANAGER / SYSTEM_ADMIN, 09 §2 "xác nhận đã đặt
 -- xe, giám sát xếp hàng"), so no app_role.version moves.
@@ -177,3 +184,8 @@ $$;
 CREATE TRIGGER tg_dispatch_load_unload_pending BEFORE UPDATE OF status
     ON fulfillment.dispatch_load
     FOR EACH ROW EXECUTE FUNCTION fulfillment.check_load_unloaded();
+
+
+-- ----------------------------------------------------------------------------- goods left, labels to reprint
+ALTER TABLE ordering.customer_order ADD COLUMN goods_left_at TIMESTAMPTZ;
+ALTER TABLE fulfillment.package ADD COLUMN label_outdated_at TIMESTAMPTZ;

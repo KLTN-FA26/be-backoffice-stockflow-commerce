@@ -443,6 +443,11 @@ class PackingService implements Packing {
             shipment.apply(printed);
             shipments.saveAndFlush(shipment);
         }
+        // SCRUM-392: printed again, a label outdated by a shipment split is current again.
+        packages.findById(packageId).filter(p -> p.getLabelOutdatedAt() != null).ifPresent(p -> {
+            p.markLabelOutdated(null);
+            packages.save(p);
+        });
         var address = order.shippingAddress();
         Address recipient = address == null ? new Address(order.contactName(), order.contactPhone(), null, null, null,
                 null, null, null) : new Address(address.recipientName() == null ? order.contactName()
@@ -592,8 +597,8 @@ class PackingService implements Packing {
             if (shipment.status() == ShipmentStatus.READY_TO_DISPATCH) {
                 if (planVehicles.partlyGone(row.getId())) {
                     // SCRUM-392 (LP-3): a vehicle of its load plan already left with some of its parcels - they are
-                    // with the carrier and cannot be voided here. Left as it is for a person to resolve; its other
-                    // vehicles are refused at their signature (the order is cancelled).
+                    // with the carrier and cannot be voided. The order refuses its cancellation once goods left
+                    // (goodsLeftAt, review of #162), so this is only a net: left as it is for a person to resolve.
                     log.error("Order {} cancelled, but shipment {} already left in part on a load plan's vehicle: "
                             + "not voided - resolve it by hand", pick.getOrderNumber(), row.getCode());
                     continue;

@@ -883,9 +883,21 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     }
 
     @Override
-    public void requireHandoverAllowed(UUID orderId) {
+    public void recordGoodsLeft(UUID orderId, java.time.Instant at,
+                                java.util.List<com.stockflow.order.api.ShipmentHandover.Line> inPlan) {
         Order order = lockOrder(orderId);
-        order.requireHandoverAllowed(ledgerOf(order));
+        if (order.recordGoodsLeft(at, inPlan == null || inPlan.isEmpty() ? null : quantities(inPlan), ledgerOf(order))) {
+            log.info("Order {}: goods left on a load plan's vehicle; no longer cancelled", order.orderNumber());
+            saved(order);
+        }
+    }
+
+    @Override
+    public void requirePlanCarriesTheRest(UUID orderId,
+                                          java.util.List<com.stockflow.order.api.ShipmentHandover.Line> inPlan) {
+        Order order = repository.findById(new OrderId(orderId))
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));
+        order.requirePlanCarriesTheRest(inPlan == null || inPlan.isEmpty() ? null : quantities(inPlan));
     }
 
     @Override

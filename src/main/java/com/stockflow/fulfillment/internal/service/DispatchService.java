@@ -99,6 +99,7 @@ class DispatchService implements Dispatching {
     private final WarehouseService warehouses;
     private final IdentityService identities;
     private final PlanVehicles planVehicles;
+    private final LeftBehindParcels leftBehind;
     private final Clock clock;
 
     @SuppressWarnings("java:S107")
@@ -109,7 +110,8 @@ class DispatchService implements Dispatching {
                     PackageLineJpaRepository packageLines, PickJpaRepository picks, CarrierJpaRepository carriers,
                     ShipmentTimeline timeline, ShipmentContext context, OrderService orders,
                     WarehouseService warehouses,
-                    IdentityService identities, PlanVehicles planVehicles, Clock clock) {
+                    IdentityService identities, PlanVehicles planVehicles, LeftBehindParcels leftBehind,
+                    Clock clock) {
         this.loads = loads;
         this.members = members;
         this.loaded = loaded;
@@ -127,6 +129,7 @@ class DispatchService implements Dispatching {
         this.warehouses = warehouses;
         this.identities = identities;
         this.planVehicles = planVehicles;
+        this.leftBehind = leftBehind;
         this.clock = clock;
     }
 
@@ -357,6 +360,13 @@ class DispatchService implements Dispatching {
                 .or(() -> packages.findByLabelCode(code.toUpperCase(Locale.ROOT)))
                 .orElseThrow(() -> new BusinessException(ErrorCode.PACKAGE_NOT_FOUND,
                         "No package labelled " + code));
+        if (parcel.getLabelOutdatedAt() != null && load.activeParcels().stream()
+                .noneMatch(l -> l.packageId().equals(parcel.getId()))) {
+            // Review of #162: it moved to another shipment since its label was printed (a left-behind parcel split
+            // off): the label names the old shipment and n/N - reprint it first.
+            throw new BusinessException(ErrorCode.LABEL_OUTDATED, ("Package %s moved to another shipment since its "
+                    + "label was printed: reprint its label before loading it").formatted(parcel.getLabelCode()));
+        }
         DispatchLoad.ShipmentFacts shipment = null;
         if (parcel.getShipmentId() != null) {
             ShipmentJpaEntity row = shipments.findById(parcel.getShipmentId()).orElseThrow();
@@ -655,12 +665,39 @@ class DispatchService implements Dispatching {
             PlanVehicles.requireConfirmed(locked.plan());
         }
         DispatchLoadJpaEntity header = locked.header();
-        if (load.startLoading(actor.userId(), clock.instant())) {
+        Instant now = clock.instant();
+        if (load.status() != LoadStatus.LOADING && locked.plan() != null) {
+            // Review of #162: an order that may not ship in parts leaves whole with the plan - refused before anything
+            // is on board, so no vehicle is stuck half way (BR-14 forbids reopening once loading starts).
+            List<UUID> onBoard = load.activeShipments();
+            Map<UUID, ShipmentJpaEntity> rows = shipments.findByIdIn(planShipments(locked.plan().plan(), onBoard))
+                    .stream().collect(Collectors.toMap(ShipmentJpaEntity::getId, Function.identity()));
+            Map<UUID, List<ShipmentHandover.Line>> inPlan = unitsInPlan(locked.plan().plan(), rows);
+            onBoard.stream().map(rows::get).filter(Objects::nonNull)
+                    .collect(Collectors.toMap(ShipmentJpaEntity::getOrderId, Function.identity(), (a, b) -> a,
+                            java.util.TreeMap::new))
+                    .forEach((orderId, row) -> named(row, () -> orders.requirePlanCarriesTheRest(orderId,
+                            inPlan.getOrDefault(orderId, List.of()))));
+        }
+        if (load.startLoading(actor.userId(), now)) {
             header = store.save(load, header);
+            if (locked.plan() != null) {
+                // Decision 2 (review of #162): left-behind parcels split off at the point of no return (BR-14).
+                leftBehind.splitOff(locked.plan().plan(), actor.userId(), now);
+            }
             log.info("Load {}: loading started (plan {} locked, BR-14)", load.code(),
                     locked.plan() == null ? null : locked.plan().plan().code());
         }
         return detail(header, load);
+    }
+
+    /** The shipments of the plan's placed parcels, with {@code also}. */
+    private static Set<UUID> planShipments(LoadPlan plan, List<UUID> also) {
+        Set<UUID> placed = plan.placedPackageIds();
+        Set<UUID> out = new HashSet<>(also);
+        plan.members().stream().filter(m -> m.active() && placed.contains(m.packageId()))
+                .forEach(m -> out.add(m.shipmentId()));
+        return out;
     }
 
     @Override
@@ -674,8 +711,7 @@ class DispatchService implements Dispatching {
         Instant now = clock.instant();
         DispatchLoadJpaEntity header = locked.header();
         if (load.confirmUnload(parcel.getId(), parcel.getLabelCode(), actor.userId(), now)) {
-            boolean calledOff = PlanVehicles.callOffIfEmpty(load,
-                    "Nothing left to carry: the order(s) on it were cancelled", now);
+            boolean calledOff = PlanVehicles.callOffIfEmpty(load, now);
             header = store.save(load, header);
             log.info("Load {}: package {} unloaded{}", load.code(), parcel.getLabelCode(),
                     calledOff ? "; nothing left, the load is called off" : "");
@@ -747,6 +783,7 @@ class DispatchService implements Dispatching {
                 request.driverPhone(), request.signatureRef(), Boolean.TRUE.equals(request.signed()), request.note()),
                 parcelsByShipment, labels, by, now);
 
+        Map<UUID, List<ShipmentHandover.Line>> unitsInPlan = unitsInPlan(plan, rows);
         // LP-3: which shipments have now left with every vehicle carrying them.
         Map<UUID, DispatchLoadJpaEntity> live = planVehicles.liveLoads(plan);
         UUID thisVehicle = ctx.vehicle().id();
@@ -771,15 +808,22 @@ class DispatchService implements Dispatching {
             } else if (ofOrder.stream().allMatch(row -> vehiclesOfShipment.get(row.getId()).stream().allMatch(gone))) {
                 completing.addAll(ofOrder);
             }
-            // Only what this signature completes: a group whose vehicles all left before was handed over then.
-            completing.removeIf(row -> !vehiclesOfShipment.get(row.getId()).contains(thisVehicle));
+            // Only what this signature completes: a group whose vehicles all left before was handed over then. An
+            // order that may not ship in parts is one group (review of #162): its shipments on vehicles that left
+            // before are handed over now with the ones on this vehicle.
+            if (PartialShipments.mayShipInParts(order)) {
+                completing.removeIf(row -> !vehiclesOfShipment.get(row.getId()).contains(thisVehicle));
+            } else if (completing.stream().noneMatch(row -> vehiclesOfShipment.get(row.getId()).contains(thisVehicle))) {
+                completing.clear();
+            }
+            if (ordersOnBoard.contains(orderId)) {
+                // Goods of the order leave on this vehicle (LP-3): the order lets them go now - on hold, cancelled,
+                // unpaid or (no partial shipments) units outside the plan are refused here, at every vehicle - and
+                // records that goods left: from now it is no longer cancelled (review of #162).
+                recordGoodsLeft(orderId, unitsInPlan.getOrDefault(orderId, List.of()), now, onManifest.stream()
+                        .map(rows::get).filter(row -> row.getOrderId().equals(orderId)).findFirst().orElseThrow());
+            }
             if (completing.isEmpty()) {
-                if (ordersOnBoard.contains(orderId)) {
-                    // Goods of the order leave on this vehicle though no shipment of it is complete yet (LP-3): the
-                    // order must let them go now - on hold, cancelled or unpaid is refused here, not at the last one.
-                    requireOrderLets(orderId, onManifest.stream().map(rows::get)
-                            .filter(row -> row.getOrderId().equals(orderId)).findFirst().orElseThrow());
-                }
                 continue;
             }
             completing.sort(Comparator.comparing(ShipmentJpaEntity::getReadyAt).thenComparing(ShipmentJpaEntity::getId));
@@ -815,10 +859,41 @@ class DispatchService implements Dispatching {
         return detail(header, load);
     }
 
-    /** The order's refusal to let goods leave (G3-Q4 balance, hold, cancellation), naming a shipment of it on board. */
-    private void requireOrderLets(UUID orderId, ShipmentJpaEntity onBoard) {
+    /**
+     * Per order, the units of its parcels placed in the plan whose shipment still waits for dispatch (the partial check
+     * of the order's gate). Orders whose parcels record no contents get none (not checked, as everywhere).
+     */
+    private Map<UUID, List<ShipmentHandover.Line>> unitsInPlan(LoadPlan plan, Map<UUID, ShipmentJpaEntity> rows) {
+        Set<UUID> placed = plan.placedPackageIds();
+        Map<UUID, UUID> shipmentOf = new HashMap<>();
+        plan.members().stream().filter(m -> m.active() && placed.contains(m.packageId()))
+                .forEach(m -> shipmentOf.put(m.packageId(), m.shipmentId()));
+        Map<UUID, Map<UUID, Integer>> totals = new HashMap<>();
+        if (!shipmentOf.isEmpty()) {
+            for (PackageLineJpaEntity line : packageLines.findByPackageIdIn(shipmentOf.keySet())) {
+                ShipmentJpaEntity row = rows.get(shipmentOf.get(line.getPackageId()));
+                if (row != null && row.getStatus() == ShipmentStatus.READY_TO_DISPATCH) {
+                    totals.computeIfAbsent(row.getOrderId(), k -> new LinkedHashMap<>())
+                            .merge(line.getOrderLineId(), line.getQuantity(), Integer::sum);
+                }
+            }
+        }
+        Map<UUID, List<ShipmentHandover.Line>> out = new HashMap<>();
+        totals.forEach((order, lines) -> out.put(order, lines.entrySet().stream()
+                .map(e -> new ShipmentHandover.Line(e.getKey(), e.getValue())).toList()));
+        return out;
+    }
+
+    /** The order's gate as goods leave (G3-Q4 balance, hold, cancellation, partial), naming a shipment of it on board. */
+    private void recordGoodsLeft(UUID orderId, List<ShipmentHandover.Line> inPlan, Instant at,
+                                 ShipmentJpaEntity onBoard) {
+        named(onBoard, () -> orders.recordGoodsLeft(orderId, at, inPlan));
+    }
+
+    /** The order's refusal of {@code call}, naming a shipment of it with its code, message and fields kept. */
+    private static void named(ShipmentJpaEntity onBoard, Runnable call) {
         try {
-            orders.requireHandoverAllowed(orderId);
+            call.run();
         } catch (BusinessException refused) {
             List<FieldError> fields = new ArrayList<>(refused.fieldErrors());
             fields.add(FieldError.of("shipmentCode", onBoard.getCode()));
@@ -994,7 +1069,7 @@ class DispatchService implements Dispatching {
                 ctx == null || ctx.vehicle() == null ? null : ctx.vehicle().seq(),
                 ctx == null || ctx.vehicle() == null ? null : ctx.vehicle().spec().code(), header.getBookedAt(),
                 header.getBookedBy(), header.getBookingCancelledAt(), header.getBookingCancelReason(),
-                pendingUnloads(load));
+                pendingUnloads(load), load.status() == LoadStatus.CANCELLED && header.getBookedAt() != null);
     }
 
     private List<PendingUnload> pendingUnloads(DispatchLoad load) {

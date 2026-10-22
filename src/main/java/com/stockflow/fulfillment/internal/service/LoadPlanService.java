@@ -119,7 +119,6 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
     private final com.stockflow.fulfillment.internal.repository.PickJpaRepository picks;
     private final com.stockflow.fulfillment.internal.repository.PackageLineJpaRepository packageLines;
     private final com.stockflow.fulfillment.internal.repository.DispatchLoadShipmentJpaRepository loadMembers;
-    private final ShipmentTimeline timeline;
     private final Clock clock;
     private final Duration budget;
 
@@ -135,7 +134,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                     com.stockflow.fulfillment.internal.repository.PickJpaRepository picks,
                     com.stockflow.fulfillment.internal.repository.PackageLineJpaRepository packageLines,
                     com.stockflow.fulfillment.internal.repository.DispatchLoadShipmentJpaRepository loadMembers,
-                    ShipmentTimeline timeline, Clock clock,
+                    Clock clock,
                     @Value("${stockflow.fulfillment.load-planning.solver-budget:PT5S}") Duration budget) {
         this.plans = plans;
         this.members = members;
@@ -155,7 +154,6 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         this.picks = picks;
         this.packageLines = packageLines;
         this.loadMembers = loadMembers;
-        this.timeline = timeline;
         this.clock = clock;
         this.budget = budget;
     }
@@ -186,8 +184,8 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                     .filter(p -> s.getId().equals(p.row().getShipmentId())).toList();
             List<LoadPlanParcels.Parcel> free = mine.stream().filter(p -> !heldElsewhere.contains(p.packageId()))
                     .sorted(Comparator.comparingInt(p -> p.row().getPackageNo())).toList();
-            if (free.isEmpty()) {
-                continue;
+            if (free.isEmpty() || free.size() < mine.size()) {
+                continue;   // LP-5: a shipment partly held by another plan is not a candidate (review of #162)
             }
             BigDecimal weight = BigDecimal.ZERO;
             long volume = 0;
@@ -334,7 +332,9 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                         }
                     });
             List<PackageJpaEntity> free = sealed.stream().filter(p -> !elsewhere.containsKey(p.getId())).toList();
-            if (free.isEmpty()) {
+            // LP-5, review of #162: whole shipments - one with a parcel held by another plan (its left-behind parcels
+            // wait for that plan's first vehicle to start loading, when they split off) is not planned here.
+            if (free.isEmpty() || !elsewhere.isEmpty()) {
                 String held = elsewhere.values().stream().distinct().map(planId -> plans.findById(planId)
                         .map(LoadPlanJpaEntity::getCode).orElse("?")).sorted().collect(Collectors.joining(", "));
                 throw new BusinessException(ErrorCode.LOAD_PLAN_PACKAGE_TAKEN, ("Shipment %s has no package free to "
@@ -588,7 +588,6 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         Instant now = clock.instant();
         List<LoadPlan.Vehicle> vehicles = plan.confirm(actor.userId(), now, cartons(held));
         LoadPlanJpaEntity after = store.save(plan, header, now);
-        splitLeftBehind(plan, held, actor.userId(), now);
         openVehicleLoads(plan, vehicles, held, actor.userId(), now);
         log.info("Load plan {} confirmed: {} vehicle(s), {} package(s) left behind", plan.code(), vehicles.size(),
                 plan.members().stream().filter(m -> m.releaseReason() == LoadPlanReleaseReason.LEFT_BEHIND
@@ -632,59 +631,6 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
             }
             loadStore.insert(load);
         }
-    }
-
-    /**
-     * 09 §4.2 step 3 / edge "kiện không xếp được ... để lại khu DISPATCH cho chuyến sau (giao lệch chuyến theo chính
-     * sách split shipment)" (SCRUM-392): a shipment with parcels placed and parcels left behind is split at the
-     * confirmation - the left-behind parcels move to a new shipment READY_TO_DISPATCH, free for a later plan; the
-     * shipment that stays leaves whole with this plan (handed over at its last vehicle, LP-3). LP-4 already refused
-     * this for an order that does not allow partial shipments.
-     */
-    private void splitLeftBehind(LoadPlan plan, Map<UUID, LoadPlanParcels.Parcel> held, UUID by, Instant at) {
-        Set<UUID> placed = plan.placedPackageIds();
-        Map<UUID, List<UUID>> leftBehindByShipment = new java.util.TreeMap<>();
-        Set<UUID> leaving = new HashSet<>();
-        for (LoadPlan.Member m : plan.members()) {
-            if (placed.contains(m.packageId())) {
-                leaving.add(m.shipmentId());
-            } else if (m.releaseReason() == LoadPlanReleaseReason.LEFT_BEHIND && at.equals(m.releasedAt())) {
-                leftBehindByShipment.computeIfAbsent(m.shipmentId(), k -> new ArrayList<>()).add(m.packageId());
-            }
-        }
-        leftBehindByShipment.keySet().retainAll(leaving);
-        if (leftBehindByShipment.isEmpty()) {
-            return;
-        }
-        Map<UUID, ShipmentJpaEntity> rows = shipmentLocks.lock(leftBehindByShipment.keySet()).stream()
-                .collect(Collectors.toMap(ShipmentJpaEntity::getId, Function.identity()));
-        leftBehindByShipment.forEach((shipmentId, parcelIds) -> {
-            ShipmentJpaEntity row = rows.get(shipmentId);
-            OrderSummary order = held.get(parcelIds.getFirst()).order();
-            String orderNumber = order != null ? order.orderNumber()
-                    : row.getCode().replaceFirst("-S\\d+$", "");
-            com.stockflow.fulfillment.internal.domain.Shipment stays = row.toDomain();
-            com.stockflow.fulfillment.internal.domain.Shipment rest = stays.splitOff(Identifiers.newId(),
-                    orderNumber + "-S" + (shipments.countByOrderId(row.getOrderId()) + 1), Identifiers.newId(),
-                    parcelIds.size(), (int) packages.findByShipmentIdOrderByPackageNoAsc(shipmentId).stream()
-                            .filter(p -> p.getStatus() == PackageStatus.SEALED && !parcelIds.contains(p.getId()))
-                            .count(), "Left behind by load plan %s for a later trip".formatted(plan.code()), by, at);
-            row.apply(stays);
-            shipments.saveAndFlush(row);
-            shipments.saveAndFlush(ShipmentJpaEntity.of(rest));
-            timeline.record(rest, null, order, orderNumber, null, null);
-            for (PackageJpaEntity parcel : packages.findAllById(parcelIds)) {
-                parcel.apply(rest.id(), parcel.getPackageType(), parcel.getStatus(), parcel.getWeightKg(),
-                        parcel.getLengthCm(), parcel.getWidthCm(), parcel.getHeightCm(), parcel.getDimWeightKg(),
-                        parcel.isRotatable(), parcel.isRotatableOverridden(), parcel.isFragile(),
-                        parcel.isFragileOverridden(), parcel.getSealedAt(), parcel.getSealedBy(), parcel.getVoidedAt(),
-                        parcel.getVoidedBy());
-                packages.save(parcel);
-            }
-            packages.flush();
-            log.info("Load plan {}: {} parcel(s) of shipment {} left behind as shipment {}", plan.code(),
-                    parcelIds.size(), row.getCode(), rest.code());
-        });
     }
 
     @Override
