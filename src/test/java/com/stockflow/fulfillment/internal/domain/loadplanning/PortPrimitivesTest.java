@@ -45,16 +45,16 @@ class PortPrimitivesTest {
 
     @Test
     void cornerBlocksComeFromTheVehicleType() {
-        VehicleSpec pickup = new VehicleSpec(LoadPlanAssertions.TRUCK, "PICKUP", 1500, 1450, 500,
+        VehicleSpec pickup = new VehicleSpec(LoadPlanAssertions.TRUCK, "PICKUP", VehicleKind.PICKUP, 1500, 1450, 500,
                 new BigDecimal("900"), 1, 0);
         assertThat(Gussets.of(new Bin(pickup))).isEmpty();
-        VehicleSpec truck = new VehicleSpec(LoadPlanAssertions.TRUCK, "TRUCK-8T", 7600, 2350, 2400,
+        VehicleSpec truck = new VehicleSpec(LoadPlanAssertions.TRUCK, "TRUCK-8T", VehicleKind.TRUCK, 7600, 2350, 2400,
                 new BigDecimal("8000"), 1, 120);
         // The original's layout, sized by the type: two cubes at the top of the front wall ...
         assertThat(Gussets.of(new Bin(truck))).extracting(g -> List.of(g.x, g.y, g.z, g.w))
                 .containsExactly(List.of(0.0, 2280.0, 0.0, 120.0), List.of(2230.0, 2280.0, 0.0, 120.0));
         // ... and on a 45-foot box, four at the 40-foot corner-post lines, 12 032 mm apart and centred.
-        VehicleSpec hc45 = new VehicleSpec(LoadPlanAssertions.TRUCK, "45HC", 13556, 2352, 2698,
+        VehicleSpec hc45 = new VehicleSpec(LoadPlanAssertions.TRUCK, "45HC", VehicleKind.CONTAINER, 13556, 2352, 2698,
                 new BigDecimal("27700"), 1, 150);
         assertThat(Gussets.of(new Bin(hc45))).extracting(g -> List.of(g.x, g.z))
                 .containsExactly(List.of(0.0, 762.0), List.of(0.0, 12644.0), List.of(2202.0, 762.0),

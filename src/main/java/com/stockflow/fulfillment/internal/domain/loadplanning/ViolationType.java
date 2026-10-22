@@ -13,5 +13,9 @@ public enum ViolationType {
     /** It is turned although it may not be, or its placed sizes are not its own in any orientation. */
     ROTATION_NOT_ALLOWED,
     /** It reaches into a reserved ceiling corner. */
-    GUSSET
+    GUSSET,
+    /** Its placed width x height face is larger than the vehicle's door, so it could not be loaded that way. */
+    DOOR,
+    /** Its physical set (kit group) is spread over more than one vehicle. */
+    KIT_SPLIT
 }

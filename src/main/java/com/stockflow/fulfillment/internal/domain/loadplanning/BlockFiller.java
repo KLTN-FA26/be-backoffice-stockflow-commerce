@@ -67,12 +67,22 @@ final class BlockFiller {
         return out;
     }
 
-    /** {@code _ems_update}: carve {@code r} out of every space, drop slivers thinner than {@code mind}, keep maximal. */
+    /**
+     * {@code _ems_update}: carve {@code r} out of every space, drop slivers thinner than {@code mind}, keep maximal.
+     *
+     * <p>The original tested every space against every other for containment. Only the pieces split off this step
+     * can be contained in something: the spaces {@code r} did not touch were maximal before and cannot sit inside a
+     * piece, which lies inside a space they were not inside either. So only the new pieces are tested - the same
+     * list in the same order, without the quadratic pass that dominated large fills.</p>
+     */
     static List<double[]> update(List<double[]> spaces, double[] r, double mind) {
         List<double[]> next = new ArrayList<>();
+        java.util.Set<double[]> pieces = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
         for (double[] s : spaces) {
             if (intersects(s, r)) {
-                next.addAll(diff(s, r));
+                List<double[]> d = diff(s, r);
+                next.addAll(d);
+                pieces.addAll(d);
             } else {
                 next.add(s);
             }
@@ -91,8 +101,10 @@ final class BlockFiller {
         List<double[]> out = new ArrayList<>(uniq.size());
         for (int i = 0; i < uniq.size(); i++) {
             boolean inside = false;
-            for (int j = 0; j < uniq.size() && !inside; j++) {
-                inside = j != i && contained(uniq.get(i), uniq.get(j));
+            if (pieces.contains(uniq.get(i))) {
+                for (int j = 0; j < uniq.size() && !inside; j++) {
+                    inside = j != i && contained(uniq.get(i), uniq.get(j));
+                }
             }
             if (!inside) {
                 out.add(uniq.get(i));
@@ -109,9 +121,9 @@ final class BlockFiller {
      * original's check comes first, and a block resting fully needs no other; only a partly resting block has each
      * bottom carton checked on its own.
      */
-    static boolean blockSupported(SupportGrid grid, double sx, double sy, double sz, double w, double d, int nx,
-                                  int nz, double supportMin) {
-        double whole = grid.support(sx, sy, sz, nx * w, nz * d);
+    static boolean blockSupported(List<BoxPlacement> supporters, double sx, double sy, double sz, double w, double d,
+                                  int nx, int nz, double supportMin) {
+        double whole = SupportGrid.support(supporters, sx, sy, sz, nx * w, nz * d);
         if (whole < supportMin) {
             return false;
         }
@@ -120,7 +132,7 @@ final class BlockFiller {
         }
         for (int a = 0; a < nx; a++) {
             for (int c = 0; c < nz; c++) {
-                if (grid.support(sx + a * w, sy, sz + c * d, w, d) < supportMin) {
+                if (SupportGrid.support(supporters, sx + a * w, sy, sz + c * d, w, d) < supportMin) {
                     return false;
                 }
             }
@@ -132,80 +144,270 @@ final class BlockFiller {
     private record Candidate(double volume, int index, double w, double h, double d, int nx, int ny, int nz,
                              double sx, double sy, double sz) { }
 
+    /** How many units of type {@code i} a block may hold now: what is left, and what the payload still allows. */
+    private static int cap(Box box, int remaining, double weightLimit, double weightAcc) {
+        if (remaining <= 0) {
+            return 0;
+        }
+        int cap = remaining;
+        if (weightLimit > 0 && box.type.weightKg > EPS) {
+            int room = (int) ((weightLimit - weightAcc + EPS) / box.type.weightKg);
+            if (room <= 0) {
+                return 0;
+            }
+            cap = Math.min(cap, room);
+        }
+        return cap;
+    }
+
+    /** The original's inner loop for one space and one type: a block per orientation that fits, in orientation order. */
+    private static List<Candidate> candidates(double[] s, int i, Box box, int cap, SpaceCache cache, SupportGrid grid,
+                                              double supportMin, Bin bin) {
+        List<Candidate> out = null;
+        int uncapped = 0;
+        double sx = s[0], sy = s[1], sz = s[2], sw = s[3], sh = s[4], sd = s[5];
+        if (box.type.rotatable && !cache.mayHold(box)) {
+            cache.uncapped[i] = 0;
+            return List.of();       // no orientation fits: the sorted sizes already do not
+        }
+        for (double[] o : box.orientations()) {
+            double w = o[0], h = o[1], d = o[2];
+            if (w > sw + TOL || h > sh + TOL || d > sd + TOL || !bin.passesDoor(w, h)) {
+                continue;       // the door (LP3-DOOR): only orientations that pass it can be loaded
+            }
+            int nx = (int) Math.floor((sw + TOL) / w);
+            int ny = (int) Math.floor((sh + TOL) / h);
+            int nz = (int) Math.floor((sd + TOL) / d);
+            uncapped = (int) Math.max(uncapped, Math.min(Integer.MAX_VALUE, (long) nx * ny * nz));
+            // The original shrinks z first, then y, then x, one unit at a time until the block fits the cap; the same
+            // result in closed form.
+            if ((long) nx * ny * nz > (long) cap) {
+                nz = (int) Math.max(1, Math.min(nz, cap / ((long) nx * ny)));
+                if ((long) nx * ny * nz > (long) cap) {
+                    ny = (int) Math.max(1, Math.min(ny, cap / (long) nx));
+                    if ((long) nx * ny * nz > (long) cap) {
+                        nx = Math.max(1, Math.min(nx, cap));
+                    }
+                }
+            }
+            if ((long) nx * ny * nz > (long) cap) {
+                continue;
+            }
+            if (sy > TOL && !blockSupported(cache.supporters(grid), sx, sy, sz, w, d, nx, nz, supportMin)) {
+                continue;
+            }
+            if (out == null) {
+                out = new ArrayList<>(2);
+            }
+            out.add(new Candidate(nx * ny * nz * w * h * d, i, w, h, d, nx, ny, nz, sx, sy, sz));
+        }
+        cache.uncapped[i] = uncapped;
+        return out == null ? List.of() : out;
+    }
+
     /**
-     * {@code _grasp_recreate}: fill {@code spaces} with blocks of the remaining cartons until nothing fits. Mutates
+     * What one free space offers, kept between steps of one fill. A space's candidates change only when the space is
+     * new, when a carton lands with its top at the space's floor under its footprint (its support changes), or when a
+     * type's cap changes enough to shrink one of its blocks. Everything else is reused, and the space keeps the
+     * largest and smallest block volume it offers, so a step finds the best block without visiting every candidate.
+     * The draw still sees exactly the original's candidate list, in the original's order.
+     */
+    private static final class SpaceCache {
+        final double[] space;
+        final List<List<Candidate>> byType;
+        final int[] capUsed;
+        /** Per type: the largest block an orientation would make before the cap shrinks it. */
+        final int[] uncapped;
+        final double[] typeMax;
+        final double[] typeMin;
+        double spaceMax = Double.NEGATIVE_INFINITY;
+        double spaceMin = Double.POSITIVE_INFINITY;
+        boolean dirty = true;
+        /** New, or its support changed: every type must be looked at again. */
+        boolean stale = true;
+        List<BoxPlacement> supporters;
+
+        /** The space's sizes, smallest first, for {@link #mayHold}. */
+        final double[] sorted;
+
+        SpaceCache(double[] space, int types) {
+            this.space = space;
+            this.sorted = new double[] {space[3], space[4], space[5]};
+            java.util.Arrays.sort(this.sorted);
+            this.byType = new ArrayList<>(types);
+            for (int i = 0; i < types; i++) {
+                byType.add(null);
+            }
+            this.capUsed = new int[types];
+            this.uncapped = new int[types];
+            this.typeMax = new double[types];
+            this.typeMin = new double[types];
+        }
+
+        /** Whether some orientation of a turnable carton could fit: its sizes, smallest first, each fit. */
+        boolean mayHold(Box box) {
+            double[] b = box.sortedSizes();
+            return b[0] <= sorted[0] + TOL && b[1] <= sorted[1] + TOL && b[2] <= sorted[2] + TOL;
+        }
+
+        List<BoxPlacement> supporters(SupportGrid grid) {
+            if (supporters == null) {
+                supporters = grid.supporters(space[0], space[1], space[2], space[3], space[5]);
+            }
+            return supporters;
+        }
+
+        void invalidate() {
+            supporters = null;
+            for (int i = 0; i < byType.size(); i++) {
+                byType.set(i, null);
+            }
+            stale = true;
+            dirty = true;
+        }
+
+        /** Bring type {@code i} up to date for this cap; returns the work it took. */
+        long refresh(int i, Box box, int cap, SupportGrid grid, double supportMin, Bin bin) {
+            List<Candidate> c = byType.get(i);
+            if (c != null && capUsed[i] == cap) {
+                return 1;
+            }
+            if (c != null && cap >= uncapped[i] && capUsed[i] >= uncapped[i]) {
+                capUsed[i] = cap;    // no block of this type was or will be shrunk by the cap: same candidates
+                return 1;
+            }
+            c = candidates(space, i, box, cap, this, grid, supportMin, bin);
+            byType.set(i, c);
+            capUsed[i] = cap;
+            double max = Double.NEGATIVE_INFINITY;
+            double min = Double.POSITIVE_INFINITY;
+            for (Candidate k : c) {
+                max = Math.max(max, k.volume);
+                min = Math.min(min, k.volume);
+            }
+            typeMax[i] = max;
+            typeMin[i] = min;
+            dirty = true;
+            return 1 + box.orientations().size();
+        }
+
+        /** Recompute the space's largest and smallest block over the types still in play. */
+        long aggregate(int[] caps) {
+            if (!dirty) {
+                return 0;
+            }
+            spaceMax = Double.NEGATIVE_INFINITY;
+            spaceMin = Double.POSITIVE_INFINITY;
+            for (int i = 0; i < caps.length; i++) {
+                if (caps[i] > 0 && byType.get(i) != null && !byType.get(i).isEmpty()) {
+                    spaceMax = Math.max(spaceMax, typeMax[i]);
+                    spaceMin = Math.min(spaceMin, typeMin[i]);
+                }
+            }
+            dirty = false;
+            return caps.length;
+        }
+
+        /** A block {@code r} was placed: does it change what this space rests on? */
+        boolean supportChangedBy(double[] r) {
+            return Math.abs((r[1] + r[4]) - space[1]) <= SupportGrid.EPS
+                    && Math.min(space[0] + space[3], r[0] + r[3]) - Math.max(space[0], r[0]) > SupportGrid.EPS
+                    && Math.min(space[2] + space[5], r[2] + r[5]) - Math.max(space[2], r[2]) > SupportGrid.EPS;
+        }
+    }
+
+    /**
+     * {@code _grasp_recreate}: fill {@code spaces} with blocks of the remaining cartons until nothing fits, or the real
+     * budget runs out - the blocks placed so far stand, so a cut-off fill is still a valid partial load. Mutates
      * {@code placements}, {@code placedIndex}, {@code grid} and {@code remaining}; returns the updated spaces.
      *
      * @param weightAcc the load already in the vehicle, updated in place. The original honoured a cap only when one
      *                  was given and the kit solver never gave one; BR-10 makes the payload a cap on every call
      */
-    static List<double[]> recreate(List<Box> boxes, PyRandom rng, double alpha, double mind, List<double[]> spaces,
-                                   SupportGrid grid, List<BoxPlacement> placements, List<Integer> placedIndex,
-                                   int[] remaining, double supportMin, double weightLimit, double[] weightAcc,
-                                   WorkClock clock) {
-        clock.tick();
-        while (true) {
-            List<Candidate> cands = new ArrayList<>();
-            for (double[] s : spaces) {
-                double sx = s[0], sy = s[1], sz = s[2], sw = s[3], sh = s[4], sd = s[5];
-                for (int i = 0; i < boxes.size(); i++) {
-                    if (remaining[i] <= 0) {
-                        continue;
-                    }
-                    Box box = boxes.get(i);
-                    int cap = remaining[i];
-                    if (weightLimit > 0 && box.type.weightKg > EPS) {
-                        int room = (int) ((weightLimit - weightAcc[0] + EPS) / box.type.weightKg);
-                        if (room <= 0) {
-                            continue;
-                        }
-                        cap = Math.min(cap, room);
-                    }
-                    for (double[] o : box.orientations()) {
-                        double w = o[0], h = o[1], d = o[2];
-                        if (w > sw + TOL || h > sh + TOL || d > sd + TOL) {
-                            continue;
-                        }
-                        int nx = (int) Math.floor((sw + TOL) / w);
-                        int ny = (int) Math.floor((sh + TOL) / h);
-                        int nz = (int) Math.floor((sd + TOL) / d);
-                        while ((long) nx * ny * nz > (long) cap) {
-                            if (nz > 1) {
-                                nz--;
-                            } else if (ny > 1) {
-                                ny--;
-                            } else if (nx > 1) {
-                                nx--;
-                            } else {
-                                break;
-                            }
-                        }
-                        if ((long) nx * ny * nz > (long) cap) {
-                            continue;
-                        }
-                        if (sy > TOL && !blockSupported(grid, sx, sy, sz, w, d, nx, nz, supportMin)) {
-                            continue;
-                        }
-                        cands.add(new Candidate(nx * ny * nz * w * h * d, i, w, h, d, nx, ny, nz, sx, sy, sz));
-                    }
+    static List<double[]> recreate(Bin bin, List<Box> boxes, PyRandom rng, double alpha, double mind,
+                                   List<double[]> spaces, SupportGrid grid, List<BoxPlacement> placements,
+                                   List<Integer> placedIndex, int[] remaining, double supportMin, double weightLimit,
+                                   double[] weightAcc, WorkClock clock) {
+        clock.construction();
+        int types = boxes.size();
+        java.util.IdentityHashMap<double[], SpaceCache> caches = new java.util.IdentityHashMap<>();
+        int[] caps = new int[types];
+        int[] previousCaps = new int[types];
+        java.util.Arrays.fill(previousCaps, -1);
+        while (!clock.expired()) {
+            long work = 0;
+            for (int i = 0; i < types; i++) {
+                caps[i] = cap(boxes.get(i), remaining[i], weightLimit, weightAcc[0]);
+            }
+            List<Integer> changed = new ArrayList<>();
+            for (int i = 0; i < types; i++) {
+                if (caps[i] != previousCaps[i]) {
+                    changed.add(i);
                 }
             }
-            if (cands.isEmpty()) {
-                break;
-            }
+            java.util.IdentityHashMap<double[], SpaceCache> live = new java.util.IdentityHashMap<>();
+            List<SpaceCache> order = new ArrayList<>(spaces.size());
             double smax = Double.NEGATIVE_INFINITY;
             double smin = Double.POSITIVE_INFINITY;
-            for (Candidate c : cands) {
-                smax = Math.max(smax, c.volume);
-                smin = Math.min(smin, c.volume);
-            }
-            double threshold = smax - alpha * (smax - smin);
-            List<Candidate> rcl = new ArrayList<>();
-            for (Candidate c : cands) {
-                if (c.volume >= threshold) {
-                    rcl.add(c);
+            for (double[] s : spaces) {
+                SpaceCache cache = caches.get(s);
+                if (cache == null) {
+                    cache = new SpaceCache(s, types);
+                }
+                live.put(s, cache);
+                order.add(cache);
+                if (cache.stale) {
+                    for (int i = 0; i < types; i++) {
+                        if (caps[i] > 0) {
+                            work += cache.refresh(i, boxes.get(i), caps[i], grid, supportMin, bin);
+                        }
+                    }
+                    cache.stale = false;
+                    cache.dirty = true;
+                } else {
+                    for (int i : changed) {
+                        if (caps[i] > 0) {
+                            work += cache.refresh(i, boxes.get(i), caps[i], grid, supportMin, bin);
+                        } else {
+                            cache.dirty = true;     // the type left play
+                        }
+                    }
+                }
+                work += cache.aggregate(caps);
+                if (cache.spaceMax != Double.NEGATIVE_INFINITY) {
+                    smax = Math.max(smax, cache.spaceMax);
+                    smin = Math.min(smin, cache.spaceMin);
                 }
             }
+            System.arraycopy(caps, 0, previousCaps, 0, types);
+            caches = live;
+            if (smax == Double.NEGATIVE_INFINITY) {
+                clock.evaluated(work + spaces.size());
+                break;
+            }
+            // The candidates are not gathered into one list: the original's list (space, type, orientation order) is
+            // walked only where a block can reach the threshold, which picks out the restricted candidate list.
+            double threshold = smax - alpha * (smax - smin);
+            List<Candidate> rcl = new ArrayList<>();
+            for (SpaceCache cache : order) {
+                work++;
+                if (cache.spaceMax == Double.NEGATIVE_INFINITY || cache.spaceMax < threshold) {
+                    continue;
+                }
+                for (int i = 0; i < types; i++) {
+                    work++;
+                    if (caps[i] <= 0 || cache.byType.get(i).isEmpty() || cache.typeMax[i] < threshold) {
+                        continue;
+                    }
+                    for (Candidate k : cache.byType.get(i)) {
+                        work++;
+                        if (k.volume >= threshold) {
+                            rcl.add(k);
+                        }
+                    }
+                }
+            }
+            clock.evaluated(work + 6L * spaces.size());
             Candidate pick = rng.choice(rcl);
             Box box = boxes.get(pick.index);
             for (int a = 0; a < pick.nx; a++) {
@@ -220,8 +422,13 @@ final class BlockFiller {
                 }
             }
             int n = pick.nx * pick.ny * pick.nz;
-            spaces = update(spaces, new double[] {pick.sx, pick.sy, pick.sz, pick.nx * pick.w, pick.ny * pick.h,
-                    pick.nz * pick.d}, mind);
+            double[] region = {pick.sx, pick.sy, pick.sz, pick.nx * pick.w, pick.ny * pick.h, pick.nz * pick.d};
+            for (SpaceCache cache : caches.values()) {
+                if (cache.supportChangedBy(region)) {
+                    cache.invalidate();
+                }
+            }
+            spaces = update(spaces, region, mind);
             remaining[pick.index] -= n;
             weightAcc[0] += n * box.type.weightKg;
         }

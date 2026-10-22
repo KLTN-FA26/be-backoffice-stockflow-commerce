@@ -23,8 +23,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /** The planner's contract: kits, reasons, modes, fill, payload, BR-12, budget, and the kit-bypass regression. */
 class LoadPlannerTest {
 
-    /** The original's work rate: same search, a fraction of the time, so the suite stays quick and reproducible. */
-    private final LoadPlanner planner = new LoadPlanner(8.0);
+    private final LoadPlanner planner = new LoadPlanner(LoadPlanAssertions.TEST_RATE);
 
     private LoadPlanResult plan(LoadPlanRequest request) {
         LoadPlanResult result = planner.plan(request);
@@ -194,7 +193,7 @@ class LoadPlannerTest {
 
     @Test
     void exactFitFillsTheVehicle() {
-        VehicleSpec box = new VehicleSpec(LoadPlanAssertions.TRUCK, "CUBE", 2000, 1000, 1000,
+        VehicleSpec box = new VehicleSpec(LoadPlanAssertions.TRUCK, "CUBE", VehicleKind.TRUCK, 2000, 1000, 1000,
                 new BigDecimal("1000"), 1, 0);
         LoadPlanResult r = plan(request(many("c", 8, 500, 500, 1000, "10", false, null), List.of(box),
                 SelectionMode.SINGLE_TYPE, List.of()));
@@ -322,5 +321,172 @@ class LoadPlannerTest {
         LoadPlanResult r = new LoadPlanner().plan(req);
         assertSound(req, r);
         assertThat((System.nanoTime() - t0) / 1_000_000).isLessThan(1_050 + 2_000);
+    }
+
+    // ------------------------------------------------------------------ review round 1 (PR #156)
+
+    private static CargoPackage part(String ref, String part, String group, int h) {
+        return new CargoPackage(ref, null, 1000, 1000, h, new BigDecimal("10"), false, part, group, null, false);
+    }
+
+    /** A box that holds exactly one set: a 600 mm part under a 400 mm part. */
+    private static VehicleSpec oneSetBox(int available) {
+        return new VehicleSpec(LoadPlanAssertions.TRUCK, "ONE-SET", VehicleKind.TRUCK, 1000, 1000, 1000,
+                new BigDecimal("100"), available, 0);
+    }
+
+    @Test
+    @DisplayName("review #3: a set's parts come from one physical kit group (repro a1/g1, a2/g2, b2/g2, b1/g1)")
+    void partsOfAPlacedSetComeFromOneKitGroup() {
+        List<CargoPackage> cartons = List.of(part("a1", "A", "g1", 600), part("a2", "A", "g2", 600),
+                part("b2", "B", "g2", 400), part("b1", "B", "g1", 400));
+        LoadPlanResult r = plan(request(cartons, List.of(oneSetBox(2)), SelectionMode.SINGLE_TYPE,
+                List.of(new KitSpec("AB", Map.of("A", 1, "B", 1)))));
+        assertThat(r.vehicles()).hasSize(2);
+        for (PlannedVehicle v : r.vehicles()) {
+            assertThat(v.placements()).extracting(Placement::kitGroup).containsOnly(v.placements().get(0).kitGroup());
+        }
+        // With one vehicle the other set stays behind whole.
+        LoadPlanResult one = plan(request(cartons, List.of(oneSetBox(1)), SelectionMode.SINGLE_TYPE,
+                List.of(new KitSpec("AB", Map.of("A", 1, "B", 1)))));
+        assertThat(one.vehicles().get(0).placements()).extracting(Placement::kitGroup).containsOnly("g1");
+        assertThat(one.unplaced()).extracting(UnplacedPackage::ref).containsExactlyInAnyOrder("a2", "b2");
+    }
+
+    @Test
+    @DisplayName("kit groups nobody declared are kept together all the same")
+    void kitGroupsWithoutADeclaredKit() {
+        List<CargoPackage> cartons = new ArrayList<>();
+        for (int g = 0; g < 6; g++) {
+            cartons.add(part("a" + g, "TOP", "set" + g, 600));
+        }
+        for (int g = 5; g >= 0; g--) {
+            cartons.add(part("b" + g, "BASE", "set" + g, 400));
+        }
+        LoadPlanResult r = plan(request(cartons, List.of(oneSetBox(6)), SelectionMode.SINGLE_TYPE, List.of()));
+        assertThat(r.vehicles()).hasSize(6);
+        assertThat(r.meta().setsTotal()).isEqualTo(6);
+    }
+
+    @Test
+    @DisplayName("review #1: a fill carton never rests on less than 98 % of its base")
+    void fillRestsOnNinetyEightPercent() {
+        List<double[]> floor = List.of(new double[] {0, 0, 0, 1000, 100, 1000});
+        assertThat(EmsFill.rests(520, 100, 0, 1000, 1000, floor, 98)).as("48 %").isFalse();
+        assertThat(EmsFill.rests(30, 100, 0, 1000, 1000, floor, 98)).as("97 %").isFalse();
+        assertThat(EmsFill.rests(20, 100, 0, 1000, 1000, floor, 98)).as("98 %").isTrue();
+        assertThat(EmsFill.rests(0, 0, 0, 1000, 1000, List.of(), 98)).as("on the floor").isTrue();
+    }
+
+    @Test
+    @DisplayName("review #2: the budget is a hard cap - 300 ms on 800 cartons of 120 sizes")
+    void budgetIsAHardCap() {
+        java.util.Random rnd = new java.util.Random(11);
+        List<int[]> sizes = new ArrayList<>();
+        for (int i = 0; i < 120; i++) {
+            sizes.add(new int[] {200 + rnd.nextInt(1301), 200 + rnd.nextInt(1001), 150 + rnd.nextInt(851)});
+        }
+        List<CargoPackage> cartons = new ArrayList<>();
+        for (int i = 0; i < 800; i++) {
+            int[] s = sizes.get(rnd.nextInt(sizes.size()));
+            cartons.add(new CargoPackage("c" + i, null, s[0], s[1], s[2], BigDecimal.valueOf(500 + rnd.nextInt(30000), 3),
+                    rnd.nextInt(5) > 0, "SKU" + i % 120, null, null, i % 7 == 0));
+        }
+        for (SelectionMode mode : SelectionMode.values()) {
+            LoadPlanRequest req = new LoadPlanRequest(cartons, List.of(dc20(40, 150), dc40(20, 150), hc40(20, 150)),
+                    mode, List.of(), KitDistribution.AUTO, false, null, 0L, Duration.ofMillis(300));
+            long t0 = System.nanoTime();
+            LoadPlanResult r = new LoadPlanner().plan(req);
+            long ms = (System.nanoTime() - t0) / 1_000_000;
+            assertSound(req, r);
+            assertThat(ms).as("%s took %d ms on a 300 ms budget", mode, ms).isLessThan(300 + 1_000);
+        }
+    }
+
+    @Test
+    @DisplayName("gussets: whole millimetres on an odd length; the 45-foot posts only on a container")
+    void gussetsOnOddLengthsAndOnlyOnContainers() {
+        VehicleSpec odd45 = new VehicleSpec(LoadPlanAssertions.HC, "45HC-ODD", VehicleKind.CONTAINER, 13555, 2352,
+                2698, new BigDecimal("27700"), 1, 150);
+        assertThat(Gussets.of(new Bin(odd45))).extracting(g -> g.z).containsExactly(761.0, 12644.0, 761.0, 12644.0);
+        LoadPlanResult r = plan(request(many("c", 40, 1200, 1000, 1000, "50", true, "C"), List.of(odd45),
+                SelectionMode.SINGLE_TYPE, List.of()));
+        assertThat(r.unplaced()).isEmpty();
+        VehicleSpec trailer = new VehicleSpec(LoadPlanAssertions.TRUCK, "TRAILER-13.6", VehicleKind.TRUCK, 13600,
+                2450, 2700, new BigDecimal("30000"), 1, 150);
+        assertThat(Gussets.of(new Bin(trailer))).extracting(g -> g.z).containsExactly(0.0, 0.0);
+    }
+
+    @Test
+    @DisplayName("sets of different make-up sharing part codes never draw on each other's cartons")
+    void setsOfDifferentMakeUpStayWhole() {
+        List<CargoPackage> cartons = new ArrayList<>();
+        for (int k = 0; k < 8; k++) {
+            int parts = 2 + k % 2;
+            for (int p = 1; p <= parts; p++) {
+                cartons.add(new CargoPackage("s" + k + "/" + p, null, 900, 700, 600, new BigDecimal("12"), true,
+                        "TABLE/" + p, "set-" + k, null, false));
+            }
+        }
+        cartons.addAll(many("loose", 30, 600, 400, 400, "6", true, "LOOSE"));
+        LoadPlanResult r = plan(request(cartons, List.of(truck5t(6, 120)), SelectionMode.SINGLE_TYPE, List.of()));
+        assertThat(r.meta().setsTotal()).isEqualTo(8);
+        assertThat(r.meta().kitBalance()).allSatisfy(b -> assertThat(b.keySet())
+                .allSatisfy(k -> assertThat(k).startsWith("TABLE/").doesNotContain(LoadPlanner.SET_MARK)));
+    }
+
+    // ------------------------------------------------------------------ doors (LP3-DOOR)
+
+    private static VehicleSpec doorTruck(int available, Integer doorWidth, Integer doorHeight) {
+        return new VehicleSpec(LoadPlanAssertions.TRUCK, "TRUCK-DOOR", VehicleKind.TRUCK, 6200, 2150, 2200,
+                new BigDecimal("5000"), available, 0, doorWidth, doorHeight);
+    }
+
+    @Test
+    @DisplayName("door: a carton that cannot turn and is taller than the door is TOO_LARGE")
+    void doorBlocksTallCartons() {
+        LoadPlanResult r = plan(request(List.of(carton("tall", 1000, 900, 2000, "20", false, null)),
+                List.of(doorTruck(1, 2000, 1800)), SelectionMode.SINGLE_TYPE, List.of()));
+        assertThat(reasons(r)).containsExactly(Map.entry("tall", UnplacedReason.TOO_LARGE));
+    }
+
+    @Test
+    @DisplayName("door: a carton that may turn goes in lying down")
+    void rotationLetsACartonThroughTheDoor() {
+        LoadPlanResult r = plan(request(List.of(carton("tall", 1000, 900, 2000, "20", true, null)),
+                List.of(doorTruck(1, 2000, 1800)), SelectionMode.SINGLE_TYPE, List.of()));
+        assertThat(r.unplaced()).isEmpty();
+        Placement p = r.vehicles().get(0).placements().get(0);
+        assertThat(p.w()).isLessThanOrEqualTo(2000);
+        assertThat(p.h()).isLessThanOrEqualTo(1800);
+    }
+
+    @Test
+    @DisplayName("door: null means no limit")
+    void noDoorMeansNoLimit() {
+        LoadPlanResult r = plan(request(List.of(carton("tall", 1000, 900, 2000, "20", false, null)),
+                List.of(doorTruck(1, null, null)), SelectionMode.SINGLE_TYPE, List.of()));
+        assertThat(r.unplaced()).isEmpty();
+        assertThat(r.vehicles().get(0).placements().get(0).h()).isEqualTo(2000);
+    }
+
+    @Test
+    @DisplayName("door: in a mixed fleet a carton blocked by one type's door rides only in the types it passes")
+    void mixedFleetRoutesCartonsThroughTheDoorsTheyPass() {
+        List<CargoPackage> cartons = new ArrayList<>(many("tall", 6, 1000, 900, 2000, "20", false, "TALL"));
+        cartons.addAll(many("small", 30, 600, 400, 400, "6", true, "SMALL"));
+        VehicleSpec lowDoor = new VehicleSpec(LoadPlanAssertions.TRUCK, "LOW-DOOR", VehicleKind.TRUCK, 6200, 2150,
+                2200, new BigDecimal("5000"), 3, 0, 2000, 1500);
+        LoadPlanResult r = plan(request(cartons, List.of(lowDoor, dc20(3, 0)), SelectionMode.FEWEST_VEHICLES,
+                List.of()));
+        assertThat(r.unplaced()).isEmpty();
+        for (PlannedVehicle v : r.vehicles()) {
+            if (v.vehicleCode().equals("LOW-DOOR")) {
+                assertThat(v.placements()).allSatisfy(p -> assertThat(p.h()).isLessThanOrEqualTo(1500));
+            }
+        }
+        LoadPlanResult lowOnly = plan(request(cartons, List.of(lowDoor), SelectionMode.SINGLE_TYPE, List.of()));
+        assertThat(lowOnly.unplaced()).hasSize(6)
+                .allSatisfy(u -> assertThat(u.reason()).isEqualTo(UnplacedReason.TOO_LARGE));
     }
 }

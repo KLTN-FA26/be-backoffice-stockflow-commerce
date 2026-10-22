@@ -12,7 +12,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class PlacementValidatorTest {
 
     /** 2000 long, 1000 wide, 1000 high, 100 kg, 100 mm corner clearance at the front wall. */
-    private static final VehicleSpec BOX = new VehicleSpec(LoadPlanAssertions.TRUCK, "T", 2000, 1000, 1000,
+    private static final VehicleSpec BOX = new VehicleSpec(LoadPlanAssertions.TRUCK, "T", VehicleKind.TRUCK,
+            2000, 1000, 1000,
             new BigDecimal("100"), 1, 100);
 
     private static PlacementValidator.Item at(CargoPackage c, int x, int y, int z) {
@@ -81,5 +82,29 @@ class PlacementValidatorTest {
         assertThat(check(at(tall, 0, 0, 0))).containsExactly(new PlacementViolation("t", ViolationType.GUSSET));
         assertThat(check(at(tall, 0, 0, 100))).isEmpty();
         assertThat(check(at(tall, 100, 0, 0))).isEmpty();
+    }
+
+    @Test
+    void aKitGroupSpreadOverVehiclesIsAKitSplit() {
+        CargoPackage top = new CargoPackage("top", null, 500, 500, 500, BigDecimal.ONE, true, "T", "set-1", null, false);
+        CargoPackage base = new CargoPackage("base", null, 500, 500, 500, BigDecimal.ONE, true, "B", "set-1", null,
+                false);
+        CargoPackage other = carton("x", 500, 500, 500, "1", true, null);
+        assertThat(PlacementValidator.validateKitGroups(List.of(List.of(at(top, 0, 0, 0), at(base, 500, 0, 0)),
+                List.of(at(other, 0, 0, 0))))).isEmpty();
+        assertThat(PlacementValidator.validateKitGroups(List.of(List.of(at(top, 0, 0, 0), at(other, 500, 0, 0)),
+                List.of(at(base, 0, 0, 0))))).containsExactly(new PlacementViolation("top", ViolationType.KIT_SPLIT),
+                new PlacementViolation("base", ViolationType.KIT_SPLIT));
+    }
+
+    @Test
+    void aFaceLargerThanTheDoorIsADoorViolation() {
+        VehicleSpec doored = new VehicleSpec(LoadPlanAssertions.TRUCK, "D", VehicleKind.TRUCK, 2000, 1000, 1000,
+                new BigDecimal("100"), 1, 0, 800, 600);
+        CargoPackage c = carton("c", 500, 500, 700, "1", true, null);    // (w, h, l) = (500, 700, 500)
+        assertThat(PlacementValidator.validate(doored, List.of(PlacementValidator.Item.of(c, 0, 0, 0,
+                Orientation.LWH)))).containsExactly(new PlacementViolation("c", ViolationType.DOOR));
+        assertThat(PlacementValidator.validate(doored, List.of(PlacementValidator.Item.of(c, 0, 0, 0,
+                Orientation.HLW)))).isEmpty();
     }
 }

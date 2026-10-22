@@ -143,55 +143,63 @@ final class EmsFill {
         return false;
     }
 
-    static double supportPct(double x, double y, double z, double w, double d, List<double[]> placed) {
+    /**
+     * {@code _support_pct}, as an exact test: on the floor, or {@code 100 * covered >= percent * base} in whole mm2.
+     * The original returned a ratio and the caller compared {@code ratio + EPS < support_min} - a millimetre tolerance
+     * added to a fraction, which let a carton resting on under half its base through. Integer areas leave nothing to
+     * tolerate.
+     */
+    static boolean rests(double x, double y, double z, double w, double d, List<double[]> placed, int percent) {
         if (y <= EPS) {
-            return 1.0;
+            return true;
         }
-        double base = w * d;
+        long base = Math.round(w) * Math.round(d);
         if (base <= 0) {
-            return 1.0;
+            return true;
         }
-        double covered = 0.0;
+        long covered = 0;
         for (double[] p : placed) {
             if (Math.abs(p[1] + p[4] - y) > EPS) {
                 continue;
             }
-            double ox = Math.min(x + w, p[0] + p[3]) - Math.max(x, p[0]);
-            double oz = Math.min(z + d, p[2] + p[5]) - Math.max(z, p[2]);
-            if (ox > EPS && oz > EPS) {
+            long ox = Math.round(Math.min(x + w, p[0] + p[3]) - Math.max(x, p[0]));
+            long oz = Math.round(Math.min(z + d, p[2] + p[5]) - Math.max(z, p[2]));
+            if (ox > 0 && oz > 0) {
                 covered += ox * oz;
             }
         }
-        return covered / base;
+        return 100 * covered >= (long) percent * base;
     }
 
     /**
      * {@code fill_into_spaces}: greedily seat {@code units} (in the caller's order) into the free spaces left by
-     * {@code obstacles}. Returns the seated cartons; {@code usedWeight[0]} receives the weight they add.
+     * {@code obstacles}, until none fits or the real budget runs out. Returns the seated cartons; {@code usedWeight[0]}
+     * receives the weight they add.
      */
     static List<Seated> fillIntoSpaces(double w, double h, double d, List<double[]> obstacles, List<Unit> units,
-                                       double weightLimit, double baseWeight, double supportMin,
-                                       double[] usedWeight) {
+                                       double weightLimit, double baseWeight, int supportPercent,
+                                       double[] usedWeight, WorkClock clock, Bin bin) {
         List<double[]> placed = new ArrayList<>(obstacles);
         List<double[]> spaces = computeEmptySpaces(w, h, d, placed);
         List<Seated> out = new ArrayList<>();
         double weight = baseWeight;
         List<Unit> remaining = new ArrayList<>(units);
         boolean progress = true;
-        while (progress && !remaining.isEmpty() && !spaces.isEmpty()) {
+        while (progress && !remaining.isEmpty() && !spaces.isEmpty() && !clock.expired()) {
             progress = false;
             spaces.sort(Comparator.<double[]>comparingDouble(s -> s[1]).thenComparingDouble(s -> s[2])
                     .thenComparingDouble(s -> s[0]));
-            for (int i = 0; i < remaining.size(); i++) {
+            for (int i = 0; i < remaining.size() && !clock.expired(); i++) {
                 Unit unit = remaining.get(i);
                 if (weightLimit > 0 && weight + unit.weight() > weightLimit + EPS) {
                     continue;
                 }
                 double[] hit = null;
+                clock.evaluated((long) spaces.size() * (placed.size() + 1));
                 for (double[] s : spaces) {
                     for (double[] o : orientations(unit.w(), unit.h(), unit.d(), unit.rotatable())) {
                         double ow = o[0], oh = o[1], od = o[2];
-                        if (ow > s[3] + EPS || oh > s[4] + EPS || od > s[5] + EPS) {
+                        if (ow > s[3] + EPS || oh > s[4] + EPS || od > s[5] + EPS || !bin.passesDoor(ow, oh)) {
                             continue;
                         }
                         double y = restingY(s[0], s[2], ow, od, s[1], placed);
@@ -201,7 +209,7 @@ final class EmsFill {
                         if (overlapsAny(s[0], y, s[2], ow, oh, od, placed)) {
                             continue;
                         }
-                        if (supportPct(s[0], y, s[2], ow, od, placed) + EPS < supportMin) {
+                        if (!rests(s[0], y, s[2], ow, od, placed, supportPercent)) {
                             continue;
                         }
                         hit = new double[] {s[0], y, s[2], ow, oh, od};
@@ -238,7 +246,7 @@ final class EmsFill {
         if (fillBoxes.isEmpty()) {
             return new Topped(List.of(), List.copyOf(fillBoxes), 0.0);
         }
-        clock.tick();
+        clock.evaluated(1);
         List<double[]> obstacles = new ArrayList<>();
         for (BoxPlacement p : occupied) {
             obstacles.add(p.region());
@@ -257,7 +265,7 @@ final class EmsFill {
                 .thenComparingDouble(u -> -Math.max(u.w(), Math.max(u.h(), u.d()))));
         double[] used = {0.0};
         List<Seated> seated = fillIntoSpaces(bin.w, bin.h, bin.d, obstacles, units, bin.payloadKg, baseWeightKg,
-                KitSolver.SUPPORT_MIN, used);
+                PlacementValidator.SUPPORT_PERCENT, used, clock, bin);
         List<BoxPlacement> extra = new ArrayList<>();
         int[] placedPerSource = new int[fillBoxes.size()];
         for (Seated s : seated) {

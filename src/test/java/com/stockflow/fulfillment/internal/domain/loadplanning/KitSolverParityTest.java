@@ -46,7 +46,8 @@ class KitSolverParityTest {
 
         List<Bin> bins = new ArrayList<>();
         for (JsonNode c : fx.get("containers")) {
-            bins.add(new Bin(new VehicleSpec(UUID.randomUUID(), c.get("code").asText(), c.get("d").asInt(),
+            bins.add(new Bin(new VehicleSpec(UUID.randomUUID(), c.get("code").asText(), VehicleKind.CONTAINER,
+                    c.get("d").asInt(),
                     c.get("w").asInt(), c.get("h").asInt(), new BigDecimal("1000000000"), c.get("quantity").asInt(),
                     c.get("gusset").asInt())));
         }
@@ -63,7 +64,8 @@ class KitSolverParityTest {
             kits.add(new KitSpec(k.get("name").asText(), members));
         }
         KitDistribution distribution = KitDistribution.valueOf(fx.get("distribute").asText().toUpperCase());
-        WorkClock clock = new WorkClock(fx.get("ticks_per_second").asDouble(), 600_000_000_000L);
+        WorkClock clock = WorkClock.starting(WorkClock.Unit.CONSTRUCTION, fx.get("ticks_per_second").asDouble(),
+                600_000_000_000L);
 
         KitSolver.Outcome out = new KitSolver(clock, 0L, false).solve(bins, boxes, kits, null,
                 fx.get("budget").asDouble(), LoadPlanner.ATTEMPTS, distribution, List.of(), false);

@@ -29,16 +29,22 @@ import java.util.UUID;
 public final class LoadPlanner {
 
     /**
-     * Greedy constructions per budget-second: how the search's budget proportions, kept from the original, turn into
-     * work ({@link WorkClock}). The original sustained about 8 a second in Python; this port builds one in well under a
-     * millisecond, so 8 would leave most of the budget unused. At 256 the port matched the original's 30 s results on
-     * every benchmark fixture (LoadPlannerBenchmarkTest, 22/10), while a 500-carton plan still ends inside a few
-     * seconds of wall time.
+     * Candidate evaluations per budget-second ({@link WorkClock.Unit#EVALUATION}): how the original's budget
+     * proportions turn into work. A laptop under load evaluates 56-130 million a second, so a budget-second is 25-55 ms
+     * of real time: the original's minimum budgets (1.5 s a vehicle, 8 s for the tail, 4 s for a fleet) add up to more
+     * budget-seconds than the caller's budget, and this rate keeps that inside the real budget with room for a slower
+     * server. Measured 22/10 on 100-800 cartons with up to 150 sizes (LoadPlannerBenchmarkTest).
      */
-    static final double TICKS_PER_SECOND = 256.0;
+    static final double TICKS_PER_SECOND = 3_000_000.0;
 
     /** The original's number of carton orders tried per vehicle type in the single-type drive. */
     static final int ATTEMPTS = 6;
+
+    /**
+     * The quick pass's rate: so slow that one tick outlasts any budget, so every loop of the original that waits on the
+     * clock runs its first round and stops - one construction per vehicle, one carton order, no polishing.
+     */
+    static final double QUICK_TICKS_PER_SECOND = 1e-9;
 
     private final double ticksPerSecond;
 
@@ -51,12 +57,25 @@ public final class LoadPlanner {
         this.ticksPerSecond = ticksPerSecond;
     }
 
+    /** What a carton type is keyed by: cartons equal on all of these pack alike (see {@link #plan}). */
+    private record TypeKey(String partKey, int lengthMm, int widthMm, int heightMm, boolean rotatable,
+                           boolean fill) {
+        static TypeKey of(CargoPackage c, String partKey) {
+            return new TypeKey(partKey, c.lengthMm(), c.widthMm(), c.heightMm(), c.rotatable(), c.fill());
+        }
+    }
+
+    /** Separates a grouped carton's part code from its set's composition in an internal part key. */
+    static final String SET_MARK = "\u00a7";
+
+    /** One solve: the outcome and the vehicle types its unplaced cartons are judged against. */
+    private record Solved(KitSolver.Outcome outcome, List<Bin> scope) { }
+
     public LoadPlanResult plan(LoadPlanRequest request) {
         long startNanos = System.nanoTime();
         List<CargoPackage> cartons = request.cartons();
         checkUnique(cartons, request.vehicleTypes());
-        WorkClock clock = new WorkClock(ticksPerSecond, request.budget().toNanos());
-        KitSolver solver = new KitSolver(clock, request.seed(), true);
+        long deadline = startNanos + request.budget().toNanos();
         double budget = request.budget().toNanos() / 1e9;
 
         List<Bin> usable = new ArrayList<>();
@@ -80,62 +99,59 @@ public final class LoadPlanner {
         // purpose - measured cartons all weigh a little differently, and splitting on it would turn every carton
         // into a type of its own and the block filler into a one-by-one filler. The type carries its heaviest
         // carton's weight, so the payload check during the search can only be stricter than the real one.
-        Map<List<Object>, ItemType> typesByKey = new LinkedHashMap<>();
-        Map<List<Object>, BigDecimal> heaviest = new LinkedHashMap<>();
-        for (CargoPackage c : cartons) {
+        // Physical sets: a carton in a kit group packs under a part key that also names its set's composition, so
+        // sets of different make-up never draw on each other's cartons, and each composition is one declared set.
+        Map<String, List<Integer>> groups = kitGroups(cartons, unplaced);
+        Map<Integer, String> partKeys = partKeys(cartons, groups);
+        Map<TypeKey, ItemType> typesByKey = new LinkedHashMap<>();
+        Map<TypeKey, BigDecimal> heaviest = new LinkedHashMap<>();
+        for (int i = 0; i < cartons.size(); i++) {
+            CargoPackage c = cartons.get(i);
             if (!unplaced.containsKey(c.ref())) {
-                heaviest.merge(typeKey(c), c.weightKg(), BigDecimal::max);
+                heaviest.merge(TypeKey.of(c, partKeys.get(i)), c.weightKg(), BigDecimal::max);
             }
         }
+        Map<Integer, ItemType> typeOf = new HashMap<>();
         for (int i = 0; i < cartons.size(); i++) {
             CargoPackage c = cartons.get(i);
             if (unplaced.containsKey(c.ref())) {
                 continue;
             }
-            List<Object> key = typeKey(c);
-            ItemType t = typesByKey.computeIfAbsent(key, k -> new ItemType(typesByKey.size(), c.partCode(),
-                    heaviest.get(k).doubleValue(), c.rotatable(), c.widthMm(), c.heightMm(),
-                    c.lengthMm()));
+            String key = partKeys.get(i);
+            ItemType t = typesByKey.computeIfAbsent(TypeKey.of(c, key), k -> new ItemType(typesByKey.size(), key,
+                    heaviest.get(k).doubleValue(), c.rotatable(), c.widthMm(), c.heightMm(), c.lengthMm()));
             t.cartons.add(i);
+            typeOf.put(i, t);
         }
         List<Box> main = new ArrayList<>();
         List<Box> fill = new ArrayList<>();
         Map<ItemType, Boolean> fillType = new HashMap<>();
         typesByKey.forEach((k, t) -> {
-            boolean isFill = (Boolean) k.get(5);
-            fillType.put(t, isFill);
-            (isFill ? fill : main).add(t.box(t.cartons.size()));
+            fillType.put(t, k.fill());
+            (k.fill() ? fill : main).add(t.box(t.cartons.size()));
         });
-        checkKitParts(request.kits(), main);
+        List<KitSpec> kits = declaredKits(request.kits(), main);
+        kits.addAll(kitsFromGroups(groups, partKeys));
+        checkKitParts(kits, main);
 
-        KitSolver.Outcome outcome;
-        List<Bin> scope;
-        if (main.isEmpty() || usable.isEmpty()) {
-            outcome = new KitSolver.Outcome(List.of(), new ArrayList<>(main), new KitSolver.Meta("GRASP_KIT", 0, 0,
-                    request.targetVehicleCount(), false, request.distribution().name(), List.of(), List.of(), null,
-                    KitSolver.EqualizeStats.NONE));
-            scope = usable;
-        } else if (request.mode() == SelectionMode.FEWEST_VEHICLES || usable.size() == 1) {
-            outcome = solver.solve(usable, main, request.kits(), request.targetVehicleCount(), budget, ATTEMPTS,
-                    request.distribution(), fill, request.equalizeFill());
-            scope = usable;
-        } else {
-            // SINGLE_TYPE: the original's same_type - each type alone, the best by the docs' order of merit.
-            KitSolver.Outcome best = null;
-            Bin bestBin = null;
-            double each = budget / usable.size();
-            for (Bin type : usable) {
-                KitSolver.Outcome o = solver.solve(List.of(type), main, request.kits(), request.targetVehicleCount(),
-                        each, ATTEMPTS, request.distribution(), fill, request.equalizeFill());
-                if (best == null || KitSolver.docsOrder().compare(o, best) < 0) {
-                    best = o;
-                    bestBin = type;
-                    clock.improved();
-                }
+        // Anytime: a quick pass (one construction wherever the original would restart) gives a complete plan
+        // whatever the load; the full search then has what is left of the budget to beat it. A full search that
+        // finishes inside the budget is what gets returned, and is reproducible.
+        WorkClock quickClock = new WorkClock(WorkClock.Unit.EVALUATION, QUICK_TICKS_PER_SECOND, deadline);
+        Solved quick = solve(request, usable, main, fill, kits, budget, quickClock);
+        WorkClock clock = new WorkClock(WorkClock.Unit.EVALUATION, ticksPerSecond, deadline);
+        Solved chosen = quick;
+        if (!clock.expired()) {
+            Solved full = solve(request, usable, main, fill, kits, budget, clock);
+            if (KitSolver.docsOrder().compare(full.outcome(), quick.outcome()) <= 0) {
+                chosen = full;
             }
-            outcome = best;
-            scope = List.of(bestBin);
         }
+        if (chosen == quick) {
+            clock.improvedAt(quickClock.lastImprovementNanos());
+        }
+        KitSolver.Outcome outcome = chosen.outcome();
+        List<Bin> scope = chosen.scope();
 
         // "Ưu tiên + hàng chèn": fill only tops up vehicles the main cargo opened.
         List<BinLoad> loads = new ArrayList<>(outcome.placed());
@@ -151,20 +167,24 @@ public final class LoadPlanner {
             fillLeft = t.leftover();
         }
 
-        Map<ItemType, Deque<Integer>> pools = new HashMap<>();
-        typesByKey.values().forEach(t -> pools.put(t, new ArrayDeque<>(t.cartons)));
+        Binding binding = new Binding(cartons, typesByKey.values(), groups);
         List<PlannedVehicle> vehicles = new ArrayList<>();
+        List<List<PlacementValidator.Item>> items = new ArrayList<>();
         Map<UUID, Integer> usedByType = new HashMap<>();
         for (BinLoad l : loads) {
-            vehicles.add(vehicle(l, vehicles.size() + 1, cartons, pools));
+            List<PlacementValidator.Item> vehicleItems = new ArrayList<>();
+            vehicles.add(vehicle(l, vehicles.size() + 1, binding, vehicleItems));
+            items.add(vehicleItems);
             usedByType.merge(l.bin().spec.typeId(), 1, Integer::sum);
         }
+        List<PlacementViolation> splits = PlacementValidator.validateKitGroups(items);
+        if (!splits.isEmpty()) {
+            throw new IllegalStateException("the plan splits a physical set over vehicles: " + splits);
+        }
         boolean fleet = request.mode() == SelectionMode.FEWEST_VEHICLES && usable.size() > 1;
-        for (Map.Entry<ItemType, Deque<Integer>> e : pools.entrySet()) {
-            for (int idx : e.getValue()) {
-                CargoPackage c = cartons.get(idx);
-                unplaced.put(c.ref(), classifyLeftover(c, fillType.get(e.getKey()), scope, usedByType, fleet));
-            }
+        for (int idx : binding.left()) {
+            CargoPackage c = cartons.get(idx);
+            unplaced.put(c.ref(), classifyLeftover(c, fillType.get(typeOf.get(idx)), scope, usedByType, fleet));
         }
         List<UnplacedPackage> left = new ArrayList<>();
         for (CargoPackage c : cartons) {
@@ -179,11 +199,247 @@ public final class LoadPlanner {
         return result;
     }
 
-    // ------------------------------------------------------------------ input checks
-
-    private static List<Object> typeKey(CargoPackage c) {
-        return java.util.Arrays.asList(c.partCode(), c.lengthMm(), c.widthMm(), c.heightMm(), c.rotatable(), c.fill());
+    private Solved solve(LoadPlanRequest request, List<Bin> usable, List<Box> main, List<Box> fill,
+                         List<KitSpec> kits, double budget, WorkClock clock) {
+        KitSolver solver = new KitSolver(clock, request.seed(), true);
+        if (main.isEmpty() || usable.isEmpty()) {
+            return new Solved(new KitSolver.Outcome(List.of(), new ArrayList<>(main), new KitSolver.Meta("GRASP_KIT",
+                    0, 0, request.targetVehicleCount(), false, request.distribution().name(), List.of(), List.of(),
+                    null, KitSolver.EqualizeStats.NONE)), usable);
+        }
+        if (usable.size() == 1) {
+            return new Solved(solver.solve(usable, main, kits, request.targetVehicleCount(), budget, ATTEMPTS,
+                    request.distribution(), fill, request.equalizeFill()), usable);
+        }
+        KitSolver.Outcome fleet = null;
+        double singleBudget = budget;
+        if (request.mode() == SelectionMode.FEWEST_VEHICLES) {
+            // The original's minimize: a mixed fleet. A single-type plan is a mixed plan too, and the fleet search
+            // spreads its screening over every vehicle on offer, so on a large fleet it can end above the best single
+            // type; the single types are tried as well, with half the budget, and the best plan by the docs' order
+            // of merit wins. Fewest vehicles can then never mean more vehicles than one type alone would need.
+            fleet = solver.solve(usable, main, kits, request.targetVehicleCount(), budget / 2, ATTEMPTS,
+                    request.distribution(), fill, request.equalizeFill());
+            clock.improved();
+            singleBudget = budget / 2;
+        }
+        // SINGLE_TYPE: the original's same_type - each type alone, the best by the docs' order of merit.
+        KitSolver.Outcome best = null;
+        Bin bestBin = null;
+        double each = singleBudget / usable.size();
+        for (Bin type : usable) {
+            KitSolver.Outcome o = solver.solve(List.of(type), main, kits, request.targetVehicleCount(), each,
+                    ATTEMPTS, request.distribution(), fill, request.equalizeFill());
+            if (best == null || KitSolver.docsOrder().compare(o, best) < 0) {
+                best = o;
+                bestBin = type;
+                clock.improved();
+            }
+        }
+        if (fleet != null) {
+            if (KitSolver.docsOrder().compare(fleet, best) <= 0) {
+                return new Solved(fleet, usable);
+            }
+            return new Solved(best, usable);
+        }
+        return new Solved(best, List.of(bestBin));
     }
+
+    // ------------------------------------------------------------------ physical sets
+
+    /** The cartons of each kit group with two or more offered cartons, in request order. */
+    private static Map<String, List<Integer>> kitGroups(List<CargoPackage> cartons,
+                                                       Map<String, UnplacedReason> unplaced) {
+        Map<String, List<Integer>> groups = new LinkedHashMap<>();
+        for (int i = 0; i < cartons.size(); i++) {
+            CargoPackage c = cartons.get(i);
+            if (c.kitGroup() == null) {
+                continue;
+            }
+            if (c.fill()) {
+                throw new IllegalArgumentException("carton " + c.ref() + " is fill and in a set; a set is main cargo");
+            }
+            if (!unplaced.containsKey(c.ref())) {
+                groups.computeIfAbsent(c.kitGroup(), k -> new ArrayList<>()).add(i);
+            }
+        }
+        groups.values().removeIf(g -> g.size() < 2);
+        return groups;
+    }
+
+    /**
+     * Each carton's part key: its part code, and for a carton in a kit group also its set's composition (e.g.
+     * {@code "T-CB§T-CB*2+T-MB*1"}). Null part codes stay null for loose cartons; a set's carton must have one.
+     */
+    private static Map<Integer, String> partKeys(List<CargoPackage> cartons, Map<String, List<Integer>> groups) {
+        Map<Integer, String> keys = new HashMap<>();
+        for (int i = 0; i < cartons.size(); i++) {
+            keys.put(i, cartons.get(i).partCode());
+        }
+        for (List<Integer> group : groups.values()) {
+            Map<String, Integer> parts = new java.util.TreeMap<>();
+            for (int i : group) {
+                String part = cartons.get(i).partCode();
+                if (part == null) {
+                    throw new IllegalArgumentException("carton " + cartons.get(i).ref()
+                            + " is in a set but has no part code");
+                }
+                parts.merge(part, 1, Integer::sum);
+            }
+            StringBuilder signature = new StringBuilder();
+            parts.forEach((part, n) -> signature.append(signature.length() == 0 ? "" : "+").append(part).append('*')
+                    .append(n));
+            for (int i : group) {
+                keys.put(i, cartons.get(i).partCode() + SET_MARK + signature);
+            }
+        }
+        return keys;
+    }
+
+    /** One declared set per set composition among the kit groups: what keeps each physical set whole. */
+    private static List<KitSpec> kitsFromGroups(Map<String, List<Integer>> groups, Map<Integer, String> partKeys) {
+        Map<Map<String, Integer>, String> byComposition = new LinkedHashMap<>();
+        for (Map.Entry<String, List<Integer>> g : groups.entrySet()) {
+            Map<String, Integer> members = new java.util.TreeMap<>();
+            for (int i : g.getValue()) {
+                members.merge(partKeys.get(i), 1, Integer::sum);
+            }
+            if (members.size() >= 2) {
+                byComposition.putIfAbsent(members, g.getKey());
+            }
+        }
+        List<KitSpec> out = new ArrayList<>();
+        byComposition.forEach((members, first) -> out.add(new KitSpec("kit-group:" + first, members)));
+        return out;
+    }
+
+    /**
+     * The caller's declared sets, for the cartons outside kit groups (estimated cartons, which have no physical set
+     * yet). A declared set none of whose parts is among them is left out: its sets, if any, are kit groups.
+     */
+    private static List<KitSpec> declaredKits(List<KitSpec> declared, List<Box> main) {
+        Set<String> loose = new HashSet<>();
+        main.forEach(b -> loose.add(b.partName()));
+        List<KitSpec> out = new ArrayList<>();
+        for (KitSpec k : declared) {
+            if (k.members().keySet().stream().anyMatch(loose::contains)) {
+                out.add(k);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Hands the cartons of the request out to the solver's placements, vehicle by vehicle. The solver places types,
+     * not cartons; any carton of a type would do, except that a physical set must stay in one vehicle - so a vehicle
+     * first takes whole kit groups that fit what it holds, then loose cartons. The original handed cartons out in
+     * request order and could put one set's top in one vehicle and its base in another.
+     */
+    private static final class Binding {
+        private final Map<ItemType, Deque<Integer>> loose = new HashMap<>();
+        private final Map<String, List<Integer>> groups;
+        private final Map<Integer, ItemType> typeOf = new HashMap<>();
+        private final Set<String> taken = new HashSet<>();
+        private final List<CargoPackage> cartons;
+
+        Binding(List<CargoPackage> cartons, java.util.Collection<ItemType> types, Map<String, List<Integer>> groups) {
+            this.cartons = cartons;
+            this.groups = groups;
+            Set<Integer> grouped = new HashSet<>();
+            groups.values().forEach(grouped::addAll);
+            for (ItemType t : types) {
+                Deque<Integer> pool = new ArrayDeque<>();
+                for (int i : t.cartons) {
+                    typeOf.put(i, t);
+                    if (!grouped.contains(i)) {
+                        pool.add(i);
+                    }
+                }
+                loose.put(t, pool);
+            }
+        }
+
+        /** The cartons for one vehicle's placements, index for index. */
+        int[] bind(List<BoxPlacement> placements) {
+            Map<ItemType, Deque<Integer>> slots = new LinkedHashMap<>();
+            for (int k = 0; k < placements.size(); k++) {
+                slots.computeIfAbsent(placements.get(k).type, t -> new ArrayDeque<>()).add(k);
+            }
+            int[] out = new int[placements.size()];
+            for (Map.Entry<String, List<Integer>> g : groups.entrySet()) {
+                if (taken.contains(g.getKey()) || !fits(g.getValue(), slots)) {
+                    continue;
+                }
+                taken.add(g.getKey());
+                for (int carton : g.getValue()) {
+                    out[slots.get(typeOf.get(carton)).pollFirst()] = carton;
+                }
+            }
+            for (Map.Entry<ItemType, Deque<Integer>> e : slots.entrySet()) {
+                Deque<Integer> pool = loose.get(e.getKey());
+                for (int slot : e.getValue()) {
+                    Integer carton = pool == null ? null : pool.pollFirst();
+                    if (carton == null) {
+                        carton = breakGroupFor(e.getKey());
+                    }
+                    out[slot] = carton;
+                }
+            }
+            return out;
+        }
+
+        private boolean fits(List<Integer> group, Map<ItemType, Deque<Integer>> slots) {
+            Map<ItemType, Integer> need = new HashMap<>();
+            for (int carton : group) {
+                need.merge(typeOf.get(carton), 1, Integer::sum);
+            }
+            for (Map.Entry<ItemType, Integer> e : need.entrySet()) {
+                Deque<Integer> free = slots.get(e.getKey());
+                if (free == null || free.size() < e.getValue()) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /**
+         * Only when the solver placed set parts outside whole sets, which it never does: a carton from a set not yet
+         * placed. The kit-group check after binding then reports the split instead of shipping it.
+         */
+        private int breakGroupFor(ItemType type) {
+            for (Map.Entry<String, List<Integer>> g : groups.entrySet()) {
+                if (taken.contains(g.getKey())) {
+                    continue;
+                }
+                for (int carton : g.getValue()) {
+                    if (typeOf.get(carton) == type) {
+                        g.getValue().remove(Integer.valueOf(carton));
+                        return carton;
+                    }
+                }
+            }
+            throw new IllegalStateException("the solver placed more cartons of " + type + " than exist");
+        }
+
+        CargoPackage carton(int index) {
+            return cartons.get(index);
+        }
+
+        /** The cartons no vehicle took. */
+        List<Integer> left() {
+            List<Integer> out = new ArrayList<>();
+            loose.values().forEach(out::addAll);
+            groups.forEach((g, cartons) -> {
+                if (!taken.contains(g)) {
+                    out.addAll(cartons);
+                }
+            });
+            out.sort(Comparator.naturalOrder());
+            return out;
+        }
+    }
+
+    // ------------------------------------------------------------------ input checks
 
     private static void checkUnique(List<CargoPackage> cartons, List<VehicleSpec> types) {
         Set<String> refs = new HashSet<>();
@@ -224,7 +480,8 @@ public final class LoadPlanner {
     // ------------------------------------------------------------------ reasons
 
     /**
-     * Whether an empty vehicle of this type can hold the carton, clear of the reserved corners. On the floor, a carton
+     * Whether an empty vehicle of this type can hold the carton, through its door (LP3-DOOR) and clear of the reserved
+     * corners. On the floor, a carton
      * that fits anywhere also fits pushed left and to the front until it meets a wall or a corner block, so only those
      * positions need trying.
      */
@@ -235,7 +492,8 @@ public final class LoadPlanner {
                 continue;
             }
             int[] e = o.extents(c);
-            if (e[0] > t.innerWidthMm() || e[1] > t.innerHeightMm() || e[2] > t.innerLengthMm()) {
+            if (e[0] > t.innerWidthMm() || e[1] > t.innerHeightMm() || e[2] > t.innerLengthMm()
+                    || !t.passesDoor(e[0], e[1])) {
                 continue;
             }
             List<Double> xs = new ArrayList<>(List.of(0.0));
@@ -323,17 +581,13 @@ public final class LoadPlanner {
         return (int) r;
     }
 
-    private static PlannedVehicle vehicle(BinLoad load, int seq, List<CargoPackage> cartons,
-                                          Map<ItemType, Deque<Integer>> pools) {
+    private static PlannedVehicle vehicle(BinLoad load, int seq, Binding binding, List<PlacementValidator.Item> items) {
         VehicleSpec spec = load.bin().spec;
-        List<PlacementValidator.Item> items = new ArrayList<>();
         List<Boolean> fills = new ArrayList<>();
-        for (BoxPlacement p : load.placements()) {
-            Deque<Integer> pool = pools.get(p.type);
-            if (pool == null || pool.isEmpty()) {
-                throw new IllegalStateException("the solver placed more cartons of " + p.type + " than exist");
-            }
-            CargoPackage c = cartons.get(pool.pollFirst());
+        int[] bound = binding.bind(load.placements());
+        for (int k = 0; k < load.placements().size(); k++) {
+            BoxPlacement p = load.placements().get(k);
+            CargoPackage c = binding.carton(bound[k]);
             items.add(new PlacementValidator.Item(c, mm(p.x), mm(p.y), mm(p.z), mm(p.w), mm(p.h), mm(p.d)));
             fills.add(p.fill);
         }
@@ -420,8 +674,35 @@ public final class LoadPlanner {
         long best = clock.lastImprovementNanos() == 0 ? elapsed
                 : (clock.lastImprovementNanos() - startNanos) / 1_000_000;
         return new LoadPlanMeta(m.algorithm(), m.setsTotal(), m.minVehicles(), m.targetVehicles(),
-                m.targetUnreachable(), m.distribution(), m.kitBalance(), m.warnings(), m.combo(),
+                m.targetUnreachable(), m.distribution(), plainBalance(m.kitBalance()), plainWarnings(m.warnings()), m.combo(),
                 m.equalize().applied(), clock.expired(), clock.ticks(), elapsed, Math.max(0, best));
+    }
+
+    private static String plain(String partKey) {
+        if (partKey == null) {
+            return null;
+        }
+        int at = partKey.indexOf(SET_MARK);
+        return at < 0 ? partKey : partKey.substring(0, at);
+    }
+
+    /** Kit balance by the part codes the caller sent, not the internal set-composition keys. */
+    private static List<Map<String, Integer>> plainBalance(List<Map<String, Integer>> balance) {
+        List<Map<String, Integer>> out = new ArrayList<>();
+        for (Map<String, Integer> vehicle : balance) {
+            Map<String, Integer> counts = new LinkedHashMap<>();
+            vehicle.forEach((k, n) -> counts.merge(plain(k), n, Integer::sum));
+            out.add(counts);
+        }
+        return out;
+    }
+
+    private static List<KitWarning> plainWarnings(List<KitWarning> warnings) {
+        List<KitWarning> out = new ArrayList<>();
+        for (KitWarning w : warnings) {
+            out.add(new KitWarning(w.kitName(), w.type(), plain(w.partCode()), w.count()));
+        }
+        return out;
     }
 
     /** The piece check: every carton is placed or unplaced, exactly once. */

@@ -17,8 +17,10 @@ import static com.stockflow.fulfillment.internal.domain.loadplanning.LoadPlanAss
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Budget benchmark (LP2-10): 100, 300 and 500 mixed cartons with sets, at budgets of 3, 5, 8 and 15 s against the
- * 30 s reference; vehicles, volume fill, time to the best plan and total time. Off in CI:
+ * Budget benchmark (LP2-10): 100, 300 and 500 cartons with realistic measured sizes - a carton size per SKU, in
+ * whole millimetres anywhere in the range (25 to 125 distinct sizes), measured weights, and physical sets of two and
+ * three parts - at budgets of 3, 5, 8 and 15 s against the 30 s reference; vehicles, volume fill, time to the best
+ * plan and total time. Off in CI:
  *
  * <pre>mvn -o test -Dtest=LoadPlannerBenchmarkTest -Dloadplanning.benchmark=true</pre>
  *
@@ -47,12 +49,12 @@ class LoadPlannerBenchmarkTest {
         List<String> verdicts = new ArrayList<>();
         for (SelectionMode mode : SelectionMode.values()) {
             for (int n : SIZES) {
-                List<CargoPackage> cartons = LoadPlannerPropertyTest.randomCartons(new Random(1000 + n), n, true);
+                List<CargoPackage> cartons = realistic(new Random(1000 + n), n);
                 List<double[]> rows = new ArrayList<>();
                 for (int b = BUDGETS.length - 1; b >= 0; b--) {
                     LoadPlanRequest req = new LoadPlanRequest(cartons,
                             List.of(dc20(30, 150), dc40(15, 150), hc40(15, 150)), mode,
-                            LoadPlannerPropertyTest.KITS, KitDistribution.AUTO, false, null, 0L,
+                            List.of(), KitDistribution.AUTO, false, null, 0L,
                             Duration.ofSeconds(BUDGETS[b]));
                     LoadPlanResult r = planner.plan(req);
                     assertSound(req, r);
@@ -83,5 +85,36 @@ class LoadPlannerBenchmarkTest {
         System.out.println(table);
         System.out.println(verdicts);
         assertThat(verdicts).isNotEmpty();
+    }
+
+    /**
+     * {@code n} cartons: a size per SKU drawn anywhere in 250-1500 x 200-1100 x 150-1000 mm (not on a 10 mm grid),
+     * n/4 SKUs, 80 % turnable, weights 1-45 kg; and n/20 physical sets, each a 2- or 3-part kit group.
+     */
+    static List<CargoPackage> realistic(Random rnd, int n) {
+        int skus = Math.max(25, n / 4);
+        List<int[]> sizes = new ArrayList<>();
+        for (int i = 0; i < skus; i++) {
+            sizes.add(new int[] {250 + rnd.nextInt(1251), 200 + rnd.nextInt(901), 150 + rnd.nextInt(851)});
+        }
+        List<CargoPackage> out = new ArrayList<>();
+        int sets = n / 20;
+        for (int k = 0; k < sets; k++) {
+            int parts = 2 + k % 2;
+            for (int p = 1; p <= parts; p++) {
+                int[] s = sizes.get(((k % 5) * 7 + p) % skus);     // one size per part code
+                out.add(new CargoPackage("set" + k + "/" + p, null, s[0], s[1], s[2],
+                        java.math.BigDecimal.valueOf(1000 + rnd.nextInt(44000), 3), true, "SET" + (k % 5) + "/" + p,
+                        "kit-" + k, null, false));
+            }
+        }
+        for (int i = out.size(); i < n; i++) {
+            int sku = rnd.nextInt(skus);
+            int[] s = sizes.get(sku);
+            out.add(new CargoPackage("c" + i, null, s[0], s[1], s[2],
+                    java.math.BigDecimal.valueOf(1000 + rnd.nextInt(44000), 3), rnd.nextInt(5) > 0, "SKU" + sku, null,
+                    null, false));
+        }
+        return out;
     }
 }

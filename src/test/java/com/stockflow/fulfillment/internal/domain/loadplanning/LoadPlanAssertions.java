@@ -19,24 +19,34 @@ final class LoadPlanAssertions {
     static final UUID HC = new UUID(0, 41);
     static final UUID TRUCK = new UUID(0, 5);
 
+    /**
+     * The tests' work rate: a tenth of the planner's, so the suite stays quick and every run finishes well inside its
+     * budget (reproducible), with enough search for the behaviour under test.
+     */
+    static final double TEST_RATE = LoadPlanner.TICKS_PER_SECOND / 10;
+
     private LoadPlanAssertions() {
     }
 
     static VehicleSpec dc20(int available, int gusset) {
-        return new VehicleSpec(C20, "20DC", 5898, 2352, 2393, new BigDecimal("28000"), available, gusset);
+        return new VehicleSpec(C20, "20DC", VehicleKind.CONTAINER,
+                5898, 2352, 2393, new BigDecimal("28000"), available, gusset);
     }
 
     static VehicleSpec dc40(int available, int gusset) {
-        return new VehicleSpec(C40, "40DC", 12032, 2352, 2393, new BigDecimal("26500"), available, gusset);
+        return new VehicleSpec(C40, "40DC", VehicleKind.CONTAINER,
+                12032, 2352, 2393, new BigDecimal("26500"), available, gusset);
     }
 
     static VehicleSpec hc40(int available, int gusset) {
-        return new VehicleSpec(HC, "40HC", 12032, 2352, 2698, new BigDecimal("26500"), available, gusset);
+        return new VehicleSpec(HC, "40HC", VehicleKind.CONTAINER,
+                12032, 2352, 2698, new BigDecimal("26500"), available, gusset);
     }
 
     /** A 5-tonne box truck: not a container, so nothing container-specific may apply to it (LP-6). */
     static VehicleSpec truck5t(int available, int gusset) {
-        return new VehicleSpec(TRUCK, "TRUCK-5T", 6200, 2150, 2200, new BigDecimal("5000"), available, gusset);
+        return new VehicleSpec(TRUCK, "TRUCK-5T", VehicleKind.TRUCK,
+                6200, 2150, 2200, new BigDecimal("5000"), available, gusset);
     }
 
     static CargoPackage carton(String ref, int l, int w, int h, String kg, boolean rotatable, String part) {
@@ -109,6 +119,17 @@ final class LoadPlanAssertions {
         }
         perType.forEach((type, n) -> assertThat(n).as("BR-12 for %s", types.get(type).code())
                 .isLessThanOrEqualTo(types.get(type).availableCount()));
+
+        Map<String, Integer> groupVehicle = new HashMap<>();
+        for (PlannedVehicle v : result.vehicles()) {
+            for (Placement p : v.placements()) {
+                if (p.kitGroup() != null) {
+                    Integer before = groupVehicle.putIfAbsent(p.kitGroup(), v.seq());
+                    assertThat(before == null ? v.seq() : before).as("set %s stays in one vehicle", p.kitGroup())
+                            .isEqualTo(v.seq());
+                }
+            }
+        }
     }
 
     /** Nothing is loaded before a carton it rests on. */

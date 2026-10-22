@@ -17,6 +17,7 @@ final class Box {
     final double d;
     final int quantity;
     private List<double[]> orientations;
+    private double[] sortedSizes;
 
     Box(ItemType type, double w, double h, double d, int quantity) {
         this.type = type;
@@ -32,6 +33,14 @@ final class Box {
 
     String partName() {
         return type.itemKey;
+    }
+
+    double[] sortedSizes() {
+        if (sortedSizes == null) {
+            sortedSizes = new double[] {w, h, d};
+            java.util.Arrays.sort(sortedSizes);
+        }
+        return sortedSizes;
     }
 
     double volume() {

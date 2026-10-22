@@ -55,6 +55,9 @@ public final class PlacementValidator {
                     || it.z() + (long) it.d() > l) {
                 out.add(new PlacementViolation(ref, ViolationType.OUT_OF_BOUNDS));
             }
+            if (!vehicle.passesDoor(it.w(), it.h())) {
+                out.add(new PlacementViolation(ref, ViolationType.DOOR));
+            }
             for (BoxPlacement g : gussets) {
                 if (overlaps(it, (long) g.x, (long) g.y, (long) g.z, (long) g.w, (long) g.h, (long) g.d)) {
                     out.add(new PlacementViolation(ref, ViolationType.GUSSET));
@@ -75,6 +78,33 @@ public final class PlacementValidator {
             out.add(new PlacementViolation(null, ViolationType.OVERWEIGHT));
         }
         return new ArrayList<>(out);
+    }
+
+    /**
+     * The plan-wide rule: the cartons of one physical set (the same {@link CargoPackage#kitGroup()}) travel in one
+     * vehicle. A carton breaks it when its set has cartons in another vehicle; every such carton is reported. Run it
+     * over all vehicles of a plan after any move between vehicles.
+     */
+    public static List<PlacementViolation> validateKitGroups(List<List<Item>> vehicles) {
+        java.util.Map<String, Set<Integer>> where = new java.util.HashMap<>();
+        for (int v = 0; v < vehicles.size(); v++) {
+            for (Item it : vehicles.get(v)) {
+                String group = it.carton().kitGroup();
+                if (group != null) {
+                    where.computeIfAbsent(group, k -> new java.util.HashSet<>()).add(v);
+                }
+            }
+        }
+        List<PlacementViolation> out = new ArrayList<>();
+        for (List<Item> vehicle : vehicles) {
+            for (Item it : vehicle) {
+                String group = it.carton().kitGroup();
+                if (group != null && where.get(group).size() > 1) {
+                    out.add(new PlacementViolation(it.carton().ref(), ViolationType.KIT_SPLIT));
+                }
+            }
+        }
+        return out;
     }
 
     private static boolean overlaps(Item a, long x, long y, long z, long dx, long dy, long dz) {

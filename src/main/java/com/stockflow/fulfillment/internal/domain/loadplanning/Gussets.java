@@ -9,10 +9,14 @@ import java.util.List;
  * The layout is exactly the original's; only the size now comes from the vehicle type (decision LP-12).
  *
  * <ul>
- *   <li>A cargo box longer than 12.5 m (a 45-foot container) gets four cubes at the two 40-foot corner-post lines -
- *       12 032 mm apart, centred in the length - left and right, and nothing at the extreme corners.</li>
- *   <li>Every other one gets two cubes at the top of the front wall, left and right.</li>
+ *   <li>A container longer than 12.5 m (a 45-foot one) gets four cubes at the two 40-foot corner-post lines -
+ *       12 032 mm apart, centred in the length - left and right, and nothing at the extreme corners. The original
+ *       applied this to any box that long; it is a container's structure, so a truck or trailer does not get it.</li>
+ *   <li>Every other vehicle gets two cubes at the top of the front wall, left and right.</li>
  * </ul>
+ *
+ * <p>Positions are whole millimetres: on an odd length the inset is rounded down (the original's half-millimetre
+ * inset put the cubes off the grid every other coordinate lives on).</p>
  */
 final class Gussets {
 
@@ -29,7 +33,7 @@ final class Gussets {
         if (size <= 0) {
             return List.of();
         }
-        List<BoxPlacement> posts = postLines(bin, size);
+        List<BoxPlacement> posts = bin.spec.kind() == VehicleKind.CONTAINER ? postLines(bin, size) : List.of();
         return posts.isEmpty() ? frontTop(bin, size) : posts;
     }
 
@@ -41,7 +45,7 @@ final class Gussets {
         if (w < 2 * size || h < size || d < 2 * size) {
             return List.of();
         }
-        double inset = (d - SPAN_40) / 2.0;
+        double inset = Math.floor((d - SPAN_40) / 2.0);
         if (d < LENGTH_45_MIN || inset <= 0 || d - 2 * (inset + size) <= 0) {
             return List.of();
         }
