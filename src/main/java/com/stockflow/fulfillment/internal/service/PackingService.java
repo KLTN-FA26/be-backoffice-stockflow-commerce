@@ -875,7 +875,7 @@ class PackingService implements Packing {
                 m == null ? null : m.lengthCm(), m == null ? null : m.widthCm(), m == null ? null : m.heightCm(),
                 parcel.dimWeightKg(), parcel.rotatable(), parcel.rotatableOverridden(), parcel.fragile(),
                 parcel.fragileOverridden(), parcel.sealedAt(), contents(parcel, skus), parcel.kit(),
-                parcel.kitOverrideReason());
+                parcel.kitOverrideReason(), parcel.labelOutdatedAt());
     }
 
     private static List<Content> contents(PackingSession.Parcel parcel, Map<UUID, String> skus) {

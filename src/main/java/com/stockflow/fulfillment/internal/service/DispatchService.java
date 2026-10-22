@@ -20,6 +20,8 @@ import com.stockflow.fulfillment.internal.entity.CarrierJpaEntity;
 import com.stockflow.fulfillment.internal.entity.DispatchLoadJpaEntity;
 import com.stockflow.fulfillment.internal.entity.DispatchLoadPackageJpaEntity;
 import com.stockflow.fulfillment.internal.entity.DispatchLoadShipmentJpaEntity;
+import com.stockflow.fulfillment.internal.entity.LoadPlanJpaEntity;
+import com.stockflow.fulfillment.internal.entity.LoadPlanVehicleJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PackageJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PackageLineJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PickJpaEntity;
@@ -137,8 +139,8 @@ class DispatchService implements Dispatching {
 
     @Override
     @Transactional(readOnly = true)
-    public PageResponse<LoadRow> list(UUID warehouseId, String status, UUID carrierId, String search, int page,
-                                      int size) {
+    public PageResponse<LoadRow> list(UUID warehouseId, String status, String mode, UUID carrierId, String search,
+                                      int page, int size) {
         if (warehouseId != null) {
             WarehouseScope.requireWarehouse(warehouseId);
         }
@@ -150,12 +152,15 @@ class DispatchService implements Dispatching {
         if (status != null && !status.isBlank()) {
             filters.add(Specs.eq("status", loadStatus(status)));
         }
+        if (mode != null && !mode.isBlank()) {
+            filters.add(Specs.eq("mode", loadMode(mode)));
+        }
         if (carrierId != null) {
             filters.add(Specs.eq("carrierId", carrierId));
         }
         if (search != null && !search.isBlank()) {
             Specification<DispatchLoadJpaEntity> byCode = Specs.contains("code", search.trim());
-            filters.add(byCode.or(Specs.contains("vehiclePlate", search.trim())));
+            filters.add(byCode.or(Specs.contains("vehiclePlate", search.trim())).or(inPlanCode(search.trim())));
         }
         var found = loads.findAll(Specification.allOf(filters),
                 Pages.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt", "id")));
@@ -957,7 +962,8 @@ class DispatchService implements Dispatching {
                     ctx == null && member.codAmount() != null && member.labelCodAmount() != null
                             && member.codAmount().compareTo(member.labelCodAmount()) != 0,
                     own.stream().map(p -> new ManifestParcel(p.getLabelCode(), p.getWeightKg(), p.getLengthCm(),
-                            p.getWidthCm(), p.getHeightCm(), onVehicle.contains(p.getId()), p.getKit())).toList()));
+                            p.getWidthCm(), p.getHeightCm(), onVehicle.contains(p.getId()), p.getKit(),
+                            p.getLabelOutdatedAt())).toList()));
         }
         CarrierJpaEntity carrier = header.getCarrierId() == null ? null
                 : carriers.findById(header.getCarrierId()).orElse(null);
@@ -1042,7 +1048,7 @@ class DispatchService implements Dispatching {
             List<LoadParcel> own = parcels.getOrDefault(member.shipmentId(), List.of()).stream().map(p -> {
                 DispatchLoad.Loaded l = onVehicle.get(p.getId());
                 return new LoadParcel(p.getId(), p.getLabelCode(), p.getWeightKg(), l != null,
-                        l == null ? null : l.loadedAt(), l == null ? null : l.loadedBy(), p.getKit());
+                        l == null ? null : l.loadedAt(), l == null ? null : l.loadedBy(), p.getKit(), p.getLabelOutdatedAt());
             }).toList();
             expected += own.size();
             lines.add(new LoadShipment(row.getId(), row.getCode(), row.getOrderId(),
@@ -1084,6 +1090,28 @@ class DispatchService implements Dispatching {
                 ShipmentJpaEntity::getCode));
         return pending.stream().map(u -> new PendingUnload(u.packageId(), labels.get(u.packageId()), u.shipmentId(),
                 codes.get(u.shipmentId()), u.reason(), u.requestedAt())).toList();
+    }
+
+    /** SCRUM-392: the load is a vehicle of a plan whose code contains the term - one subquery, no row per plan. */
+    private static Specification<DispatchLoadJpaEntity> inPlanCode(String term) {
+        return (root, query, cb) -> {
+            var sub = query.subquery(UUID.class);
+            var vehicle = sub.from(LoadPlanVehicleJpaEntity.class);
+            var plan = sub.from(LoadPlanJpaEntity.class);
+            sub.select(vehicle.get("id")).where(cb.equal(vehicle.get("loadPlanId"), plan.get("id")),
+                    Specs.<LoadPlanJpaEntity>contains("code", term).toPredicate(plan, query, cb));
+            return root.get("loadPlanVehicleId").in(sub);
+        };
+    }
+
+    private static DeliveryMode loadMode(String raw) {
+        try {
+            return DeliveryMode.valueOf(raw.trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            throw new BusinessException(ErrorCode.UNSUPPORTED_PARAMETER, "Unknown load mode",
+                    List.of(FieldError.of("mode", "must be one of " + java.util.Arrays.toString(
+                            DeliveryMode.values()))));
+        }
     }
 
     private static LoadStatus loadStatus(String raw) {
