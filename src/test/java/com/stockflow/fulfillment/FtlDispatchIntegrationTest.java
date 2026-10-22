@@ -633,7 +633,12 @@ class FtlDispatchIntegrationTest {
         scanOnto(loadId, restLabel).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("PACKAGE_NOT_IN_LOAD"));
 
+        // The parcel that stays is 1/1 now, no longer 1/2: its label is reprinted before it is loaded too.
         assertThat(labels(load(loadId))).hasSize(1);
+        scanOnto(loadId, labels(load(loadId)).getFirst()).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("LABEL_OUTDATED"));
+        packer(get(BASE + "/tasks/" + packedShipment[1] + "/packages/" + goes + "/label")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.packageCount").value(1));
         scanOnto(loadId, labels(load(loadId)).getFirst()).andExpect(status().isOk());
         handOver(loadId).andExpect(status().isOk());
         assertThat(shipmentStatus(shipment)).isEqualTo("HANDED_OVER");

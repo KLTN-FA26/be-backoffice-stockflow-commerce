@@ -89,6 +89,8 @@ class PackEarlyIntegrationTest {
     @Autowired PartialShipments partialShipments;
     @Autowired InventoryService inventory;
     @Autowired Dispatching dispatching;
+    @Autowired com.stockflow.fulfillment.internal.service.LoadPlans loadPlans;
+    @Autowired com.stockflow.order.internal.service.CustomerOrders customerOrders;
     @Autowired FulfillmentService fulfillment;
     @Autowired Packing packing;
     @Autowired PickLists pickLists;
@@ -489,5 +491,85 @@ class PackEarlyIntegrationTest {
         Await.until("the print job is held", ASYNC, () -> "ON_HOLD".equals(jdbc.queryForObject(
                 "SELECT status FROM production.production_order WHERE id = ?", String.class,
                 order.productionOrderId())));
+    }
+
+    @Test
+    @DisplayName("SCRUM-392 (review of #162): a pack-early FTL order - its stock in one shipment on two 1.25 t trucks. "
+            + "Truck 1 leaves: goods_left_at set, staff cancellation and the customer's cancellation request are 409 "
+            + "ORDER_NOT_CANCELLABLE, partial shipment cannot be turned off (409 ORDER_PARTIAL_SHIPMENT_LOCKED); the "
+            + "last truck signs: PARTIALLY_FULFILLED; the print line closed: SHIPPED")
+    void packEarlyFtlOrderIsNotCancelledOnceATruckLeft() throws Exception {
+        Mixed order = inProduction(2, 3);
+        partialShipments.decide(order.orderId(), true, null, sales.userId());
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE ordering.customer_order SET delivery_mode = 'FULL_TRUCKLOAD' "
+                + "WHERE id = ?", order.orderId()));
+        UUID task = pickedStock(order);
+        packing.start(task, picker);
+        for (int units : new int[] {1, 2}) {
+            UUID parcel = packing.openPackage(task, null, ONE_CARTON, picker).packageId();
+            packing.scan(task, parcel, new Packing.Scan(UUID.randomUUID(), BLANK.code(), null, null, units,
+                    order.stockLine()), picker);
+            // Sofa-sized: a 1.25 t truck takes one.
+            packing.seal(task, parcel, new Packing.Seal(new BigDecimal("52.5"), new BigDecimal("215"),
+                    new BigDecimal("95"), new BigDecimal("90"), null, null, null), picker);
+        }
+        UUID shipment = fulfillment.completePacking(task, new PackingCompletion(UUID.randomUUID(), true,
+                "Hàng sẵn đi trước"), picker).shipmentId();
+
+        UUID truck = jdbc.queryForObject("SELECT id FROM fulfillment.vehicle_type WHERE code = 'TRUCK-1T25'", UUID.class);
+        var plan = loadPlans.create(new com.stockflow.fulfillment.internal.service.LoadPlans.CreatePlan(
+                UUID.randomUUID(), hcm, List.of(shipment), List.of(truck), "SINGLE_TYPE", null), picker);
+        plan = loadPlans.calculate(plan.loadPlanId(), plan.version(), picker);
+        plan = loadPlans.confirm(plan.loadPlanId(), plan.version(), picker);
+        assertThat(plan.vehicles()).hasSize(2);
+        UUID ghn = jdbc.queryForObject("SELECT id FROM fulfillment.carrier WHERE code = 'GHN'", UUID.class);
+        List<UUID> trucks = plan.vehicles().stream().map(v -> v.load().loadId()).toList();
+
+        // Packed ahead of the prints, nothing left yet: the portal still offers a cancellation request (#150).
+        assertThat(customerOrders.myOrder(DemoData.CUSTOMER_ID, order.orderId()).allowedActions()
+                .requestCancellation()).isTrue();
+
+        // Truck 1 leaves with part of the shipment.
+        signed(trucks.get(0), ghn);
+        assertThat(customerOrders.myOrder(DemoData.CUSTOMER_ID, order.orderId()).allowedActions()
+                .requestCancellation()).as("goods left: no cancellation request offered").isFalse();
+        assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.shipment WHERE id = ?", String.class, shipment))
+                .isEqualTo("READY_TO_DISPATCH");
+        assertThat(jdbc.queryForObject("SELECT goods_left_at IS NOT NULL FROM ordering.customer_order WHERE id = ?",
+                Boolean.class, order.orderId())).isTrue();
+        assertThat(order(order).status()).isEqualTo(OrderStatus.IN_PRODUCTION);
+        assertThat(code(catchThrowable(() -> WithCurrentUser.call(TestUsers.admin(), DataScope.ALL,
+                () -> salesOrders.cancel(order.orderId(), new com.stockflow.order.api.CancelOrderCommand(
+                        CancellationReasonCode.CUSTOMER_REQUEST, "Khách huỷ", null, sales.userId(),
+                        new com.stockflow.order.api.CancellationFee(new BigDecimal("4000"), "Phí in", "2 ly")))))))
+                .as("staff cancellation").isEqualTo(ErrorCode.ORDER_NOT_CANCELLABLE);
+        assertThat(code(catchThrowable(() -> salesOrders.cancelOwn(order.orderId(), DemoData.CUSTOMER_ID,
+                CancellationReasonCode.CUSTOMER_REQUEST, "Khách huỷ", DemoData.CUSTOMER_ID))))
+                .as("the customer's cancellation request").isEqualTo(ErrorCode.ORDER_NOT_CANCELLABLE);
+        assertThat(code(catchThrowable(() -> partialShipments.decide(order.orderId(), false, null, sales.userId()))))
+                .isEqualTo(ErrorCode.ORDER_PARTIAL_SHIPMENT_LOCKED);
+
+        // The last truck signs: the shipment is handed over, the prints are still to come.
+        signed(trucks.get(1), ghn);
+        assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.shipment WHERE id = ?", String.class, shipment))
+                .isEqualTo("HANDED_OVER");
+        assertThat(order(order).status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+
+        WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> salesOrders.closeRemainder(order.orderId(),
+                CancellationReasonCode.CUSTOMER_REQUEST, "Khách không lấy hàng in nữa", sales.userId()));
+        assertThat(order(order).status()).isEqualTo(OrderStatus.SHIPPED);
+    }
+
+    /** A load plan's vehicle booked, loaded with every parcel shown on it, and signed (SCRUM-392). */
+    private void signed(UUID loadId, UUID carrier) {
+        dispatching.book(loadId, new Dispatching.Booking(carrier, "51C-999.99", "Driver", null), picker);
+        Dispatching.LoadDetail load = dispatching.startLoading(loadId, picker);
+        for (Dispatching.LoadShipment s : load.shipments()) {
+            for (Dispatching.LoadParcel p : s.packages()) {
+                load = dispatching.scan(loadId, UUID.randomUUID(), p.labelCode(), picker);
+            }
+        }
+        dispatching.handOver(loadId, new Dispatching.Handover(load.version(), "Nguyen Van Tai", null, null, null, true,
+                null), picker);
     }
 }

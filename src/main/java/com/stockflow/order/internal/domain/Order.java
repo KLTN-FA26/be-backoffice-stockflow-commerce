@@ -916,6 +916,12 @@ public final class Order extends AggregateRoot {
                     + "ahead of its prints: partial shipment stays allowed until the prints follow or are closed")
                     .formatted(orderNumber));
         }
+        if (!allowed && allowPartialShipment && goodsLeftAt != null) {
+            // SCRUM-392 (review of #162): part of it already left on a load plan's vehicle - the other vehicles carry
+            // the rest of a partial plan; turning the flag off would leave them unable to sign.
+            throw new BusinessException(ErrorCode.ORDER_PARTIAL_SHIPMENT_LOCKED, ("Order %s already has goods on a "
+                    + "load plan's vehicle that left: partial shipment stays allowed").formatted(orderNumber));
+        }
         if (allowPartialShipment == allowed) {
             return false;
         }

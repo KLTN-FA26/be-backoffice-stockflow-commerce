@@ -1159,7 +1159,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                 order.closedAt(), order.billedAmount(), order.billable(), order.amountDue(),
                 order.amountDueBeforeHandover(), progress, shipments, order.amountDueOnDelivery(), order.codAmount(),
                 order.allowPartialShipment(), order.printLinesReady(), order.deliveryMode(),
-                order.deliveryModeLocked());
+                order.deliveryModeLocked(), order.goodsLeftAt());
     }
 
     private static OrderAddressSnapshot toSnapshot(CheckoutCustomer.CheckoutAddress address) {

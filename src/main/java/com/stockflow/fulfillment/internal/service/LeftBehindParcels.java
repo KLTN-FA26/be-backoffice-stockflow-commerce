@@ -31,8 +31,8 @@ import java.util.stream.Collectors;
  * split shipment)" (SCRUM-392, review of #162): a shipment with parcels placed in a plan and parcels left behind at its
  * confirmation is split when the plan's first vehicle starts loading - BR-14's point of no return, so a plan reopened or
  * cancelled before it leaves its shipments untouched. The left-behind parcels move to a new shipment waiting for
- * dispatch, free for a later trip; their labels are marked outdated (they name the old shipment and n/N) and are
- * reprinted before they are loaded. Until then a shipment partly held by a plan is not planned elsewhere (LP-5).
+ * dispatch, free for a later trip; their labels - and those of the parcels that stay, whose n/N changed - are marked
+ * outdated and are reprinted before they are loaded. Until then a shipment partly held by a plan is not planned elsewhere (LP-5).
  * LP-4 already refused this for an order that does not allow partial shipments. Idempotent: a parcel already moved is
  * not moved again.
  */
@@ -103,6 +103,11 @@ class LeftBehindParcels {
                 parcel.markLabelOutdated(at);
                 packages.save(parcel);
             }
+            // The parcels that stay are now n of a smaller N: their labels are reprinted too (review of #162).
+            ofShipment.stream().filter(p -> !ids.contains(p.getId())).forEach(parcel -> {
+                parcel.markLabelOutdated(at);
+                packages.save(parcel);
+            });
             packages.flush();
             log.info("Load plan {}: {} left-behind parcel(s) of shipment {} split off as shipment {} (labels to reprint)",
                     plan.code(), moving.size(), row.getCode(), rest.code());
