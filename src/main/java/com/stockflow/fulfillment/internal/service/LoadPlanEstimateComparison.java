@@ -49,7 +49,7 @@ class LoadPlanEstimateComparison {
     }
 
     /**
-     * @param orders   the plan's orders
+     * @param orders   the plan's orders; {@link LoadPlanParcels.Parcel#order()} ties each parcel to one
      * @param parcels  the plan's pieces (held, or left behind at confirmation)
      * @param vehicles the plan's active vehicles
      */
@@ -58,12 +58,13 @@ class LoadPlanEstimateComparison {
                                          List<LoadPlan.Vehicle> vehicles) {
         List<UUID> estimateIds = new ArrayList<>();
         List<UUID> without = new ArrayList<>();
+        Set<UUID> estimatedOrders = new LinkedHashSet<>();
         Set<String> flags = new LinkedHashSet<>();
-        Map<String, int[]> byType = new TreeMap<>();
+        Map<String, Integer> estimatedByType = new TreeMap<>();
+        List<LoadPlans.OrderEstimate> perOrder = new ArrayList<>();
         Map<UUID, LoadPlans.LineCount> byLine = new LinkedHashMap<>();
         BigDecimal estimatedVolume = BigDecimal.ZERO;
         BigDecimal estimatedWeight = BigDecimal.ZERO;
-        boolean any = false;
         for (OrderSummary order : orders) {
             // Asked first, so a missing estimate is no exception crossing the read's transaction.
             if (estimateRows.findBySourceTypeAndSourceIdAndStatus(LoadEstimates.SourceType.ORDER.name(),
@@ -72,17 +73,21 @@ class LoadPlanEstimateComparison {
                 continue;
             }
             LoadEstimates.LoadEstimateView e = estimates.current(LoadEstimates.SourceType.ORDER, order.orderId());
-            any = true;
             estimateIds.add(e.id());
+            estimatedOrders.add(order.orderId());
             if (e.incomplete()) {
                 flags.add("ESTIMATE_INCOMPLETE");
             }
             if (!e.unplaced().isEmpty()) {
                 flags.add("ESTIMATE_UNPLACED");
             }
+            Map<String, Integer> own = new TreeMap<>();
             for (Layout v : e.vehicles()) {
-                byType.computeIfAbsent(v.code(), k -> new int[2])[0]++;
+                own.merge(v.code(), 1, Integer::sum);
+                estimatedByType.merge(v.code(), 1, Integer::sum);
             }
+            perOrder.add(new LoadPlans.OrderEstimate(order.orderId(), e.id(), own.entrySet().stream()
+                    .map(t -> new LoadPlans.VehicleCount(t.getKey(), t.getValue(), 0)).toList()));
             for (LoadEstimates.EstimateLine line : e.lines()) {
                 long boxes = line.cartons() * Math.max(1, line.kitParts());
                 byLine.merge(line.orderLineId(), new LoadPlans.LineCount(line.orderLineId(), line.sku(), boxes, 0),
@@ -106,24 +111,46 @@ class LoadPlanEstimateComparison {
         if (!without.isEmpty()) {
             flags.add("NO_ESTIMATE");
         }
-        if (!any) {
-            return new LoadPlans.EstimateComparison(estimateIds, without, List.of(), List.of(), null, null,
-                    List.copyOf(flags));
+        if (estimatedOrders.isEmpty()) {
+            return new LoadPlans.EstimateComparison(estimateIds, without, false, List.of(), List.of(), List.of(),
+                    null, null, List.copyOf(flags));
         }
 
-        // The plan's side.
-        for (LoadPlan.Vehicle v : vehicles) {
-            byType.computeIfAbsent(v.spec().code(), k -> new int[2])[1]++;
+        // Vehicles: only a single-order plan compares - each estimate planned its order alone.
+        boolean vehiclesCompared = orders.size() == 1;
+        List<LoadPlans.VehicleCount> types = new ArrayList<>();
+        if (vehiclesCompared) {
+            Map<String, int[]> byType = new TreeMap<>();
+            estimatedByType.forEach((code, n) -> byType.computeIfAbsent(code, k -> new int[2])[0] += n);
+            for (LoadPlan.Vehicle v : vehicles) {
+                byType.computeIfAbsent(v.spec().code(), k -> new int[2])[1]++;
+            }
+            int estimatedVehicles = 0;
+            int actualVehicles = 0;
+            for (Map.Entry<String, int[]> t : byType.entrySet()) {
+                types.add(new LoadPlans.VehicleCount(t.getKey(), t.getValue()[0], t.getValue()[1]));
+                estimatedVehicles += t.getValue()[0];
+                actualVehicles += t.getValue()[1];
+            }
+            if (actualVehicles > estimatedVehicles) {
+                flags.add("MORE_VEHICLES");
+            } else if (actualVehicles < estimatedVehicles) {
+                flags.add("FEWER_VEHICLES");
+            }
         }
+
+        // Parcels, volume, weight, lines: only the parcels of the orders that have an estimate.
+        List<LoadPlanParcels.Parcel> compared = parcels.stream()
+                .filter(p -> p.order() != null && estimatedOrders.contains(p.order().orderId())).toList();
         Map<UUID, Set<UUID>> linesOfParcel = new HashMap<>();
-        for (PackageLineJpaEntity l : packageLines.findByPackageIdIn(parcels.stream()
+        for (PackageLineJpaEntity l : packageLines.findByPackageIdIn(compared.stream()
                 .map(LoadPlanParcels.Parcel::packageId).toList())) {
             linesOfParcel.computeIfAbsent(l.getPackageId(), k -> new LinkedHashSet<>()).add(l.getOrderLineId());
         }
         Map<UUID, Integer> actualByLine = new HashMap<>();
         BigDecimal actualVolume = BigDecimal.ZERO;
         BigDecimal actualWeight = BigDecimal.ZERO;
-        for (LoadPlanParcels.Parcel p : parcels) {
+        for (LoadPlanParcels.Parcel p : compared) {
             Set<UUID> lines = new LinkedHashSet<>(linesOfParcel.getOrDefault(p.packageId(), Set.of()));
             if (p.row().getKit() != null) {
                 lines.add(p.row().getKit().orderLineId());
@@ -142,22 +169,9 @@ class LoadPlanEstimateComparison {
                     actualByLine.getOrDefault(l.orderLineId(), 0)));
             estimatedBoxes += l.estimated();
         }
-        List<LoadPlans.VehicleCount> types = new ArrayList<>();
-        int estimatedVehicles = 0;
-        int actualVehicles = 0;
-        for (Map.Entry<String, int[]> t : byType.entrySet()) {
-            types.add(new LoadPlans.VehicleCount(t.getKey(), t.getValue()[0], t.getValue()[1]));
-            estimatedVehicles += t.getValue()[0];
-            actualVehicles += t.getValue()[1];
-        }
-        if (actualVehicles > estimatedVehicles) {
-            flags.add("MORE_VEHICLES");
-        } else if (actualVehicles < estimatedVehicles) {
-            flags.add("FEWER_VEHICLES");
-        }
-        if (parcels.size() > estimatedBoxes) {
+        if (compared.size() > estimatedBoxes) {
             flags.add("MORE_PARCELS");
-        } else if (parcels.size() < estimatedBoxes) {
+        } else if (compared.size() < estimatedBoxes) {
             flags.add("FEWER_PARCELS");
         }
         LoadPlans.Measure volume = measure(estimatedVolume, actualVolume);
@@ -168,8 +182,8 @@ class LoadPlanEstimateComparison {
         if (above(weight)) {
             flags.add("WEIGHT_ABOVE");
         }
-        return new LoadPlans.EstimateComparison(estimateIds, without, types, lines, volume, weight,
-                List.copyOf(flags));
+        return new LoadPlans.EstimateComparison(estimateIds, without, vehiclesCompared, types, perOrder, lines, volume,
+                weight, List.copyOf(flags));
     }
 
     private static LoadPlans.Measure measure(BigDecimal estimated, BigDecimal actual) {

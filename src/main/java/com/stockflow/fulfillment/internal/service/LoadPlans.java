@@ -91,23 +91,35 @@ public interface LoadPlans {
     /** {@code deltaPct}: (actual - estimated) / estimated x 100, two decimals; null when nothing was estimated. */
     record Measure(BigDecimal estimated, BigDecimal actual, BigDecimal deltaPct) { }
 
+    /** One order's current estimate and the vehicles it planned on its own: information only in a multi-order plan. */
+    record OrderEstimate(UUID orderId, UUID estimateId, List<VehicleCount> vehiclesByType) { }
+
     /**
-     * The plan against the CURRENT estimate of each of its orders (design v2 §5 {@code vsEstimate}). Several orders:
-     * their estimates are added up (each was planned on its own, so the vehicle count is an upper bound).
+     * The plan against the CURRENT estimate of each of its orders (design v2 §5 {@code vsEstimate}).
      *
-     * @param estimateIds          the current estimates compared
-     * @param ordersWithoutEstimate orders of the plan that have no current estimate (flag {@code NO_ESTIMATE})
-     * @param volumeMm3            estimated box volume against the plan's parcel volume
-     * @param weightKg             estimated weight against the parcels' measured weight
-     * @param flags                {@code NO_ESTIMATE}, {@code ESTIMATE_INCOMPLETE} (an estimate left lines out for
-     *                             missing sizes, LP2-3), {@code ESTIMATE_UNPLACED} (the estimate itself left boxes out),
-     *                             {@code MORE_VEHICLES}, {@code FEWER_VEHICLES}, {@code MORE_PARCELS},
-     *                             {@code FEWER_PARCELS}, {@code VOLUME_ABOVE}, {@code WEIGHT_ABOVE} (more than 10 %
-     *                             above the estimate)
+     * <p>Only what can be compared is: parcels, volume, weight and boxes by line count the plan's parcels of the orders
+     * that HAVE a current estimate; orders without one are listed in {@code notEstimated} and left out. Vehicle counts
+     * are compared only in a single-order plan - each estimate planned its order alone, so in a multi-order plan the
+     * sum of the estimates' vehicles says nothing about the shared trucks; there {@code vehiclesByType} is empty and
+     * {@code orders} reports each estimate's vehicles for information.</p>
+     *
+     * @param estimateIds     the current estimates compared
+     * @param notEstimated    orders of the plan with no current estimate (flag {@code NO_ESTIMATE}); not compared
+     * @param vehiclesCompared whether vehicle counts were compared (a single-order plan with its estimate)
+     * @param vehiclesByType  estimated against actual per vehicle type; empty unless {@code vehiclesCompared}
+     * @param orders          each estimated order's own estimate and vehicles
+     * @param volumeMm3       estimated box volume against the volume of the estimated orders' parcels
+     * @param weightKg        estimated weight against the weight of the estimated orders' parcels
+     * @param flags           {@code NO_ESTIMATE}, {@code ESTIMATE_INCOMPLETE} (an estimate left lines out for missing
+     *                        sizes, LP2-3), {@code ESTIMATE_UNPLACED} (the estimate itself left boxes out),
+     *                        {@code MORE_VEHICLES}, {@code FEWER_VEHICLES} (single-order plans only),
+     *                        {@code MORE_PARCELS}, {@code FEWER_PARCELS}, {@code VOLUME_ABOVE}, {@code WEIGHT_ABOVE}
+     *                        (more than 10 % above the estimate)
      */
-    record EstimateComparison(List<UUID> estimateIds, List<UUID> ordersWithoutEstimate,
-                              List<VehicleCount> vehiclesByType, List<LineCount> cartonsByLine, Measure volumeMm3,
-                              Measure weightKg, List<String> flags) { }
+    record EstimateComparison(List<UUID> estimateIds, List<UUID> notEstimated, boolean vehiclesCompared,
+                              List<VehicleCount> vehiclesByType, List<OrderEstimate> orders,
+                              List<LineCount> cartonsByLine, Measure volumeMm3, Measure weightKg,
+                              List<String> flags) { }
 
     // ---- commands --------------------------------------------------------------------------------------------------
 

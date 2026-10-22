@@ -503,21 +503,28 @@ class LoadPlanIntegrationTest {
                     assertThat(o.path("leftBehind").asInt()).isEqualTo(1);
                     assertThat(o.path("placed").asInt()).isZero();
                 });
-        // Against the CURRENT estimates: order A's compared, order B has none.
+        // Against the CURRENT estimates: order A's compared, order B has none - listed, not compared. Two orders share
+        // the truck: vehicle counts are not compared (each estimate planned its order alone), only reported.
         JsonNode vs = check.path("vsEstimate");
         assertThat(vs.path("estimateIds").get(0).asText()).isEqualTo(estimateId);
-        assertThat(vs.path("ordersWithoutEstimate").get(0).asText()).isEqualTo(orderB.orderId().toString());
+        assertThat(vs.path("notEstimated")).hasSize(1);
+        assertThat(vs.path("notEstimated").get(0).asText()).isEqualTo(orderB.orderId().toString());
         List<String> flags = new ArrayList<>();
         vs.path("flags").forEach(f -> flags.add(f.asText()));
-        assertThat(flags).contains("NO_ESTIMATE");
-        assertThat(vs.path("vehiclesByType")).filteredOn(t -> t.path("code").asText().equals("TRUCK-5T"))
-                .singleElement().satisfies(t -> assertThat(t.path("actual").asInt()).isEqualTo(1));
+        assertThat(flags).contains("NO_ESTIMATE").doesNotContain("MORE_VEHICLES", "FEWER_VEHICLES");
+        assertThat(vs.path("vehiclesCompared").asBoolean()).isFalse();
+        assertThat(vs.path("vehiclesByType")).isEmpty();
+        assertThat(vs.path("orders")).singleElement().satisfies(o -> {
+            assertThat(o.path("orderId").asText()).isEqualTo(orderA.orderId().toString());
+            assertThat(o.path("vehiclesByType")).isNotEmpty();
+        });
         assertThat(vs.path("cartonsByLine")).filteredOn(l -> l.path("orderLineId").asText()
                 .equals(orderA.lines().getFirst().lineId().toString())).singleElement().satisfies(l -> {
                     assertThat(l.path("actual").asInt()).isEqualTo(4);
                     assertThat(l.path("estimated").asLong()).isPositive();
                 });
-        assertThat(vs.path("weightKg").path("actual").decimalValue()).isEqualByComparingTo("197.5");
+        // Only order A's parcels are weighed against its estimate: 2 x 52.5 + 2 x 20, not order B's carton.
+        assertThat(vs.path("weightKg").path("actual").decimalValue()).isEqualByComparingTo("145");
         assertThat(vs.path("volumeMm3").path("estimated").decimalValue()).isPositive();
 
         // Reopened (LP-11): the PLANNED load is cancelled with the reason.
