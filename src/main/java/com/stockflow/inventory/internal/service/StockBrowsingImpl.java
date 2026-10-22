@@ -54,7 +54,12 @@ class StockBrowsingImpl implements StockBrowsing {
     public Reservation reservation(UUID reservationId) {
         var row = search.reservation(reservationId).orElseThrow(() ->
                 new BusinessException(ErrorCode.RESERVATION_NOT_FOUND, "No stock reservation " + reservationId));
-        WarehouseScope.requireLocation(row.locationCode());
+        if (row.locationCode() != null) {
+            WarehouseScope.requireLocation(row.locationCode());
+        } else if (WarehouseScope.restriction().isPresent()) {
+            // A SKU reservation sits in no warehouse (SCRUM-152), so it is in none of the caller's.
+            throw new BusinessException(ErrorCode.OUT_OF_DATA_SCOPE, "The reservation is not in your warehouses");
+        }
         return toView(row);
     }
 

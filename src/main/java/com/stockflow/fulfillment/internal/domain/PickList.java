@@ -184,11 +184,85 @@ public final class PickList {
      * @throws BusinessException {@code PICK_LINES_INCOMPLETE}, naming how many lines are still open
      */
     public void requireAllPicked() {
-        long open = lines.stream().filter(line -> line.status() != PickLineStatus.PICKED).count();
+        // A CANCELLED line of a live task is a short line whose allocation was moved: its new lines count instead.
+        long open = lines.stream().filter(line -> line.status() != PickLineStatus.PICKED
+                && line.status() != PickLineStatus.CANCELLED).count();
         if (open > 0) {
             throw new BusinessException(ErrorCode.PICK_LINES_INCOMPLETE,
                     "%d of %d lines are not picked yet".formatted(open, lines.size()));
         }
+    }
+
+    // ------------------------------------------------------------------ short picks (X-SHORT)
+
+    /**
+     * The picker is at the line's bin and finds fewer units than were allocated there (docs 04c X-SHORT): the line
+     * turns SHORT, recording the shortfall; nothing is picked and no stock is deducted. The order stops (the
+     * caller puts it ON_HOLD) until the coordinator reallocates. Reporting the same shortfall again answers with
+     * the line as it is.
+     *
+     * @param found the units that are there, 0 up to one fewer than allocated
+     * @throws BusinessException {@code NOT_FOUND}; {@code PICK_TASK_STATE_CONFLICT} unless the task is PICKING;
+     *         {@code PICK_LINE_NOT_OPEN}; {@code PICK_LOCATION_MISMATCH}; {@code VALIDATION_FAILED} for a quantity
+     *         that is not short
+     */
+    public Confirmation reportShort(UUID lineId, String scannedLocation, int found) {
+        PickLine line = requireLine(lineId);
+        if (line.status() == PickLineStatus.SHORT && line.shortQty() == line.allocatedQty() - found
+                && sameCode(scannedLocation, line.locationCode())) {
+            return new Confirmation(line, true);
+        }
+        if (status != PickStatus.PICKING) {
+            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT,
+                    "Short picks are reported while the task is PICKING; it is " + status);
+        }
+        if (line.status() != PickLineStatus.OPEN) {
+            throw new BusinessException(ErrorCode.PICK_LINE_NOT_OPEN, "The line is " + line.status());
+        }
+        if (!sameCode(scannedLocation, line.locationCode())) {
+            throw new BusinessException(ErrorCode.PICK_LOCATION_MISMATCH,
+                    "This line is picked from " + line.locationCode());
+        }
+        if (found < 0 || found >= line.allocatedQty()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "%d allocated to this line; a short pick finds 0 to %d".formatted(line.allocatedQty(),
+                            line.allocatedQty() - 1));
+        }
+        line.reportShort(found, scannedLocation.trim());
+        return new Confirmation(line, false);
+    }
+
+    /**
+     * The coordinator moved a SHORT line's allocation to other bins of the warehouse: the short line is
+     * superseded (CANCELLED, its shortfall kept) and one new OPEN line per new allocation follows the last stop.
+     *
+     * @throws BusinessException {@code PICK_LINE_NOT_OPEN} unless the line is SHORT;
+     *         {@code FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE} for an allocation outside the task's warehouse
+     */
+    public List<PickLine> replaceShort(UUID lineId, List<Hold> allocations, Supplier<UUID> ids) {
+        PickLine line = requireLine(lineId);
+        if (line.status() != PickLineStatus.SHORT) {
+            throw new BusinessException(ErrorCode.PICK_LINE_NOT_OPEN, "Only a SHORT line is reallocated; it is "
+                    + line.status());
+        }
+        if (allocations.stream().anyMatch(hold -> !warehouseId.equals(hold.warehouseId()))) {
+            throw new BusinessException(ErrorCode.FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE,
+                    "Task %s is picked in warehouse %s; the new allocation is elsewhere".formatted(taskId, warehouseId));
+        }
+        line.supersede();
+        int sequence = lines.stream().mapToInt(PickLine::sequenceNo).max().orElse(0);
+        List<PickLine> added = new ArrayList<>();
+        for (Hold hold : allocations) {
+            added.add(PickLine.open(ids.get(), line.orderLineId(), hold.reservationId(), hold.sku(),
+                    hold.locationCode(), hold.lotNumber(), ++sequence, hold.quantity()));
+        }
+        lines.addAll(added);
+        return added;
+    }
+
+    /** Whether a line is still SHORT, waiting for the coordinator. */
+    public boolean hasShortLines() {
+        return lines.stream().anyMatch(line -> line.status() == PickLineStatus.SHORT);
     }
 
     // ------------------------------------------------------------------ cancelling and putting back

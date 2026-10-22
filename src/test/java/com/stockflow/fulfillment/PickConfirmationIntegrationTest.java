@@ -335,6 +335,61 @@ class PickConfirmationIntegrationTest {
     // ---- confirming ----------------------------------------------------------------------------
 
     @Test
+    @DisplayName("X-SHORT: a short line stops the order and deducts nothing; reallocated elsewhere, it is picked there")
+    void shortPickIsReallocatedAndPicked() throws Exception {
+        OrderSummary order = confirmedOrder(sofa(1));
+        UUID task = startedTask(order);
+        JsonNode line = lines(task).get(0);
+        String lineId = line.path("lineId").asText();
+        String location = line.path("locationCode").asText();
+        int before = onHand(location, SOFA);
+
+        call(post("/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + lineId + "/short")
+                .header("Authorization", token(pickerHcm, "WAREHOUSE_STAFF"))
+                .contentType("application/json").content("{\"locationCode\":\"" + location + "\",\"foundQuantity\":0}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("SHORT"))
+                .andExpect(jsonPath("$.data.shortQty").value(1));
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.ON_HOLD);
+        assertThat(orders.findById(order.orderId()).orElseThrow().lifecycle().holdReason())
+                .as("X-SHORT: held for stock, not for a design").isEqualTo(com.stockflow.order.api.HoldReason.INVENTORY);
+        assertThat(onHand(location, SOFA)).as("nothing deducted").isEqualTo(before);
+        assertThat(ledgerRows("PICK", lineId)).isZero();
+        // X-SHORT step 03: a blind recount of that bin and SKU, opened once even if the short is reported again.
+        String recount = "SELECT count(*) FROM inventory.cycle_count c JOIN inventory.cycle_count_line l"
+                + " ON l.cycle_count_id = c.id WHERE c.trigger_type = 'SHORT_PICK' AND c.status = 'PLANNED' AND c.is_blind"
+                + " AND l.location_code = ? AND l.sku = 'SOFA-3S-GREY'";
+        assertThat(jdbc.queryForObject(recount, Integer.class, location)).isEqualTo(1);
+        call(post("/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + lineId + "/short")
+                .header("Authorization", token(pickerHcm, "WAREHOUSE_STAFF"))
+                .contentType("application/json").content("{\"locationCode\":\"" + location + "\",\"foundQuantity\":0}"))
+                .andExpect(status().isOk());
+        assertThat(jdbc.queryForObject(recount, Integer.class, location)).as("the same report again").isEqualTo(1);
+
+        JsonNode added = body(call(post("/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + lineId + "/reallocation")
+                .header("Authorization", token(coordinator, "ORDER_COORDINATOR")))
+                .andExpect(status().isOk()).andReturn());
+        assertThat(added).hasSize(1);
+        String newLine = added.get(0).path("lineId").asText();
+        String newLocation = added.get(0).path("locationCode").asText();
+        assertThat(newLocation).as("never the short bin").isNotEqualTo(location);
+        assertThat(lineStatus(lineId)).isEqualTo("CANCELLED");
+        assertThat(holdStatus(lineId)).isEqualTo("RELEASED");
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).as("back where it was held from")
+                .isEqualTo(OrderStatus.PICKING);
+        assertThat(orders.findById(order.orderId()).orElseThrow().lines().get(0).reservationIds())
+                .containsExactly(UUID.fromString(jdbc.queryForObject(
+                        "SELECT reservation_id::text FROM fulfillment.pick_line WHERE id = ?::uuid", String.class, newLine)));
+
+        confirm(task, newLine, pickerHcm.toString(), "WAREHOUSE_STAFF", scan(newLocation, "SOFA-3S-GREY", 1))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("PICKED"));
+        assertThat(ledgerRows("PICK", newLine)).isEqualTo(1);
+        assertThat(holdStatus(newLine)).isEqualTo("CONSUMED");
+    }
+
+
+    @Test
     @DisplayName("a confirmed line deducts its hold: on_hand, hold CONSUMED, one PICK ledger row, StockDeducted in the registry")
     void confirmationDeductsWithLedgerAndEvent() throws Exception {
         OrderSummary order = confirmedOrder(sofa(1));
@@ -476,9 +531,10 @@ class PickConfirmationIntegrationTest {
     }
 
     @Test
-    @DisplayName("a hold released or expired under the line: 409 RESERVATION_NOT_ACTIVE and nothing written")
+    @DisplayName("a hold released under the line: 409 RESERVATION_NOT_ACTIVE and nothing written")
     void holdNoLongerActive() throws Exception {
-        for (String how : List.of("RELEASED", "EXPIRED")) {
+        // An allocation never expires (X-RESV, ck_stock_reservation_allocation): only a release can close it.
+        for (String how : List.of("RELEASED")) {
             OrderSummary order = confirmedOrder(sofa(1));
             UUID task = startedTask(order);
             JsonNode line = lines(task).get(0);

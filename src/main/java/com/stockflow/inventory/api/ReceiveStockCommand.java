@@ -17,6 +17,8 @@ import java.util.UUID;
  * @param actorId       who confirmed the receipt, for the ledger
  * @param receivedAt    when the receipt was confirmed: the new stock layer's receipt time (one layer
  *                      per receipt), which FIFO and the shelf-life policy read
+ * @param origin        the receipt, purchase order and supplier, for the lot the receipt opens (SCRUM-142); null
+ *                      when the caller has none, and the stock then joins an UNTRACED lot
  */
 public record ReceiveStockCommand(
         UUID receiptLineId,
@@ -26,8 +28,14 @@ public record ReceiveStockCommand(
         String locationCode,
         int quantity,
         UUID actorId,
-        Instant receivedAt
+        Instant receivedAt,
+        ReceiptOrigin origin
 ) {
+
+    public ReceiveStockCommand(UUID receiptLineId, Sku sku, String lotNumber, LocalDate expiryDate, String locationCode,
+                               int quantity, UUID actorId, Instant receivedAt) {
+        this(receiptLineId, sku, lotNumber, expiryDate, locationCode, quantity, actorId, receivedAt, null);
+    }
 
     public ReceiveStockCommand {
         Objects.requireNonNull(receiptLineId, "receiptLineId");

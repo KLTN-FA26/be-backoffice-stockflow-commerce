@@ -483,7 +483,7 @@ class TransferLoadPlanningIntegrationTest {
                 + "\"],\"transferOrderIds\":[\"" + transfer + "\"]}")).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("LOAD_PLAN_SOURCE_MISMATCH"));
 
-        // The tables say it again (V20261022001500).
+        // The tables say it again (V20261023000400).
         UUID parcel = jdbc.queryForObject("SELECT id FROM fulfillment.package WHERE transfer_order_id = ? LIMIT 1",
                 UUID.class, transfer);
         List<UUID> shipments = jdbc.queryForList("SELECT id FROM fulfillment.shipment LIMIT 1", UUID.class);
@@ -671,8 +671,10 @@ class TransferLoadPlanningIntegrationTest {
         assertThat(holds(transfer, "CONSUMED")).isEqualTo(11);
         assertThat(jdbc.queryForObject("SELECT status FROM inventory.stock_package WHERE lpn = ?", String.class, lpn))
                 .isEqualTo("CONSUMED");
-        assertThat(jdbc.queryForObject("SELECT reserved FROM inventory.stock_item WHERE sku = ? AND location_code = "
-                + "'HCM-A01-1-B'", Integer.class, cartonSku)).isEqualTo(5);
+        // #147: the order's checkout reservation is on the SKU, still live and still covered by the 5 loose units.
+        assertThat(jdbc.queryForObject("SELECT COALESCE(SUM(quantity), 0) FROM inventory.stock_reservation WHERE "
+                + "order_id = ? AND stock_item_id IS NULL AND status = 'HELD'", Integer.class, order)).isEqualTo(5);
+        assertThat(onHand(cartonSku)).isEqualTo(5);
     }
 
     @Test
@@ -695,10 +697,16 @@ class TransferLoadPlanningIntegrationTest {
                 .andExpect(status().isCreated()));
         packer(body(post(PACKS + "/" + pack + "/packages/" + carton.path("parcel").path("packageId").asText()
                 + "/seal"), CARTON_MEASURES)).andExpect(status().isOk());
-        // Meanwhile an order reserves all 15 of the SKU at HCM: the carton's 10 among them.
+        // Meanwhile an order reserves all 15 of the SKU and is released to HCM: #147 allocates its bins and lots -
+        // the carton's rows among them.
         UUID order = confirmedOrder();
-        tx.executeWithoutResult(s -> inventory.reserve(new com.stockflow.inventory.api.ReserveStockCommand(
-                UUID.randomUUID(), new com.stockflow.common.domain.Sku(cartonSku), 15, order)));
+        tx.executeWithoutResult(s -> {
+            inventory.reserve(new com.stockflow.inventory.api.ReserveStockCommand(UUID.randomUUID(),
+                    new com.stockflow.common.domain.Sku(cartonSku), 15, order));
+            inventory.allocate(new com.stockflow.inventory.api.AllocateStockCommand(order, "HCM"));
+        });
+        assertThat(jdbc.queryForObject("SELECT s.reserved FROM inventory.stock_item s JOIN inventory.stock_package p "
+                + "ON p.id = s.stock_package_id WHERE p.lpn = ?", Integer.class, lpn)).isEqualTo(10);
         packer(post(PACKS + "/" + pack + "/completion")).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("STOCK_CARTON_NOT_SHIPPABLE"));
         assertThat(holds(transfer, "HELD")).isZero();

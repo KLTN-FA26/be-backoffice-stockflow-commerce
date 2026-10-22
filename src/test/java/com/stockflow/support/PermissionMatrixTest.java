@@ -106,6 +106,8 @@ class PermissionMatrixTest {
                     "public: a Sales-invited contact sets a password; the one-time token is the authorisation (permitAll for POST, SCRUM-450)"),
             Map.entry("GET /oauth2/jwks", "public: the signing keys the resource server validates tokens with (permitAll)"),
             Map.entry("GET /api/v1/public/products/{productId}/gallery", "public: published product images (permitAll)"),
+            Map.entry("GET /api/v1/catalog/categories",
+                    "any signed-in user: the storefront category navigation, visible categories only (SCRUM-171)"),
             Map.entry("GET /api/v1/catalog/products", "any signed-in user: published storefront catalog, no private data"),
             Map.entry("GET /api/v1/catalog/products/{slug}", "any signed-in user: one published product"),
             Map.entry("GET /api/v1/catalog/products/{slug}/gallery", "any signed-in user: published images of one product"),

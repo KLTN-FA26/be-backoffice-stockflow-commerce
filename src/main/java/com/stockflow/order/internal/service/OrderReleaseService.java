@@ -49,12 +49,14 @@ class OrderReleaseService implements OrderReleases {
     private final Clock clock;
     private final InventoryService inventory;
     private final com.stockflow.payment.api.PaymentService paymentService;
+    private final OrderStockAllocation allocation;
     private final DeliveryModeHistory deliveryModes;
 
     OrderReleaseService(OrderRepository repository, ProductionRecords production, WarehouseDirectory warehouses,
                         OrderEventPublisher events, OrderService orders, Clock clock,
                         InventoryService inventory, com.stockflow.payment.api.PaymentService paymentService,
-                        DeliveryModeHistory deliveryModes) {
+                        OrderStockAllocation allocation, DeliveryModeHistory deliveryModes) {
+        this.allocation = allocation;
         this.repository = repository;
         this.production = production;
         this.warehouses = warehouses;
@@ -123,6 +125,10 @@ class OrderReleaseService implements OrderReleases {
                     "Order %s is on credit and its customer has overdue receivables".formatted(order.orderNumber()));
         }
         order.release(warehouseId, warehouseCode, releasedBy, clock.instant(), approvedSamples);
+        // F-FUL step 02 (SCRUM-152): the SKU reservations taken at checkout become allocations on pickable bins of
+        // this warehouse, FEFO - every line, print lines included, whose blanks production issues from them. All
+        // or nothing: a warehouse that cannot cover a line refuses the release, and the order stays as it was.
+        allocation.allocate(order, warehouseCode);
         if (deliveryMode != null) {
             // LP-1: the coordinator's choice at release, recorded at the status the order was released to. A refusal
             // (LP-2, DELIVERY_MODE_FTL_NO_COD) rolls the whole release back: nothing is released.

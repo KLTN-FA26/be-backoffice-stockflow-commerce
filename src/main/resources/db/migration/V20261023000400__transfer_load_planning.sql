@@ -10,8 +10,10 @@
 --
 --   stock_reservation       a hold belongs to an order, a production order OR a transfer order (10 step 4, BR-02/03:
 --                           the source's stock is allocated to the transfer at picking - here when its packing
---                           completes, an unopened carton shipped as it is holding its own rows). A transfer's hold
---                           never expires; it is released when picking is cancelled and consumed at dispatch.
+--                           completes, an unopened carton shipped as it is holding its own rows and lot). Built on
+--                           #147's holds (V20261023000100): a transfer's hold is a hold on one stock row (bin and lot),
+--                           like a production hold - never a SKU reservation, never an allocation of one, never
+--                           expiring; released when picking is cancelled, consumed at dispatch.
 --   transfer_order          gains delivery_mode (LP2-8: FULL_TRUCKLOAD by default; PARCEL keeps the manual dispatch
 --                           of SCRUM-327), packed_at (its packing completed: ready for a load plan) and goods_left_at
 --                           (goods of it first left on a plan's vehicle, before the last vehicle's signature moves it to
@@ -69,6 +71,13 @@ ALTER TABLE inventory.stock_reservation
     ADD CONSTRAINT ck_stock_reservation_owner CHECK (num_nonnulls(order_id, production_order_id, transfer_order_id) = 1);
 CREATE INDEX ix_stock_reservation_transfer_order ON inventory.stock_reservation (transfer_order_id)
     WHERE transfer_order_id IS NOT NULL;
+-- #147 (V20261023000100): a transfer's hold is a hold on one stock row, like a production hold - never a SKU
+-- reservation (those are a customer order's checkout holds) and never an allocation of one.
+ALTER TABLE inventory.stock_reservation DROP CONSTRAINT ck_stock_reservation_kind;
+ALTER TABLE inventory.stock_reservation ADD CONSTRAINT ck_stock_reservation_kind CHECK (
+    (stock_item_id IS NOT NULL AND status <> 'ALLOCATED')
+    OR (stock_item_id IS NULL AND order_id IS NOT NULL AND production_order_id IS NULL AND transfer_order_id IS NULL
+        AND allocated_from_id IS NULL AND status <> 'CONSUMED'));
 
 
 -- ----------------------------------------------------------------------------- pack

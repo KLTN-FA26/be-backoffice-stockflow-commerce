@@ -105,7 +105,11 @@ class StockPackageConsumptionIntegrationTest {
             UUID id = inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), quantity, order))
                     .reservationIds().getFirst();
             inventory.pinReservations(order);
-            return id;
+            // SCRUM-152: the checkout reservation holds the SKU on no bin; the release allocates it, here to the one
+            // stock row (a carton's, or loose) that can serve it.
+            return inventory.allocate(new com.stockflow.inventory.api.AllocateStockCommand(order, "HCM")).allocations()
+                    .stream().filter(allocation -> allocation.reservationId().equals(id)).findFirst().orElseThrow()
+                    .holdIds().getFirst();
         });
     }
 

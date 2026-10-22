@@ -25,7 +25,9 @@ import java.util.UUID;
 
 /**
  * Holds are read with their stock row in one query (Criteria API, a constructor result: nothing lands
- * in the persistence context, and no filter that was not asked for is bound). Stock rows are a
+ * in the persistence context, and no filter that was not asked for is bound). The stock row is a left join: a SKU
+ * reservation (SCRUM-152) has none, and is listed with a null location - outside every warehouse, so a warehouse
+ * filter or a warehouse-bound caller does not see it. Stock rows are a
  * Specification over {@code stock_item}.
  */
 @Repository
@@ -45,7 +47,7 @@ class StockBrowseSearchAdapter implements StockBrowseSearch {
         CriteriaBuilder cb = entityManager.getCriteriaBuilder();
         CriteriaQuery<ReservationRow> query = cb.createQuery(ReservationRow.class);
         Root<ReservationJpaEntity> root = query.from(ReservationJpaEntity.class);
-        Join<ReservationJpaEntity, StockItemJpaEntity> stock = root.join("stockItem");
+        Join<ReservationJpaEntity, StockItemJpaEntity> stock = root.join("stockItem", jakarta.persistence.criteria.JoinType.LEFT);
         query.select(row(cb, root, stock))
                 .where(reservationFilters(cb, root, stock, criteria).toArray(Predicate[]::new))
                 .orderBy(cb.desc(root.get("reservedAt")), cb.asc(root.get("id")));
@@ -56,7 +58,7 @@ class StockBrowseSearchAdapter implements StockBrowseSearch {
 
         CriteriaQuery<Long> count = cb.createQuery(Long.class);
         Root<ReservationJpaEntity> countRoot = count.from(ReservationJpaEntity.class);
-        Join<ReservationJpaEntity, StockItemJpaEntity> countStock = countRoot.join("stockItem");
+        Join<ReservationJpaEntity, StockItemJpaEntity> countStock = countRoot.join("stockItem", jakarta.persistence.criteria.JoinType.LEFT);
         count.select(cb.count(countRoot))
                 .where(reservationFilters(cb, countRoot, countStock, criteria).toArray(Predicate[]::new));
         return new PageImpl<>(content, pageable, entityManager.createQuery(count).getSingleResult());
@@ -67,7 +69,7 @@ class StockBrowseSearchAdapter implements StockBrowseSearch {
         CriteriaBuilder cb = entityManager.getCriteriaBuilder();
         CriteriaQuery<ReservationRow> query = cb.createQuery(ReservationRow.class);
         Root<ReservationJpaEntity> root = query.from(ReservationJpaEntity.class);
-        Join<ReservationJpaEntity, StockItemJpaEntity> stock = root.join("stockItem");
+        Join<ReservationJpaEntity, StockItemJpaEntity> stock = root.join("stockItem", jakarta.persistence.criteria.JoinType.LEFT);
         query.select(row(cb, root, stock)).where(cb.equal(root.get("id"), reservationId));
         return entityManager.createQuery(query).getResultList().stream().findFirst();
     }
@@ -75,7 +77,7 @@ class StockBrowseSearchAdapter implements StockBrowseSearch {
     private static jakarta.persistence.criteria.CompoundSelection<ReservationRow> row(
             CriteriaBuilder cb, Root<ReservationJpaEntity> root, Join<ReservationJpaEntity, StockItemJpaEntity> stock) {
         return cb.construct(ReservationRow.class, root.get("id"), root.get("orderId"), stock.get("id"),
-                stock.get("sku"), stock.get("locationCode"), stock.get("lotNumber"), root.get("quantity"),
+                root.get("sku"), stock.get("locationCode"), stock.get("lotNumber"), root.get("quantity"),
                 root.get("status"), root.get("reservedAt"), root.get("expiresAt"), root.get("releaseReason"),
                 root.get("closedAt"));
     }
@@ -88,7 +90,7 @@ class StockBrowseSearchAdapter implements StockBrowseSearch {
             filters.add(cb.equal(root.get("orderId"), criteria.orderId()));
         }
         if (criteria.sku() != null && !criteria.sku().isBlank()) {
-            filters.add(cb.equal(stock.get("sku"), criteria.sku().trim()));
+            filters.add(cb.equal(root.get("sku"), criteria.sku().trim().toUpperCase(Locale.ROOT)));
         }
         if (criteria.statuses() != null) {
             filters.add(criteria.statuses().isEmpty() ? cb.disjunction() : root.get("status").in(criteria.statuses()));

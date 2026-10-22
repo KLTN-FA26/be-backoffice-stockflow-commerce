@@ -31,6 +31,7 @@ import com.stockflow.inventory.internal.domain.ReservationId;
 import com.stockflow.inventory.internal.domain.StockAdjustment;
 import com.stockflow.inventory.internal.domain.StockAdjustmentRepository;
 import com.stockflow.inventory.internal.domain.StockItem;
+import com.stockflow.inventory.internal.domain.StockLots;
 import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.inventory.internal.domain.StockMovement;
 import com.stockflow.inventory.internal.domain.StockMovementLog;
@@ -80,6 +81,7 @@ class StockOperationsServiceImpl implements StockOperations {
     private final LocationDirectory locations;
     private final Clock clock;
     private final InventoryPolicyRepository policies;
+    private final StockLots lots;
     private final InventoryEventPublisher events;
     /** Taking from a carton opens it and the last unit closes it; its lock comes between the SKU's and the rows'. */
     private final StockPackageContents cartons;
@@ -87,7 +89,7 @@ class StockOperationsServiceImpl implements StockOperations {
     StockOperationsServiceImpl(StockItemRepository stockItems, StockAdjustmentRepository adjustments,
                                StockAdjustmentSearch adjustmentSearch, StockMovementLog ledger,
                                StockLedgerSearch ledgerSearch, LocationDirectory locations, Clock clock,
-                               InventoryPolicyRepository policies, StockPackageContents cartons,
+                               InventoryPolicyRepository policies, StockLots lots, StockPackageContents cartons,
                                InventoryEventPublisher events) {
         this.cartons = cartons;
         this.events = events;
@@ -99,6 +101,7 @@ class StockOperationsServiceImpl implements StockOperations {
         this.locations = locations;
         this.clock = clock;
         this.policies = policies;
+        this.lots = lots;
     }
 
     // ------------------------------------------------------------------ move
@@ -217,7 +220,7 @@ class StockOperationsServiceImpl implements StockOperations {
         Instant now = clock.instant();
         StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.MOVE,
                 sku, blankToNull(lotNumber), from, to, quantity.value(), before, arriving,
-                referenceType, referenceId, reason, actorId, now);
+                referenceType, referenceId, reason, actorId, now).ofLot(source.lotId());
         ledger.append(line);
         log.info("Moved {} x {}{} from {} to {} ({} -> {})", quantity, sku, lotSuffix(lotNumber), from, to,
                 before, arriving);
@@ -321,7 +324,8 @@ class StockOperationsServiceImpl implements StockOperations {
         StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.MOVE,
                 source.sku(), source.lotNumber(), from, to, hold.quantity().value(), source.status(), arriving,
                 StockMovement.ReferenceType.PRODUCTION_ORDER, command.productionOrderId(),
-                "Hold " + hold.id().value(), command.actorId(), now).leaving(source.stockPackageId());
+                "Hold " + hold.id().value(), command.actorId(), now)
+                .ofLot(source.lotId()).leaving(source.stockPackageId());
         ledger.append(line);
         log.info("Issued hold {} ({} x {}{}) from {} to {} for production order {}", hold.id().value(),
                 hold.quantity(), source.sku(), lotSuffix(source.lotNumber()), from, to, command.productionOrderId());
@@ -456,7 +460,7 @@ class StockOperationsServiceImpl implements StockOperations {
         StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.CONSUMPTION, item.sku(),
                 item.lotNumber(), item.location(), null, hold.quantity().value(), status,
                 StockMovement.ReferenceType.PRODUCTION_ORDER, productionOrderId, "Hold " + reservationId, actorId, now)
-                .leaving(item.stockPackageId());
+                .ofLot(item.lotId()).forOrder(orderId).leaving(item.stockPackageId());
         ledger.append(line);
         log.info("Production order {} completed: hold {} ({} x {}) consumed at {}", productionOrderId, reservationId,
                 hold.quantity(), item.sku(), item.location());
@@ -532,7 +536,7 @@ class StockOperationsServiceImpl implements StockOperations {
             ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.PUT_BACK, item.sku(),
                     item.lotNumber(), null, item.location(), quantity, StockStatus.AVAILABLE,
                     StockMovement.ReferenceType.ORDER, command.orderId(), "Hold " + scrapHold.id().value(),
-                    command.requestedBy(), now));
+                    command.requestedBy(), now).ofLot(item.lotId()).forOrder(command.orderId()));
             StockAdjustment adjustment = StockAdjustment.request(adjustments.nextNumber(LocalDate.ofInstant(now,
                             BUSINESS_ZONE)), item.location(), item.sku(), item.lotNumber(), -quantity,
                             AdjustmentReason.SCRAP, command.note(), command.requestedBy(), now)
@@ -612,7 +616,7 @@ class StockOperationsServiceImpl implements StockOperations {
                 item.lotNumber(), item.location(), null, command.quantity(), item.status(),
                 StockMovement.ReferenceType.PRODUCTION_ORDER, command.productionOrderId(),
                 command.note() == null ? "Used by the subcontractor" : command.note(), command.actorId(), now)
-                .leaving(item.stockPackageId());
+                .ofLot(item.lotId()).leaving(item.stockPackageId());
         ledger.append(line);
         log.info("{} x {} consumed at {} out of hold {}", command.quantity(), item.sku(), item.location(),
                 hold.id().value());
@@ -699,7 +703,8 @@ class StockOperationsServiceImpl implements StockOperations {
         StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.MOVE, source.sku(),
                 source.lotNumber(), from, to, quantity.value(), StockStatus.IN_PRODUCTION, StockStatus.AVAILABLE,
                 StockMovement.ReferenceType.PRODUCTION_ORDER, command.productionOrderId(),
-                "Unprinted, from hold " + hold.id().value(), command.actorId(), now).leaving(source.stockPackageId());
+                "Unprinted, from hold " + hold.id().value(), command.actorId(), now)
+                .ofLot(source.lotId()).leaving(source.stockPackageId());
         ledger.append(line);
         log.info("Returned {} unprinted x {} from {} to {} (hold {})", quantity, source.sku(), from, to,
                 hold.id().value());
@@ -712,7 +717,7 @@ class StockOperationsServiceImpl implements StockOperations {
      */
     private Optional<StockItem> sameLayerAt(StockItem source, LocationId location) {
         return stockItems.findLooseBySkuAndLocation(source.sku(), location).stream()
-                .filter(item -> item.isLayer(source.lotNumber(), source.serialNumber(), source.receivedAt()))
+                .filter(item -> item.isSameGoodsAs(source))
                 .findFirst();
     }
 
@@ -831,13 +836,20 @@ class StockOperationsServiceImpl implements StockOperations {
         }
         String lot = blankToNull(command.lotNumber());
         Quantity quantity = Quantity.of(command.quantity());
+        // SCRUM-142: the receipt opens the lot - one per receipt and (SKU, lot number, expiry) - so a lot number
+        // another receipt used before is a different lot, and the trace knows the supplier and the documents.
+        UUID lotId = command.origin() == null ? null : lots.openForReceipt(new StockLots.ReceiptLot(command.sku(), lot,
+                command.expiryDate(), command.receivedAt(), command.origin().goodsReceiptId(),
+                command.origin().goodsReceiptNumber(), command.origin().purchaseOrderId(),
+                command.origin().purchaseOrderNumber(), command.origin().supplierId(), command.origin().supplierName(),
+                command.origin().warehouseId()));
         stockItems.save(StockItem.receiveInbound(command.sku(), location, lot, command.expiryDate(), quantity,
-                command.receivedAt()));
+                command.receivedAt(), lotId));
 
         StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.RECEIPT,
                 command.sku(), lot, null, location, quantity.value(), StockStatus.INBOUND,
                 StockMovement.ReferenceType.GOODS_RECEIPT_LINE, command.receiptLineId(), null,
-                command.actorId(), clock.instant());
+                command.actorId(), clock.instant()).ofLot(lotId);
         ledger.append(line);
         log.info("Received {} x {}{} into {}", quantity, command.sku(), lotSuffix(lot), location);
         return toMove(line);
@@ -901,7 +913,7 @@ class StockOperationsServiceImpl implements StockOperations {
                 delta < 0 ? adjustment.location() : null, delta > 0 ? adjustment.location() : null,
                 Math.abs(delta), item.status(), StockMovement.ReferenceType.STOCK_ADJUSTMENT, adjustment.id(),
                 adjustment.reason() + (adjustment.note() == null ? "" : ": " + adjustment.note()),
-                approverId, now));
+                approverId, now).ofLot(item.lotId()));
         log.info("Posted adjustment {}: {} {} at {}", adjustment.number(), delta, adjustment.sku(), adjustment.location());
         return toSummary(saved);
     }
