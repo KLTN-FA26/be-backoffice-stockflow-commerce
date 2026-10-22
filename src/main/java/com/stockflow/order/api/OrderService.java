@@ -101,6 +101,30 @@ public interface OrderService {
     OrderSummary recordHandover(UUID orderId, ShipmentHandover handover);
 
     /**
+     * Goods of the order leave on a load plan's vehicle (SCRUM-392 LP-3: part of a shipment that is handed over only
+     * with its last vehicle). The gate of {@link #recordHandover} runs - cancelled, on hold, not picking, money due
+     * before the goods leave - and an order that does not allow partial shipments must have every unit it still wants
+     * in the plan ({@code inPlan}). The first time, the order records it ({@code goodsLeftAt}): from then it is no
+     * longer cancelled, only its remainder closed or returned. Takes the order's row lock.
+     *
+     * @param inPlan the units of the order's parcels in the plan not handed over yet; empty when they record no contents
+     *               (not checked)
+     * @throws com.stockflow.common.error.BusinessException {@code ORDER_BALANCE_NOT_PAID};
+     *         {@code ORDER_INVALID_TRANSITION}, also while ON_HOLD; {@code ORDER_CANCELLED};
+     *         {@code ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED}; {@code NOT_FOUND}
+     */
+    void recordGoodsLeft(UUID orderId, java.time.Instant at, java.util.List<ShipmentHandover.Line> inPlan);
+
+    /**
+     * The partial-shipment check of {@link #recordGoodsLeft} alone, when a vehicle of a load plan starts loading: a
+     * plan that would leave part of an order that may not ship in parts is refused before anything is on board.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED},
+     *         {@code ORDER_CANCELLED}, {@code NOT_FOUND}
+     */
+    void requirePlanCarriesTheRest(UUID orderId, java.util.List<ShipmentHandover.Line> inPlan);
+
+    /**
      * What the carrier would collect for a shipment of these units if it were handed over now (G4-5: the package label
      * and the shipment, 08 step 6, 09 BR-04): the sum {@link #recordHandover} fixes, from the same formula and the
      * payment ledger. {@code earlierPending}: the units of the order's shipments made before this one and not handed

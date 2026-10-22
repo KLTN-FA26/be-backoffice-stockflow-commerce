@@ -446,6 +446,15 @@ stockflow:
       lifetime: ${PORTAL_INVITATION_LIFETIME:PT72H}
       resend-cooldown: ${PORTAL_INVITATION_RESEND_COOLDOWN:PT1M}
 
+  fulfillment:
+    load-planning:
+      # Real time cap of one load-plan calculation, run synchronously (decision LP2-10); the planner returns the best
+      # plan found so far when it runs out (LoadPlanRequest.budget). On the benchmark (100, 300 and 500 cartons with
+      # sets, LoadPlannerBenchmarkTest) 3 s already matched the 30 s reference on a laptop; 5 s keeps a margin for a
+      # smaller server, where the same search runs slower. Read by the load-estimate service (PR EST) and the
+      # load-plan service (SCRUM-287 PR D).
+      solver-budget: PT5S
+
   security:
     # Turns on the resource-server filter chain AND RequiresPermissionAspect. Both are behind the
     # same switch on purpose: a state where the chain is on but the aspect is off means every

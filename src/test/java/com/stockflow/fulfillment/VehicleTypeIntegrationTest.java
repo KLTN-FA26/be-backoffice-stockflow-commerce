@@ -173,14 +173,26 @@ class VehicleTypeIntegrationTest {
                 .andExpect(jsonPath("$.errorCode").value("VEHICLE_TYPE_NOT_FOUND"));
     }
 
+    /** The door of {@code row} as PUT fields: a full replace clears a door that is left out. */
+    private static String door(JsonNode row) {
+        String door = "";
+        if (row.hasNonNull("doorWidthMm")) {
+            door += "\"doorWidthMm\":" + row.get("doorWidthMm").asInt() + ",";
+        }
+        if (row.hasNonNull("doorHeightMm")) {
+            door += "\"doorHeightMm\":" + row.get("doorHeightMm").asInt() + ",";
+        }
+        return door;
+    }
+
     /** The PUT body that replaces {@code row} with itself (a full replace sends every field), with changes applied. */
     private String replaceBody(JsonNode row, String code, String kind, int availableCount, long version) {
         return """
                 {"code":"%s","name":"%s","kind":"%s","innerLengthMm":%d,"innerWidthMm":%d,"innerHeightMm":%d,
-                 "gussetMm":%d,"maxPayloadKg":%s,"availableCount":%d,"version":%d}""".formatted(code,
+                 "gussetMm":%d,%s"maxPayloadKg":%s,"availableCount":%d,"version":%d}""".formatted(code,
                 row.get("name").asText(), kind, row.get("innerLengthMm").asInt(), row.get("innerWidthMm").asInt(),
-                row.get("innerHeightMm").asInt(), row.get("gussetMm").asInt(), row.get("maxPayloadKg").decimalValue()
-                        .toPlainString(), availableCount, version);
+                row.get("innerHeightMm").asInt(), row.get("gussetMm").asInt(), door(row),
+                row.get("maxPayloadKg").decimalValue().toPlainString(), availableCount, version);
     }
 
     @Test
@@ -304,6 +316,108 @@ class VehicleTypeIntegrationTest {
         // required fields are required on PUT, too
         send(Role.WAREHOUSE_MANAGER, put(BASE + "/" + id), "{\"version\":1}").andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
+    }
+
+    @Test
+    @DisplayName("the container presets carry their typical ISO door opening, the trucks and the pickup none")
+    void presetsHaveDoors() throws Exception {
+        for (String[] row : new String[][] {{"20DC", "2340", "2280"}, {"40DC", "2340", "2280"},
+                {"40HC", "2340", "2585"}, {"45HC", "2340", "2585"}}) {
+            assertThat(jdbc.queryForList("SELECT door_width_mm || 'x' || door_height_mm FROM fulfillment.vehicle_type "
+                    + "WHERE code = ?", String.class, row[0])).containsExactly(row[1] + "x" + row[2]);
+        }
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM fulfillment.vehicle_type
+                 WHERE is_preset AND kind <> 'CONTAINER' AND (door_width_mm IS NOT NULL OR door_height_mm IS NOT NULL)""",
+                Integer.class)).isZero();
+        // through the API, too
+        JsonNode preset = data(as(Role.WAREHOUSE_STAFF, get(BASE).param("search", "20DC"))).get("items").get(0);
+        assertThat(preset.get("doorWidthMm").asInt()).isEqualTo(2340);
+        assertThat(preset.get("doorHeightMm").asInt()).isEqualTo(2280);
+    }
+
+    @Test
+    @DisplayName("a preset's door stays editable (the preset trigger does not guard it); a type may be declared without one")
+    void presetDoorIsEditable() throws Exception {
+        assertThat(jdbc.update("UPDATE fulfillment.vehicle_type SET door_height_mm = 2280 WHERE code = '20DC'"))
+                .isEqualTo(1);
+        // A type declared with no door has none.
+        send(Role.WAREHOUSE_MANAGER, post(BASE), truck(code())).andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.doorWidthMm").doesNotExist())
+                .andExpect(jsonPath("$.data.doorHeightMm").doesNotExist());
+    }
+
+    @Test
+    @DisplayName("a door is set on create, changed, and cleared by a PUT that leaves it out (full replace)")
+    void doorSetChangedAndCleared() throws Exception {
+        JsonNode created = data(send(Role.WAREHOUSE_MANAGER, post(BASE),
+                truck(code()).replace("\"gussetMm\":40,", "\"gussetMm\":40,\"doorWidthMm\":2300,\"doorHeightMm\":2250,"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.doorWidthMm").value(2300))
+                .andExpect(jsonPath("$.data.doorHeightMm").value(2250)));
+        String id = created.get("vehicleTypeId").asText();
+        String put = """
+                {"name":"Truck 9 t","kind":"TRUCK","innerLengthMm":6200,"innerWidthMm":2350,"innerHeightMm":2400,
+                 "maxPayloadKg":9000,"availableCount":3,%s"version":%d}""";
+        // Door width equal to the inner width and height equal to the inner height are allowed (<=).
+        JsonNode changed = data(send(Role.WAREHOUSE_MANAGER, put(BASE + "/" + id),
+                put.formatted("\"doorWidthMm\":2350,\"doorHeightMm\":2400,", created.get("version").asLong()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.doorWidthMm").value(2350))
+                .andExpect(jsonPath("$.data.doorHeightMm").value(2400)));
+        as(Role.ORDER_COORDINATOR, get(BASE + "/" + id)).andExpect(jsonPath("$.data.doorHeightMm").value(2400));
+        // Only one side may be given; the other is cleared.
+        JsonNode oneSide = data(send(Role.WAREHOUSE_MANAGER, put(BASE + "/" + id),
+                put.formatted("\"doorHeightMm\":2200,", changed.get("version").asLong())).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.doorWidthMm").doesNotExist())
+                .andExpect(jsonPath("$.data.doorHeightMm").value(2200)));
+        // Left out = cleared.
+        send(Role.WAREHOUSE_MANAGER, put(BASE + "/" + id), put.formatted("", oneSide.get("version").asLong()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.doorWidthMm").doesNotExist())
+                .andExpect(jsonPath("$.data.doorHeightMm").doesNotExist());
+        assertThat(jdbc.queryForObject("SELECT door_width_mm IS NULL AND door_height_mm IS NULL "
+                + "FROM fulfillment.vehicle_type WHERE id = ?::uuid", Boolean.class, id)).isTrue();
+    }
+
+    @Test
+    @DisplayName("a door larger than the inside, or not above 0, is 400 with its field code (vi too); the table says the same")
+    void doorLargerThanInnerIsRefused() throws Exception {
+        String wide = truck(code()).replace("\"gussetMm\":40,", "\"gussetMm\":40,\"doorWidthMm\":2351,");
+        send(Role.WAREHOUSE_MANAGER, post(BASE), wide).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("doorWidthMm"))
+                .andExpect(jsonPath("$.fieldErrors[0].code").value("VEHICLE_TYPE_DOOR_TOO_LARGE"));
+        send(Role.WAREHOUSE_MANAGER, post(BASE),
+                truck(code()).replace("\"gussetMm\":40,", "\"gussetMm\":40,\"doorHeightMm\":2401,"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("doorHeightMm"))
+                .andExpect(jsonPath("$.fieldErrors[0].code").value("VEHICLE_TYPE_DOOR_TOO_LARGE"));
+        mvc.perform(post(BASE).header("Accept-Language", "vi").header("Authorization", http.token(Role.WAREHOUSE_MANAGER, user))
+                        .contentType(MediaType.APPLICATION_JSON).content(wide))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[0].message").value(org.hamcrest.Matchers.startsWith("Cửa không được lớn hơn")));
+        for (String zero : List.of("\"doorWidthMm\":0,", "\"doorHeightMm\":-5,")) {
+            send(Role.WAREHOUSE_MANAGER, post(BASE), truck(code()).replace("\"gussetMm\":40,", "\"gussetMm\":40," + zero))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
+        }
+        // A preset whose inner height is cut below its door: refused with a field error, not a 500 from the table.
+        JsonNode preset = data(as(Role.WAREHOUSE_MANAGER, get(BASE).param("search", "40HC"))).get("items").get(0);
+        String shrink = """
+                {"name":"%s","kind":"CONTAINER","innerLengthMm":12032,"innerWidthMm":2352,"innerHeightMm":2500,
+                 "gussetMm":150,"doorHeightMm":2585,"maxPayloadKg":26500,"availableCount":10,"version":%d}"""
+                .formatted(preset.get("name").asText(), preset.get("version").asLong());
+        send(Role.WAREHOUSE_MANAGER, put(BASE + "/" + preset.get("vehicleTypeId").asText()), shrink)
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[0].code").value("VEHICLE_TYPE_DOOR_TOO_LARGE"));
+        // The table, for a writer that skips the API.
+        for (String check : List.of("door_width_mm = 0", "door_height_mm = 0", "door_width_mm = 2353",
+                "door_height_mm = 2394")) {
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> jdbc.update(
+                            "UPDATE fulfillment.vehicle_type SET " + check + " WHERE code = '20DC'"))
+                    .hasMessageContaining("ck_vehicle_type_door");
+        }
     }
 
     @Test

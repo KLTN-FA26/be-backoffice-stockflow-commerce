@@ -12,6 +12,9 @@ import java.util.List;
  *
  * @param codChangedSinceLabel per shipment: the COD fixed at the handover differs from its label's (money arrived
  *                             meanwhile) - the manifest's figure is the one collected
+ * @param mode                 PARCEL or FULL_TRUCKLOAD; a full truckload's manifest is per vehicle (BR-15): it lists
+ *                             only the parcels its plan placed on the vehicle ({@code loadPlanCode}, {@code vehicleSeq},
+ *                             {@code vehicleTypeCode}) and its COD is always 0
  */
 public record ManifestResponse(String loadCode, String status, String warehouseName, String warehouseAddress,
                                String carrierCode, String carrierName, String carrierContactName,
@@ -19,16 +22,22 @@ public record ManifestResponse(String loadCode, String status, String warehouseN
                                String carrierRepresentative, String signatureRef, String handoverNote,
                                Instant dispatchedAt, String dispatchedByName, List<Shipment> shipments,
                                int shipmentCount, int packageCount, BigDecimal totalWeightKg, BigDecimal codTotal,
-                               String currency, Instant printedAt) {
+                               String currency, Instant printedAt, String mode, String loadPlanCode,
+                               Integer vehicleSeq, String vehicleTypeCode) {
 
     public record Shipment(String shipmentCode, String orderNumber, String recipientName, String recipientPhone,
                            String deliveryAddress, int packageCount, BigDecimal weightKg, BigDecimal codAmount,
                            boolean codChangedSinceLabel, List<Parcel> packages) {
     }
 
-    /** @param kit the kit it is a part of (SCRUM-287 LP2-6): printed "Bộ partNo/partCount"; absent otherwise */
+    /**
+     * @param kit             the kit it is a part of (SCRUM-287 LP2-6): printed "Bộ partNo/partCount"; absent otherwise
+     * @param labelOutdated   its label no longer matches the parcel: reprint it before it is loaded
+     * @param labelOutdatedAt since when; null when {@code labelOutdated} is false
+     */
     public record Parcel(String labelCode, BigDecimal weightKg, BigDecimal lengthCm, BigDecimal widthCm,
                          BigDecimal heightCm, boolean loaded,
-                         @JsonInclude(JsonInclude.Include.NON_NULL) KitPartResponse kit) {
+                         @JsonInclude(JsonInclude.Include.NON_NULL) KitPartResponse kit, boolean labelOutdated,
+                         Instant labelOutdatedAt) {
     }
 }

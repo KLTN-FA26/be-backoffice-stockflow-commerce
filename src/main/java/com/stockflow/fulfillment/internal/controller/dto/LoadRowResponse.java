@@ -9,9 +9,10 @@ import java.util.UUID;
  *
  * @param shipmentCount shipments on its manifest; {@code packageCount} parcels scanned onto the vehicle
  * @param codTotal      what the carrier collects for it: as labelled while loading, as fixed once dispatched
+ * @param loadPlanId    FULL_TRUCKLOAD only (SCRUM-392): its plan, the plan's code and the vehicle's seq
  */
 public record LoadRowResponse(UUID loadId, String code, UUID warehouseId, String mode, String status, UUID carrierId,
                               String carrierName, String vehiclePlate, String driverName, int shipmentCount,
                               int packageCount, BigDecimal codTotal, Instant loadingStartedAt, Instant dispatchedAt,
-                              long version) {
+                              long version, UUID loadPlanId, String loadPlanCode, Integer vehicleSeq) {
 }

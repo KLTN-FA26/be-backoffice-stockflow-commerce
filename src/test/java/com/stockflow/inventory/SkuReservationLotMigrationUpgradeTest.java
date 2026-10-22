@@ -15,7 +15,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * V20261022001200 (SCRUM-152) and V20261022001300 (SCRUM-142/153) on a database that already holds data: a
+ * V20261023000100 (SCRUM-152) and V20261023000200 (SCRUM-142/153) on a database that already holds data: a
  * checkout hold placed on a stock item before SKU reservations existed, its order, and a pick of it in the ledger.
  * The upgrade must keep that hold exactly as it is (still pickable where it is), give every row its SKU, tag the
  * stock layer and the ledger line with a lot and the pick with its order, and from then on enforce the new rules.
@@ -23,7 +23,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class SkuReservationLotMigrationUpgradeTest {
 
     /** The newest migration before this change. */
-    private static final String BEFORE = "20261022000900";
+    private static final String BEFORE = "20261022001400";
     private static final String SKU = "SOFA-3S-GREY";
     private static final String BIN = "HCM-A01-1-A";
 
@@ -58,7 +58,7 @@ class SkuReservationLotMigrationUpgradeTest {
                 var result = flyway(pg, null).migrate();
                 assertThat(result.success).isTrue();
                 assertThat(result.migrations).extracting(m -> m.version)
-                        .contains("20261022001200", "20261022001300", "20261022001400");
+                        .contains("20261023000100", "20261023000200", "20261023000300");
 
                 // The pre-split checkout hold stays on its stock item, as it was; it now names its SKU.
                 assertThat(text(db, """

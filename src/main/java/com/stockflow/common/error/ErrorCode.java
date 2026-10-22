@@ -413,7 +413,41 @@ public enum ErrorCode {
     /** SCRUM-287 load planning: the vehicle-type catalogue (kltn-docs 09 §3). */
     VEHICLE_TYPE_NOT_FOUND("Vehicle type not found", 404),
     VEHICLE_TYPE_CODE_EXISTS("Vehicle type code already exists", 409),
+    /**
+     * SCRUM-287 PR EST: the advisory load estimate (design v2 §2, LP2-1 to LP2-5). PACKAGING_MISSING names each blocked
+     * line's inventory item in the field errors, so the screen links to the item to complete.
+     */
+    LOAD_ESTIMATE_NOT_FOUND("Load estimate not found", 404),
+    LOAD_ESTIMATE_PACKAGING_MISSING("No line has an item with a size and weight to estimate its cartons", 422),
+    LOAD_ESTIMATE_SOURCE_NOT_ELIGIBLE("This order cannot be estimated in its current status, or has nothing left to ship", 409),
+    LOAD_ESTIMATE_SOURCE_UNSUPPORTED("This kind of source cannot be estimated yet", 400),
+    LOAD_ESTIMATE_TOO_MANY_CARTONS("The order has too many cartons to estimate at once", 422),
+    VEHICLE_TYPE_INACTIVE("This vehicle type is no longer in use", 409),
     INVALID_LOAD_TRANSITION("The load cannot do that in its current status", 409),
+    // ---- SCRUM-287 PR D load plans (kltn-docs 09 §4.2, §5, BR-09..BR-15)
+    /** A load plan of a warehouse outside the caller's scope is OUT_OF_DATA_SCOPE, not this. */
+    LOAD_PLAN_NOT_FOUND("Load plan not found", 404),
+    LOAD_PLAN_VEHICLE_NOT_FOUND("This vehicle is not in the load plan", 404),
+    /** Docs 09 §5: the plan's status does not allow the step. */
+    INVALID_LOAD_PLAN_TRANSITION("The load plan cannot do that in its current status", 409),
+    /** Docs 09 BR-09: a parcel belongs to at most one load plan that is not cancelled. */
+    LOAD_PLAN_PACKAGE_TAKEN("A package of this shipment is already in another load plan", 409),
+    /** Docs 09 BR-09 / edge "kiện thiếu kích thước": only sealed parcels with sizes and weight are planned. */
+    LOAD_PLAN_PACKAGE_UNMEASURED("A package has no size or weight: measure it again at packing", 422),
+    /** Nothing to calculate or confirm: no parcels, no vehicle types, or no parcel placed. */
+    LOAD_PLAN_EMPTY("The load plan has nothing to plan or confirm", 409),
+    /** Docs 09 BR-13: parcels left unplaced must be acknowledged before the plan is confirmed. */
+    LOAD_PLAN_UNPLACED_NOT_ACKNOWLEDGED("Acknowledge the packages left unplaced before confirming", 409),
+    /** Docs 09 BR-14: once a vehicle of the plan started loading, the plan is neither reopened nor cancelled here. */
+    LOAD_PLAN_LOADING_STARTED("A vehicle of this load plan is already being loaded", 409),
+    /** Docs 09 BR-10 / BR-11: a placement breaks a loading rule; the field errors name each package and rule. */
+    PLACEMENT_RULE_VIOLATION("A placement breaks a loading rule", 422),
+    /** Docs 09 edge "bỏ kiện & tính lại": parcels were taken out of a vehicle; recalculate it before confirming. */
+    LOAD_PLAN_NEEDS_RECALCULATION("A vehicle of this load plan lost parcels and must be recalculated first", 409),
+    /** A load of a load plan's vehicle changes only through its plan (reopen, cancel, recalculate). */
+    LOAD_MANAGED_BY_PLAN("This load belongs to a load plan; change it through the plan", 409),
+    /** Docs 09 BR-09: a parcel in a load plan is not voided, re-opened or re-measured. */
+    PACKAGE_IN_LOAD_PLAN("This package is in a load plan; take it out of the plan first", 409),
     /** Docs 09 edge: a parcel of another shipment, warehouse or load scanned by mistake; the message names where it belongs. */
     PACKAGE_NOT_IN_LOAD("This package is not on this load's manifest", 409),
     PACKAGE_ALREADY_LOADED("This package is already on another load", 409),
@@ -431,6 +465,8 @@ public enum ErrorCode {
     /** Docs 09 BR-04: the COD the order fixes at the handover is not the one on the parcels' label: reprint it. */
     LABEL_OUTDATED("The package label shows another COD amount than the order now fixes; reprint it", 409),
     LOAD_SCAN_ID_CONFLICT("This scan id was already used for another package or load", 409),
+    /** SCRUM-392: parcels of a cancelled order are still on the vehicle; unload them before it is handed over. */
+    LOAD_UNLOAD_PENDING("Parcels of a cancelled order are still on this vehicle; unload them first", 409),
     OPTIMISTIC_LOCK("The record changed meanwhile, please retry", 409),
     /** Two writers reached the same row; the loser waited for the lock and gave up. Retryable. */
     LOCK_TIMEOUT("The record is busy, please retry", 409),

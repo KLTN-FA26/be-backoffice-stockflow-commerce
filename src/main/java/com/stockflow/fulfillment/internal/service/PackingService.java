@@ -120,6 +120,8 @@ class PackingService implements Packing {
     private final Clock clock;
     private final int dimDivisor;
     private final com.stockflow.common.audit.AuditTrail audit;
+    private final LoadPlanReleases loadPlans;
+    private final PlanVehicles planVehicles;
 
     @SuppressWarnings("java:S107")
     PackingService(PickJpaRepository picks, PickLineJpaRepository pickLines, PackJpaRepository packs,
@@ -134,7 +136,8 @@ class PackingService implements Packing {
                    com.stockflow.fulfillment.internal.repository.DispatchLoadJpaRepository loads,
                    com.stockflow.fulfillment.internal.repository.DispatchLoadStore loadStore, Clock clock,
                    @Value("${stockflow.fulfillment.packing.dim-divisor:6000}") int dimDivisor,
-                   com.stockflow.common.audit.AuditTrail audit) {
+                   com.stockflow.common.audit.AuditTrail audit, LoadPlanReleases loadPlans,
+                   PlanVehicles planVehicles) {
         this.picks = picks;
         this.pickLines = pickLines;
         this.packs = packs;
@@ -156,6 +159,8 @@ class PackingService implements Packing {
         this.clock = clock;
         this.dimDivisor = dimDivisor;
         this.audit = audit;
+        this.loadPlans = loadPlans;
+        this.planVehicles = planVehicles;
     }
 
     // ------------------------------------------------------------------ the queue
@@ -365,6 +370,7 @@ class PackingService implements Packing {
     @Override
     public Parcel reopen(UUID taskId, UUID packageId, CurrentUser actor) {
         Context ctx = forWork(taskId);
+        requireNotPlanned(ctx, packageId);
         requirePackable(ctx.order());
         PackingSession session = load(ctx);
         session.requireWorkable(actor.userId(), isManager(actor));
@@ -376,6 +382,7 @@ class PackingService implements Packing {
     @Override
     public Session voidPackage(UUID taskId, UUID packageId, CurrentUser actor) {
         Context ctx = forWork(taskId);
+        requireNotPlanned(ctx, packageId);
         requirePackable(ctx.order());
         PackingSession session = load(ctx);
         session.requireWorkable(actor.userId(), isManager(actor));
@@ -436,6 +443,11 @@ class PackingService implements Packing {
             shipment.apply(printed);
             shipments.saveAndFlush(shipment);
         }
+        // SCRUM-392: printed again, a label outdated by a shipment split is current again.
+        packages.findById(packageId).filter(p -> p.getLabelOutdatedAt() != null).ifPresent(p -> {
+            p.markLabelOutdated(null);
+            packages.save(p);
+        });
         var address = order.shippingAddress();
         Address recipient = address == null ? new Address(order.contactName(), order.contactPhone(), null, null, null,
                 null, null, null) : new Address(address.recipientName() == null ? order.contactName()
@@ -557,6 +569,24 @@ class PackingService implements Packing {
     }
 
     /**
+     * SCRUM-287 PR D (09 BR-09): a parcel a load plan holds - or any part of its kit, which is voided whole - is not
+     * voided or re-opened: 409 {@code PACKAGE_IN_LOAD_PLAN}, before the station's own "already shipped" refusal.
+     */
+    private void requireNotPlanned(Context ctx, UUID packageId) {
+        PackageJpaEntity parcel = packages.findById(packageId).orElse(null);
+        if (parcel == null) {
+            return;
+        }
+        java.util.List<UUID> ids = new java.util.ArrayList<>(List.of(packageId));
+        if (parcel.getKit() != null) {
+            packages.findByPackIdOrderByPackageNoAsc(ctx.pack().getId()).stream()
+                    .filter(p -> p.getKit() != null && p.getKit().groupId().equals(parcel.getKit().groupId()))
+                    .forEach(p -> ids.add(p.getId()));
+        }
+        loadPlans.requireNotPlanned(ids);
+    }
+
+    /**
      * The order was cancelled (08 BR-05, 17 §4.5 step 15): parcels that did not ship are voided with their labels, a
      * shipment still waiting for dispatch is cancelled. The goods in them were picked: the pick's put-back covers them.
      */
@@ -565,7 +595,18 @@ class PackingService implements Packing {
         for (ShipmentJpaEntity row : shipments.findByPackIdOrderByReadyAtAscIdAsc(pack.getId())) {
             Shipment shipment = row.toDomain();
             if (shipment.status() == ShipmentStatus.READY_TO_DISPATCH) {
-                takeOffLoad(row.getId(), now);
+                if (planVehicles.partlyGone(row.getId())) {
+                    // SCRUM-392 (LP-3): a vehicle of its load plan already left with some of its parcels - they are
+                    // with the carrier and cannot be voided. The order refuses its cancellation once goods left
+                    // (goodsLeftAt, review of #162), so this is only a net: left as it is for a person to resolve.
+                    log.error("Order {} cancelled, but shipment {} already left in part on a load plan's vehicle: "
+                            + "not voided - resolve it by hand", pick.getOrderNumber(), row.getCode());
+                    continue;
+                }
+                // SCRUM-287 PR D: out of its load plan first (plan lock before any load's), then off its loads -
+                // a vehicle being loaded keeps the parcels on board to unload (SCRUM-392).
+                loadPlans.releaseShipment(row.getId(), now);
+                planVehicles.withdraw(row.getId(), now);
                 shipment.cancel("The order was cancelled", null, now);
                 row.apply(shipment);
                 shipments.save(row);
@@ -744,21 +785,6 @@ class PackingService implements Packing {
         return allMatch;
     }
 
-    /**
-     * G4-2a (09 edge "đơn bị huỷ khi kiện đã nằm trong chuyến xe, chưa xếp lên xe"): a shipment cancelled while on an
-     * open load leaves its manifest with its scanned parcels, so the signature skips it. The load's lock is taken
-     * here, after the pick's and before the shipment's row changes - the order the handover takes them in.
-     */
-    private void takeOffLoad(UUID shipmentId, Instant now) {
-        loadMembers.findByShipmentIdInAndActiveTrue(List.of(shipmentId)).stream().findFirst().ifPresent(member ->
-                loads.lockById(member.getLoadId()).ifPresent(header -> {
-                    var load = loadStore.load(header);
-                    if (load.status().isOpen() && load.removeShipment(shipmentId, null, now)) {
-                        loadStore.save(load, header);
-                        log.info("Shipment {} of a cancelled order taken off load {}", shipmentId, load.code());
-                    }
-                }));
-    }
 
     /**
      * E2E QA 2026-10-21 (F2): a label reprinted with another COD while its shipment is on an open load - the
@@ -849,7 +875,7 @@ class PackingService implements Packing {
                 m == null ? null : m.lengthCm(), m == null ? null : m.widthCm(), m == null ? null : m.heightCm(),
                 parcel.dimWeightKg(), parcel.rotatable(), parcel.rotatableOverridden(), parcel.fragile(),
                 parcel.fragileOverridden(), parcel.sealedAt(), contents(parcel, skus), parcel.kit(),
-                parcel.kitOverrideReason());
+                parcel.kitOverrideReason(), parcel.labelOutdatedAt());
     }
 
     private static List<Content> contents(PackingSession.Parcel parcel, Map<UUID, String> skus) {

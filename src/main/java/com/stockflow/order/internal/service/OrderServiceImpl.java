@@ -883,6 +883,24 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     }
 
     @Override
+    public void recordGoodsLeft(UUID orderId, java.time.Instant at,
+                                java.util.List<com.stockflow.order.api.ShipmentHandover.Line> inPlan) {
+        Order order = lockOrder(orderId);
+        if (order.recordGoodsLeft(at, inPlan == null || inPlan.isEmpty() ? null : quantities(inPlan), ledgerOf(order))) {
+            log.info("Order {}: goods left on a load plan's vehicle; no longer cancelled", order.orderNumber());
+            saved(order);
+        }
+    }
+
+    @Override
+    public void requirePlanCarriesTheRest(UUID orderId,
+                                          java.util.List<com.stockflow.order.api.ShipmentHandover.Line> inPlan) {
+        Order order = repository.findById(new OrderId(orderId))
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));
+        order.requirePlanCarriesTheRest(inPlan == null || inPlan.isEmpty() ? null : quantities(inPlan));
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public java.util.List<com.stockflow.order.api.OrderHoldState> holdStates(java.util.Collection<UUID> orderIds) {
         return repository.holdStates(orderIds == null ? java.util.List.of() : java.util.Set.copyOf(orderIds));
@@ -1141,7 +1159,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                 order.closedAt(), order.billedAmount(), order.billable(), order.amountDue(),
                 order.amountDueBeforeHandover(), progress, shipments, order.amountDueOnDelivery(), order.codAmount(),
                 order.allowPartialShipment(), order.printLinesReady(), order.deliveryMode(),
-                order.deliveryModeLocked());
+                order.deliveryModeLocked(), order.goodsLeftAt());
     }
 
     private static OrderAddressSnapshot toSnapshot(CheckoutCustomer.CheckoutAddress address) {

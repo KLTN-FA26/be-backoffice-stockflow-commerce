@@ -12,17 +12,20 @@ import java.util.UUID;
 public interface VehicleTypes {
 
     record VehicleTypeView(UUID id, String code, String name, String kind, int innerLengthMm, int innerWidthMm,
-                           int innerHeightMm, int gussetMm, BigDecimal maxPayloadKg, int availableCount,
-                           BigDecimal rentalPrice, boolean preset, String status, long version) { }
+                           int innerHeightMm, int gussetMm, Integer doorWidthMm, Integer doorHeightMm,
+                           BigDecimal maxPayloadKg, int availableCount, BigDecimal rentalPrice, boolean preset, String status, long version) { }
 
     /**
      * @param code    create: the code; update: optional, and if given it must be the current one (a code never changes)
      * @param gussetMm ceiling-corner gusset cube edge in mm (see the migration); null = 0, also on update (full replace)
+     * @param doorWidthMm  optional clear door opening width in mm, at most the inner width; null = no limit, also on update (full replace)
+     * @param doorHeightMm optional clear door opening height in mm, at most the inner height; null = no limit, also on update (full replace)
      * @param status  ACTIVE / INACTIVE; null keeps the current one (ACTIVE on create)
      * @param version required to change an existing type: the version read (optimistic lock); ignored on create
      */
     record SaveVehicleType(String code, String name, String kind, Integer innerLengthMm, Integer innerWidthMm,
-                           Integer innerHeightMm, Integer gussetMm, BigDecimal maxPayloadKg, Integer availableCount,
+                           Integer innerHeightMm, Integer gussetMm, Integer doorWidthMm, Integer doorHeightMm,
+                           BigDecimal maxPayloadKg, Integer availableCount,
                            BigDecimal rentalPrice, String status, Long version) { }
 
     /** Paged, by name; {@code status} ACTIVE / INACTIVE or null for both; {@code search} in code or name. */

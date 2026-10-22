@@ -163,7 +163,7 @@ class CustomerOrdersService implements CustomerOrders {
         boolean printing = status == OrderStatus.IN_PRODUCTION || lifecycle != null
                 && status == OrderStatus.ON_HOLD && lifecycle.statusBeforeHold() == OrderStatus.IN_PRODUCTION;
         boolean packed = lifecycle != null && lifecycle.packedAt() != null
-                && !(printing && lifecycle.shipments().isEmpty());
+                && !(printing && lifecycle.shipments().isEmpty() && lifecycle.goodsLeftAt() == null);
         boolean request = !cancel && !packed && status.canTransitionTo(OrderStatus.CANCELLED)
                 && !cancellationRequests.hasPending(summary.orderId());
         return new AllowedActions(cancel, request, quotes.findByConvertedOrderId(summary.orderId()).isPresent());

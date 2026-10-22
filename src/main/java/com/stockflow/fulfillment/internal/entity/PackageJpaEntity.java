@@ -51,6 +51,8 @@ public class PackageJpaEntity extends BaseEntity {
     @Column(name = "kit_order_line_id", updatable = false) private UUID kitOrderLineId;
     /** KIT-FORCE: why this ordinary parcel holds units of an item that ships as several boxes. */
     @Column(name = "kit_override_reason", length = 500) private String kitOverrideReason;
+    /** SCRUM-392: moved to another shipment since its label was printed; reprint before loading. */
+    @Column(name = "label_outdated_at") private Instant labelOutdatedAt;
 
     protected PackageJpaEntity() {
     }
@@ -103,6 +105,12 @@ public class PackageJpaEntity extends BaseEntity {
     public UUID getShipmentId() { return shipmentId; }
     public int getPackageNo() { return packageNo; }
     public String getLabelCode() { return labelCode; }
+    public Instant getLabelOutdatedAt() { return labelOutdatedAt; }
+
+    /** SCRUM-392: the label names another shipment than the parcel's now (set), or was reprinted (null). */
+    public void markLabelOutdated(Instant at) {
+        this.labelOutdatedAt = at;
+    }
     public PackageType getPackageType() { return packageType; }
     public PackageStatus getStatus() { return status; }
     public BigDecimal getWeightKg() { return weightKg; }

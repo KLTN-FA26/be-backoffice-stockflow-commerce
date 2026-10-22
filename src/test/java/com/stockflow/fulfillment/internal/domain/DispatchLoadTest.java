@@ -197,4 +197,141 @@ class DispatchLoadTest {
         assertThat(back.activeParcels()).hasSize(1);
         assertThat(List.copyOf(back.members())).hasSize(1);
     }
+
+    // ---- full truckload (SCRUM-392) --------------------------------------------------------------------------------
+
+    private static DispatchLoad vehicle() {
+        DispatchLoad load = DispatchLoad.planFullTruckload(UUID.randomUUID(), "LD-20261022-0001", UUID.randomUUID(), HCM,
+                UUID.randomUUID());
+        return load;
+    }
+
+    private static DispatchLoad.ShipmentFacts ftl(UUID id, UUID carrier, String otherLoad) {
+        return new DispatchLoad.ShipmentFacts(id, "SO-9-S1", HCM, DeliveryMode.FULL_TRUCKLOAD,
+                ShipmentStatus.READY_TO_DISPATCH, carrier, otherLoad);
+    }
+
+    private static DispatchLoad.ParcelFacts placed(UUID packageId, DispatchLoad.ShipmentFacts shipment,
+                                                   DispatchLoad.Placement where) {
+        return new DispatchLoad.ParcelFacts(packageId, "PKG-SO-9-" + packageId.toString().substring(0, 4),
+                PackageStatus.SEALED, shipment, null, where);
+    }
+
+    private static final DispatchLoad.Placement HERE = new DispatchLoad.Placement(true, "LP-1", 1, null);
+
+    @Test
+    @DisplayName("FTL: PLANNED -> booked (again: replaced; same: no-op) -> booking cancelled with a reason back to "
+            + "PLANNED -> booked -> LOADING; loading before booking, booking or cancelling the booking once loading are "
+            + "INVALID_LOAD_TRANSITION; a parcel load is never booked")
+    void bookingAndLoading() {
+        DispatchLoad load = vehicle();
+        UUID ghn = UUID.randomUUID();
+        UUID ghtk = UUID.randomUUID();
+        assertThat(code(() -> load.startLoading(DISPATCHER, NOW))).isEqualTo(ErrorCode.INVALID_LOAD_TRANSITION);
+        assertThat(load.cancelBooking("nothing booked", DISPATCHER, NOW)).isFalse();
+        assertThat(load.book(ghn, "51C-1", "Tai", null, DISPATCHER, NOW)).isTrue();
+        assertThat(load.status()).isEqualTo(LoadStatus.VEHICLE_BOOKED);
+        assertThat(load.book(ghn, "51C-1", "Tai", null, DISPATCHER, NOW)).isFalse();
+        assertThat(load.book(ghtk, "51C-2", null, null, DISPATCHER, NOW)).isTrue();
+        assertThat(load.carrierId()).isEqualTo(ghtk);
+        assertThat(code(() -> load.cancelBooking(" ", DISPATCHER, NOW))).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(load.cancelBooking("carrier has no truck", DISPATCHER, NOW)).isTrue();
+        DispatchLoad.Snapshot cancelled = load.snapshot();
+        assertThat(cancelled.status()).isEqualTo(LoadStatus.PLANNED);
+        assertThat(cancelled.carrierId()).isNull();
+        assertThat(cancelled.vehiclePlate()).isNull();
+        assertThat(cancelled.bookedAt()).isNull();
+        assertThat(cancelled.bookingCancelReason()).isEqualTo("carrier has no truck");
+
+        assertThat(load.book(ghn, null, null, null, DISPATCHER, NOW)).isTrue();
+        assertThat(load.startLoading(DISPATCHER, NOW)).isTrue();
+        assertThat(load.startLoading(DISPATCHER, NOW)).isFalse();
+        assertThat(load.status()).isEqualTo(LoadStatus.LOADING);
+        assertThat(code(() -> load.cancelBooking("too late", DISPATCHER, NOW)))
+                .isEqualTo(ErrorCode.INVALID_LOAD_TRANSITION);
+        assertThat(code(() -> load.book(ghtk, null, null, null, DISPATCHER, NOW)))
+                .isEqualTo(ErrorCode.INVALID_LOAD_TRANSITION);
+        assertThat(code(() -> open().book(ghn, null, null, null, DISPATCHER, NOW)))
+                .isEqualTo(ErrorCode.INVALID_LOAD_TRANSITION);
+        assertThat(code(() -> open().startLoading(DISPATCHER, NOW))).isEqualTo(ErrorCode.INVALID_LOAD_TRANSITION);
+    }
+
+    @Test
+    @DisplayName("FTL: a shipment chosen for a carrier goes on the unbooked vehicle's manifest; a parcel placed on "
+            + "another vehicle is PACKAGE_NOT_IN_LOAD naming vehicle and load; the handover checks only the parcels "
+            + "given for this vehicle; COD is always 0")
+    void scanningAVehicle() {
+        DispatchLoad load = vehicle();
+        UUID s1 = UUID.randomUUID();
+        DispatchLoad.ShipmentFacts shipment = ftl(s1, UUID.randomUUID(), null);
+        assertThat(load.addShipment(shipment, new BigDecimal("5"), DISPATCHER, NOW)).isTrue();
+        assertThat(code(() -> load.addShipment(ftl(UUID.randomUUID(), null, "LD-OTHER"), null, DISPATCHER, NOW)))
+                .isEqualTo(ErrorCode.SHIPMENT_ON_ANOTHER_LOAD);
+        load.book(shipment.carrierId(), "51C-1", null, null, DISPATCHER, NOW);
+        load.startLoading(DISPATCHER, NOW);
+        UUID mine = UUID.randomUUID();
+        UUID theirs = UUID.randomUUID();
+        Throwable wrong = catchThrowable(() -> load.scan(UUID.randomUUID(), placed(theirs, shipment,
+                new DispatchLoad.Placement(false, "LP-1", 2, "LD-20261022-0002")), DISPATCHER, NOW));
+        assertThat(((BusinessException) wrong).errorCode()).isEqualTo(ErrorCode.PACKAGE_NOT_IN_LOAD);
+        assertThat(wrong.getMessage()).contains("vehicle 2").contains("LD-20261022-0002");
+        assertThat(((BusinessException) wrong).fieldErrors()).extracting(f -> f.field() + "=" + f.message())
+                .contains("vehicleSeq=2", "loadCode=LD-20261022-0002");
+        assertThat(code(() -> load.scan(UUID.randomUUID(), placed(theirs, shipment,
+                new DispatchLoad.Placement(false, null, null, null)), DISPATCHER, NOW)))
+                .isEqualTo(ErrorCode.PACKAGE_NOT_IN_LOAD);
+        assertThat(load.scan(UUID.randomUUID(), placed(mine, shipment, HERE), DISPATCHER, NOW)).isTrue();
+        // Only this vehicle's parcels are expected; the shipment's parcel on vehicle 2 is not.
+        assertThat(load.handOver(SIGNED, Map.of(s1, Set.of(mine)), Map.of(mine, "PKG-1"), DISPATCHER, NOW))
+                .containsExactly(s1);
+        assertThat(load.codTotal()).isEqualByComparingTo("0");
+    }
+
+    @Test
+    @DisplayName("FTL: an order cancelled while its parcels are on board leaves the manifest; the scanned parcels are "
+            + "to be unloaded and the handover is LOAD_UNLOAD_PENDING until they are; not scanned or not loading: "
+            + "nothing to unload")
+    void unloadingACancelledOrder() {
+        DispatchLoad load = vehicle();
+        UUID doomed = UUID.randomUUID();
+        UUID kept = UUID.randomUUID();
+        load.addShipment(ftl(doomed, null, null), null, DISPATCHER, NOW);
+        load.addShipment(ftl(kept, null, null), null, DISPATCHER, NOW);
+        assertThat(load.withdrawShipment(UUID.randomUUID(), "x", NOW)).isFalse();
+        load.book(UUID.randomUUID(), "51C-1", null, null, DISPATCHER, NOW);
+        load.startLoading(DISPATCHER, NOW);
+        UUID onBoard = UUID.randomUUID();
+        UUID keptParcel = UUID.randomUUID();
+        load.scan(UUID.randomUUID(), placed(onBoard, ftl(doomed, null, null), HERE), DISPATCHER, NOW);
+        load.scan(UUID.randomUUID(), placed(keptParcel, ftl(kept, null, null), HERE), DISPATCHER, NOW);
+
+        assertThat(load.withdrawShipment(doomed, "The order was cancelled", NOW)).isTrue();
+        assertThat(load.withdrawShipment(doomed, "again", NOW)).isFalse();
+        assertThat(load.activeShipments()).containsExactly(kept);
+        assertThat(load.pendingUnloads()).singleElement().satisfies(u -> {
+            assertThat(u.packageId()).isEqualTo(onBoard);
+            assertThat(u.reason()).isEqualTo("The order was cancelled");
+        });
+        Map<UUID, Set<UUID>> parcels = Map.of(kept, Set.of(keptParcel));
+        Throwable pending = catchThrowable(() -> load.handOver(SIGNED, parcels, Map.of(), DISPATCHER, NOW));
+        assertThat(((BusinessException) pending).errorCode()).isEqualTo(ErrorCode.LOAD_UNLOAD_PENDING);
+        assertThat(code(() -> load.confirmUnload(keptParcel, "PKG-K", DISPATCHER, NOW)))
+                .isEqualTo(ErrorCode.PACKAGE_NOT_IN_LOAD);
+        assertThat(load.confirmUnload(onBoard, "PKG-D", DISPATCHER, NOW)).isTrue();
+        assertThat(load.confirmUnload(onBoard, "PKG-D", DISPATCHER, NOW)).isFalse();
+        assertThat(load.handOver(SIGNED, parcels, Map.of(), DISPATCHER, NOW)).containsExactly(kept);
+
+        // Restored with its unloads.
+        DispatchLoad back = DispatchLoad.restore(load.snapshot());
+        assertThat(back.snapshot()).isEqualTo(load.snapshot());
+        assertThat(back.unloads()).hasSize(1);
+
+        // Booked but not loading: nothing is on board, nothing to unload.
+        DispatchLoad booked = vehicle();
+        UUID s = UUID.randomUUID();
+        booked.addShipment(ftl(s, null, null), null, DISPATCHER, NOW);
+        booked.book(UUID.randomUUID(), null, null, null, DISPATCHER, NOW);
+        assertThat(booked.withdrawShipment(s, null, NOW)).isTrue();
+        assertThat(booked.pendingUnloads()).isEmpty();
+    }
 }

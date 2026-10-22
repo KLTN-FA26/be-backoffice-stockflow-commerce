@@ -107,7 +107,7 @@ class VehicleTypeService implements VehicleTypes {
 
     /**
      * PUT is a full replace, as for carriers: required fields are required, an optional field left out is cleared
-     * ({@code rentalPrice} to none, {@code gussetMm} to 0), and only a missing {@code status} keeps the current one.
+     * ({@code rentalPrice} and the door to none, {@code gussetMm} to 0), and only a missing {@code status} keeps the current one.
      * A preset keeps its kind.
      */
     private static void fill(VehicleTypeJpaEntity row, SaveVehicleType type, String defaultStatus) {
@@ -133,6 +133,8 @@ class VehicleTypeService implements VehicleTypes {
             problems.add(field("gussetMm", "VEHICLE_TYPE_GUSSET_TOO_LARGE",
                     "twice the gusset must be less than the inner width, and the gusset less than the inner height"));
         }
+        Integer doorWidth = door(type.doorWidthMm(), width, "doorWidthMm", "inner width", problems);
+        Integer doorHeight = door(type.doorHeightMm(), height, "doorHeightMm", "inner height", problems);
         BigDecimal payload = type.maxPayloadKg();
         if (payload == null || payload.signum() <= 0 || payload.compareTo(MAX_PAYLOAD_KG) > 0
                 || payload.scale() > 3) {
@@ -156,7 +158,23 @@ class VehicleTypeService implements VehicleTypes {
         if (!problems.isEmpty()) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Invalid vehicle type", problems);
         }
-        row.apply(name, kind, length, width, height, gusset, payload, count, price, status);
+        row.apply(name, kind, length, width, height, gusset, doorWidth, doorHeight, payload, count, price, status);
+    }
+
+    /** An optional door side: null = no limit; otherwise 1 to the sanity bound and not above the inner side (ck_vehicle_type_door_*). */
+    private static Integer door(Integer mm, int inner, String field, String innerName, List<FieldError> problems) {
+        if (mm == null) {
+            return null;
+        }
+        if (mm <= 0 || mm > MAX_SIDE_MM) {
+            problems.add(field(field, "VEHICLE_TYPE_DOOR_INVALID", "1 to " + MAX_SIDE_MM + " mm"));
+            return null;
+        }
+        if (mm > inner) {
+            problems.add(field(field, "VEHICLE_TYPE_DOOR_TOO_LARGE", "must not be larger than the " + innerName));
+            return null;
+        }
+        return mm;
     }
 
     private static int side(Integer mm, String field, List<FieldError> problems) {
@@ -173,7 +191,7 @@ class VehicleTypeService implements VehicleTypes {
 
     static VehicleTypeView view(VehicleTypeJpaEntity row) {
         return new VehicleTypeView(row.getId(), row.getCode(), row.getName(), row.getKind(), row.getInnerLengthMm(),
-                row.getInnerWidthMm(), row.getInnerHeightMm(), row.getGussetMm(), row.getMaxPayloadKg(), row.getAvailableCount(),
+                row.getInnerWidthMm(), row.getInnerHeightMm(), row.getGussetMm(), row.getDoorWidthMm(), row.getDoorHeightMm(), row.getMaxPayloadKg(), row.getAvailableCount(),
                 row.getRentalPrice(), row.isPreset(), row.getStatus(), row.getVersion());
     }
 

@@ -36,6 +36,11 @@ public class DispatchLoadJpaEntity extends BaseEntity {
     @Column(name = "driver_phone", length = 32) private String driverPhone;
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 16) private LoadStatus status;
+    @Column(name = "booked_at") private Instant bookedAt;
+    @Column(name = "booked_by") private UUID bookedBy;
+    @Column(name = "booking_cancelled_at") private Instant bookingCancelledAt;
+    @Column(name = "booking_cancelled_by") private UUID bookingCancelledBy;
+    @Column(name = "booking_cancel_reason", length = 500) private String bookingCancelReason;
     @Column(name = "loading_started_at") private Instant loadingStartedAt;
     @Column(name = "loading_started_by") private UUID loadingStartedBy;
     @Column(name = "dispatched_at") private Instant dispatchedAt;
@@ -69,6 +74,11 @@ public class DispatchLoadJpaEntity extends BaseEntity {
         this.driverName = s.driverName();
         this.driverPhone = s.driverPhone();
         this.status = s.status();
+        this.bookedAt = s.bookedAt();
+        this.bookedBy = s.bookedBy();
+        this.bookingCancelledAt = s.bookingCancelledAt();
+        this.bookingCancelledBy = s.bookingCancelledBy();
+        this.bookingCancelReason = s.bookingCancelReason();
         this.loadingStartedAt = s.loadingStartedAt();
         this.loadingStartedBy = s.loadingStartedBy();
         this.dispatchedAt = s.dispatchedAt();
@@ -94,6 +104,11 @@ public class DispatchLoadJpaEntity extends BaseEntity {
     public String getDriverName() { return driverName; }
     public String getDriverPhone() { return driverPhone; }
     public LoadStatus getStatus() { return status; }
+    public Instant getBookedAt() { return bookedAt; }
+    public UUID getBookedBy() { return bookedBy; }
+    public Instant getBookingCancelledAt() { return bookingCancelledAt; }
+    public UUID getBookingCancelledBy() { return bookingCancelledBy; }
+    public String getBookingCancelReason() { return bookingCancelReason; }
     public Instant getLoadingStartedAt() { return loadingStartedAt; }
     public UUID getLoadingStartedBy() { return loadingStartedBy; }
     public Instant getDispatchedAt() { return dispatchedAt; }

@@ -23,7 +23,7 @@ class DispatchWebMapper {
     LoadRowResponse toResponse(Dispatching.LoadRow r) {
         return new LoadRowResponse(r.loadId(), r.code(), r.warehouseId(), r.mode(), r.status(), r.carrierId(),
                 r.carrierName(), r.vehiclePlate(), r.driverName(), r.shipmentCount(), r.packageCount(), r.codTotal(),
-                r.loadingStartedAt(), r.dispatchedAt(), r.version());
+                r.loadingStartedAt(), r.dispatchedAt(), r.version(), r.loadPlanId(), r.loadPlanCode(), r.vehicleSeq());
     }
 
     LoadResponse toResponse(Dispatching.LoadDetail d) {
@@ -36,8 +36,12 @@ class DispatchWebMapper {
                         s.orderId(), s.orderNumber(), s.taskId(), s.status(), s.packageCount(), s.loadedCount(),
                         s.labelCodAmount(), s.codAmount(), s.currency(), s.packages().stream().map(p -> new LoadResponse.Parcel(
                                 p.packageId(), p.labelCode(), p.weightKg(), p.loaded(), p.loadedAt(), p.loadedBy(),
-                                PackingWebMapper.kit(p.kit())))
-                        .toList())).toList());
+                                PackingWebMapper.kit(p.kit()), p.labelOutdatedAt() != null, p.labelOutdatedAt()))
+                        .toList())).toList(), d.loadPlanId(), d.loadPlanCode(), d.vehicleSeq(), d.vehicleTypeCode(),
+                d.bookedAt(), d.bookedBy(), d.bookingCancelledAt(), d.bookingCancelReason(),
+                d.pendingUnloads().stream().map(u -> new LoadResponse.PendingUnload(u.packageId(), u.labelCode(),
+                        u.shipmentId(), u.shipmentCode(), u.reason(), u.requestedAt())).toList(),
+                d.carrierBookingToCancel());
     }
 
     ManifestResponse toResponse(Dispatching.Manifest m) {
@@ -48,9 +52,11 @@ class DispatchWebMapper {
                         s.shipmentCode(), s.orderNumber(), s.recipientName(), s.recipientPhone(), s.deliveryAddress(),
                         s.packageCount(), s.weightKg(), s.codAmount(), s.codChangedSinceLabel(),
                         s.packages().stream().map(p -> new ManifestResponse.Parcel(p.labelCode(), p.weightKg(),
-                                p.lengthCm(), p.widthCm(), p.heightCm(), p.loaded(), PackingWebMapper.kit(p.kit())))
+                                p.lengthCm(), p.widthCm(), p.heightCm(), p.loaded(), PackingWebMapper.kit(p.kit()),
+                                p.labelOutdatedAt() != null, p.labelOutdatedAt()))
                                 .toList())).toList(),
-                m.shipmentCount(), m.packageCount(), m.totalWeightKg(), m.codTotal(), m.currency(), m.printedAt());
+                m.shipmentCount(), m.packageCount(), m.totalWeightKg(), m.codTotal(), m.currency(), m.printedAt(),
+                m.mode(), m.loadPlanCode(), m.vehicleSeq(), m.vehicleTypeCode());
     }
 
     ShipmentRowResponse toResponse(Shipments.ShipmentRow r) {
@@ -64,7 +70,8 @@ class DispatchWebMapper {
     ShipmentResponse toResponse(Shipments.ShipmentDetail d) {
         return new ShipmentResponse(toResponse(d.shipment()), d.partialNote(), d.failureNote(), d.cancelledAt(),
                 d.packages().stream().map(p -> new ShipmentResponse.Parcel(p.packageId(), p.labelCode(), p.status(),
-                        p.weightKg(), p.lengthCm(), p.widthCm(), p.heightCm(), PackingWebMapper.kit(p.kit())))
+                        p.weightKg(), p.lengthCm(), p.widthCm(), p.heightCm(), PackingWebMapper.kit(p.kit()),
+                        p.labelOutdatedAt() != null, p.labelOutdatedAt()))
                         .toList(),
                 d.timeline().stream().map(s -> new ShipmentResponse.Step(s.status(), s.occurredAt(), s.recordedBy(),
                         s.recordedByName(), s.note())).toList());
