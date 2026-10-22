@@ -17,7 +17,7 @@ public interface VehicleTypes {
 
     /**
      * @param code    create: the code; update: optional, and if given it must be the current one (a code never changes)
-     * @param gussetMm ceiling-corner clearance in mm; null: 0 on create, unchanged on update
+     * @param gussetMm ceiling-corner gusset cube edge in mm (see the migration); null = 0, also on update (full replace)
      * @param status  ACTIVE / INACTIVE; null keeps the current one (ACTIVE on create)
      * @param version required to change an existing type: the version read (optimistic lock); ignored on create
      */
@@ -40,7 +40,8 @@ public interface VehicleTypes {
     VehicleTypeView create(SaveVehicleType type);
 
     /**
-     * Everything but the code. INACTIVE takes the type out of new plans; plans that already use it keep it.
+     * A full replace of everything but the code (and, for a preset, the kind): an optional field left out is cleared,
+     * only a missing status keeps the current one. INACTIVE takes the type out of new plans; plans that already use it keep it.
      *
      * @throws com.stockflow.common.error.BusinessException {@code VEHICLE_TYPE_NOT_FOUND};
      *         {@code VALIDATION_FAILED} (a different code); {@code OPTIMISTIC_LOCK} when {@code version} is not the

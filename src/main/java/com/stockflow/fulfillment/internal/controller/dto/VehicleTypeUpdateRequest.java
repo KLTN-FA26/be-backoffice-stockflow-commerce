@@ -13,10 +13,12 @@ import jakarta.validation.constraints.Size;
 import java.math.BigDecimal;
 
 /**
- * Changes a vehicle type: every field but the code. Setting {@code status} to INACTIVE retires the type.
+ * Changes a vehicle type as a full replace, like a carrier: every field but the code is sent; an optional field left out
+ * is cleared ({@code rentalPrice} to none, {@code gussetMm} to 0), and only a missing {@code status} keeps the current
+ * one. A preset also keeps its {@code kind}. Setting {@code status} to INACTIVE retires the type.
  *
  * @param code    optional; a type's code never changes, so only its current code (any case) is accepted
- * @param gussetMm optional: omitted keeps the current clearance
+ * @param gussetMm optional (edge in mm of the reinforcement cube the placement solver keeps free in the top corners - two cubes at the front-end top corners (z = 0), or, on a 45' box (inner length of 12 500 mm or more), four at the corner-post positions of the 40' post span instead of those two; 0 = none); omitted = 0
  * @param version required: the version read (optimistic lock)
  * @see VehicleTypeRequest for the fields
  */

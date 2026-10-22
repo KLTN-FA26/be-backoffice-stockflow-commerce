@@ -9,6 +9,7 @@ import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.Specs;
 import com.stockflow.fulfillment.internal.entity.VehicleTypeJpaEntity;
 import com.stockflow.fulfillment.internal.repository.VehicleTypeJpaRepository;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
@@ -24,7 +25,8 @@ import java.util.UUID;
 /**
  * See {@link VehicleTypes}. The rules are the table's ({@code ck_vehicle_type_*}), checked here first for a readable
  * answer (the request DTO already refuses most of them with a field error; this is the same rule for a caller that
- * does not come through the controller).
+ * does not come through the controller). Every field error carries a code with an English and a Vietnamese message
+ * ({@code error.VEHICLE_TYPE_*}), like the other business-rule field errors.
  */
 @Service
 @Transactional
@@ -74,8 +76,18 @@ class VehicleTypeService implements VehicleTypes {
                     "Vehicle type code %s is taken".formatted(code));
         });
         VehicleTypeJpaEntity row = new VehicleTypeJpaEntity(Identifiers.newId(), code);
-        fill(row, type, "ACTIVE", 0);
-        return view(types.saveAndFlush(row));
+        fill(row, type, "ACTIVE");
+        try {
+            return view(types.saveAndFlush(row));
+        } catch (DataIntegrityViolationException raced) {
+            // Two creates passed the check above together: the unique constraint is the net, and the answer is the
+            // same 409, not a generic DUPLICATE_KEY logged as an error.
+            if (isViolationOf(raced, "uk_vehicle_type_code")) {
+                throw new BusinessException(ErrorCode.VEHICLE_TYPE_CODE_EXISTS,
+                        "Vehicle type code %s is taken".formatted(code));
+            }
+            throw raced;
+        }
     }
 
     @Override
@@ -83,50 +95,63 @@ class VehicleTypeService implements VehicleTypes {
         VehicleTypeJpaEntity row = require(id);
         if (type.code() != null && !type.code().isBlank()
                 && !type.code().trim().toUpperCase(Locale.ROOT).equals(row.getCode())) {
-            throw invalid("code", "cannot be changed");
+            throw invalid("code", "VEHICLE_TYPE_CODE_IMMUTABLE", "cannot be changed");
         }
         if (type.version() == null || type.version() != row.getVersion()) {
             throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK,
                     "Vehicle type %s changed meanwhile; reload it".formatted(row.getCode()));
         }
-        fill(row, type, row.getStatus(), row.getGussetMm());
+        fill(row, type, row.getStatus());
         return view(types.saveAndFlush(row));
     }
 
-    private static void fill(VehicleTypeJpaEntity row, SaveVehicleType type, String defaultStatus, int defaultGusset) {
+    /**
+     * PUT is a full replace, as for carriers: required fields are required, an optional field left out is cleared
+     * ({@code rentalPrice} to none, {@code gussetMm} to 0), and only a missing {@code status} keeps the current one.
+     * A preset keeps its kind.
+     */
+    private static void fill(VehicleTypeJpaEntity row, SaveVehicleType type, String defaultStatus) {
         List<FieldError> problems = new ArrayList<>();
         String name = trimmed(type.name());
         if (name == null || name.length() > 120) {
-            problems.add(FieldError.of("name", "required, at most 120 characters"));
+            problems.add(field("name", "VEHICLE_TYPE_NAME_INVALID", "required, at most 120 characters"));
         }
         String kind = type.kind() == null ? "" : type.kind().trim().toUpperCase(Locale.ROOT);
         if (!KINDS.contains(kind)) {
-            problems.add(FieldError.of("kind", "CONTAINER, TRUCK or PICKUP"));
+            problems.add(field("kind", "VEHICLE_TYPE_KIND_INVALID", "CONTAINER, TRUCK or PICKUP"));
+        } else if (row.isPreset() && !kind.equals(row.getKind())) {
+            problems.add(field("kind", "VEHICLE_TYPE_KIND_IMMUTABLE", "a preset keeps its kind"));
         }
         int length = side(type.innerLengthMm(), "innerLengthMm", problems);
         int width = side(type.innerWidthMm(), "innerWidthMm", problems);
         int height = side(type.innerHeightMm(), "innerHeightMm", problems);
-        int gusset = type.gussetMm() == null ? defaultGusset : type.gussetMm();
+        int gusset = type.gussetMm() == null ? 0 : type.gussetMm();
         if (gusset < 0 || gusset > MAX_GUSSET_MM) {
-            problems.add(FieldError.of("gussetMm", "0 to " + MAX_GUSSET_MM + " mm"));
+            problems.add(field("gussetMm", "VEHICLE_TYPE_GUSSET_INVALID", "0 to " + MAX_GUSSET_MM + " mm"));
+        } else if (2 * gusset >= width || gusset >= height) {
+            // The solver would drop a gusset that does not fit: refuse it instead (ck_vehicle_type_gusset_fits).
+            problems.add(field("gussetMm", "VEHICLE_TYPE_GUSSET_TOO_LARGE",
+                    "twice the gusset must be less than the inner width, and the gusset less than the inner height"));
         }
         BigDecimal payload = type.maxPayloadKg();
         if (payload == null || payload.signum() <= 0 || payload.compareTo(MAX_PAYLOAD_KG) > 0
                 || payload.scale() > 3) {
-            problems.add(FieldError.of("maxPayloadKg", "more than 0 and at most 100000 kg, 3 decimals at most"));
+            problems.add(field("maxPayloadKg", "VEHICLE_TYPE_PAYLOAD_INVALID",
+                    "more than 0 and at most 100000 kg, 3 decimals at most"));
             payload = BigDecimal.ONE;
         }
         int count = type.availableCount() == null ? 0 : type.availableCount();
         if (type.availableCount() == null || count < 0 || count > MAX_COUNT) {
-            problems.add(FieldError.of("availableCount", "0 to " + MAX_COUNT));
+            problems.add(field("availableCount", "VEHICLE_TYPE_COUNT_INVALID", "0 to " + MAX_COUNT));
         }
         BigDecimal price = type.rentalPrice();
         if (price != null && (price.signum() < 0 || price.scale() > 4 || price.precision() - price.scale() > 15)) {
-            problems.add(FieldError.of("rentalPrice", "0 or more, 4 decimals at most"));
+            problems.add(field("rentalPrice", "VEHICLE_TYPE_PRICE_INVALID", "0 or more, 4 decimals at most"));
         }
-        String status = type.status() == null || type.status().isBlank() ? defaultStatus : type.status().trim().toUpperCase(Locale.ROOT);
+        String status = type.status() == null || type.status().isBlank() ? defaultStatus
+                : type.status().trim().toUpperCase(Locale.ROOT);
         if (!STATUSES.contains(status)) {
-            problems.add(FieldError.of("status", "ACTIVE or INACTIVE"));
+            problems.add(field("status", "VEHICLE_TYPE_STATUS_INVALID", "ACTIVE or INACTIVE"));
         }
         if (!problems.isEmpty()) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Invalid vehicle type", problems);
@@ -136,7 +161,7 @@ class VehicleTypeService implements VehicleTypes {
 
     private static int side(Integer mm, String field, List<FieldError> problems) {
         if (mm == null || mm <= 0 || mm > MAX_SIDE_MM) {
-            problems.add(FieldError.of(field, "1 to " + MAX_SIDE_MM + " mm"));
+            problems.add(field(field, "VEHICLE_TYPE_DIMENSION_INVALID", "1 to " + MAX_SIDE_MM + " mm"));
             return 1;
         }
         return mm;
@@ -155,7 +180,8 @@ class VehicleTypeService implements VehicleTypes {
     private static String code(String raw) {
         String code = raw == null ? "" : raw.trim().toUpperCase(Locale.ROOT);
         if (!CODE.matcher(code).matches()) {
-            throw invalid("code", "2-32 letters, digits, '-' or '_', starting with a letter or digit");
+            throw invalid("code", "VEHICLE_TYPE_CODE_INVALID",
+                    "2-32 letters, digits, '-' or '_', starting with a letter or digit");
         }
         return code;
     }
@@ -163,14 +189,24 @@ class VehicleTypeService implements VehicleTypes {
     private static String status(String raw) {
         String status = raw.trim().toUpperCase(Locale.ROOT);
         if (!STATUSES.contains(status)) {
-            throw invalid("status", "ACTIVE or INACTIVE");
+            throw invalid("status", "VEHICLE_TYPE_STATUS_INVALID", "ACTIVE or INACTIVE");
         }
         return status;
     }
 
-    private static BusinessException invalid(String field, String rule) {
+    private static BusinessException invalid(String field, String code, String rule) {
         return new BusinessException(ErrorCode.VALIDATION_FAILED, "Invalid vehicle type " + field,
-                List.of(FieldError.of(field, rule)));
+                List.of(field(field, code, rule)));
+    }
+
+    /** A field error with its own code: the handler translates it from {@code error.<code>}; {@code rule} is the English default. */
+    private static FieldError field(String field, String code, String rule) {
+        return new FieldError(field, rule, code);
+    }
+
+    private static boolean isViolationOf(DataIntegrityViolationException ex, String constraint) {
+        String message = ex.getMostSpecificCause().getMessage();
+        return message != null && message.contains("\"" + constraint + "\"");
     }
 
     private static String trimmed(String value) {

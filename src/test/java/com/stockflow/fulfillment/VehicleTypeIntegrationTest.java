@@ -95,7 +95,7 @@ class VehicleTypeIntegrationTest {
                 assertThat(row.get("innerLengthMm").asInt()).isEqualTo(12032);
                 assertThat(row.get("innerWidthMm").asInt()).isEqualTo(2352);
                 assertThat(row.get("innerHeightMm").asInt()).isEqualTo(2698);
-                assertThat(row.get("gussetMm").asInt()).isEqualTo(100);
+                assertThat(row.get("gussetMm").asInt()).isEqualTo(150);
                 assertThat(row.get("maxPayloadKg").decimalValue()).isGreaterThan(java.math.BigDecimal.ZERO);
                 assertThat(row.get("availableCount").asInt()).isGreaterThanOrEqualTo(0);
             }
@@ -145,7 +145,7 @@ class VehicleTypeIntegrationTest {
         JsonNode updated = data(send(Role.WAREHOUSE_MANAGER, put(BASE + "/" + id), change).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.name").value("Truck 9.5 t"))
                 .andExpect(jsonPath("$.data.availableCount").value(5))
-                .andExpect(jsonPath("$.data.gussetMm").value(40))
+                .andExpect(jsonPath("$.data.gussetMm").value(0))
                 .andExpect(jsonPath("$.data.rentalPrice").doesNotExist())
                 .andExpect(jsonPath("$.data.status").value("ACTIVE")));
         assertThat(updated.get("version").asLong()).isGreaterThan(created.get("version").asLong());
@@ -165,49 +165,176 @@ class VehicleTypeIntegrationTest {
         as(Role.WAREHOUSE_STAFF, get(BASE).param("status", "INACTIVE").param("search", code))
                 .andExpect(jsonPath("$.data.items[0].code").value(code));
         as(Role.WAREHOUSE_STAFF, get(BASE).param("status", "BOGUS")).andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors[0].code").value("VEHICLE_TYPE_STATUS_INVALID"));
         as(Role.WAREHOUSE_STAFF, get(BASE + "/" + UUID.randomUUID())).andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.errorCode").value("VEHICLE_TYPE_NOT_FOUND"));
         send(Role.WAREHOUSE_MANAGER, put(BASE + "/" + UUID.randomUUID()), retire).andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.errorCode").value("VEHICLE_TYPE_NOT_FOUND"));
     }
 
+    /** The PUT body that replaces {@code row} with itself (a full replace sends every field), with changes applied. */
+    private String replaceBody(JsonNode row, String code, String kind, int availableCount, long version) {
+        return """
+                {"code":"%s","name":"%s","kind":"%s","innerLengthMm":%d,"innerWidthMm":%d,"innerHeightMm":%d,
+                 "gussetMm":%d,"maxPayloadKg":%s,"availableCount":%d,"version":%d}""".formatted(code,
+                row.get("name").asText(), kind, row.get("innerLengthMm").asInt(), row.get("innerWidthMm").asInt(),
+                row.get("innerHeightMm").asInt(), row.get("gussetMm").asInt(), row.get("maxPayloadKg").decimalValue()
+                        .toPlainString(), availableCount, version);
+    }
+
     @Test
-    @DisplayName("a code never changes, a preset is never deleted, but a preset's availability can be set")
+    @DisplayName("a code and a preset's kind never change, a preset is never deleted, but a preset's availability can be set")
     void presetsAndCodes() throws Exception {
         JsonNode preset = data(as(Role.WAREHOUSE_MANAGER, get(BASE).param("search", "20DC")))
                 .get("items").get(0);
         String id = preset.get("vehicleTypeId").asText();
-        String body = """
-                {"code":"%s","name":"%s","kind":"CONTAINER","innerLengthMm":%d,"innerWidthMm":%d,"innerHeightMm":%d,
-                 "maxPayloadKg":%s,"availableCount":%d,"version":%d}""";
-        String renamed = body.formatted("OTHER", preset.get("name").asText(), 5898, 2352, 2393, "28200", 7,
-                preset.get("version").asLong());
-        send(Role.WAREHOUSE_MANAGER, put(BASE + "/" + id), renamed).andExpect(status().isBadRequest())
+        int original = preset.get("availableCount").asInt();
+        long version = preset.get("version").asLong();
+
+        send(Role.WAREHOUSE_MANAGER, put(BASE + "/" + id), replaceBody(preset, "OTHER", "CONTAINER", 7, version))
+                .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"))
-                .andExpect(jsonPath("$.fieldErrors[0].field").value("code"));
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("code"))
+                .andExpect(jsonPath("$.fieldErrors[0].code").value("VEHICLE_TYPE_CODE_IMMUTABLE"));
+        // The same refusal in Vietnamese, from the message bundle.
+        mvc.perform(put(BASE + "/" + id).header("Accept-Language", "vi")
+                        .header("Authorization", http.token(Role.WAREHOUSE_MANAGER, user))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(replaceBody(preset, "OTHER", "CONTAINER", 7, version)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[0].message").value("Không thể đổi mã của loại xe"));
 
-        String sameCode = body.formatted("20dc", preset.get("name").asText(), 5898, 2352, 2393, "28200", 7,
-                preset.get("version").asLong());
-        send(Role.WAREHOUSE_MANAGER, put(BASE + "/" + id), sameCode).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.code").value("20DC"))
-                .andExpect(jsonPath("$.data.preset").value(true))
-                .andExpect(jsonPath("$.data.availableCount").value(7));
+        // A preset keeps its kind; a CONTAINER cannot be told it is a TRUCK.
+        send(Role.WAREHOUSE_MANAGER, put(BASE + "/" + id), replaceBody(preset, "20DC", "TRUCK", 7, version))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("kind"))
+                .andExpect(jsonPath("$.fieldErrors[0].code").value("VEHICLE_TYPE_KIND_IMMUTABLE"));
 
-        // No DELETE endpoint; the database also refuses, whoever writes (psql, a script).
-        as(Role.SYSTEM_ADMIN, delete(BASE + "/" + id)).andExpect(status().is4xxClientError());
-        org.assertj.core.api.Assertions.assertThatThrownBy(
-                        () -> jdbc.update("DELETE FROM fulfillment.vehicle_type WHERE code = '20DC'"))
-                .hasMessageContaining("preset");
-        org.assertj.core.api.Assertions.assertThatThrownBy(
-                        () -> jdbc.update("UPDATE fulfillment.vehicle_type SET code = 'X20' WHERE code = '20DC'"))
-                .hasMessageContaining("cannot change");
+        try {
+            send(Role.WAREHOUSE_MANAGER, put(BASE + "/" + id), replaceBody(preset, "20dc", "CONTAINER", 7, version))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.code").value("20DC"))
+                    .andExpect(jsonPath("$.data.preset").value(true))
+                    .andExpect(jsonPath("$.data.gussetMm").value(150))
+                    .andExpect(jsonPath("$.data.availableCount").value(7));
+
+            // No DELETE endpoint; the database also refuses, whoever writes (psql, a script).
+            as(Role.SYSTEM_ADMIN, delete(BASE + "/" + id)).andExpect(status().is4xxClientError());
+            org.assertj.core.api.Assertions.assertThatThrownBy(
+                            () -> jdbc.update("DELETE FROM fulfillment.vehicle_type WHERE code = '20DC'"))
+                    .hasMessageContaining("preset");
+            org.assertj.core.api.Assertions.assertThatThrownBy(
+                            () -> jdbc.update("UPDATE fulfillment.vehicle_type SET code = 'X20' WHERE code = '20DC'"))
+                    .hasMessageContaining("cannot change");
+            org.assertj.core.api.Assertions.assertThatThrownBy(
+                            () -> jdbc.update("UPDATE fulfillment.vehicle_type SET kind = 'TRUCK' WHERE code = '20DC'"))
+                    .hasMessageContaining("kind of preset");
+        } finally {
+            // The preset belongs to every test of the shared database: put its availability back.
+            JsonNode now = data(as(Role.WAREHOUSE_MANAGER, get(BASE + "/" + id)));
+            send(Role.WAREHOUSE_MANAGER, put(BASE + "/" + id),
+                    replaceBody(now, "20DC", "CONTAINER", original, now.get("version").asLong()))
+                    .andExpect(status().isOk());
+        }
+        assertThat(jdbc.queryForObject("SELECT available_count FROM fulfillment.vehicle_type WHERE code = '20DC'",
+                Integer.class)).isEqualTo(original);
+
         // A created type cannot become a preset through the API: the body has no such field, and the column is fixed.
         String code = code();
         String id2 = data(send(Role.WAREHOUSE_MANAGER, post(BASE),
                 truck(code).replace("\"kind\"", "\"preset\":true,\"kind\"")).andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.preset").value(false))).get("vehicleTypeId").asText();
         jdbc.update("DELETE FROM fulfillment.vehicle_type WHERE id = ?::uuid", id2);
+    }
+
+    @Test
+    @DisplayName("seeded figures: containers 150 mm gusset, trucks and the pickup 0, the pickup's usable bed width")
+    void seededFigures() {
+        assertThat(jdbc.queryForList("SELECT DISTINCT gusset_mm FROM fulfillment.vehicle_type "
+                + "WHERE kind = 'CONTAINER' AND is_preset", Integer.class)).containsExactly(150);
+        assertThat(jdbc.queryForList("SELECT DISTINCT gusset_mm FROM fulfillment.vehicle_type "
+                + "WHERE kind <> 'CONTAINER' AND is_preset", Integer.class)).containsExactly(0);
+        assertThat(jdbc.queryForObject("SELECT inner_width_mm FROM fulfillment.vehicle_type WHERE code = 'PICKUP'",
+                Integer.class)).isEqualTo(1140);
+        assertThat(jdbc.queryForObject("SELECT inner_length_mm FROM fulfillment.vehicle_type WHERE code = 'TRUCK-8T'",
+                Integer.class)).isBetween(7400, 8000);
+    }
+
+    @Test
+    @DisplayName("a gusset that would not fit is refused: 2 x gusset < width, gusset < height (API and table)")
+    void gussetMustFit() throws Exception {
+        // 900 mm on a 1 600 mm wide box: the solver would silently drop it.
+        String wide = truck(code()).replace("\"innerWidthMm\":2350", "\"innerWidthMm\":1600")
+                .replace("\"gussetMm\":40", "\"gussetMm\":900");
+        send(Role.WAREHOUSE_MANAGER, post(BASE), wide).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("gussetMm"))
+                .andExpect(jsonPath("$.fieldErrors[0].code").value("VEHICLE_TYPE_GUSSET_TOO_LARGE"));
+        // exactly half the width is still too much (2 x 800 = 1 600); 799 fits.
+        send(Role.WAREHOUSE_MANAGER, post(BASE), wide.replace("\"gussetMm\":900", "\"gussetMm\":800"))
+                .andExpect(status().isBadRequest());
+        send(Role.WAREHOUSE_MANAGER, post(BASE), wide.replace("\"gussetMm\":900", "\"gussetMm\":799"))
+                .andExpect(status().isCreated());
+        // tall gusset on a low box
+        String low = truck(code()).replace("\"innerHeightMm\":2400", "\"innerHeightMm\":500")
+                .replace("\"gussetMm\":40", "\"gussetMm\":500");
+        send(Role.WAREHOUSE_MANAGER, post(BASE), low).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[0].code").value("VEHICLE_TYPE_GUSSET_TOO_LARGE"));
+        // The table says the same for a writer that skips the API.
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> jdbc.update(
+                        "UPDATE fulfillment.vehicle_type SET gusset_mm = 900 WHERE code = 'PICKUP'"))
+                .hasMessageContaining("ck_vehicle_type_gusset_fits");
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> jdbc.update(
+                        "UPDATE fulfillment.vehicle_type SET gusset_mm = 500 WHERE code = 'PICKUP'"))
+                .hasMessageContaining("ck_vehicle_type_gusset_fits");
+    }
+
+    @Test
+    @DisplayName("PUT is a full replace like a carrier: a left-out gusset and price are cleared, a left-out status is kept")
+    void putIsAFullReplace() throws Exception {
+        JsonNode created = data(send(Role.WAREHOUSE_MANAGER, post(BASE), truck(code())).andExpect(status().isCreated()));
+        String id = created.get("vehicleTypeId").asText();
+        String body = """
+                {"name":"Truck 9 t","kind":"TRUCK","innerLengthMm":6200,"innerWidthMm":2350,"innerHeightMm":2400,
+                 "maxPayloadKg":9000,"availableCount":3,"version":%d}""".formatted(created.get("version").asLong());
+        send(Role.WAREHOUSE_MANAGER, put(BASE + "/" + id), body).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.gussetMm").value(0))
+                .andExpect(jsonPath("$.data.rentalPrice").doesNotExist())
+                .andExpect(jsonPath("$.data.status").value("ACTIVE"));
+        // required fields are required on PUT, too
+        send(Role.WAREHOUSE_MANAGER, put(BASE + "/" + id), "{\"version\":1}").andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
+    }
+
+    @Test
+    @DisplayName("two creates of the same code at once: one 201, the other 409 VEHICLE_TYPE_CODE_EXISTS, never DUPLICATE_KEY")
+    void concurrentCreatesOfOneCode() throws Exception {
+        for (int round = 0; round < 3; round++) {
+            String body = truck(code());
+            int threads = 6;
+            String bearer = http.token(Role.WAREHOUSE_MANAGER, user);   // stubbed once, not from the threads
+            java.util.concurrent.CountDownLatch start = new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(threads);
+            List<java.util.concurrent.Future<String>> answers = new java.util.ArrayList<>();
+            for (int i = 0; i < threads; i++) {
+                answers.add(pool.submit(() -> {
+                    start.await();
+                    var response = mvc.perform(post(BASE).header("Authorization", bearer)
+                            .contentType(MediaType.APPLICATION_JSON).content(body)).andReturn().getResponse();
+                    return response.getStatus() + " " + (response.getStatus() == 201 ? ""
+                            : json.readTree(response.getContentAsString()).get("errorCode").asText());
+                }));
+            }
+            start.countDown();
+            List<String> results = new java.util.ArrayList<>();
+            for (var answer : answers) {
+                results.add(answer.get(30, java.util.concurrent.TimeUnit.SECONDS));
+            }
+            pool.shutdown();
+            assertThat(results.stream().filter(r -> r.startsWith("201")).count()).isEqualTo(1);
+            assertThat(results.stream().filter(r -> !r.startsWith("201")))
+                    .allMatch(r -> r.equals("409 VEHICLE_TYPE_CODE_EXISTS"));
+        }
     }
 
     @Test

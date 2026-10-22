@@ -17,7 +17,8 @@ import java.math.BigDecimal;
  *
  * @param code            2-32 upper-case letters, digits, '-' or '_' (lower case is upper-cased); never changes
  * @param kind            CONTAINER, TRUCK or PICKUP
- * @param gussetMm        ceiling-corner clearance, mm kept free in each upper corner (BR-10); optional, default 0
+ * @param gussetMm        gusset: edge in mm of the reinforcement cube the placement solver keeps free in the top corners - two cubes at the front-end top corners (z = 0), or, on a 45' box (inner length of 12 500 mm or more), four at the corner-post positions of the 40' post span instead of those two; 0 = none; optional (none = 0); 2 x gusset must be less than the inner width and the gusset less
+ *                        than the inner height (0..1000)
  * @param innerLengthMm   inner cargo space, mm (1..30000)
  * @param maxPayloadKg    maximum payload, kg (more than 0, at most 100000)
  * @param availableCount  how many vehicles of this type a plan may use (BR-12)

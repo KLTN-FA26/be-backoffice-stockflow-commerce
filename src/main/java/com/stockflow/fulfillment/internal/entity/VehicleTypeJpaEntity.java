@@ -10,7 +10,7 @@ import java.util.UUID;
 
 /**
  * A kind of truck, pickup or container a load plan may use (table {@code fulfillment.vehicle_type}; kltn-docs 09 §3 "Danh mục
- * loại xe"). The inner dimensions (mm) are the box the placement solver fills; {@code gussetMm} is the ceiling-corner clearance (BR-10); {@code availableCount} caps how many
+ * loại xe"). The inner dimensions (mm) are the box the placement solver fills; {@code gussetMm} is the edge of the reinforcement cubes kept free in the top corners (BR-10; two at the front-end top corners, four corner-post cubes on a 45' box, 0 = none; 2 x gusset < width, gusset < height); {@code availableCount} caps how many
  * vehicles of the type a plan uses (BR-12); {@code rentalPrice} is reference only. The four ISO containers are
  * {@code isPreset}: never deleted, and the code of any type never changes.
  */
