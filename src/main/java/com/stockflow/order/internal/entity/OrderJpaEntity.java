@@ -167,6 +167,14 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "fulfilment_started_at")
     private Instant fulfilmentStartedAt;
 
+    /** V20261022000800 (LP-1): how the order travels; when its first package was opened (locks the mode). */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "delivery_mode", nullable = false, length = 16)
+    private com.stockflow.order.api.DeliveryMode deliveryMode = com.stockflow.order.api.DeliveryMode.PARCEL;
+
+    @Column(name = "packing_started_at")
+    private Instant packingStartedAt;
+
     @Column(name = "warehouse_id")
     private UUID warehouseId;
 
@@ -326,6 +334,14 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     }
 
     public Instant getFulfilmentStartedAt() { return fulfilmentStartedAt; }
+
+    public void applyDeliveryMode(com.stockflow.order.api.DeliveryMode mode, Instant packingStarted) {
+        this.deliveryMode = mode == null ? com.stockflow.order.api.DeliveryMode.PARCEL : mode;
+        this.packingStartedAt = packingStarted;
+    }
+
+    public com.stockflow.order.api.DeliveryMode getDeliveryMode() { return deliveryMode; }
+    public Instant getPackingStartedAt() { return packingStartedAt; }
 
     public void applyRemainderFee(java.math.BigDecimal fee, java.math.BigDecimal retained, java.math.BigDecimal paid) {
         this.remainderFeeAmount = fee == null ? java.math.BigDecimal.ZERO : fee;

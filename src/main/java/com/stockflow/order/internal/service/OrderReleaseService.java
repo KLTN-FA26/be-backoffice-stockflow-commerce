@@ -49,10 +49,12 @@ class OrderReleaseService implements OrderReleases {
     private final Clock clock;
     private final InventoryService inventory;
     private final com.stockflow.payment.api.PaymentService paymentService;
+    private final DeliveryModeHistory deliveryModes;
 
     OrderReleaseService(OrderRepository repository, ProductionRecords production, WarehouseDirectory warehouses,
                         OrderEventPublisher events, OrderService orders, Clock clock,
-                        InventoryService inventory, com.stockflow.payment.api.PaymentService paymentService) {
+                        InventoryService inventory, com.stockflow.payment.api.PaymentService paymentService,
+                        DeliveryModeHistory deliveryModes) {
         this.repository = repository;
         this.production = production;
         this.warehouses = warehouses;
@@ -61,11 +63,21 @@ class OrderReleaseService implements OrderReleases {
         this.clock = clock;
         this.inventory = inventory;
         this.paymentService = paymentService;
+        this.deliveryModes = deliveryModes;
+    }
+
+    /** Declared here, not as an interface default: the class's {@code @Transactional} must cover it (a default
+     *  method of the interface would run on the proxy without a transaction). */
+    @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "order", resourceId = "#orderId")
+    public OrderSummary release(UUID orderId, UUID warehouseId, UUID releasedBy) {
+        return release(orderId, warehouseId, null, releasedBy);
     }
 
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "order", resourceId = "#orderId")
-    public OrderSummary release(UUID orderId, UUID warehouseId, UUID releasedBy) {
+    public OrderSummary release(UUID orderId, UUID warehouseId, com.stockflow.order.api.DeliveryMode deliveryMode,
+                                UUID releasedBy) {
         Order order = repository.findByIdForUpdate(new OrderId(orderId))
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + orderId));
         String warehouseCode = warehouses.codeOf(warehouseId).orElseThrow(() ->
@@ -97,6 +109,11 @@ class OrderReleaseService implements OrderReleases {
                     "Order %s is on credit and its customer has overdue receivables".formatted(order.orderNumber()));
         }
         order.release(warehouseId, warehouseCode, releasedBy, clock.instant(), approvedSamples);
+        if (deliveryMode != null) {
+            // LP-1: the coordinator's choice at release, recorded at the status the order was released to. A refusal
+            // (LP-2, DELIVERY_MODE_FTL_NO_COD) rolls the whole release back: nothing is released.
+            deliveryModes.apply(order, deliveryMode, null, releasedBy);
+        }
         // A deposit order leaves PENDING_PAYMENT here (BR-PRD-09): from now on its holds must not
         // expire (kltn-docs 14 BR-07, SCRUM-465). Idempotent for an order already paid and pinned.
         inventory.pinReservations(orderId);

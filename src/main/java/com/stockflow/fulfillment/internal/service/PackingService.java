@@ -248,6 +248,9 @@ class PackingService implements Packing {
         PackingSession session = load(ctx);
         session.requireWorkable(actor.userId(), isManager(actor));
         PackingSession.Parcel parcel = session.openPackage(Identifiers.newId(), packageType(type), clock.instant());
+        // LP-1: packing started - the order's delivery mode is locked from now on (under the order's row lock, after
+        // the pick's, as completion takes them).
+        orders.recordPackingStarted(ctx.order().orderId());
         store.save(session, ctx.pack());
         return parcelView(parcel, skus(session));
     }
@@ -471,9 +474,11 @@ class PackingService implements Packing {
         BigDecimal cod = orders.codFor(ctx.order().orderId(), lines, pendingLines(session,
                 shipments.findByPackIdOrderByReadyAtAscIdAsc(ctx.pack().getId()), null));
         long before = shipments.countByOrderId(ctx.order().orderId());
+        // LP-1: the shipment travels as the order does - locked since its first package was opened.
+        DeliveryMode mode = deliveryModeOf(after);
         Shipment shipment = Shipment.ready(Identifiers.newId(), ctx.order().orderNumber() + "-S" + (before + 1),
                 ctx.order().orderId(), ctx.pack().getId(), ctx.pick().getWarehouseId(), request.requestId(),
-                DeliveryMode.PARCEL, completion.parcels().size(), cod,
+                mode, completion.parcels().size(), cod,
                 completion.partial() ? request.note().trim() : null, actor.userId(), now);
         shipments.saveAndFlush(ShipmentJpaEntity.of(shipment));
         timeline.record(shipment, null, ctx.order(), null, null, null);
@@ -572,6 +577,12 @@ class PackingService implements Packing {
         return PACKABLE.contains(state.status()) || (state.status() == OrderStatus.ON_HOLD
                 && state.holdReason() == com.stockflow.order.api.HoldReason.DESIGN_MISMATCH)
                 || state.status() == OrderStatus.IN_PRODUCTION && state.allowPartialShipment();
+    }
+
+    /** LP-1: the order's delivery mode in fulfillment's words (the same names); PARCEL on a row without it. */
+    static DeliveryMode deliveryModeOf(OrderSummary order) {
+        return order.lifecycle() == null ? DeliveryMode.PARCEL
+                : DeliveryMode.valueOf(order.lifecycle().deliveryMode().name());
     }
 
     private static boolean allowsPartialShipment(OrderSummary order) {

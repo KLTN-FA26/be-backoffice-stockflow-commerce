@@ -325,6 +325,13 @@ public enum ErrorCode {
     ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED("This order does not allow partial shipments", 409),
     /** PACK-PARTIAL: whether the order may ship in parts can no longer change once everything left or it is closed. */
     ORDER_PARTIAL_SHIPMENT_LOCKED("Partial shipment can no longer be changed on this order", 409),
+    /** LP-1 (lead's decision 2026-10-22): the delivery mode is locked once packing of the order started. */
+    DELIVERY_MODE_LOCKED("The delivery mode can no longer be changed on this order", 409),
+    /**
+     * LP-2 (lead's decision 2026-10-22): a full truckload is never paid by a carrier collecting on delivery
+     * ({@code ck_shipment_ftl_no_cod}); Sales changes the balance policy, or the order stays a parcel shipment.
+     */
+    DELIVERY_MODE_FTL_NO_COD("A full-truckload order cannot have its balance collected on delivery", 409),
     /** G2-3: a carrier remittance names a receivable the customer pays themselves. */
     RECEIVABLE_NOT_CARRIER_COLLECTED("This receivable is not collected by a carrier", 409),
     /** G2-3: the customer paid this balance to the carrier; record the carrier's remittance instead. */

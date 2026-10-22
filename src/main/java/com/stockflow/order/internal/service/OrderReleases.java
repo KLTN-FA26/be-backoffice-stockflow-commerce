@@ -20,4 +20,15 @@ public interface OrderReleases {
      *         {@code CONFLICT} (not in a releasable status)
      */
     OrderSummary release(UUID orderId, UUID warehouseId, UUID releasedBy);
+
+    /**
+     * As {@link #release(UUID, UUID, UUID)}, choosing how the order travels on the way (LP-1, lead's decision
+     * 2026-10-22): null keeps the order's mode (PARCEL unless changed before). A change is recorded in the order's
+     * history; whether the caller may make it is the controller's to check.
+     *
+     * @throws com.stockflow.common.error.BusinessException also {@code DELIVERY_MODE_FTL_NO_COD} (LP-2): nothing is
+     *         released then
+     */
+    OrderSummary release(UUID orderId, UUID warehouseId, com.stockflow.order.api.DeliveryMode deliveryMode,
+                         UUID releasedBy);
 }

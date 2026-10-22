@@ -138,7 +138,18 @@ public record OrderResponse(
         @Schema(description = "Its printed goods are at packing: no print lines, or production completed. False while "
                 + "the order is printed, or partly shipped before production completed (PACK-EARLY); null on rows "
                 + "that do not carry it")
-        Boolean printLinesReady
+        Boolean printLinesReady,
+
+        @Schema(example = "PARCEL", description = "How the order travels (LP-1): PARCEL (parcels through a carrier, the "
+                + "default) or FULL_TRUCKLOAD (a whole truck or container, planned in 3D). Chosen by the Order "
+                + "Coordinator at release or with PUT /orders/{orderId}/delivery-mode; packing copies it onto every "
+                + "shipment; null on rows that do not carry it")
+        String deliveryMode,
+
+        @Schema(description = "Packing started (its first package was opened), or the order is past packing, cancelled "
+                + "or closed: the delivery mode can no longer change (409 DELIVERY_MODE_LOCKED); null on rows that do "
+                + "not carry it")
+        Boolean deliveryModeLocked
 ) {
 
     @Schema(name = "OrderShipment")
