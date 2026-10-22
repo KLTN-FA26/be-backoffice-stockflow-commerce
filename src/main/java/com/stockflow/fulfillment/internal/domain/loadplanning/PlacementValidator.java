@@ -83,13 +83,14 @@ public final class PlacementValidator {
     /**
      * The plan-wide rule: the cartons of one physical set (the same {@link CargoPackage#kitGroup()}) travel in one
      * vehicle. A carton breaks it when its set has cartons in another vehicle; every such carton is reported. Run it
-     * over all vehicles of a plan after any move between vehicles.
+     * over all vehicles of a plan after any move between vehicles. Fill cartons are not counted: fill is never a set
+     * part (see {@link LoadPlanner}).
      */
     public static List<PlacementViolation> validateKitGroups(List<List<Item>> vehicles) {
         java.util.Map<String, Set<Integer>> where = new java.util.HashMap<>();
         for (int v = 0; v < vehicles.size(); v++) {
             for (Item it : vehicles.get(v)) {
-                String group = it.carton().kitGroup();
+                String group = it.carton().fill() ? null : it.carton().kitGroup();
                 if (group != null) {
                     where.computeIfAbsent(group, k -> new java.util.HashSet<>()).add(v);
                 }
@@ -98,7 +99,7 @@ public final class PlacementValidator {
         List<PlacementViolation> out = new ArrayList<>();
         for (List<Item> vehicle : vehicles) {
             for (Item it : vehicle) {
-                String group = it.carton().kitGroup();
+                String group = it.carton().fill() ? null : it.carton().kitGroup();
                 if (group != null && where.get(group).size() > 1) {
                     out.add(new PlacementViolation(it.carton().ref(), ViolationType.KIT_SPLIT));
                 }

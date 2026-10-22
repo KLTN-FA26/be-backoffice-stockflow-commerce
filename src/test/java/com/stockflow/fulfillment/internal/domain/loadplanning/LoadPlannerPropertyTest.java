@@ -38,16 +38,27 @@ class LoadPlannerPropertyTest {
 
     /** Mixed cartons with real-looking, all-different weights; with kits, whole sets of K1 and K2 among them. */
     static List<CargoPackage> randomCartons(Random rnd, int n, boolean kits) {
-        return randomCartons(rnd, n, kits, 0);
+        return randomCartons(rnd, n, kits, 0, false);
     }
 
     /**
      * As above; each set's parts share a kit group (a physical set), and {@code fillPercent} of the loose cartons are
      * fill. Fill is decided by the carton's ref, not drawn, so the cartons stay the ones the benchmark ran on.
      */
-    static List<CargoPackage> randomCartons(Random rnd, int n, boolean kits, int fillPercent) {
+    static List<CargoPackage> randomCartons(Random rnd, int n, boolean kits, int fillPercent, boolean bigSets) {
         List<CargoPackage> out = new ArrayList<>();
         int i = 0;
+        if (bigSets) {
+            // Sets bigger than a vehicle's share: three 2000 x 2000 x 1100 parts that may not turn - a 20DC holds one
+            // set, a truck or a 40-foot box two to four - so most shares must be laid set by set.
+            for (int s = 0; s < 2 + n / 60; s++) {
+                for (int p = 1; p <= 3; p++) {
+                    out.add(new CargoPackage("k3-" + s + "/" + p, null, 2000, 2000, 1100,
+                            BigDecimal.valueOf(50000 + rnd.nextInt(20000), 3), false, "K3/" + p, "K3#" + s, null,
+                            false));
+                }
+            }
+        }
         if (kits) {
             int k1 = 1 + n / 25;
             int k2 = 1 + n / 40;
@@ -60,8 +71,8 @@ class LoadPlannerPropertyTest {
                 out.add(carton(rnd, "k2b1-" + s, new int[] {730, 730, 800}, "K2-B", "K2#" + s, false));
                 out.add(carton(rnd, "k2b2-" + s, new int[] {730, 730, 800}, "K2-B", "K2#" + s, false));
             }
-            i = out.size();
         }
+        i = out.size();
         for (; i < n; i++) {
             int[] s = SIZES[rnd.nextInt(SIZES.length)];
             String ref = "c" + i;
@@ -97,7 +108,9 @@ class LoadPlannerPropertyTest {
             int fill = seed % 3 == 1 ? 20 : 0;
             // Sets declared as kits in some cases, left to be derived from their kit groups in others.
             List<KitSpec> declared = kits && seed % 4 < 2 ? KITS : List.of();
-            return Arguments.of(seed, new LoadPlanRequest(randomCartons(rnd, n, kits, fill), fleet, mode, declared,
+            boolean bigSets = seed % 6 == 2 || seed % 6 == 5;
+            return Arguments.of(seed, new LoadPlanRequest(randomCartons(rnd, n, kits, fill, bigSets), fleet, mode,
+                    declared,
                     dist, seed % 5 == 0, null, seed, Duration.ofSeconds(20)));
         });
     }

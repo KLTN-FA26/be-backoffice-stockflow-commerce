@@ -134,7 +134,7 @@ final class SeededPacker {
         }
         List<BoxPlacement> placed = new ArrayList<>();
         BlockFiller.recreate(bin, kitBoxes, r, alpha, mind, spaces, grid, placed, new ArrayList<>(), remaining,
-                KitSolver.SUPPORT_MIN, bin.payloadKg, new double[] {0.0}, clock);
+                KitSolver.SUPPORT_MIN, bin.payloadKg, new double[] {weightOf(obstacles)}, clock);
         return placed;
     }
 
@@ -151,50 +151,81 @@ final class SeededPacker {
      *
      * <p>A second defect is fixed on the way: the original trimmed an incomplete set by dropping placements after the
      * fact, which could remove a carton another part was resting on. Here only whole sets are ever laid: when a share
-     * does not fit, the sets that did are laid again on their own, so every kept part rests on what is really
-     * there (BR-10).</p>
+     * does not fit, it is laid set by set ({@link #setBySet}), so every kept part rests on what is really there
+     * (BR-10) and the vehicle keeps as many complete sets as fit.</p>
      */
     KitShare placeKitShare(Bin bin, List<KitSets.Expanded> expanded, int[] row, List<BoxPlacement> obstacles,
                                    double budget) {
-        int[] target = row.clone();
-        while (KitSets.sum(target) > 0) {
-            List<Box> boxes = KitSets.kitMemberBoxes(expanded, target);
-            int want = KitSets.units(boxes);
-            List<BoxPlacement> best = constructKits(bin, boxes, obstacles, rng(4242), 0.0);
-            int bestSets = KitSets.completeSets(expanded, target, best);
-            double start = clock.now();
-            int restart = 1;
-            while (best.size() < want && clock.now() - start < budget) {
-                clock.evaluated(RNG_SEED_COST);
-                PyRandom r = rng(4242 + restart * 7919L);
-                restart++;
-                List<BoxPlacement> cand = constructKits(bin, boxes, obstacles, r, r.uniform(0.02, 0.5));
-                int sets = KitSets.completeSets(expanded, target, cand);
-                if (sets > bestSets || (sets == bestSets && volume(cand) > volume(best))) {
-                    best = cand;
-                    bestSets = sets;
-                }
-            }
-            if (best.size() == want) {
-                int[] rollover = new int[row.length];
-                for (int j = 0; j < row.length; j++) {
-                    rollover[j] = row[j] - target[j];
-                }
-                return new KitShare(KitSets.bySet(expanded, target, best), rollover);
-            }
-            int[] fitted = KitSets.completeRow(expanded, target, best);
-            if (KitSets.sum(fitted) >= KitSets.sum(target)) {
-                fitted = target.clone();
-                for (int j = fitted.length - 1; j >= 0; j--) {
-                    if (fitted[j] > 0) {
-                        fitted[j]--;
-                        break;
-                    }
-                }
-            }
-            target = fitted;
+        if (KitSets.sum(row) == 0) {
+            return new KitShare(List.of(), row.clone());
         }
-        return new KitShare(List.of(), row.clone());
+        List<Box> boxes = KitSets.kitMemberBoxes(expanded, row);
+        List<BoxPlacement> whole = bestLayout(bin, boxes, obstacles, budget, expanded, row);
+        if (whole.size() == KitSets.units(boxes)) {
+            return new KitShare(KitSets.bySet(expanded, row, whole), new int[row.length]);
+        }
+        return setBySet(bin, expanded, row, obstacles, budget);
+    }
+
+    /**
+     * The share does not fit whole: lay it one set at a time, each around the sets already laid, and keep every set
+     * that went in complete. A set that does not fit ends that declared set's share; the rest roll over.
+     *
+     * <p>Trimming the whole share's layout (the original's way, and this port's first) could end with no complete set
+     * at all - a greedy pass that stacks one part on another (A on A) leaves every B out - and roll every set to the
+     * next vehicle, which then does the same: nothing planned. Set by set, a vehicle always keeps as many complete sets
+     * as it can hold, whatever the parts' sizes.</p>
+     */
+    private KitShare setBySet(Bin bin, List<KitSets.Expanded> expanded, int[] row, List<BoxPlacement> obstacles,
+                              double budget) {
+        List<BoxPlacement> laid = new ArrayList<>();
+        int[] placed = new int[row.length];
+        double perSet = budget / Math.max(1, KitSets.sum(row));
+        for (int j = 0; j < row.length; j++) {
+            for (int k = 0; k < row[j]; k++) {
+                int[] one = new int[row.length];
+                one[j] = 1;
+                List<Box> boxes = KitSets.kitMemberBoxes(expanded, one);
+                List<BoxPlacement> seeds = new ArrayList<>(obstacles);
+                seeds.addAll(laid);
+                List<BoxPlacement> got = bestLayout(bin, boxes, seeds, perSet, expanded, one);
+                if (got.size() != KitSets.units(boxes)) {
+                    break;
+                }
+                laid.addAll(KitSets.bySet(expanded, one, got));
+                placed[j]++;
+            }
+        }
+        int[] rollover = new int[row.length];
+        for (int j = 0; j < row.length; j++) {
+            rollover[j] = row[j] - placed[j];
+        }
+        return new KitShare(laid, rollover);
+    }
+
+    /**
+     * The original's {@code _place_kits} pass (seed 4242, pure greedy), then restarts until every part is in or the
+     * budget is spent; the layout with the most complete sets, then the most volume.
+     */
+    private List<BoxPlacement> bestLayout(Bin bin, List<Box> boxes, List<BoxPlacement> obstacles, double budget,
+                                          List<KitSets.Expanded> expanded, int[] row) {
+        int want = KitSets.units(boxes);
+        List<BoxPlacement> best = constructKits(bin, boxes, obstacles, rng(4242), 0.0);
+        int bestSets = KitSets.completeSets(expanded, row, best);
+        double start = clock.now();
+        int restart = 1;
+        while (best.size() < want && clock.now() - start < budget) {
+            clock.evaluated(RNG_SEED_COST);
+            PyRandom r = rng(4242 + restart * 7919L);
+            restart++;
+            List<BoxPlacement> cand = constructKits(bin, boxes, obstacles, r, r.uniform(0.02, 0.5));
+            int sets = KitSets.completeSets(expanded, row, cand);
+            if (sets > bestSets || (sets == bestSets && volume(cand) > volume(best))) {
+                best = cand;
+                bestSets = sets;
+            }
+        }
+        return best;
     }
 
     record KitShare(List<BoxPlacement> placements, int[] rollover) { }

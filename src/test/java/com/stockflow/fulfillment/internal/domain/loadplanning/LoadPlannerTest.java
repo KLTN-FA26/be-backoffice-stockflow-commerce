@@ -542,4 +542,69 @@ class LoadPlannerTest {
         assertThat(r.unplaced()).isNotEmpty().allSatisfy(u -> assertThat(u.reason())
                 .isEqualTo(UnplacedReason.SEARCH_CUT_OFF));
     }
+
+    // ------------------------------------------------------------------ review round 3 (PR #156)
+
+    /** A truck that holds exactly one 2-box unit: two 2000 x 2000 x 1100 boxes stacked. */
+    private static VehicleSpec oneUnitTruck(int available) {
+        return new VehicleSpec(LoadPlanAssertions.TRUCK, "ONE-UNIT", VehicleKind.TRUCK, 2100, 2100, 2300,
+                new BigDecimal("5000"), available, 0);
+    }
+
+    private static CargoPackage unitBox(String ref, String part, String group, int length) {
+        return new CargoPackage(ref, null, length, 2000, 1100, new BigDecimal("100"), false, part, group, null, false);
+    }
+
+    @Test
+    @DisplayName("review r3: three same-size 2-box units, five one-unit trucks - one unit per truck, nothing left")
+    void moreSetsInAShareThanFitAreLaidSetBySet() {
+        List<CargoPackage> declared = new ArrayList<>();
+        for (int u = 0; u < 3; u++) {
+            declared.add(unitBox("u" + u + "/1", "UNIT/1", null, 2000));
+            declared.add(unitBox("u" + u + "/2", "UNIT/2", null, 2000));
+        }
+        LoadPlanResult r = plan(new LoadPlanRequest(declared, List.of(oneUnitTruck(5)), SelectionMode.SINGLE_TYPE,
+                List.of(new KitSpec("UNIT", Map.of("UNIT/1", 1, "UNIT/2", 1))), KitDistribution.FIRST, false, null,
+                0L, Duration.ofSeconds(5)));
+        assertThat(r.unplaced()).isEmpty();
+        assertThat(r.vehicles()).hasSize(3);
+        assertThat(r.meta().kitBalance()).allSatisfy(b -> assertThat(b).containsOnly(Map.entry("UNIT/1", 1),
+                Map.entry("UNIT/2", 1)));
+
+        List<CargoPackage> grouped = new ArrayList<>();
+        for (int u = 0; u < 3; u++) {
+            grouped.add(unitBox("g" + u + "/1", "UNIT/1", "unit-" + u, 2000));
+            grouped.add(unitBox("g" + u + "/2", "UNIT/2", "unit-" + u, 2000));
+        }
+        LoadPlanResult g = plan(new LoadPlanRequest(grouped, List.of(oneUnitTruck(5)), SelectionMode.SINGLE_TYPE,
+                List.of(), KitDistribution.FIRST, false, null, 0L, Duration.ofSeconds(5)));
+        assertThat(g.unplaced()).isEmpty();
+        assertThat(g.vehicles()).hasSize(3);
+    }
+
+    @Test
+    @DisplayName("review r3: three sets whose parts were measured a millimetre apart, one per truck")
+    void setsWithSlightlyDifferentPartsAreLaidSetBySet() {
+        List<CargoPackage> cartons = new ArrayList<>();
+        for (int u = 0; u < 3; u++) {
+            cartons.add(unitBox("s" + u + "/1", "UNIT/1", "set-" + u, 2000 + u));
+            cartons.add(unitBox("s" + u + "/2", "UNIT/2", "set-" + u, 2000 - u));
+        }
+        LoadPlanResult r = plan(new LoadPlanRequest(cartons, List.of(oneUnitTruck(5)), SelectionMode.SINGLE_TYPE,
+                List.of(), KitDistribution.FIRST, false, null, 0L, Duration.ofSeconds(5)));
+        assertThat(r.unplaced()).isEmpty();
+        assertThat(r.vehicles()).hasSize(3);
+    }
+
+    @Test
+    @DisplayName("review r3: a fill carton naming a set loads as plain fill, with a warning")
+    void fillInASetIsPlainFill() {
+        List<CargoPackage> cartons = List.of(
+                new CargoPackage("m1", null, 600, 400, 400, new BigDecimal("5"), true, "M/1", "set-1", null, false),
+                new CargoPackage("m2", null, 600, 400, 400, new BigDecimal("5"), true, "M/2", "set-1", null, false),
+                new CargoPackage("f1", null, 400, 300, 300, new BigDecimal("2"), true, "F", "set-1", null, true));
+        LoadPlanResult r = plan(request(cartons, List.of(truck5t(1, 0)), SelectionMode.SINGLE_TYPE, List.of()));
+        assertThat(r.unplaced()).isEmpty();
+        assertThat(r.meta().kitWarnings()).contains(new KitWarning("set-1", KitWarning.Type.FILL_IN_SET, "F", 1));
+    }
 }

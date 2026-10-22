@@ -20,6 +20,8 @@ public record KitWarning(String kitName, Type type, String partCode, int count) 
          * The part's cartons do not all have the same sizes and rotatable flag, so the declared set cannot be laid as
          * one: it is not kept, and its cartons load loose.
          */
-        PARTS_OF_DIFFERENT_SIZES
+        PARTS_OF_DIFFERENT_SIZES,
+        /** A fill carton names a set: fill is never a set part, so it loads as plain fill (kitName is the group). */
+        FILL_IN_SET
     }
 }

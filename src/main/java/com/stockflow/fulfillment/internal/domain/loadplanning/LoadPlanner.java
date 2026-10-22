@@ -101,7 +101,8 @@ public final class LoadPlanner {
         // carton's weight, so the payload check during the search can only be stricter than the real one.
         // Physical sets: a carton in a kit group packs under a part key that also names its set's composition, so
         // sets of different make-up never draw on each other's cartons, and each composition is one declared set.
-        Map<String, List<Integer>> groups = kitGroups(cartons, unplaced);
+        List<KitWarning> warnings = new ArrayList<>();
+        Map<String, List<Integer>> groups = kitGroups(cartons, unplaced, warnings);
         Map<Integer, String> partKeys = partKeys(cartons, groups);
         Map<TypeKey, ItemType> typesByKey = new LinkedHashMap<>();
         Map<TypeKey, BigDecimal> heaviest = new LinkedHashMap<>();
@@ -130,7 +131,6 @@ public final class LoadPlanner {
             fillType.put(t, k.fill());
             (k.fill() ? fill : main).add(t.box(t.cartons.size()));
         });
-        List<KitWarning> warnings = new ArrayList<>();
         List<KitSpec> kits = consistentKits(declaredKits(request.kits(), main), main, warnings);
         kits.addAll(kitsFromGroups(groups, partKeys));
 
@@ -258,18 +258,25 @@ public final class LoadPlanner {
     // ------------------------------------------------------------------ physical sets
 
     /**
-     * The cartons of each kit group with two or more offered main cartons, in request order. A fill carton is never
-     * part of a set: fill only tops up space, so its kit group is not kept.
+     * The cartons of each kit group with two or more offered main cartons, in request order.
+     *
+     * <p>A fill carton is never part of a set: fill only tops up the space the main cargo leaves, in whatever vehicle
+     * has room, so it cannot promise to ride with its set-mates. A fill carton that names a kit group loads as plain
+     * fill, with a {@link KitWarning.Type#FILL_IN_SET} warning, and the kit-group rule ({@code KIT_SPLIT}) does not
+     * count it.</p>
      */
     private static Map<String, List<Integer>> kitGroups(List<CargoPackage> cartons,
-                                                       Map<String, UnplacedReason> unplaced) {
+                                                       Map<String, UnplacedReason> unplaced,
+                                                       List<KitWarning> warnings) {
         Map<String, List<Integer>> groups = new LinkedHashMap<>();
         for (int i = 0; i < cartons.size(); i++) {
             CargoPackage c = cartons.get(i);
             if (c.kitGroup() == null) {
                 continue;
             }
-            if (!c.fill() && !unplaced.containsKey(c.ref())) {
+            if (c.fill()) {
+                warnings.add(new KitWarning(c.kitGroup(), KitWarning.Type.FILL_IN_SET, c.partCode(), 1));
+            } else if (!unplaced.containsKey(c.ref())) {
                 groups.computeIfAbsent(c.kitGroup(), k -> new ArrayList<>()).add(i);
             }
         }

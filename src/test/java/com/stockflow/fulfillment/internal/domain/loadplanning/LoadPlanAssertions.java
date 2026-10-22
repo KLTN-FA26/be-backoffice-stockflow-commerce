@@ -123,7 +123,7 @@ final class LoadPlanAssertions {
         Map<String, Integer> groupVehicle = new HashMap<>();
         for (PlannedVehicle v : result.vehicles()) {
             for (Placement p : v.placements()) {
-                if (p.kitGroup() != null) {
+                if (p.kitGroup() != null && !p.fill()) {
                     Integer before = groupVehicle.putIfAbsent(p.kitGroup(), v.seq());
                     assertThat(before == null ? v.seq() : before).as("set %s stays in one vehicle", p.kitGroup())
                             .isEqualTo(v.seq());
