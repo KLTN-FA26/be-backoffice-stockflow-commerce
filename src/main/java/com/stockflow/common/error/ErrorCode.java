@@ -399,6 +399,9 @@ public enum ErrorCode {
     HANDOVER_NOT_SIGNED("Both sides must sign the manifest", 400),
     CARRIER_CODE_EXISTS("Carrier code already exists", 409),
     CARRIER_INACTIVE("This carrier is no longer in use", 409),
+    /** SCRUM-287 load planning: the vehicle-type catalogue (kltn-docs 09 §3). */
+    VEHICLE_TYPE_NOT_FOUND("Vehicle type not found", 404),
+    VEHICLE_TYPE_CODE_EXISTS("Vehicle type code already exists", 409),
     INVALID_LOAD_TRANSITION("The load cannot do that in its current status", 409),
     /** Docs 09 edge: a parcel of another shipment, warehouse or load scanned by mistake; the message names where it belongs. */
     PACKAGE_NOT_IN_LOAD("This package is not on this load's manifest", 409),
