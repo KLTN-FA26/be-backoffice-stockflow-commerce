@@ -157,7 +157,8 @@ public interface Packing {
                   BigDecimal weightKg, BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm,
                   BigDecimal dimWeightKg, boolean rotatable, boolean rotatableOverridden, boolean fragile,
                   boolean fragileOverridden, Instant sealedAt, List<Content> contents,
-                  com.stockflow.fulfillment.internal.domain.KitPart kit, String kitOverrideReason) { }
+                  com.stockflow.fulfillment.internal.domain.KitPart kit, String kitOverrideReason,
+                  Instant labelOutdatedAt) { }
 
     record ShipmentSummary(UUID shipmentId, String code, String status, String deliveryMode, int packageCount,
                            BigDecimal codAmount, String currency, boolean partial, String partialNote,

@@ -51,8 +51,14 @@ public record LoadResponse(UUID loadId, String code, UUID warehouseId, String mo
                            String currency, List<Parcel> packages) {
     }
 
-    /** @param kit the kit it is a part of (SCRUM-287 LP2-6); absent for an ordinary parcel */
+    /**
+     * @param kit             the kit it is a part of (SCRUM-287 LP2-6); absent for an ordinary parcel
+     * @param labelOutdated   its label no longer matches the parcel (moved to another shipment, or its n/N changed):
+     *                        scanning it is 409 LABEL_OUTDATED until the label is reprinted
+     * @param labelOutdatedAt since when; null when {@code labelOutdated} is false
+     */
     public record Parcel(UUID packageId, String labelCode, BigDecimal weightKg, boolean loaded, Instant loadedAt,
-                         UUID loadedBy, @JsonInclude(JsonInclude.Include.NON_NULL) KitPartResponse kit) {
+                         UUID loadedBy, @JsonInclude(JsonInclude.Include.NON_NULL) KitPartResponse kit,
+                         boolean labelOutdated, Instant labelOutdatedAt) {
     }
 }

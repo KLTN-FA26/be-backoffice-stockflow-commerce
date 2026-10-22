@@ -57,13 +57,15 @@ class DispatchController {
 
     @GetMapping
     @Operation(summary = "Loads of the caller's warehouses, newest first; status PLANNED, VEHICLE_BOOKED, LOADING, "
-            + "DISPATCHED, CANCELLED; search in load code or plate")
+            + "DISPATCHED, CANCELLED; mode PARCEL or FULL_TRUCKLOAD (400 UNSUPPORTED_PARAMETER otherwise); search in "
+            + "load code, plate or the load plan's code")
     @RequiresPermission(resource = FulfillmentResources.SHIPMENTS, action = Action.READ)
     public ApiResponse<PageResponse<LoadRowResponse>> list(@RequestParam(required = false) UUID warehouseId,
-            @RequestParam(required = false) String status, @RequestParam(required = false) UUID carrierId,
+            @RequestParam(required = false) String status, @RequestParam(required = false) String mode,
+            @RequestParam(required = false) UUID carrierId,
             @RequestParam(required = false) String search, @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size) {
-        return ApiResponse.ok(dispatching.list(warehouseId, status, carrierId, search, page,
+        return ApiResponse.ok(dispatching.list(warehouseId, status, mode, carrierId, search, page,
                 size == null ? Pages.DEFAULT_PAGE_SIZE : size).map(mapper::toResponse));
     }
 

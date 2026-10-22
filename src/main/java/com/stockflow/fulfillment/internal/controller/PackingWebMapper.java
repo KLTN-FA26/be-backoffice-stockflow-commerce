@@ -45,7 +45,8 @@ class PackingWebMapper {
                 parcel.status(), parcel.shipmentId(), parcel.weightKg(), parcel.lengthCm(), parcel.widthCm(),
                 parcel.heightCm(), parcel.dimWeightKg(), parcel.rotatable(), parcel.rotatableOverridden(),
                 parcel.fragile(), parcel.fragileOverridden(), parcel.sealedAt(), contents(parcel.contents()),
-                kit(parcel.kit()), parcel.kitOverrideReason());
+                kit(parcel.kit()), parcel.kitOverrideReason(), parcel.labelOutdatedAt() != null,
+                parcel.labelOutdatedAt());
     }
 
     PackageKitResponse toResponse(Packing.Kit kit) {

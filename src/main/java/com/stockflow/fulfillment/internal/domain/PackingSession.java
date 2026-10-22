@@ -140,6 +140,8 @@ public final class PackingSession {
         private String kitOverrideReason;
         /** Its shipment came back (RETURNED): its units are the order's to ship again, so it holds nothing now. */
         private boolean returned;
+        /** SCRUM-392: moved to another shipment since its label was printed; null when the label is current. */
+        private Instant labelOutdatedAt;
 
         @SuppressWarnings("java:S107")
         public Parcel(UUID id, int packageNo, String labelCode, PackageType type, PackageStatus status, UUID shipmentId,
@@ -231,6 +233,13 @@ public final class PackingSession {
         public Instant createdAt() { return createdAt; }
         public KitPart kit() { return kit; }
         public String kitOverrideReason() { return kitOverrideReason; }
+        public Instant labelOutdatedAt() { return labelOutdatedAt; }
+
+        /** Read back from the table: when the parcel's label went out of date (null when current). */
+        public Parcel withLabelOutdatedAt(Instant at) {
+            this.labelOutdatedAt = at;
+            return this;
+        }
 
         /** Read back from the table: the reason recorded for this ordinary parcel (KIT-FORCE). */
         public Parcel withKitOverrideReason(String reason) {
