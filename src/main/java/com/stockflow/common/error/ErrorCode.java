@@ -388,6 +388,16 @@ public enum ErrorCode {
     /** PACK-PARTIAL (lead's decision 2026-10-21): the order does not allow a partial shipment; Sales decides. */
     PACK_PARTIAL_NOT_ALLOWED("Partial shipments are not allowed", 409),
     PACK_NOTHING_TO_SHIP("No sealed package is waiting to ship", 409),
+    /** SCRUM-287 LP2-6: a kit ("bộ") ships whole - a part of it is not sealed, or part 1 holds no unit yet. */
+    KIT_INCOMPLETE("A kit has parts that are not sealed yet", 409),
+    /** LP2-5: a kit has as many parts as its item ships boxes ({@code package_count}); one box is no kit. */
+    KIT_PART_COUNT_MISMATCH("The kit's parts do not match how many boxes the item ships as", 422),
+    /** LP2-6: only part 1 of a kit holds goods, and one unit of its item. */
+    KIT_CONTENTS_INVALID("Only part 1 of a kit holds goods: one unit of its item", 409),
+    /** LP2-6 (review of #155): part 1 of a kit takes the item of the line the kit was opened for, no other. */
+    KIT_ITEM_MISMATCH("This kit was opened for another item", 422),
+    /** KIT-FORCE (lead's decision 2026-10-22): an item that ships as several boxes goes in an ordinary package only with a reason. */
+    KIT_OVERRIDE_REASON_REQUIRED("This item ships as a kit: give a reason to pack it in an ordinary package", 422),
     /** Docs 09 §5: the shipment's status does not allow the step. */
     SHIPMENT_STATE_CONFLICT("The shipment cannot do that in its current status", 409),
     // ---- G4-2a loading and handover (kltn-docs 09 §4.1, §5): 404 / 400 / 409 kept together with the flow

@@ -1,6 +1,7 @@
 package com.stockflow.fulfillment.internal.entity;
 
 import com.stockflow.common.persistence.BaseEntity;
+import com.stockflow.fulfillment.internal.domain.KitPart;
 import com.stockflow.fulfillment.internal.domain.PackageStatus;
 import com.stockflow.fulfillment.internal.domain.PackageType;
 import jakarta.persistence.Column;
@@ -43,6 +44,13 @@ public class PackageJpaEntity extends BaseEntity {
     @Column(name = "sealed_by") private UUID sealedBy;
     @Column(name = "voided_at") private Instant voidedAt;
     @Column(name = "voided_by") private UUID voidedBy;
+    /** SCRUM-287 LP2-6: the kit ("bộ") it is a part of; all three null for an ordinary parcel. Fixed at opening. */
+    @Column(name = "kit_group_id", updatable = false) private UUID kitGroupId;
+    @Column(name = "kit_part_no", updatable = false) private Short kitPartNo;
+    @Column(name = "kit_part_count", updatable = false) private Short kitPartCount;
+    @Column(name = "kit_order_line_id", updatable = false) private UUID kitOrderLineId;
+    /** KIT-FORCE: why this ordinary parcel holds units of an item that ships as several boxes. */
+    @Column(name = "kit_override_reason", length = 500) private String kitOverrideReason;
 
     protected PackageJpaEntity() {
     }
@@ -55,6 +63,17 @@ public class PackageJpaEntity extends BaseEntity {
         this.packageType = PackageType.CARTON;
         this.status = PackageStatus.OPEN;
         this.rotatable = true;
+    }
+
+    /** A part of a kit (LP2-6): its group, part number and the kit's size are fixed when the kit is opened. */
+    public PackageJpaEntity(UUID id, UUID packId, int packageNo, String labelCode, KitPart kit) {
+        this(id, packId, packageNo, labelCode);
+        if (kit != null) {
+            this.kitGroupId = kit.groupId();
+            this.kitPartNo = (short) kit.partNo();
+            this.kitPartCount = (short) kit.partCount();
+            this.kitOrderLineId = kit.orderLineId();
+        }
     }
 
     @SuppressWarnings("java:S107")
@@ -99,4 +118,13 @@ public class PackageJpaEntity extends BaseEntity {
     public UUID getSealedBy() { return sealedBy; }
     public Instant getVoidedAt() { return voidedAt; }
     public UUID getVoidedBy() { return voidedBy; }
+
+    public String getKitOverrideReason() { return kitOverrideReason; }
+
+    public void setKitOverrideReason(String kitOverrideReason) { this.kitOverrideReason = kitOverrideReason; }
+
+    /** The kit part it is, or null for an ordinary parcel. */
+    public KitPart getKit() {
+        return kitGroupId == null ? null : new KitPart(kitGroupId, kitPartNo, kitPartCount, kitOrderLineId);
+    }
 }
