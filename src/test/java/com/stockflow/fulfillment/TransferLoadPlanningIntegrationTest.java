@@ -343,6 +343,8 @@ class TransferLoadPlanningIntegrationTest {
         JsonNode session = packed(transfer, lpn);
         assertThat(session.path("packStatus").asText()).isEqualTo("PACKED");
         assertThat(session.path("packages")).hasSize(3);
+        session.path("packages").forEach(p -> assertThat(p.has("labelOutdated")
+                && !p.path("labelOutdated").asBoolean()).isTrue());
         JsonNode cartonParcel = null;
         for (JsonNode p : session.path("packages")) {
             if (!p.path("stockPackageId").isNull() && !p.path("stockPackageId").isMissingNode()) {
@@ -386,6 +388,22 @@ class TransferLoadPlanningIntegrationTest {
             assertThat(line.path("shipmentId").isNull() || line.path("shipmentId").isMissingNode()).isTrue();
         });
         assertThat(first.path("codTotal").decimalValue()).isEqualByComparingTo("0");
+        // #165 on a TRANSFER plan's vehicles: each parcel carries its label flag; the loads list finds them by mode
+        // and by the plan's code.
+        first.path("shipments").get(0).path("packages").forEach(p -> {
+            assertThat(p.path("labelOutdated").asBoolean(true)).isFalse();
+            assertThat(p.has("labelOutdated")).isTrue();
+        });
+        JsonNode byPlan = data(dispatch(get(LOADS).param("mode", "FULL_TRUCKLOAD")
+                .param("search", plan.path("code").asText())).andExpect(status().isOk()));
+        List<String> found = new ArrayList<>();
+        byPlan.path("items").forEach(r -> found.add(r.path("loadId").asText()));
+        assertThat(found).containsExactlyInAnyOrder(v1, v2);
+        assertThat(data(dispatch(get(LOADS).param("mode", "PARCEL").param("search", plan.path("code").asText()))
+                .andExpect(status().isOk())).path("items")).isEmpty();
+        JsonNode manifestV1 = data(dispatch(get(LOADS + "/" + v1 + "/manifest")).andExpect(status().isOk()));
+        manifestV1.path("shipments").get(0).path("packages").forEach(p ->
+                assertThat(p.has("labelOutdated") && !p.path("labelOutdated").asBoolean()).isTrue());
 
         // Packed for a load plan: no manual dispatch (its last vehicle dispatches it).
         String line1 = lineOf(transfer, 1).toString();
