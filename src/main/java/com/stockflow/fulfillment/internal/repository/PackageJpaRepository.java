@@ -20,4 +20,11 @@ public interface PackageJpaRepository extends BaseJpaRepository<PackageJpaEntity
     java.util.Optional<PackageJpaEntity> findByLabelCode(String labelCode);
 
     List<PackageJpaEntity> findByShipmentIdIn(Collection<UUID> shipmentIds);
+
+    /** SCRUM-287 PR T: the parcels of these transfer orders (voided ones included). */
+    List<PackageJpaEntity> findByTransferOrderIdIn(Collection<UUID> transferOrderIds);
+
+    /** LP2-8: a parcel not voided that ships this stock carton as it is. */
+    java.util.Optional<PackageJpaEntity> findFirstByStockPackageIdAndStatusNot(UUID stockPackageId,
+            com.stockflow.fulfillment.internal.domain.PackageStatus status);
 }

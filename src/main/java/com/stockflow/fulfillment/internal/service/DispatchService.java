@@ -101,6 +101,7 @@ class DispatchService implements Dispatching {
     private final PlanVehicles planVehicles;
     private final LeftBehindParcels leftBehind;
     private final Clock clock;
+    private final com.stockflow.inventory.api.TransferFulfillment transfers;
 
     @SuppressWarnings("java:S107")
     DispatchService(DispatchLoadJpaRepository loads, DispatchLoadShipmentJpaRepository members,
@@ -111,7 +112,8 @@ class DispatchService implements Dispatching {
                     ShipmentTimeline timeline, ShipmentContext context, OrderService orders,
                     WarehouseService warehouses,
                     IdentityService identities, PlanVehicles planVehicles, LeftBehindParcels leftBehind,
-                    Clock clock) {
+                    Clock clock, com.stockflow.inventory.api.TransferFulfillment transfers) {
+        this.transfers = transfers;
         this.loads = loads;
         this.members = members;
         this.loaded = loaded;
@@ -371,6 +373,9 @@ class DispatchService implements Dispatching {
         if (parcel.getShipmentId() != null) {
             ShipmentJpaEntity row = shipments.findById(parcel.getShipmentId()).orElseThrow();
             shipment = facts(row, otherLoads(Set.of(row.getId()), loadId).get(row.getId()));
+        } else if (parcel.getTransferOrderId() != null) {
+            // SCRUM-287 PR T: a transfer's parcel goes on its plan's vehicles only, as a full truckload's.
+            shipment = transfers.find(parcel.getTransferOrderId()).map(LoadPlanService::transferFacts).orElse(null);
         }
         String parcelElsewhere = loaded.findByPackageIdAndActiveTrue(parcel.getId())
                 .filter(l -> !l.getLoadId().equals(loadId))
@@ -402,6 +407,9 @@ class DispatchService implements Dispatching {
     @Override
     public LoadDetail handOver(UUID loadId, Handover request, CurrentUser actor) {
         Locked locked = lockForChange(loadId);
+        if (locked.plan() != null && locked.plan().plan().ofTransfer()) {
+            return handOverTransferVehicle(locked, request, actor);
+        }
         if (locked.plan() != null) {
             return handOverVehicle(locked, request, actor);
         }
@@ -666,7 +674,7 @@ class DispatchService implements Dispatching {
         }
         DispatchLoadJpaEntity header = locked.header();
         Instant now = clock.instant();
-        if (load.status() != LoadStatus.LOADING && locked.plan() != null) {
+        if (load.status() != LoadStatus.LOADING && locked.plan() != null && !locked.plan().plan().ofTransfer()) {
             // Review of #162: an order that may not ship in parts leaves whole with the plan - refused before anything
             // is on board, so no vehicle is stuck half way (BR-14 forbids reopening once loading starts).
             List<UUID> onBoard = load.activeShipments();
@@ -681,7 +689,7 @@ class DispatchService implements Dispatching {
         }
         if (load.startLoading(actor.userId(), now)) {
             header = store.save(load, header);
-            if (locked.plan() != null) {
+            if (locked.plan() != null && !locked.plan().plan().ofTransfer()) {
                 // Decision 2 (review of #162): left-behind parcels split off at the point of no return (BR-14).
                 leftBehind.splitOff(locked.plan().plan(), actor.userId(), now);
             }
@@ -904,6 +912,174 @@ class DispatchService implements Dispatching {
         }
     }
 
+    /**
+     * SCRUM-287 PR T: one vehicle of a TRANSFER plan signed for (09 §4.2 step 5, BR-15; 10 step 5; LP-3). Every parcel
+     * the plan placed on it is on board (a kit whole); the transfer is still being picked. Goods of the transfer left:
+     * it records that (its picking is no longer cancelled, 10 BR-04). At the LAST vehicle's signature the transfer is
+     * dispatched with the packed quantities - its stock leaves the source warehouse and is In-Transit (10 step 5, 09
+     * §4.2 step 5 "lệnh chuyển kho → In Transit") - and the plan is DISPATCHED.
+     */
+    private LoadDetail handOverTransferVehicle(Locked locked, Handover request, CurrentUser actor) {
+        DispatchLoadJpaEntity header = locked.header();
+        DispatchLoad load = locked.load();
+        PlanVehicles.PlanOfLoad ctx = locked.plan();
+        if (load.status() == LoadStatus.DISPATCHED) {
+            return detail(header, load);
+        }
+        if (request.version() == null || request.version() != header.getVersion()) {
+            throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK, "Load %s changed since version %s (now %d): "
+                    .formatted(load.code(), request.version(), header.getVersion())
+                    + "check the manifest again before signing");
+        }
+        if (load.status() == LoadStatus.LOADING) {
+            PlanVehicles.requireConfirmed(ctx);
+        }
+        Instant now = clock.instant();
+        UUID by = actor.userId();
+        LoadPlan plan = ctx.plan();
+        UUID transferId = load.activeShipments().stream().findFirst().orElseThrow(() -> new BusinessException(
+                ErrorCode.LOAD_EMPTY, "Load %s has no transfer on its manifest".formatted(load.code())));
+        var transfer = transfers.find(transferId).orElseThrow();
+        if (!transfer.picking()) {
+            throw new BusinessException(ErrorCode.PACKAGE_NOT_READY, "Transfer %s is %s; it cannot leave"
+                    .formatted(transfer.number(), transfer.status()));
+        }
+        Set<UUID> placedHere = ctx.placedHere();
+        List<PackageJpaEntity> here = placedHere.isEmpty() ? List.of() : packages.findAllById(placedHere).stream()
+                .filter(p -> p.getStatus() == PackageStatus.SEALED && transferId.equals(p.getTransferOrderId()))
+                .toList();
+        Map<UUID, Set<UUID>> parcelsOf = Map.of(transferId, here.stream().map(PackageJpaEntity::getId)
+                .collect(Collectors.toSet()));
+        Map<UUID, String> labels = here.stream().collect(Collectors.toMap(PackageJpaEntity::getId,
+                p -> p.getKit() == null ? p.getLabelCode() : "%s (kit part %d/%d)".formatted(p.getLabelCode(),
+                        p.getKit().partNo(), p.getKit().partCount())));
+        load.handOver(new DispatchLoad.Handover(request.carrierRepresentative(), request.vehiclePlate(),
+                request.driverPhone(), request.signatureRef(), Boolean.TRUE.equals(request.signed()), request.note()),
+                parcelsOf, labels, by, now);
+        transfers.recordGoodsLeft(transferId, now);
+        Map<UUID, DispatchLoadJpaEntity> live = planVehicles.liveLoads(plan);
+        UUID thisVehicle = ctx.vehicle().id();
+        boolean last = plan.activeVehicles().stream().filter(v -> live.containsKey(v.id()))
+                .allMatch(v -> v.id().equals(thisVehicle) || live.get(v.id()).getStatus() == LoadStatus.DISPATCHED);
+        header = store.save(load, header);
+        if (last) {
+            dispatchTransfer(transferId, plan, by);
+        }
+        boolean planDone = planVehicles.completeIfDispatched(ctx.header(), plan, now);
+        log.info("Load {} (vehicle {} of plan {}) dispatched: {} parcel(s) of transfer {}{}", load.code(),
+                ctx.vehicle().seq(), plan.code(), load.activeParcels().size(), transfer.number(),
+                last ? "; the transfer is in transit" + (planDone ? ", plan dispatched" : "") : "");
+        return detail(header, load);
+    }
+
+    /**
+     * The transfer leaves with what its plan carried: per line, the units of its sealed parcels placed in the plan (a
+     * TRANSFER plan leaves nothing behind); a carton shipped as it is gives its own stock rows (LP2-8).
+     */
+    private void dispatchTransfer(UUID transferId, LoadPlan plan, UUID by) {
+        Set<UUID> placed = plan.placedPackageIds();
+        Map<UUID, UUID> cartonOfPackage = new HashMap<>();
+        packages.findAllById(placed).forEach(p -> {
+            if (p.getStockPackageId() != null) {
+                cartonOfPackage.put(p.getId(), p.getStockPackageId());
+            }
+        });
+        Map<UUID, Integer> shipped = new LinkedHashMap<>();
+        Map<UUID, List<UUID>> cartons = new HashMap<>();
+        for (PackageLineJpaEntity line : packageLines.findByPackageIdIn(placed)) {
+            if (line.getTransferLineId() == null) {
+                continue;
+            }
+            shipped.merge(line.getTransferLineId(), line.getQuantity(), Integer::sum);
+            UUID carton = cartonOfPackage.get(line.getPackageId());
+            if (carton != null) {
+                cartons.computeIfAbsent(line.getTransferLineId(), k -> new ArrayList<>()).add(carton);
+            }
+        }
+        transfers.dispatchLoaded(transferId, by, shipped, cartons);
+    }
+
+    /** A TRANSFER plan's vehicle as the load screen shows it: its transfer order and the parcels placed on it. */
+    private LoadDetail transferDetail(DispatchLoadJpaEntity header, DispatchLoad load, PlanVehicles.PlanOfLoad ctx) {
+        Set<UUID> placedHere = ctx.placedHere();
+        Map<UUID, DispatchLoad.Loaded> onVehicle = load.activeParcels().stream()
+                .collect(Collectors.toMap(DispatchLoad.Loaded::packageId, Function.identity()));
+        List<LoadShipment> lines = new ArrayList<>();
+        int expected = 0;
+        for (DispatchLoad.Member member : load.members().stream().filter(DispatchLoad.Member::active).toList()) {
+            var transfer = transfers.find(member.shipmentId()).orElse(null);
+            List<LoadParcel> own = packages.findByTransferOrderIdIn(List.of(member.shipmentId())).stream()
+                    .filter(p -> p.getStatus() == PackageStatus.SEALED && placedHere.contains(p.getId()))
+                    .sorted(Comparator.comparing(PackageJpaEntity::getLabelCode)).map(p -> {
+                        DispatchLoad.Loaded l = onVehicle.get(p.getId());
+                        return new LoadParcel(p.getId(), p.getLabelCode(), p.getWeightKg(), l != null,
+                                l == null ? null : l.loadedAt(), l == null ? null : l.loadedBy(), p.getKit());
+                    }).toList();
+            expected += own.size();
+            lines.add(new LoadShipment(null, transfer == null ? null : transfer.number(), null, null, null,
+                    transfer == null ? null : transfer.status(), own.size(),
+                    (int) own.stream().filter(LoadParcel::loaded).count(), BigDecimal.ZERO, null, DEFAULT_CURRENCY,
+                    own, member.shipmentId()));
+        }
+        CarrierJpaEntity carrier = header.getCarrierId() == null ? null
+                : carriers.findById(header.getCarrierId()).orElse(null);
+        Map<UUID, String> names = header.getDispatchedBy() == null ? new HashMap<>()
+                : new HashMap<>(identities.displayNames(List.of(header.getDispatchedBy())));
+        return new LoadDetail(header.getId(), header.getCode(), header.getWarehouseId(), header.getMode().name(),
+                header.getStatus().name(), header.getCarrierId(), carrier == null ? null : carrier.getCode(),
+                carrier == null ? null : carrier.getName(), header.getVehiclePlate(), header.getDriverName(),
+                header.getDriverPhone(), header.getLoadingStartedAt(), header.getLoadingStartedBy(),
+                header.getDispatchedAt(), header.getDispatchedBy(), names.get(header.getDispatchedBy()),
+                header.getCarrierRepresentative(), header.getSignatureRef(), header.getHandoverNote(),
+                header.getCancelledAt(), header.getCancelReason(), lines.size(), expected, onVehicle.size(),
+                BigDecimal.ZERO, DEFAULT_CURRENCY, header.getVersion(), lines, ctx.header().getId(),
+                ctx.plan().code(), ctx.vehicle() == null ? null : ctx.vehicle().seq(),
+                ctx.vehicle() == null ? null : ctx.vehicle().spec().code(), header.getBookedAt(),
+                header.getBookedBy(), header.getBookingCancelledAt(), header.getBookingCancelReason(), List.of(),
+                load.status() == LoadStatus.CANCELLED && header.getBookedAt() != null);
+    }
+
+    /** The manifest of a TRANSFER plan's vehicle: its transfer order, to the destination warehouse; no COD (LP-2). */
+    private Manifest transferManifest(DispatchLoadJpaEntity header, DispatchLoad load, PlanVehicles.PlanOfLoad ctx) {
+        Set<UUID> placedHere = ctx.placedHere();
+        Set<UUID> onVehicle = load.activeParcels().stream().map(DispatchLoad.Loaded::packageId)
+                .collect(Collectors.toSet());
+        List<ManifestShipment> lines = new ArrayList<>();
+        BigDecimal weight = BigDecimal.ZERO;
+        int parcelCount = 0;
+        for (DispatchLoad.Member member : load.members().stream().filter(DispatchLoad.Member::active).toList()) {
+            var transfer = transfers.find(member.shipmentId()).orElse(null);
+            var destination = transfer == null ? java.util.Optional.<com.stockflow.warehouse.api.WarehouseView>empty()
+                    : warehouses.findWarehouse(transfer.toWarehouseId());
+            List<PackageJpaEntity> own = packages.findByTransferOrderIdIn(List.of(member.shipmentId())).stream()
+                    .filter(p -> p.getStatus() == PackageStatus.SEALED && placedHere.contains(p.getId()))
+                    .sorted(Comparator.comparing(PackageJpaEntity::getLabelCode)).toList();
+            BigDecimal ownWeight = own.stream().map(PackageJpaEntity::getWeightKg).filter(Objects::nonNull)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            weight = weight.add(ownWeight);
+            parcelCount += own.size();
+            lines.add(new ManifestShipment(transfer == null ? null : transfer.number(), null,
+                    destination.map(w -> w.name()).orElse(null), null, destination.map(w -> w.address()).orElse(null),
+                    own.size(), ownWeight, BigDecimal.ZERO, false, own.stream().map(p -> new ManifestParcel(
+                            p.getLabelCode(), p.getWeightKg(), p.getLengthCm(), p.getWidthCm(), p.getHeightCm(),
+                            onVehicle.contains(p.getId()), p.getKit())).toList(), member.shipmentId()));
+        }
+        CarrierJpaEntity carrier = header.getCarrierId() == null ? null
+                : carriers.findById(header.getCarrierId()).orElse(null);
+        var warehouse = warehouses.findWarehouse(header.getWarehouseId());
+        String dispatcher = header.getDispatchedBy() == null ? null
+                : identities.displayNames(List.of(header.getDispatchedBy())).get(header.getDispatchedBy());
+        return new Manifest(header.getCode(), header.getStatus().name(), warehouse.map(w -> w.name()).orElse(null),
+                warehouse.map(w -> w.address()).orElse(null), carrier == null ? null : carrier.getCode(),
+                carrier == null ? null : carrier.getName(), carrier == null ? null : carrier.getContactName(),
+                carrier == null ? null : carrier.getContactPhone(), header.getVehiclePlate(), header.getDriverName(),
+                header.getDriverPhone(), header.getCarrierRepresentative(), header.getSignatureRef(),
+                header.getHandoverNote(), header.getDispatchedAt(), dispatcher, lines, lines.size(), parcelCount,
+                weight, BigDecimal.ZERO, DEFAULT_CURRENCY, clock.instant(), header.getMode().name(), ctx.plan().code(),
+                ctx.vehicle() == null ? null : ctx.vehicle().seq(),
+                ctx.vehicle() == null ? null : ctx.vehicle().spec().code());
+    }
+
     // ------------------------------------------------------------------ the printable manifest
 
     @Override
@@ -915,6 +1091,9 @@ class DispatchService implements Dispatching {
         DispatchLoad load = store.load(header);
         // SCRUM-392: a plan's vehicle carries - and its manifest lists - only the parcels placed on it.
         PlanVehicles.PlanOfLoad ctx = header.getLoadPlanVehicleId() == null ? null : planVehicles.read(header);
+        if (ctx != null && ctx.plan().ofTransfer()) {
+            return transferManifest(header, load, ctx);
+        }
         Set<UUID> placedHere = ctx == null ? null : ctx.placedHere();
         Map<UUID, DispatchLoad.Member> onManifest = load.members().stream().filter(DispatchLoad.Member::active)
                 .collect(Collectors.toMap(DispatchLoad.Member::shipmentId, Function.identity(), (a, b) -> a,
@@ -957,7 +1136,8 @@ class DispatchService implements Dispatching {
                     ctx == null && member.codAmount() != null && member.labelCodAmount() != null
                             && member.codAmount().compareTo(member.labelCodAmount()) != 0,
                     own.stream().map(p -> new ManifestParcel(p.getLabelCode(), p.getWeightKg(), p.getLengthCm(),
-                            p.getWidthCm(), p.getHeightCm(), onVehicle.contains(p.getId()), p.getKit())).toList()));
+                            p.getWidthCm(), p.getHeightCm(), onVehicle.contains(p.getId()), p.getKit())).toList(),
+                    null));
         }
         CarrierJpaEntity carrier = header.getCarrierId() == null ? null
                 : carriers.findById(header.getCarrierId()).orElse(null);
@@ -1015,6 +1195,12 @@ class DispatchService implements Dispatching {
     }
 
     private LoadDetail detail(DispatchLoadJpaEntity header, DispatchLoad load) {
+        if (header.getLoadPlanVehicleId() != null) {
+            PlanVehicles.PlanOfLoad ctx = planVehicles.read(header);
+            if (ctx.plan().ofTransfer()) {
+                return transferDetail(header, load, ctx);
+            }
+        }
         List<DispatchLoad.Member> active = load.members().stream().filter(DispatchLoad.Member::active).toList();
         Set<UUID> ids = active.stream().map(DispatchLoad.Member::shipmentId).collect(Collectors.toSet());
         Map<UUID, ShipmentJpaEntity> rows = ids.isEmpty() ? Map.of() : shipments.findByIdIn(ids).stream()
@@ -1048,7 +1234,7 @@ class DispatchService implements Dispatching {
             lines.add(new LoadShipment(row.getId(), row.getCode(), row.getOrderId(),
                     orderNumbers.get(row.getOrderId()), tasks.get(row.getId()), row.getStatus().name(), own.size(),
                     (int) own.stream().filter(LoadParcel::loaded).count(), member.labelCodAmount(),
-                    member.codAmount(), currencies.get(row.getOrderId()), own));
+                    member.codAmount(), currencies.get(row.getOrderId()), own, null));
         }
         CarrierJpaEntity carrier = header.getCarrierId() == null ? null
                 : carriers.findById(header.getCarrierId()).orElse(null);

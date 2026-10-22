@@ -16,4 +16,7 @@ public interface DispatchLoadShipmentJpaRepository extends BaseJpaRepository<Dis
     List<DispatchLoadShipmentJpaEntity> findByShipmentIdInAndActiveTrue(Collection<UUID> shipmentIds);
 
     List<DispatchLoadShipmentJpaEntity> findByLoadIdInAndActiveTrue(Collection<UUID> loadIds);
+
+    /** SCRUM-287 PR T: the manifests a transfer order is on now (the vehicles of its plan). */
+    List<DispatchLoadShipmentJpaEntity> findByTransferOrderIdAndActiveTrue(UUID transferOrderId);
 }

@@ -20,22 +20,45 @@ public interface TransferOrders {
     record NewLine(String sku, String lotNumber, int quantity) {
     }
 
+    /** @param deliveryMode LP2-8: null is FULL_TRUCKLOAD */
     record Create(UUID fromWarehouseId, UUID toWarehouseId, TransferReason reason, LocalDate expectedDate,
-                  List<NewLine> lines) {
+                  List<NewLine> lines, com.stockflow.inventory.api.TransferDeliveryMode deliveryMode) {
+
+        public Create(UUID fromWarehouseId, UUID toWarehouseId, TransferReason reason, LocalDate expectedDate,
+                      List<NewLine> lines) {
+            this(fromWarehouseId, toWarehouseId, reason, expectedDate, lines, null);
+        }
     }
 
-    /** The whole DRAFT as the planner now wants it; {@code version} is the one they read. */
+    /**
+     * The whole DRAFT as the planner now wants it; {@code version} is the one they read.
+     *
+     * @param deliveryMode null keeps it
+     */
     record Revise(long version, UUID fromWarehouseId, UUID toWarehouseId, TransferReason reason,
-                  LocalDate expectedDate, List<NewLine> lines) {
+                  LocalDate expectedDate, List<NewLine> lines,
+                  com.stockflow.inventory.api.TransferDeliveryMode deliveryMode) {
+
+        public Revise(long version, UUID fromWarehouseId, UUID toWarehouseId, TransferReason reason,
+                      LocalDate expectedDate, List<NewLine> lines) {
+            this(version, fromWarehouseId, toWarehouseId, reason, expectedDate, lines, null);
+        }
     }
 
     record Line(UUID lineId, int lineNo, String sku, String lotNumber, int requested, int shipped) {
     }
 
+    /**
+     * @param deliveryMode LP2-8: FULL_TRUCKLOAD (packed, load-planned, dispatched by its plan's last vehicle) or PARCEL
+     * @param packedAt     its packing completed: ready for a load plan (SCRUM-287 PR T)
+     * @param goodsLeftAt  goods of it first left on a load plan's vehicle: picking is no longer cancelled (10 BR-04)
+     */
     record Transfer(UUID transferId, String number, UUID fromWarehouseId, UUID toWarehouseId, TransferStatus status,
                     TransferReason reason, LocalDate expectedDate, List<Line> lines, UUID submittedBy,
                     Instant submittedAt, UUID approvedBy, Instant approvedAt, UUID dispatchedBy, Instant dispatchedAt,
-                    String cancelReason, Instant createdAt, long version) {
+                    String cancelReason, Instant createdAt, long version,
+                    com.stockflow.inventory.api.TransferDeliveryMode deliveryMode, Instant packedAt,
+                    Instant goodsLeftAt) {
     }
 
     record Row(UUID transferId, String number, UUID fromWarehouseId, UUID toWarehouseId, TransferStatus status,

@@ -484,7 +484,7 @@ class LoadEstimateIntegrationTest {
     }
 
     @Test
-    @DisplayName("DRAFT, PENDING_PAYMENT, ON_HOLD, SHIPPED: 409; TRANSFER is reserved (400); an unknown id is 404")
+    @DisplayName("DRAFT, PENDING_PAYMENT, ON_HOLD, SHIPPED: 409; an unknown order or transfer id is 404")
     void eligibility() throws Exception {
         measureTheBareItem();
         for (String status : List.of("DRAFT", "PENDING_PAYMENT", "ON_HOLD", "SHIPPED")) {
@@ -494,9 +494,9 @@ class LoadEstimateIntegrationTest {
                     .andExpect(jsonPath("$.errorCode").value("LOAD_ESTIMATE_SOURCE_NOT_ELIGIBLE"));
         }
         UUID confirmed = tx.execute(s -> order("CONFIRMED", Map.of(palletSku, 1)));
+        // SCRUM-287 PR T: transfers are estimated now - an unknown one is 404 as an order is.
         estimate(Role.ORDER_COORDINATOR, coordinator, body(UUID.randomUUID(), "TRANSFER", container))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.errorCode").value("LOAD_ESTIMATE_SOURCE_UNSUPPORTED"));
+                .andExpect(status().isNotFound());
         estimate(Role.ORDER_COORDINATOR, coordinator, body(UUID.randomUUID(), "ORDER", container))
                 .andExpect(status().isNotFound());
         UUID retired = tx.execute(s -> vehicleType("INACTIVE"));

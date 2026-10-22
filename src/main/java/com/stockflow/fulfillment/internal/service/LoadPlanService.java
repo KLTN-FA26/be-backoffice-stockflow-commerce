@@ -121,6 +121,8 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
     private final com.stockflow.fulfillment.internal.repository.DispatchLoadShipmentJpaRepository loadMembers;
     private final Clock clock;
     private final Duration budget;
+    private final com.stockflow.inventory.api.TransferFulfillment transfers;
+    private final com.stockflow.fulfillment.internal.repository.PackJpaRepository packs;
 
     @SuppressWarnings("java:S107")
     LoadPlanService(LoadPlanJpaRepository plans, LoadPlanPackageJpaRepository members,
@@ -135,7 +137,11 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                     com.stockflow.fulfillment.internal.repository.PackageLineJpaRepository packageLines,
                     com.stockflow.fulfillment.internal.repository.DispatchLoadShipmentJpaRepository loadMembers,
                     Clock clock,
-                    @Value("${stockflow.fulfillment.load-planning.solver-budget:PT5S}") Duration budget) {
+                    @Value("${stockflow.fulfillment.load-planning.solver-budget:PT5S}") Duration budget,
+                    com.stockflow.inventory.api.TransferFulfillment transfers,
+                    com.stockflow.fulfillment.internal.repository.PackJpaRepository packs) {
+        this.transfers = transfers;
+        this.packs = packs;
         this.plans = plans;
         this.members = members;
         this.planVehicles = planVehicles;
@@ -162,9 +168,12 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
 
     @Override
     @Transactional(readOnly = true)
-    public List<CandidateShipment> candidates(UUID warehouseId, UUID loadPlanId) {
+    public List<CandidateShipment> candidates(UUID warehouseId, UUID loadPlanId, String sourceType) {
         Objects.requireNonNull(warehouseId, "warehouseId");
         WarehouseScope.requireWarehouse(warehouseId);
+        if (LoadPlan.SOURCE_TRANSFER.equals(source(sourceType))) {
+            return transferCandidates(warehouseId, loadPlanId);
+        }
         List<ShipmentJpaEntity> waiting = shipments.findAll(Specification.allOf(List.of(
                 Specs.eq("warehouseId", warehouseId), Specs.eq("status", ShipmentStatus.READY_TO_DISPATCH),
                 Specs.eq("deliveryMode", DeliveryMode.FULL_TRUCKLOAD))), Sort.by("readyAt", "id"));
@@ -199,9 +208,73 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
             out.add(new CandidateShipment(s.getId(), s.getCode(), s.getOrderId(),
                     order == null ? null : order.orderNumber(), allowsPartial(order), s.getReadyAt(), free.size(),
                     mine.size() - free.size(), weight, volume,
-                    free.stream().map(p -> parcelView(p, null, null)).toList()));
+                    free.stream().map(p -> parcelView(p, null, null)).toList(), LoadPlan.SOURCE_ORDER, null, null));
         }
         return out;
+    }
+
+    /**
+     * SCRUM-287 PR T (LP-9; 09 §4.2 step 1, BR-09; 10 step 5): the packed full-truckload transfer orders leaving from
+     * the warehouse, with their sealed parcels - whole: one with a parcel another live plan holds is not offered.
+     */
+    private List<CandidateShipment> transferCandidates(UUID warehouseId, UUID loadPlanId) {
+        List<UUID> packed = packs.findByTransferOrderIdNotNullAndStatus(
+                com.stockflow.fulfillment.internal.domain.PackStatus.PACKED).stream()
+                .map(com.stockflow.fulfillment.internal.entity.PackJpaEntity::getTransferOrderId).distinct().toList();
+        List<com.stockflow.inventory.api.TransferFulfillment.TransferView> ready = transfers.findAll(packed).stream()
+                .filter(t -> t.fromWarehouseId().equals(warehouseId) && readyToPlan(t))
+                .sorted(Comparator.comparing(com.stockflow.inventory.api.TransferFulfillment.TransferView::packedAt)
+                        .thenComparing(com.stockflow.inventory.api.TransferFulfillment.TransferView::transferId))
+                .toList();
+        if (ready.isEmpty()) {
+            return List.of();
+        }
+        List<PackageJpaEntity> sealed = packages.findByTransferOrderIdIn(ready.stream()
+                .map(com.stockflow.inventory.api.TransferFulfillment.TransferView::transferId).toList()).stream()
+                .filter(p -> p.getStatus() == PackageStatus.SEALED).toList();
+        Set<UUID> heldElsewhere = members.findByPackageIdInAndActiveTrue(sealed.stream().map(PackageJpaEntity::getId)
+                        .toList()).stream().filter(m -> !m.getLoadPlanId().equals(loadPlanId))
+                .map(LoadPlanPackageJpaEntity::getPackageId).collect(Collectors.toSet());
+        Map<UUID, LoadPlanParcels.Parcel> described = parcels.describe(sealed);
+        List<CandidateShipment> out = new ArrayList<>();
+        for (var t : ready) {
+            List<LoadPlanParcels.Parcel> mine = described.values().stream()
+                    .filter(p -> t.transferId().equals(p.row().getTransferOrderId()))
+                    .sorted(Comparator.comparingInt(p -> p.row().getPackageNo())).toList();
+            if (mine.isEmpty() || mine.stream().anyMatch(p -> heldElsewhere.contains(p.packageId()))) {
+                continue;
+            }
+            BigDecimal weight = BigDecimal.ZERO;
+            long volume = 0;
+            for (LoadPlanParcels.Parcel p : mine) {
+                if (p.carton() != null) {
+                    weight = weight.add(p.carton().weightKg());
+                    volume += (long) p.carton().lengthMm() * p.carton().widthMm() * p.carton().heightMm();
+                }
+            }
+            out.add(new CandidateShipment(null, t.number(), null, null, false, t.packedAt(), mine.size(), 0, weight,
+                    volume, mine.stream().map(p -> parcelView(p, null, null)).toList(), LoadPlan.SOURCE_TRANSFER,
+                    t.transferId(), t.toWarehouseId()));
+        }
+        return out;
+    }
+
+    /** Packed, still being picked (not dispatched), travelling as a full truckload (LP2-8). */
+    private static boolean readyToPlan(com.stockflow.inventory.api.TransferFulfillment.TransferView t) {
+        return t.picking() && t.packedAt() != null
+                && t.deliveryMode() == com.stockflow.inventory.api.TransferDeliveryMode.FULL_TRUCKLOAD;
+    }
+
+    private static String source(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return LoadPlan.SOURCE_ORDER;
+        }
+        String value = raw.trim().toUpperCase(Locale.ROOT);
+        if (!LoadPlan.SOURCE_ORDER.equals(value) && !LoadPlan.SOURCE_TRANSFER.equals(value)) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Invalid source type",
+                    List.of(new FieldError("sourceType", "ORDER or TRANSFER", "LOAD_PLAN_SOURCE_INVALID")));
+        }
+        return value;
     }
 
     // ------------------------------------------------------------------ the plan
@@ -222,14 +295,23 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         WarehouseScope.requireWarehouse(request.warehouseId());
         warehouses.findWarehouse(request.warehouseId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.WAREHOUSE_NOT_FOUND));
+        String sourceType = source(request.sourceType());
         Instant now = clock.instant();
         LoadPlan plan = LoadPlan.draft(Identifiers.newId(), numbers.next(LocalDate.ofInstant(now, BUSINESS_ZONE)),
-                request.requestId(), request.warehouseId(), mode(request.selectionMode()), request.note());
+                request.requestId(), request.warehouseId(), mode(request.selectionMode()), request.note(), sourceType);
+        requireOneSource(plan, request.shipmentIds(), request.transferOrderIds());
         boolean withInputs = request.shipmentIds() != null && !request.shipmentIds().isEmpty()
+                || request.transferOrderIds() != null && !request.transferOrderIds().isEmpty()
                 || request.vehicleTypeIds() != null && !request.vehicleTypeIds().isEmpty();
         if (withInputs) {
-            lockPicksOf(request.shipmentIds());
-            applyInputs(plan, request.shipmentIds(), request.vehicleTypeIds(), null, actor.userId(), now);
+            if (plan.ofTransfer()) {
+                lockPacksOf(request.transferOrderIds());
+                applyTransferInputs(plan, request.transferOrderIds(), request.vehicleTypeIds(), null, actor.userId(),
+                        now);
+            } else {
+                lockPicksOf(request.shipmentIds());
+                applyInputs(plan, request.shipmentIds(), request.vehicleTypeIds(), null, actor.userId(), now);
+            }
         }
         LoadPlanJpaEntity header = claim(() -> store.insert(plan, now));
         log.info("Load plan {} created at warehouse {}: {} package(s)", plan.code(), plan.warehouseId(),
@@ -266,7 +348,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
             return new PlanRow(header.getId(), header.getCode(), header.getWarehouseId(), header.getStatus().name(),
                     header.getSelectionMode().name(), (int) shipmentCount, held.size(), (int) vehicleCount,
                     (int) unplaced, header.getCreatedAt(), header.getCalculatedAt(), header.getConfirmedAt(),
-                    header.getVersion());
+                    header.getVersion(), header.getSourceType());
         });
     }
 
@@ -280,11 +362,91 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
     @Override
     public PlanDetail setInputs(UUID loadPlanId, Inputs inputs, CurrentUser actor) {
         lockPicksOf(inputs.shipmentIds());
+        lockPacksOf(inputs.transferOrderIds());
         LoadPlanJpaEntity header = lock(loadPlanId, inputs.expectedVersion());
         LoadPlan plan = store.load(header);
+        requireOneSource(plan, inputs.shipmentIds(), inputs.transferOrderIds());
         Instant now = clock.instant();
-        applyInputs(plan, inputs.shipmentIds(), inputs.vehicleTypeIds(), inputs.selectionMode(), actor.userId(), now);
+        if (plan.ofTransfer()) {
+            applyTransferInputs(plan, inputs.transferOrderIds(), inputs.vehicleTypeIds(), inputs.selectionMode(),
+                    actor.userId(), now);
+        } else {
+            applyInputs(plan, inputs.shipmentIds(), inputs.vehicleTypeIds(), inputs.selectionMode(), actor.userId(),
+                    now);
+        }
         return saved(plan, header, now);
+    }
+
+    /**
+     * 09 §3 (LoadPlan.source_type "đơn khách / TO"): an ORDER plan takes shipments, a TRANSFER plan one transfer order -
+     * never the other ({@code LOAD_PLAN_SOURCE_MISMATCH}).
+     */
+    private static void requireOneSource(LoadPlan plan, List<UUID> shipmentIds, List<UUID> transferOrderIds) {
+        boolean shipments = shipmentIds != null && !shipmentIds.isEmpty();
+        boolean transfers = transferOrderIds != null && !transferOrderIds.isEmpty();
+        if (plan.ofTransfer() ? shipments : transfers) {
+            throw new BusinessException(ErrorCode.LOAD_PLAN_SOURCE_MISMATCH, ("Load plan %s is a %s plan: it takes %s "
+                    + "only - customer orders and transfer orders travel on separate plans (09 §3)").formatted(
+                    plan.code(), plan.sourceType(), plan.ofTransfer() ? "one transfer order" : "shipments"),
+                    List.of(FieldError.of(plan.ofTransfer() ? "shipmentIds" : "transferOrderIds",
+                            "not for a " + plan.sourceType() + " plan")));
+        }
+    }
+
+    /** The transfers' packing sessions, locked before the plan: the lock their picking cancellation takes first. */
+    private void lockPacksOf(List<UUID> transferOrderIds) {
+        if (transferOrderIds == null || transferOrderIds.isEmpty()) {
+            return;
+        }
+        new java.util.TreeSet<>(transferOrderIds).forEach(id -> packs.findByTransferOrderIdOrderByCreatedAtDesc(id)
+                .stream().filter(p -> p.getStatus() != com.stockflow.fulfillment.internal.domain.PackStatus.CANCELLED)
+                .forEach(p -> packs.lockById(p.getId())));
+    }
+
+    /**
+     * SCRUM-287 PR T: the parcels of ONE transfer order (09 §4.2 step 1 "của một lệnh chuyển kho"), whole - packed,
+     * still being picked at this plan's warehouse, travelling as a full truckload; none of its parcels held by another
+     * plan (BR-09).
+     */
+    private void applyTransferInputs(LoadPlan plan, List<UUID> transferOrderIds, List<UUID> typeIds,
+                                     String selectionMode, UUID by, Instant at) {
+        List<UUID> wanted = transferOrderIds == null ? List.of() : List.copyOf(new LinkedHashSet<>(transferOrderIds));
+        if (wanted.size() > 1) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("A transfer plan carries one transfer order "
+                    + "(09 §4.2 step 1)"), List.of(FieldError.of("transferOrderIds", "at most one")));
+        }
+        Map<UUID, UUID> chosen = new LinkedHashMap<>();
+        List<PackageJpaEntity> taken = new ArrayList<>();
+        for (UUID id : wanted) {
+            var t = transfers.find(id).orElseThrow(() -> new BusinessException(ErrorCode.TRANSFER_ORDER_NOT_FOUND,
+                    "No transfer order " + id));
+            if (!t.fromWarehouseId().equals(plan.warehouseId())) {
+                throw new BusinessException(ErrorCode.LOAD_PLAN_SOURCE_MISMATCH, ("Transfer %s leaves from another "
+                        + "warehouse than load plan %s").formatted(t.number(), plan.code()));
+            }
+            if (!readyToPlan(t)) {
+                throw new BusinessException(ErrorCode.TRANSFER_NOT_PACKED, ("Transfer %s is %s%s; only a packed full "
+                        + "truckload being picked is planned (LP2-1, LP2-8)").formatted(t.number(), t.status(),
+                        t.packedAt() == null ? ", not packed" : ""));
+            }
+            List<PackageJpaEntity> sealed = packages.findByTransferOrderIdIn(List.of(id)).stream()
+                    .filter(p -> p.getStatus() == PackageStatus.SEALED).toList();
+            Set<UUID> elsewhere = members.findByPackageIdInAndActiveTrue(sealed.stream().map(PackageJpaEntity::getId)
+                    .toList()).stream().filter(m -> !m.getLoadPlanId().equals(plan.id()))
+                    .map(LoadPlanPackageJpaEntity::getLoadPlanId).collect(Collectors.toSet());
+            if (sealed.isEmpty() || !elsewhere.isEmpty()) {
+                String held = elsewhere.stream().map(planId -> plans.findById(planId).map(LoadPlanJpaEntity::getCode)
+                        .orElse("?")).sorted().collect(Collectors.joining(", "));
+                throw new BusinessException(ErrorCode.LOAD_PLAN_PACKAGE_TAKEN, ("Transfer %s has no package free to "
+                        + "plan: held by load plan %s (09 BR-09)").formatted(t.number(), held.isEmpty() ? "-" : held));
+            }
+            sealed.forEach(p -> chosen.put(p.getId(), id));
+            taken.addAll(sealed);
+        }
+        LoadPlanParcels.requireMeasured(parcels.describe(taken).values());
+        List<UUID> types = typeIds == null ? plan.vehicleTypeIds() : typeIds;
+        requireUsableTypes(types);
+        plan.setInputs(chosen, types, selectionMode == null ? null : mode(selectionMode), by, at);
     }
 
     /**
@@ -558,6 +720,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         Map<UUID, LoadPlanParcels.Parcel> held = parcels.of(plan.activePackageIds());
         if (plan.status() == LoadPlanStatus.PLANNED) {
             requirePartialAllowed(plan, held);
+            requireTransferWhole(plan);
         }
         Instant now = clock.instant();
         plan.acknowledgeUnplaced(actor.userId(), now, note, cartons(held));
@@ -575,9 +738,22 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                         "Load plan %s has no package placed: nothing to confirm".formatted(plan.code()));
             }
             requirePartialAllowed(plan, held);
+            requireTransferWhole(plan);
             // 09 BR-01: what leaves still waits for dispatch (locked: nothing hands it over or cancels it meanwhile).
             Set<UUID> leaving = new HashSet<>();
-            plan.placedPackageIds().forEach(id -> leaving.add(held.get(id).row().getShipmentId()));
+            plan.placedPackageIds().forEach(id -> {
+                UUID shipmentId = held.get(id).row().getShipmentId();
+                if (shipmentId != null) {
+                    leaving.add(shipmentId);
+                }
+            });
+            for (UUID transferId : transfersOf(plan)) {
+                var t = transfers.find(transferId).orElseThrow();
+                if (!readyToPlan(t)) {
+                    throw new BusinessException(ErrorCode.TRANSFER_NOT_PACKED, ("Transfer %s is %s; take it out of the "
+                            + "plan").formatted(t.number(), t.status()));
+                }
+            }
             for (ShipmentJpaEntity s : shipmentLocks.lock(leaving)) {
                 if (s.getStatus() != ShipmentStatus.READY_TO_DISPATCH) {
                     throw new BusinessException(ErrorCode.SHIPMENT_STATE_CONFLICT, ("Shipment %s is %s; take it out "
@@ -602,6 +778,10 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
      */
     private void openVehicleLoads(LoadPlan plan, List<LoadPlan.Vehicle> vehicles, Map<UUID, LoadPlanParcels.Parcel> held,
                                   UUID by, Instant at) {
+        if (plan.ofTransfer()) {
+            openTransferVehicleLoads(plan, vehicles, by, at);
+            return;
+        }
         Map<UUID, UUID> shipmentOf = new HashMap<>();
         plan.members().forEach(m -> shipmentOf.put(m.packageId(), m.shipmentId()));
         Set<UUID> allShipments = new HashSet<>();
@@ -630,6 +810,58 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                         by, at);
             }
             loadStore.insert(load);
+        }
+    }
+
+    /**
+     * SCRUM-287 PR T: each vehicle of a TRANSFER plan carries its one transfer order (the manifest's line), a PLANNED
+     * full-truckload load per vehicle as for orders; no COD (LP-2).
+     */
+    private void openTransferVehicleLoads(LoadPlan plan, List<LoadPlan.Vehicle> vehicles, UUID by, Instant at) {
+        Set<UUID> transferIds = transfersOf(plan);
+        Map<UUID, com.stockflow.inventory.api.TransferFulfillment.TransferView> rows = new HashMap<>();
+        transfers.findAll(transferIds).forEach(t -> rows.put(t.transferId(), t));
+        Map<UUID, UUID> transferOf = new HashMap<>();
+        plan.members().forEach(m -> transferOf.put(m.packageId(), m.shipmentId()));
+        LocalDate day = LocalDate.ofInstant(at, BUSINESS_ZONE);
+        for (LoadPlan.Vehicle v : vehicles) {
+            DispatchLoad load = DispatchLoad.planFullTruckload(Identifiers.newId(), loadNumbers.next(day),
+                    Identifiers.newId(), plan.warehouseId(), v.id());
+            Set<UUID> onVehicle = new LinkedHashSet<>();
+            v.placements().forEach(p -> onVehicle.add(transferOf.get(p.packageId())));
+            for (UUID transferId : onVehicle) {
+                var t = rows.get(transferId);
+                load.addShipment(transferFacts(t), BigDecimal.ZERO, by, at);
+            }
+            loadStore.insert(load, true);
+        }
+    }
+
+    /** A transfer order as a load's manifest sees it (its "shipment"): waiting for dispatch while packed and picking. */
+    static DispatchLoad.ShipmentFacts transferFacts(com.stockflow.inventory.api.TransferFulfillment.TransferView t) {
+        return new DispatchLoad.ShipmentFacts(t.transferId(), t.number(), t.fromWarehouseId(),
+                DeliveryMode.FULL_TRUCKLOAD, readyToPlan(t) ? ShipmentStatus.READY_TO_DISPATCH
+                : t.picking() ? ShipmentStatus.CANCELLED : ShipmentStatus.HANDED_OVER, null, null);
+    }
+
+    /** The transfer orders a TRANSFER plan holds parcels of (one). */
+    private static Set<UUID> transfersOf(LoadPlan plan) {
+        if (!plan.ofTransfer()) {
+            return Set.of();
+        }
+        return plan.members().stream().filter(LoadPlan.Member::active).map(LoadPlan.Member::shipmentId)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+    }
+
+    /**
+     * 10 step 5, 09 §4.2 step 1: a transfer leaves whole with its plan - nothing of it is left behind on the tray
+     * ({@code TRANSFER_SHIPS_WHOLE}); add a vehicle or another type, or recalculate.
+     */
+    private static void requireTransferWhole(LoadPlan plan) {
+        if (plan.ofTransfer() && !plan.unplacedPackageIds().isEmpty()) {
+            throw new BusinessException(ErrorCode.TRANSFER_SHIPS_WHOLE, ("Load plan %s leaves %d package(s) of its "
+                    + "transfer unplaced: a transfer order leaves whole - add a vehicle or another vehicle type and "
+                    + "recalculate").formatted(plan.code(), plan.unplacedPackageIds().size()));
         }
     }
 
@@ -695,6 +927,14 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         Map<UUID, Set<UUID>> sealedByShipment = new HashMap<>();
         packages.findByShipmentIdIn(shipmentIds).stream().filter(p -> p.getStatus() != PackageStatus.VOIDED)
                 .forEach(p -> sealedByShipment.computeIfAbsent(p.getShipmentId(), k -> new HashSet<>()).add(p.getId()));
+        // SCRUM-287 PR T: a TRANSFER plan counts its transfer's parcels, named by the transfer's number.
+        Map<UUID, String> transferNumbers = new HashMap<>();
+        if (plan.ofTransfer()) {
+            packages.findByTransferOrderIdIn(shipmentIds).stream().filter(p -> p.getStatus() != PackageStatus.VOIDED)
+                    .forEach(p -> sealedByShipment.computeIfAbsent(p.getTransferOrderId(), k -> new HashSet<>())
+                            .add(p.getId()));
+            transfers.findAll(shipmentIds).forEach(t -> transferNumbers.put(t.transferId(), t.number()));
+        }
         counted.keySet().forEach(id -> sealedByShipment.computeIfAbsent(shipmentOf.get(id), k -> new HashSet<>())
                 .add(id));
 
@@ -720,7 +960,8 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         byShipment.forEach((shipmentId, c) -> {
             ShipmentJpaEntity s = shipmentRows.get(shipmentId);
             int all = sealedByShipment.getOrDefault(shipmentId, Set.of()).size();
-            perShipment.add(count(shipmentId.toString(), s == null ? null : s.getCode(), c, all - c[0]));
+            perShipment.add(count(shipmentId.toString(), s == null ? transferNumbers.get(shipmentId) : s.getCode(), c,
+                    all - c[0]));
             if (s != null) {
                 int[] o = byOrder.computeIfAbsent(s.getOrderId(), k -> new int[5]);
                 for (int i = 0; i < 4; i++) {
@@ -736,7 +977,9 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         });
         int notInPlan = perShipment.stream().mapToInt(PieceCount::notInPlan).sum();
         return new Reconciliation(count(plan.id().toString(), plan.code(), total, notInPlan), perShipment, perOrder,
-                estimates.compare(orders.values(), parcels.of(counted.keySet()).values(), plan.activeVehicles()));
+                plan.ofTransfer() ? null
+                        : estimates.compare(orders.values(), parcels.of(counted.keySet()).values(),
+                        plan.activeVehicles()));
     }
 
     private static PieceCount count(String key, String code, int[] c, int notInPlan) {
@@ -777,6 +1020,22 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
             }
             log.info("Shipment {} of a cancelled order left load plan {}{}", shipmentId, plan.code(),
                     reopened ? " (back to PLANNED)" : "");
+        }
+    }
+
+    @Override
+    public void releaseTransfer(UUID transferOrderId, String reason, Instant at) {
+        List<UUID> planIds = members.findByTransferOrderIdAndActiveTrue(transferOrderId).stream()
+                .map(LoadPlanPackageJpaEntity::getLoadPlanId).distinct().sorted().toList();
+        for (UUID planId : planIds) {
+            LoadPlanJpaEntity header = plans.lockById(planId).orElseThrow();
+            LoadPlan plan = store.load(header);
+            List<DispatchLoadJpaEntity> vehicleLoads = loadsOf(plan);
+            if (plan.cancel(reason, loadingStarted(vehicleLoads), null, at)) {
+                store.save(plan, header, at);
+                cancelLoads(vehicleLoads, "Load plan %s cancelled: %s".formatted(plan.code(), reason), null, at);
+                log.info("Load plan {} cancelled: {}", plan.code(), reason);
+            }
         }
     }
 
@@ -957,7 +1216,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                 p.shipment() == null ? null : p.shipment().getCode(), p.partName(), c == null ? 0 : c.lengthMm(),
                 c == null ? 0 : c.widthMm(), c == null ? 0 : c.heightMm(), p.row().getWeightKg(), p.row().isRotatable(),
                 kit == null ? null : kit.groupId(), kit == null ? null : kit.partNo(),
-                kit == null ? null : kit.partCount(), seq, unplacedReason);
+                kit == null ? null : kit.partCount(), seq, unplacedReason, p.row().getTransferOrderId());
     }
 
     private PlanDetail detail(LoadPlanJpaEntity header, LoadPlan plan) {
@@ -982,6 +1241,16 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
             parcelViews.add(parcelView(p, seqOf.get(m.packageId()),
                     m.unplacedReason() == null ? null : m.unplacedReason().name()));
             perShipment.computeIfAbsent(m.shipmentId(), k -> new int[1])[0]++;
+        }
+        TransferInPlan transferView = null;
+        if (plan.ofTransfer()) {
+            // SCRUM-287 PR T: the plan's one transfer order (its parcels' key); no shipments.
+            UUID transferId = perShipment.keySet().stream().findFirst().orElse(null);
+            int count = transferId == null ? 0 : perShipment.get(transferId)[0];
+            transferView = transferId == null ? null : transfers.find(transferId).map(t -> new TransferInPlan(
+                    t.transferId(), t.number(), t.fromWarehouseId(), t.toWarehouseId(), t.status(), count))
+                    .orElse(null);
+            perShipment.clear();
         }
         Map<UUID, ShipmentJpaEntity> shipmentRows = shipments.findAllById(perShipment.keySet()).stream()
                 .collect(Collectors.toMap(ShipmentJpaEntity::getId, Function.identity()));
@@ -1017,6 +1286,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                 plan.status().name(), s.note(), typeViews, shipmentViews, vehicleViews, parcelViews,
                 plan.activePackageIds().size(), plan.placedPackageIds().size(), plan.unplacedPackageIds().size(), ack,
                 s.calculatedAt(), header.getSolverMeta(), s.confirmedAt(), s.reopenedAt(), s.reopenReason(),
-                s.dispatchedAt(), s.cancelledAt(), s.cancelReason(), header.getCreatedAt(), header.getVersion());
+                s.dispatchedAt(), s.cancelledAt(), s.cancelReason(), header.getCreatedAt(), header.getVersion(),
+                transferView);
     }
 }

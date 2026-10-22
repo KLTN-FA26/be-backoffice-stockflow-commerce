@@ -22,6 +22,9 @@ import java.util.stream.Collectors;
  * Reads a {@link PackingSession} from its pack, parcels and scans, and writes back what changed: the pack's status,
  * the parcels touched, the new scans (append-only) and the per-line totals of the parcels touched.
  *
+ * <p>A transfer's packing session (SCRUM-287 PR T) is read and written the same way: its lines are the transfer's,
+ * kept in the {@code transfer_line_id} columns ({@code PackingSession} calls every line an order line).</p>
+ *
  * <p>A parcel's contents are the sum of its scans per order line, lot and serial; {@code package_line} is kept equal to
  * the per-line sum, which is what the over-pack trigger checks and load planning reads. The caller holds the pick's
  * lock, so two writers of one session are serialised before they reach here.</p>
@@ -54,7 +57,7 @@ public class PackingSessionStore {
         Map<UUID, Map<PackingSession.ContentKey, Integer>> contents = new HashMap<>();
         for (PackageScanJpaEntity scan : scanned) {
             contents.computeIfAbsent(scan.getPackageId(), id -> new LinkedHashMap<>())
-                    .merge(new PackingSession.ContentKey(scan.getOrderLineId(), scan.getLotNumber(),
+                    .merge(new PackingSession.ContentKey(scan.getLineId(), scan.getLotNumber(),
                             scan.getSerialNumber()), scan.getQuantity(), Integer::sum);
         }
         // Parcels written before scans existed (seeded or packed by the old flow): their package_line rows are the
@@ -75,7 +78,7 @@ public class PackingSessionStore {
             if (held == null) {
                 held = new LinkedHashMap<>();
                 for (PackageLineJpaEntity line : legacy.getOrDefault(row.getId(), List.of())) {
-                    held.put(new PackingSession.ContentKey(line.getOrderLineId(), null, null), line.getQuantity());
+                    held.put(new PackingSession.ContentKey(line.getLineId(), null, null), line.getQuantity());
                 }
             }
             PackingSession.Parcel parcel = toParcel(row, held);
@@ -137,7 +140,8 @@ public class PackingSessionStore {
                     .collect(Collectors.toMap(PackageJpaEntity::getId, Function.identity()));
             for (PackingSession.Parcel parcel : changed) {
                 PackageJpaEntity row = existing.computeIfAbsent(parcel.id(), id -> new PackageJpaEntity(id,
-                        session.packId(), parcel.packageNo(), parcel.labelCode(), parcel.kit()));
+                        session.packId(), parcel.packageNo(), parcel.labelCode(), parcel.kit(),
+                        pack.getTransferOrderId()));
                 var m = parcel.measures();
                 row.apply(parcel.shipmentId(), parcel.type(), parcel.status(), m == null ? null : m.weightKg(),
                         m == null ? null : m.lengthCm(), m == null ? null : m.widthCm(), m == null ? null : m.heightCm(),
@@ -150,15 +154,18 @@ public class PackingSessionStore {
         }
         List<PackingSession.Scan> recorded = session.pullScans();
         if (!recorded.isEmpty()) {
-            scans.saveAllAndFlush(recorded.stream().map(scan -> new PackageScanJpaEntity(scan.id(), scan.packageId(),
-                    scan.orderLineId(), scan.scannedCode(), scan.lotNumber(), scan.serialNumber(), scan.quantity(),
-                    scan.by(), scan.at())).toList());
+            boolean transfer = pack.getTransferOrderId() != null;
+            scans.saveAllAndFlush(recorded.stream().map(scan -> transfer
+                    ? PackageScanJpaEntity.ofTransfer(scan.id(), scan.packageId(), scan.orderLineId(),
+                    scan.scannedCode(), scan.lotNumber(), scan.quantity(), scan.by(), scan.at())
+                    : new PackageScanJpaEntity(scan.id(), scan.packageId(), scan.orderLineId(), scan.scannedCode(),
+                    scan.lotNumber(), scan.serialNumber(), scan.quantity(), scan.by(), scan.at())).toList());
         }
-        writeLineTotals(changed);
+        writeLineTotals(changed, pack.getTransferOrderId() != null);
     }
 
     /** {@code package_line} equals the scans' per-line sum of every parcel touched; rows at zero are removed. */
-    private void writeLineTotals(List<PackingSession.Parcel> changed) {
+    private void writeLineTotals(List<PackingSession.Parcel> changed, boolean transfer) {
         if (changed.isEmpty()) {
             return;
         }
@@ -171,7 +178,7 @@ public class PackingSessionStore {
         for (PackingSession.Parcel parcel : changed) {
             Map<UUID, Integer> totals = parcel.lineTotals();
             Map<UUID, PackageLineJpaEntity> rows = stored.getOrDefault(parcel.id(), List.of()).stream()
-                    .collect(Collectors.toMap(PackageLineJpaEntity::getOrderLineId, Function.identity()));
+                    .collect(Collectors.toMap(PackageLineJpaEntity::getLineId, Function.identity()));
             rows.forEach((line, row) -> {
                 int now = totals.getOrDefault(line, 0);
                 if (now == 0) {
@@ -186,7 +193,8 @@ public class PackingSessionStore {
             });
             totals.forEach((line, quantity) -> {
                 if (!rows.containsKey(line)) {
-                    higher.add(new PackageLineJpaEntity(Identifiers.newId(), parcel.id(), line, quantity));
+                    higher.add(transfer ? PackageLineJpaEntity.ofTransfer(Identifiers.newId(), parcel.id(), line,
+                            quantity) : new PackageLineJpaEntity(Identifiers.newId(), parcel.id(), line, quantity));
                 }
             });
         }

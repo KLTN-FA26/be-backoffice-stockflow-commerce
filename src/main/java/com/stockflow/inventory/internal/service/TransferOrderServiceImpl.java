@@ -44,11 +44,29 @@ import java.util.UUID;
 import com.stockflow.common.domain.BusinessCalendar;
 import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
+import com.stockflow.inventory.api.TransferDeliveryMode;
+import com.stockflow.inventory.api.TransferDispatchGuard;
+import com.stockflow.inventory.api.TransferFulfillment;
+import com.stockflow.inventory.internal.domain.StockPackage;
+import com.stockflow.inventory.internal.domain.StockPackageId;
+import com.stockflow.inventory.internal.domain.StockPackageRepository;
+import com.stockflow.inventory.internal.domain.StockPackageStatus;
+import com.stockflow.inventory.internal.repository.UomConversionRepository;
+import org.springframework.beans.factory.ObjectProvider;
+import java.util.Collection;
+import java.util.HashSet;
+import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Collectors;
 
+/**
+ * See {@link TransferOrders}. Also {@link TransferFulfillment} (SCRUM-287 PR T): what fulfillment packs, load-plans and
+ * dispatches a full-truckload transfer through; picking cancelled and a manual dispatch first ask fulfillment
+ * ({@link TransferDispatchGuard}) whether the transfer is in its hands.
+ */
 @Service
 @Transactional
-class TransferOrderServiceImpl implements TransferOrders {
+class TransferOrderServiceImpl implements TransferOrders, TransferFulfillment {
 
     private static final Logger log = LoggerFactory.getLogger(TransferOrderServiceImpl.class);
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
@@ -63,15 +81,24 @@ class TransferOrderServiceImpl implements TransferOrders {
     private final InventoryControlService controls;
     private final InventoryPolicyRepository policies;
     private final StockPackageContents cartons;
+    private final StockPackageRepository stockPackages;
+    private final UomConversionRepository units;
+    /** Absent when fulfillment is not loaded (an inventory-only module test): nothing is packed then. */
+    private final ObjectProvider<TransferDispatchGuard> guards;
 
+    @SuppressWarnings("java:S107")
     TransferOrderServiceImpl(TransferOrderRepository transfers, TransferOrderSearch search,
                              WarehouseDirectory warehouses, StockItemRepository stockItems, StockMovementLog ledger,
                              Clock clock,
             InventoryControlService controls,
             InventoryPolicyRepository policies,
-                             StockPackageContents cartons,
+                             StockPackageContents cartons, StockPackageRepository stockPackages,
+                             UomConversionRepository units, ObjectProvider<TransferDispatchGuard> guards,
                              @Value("${stockflow.inventory.transfer.approval-threshold-units:100}") int approvalThreshold) {
         this.cartons = cartons;
+        this.stockPackages = stockPackages;
+        this.units = units;
+        this.guards = guards;
         this.transfers = transfers;
         this.search = search;
         this.warehouses = warehouses;
@@ -97,6 +124,7 @@ class TransferOrderServiceImpl implements TransferOrders {
         TransferOrder numbered = TransferOrder.draft(order.id(),
                 transfers.nextNumber(LocalDate.ofInstant(now, BUSINESS_ZONE)), order.fromWarehouseId(),
                 order.toWarehouseId(), order.reason(), order.expectedDate(), null, order.lines(), now);
+        numbered.travelAs(command.deliveryMode());
         return toView(transfers.save(numbered));
     }
 
@@ -128,6 +156,7 @@ class TransferOrderServiceImpl implements TransferOrders {
         activePrefixOf(command.toWarehouseId());
         order.reviseDraft(command.fromWarehouseId(), command.toWarehouseId(), command.reason(),
                 command.expectedDate(), newLines(command.lines()));
+        order.travelAs(command.deliveryMode());
         requireCoverable(order, sourcePrefix, clock.instant());
         return toView(transfers.save(order));
     }
@@ -207,7 +236,13 @@ class TransferOrderServiceImpl implements TransferOrders {
     @Auditable(action = AuditAction.TRANSITION, resourceType = "transfer-order", resourceId = "#transferId")
     public Transfer cancelPicking(UUID transferId) {
         TransferOrder order = loadAtSource(transferId);
+        // 10 BR-04: refused once goods left on a vehicle; then fulfillment voids its parcels and calls its plan off
+        // (refused while a vehicle of the plan is being loaded, 09 BR-14).
         order.cancelPicking();
+        TransferDispatchGuard guard = guards.getIfAvailable();
+        if (guard != null) {
+            guard.beforePickingCancelled(order.id(), clock.instant());
+        }
         return toView(transfers.save(order));
     }
 
@@ -222,8 +257,21 @@ class TransferOrderServiceImpl implements TransferOrders {
     @Auditable(action = AuditAction.TRANSITION, resourceType = "transfer-order", resourceId = "#transferId")
     public Transfer dispatch(UUID transferId, UUID userId, Map<UUID, Integer> shippedByLine) {
         TransferOrder order = loadAtSource(transferId);
+        TransferDispatchGuard guard = guards.getIfAvailable();
+        if (guard != null) {
+            guard.requireManualDispatch(order.id());
+        }
         Instant now = clock.instant();
         order.dispatch(userId, shippedByLine, now);
+        return toView(takeFromSource(order, userId, now, Map.of()));
+    }
+
+    /**
+     * The dispatched lines' units leave the source: an unopened carton shipped as it is ({@code cartonsByLine}, LP2-8)
+     * gives its own rows first; the rest is planned by the line's removal policy over the other sellable rows.
+     */
+    private TransferOrder takeFromSource(TransferOrder order, UUID userId, Instant now,
+                                         Map<UUID, List<UUID>> cartonsByLine) {
         String sourcePrefix = prefixOf(order.fromWarehouseId());
         // Match reservation and policy-edit lock order before planning or taking row locks.
         policies.lockReservationStock(
@@ -236,8 +284,28 @@ class TransferOrderServiceImpl implements TransferOrders {
             if (line.shipped() == 0) {
                 continue;
             }
+            int left = line.shipped();
+            Set<StockItemId> fromCartons = new HashSet<>();
+            for (UUID carton : cartonsByLine.getOrDefault(line.id(), List.of())) {
+                for (StockItemId rowId : stockItems.findIdsInStockPackage(new StockPackageId(carton))) {
+                    StockItem row = stockItems.findById(rowId).orElse(null);
+                    if (left == 0 || row == null || !row.sku().equals(line.sku())
+                            || !row.location().warehouseCode().equals(sourcePrefix) || !row.status().isReservable()
+                            || row.available().isZero()) {
+                        continue;
+                    }
+                    int quantity = Math.min(left, row.available().value());
+                    takes.add(new Take(line, rowId, Quantity.of(quantity)));
+                    fromCartons.add(rowId);
+                    left -= quantity;
+                }
+            }
+            if (left == 0) {
+                continue;
+            }
             for (StockAllocator.AllocationLine allocation : StockAllocator.plan(line.sku().code(),
-                    candidates(line, sourcePrefix), Quantity.of(line.shipped()),
+                    candidates(line, sourcePrefix).stream().filter(c -> !fromCartons.contains(c.stockItemId()))
+                            .toList(), Quantity.of(left),
                             controls.policy(line.sku()).removalStrategy(),
                             BusinessCalendar.date(now))) {
                 takes.add(new Take(line, allocation.stockItemId(), allocation.quantity()));
@@ -268,7 +336,7 @@ class TransferOrderServiceImpl implements TransferOrders {
         TransferOrder saved = transfers.save(order);
         log.info("Dispatched transfer {}: {} unit(s) from {} stock row(s)", order.number(),
                 takes.stream().mapToInt(t -> t.quantity().value()).sum(), locked.size());
-        return toView(saved);
+        return saved;
     }
 
     @Override
@@ -318,9 +386,104 @@ class TransferOrderServiceImpl implements TransferOrders {
 
     private static Transfer toView(TransferOrder o) {
         return new Transfer(o.id(), o.number(), o.fromWarehouseId(), o.toWarehouseId(), o.status(), o.reason(),
-                o.expectedDate(), o.lines().stream().map(l -> new Line(l.id(), l.lineNo(), l.sku().code(),
-                        l.lotNumber(), l.requested(), l.shipped())).toList(),
+                o.expectedDate(), o.lines().stream().map(l -> new TransferOrders.Line(l.id(), l.lineNo(),
+                        l.sku().code(), l.lotNumber(), l.requested(), l.shipped())).toList(),
                 o.submittedBy(), o.submittedAt(), o.approvedBy(), o.approvedAt(), o.dispatchedBy(), o.dispatchedAt(),
-                o.cancelReason(), o.createdAt(), o.version());
+                o.cancelReason(), o.createdAt(), o.version(), o.deliveryMode(), o.packedAt(), o.goodsLeftAt());
+    }
+
+    // ------------------------------------------------------------------ TransferFulfillment (SCRUM-287 PR T)
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<TransferView> find(UUID transferId) {
+        return transfers.findById(transferId).map(TransferOrderServiceImpl::fulfillmentView);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<TransferView> findAll(Collection<UUID> transferIds) {
+        return transferIds.stream().distinct().map(transfers::findById).flatMap(Optional::stream)
+                .map(TransferOrderServiceImpl::fulfillmentView).toList();
+    }
+
+    @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "transfer-order", resourceId = "#transferId")
+    public TransferView beginPacking(UUID transferId) {
+        TransferOrder order = loadAtSource(transferId);
+        if (!order.beginPacking()) {
+            return fulfillmentView(order);
+        }
+        log.info("Transfer {}: picking started for packing (load planning)", order.number());
+        return fulfillmentView(transfers.save(order));
+    }
+
+    @Override
+    public TransferView markPacked(UUID transferId, Instant at) {
+        TransferOrder order = loadAtSource(transferId);
+        order.markPacked(at);
+        return fulfillmentView(transfers.save(order));
+    }
+
+    @Override
+    public TransferView recordGoodsLeft(UUID transferId, Instant at) {
+        TransferOrder order = loadAtSource(transferId);
+        if (!order.recordGoodsLeft(at)) {
+            return fulfillmentView(order);
+        }
+        log.info("Transfer {}: goods left on a vehicle; picking is no longer cancelled (10 BR-04)", order.number());
+        return fulfillmentView(transfers.save(order));
+    }
+
+    /**
+     * 10 step 5: the transfer leaves with what its load plan carried. Packed first ({@code TRANSFER_NOT_PACKED}); the
+     * line quantities are the packed ones, so nothing here is a choice - the dispatch is the packing's.
+     */
+    @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "transfer-order", resourceId = "#transferId")
+    public TransferView dispatchLoaded(UUID transferId, UUID userId, Map<UUID, Integer> shippedByLine,
+                                       Map<UUID, List<UUID>> cartonsByLine) {
+        TransferOrder order = loadAtSource(transferId);
+        if (order.status() == TransferStatus.PICKING && order.packedAt() == null) {
+            throw new BusinessException(ErrorCode.TRANSFER_NOT_PACKED,
+                    "Transfer %s is not packed for dispatch".formatted(order.number()));
+        }
+        Instant now = clock.instant();
+        order.dispatch(userId, shippedByLine, now);
+        return fulfillmentView(takeFromSource(order, userId, now, cartonsByLine == null ? Map.of() : cartonsByLine));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<Carton> carton(String lpn, UUID warehouseId) {
+        if (lpn == null || lpn.isBlank()) {
+            return Optional.empty();
+        }
+        Optional<StockPackage> found = stockPackages.findByLpn(lpn.trim());
+        if (found.isEmpty()) {
+            return Optional.empty();
+        }
+        StockPackage carton = found.get();
+        String sku = policies.findSku(carton.inventoryItemId()).orElse(null);
+        List<StockItem> rows = stockItems.findIdsInStockPackage(carton.id()).stream().map(stockItems::findById)
+                .flatMap(Optional::stream).toList();
+        int quantity = rows.stream().mapToInt(r -> r.onHand().value()).sum();
+        boolean sellable = !rows.isEmpty() && rows.stream().allMatch(r -> r.status().isReservable()
+                && r.reserved().isZero());
+        String lot = rows.stream().map(StockItem::lotNumber).filter(Objects::nonNull).findFirst().orElse(null);
+        String prefix = warehouseId == null ? null : warehouses.prefixOf(warehouseId).orElse(null);
+        String unit = sku == null ? null : units.find(sku, carton.uomConversionId())
+                .map(com.stockflow.inventory.api.UomConversion::unitOfMeasure).orElse(null);
+        return Optional.of(new Carton(carton.id().value(), carton.lpn(), sku, lot, quantity,
+                prefix != null && carton.location().warehouseCode().equals(prefix), carton.location().code(),
+                carton.uomConversionId(), unit, carton.unopened(), carton.status() == StockPackageStatus.IN_STOCK,
+                sellable));
+    }
+
+    private static TransferView fulfillmentView(TransferOrder o) {
+        return new TransferView(o.id(), o.number(), o.fromWarehouseId(), o.toWarehouseId(), o.status().name(),
+                o.deliveryMode() == null ? TransferDeliveryMode.FULL_TRUCKLOAD : o.deliveryMode(), o.packedAt(),
+                o.goodsLeftAt(), o.dispatchedAt(), o.lines().stream().map(l -> new TransferFulfillment.Line(l.id(),
+                        l.lineNo(), l.sku().code(), l.lotNumber(), l.requested(), l.shipped())).toList());
     }
 }

@@ -9,7 +9,7 @@ public record TransferOrderResponse(UUID transferId, String number, UUID fromWar
                                     String status, String reason, LocalDate expectedDate, List<Line> lines,
                                     UUID submittedBy, Instant submittedAt, UUID approvedBy, Instant approvedAt,
                                     UUID dispatchedBy, Instant dispatchedAt, String cancelReason, Instant createdAt,
-                                    long version) {
+                                    long version, String deliveryMode, Instant packedAt, Instant goodsLeftAt) {
 
     public record Line(UUID lineId, int lineNo, String sku, String lotNumber, int requested, int shipped) {
     }

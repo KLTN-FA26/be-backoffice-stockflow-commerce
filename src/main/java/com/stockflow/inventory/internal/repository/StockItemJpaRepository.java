@@ -133,6 +133,9 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
                                                        @Param("locationCode") String locationCode);
 
     /** JPQL on purpose: Hibernate flushes this session's pending stock rows before running it (FlushMode.AUTO). */
+    @Query("select s.id from StockItemJpaEntity s where s.stockPackageId = :stockPackageId order by s.id")
+    List<UUID> findIdsInStockPackage(@Param("stockPackageId") UUID stockPackageId);
+
     @Query("select coalesce(sum(s.onHand), 0) from StockItemJpaEntity s where s.stockPackageId = :stockPackageId")
     long sumOnHandInStockPackage(@Param("stockPackageId") UUID stockPackageId);
 

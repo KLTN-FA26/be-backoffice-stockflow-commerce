@@ -259,7 +259,7 @@ public final class PackagingRules {
     }
 
     /** Centimetres to whole millimetres, rounded up. */
-    static int mm(BigDecimal cm) {
+    public static int mm(BigDecimal cm) {
         return cm.movePointRight(1).setScale(0, RoundingMode.CEILING).intValueExact();
     }
 

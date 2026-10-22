@@ -69,6 +69,18 @@ public class TransferOrderJpaEntity extends BaseEntity {
     @Column(name = "cancel_reason", length = 500)
     private String cancelReason;
 
+    /** SCRUM-287 PR T (LP2-8): how it travels; its packing completed; its goods first left on a vehicle. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "delivery_mode", nullable = false, length = 16)
+    private com.stockflow.inventory.api.TransferDeliveryMode deliveryMode =
+            com.stockflow.inventory.api.TransferDeliveryMode.FULL_TRUCKLOAD;
+
+    @Column(name = "packed_at")
+    private Instant packedAt;
+
+    @Column(name = "goods_left_at")
+    private Instant goodsLeftAt;
+
     @OneToMany(mappedBy = "transferOrder", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
     @OrderBy("lineNo")
     private List<TransferOrderLineJpaEntity> lines = new ArrayList<>();
@@ -97,6 +109,13 @@ public class TransferOrderJpaEntity extends BaseEntity {
         this.dispatchedBy = dispatchedBy;
         this.dispatchedAt = dispatchedAt;
         this.cancelReason = cancelReason;
+    }
+
+    public void applyFulfillment(com.stockflow.inventory.api.TransferDeliveryMode deliveryMode, Instant packedAt,
+                                 Instant goodsLeftAt) {
+        this.deliveryMode = deliveryMode;
+        this.packedAt = packedAt;
+        this.goodsLeftAt = goodsLeftAt;
     }
 
     /** A DRAFT's new header (SCRUM-462); the lines are replaced by the repository. */
@@ -128,5 +147,8 @@ public class TransferOrderJpaEntity extends BaseEntity {
     public UUID getDispatchedBy() { return dispatchedBy; }
     public Instant getDispatchedAt() { return dispatchedAt; }
     public String getCancelReason() { return cancelReason; }
+    public com.stockflow.inventory.api.TransferDeliveryMode getDeliveryMode() { return deliveryMode; }
+    public Instant getPackedAt() { return packedAt; }
+    public Instant getGoodsLeftAt() { return goodsLeftAt; }
     public List<TransferOrderLineJpaEntity> getLines() { return lines; }
 }

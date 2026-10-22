@@ -42,4 +42,12 @@ public interface PackagingSpecResolver {
      * when any has no item.
      */
     List<PackagingSpec> resolveAll(List<PackagingRequest> lines);
+
+    /**
+     * One carton of the packing unit {@code uomConversionId} of {@code sku}, as its unit of measure declares it (SCRUM-287
+     * PR T, LP2-8): an unopened stock carton shipped as it is starts from these measures - the packer still weighs and
+     * measures it. Empty when the unit is not the SKU's or lacks a full size or weight (nothing is defaulted, LP2-3);
+     * the rotatable flag is the item's.
+     */
+    java.util.Optional<PackagingSpec.CartonSpec> unitCarton(Sku sku, UUID uomConversionId);
 }

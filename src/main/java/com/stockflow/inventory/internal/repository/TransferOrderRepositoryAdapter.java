@@ -71,6 +71,7 @@ class TransferOrderRepositoryAdapter implements TransferOrderRepository, Transfe
         });
         entity.apply(order.status(), order.submittedBy(), order.submittedAt(), order.approvedBy(),
                 order.approvedAt(), order.dispatchedBy(), order.dispatchedAt(), order.cancelReason());
+        entity.applyFulfillment(order.deliveryMode(), order.packedAt(), order.goodsLeftAt());
         for (TransferLine line : order.lines()) {
             entity.getLines().stream().filter(row -> row.getId().equals(line.id())).findFirst()
                     .ifPresent(row -> row.ship(line.shipped()));
@@ -112,6 +113,7 @@ class TransferOrderRepositoryAdapter implements TransferOrderRepository, Transfe
                 e.getLines().stream().map(l -> new TransferLine(l.getId(), l.getLineNo(), new Sku(l.getSku()),
                         l.getLotNumber(), l.getRequestedQty(), l.getShippedQty())).toList(),
                 e.getStatus(), e.getSubmittedBy(), e.getSubmittedAt(), e.getApprovedBy(), e.getApprovedAt(),
-                e.getDispatchedBy(), e.getDispatchedAt(), e.getCancelReason(), e.getVersion(), e.getCreatedAt());
+                e.getDispatchedBy(), e.getDispatchedAt(), e.getCancelReason(), e.getVersion(), e.getCreatedAt())
+                .restoreFulfillment(e.getDeliveryMode(), e.getPackedAt(), e.getGoodsLeftAt());
     }
 }

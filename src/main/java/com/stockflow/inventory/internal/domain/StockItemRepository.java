@@ -90,6 +90,9 @@ public interface StockItemRepository {
      */
     int onHandInStockPackage(StockPackageId stockPackageId);
 
+    /** The ids of the stock rows of a stock package (its contents), read without locking (SCRUM-287 PR T, LP2-8). */
+    List<StockItemId> findIdsInStockPackage(StockPackageId stockPackageId);
+
     /** Every stock item holding at least one reservation that expired before {@code cutoff}. */
     List<StockItem> findWithReservationsExpiredBefore(Instant cutoff, int limit);
 

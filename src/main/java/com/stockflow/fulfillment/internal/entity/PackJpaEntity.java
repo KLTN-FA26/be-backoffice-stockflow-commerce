@@ -19,8 +19,13 @@ import java.util.UUID;
 @Table(name = "pack", schema = "fulfillment")
 public class PackJpaEntity extends BaseEntity {
 
-    @Column(name = "pick_id", nullable = false)
+    /** The pick of an order's packing session; null for a transfer's (SCRUM-287 PR T). */
+    @Column(name = "pick_id")
     private UUID pickId;
+
+    /** The transfer order of a transfer's packing session (SCRUM-287 PR T); null for an order's. */
+    @Column(name = "transfer_order_id", updatable = false)
+    private UUID transferOrderId;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 32)
@@ -48,7 +53,15 @@ public class PackJpaEntity extends BaseEntity {
         this.packedAt = packedAt;
     }
 
+    /** The packing session of a transfer order (10 step 5), PACKING from the start. */
+    public static PackJpaEntity forTransfer(UUID id, UUID transferOrderId) {
+        PackJpaEntity pack = new PackJpaEntity(id, null, PackStatus.PENDING, null);
+        pack.transferOrderId = transferOrderId;
+        return pack;
+    }
+
     public UUID getPickId() { return pickId; }
+    public UUID getTransferOrderId() { return transferOrderId; }
     public PackStatus getStatus() { return status; }
     public Instant getPackedAt() { return packedAt; }
     public Instant getStartedAt() { return startedAt; }

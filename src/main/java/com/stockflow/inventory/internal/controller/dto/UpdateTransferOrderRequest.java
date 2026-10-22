@@ -20,6 +20,8 @@ public record UpdateTransferOrderRequest(
         @NotNull(message = "toWarehouseId is required") UUID toWarehouseId,
         TransferReason reason,
         LocalDate expectedDate,
+        @Schema(description = "LP2-8: FULL_TRUCKLOAD (default; packed and load-planned) or PARCEL (dispatched by hand)")
+        com.stockflow.inventory.api.TransferDeliveryMode deliveryMode,
         @NotEmpty(message = "A transfer order needs at least one line")
         @Size(max = 200, message = "At most 200 lines")
         List<CreateTransferOrderRequest.@Valid @NotNull Line> lines

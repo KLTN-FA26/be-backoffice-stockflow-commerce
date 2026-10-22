@@ -45,10 +45,13 @@ public record LoadResponse(UUID loadId, String code, UUID warehouseId, String mo
      * @param labelCodAmount what the shipment's label says the carrier collects
      * @param codAmount      what the order fixed at the handover; null before it
      * @param currency       of both amounts
+     * @param transferOrderId SCRUM-287 PR T: the transfer order on a TRANSFER plan's vehicle (then shipmentId, orderId
+     *                       and taskId are null, code is the transfer's number); absent otherwise
      */
     public record Shipment(UUID shipmentId, String code, UUID orderId, String orderNumber, UUID taskId, String status,
                            int packageCount, int loadedCount, BigDecimal labelCodAmount, BigDecimal codAmount,
-                           String currency, List<Parcel> packages) {
+                           String currency, List<Parcel> packages,
+                           @JsonInclude(JsonInclude.Include.NON_NULL) UUID transferOrderId) {
     }
 
     /** @param kit the kit it is a part of (SCRUM-287 LP2-6); absent for an ordinary parcel */

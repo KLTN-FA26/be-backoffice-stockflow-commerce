@@ -55,7 +55,11 @@ import java.util.function.Supplier;
  */
 public final class LoadPlan {
 
-    /** A parcel the plan holds or held. {@code unplacedReason} is null when it has a place or before a calculation. */
+    /**
+     * A parcel the plan holds or held. {@code unplacedReason} is null when it has a place or before a calculation.
+     * {@code shipmentId} is what the parcel leaves with: its shipment in an ORDER plan, its transfer order in a TRANSFER
+     * plan (SCRUM-287 PR T - a parcel is of a shipment or of a transfer, and a plan holds one kind).
+     */
     public record Member(UUID packageId, UUID shipmentId, boolean active, LoadPlanUnplacedReason unplacedReason,
                          Instant addedAt, UUID addedBy, Instant releasedAt, LoadPlanReleaseReason releaseReason) {
 
@@ -100,6 +104,8 @@ public final class LoadPlan {
                            List<Vehicle> vehicles) { }
 
     public static final String SOURCE_ORDER = "ORDER";
+    /** 09 §3 LoadPlan.source_type "TO", §4.2 step 1: the parcels of one transfer order (SCRUM-287 PR T, LP-9). */
+    public static final String SOURCE_TRANSFER = "TRANSFER";
 
     private final UUID id;
     private final String code;
@@ -165,10 +171,19 @@ public final class LoadPlan {
         }
     }
 
-    /** A new plan (09 §4.2 step 1): DRAFT, nothing chosen yet. */
+    /** A new plan of customer orders (09 §4.2 step 1): DRAFT, nothing chosen yet. */
     public static LoadPlan draft(UUID id, String code, UUID requestId, UUID warehouseId, SelectionMode mode,
                                  String note) {
-        LoadPlan plan = new LoadPlan(new Snapshot(id, code, requestId, warehouseId, SOURCE_ORDER,
+        return draft(id, code, requestId, warehouseId, mode, note, SOURCE_ORDER);
+    }
+
+    /** A new plan of {@code sourceType} ({@link #SOURCE_ORDER} or {@link #SOURCE_TRANSFER}): DRAFT, nothing chosen. */
+    public static LoadPlan draft(UUID id, String code, UUID requestId, UUID warehouseId, SelectionMode mode,
+                                 String note, String sourceType) {
+        if (!SOURCE_ORDER.equals(sourceType) && !SOURCE_TRANSFER.equals(sourceType)) {
+            throw new IllegalArgumentException("source type " + sourceType);
+        }
+        LoadPlan plan = new LoadPlan(new Snapshot(id, code, requestId, warehouseId, sourceType,
                 mode == null ? SelectionMode.SINGLE_TYPE : mode, LoadPlanStatus.DRAFT, trimmed(note), null, null, null,
                 null, null, null, null, null, null, null, null, null, null, null, 0, List.of(), List.of(), List.of()));
         plan.changed = true;
@@ -574,7 +589,7 @@ public final class LoadPlan {
         }
         Set<UUID> dropped = new HashSet<>();
         for (Member m : List.copyOf(members.values())) {
-            if (m.active() && m.shipmentId().equals(shipmentId)) {
+            if (m.active() && Objects.equals(m.shipmentId(), shipmentId)) {
                 members.put(m.packageId(), m.released(LoadPlanReleaseReason.ORDER_CANCELLED, at));
                 dropped.add(m.packageId());
             }
@@ -681,6 +696,9 @@ public final class LoadPlan {
     public String code() { return code; }
     public UUID requestId() { return requestId; }
     public UUID warehouseId() { return warehouseId; }
+    public String sourceType() { return sourceType; }
+    /** A plan of one transfer order's parcels (SCRUM-287 PR T). */
+    public boolean ofTransfer() { return SOURCE_TRANSFER.equals(sourceType); }
     public SelectionMode mode() { return mode; }
     public LoadPlanStatus status() { return status; }
     public long version() { return version; }
