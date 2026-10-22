@@ -1,0 +1,118 @@
+{
+ "containers": [
+  {
+   "code": "20DC",
+   "w": 2352,
+   "h": 2393,
+   "d": 5898,
+   "quantity": 64,
+   "payload": 1000000000.0,
+   "gusset": 0
+  }
+ ],
+ "boxes": [
+  {
+   "part": "P-A",
+   "w": 1100,
+   "h": 700,
+   "d": 900,
+   "quantity": 30,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "P-B",
+   "w": 800,
+   "h": 500,
+   "d": 600,
+   "quantity": 30,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "Q-1",
+   "w": 600,
+   "h": 600,
+   "d": 600,
+   "quantity": 12,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "Q-2",
+   "w": 400,
+   "h": 300,
+   "d": 500,
+   "quantity": 24,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L0",
+   "w": 300,
+   "h": 300,
+   "d": 300,
+   "quantity": 4,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L1",
+   "w": 600,
+   "h": 400,
+   "d": 400,
+   "quantity": 3,
+   "rotatable": false,
+   "weight": 1.0
+  },
+  {
+   "part": "L2",
+   "w": 800,
+   "h": 600,
+   "d": 500,
+   "quantity": 7,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L3",
+   "w": 400,
+   "h": 300,
+   "d": 250,
+   "quantity": 5,
+   "rotatable": true,
+   "weight": 1.0
+  }
+ ],
+ "kits": [
+  {
+   "name": "P",
+   "members": [
+    [
+     "P-A",
+     1
+    ],
+    [
+     "P-B",
+     1
+    ]
+   ]
+  },
+  {
+   "name": "Q",
+   "members": [
+    [
+     "Q-1",
+     1
+    ],
+    [
+     "Q-2",
+     2
+    ]
+   ]
+  }
+ ],
+ "distribute": "even",
+ "budget": 8,
+ "ticks_per_second": 8.0
+}
