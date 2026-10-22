@@ -749,7 +749,7 @@ class PrintedGoodsAtPackingIntegrationTest {
     // ------------------------------------------------------------------------------------------- G4-5
 
     @Test
-    @DisplayName("G4-5: a design hold during packing - QC re-verifies, packing is back in progress (08 §5), the packer "
+    @DisplayName("G4-5: a design hold during packing - the warehouse manager re-verifies, packing is back in progress (08 §5), the packer "
             + "completes; stock moved only when production completed")
     void aDesignHoldIsReverifiedThenPacked() throws Exception {
         Line line = inPacking(2);
@@ -767,13 +767,13 @@ class PrintedGoodsAtPackingIntegrationTest {
         assertThat(code(catchThrowable(() -> packing.openPackage(task, null, picker))))
                 .as("nothing changes while held").isEqualTo(ErrorCode.PACK_STATE_CONFLICT);
 
-        // Still wrong: QC's attempt is kept as evidence, the hold stays.
-        assertThat(fulfillment.reverifyDesignIntegrity(task, "checked", inspector).packStatus()).isEqualTo("ON_HOLD");
+        // Still wrong: the manager's attempt is kept as evidence, the hold stays.
+        assertThat(fulfillment.reverifyDesignIntegrity(task, "checked", manager).packStatus()).isEqualTo("ON_HOLD");
         tx.executeWithoutResult(s -> {
             jdbc.execute("SET LOCAL session_replication_role = replica");
             jdbc.update("UPDATE ordering.order_line SET design_checksum = ? WHERE id = ?", confirmed, line.lineId());
         });
-        FulfillmentTask resumed = fulfillment.reverifyDesignIntegrity(task, "Artwork restored", inspector);
+        FulfillmentTask resumed = fulfillment.reverifyDesignIntegrity(task, "Artwork restored", manager);
 
         assertThat(resumed.packStatus()).isEqualTo("PACKING");
         assertThat(salesOrders.findById(line.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.PICKING);

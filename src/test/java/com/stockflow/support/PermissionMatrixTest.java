@@ -194,7 +194,8 @@ class PermissionMatrixTest {
             Map.entry("fulfillment-packing:UPDATE", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-packing:APPROVE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-design-reverification:READ", Set.of(Role.QC_STAFF, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
-            Map.entry("fulfillment-design-reverification:UPDATE", Set.of(Role.QC_STAFF, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            // QC-REVERIFY-1022 (V20261022000600): only the warehouse manager releases a design hold; QC can still read it.
+            Map.entry("fulfillment-design-reverification:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-carriers:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-dispatch:CREATE", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-dispatch:UPDATE", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
