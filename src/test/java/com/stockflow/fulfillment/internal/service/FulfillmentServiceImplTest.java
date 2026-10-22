@@ -119,10 +119,13 @@ class FulfillmentServiceImplTest {
     }
 
     @Test
-    void onlyQcOrAManagerReverifiesAndOnlyWarehouseStaffPack() {
+    void onlyAManagerReverifiesAndOnlyWarehouseStaffPack() {
         var pick = pickedTask(UUID.randomUUID());
         assertThatThrownBy(() -> service.reverifyDesignIntegrity(pick.getId(), "note",
                 user(UUID.randomUUID(), Role.WAREHOUSE_STAFF))).isInstanceOf(BusinessException.class);
+        // QC-REVERIFY-1022: QC may see a held task but not release the hold.
+        assertThatThrownBy(() -> service.reverifyDesignIntegrity(pick.getId(), "note",
+                user(UUID.randomUUID(), Role.QC_STAFF))).isInstanceOf(BusinessException.class);
         assertThatThrownBy(() -> service.completePacking(pick.getId(), user(UUID.randomUUID(), Role.QC_STAFF)))
                 .isInstanceOf(BusinessException.class);
         verify(packing, never()).reverify(any(), any(), any());
@@ -616,8 +619,7 @@ class FulfillmentServiceImplTest {
                     code.apply(FulfillmentPermissions.TASK_ASSIGNMENT, update),
                     code.apply(FulfillmentPermissions.TASK_OVERSIGHT, read));
             case QC_STAFF -> Set.of(code.apply(FulfillmentPermissions.PICK_LISTS, read),
-                    code.apply(FulfillmentPermissions.DESIGN_REVERIFICATION, read),
-                    code.apply(FulfillmentPermissions.DESIGN_REVERIFICATION, update));
+                    code.apply(FulfillmentPermissions.DESIGN_REVERIFICATION, read));
             default -> Set.of();
         };
     }
