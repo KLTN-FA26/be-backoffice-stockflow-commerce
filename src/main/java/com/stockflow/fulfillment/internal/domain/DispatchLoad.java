@@ -472,6 +472,8 @@ public final class DispatchLoad {
     public UUID warehouseId() { return warehouseId; }
     public DeliveryMode mode() { return mode; }
     public UUID carrierId() { return carrierId; }
+    /** The load-plan vehicle a full-truckload load is (SCRUM-287 PR D); null for a parcel load. */
+    public UUID loadPlanVehicleId() { return loadPlanVehicleId; }
     public LoadStatus status() { return status; }
     public long version() { return version; }
     public Instant dispatchedAt() { return dispatchedAt; }

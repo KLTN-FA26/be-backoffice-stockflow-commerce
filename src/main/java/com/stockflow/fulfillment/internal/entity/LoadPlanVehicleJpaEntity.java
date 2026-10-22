@@ -36,6 +36,8 @@ public class LoadPlanVehicleJpaEntity extends BaseEntity {
     @Column(name = "used_weight_kg", nullable = false, precision = 12, scale = 3) private BigDecimal usedWeightKg;
     @Column(name = "volume_fill_pct", nullable = false, precision = 7, scale = 2) private BigDecimal volumeFillPct;
     @Column(name = "weight_fill_pct", nullable = false, precision = 7, scale = 2) private BigDecimal weightFillPct;
+    /** Parcels were taken out from under it (an order cancelled): recalculate before the plan is confirmed. */
+    @Column(name = "needs_recalculation", nullable = false) private boolean needsRecalculation;
 
     protected LoadPlanVehicleJpaEntity() {
     }
@@ -57,7 +59,8 @@ public class LoadPlanVehicleJpaEntity extends BaseEntity {
     }
 
     public void apply(boolean active, long usedVolumeMm3, BigDecimal usedWeightKg, BigDecimal volumeFillPct,
-                      BigDecimal weightFillPct) {
+                      BigDecimal weightFillPct, boolean needsRecalculation) {
+        this.needsRecalculation = needsRecalculation;
         this.active = active;
         this.usedVolumeMm3 = usedVolumeMm3;
         this.usedWeightKg = usedWeightKg;
@@ -80,4 +83,5 @@ public class LoadPlanVehicleJpaEntity extends BaseEntity {
     public BigDecimal getUsedWeightKg() { return usedWeightKg; }
     public BigDecimal getVolumeFillPct() { return volumeFillPct; }
     public BigDecimal getWeightFillPct() { return weightFillPct; }
+    public boolean isNeedsRecalculation() { return needsRecalculation; }
 }

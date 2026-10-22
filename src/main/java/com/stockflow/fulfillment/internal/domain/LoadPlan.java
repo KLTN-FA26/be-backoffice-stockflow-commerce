@@ -40,6 +40,12 @@ import java.util.function.Supplier;
  * acknowledged (BR-13) and the plan is confirmed - the parcel list and the layout are locked (BR-14), and each vehicle
  * becomes a dispatch load to book and load (PR E). A confirmed plan reopens to PLANNED while no vehicle is loading.
  *
+ * <p>A vehicle whose parcels were taken out from under the dispatcher (an order cancelled out of the plan) is
+ * flagged {@code needsRecalculation} - the docs' "bỏ kiện &amp; tính lại": what rested on a removed parcel may now
+ * float. The plan is not confirmed while a vehicle is flagged; recalculating it, recalculating the plan or a manual
+ * edit (which is checked whole) clears the flag. Confirmation also re-checks every vehicle against the loading rules
+ * as a last gate.</p>
+ *
  * <p>The plan holds its parcels (BR-09: at most one live plan per parcel - the database's partial unique index is the
  * net). It releases them when they leave its inputs, when it is cancelled, when its order is cancelled, and - the
  * unplaced ones - when it is confirmed: they go back to the dispatch area for a later trip.</p>
@@ -71,14 +77,14 @@ public final class LoadPlan {
      */
     public record Vehicle(UUID id, int seq, boolean active, VehicleSpec spec, List<Placed> placements,
                           long usedVolumeMm3, BigDecimal usedWeightKg, BigDecimal volumeFillPct,
-                          BigDecimal weightFillPct) {
+                          BigDecimal weightFillPct, boolean needsRecalculation) {
         public Vehicle {
             placements = List.copyOf(placements);
         }
 
         Vehicle retired() {
             return new Vehicle(id, seq, false, spec, placements, usedVolumeMm3, usedWeightKg, volumeFillPct,
-                    weightFillPct);
+                    weightFillPct, needsRecalculation);
         }
     }
 
@@ -335,7 +341,7 @@ public final class LoadPlan {
                 CargoPackage c = carton(cartons, p.packageId());
                 items.add(new PlacementValidator.Item(c, p.x(), p.y(), p.z(), p.w(), p.h(), p.d()));
                 if (p.orientation() != null && !matches(p.orientation(), c, p)) {
-                    violations.add(new PlacementViolation(c.ref(), ViolationType.ROTATION_NOT_ALLOWED));
+                    violations.add(new PlacementViolation(c.ref(), ViolationType.ORIENTATION_MISMATCH));
                 }
             }
             for (PlacementViolation pv : PlacementValidator.validate(v.spec(), items)) {
@@ -475,6 +481,13 @@ public final class LoadPlan {
             throw new BusinessException(ErrorCode.LOAD_PLAN_EMPTY,
                     "Load plan %s has no package placed: nothing to confirm".formatted(code));
         }
+        List<Vehicle> flaggedVehicles = activeVehicles().stream().filter(Vehicle::needsRecalculation).toList();
+        if (!flaggedVehicles.isEmpty()) {
+            throw new BusinessException(ErrorCode.LOAD_PLAN_NEEDS_RECALCULATION, ("Load plan %s lost parcels from "
+                    + "vehicle(s) %s: recalculate them (or the plan) before confirming").formatted(code,
+                    flaggedVehicles.stream().map(v -> String.valueOf(v.seq())).toList()));
+        }
+        requireLayoutValid(cartons);
         requireKitsWhole(cartons);
         Set<UUID> unplaced = unplacedPackageIds();
         if (!unplaced.isEmpty() && acknowledgedAt == null) {
@@ -578,8 +591,9 @@ public final class LoadPlan {
             if (kept.isEmpty() && status != LoadPlanStatus.CONFIRMED) {
                 vehicles.set(i, v.retired());
             } else {
+                // "bỏ kiện & tính lại": what rested on a removed parcel may float - recalculate before confirming.
                 vehicles.set(i, new Vehicle(v.id(), v.seq(), true, v.spec(), kept, volume(kept),
-                        v.usedWeightKg(), v.volumeFillPct(), v.weightFillPct()));
+                        v.usedWeightKg(), v.volumeFillPct(), v.weightFillPct(), !kept.isEmpty()));
             }
         }
         changed = true;
@@ -593,7 +607,13 @@ public final class LoadPlan {
 
     /** Recomputes the weight figures of the vehicles after {@link #dropShipment}, once the cartons are known. */
     public void refreshUsage(Map<UUID, CargoPackage> cartons) {
-        vehicles.replaceAll(v -> v.active() ? withUsage(v.id(), v.seq(), v.spec(), v.placements(), cartons) : v);
+        vehicles.replaceAll(v -> v.active() ? flagged(withUsage(v.id(), v.seq(), v.spec(), v.placements(), cartons),
+                v.needsRecalculation()) : v);
+    }
+
+    private static Vehicle flagged(Vehicle v, boolean needsRecalculation) {
+        return new Vehicle(v.id(), v.seq(), v.active(), v.spec(), v.placements(), v.usedVolumeMm3(), v.usedWeightKg(),
+                v.volumeFillPct(), v.weightFillPct(), needsRecalculation);
     }
 
     // ---- reading ---------------------------------------------------------------------------------------------------
@@ -669,6 +689,24 @@ public final class LoadPlan {
     public boolean changed() { return changed; }
 
     // ---- internals -------------------------------------------------------------------------------------------------
+
+    /** The last gate of confirmation (BR-10): every vehicle as stored passes the loading rules. */
+    private void requireLayoutValid(Map<UUID, CargoPackage> cartons) {
+        List<PlacementViolation> violations = new ArrayList<>();
+        for (Vehicle v : activeVehicles()) {
+            List<PlacementValidator.Item> items = new ArrayList<>();
+            for (Placed p : v.placements()) {
+                items.add(new PlacementValidator.Item(carton(cartons, p.packageId()), p.x(), p.y(), p.z(), p.w(),
+                        p.h(), p.d()));
+            }
+            for (PlacementViolation pv : PlacementValidator.validate(v.spec(), items)) {
+                violations.add(pv.ref() == null ? new PlacementViolation("vehicle:" + v.seq(), pv.rule()) : pv);
+            }
+        }
+        if (!violations.isEmpty()) {
+            throw ruleViolation(violations);
+        }
+    }
 
     /** A kit's parts are all placed or all left behind (LP-3: and the placed ones on one vehicle, BR-11). */
     private void requireKitsWhole(Map<UUID, CargoPackage> cartons) {
@@ -769,7 +807,7 @@ public final class LoadPlan {
                 .divide(spec.maxPayloadKg(), 2, RoundingMode.HALF_UP);
         List<Placed> ordered = new ArrayList<>(placed);
         ordered.sort(Comparator.comparingInt(Placed::z).thenComparingInt(Placed::y).thenComparingInt(Placed::x));
-        return new Vehicle(id, seq, true, spec, ordered, volume, weight, volumePct, weightPct);
+        return new Vehicle(id, seq, true, spec, ordered, volume, weight, volumePct, weightPct, false);
     }
 
     private static String trimmed(String value) {

@@ -621,6 +621,15 @@ class LoadPlanIntegrationTest {
                 "UPDATE fulfillment.package SET height_cm = 10 WHERE id = ?", parcel));
         assertThat(byHand).hasMessageContaining("tg_package_in_load_plan");
 
+        // Review of #161: a plan's load changes only through the plan.
+        as(manager, "WAREHOUSE_MANAGER", body(post(BASE + "/loads/" + loadId + "/cancellation"),
+                "{\"reason\":\"no truck\"}")).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("LOAD_MANAGED_BY_PLAN"));
+        dispatch(body(post(BASE + "/loads/" + loadId + "/shipments"), "{\"shipmentIds\":[\"" + kept[0] + "\"]}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("LOAD_MANAGED_BY_PLAN"));
+        assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.dispatch_load WHERE id = ?", String.class,
+                loadId)).isEqualTo("PLANNED");
+
         tx.executeWithoutResult(s -> publisher.publishEvent(new OrderCancelled(cancelled.orderId(),
                 cancelled.orderNumber(), DemoData.CUSTOMER_ID, "PACKED", "OTHER", "test", BigDecimal.ZERO,
                 BigDecimal.ZERO, "VND", coordinator, Instant.now())));
@@ -636,8 +645,112 @@ class LoadPlanIntegrationTest {
                 .isEqualTo("VOIDED");
         assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.shipment WHERE id = ?", String.class, doomed[0]))
                 .isEqualTo("CANCELLED");
-        // The plan is consistent: confirmed again with what is left.
+        // Review of #161 ("bỏ kiện & tính lại"): the vehicle that lost the parcel is flagged; the plan is confirmed only
+        // once it is recalculated.
+        assertThat(after.path("vehicles").get(0).path("needsRecalculation").asBoolean()).isTrue();
+        dispatch(body(post(PLANS + "/" + id + "/confirmation"), version(after))).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("LOAD_PLAN_NEEDS_RECALCULATION"));
+        after = step(after, "/vehicles/1/recalculation", version(after));
+        assertThat(after.path("vehicles").get(0).path("needsRecalculation").asBoolean()).isFalse();
         assertThat(step(after, "/confirmation", version(after)).path("status").asText()).isEqualTo("CONFIRMED");
+    }
+
+    @Test
+    @DisplayName("review of #161, LP-4 across plans: an order that may not ship in parts, with a second shipment in no "
+            + "plan, is refused at acknowledgement and confirmation (409 ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED); with both "
+            + "its shipments in the plan it is confirmed")
+    void anOrderLeavesWholeWithItsPlan() throws Exception {
+        OrderSummary order = ftlOrder(2);
+        tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE ordering.customer_order SET allow_partial_shipment = TRUE WHERE id = ?", order.orderId()));
+        // Packed in two shipments while Sales allowed it: one sofa, then the other.
+        UUID task = UUID.fromString(data(oc(body(post(BASE + "/tasks"), "{\"orderId\":\"" + order.orderId()
+                + "\",\"assignedUserId\":\"" + picker + "\"}")).andExpect(status().isCreated())).path("taskId").asText());
+        packer(post(BASE + "/tasks/" + task + "/picking-start")).andExpect(status().isOk());
+        for (Map<String, Object> line : jdbc.queryForList(
+                "SELECT id, location_code, sku, allocated_qty FROM fulfillment.pick_line WHERE pick_id = ?", task)) {
+            packer(body(post(BASE + "/tasks/" + task + "/pick-lines/" + line.get("id") + "/confirmation"),
+                    "{\"locationCode\":\"" + line.get("location_code") + "\",\"scannedCode\":\"" + line.get("sku")
+                            + "\",\"quantity\":" + line.get("allocated_qty") + "}")).andExpect(status().isOk());
+        }
+        packer(post(BASE + "/tasks/" + task + "/picking-completion")).andExpect(status().isOk());
+        packer(post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());
+        List<UUID> shipments = new ArrayList<>();
+        for (int i = 0; i < 2; i++) {
+            String parcel = data(packer(body(post(BASE + "/tasks/" + task + "/packages"), ONE_CARTON))
+                    .andExpect(status().isCreated())).path("packageId").asText();
+            scan(task, parcel);
+            packer(body(post(BASE + "/tasks/" + task + "/packages/" + parcel + "/seal"), SOFA_MEASURES))
+                    .andExpect(status().isOk());
+            shipments.add(UUID.fromString(data(packer(body(post(BASE + "/tasks/" + task + "/packing-completion"),
+                    i == 0 ? "{\"partial\":true,\"note\":\"one sofa now\"}" : "{}")).andExpect(status().isOk()))
+                    .path("shipmentId").asText()));
+        }
+        // Sales withdraws it: the order now leaves whole.
+        tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE ordering.customer_order SET allow_partial_shipment = FALSE WHERE id = ?", order.orderId()));
+
+        JsonNode plan = create(createBody(UUID.randomUUID(), List.of(shipments.get(0)), List.of(truck5t)));
+        plan = step(plan, "/calculation", version(plan));
+        assertThat(plan.path("unplacedCount").asInt()).as("nothing left on the tray").isZero();
+        String id = plan.path("loadPlanId").asText();
+        dispatch(body(post(PLANS + "/" + id + "/unplaced-acknowledgement"), version(plan)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED"));
+        dispatch(body(post(PLANS + "/" + id + "/confirmation"), version(plan))).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED"))
+                .andExpect(jsonPath("$.fieldErrors[0].message").value(order.orderNumber()));
+
+        plan = data(dispatch(body(put(PLANS + "/" + id + "/inputs"), "{\"expectedVersion\":" + plan.path("version")
+                .asLong() + ",\"shipmentIds\":" + ids(shipments) + ",\"vehicleTypeIds\":[\"" + truck5t + "\"]}"))
+                .andExpect(status().isOk()));
+        plan = step(plan, "/calculation", version(plan));
+        assertThat(step(plan, "/confirmation", version(plan)).path("status").asText()).isEqualTo("CONFIRMED");
+    }
+
+    @Test
+    @DisplayName("review of #161: claiming takes the order's task lock first, as the order cancellation does - a claim "
+            + "waits while a cancellation holds it; a cancellation after the claim releases the parcel before voiding "
+            + "it, and the listener does not trip over tg_package_in_load_plan")
+    void claimAndOrderCancellationDoNotInterleave() throws Exception {
+        OrderSummary order = ftlOrder(1);
+        UUID[] packedShipment = packed(order, false);
+        JsonNode plan = create(createBody(UUID.randomUUID(), List.of(), List.of(truck5t)));
+        String token = token(dispatcher, "WAREHOUSE_STAFF");
+        CountDownLatch locked = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        Future<?> holder = pool.submit(() -> tx.executeWithoutResult(s -> {
+            jdbc.queryForList("SELECT id FROM fulfillment.pick WHERE order_id = ? FOR UPDATE", order.orderId());
+            locked.countDown();
+            try {
+                release.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }));
+        locked.await();
+        long version = plan.path("version").asLong();
+        Future<Integer> claim = pool.submit(() -> mvc.perform(put(PLANS + "/" + plan.path("loadPlanId").asText()
+                + "/inputs").header("Authorization", token).contentType("application/json").content(
+                "{\"expectedVersion\":" + version + ",\"shipmentIds\":[\"" + packedShipment[0]
+                        + "\"],\"vehicleTypeIds\":[\"" + truck5t + "\"]}")).andReturn().getResponse().getStatus());
+        Thread.sleep(1500);
+        assertThat(claim.isDone()).as("the claim waits for the order's task lock").isFalse();
+        release.countDown();
+        holder.get();
+        assertThat(claim.get()).isEqualTo(200);
+        pool.shutdown();
+
+        UUID parcel = jdbc.queryForObject("SELECT id FROM fulfillment.package WHERE shipment_id = ?", UUID.class,
+                packedShipment[0]);
+        tx.executeWithoutResult(s -> publisher.publishEvent(new OrderCancelled(order.orderId(), order.orderNumber(),
+                DemoData.CUSTOMER_ID, "PACKED", "OTHER", "test", BigDecimal.ZERO, BigDecimal.ZERO, "VND", coordinator,
+                Instant.now())));
+        Await.until("the parcel is voided", ASYNC, () -> "VOIDED".equals(jdbc.queryForObject(
+                "SELECT status FROM fulfillment.package WHERE id = ?", String.class, parcel)));
+        assertThat(jdbc.queryForObject("SELECT release_reason FROM fulfillment.load_plan_package WHERE package_id = ?",
+                String.class, parcel)).isEqualTo("ORDER_CANCELLED");
     }
 
     @Test

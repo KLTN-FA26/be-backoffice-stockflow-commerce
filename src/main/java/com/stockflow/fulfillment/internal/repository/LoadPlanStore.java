@@ -64,7 +64,8 @@ public class LoadPlanStore {
             placed.sort(java.util.Comparator.comparingInt(LoadPlan.Placed::z).thenComparingInt(LoadPlan.Placed::y)
                     .thenComparingInt(LoadPlan.Placed::x));
             vs.add(new LoadPlan.Vehicle(row.getId(), row.getSeq(), row.isActive(), row.toSpec(), placed,
-                    row.getUsedVolumeMm3(), row.getUsedWeightKg(), row.getVolumeFillPct(), row.getWeightFillPct()));
+                    row.getUsedVolumeMm3(), row.getUsedWeightKg(), row.getVolumeFillPct(), row.getWeightFillPct(),
+                    row.isNeedsRecalculation()));
         }
         return LoadPlan.restore(new LoadPlan.Snapshot(planId, header.getCode(), header.getRequestId(),
                 header.getWarehouseId(), header.getSourceType(), header.getSelectionMode(), header.getStatus(),
@@ -129,12 +130,14 @@ public class LoadPlanStore {
                 row = new LoadPlanVehicleJpaEntity(v.id(), planId, v.seq(), v.spec());
             }
             boolean same = row.isActive() == v.active() && row.getUsedVolumeMm3() == v.usedVolumeMm3()
+                    && row.isNeedsRecalculation() == v.needsRecalculation()
                     && row.getUsedWeightKg() != null && row.getUsedWeightKg().compareTo(v.usedWeightKg()) == 0
                     && row.getVolumeFillPct() != null && row.getVolumeFillPct().compareTo(v.volumeFillPct()) == 0
                     && row.getWeightFillPct() != null && row.getWeightFillPct().compareTo(v.weightFillPct()) == 0
                     && vehicleRows.containsKey(v.id());
             if (!same) {
-                row.apply(v.active(), v.usedVolumeMm3(), v.usedWeightKg(), v.volumeFillPct(), v.weightFillPct());
+                row.apply(v.active(), v.usedVolumeMm3(), v.usedWeightKg(), v.volumeFillPct(), v.weightFillPct(),
+                        v.needsRecalculation());
                 (v.active() ? current : retired).add(row);
             }
             if (v.active()) {

@@ -263,10 +263,74 @@ class LoadPlanTest {
         assertThat(plan.members()).filteredOn(m -> m.packageId().equals(b)).singleElement()
                 .satisfies(m -> assertThat(m.releaseReason()).isEqualTo(LoadPlanReleaseReason.ORDER_CANCELLED));
 
+        // "bỏ kiện & tính lại": the vehicle lost a parcel - flagged, and not confirmed until recalculated.
+        assertThat(plan.activeVehicles().getFirst().needsRecalculation()).isTrue();
+        assertThat(code(() -> plan.confirm(DISPATCHER, NOW, cartons)))
+                .isEqualTo(ErrorCode.LOAD_PLAN_NEEDS_RECALCULATION);
+        plan.applyVehicleRecalculation(1, new LoadPlanner().plan(new LoadPlanRequest(List.of(cartons.get(a)),
+                List.of(TRUCK), SelectionMode.SINGLE_TYPE, List.of(), KitDistribution.AUTO, false, null, 0L,
+                Duration.ofSeconds(2))), cartons, NOW);
+        assertThat(plan.activeVehicles().getFirst().needsRecalculation()).isFalse();
         plan.confirm(DISPATCHER, NOW, cartons);
         assertThat(plan.dropShipment(shipmentA, true, NOW)).as("loading: stays").isFalse();
         assertThat(plan.status()).isEqualTo(LoadPlanStatus.CONFIRMED);
         assertThat(plan.activePackageIds()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("review of #161: a box left floating after an order was cancelled out of a stacked vehicle - the "
+            + "vehicle is flagged (409 LOAD_PLAN_NEEDS_RECALCULATION); and confirmation re-checks every stored vehicle "
+            + "against the loading rules as a last gate (422 UNSUPPORTED)")
+    void confirmationRevalidatesTheLayout() {
+        UUID bottom = cube(shipmentB, null);
+        UUID top = cube(shipmentA, null);
+        VehicleSpec tall = new VehicleSpec(TRUCK_TYPE, "TALL", VehicleKind.TRUCK, 1000, 1000, 2000,
+                new BigDecimal("1000"), 1, 0);
+        LoadPlan.Vehicle stacked = new LoadPlan.Vehicle(UUID.randomUUID(), 1, true, tall, List.of(
+                new LoadPlan.Placed(bottom, 0, 0, 0, 1000, 1000, 1000, Orientation.LWH),
+                new LoadPlan.Placed(top, 0, 1000, 0, 1000, 1000, 1000, Orientation.LWH)), 2_000_000_000L,
+                new BigDecimal("200"), new BigDecimal("100.00"), new BigDecimal("20.00"), false);
+        List<LoadPlan.Member> members = List.of(
+                new LoadPlan.Member(bottom, shipmentB, true, null, NOW, DISPATCHER, null, null),
+                new LoadPlan.Member(top, shipmentA, true, null, NOW, DISPATCHER, null, null));
+        LoadPlan plan = LoadPlan.restore(new LoadPlan.Snapshot(UUID.randomUUID(), "LP-T", UUID.randomUUID(), HCM,
+                "ORDER", SelectionMode.SINGLE_TYPE, LoadPlanStatus.PLANNED, null, NOW, DISPATCHER, null, null, null,
+                null, null, null, null, null, null, null, null, null, 3, List.of(TRUCK_TYPE), members,
+                List.of(stacked)));
+        assertThat(plan.dropShipment(shipmentB, false, NOW)).isFalse();
+        assertThat(plan.activeVehicles().getFirst().placements()).extracting(LoadPlan.Placed::packageId)
+                .containsExactly(top);
+        assertThat(code(() -> plan.confirm(DISPATCHER, NOW, cartons)))
+                .isEqualTo(ErrorCode.LOAD_PLAN_NEEDS_RECALCULATION);
+
+        // The same floating box stored without the flag (whatever wrote it): the final gate refuses it.
+        LoadPlan.Vehicle floating = new LoadPlan.Vehicle(stacked.id(), 1, true, tall, List.of(
+                new LoadPlan.Placed(top, 0, 1000, 0, 1000, 1000, 1000, Orientation.LWH)), 1_000_000_000L,
+                new BigDecimal("100"), new BigDecimal("50.00"), new BigDecimal("10.00"), false);
+        LoadPlan unflagged = LoadPlan.restore(new LoadPlan.Snapshot(UUID.randomUUID(), "LP-U", UUID.randomUUID(), HCM,
+                "ORDER", SelectionMode.SINGLE_TYPE, LoadPlanStatus.PLANNED, null, NOW, DISPATCHER, null, null, null,
+                null, null, null, null, null, null, null, null, null, 3, List.of(TRUCK_TYPE), List.of(members.get(1)),
+                List.of(floating)));
+        Throwable gate = catchThrowable(() -> unflagged.confirm(DISPATCHER, NOW, cartons));
+        assertThat(((BusinessException) gate).errorCode()).isEqualTo(ErrorCode.PLACEMENT_RULE_VIOLATION);
+        assertThat(((BusinessException) gate).fieldErrors()).extracting(f -> f.field() + ":" + f.code())
+                .containsExactly(top + ":UNSUPPORTED");
+        assertThat(unflagged.status()).isEqualTo(LoadPlanStatus.PLANNED);
+    }
+
+    @Test
+    @DisplayName("review of #161: an orientation that does not give the sizes sent is ORIENTATION_MISMATCH, not "
+            + "ROTATION_NOT_ALLOWED")
+    void orientationMismatch() {
+        UUID id = UUID.randomUUID();
+        cartons.put(id, new CargoPackage(id.toString(), null, 1000, 500, 400, new BigDecimal("10"), true, "BOX",
+                null, shipmentA.toString(), false));
+        shipmentOf.put(id, shipmentA);
+        LoadPlan plan = planned(1);
+        Throwable thrown = catchThrowable(() -> plan.editPlacements(List.of(new LoadPlan.VehicleEdit(1, List.of(
+                new LoadPlan.Placed(id, 0, 0, 0, 500, 400, 1000, Orientation.HLW)))), List.of(), cartons, NOW));
+        assertThat(((BusinessException) thrown).fieldErrors()).extracting(f -> f.code())
+                .containsExactly("ORIENTATION_MISMATCH");
     }
 
     @Test

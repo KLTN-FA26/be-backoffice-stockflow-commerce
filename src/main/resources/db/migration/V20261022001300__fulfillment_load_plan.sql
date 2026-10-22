@@ -199,6 +199,9 @@ CREATE TABLE fulfillment.load_plan_vehicle
     used_weight_kg   NUMERIC(12, 3) NOT NULL DEFAULT 0,
     volume_fill_pct  NUMERIC(7, 2)  NOT NULL DEFAULT 0,
     weight_fill_pct  NUMERIC(7, 2)  NOT NULL DEFAULT 0,
+    -- Parcels were taken out from under it (an order cancelled out of the plan, 09 edge "bỏ kiện & tính lại"): what
+    -- rested on them may float. The plan is not confirmed until the vehicle is recalculated or edited.
+    needs_recalculation BOOLEAN     NOT NULL DEFAULT FALSE,
 
     version          BIGINT         NOT NULL DEFAULT 0,
     created_at       TIMESTAMPTZ    NOT NULL DEFAULT NOW(),

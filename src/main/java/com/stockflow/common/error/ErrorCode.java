@@ -432,6 +432,10 @@ public enum ErrorCode {
     LOAD_PLAN_LOADING_STARTED("A vehicle of this load plan is already being loaded", 409),
     /** Docs 09 BR-10 / BR-11: a placement breaks a loading rule; the field errors name each package and rule. */
     PLACEMENT_RULE_VIOLATION("A placement breaks a loading rule", 422),
+    /** Docs 09 edge "bỏ kiện & tính lại": parcels were taken out of a vehicle; recalculate it before confirming. */
+    LOAD_PLAN_NEEDS_RECALCULATION("A vehicle of this load plan lost parcels and must be recalculated first", 409),
+    /** A load of a load plan's vehicle changes only through its plan (reopen, cancel, recalculate). */
+    LOAD_MANAGED_BY_PLAN("This load belongs to a load plan; change it through the plan", 409),
     /** Docs 09 BR-09: a parcel in a load plan is not voided, re-opened or re-measured. */
     PACKAGE_IN_LOAD_PLAN("This package is in a load plan; take it out of the plan first", 409),
     /** Docs 09 edge: a parcel of another shipment, warehouse or load scanned by mistake; the message names where it belongs. */

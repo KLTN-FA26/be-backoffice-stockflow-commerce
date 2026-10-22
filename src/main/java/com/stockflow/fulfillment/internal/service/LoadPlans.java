@@ -49,9 +49,10 @@ public interface LoadPlans {
     /** The dispatch load a confirmed vehicle became (PLANNED until PR E books it). */
     record LoadRef(UUID loadId, String code, String status) { }
 
+    /** {@code needsRecalculation}: parcels were taken out of it (an order cancelled); recalculate before confirming. */
     record VehicleSummary(int seq, UUID loadPlanVehicleId, UUID vehicleTypeId, String code, int packageCount,
                           long usedVolumeMm3, BigDecimal usedWeightKg, BigDecimal volumeFillPct,
-                          BigDecimal weightFillPct, LoadRef load) { }
+                          BigDecimal weightFillPct, LoadRef load, boolean needsRecalculation) { }
 
     record Acknowledgement(Instant at, UUID by, String note) { }
 

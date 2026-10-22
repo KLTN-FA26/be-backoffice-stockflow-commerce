@@ -111,6 +111,8 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
     private final LoadNumbers loadNumbers;
     private final WarehouseService warehouses;
     private final LoadPlanEstimateComparison estimates;
+    private final com.stockflow.fulfillment.internal.repository.PickJpaRepository picks;
+    private final com.stockflow.fulfillment.internal.repository.PackageLineJpaRepository packageLines;
     private final Clock clock;
     private final Duration budget;
 
@@ -122,7 +124,9 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                     ShipmentJpaRepository shipments, ShipmentLocks shipmentLocks,
                     VehicleTypeJpaRepository vehicleTypes, DispatchLoadJpaRepository loads,
                     DispatchLoadStore loadStore, LoadNumbers loadNumbers, WarehouseService warehouses,
-                    LoadPlanEstimateComparison estimates, Clock clock,
+                    LoadPlanEstimateComparison estimates,
+                    com.stockflow.fulfillment.internal.repository.PickJpaRepository picks,
+                    com.stockflow.fulfillment.internal.repository.PackageLineJpaRepository packageLines, Clock clock,
                     @Value("${stockflow.fulfillment.load-planning.solver-budget:PT5S}") Duration budget) {
         this.plans = plans;
         this.members = members;
@@ -139,6 +143,8 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         this.loadNumbers = loadNumbers;
         this.warehouses = warehouses;
         this.estimates = estimates;
+        this.picks = picks;
+        this.packageLines = packageLines;
         this.clock = clock;
         this.budget = budget;
     }
@@ -213,6 +219,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         boolean withInputs = request.shipmentIds() != null && !request.shipmentIds().isEmpty()
                 || request.vehicleTypeIds() != null && !request.vehicleTypeIds().isEmpty();
         if (withInputs) {
+            lockPicksOf(request.shipmentIds());
             applyInputs(plan, request.shipmentIds(), request.vehicleTypeIds(), null, actor.userId(), now);
         }
         LoadPlanJpaEntity header = claim(() -> store.insert(plan, now));
@@ -263,11 +270,26 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
 
     @Override
     public PlanDetail setInputs(UUID loadPlanId, Inputs inputs, CurrentUser actor) {
+        lockPicksOf(inputs.shipmentIds());
         LoadPlanJpaEntity header = lock(loadPlanId, inputs.expectedVersion());
         LoadPlan plan = store.load(header);
         Instant now = clock.instant();
         applyInputs(plan, inputs.shipmentIds(), inputs.vehicleTypeIds(), inputs.selectionMode(), actor.userId(), now);
         return saved(plan, header, now);
+    }
+
+    /**
+     * The orders' fulfilment tasks, locked before the plan (id order of the orders): the lock the order-cancellation
+     * listener takes first. A cancellation running meanwhile then either finishes before the parcels are claimed (the
+     * shipment is CANCELLED: 409) or starts after the claim committed (it sees the plan and releases the parcels before
+     * voiding them) - never between, where its void would hit tg_package_in_load_plan.
+     */
+    private void lockPicksOf(List<UUID> shipmentIds) {
+        if (shipmentIds == null || shipmentIds.isEmpty()) {
+            return;
+        }
+        shipmentLocks.ordersOf(new LinkedHashSet<>(shipmentIds)).stream().sorted()
+                .forEach(orderId -> picks.lockByOrderId(orderId));
     }
 
     /** Whole shipments (LP-5) of this warehouse's full truckloads waiting for dispatch, with their free parcels. */
@@ -719,7 +741,13 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         }
     }
 
-    /** LP-4: an order that does not allow partial shipments leaves nothing behind. */
+    /**
+     * LP-4 / PACK-PARTIAL: an order that does not allow partial shipments leaves whole with this plan - nothing of it
+     * left behind on the tray, and every unit it still wants placed in this plan: not packed yet, or packed in a
+     * shipment in no plan or in another plan, is a partial shipment too (the rule of the parcel loads,
+     * {@link PartialShipments}). Orders whose parcels carry no contents (packed before contents were recorded) are
+     * not counted, as at the parcel loads.
+     */
     private void requirePartialAllowed(LoadPlan plan, Map<UUID, LoadPlanParcels.Parcel> held) {
         Map<UUID, OrderSummary> refused = new TreeMap<>();
         for (UUID id : plan.unplacedPackageIds()) {
@@ -728,17 +756,43 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                 refused.put(order.orderId(), order);
             }
         }
+        Set<UUID> placed = plan.placedPackageIds();
+        Map<UUID, Integer> leaving = new HashMap<>();
+        Map<UUID, OrderSummary> ordersInPlan = new HashMap<>();
+        held.values().forEach(p -> {
+            if (p.order() != null) {
+                ordersInPlan.put(p.order().orderId(), p.order());
+            }
+        });
+        Map<UUID, UUID> orderOfPackage = new HashMap<>();
+        held.values().forEach(p -> orderOfPackage.put(p.packageId(), p.order() == null ? null : p.order().orderId()));
+        Set<UUID> recorded = new HashSet<>();
+        for (var line : packageLines.findByPackageIdIn(held.keySet())) {
+            UUID orderId = orderOfPackage.get(line.getPackageId());
+            if (orderId != null) {
+                recorded.add(orderId);
+                if (placed.contains(line.getPackageId())) {
+                    leaving.merge(orderId, line.getQuantity(), Integer::sum);
+                }
+            }
+        }
+        ordersInPlan.forEach((orderId, order) -> {
+            if (!allowsPartial(order) && recorded.contains(orderId)
+                    && leaving.getOrDefault(orderId, 0) < PartialShipments.outstandingUnits(order)) {
+                refused.put(orderId, order);
+            }
+        });
         if (!refused.isEmpty()) {
             List<String> numbers = refused.values().stream().map(OrderSummary::orderNumber).sorted().toList();
             throw new BusinessException(ErrorCode.ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED, ("Order(s) %s do not allow "
-                    + "partial shipments, and the plan leaves some of their packages behind: place them, or ask Sales "
-                    + "to allow partial shipment (LP-4)").formatted(String.join(", ", numbers)),
+                    + "partial shipments, and this plan does not take all of them: place every package of the order in "
+                    + "this plan, or ask Sales to allow partial shipment (LP-4)").formatted(String.join(", ", numbers)),
                     numbers.stream().map(n -> FieldError.of("orderNumber", n)).toList());
         }
     }
 
     private static boolean allowsPartial(OrderSummary order) {
-        return order == null || order.lifecycle() == null || order.lifecycle().allowPartialShipment();
+        return PartialShipments.mayShipInParts(order);
     }
 
     private List<DispatchLoadJpaEntity> loadsOf(LoadPlan plan) {
@@ -870,7 +924,8 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
             DispatchLoadJpaEntity l = loadOf.get(v.id());
             return new VehicleSummary(v.seq(), v.id(), v.spec().typeId(), v.spec().code(),
                     countOf.getOrDefault(v.seq(), 0), v.usedVolumeMm3(), v.usedWeightKg(), v.volumeFillPct(),
-                    v.weightFillPct(), l == null ? null : new LoadRef(l.getId(), l.getCode(), l.getStatus().name()));
+                    v.weightFillPct(), l == null ? null : new LoadRef(l.getId(), l.getCode(), l.getStatus().name()),
+                    v.needsRecalculation());
         }).toList();
         LoadPlan.Snapshot s = plan.snapshot();
         Acknowledgement ack = s.acknowledgedAt() == null ? null
