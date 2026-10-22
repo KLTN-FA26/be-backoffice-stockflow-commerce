@@ -304,6 +304,35 @@ why the report's architecture diagrams come from there rather than from a drawin
 
 ---
 
+## CI & quality checks
+
+Workflows live in `.github/workflows/`; every pull request runs them.
+
+| Check | Workflow | Required to merge | What it does |
+|---|---|---|---|
+| `build` | `build.yml` | **yes** | `tools/verify.py`, compile, `ModularityTest` + `ArchitectureTest`, the full test suite with Testcontainers, append-only migration check, JaCoCo coverage summary |
+| `Analyze (actions)`, `Analyze (java-kotlin)` | `codeql.yml` | no | CodeQL static analysis (also weekly) |
+| Trivy image scan | `build.yml`, `docker` job | no (push to `develop` only) | scans the pushed image for fixable CRITICAL/HIGH vulnerabilities and uploads the result to the Security tab. Warning-only for the first week, then it blocks the deploy |
+| SonarQube Cloud analysis | `build.yml`, last step of `build` | no | code quality and coverage (from the JaCoCo XML, tests are not run twice). Warning-only for the first week. **Skipped until Sonar is set up** |
+
+**Setting up SonarQube Cloud** (repository admin, once):
+
+1. Import the repository in SonarQube Cloud (organization `kltn-fa26`). The project key must be
+   `KLTN-FA26_be-backoffice-stockflow-commerce`, which is what `pom.xml` expects.
+2. Repository secret `SONAR_TOKEN`: the project's analysis token.
+3. Repository variable `SONAR_ORGANIZATION`: `kltn-fa26`.
+4. Turn off "Automatic Analysis" for the project in SonarQube Cloud, otherwise it conflicts with the
+   CI analysis.
+
+Until both exist the Sonar step prints a notice and is skipped, and the build stays green.
+
+**Dependabot** (`.github/dependabot.yml`) opens pull requests against `develop` every Monday at
+08:00 Vietnam time for Maven, GitHub Actions and the Dockerfile. Minor and patch updates are grouped
+into one pull request per ecosystem, majors are separate, at most 5 open at a time, titled
+`chore(deps): ...` and labelled `dependencies`.
+
+---
+
 ## Database conventions
 
 One database, `stockflow`; one schema per module. Three rules, and the reasoning is in
