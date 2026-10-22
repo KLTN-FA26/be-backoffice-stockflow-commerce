@@ -6,6 +6,7 @@ import com.stockflow.fulfillment.internal.entity.PackJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PackageJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PackageLineJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PackageScanJpaEntity;
+import jakarta.persistence.EntityManager;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -33,14 +34,17 @@ public class PackingSessionStore {
     private final PackageScanJpaRepository scans;
     private final PackJpaRepository packs;
     private final ShipmentJpaRepository shipments;
+    private final EntityManager entityManager;
 
     PackingSessionStore(PackageJpaRepository packages, PackageLineJpaRepository packageLines,
-                        PackageScanJpaRepository scans, PackJpaRepository packs, ShipmentJpaRepository shipments) {
+                        PackageScanJpaRepository scans, PackJpaRepository packs, ShipmentJpaRepository shipments,
+                        EntityManager entityManager) {
         this.packages = packages;
         this.packageLines = packageLines;
         this.scans = scans;
         this.packs = packs;
         this.shipments = shipments;
+        this.entityManager = entityManager;
     }
 
     public PackingSession load(PackJpaEntity pack, String orderNumber, List<PackingSession.Line> lines) {
@@ -83,7 +87,47 @@ public class PackingSessionStore {
                 scanned.stream().map(PackageScanJpaEntity::getId).toList());
     }
 
+    /**
+     * Writes what changed. A database kit rule that refuses it (V20261022001000) is answered with the kit's own 409
+     * ({@link KitConstraints}), not a 500 - the rule that a kit ships whole included: it waits for the commit, so it is
+     * checked here, before the write returns, whenever a kit part changed.
+     */
     public void save(PackingSession session, PackJpaEntity pack) {
+        try {
+            write(session, pack);
+            if (session.changedParcels().stream().anyMatch(parcel -> parcel.kit() != null)) {
+                checkKitsNow();
+            }
+        } catch (RuntimeException refused) {
+            throw KitConstraints.translate(refused).map(RuntimeException.class::cast).orElse(refused);
+        }
+    }
+
+    /**
+     * The deferred "a kit ships whole" rule on what this transaction wrote so far, answered as the station answers it
+     * ({@code KIT_INCOMPLETE}) instead of failing the commit.
+     */
+    public void checkKits() {
+        try {
+            checkKitsNow();
+        } catch (RuntimeException refused) {
+            throw KitConstraints.translate(refused).map(RuntimeException.class::cast).orElse(refused);
+        }
+    }
+
+    /**
+     * Runs the deferred check on what this transaction wrote so far, then defers it again: later writes of the same
+     * transaction (one part at a time) are judged as they leave it, at the next check or the commit.
+     */
+    private void checkKitsNow() {
+        entityManager.flush();
+        entityManager.createNativeQuery("SET CONSTRAINTS fulfillment.tg_package_kit_ships_whole IMMEDIATE")
+                .executeUpdate();
+        entityManager.createNativeQuery("SET CONSTRAINTS fulfillment.tg_package_kit_ships_whole DEFERRED")
+                .executeUpdate();
+    }
+
+    private void write(PackingSession session, PackJpaEntity pack) {
         pack.apply(session.status(), session.startedAt(), session.startedBy(), session.packedAt(), session.packedBy());
         packs.saveAndFlush(pack);
         List<PackingSession.Parcel> changed = session.changedParcels();

@@ -8,6 +8,7 @@ import java.util.UUID;
  *
  * @param partNo    1..{@code partCount}; part 1 holds the unit, the others no goods
  * @param partCount the item's {@code package_count} when the kit was opened
+ * @param orderLineId the line whose one unit the kit holds (in part 1)
  */
-public record KitPartResponse(UUID groupId, int partNo, int partCount) {
+public record KitPartResponse(UUID groupId, int partNo, int partCount, UUID orderLineId) {
 }

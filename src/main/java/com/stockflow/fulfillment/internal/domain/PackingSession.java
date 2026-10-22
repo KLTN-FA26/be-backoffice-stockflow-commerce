@@ -340,9 +340,19 @@ public final class PackingSession {
                     "%s ships as %d boxes, not %d".formatted(line.sku(), parts, partCount),
                     List.of(new FieldError("partCount", "must be " + parts, "PackageCount")));
         }
-        if (packedOf(orderLineId) >= line.wanted()) {
+        // A kit is opened for a unit of the line still to pack that has reached packing (review of #155: under
+        // PACK-EARLY a print line not produced yet has none). Kits already opened for the line and still empty hold a
+        // unit each.
+        int held = packedOf(orderLineId) + emptyKits(orderLineId).size();
+        if (held >= line.wanted()) {
             throw new BusinessException(ErrorCode.PACK_QUANTITY_EXCEEDS_ORDER,
-                    "Line %s wants %d; all of it is packed".formatted(line.sku(), line.wanted()));
+                    "Line %s wants %d; all of it is packed or has a kit opened".formatted(line.sku(), line.wanted()));
+        }
+        if (held >= line.available()) {
+            throw new BusinessException(ErrorCode.PACK_QUANTITY_EXCEEDS_PICKED, line.available() == 0
+                    ? "Nothing of %s has reached packing yet: open its kit once it has".formatted(line.sku())
+                    : "%d of %s reached packing; each is packed or has a kit opened".formatted(line.available(),
+                    line.sku()));
         }
         if (ids.size() != parts) {
             throw new IllegalArgumentException("one id per part: " + parts);
@@ -354,7 +364,7 @@ public final class PackingSession {
             int no = next + part - 1;
             Parcel parcel = new Parcel(id, no, "PKG-" + orderNumber + "-" + no, type, PackageStatus.OPEN, null, null,
                     null, true, false, false, false, null, null, null, null, Map.of(), now,
-                    new KitPart(groupId, part, parts));
+                    new KitPart(groupId, part, parts, orderLineId));
             parcels.add(parcel);
             changed.add(id);
             kit.add(parcel);
@@ -378,7 +388,7 @@ public final class PackingSession {
         }
         requireUnits(quantity);
         Parcel parcel = requireOpen(packageId);
-        Line line = lineFor(code, orderLineId);
+        Line line = lineFor(code, orderLineId == null ? kitLineScanned(parcel, code) : orderLineId);
         requireKitRoom(parcel, line, quantity);
         int packed = packedOf(line.orderLineId());
         if ((long) packed + quantity > line.wanted()) {
@@ -599,6 +609,8 @@ public final class PackingSession {
         }
         parcels.stream().filter(p -> p.status == PackageStatus.OPEN && p.isEmpty() && p.kit == null)
                 .forEach(p -> voidOne(p, actor, now));
+        // A kit opened and never used - nothing in part 1, nothing sealed - goes like an empty box (review of #155).
+        emptyKits(null).forEach(kit -> kit.forEach(p -> voidOne(p, actor, now)));
         return new Completion(toShip, content, !missing.isEmpty(), missing);
     }
 
@@ -779,8 +791,20 @@ public final class PackingSession {
     }
 
     /**
-     * LP2-6: a kit's parts 2..N take no goods; part 1 takes one unit of an item that ships as as many boxes as the kit
-     * has parts.
+     * The kit's own line when the code scanned into its part 1 is that line's item: a code on two lines (a plain and a
+     * printed one of one SKU) then means the line the kit was opened for. Null otherwise - the code decides.
+     */
+    private UUID kitLineScanned(Parcel parcel, String code) {
+        if (parcel.kit == null || !parcel.kit.holdsGoods()) {
+            return null;
+        }
+        Line own = lines.get(parcel.kit.orderLineId());
+        return own != null && (same(code, own.sku()) || same(code, own.barcode())) ? own.orderLineId() : null;
+    }
+
+    /**
+     * LP2-6: a kit's parts 2..N take no goods; part 1 takes one unit of the line the kit was opened for, and no other
+     * item - even one that ships as as many boxes ({@code KIT_ITEM_MISMATCH}, review of #155).
      */
     private static void requireKitRoom(Parcel parcel, Line line, int quantity) {
         KitPart kit = parcel.kit;
@@ -792,9 +816,10 @@ public final class PackingSession {
                     + "holds no goods, part 1 holds the unit").formatted(parcel.packageNo, kit.partNo(),
                     kit.partCount()));
         }
-        if (line.packageCount() != kit.partCount()) {
-            throw new BusinessException(ErrorCode.KIT_PART_COUNT_MISMATCH, "%s ships as %d box(es); this kit has %d parts"
-                    .formatted(line.sku(), line.packageCount(), kit.partCount()));
+        if (!line.orderLineId().equals(kit.orderLineId())) {
+            throw new BusinessException(ErrorCode.KIT_ITEM_MISMATCH, ("Kit part 1 (package %d) was opened for another "
+                    + "line than %s: scan its own item, or open a kit for %s").formatted(parcel.packageNo, line.sku(),
+                    line.sku()));
         }
         if ((long) parcel.units() + quantity > 1) {
             throw new BusinessException(ErrorCode.KIT_CONTENTS_INVALID, ("Kit part 1 (package %d) holds one unit: open "
@@ -809,14 +834,33 @@ public final class PackingSession {
                 .orElseThrow(() -> new IllegalStateException("kit " + part.kit.groupId() + " has no part 1"));
     }
 
-    /**
-     * Every kit not yet shipped is whole before anything ships (LP2-6): all its parts sealed, part 1 with its unit.
-     * Refused with {@code KIT_INCOMPLETE}, one field error per kit naming the parts still missing.
-     */
-    private void requireWholeKits() {
+    /** Kits not voided and not shipped, by group, parts in order. */
+    private Map<UUID, List<Parcel>> openKits() {
         Map<UUID, List<Parcel>> kits = new LinkedHashMap<>();
         parcels.stream().filter(p -> p.kit != null && p.status != PackageStatus.VOIDED && !p.shipped())
                 .forEach(p -> kits.computeIfAbsent(p.kit.groupId(), id -> new ArrayList<>()).add(p));
+        return kits;
+    }
+
+    /**
+     * Kits opened and not used yet - no unit in part 1 and no part sealed - of {@code orderLineId} (null: of any line).
+     * Each holds a unit of its line when another kit is opened; completing voids them like empty boxes.
+     */
+    private List<List<Parcel>> emptyKits(UUID orderLineId) {
+        return openKits().values().stream()
+                .filter(parts -> orderLineId == null || parts.get(0).kit.orderLineId().equals(orderLineId))
+                .filter(parts -> parts.stream().allMatch(p -> p.isEmpty() && p.status == PackageStatus.OPEN))
+                .toList();
+    }
+
+    /**
+     * Every kit not yet shipped is whole before anything ships (LP2-6): all its parts sealed, part 1 with its unit.
+     * Refused with {@code KIT_INCOMPLETE}, one field error per kit naming the parts still missing. A kit not used at
+     * all is not in the way: completing voids it.
+     */
+    private void requireWholeKits() {
+        Map<UUID, List<Parcel>> kits = openKits();
+        emptyKits(null).forEach(parts -> kits.remove(parts.get(0).kit.groupId()));
         List<FieldError> problems = new ArrayList<>();
         List<String> described = new ArrayList<>();
         kits.forEach((groupId, parts) -> {

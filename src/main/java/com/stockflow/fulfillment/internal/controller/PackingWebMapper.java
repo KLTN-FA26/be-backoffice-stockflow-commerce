@@ -54,7 +54,8 @@ class PackingWebMapper {
     }
 
     static KitPartResponse kit(KitPart kit) {
-        return kit == null ? null : new KitPartResponse(kit.groupId(), kit.partNo(), kit.partCount());
+        return kit == null ? null : new KitPartResponse(kit.groupId(), kit.partNo(), kit.partCount(),
+                kit.orderLineId());
     }
 
     PackageLabelResponse toResponse(Packing.Label label) {

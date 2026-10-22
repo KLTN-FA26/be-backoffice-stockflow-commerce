@@ -24,19 +24,32 @@ class PackingSessionKitTest {
     private static final UUID TABLES = UUID.randomUUID();
     private static final UUID DESKS = UUID.randomUUID();
     private static final UUID CUPS = UUID.randomUUID();
+    private static final UUID SHELVES = UUID.randomUUID();
+    private static final UUID PRINTED_DESKS = UUID.randomUUID();
 
     /**
      * 2 tables (top and base: 2 boxes a unit, not rotatable), 1 desk (3 boxes, fragile), 5 cups (one box, the
-     * ordinary case).
+     * ordinary case), 1 shelf (2 boxes, like the table), 1 printed desk not produced yet (PACK-EARLY: none reached
+     * packing).
      */
     private static PackingSession session() {
+        return session(true);
+    }
+
+    /** {@code withLate}: with the shelf and the printed desk, which keep the order from being packed whole. */
+    private static PackingSession session(boolean withLate) {
         var tables = new PackingSession.Line(TABLES, "TABLE-OAK-160", null, 2, 2, false, null, Map.of(), Set.of(),
                 false, false, 2);
         var desks = new PackingSession.Line(DESKS, "DESK-3P", null, 1, 1, false, null, Map.of(), Set.of(), true, true,
                 3);
         var cups = new PackingSession.Line(CUPS, "CUP-12OZ", null, 5, 5, false, null, Map.of(), Set.of(), true, false);
+        var shelves = new PackingSession.Line(SHELVES, "SHELF-2B", null, 1, 1, false, null, Map.of(), Set.of(), true,
+                false, 2);
+        var printed = new PackingSession.Line(PRINTED_DESKS, "DESK-3P", null, 1, 0, true, UUID.randomUUID(), Map.of(),
+                Set.of(), true, true, 3);
         var session = new PackingSession(UUID.randomUUID(), "SO-KIT", PackStatus.PENDING, null, null, null, null,
-                List.of(tables, desks, cups), List.of(), List.of());
+                withLate ? List.of(tables, desks, cups, shelves, printed) : List.of(tables, desks, cups), List.of(),
+                List.of());
         session.start(PACKER, false, NOW);
         return session;
     }
@@ -77,7 +90,7 @@ class PackingSessionKitTest {
         assertThat(parts).extracting(PackingSession.Parcel::packageNo).containsExactly(2, 3);
         assertThat(parts).extracting(PackingSession.Parcel::labelCode).containsExactly("PKG-SO-KIT-2", "PKG-SO-KIT-3");
         assertThat(parts).extracting(PackingSession.Parcel::kit)
-                .containsExactly(new KitPart(group, 1, 2), new KitPart(group, 2, 2));
+                .containsExactly(new KitPart(group, 1, 2, TABLES), new KitPart(group, 2, 2, TABLES));
         assertThat(session.changedParcels()).hasSize(3);
     }
 
@@ -108,7 +121,10 @@ class PackingSessionKitTest {
         assertThat(code(catchThrowable(() -> put(session, parts.get(1), "TABLE-OAK-160"))))
                 .isEqualTo(ErrorCode.KIT_CONTENTS_INVALID);
         assertThat(code(catchThrowable(() -> put(session, parts.get(0), "CUP-12OZ"))))
-                .as("a one-box item in a table kit").isEqualTo(ErrorCode.KIT_PART_COUNT_MISMATCH);
+                .as("a one-box item in a table kit").isEqualTo(ErrorCode.KIT_ITEM_MISMATCH);
+        assertThat(code(catchThrowable(() -> put(session, parts.get(0), "SHELF-2B"))))
+                .as("review of #155: a shelf ships as 2 boxes too, but the kit is the table's")
+                .isEqualTo(ErrorCode.KIT_ITEM_MISMATCH);
         assertThat(code(catchThrowable(() -> session.scan(UUID.randomUUID(), parts.get(0).id(), "TABLE-OAK-160", null,
                 null, 2, null, PACKER, NOW)))).isEqualTo(ErrorCode.KIT_CONTENTS_INVALID);
         put(session, parts.get(0), "TABLE-OAK-160");
@@ -173,17 +189,18 @@ class PackingSessionKitTest {
     }
 
     @Test
-    @DisplayName("an opened kit with no unit scanned blocks completion too; voiding one part voids the whole kit")
+    @DisplayName("a kit in use (unit in part 1, not sealed) blocks completion; voiding one part voids the whole kit")
     void voidingTakesTheKitApart() {
         var session = session();
         var parts = kit(session, TABLES, 2);
+        put(session, parts.get(0), "TABLE-OAK-160");
         var cups = session.openPackage(UUID.randomUUID(), null, NOW);
         session.scan(UUID.randomUUID(), cups.id(), "CUP-12OZ", null, null, 5, null, PACKER, NOW);
         seal(session, cups);
         BusinessException refused = (BusinessException) catchThrowable(() -> session.complete(true, "cups first", true,
                 PACKER, NOW));
         assertThat(refused.errorCode()).isEqualTo(ErrorCode.KIT_INCOMPLETE);
-        assertThat(refused.fieldErrors().getFirst().message()).contains("no unit scanned");
+        assertThat(refused.fieldErrors().getFirst().message()).contains("not sealed");
         session.voidPackage(parts.get(1).id(), PACKER, NOW);
         assertThat(parts).allSatisfy(p -> assertThat(p.status()).isEqualTo(PackageStatus.VOIDED));
         var completion = session.complete(true, "cups first", true, PACKER, NOW);
@@ -194,7 +211,7 @@ class PackingSessionKitTest {
     @Test
     @DisplayName("no double counting: two table kits are 4 parcels and 2 tables; with the cups the order is complete")
     void unitsAreCountedOnce() {
-        var session = session();
+        var session = session(false);
         for (int unit = 0; unit < 2; unit++) {
             var parts = kit(session, TABLES, 2);
             put(session, parts.get(0), "TABLE-OAK-160");
@@ -228,5 +245,62 @@ class PackingSessionKitTest {
                 .isEqualTo(ErrorCode.PACKAGE_SHIPPED);
         assertThat(code(catchThrowable(() -> session.reopen(parts.get(0).id()))))
                 .isEqualTo(ErrorCode.PACKAGE_SHIPPED);
+    }
+
+    @Test
+    @DisplayName("review of #155: no kit for a line with nothing at packing (a print line not produced yet, PACK-EARLY); "
+            + "an empty kit already opened holds a unit")
+    void aKitNeedsAUnitThatReachedPacking() {
+        var session = session();
+        BusinessException notProduced = (BusinessException) catchThrowable(() -> session.openKit(UUID.randomUUID(),
+                ids(3), PRINTED_DESKS, 3, null, NOW));
+        assertThat(notProduced.errorCode()).isEqualTo(ErrorCode.PACK_QUANTITY_EXCEEDS_PICKED);
+        assertThat(notProduced.getMessage()).contains("reached packing");
+        kit(session, SHELVES, 2);
+        assertThat(code(catchThrowable(() -> kit(session, SHELVES, 2))))
+                .as("the one shelf has a kit, empty still").isEqualTo(ErrorCode.PACK_QUANTITY_EXCEEDS_ORDER);
+        kit(session, TABLES, 2);
+        kit(session, TABLES, 2);
+        assertThat(code(catchThrowable(() -> kit(session, TABLES, 2)))).isEqualTo(ErrorCode.PACK_QUANTITY_EXCEEDS_ORDER);
+        assertThat(session.parcels()).hasSize(6);
+    }
+
+    @Test
+    @DisplayName("review of #155: a kit opened and never used is voided at completion like an empty box - it does not "
+            + "hold back the partial shipment of the rest; a kit with a part sealed still does")
+    void anEmptyKitDoesNotBlockCompletion() {
+        var session = session();
+        var unused = kit(session, TABLES, 2);
+        var cups = session.openPackage(UUID.randomUUID(), null, NOW);
+        session.scan(UUID.randomUUID(), cups.id(), "CUP-12OZ", null, null, 5, null, PACKER, NOW);
+        seal(session, cups);
+        var completion = session.complete(true, "cups first", true, PACKER, NOW);
+        assertThat(completion.parcels()).containsExactly(cups);
+        assertThat(unused).allSatisfy(p -> assertThat(p.status()).isEqualTo(PackageStatus.VOIDED));
+        assertThat(session.changedParcels()).containsAll(unused);
+
+        var started = kit(session, DESKS, 3);
+        put(session, started.get(0), "DESK-3P");
+        seal(session, started.get(1));
+        session.remove(UUID.randomUUID(), started.get(0).id(), DESKS, null, null, 1, PACKER, NOW);
+        assertThat(code(catchThrowable(() -> session.complete(true, "the rest", true, PACKER, NOW))))
+                .as("part 2 sealed: the kit is in use").isEqualTo(ErrorCode.KIT_INCOMPLETE);
+    }
+
+    @Test
+    @DisplayName("review of #155: the kit's code on two lines (plain and printed) means the kit's own line in part 1")
+    void theKitsLineDecidesAnAmbiguousCode() {
+        var plain = new PackingSession.Line(DESKS, "DESK-3P", null, 1, 1, false, null, Map.of(), Set.of(), true, false,
+                3);
+        var printed = new PackingSession.Line(PRINTED_DESKS, "DESK-3P", null, 1, 1, true, UUID.randomUUID(), Map.of(),
+                Set.of(), true, false, 3);
+        var session = new PackingSession(UUID.randomUUID(), "SO-KIT2", PackStatus.PACKING, NOW, PACKER, null, null,
+                List.of(plain, printed), List.of(), List.of());
+        var parts = kit(session, PRINTED_DESKS, 3);
+        put(session, parts.get(0), "DESK-3P");
+        assertThat(session.packedOf(PRINTED_DESKS)).isEqualTo(1);
+        assertThat(session.packedOf(DESKS)).isZero();
+        assertThat(code(catchThrowable(() -> session.scan(UUID.randomUUID(), parts.get(0).id(), "DESK-3P", null, null, 1,
+                DESKS, PACKER, NOW)))).isIn(ErrorCode.KIT_ITEM_MISMATCH, ErrorCode.KIT_CONTENTS_INVALID);
     }
 }

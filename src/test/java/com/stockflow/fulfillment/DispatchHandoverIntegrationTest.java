@@ -1269,4 +1269,68 @@ class DispatchHandoverIntegrationTest {
         assertThat(manifest.path("shipments").get(0).path("packages").findValuesAsText("groupId"))
                 .containsOnly(kit.path("kitGroupId").asText());
     }
+
+    /** A kit of the line opened, the unit scanned into part 1, every part sealed; its parts, part 1 first. */
+    private List<String> packKit(UUID task, UUID line) throws Exception {
+        JsonNode kit = data(as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/package-kits"),
+                "{\"orderLineId\":\"" + line + "\"}")).andExpect(status().isCreated()));
+        List<String> parts = new ArrayList<>();
+        kit.path("packages").forEach(p -> parts.add(p.path("packageId").asText()));
+        as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + parts.get(0) + "/scans"),
+                "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA.code() + "\",\"quantity\":1}"))
+                .andExpect(status().isOk());
+        for (String part : parts) {
+            as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + part + "/seal"),
+                    MEASURES)).andExpect(status().isOk());
+        }
+        return parts;
+    }
+
+    @Test
+    @DisplayName("review of #155: a kit shipped in part of the order and returned stays whole on its shipment; its unit is "
+            + "packed again in a new kit and ships with the rest")
+    void aReturnedKitIsPackedAgain() throws Exception {
+        stock(2);
+        OrderSummary order = order(PaymentTerm.PREPAID, null, 2, 1_000_000);
+        UUID task = pickedTask(order);
+        UUID line = order.lines().getFirst().lineId();
+        as(picker, "WAREHOUSE_STAFF", post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());
+        List<String> first = packKit(task, line);
+        UUID s1 = UUID.fromString(data(as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task
+                + "/packing-completion"), "{\"partial\":true,\"note\":\"one sofa now\"}")).andExpect(status().isOk()))
+                .path("shipmentId").asText());
+        String load = openLoad(ghn, s1).path("loadId").asText();
+        labels(s1).forEach(code -> {
+            try {
+                scan(load, code).andExpect(status().isOk());
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+        });
+        handOver(load).andExpect(status().isOk());
+        outcome(s1, "{\"outcome\":\"DELIVERY_FAILED\",\"failureReason\":\"REFUSED\"}").andExpect(status().isOk());
+        as(manager, "WAREHOUSE_MANAGER", body(post(BASE + "/shipments/" + s1 + "/delivery-outcome"),
+                "{\"outcome\":\"RETURNED\"}")).andExpect(status().isOk());
+
+        // The returned kit's unit is the order's to ship again: both sofas are packed anew, each in its own kit.
+        as(picker, "WAREHOUSE_STAFF", get(BASE + "/tasks/" + task + "/packing-session")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.lines[0].packed").value(0));
+        List<String> second = packKit(task, line);
+        List<String> third = packKit(task, line);
+        UUID s2 = UUID.fromString(data(as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task
+                + "/packing-completion"), "{}")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.packStatus").value("PACKED"))).path("shipmentId").asText());
+        assertThat(shipmentRow(s1)).containsEntry("status", "RETURNED");
+        assertThat(jdbc.queryForList("SELECT shipment_id || '/' || status FROM fulfillment.package WHERE id IN "
+                + "(?::uuid, ?::uuid)", String.class, first.get(0), first.get(1))).containsOnly(s1 + "/SEALED");
+        assertThat(jdbc.queryForObject("SELECT package_count FROM fulfillment.shipment WHERE id = ?", Integer.class,
+                s2)).isEqualTo(4);
+        assertThat(jdbc.queryForObject("SELECT count(DISTINCT kit_group_id) FROM fulfillment.package WHERE shipment_id "
+                + "= ?", Integer.class, s2)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT COALESCE(SUM(pl.quantity), 0) FROM fulfillment.package_line pl JOIN "
+                + "fulfillment.package p ON p.id = pl.package_id WHERE p.shipment_id = ?", Integer.class, s2))
+                .isEqualTo(2);
+        assertThat(second).hasSize(2);
+        assertThat(third).hasSize(2);
+    }
 }

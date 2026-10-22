@@ -48,6 +48,7 @@ public class PackageJpaEntity extends BaseEntity {
     @Column(name = "kit_group_id", updatable = false) private UUID kitGroupId;
     @Column(name = "kit_part_no", updatable = false) private Short kitPartNo;
     @Column(name = "kit_part_count", updatable = false) private Short kitPartCount;
+    @Column(name = "kit_order_line_id", updatable = false) private UUID kitOrderLineId;
 
     protected PackageJpaEntity() {
     }
@@ -69,6 +70,7 @@ public class PackageJpaEntity extends BaseEntity {
             this.kitGroupId = kit.groupId();
             this.kitPartNo = (short) kit.partNo();
             this.kitPartCount = (short) kit.partCount();
+            this.kitOrderLineId = kit.orderLineId();
         }
     }
 
@@ -117,6 +119,6 @@ public class PackageJpaEntity extends BaseEntity {
 
     /** The kit part it is, or null for an ordinary parcel. */
     public KitPart getKit() {
-        return kitGroupId == null ? null : new KitPart(kitGroupId, kitPartNo, kitPartCount);
+        return kitGroupId == null ? null : new KitPart(kitGroupId, kitPartNo, kitPartCount, kitOrderLineId);
     }
 }

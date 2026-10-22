@@ -387,6 +387,8 @@ public enum ErrorCode {
     KIT_PART_COUNT_MISMATCH("The kit's parts do not match how many boxes the item ships as", 422),
     /** LP2-6: only part 1 of a kit holds goods, and one unit of its item. */
     KIT_CONTENTS_INVALID("Only part 1 of a kit holds goods: one unit of its item", 409),
+    /** LP2-6 (review of #155): part 1 of a kit takes the item of the line the kit was opened for, no other. */
+    KIT_ITEM_MISMATCH("This kit was opened for another item", 422),
     /** Docs 09 §5: the shipment's status does not allow the step. */
     SHIPMENT_STATE_CONFLICT("The shipment cannot do that in its current status", 409),
     // ---- G4-2a loading and handover (kltn-docs 09 §4.1, §5): 404 / 400 / 409 kept together with the flow

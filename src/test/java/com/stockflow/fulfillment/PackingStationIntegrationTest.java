@@ -14,6 +14,7 @@ import com.stockflow.customer.api.CommercialTerm;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.DepositBalancePolicy;
 import com.stockflow.customer.api.SaveCreditTermsCommand;
+import com.stockflow.fulfillment.internal.repository.KitConstraints;
 import com.stockflow.order.api.CancelOrderCommand;
 import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.OrderService;
@@ -109,6 +110,7 @@ class PackingStationIntegrationTest {
     @Autowired EntityManager entityManager;
     @Autowired ApplicationEventPublisher publisher;
     @Autowired ObjectMapper json;
+    @Autowired com.stockflow.fulfillment.internal.repository.PackingSessionStore store;
 
     private UUID coordinator;
     private UUID managerHcm;
@@ -845,7 +847,7 @@ class PackingStationIntegrationTest {
             assertThat(parts).hasSize(3);
             scanAs(packerHcm, task, parts.get(0), scan(UUID.randomUUID(), SOFA.code(), null, 1))
                     .andExpect(status().isUnprocessableEntity())
-                    .andExpect(jsonPath("$.errorCode").value("KIT_PART_COUNT_MISMATCH"));
+                    .andExpect(jsonPath("$.errorCode").value("KIT_ITEM_MISMATCH"));
             scanAs(packerHcm, task, parts.get(0), scan(UUID.randomUUID(), TABLE.code(), TABLE_LOT, 1))
                     .andExpect(status().isOk());
             for (UUID part : parts) {
@@ -864,33 +866,53 @@ class PackingStationIntegrationTest {
                     + "WHERE id IN (?, ?, ?) ORDER BY kit_part_no", String.class, parts.get(0), parts.get(1),
                     parts.get(2))).containsExactly("1/3", "2/3", "3/3");
 
-            // The database holds the same rules.
+            // The database holds the same rules; each refusal names its rule, and the station maps it to a 409.
+            UUID part1 = parts.get(0);
             UUID part2 = parts.get(1);
             UUID part3 = parts.get(2);
-            assertThat(refused("UPDATE fulfillment.package SET kit_part_no = NULL WHERE id = ?", part2))
-                    .contains("ck_package_kit");
+            UUID sofaLine = lineOf(order, SOFA);
             assertThat(refused("UPDATE fulfillment.package SET kit_part_no = 4 WHERE id = ?", part2))
-                    .contains("ck_package_kit");
-            assertThat(refused("UPDATE fulfillment.package SET kit_group_id = NULL WHERE id = ?", part2))
-                    .contains("ck_package_kit");
-            assertThat(refused("UPDATE fulfillment.package SET kit_part_count = 4 WHERE id = ?", part2))
-                    .contains("agree on its size");
-            assertThat(refused("UPDATE fulfillment.package SET kit_part_no = 2 WHERE id = ?", part3))
-                    .contains("uk_package_kit_part");
+                    .contains("tg_package_kit_fixed");
+            assertThat(refused("UPDATE fulfillment.package SET kit_group_id = NULL, kit_part_no = NULL, "
+                    + "kit_part_count = NULL, kit_order_line_id = NULL WHERE id = ?", part2))
+                    .contains("tg_package_kit_fixed");
+            assertThat(refused(part(91, Map.of("kit_part_no", "NULL")), part2)).contains("ck_package_kit");
+            assertThat(refused(part(92, Map.of("kit_part_no", "4")), part2)).contains("ck_package_kit");
+            assertThat(refused(part(93, Map.of("kit_part_no", "2")), part2)).contains("uk_package_kit_part");
+            assertThat(refused(part(94, Map.of("kit_part_count", "4")), part2)).contains("agree on its size");
+            assertThat(refused(part(95, Map.of("kit_order_line_id", uuid(sofaLine))), part2))
+                    .contains("agree on its size and line");
             assertThat(refused("INSERT INTO fulfillment.package_line (id, package_id, order_line_id, quantity, version, "
                     + "created_at) VALUES (gen_random_uuid(), ?, ?, 1, 0, NOW())", part2, tableLine))
-                    .contains("only part 1 of a kit holds goods");
-            assertThat(refused("UPDATE fulfillment.package SET shipment_id = NULL WHERE id = ?", part3))
-                    .contains("ships whole");
+                    .contains("tg_package_line_kit_part");
+            assertThat(refused("INSERT INTO fulfillment.package_line (id, package_id, order_line_id, quantity, version, "
+                    + "created_at) VALUES (gen_random_uuid(), ?, ?, 1, 0, NOW())", part1, sofaLine))
+                    .as("review of #155: part 1 holds its own line only").contains("tg_package_line_kit_part");
             OrderSummary other = paidOrder(sofa(1));
             pickedTask(other);
             UUID otherPack = jdbc.queryForObject("SELECT k.id FROM fulfillment.pack k JOIN fulfillment.pick p ON "
                     + "p.id = k.pick_id WHERE p.order_id = ?", UUID.class, other.orderId());
-            assertThat(refused("INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, package_type, "
-                    + "status, rotatable, rotatable_overridden, fragile, fragile_overridden, kit_group_id, kit_part_no, "
-                    + "kit_part_count, version, created_at) SELECT gen_random_uuid(), ?, 99, 'PKG-X-99', 'CARTON', 'OPEN', "
-                    + "TRUE, FALSE, FALSE, FALSE, kit_group_id, 3, 3, 0, NOW() FROM fulfillment.package WHERE id = ?",
-                    otherPack, part2)).contains("one order");
+            assertThat(refused(part(96, Map.of("pack_id", uuid(otherPack))), part2)).contains("a line of its own order");
+            assertThat(refused(part(97, Map.of("pack_id", uuid(otherPack),
+                    "kit_order_line_id", uuid(lineOf(other, SOFA)))), part2)).contains("of one order");
+
+            // Review of #155: "a kit ships whole" waits for the commit. A commit it refuses carries an integrity
+            // SQLSTATE, which the API answers 409, not 500; a packing write checks it before it returns and answers
+            // KIT_INCOMPLETE.
+            String breakKit = "UPDATE fulfillment.package SET shipment_id = NULL WHERE id = ?";
+            Throwable atCommit = catchThrowable(() -> tx.executeWithoutResult(s -> jdbc.update(breakKit, part3)));
+            assertThat(chain(atCommit)).contains("tg_package_kit_ships_whole");
+            assertThat(sqlState(atCommit)).isEqualTo("23514");
+            assertThat(code(catchThrowable(() -> tx.executeWithoutResult(s -> {
+                jdbc.update(breakKit, part3);
+                store.checkKits();
+            })))).isEqualTo(ErrorCode.KIT_INCOMPLETE);
+            assertThat(code(KitConstraints.translate(catchThrowable(() -> tx.executeWithoutResult(s -> jdbc.update(
+                    "INSERT INTO fulfillment.package_line (id, package_id, order_line_id, quantity, version, "
+                    + "created_at) VALUES (gen_random_uuid(), ?, ?, 1, 0, NOW())", part2, tableLine))))
+                    .orElseThrow())).isEqualTo(ErrorCode.KIT_CONTENTS_INVALID);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.package WHERE id = ? AND shipment_id IS "
+                    + "NOT NULL", Integer.class, part3)).as("nothing broke").isEqualTo(1);
         } finally {
             tx.executeWithoutResult(s -> jdbc.update(
                     "UPDATE inventory.inventory_items SET package_count = 1 WHERE id = ?", item));
@@ -902,6 +924,121 @@ class PackingStationIntegrationTest {
                 .andExpect(jsonPath("$.data.lines[0].packageCount").value(1));
         openKit(task, "{\"orderLineId\":\"" + lineOf(plain, TABLE) + "\"}").andExpect(status().isUnprocessableEntity())
                 .andExpect(jsonPath("$.errorCode").value("KIT_PART_COUNT_MISMATCH"));
+    }
+
+    @Test
+    @DisplayName("review of #155: an order cancelled with one kit sealed and one half-packed voids every part with its "
+            + "label; a packed order's shipment cancelled (OrderCancelled) voids its kit whole; an unused kit does not "
+            + "hold back completion")
+    void cancellingVoidsKitsWhole() throws Exception {
+        stock(4);
+        OrderSummary order = paidOrder(sofa(2));
+        UUID line = lineOf(order, SOFA);
+        UUID task = pickedTask(order);
+        packer(post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());
+        List<UUID> sealed = kit(task, line);
+        scanAs(packerHcm, task, sealed.get(0), scan(UUID.randomUUID(), SOFA.code(), null, 1)).andExpect(status().isOk());
+        for (UUID part : sealed) {
+            seal(task, part, MEASURES).andExpect(status().isOk());
+        }
+        List<UUID> half = kit(task, line);
+        scanAs(packerHcm, task, half.get(0), scan(UUID.randomUUID(), SOFA.code(), null, 1)).andExpect(status().isOk());
+        seal(task, half.get(0), MEASURES).andExpect(status().isOk());
+        WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> orders.cancel(order.orderId(),
+                new CancelOrderCommand(CancellationReasonCode.CUSTOMER_REQUEST, "changed their mind", null, null)));
+        Await.until("every kit part voided", ASYNC, () -> sum("SELECT count(*) FROM fulfillment.package WHERE id IN "
+                + "(?, ?, ?, ?) AND status = 'VOIDED'", sealed.get(0), sealed.get(1), half.get(0), half.get(1)) == 4);
+        assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.pack WHERE pick_id = ?", String.class, task))
+                .isEqualTo("CANCELLED");
+
+        // A packed order, its kit in a shipment waiting for dispatch: the fulfillment side of a cancellation (data
+        // written before the rule that a packed order is not cancelled, or a future path) voids the kit whole.
+        OrderSummary packed = paidOrder(sofa(1));
+        UUID packedTask = pickedTask(packed);
+        packer(post(BASE + "/tasks/" + packedTask + "/packing-start")).andExpect(status().isOk());
+        // A kit opened and never used is voided at completion, like an empty box.
+        List<UUID> unused = kit(packedTask, lineOf(packed, SOFA));
+        packer(delete(BASE + "/tasks/" + packedTask + "/packages/" + unused.get(0))).andExpect(status().isOk());
+        List<UUID> spare = kit(packedTask, lineOf(packed, SOFA));
+        UUID box = openPackage(packedTask);
+        scanAs(packerHcm, packedTask, box, scan(UUID.randomUUID(), SOFA.code(), null, 1)).andExpect(status().isOk());
+        seal(packedTask, box, MEASURES).andExpect(status().isOk());
+        String shipment = data(packer(post(BASE + "/tasks/" + packedTask + "/packing-completion"))
+                .andExpect(status().isOk())).path("shipmentId").asText();
+        assertThat(sum("SELECT count(*) FROM fulfillment.package WHERE id IN (?, ?) AND status = 'VOIDED'",
+                spare.get(0), spare.get(1))).as("the unused kit voided at completion").isEqualTo(2);
+        OrderSummary kitOrder = paidOrder(sofa(1));
+        UUID kitTask = pickedTask(kitOrder);
+        packer(post(BASE + "/tasks/" + kitTask + "/packing-start")).andExpect(status().isOk());
+        List<UUID> parts = kit(kitTask, lineOf(kitOrder, SOFA));
+        scanAs(packerHcm, kitTask, parts.get(0), scan(UUID.randomUUID(), SOFA.code(), null, 1)).andExpect(status().isOk());
+        for (UUID part : parts) {
+            seal(kitTask, part, MEASURES).andExpect(status().isOk());
+        }
+        String kitShipment = data(packer(post(BASE + "/tasks/" + kitTask + "/packing-completion"))
+                .andExpect(status().isOk())).path("shipmentId").asText();
+        tx.executeWithoutResult(s -> publisher.publishEvent(new com.stockflow.contracts.OrderCancelled(
+                kitOrder.orderId(), kitOrder.orderNumber(), DemoData.CUSTOMER_ID, "PACKED", "OTHER", "test",
+                BigDecimal.ZERO, BigDecimal.ZERO, "VND", coordinator, java.time.Instant.now(), BigDecimal.ZERO)));
+        Await.until("the kit's shipment cancelled", ASYNC, () -> "CANCELLED".equals(jdbc.queryForObject(
+                "SELECT status FROM fulfillment.shipment WHERE id = ?::uuid", String.class, kitShipment)));
+        assertThat(jdbc.queryForList("SELECT status FROM fulfillment.package WHERE id IN (?, ?)", String.class,
+                parts.get(0), parts.get(1))).containsOnly("VOIDED");
+        assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.shipment WHERE id = ?::uuid", String.class,
+                shipment)).isEqualTo("READY_TO_DISPATCH");
+    }
+
+    /**
+     * A copy of the parcel {@code ?} names as another part of its kit, numbered {@code no}, with {@code overrides}
+     * (column to SQL expression): an INSERT for the database's kit rules.
+     */
+    private static String part(int no, Map<String, String> overrides) {
+        Map<String, String> columns = new java.util.LinkedHashMap<>();
+        columns.put("id", "gen_random_uuid()");
+        columns.put("pack_id", "pack_id");
+        columns.put("package_no", String.valueOf(no));
+        columns.put("label_code", "'PKG-X-" + no + "'");
+        columns.put("package_type", "'CARTON'");
+        columns.put("status", "'OPEN'");
+        columns.put("rotatable", "TRUE");
+        columns.put("rotatable_overridden", "FALSE");
+        columns.put("fragile", "FALSE");
+        columns.put("fragile_overridden", "FALSE");
+        columns.put("kit_group_id", "kit_group_id");
+        columns.put("kit_part_no", "kit_part_no");
+        columns.put("kit_part_count", "kit_part_count");
+        columns.put("kit_order_line_id", "kit_order_line_id");
+        columns.put("version", "0");
+        columns.put("created_at", "NOW()");
+        columns.putAll(overrides);
+        return "INSERT INTO fulfillment.package (" + String.join(", ", columns.keySet()) + ") SELECT "
+                + String.join(", ", columns.values()) + " FROM fulfillment.package WHERE id = ?";
+    }
+
+    private static String uuid(UUID id) {
+        return "'" + id + "'::uuid";
+    }
+
+    private static String chain(Throwable thrown) {
+        StringBuilder messages = new StringBuilder();
+        for (Throwable t = thrown; t != null && t.getCause() != t; t = t.getCause()) {
+            messages.append(t.getClass().getSimpleName()).append(": ").append(t.getMessage()).append('\n');
+        }
+        return messages.toString();
+    }
+
+    private static String sqlState(Throwable thrown) {
+        for (Throwable t = thrown; t != null && t.getCause() != t; t = t.getCause()) {
+            if (t instanceof java.sql.SQLException sql && sql.getSQLState() != null) {
+                return sql.getSQLState();
+            }
+        }
+        return null;
+    }
+
+    private static ErrorCode code(Throwable thrown) {
+        assertThat(thrown).isInstanceOf(BusinessException.class);
+        return ((BusinessException) thrown).errorCode();
     }
 
     /** The statement, committed on its own: what the database said when it refused it. */
