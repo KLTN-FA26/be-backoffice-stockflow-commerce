@@ -15,6 +15,11 @@ public record KitWarning(String kitName, Type type, String partCode, int count) 
         /** Not enough cartons of some part for even one set: its cartons load loose. */
         NO_COMPLETE_SET,
         /** Cartons of a part beyond the last whole set: they load loose. */
-        SURPLUS_PARTS
+        SURPLUS_PARTS,
+        /**
+         * The part's cartons do not all have the same sizes and rotatable flag, so the declared set cannot be laid as
+         * one: it is not kept, and its cartons load loose.
+         */
+        PARTS_OF_DIFFERENT_SIZES
     }
 }

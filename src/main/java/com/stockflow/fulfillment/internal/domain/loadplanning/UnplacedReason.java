@@ -12,5 +12,10 @@ public enum UnplacedReason {
      * Vehicles remain but it found no room: a fill carton (it never opens a vehicle), or a set part whose set could
      * not be completed in any vehicle.
      */
-    NO_SPACE
+    NO_SPACE,
+    /**
+     * Vehicles remained, but the time budget ran out before the search could load it ({@code meta.budgetExhausted}
+     * is set). A longer budget, or recalculating, may place it.
+     */
+    SEARCH_CUT_OFF
 }

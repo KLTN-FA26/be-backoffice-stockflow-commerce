@@ -130,9 +130,9 @@ public final class LoadPlanner {
             fillType.put(t, k.fill());
             (k.fill() ? fill : main).add(t.box(t.cartons.size()));
         });
-        List<KitSpec> kits = declaredKits(request.kits(), main);
+        List<KitWarning> warnings = new ArrayList<>();
+        List<KitSpec> kits = consistentKits(declaredKits(request.kits(), main), main, warnings);
         kits.addAll(kitsFromGroups(groups, partKeys));
-        checkKitParts(kits, main);
 
         // Anytime: a quick pass (one construction wherever the original would restart) gives a complete plan
         // whatever the load; the full search then has what is left of the budget to beat it. A full search that
@@ -167,6 +167,8 @@ public final class LoadPlanner {
             fillLeft = t.leftover();
         }
 
+        // Whether the search was cut off, fixed now: what follows (binding, checks) is bookkeeping, not search.
+        boolean cutOff = clock.expired();
         Binding binding = new Binding(cartons, typesByKey.values(), groups);
         List<PlannedVehicle> vehicles = new ArrayList<>();
         List<List<PlacementValidator.Item>> items = new ArrayList<>();
@@ -177,14 +179,22 @@ public final class LoadPlanner {
             items.add(vehicleItems);
             usedByType.merge(l.bin().spec.typeId(), 1, Integer::sum);
         }
-        List<PlacementViolation> splits = PlacementValidator.validateKitGroups(items);
+        Set<String> grouped = new HashSet<>();
+        groups.values().forEach(g -> g.forEach(i -> grouped.add(cartons.get(i).ref())));
+        List<List<PlacementValidator.Item>> setItems = new ArrayList<>();
+        for (List<PlacementValidator.Item> vehicle : items) {
+            setItems.add(vehicle.stream().filter(it -> grouped.contains(it.carton().ref())).toList());
+        }
+        List<PlacementViolation> splits = PlacementValidator.validateKitGroups(setItems);
         if (!splits.isEmpty()) {
             throw new IllegalStateException("the plan splits a physical set over vehicles: " + splits);
         }
         boolean fleet = request.mode() == SelectionMode.FEWEST_VEHICLES && usable.size() > 1;
         for (int idx : binding.left()) {
             CargoPackage c = cartons.get(idx);
-            unplaced.put(c.ref(), classifyLeftover(c, fillType.get(typeOf.get(idx)), scope, usedByType, fleet));
+            UnplacedReason r = classifyLeftover(c, fillType.get(typeOf.get(idx)), scope, usedByType, fleet);
+            // Room was left but the search ran out of time before it could use it: say so, not NO_SPACE.
+            unplaced.put(c.ref(), r == UnplacedReason.NO_SPACE && cutOff ? UnplacedReason.SEARCH_CUT_OFF : r);
         }
         List<UnplacedPackage> left = new ArrayList<>();
         for (CargoPackage c : cartons) {
@@ -194,7 +204,7 @@ public final class LoadPlanner {
             }
         }
 
-        LoadPlanResult result = new LoadPlanResult(vehicles, left, meta(outcome, clock, startNanos));
+        LoadPlanResult result = new LoadPlanResult(vehicles, left, meta(outcome, clock, startNanos, warnings, cutOff));
         checkPieces(cartons, result);
         return result;
     }
@@ -247,7 +257,10 @@ public final class LoadPlanner {
 
     // ------------------------------------------------------------------ physical sets
 
-    /** The cartons of each kit group with two or more offered cartons, in request order. */
+    /**
+     * The cartons of each kit group with two or more offered main cartons, in request order. A fill carton is never
+     * part of a set: fill only tops up space, so its kit group is not kept.
+     */
     private static Map<String, List<Integer>> kitGroups(List<CargoPackage> cartons,
                                                        Map<String, UnplacedReason> unplaced) {
         Map<String, List<Integer>> groups = new LinkedHashMap<>();
@@ -256,10 +269,7 @@ public final class LoadPlanner {
             if (c.kitGroup() == null) {
                 continue;
             }
-            if (c.fill()) {
-                throw new IllegalArgumentException("carton " + c.ref() + " is fill and in a set; a set is main cargo");
-            }
-            if (!unplaced.containsKey(c.ref())) {
+            if (!c.fill() && !unplaced.containsKey(c.ref())) {
                 groups.computeIfAbsent(c.kitGroup(), k -> new ArrayList<>()).add(i);
             }
         }
@@ -268,8 +278,11 @@ public final class LoadPlanner {
     }
 
     /**
-     * Each carton's part key: its part code, and for a carton in a kit group also its set's composition (e.g.
-     * {@code "T-CB§T-CB*2+T-MB*1"}). Null part codes stay null for loose cartons; a set's carton must have one.
+     * Each carton's part key: its part code; for a carton in a kit group, its part code with its measured sizes and
+     * rotatable flag, and its set's make-up in the same terms (e.g. {@code "T-CB@730x730x800r§T-CB@730x730x800r*2+..."}).
+     * Sealed cartons are measured one by one, so two sets of the same item can differ by a millimetre: the sizes in
+     * the key keep each make-up its own set instead of one part code covering two sizes. A carton with no part code
+     * is keyed by its sizes alone.
      */
     private static Map<Integer, String> partKeys(List<CargoPackage> cartons, Map<String, List<Integer>> groups) {
         Map<Integer, String> keys = new HashMap<>();
@@ -279,21 +292,22 @@ public final class LoadPlanner {
         for (List<Integer> group : groups.values()) {
             Map<String, Integer> parts = new java.util.TreeMap<>();
             for (int i : group) {
-                String part = cartons.get(i).partCode();
-                if (part == null) {
-                    throw new IllegalArgumentException("carton " + cartons.get(i).ref()
-                            + " is in a set but has no part code");
-                }
-                parts.merge(part, 1, Integer::sum);
+                parts.merge(member(cartons.get(i)), 1, Integer::sum);
             }
             StringBuilder signature = new StringBuilder();
             parts.forEach((part, n) -> signature.append(signature.length() == 0 ? "" : "+").append(part).append('*')
                     .append(n));
             for (int i : group) {
-                keys.put(i, cartons.get(i).partCode() + SET_MARK + signature);
+                keys.put(i, member(cartons.get(i)) + SET_MARK + signature);
             }
         }
         return keys;
+    }
+
+    /** A set member as the solver must tell it apart: part code, measured sizes, rotatable flag. */
+    private static String member(CargoPackage c) {
+        return (c.partCode() == null ? "" : c.partCode()) + "@" + c.lengthMm() + "x" + c.widthMm() + "x"
+                + c.heightMm() + (c.rotatable() ? "r" : "f");
     }
 
     /** One declared set per set composition among the kit groups: what keeps each physical set whole. */
@@ -457,24 +471,32 @@ public final class LoadPlanner {
     }
 
     /**
-     * A set's part must be one kind of carton: the solver lays parts as one line, so two sizes under one part code
-     * would put the wrong carton in a slot. (The original kept the last line's sizes for all of them.)
+     * A declared set's part must be one kind of carton: the solver lays parts as one line, so two sizes under one part
+     * code would put the wrong carton in a slot. (The original kept the last line's sizes for all of them.) Measured
+     * data can be like that, so it is not refused: the set is not kept, its cartons load loose, and a warning says
+     * why. Kit groups never get here - their key carries the sizes.
      */
-    private static void checkKitParts(List<KitSpec> kits, List<Box> main) {
-        Set<String> parts = new HashSet<>();
-        kits.forEach(k -> parts.addAll(k.members().keySet()));
+    private static List<KitSpec> consistentKits(List<KitSpec> kits, List<Box> main, List<KitWarning> warnings) {
         Map<String, Integer> lines = new HashMap<>();
         for (Box b : main) {
-            if (parts.contains(b.partName())) {
-                lines.merge(b.partName(), 1, Integer::sum);
+            lines.merge(b.partName() == null ? "" : b.partName(), 1, Integer::sum);
+        }
+        List<KitSpec> out = new ArrayList<>();
+        for (KitSpec k : kits) {
+            String mixed = null;
+            for (String part : k.members().keySet()) {
+                if (lines.getOrDefault(part, 0) > 1) {
+                    mixed = part;
+                    break;
+                }
+            }
+            if (mixed == null) {
+                out.add(k);
+            } else {
+                warnings.add(new KitWarning(k.name(), KitWarning.Type.PARTS_OF_DIFFERENT_SIZES, mixed, 0));
             }
         }
-        lines.forEach((part, n) -> {
-            if (n > 1) {
-                throw new IllegalArgumentException("set part " + part
-                        + " has cartons of different sizes or rotatable flags");
-            }
-        });
+        return out;
     }
 
     // ------------------------------------------------------------------ reasons
@@ -668,14 +690,15 @@ public final class LoadPlanner {
         return seq;
     }
 
-    private static LoadPlanMeta meta(KitSolver.Outcome o, WorkClock clock, long startNanos) {
+    private static LoadPlanMeta meta(KitSolver.Outcome o, WorkClock clock, long startNanos,
+                                     List<KitWarning> plannerWarnings, boolean cutOff) {
         KitSolver.Meta m = o.meta();
         long elapsed = (System.nanoTime() - startNanos) / 1_000_000;
         long best = clock.lastImprovementNanos() == 0 ? elapsed
                 : (clock.lastImprovementNanos() - startNanos) / 1_000_000;
         return new LoadPlanMeta(m.algorithm(), m.setsTotal(), m.minVehicles(), m.targetVehicles(),
-                m.targetUnreachable(), m.distribution(), plainBalance(m.kitBalance()), plainWarnings(m.warnings()), m.combo(),
-                m.equalize().applied(), clock.expired(), clock.ticks(), elapsed, Math.max(0, best));
+                m.targetUnreachable(), m.distribution(), plainBalance(m.kitBalance()), plainWarnings(plannerWarnings, m.warnings()), m.combo(),
+                m.equalize().applied(), cutOff, clock.ticks(), elapsed, Math.max(0, best));
     }
 
     private static String plain(String partKey) {
@@ -683,7 +706,11 @@ public final class LoadPlanner {
             return null;
         }
         int at = partKey.indexOf(SET_MARK);
-        return at < 0 ? partKey : partKey.substring(0, at);
+        if (at < 0) {
+            return partKey;
+        }
+        String member = partKey.substring(0, at);       // part code @ sizes, for a kit group's carton
+        return member.substring(0, member.lastIndexOf('@'));
     }
 
     /** Kit balance by the part codes the caller sent, not the internal set-composition keys. */
@@ -697,8 +724,8 @@ public final class LoadPlanner {
         return out;
     }
 
-    private static List<KitWarning> plainWarnings(List<KitWarning> warnings) {
-        List<KitWarning> out = new ArrayList<>();
+    private static List<KitWarning> plainWarnings(List<KitWarning> plannerWarnings, List<KitWarning> warnings) {
+        List<KitWarning> out = new ArrayList<>(plannerWarnings);
         for (KitWarning w : warnings) {
             out.add(new KitWarning(w.kitName(), w.type(), plain(w.partCode()), w.count()));
         }

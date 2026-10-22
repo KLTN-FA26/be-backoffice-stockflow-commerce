@@ -300,14 +300,17 @@ class LoadPlannerTest {
     }
 
     @Test
-    void rejectsDuplicateRefsAndMixedKitParts() {
+    void rejectsDuplicateRefsButNeverMeasuredData() {
         assertThatThrownBy(() -> planner.plan(request(List.of(carton("x", 1, 1, 1, "1", true, null),
                 carton("x", 1, 1, 1, "1", true, null)), List.of(dc20(1, 0)), SelectionMode.SINGLE_TYPE, List.of())))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> planner.plan(request(List.of(carton("a1", 500, 500, 500, "1", true, "A"),
+        // A declared set whose part comes in two sizes is not kept - a warning, the cartons load loose, no exception.
+        LoadPlanResult r = plan(request(List.of(carton("a1", 500, 500, 500, "1", true, "A"),
                 carton("a2", 600, 500, 500, "1", true, "A"), carton("b", 500, 500, 500, "1", true, "B")),
-                List.of(dc20(1, 0)), SelectionMode.SINGLE_TYPE, List.of(new KitSpec("AB", Map.of("A", 1, "B", 1))))))
-                .isInstanceOf(IllegalArgumentException.class);
+                List.of(dc20(1, 0)), SelectionMode.SINGLE_TYPE, List.of(new KitSpec("AB", Map.of("A", 1, "B", 1)))));
+        assertThat(r.unplaced()).isEmpty();
+        assertThat(r.meta().kitWarnings()).containsExactly(
+                new KitWarning("AB", KitWarning.Type.PARTS_OF_DIFFERENT_SIZES, "A", 0));
     }
 
     @Test
@@ -488,5 +491,55 @@ class LoadPlannerTest {
         LoadPlanResult lowOnly = plan(request(cartons, List.of(lowDoor), SelectionMode.SINGLE_TYPE, List.of()));
         assertThat(lowOnly.unplaced()).hasSize(6)
                 .allSatisfy(u -> assertThat(u.reason()).isEqualTo(UnplacedReason.TOO_LARGE));
+    }
+
+    // ------------------------------------------------------------------ review round 2 (PR #156)
+
+    @Test
+    @DisplayName("review r2 #1: two sets of the same item, one part measured 1 mm larger, both stay whole")
+    void setsOfTheSameItemWithAMillimetreDifference() {
+        List<CargoPackage> cartons = List.of(
+                new CargoPackage("t1", null, 1200, 800, 600, new BigDecimal("20"), true, "TABLE/1", "set-1", null, false),
+                new CargoPackage("b1", null, 730, 730, 800, new BigDecimal("9"), true, "TABLE/2", "set-1", null, false),
+                new CargoPackage("t2", null, 1201, 800, 600, new BigDecimal("20"), true, "TABLE/1", "set-2", null, false),
+                new CargoPackage("b2", null, 730, 730, 800, new BigDecimal("9"), true, "TABLE/2", "set-2", null, false));
+        for (List<KitSpec> kits : List.of(List.<KitSpec>of(), List.of(new KitSpec("T", Map.of("TABLE/1", 1,
+                "TABLE/2", 1))))) {
+            LoadPlanResult r = plan(request(cartons, List.of(truck5t(2, 0)), SelectionMode.SINGLE_TYPE, kits));
+            assertThat(r.unplaced()).isEmpty();
+            assertThat(r.meta().setsTotal()).isEqualTo(2);
+            assertThat(r.meta().kitBalance()).allSatisfy(b -> assertThat(b.keySet())
+                    .containsOnly("TABLE/1", "TABLE/2"));
+        }
+    }
+
+    @Test
+    @DisplayName("review r2 #1: odd but real data never throws - a set without part codes, a fill carton in a set")
+    void oddSetDataIsLoadedNotRefused() {
+        List<CargoPackage> cartons = List.of(
+                new CargoPackage("p1", null, 600, 400, 400, new BigDecimal("5"), true, null, "set-x", null, false),
+                new CargoPackage("p2", null, 500, 400, 300, new BigDecimal("4"), true, null, "set-x", null, false),
+                new CargoPackage("f1", null, 400, 300, 300, new BigDecimal("2"), true, "F", "set-y", null, true),
+                new CargoPackage("m1", null, 600, 400, 400, new BigDecimal("5"), true, "M", "set-y", null, false));
+        LoadPlanResult r = plan(request(cartons, List.of(truck5t(1, 0)), SelectionMode.SINGLE_TYPE, List.of()));
+        assertThat(r.unplaced()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("review r2 #2: cartons the search had no time for are SEARCH_CUT_OFF, with budgetExhausted")
+    void cutOffCartonsSaySo() {
+        java.util.Random rnd = new java.util.Random(5);
+        List<CargoPackage> cartons = new ArrayList<>();
+        for (int i = 0; i < 1500; i++) {
+            cartons.add(carton("c" + i, 200 + rnd.nextInt(1200), 200 + rnd.nextInt(900), 150 + rnd.nextInt(800),
+                    "3", true, "SKU" + i % 300));
+        }
+        LoadPlanRequest req = new LoadPlanRequest(cartons, List.of(dc20(200, 150), dc40(100, 150)),
+                SelectionMode.FEWEST_VEHICLES, List.of(), KitDistribution.AUTO, false, null, 0L, Duration.ofMillis(5));
+        LoadPlanResult r = new LoadPlanner().plan(req);
+        assertSound(req, r);
+        assertThat(r.meta().budgetExhausted()).isTrue();
+        assertThat(r.unplaced()).isNotEmpty().allSatisfy(u -> assertThat(u.reason())
+                .isEqualTo(UnplacedReason.SEARCH_CUT_OFF));
     }
 }
