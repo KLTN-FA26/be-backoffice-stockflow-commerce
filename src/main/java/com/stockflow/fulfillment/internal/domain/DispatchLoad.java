@@ -136,6 +136,18 @@ public final class DispatchLoad {
                 null, null, null, null, BigDecimal.ZERO, null, null, null, 0, List.of(), List.of()));
     }
 
+    /**
+     * A vehicle of a confirmed load plan (09 §4.2 step 4-5, SCRUM-287 PR D): a full-truckload load, PLANNED - no carrier,
+     * vehicle or manifest yet. Booking the vehicle, its manifest and its loading are PR E's.
+     */
+    public static DispatchLoad planFullTruckload(UUID id, String code, UUID requestId, UUID warehouseId,
+                                                 UUID loadPlanVehicleId) {
+        Objects.requireNonNull(loadPlanVehicleId, "a full-truckload load is a vehicle of a load plan");
+        return new DispatchLoad(new Snapshot(id, code, requestId, warehouseId, DeliveryMode.FULL_TRUCKLOAD, null,
+                loadPlanVehicleId, null, null, null, LoadStatus.PLANNED, null, null, null, null, null, null, null,
+                BigDecimal.ZERO, null, null, null, 0, List.of(), List.of()));
+    }
+
     public static DispatchLoad restore(Snapshot snapshot) {
         return new DispatchLoad(snapshot);
     }
@@ -460,6 +472,8 @@ public final class DispatchLoad {
     public UUID warehouseId() { return warehouseId; }
     public DeliveryMode mode() { return mode; }
     public UUID carrierId() { return carrierId; }
+    /** The load-plan vehicle a full-truckload load is (SCRUM-287 PR D); null for a parcel load. */
+    public UUID loadPlanVehicleId() { return loadPlanVehicleId; }
     public LoadStatus status() { return status; }
     public long version() { return version; }
     public Instant dispatchedAt() { return dispatchedAt; }

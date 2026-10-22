@@ -22,4 +22,7 @@ public interface DispatchLoadJpaRepository extends BaseJpaRepository<DispatchLoa
     Optional<DispatchLoadJpaEntity> findByRequestId(UUID requestId);
 
     List<DispatchLoadJpaEntity> findByIdIn(Collection<UUID> ids);
+
+    /** The loads opened for these load-plan vehicles (SCRUM-287 PR D), cancelled ones included. */
+    List<DispatchLoadJpaEntity> findByLoadPlanVehicleIdIn(Collection<UUID> loadPlanVehicleIds);
 }

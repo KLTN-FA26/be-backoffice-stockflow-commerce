@@ -17,5 +17,10 @@ public enum ViolationType {
     /** Its placed width x height face is larger than the vehicle's door, so it could not be loaded that way. */
     DOOR,
     /** Its physical set (kit group) is spread over more than one vehicle. */
-    KIT_SPLIT
+    KIT_SPLIT,
+    /**
+     * A manual edit named an orientation that does not give the placed sizes it sent (the request contradicts itself;
+     * the sizes are not checked against the rotation rule then). Never reported by {@link PlacementValidator}.
+     */
+    ORIENTATION_MISMATCH
 }

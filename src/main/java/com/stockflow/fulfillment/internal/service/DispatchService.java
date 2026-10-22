@@ -233,6 +233,7 @@ class DispatchService implements Dispatching {
     public LoadDetail addShipments(UUID loadId, List<UUID> shipmentIds, CurrentUser actor) {
         DispatchLoadJpaEntity header = lockLoad(loadId);
         DispatchLoad load = store.load(header);
+        requireNotPlanManaged(load);
         if (add(load, shipmentIds, actor.userId(), clock.instant())) {
             header = store.save(load, header);
         }
@@ -295,17 +296,10 @@ class DispatchService implements Dispatching {
                 return;
             }
             OrderSummary order = orders.findById(orderId).orElse(null);
-            if (order == null || order.lifecycle() == null || order.lifecycle().allowPartialShipment()) {
+            if (PartialShipments.mayShipInParts(order)) {
                 return;
             }
-            Map<UUID, Integer> progress = new HashMap<>();
-            Map<UUID, Integer> closed = new HashMap<>();
-            order.lifecycle().lines().forEach(line -> {
-                progress.put(line.lineId(), line.shippedQuantity());
-                closed.put(line.lineId(), line.cancelledQuantity());
-            });
-            int outstanding = order.lines().stream().mapToInt(line -> line.quantity()
-                    - closed.getOrDefault(line.lineId(), 0) - progress.getOrDefault(line.lineId(), 0)).sum();
+            int outstanding = PartialShipments.outstandingUnits(order);
             boolean recorded = ofOrder.stream().allMatch(row -> contents.containsKey(row.getId()));
             int leaving = ofOrder.stream().flatMap(row -> contents.getOrDefault(row.getId(), List.of()).stream())
                     .mapToInt(ShipmentHandover.Line::quantity).sum();
@@ -542,11 +536,23 @@ class DispatchService implements Dispatching {
     public LoadDetail cancel(UUID loadId, String reason, CurrentUser actor) {
         DispatchLoadJpaEntity header = lockLoad(loadId);
         DispatchLoad load = store.load(header);
+        requireNotPlanManaged(load);
         if (load.cancel(reason, actor.userId(), clock.instant())) {
             header = store.save(load, header);
             log.info("Load {} cancelled", load.code());
         }
         return detail(header, load);
+    }
+
+    /**
+     * SCRUM-287 PR D: a load of a load plan's vehicle changes only through its plan (reopening and cancelling the plan
+     * cancel it, LP-11), never on its own: 409 {@code LOAD_MANAGED_BY_PLAN}.
+     */
+    private static void requireNotPlanManaged(DispatchLoad load) {
+        if (load.loadPlanVehicleId() != null) {
+            throw new BusinessException(ErrorCode.LOAD_MANAGED_BY_PLAN, ("Load %s is a vehicle of a load plan; change "
+                    + "it through the plan").formatted(load.code()));
+        }
     }
 
     // ------------------------------------------------------------------ the printable manifest
