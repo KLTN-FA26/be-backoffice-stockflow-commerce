@@ -1,8 +1,11 @@
 package com.stockflow.fulfillment.internal.entity;
 
 import com.stockflow.common.persistence.BaseEntity;
+import com.stockflow.fulfillment.internal.domain.DeliveryMode;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.Table;
 
 import java.math.BigDecimal;
@@ -16,6 +19,9 @@ public class DispatchLoadShipmentJpaEntity extends BaseEntity {
 
     @Column(name = "load_id", nullable = false, updatable = false) private UUID loadId;
     @Column(name = "shipment_id", nullable = false, updatable = false) private UUID shipmentId;
+    /** The load's delivery mode (V20261022001400): a PARCEL manifest holds a shipment alone, an FTL one shares it. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "mode", nullable = false, updatable = false, length = 16) private DeliveryMode mode;
     @Column(name = "active", nullable = false) private boolean active;
     @Column(name = "added_at", nullable = false) private Instant addedAt;
     @Column(name = "added_by", nullable = false) private UUID addedBy;
@@ -27,10 +33,11 @@ public class DispatchLoadShipmentJpaEntity extends BaseEntity {
     protected DispatchLoadShipmentJpaEntity() {
     }
 
-    public DispatchLoadShipmentJpaEntity(UUID id, UUID loadId, UUID shipmentId) {
+    public DispatchLoadShipmentJpaEntity(UUID id, UUID loadId, UUID shipmentId, DeliveryMode mode) {
         super(id);
         this.loadId = loadId;
         this.shipmentId = shipmentId;
+        this.mode = mode;
     }
 
     public void apply(boolean active, Instant addedAt, UUID addedBy, Instant removedAt, UUID removedBy,
@@ -46,6 +53,7 @@ public class DispatchLoadShipmentJpaEntity extends BaseEntity {
 
     public UUID getLoadId() { return loadId; }
     public UUID getShipmentId() { return shipmentId; }
+    public DeliveryMode getMode() { return mode; }
     public boolean isActive() { return active; }
     public Instant getAddedAt() { return addedAt; }
     public UUID getAddedBy() { return addedBy; }

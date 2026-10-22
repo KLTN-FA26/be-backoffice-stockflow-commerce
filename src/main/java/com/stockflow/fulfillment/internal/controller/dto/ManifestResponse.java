@@ -12,6 +12,9 @@ import java.util.List;
  *
  * @param codChangedSinceLabel per shipment: the COD fixed at the handover differs from its label's (money arrived
  *                             meanwhile) - the manifest's figure is the one collected
+ * @param mode                 PARCEL or FULL_TRUCKLOAD; a full truckload's manifest is per vehicle (BR-15): it lists
+ *                             only the parcels its plan placed on the vehicle ({@code loadPlanCode}, {@code vehicleSeq},
+ *                             {@code vehicleTypeCode}) and its COD is always 0
  */
 public record ManifestResponse(String loadCode, String status, String warehouseName, String warehouseAddress,
                                String carrierCode, String carrierName, String carrierContactName,
@@ -19,7 +22,8 @@ public record ManifestResponse(String loadCode, String status, String warehouseN
                                String carrierRepresentative, String signatureRef, String handoverNote,
                                Instant dispatchedAt, String dispatchedByName, List<Shipment> shipments,
                                int shipmentCount, int packageCount, BigDecimal totalWeightKg, BigDecimal codTotal,
-                               String currency, Instant printedAt) {
+                               String currency, Instant printedAt, String mode, String loadPlanCode,
+                               Integer vehicleSeq, String vehicleTypeCode) {
 
     public record Shipment(String shipmentCode, String orderNumber, String recipientName, String recipientPhone,
                            String deliveryAddress, int packageCount, BigDecimal weightKg, BigDecimal codAmount,

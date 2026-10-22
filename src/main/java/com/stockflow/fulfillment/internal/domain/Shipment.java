@@ -75,7 +75,7 @@ public final class Shipment {
     private final UUID warehouseId;
     private final UUID requestId;
     private final DeliveryMode deliveryMode;
-    private final int packageCount;
+    private int packageCount;
     private BigDecimal codAmount;
     private final boolean partial;
     private final String partialNote;
@@ -198,6 +198,31 @@ public final class Shipment {
         handedOverBy = by;
         recorded.add(new Step(status, at, by, null));
         return true;
+    }
+
+    /**
+     * Some of its parcels stay behind when its load plan is confirmed (kltn-docs 09 §4.2 step 3 and edge "kiện không xếp
+     * được ... để lại khu DISPATCH cho chuyến sau, giao lệch chuyến", SCRUM-392): they become a new shipment waiting for
+     * dispatch, born now, and this one keeps the rest. Only a full truckload waiting for dispatch is split (it carries no
+     * COD, so no amount moves); the caller moves the parcels.
+     *
+     * @param parcels how many parcels go to the new shipment (at least one)
+     * @param staying how many stay with this one (at least one)
+     * @return the new shipment, READY_TO_DISPATCH, partial with {@code note}
+     */
+    public Shipment splitOff(UUID newId, String newCode, UUID newRequestId, int parcels, int staying, String note,
+                             UUID by, Instant at) {
+        if (status != ShipmentStatus.READY_TO_DISPATCH || deliveryMode != DeliveryMode.FULL_TRUCKLOAD) {
+            throw new BusinessException(ErrorCode.SHIPMENT_STATE_CONFLICT,
+                    "Shipment %s is %s %s; only a full truckload waiting for dispatch is split".formatted(code,
+                            deliveryMode, status));
+        }
+        if (parcels < 1 || staying < 1) {
+            throw new IllegalArgumentException("A split moves at least one parcel and leaves at least one");
+        }
+        packageCount = staying;
+        return ready(newId, newCode, orderId, packId, warehouseId, newRequestId, deliveryMode, parcels, BigDecimal.ZERO,
+                note, by, at);
     }
 
     /**

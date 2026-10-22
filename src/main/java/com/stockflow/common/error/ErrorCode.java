@@ -463,6 +463,8 @@ public enum ErrorCode {
     /** Docs 09 BR-04: the COD the order fixes at the handover is not the one on the parcels' label: reprint it. */
     LABEL_OUTDATED("The package label shows another COD amount than the order now fixes; reprint it", 409),
     LOAD_SCAN_ID_CONFLICT("This scan id was already used for another package or load", 409),
+    /** SCRUM-392: parcels of a cancelled order are still on the vehicle; unload them before it is handed over. */
+    LOAD_UNLOAD_PENDING("Parcels of a cancelled order are still on this vehicle; unload them first", 409),
     OPTIMISTIC_LOCK("The record changed meanwhile, please retry", 409),
     /** Two writers reached the same row; the loser waited for the lock and gave up. Retryable. */
     LOCK_TIMEOUT("The record is busy, please retry", 409),

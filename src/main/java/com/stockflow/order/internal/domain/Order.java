@@ -89,6 +89,12 @@ public final class Order extends AggregateRoot {
      * Written by fulfillment in the transaction that completes the package, under this order's row lock.
      */
     private Instant packedAt;
+    /**
+     * SCRUM-392 (review of #162): when goods of the order first left the warehouse on a load plan's vehicle - before the
+     * shipment they belong to is handed over at its last vehicle (LP-3). From then the order is no longer cancelled
+     * (lead's #150 rule: cancel-with-fee only while nothing left), only its remainder closed or returned.
+     */
+    private Instant goodsLeftAt;
     private PaymentTerm paymentTerm = PaymentTerm.PREPAID;
     private java.math.BigDecimal depositRequired;
     private Instant depositReceivedAt;
@@ -910,6 +916,12 @@ public final class Order extends AggregateRoot {
                     + "ahead of its prints: partial shipment stays allowed until the prints follow or are closed")
                     .formatted(orderNumber));
         }
+        if (!allowed && allowPartialShipment && goodsLeftAt != null) {
+            // SCRUM-392 (review of #162): part of it already left on a load plan's vehicle - the other vehicles carry
+            // the rest of a partial plan; turning the flag off would leave them unable to sign.
+            throw new BusinessException(ErrorCode.ORDER_PARTIAL_SHIPMENT_LOCKED, ("Order %s already has goods on a "
+                    + "load plan's vehicle that left: partial shipment stays allowed").formatted(orderNumber));
+        }
         if (allowPartialShipment == allowed) {
             return false;
         }
@@ -1275,6 +1287,28 @@ public final class Order extends AggregateRoot {
         return recordHandover(handover, null);
     }
 
+    /**
+     * Whether goods of the order may leave the warehouse now - the gate of {@link #recordHandover} without recording
+     * anything (SCRUM-392 LP-3: a vehicle of a load plan leaves with part of a shipment, which is handed over only with
+     * its last vehicle). Refused while the order is cancelled, on hold or not yet picking, and when its terms want money
+     * before the goods leave that has not all arrived ({@code ORDER_BALANCE_NOT_PAID}, G3-Q4).
+     *
+     * @param ledger as for {@link #markShipped(Instant, UUID, LedgerMoney)}
+     */
+    public void requireHandoverAllowed(LedgerMoney ledger) {
+        requireNotCancelled("its goods are not handed over");
+        // PACK-EARLY: IN_PRODUCTION / READY_TO_FULFILL hand over the stock packed while the order was printed - only
+        // part of the order, so only when it allows partial shipments (recordHandover checks what is left behind).
+        boolean early = status == OrderStatus.IN_PRODUCTION || status == OrderStatus.READY_TO_FULFILL;
+        if (status != OrderStatus.PICKING && status != OrderStatus.PACKED && status != OrderStatus.PARTIALLY_FULFILLED
+                && !early) {
+            throw new InvalidOrderTransitionException(orderNumber, status,
+                    status == OrderStatus.ON_HOLD ? "resolve the hold before handing goods over"
+                            : "only a picking, packed or partly shipped order hands goods over");
+        }
+        requireHandoverPaid(ledger);
+    }
+
     /** @param ledger as for {@link #markShipped(Instant, UUID, LedgerMoney)} */
     public boolean recordHandover(ShipmentHandover handover, LedgerMoney ledger) {
         java.util.Objects.requireNonNull(handover, "handover");
@@ -1288,17 +1322,8 @@ public final class Order extends AggregateRoot {
             }
             return false;
         }
-        requireNotCancelled("its goods are not handed over");
-        // PACK-EARLY: IN_PRODUCTION / READY_TO_FULFILL hand over the stock packed while the order was printed - only
-        // part of the order, so only when it allows partial shipments (checked below with what is left behind).
+        requireHandoverAllowed(ledger);
         boolean early = status == OrderStatus.IN_PRODUCTION || status == OrderStatus.READY_TO_FULFILL;
-        if (status != OrderStatus.PICKING && status != OrderStatus.PACKED && status != OrderStatus.PARTIALLY_FULFILLED
-                && !early) {
-            throw new InvalidOrderTransitionException(orderNumber, status,
-                    status == OrderStatus.ON_HOLD ? "resolve the hold before handing goods over"
-                            : "only a picking, packed or partly shipped order hands goods over");
-        }
-        requireHandoverPaid(ledger);
         Money value = Money.zero(total().currency());
         for (Map.Entry<UUID, Integer> entry : quantities.entrySet()) {
             OrderLine line = findLine(entry.getKey()).orElseThrow(() -> new BusinessException(
@@ -2071,7 +2096,55 @@ public final class Order extends AggregateRoot {
     public boolean packedOnlyAheadOfPrints() {
         boolean printing = status == OrderStatus.IN_PRODUCTION
                 || status == OrderStatus.ON_HOLD && statusBeforeHold == OrderStatus.IN_PRODUCTION;
-        return packedAt != null && printing && shipments.isEmpty();
+        return packedAt != null && printing && shipments.isEmpty() && goodsLeftAt == null;
+    }
+
+    /** Rehydration of when goods first left on a load plan's vehicle (SCRUM-392). */
+    public void restoreGoodsLeft(Instant at) {
+        this.goodsLeftAt = at;
+    }
+
+    public Instant goodsLeftAt() { return goodsLeftAt; }
+
+    /**
+     * Goods of the order leave on a load plan's vehicle (SCRUM-392, LP-3) - part of a shipment that is handed over only
+     * with its last vehicle. The gate of {@link #recordHandover} runs (cancelled, on hold, not picking, money due before
+     * the goods leave) and the plan must carry everything the order still wants unless it allows partial shipments
+     * ({@link #requirePlanCarriesTheRest}). The first time, {@code goodsLeftAt} is set: from then the order is no longer
+     * cancelled (review of #162).
+     *
+     * @param inPlan the units of the order's parcels in the plan not handed over yet, per order line; null when its
+     *               parcels record no contents (not checked, as everywhere)
+     * @return whether this changed the order
+     */
+    public boolean recordGoodsLeft(Instant at, Map<UUID, Integer> inPlan, LedgerMoney ledger) {
+        java.util.Objects.requireNonNull(at, "at");
+        requireHandoverAllowed(ledger);
+        requirePlanCarriesTheRest(inPlan);
+        if (goodsLeftAt != null) {
+            return false;
+        }
+        goodsLeftAt = at;
+        return true;
+    }
+
+    /**
+     * PACK-PARTIAL at a load plan (review of #162): an order that does not allow partial shipments leaves whole with
+     * the plan - checked when a vehicle starts loading and when it leaves, so no vehicle is stuck half way.
+     *
+     * @param inPlan as for {@link #recordGoodsLeft}; null: not checked
+     */
+    public void requirePlanCarriesTheRest(Map<UUID, Integer> inPlan) {
+        requireNotCancelled("its goods are not loaded");
+        if (inPlan == null || allowPartialShipment) {
+            return;
+        }
+        int carried = inPlan.values().stream().mapToInt(Integer::intValue).sum();
+        if (outstandingUnits() > carried) {
+            throw new BusinessException(ErrorCode.ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED, ("Order %s does not allow partial "
+                    + "shipments: %d unit(s) are not in this load plan. Put them in the plan, or ask Sales to allow "
+                    + "partial shipment on the order").formatted(orderNumber, outstandingUnits() - carried));
+        }
     }
 
     /** Whether a package of the order binds it to a return instead of a cancellation (03 §9). */

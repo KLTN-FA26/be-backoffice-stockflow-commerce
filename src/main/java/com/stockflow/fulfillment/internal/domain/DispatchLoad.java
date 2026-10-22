@@ -20,8 +20,12 @@ import java.util.UUID;
  * dispatcher puts on its manifest - shipments of its warehouse, waiting for dispatch, of its carrier or of none yet.
  * Each parcel is scanned onto the vehicle and checked against that list ("đối chiếu danh sách"); a shipment leaves only
  * with all its parcels (BR-03 at the shipment's level). Both sides sign: DISPATCHED, and the shipments are handed over.
- * The FTL branch (G4-1/G4-2b) creates it PLANNED from a confirmed load plan's vehicle and books the vehicle; the scan
- * and the handover are the same.
+ * The FTL branch (G4-1/G4-2b, SCRUM-392) creates it PLANNED from a confirmed load plan's vehicle, with the shipments
+ * whose parcels are placed on that vehicle - one shipment may span several vehicles of the plan (LP-3). The dispatcher
+ * books the vehicle (VEHICLE_BOOKED; a booking is cancelled back to PLANNED until loading starts), starts loading when
+ * it arrives (LOADING), scans only the parcels placed on it (others are refused naming their vehicle) and both sides
+ * sign. A parcel of an order cancelled while it is on board is to be unloaded first ({@link #withdrawShipment}): the
+ * vehicle is not handed over while one is pending ({@code LOAD_UNLOAD_PENDING}).
  *
  * <p>Every step on an open load is idempotent: a shipment already on it, a parcel already loaded, a parcel not loaded,
  * a load already dispatched - nothing changes and nothing is refused. What another load holds is refused, naming that
@@ -41,9 +45,38 @@ public final class DispatchLoad {
      *
      * @param shipment      its shipment; null for a parcel in none (still at the packing table)
      * @param otherLoadCode the open load it is loaded on, when not this one
+     * @param placement     where the plan of a full-truckload load placed it; null for a parcel load
      */
     public record ParcelFacts(UUID packageId, String labelCode, PackageStatus status, ShipmentFacts shipment,
-                              String otherLoadCode) { }
+                              String otherLoadCode, Placement placement) {
+
+        public ParcelFacts(UUID packageId, String labelCode, PackageStatus status, ShipmentFacts shipment,
+                           String otherLoadCode) {
+            this(packageId, labelCode, status, shipment, otherLoadCode, null);
+        }
+    }
+
+    /**
+     * Where the load plan placed a scanned parcel (09 edge "quét nhầm kiện của xe / chuyến khác → chặn, báo kiện thuộc xe
+     * / kế hoạch nào").
+     *
+     * @param here       placed on this load's vehicle
+     * @param planCode   the plan it is placed in; null when no plan of this vehicle's holds it
+     * @param vehicleSeq the vehicle it is placed on; null when not placed
+     * @param loadCode   that vehicle's live load; null when not placed or none is live
+     */
+    public record Placement(boolean here, String planCode, Integer vehicleSeq, String loadCode) { }
+
+    /**
+     * A parcel to take off the vehicle again: its order was cancelled while it was on board (09 edge "đã xếp lên xe →
+     * dỡ kiện"). Pending while {@code unloadedAt} is null.
+     */
+    public record Unload(UUID packageId, UUID shipmentId, String reason, Instant requestedAt, Instant unloadedAt,
+                         UUID unloadedBy) {
+        public boolean pending() {
+            return unloadedAt == null;
+        }
+    }
 
     /** A shipment on the manifest; {@code active} false once taken off before the handover. */
     public record Member(UUID shipmentId, boolean active, Instant addedAt, UUID addedBy, Instant removedAt,
@@ -62,19 +95,40 @@ public final class DispatchLoad {
                            LoadStatus status, Instant loadingStartedAt, UUID loadingStartedBy, Instant dispatchedAt,
                            UUID dispatchedBy, String carrierRepresentative, String signatureRef, String handoverNote,
                            BigDecimal codTotal, Instant cancelledAt, UUID cancelledBy, String cancelReason,
-                           long version, List<Member> members, List<Loaded> loaded) { }
+                           long version, List<Member> members, List<Loaded> loaded, Instant bookedAt, UUID bookedBy,
+                           Instant bookingCancelledAt, UUID bookingCancelledBy, String bookingCancelReason,
+                           List<Unload> unloads) {
+
+        /** Without booking and unloads (parcel loads, and callers written before SCRUM-392). */
+        public Snapshot(UUID id, String code, UUID requestId, UUID warehouseId, DeliveryMode mode, UUID carrierId,
+                        UUID loadPlanVehicleId, String vehiclePlate, String driverName, String driverPhone,
+                        LoadStatus status, Instant loadingStartedAt, UUID loadingStartedBy, Instant dispatchedAt,
+                        UUID dispatchedBy, String carrierRepresentative, String signatureRef, String handoverNote,
+                        BigDecimal codTotal, Instant cancelledAt, UUID cancelledBy, String cancelReason,
+                        long version, List<Member> members, List<Loaded> loaded) {
+            this(id, code, requestId, warehouseId, mode, carrierId, loadPlanVehicleId, vehiclePlate, driverName,
+                    driverPhone, status, loadingStartedAt, loadingStartedBy, dispatchedAt, dispatchedBy,
+                    carrierRepresentative, signatureRef, handoverNote, codTotal, cancelledAt, cancelledBy, cancelReason,
+                    version, members, loaded, null, null, null, null, null, List.of());
+        }
+    }
 
     private final UUID id;
     private final String code;
     private final UUID requestId;
     private final UUID warehouseId;
     private final DeliveryMode mode;
-    private final UUID carrierId;
+    private UUID carrierId;
     private final UUID loadPlanVehicleId;
     private String vehiclePlate;
     private String driverName;
     private String driverPhone;
     private LoadStatus status;
+    private Instant bookedAt;
+    private UUID bookedBy;
+    private Instant bookingCancelledAt;
+    private UUID bookingCancelledBy;
+    private String bookingCancelReason;
     private Instant loadingStartedAt;
     private UUID loadingStartedBy;
     private Instant dispatchedAt;
@@ -89,6 +143,7 @@ public final class DispatchLoad {
     private final long version;
     private final Map<UUID, Member> members = new LinkedHashMap<>();
     private final Map<UUID, Loaded> loaded = new LinkedHashMap<>();
+    private final Map<UUID, Unload> unloads = new LinkedHashMap<>();
 
     private DispatchLoad(Snapshot s) {
         this.id = Objects.requireNonNull(s.id(), "id");
@@ -102,6 +157,11 @@ public final class DispatchLoad {
         this.driverName = s.driverName();
         this.driverPhone = s.driverPhone();
         this.status = Objects.requireNonNull(s.status(), "status");
+        this.bookedAt = s.bookedAt();
+        this.bookedBy = s.bookedBy();
+        this.bookingCancelledAt = s.bookingCancelledAt();
+        this.bookingCancelledBy = s.bookingCancelledBy();
+        this.bookingCancelReason = s.bookingCancelReason();
         this.loadingStartedAt = s.loadingStartedAt();
         this.loadingStartedBy = s.loadingStartedBy();
         this.dispatchedAt = s.dispatchedAt();
@@ -120,6 +180,9 @@ public final class DispatchLoad {
         if (s.loaded() != null) {
             s.loaded().forEach(l -> loaded.put(l.packageId(), l));
         }
+        if (s.unloads() != null) {
+            s.unloads().forEach(u -> unloads.put(u.packageId(), u));
+        }
     }
 
     /**
@@ -137,8 +200,9 @@ public final class DispatchLoad {
     }
 
     /**
-     * A vehicle of a confirmed load plan (09 §4.2 step 4-5, SCRUM-287 PR D): a full-truckload load, PLANNED - no carrier,
-     * vehicle or manifest yet. Booking the vehicle, its manifest and its loading are PR E's.
+     * A vehicle of a confirmed load plan (09 §4.2 step 4-5, SCRUM-287 PR D): a full-truckload load, PLANNED - no carrier
+     * or vehicle yet. The plan's confirmation puts its shipments on the manifest ({@link #addShipment}); booking,
+     * loading and the signature follow (SCRUM-392).
      */
     public static DispatchLoad planFullTruckload(UUID id, String code, UUID requestId, UUID warehouseId,
                                                  UUID loadPlanVehicleId) {
@@ -181,10 +245,12 @@ public final class DispatchLoad {
                     : ErrorCode.SHIPMENT_NOT_FOR_LOAD,
                     "Shipment %s travels as %s; load %s is %s".formatted(shipment.code(), shipment.mode(), code, mode));
         }
-        if (shipment.carrierId() != null && !shipment.carrierId().equals(carrierId)) {
+        if (carrierId != null && shipment.carrierId() != null && !shipment.carrierId().equals(carrierId)) {
             throw new BusinessException(ErrorCode.SHIPMENT_OTHER_CARRIER,
                     "Shipment %s goes with another carrier than load %s".formatted(shipment.code(), code));
         }
+        // A full truckload's shipment may span the vehicles of its plan (LP-3): the caller leaves those out of
+        // otherLoadCode, so what is left is a load of another plan or a parcel load.
         if (shipment.otherLoadCode() != null) {
             throw new BusinessException(ErrorCode.SHIPMENT_ON_ANOTHER_LOAD,
                     "Shipment %s is on load %s; take it off there first".formatted(shipment.code(),
@@ -212,6 +278,134 @@ public final class DispatchLoad {
                 loaded.put(parcel.packageId(), unloaded(parcel, by, at));
             }
         }
+        return true;
+    }
+
+    /**
+     * The shipment's order was cancelled before the handover (08 BR-05, 09 edge "đơn bị huỷ khi kiện đã nằm trong kế
+     * hoạch chuyến xe"): off the manifest. On a full truckload being loaded, its parcels already scanned on board are
+     * to be unloaded ({@link #confirmUnload}) before the vehicle may leave; elsewhere they simply come off. Not on it, or
+     * the load is no longer open: nothing changes.
+     *
+     * @return whether it changed the load
+     */
+    public boolean withdrawShipment(UUID shipmentId, String reason, Instant at) {
+        Member member = members.get(shipmentId);
+        if (!status.isOpen() || member == null || !member.active()) {
+            return false;
+        }
+        members.put(shipmentId, new Member(shipmentId, false, member.addedAt(), member.addedBy(), at, null,
+                member.labelCodAmount(), null));
+        boolean onBoard = mode == DeliveryMode.FULL_TRUCKLOAD && status == LoadStatus.LOADING;
+        for (Loaded parcel : List.copyOf(loaded.values())) {
+            if (parcel.active() && parcel.shipmentId().equals(shipmentId)) {
+                loaded.put(parcel.packageId(), unloaded(parcel, null, at));
+                if (onBoard && !unloads.containsKey(parcel.packageId())) {
+                    unloads.put(parcel.packageId(), new Unload(parcel.packageId(), shipmentId,
+                            Objects.requireNonNullElse(trimmed(reason), "The order was cancelled"), at, null, null));
+                }
+            }
+        }
+        return true;
+    }
+
+    /**
+     * A parcel to unload was taken off the vehicle (scanned off). Already unloaded: nothing changes.
+     *
+     * @throws BusinessException {@code PACKAGE_NOT_IN_LOAD} when the parcel is not to be unloaded from this vehicle
+     */
+    public boolean confirmUnload(UUID packageId, String labelCode, UUID by, Instant at) {
+        Unload unload = unloads.get(packageId);
+        if (unload == null) {
+            throw new BusinessException(ErrorCode.PACKAGE_NOT_IN_LOAD,
+                    "Package %s is not to be unloaded from load %s".formatted(labelCode, code));
+        }
+        if (!unload.pending()) {
+            return false;
+        }
+        unloads.put(packageId, new Unload(packageId, unload.shipmentId(), unload.reason(), unload.requestedAt(), at,
+                Objects.requireNonNull(by)));
+        return true;
+    }
+
+    // ---- the booking (full truckload, 09 §4.2 step 5) --------------------------------------------------------------
+
+    /**
+     * The vehicle was booked with a carrier outside the system and is recorded here (09 §4.2 step 5 assumption: plate
+     * and driver may be known now or at the signature): PLANNED → VEHICLE_BOOKED. Booked again before loading: the
+     * booking's details are replaced; the same details again change nothing.
+     *
+     * @return whether it changed the load
+     */
+    public boolean book(UUID carrier, String plate, String driver, String phone, UUID by, Instant at) {
+        requireFullTruckload("be booked");
+        Objects.requireNonNull(carrier, "the carrier the vehicle is booked with");
+        if (status != LoadStatus.PLANNED && status != LoadStatus.VEHICLE_BOOKED) {
+            throw new BusinessException(ErrorCode.INVALID_LOAD_TRANSITION,
+                    "Load %s is %s; a vehicle is booked before loading starts".formatted(code, status));
+        }
+        if (status == LoadStatus.VEHICLE_BOOKED && carrier.equals(carrierId)
+                && Objects.equals(trimmed(plate), vehiclePlate) && Objects.equals(trimmed(driver), driverName)
+                && Objects.equals(trimmed(phone), driverPhone)) {
+            return false;
+        }
+        carrierId = carrier;
+        vehiclePlate = trimmed(plate);
+        driverName = trimmed(driver);
+        driverPhone = trimmed(phone);
+        bookedAt = at;
+        bookedBy = Objects.requireNonNull(by);
+        status = LoadStatus.VEHICLE_BOOKED;
+        return true;
+    }
+
+    /**
+     * The booking fell through before loading started (the carrier cancelled, another vehicle is booked instead):
+     * VEHICLE_BOOKED → PLANNED, the carrier and vehicle cleared, the reason kept. PLANNED already: nothing changes.
+     *
+     * @throws BusinessException {@code INVALID_LOAD_TRANSITION} once loading started; {@code VALIDATION_FAILED} without a
+     *         reason
+     */
+    public boolean cancelBooking(String reason, UUID by, Instant at) {
+        requireFullTruckload("have its booking cancelled");
+        if (status == LoadStatus.PLANNED) {
+            return false;
+        }
+        if (status != LoadStatus.VEHICLE_BOOKED) {
+            throw new BusinessException(ErrorCode.INVALID_LOAD_TRANSITION, ("Load %s is %s; a booking is cancelled "
+                    + "only before loading starts").formatted(code, status));
+        }
+        String why = trimmed(reason);
+        if (why == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Cancelling a booking says why");
+        }
+        carrierId = null;
+        vehiclePlate = null;
+        driverName = null;
+        driverPhone = null;
+        bookedAt = null;
+        bookedBy = null;
+        bookingCancelledAt = at;
+        bookingCancelledBy = by;
+        bookingCancelReason = why;
+        status = LoadStatus.PLANNED;
+        return true;
+    }
+
+    /** The booked vehicle arrived and loading starts (BR-14: its plan is locked from now on). LOADING already: no-op. */
+    public boolean startLoading(UUID by, Instant at) {
+        requireFullTruckload("start loading this way");
+        if (status == LoadStatus.LOADING) {
+            return false;
+        }
+        if (status != LoadStatus.VEHICLE_BOOKED) {
+            throw new BusinessException(ErrorCode.INVALID_LOAD_TRANSITION, (status == LoadStatus.PLANNED
+                    ? "Load %s has no vehicle booked yet: book it first" : "Load %s is %s and cannot start loading")
+                    .formatted(code, status));
+        }
+        status = LoadStatus.LOADING;
+        loadingStartedAt = at;
+        loadingStartedBy = Objects.requireNonNull(by);
         return true;
     }
 
@@ -256,7 +450,9 @@ public final class DispatchLoad {
                     : ErrorCode.PACKAGE_NOT_IN_LOAD, "Package %s travels as %s; load %s is %s"
                     .formatted(parcel.labelCode(), shipment.mode(), code, mode));
         }
-        if (shipment.carrierId() != null && !shipment.carrierId().equals(carrierId)) {
+        if (mode == DeliveryMode.FULL_TRUCKLOAD) {
+            requirePlacedHere(parcel);
+        } else if (shipment.carrierId() != null && !shipment.carrierId().equals(carrierId)) {
             throw new BusinessException(ErrorCode.PACKAGE_OTHER_CARRIER, "Package %s goes with another carrier"
                     .formatted(parcel.labelCode()));
         }
@@ -271,6 +467,34 @@ public final class DispatchLoad {
         loaded.put(parcel.packageId(), new Loaded(parcel.packageId(), shipment.shipmentId(), scanId, at,
                 Objects.requireNonNull(by), true, null, null));
         return true;
+    }
+
+    /**
+     * 09 §4.2 step 5 ("hệ thống chặn kiện không thuộc xe này"): a full truckload takes only the parcels its plan placed on
+     * it; another is refused naming the vehicle and load it belongs on ({@code PACKAGE_NOT_IN_LOAD}).
+     */
+    private void requirePlacedHere(ParcelFacts parcel) {
+        Placement placed = parcel.placement();
+        if (placed != null && placed.here()) {
+            return;
+        }
+        List<com.stockflow.common.api.FieldError> where = new ArrayList<>();
+        String message;
+        if (placed == null || placed.vehicleSeq() == null) {
+            message = placed == null || placed.planCode() == null
+                    ? "Package %s is in no load plan; it does not go on load %s".formatted(parcel.labelCode(), code)
+                    : "Package %s is in load plan %s but has no place on this vehicle (load %s)".formatted(
+                    parcel.labelCode(), placed.planCode(), code);
+        } else {
+            message = "Package %s is placed on vehicle %d%s of plan %s, not on load %s".formatted(parcel.labelCode(),
+                    placed.vehicleSeq(), placed.loadCode() == null ? "" : " (load " + placed.loadCode() + ")",
+                    placed.planCode(), code);
+            where.add(com.stockflow.common.api.FieldError.of("vehicleSeq", String.valueOf(placed.vehicleSeq())));
+            if (placed.loadCode() != null) {
+                where.add(com.stockflow.common.api.FieldError.of("loadCode", placed.loadCode()));
+            }
+        }
+        throw new BusinessException(ErrorCode.PACKAGE_NOT_IN_LOAD, message, where);
     }
 
     /** Takes a scanned parcel off the vehicle again before the handover. Not loaded here: nothing changes. */
@@ -298,6 +522,13 @@ public final class DispatchLoad {
             return List.of();
         }
         requireLoading("be handed over");
+        List<Unload> pending = pendingUnloads();
+        if (!pending.isEmpty()) {
+            throw new BusinessException(ErrorCode.LOAD_UNLOAD_PENDING, ("Load %s still carries %d parcel(s) of a "
+                    + "cancelled order: unload them first").formatted(code, pending.size()),
+                    pending.stream().map(u -> com.stockflow.common.api.FieldError.of("packageId",
+                            u.packageId().toString())).toList());
+        }
         if (!handover.signed()) {
             throw new BusinessException(ErrorCode.HANDOVER_NOT_SIGNED,
                     "Both sides sign the manifest of load %s before it leaves".formatted(code));
@@ -328,7 +559,8 @@ public final class DispatchLoad {
         if (!missing.isEmpty()) {
             throw new BusinessException(ErrorCode.LOAD_NOT_FULLY_LOADED, "Not scanned onto the vehicle yet: %s. Scan "
                     .formatted(String.join(", ", missing.stream().sorted().toList()))
-                    + "them, or take their shipment off the manifest");
+                    + (mode == DeliveryMode.FULL_TRUCKLOAD ? "them: the plan placed them on this vehicle"
+                    : "them, or take their shipment off the manifest"));
         }
         status = LoadStatus.DISPATCHED;
         carrierRepresentative = representative;
@@ -419,6 +651,14 @@ public final class DispatchLoad {
         return List.copyOf(members.values());
     }
 
+    public List<Unload> unloads() {
+        return List.copyOf(unloads.values());
+    }
+
+    public List<Unload> pendingUnloads() {
+        return unloads.values().stream().filter(Unload::pending).toList();
+    }
+
     public Collection<Loaded> loaded() {
         return List.copyOf(loaded.values());
     }
@@ -430,6 +670,9 @@ public final class DispatchLoad {
 
     /** COD of the shipments on the manifest: as fixed at the handover once dispatched, as labelled before. */
     public BigDecimal codTotal() {
+        if (mode == DeliveryMode.FULL_TRUCKLOAD) {
+            return BigDecimal.ZERO;   // lead decision 2026-10-21 / LP-2: a full truckload carries no COD
+        }
         return members.values().stream().filter(Member::active)
                 .map(m -> m.codAmount() != null ? m.codAmount() : m.labelCodAmount() == null ? BigDecimal.ZERO
                         : m.labelCodAmount())
@@ -440,13 +683,21 @@ public final class DispatchLoad {
         return new Snapshot(id, code, requestId, warehouseId, mode, carrierId, loadPlanVehicleId, vehiclePlate,
                 driverName, driverPhone, status, loadingStartedAt, loadingStartedBy, dispatchedAt, dispatchedBy,
                 carrierRepresentative, signatureRef, handoverNote, codTotal(), cancelledAt, cancelledBy, cancelReason,
-                version, List.copyOf(members.values()), List.copyOf(loaded.values()));
+                version, List.copyOf(members.values()), List.copyOf(loaded.values()), bookedAt, bookedBy,
+                bookingCancelledAt, bookingCancelledBy, bookingCancelReason, List.copyOf(unloads.values()));
     }
 
     private void requireOpen(String what) {
         if (!status.isOpen()) {
             throw new BusinessException(ErrorCode.INVALID_LOAD_TRANSITION,
                     "Load %s is %s and cannot %s".formatted(code, status, what));
+        }
+    }
+
+    private void requireFullTruckload(String what) {
+        if (mode != DeliveryMode.FULL_TRUCKLOAD) {
+            throw new BusinessException(ErrorCode.INVALID_LOAD_TRANSITION,
+                    "Load %s is a parcel load and cannot %s; only a load plan's vehicle can".formatted(code, what));
         }
     }
 
@@ -472,6 +723,7 @@ public final class DispatchLoad {
     public UUID warehouseId() { return warehouseId; }
     public DeliveryMode mode() { return mode; }
     public UUID carrierId() { return carrierId; }
+    public Instant bookedAt() { return bookedAt; }
     /** The load-plan vehicle a full-truckload load is (SCRUM-287 PR D); null for a parcel load. */
     public UUID loadPlanVehicleId() { return loadPlanVehicleId; }
     public LoadStatus status() { return status; }

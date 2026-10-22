@@ -510,6 +510,50 @@ class OrderFlowFollowupsTest {
         }
 
         @Test
+        @DisplayName("SCRUM-392 (review of #162): stock packed ahead of the prints left on a load plan's first vehicle - "
+                + "goodsLeftAt is set, the order is no longer cancelled (ORDER_NOT_CANCELLABLE) though no shipment is "
+                + "recorded yet, partial shipment can no longer be turned off; its remainder is still closed; "
+                + "recording it again changes nothing")
+        void goodsLeftOnAVehicleIsNoLongerCancelled() {
+            Order order = tenMillion(PaymentTerm.PREPAID, null);
+            order.recordPacked(NOW);
+            order.recordPrintingStarted(NOW);
+            assertThat(order.packedOnlyAheadOfPrints()).isTrue();
+            assertThat(order.recordGoodsLeft(NOW, Map.of(stock(order), 10), null)).isTrue();
+            assertThat(order.recordGoodsLeft(NOW.plusSeconds(60), Map.of(stock(order), 10), null)).isFalse();
+            assertThat(order.goodsLeftAt()).isEqualTo(NOW);
+            assertThat(order.packedOnlyAheadOfPrints()).isFalse();
+            assertThat(order.packedForGood()).isTrue();
+            assertThat(code(catchThrowable(order::requireNotPacked))).isEqualTo(ErrorCode.ORDER_NOT_CANCELLABLE);
+            assertThat(code(catchThrowable(() -> order.cancel(CancellationReasonCode.CUSTOMER_REQUEST, null, null,
+                    fee(2_000_000), STAFF, NOW)))).isEqualTo(ErrorCode.ORDER_NOT_CANCELLABLE);
+            assertThat(code(catchThrowable(() -> order.decidePartialShipment(false))))
+                    .as("the vehicles still to leave carry the rest").isEqualTo(ErrorCode.ORDER_PARTIAL_SHIPMENT_LOCKED);
+            assertThat(order.allowPartialShipment()).isTrue();
+            // The last vehicle signs: the stock shipment is recorded, the prints are what is left to close.
+            order.recordHandover(handover(S1, stock(order), 10));
+            assertThat(order.status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+            assertThat(order.closeRemainder(CancellationReasonCode.CUSTOMER_REQUEST, null, STAFF, NOW)).isPositive();
+            assertThat(order.status()).isEqualTo(OrderStatus.SHIPPED);
+        }
+
+        @Test
+        @DisplayName("SCRUM-392 (review of #162): an order that may not ship in parts lets goods leave on a load plan "
+                + "only when the plan carries every unit it still wants (409 ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED)")
+        void aPlanCarriesTheRestWithoutTheFlag() {
+            Order order = mixed(PaymentTerm.PREPAID, null, false);
+            assertThat(code(catchThrowable(() -> order.requirePlanCarriesTheRest(Map.of(stock(order), 10)))))
+                    .isEqualTo(ErrorCode.ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED);
+            assertThat(code(catchThrowable(() -> order.recordGoodsLeft(NOW, Map.of(stock(order), 10), null))))
+                    .isEqualTo(ErrorCode.ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED);
+            assertThat(order.goodsLeftAt()).isNull();
+            order.requirePlanCarriesTheRest(Map.of(stock(order), 10, print(order), 100));
+            order.requirePlanCarriesTheRest(null);
+            Order partial = mixed(PaymentTerm.PREPAID, null, true);
+            partial.requirePlanCarriesTheRest(Map.of(stock(partial), 10));
+        }
+
+        @Test
         @DisplayName("7: a print line is withdrawn once every unit is shipped or closed, not before")
         void lineWithdrawnCountsShippedUnits() {
             Order order = tenMillion(PaymentTerm.PREPAID, null);
