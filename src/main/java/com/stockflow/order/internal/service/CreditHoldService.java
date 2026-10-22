@@ -122,12 +122,26 @@ public class CreditHoldService {
                         "Customer %s may not be sold on %s terms".formatted(order.customerId(), term));
             }
             com.stockflow.order.api.BalancePolicy policy = OrderServiceImpl.balancePolicyFor(term, null, terms);
+            String recorded = note;
+            if (policy == com.stockflow.order.api.BalancePolicy.ON_DELIVERY
+                    && order.deliveryMode() == com.stockflow.order.api.DeliveryMode.FULL_TRUCKLOAD) {
+                // LP-2 (review of #157): the customer's default would have the carrier collect the balance, which a
+                // full truckload never does. The default gives way, as ON_CREDIT does below: paid before delivery,
+                // and said so in the decision's note. Only a policy staff choose explicitly is refused (409).
+                policy = com.stockflow.order.api.BalancePolicy.BEFORE_DELIVERY;
+                String why = " [balance before delivery: full-truckload order, the customer's ON_DELIVERY default "
+                        + "does not apply (LP-2)]";
+                String told = note.trim();
+                // The note columns hold 1000; the hold's carries "REJECTED: " in front.
+                int room = 980 - why.length();
+                recorded = (told.length() > room ? told.substring(0, room) : told) + why;
+            }
             order.switchTermsAfterCreditRefusal(term,
                     term == PaymentTerm.DEPOSIT && depositPercent == null ? terms.depositPercent() : depositPercent,
                     // Credit was just refused: a balance on credit (BALCREDIT) is not the way out, it is paid first.
                     policy == com.stockflow.order.api.BalancePolicy.ON_CREDIT
                             ? com.stockflow.order.api.BalancePolicy.BEFORE_DELIVERY : policy);
-            decide(order, CreditChecks.Outcome.REJECTED, note, by);
+            decide(order, CreditChecks.Outcome.REJECTED, recorded, by);
             // Waiting for payment again: its holds get a deadline, as at checkout (kltn-docs 14 BR-07).
             inventory.rearmReservations(orderId);
             repository.save(order);

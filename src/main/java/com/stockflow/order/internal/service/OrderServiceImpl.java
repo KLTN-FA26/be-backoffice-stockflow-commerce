@@ -475,6 +475,16 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     }
 
     @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public void recordPackingStarted(UUID orderId) {
+        Order order = lockOrder(orderId);
+        if (order.recordPackingStarted(clock.instant())) {
+            repository.save(order);
+            log.info("Order {}: packing started, delivery mode {} locked", order.orderNumber(), order.deliveryMode());
+        }
+    }
+
+    @Override
     public void recordPacked(UUID orderId) {
         Order order = lockOrder(orderId);
         if (order.recordPacked(clock.instant())) {
@@ -1130,7 +1140,8 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                 order.packedAt(), order.shippedAt(), order.deliveredAt(), order.deliveryFailureReason(), order.completedAt(),
                 order.closedAt(), order.billedAmount(), order.billable(), order.amountDue(),
                 order.amountDueBeforeHandover(), progress, shipments, order.amountDueOnDelivery(), order.codAmount(),
-                order.allowPartialShipment(), order.printLinesReady());
+                order.allowPartialShipment(), order.printLinesReady(), order.deliveryMode(),
+                order.deliveryModeLocked());
     }
 
     private static OrderAddressSnapshot toSnapshot(CheckoutCustomer.CheckoutAddress address) {

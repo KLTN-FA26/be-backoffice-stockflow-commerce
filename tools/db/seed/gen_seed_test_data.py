@@ -672,6 +672,32 @@ for v in VARIANTS:
                  "UPDATE inventory.inventory_items SET " + ", ".join(f"{k} = {q(x)}" for k, x in sets.items())
                  + f" WHERE sku = {q(v['sku'])};"))
 
+# Packing units for the load-planning demo (SCRUM-287 PR P): the item's base unit is its carton (above), a pallet
+# is the larger packing unit. Three ways the packaging-spec resolver picks the carton for an estimate:
+#   default shipping flag on the pallet        LYG-1L-12OZ, LYG-1L-16OZ   (level 1)
+#   no flag: the largest packing unit wins     LYG-2L-12OZ                (level 2)
+#   flag on the base unit: ship the carton     NAP-GIAY-D80-WHITE         (level 1, the pallet is ignored)
+# A pallet weighs its cartons plus 25 kg of wood; sizes in cm, weights in kg. No random draw.
+PALLET_DEMO = [
+    # sku, cartons per pallet, (length, width, height) cm, flag on the pallet, flag on the base unit
+    ("LYG-1L-12OZ", 24, (120, 100, 150), True, False),
+    ("LYG-1L-16OZ", 24, (120, 100, 150), True, False),
+    ("LYG-2L-12OZ", 20, (120, 100, 155), False, False),
+    ("NAP-GIAY-D80-WHITE", 36, (120, 100, 150), False, True),
+]
+for sku, per_pallet, (pl, pw, ph), flag_pallet, flag_base in PALLET_DEMO:
+    carton_kg = VAR[sku]["dims"][0]
+    POST.append(("procurement.supplier_addresses",
+                 "INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base, "
+                 "weight_kg, length_cm, width_cm, height_cm, default_purchase, active, default_shipping, created_by) "
+                 f"SELECT {q(uid('uom:' + sku + ':PALLET'))}, i.id, 'PALLET', {per_pallet}, FALSE, "
+                 f"{q(round(per_pallet * carton_kg + 25, 3))}, {pl}, {pw}, {ph}, FALSE, TRUE, {q(flag_pallet)}, "
+                 f"{q(BY)} FROM inventory.inventory_items i WHERE i.sku = {q(sku)};"))
+    if flag_base:
+        POST.append(("procurement.supplier_addresses",
+                     "UPDATE inventory.uom_conversions SET default_shipping = TRUE WHERE is_base AND "
+                     f"inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = {q(sku)});"))
+
 for v in VARIANTS:
     code = DEFAULT_SUP.get(v["sku"])
     if not code or v["vstatus"] != "ACTIVE":

@@ -25,6 +25,10 @@ public record CreateUomConversionRequest(
         @Positive(message = "heightCm must be positive") BigDecimal heightCm,
 
         @Schema(description = "Make it the default purchase unit (unmarks the previous one); false when absent")
-        Boolean defaultPurchase
+        Boolean defaultPurchase,
+
+        @Schema(description = "Make it the default shipping unit of the item, the carton load planning estimates "
+                + "with: unmarks the previous one in the same transaction; false when absent; not on a retired unit")
+        Boolean defaultShipping
 ) {
 }

@@ -35,6 +35,7 @@ public final class UomConversionRules {
         positive(d.widthCm(), "widthCm");
         positive(d.heightCm(), "heightCm");
         retiredIsNotDefault(d);
+        retiredIsNotDefaultShipping(d);
     }
 
     /**
@@ -48,6 +49,12 @@ public final class UomConversionRules {
         if (!d.defaultPurchase() && current.defaultPurchase()) {
             throw invalid("defaultPurchase",
                     "The base unit stays the default purchase unit until another unit is marked");
+        }
+    }
+
+    private static void retiredIsNotDefaultShipping(UomConversionDraft d) {
+        if (!d.active() && d.defaultShipping()) {
+            throw invalid("defaultShipping", "A retired unit cannot be the default shipping unit");
         }
     }
 

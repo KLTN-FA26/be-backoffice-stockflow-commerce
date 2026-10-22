@@ -93,6 +93,8 @@ class InventoryItemSecurityIntegrationTest {
         UUID user = UUID.randomUUID();
         mvc.asRole(Role.WAREHOUSE_STAFF, user, get(url(""))).andExpect(status().isOk());
         mvc.asRole(Role.WAREHOUSE_STAFF, user, get("/api/v1/inventory/items")).andExpect(status().isOk());
+        mvc.asRole(Role.WAREHOUSE_STAFF, user, get(url("/packaging-preview")).param("quantity", "2"))
+                .andExpect(status().isOk());
         mvc.asRole(Role.WAREHOUSE_STAFF, user, put(url("/logistics")).contentType(MediaType.APPLICATION_JSON)
                         .content(LOGISTICS_BODY.formatted(version())))
                 .andExpect(status().isForbidden());
@@ -113,6 +115,7 @@ class InventoryItemSecurityIntegrationTest {
     @Test
     void anonymousIsUnauthorized() throws Exception {
         mvc.anonymous(get(url(""))).andExpect(status().isUnauthorized());
+        mvc.anonymous(get(url("/packaging-preview")).param("quantity", "2")).andExpect(status().isUnauthorized());
     }
 
     @Test
@@ -125,6 +128,8 @@ class InventoryItemSecurityIntegrationTest {
                 .andExpect(status().isForbidden());
         mockMvc.perform(put(url("/logistics")).header("Authorization", token).contentType(MediaType.APPLICATION_JSON)
                         .content(LOGISTICS_BODY.formatted(version())))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(get(url("/packaging-preview")).param("quantity", "2").header("Authorization", token))
                 .andExpect(status().isForbidden());
     }
 }
