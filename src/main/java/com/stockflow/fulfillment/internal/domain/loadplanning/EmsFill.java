@@ -39,20 +39,16 @@ final class EmsFill {
             return out;
         }
         double[] dims = {w, h, d};
-        for (int a = 0; a < 3; a++) {
-            for (int b = 0; b < 3; b++) {
-                if (b == a) {
-                    continue;
-                }
-                int c = 3 - a - b;
-                double[] k = {dims[a], dims[b], dims[c]};
-                boolean dup = false;
-                for (double[] o : out) {
-                    dup |= o[0] == k[0] && o[1] == k[1] && o[2] == k[2];
-                }
-                if (!dup) {
-                    out.add(k);
-                }
+        // The original's two loops (a, then b != a, c the third) visit the permutations in this order.
+        int[][] perms = {{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}};
+        for (int[] p : perms) {
+            double[] k = {dims[p[0]], dims[p[1]], dims[p[2]]};
+            boolean dup = false;
+            for (double[] o : out) {
+                dup |= o[0] == k[0] && o[1] == k[1] && o[2] == k[2];
+            }
+            if (!dup) {
+                out.add(k);
             }
         }
         return out;

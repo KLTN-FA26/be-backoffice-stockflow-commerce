@@ -34,8 +34,12 @@ class LoadPlannerBenchmarkTest {
 
     @Test
     void budgets() {
-        double rate = Double.parseDouble(System.getProperty("loadplanning.rate",
-                Double.toString(LoadPlanner.TICKS_PER_SECOND)));
+        double rate = LoadPlanner.TICKS_PER_SECOND;
+        try {
+            rate = Double.parseDouble(System.getProperty("loadplanning.rate", Double.toString(rate)));
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("loadplanning.rate must be a number", e);
+        }
         LoadPlanner planner = new LoadPlanner(rate);
         StringBuilder table = new StringBuilder(String.format(Locale.ROOT,
                 "%nwork rate %.0f/s%n| mode | cartons | budget s | vehicles | volume fill %% | unplaced | best at ms "
@@ -44,7 +48,6 @@ class LoadPlannerBenchmarkTest {
         for (SelectionMode mode : SelectionMode.values()) {
             for (int n : SIZES) {
                 List<CargoPackage> cartons = LoadPlannerPropertyTest.randomCartons(new Random(1000 + n), n, true);
-                double[] reference = null;
                 List<double[]> rows = new ArrayList<>();
                 for (int b = BUDGETS.length - 1; b >= 0; b--) {
                     LoadPlanRequest req = new LoadPlanRequest(cartons,
@@ -66,11 +69,9 @@ class LoadPlannerBenchmarkTest {
                     double fill = capacity == 0 ? 0 : 100.0 * volume / capacity;
                     double[] row = {BUDGETS[b], r.vehicles().size(), fill, r.unplaced().size(),
                             r.meta().bestFoundMillis(), r.meta().elapsedMillis(), r.meta().budgetExhausted() ? 1 : 0};
-                    if (reference == null) {
-                        reference = row;
-                    }
                     rows.add(0, row);
                 }
+                double[] reference = rows.get(rows.size() - 1);
                 for (double[] row : rows) {
                     table.append(String.format(Locale.ROOT, "| %s | %d | %.0f | %.0f | %.2f | %.0f | %.0f | %.0f | %s |%n",
                             mode, n, row[0], row[1], row[2], row[3], row[4], row[5], row[6] > 0 ? "yes" : "no"));

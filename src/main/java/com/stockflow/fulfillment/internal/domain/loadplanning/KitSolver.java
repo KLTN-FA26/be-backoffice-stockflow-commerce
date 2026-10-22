@@ -206,7 +206,7 @@ final class KitSolver {
      * there (BR-10).</p>
      */
     private KitShare placeKitShare(Bin bin, List<Expanded> expanded, int[] row, List<BoxPlacement> obstacles,
-                                   double budget, long seed) {
+                                   double budget) {
         int[] target = row.clone();
         while (sum(target) > 0) {
             List<Box> boxes = kitMemberBoxes(expanded, target);
@@ -532,7 +532,7 @@ final class KitSolver {
             List<BoxPlacement> gussets = Gussets.of(one);
             List<BoxPlacement> kitPl = List.of();
             if (ci < plans.size() && sum(plans.get(ci)) > 0) {
-                KitShare share = placeKitShare(one, expanded, plans.get(ci), gussets, perBinBudget, seed + ci * 31L);
+                KitShare share = placeKitShare(one, expanded, plans.get(ci), gussets, perBinBudget);
                 kitPl = share.placements();
                 int[] rollover = share.rollover();
                 if (sum(rollover) > 0) {
@@ -1032,6 +1032,7 @@ final class KitSolver {
                 break;
             }
         }
+        java.util.Objects.requireNonNull(best, "the first attempt always runs");
         List<BinLoad> placed = consolidateTail(new ArrayList<>(best.placed()), split.expanded(), 8.0);
         Set<String> skus = kitSkus(split.expanded());
         EqualizeStats eqStats = null;
@@ -1163,7 +1164,7 @@ final class KitSolver {
             }
             for (Map.Entry<double[], Drive> e : cand) {
                 double[] s = e.getKey();
-                double[] ext = {s[0], s[1], -fillGain(e.getValue().placed(), bins, fillScoring), s[2]};
+                double[] ext = {s[0], s[1], -fillGain(e.getValue().placed(), fillScoring), s[2]};
                 if (bestKey == null || compare(ext, bestKey) < 0) {
                     bestKey = ext;
                     best = e.getValue();
@@ -1221,7 +1222,7 @@ final class KitSolver {
      * count vehicles the plan leaves empty: fill never gets a vehicle of its own (docs 09 "hàng phụ chỉ chèn vào chỗ
      * trống còn lại").
      */
-    private double fillGain(List<BinLoad> placed, List<Bin> bins, List<Box> fill) {
+    private double fillGain(List<BinLoad> placed, List<Box> fill) {
         if (fill.isEmpty()) {
             return 0.0;
         }

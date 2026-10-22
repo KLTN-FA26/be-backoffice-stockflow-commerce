@@ -93,6 +93,7 @@ class LoadPlannerPropertyTest {
     @MethodSource("cases")
     void everyPlanIsSoundAndReproducible(int seed, LoadPlanRequest request) {
         LoadPlanResult first = new LoadPlanner(8.0).plan(request);
+        assertThat(request.seed()).as("case %d carries its seed", seed).isEqualTo(seed);
         assertSound(request, first);
         assertThat(first.meta().budgetExhausted()).as("finished within its budget, so it must be reproducible")
                 .isFalse();

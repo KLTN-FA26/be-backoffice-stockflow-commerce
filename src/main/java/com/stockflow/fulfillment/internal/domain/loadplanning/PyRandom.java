@@ -102,7 +102,7 @@ final class PyRandom {
     int randBelow(int n) {
         int k = 32 - Integer.numberOfLeadingZeros(n);
         long r = getRandBits(k);
-        while (r >= n) {
+        while (r >= (long) n) {
             r = getRandBits(k);
         }
         return (int) r;

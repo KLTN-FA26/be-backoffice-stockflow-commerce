@@ -169,7 +169,7 @@ final class BlockFiller {
                         int nx = (int) Math.floor((sw + TOL) / w);
                         int ny = (int) Math.floor((sh + TOL) / h);
                         int nz = (int) Math.floor((sd + TOL) / d);
-                        while ((long) nx * ny * nz > cap) {
+                        while ((long) nx * ny * nz > (long) cap) {
                             if (nz > 1) {
                                 nz--;
                             } else if (ny > 1) {
@@ -180,7 +180,7 @@ final class BlockFiller {
                                 break;
                             }
                         }
-                        if ((long) nx * ny * nz > cap) {
+                        if ((long) nx * ny * nz > (long) cap) {
                             continue;
                         }
                         if (sy > TOL && !blockSupported(grid, sx, sy, sz, w, d, nx, nz, supportMin)) {

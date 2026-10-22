@@ -69,13 +69,10 @@ public final class LoadPlanner {
         // Cartons no usable vehicle can ever take are reported, not offered: they would only cost search time, and a
         // set part that can never load must not hold its set-mates back (they load loose instead).
         Map<String, UnplacedReason> unplaced = new LinkedHashMap<>();
-        List<CargoPackage> offered = new ArrayList<>();
         for (CargoPackage c : cartons) {
             UnplacedReason r = classifyAlone(c, request.vehicleTypes());
             if (r != null) {
                 unplaced.put(c.ref(), r);
-            } else {
-                offered.add(c);
             }
         }
 
