@@ -111,6 +111,17 @@ public class InventoryPolicyRepository {
                         logistics(rs), policy(rs)), id).stream().findFirst();
     }
 
+    /** The items with these SKUs, in one SELECT; a SKU without an item is simply absent. */
+    public java.util.List<ItemRow> findBySkus(java.util.Collection<String> skus) {
+        if (skus.isEmpty()) {
+            return java.util.List.of();
+        }
+        return jdbc.query("select * from inventory.inventory_items where sku = any (?)", ps ->
+                ps.setArray(1, ps.getConnection().createArrayOf("text", skus.toArray())), (rs, n) ->
+                new ItemRow(rs.getObject("id", java.util.UUID.class), rs.getString("sku"), rs.getLong("version"),
+                        logistics(rs), policy(rs)));
+    }
+
     private static InventoryPolicy policy(java.sql.ResultSet rs) throws java.sql.SQLException {
         return new InventoryPolicy(
                 rs.getObject("reorder_point", Integer.class),

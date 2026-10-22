@@ -31,13 +31,15 @@ public interface UomConversionService {
 
     /**
      * Declare a packing unit. {@code UOM_CONVERSION_DUPLICATE} when the code is taken (the base unit's
-     * included); marking it the default purchase unit unmarks the previous one.
+     * included); marking it the default purchase unit, or the default shipping unit, unmarks the previous one.
      */
     UomConversion add(Sku sku, UomConversionDraft draft);
 
     /**
      * Replace a unit. Unmarking the default purchase unit hands the mark back to the base unit; a retired
-     * unit cannot be the default purchase unit; on the base unit only the default purchase mark changes.
+     * unit cannot be the default purchase unit or the default shipping unit. Marking the default shipping unit
+     * unmarks the item's previous one in the same transaction (never a conflict); unmarking it leaves the item
+     * without one. On the base unit only the two marks change.
      */
     UomConversion change(Sku sku, UUID id, long expectedVersion, UomConversionDraft draft);
 
