@@ -1,0 +1,105 @@
+{
+ "containers": [
+  {
+   "code": "40DC",
+   "w": 2352,
+   "h": 2393,
+   "d": 12032,
+   "quantity": 64,
+   "payload": 1000000000.0,
+   "gusset": 0
+  }
+ ],
+ "boxes": [
+  {
+   "part": "T-MB",
+   "w": 1590,
+   "h": 90,
+   "d": 1590,
+   "quantity": 6,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "T-CB",
+   "w": 730,
+   "h": 800,
+   "d": 730,
+   "quantity": 12,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L0",
+   "w": 500,
+   "h": 500,
+   "d": 500,
+   "quantity": 11,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L1",
+   "w": 300,
+   "h": 300,
+   "d": 300,
+   "quantity": 11,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L2",
+   "w": 800,
+   "h": 600,
+   "d": 500,
+   "quantity": 11,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L3",
+   "w": 700,
+   "h": 500,
+   "d": 450,
+   "quantity": 6,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L4",
+   "w": 500,
+   "h": 500,
+   "d": 500,
+   "quantity": 9,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L5",
+   "w": 400,
+   "h": 300,
+   "d": 250,
+   "quantity": 9,
+   "rotatable": true,
+   "weight": 1.0
+  }
+ ],
+ "kits": [
+  {
+   "name": "Table",
+   "members": [
+    [
+     "T-MB",
+     1
+    ],
+    [
+     "T-CB",
+     2
+    ]
+   ]
+  }
+ ],
+ "distribute": "even",
+ "budget": 6,
+ "ticks_per_second": 8.0
+}
