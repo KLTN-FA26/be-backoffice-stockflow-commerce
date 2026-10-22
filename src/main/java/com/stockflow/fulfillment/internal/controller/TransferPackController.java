@@ -25,6 +25,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -56,6 +57,32 @@ class TransferPackController {
     public ApiResponse<TransferPacks.Session> open(@Valid @RequestBody TransferPackRequest request,
                                                    @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(packs.open(request.transferOrderId(), actor));
+    }
+
+    @GetMapping
+    @Operation(summary = "The transfer's packing session - its live one, else its latest - without starting anything "
+            + "(a reader reaches it from the transfer). 404 when it was never packed")
+    @RequiresPermission(resource = FulfillmentResources.PACKAGES, action = Action.READ)
+    public ApiResponse<TransferPacks.Session> current(@RequestParam UUID transferOrderId) {
+        return ApiResponse.ok(packs.current(transferOrderId));
+    }
+
+    @PostMapping("/{packId}/packages/{packageId}/reopening")
+    @Operation(summary = "A sealed package opened again before packing completes (as at an order's table)")
+    @RequiresPermission(resource = FulfillmentResources.PACKING, action = Action.UPDATE)
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "fulfillment-package", resourceId = "#packageId")
+    public ApiResponse<TransferPacks.Parcel> reopen(@PathVariable UUID packId, @PathVariable UUID packageId,
+                                                    @AuthenticatedUser CurrentUser actor) {
+        return ApiResponse.ok(packs.reopen(packId, packageId, actor));
+    }
+
+    @GetMapping("/{packId}/packages/{packageId}/label")
+    @Operation(summary = "The internal label of a sealed transfer package (transfer, n of N, from / to warehouse, "
+            + "weight, size, flags, contents, kit part); printing it makes an outdated label current again")
+    @RequiresPermission(resource = FulfillmentResources.PACKING, action = Action.READ)
+    public ApiResponse<TransferPacks.Label> label(@PathVariable UUID packId, @PathVariable UUID packageId,
+                                                  @AuthenticatedUser CurrentUser actor) {
+        return ApiResponse.ok(packs.label(packId, packageId, actor));
     }
 
     @GetMapping("/{packId}")

@@ -61,8 +61,10 @@ public interface TransferOrders {
                     Instant goodsLeftAt) {
     }
 
+    /** @param deliveryMode LP2-8; @param packedAt its packing completed - ready for a load plan (SCRUM-287 PR T) */
     record Row(UUID transferId, String number, UUID fromWarehouseId, UUID toWarehouseId, TransferStatus status,
-               LocalDate expectedDate, Instant createdAt, Instant dispatchedAt) {
+               LocalDate expectedDate, Instant createdAt, Instant dispatchedAt,
+               com.stockflow.inventory.api.TransferDeliveryMode deliveryMode, Instant packedAt) {
     }
 
     Transfer create(Create command);

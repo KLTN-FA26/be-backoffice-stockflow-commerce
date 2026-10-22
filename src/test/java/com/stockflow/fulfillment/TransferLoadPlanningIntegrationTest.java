@@ -803,6 +803,69 @@ class TransferLoadPlanningIntegrationTest {
         assertThat(transferStatus(parcel)).isEqualTo("IN_TRANSIT");
     }
 
+    @Test
+    @DisplayName("FE F9 contract: a reader finds the transfer's pack session by transfer (404 before) without starting "
+            + "picking; the session names its packer; a sealed parcel reopens and is sealed again; its label names the "
+            + "transfer, n of N and both warehouses, and printing it makes an outdated label current; the transfer list "
+            + "row carries deliveryMode and packedAt")
+    void contractForTheTransferPackingScreen() throws Exception {
+        String lpn = stock();
+        UUID transfer = approvedTransfer("FULL_TRUCKLOAD");
+        dispatch(get(PACKS).param("transferOrderId", transfer.toString())).andExpect(status().isNotFound());
+        assertThat(transferStatus(transfer)).isEqualTo("APPROVED");      // a reader starts nothing
+
+        JsonNode session = packed(transfer, lpn);
+        String pack = session.path("packId").asText();
+        JsonNode found = data(dispatch(get(PACKS).param("transferOrderId", transfer.toString()))
+                .andExpect(status().isOk()));
+        assertThat(found.path("packId").asText()).isEqualTo(pack);
+        assertThat(found.path("packerId").asText()).isEqualTo(packer.toString());
+        assertThat(found.path("packerName").asText()).isNotBlank();
+
+        // The label of the carton parcel: transfer, n of 3, from HCM to the destination; no COD.
+        String carton = null;
+        for (JsonNode p : found.path("packages")) {
+            if (p.hasNonNull("stockPackageId")) {
+                carton = p.path("packageId").asText();
+            }
+        }
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE fulfillment.package SET label_outdated_at = NOW() WHERE "
+                + "transfer_order_id = ?", transfer));
+        String cartonId = carton;
+        JsonNode label = data(packer(get(PACKS + "/" + pack + "/packages/" + cartonId + "/label"))
+                .andExpect(status().isOk()));
+        assertThat(label.path("transferOrderId").asText()).isEqualTo(transfer.toString());
+        assertThat(label.path("packageCount").asInt()).isEqualTo(3);
+        assertThat(label.path("toWarehouseName").asText()).isEqualTo("Destination");
+        assertThat(label.path("fromWarehouseName").asText()).isNotBlank();
+        assertThat(label.path("weightKg").decimalValue()).isEqualByComparingTo("1195");
+        assertThat(jdbc.queryForObject("SELECT label_outdated_at IS NULL FROM fulfillment.package WHERE id = ?::uuid",
+                Boolean.class, cartonId)).isTrue();
+
+        // The transfer list row: how it travels and when its packing completed.
+        String number = jdbc.queryForObject("SELECT transfer_number FROM inventory.transfer_order WHERE id = ?",
+                String.class, transfer);
+        JsonNode row = data(dispatch(get(TRANSFERS).param("search", number)).andExpect(status().isOk()))
+                .path("items").get(0);
+        assertThat(row.path("deliveryMode").asText()).isEqualTo("FULL_TRUCKLOAD");
+        assertThat(row.hasNonNull("packedAt")).isTrue();
+
+        // Reopening a sealed parcel, before completion, on a second transfer (a packed session no longer changes).
+        String lpn2 = stock();
+        UUID other = approvedTransfer("FULL_TRUCKLOAD");
+        String otherPack = data(packer(body(post(PACKS), "{\"transferOrderId\":\"" + other + "\"}"))
+                .andExpect(status().isCreated())).path("packId").asText();
+        String parcel = data(packer(body(post(PACKS + "/" + otherPack + "/cartons"), "{\"lpn\":\"" + lpn2 + "\"}"))
+                .andExpect(status().isCreated())).path("parcel").path("packageId").asText();
+        packer(body(post(PACKS + "/" + otherPack + "/packages/" + parcel + "/seal"), CARTON_MEASURES))
+                .andExpect(status().isOk());
+        assertThat(data(packer(post(PACKS + "/" + otherPack + "/packages/" + parcel + "/reopening"))
+                .andExpect(status().isOk())).path("status").asText()).isEqualTo("OPEN");
+        assertThat(data(packer(body(post(PACKS + "/" + otherPack + "/packages/" + parcel + "/seal"), CARTON_MEASURES))
+                .andExpect(status().isOk())).path("status").asText()).isEqualTo("SEALED");
+        packer(post(PACKS + "/" + pack + "/packages/" + cartonId + "/reopening")).andExpect(status().isConflict());
+    }
+
     private static MockHttpServletRequestBuilder put(String url) {
         return org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put(url);
     }

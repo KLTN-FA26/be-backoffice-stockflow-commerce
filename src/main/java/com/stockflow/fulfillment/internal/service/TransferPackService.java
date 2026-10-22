@@ -65,12 +65,18 @@ class TransferPackService implements TransferPacks {
     private final PackagingSpecResolver packaging;
     private final Clock clock;
     private final int dimDivisor;
+    private final com.stockflow.identity.api.IdentityService identities;
+    private final com.stockflow.warehouse.api.WarehouseService warehouses;
 
     @SuppressWarnings("java:S107")
     TransferPackService(PackJpaRepository packs, PackageJpaRepository packages, PackageScanJpaRepository scans,
                         PackingSessionStore store, TransferFulfillment transfers, InventoryControlService itemControls,
                         PackagingSpecResolver packaging, Clock clock,
-                        @Value("${stockflow.fulfillment.packing.dim-divisor:6000}") int dimDivisor) {
+                        @Value("${stockflow.fulfillment.packing.dim-divisor:6000}") int dimDivisor,
+                        com.stockflow.identity.api.IdentityService identities,
+                        com.stockflow.warehouse.api.WarehouseService warehouses) {
+        this.identities = identities;
+        this.warehouses = warehouses;
         this.packs = packs;
         this.packages = packages;
         this.scans = scans;
@@ -119,6 +125,60 @@ class TransferPackService implements TransferPacks {
         Context ctx = context(packs.findById(packId).filter(p -> p.getTransferOrderId() != null)
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No transfer packing session " + packId)));
         return view(ctx, load(ctx));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Session current(UUID transferOrderId) {
+        List<PackJpaEntity> sessions = packs.findByTransferOrderIdOrderByCreatedAtDesc(transferOrderId);
+        PackJpaEntity chosen = sessions.stream().filter(p -> p.getStatus() != PackStatus.CANCELLED).findFirst()
+                .orElse(sessions.isEmpty() ? null : sessions.getFirst());
+        if (chosen == null) {
+            throw new BusinessException(ErrorCode.NOT_FOUND, "Transfer " + transferOrderId + " was never packed");
+        }
+        Context ctx = context(chosen);
+        return view(ctx, load(ctx));
+    }
+
+    @Override
+    public Parcel reopen(UUID packId, UUID packageId, CurrentUser actor) {
+        Context ctx = forWork(packId);
+        PackingSession session = workable(ctx, actor);
+        PackingSession.Parcel parcel = session.reopen(packageId);
+        store.save(session, ctx.pack());
+        return parcelView(parcel, skus(session), cartonsOf(List.of(parcel)));
+    }
+
+    @Override
+    public Label label(UUID packId, UUID packageId, CurrentUser actor) {
+        PackJpaEntity pack = packs.findById(packId).filter(p -> p.getTransferOrderId() != null)
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No transfer packing session " + packId));
+        Context ctx = context(pack);
+        PackingSession session = load(ctx);
+        PackingSession.Parcel parcel = session.parcel(packageId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.PACKAGE_NOT_FOUND));
+        if (parcel.status() != PackageStatus.SEALED) {
+            throw new BusinessException(ErrorCode.PACK_STATE_CONFLICT, parcel.status() == PackageStatus.OPEN
+                    ? "Seal package %d first: the label carries its weight and size".formatted(parcel.packageNo())
+                    : "Package %d was voided; its label is void (08 BR-05)".formatted(parcel.packageNo()));
+        }
+        List<PackingSession.Parcel> sealed = session.parcels().stream()
+                .filter(p -> p.status() == PackageStatus.SEALED).toList();
+        // Printed again, an outdated label is current again (as at an order's table).
+        packages.findById(packageId).filter(p -> p.getLabelOutdatedAt() != null).ifPresent(p -> {
+            p.markLabelOutdated(null);
+            packages.save(p);
+        });
+        var from = warehouses.findWarehouse(ctx.transfer().fromWarehouseId());
+        var to = warehouses.findWarehouse(ctx.transfer().toWarehouseId());
+        Parcel view = parcelView(parcel, skus(session), cartonsOf(List.of(parcel)));
+        var m = parcel.measures();
+        return new Label(parcel.labelCode(), parcel.id(), ctx.transfer().transferId(), ctx.transfer().number(),
+                sealed.indexOf(parcel) + 1, sealed.size(), from.map(w -> w.name()).orElse(null),
+                from.map(w -> w.address()).orElse(null), to.map(w -> w.name()).orElse(null),
+                to.map(w -> w.address()).orElse(null), parcel.type().name(), m.weightKg(), m.lengthCm(),
+                m.widthCm(), m.heightCm(), parcel.dimWeightKg(), parcel.fragile(), parcel.rotatable(),
+                view.contents(), view.kit(), view.stockPackageId());
     }
 
     @Override
@@ -371,6 +431,8 @@ class TransferPackService implements TransferPacks {
         TransferFulfillment.TransferView t = ctx.transfer();
         return new Session(ctx.pack().getId(), t.transferId(), t.number(), t.fromWarehouseId(), t.toWarehouseId(),
                 t.status(), t.deliveryMode().name(), session.status().name(), session.startedBy(),
+                session.startedBy() == null ? null
+                        : identities.displayNames(List.of(session.startedBy())).get(session.startedBy()),
                 session.startedAt(), session.packedAt(), lines,
                 session.parcels().stream().map(p -> parcelView(p, skus, cartons)).toList());
     }

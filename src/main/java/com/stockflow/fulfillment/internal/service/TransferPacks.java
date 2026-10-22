@@ -68,10 +68,22 @@ public interface TransferPacks {
     /**
      * @param transferStatus the transfer's status (PICKING while it is packed and loaded)
      * @param packStatus     PACKING, then PACKED (ready for a load plan); CANCELLED when picking was cancelled
+     * @param packerId       who took the session ("taken by"); {@code packerName} their display name
      */
     record Session(UUID packId, UUID transferOrderId, String transferNumber, UUID fromWarehouseId,
                    UUID toWarehouseId, String transferStatus, String deliveryMode, String packStatus, UUID packerId,
-                   Instant startedAt, Instant packedAt, List<Line> lines, List<Parcel> packages) { }
+                   String packerName, Instant startedAt, Instant packedAt, List<Line> lines, List<Parcel> packages) { }
+
+    /**
+     * What the internal label of a sealed transfer parcel prints (08 step 6, for a transfer): the transfer, package n of
+     * N among the session's sealed parcels, the source warehouse it leaves from and the destination it goes to (the
+     * recipient), weight, size, the fragile / rotatable flags, contents and kit part. No COD (LP-2).
+     */
+    record Label(String labelCode, UUID packageId, UUID transferOrderId, String transferNumber, int packageNo,
+                 int packageCount, String fromWarehouseName, String fromWarehouseAddress, String toWarehouseName,
+                 String toWarehouseAddress, String packageType, BigDecimal weightKg, BigDecimal lengthCm,
+                 BigDecimal widthCm, BigDecimal heightCm, BigDecimal dimWeightKg, boolean fragile, boolean rotatable,
+                 List<Content> contents, KitView kit, UUID stockPackageId) { }
 
     record Scan(UUID scanId, String scannedCode, String lotNumber, int quantity, UUID transferLineId,
                 String kitOverrideReason) { }
@@ -89,6 +101,22 @@ public interface TransferPacks {
     Session open(UUID transferOrderId, CurrentUser actor);
 
     Session get(UUID packId);
+
+    /**
+     * The transfer's packing session - its live one, else its latest - for a reader (READ), without starting anything.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND} when it was never packed
+     */
+    Session current(UUID transferOrderId);
+
+    /** A sealed parcel opened again before packing completes (as at an order's table). */
+    Parcel reopen(UUID packId, UUID packageId, CurrentUser actor);
+
+    /**
+     * The label of a sealed parcel as it prints now; printing it makes an outdated label current again (as an order's,
+     * {@code LABEL_OUTDATED}).
+     */
+    Label label(UUID packId, UUID packageId, CurrentUser actor);
 
     Parcel openPackage(UUID packId, String type, String kitOverrideReason, CurrentUser actor);
 

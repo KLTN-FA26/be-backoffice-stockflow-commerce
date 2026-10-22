@@ -200,7 +200,7 @@ class TransferOrderServiceImpl implements TransferOrders, TransferFulfillment {
         return Pages.toResponse(search.search(new TransferOrderSearch.Criteria(statuses, fromWarehouseId,
                         toWarehouseId, number), pageable)
                 .map(r -> new Row(r.id(), r.number(), r.fromWarehouseId(), r.toWarehouseId(), r.status(),
-                        r.expectedDate(), r.createdAt(), r.dispatchedAt())));
+                        r.expectedDate(), r.createdAt(), r.dispatchedAt(), r.deliveryMode(), r.packedAt())));
     }
 
     @Override

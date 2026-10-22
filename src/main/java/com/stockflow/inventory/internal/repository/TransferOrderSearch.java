@@ -14,7 +14,8 @@ public interface TransferOrderSearch {
     }
 
     record Row(UUID id, String number, UUID fromWarehouseId, UUID toWarehouseId, TransferStatus status,
-               java.time.LocalDate expectedDate, java.time.Instant createdAt, java.time.Instant dispatchedAt) {
+               java.time.LocalDate expectedDate, java.time.Instant createdAt, java.time.Instant dispatchedAt,
+               com.stockflow.inventory.api.TransferDeliveryMode deliveryMode, java.time.Instant packedAt) {
     }
 
     Page<Row> search(Criteria criteria, Pageable pageable);
