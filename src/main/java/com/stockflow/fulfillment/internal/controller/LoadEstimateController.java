@@ -24,8 +24,8 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.UUID;
 
 /**
- * The advisory load estimate of full-truckload load planning (SCRUM-287 PR EST; design v2 §5, LP2-1): how a released
- * order's lines would load before anything is packed. It never confirms a plan or books a vehicle. {@code
+ * The advisory load estimate of full-truckload load planning (SCRUM-287 PR EST; design v2 §5, LP2-1): how an order's
+ * remaining units would load before anything is packed - from confirmation (the release dialog) until it shipped. It never confirms a plan or books a vehicle. {@code
  * fulfillment-load-estimates:CREATE} to estimate, {@code :READ} to read one; every call is limited to the caller's
  * warehouses.
  */
@@ -44,10 +44,12 @@ class LoadEstimateController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    @Operation(summary = "Estimate how a released order loads (advisory; synchronous within the solver budget) and "
-            + "make it the order's current estimate. 400 LOAD_ESTIMATE_SOURCE_UNSUPPORTED (TRANSFER), 404, 409 "
-            + "LOAD_ESTIMATE_SOURCE_NOT_ELIGIBLE / VEHICLE_TYPE_INACTIVE, 422 LOAD_ESTIMATE_PACKAGING_MISSING (field "
-            + "inventoryItems[<itemId>] per blocked line) / LOAD_ESTIMATE_TOO_MANY_CARTONS")
+    @Operation(summary = "Estimate how an order's remaining units load (advisory; synchronous within the solver budget) "
+            + "and make it the order's current estimate. CONFIRMED needs warehouseId. Lines without size or weight are "
+            + "listed in missing (incomplete=true). 400 LOAD_ESTIMATE_SOURCE_UNSUPPORTED (TRANSFER) / "
+            + "VALIDATION_FAILED, 404, 409 LOAD_ESTIMATE_SOURCE_NOT_ELIGIBLE / VEHICLE_TYPE_INACTIVE, 422 "
+            + "LOAD_ESTIMATE_PACKAGING_MISSING when no line resolves (field inventoryItems[<itemId>] per line) / "
+            + "LOAD_ESTIMATE_TOO_MANY_CARTONS")
     @RequiresPermission(resource = FulfillmentResources.LOAD_ESTIMATES, action = Action.CREATE)
     @Auditable(action = AuditAction.CREATE, resourceType = "load_estimate", resourceId = "#result?.data()?.id()")
     public ApiResponse<LoadEstimateResponse> create(@Valid @RequestBody LoadEstimateRequest request) {

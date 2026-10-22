@@ -12,7 +12,7 @@ import java.util.UUID;
 
 /**
  * An advisory load estimate (table {@code fulfillment.load_estimate}; SCRUM-287 PR EST, LP2-1). Written once and then
- * only superseded: what was estimated - lines, layout, warnings - never changes, so a superseded estimate still shows
+ * only superseded: what was estimated - lines, layout, warnings, the lines left out - never changes, so a superseded estimate still shows
  * what the coordinator saw. The JSON columns hold the API's own shapes; the service reads and writes them.
  */
 @Entity
@@ -39,12 +39,17 @@ public class LoadEstimateJpaEntity extends BaseEntity {
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "warnings", nullable = false, updatable = false, columnDefinition = "jsonb")
     private JsonNode warnings;
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "missing", nullable = false, updatable = false, columnDefinition = "jsonb")
+    private JsonNode missing;
+    @Column(name = "incomplete", nullable = false, updatable = false) private boolean incomplete;
 
     protected LoadEstimateJpaEntity() {
     }
 
     public LoadEstimateJpaEntity(UUID id, String sourceType, UUID sourceId, UUID warehouseId, JsonNode vehicleTypeIds,
-                                 String mode, JsonNode lines, JsonNode layout, JsonNode warnings) {
+                                 String mode, JsonNode lines, JsonNode layout, JsonNode warnings,
+                                 JsonNode missing) {
         super(id);
         this.sourceType = sourceType;
         this.sourceId = sourceId;
@@ -55,6 +60,8 @@ public class LoadEstimateJpaEntity extends BaseEntity {
         this.lines = lines;
         this.layout = layout;
         this.warnings = warnings;
+        this.missing = missing;
+        this.incomplete = missing != null && !missing.isEmpty();
     }
 
     /** A newer estimate of the same source replaced this one. */
@@ -71,4 +78,6 @@ public class LoadEstimateJpaEntity extends BaseEntity {
     public JsonNode getLines() { return lines; }
     public JsonNode getLayout() { return layout; }
     public JsonNode getWarnings() { return warnings; }
+    public JsonNode getMissing() { return missing; }
+    public boolean isIncomplete() { return incomplete; }
 }

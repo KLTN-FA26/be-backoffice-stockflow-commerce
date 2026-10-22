@@ -151,17 +151,18 @@ class LoadEstimateIntegrationTest {
     /** A placed order in {@code status} with these lines; released to HCM when the status says it was. */
     private UUID order(String status, Map<String, Integer> lines) {
         UUID id = Identifiers.newId();
-        boolean released = !Set.of("DRAFT", "PENDING_PAYMENT", "CONFIRMED").contains(status);
+        boolean released = !Set.of("DRAFT", "PENDING_PAYMENT", "CONFIRMED", "ON_HOLD").contains(status);
         jdbc.update("""
                 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
                     currency, placed_at, payment_term, credit_term_days, released_at, released_by, warehouse_id,
-                    shipped_at, version, created_at)
-                VALUES (?, ?, ?, ?, ?, 1000, 'VND', NOW(), 'CREDIT', 30, ?, ?, ?, ?, 0, NOW())""",
+                    shipped_at, hold_reason, version, created_at)
+                VALUES (?, ?, ?, ?, ?, 1000, 'VND', NOW(), 'CREDIT', 30, ?, ?, ?, ?,
+                        CASE WHEN ? = 'ON_HOLD' THEN 'CREDIT' END, 0, NOW())""",
                 id, "SO-20261022-" + java.util.concurrent.ThreadLocalRandom.current().nextLong(100_000_000L, 999_999_999L), customer, Identifiers.newId(), status,
                 released ? java.sql.Timestamp.from(java.time.Instant.now()) : null, released ? coordinator : null,
                 released ? HCM : null,
-                status.equals("SHIPPED") ? java.sql.Timestamp.from(java.time.Instant.now()) : null);
-        lines.forEach((sku, quantity) -> jdbc.update("""
+                status.equals("SHIPPED") ? java.sql.Timestamp.from(java.time.Instant.now()) : null, status);
+        new java.util.TreeMap<>(lines).forEach((sku, quantity) -> jdbc.update("""
                 INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
                 VALUES (?, ?, ?, ?, 1000, 'VND')""", Identifiers.newId(), id, sku, quantity));
         return id;
@@ -174,13 +175,17 @@ class LoadEstimateIntegrationTest {
     }
 
     private String body(UUID source, String type, UUID... types) {
+        return bodyFor(source, type, null, types);
+    }
+
+    private String bodyFor(UUID source, String type, UUID warehouse, UUID... types) {
         StringBuilder ids = new StringBuilder();
         for (UUID t : types) {
             ids.append(ids.isEmpty() ? "" : ",").append('"').append(t).append('"');
         }
         return """
-                {"sources":[{"type":"%s","id":"%s"}],"vehicleTypeIds":[%s],"selectionMode":"SINGLE_TYPE"}"""
-                .formatted(type, source, ids);
+                {"sources":[{"type":"%s","id":"%s"}],%s"vehicleTypeIds":[%s],"selectionMode":"SINGLE_TYPE"}"""
+                .formatted(type, source, warehouse == null ? "" : "\"warehouseId\":\"" + warehouse + "\",", ids);
     }
 
     private ResultActions as(Role role, UUID user, MockHttpServletRequestBuilder request) throws Exception {
@@ -198,15 +203,165 @@ class LoadEstimateIntegrationTest {
     // ---- tests ---------------------------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("LP2-3: an item never measured blocks the estimate with 422 naming that item; nothing is stored")
-    void missingPackagingIsRefusedWithTheItem() throws Exception {
-        estimate(Role.ORDER_COORDINATOR, coordinator, body(order, "ORDER", container))
+    @DisplayName("LP2-3: an item never measured blocks only its line: estimated without it, listed in missing")
+    void missingPackagingBlocksOnlyThatLine() throws Exception {
+        JsonNode estimate = data(estimate(Role.ORDER_COORDINATOR, coordinator, body(order, "ORDER", container))
+                .andExpect(status().isCreated()));
+
+        assertThat(estimate.path("incomplete").asBoolean()).isTrue();
+        assertThat(estimate.path("missing")).hasSize(1);
+        JsonNode missing = estimate.path("missing").get(0);
+        assertThat(missing.path("orderLineId").asText()).isEqualTo(lineOf.get(bareSku).toString());
+        assertThat(missing.path("sku").asText()).isEqualTo(bareSku);
+        assertThat(missing.path("inventoryItemId").asText()).isEqualTo(bareItem.toString());
+        assertThat(json.convertValue(missing.path("missingFields"), List.class))
+                .containsExactly("lengthCm", "widthCm", "heightCm", "weightKg");
+        assertThat(estimate.path("lines")).extracting(l -> l.path("sku").asText())
+                .containsExactlyInAnyOrder(palletSku, kitSku);
+        assertThat(estimate.path("vehicles").get(0).path("boxes")).hasSize(2 + 3 * 2);
+        // Stored with the estimate: GET answers the same.
+        as(Role.ORDER_COORDINATOR, coordinator, get(BASE + "?sourceType=ORDER&sourceId=" + order))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.incomplete").value(true))
+                .andExpect(jsonPath("$.data.missing[0].inventoryItemId").value(bareItem.toString()));
+        assertThat(jdbc.queryForObject("SELECT incomplete FROM fulfillment.load_estimate WHERE source_id = ?",
+                Boolean.class, order)).isTrue();
+    }
+
+    @Test
+    @DisplayName("LP2-3: when no line resolves, 422 naming each item; only the fields really missing; nothing stored")
+    void noLineResolvesIsRefused() throws Exception {
+        String weightless = tx.execute(s -> ReferenceRows.product(entityManager).sku());
+        UUID weightlessItem = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class,
+                weightless);
+        tx.executeWithoutResult(s -> jdbc.update("""
+                UPDATE inventory.inventory_items SET length_cm = 30, width_cm = 20, height_cm = 10, weight_kg = NULL
+                WHERE id = ?""", weightlessItem));
+        UUID unmeasured = tx.execute(s -> order("READY_TO_FULFILL", Map.of(bareSku, 2, weightless, 1)));
+
+        estimate(Role.ORDER_COORDINATOR, coordinator, body(unmeasured, "ORDER", container))
                 .andExpect(status().isUnprocessableEntity())
                 .andExpect(jsonPath("$.errorCode").value("LOAD_ESTIMATE_PACKAGING_MISSING"))
-                .andExpect(jsonPath("$.fieldErrors.length()").value(1))
-                .andExpect(jsonPath("$.fieldErrors[0].field").value("inventoryItems[" + bareItem + "]"))
-                .andExpect(jsonPath("$.fieldErrors[0].code").value("PackagingMissing"))
-                .andExpect(jsonPath("$.fieldErrors[0].message").value(org.hamcrest.Matchers.containsString(bareSku)));
+                .andExpect(jsonPath("$.fieldErrors.length()").value(2))
+                .andExpect(jsonPath("$.fieldErrors[?(@.field=='inventoryItems[" + bareItem + "]')].code")
+                        .value("PackagingMissing"))
+                .andExpect(jsonPath("$.fieldErrors[?(@.field=='inventoryItems[" + weightlessItem + "]')].message")
+                        .value(org.hamcrest.Matchers.contains(org.hamcrest.Matchers.endsWith(
+                                "has no weightKg on its inventory item"))));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.load_estimate WHERE source_id = ?",
+                Integer.class, unmeasured)).isZero();
+    }
+
+    @Test
+    @DisplayName("only what is still to ship: units shipped (not returned) and closed out are not loaded again")
+    void remainingUnitsOnly() throws Exception {
+        measureTheBareItem();
+        UUID partial = tx.execute(s -> order("PARTIALLY_FULFILLED", Map.of(palletSku, 30, kitSku, 3, bareSku, 2)));
+        Map<String, UUID> lines = new HashMap<>();
+        jdbc.query("SELECT sku, id FROM ordering.order_line WHERE order_id = ?",
+                rs -> { lines.put(rs.getString(1), rs.getObject(2, UUID.class)); }, partial);
+        // PACK-EARLY: 24 pallet units and every measured item went out; one returned shipment does not count.
+        UUID shipped = com.stockflow.support.ShipmentRows.ready(jdbc, tx, partial, Identifiers.newId());
+        UUID returned = com.stockflow.support.ShipmentRows.ready(jdbc, tx, partial, Identifiers.newId());
+        tx.executeWithoutResult(s -> {
+            jdbc.update("""
+                    INSERT INTO ordering.order_shipment (id, order_id, status, amount, handed_over_at)
+                    VALUES (?, ?, 'HANDED_OVER', 1000, NOW())""", shipped, partial);
+            jdbc.update("""
+                    INSERT INTO ordering.order_shipment (id, order_id, status, amount, handed_over_at, outcome_at)
+                    VALUES (?, ?, 'RETURNED', 1000, NOW(), NOW())""", returned, partial);
+            jdbc.update("INSERT INTO ordering.order_shipment_line (shipment_id, order_line_id, quantity) VALUES (?, ?, 24)",
+                    shipped, lines.get(palletSku));
+            jdbc.update("INSERT INTO ordering.order_shipment_line (shipment_id, order_line_id, quantity) VALUES (?, ?, 2)",
+                    shipped, lines.get(bareSku));
+            jdbc.update("INSERT INTO ordering.order_shipment_line (shipment_id, order_line_id, quantity) VALUES (?, ?, 3)",
+                    returned, lines.get(kitSku));
+            // One table closed out of the order (#150).
+            jdbc.update("UPDATE ordering.order_line SET cancelled_quantity = 1 WHERE id = ?", lines.get(kitSku));
+        });
+
+        JsonNode estimate = data(estimate(Role.ORDER_COORDINATOR, coordinator, body(partial, "ORDER", container))
+                .andExpect(status().isCreated()));
+
+        Map<String, JsonNode> bySku = new HashMap<>();
+        estimate.path("lines").forEach(l -> bySku.put(l.path("sku").asText(), l));
+        assertThat(bySku).containsOnlyKeys(palletSku, kitSku);
+        assertThat(bySku.get(palletSku).path("quantity").asInt()).isEqualTo(6);
+        assertThat(bySku.get(palletSku).path("cartons").asInt()).isEqualTo(1);
+        assertThat(bySku.get(palletSku).path("partial").path("units").asInt()).isEqualTo(6);
+        assertThat(bySku.get(kitSku).path("quantity").asInt()).isEqualTo(2);
+        assertThat(estimate.path("vehicles").get(0).path("boxes")).hasSize(1 + 2 * 2);
+        assertThat(estimate.path("incomplete").asBoolean()).isFalse();
+    }
+
+    @Test
+    @DisplayName("CONFIRMED: estimated in the release dialog for the warehouse it will go to, within the caller's scope")
+    void confirmedOrderNeedsItsTargetWarehouse() throws Exception {
+        measureTheBareItem();
+        UUID confirmed = tx.execute(s -> order("CONFIRMED", Map.of(palletSku, 30)));
+        estimate(Role.ORDER_COORDINATOR, coordinator, body(confirmed, "ORDER", container))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("warehouseId"));
+        estimate(Role.ORDER_COORDINATOR, coordinator, bodyFor(confirmed, "ORDER", UUID.randomUUID(), container))
+                .andExpect(status().isNotFound());
+        estimate(Role.WAREHOUSE_MANAGER, managerElsewhere, bodyFor(confirmed, "ORDER", HCM, container))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.errorCode").value("OUT_OF_DATA_SCOPE"));
+
+        JsonNode estimate = data(estimate(Role.WAREHOUSE_MANAGER, manager, bodyFor(confirmed, "ORDER", HCM, container))
+                .andExpect(status().isCreated()));
+        assertThat(estimate.path("warehouseId").asText()).isEqualTo(HCM.toString());
+        as(Role.WAREHOUSE_MANAGER, managerElsewhere, get(BASE + "/" + estimate.path("id").asText()))
+                .andExpect(status().isForbidden());
+
+        // A released order keeps its own warehouse.
+        estimate(Role.ORDER_COORDINATOR, coordinator, bodyFor(order, "ORDER", UUID.randomUUID(), container))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[0].code").value("WarehouseMismatch"));
+    }
+
+    @Test
+    @DisplayName("an order cancelled while it was planned: 409 under its row lock, and nothing is saved")
+    void orderChangedDuringTheSolveIsNotSaved() throws Exception {
+        measureTheBareItem();
+        javax.sql.DataSource dataSource = jdbc.getDataSource();
+        try (java.sql.Connection holder = dataSource.getConnection()) {
+            holder.setAutoCommit(false);
+            try (var lock = holder.prepareStatement("SELECT id FROM ordering.customer_order WHERE id = ? FOR UPDATE")) {
+                lock.setObject(1, order);
+                lock.executeQuery();
+            }
+            java.util.concurrent.CompletableFuture<ResultActions> request = java.util.concurrent.CompletableFuture
+                    .supplyAsync(() -> {
+                        try {
+                            return estimate(Role.ORDER_COORDINATOR, coordinator, body(order, "ORDER", container));
+                        } catch (Exception e) {
+                            throw new IllegalStateException(e);
+                        }
+                    });
+            // The request has read and planned; it now waits for the order's row lock.
+            long deadline = System.nanoTime() + java.time.Duration.ofSeconds(30).toNanos();
+            // (pg_stat_activity.query is cut at 1 kB, before the FROM of Hibernate's long select: look at the lock.)
+            while (jdbc.queryForObject("SELECT count(*) FROM pg_locks WHERE NOT granted AND pid <> pg_backend_pid()",
+                    Integer.class) == 0) {
+                if (request.isDone()) {
+                    throw new AssertionError("the request did not wait for the order's lock: "
+                            + request.join().andReturn().getResponse().getContentAsString());
+                }
+                assertThat(System.nanoTime()).isLessThan(deadline);
+                Thread.sleep(50);
+            }
+            try (var cancel = holder.prepareStatement("""
+                    UPDATE ordering.customer_order SET status = 'CANCELLED', cancellation_reason = 'test',
+                        cancellation_reason_code = 'OTHER' WHERE id = ?""")) {
+                cancel.setObject(1, order);
+                cancel.executeUpdate();
+            }
+            holder.commit();
+            request.get(30, java.util.concurrent.TimeUnit.SECONDS)
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.errorCode").value("LOAD_ESTIMATE_SOURCE_NOT_ELIGIBLE"));
+        }
         assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.load_estimate WHERE source_id = ?",
                 Integer.class, order)).isZero();
     }
@@ -223,6 +378,7 @@ class LoadEstimateIntegrationTest {
         assertThat(estimate.path("sourceId").asText()).isEqualTo(order.toString());
         assertThat(estimate.path("warehouseId").asText()).isEqualTo(HCM.toString());
         assertThat(estimate.path("missing")).isEmpty();
+        assertThat(estimate.path("incomplete").asBoolean()).isFalse();
         Map<String, JsonNode> lines = new HashMap<>();
         estimate.path("lines").forEach(l -> lines.put(l.path("sku").asText(), l));
         assertThat(lines).hasSize(3);
@@ -328,17 +484,16 @@ class LoadEstimateIntegrationTest {
     }
 
     @Test
-    @DisplayName("only a released order not yet shipped (409); TRANSFER is reserved (400); an unknown id is 404")
+    @DisplayName("DRAFT, PENDING_PAYMENT, ON_HOLD, SHIPPED: 409; TRANSFER is reserved (400); an unknown id is 404")
     void eligibility() throws Exception {
         measureTheBareItem();
+        for (String status : List.of("DRAFT", "PENDING_PAYMENT", "ON_HOLD", "SHIPPED")) {
+            UUID refused = tx.execute(s -> order(status, Map.of(palletSku, 1)));
+            estimate(Role.ORDER_COORDINATOR, coordinator, bodyFor(refused, "ORDER", HCM, container))
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.errorCode").value("LOAD_ESTIMATE_SOURCE_NOT_ELIGIBLE"));
+        }
         UUID confirmed = tx.execute(s -> order("CONFIRMED", Map.of(palletSku, 1)));
-        UUID shipped = tx.execute(s -> order("SHIPPED", Map.of(palletSku, 1)));
-        estimate(Role.ORDER_COORDINATOR, coordinator, body(confirmed, "ORDER", container))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("LOAD_ESTIMATE_SOURCE_NOT_ELIGIBLE"));
-        estimate(Role.ORDER_COORDINATOR, coordinator, body(shipped, "ORDER", container))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("LOAD_ESTIMATE_SOURCE_NOT_ELIGIBLE"));
         estimate(Role.ORDER_COORDINATOR, coordinator, body(UUID.randomUUID(), "TRANSFER", container))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("LOAD_ESTIMATE_SOURCE_UNSUPPORTED"));

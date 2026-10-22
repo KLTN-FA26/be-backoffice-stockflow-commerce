@@ -48,7 +48,20 @@ public record Layout(int seq, String code, UUID vehicleTypeId, Dims innerMm, Big
                       String partName, String kitGroup, Dims origMm, String orientation, boolean rotatable,
                       BigDecimal weightKg, int loadSequence) { }
 
-    /** A carton the plan left out, with the keys the viewer groups lines by and the planner's reason. */
-    public record Unplaced(String ref, String sourceRef, String label, String partName, String kitGroup, Dims origMm,
-                           BigDecimal weightKg, UnplacedReason reason) { }
+    /**
+     * Cartons the plan left out, grouped as the frontend's {@code UnplacedLineSchema} reads them (FE #71: label,
+     * partName, origMm, quantity): one entry per source line, part, size and reason.
+     *
+     * @param sourceRef the estimate line the cartons come from; null for packed parcels
+     * @param reason    the planner's reason, the same for every carton of the entry
+     * @param quantity  how many cartons
+     * @param refs      the cartons, in the planner's order; {@code refs.size() == quantity}
+     */
+    public record UnplacedLine(String sourceRef, String label, String partName, Dims origMm, UnplacedReason reason,
+                               int quantity, List<String> refs) {
+
+        public UnplacedLine {
+            refs = List.copyOf(refs);
+        }
+    }
 }

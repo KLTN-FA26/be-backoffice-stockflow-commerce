@@ -9,10 +9,12 @@
 --                   never books a vehicle: kltn-docs 09 BR-09 allows only Packed parcels in a real load plan
 --                   (PR D), which is planned again from the sealed parcels.
 --
---   source_type / source_id   what was estimated: ORDER (a sales order) now; TRANSFER (a transfer order, docs 10) is
+--   source_type / source_id   what was estimated: ORDER (a sales order: released and not fully shipped - only its
+--                             remaining units, quantity - shipped - closed - or CONFIRMED, for the release dialog); TRANSFER (a transfer order, docs 10) is
 --                             reserved for PR T and refused by the API until then. No foreign key: the id names a row of
 --                             ordering or of inventory depending on the type.
---   warehouse_id              the order's warehouse when it was estimated: the data scope (BR-SEC-002) of the row.
+--   warehouse_id              the order's warehouse, or for a CONFIRMED order the warehouse the caller is about to
+--                             release it to: the data scope (BR-SEC-002) of the row.
 --   vehicle_type_ids          JSONB array of the vehicle types the estimate was allowed to use.
 --   mode                      the selection mode, SINGLE_TYPE ("Một loại") or FEWEST_VEHICLES ("Ít xe nhất").
 --   status                    CURRENT | SUPERSEDED. At most one CURRENT row per source (uk_load_estimate_current):
@@ -20,9 +22,13 @@
 --                             rows stay for history.
 --   lines                     JSONB: per order line, the resolver's rule level, unit, factor, carton count, partial
 --                             carton, carton size (mm) and weight, rotatable flag and kit parts.
---   layout                    JSONB: {vehicles: [Layout], unplaced: [...], meta: {...}} - the Layout shape the 3D viewer
+--   layout                    JSONB: {vehicles: [Layout], unplaced: [grouped lines], meta: {...}} - the Layout shape the 3D viewer
 --                             renders (FE #71), shared with the real load plans of PR D.
 --   warnings                  JSONB: what the resolver skipped or noticed per line.
+--   missing / incomplete      LP2-3 blocks only the affected line: missing is one entry per line whose item has no
+--                             size or weight at any level ({orderLineId, sku, inventoryItemId, missingFields}), left
+--                             out of the plan; incomplete is true when there is any. An estimate where no line
+--                             resolves is refused (422) and not stored.
 -- =============================================================================
 
 CREATE TABLE fulfillment.load_estimate
@@ -37,6 +43,8 @@ CREATE TABLE fulfillment.load_estimate
     lines            JSONB        NOT NULL DEFAULT '[]'::jsonb,
     layout           JSONB        NOT NULL DEFAULT '{}'::jsonb,
     warnings         JSONB        NOT NULL DEFAULT '[]'::jsonb,
+    missing          JSONB        NOT NULL DEFAULT '[]'::jsonb,
+    incomplete       BOOLEAN      NOT NULL DEFAULT FALSE,
 
     version          BIGINT       NOT NULL DEFAULT 0,
     created_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
@@ -51,7 +59,9 @@ CREATE TABLE fulfillment.load_estimate
     CONSTRAINT ck_load_estimate_vehicle_type_ids CHECK (jsonb_typeof(vehicle_type_ids) = 'array'),
     CONSTRAINT ck_load_estimate_lines CHECK (jsonb_typeof(lines) = 'array'),
     CONSTRAINT ck_load_estimate_layout CHECK (jsonb_typeof(layout) = 'object'),
-    CONSTRAINT ck_load_estimate_warnings CHECK (jsonb_typeof(warnings) = 'array')
+    CONSTRAINT ck_load_estimate_warnings CHECK (jsonb_typeof(warnings) = 'array'),
+    CONSTRAINT ck_load_estimate_missing CHECK (jsonb_typeof(missing) = 'array'),
+    CONSTRAINT ck_load_estimate_incomplete CHECK (incomplete = (jsonb_array_length(missing) > 0))
 );
 
 -- One current estimate per source; superseded ones are history.

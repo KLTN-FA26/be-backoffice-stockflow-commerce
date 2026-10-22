@@ -1,7 +1,9 @@
 package com.stockflow.fulfillment.internal.domain.loadplanning;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -18,6 +20,8 @@ import java.util.function.Function;
  *       clear ({@link Gussets}): the viewer draws them, it does not compute them.</li>
  *   <li>{@code sourceRef} is null when it only repeats {@code ref} (a packed parcel), as the viewer expects.</li>
  *   <li>{@code partName} is the part code the planner was given, or the label when it had none.</li>
+ *   <li>Cartons left out are grouped per source line, part, size and reason with their count and refs: the
+ *       frontend's {@code UnplacedLineSchema} (label, partName, origMm, quantity).</li>
  * </ul>
  */
 public final class Layouts {
@@ -25,8 +29,8 @@ public final class Layouts {
     private Layouts() {
     }
 
-    /** The vehicles in plan order and the cartons left out, in the order the planner reported them. */
-    public record Mapped(List<Layout> vehicles, List<Layout.Unplaced> unplaced) {
+    /** The vehicles in plan order and the cartons left out, grouped, in the order the planner first reported them. */
+    public record Mapped(List<Layout> vehicles, List<Layout.UnplacedLine> unplaced) {
 
         public Mapped {
             vehicles = List.copyOf(vehicles);
@@ -54,12 +58,25 @@ public final class Layouts {
             }
             vehicles.add(vehicle(v, spec, cartons, label));
         }
-        List<Layout.Unplaced> unplaced = new ArrayList<>();
+        // Grouped by source line, part, size and reason, in the order the planner reported them first.
+        Map<List<Object>, List<String>> groups = new LinkedHashMap<>();
+        Map<List<Object>, Layout.UnplacedLine> heads = new HashMap<>();
         for (UnplacedPackage u : result.unplaced()) {
             CargoPackage c = carton(cartons, u.ref());
-            unplaced.add(new Layout.Unplaced(c.ref(), sourceRef(c.ref(), c.sourceRef()), labelOf(c, label),
-                    partName(c.partCode(), c, label), c.kitGroup(), dims(c), c.weightKg(), u.reason()));
+            String source = sourceRef(c.ref(), c.sourceRef());
+            String shortCode = labelOf(c, label);
+            String part = partName(c.partCode(), c, label);
+            List<Object> key = Arrays.asList(source, shortCode, part, dims(c), u.reason());
+            groups.computeIfAbsent(key, k -> new ArrayList<>()).add(c.ref());
+            heads.putIfAbsent(key, new Layout.UnplacedLine(source, shortCode, part, dims(c), u.reason(), 0,
+                    List.of()));
         }
+        List<Layout.UnplacedLine> unplaced = new ArrayList<>();
+        groups.forEach((key, refs) -> {
+            Layout.UnplacedLine head = heads.get(key);
+            unplaced.add(new Layout.UnplacedLine(head.sourceRef(), head.label(), head.partName(), head.origMm(),
+                    head.reason(), refs.size(), refs));
+        });
         return new Mapped(vehicles, unplaced);
     }
 

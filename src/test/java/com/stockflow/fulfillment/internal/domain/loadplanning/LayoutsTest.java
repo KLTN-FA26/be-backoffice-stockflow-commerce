@@ -101,17 +101,25 @@ class LayoutsTest {
     }
 
     @Test
-    @DisplayName("a carton no vehicle can take is reported with its keys, sizes and the planner's reason")
-    void unplacedKeepsTheirKeys() {
+    @DisplayName("cartons left out are grouped per line, part, size and reason with a quantity: FE UnplacedLineSchema")
+    void unplacedAreGroupedLines() {
         VehicleSpec truck = LoadPlanAssertions.truck5t(1, 0);
-        CargoPackage huge = new CargoPackage("L9#1", "L9", 20_000, 3_000, 3_000, new BigDecimal("10"), true, "BIG",
-                null, null, false);
-        LoadPlanRequest request = request(List.of(huge), truck);
+        List<CargoPackage> cartons = List.of(
+                new CargoPackage("L9#1", "L9", 20_000, 3_000, 3_000, new BigDecimal("10"), true, "BIG", null, null,
+                        false),
+                new CargoPackage("L9#2", "L9", 20_000, 3_000, 3_000, new BigDecimal("4"), true, "BIG", null, null,
+                        false),
+                new CargoPackage("L8#1", "L8", 20_000, 3_000, 3_000, new BigDecimal("10"), true, "BIG", null, null,
+                        false));
+        LoadPlanRequest request = request(cartons, truck);
 
         Layouts.Mapped mapped = Layouts.of(request, new LoadPlanner().plan(request), c -> "BIG");
 
         assertThat(mapped.vehicles()).isEmpty();
-        assertThat(mapped.unplaced()).containsExactly(new Layout.Unplaced("L9#1", "L9", "BIG", "BIG", null,
-                new Layout.Dims(20_000, 3_000, 3_000), new BigDecimal("10"), UnplacedReason.TOO_LARGE));
+        assertThat(mapped.unplaced()).containsExactly(
+                new Layout.UnplacedLine("L9", "BIG", "BIG", new Layout.Dims(20_000, 3_000, 3_000),
+                        UnplacedReason.TOO_LARGE, 2, List.of("L9#1", "L9#2")),
+                new Layout.UnplacedLine("L8", "BIG", "BIG", new Layout.Dims(20_000, 3_000, 3_000),
+                        UnplacedReason.TOO_LARGE, 1, List.of("L8#1")));
     }
 }

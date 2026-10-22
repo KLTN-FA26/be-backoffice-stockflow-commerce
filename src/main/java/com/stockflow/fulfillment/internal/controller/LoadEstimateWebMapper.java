@@ -15,13 +15,13 @@ class LoadEstimateWebMapper {
     LoadEstimates.CreateEstimate toCommand(LoadEstimateRequest r) {
         List<LoadEstimates.Source> sources = r.sources().stream()
                 .map(s -> new LoadEstimates.Source(LoadEstimates.SourceType.valueOf(s.type()), s.id())).toList();
-        return new LoadEstimates.CreateEstimate(sources, r.vehicleTypeIds() == null ? List.of() : r.vehicleTypeIds(),
+        return new LoadEstimates.CreateEstimate(sources, r.warehouseId(), r.vehicleTypeIds() == null ? List.of() : r.vehicleTypeIds(),
                 r.selectionMode() == null ? null : SelectionMode.valueOf(r.selectionMode()));
     }
 
     LoadEstimateResponse toResponse(LoadEstimates.LoadEstimateView v) {
         return new LoadEstimateResponse(v.id(), v.sourceType().name(), v.sourceId(), v.warehouseId(), v.status(),
-                v.selectionMode().name(), v.vehicleTypeIds(), v.lines(), v.missing(), v.warnings(), v.vehicles(),
+                v.selectionMode().name(), v.vehicleTypeIds(), v.lines(), v.missing(), v.incomplete(), v.warnings(), v.vehicles(),
                 v.unplaced(), v.meta(), v.createdAt(), v.createdBy());
     }
 }
