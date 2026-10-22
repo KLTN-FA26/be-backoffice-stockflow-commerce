@@ -37,6 +37,9 @@ public final class FulfillmentPermissions {
     /** UPDATE: add and edit carriers in the carrier catalogue. */
     public static final String CARRIERS = "fulfillment-carriers";
 
+    /** READ: the vehicle-type catalogue of load planning; UPDATE: declare and edit vehicle types (V20261022000700). */
+    public static final String VEHICLE_TYPES = "fulfillment-vehicle-types";
+
     /**
      * CREATE: open a load; UPDATE: choose a shipment's carrier, put shipments on a load, scan and unscan parcels, and
      * sign the manifest (handover).
