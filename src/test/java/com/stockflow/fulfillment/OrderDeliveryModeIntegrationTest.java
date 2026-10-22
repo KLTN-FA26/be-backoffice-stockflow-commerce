@@ -90,6 +90,8 @@ class OrderDeliveryModeIntegrationTest {
     private static final UUID HCM = DemoData.WAREHOUSE_HCM;
     private static final String ORDERS = "/api/v1/orders";
     private static final String BASE = "/api/v1/fulfillment";
+    /** KIT-FORCE: the sofa ships as 2 boxes; packed in an ordinary package, it needs a reason. */
+    private static final String ONE_CARTON = "{\"kitOverrideReason\":\"test: packed as one carton\"}";
 
     @Autowired MockMvc mvc;
     @MockitoBean JwtDecoder decoder;
@@ -245,7 +247,7 @@ class OrderDeliveryModeIntegrationTest {
     }
 
     private UUID openPackage(UUID task) throws Exception {
-        return UUID.fromString(data(packer(body(post(BASE + "/tasks/" + task + "/packages"), "{}"))
+        return UUID.fromString(data(packer(body(post(BASE + "/tasks/" + task + "/packages"), ONE_CARTON))
                 .andExpect(status().isCreated())).path("packageId").asText());
     }
 

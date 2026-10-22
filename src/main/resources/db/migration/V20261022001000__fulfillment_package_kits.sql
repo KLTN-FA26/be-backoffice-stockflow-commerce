@@ -10,6 +10,9 @@
 --
 --   package.kit_*          all four null (an ordinary parcel) or all four set, with 2 <= kit_part_count and
 --                          1 <= kit_part_no <= kit_part_count; one parcel per part number. Fixed when the kit is opened.
+--   package.kit_override_reason  KIT-FORCE (lead's decision 2026-10-22): a kit is the default for an item that ships
+--                          as several boxes; an ordinary parcel holds its units only with the packer's reason, kept
+--                          here (and in the audit trail). Never on a kit part; never blank.
 --   tg_package_kit_check   every part of a kit is of one packing session - one order (08 BR-04) - for a line of that
 --                          order, and agrees on the kit's size and line.
 --   tg_package_kit_fixed   a parcel's kit never changes after it was opened.
@@ -27,7 +30,8 @@ ALTER TABLE fulfillment.package
     ADD COLUMN kit_group_id      UUID,
     ADD COLUMN kit_part_no       SMALLINT,
     ADD COLUMN kit_part_count    SMALLINT,
-    ADD COLUMN kit_order_line_id UUID;
+    ADD COLUMN kit_order_line_id UUID,
+    ADD COLUMN kit_override_reason VARCHAR(500);
 
 ALTER TABLE fulfillment.package
     ADD CONSTRAINT fk_package_kit_order_line FOREIGN KEY (kit_order_line_id)
@@ -36,7 +40,9 @@ ALTER TABLE fulfillment.package
         (kit_group_id IS NULL AND kit_part_no IS NULL AND kit_part_count IS NULL AND kit_order_line_id IS NULL)
         OR (kit_group_id IS NOT NULL AND kit_part_no IS NOT NULL AND kit_part_count IS NOT NULL
             AND kit_order_line_id IS NOT NULL
-            AND kit_part_count >= 2 AND kit_part_no >= 1 AND kit_part_no <= kit_part_count));
+            AND kit_part_count >= 2 AND kit_part_no >= 1 AND kit_part_no <= kit_part_count)),
+    ADD CONSTRAINT ck_package_kit_override CHECK (kit_override_reason IS NULL
+        OR (kit_group_id IS NULL AND btrim(kit_override_reason) <> ''));
 
 CREATE UNIQUE INDEX uk_package_kit_part ON fulfillment.package (kit_group_id, kit_part_no);
 
@@ -45,6 +51,8 @@ COMMENT ON COLUMN fulfillment.package.kit_group_id IS
 COMMENT ON COLUMN fulfillment.package.kit_part_no IS 'Part n of the kit; part 1 holds the unit, the others no goods';
 COMMENT ON COLUMN fulfillment.package.kit_part_count IS 'Parts of the kit: the item''s package_count when opened';
 COMMENT ON COLUMN fulfillment.package.kit_order_line_id IS 'The order line whose one unit the kit holds (in part 1)';
+COMMENT ON COLUMN fulfillment.package.kit_override_reason IS
+    'KIT-FORCE: why this ordinary parcel holds units of an item that ships as several boxes (not as a kit)';
 
 
 -- ----------------------------------------------------------------------------- one order, one line, one size

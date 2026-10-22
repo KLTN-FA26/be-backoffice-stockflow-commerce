@@ -144,6 +144,7 @@ public class PackingSessionStore {
                         parcel.dimWeightKg(), parcel.rotatable(), parcel.rotatableOverridden(), parcel.fragile(),
                         parcel.fragileOverridden(), parcel.sealedAt(), parcel.sealedBy(), parcel.voidedAt(),
                         parcel.voidedBy());
+                row.setKitOverrideReason(parcel.kitOverrideReason());
             }
             packages.saveAllAndFlush(existing.values());
         }
@@ -202,6 +203,7 @@ public class PackingSessionStore {
         return new PackingSession.Parcel(row.getId(), row.getPackageNo(), row.getLabelCode(), row.getPackageType(),
                 row.getStatus(), row.getShipmentId(), measures, row.getDimWeightKg(), row.isRotatable(),
                 row.isRotatableOverridden(), row.isFragile(), row.isFragileOverridden(), row.getSealedAt(),
-                row.getSealedBy(), row.getVoidedAt(), row.getVoidedBy(), held, row.getCreatedAt(), row.getKit());
+                row.getSealedBy(), row.getVoidedAt(), row.getVoidedBy(), held, row.getCreatedAt(), row.getKit())
+                .withKitOverrideReason(row.getKitOverrideReason());
     }
 }

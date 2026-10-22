@@ -13,6 +13,8 @@ import java.math.BigDecimal;
  *
  * @param rotatable null: from the SKUs inside, the strictest wins (01, E13); set: the packer's override
  * @param fragile   null: from the SKUs inside (storage class FRAGILE); set: the packer's override
+ * @param kitOverrideReason KIT-FORCE: an ordinary package holding an item that ships as several boxes is sealed only
+ *                  with a reason - its own (given when opened or scanned) or this one
  */
 public record SealPackageRequest(@NotNull @Positive @Digits(integer = 7, fraction = 3) BigDecimal weightKg,
                                  @NotNull @Positive @Digits(integer = 8, fraction = 2) @DecimalMax("100000")
@@ -23,5 +25,6 @@ public record SealPackageRequest(@NotNull @Positive @Digits(integer = 7, fractio
                                  BigDecimal heightCm,
                                  @Size(max = 16) String packageType,
                                  Boolean rotatable,
-                                 Boolean fragile) {
+                                 Boolean fragile,
+                                 @Size(max = 500) String kitOverrideReason) {
 }

@@ -95,6 +95,8 @@ class DispatchHandoverIntegrationTest {
     private static final Duration ASYNC = Duration.ofSeconds(15);
     private static final UUID HCM = DemoData.WAREHOUSE_HCM;
     private static final String BASE = "/api/v1/fulfillment";
+    /** KIT-FORCE: the sofa ships as 2 boxes; packed in an ordinary package, it needs a reason. */
+    private static final String ONE_CARTON = "{\"kitOverrideReason\":\"test: packed as one carton\"}";
     private static final String MEASURES = "{\"weightKg\":52.5,\"lengthCm\":215,\"widthCm\":95,\"heightCm\":90}";
 
     @Autowired MockMvc mvc;
@@ -255,7 +257,7 @@ class DispatchHandoverIntegrationTest {
         as(picker, "WAREHOUSE_STAFF", post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());
         for (int units : perPackage) {
             UUID parcel = UUID.fromString(data(as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task
-                    + "/packages"), "{}")).andExpect(status().isCreated())).path("packageId").asText());
+                    + "/packages"), ONE_CARTON)).andExpect(status().isCreated())).path("packageId").asText());
             as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + parcel + "/scans"),
                     "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA.code() + "\",\"quantity\":"
                             + units + "}")).andExpect(status().isOk());
@@ -565,7 +567,7 @@ class DispatchHandoverIntegrationTest {
         // An open parcel: its label exists but it is not sealed.
         as(picker, "WAREHOUSE_STAFF", post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());
         UUID open = UUID.fromString(data(as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task
-                + "/packages"), "{}")).andExpect(status().isCreated())).path("packageId").asText());
+                + "/packages"), ONE_CARTON)).andExpect(status().isCreated())).path("packageId").asText());
         String openLabel = jdbc.queryForObject("SELECT label_code FROM fulfillment.package WHERE id = ?", String.class,
                 open);
         scan(load, openLabel).andExpect(status().isConflict())

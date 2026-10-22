@@ -396,6 +396,8 @@ public enum ErrorCode {
     KIT_CONTENTS_INVALID("Only part 1 of a kit holds goods: one unit of its item", 409),
     /** LP2-6 (review of #155): part 1 of a kit takes the item of the line the kit was opened for, no other. */
     KIT_ITEM_MISMATCH("This kit was opened for another item", 422),
+    /** KIT-FORCE (lead's decision 2026-10-22): an item that ships as several boxes goes in an ordinary package only with a reason. */
+    KIT_OVERRIDE_REASON_REQUIRED("This item ships as a kit: give a reason to pack it in an ordinary package", 422),
     /** Docs 09 §5: the shipment's status does not allow the step. */
     SHIPMENT_STATE_CONFLICT("The shipment cannot do that in its current status", 409),
     // ---- G4-2a loading and handover (kltn-docs 09 §4.1, §5): 404 / 400 / 409 kept together with the flow

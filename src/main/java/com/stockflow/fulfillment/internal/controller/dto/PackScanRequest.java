@@ -16,11 +16,14 @@ import java.util.UUID;
  * @param lotNumber    required when the goods picked for the line have a lot
  * @param serialNumber required, one unit per scan, when the goods have serial numbers
  * @param orderLineId  only when the code is on two lines of the order (a plain and a printed cup of one SKU)
+ * @param kitOverrideReason KIT-FORCE: required (422 KIT_OVERRIDE_REASON_REQUIRED) to scan an item that ships as
+ *                     several boxes into an ordinary package that has no reason yet; kept on the package
  */
 public record PackScanRequest(@NotNull UUID scanId,
                               @NotBlank @Size(max = 64) String scannedCode,
                               @Size(max = 64) String lotNumber,
                               @Size(max = 100) String serialNumber,
                               @NotNull @Positive @Max(1_000_000) Integer quantity,
-                              UUID orderLineId) {
+                              UUID orderLineId,
+                              @Size(max = 500) String kitOverrideReason) {
 }

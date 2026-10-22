@@ -49,6 +49,8 @@ public class PackageJpaEntity extends BaseEntity {
     @Column(name = "kit_part_no", updatable = false) private Short kitPartNo;
     @Column(name = "kit_part_count", updatable = false) private Short kitPartCount;
     @Column(name = "kit_order_line_id", updatable = false) private UUID kitOrderLineId;
+    /** KIT-FORCE: why this ordinary parcel holds units of an item that ships as several boxes. */
+    @Column(name = "kit_override_reason", length = 500) private String kitOverrideReason;
 
     protected PackageJpaEntity() {
     }
@@ -116,6 +118,10 @@ public class PackageJpaEntity extends BaseEntity {
     public UUID getSealedBy() { return sealedBy; }
     public Instant getVoidedAt() { return voidedAt; }
     public UUID getVoidedBy() { return voidedBy; }
+
+    public String getKitOverrideReason() { return kitOverrideReason; }
+
+    public void setKitOverrideReason(String kitOverrideReason) { this.kitOverrideReason = kitOverrideReason; }
 
     /** The kit part it is, or null for an ordinary parcel. */
     public KitPart getKit() {

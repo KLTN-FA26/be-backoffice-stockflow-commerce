@@ -303,4 +303,50 @@ class PackingSessionKitTest {
         assertThat(code(catchThrowable(() -> session.scan(UUID.randomUUID(), parts.get(0).id(), "DESK-3P", null, null, 1,
                 DESKS, PACKER, NOW)))).isIn(ErrorCode.KIT_ITEM_MISMATCH, ErrorCode.KIT_CONTENTS_INVALID);
     }
+
+    @Test
+    @DisplayName("KIT-FORCE: a kit item in an ordinary package needs a reason - refused without one (422), kept from "
+            + "the scan or from opening; one-box goods and the kit path need none")
+    void anOrdinaryPackageOfAKitItemNeedsAReason() {
+        var session = session();
+        var box = session.openPackage(UUID.randomUUID(), null, NOW);
+        BusinessException refused = (BusinessException) catchThrowable(() -> put(session, box, "TABLE-OAK-160"));
+        assertThat(refused.errorCode()).isEqualTo(ErrorCode.KIT_OVERRIDE_REASON_REQUIRED);
+        assertThat(refused.fieldErrors()).extracting("field").containsExactly("kitOverrideReason");
+        session.scan(UUID.randomUUID(), box.id(), "CUP-12OZ", null, null, 2, null, PACKER, NOW);
+        assertThat(box.kitOverrideReason()).as("one-box goods need none").isNull();
+        assertThat(code(catchThrowable(() -> session.scan(UUID.randomUUID(), box.id(), "TABLE-OAK-160", null, null, 1,
+                null, "  ", PACKER, NOW)))).as("a blank reason is none").isEqualTo(ErrorCode.KIT_OVERRIDE_REASON_REQUIRED);
+        session.scan(UUID.randomUUID(), box.id(), "TABLE-OAK-160", null, null, 1, null, " top and base fit one crate ",
+                PACKER, NOW);
+        assertThat(box.kitOverrideReason()).isEqualTo("top and base fit one crate");
+        put(session, box, "TABLE-OAK-160");
+        assertThat(session.packedOf(TABLES)).as("the reason holds for the parcel").isEqualTo(2);
+        seal(session, box);
+
+        var crate = session.openPackage(UUID.randomUUID(), PackageType.CRATE, "customer asked for one crate", NOW);
+        session.scan(UUID.randomUUID(), crate.id(), "DESK-3P", null, null, 1, DESKS, PACKER, NOW);
+        assertThat(crate.kitOverrideReason()).isEqualTo("customer asked for one crate");
+
+        var kit = kit(session, SHELVES, 2);
+        put(session, kit.get(0), "SHELF-2B");
+        kit.forEach(part -> seal(session, part));
+        assertThat(kit).allSatisfy(part -> assertThat(part.kitOverrideReason()).isNull());
+    }
+
+    @Test
+    @DisplayName("KIT-FORCE: an ordinary package holding a kit item from before the rule is sealed only with a reason")
+    void sealingAKitItemWithoutAReason() {
+        var old = new PackingSession.Parcel(UUID.randomUUID(), 1, "PKG-SO-KIT-1", PackageType.CARTON,
+                PackageStatus.OPEN, null, null, null, true, false, false, false, null, null, null, null,
+                Map.of(new PackingSession.ContentKey(TABLES, null, null), 1), NOW);
+        var tables = new PackingSession.Line(TABLES, "TABLE-OAK-160", null, 2, 2, false, null, Map.of(), Set.of(),
+                false, false, 2);
+        var session = new PackingSession(UUID.randomUUID(), "SO-KIT", PackStatus.PACKING, NOW, PACKER, null, null,
+                List.of(tables), List.of(old), List.of());
+        assertThat(code(catchThrowable(() -> seal(session, old)))).isEqualTo(ErrorCode.KIT_OVERRIDE_REASON_REQUIRED);
+        session.seal(old.id(), box(), null, null, null, "packed before kits existed", 6000, PACKER, NOW);
+        assertThat(old.status()).isEqualTo(PackageStatus.SEALED);
+        assertThat(old.kitOverrideReason()).isEqualTo("packed before kits existed");
+    }
 }

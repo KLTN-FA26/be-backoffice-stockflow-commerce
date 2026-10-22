@@ -97,7 +97,8 @@ class PackingController {
     public ApiResponse<PackageResponse> openPackage(@PathVariable UUID taskId,
             @Valid @RequestBody(required = false) OpenPackageRequest request, @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(mapper.toResponse(packing.openPackage(taskId,
-                request == null ? null : request.packageType(), actor)));
+                request == null ? null : request.packageType(), request == null ? null : request.kitOverrideReason(),
+                actor)));
     }
 
     /**
@@ -130,7 +131,7 @@ class PackingController {
             @Valid @RequestBody PackScanRequest request, @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(mapper.toResponse(packing.scan(taskId, packageId, new Packing.Scan(request.scanId(),
                 request.scannedCode(), request.lotNumber(), request.serialNumber(), request.quantity(),
-                request.orderLineId()), actor)));
+                request.orderLineId(), request.kitOverrideReason()), actor)));
     }
 
     /**
@@ -161,7 +162,7 @@ class PackingController {
             @Valid @RequestBody SealPackageRequest request, @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(mapper.toResponse(packing.seal(taskId, packageId, new Packing.Seal(request.weightKg(),
                 request.lengthCm(), request.widthCm(), request.heightCm(), request.packageType(), request.rotatable(),
-                request.fragile()), actor)));
+                request.fragile(), request.kitOverrideReason()), actor)));
     }
 
     /** A sealed package opened again before it shipped (409 PACKAGE_SHIPPED after). */

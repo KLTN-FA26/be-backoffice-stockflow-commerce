@@ -22,6 +22,7 @@ public final class KitConstraints {
             "tg_package_kit_check", ErrorCode.KIT_CONTENTS_INVALID,
             "tg_package_kit_fixed", ErrorCode.KIT_CONTENTS_INVALID,
             "ck_package_kit", ErrorCode.KIT_CONTENTS_INVALID,
+            "ck_package_kit_override", ErrorCode.KIT_OVERRIDE_REASON_REQUIRED,
             "uk_package_kit_part", ErrorCode.KIT_CONTENTS_INVALID);
 
     private KitConstraints() {
@@ -39,7 +40,9 @@ public final class KitConstraints {
             String message = cause.getMessage();
             if (message != null) {
                 String lower = message.toLowerCase(Locale.ROOT);
-                for (var entry : CODES.entrySet()) {
+                // Longest name first: ck_package_kit_override is not ck_package_kit.
+                for (var entry : CODES.entrySet().stream().sorted((a, b) -> b.getKey().length() - a.getKey().length())
+                        .toList()) {
                     if (lower.contains(entry.getKey())) {
                         return Optional.of(refusal(entry.getValue()));
                     }
@@ -50,8 +53,10 @@ public final class KitConstraints {
     }
 
     private static BusinessException refusal(ErrorCode code) {
-        return new BusinessException(code, code == ErrorCode.KIT_INCOMPLETE
-                ? "A kit ships whole: every part sealed, in one shipment, part 1 with its unit"
-                : "Only part 1 of a kit holds goods, one unit of its own line; a kit's parts do not change");
+        return new BusinessException(code, switch (code) {
+            case KIT_INCOMPLETE -> "A kit ships whole: every part sealed, in one shipment, part 1 with its unit";
+            case KIT_OVERRIDE_REASON_REQUIRED -> "A kit part has no override reason, and a reason is never blank";
+            default -> "Only part 1 of a kit holds goods, one unit of its own line; a kit's parts do not change";
+        });
     }
 }

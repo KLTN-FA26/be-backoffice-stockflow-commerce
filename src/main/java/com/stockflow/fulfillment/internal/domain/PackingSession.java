@@ -43,6 +43,9 @@ import java.util.stream.Collectors;
  *       carry only the kit code. Every part is weighed and measured on its own; the kit is voided whole, and completing
  *       is refused while a kit has a part not sealed ({@code KIT_INCOMPLETE}), so a kit always ships whole - a partial
  *       shipment never splits one. Units are counted once, from part 1.</li>
+ *   <li><b>KIT-FORCE</b> (lead's decision 2026-10-22): a kit is the default for an item that ships as several boxes. Its
+ *       units go in an ordinary parcel only with the packer's reason ({@code KIT_OVERRIDE_REASON_REQUIRED}), kept on
+ *       the parcel; the kit path needs none.</li>
  * </ul>
  *
  * <p>Pure Java: the service supplies the facts it needs from the order, the pick and inventory, and persists what
@@ -133,6 +136,8 @@ public final class PackingSession {
         private final Instant createdAt;
         /** The kit it is a part of (LP2-6); null for an ordinary parcel. */
         private final KitPart kit;
+        /** KIT-FORCE: why this ordinary parcel holds units of an item that ships as several boxes; null otherwise. */
+        private String kitOverrideReason;
         /** Its shipment came back (RETURNED): its units are the order's to ship again, so it holds nothing now. */
         private boolean returned;
 
@@ -225,6 +230,13 @@ public final class PackingSession {
         public Map<ContentKey, Integer> contents() { return java.util.Collections.unmodifiableMap(contents); }
         public Instant createdAt() { return createdAt; }
         public KitPart kit() { return kit; }
+        public String kitOverrideReason() { return kitOverrideReason; }
+
+        /** Read back from the table: the reason recorded for this ordinary parcel (KIT-FORCE). */
+        public Parcel withKitOverrideReason(String reason) {
+            this.kitOverrideReason = reason;
+            return this;
+        }
     }
 
     private final UUID packId;
@@ -305,9 +317,18 @@ public final class PackingSession {
 
     /** A new, empty parcel; its number is the next of the session, its label code {@code PKG-<order>-<n>}. */
     public Parcel openPackage(UUID id, PackageType type, Instant now) {
+        return openPackage(id, type, null, now);
+    }
+
+    /**
+     * A new, empty ordinary parcel. {@code kitOverrideReason} (KIT-FORCE): why units of an item that ships as several
+     * boxes will go in it rather than in a kit; it may also be given with the scan that puts them in.
+     */
+    public Parcel openPackage(UUID id, PackageType type, String kitOverrideReason, Instant now) {
         int next = parcels.stream().mapToInt(Parcel::packageNo).max().orElse(0) + 1;
         Parcel parcel = new Parcel(id, next, "PKG-" + orderNumber + "-" + next, type, PackageStatus.OPEN, null, null,
                 null, true, false, false, false, null, null, null, null, Map.of(), now);
+        parcel.kitOverrideReason = trimmed(kitOverrideReason);
         parcels.add(parcel);
         changed.add(id);
         return parcel;
@@ -382,6 +403,17 @@ public final class PackingSession {
     @SuppressWarnings("java:S107")
     public boolean scan(UUID scanId, UUID packageId, String code, String lotNumber, String serialNumber, int quantity,
                         UUID orderLineId, UUID actor, Instant now) {
+        return scan(scanId, packageId, code, lotNumber, serialNumber, quantity, orderLineId, null, actor, now);
+    }
+
+    /**
+     * As {@link #scan(UUID, UUID, String, String, String, int, UUID, UUID, Instant)}, with the packer's reason for
+     * putting units of an item that ships as several boxes in this ordinary parcel (KIT-FORCE): needed unless the parcel
+     * has one already ({@code KIT_OVERRIDE_REASON_REQUIRED}); kept on the parcel.
+     */
+    @SuppressWarnings("java:S107")
+    public boolean scan(UUID scanId, UUID packageId, String code, String lotNumber, String serialNumber, int quantity,
+                        UUID orderLineId, String kitOverrideReason, UUID actor, Instant now) {
         Objects.requireNonNull(scanId, "scanId");
         if (knownScans.contains(scanId)) {
             return false;
@@ -390,6 +422,7 @@ public final class PackingSession {
         Parcel parcel = requireOpen(packageId);
         Line line = lineFor(code, orderLineId == null ? kitLineScanned(parcel, code) : orderLineId);
         requireKitRoom(parcel, line, quantity);
+        String override = kitOverride(parcel, List.of(line), kitOverrideReason);
         int packed = packedOf(line.orderLineId());
         if ((long) packed + quantity > line.wanted()) {
             throw new BusinessException(ErrorCode.PACK_QUANTITY_EXCEEDS_ORDER,
@@ -406,6 +439,7 @@ public final class PackingSession {
         String lot = checkLot(line, lotNumber, quantity);
         String serial = checkSerial(line, serialNumber, quantity);
         ContentKey key = new ContentKey(line.orderLineId(), lot, serial);
+        parcel.kitOverrideReason = override;
         parcel.contents.merge(key, quantity, Integer::sum);
         record(new Scan(scanId, parcel.id, line.orderLineId(), code.trim(), lot, serial, quantity, actor, now));
         return true;
@@ -478,6 +512,17 @@ public final class PackingSession {
     @SuppressWarnings("java:S107")
     public Parcel seal(UUID packageId, Measures measures, Boolean rotatable, Boolean fragile, PackageType type,
                        int dimDivisor, UUID actor, Instant now) {
+        return seal(packageId, measures, rotatable, fragile, type, null, dimDivisor, actor, now);
+    }
+
+    /**
+     * As {@link #seal(UUID, Measures, Boolean, Boolean, PackageType, int, UUID, Instant)}; an ordinary parcel holding
+     * units of an item that ships as several boxes is sealed only with a reason, its own or {@code kitOverrideReason}
+     * (KIT-FORCE) - goods put in before the rule have none yet.
+     */
+    @SuppressWarnings("java:S107")
+    public Parcel seal(UUID packageId, Measures measures, Boolean rotatable, Boolean fragile, PackageType type,
+                       String kitOverrideReason, int dimDivisor, UUID actor, Instant now) {
         Parcel parcel = requireParcel(packageId);
         if (parcel.status == PackageStatus.SEALED) {
             throw new BusinessException(ErrorCode.PACKAGE_SEALED, "Package %d is sealed".formatted(parcel.packageNo));
@@ -492,6 +537,9 @@ public final class PackingSession {
                     holder.packageNo));
         }
         requireMeasures(measures);
+        String override = kitOverride(parcel, holder.lineTotals().keySet().stream().map(lines::get)
+                .filter(Objects::nonNull).toList(), kitOverrideReason);
+        parcel.kitOverrideReason = override;
         boolean defaultRotatable = holder.lineTotals().keySet().stream().map(lines::get).filter(Objects::nonNull)
                 .allMatch(Line::rotatable);
         boolean defaultFragile = holder.lineTotals().keySet().stream().map(lines::get).filter(Objects::nonNull)
@@ -826,6 +874,29 @@ public final class PackingSession {
                     + "another kit for the next one").formatted(parcel.packageNo),
                     List.of(new FieldError("quantity", "at most " + (1 - parcel.units()), "KitUnit")));
         }
+    }
+
+    /**
+     * KIT-FORCE: the reason an ordinary parcel holding units of {@code goods} keeps. None needed for a kit part or for
+     * goods that ship as one box; otherwise the parcel's own, or {@code given}, or {@code KIT_OVERRIDE_REASON_REQUIRED}.
+     */
+    private static String kitOverride(Parcel parcel, List<Line> goods, String given) {
+        if (parcel.kit != null) {
+            return parcel.kitOverrideReason;
+        }
+        List<Line> kitItems = goods.stream().filter(line -> line.packageCount() >= KitPart.MIN_PARTS).toList();
+        String reason = trimmed(given) != null ? trimmed(given) : parcel.kitOverrideReason;
+        if (!kitItems.isEmpty() && reason == null) {
+            Line first = kitItems.get(0);
+            throw new BusinessException(ErrorCode.KIT_OVERRIDE_REASON_REQUIRED, ("%s ships as %d boxes: pack it as a "
+                    + "kit, or say why it goes in an ordinary package").formatted(first.sku(), first.packageCount()),
+                    List.of(new FieldError("kitOverrideReason", "required for " + first.sku(), "KitOverride")));
+        }
+        return kitItems.isEmpty() && trimmed(given) == null ? parcel.kitOverrideReason : reason;
+    }
+
+    private static String trimmed(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
     }
 
     /** Part 1 of {@code part}'s kit: the parcel that holds its unit. */

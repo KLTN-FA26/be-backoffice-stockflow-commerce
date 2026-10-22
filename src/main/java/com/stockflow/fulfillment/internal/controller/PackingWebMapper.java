@@ -30,7 +30,7 @@ class PackingWebMapper {
                         line.barcode(), line.printLine(), line.designSnapshotId(), line.wanted(), line.available(),
                         line.packed(), line.shipped(), line.remaining(), line.lotTracked(), line.serialTracked(),
                         line.lots().stream().map(lot -> new PackingSessionResponse.Lot(lot.lotNumber(), lot.available(),
-                                lot.packed())).toList(), line.packageCount())).toList(),
+                                lot.packed())).toList(), line.packageCount(), line.kitSuggested())).toList(),
                 session.packages().stream().map(this::toResponse).toList(),
                 session.shipments().stream().map(s -> new PackingSessionResponse.Shipment(s.shipmentId(), s.code(),
                         s.status(), s.deliveryMode(), s.packageCount(), s.codAmount(), s.currency(), s.partial(),
@@ -45,7 +45,7 @@ class PackingWebMapper {
                 parcel.status(), parcel.shipmentId(), parcel.weightKg(), parcel.lengthCm(), parcel.widthCm(),
                 parcel.heightCm(), parcel.dimWeightKg(), parcel.rotatable(), parcel.rotatableOverridden(),
                 parcel.fragile(), parcel.fragileOverridden(), parcel.sealedAt(), contents(parcel.contents()),
-                kit(parcel.kit()));
+                kit(parcel.kit()), parcel.kitOverrideReason());
     }
 
     PackageKitResponse toResponse(Packing.Kit kit) {

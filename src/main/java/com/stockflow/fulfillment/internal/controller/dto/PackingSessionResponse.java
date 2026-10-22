@@ -35,10 +35,12 @@ public record PackingSessionResponse(UUID taskId, UUID orderId, String orderNumb
      * @param serialTracked a scan of it names one serial number, one unit at a time
      * @param packageCount  boxes one unit of its item ships as ({@code package_count}); above 1 the station offers
      *                      "đóng bộ": {@code POST /tasks/{taskId}/package-kits} (SCRUM-287 LP2-5/LP2-6)
+     * @param kitSuggested  {@code packageCount} above 1: the station suggests "đóng bộ" (KIT-FORCE); an ordinary
+     *                      package of it needs {@code kitOverrideReason}
      */
     public record Line(UUID orderLineId, String sku, String barcode, boolean printLine, UUID designSnapshotId,
                        int wanted, int available, int packed, int shipped, int remaining, boolean lotTracked,
-                       boolean serialTracked, List<Lot> lots, int packageCount) { }
+                       boolean serialTracked, List<Lot> lots, int packageCount, boolean kitSuggested) { }
 
     public record Lot(String lotNumber, int available, int packed) { }
 

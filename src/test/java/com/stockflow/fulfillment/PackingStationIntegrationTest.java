@@ -98,6 +98,8 @@ class PackingStationIntegrationTest {
     private static final Duration ASYNC = Duration.ofSeconds(15);
     private static final UUID HCM = DemoData.WAREHOUSE_HCM;
     private static final String BASE = "/api/v1/fulfillment";
+    /** KIT-FORCE: the sofa ships as 2 boxes; packed in an ordinary package, it needs a reason. */
+    private static final String ONE_CARTON = "{\"kitOverrideReason\":\"test: packed as one carton\"}";
 
     @Autowired MockMvc mvc;
     @MockitoBean JwtDecoder decoder;
@@ -272,8 +274,9 @@ class PackingStationIntegrationTest {
     }
 
     private UUID openPackage(UUID task) throws Exception {
+        // KIT-FORCE: the sofa ships as 2 boxes; these tests pack it in ordinary packages, with a reason.
         return UUID.fromString(data(packer(post(BASE + "/tasks/" + task + "/packages").contentType("application/json")
-                .content("{}")).andExpect(status().isCreated())).path("packageId").asText());
+                .content(ONE_CARTON)).andExpect(status().isCreated())).path("packageId").asText());
     }
 
     private static String scan(UUID scanId, String code, String lot, int quantity) {
@@ -442,7 +445,7 @@ class PackingStationIntegrationTest {
         as(otherPackerHcm, "WAREHOUSE_STAFF", post(BASE + "/tasks/" + task + "/packages").contentType("application/json")
                 .content("{}")).andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PACKING_TAKEN"));
         as(managerHcm, "WAREHOUSE_MANAGER", post(BASE + "/tasks/" + task + "/packages").contentType("application/json")
-                .content("{\"packageType\":\"BAG\"}")).andExpect(status().isCreated())
+                .content("{\"packageType\":\"BAG\",\"kitOverrideReason\":\"test: one carton\"}")).andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.packageType").value("BAG"));
         as(coordinator, "ORDER_COORDINATOR", get(BASE + "/tasks/" + task + "/packing-session"))
                 .andExpect(status().isForbidden());
@@ -986,6 +989,54 @@ class PackingStationIntegrationTest {
                 parts.get(0), parts.get(1))).containsOnly("VOIDED");
         assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.shipment WHERE id = ?::uuid", String.class,
                 shipment)).isEqualTo("READY_TO_DISPATCH");
+    }
+
+    @Test
+    @DisplayName("KIT-FORCE (lead 2026-10-22): the sofa (2 boxes) is kitSuggested; in an ordinary package without a "
+            + "reason 422 KIT_OVERRIDE_REASON_REQUIRED, with one 200 - kept on the package, in its response and in the "
+            + "audit trail; the kit path needs none")
+    void anOrdinaryPackageOfAKitItemNeedsAReason() throws Exception {
+        stock(2);
+        OrderSummary order = paidOrder(sofa(2), table(1));
+        UUID sofaLine = lineOf(order, SOFA);
+        UUID task = pickedTask(order);
+        packer(post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.lines[?(@.sku == 'SOFA-3S-GREY')].kitSuggested").value(true))
+                .andExpect(jsonPath("$.data.lines[?(@.sku == 'TABLE-OAK-160')].kitSuggested").value(false));
+        UUID box = UUID.fromString(data(packer(post(BASE + "/tasks/" + task + "/packages")
+                .contentType("application/json").content("{}")).andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.kitOverrideReason").doesNotExist())).path("packageId").asText());
+        scanAs(packerHcm, task, box, scan(UUID.randomUUID(), TABLE.code(), TABLE_LOT, 1)).andExpect(status().isOk());
+        scanAs(packerHcm, task, box, scan(UUID.randomUUID(), SOFA.code(), null, 1))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.errorCode").value("KIT_OVERRIDE_REASON_REQUIRED"))
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("kitOverrideReason"));
+        assertThat(sum("SELECT count(*) FROM fulfillment.package_scan WHERE package_id = ? AND quantity > 0 "
+                + "AND scanned_code = ?", box, SOFA.code())).isZero();
+        String withReason = "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA.code()
+                + "\",\"quantity\":1,\"kitOverrideReason\":\"Khách lấy tại kho, không cần tách kiện\"}";
+        scanAs(packerHcm, task, box, withReason).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.packages[0].kitOverrideReason")
+                        .value("Khách lấy tại kho, không cần tách kiện"));
+        seal(task, box, MEASURES).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.kitOverrideReason").value("Khách lấy tại kho, không cần tách kiện"));
+        assertThat(jdbc.queryForObject("SELECT kit_override_reason FROM fulfillment.package WHERE id = ?", String.class,
+                box)).isEqualTo("Khách lấy tại kho, không cần tách kiện");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM platform.audit_log WHERE resource_type = "
+                + "'fulfillment-package' AND resource_id = ? AND action = 'UPDATE' AND details LIKE ?", Integer.class,
+                box.toString(), "%kitOverrideReason%không cần tách kiện%")).isEqualTo(1);
+
+        // The kit path: no reason asked, none kept.
+        List<UUID> parts = kit(task, sofaLine);
+        scanAs(packerHcm, task, parts.get(0), scan(UUID.randomUUID(), SOFA.code(), null, 1)).andExpect(status().isOk());
+        for (UUID part : parts) {
+            seal(task, part, MEASURES).andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.kitOverrideReason").doesNotExist());
+        }
+        packer(post(BASE + "/tasks/" + task + "/packing-completion")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.packStatus").value("PACKED"));
+        assertThat(sum("SELECT count(*) FROM fulfillment.package WHERE kit_override_reason IS NOT NULL AND id IN (?, ?)",
+                parts.get(0), parts.get(1))).isZero();
     }
 
     /**
