@@ -10,7 +10,7 @@ import java.util.UUID;
 
 /**
  * A kind of truck, pickup or container a load plan may use (table {@code fulfillment.vehicle_type}; kltn-docs 09 §3 "Danh mục
- * loại xe"). The inner dimensions (mm) are the box the placement solver fills; {@code gussetMm} is the edge of the reinforcement cubes kept free in the top corners (BR-10; two at the front-end top corners, four corner-post cubes on a 45' box, 0 = none; 2 x gusset < width, gusset < height); {@code availableCount} caps how many
+ * loại xe"). The inner dimensions (mm) are the box the placement solver fills; {@code doorWidthMm} / {@code doorHeightMm} are the optional clear door opening (null = no door limit; never above the inner width / height); {@code gussetMm} is the edge of the reinforcement cubes kept free in the top corners (BR-10; two at the front-end top corners, four corner-post cubes on a 45' box, 0 = none; 2 x gusset < width, gusset < height); {@code availableCount} caps how many
  * vehicles of the type a plan uses (BR-12); {@code rentalPrice} is reference only. The four ISO containers are
  * {@code isPreset}: never deleted, and the code of any type never changes.
  */
@@ -25,6 +25,8 @@ public class VehicleTypeJpaEntity extends BaseEntity {
     @Column(name = "inner_width_mm", nullable = false) private int innerWidthMm;
     @Column(name = "inner_height_mm", nullable = false) private int innerHeightMm;
     @Column(name = "gusset_mm", nullable = false) private int gussetMm;
+    @Column(name = "door_width_mm") private Integer doorWidthMm;
+    @Column(name = "door_height_mm") private Integer doorHeightMm;
     @Column(name = "max_payload_kg", nullable = false, precision = 10, scale = 3) private BigDecimal maxPayloadKg;
     @Column(name = "available_count", nullable = false) private int availableCount;
     @Column(name = "rental_price", precision = 19, scale = 4) private BigDecimal rentalPrice;
@@ -42,13 +44,16 @@ public class VehicleTypeJpaEntity extends BaseEntity {
     }
 
     public void apply(String name, String kind, int innerLengthMm, int innerWidthMm, int innerHeightMm,
-                      int gussetMm, BigDecimal maxPayloadKg, int availableCount, BigDecimal rentalPrice, String status) {
+                      int gussetMm, Integer doorWidthMm, Integer doorHeightMm, BigDecimal maxPayloadKg, int availableCount,
+                      BigDecimal rentalPrice, String status) {
         this.name = name;
         this.kind = kind;
         this.innerLengthMm = innerLengthMm;
         this.innerWidthMm = innerWidthMm;
         this.innerHeightMm = innerHeightMm;
         this.gussetMm = gussetMm;
+        this.doorWidthMm = doorWidthMm;
+        this.doorHeightMm = doorHeightMm;
         this.maxPayloadKg = maxPayloadKg;
         this.availableCount = availableCount;
         this.rentalPrice = rentalPrice;
@@ -66,6 +71,8 @@ public class VehicleTypeJpaEntity extends BaseEntity {
     public int getInnerWidthMm() { return innerWidthMm; }
     public int getInnerHeightMm() { return innerHeightMm; }
     public int getGussetMm() { return gussetMm; }
+    public Integer getDoorWidthMm() { return doorWidthMm; }
+    public Integer getDoorHeightMm() { return doorHeightMm; }
     public BigDecimal getMaxPayloadKg() { return maxPayloadKg; }
     public int getAvailableCount() { return availableCount; }
     public BigDecimal getRentalPrice() { return rentalPrice; }
