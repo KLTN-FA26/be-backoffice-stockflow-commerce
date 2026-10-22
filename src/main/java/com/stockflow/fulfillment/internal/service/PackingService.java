@@ -121,6 +121,7 @@ class PackingService implements Packing {
     private final int dimDivisor;
     private final com.stockflow.common.audit.AuditTrail audit;
     private final LoadPlanReleases loadPlans;
+    private final PlanVehicles planVehicles;
 
     @SuppressWarnings("java:S107")
     PackingService(PickJpaRepository picks, PickLineJpaRepository pickLines, PackJpaRepository packs,
@@ -135,7 +136,8 @@ class PackingService implements Packing {
                    com.stockflow.fulfillment.internal.repository.DispatchLoadJpaRepository loads,
                    com.stockflow.fulfillment.internal.repository.DispatchLoadStore loadStore, Clock clock,
                    @Value("${stockflow.fulfillment.packing.dim-divisor:6000}") int dimDivisor,
-                   com.stockflow.common.audit.AuditTrail audit, LoadPlanReleases loadPlans) {
+                   com.stockflow.common.audit.AuditTrail audit, LoadPlanReleases loadPlans,
+                   PlanVehicles planVehicles) {
         this.picks = picks;
         this.pickLines = pickLines;
         this.packs = packs;
@@ -158,6 +160,7 @@ class PackingService implements Packing {
         this.dimDivisor = dimDivisor;
         this.audit = audit;
         this.loadPlans = loadPlans;
+        this.planVehicles = planVehicles;
     }
 
     // ------------------------------------------------------------------ the queue
@@ -587,9 +590,18 @@ class PackingService implements Packing {
         for (ShipmentJpaEntity row : shipments.findByPackIdOrderByReadyAtAscIdAsc(pack.getId())) {
             Shipment shipment = row.toDomain();
             if (shipment.status() == ShipmentStatus.READY_TO_DISPATCH) {
-                // SCRUM-287 PR D: out of its load plan first (plan lock before any load's), then off its load.
+                if (planVehicles.partlyGone(row.getId())) {
+                    // SCRUM-392 (LP-3): a vehicle of its load plan already left with some of its parcels - they are
+                    // with the carrier and cannot be voided here. Left as it is for a person to resolve; its other
+                    // vehicles are refused at their signature (the order is cancelled).
+                    log.error("Order {} cancelled, but shipment {} already left in part on a load plan's vehicle: "
+                            + "not voided - resolve it by hand", pick.getOrderNumber(), row.getCode());
+                    continue;
+                }
+                // SCRUM-287 PR D: out of its load plan first (plan lock before any load's), then off its loads -
+                // a vehicle being loaded keeps the parcels on board to unload (SCRUM-392).
                 loadPlans.releaseShipment(row.getId(), now);
-                takeOffLoad(row.getId(), now);
+                planVehicles.withdraw(row.getId(), now);
                 shipment.cancel("The order was cancelled", null, now);
                 row.apply(shipment);
                 shipments.save(row);
@@ -768,21 +780,6 @@ class PackingService implements Packing {
         return allMatch;
     }
 
-    /**
-     * G4-2a (09 edge "đơn bị huỷ khi kiện đã nằm trong chuyến xe, chưa xếp lên xe"): a shipment cancelled while on an
-     * open load leaves its manifest with its scanned parcels, so the signature skips it. The load's lock is taken
-     * here, after the pick's and before the shipment's row changes - the order the handover takes them in.
-     */
-    private void takeOffLoad(UUID shipmentId, Instant now) {
-        loadMembers.findByShipmentIdInAndActiveTrue(List.of(shipmentId)).stream().findFirst().ifPresent(member ->
-                loads.lockById(member.getLoadId()).ifPresent(header -> {
-                    var load = loadStore.load(header);
-                    if (load.status().isOpen() && load.removeShipment(shipmentId, null, now)) {
-                        loadStore.save(load, header);
-                        log.info("Shipment {} of a cancelled order taken off load {}", shipmentId, load.code());
-                    }
-                }));
-    }
 
     /**
      * E2E QA 2026-10-21 (F2): a label reprinted with another COD while its shipment is on an open load - the

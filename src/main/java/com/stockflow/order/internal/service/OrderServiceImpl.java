@@ -883,6 +883,12 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     }
 
     @Override
+    public void requireHandoverAllowed(UUID orderId) {
+        Order order = lockOrder(orderId);
+        order.requireHandoverAllowed(ledgerOf(order));
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public java.util.List<com.stockflow.order.api.OrderHoldState> holdStates(java.util.Collection<UUID> orderIds) {
         return repository.holdStates(orderIds == null ? java.util.List.of() : java.util.Set.copyOf(orderIds));

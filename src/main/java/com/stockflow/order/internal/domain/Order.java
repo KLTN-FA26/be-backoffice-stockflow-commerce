@@ -1275,6 +1275,28 @@ public final class Order extends AggregateRoot {
         return recordHandover(handover, null);
     }
 
+    /**
+     * Whether goods of the order may leave the warehouse now - the gate of {@link #recordHandover} without recording
+     * anything (SCRUM-392 LP-3: a vehicle of a load plan leaves with part of a shipment, which is handed over only with
+     * its last vehicle). Refused while the order is cancelled, on hold or not yet picking, and when its terms want money
+     * before the goods leave that has not all arrived ({@code ORDER_BALANCE_NOT_PAID}, G3-Q4).
+     *
+     * @param ledger as for {@link #markShipped(Instant, UUID, LedgerMoney)}
+     */
+    public void requireHandoverAllowed(LedgerMoney ledger) {
+        requireNotCancelled("its goods are not handed over");
+        // PACK-EARLY: IN_PRODUCTION / READY_TO_FULFILL hand over the stock packed while the order was printed - only
+        // part of the order, so only when it allows partial shipments (recordHandover checks what is left behind).
+        boolean early = status == OrderStatus.IN_PRODUCTION || status == OrderStatus.READY_TO_FULFILL;
+        if (status != OrderStatus.PICKING && status != OrderStatus.PACKED && status != OrderStatus.PARTIALLY_FULFILLED
+                && !early) {
+            throw new InvalidOrderTransitionException(orderNumber, status,
+                    status == OrderStatus.ON_HOLD ? "resolve the hold before handing goods over"
+                            : "only a picking, packed or partly shipped order hands goods over");
+        }
+        requireHandoverPaid(ledger);
+    }
+
     /** @param ledger as for {@link #markShipped(Instant, UUID, LedgerMoney)} */
     public boolean recordHandover(ShipmentHandover handover, LedgerMoney ledger) {
         java.util.Objects.requireNonNull(handover, "handover");
@@ -1288,17 +1310,8 @@ public final class Order extends AggregateRoot {
             }
             return false;
         }
-        requireNotCancelled("its goods are not handed over");
-        // PACK-EARLY: IN_PRODUCTION / READY_TO_FULFILL hand over the stock packed while the order was printed - only
-        // part of the order, so only when it allows partial shipments (checked below with what is left behind).
+        requireHandoverAllowed(ledger);
         boolean early = status == OrderStatus.IN_PRODUCTION || status == OrderStatus.READY_TO_FULFILL;
-        if (status != OrderStatus.PICKING && status != OrderStatus.PACKED && status != OrderStatus.PARTIALLY_FULFILLED
-                && !early) {
-            throw new InvalidOrderTransitionException(orderNumber, status,
-                    status == OrderStatus.ON_HOLD ? "resolve the hold before handing goods over"
-                            : "only a picking, packed or partly shipped order hands goods over");
-        }
-        requireHandoverPaid(ledger);
         Money value = Money.zero(total().currency());
         for (Map.Entry<UUID, Integer> entry : quantities.entrySet()) {
             OrderLine line = findLine(entry.getKey()).orElseThrow(() -> new BusinessException(

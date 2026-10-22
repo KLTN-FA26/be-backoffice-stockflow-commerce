@@ -21,6 +21,17 @@ public interface DispatchLoadJpaRepository extends BaseJpaRepository<DispatchLoa
 
     Optional<DispatchLoadJpaEntity> findByRequestId(UUID requestId);
 
+    /** What a load is, read without loading the entity (so a lock taken next reads it fresh). */
+    interface LoadKey {
+        UUID getWarehouseId();
+
+        UUID getLoadPlanVehicleId();
+    }
+
+    @Query("select l.warehouseId as warehouseId, l.loadPlanVehicleId as loadPlanVehicleId "
+            + "from DispatchLoadJpaEntity l where l.id = :id")
+    Optional<LoadKey> findKeyById(@Param("id") UUID id);
+
     List<DispatchLoadJpaEntity> findByIdIn(Collection<UUID> ids);
 
     /** The loads opened for these load-plan vehicles (SCRUM-287 PR D), cancelled ones included. */

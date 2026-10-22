@@ -541,8 +541,12 @@ class LoadPlanIntegrationTest {
         UUID loadId = jdbc.queryForObject("SELECT id FROM fulfillment.dispatch_load WHERE load_plan_vehicle_id = ? AND "
                 + "status = 'PLANNED'", UUID.class, vehicleId);
         UUID ghn = jdbc.queryForObject("SELECT id FROM fulfillment.carrier WHERE code = 'GHN'", UUID.class);
-        tx.executeWithoutResult(s -> jdbc.update("UPDATE fulfillment.dispatch_load SET status = 'LOADING', carrier_id = ?, "
-                + "loading_started_at = NOW() WHERE id = ?", ghn, loadId));
+        // PR E (SCRUM-392): booked, then loading.
+        dispatch(body(post(BASE + "/loads/" + loadId + "/booking"), "{\"carrierId\":\"" + ghn
+                + "\",\"vehiclePlate\":\"51C-123.45\"}")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("VEHICLE_BOOKED"));
+        dispatch(post(BASE + "/loads/" + loadId + "/loading-start")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("LOADING"));
         dispatch(body(post(PLANS + "/" + id + "/reopening"), reason(plan, "x"))).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("LOAD_PLAN_LOADING_STARTED"));
         dispatch(body(post(PLANS + "/" + id + "/cancellation"), reason(plan, "x"))).andExpect(status().isConflict())
@@ -550,7 +554,8 @@ class LoadPlanIntegrationTest {
 
         // Not loading after all: cancelled - the parcels are free, the load cancelled.
         tx.executeWithoutResult(s -> jdbc.update("UPDATE fulfillment.dispatch_load SET status = 'PLANNED', "
-                + "loading_started_at = NULL, carrier_id = NULL WHERE id = ?", loadId));
+                + "loading_started_at = NULL, loading_started_by = NULL, carrier_id = NULL, booked_at = NULL, "
+                + "booked_by = NULL WHERE id = ?", loadId));
         plan = step(plan, "/cancellation", reason(plan, "customer will collect"));
         assertThat(plan.path("status").asText()).isEqualTo("CANCELLED");
         assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.dispatch_load WHERE id = ?", String.class,

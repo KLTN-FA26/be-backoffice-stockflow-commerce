@@ -118,6 +118,8 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
     private final LoadPlanEstimateComparison estimates;
     private final com.stockflow.fulfillment.internal.repository.PickJpaRepository picks;
     private final com.stockflow.fulfillment.internal.repository.PackageLineJpaRepository packageLines;
+    private final com.stockflow.fulfillment.internal.repository.DispatchLoadShipmentJpaRepository loadMembers;
+    private final ShipmentTimeline timeline;
     private final Clock clock;
     private final Duration budget;
 
@@ -131,7 +133,9 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                     DispatchLoadStore loadStore, LoadNumbers loadNumbers, WarehouseService warehouses,
                     LoadPlanEstimateComparison estimates,
                     com.stockflow.fulfillment.internal.repository.PickJpaRepository picks,
-                    com.stockflow.fulfillment.internal.repository.PackageLineJpaRepository packageLines, Clock clock,
+                    com.stockflow.fulfillment.internal.repository.PackageLineJpaRepository packageLines,
+                    com.stockflow.fulfillment.internal.repository.DispatchLoadShipmentJpaRepository loadMembers,
+                    ShipmentTimeline timeline, Clock clock,
                     @Value("${stockflow.fulfillment.load-planning.solver-budget:PT5S}") Duration budget) {
         this.plans = plans;
         this.members = members;
@@ -150,6 +154,8 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         this.estimates = estimates;
         this.picks = picks;
         this.packageLines = packageLines;
+        this.loadMembers = loadMembers;
+        this.timeline = timeline;
         this.clock = clock;
         this.budget = budget;
     }
@@ -582,16 +588,103 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         Instant now = clock.instant();
         List<LoadPlan.Vehicle> vehicles = plan.confirm(actor.userId(), now, cartons(held));
         LoadPlanJpaEntity after = store.save(plan, header, now);
-        LocalDate day = LocalDate.ofInstant(now, BUSINESS_ZONE);
-        for (LoadPlan.Vehicle v : vehicles) {
-            UUID id = Identifiers.newId();
-            loadStore.insert(DispatchLoad.planFullTruckload(id, loadNumbers.next(day), Identifiers.newId(),
-                    plan.warehouseId(), v.id()));
-        }
+        splitLeftBehind(plan, held, actor.userId(), now);
+        openVehicleLoads(plan, vehicles, held, actor.userId(), now);
         log.info("Load plan {} confirmed: {} vehicle(s), {} package(s) left behind", plan.code(), vehicles.size(),
                 plan.members().stream().filter(m -> m.releaseReason() == LoadPlanReleaseReason.LEFT_BEHIND
                         && now.equals(m.releasedAt())).count());
         return detail(after, plan);
+    }
+
+    /**
+     * 09 §4.2 step 4-5 (SCRUM-392): one PLANNED dispatch load per vehicle, its manifest the shipments whose parcels the
+     * plan placed on it. A shipment spanning vehicles is on each of their manifests (LP-3) - only vehicles of this
+     * plan; a shipment on any other load is refused ({@code SHIPMENT_ON_ANOTHER_LOAD}, as at a parcel load).
+     */
+    private void openVehicleLoads(LoadPlan plan, List<LoadPlan.Vehicle> vehicles, Map<UUID, LoadPlanParcels.Parcel> held,
+                                  UUID by, Instant at) {
+        Map<UUID, UUID> shipmentOf = new HashMap<>();
+        plan.members().forEach(m -> shipmentOf.put(m.packageId(), m.shipmentId()));
+        Set<UUID> allShipments = new HashSet<>();
+        vehicles.forEach(v -> v.placements().forEach(p -> allShipments.add(shipmentOf.get(p.packageId()))));
+        Map<UUID, ShipmentJpaEntity> rows = shipments.findAllById(allShipments).stream()
+                .collect(Collectors.toMap(ShipmentJpaEntity::getId, Function.identity()));
+        // Open manifests elsewhere (none for a shipment waiting for this plan; a parcel load would be one).
+        Map<UUID, UUID> elsewhere = new HashMap<>();
+        loadMembers.findByShipmentIdInAndActiveTrue(allShipments).forEach(m -> elsewhere.put(m.getShipmentId(),
+                m.getLoadId()));
+        Map<UUID, String> elsewhereCodes = elsewhere.isEmpty() ? Map.of() : loads.findByIdIn(Set.copyOf(
+                elsewhere.values())).stream().collect(Collectors.toMap(DispatchLoadJpaEntity::getId,
+                DispatchLoadJpaEntity::getCode));
+        LocalDate day = LocalDate.ofInstant(at, BUSINESS_ZONE);
+        for (LoadPlan.Vehicle v : vehicles) {
+            DispatchLoad load = DispatchLoad.planFullTruckload(Identifiers.newId(), loadNumbers.next(day),
+                    Identifiers.newId(), plan.warehouseId(), v.id());
+            Set<UUID> onVehicle = new java.util.LinkedHashSet<>();
+            v.placements().forEach(p -> onVehicle.add(shipmentOf.get(p.packageId())));
+            for (UUID shipmentId : onVehicle) {
+                ShipmentJpaEntity row = rows.get(shipmentId);
+                String other = elsewhere.containsKey(shipmentId) ? elsewhereCodes.getOrDefault(elsewhere.get(shipmentId),
+                        "?") : null;
+                load.addShipment(new DispatchLoad.ShipmentFacts(row.getId(), row.getCode(), row.getWarehouseId(),
+                        row.getDeliveryMode(), row.getStatus(), row.getCarrierId(), other), row.getLabelCodAmount(),
+                        by, at);
+            }
+            loadStore.insert(load);
+        }
+    }
+
+    /**
+     * 09 §4.2 step 3 / edge "kiện không xếp được ... để lại khu DISPATCH cho chuyến sau (giao lệch chuyến theo chính
+     * sách split shipment)" (SCRUM-392): a shipment with parcels placed and parcels left behind is split at the
+     * confirmation - the left-behind parcels move to a new shipment READY_TO_DISPATCH, free for a later plan; the
+     * shipment that stays leaves whole with this plan (handed over at its last vehicle, LP-3). LP-4 already refused
+     * this for an order that does not allow partial shipments.
+     */
+    private void splitLeftBehind(LoadPlan plan, Map<UUID, LoadPlanParcels.Parcel> held, UUID by, Instant at) {
+        Set<UUID> placed = plan.placedPackageIds();
+        Map<UUID, List<UUID>> leftBehindByShipment = new java.util.TreeMap<>();
+        Set<UUID> leaving = new HashSet<>();
+        for (LoadPlan.Member m : plan.members()) {
+            if (placed.contains(m.packageId())) {
+                leaving.add(m.shipmentId());
+            } else if (m.releaseReason() == LoadPlanReleaseReason.LEFT_BEHIND && at.equals(m.releasedAt())) {
+                leftBehindByShipment.computeIfAbsent(m.shipmentId(), k -> new ArrayList<>()).add(m.packageId());
+            }
+        }
+        leftBehindByShipment.keySet().retainAll(leaving);
+        if (leftBehindByShipment.isEmpty()) {
+            return;
+        }
+        Map<UUID, ShipmentJpaEntity> rows = shipmentLocks.lock(leftBehindByShipment.keySet()).stream()
+                .collect(Collectors.toMap(ShipmentJpaEntity::getId, Function.identity()));
+        leftBehindByShipment.forEach((shipmentId, parcelIds) -> {
+            ShipmentJpaEntity row = rows.get(shipmentId);
+            OrderSummary order = held.get(parcelIds.getFirst()).order();
+            String orderNumber = order != null ? order.orderNumber()
+                    : row.getCode().replaceFirst("-S\\d+$", "");
+            com.stockflow.fulfillment.internal.domain.Shipment stays = row.toDomain();
+            com.stockflow.fulfillment.internal.domain.Shipment rest = stays.splitOff(Identifiers.newId(),
+                    orderNumber + "-S" + (shipments.countByOrderId(row.getOrderId()) + 1), Identifiers.newId(),
+                    parcelIds.size(), (int) packages.findByShipmentIdOrderByPackageNoAsc(shipmentId).stream()
+                            .filter(p -> p.getStatus() == PackageStatus.SEALED && !parcelIds.contains(p.getId()))
+                            .count(), "Left behind by load plan %s for a later trip".formatted(plan.code()), by, at);
+            row.apply(stays);
+            shipments.saveAndFlush(row);
+            shipments.saveAndFlush(ShipmentJpaEntity.of(rest));
+            timeline.record(rest, null, order, orderNumber, null, null);
+            for (PackageJpaEntity parcel : packages.findAllById(parcelIds)) {
+                parcel.apply(rest.id(), parcel.getPackageType(), parcel.getStatus(), parcel.getWeightKg(),
+                        parcel.getLengthCm(), parcel.getWidthCm(), parcel.getHeightCm(), parcel.getDimWeightKg(),
+                        parcel.isRotatable(), parcel.isRotatableOverridden(), parcel.isFragile(),
+                        parcel.isFragileOverridden(), parcel.getSealedAt(), parcel.getSealedBy(), parcel.getVoidedAt(),
+                        parcel.getVoidedBy());
+                packages.save(parcel);
+            }
+            packages.flush();
+            log.info("Load plan {}: {} parcel(s) of shipment {} left behind as shipment {}", plan.code(),
+                    parcelIds.size(), row.getCode(), rest.code());
+        });
     }
 
     @Override
@@ -651,9 +744,13 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         Map<UUID, ShipmentJpaEntity> shipmentRows = shipments.findAllById(shipmentIds).stream()
                 .collect(Collectors.toMap(ShipmentJpaEntity::getId, Function.identity()));
         Map<UUID, OrderSummary> orders = parcels.ordersOf(shipmentRows.values());
-        Map<UUID, List<PackageJpaEntity>> sealedByShipment = packages.findByShipmentIdIn(shipmentIds).stream()
-                .filter(p -> p.getStatus() != PackageStatus.VOIDED)
-                .collect(Collectors.groupingBy(PackageJpaEntity::getShipmentId));
+        // A shipment's parcels: those it holds now, and those the plan counted under it (a left-behind parcel moved
+        // to the shipment split off at the confirmation, SCRUM-392, still counts where it was planned).
+        Map<UUID, Set<UUID>> sealedByShipment = new HashMap<>();
+        packages.findByShipmentIdIn(shipmentIds).stream().filter(p -> p.getStatus() != PackageStatus.VOIDED)
+                .forEach(p -> sealedByShipment.computeIfAbsent(p.getShipmentId(), k -> new HashSet<>()).add(p.getId()));
+        counted.keySet().forEach(id -> sealedByShipment.computeIfAbsent(shipmentOf.get(id), k -> new HashSet<>())
+                .add(id));
 
         Map<UUID, int[]> byShipment = new TreeMap<>();
         int[] total = new int[4];
@@ -676,7 +773,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         Map<UUID, int[]> byOrder = new LinkedHashMap<>();
         byShipment.forEach((shipmentId, c) -> {
             ShipmentJpaEntity s = shipmentRows.get(shipmentId);
-            int all = sealedByShipment.getOrDefault(shipmentId, List.of()).size();
+            int all = sealedByShipment.getOrDefault(shipmentId, Set.of()).size();
             perShipment.add(count(shipmentId.toString(), s == null ? null : s.getCode(), c, all - c[0]));
             if (s != null) {
                 int[] o = byOrder.computeIfAbsent(s.getOrderId(), k -> new int[5]);

@@ -23,9 +23,15 @@ import java.util.UUID;
  */
 public interface Dispatching {
 
+    /** @param loadPlanId the plan of a full-truckload load (SCRUM-392), with its code and the vehicle's seq; null else */
     record LoadRow(UUID loadId, String code, UUID warehouseId, String mode, String status, UUID carrierId,
                    String carrierName, String vehiclePlate, String driverName, int shipmentCount, int packageCount,
-                   BigDecimal codTotal, Instant loadingStartedAt, Instant dispatchedAt, long version) { }
+                   BigDecimal codTotal, Instant loadingStartedAt, Instant dispatchedAt, long version, UUID loadPlanId,
+                   String loadPlanCode, Integer vehicleSeq) { }
+
+    /** A parcel of a cancelled order to take off the vehicle before it leaves (SCRUM-392). */
+    record PendingUnload(UUID packageId, String labelCode, UUID shipmentId, String shipmentCode, String reason,
+                         Instant requestedAt) { }
 
     /** @param kit the kit it is a part of (SCRUM-287 LP2-6): every part is scanned; null for an ordinary parcel */
     record LoadParcel(UUID packageId, String labelCode, BigDecimal weightKg, boolean loaded, Instant loadedAt,
@@ -49,7 +55,9 @@ public interface Dispatching {
                       UUID dispatchedBy, String dispatchedByName, String carrierRepresentative, String signatureRef,
                       String handoverNote, Instant cancelledAt, String cancelReason, int shipmentCount,
                       int expectedPackageCount, int loadedPackageCount, BigDecimal codTotal, String currency,
-                      long version, List<LoadShipment> shipments) { }
+                      long version, List<LoadShipment> shipments, UUID loadPlanId, String loadPlanCode,
+                      Integer vehicleSeq, String vehicleTypeCode, Instant bookedAt, UUID bookedBy,
+                      Instant bookingCancelledAt, String bookingCancelReason, List<PendingUnload> pendingUnloads) { }
 
     /** The printable manifest (09 §3 Output "Biên bản bàn giao"): what both sides sign. */
     record Manifest(String loadCode, String status, String warehouseName, String warehouseAddress, String carrierCode,
@@ -57,7 +65,8 @@ public interface Dispatching {
                     String driverName, String driverPhone, String carrierRepresentative, String signatureRef,
                     String handoverNote, Instant dispatchedAt, String dispatchedByName, List<ManifestShipment> shipments,
                     int shipmentCount, int packageCount, BigDecimal totalWeightKg, BigDecimal codTotal,
-                    String currency, Instant printedAt) { }
+                    String currency, Instant printedAt, String mode, String loadPlanCode, Integer vehicleSeq,
+                    String vehicleTypeCode) { }
 
     record ManifestShipment(String shipmentCode, String orderNumber, String recipientName, String recipientPhone,
                             String deliveryAddress, int packageCount, BigDecimal weightKg, BigDecimal codAmount,
@@ -72,6 +81,9 @@ public interface Dispatching {
      */
     record OpenLoad(UUID requestId, UUID warehouseId, UUID carrierId, List<UUID> shipmentIds, String vehiclePlate,
                     String driverName, String driverPhone) { }
+
+    /** A load plan's vehicle booked with a carrier outside the system (09 §4.2 step 5); plate and driver optional. */
+    record Booking(UUID carrierId, String vehiclePlate, String driverName, String driverPhone) { }
 
     /** @param version the load's version as the dispatcher saw it when the driver signed */
     record Handover(Long version, String carrierRepresentative, String vehiclePlate, String driverPhone,
@@ -134,4 +146,31 @@ public interface Dispatching {
 
     /** The manifest to print: shipments, parcels, recipients, COD per shipment and in total. */
     Manifest manifest(UUID loadId);
+
+    // ---- full truckload (SCRUM-392; 09 §4.2 step 5, BR-14, BR-15; LP-3, LP-11, LP2-1) ----------------------------
+
+    /**
+     * A confirmed plan's vehicle booked with a carrier: PLANNED → VEHICLE_BOOKED; again before loading, the booking's
+     * details are replaced.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code INVALID_LOAD_TRANSITION} (a parcel load, or loading
+     *         started), {@code INVALID_LOAD_PLAN_TRANSITION} (the plan is not CONFIRMED), {@code CARRIER_NOT_FOUND},
+     *         {@code CARRIER_INACTIVE}, {@code SHIPMENT_OTHER_CARRIER} (a shipment on it was chosen for another
+     *         carrier)
+     */
+    LoadDetail book(UUID loadId, Booking booking, CurrentUser actor);
+
+    /** The booking fell through before loading: back to PLANNED with the reason; {@code INVALID_LOAD_TRANSITION} once loading. */
+    LoadDetail cancelBooking(UUID loadId, String reason, CurrentUser actor);
+
+    /** The booked vehicle arrived: LOADING (BR-14: the plan is locked from now on). */
+    LoadDetail startLoading(UUID loadId, CurrentUser actor);
+
+    /**
+     * A parcel of a cancelled order was taken off the vehicle (scanned off). With nothing left to carry, the vehicle is
+     * called off and the plan DISPATCHED if every other vehicle left.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code PACKAGE_NOT_FOUND}, {@code PACKAGE_NOT_IN_LOAD}
+     */
+    LoadDetail unload(UUID loadId, String packageCode, CurrentUser actor);
 }

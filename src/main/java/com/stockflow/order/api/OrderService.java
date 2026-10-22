@@ -101,6 +101,16 @@ public interface OrderService {
     OrderSummary recordHandover(UUID orderId, ShipmentHandover handover);
 
     /**
+     * Whether goods of the order may leave the warehouse now, without recording a handover (SCRUM-392 LP-3: a vehicle
+     * of a load plan leaves with parcels of a shipment that is handed over only with its last vehicle). Takes the
+     * order's row lock, as {@link #recordHandover} does.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code ORDER_BALANCE_NOT_PAID};
+     *         {@code ORDER_INVALID_TRANSITION}, also while ON_HOLD; {@code ORDER_CANCELLED}; {@code NOT_FOUND}
+     */
+    void requireHandoverAllowed(UUID orderId);
+
+    /**
      * What the carrier would collect for a shipment of these units if it were handed over now (G4-5: the package label
      * and the shipment, 08 step 6, 09 BR-04): the sum {@link #recordHandover} fixes, from the same formula and the
      * payment ledger. {@code earlierPending}: the units of the order's shipments made before this one and not handed
