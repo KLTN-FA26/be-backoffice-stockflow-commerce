@@ -44,6 +44,18 @@ public interface Packing {
     Parcel openPackage(UUID taskId, String type, CurrentUser actor);
 
     /**
+     * "Đóng bộ" (SCRUM-287 LP2-5/LP2-6): opens the N parcels of a kit for one unit of an order line whose item ships as
+     * N &gt; 1 boxes ({@code package_count}, read from inventory). Part 1 takes the unit by the usual scan; parts 2..N
+     * take no goods. Each part is then sealed with its own weight and size by {@link #seal}; voiding any part voids
+     * the kit; completing is refused while a kit has a part not sealed ({@code KIT_INCOMPLETE}).
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code KIT_PART_COUNT_MISMATCH} for an item that ships as one
+     *         box, or when {@code partCount} is given and is not the item's; {@code PACK_ITEM_NOT_IN_ORDER};
+     *         {@code PACK_QUANTITY_EXCEEDS_ORDER} when the line is packed in full
+     */
+    Kit openKit(UUID taskId, OpenKit request, CurrentUser actor);
+
+    /**
      * One scan into an open parcel (08 step 2): SKU or barcode, lot or serial when the goods have one, quantity.
      * Again with the same {@code scanId}, nothing changes.
      *
@@ -93,6 +105,12 @@ public interface Packing {
     record Scan(UUID scanId, String scannedCode, String lotNumber, String serialNumber, int quantity,
                 UUID orderLineId) { }
 
+    /** @param partCount what the client expects the kit's size to be; null: the item's, whatever it is */
+    record OpenKit(UUID orderLineId, Integer partCount, String packageType) { }
+
+    /** The parts of a kit just opened, part 1 first. */
+    record Kit(UUID kitGroupId, UUID orderLineId, String sku, int partCount, List<Parcel> packages) { }
+
     record Seal(BigDecimal weightKg, BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm, String packageType,
                 Boolean rotatable, Boolean fragile) { }
 
@@ -106,10 +124,11 @@ public interface Packing {
      * @param packed    in parcels not voided
      * @param shipped   in parcels already in a shipment
      * @param remaining still to pack: {@code wanted - packed}
+     * @param packageCount boxes one unit of its item ships as: more than one, a unit is packed as a kit (LP2-5)
      */
     record Line(UUID orderLineId, String sku, String barcode, boolean printLine, UUID designSnapshotId, int wanted,
                 int available, int packed, int shipped, int remaining, boolean lotTracked, boolean serialTracked,
-                List<Lot> lots) { }
+                List<Lot> lots, int packageCount) { }
 
     record Lot(String lotNumber, int available, int packed) { }
 
@@ -118,7 +137,8 @@ public interface Packing {
     record Parcel(UUID packageId, int packageNo, String labelCode, String packageType, String status, UUID shipmentId,
                   BigDecimal weightKg, BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm,
                   BigDecimal dimWeightKg, boolean rotatable, boolean rotatableOverridden, boolean fragile,
-                  boolean fragileOverridden, Instant sealedAt, List<Content> contents) { }
+                  boolean fragileOverridden, Instant sealedAt, List<Content> contents,
+                  com.stockflow.fulfillment.internal.domain.KitPart kit) { }
 
     record ShipmentSummary(UUID shipmentId, String code, String status, String deliveryMode, int packageCount,
                            BigDecimal codAmount, String currency, boolean partial, String partialNote,
@@ -138,5 +158,6 @@ public interface Packing {
                  int packageNo, int packageCount, boolean provisional, BigDecimal codAmount, String currency,
                  Address recipient, String returnWarehouseName, String returnAddress, String packageType,
                  BigDecimal weightKg, BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm,
-                 BigDecimal dimWeightKg, boolean fragile, boolean rotatable, List<Content> contents) { }
+                 BigDecimal dimWeightKg, boolean fragile, boolean rotatable, List<Content> contents,
+                 com.stockflow.fulfillment.internal.domain.KitPart kit) { }
 }

@@ -697,4 +697,221 @@ class PackingStationIntegrationTest {
                 .andExpect(jsonPath("$.data.shipments[0].currency").value("VND"))
                 .andExpect(jsonPath("$.data.shipments[0].codAmount").value(0));
     }
+
+    // ---- kits ("bộ", SCRUM-287 PR K, LP2-5/LP2-6) -------------------------------------------------------------
+
+    /** Brings its own sofas, picked first (oldest): the class shares the demo stock with the tests above. */
+    private void stock(int sofas) {
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version,
+                    created_at, received_at)
+                VALUES (?, ?, 'HCM-A02-1-A', ?, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '400 days')""",
+                Identifiers.newId(), SOFA.code(), sofas));
+    }
+
+    private ResultActions openKit(UUID task, String body) throws Exception {
+        return packer(post(BASE + "/tasks/" + task + "/package-kits").contentType("application/json").content(body));
+    }
+
+    /** The parts of a kit of the line just opened, part 1 first. */
+    private List<UUID> kit(UUID task, UUID line) throws Exception {
+        JsonNode kit = data(openKit(task, "{\"orderLineId\":\"" + line + "\"}").andExpect(status().isCreated()));
+        List<UUID> parts = new ArrayList<>();
+        kit.path("packages").forEach(p -> parts.add(UUID.fromString(p.path("packageId").asText())));
+        return parts;
+    }
+
+    private UUID lineOf(OrderSummary order, Sku sku) {
+        return order.lines().stream().filter(l -> l.sku().equals(sku.code())).findFirst().orElseThrow().lineId();
+    }
+
+    @Test
+    @DisplayName("LP2-6 a kit of 2 (sofa A+B) on a deposit order: opened at once, only part 1 takes the unit, every part "
+            + "sealed with its own size; an incomplete kit blocks completion, partial or not (KIT_INCOMPLETE); voiding "
+            + "a part voids the kit; two shipments of whole kits; units, package_line and COD counted once")
+    void aKitOfTwoShipsWhole() throws Exception {
+        stock(2);
+        OrderSummary order = depositOrder(DepositBalancePolicy.ON_DELIVERY, 2);        // 10M, deposit 3M, COD 7M
+        UUID sofaLine = lineOf(order, SOFA);
+        UUID task = pickedTask(order);
+        packer(post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.lines[0].packageCount").value(2));
+
+        // The station asks for the size it shows; another one is stale data: 422, nothing opened.
+        openKit(task, "{\"orderLineId\":\"" + sofaLine + "\",\"partCount\":3}")
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.errorCode").value("KIT_PART_COUNT_MISMATCH"));
+        openKit(task, "{}").andExpect(status().isBadRequest());
+        JsonNode opened = data(openKit(task, "{\"orderLineId\":\"" + sofaLine + "\",\"partCount\":2}")
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.partCount").value(2))
+                .andExpect(jsonPath("$.data.sku").value(SOFA.code()))
+                .andExpect(jsonPath("$.data.packages.length()").value(2))
+                .andExpect(jsonPath("$.data.packages[0].kit.partNo").value(1))
+                .andExpect(jsonPath("$.data.packages[1].kit.partNo").value(2))
+                .andExpect(jsonPath("$.data.packages[1].kit.partCount").value(2))
+                .andExpect(jsonPath("$.data.packages[1].status").value("OPEN")));
+        String group = opened.path("kitGroupId").asText();
+        assertThat(opened.path("packages").findValuesAsText("groupId")).containsOnly(group);
+        UUID a = UUID.fromString(opened.path("packages").get(0).path("packageId").asText());
+        UUID b = UUID.fromString(opened.path("packages").get(1).path("packageId").asText());
+
+        scanAs(packerHcm, task, b, scan(UUID.randomUUID(), SOFA.code(), null, 1)).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("KIT_CONTENTS_INVALID"));
+        seal(task, b, MEASURES).andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PACKAGE_EMPTY"));
+        scanAs(packerHcm, task, a, scan(UUID.randomUUID(), SOFA.code(), null, 2)).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("KIT_CONTENTS_INVALID"));
+        scanAs(packerHcm, task, a, scan(UUID.randomUUID(), SOFA.code(), null, 1)).andExpect(status().isOk());
+        seal(task, a, MEASURES).andExpect(status().isOk()).andExpect(jsonPath("$.data.kit.partNo").value(1));
+        seal(task, b, "{\"weightKg\":20,\"lengthCm\":95,\"widthCm\":90,\"heightCm\":40}").andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.heightCm").value(40)).andExpect(jsonPath("$.data.contents.length()").value(0));
+        packer(get(BASE + "/tasks/" + task + "/packages/" + b + "/label")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.kit.groupId").value(group))
+                .andExpect(jsonPath("$.data.kit.partNo").value(2)).andExpect(jsonPath("$.data.kit.partCount").value(2))
+                .andExpect(jsonPath("$.data.contents.length()").value(0));
+
+        // The second sofa's kit: part 1 sealed, part 2 not - nothing ships, whole or partial.
+        List<UUID> second = kit(task, sofaLine);
+        scanAs(packerHcm, task, second.get(0), scan(UUID.randomUUID(), SOFA.code(), null, 1)).andExpect(status().isOk());
+        seal(task, second.get(0), MEASURES).andExpect(status().isOk());
+        packer(post(BASE + "/tasks/" + task + "/packing-completion")).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("KIT_INCOMPLETE"))
+                .andExpect(jsonPath("$.fieldErrors[0].message").value(org.hamcrest.Matchers.containsString(
+                        "PKG-" + order.orderNumber() + "-4")));
+        String partial = "{\"partial\":true,\"note\":\"one sofa now\"}";
+        packer(post(BASE + "/tasks/" + task + "/packing-completion").contentType("application/json").content(partial))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("KIT_INCOMPLETE"));
+
+        // Taking its part 2 apart takes the kit apart: the first kit leaves alone, part of the order.
+        packer(delete(BASE + "/tasks/" + task + "/packages/" + second.get(1))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.lines[0].packed").value(1));
+        assertThat(sum("SELECT count(*) FROM fulfillment.package WHERE kit_group_id = (SELECT kit_group_id FROM "
+                + "fulfillment.package WHERE id = ?) AND status = 'VOIDED'", second.get(0))).isEqualTo(2);
+        String s1 = data(packer(post(BASE + "/tasks/" + task + "/packing-completion").contentType("application/json")
+                .content(partial)).andExpect(status().isOk())).path("shipmentId").asText();
+
+        List<UUID> third = kit(task, sofaLine);
+        scanAs(packerHcm, task, third.get(0), scan(UUID.randomUUID(), SOFA.code(), null, 1)).andExpect(status().isOk());
+        for (UUID part : third) {
+            seal(task, part, MEASURES).andExpect(status().isOk());
+        }
+        String s2 = data(packer(post(BASE + "/tasks/" + task + "/packing-completion")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.packStatus").value("PACKED"))).path("shipmentId").asText();
+
+        // Each shipment holds one whole kit: two parcels, one sofa.
+        for (String shipment : List.of(s1, s2)) {
+            assertThat(sum("SELECT package_count FROM fulfillment.shipment WHERE id = ?::uuid", shipment)).isEqualTo(2);
+            assertThat(sum("SELECT count(DISTINCT kit_group_id) FROM fulfillment.package WHERE shipment_id = ?::uuid",
+                    shipment)).isEqualTo(1);
+            assertThat(sum("SELECT COALESCE(SUM(pl.quantity), 0) FROM fulfillment.package_line pl JOIN "
+                    + "fulfillment.package p ON p.id = pl.package_id WHERE p.shipment_id = ?::uuid", shipment)).isEqualTo(1);
+        }
+        assertThat(jdbc.queryForList("SELECT shipment_id::text FROM fulfillment.package WHERE id IN (?, ?)", String.class,
+                a, b)).containsOnly(s1);
+        // Units once: package_line only on parts 1, 2 sofas for 4 sealed parcels; the order is PACKED, not over-packed.
+        assertThat(sum("SELECT count(*) FROM fulfillment.package_line pl JOIN fulfillment.package p ON p.id = "
+                + "pl.package_id WHERE pl.order_line_id = ? AND p.status <> 'VOIDED'", sofaLine)).isEqualTo(2);
+        assertThat(sum("SELECT count(*) FROM fulfillment.package_line pl JOIN fulfillment.package p ON p.id = "
+                + "pl.package_id WHERE pl.order_line_id = ? AND p.kit_part_no > 1", sofaLine)).isZero();
+        assertThat(sum("SELECT COALESCE(SUM(pl.quantity), 0) FROM fulfillment.package_line pl JOIN fulfillment.package p "
+                + "ON p.id = pl.package_id WHERE pl.order_line_id = ? AND p.status = 'SEALED'", sofaLine)).isEqualTo(2);
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.PACKED);
+        // 09 BR-04: 5M of goods each, 3M paid ahead - S1 collects 2M, S2 5M; parts 2 add nothing.
+        assertThat(cod(s1)).isEqualTo(2_000_000L);
+        assertThat(cod(s2)).isEqualTo(5_000_000L);
+        assertThat(data(packer(get(BASE + "/tasks/" + task + "/packages/" + b + "/label"))).path("codAmount")
+                .decimalValue()).isEqualByComparingTo("2000000");
+        // The shipment's view carries the kit of every parcel.
+        packer(get(BASE + "/shipments/" + s1)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.packages[*].kit.groupId").value(org.hamcrest.Matchers.everyItem(
+                        org.hamcrest.Matchers.is(group))));
+    }
+
+    @Test
+    @DisplayName("LP2-5 a kit of 3 (an item of package_count 3): three parcels, one unit; a one-box item has no kit; the "
+            + "database refuses a broken kit - columns, part numbers, goods in part 2, another order, a part left behind")
+    void aKitOfThreeAndTheDatabaseRules() throws Exception {
+        UUID item = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class,
+                TABLE.code());
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE inventory.inventory_items SET package_count = 3 WHERE id = ?",
+                item));
+        try {
+            stock(2);
+            OrderSummary order = paidOrder(table(1), sofa(1));
+            UUID tableLine = lineOf(order, TABLE);
+            UUID task = pickedTask(order);
+            packer(post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());
+            List<UUID> parts = kit(task, tableLine);
+            assertThat(parts).hasSize(3);
+            scanAs(packerHcm, task, parts.get(0), scan(UUID.randomUUID(), SOFA.code(), null, 1))
+                    .andExpect(status().isUnprocessableEntity())
+                    .andExpect(jsonPath("$.errorCode").value("KIT_PART_COUNT_MISMATCH"));
+            scanAs(packerHcm, task, parts.get(0), scan(UUID.randomUUID(), TABLE.code(), TABLE_LOT, 1))
+                    .andExpect(status().isOk());
+            for (UUID part : parts) {
+                seal(task, part, MEASURES).andExpect(status().isOk());
+            }
+            // The sofa goes in an ordinary parcel: kits are the packer's choice ("đóng bộ"), not forced.
+            UUID sofaBox = openPackage(task);
+            scanAs(packerHcm, task, sofaBox, scan(UUID.randomUUID(), SOFA.code(), null, 1)).andExpect(status().isOk());
+            seal(task, sofaBox, MEASURES).andExpect(status().isOk()).andExpect(jsonPath("$.data.kit").doesNotExist());
+            String shipment = data(packer(post(BASE + "/tasks/" + task + "/packing-completion"))
+                    .andExpect(status().isOk())).path("shipmentId").asText();
+            assertThat(sum("SELECT package_count FROM fulfillment.shipment WHERE id = ?::uuid", shipment)).isEqualTo(4);
+            assertThat(sum("SELECT COALESCE(SUM(quantity), 0) FROM fulfillment.package_line WHERE order_line_id = ?",
+                    tableLine)).isEqualTo(1);
+            assertThat(jdbc.queryForList("SELECT kit_part_no || '/' || kit_part_count FROM fulfillment.package "
+                    + "WHERE id IN (?, ?, ?) ORDER BY kit_part_no", String.class, parts.get(0), parts.get(1),
+                    parts.get(2))).containsExactly("1/3", "2/3", "3/3");
+
+            // The database holds the same rules.
+            UUID part2 = parts.get(1);
+            UUID part3 = parts.get(2);
+            assertThat(refused("UPDATE fulfillment.package SET kit_part_no = NULL WHERE id = ?", part2))
+                    .contains("ck_package_kit");
+            assertThat(refused("UPDATE fulfillment.package SET kit_part_no = 4 WHERE id = ?", part2))
+                    .contains("ck_package_kit");
+            assertThat(refused("UPDATE fulfillment.package SET kit_group_id = NULL WHERE id = ?", part2))
+                    .contains("ck_package_kit");
+            assertThat(refused("UPDATE fulfillment.package SET kit_part_count = 4 WHERE id = ?", part2))
+                    .contains("agree on its size");
+            assertThat(refused("UPDATE fulfillment.package SET kit_part_no = 2 WHERE id = ?", part3))
+                    .contains("uk_package_kit_part");
+            assertThat(refused("INSERT INTO fulfillment.package_line (id, package_id, order_line_id, quantity, version, "
+                    + "created_at) VALUES (gen_random_uuid(), ?, ?, 1, 0, NOW())", part2, tableLine))
+                    .contains("only part 1 of a kit holds goods");
+            assertThat(refused("UPDATE fulfillment.package SET shipment_id = NULL WHERE id = ?", part3))
+                    .contains("ships whole");
+            OrderSummary other = paidOrder(sofa(1));
+            pickedTask(other);
+            UUID otherPack = jdbc.queryForObject("SELECT k.id FROM fulfillment.pack k JOIN fulfillment.pick p ON "
+                    + "p.id = k.pick_id WHERE p.order_id = ?", UUID.class, other.orderId());
+            assertThat(refused("INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, package_type, "
+                    + "status, rotatable, rotatable_overridden, fragile, fragile_overridden, kit_group_id, kit_part_no, "
+                    + "kit_part_count, version, created_at) SELECT gen_random_uuid(), ?, 99, 'PKG-X-99', 'CARTON', 'OPEN', "
+                    + "TRUE, FALSE, FALSE, FALSE, kit_group_id, 3, 3, 0, NOW() FROM fulfillment.package WHERE id = ?",
+                    otherPack, part2)).contains("one order");
+        } finally {
+            tx.executeWithoutResult(s -> jdbc.update(
+                    "UPDATE inventory.inventory_items SET package_count = 1 WHERE id = ?", item));
+        }
+        // A one-box item has no kit.
+        OrderSummary plain = paidOrder(table(1));
+        UUID task = pickedTask(plain);
+        packer(post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.lines[0].packageCount").value(1));
+        openKit(task, "{\"orderLineId\":\"" + lineOf(plain, TABLE) + "\"}").andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.errorCode").value("KIT_PART_COUNT_MISMATCH"));
+    }
+
+    /** The statement, committed on its own: what the database said when it refused it. */
+    private String refused(String sql, Object... args) {
+        Throwable thrown = catchThrowable(() -> tx.executeWithoutResult(s -> jdbc.update(sql, args)));
+        assertThat(thrown).as(sql).isNotNull();
+        StringBuilder messages = new StringBuilder();
+        for (Throwable t = thrown; t != null; t = t.getCause()) {
+            messages.append(t.getMessage()).append('\n');
+        }
+        return messages.toString();
+    }
 }

@@ -1,5 +1,7 @@
 package com.stockflow.fulfillment.internal.controller.dto;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
@@ -24,7 +26,9 @@ public record ManifestResponse(String loadCode, String status, String warehouseN
                            boolean codChangedSinceLabel, List<Parcel> packages) {
     }
 
+    /** @param kit the kit it is a part of (SCRUM-287 LP2-6): printed "Bộ partNo/partCount"; absent otherwise */
     public record Parcel(String labelCode, BigDecimal weightKg, BigDecimal lengthCm, BigDecimal widthCm,
-                         BigDecimal heightCm, boolean loaded) {
+                         BigDecimal heightCm, boolean loaded,
+                         @JsonInclude(JsonInclude.Include.NON_NULL) KitPartResponse kit) {
     }
 }

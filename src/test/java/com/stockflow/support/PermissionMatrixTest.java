@@ -149,6 +149,7 @@ class PermissionMatrixTest {
             Map.entry("GET /api/v1/fulfillment/tasks/{taskId}/packing-session", "fulfillment-packages:READ"),
             Map.entry("POST /api/v1/fulfillment/tasks/{taskId}/packing-start", "fulfillment-packing:UPDATE"),
             Map.entry("POST /api/v1/fulfillment/tasks/{taskId}/packages", "fulfillment-packing:UPDATE"),
+            Map.entry("POST /api/v1/fulfillment/tasks/{taskId}/package-kits", "fulfillment-packing:UPDATE"),
             Map.entry("POST /api/v1/fulfillment/tasks/{taskId}/packages/{packageId}/scans", "fulfillment-packing:UPDATE"),
             Map.entry("DELETE /api/v1/fulfillment/tasks/{taskId}/packages/{packageId}/lines/{orderLineId}",
                     "fulfillment-packing:UPDATE"),

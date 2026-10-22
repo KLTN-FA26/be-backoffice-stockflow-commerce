@@ -411,8 +411,10 @@ class DispatchService implements Dispatching {
                 .stream().filter(p -> p.getStatus() == PackageStatus.SEALED).toList();
         Map<UUID, Set<UUID>> parcelsByShipment = sealed.stream().collect(Collectors.groupingBy(
                 PackageJpaEntity::getShipmentId, Collectors.mapping(PackageJpaEntity::getId, Collectors.toSet())));
+        // A kit's part names its kit (SCRUM-287 LP2-6): a part not scanned holds back its kit's shipment.
         Map<UUID, String> labels = sealed.stream().collect(Collectors.toMap(PackageJpaEntity::getId,
-                PackageJpaEntity::getLabelCode));
+                p -> p.getKit() == null ? p.getLabelCode() : "%s (kit part %d/%d)".formatted(p.getLabelCode(),
+                        p.getKit().partNo(), p.getKit().partCount())));
         List<UUID> leaving = load.handOver(new DispatchLoad.Handover(request.carrierRepresentative(),
                 request.vehiclePlate(), request.driverPhone(), request.signatureRef(),
                 Boolean.TRUE.equals(request.signed()), request.note()), parcelsByShipment, labels, by, now);
@@ -595,7 +597,7 @@ class DispatchService implements Dispatching {
                     member.codAmount() != null && member.labelCodAmount() != null
                             && member.codAmount().compareTo(member.labelCodAmount()) != 0,
                     own.stream().map(p -> new ManifestParcel(p.getLabelCode(), p.getWeightKg(), p.getLengthCm(),
-                            p.getWidthCm(), p.getHeightCm(), onVehicle.contains(p.getId()))).toList()));
+                            p.getWidthCm(), p.getHeightCm(), onVehicle.contains(p.getId()), p.getKit())).toList()));
         }
         CarrierJpaEntity carrier = header.getCarrierId() == null ? null
                 : carriers.findById(header.getCarrierId()).orElse(null);
@@ -674,7 +676,7 @@ class DispatchService implements Dispatching {
             List<LoadParcel> own = parcels.getOrDefault(member.shipmentId(), List.of()).stream().map(p -> {
                 DispatchLoad.Loaded l = onVehicle.get(p.getId());
                 return new LoadParcel(p.getId(), p.getLabelCode(), p.getWeightKg(), l != null,
-                        l == null ? null : l.loadedAt(), l == null ? null : l.loadedBy());
+                        l == null ? null : l.loadedAt(), l == null ? null : l.loadedBy(), p.getKit());
             }).toList();
             expected += own.size();
             lines.add(new LoadShipment(row.getId(), row.getCode(), row.getOrderId(),

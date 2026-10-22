@@ -1217,4 +1217,56 @@ class DispatchHandoverIntegrationTest {
             pool.shutdownNow();
         }
     }
+
+    // ---- kits ("bộ", SCRUM-287 PR K, LP2-6) -------------------------------------------------------------------
+
+    @Test
+    @DisplayName("LP2-6: a kit of 2 leaves only with both parts scanned - a part left behind holds back its shipment, "
+            + "named with its kit; the load and the manifest show each part's kit")
+    void everyPartOfAKitIsScanned() throws Exception {
+        stock(1);
+        OrderSummary order = order(PaymentTerm.PREPAID, null, 1, 1_000_000);
+        UUID task = pickedTask(order);
+        UUID line = order.lines().getFirst().lineId();
+        as(picker, "WAREHOUSE_STAFF", post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());
+        JsonNode kit = data(as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/package-kits"),
+                "{\"orderLineId\":\"" + line + "\"}")).andExpect(status().isCreated()));
+        List<String> parts = new ArrayList<>();
+        kit.path("packages").forEach(p -> parts.add(p.path("packageId").asText()));
+        assertThat(parts).hasSize(2);
+        as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + parts.get(0) + "/scans"),
+                "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA.code() + "\",\"quantity\":1}"))
+                .andExpect(status().isOk());
+        for (String part : parts) {
+            as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + part + "/seal"),
+                    MEASURES)).andExpect(status().isOk());
+        }
+        UUID shipment = UUID.fromString(data(as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task
+                + "/packing-completion"), "{}")).andExpect(status().isOk())).path("shipmentId").asText());
+        List<String> labels = labels(shipment);
+        assertThat(labels).hasSize(2);
+
+        String load = openLoad(ghn, shipment).path("loadId").asText();
+        scan(load, labels.get(0)).andExpect(status().isOk());
+        handOver(load).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("LOAD_NOT_FULLY_LOADED"))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString(
+                        labels.get(1) + " (kit part 2/2)")));
+        assertThat(shipmentRow(shipment)).containsEntry("status", "READY_TO_DISPATCH");
+        dispatch(get(BASE + "/loads/" + load)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.expectedPackageCount").value(2))
+                .andExpect(jsonPath("$.data.loadedPackageCount").value(1))
+                .andExpect(jsonPath("$.data.shipments[0].packages[1].kit.partNo").value(2))
+                .andExpect(jsonPath("$.data.shipments[0].packages[1].kit.partCount").value(2))
+                .andExpect(jsonPath("$.data.shipments[0].packages[1].loaded").value(false));
+
+        scan(load, labels.get(1)).andExpect(status().isOk());
+        handOver(load).andExpect(status().isOk());
+        assertThat(shipmentRow(shipment)).containsEntry("status", "HANDED_OVER");
+        assertThat(statusOf(order)).isEqualTo(OrderStatus.SHIPPED);
+        JsonNode manifest = data(dispatch(get(BASE + "/loads/" + load + "/manifest")).andExpect(status().isOk()));
+        assertThat(manifest.path("packageCount").asInt()).isEqualTo(2);
+        assertThat(manifest.path("shipments").get(0).path("packages").findValuesAsText("groupId"))
+                .containsOnly(kit.path("kitGroupId").asText());
+    }
 }

@@ -38,6 +38,11 @@ import java.util.stream.Collectors;
  *       shipment. Everything the order still wants must be in it (BR-01) unless the packer completes a partial
  *       shipment, with a reason, where the policy allows split shipments (G4-Q3; a mixed order's stock lines first,
  *       decision 2026-10-21); the rest is packed later into another shipment.</li>
+ *   <li><b>Kits</b> (SCRUM-287 LP2-5/LP2-6): a unit whose item ships as N &gt; 1 boxes may be packed as a kit ("đóng
+ *       bộ") of N parcels opened together ({@link #openKit}). Part 1 holds the one unit; parts 2..N hold no goods and
+ *       carry only the kit code. Every part is weighed and measured on its own; the kit is voided whole, and completing
+ *       is refused while a kit has a part not sealed ({@code KIT_INCOMPLETE}), so a kit always ships whole - a partial
+ *       shipment never splits one. Units are counted once, from part 1.</li>
  * </ul>
  *
  * <p>Pure Java: the service supplies the facts it needs from the order, the pick and inventory, and persists what
@@ -60,15 +65,27 @@ public final class PackingSession {
      *                  of them have a lot and some do not, the units without one are under {@link #NO_LOT}
      * @param serials   the serial numbers of the goods; empty when they have none
      * @param fragile   its SKU is stored FRAGILE (docs 01 storage class): a parcel holding it is marked fragile
+     * @param packageCount how many boxes one unit of its item ships as (inventory {@code package_count}); more than one
+     *                  makes a unit of it a kit (LP2-5)
      */
     public record Line(UUID orderLineId, String sku, String barcode, int wanted, int available, boolean printLine,
                        UUID designSnapshotId, Map<String, Integer> lots, Set<String> serials, boolean rotatable,
-                       boolean fragile) {
+                       boolean fragile, int packageCount) {
         public Line {
             Objects.requireNonNull(orderLineId, "orderLineId");
             Objects.requireNonNull(sku, "sku");
             lots = lots == null ? Map.of() : Map.copyOf(lots);
             serials = serials == null ? Set.of() : Set.copyOf(serials);
+            packageCount = Math.max(1, packageCount);
+        }
+
+        /** A line whose item ships as one box. */
+        @SuppressWarnings("java:S107")
+        public Line(UUID orderLineId, String sku, String barcode, int wanted, int available, boolean printLine,
+                    UUID designSnapshotId, Map<String, Integer> lots, Set<String> serials, boolean rotatable,
+                    boolean fragile) {
+            this(orderLineId, sku, barcode, wanted, available, printLine, designSnapshotId, lots, serials, rotatable,
+                    fragile, 1);
         }
     }
 
@@ -114,6 +131,8 @@ public final class PackingSession {
         private UUID voidedBy;
         private final Map<ContentKey, Integer> contents = new LinkedHashMap<>();
         private final Instant createdAt;
+        /** The kit it is a part of (LP2-6); null for an ordinary parcel. */
+        private final KitPart kit;
         /** Its shipment came back (RETURNED): its units are the order's to ship again, so it holds nothing now. */
         private boolean returned;
 
@@ -122,6 +141,16 @@ public final class PackingSession {
                       Measures measures, BigDecimal dimWeightKg, boolean rotatable, boolean rotatableOverridden,
                       boolean fragile, boolean fragileOverridden, Instant sealedAt, UUID sealedBy, Instant voidedAt,
                       UUID voidedBy, Map<ContentKey, Integer> contents, Instant createdAt) {
+            this(id, packageNo, labelCode, type, status, shipmentId, measures, dimWeightKg, rotatable,
+                    rotatableOverridden, fragile, fragileOverridden, sealedAt, sealedBy, voidedAt, voidedBy, contents,
+                    createdAt, null);
+        }
+
+        @SuppressWarnings("java:S107")
+        public Parcel(UUID id, int packageNo, String labelCode, PackageType type, PackageStatus status, UUID shipmentId,
+                      Measures measures, BigDecimal dimWeightKg, boolean rotatable, boolean rotatableOverridden,
+                      boolean fragile, boolean fragileOverridden, Instant sealedAt, UUID sealedBy, Instant voidedAt,
+                      UUID voidedBy, Map<ContentKey, Integer> contents, Instant createdAt, KitPart kit) {
             this.id = Objects.requireNonNull(id, "id");
             this.packageNo = packageNo;
             this.labelCode = Objects.requireNonNull(labelCode, "labelCode");
@@ -146,6 +175,7 @@ public final class PackingSession {
                 });
             }
             this.createdAt = createdAt;
+            this.kit = kit;
         }
 
         /** Units per order line, as {@code package_line} keeps them. */
@@ -173,6 +203,8 @@ public final class PackingSession {
         public boolean returned() { return returned; }
         boolean shipped() { return shipmentId != null; }
         boolean isEmpty() { return contents.isEmpty(); }
+        int units() { return contents.values().stream().mapToInt(Integer::intValue).sum(); }
+        boolean inKit(UUID groupId) { return kit != null && kit.groupId().equals(groupId); }
 
         public UUID id() { return id; }
         public int packageNo() { return packageNo; }
@@ -192,6 +224,7 @@ public final class PackingSession {
         public UUID voidedBy() { return voidedBy; }
         public Map<ContentKey, Integer> contents() { return java.util.Collections.unmodifiableMap(contents); }
         public Instant createdAt() { return createdAt; }
+        public KitPart kit() { return kit; }
     }
 
     private final UUID packId;
@@ -281,6 +314,55 @@ public final class PackingSession {
     }
 
     /**
+     * LP2-6 "đóng bộ": opens the N parcels of a kit for one unit of {@code orderLineId} at once - N is the item's
+     * {@code package_count} (LP2-5), numbered after the session's last parcel, sharing {@code groupId}. When the client
+     * says how many parts it expects ({@code partCount}), it must be that ({@code KIT_PART_COUNT_MISMATCH}: the item's
+     * data changed under it). A line whose item ships as one box has no kit; a line with nothing left to pack none
+     * either.
+     *
+     * @param ids one new parcel id per part, part 1 first
+     */
+    public List<Parcel> openKit(UUID groupId, List<UUID> ids, UUID orderLineId, Integer partCount, PackageType type,
+                                Instant now) {
+        Line line = lines.get(orderLineId);
+        if (line == null) {
+            throw new BusinessException(ErrorCode.PACK_ITEM_NOT_IN_ORDER, "That line is not on order " + orderNumber);
+        }
+        int parts = line.packageCount();
+        if (parts < KitPart.MIN_PARTS || parts > KitPart.MAX_PARTS) {
+            throw new BusinessException(ErrorCode.KIT_PART_COUNT_MISMATCH, parts < KitPart.MIN_PARTS
+                    ? "%s ships as one box: pack it in an ordinary package".formatted(line.sku())
+                    : "%s ships as %d boxes, more than a kit holds (%d)".formatted(line.sku(), parts,
+                    KitPart.MAX_PARTS));
+        }
+        if (partCount != null && partCount != parts) {
+            throw new BusinessException(ErrorCode.KIT_PART_COUNT_MISMATCH,
+                    "%s ships as %d boxes, not %d".formatted(line.sku(), parts, partCount),
+                    List.of(new FieldError("partCount", "must be " + parts, "PackageCount")));
+        }
+        if (packedOf(orderLineId) >= line.wanted()) {
+            throw new BusinessException(ErrorCode.PACK_QUANTITY_EXCEEDS_ORDER,
+                    "Line %s wants %d; all of it is packed".formatted(line.sku(), line.wanted()));
+        }
+        if (ids.size() != parts) {
+            throw new IllegalArgumentException("one id per part: " + parts);
+        }
+        int next = parcels.stream().mapToInt(Parcel::packageNo).max().orElse(0) + 1;
+        List<Parcel> kit = new ArrayList<>();
+        for (int part = 1; part <= parts; part++) {
+            UUID id = ids.get(part - 1);
+            int no = next + part - 1;
+            Parcel parcel = new Parcel(id, no, "PKG-" + orderNumber + "-" + no, type, PackageStatus.OPEN, null, null,
+                    null, true, false, false, false, null, null, null, null, Map.of(), now,
+                    new KitPart(groupId, part, parts));
+            parcels.add(parcel);
+            changed.add(id);
+            kit.add(parcel);
+        }
+        return kit;
+    }
+
+    /**
      * Docs 08 step 2: one scan of {@code quantity} units into an open parcel. See the class comment for what is
      * refused. {@code orderLineId} is needed only when the code is on two lines (a plain and a printed cup of the
      * same SKU); otherwise the line is found by the code.
@@ -297,6 +379,7 @@ public final class PackingSession {
         requireUnits(quantity);
         Parcel parcel = requireOpen(packageId);
         Line line = lineFor(code, orderLineId);
+        requireKitRoom(parcel, line, quantity);
         int packed = packedOf(line.orderLineId());
         if ((long) packed + quantity > line.wanted()) {
             throw new BusinessException(ErrorCode.PACK_QUANTITY_EXCEEDS_ORDER,
@@ -390,13 +473,18 @@ public final class PackingSession {
             throw new BusinessException(ErrorCode.PACKAGE_SEALED, "Package %d is sealed".formatted(parcel.packageNo));
         }
         requireOpen(packageId);
-        if (parcel.isEmpty()) {
-            throw new BusinessException(ErrorCode.PACKAGE_EMPTY, "Package %d has nothing in it".formatted(parcel.packageNo));
+        // A kit's parts 2..N hold nothing of their own: their flags are those of the unit in part 1.
+        Parcel holder = parcel.kit == null ? parcel : kitHolder(parcel);
+        if (holder.isEmpty()) {
+            throw new BusinessException(ErrorCode.PACKAGE_EMPTY, parcel == holder
+                    ? "Package %d has nothing in it".formatted(parcel.packageNo)
+                    : "Kit part 1 (package %d) holds nothing yet: scan the unit into it first".formatted(
+                    holder.packageNo));
         }
         requireMeasures(measures);
-        boolean defaultRotatable = parcel.lineTotals().keySet().stream().map(lines::get).filter(Objects::nonNull)
+        boolean defaultRotatable = holder.lineTotals().keySet().stream().map(lines::get).filter(Objects::nonNull)
                 .allMatch(Line::rotatable);
-        boolean defaultFragile = parcel.lineTotals().keySet().stream().map(lines::get).filter(Objects::nonNull)
+        boolean defaultFragile = holder.lineTotals().keySet().stream().map(lines::get).filter(Objects::nonNull)
                 .anyMatch(Line::fragile);
         parcel.rotatable = rotatable == null ? defaultRotatable : rotatable;
         parcel.rotatableOverridden = parcel.rotatable != defaultRotatable;
@@ -432,13 +520,27 @@ public final class PackingSession {
         return parcel;
     }
 
-    /** Taken apart before it shipped: its goods count as unpacked again; its label is void (08 BR-05). */
+    /**
+     * Taken apart before it shipped: its goods count as unpacked again; its label is void (08 BR-05). A kit is taken
+     * apart whole: voiding one of its parts voids them all (LP2-6), so no kit is left with a part missing.
+     */
     public Parcel voidPackage(UUID packageId, UUID actor, Instant now) {
         Parcel parcel = requireParcel(packageId);
         if (parcel.status == PackageStatus.VOIDED) {
             return parcel;
         }
         requireNotShipped(parcel);
+        if (parcel.kit != null) {
+            List<Parcel> kit = parcels.stream().filter(p -> p.inKit(parcel.kit.groupId())
+                    && p.status != PackageStatus.VOIDED).toList();
+            kit.forEach(PackingSession::requireNotShipped);
+            kit.forEach(part -> voidOne(part, actor, now));
+            return parcel;
+        }
+        return voidOne(parcel, actor, now);
+    }
+
+    private Parcel voidOne(Parcel parcel, UUID actor, Instant now) {
         parcel.status = PackageStatus.VOIDED;
         parcel.voidedAt = now;
         parcel.voidedBy = actor;
@@ -459,6 +561,7 @@ public final class PackingSession {
         if (status != PackStatus.PACKING) {
             throw new BusinessException(ErrorCode.PACK_STATE_CONFLICT, "Packing is " + status);
         }
+        requireWholeKits();
         List<Parcel> open = parcels.stream().filter(p -> p.status == PackageStatus.OPEN && !p.isEmpty()).toList();
         if (!open.isEmpty()) {
             throw new BusinessException(ErrorCode.PACKAGE_NOT_SEALED, "Package(s) %s still open: weigh, measure and "
@@ -494,8 +597,8 @@ public final class PackingSession {
                         List.of(FieldError.of("note", "required for a partial shipment")));
             }
         }
-        parcels.stream().filter(p -> p.status == PackageStatus.OPEN && p.isEmpty())
-                .forEach(p -> voidPackage(p.id, actor, now));
+        parcels.stream().filter(p -> p.status == PackageStatus.OPEN && p.isEmpty() && p.kit == null)
+                .forEach(p -> voidOne(p, actor, now));
         return new Completion(toShip, content, !missing.isEmpty(), missing);
     }
 
@@ -535,7 +638,7 @@ public final class PackingSession {
     public List<Parcel> cancel(UUID actor, Instant now) {
         List<Parcel> voided = new ArrayList<>();
         parcels.stream().filter(p -> p.status != PackageStatus.VOIDED && !p.shipped()).forEach(p -> {
-            voidPackage(p.id, actor, now);
+            voidOne(p, actor, now);
             voided.add(p);
         });
         status = PackStatus.CANCELLED;
@@ -673,6 +776,71 @@ public final class PackingSession {
             throw new BusinessException(ErrorCode.PACK_SERIAL_MISMATCH, "Serial %s is packed already".formatted(serial));
         }
         return serial;
+    }
+
+    /**
+     * LP2-6: a kit's parts 2..N take no goods; part 1 takes one unit of an item that ships as as many boxes as the kit
+     * has parts.
+     */
+    private static void requireKitRoom(Parcel parcel, Line line, int quantity) {
+        KitPart kit = parcel.kit;
+        if (kit == null) {
+            return;
+        }
+        if (!kit.holdsGoods()) {
+            throw new BusinessException(ErrorCode.KIT_CONTENTS_INVALID, ("Package %d is part %d of %d of a kit: it "
+                    + "holds no goods, part 1 holds the unit").formatted(parcel.packageNo, kit.partNo(),
+                    kit.partCount()));
+        }
+        if (line.packageCount() != kit.partCount()) {
+            throw new BusinessException(ErrorCode.KIT_PART_COUNT_MISMATCH, "%s ships as %d box(es); this kit has %d parts"
+                    .formatted(line.sku(), line.packageCount(), kit.partCount()));
+        }
+        if ((long) parcel.units() + quantity > 1) {
+            throw new BusinessException(ErrorCode.KIT_CONTENTS_INVALID, ("Kit part 1 (package %d) holds one unit: open "
+                    + "another kit for the next one").formatted(parcel.packageNo),
+                    List.of(new FieldError("quantity", "at most " + (1 - parcel.units()), "KitUnit")));
+        }
+    }
+
+    /** Part 1 of {@code part}'s kit: the parcel that holds its unit. */
+    private Parcel kitHolder(Parcel part) {
+        return parcels.stream().filter(p -> p.inKit(part.kit.groupId()) && p.kit.holdsGoods()).findFirst()
+                .orElseThrow(() -> new IllegalStateException("kit " + part.kit.groupId() + " has no part 1"));
+    }
+
+    /**
+     * Every kit not yet shipped is whole before anything ships (LP2-6): all its parts sealed, part 1 with its unit.
+     * Refused with {@code KIT_INCOMPLETE}, one field error per kit naming the parts still missing.
+     */
+    private void requireWholeKits() {
+        Map<UUID, List<Parcel>> kits = new LinkedHashMap<>();
+        parcels.stream().filter(p -> p.kit != null && p.status != PackageStatus.VOIDED && !p.shipped())
+                .forEach(p -> kits.computeIfAbsent(p.kit.groupId(), id -> new ArrayList<>()).add(p));
+        List<FieldError> problems = new ArrayList<>();
+        List<String> described = new ArrayList<>();
+        kits.forEach((groupId, parts) -> {
+            int count = parts.get(0).kit.partCount();
+            List<String> missing = new ArrayList<>();
+            for (int no = 1; no <= count; no++) {
+                int partNo = no;
+                Parcel part = parts.stream().filter(p -> p.kit.partNo() == partNo).findFirst().orElse(null);
+                if (part == null) {
+                    missing.add("part %d/%d (missing)".formatted(partNo, count));
+                } else if (part.status != PackageStatus.SEALED) {
+                    missing.add("part %d/%d %s (%s)".formatted(partNo, count, part.labelCode,
+                            part.kit.holdsGoods() && part.isEmpty() ? "no unit scanned" : "not sealed"));
+                }
+            }
+            if (!missing.isEmpty()) {
+                problems.add(new FieldError("kits[" + groupId + "]", String.join(", ", missing), "KitIncomplete"));
+                described.add(String.join(", ", missing));
+            }
+        });
+        if (!problems.isEmpty()) {
+            throw new BusinessException(ErrorCode.KIT_INCOMPLETE, "A kit ships whole: seal every part first - "
+                    + String.join("; ", described), problems);
+        }
     }
 
     private void record(Scan scan) {

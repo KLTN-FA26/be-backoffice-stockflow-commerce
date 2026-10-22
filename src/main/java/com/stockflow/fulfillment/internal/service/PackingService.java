@@ -253,6 +253,30 @@ class PackingService implements Packing {
     }
 
     @Override
+    public Kit openKit(UUID taskId, OpenKit request, CurrentUser actor) {
+        Context ctx = forWork(taskId);
+        requirePackable(ctx.order());
+        PackingSession session = load(ctx);
+        session.requireWorkable(actor.userId(), isManager(actor));
+        // One id per part; the item's package_count (read with the session's facts) is the kit's size.
+        int parts = session.lines().stream().filter(l -> l.orderLineId().equals(request.orderLineId()))
+                .mapToInt(PackingSession.Line::packageCount).findFirst().orElse(0);
+        List<UUID> ids = new ArrayList<>();
+        for (int i = 0; i < parts; i++) {
+            ids.add(Identifiers.newId());
+        }
+        UUID groupId = Identifiers.newId();
+        List<PackingSession.Parcel> kit = session.openKit(groupId, ids, request.orderLineId(), request.partCount(),
+                packageType(request.packageType()), clock.instant());
+        store.save(session, ctx.pack());
+        Map<UUID, String> skus = skus(session);
+        log.info("Order {}: kit {} of {} parts opened for line {}", ctx.pick().getOrderNumber(), groupId, kit.size(),
+                request.orderLineId());
+        return new Kit(groupId, request.orderLineId(), skus.get(request.orderLineId()), kit.size(),
+                kit.stream().map(parcel -> parcelView(parcel, skus)).toList());
+    }
+
+    @Override
     public Session scan(UUID taskId, UUID packageId, Scan scan, CurrentUser actor) {
         Context ctx = forWork(taskId);
         if (isReplay(ctx, packageId, scan.scanId())) {
@@ -406,7 +430,7 @@ class PackingService implements Packing {
                 shipment == null, cod, order.total().currency().getCurrencyCode(), recipient,
                 warehouse.map(w -> w.name()).orElse(null), warehouse.map(w -> w.address()).orElse(null),
                 parcel.type().name(), m.weightKg(), m.lengthCm(), m.widthCm(), m.heightCm(), parcel.dimWeightKg(),
-                parcel.fragile(), parcel.rotatable(), contents(parcel, skus));
+                parcel.fragile(), parcel.rotatable(), contents(parcel, skus), parcel.kit());
     }
 
     // ------------------------------------------------------------------ completing
@@ -659,7 +683,7 @@ class PackingService implements Packing {
             }
             lines.add(new PackingSession.Line(line.lineId(), line.sku(), item.barcode(), wanted, available, print,
                     line.designSnapshotId(), lots, serials, item.rotatable(),
-                    item.storageClass() == StorageClass.FRAGILE));
+                    item.storageClass() == StorageClass.FRAGILE, item.packageCount()));
         }
         return lines;
     }
@@ -767,7 +791,8 @@ class PackingService implements Packing {
             return new Line(line.orderLineId(), line.sku(), line.barcode(), line.printLine(), line.designSnapshotId(),
                     line.wanted(), line.available(), packed, session.shippedOf(line.orderLineId()),
                     Math.max(0, line.wanted() - packed), line.lots().keySet().stream()
-                    .anyMatch(lot -> !PackingSession.NO_LOT.equals(lot)), !line.serials().isEmpty(), lots);
+                    .anyMatch(lot -> !PackingSession.NO_LOT.equals(lot)), !line.serials().isEmpty(), lots,
+                    line.packageCount());
         }).toList();
         List<Parcel> parcels = session.parcels().stream().map(parcel -> parcelView(parcel, skus)).toList();
         List<ShipmentSummary> made = shipments.findByPackIdOrderByReadyAtAscIdAsc(ctx.pack().getId()).stream()
@@ -795,7 +820,7 @@ class PackingService implements Packing {
                 parcel.status().name(), parcel.shipmentId(), m == null ? null : m.weightKg(),
                 m == null ? null : m.lengthCm(), m == null ? null : m.widthCm(), m == null ? null : m.heightCm(),
                 parcel.dimWeightKg(), parcel.rotatable(), parcel.rotatableOverridden(), parcel.fragile(),
-                parcel.fragileOverridden(), parcel.sealedAt(), contents(parcel, skus));
+                parcel.fragileOverridden(), parcel.sealedAt(), contents(parcel, skus), parcel.kit());
     }
 
     private static List<Content> contents(PackingSession.Parcel parcel, Map<UUID, String> skus) {

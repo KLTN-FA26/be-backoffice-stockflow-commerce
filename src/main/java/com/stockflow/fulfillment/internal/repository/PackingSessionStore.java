@@ -93,7 +93,7 @@ public class PackingSessionStore {
                     .collect(Collectors.toMap(PackageJpaEntity::getId, Function.identity()));
             for (PackingSession.Parcel parcel : changed) {
                 PackageJpaEntity row = existing.computeIfAbsent(parcel.id(), id -> new PackageJpaEntity(id,
-                        session.packId(), parcel.packageNo(), parcel.labelCode()));
+                        session.packId(), parcel.packageNo(), parcel.labelCode(), parcel.kit()));
                 var m = parcel.measures();
                 row.apply(parcel.shipmentId(), parcel.type(), parcel.status(), m == null ? null : m.weightKg(),
                         m == null ? null : m.lengthCm(), m == null ? null : m.widthCm(), m == null ? null : m.heightCm(),
@@ -158,6 +158,6 @@ public class PackingSessionStore {
         return new PackingSession.Parcel(row.getId(), row.getPackageNo(), row.getLabelCode(), row.getPackageType(),
                 row.getStatus(), row.getShipmentId(), measures, row.getDimWeightKg(), row.isRotatable(),
                 row.isRotatableOverridden(), row.isFragile(), row.isFragileOverridden(), row.getSealedAt(),
-                row.getSealedBy(), row.getVoidedAt(), row.getVoidedBy(), held, row.getCreatedAt());
+                row.getSealedBy(), row.getVoidedAt(), row.getVoidedBy(), held, row.getCreatedAt(), row.getKit());
     }
 }
