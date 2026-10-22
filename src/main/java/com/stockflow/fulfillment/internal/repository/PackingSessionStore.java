@@ -212,6 +212,7 @@ public class PackingSessionStore {
                 row.getStatus(), row.getShipmentId(), measures, row.getDimWeightKg(), row.isRotatable(),
                 row.isRotatableOverridden(), row.isFragile(), row.isFragileOverridden(), row.getSealedAt(),
                 row.getSealedBy(), row.getVoidedAt(), row.getVoidedBy(), held, row.getCreatedAt(), row.getKit())
-                .withKitOverrideReason(row.getKitOverrideReason());
+                .withKitOverrideReason(row.getKitOverrideReason())
+                .withLabelOutdatedAt(row.getLabelOutdatedAt());
     }
 }

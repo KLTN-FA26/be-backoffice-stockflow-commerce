@@ -44,11 +44,14 @@ public interface TransferPacks {
 
     /**
      * @param stockPackageId the unopened stock carton it ships as it is (LP2-8); null for a parcel packed at the table
+     * @param labelOutdated   its label no longer matches the parcel: reprint it before it is scanned onto a vehicle
+     * @param labelOutdatedAt since when; null when {@code labelOutdated} is false
      */
     record Parcel(UUID packageId, int packageNo, String labelCode, String packageType, String status,
                   BigDecimal weightKg, BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm,
                   BigDecimal dimWeightKg, boolean rotatable, boolean fragile, Instant sealedAt,
-                  List<Content> contents, KitView kit, String kitOverrideReason, UUID stockPackageId) { }
+                  List<Content> contents, KitView kit, String kitOverrideReason, UUID stockPackageId,
+                  boolean labelOutdated, Instant labelOutdatedAt) { }
 
     /** Measures suggested for a carton shipped as it is: its packing unit's, in cm and kg (the packer confirms). */
     record Measures(BigDecimal weightKg, BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm) { }

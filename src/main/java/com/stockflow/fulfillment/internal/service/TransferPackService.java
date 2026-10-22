@@ -374,7 +374,8 @@ class TransferPackService implements TransferPacks {
                 m == null ? null : m.widthCm(), m == null ? null : m.heightCm(), parcel.dimWeightKg(),
                 parcel.rotatable(), parcel.fragile(), parcel.sealedAt(), contents,
                 kit == null ? null : new KitView(kit.groupId(), kit.partNo(), kit.partCount(), kit.orderLineId()),
-                parcel.kitOverrideReason(), cartons.get(parcel.id()));
+                parcel.kitOverrideReason(), cartons.get(parcel.id()), parcel.labelOutdatedAt() != null,
+                parcel.labelOutdatedAt());
     }
 
     private static Map<UUID, String> skus(PackingSession session) {

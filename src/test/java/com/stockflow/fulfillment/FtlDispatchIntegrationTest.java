@@ -921,6 +921,195 @@ class FtlDispatchIntegrationTest {
                 loadId)).isEqualTo("PLANNED");
     }
 
+    // ---- loads list: mode filter, plan code search; label flags (the FE gaps of the dispatch screens) ----------
+
+    /** A parcel load straight into the table (a parcel load needs parcel shipments, which this context has none of). */
+    private String parcelLoad(String plate) {
+        UUID id = Identifiers.newId();
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO fulfillment.dispatch_load (id, code, request_id, warehouse_id, mode, carrier_id,
+                    vehicle_plate, status, loading_started_at)
+                VALUES (?, ?, gen_random_uuid(), ?, 'PARCEL', ?, ?, 'LOADING', NOW())""",
+                id, "LD-TEST-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(), HCM, ghn, plate));
+        return id.toString();
+    }
+
+    private JsonNode loadsPage(String query) throws Exception {
+        return data(dispatch(get(LOADS + "?warehouseId=" + HCM + query)).andExpect(status().isOk()));
+    }
+
+    private int count(String where) {
+        return jdbc.queryForObject("SELECT count(*) FROM fulfillment.dispatch_load WHERE warehouse_id = ? AND "
+                + where, Integer.class, HCM);
+    }
+
+    @Test
+    @DisplayName("GET loads?mode: FULL_TRUCKLOAD / PARCEL (any case) filter in the query - totalElements, totalPages "
+            + "and the pages of a size 1 walk are those of the filtered set; combined with status; no mode: both; an "
+            + "unknown mode is 400 UNSUPPORTED_PARAMETER on field mode")
+    void listFiltersByMode() throws Exception {
+        UUID shipment = packed(ftlOrder(2), true)[0];
+        confirmed(List.of(shipment), truck1t25);                       // two FTL vehicles, PLANNED
+        parcelLoad("51D-001.01");
+        parcelLoad("51D-002.02");
+        int ftl = count("mode = 'FULL_TRUCKLOAD'");
+        int parcel = count("mode = 'PARCEL'");
+        assertThat(ftl).isGreaterThanOrEqualTo(2);
+        assertThat(parcel).isGreaterThanOrEqualTo(2);
+
+        JsonNode onlyFtl = loadsPage("&mode=FULL_TRUCKLOAD&size=1");
+        assertThat(onlyFtl.path("totalElements").asInt()).isEqualTo(ftl);
+        assertThat(onlyFtl.path("totalPages").asInt()).isEqualTo(ftl);
+        assertThat(onlyFtl.path("items")).hasSize(1);
+        assertThat(onlyFtl.path("hasNext").asBoolean()).isTrue();
+        List<String> seen = new ArrayList<>();
+        for (int page = 0; page < ftl; page++) {
+            JsonNode one = loadsPage("&mode=FULL_TRUCKLOAD&size=1&page=" + page);
+            assertThat(one.path("items")).hasSize(1);
+            assertThat(one.path("items").get(0).path("mode").asText()).isEqualTo("FULL_TRUCKLOAD");
+            seen.add(one.path("items").get(0).path("loadId").asText());
+        }
+        assertThat(seen).doesNotHaveDuplicates().hasSize(ftl);
+        assertThat(loadsPage("&mode=FULL_TRUCKLOAD&size=1&page=" + ftl).path("items")).isEmpty();
+
+        JsonNode onlyParcel = loadsPage("&mode=parcel&size=2");
+        assertThat(onlyParcel.path("totalElements").asInt()).isEqualTo(parcel);
+        assertThat(onlyParcel.path("items")).allSatisfy(l -> assertThat(l.path("mode").asText()).isEqualTo("PARCEL"));
+        assertThat(onlyParcel.path("items").get(0).hasNonNull("loadPlanCode")).isFalse();
+
+        assertThat(loadsPage("&size=1").path("totalElements").asInt()).isEqualTo(ftl + parcel);
+        assertThat(loadsPage("&mode=").path("totalElements").asInt()).isEqualTo(ftl + parcel);
+        assertThat(loadsPage("&mode=FULL_TRUCKLOAD&status=PLANNED").path("totalElements").asInt())
+                .isEqualTo(count("mode = 'FULL_TRUCKLOAD' AND status = 'PLANNED'"));
+        assertThat(loadsPage("&mode=PARCEL&status=PLANNED").path("totalElements").asInt()).isZero();
+
+        JsonNode bad = body(dispatch(get(LOADS + "?mode=TRAIN")).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("UNSUPPORTED_PARAMETER")));
+        assertThat(bad.path("fieldErrors")).singleElement().satisfies(f -> assertThat(f.path("field").asText())
+                .isEqualTo("mode"));
+    }
+
+    @Test
+    @DisplayName("GET loads?search also matches the load plan's code (case-insensitive, partial) through the vehicle: "
+            + "both vehicles of the plan and no other load; load code and plate matches unchanged; one query, so the "
+            + "count and the pages stay right with mode")
+    void listSearchesByPlanCode() throws Exception {
+        UUID shipment = packed(ftlOrder(2), true)[0];
+        JsonNode plan = confirmed(List.of(shipment), truck1t25);
+        String planCode = plan.path("code").asText();
+        String v1 = loadOf(plan, 1);
+        String v2 = loadOf(plan, 2);
+        String other = parcelLoad("51E-777.77");
+
+        JsonNode byPlan = loadsPage("&search=" + planCode);
+        assertThat(byPlan.path("totalElements").asInt()).isEqualTo(2);
+        assertThat(byPlan.path("items").findValuesAsText("loadId")).containsExactlyInAnyOrder(v1, v2);
+        assertThat(byPlan.path("items")).allSatisfy(l -> assertThat(l.path("loadPlanCode").asText()).isEqualTo(planCode));
+        assertThat(loadsPage("&search=" + planCode.toLowerCase()).path("totalElements").asInt()).isEqualTo(2);
+        assertThat(loadsPage("&search=" + planCode.substring(planCode.length() - 4)).path("items")
+                .findValuesAsText("loadId")).contains(v1, v2);
+        JsonNode paged = loadsPage("&search=" + planCode + "&size=1&page=1");
+        assertThat(paged.path("totalElements").asInt()).isEqualTo(2);
+        assertThat(paged.path("totalPages").asInt()).isEqualTo(2);
+        assertThat(paged.path("items")).hasSize(1);
+        assertThat(loadsPage("&search=" + planCode + "&mode=PARCEL").path("totalElements").asInt()).isZero();
+        assertThat(loadsPage("&search=" + planCode + "&mode=FULL_TRUCKLOAD").path("totalElements").asInt())
+                .isEqualTo(2);
+
+        // The existing matches: the load's own code and the plate (a parcel load has no plan).
+        assertThat(loadsPage("&search=" + load(v1).path("code").asText()).path("items").findValuesAsText("loadId"))
+                .containsExactly(v1);
+        book(v2, ghn, "51F-123.45");
+        assertThat(loadsPage("&search=51F-123").path("items").findValuesAsText("loadId")).containsExactly(v2);
+        assertThat(loadsPage("&search=51E-777").path("items").findValuesAsText("loadId")).containsExactly(other);
+        assertThat(loadsPage("&search=LP-NO-SUCH-PLAN").path("totalElements").asInt()).isZero();
+        // The % of a search term is literal, not a wildcard.
+        assertThat(loadsPage("&search=%25").path("totalElements").asInt()).isZero();
+    }
+
+    @Test
+    @DisplayName("labelOutdated / labelOutdatedAt on every parcel entry: a split at loading start marks the parcel left "
+            + "on the shipment (n/N changed) - on the vehicle's load and manifest - and the parcel moved to the new "
+            + "shipment - on the shipment detail and the packing session; the 409 LABEL_OUTDATED scan is unchanged; "
+            + "a label reprint clears the flag everywhere")
+    void labelOutdatedIsExposed() throws Exception {
+        OrderSummary order = ftlOrder(2);
+        allowPartial(order, true);
+        UUID[] packedShipment = packed(order, false);
+        UUID shipment = packedShipment[0];
+        UUID task = packedShipment[1];
+        JsonNode plan = plan(List.of(shipment), truck5t);
+        plan = step(plan, "/calculation", version(plan));
+        List<String> parcels = plan.path("packages").findValuesAsText("packageId");
+        String goes = parcels.get(0);
+        String stays = parcels.get(1);
+        plan = leaveOnTray(plan, goes, stays);
+        plan = step(plan, "/confirmation", version(plan));
+        String loadId = loadOf(plan, 1);
+
+        // Before the split nothing is outdated, and the flag is there, false, and the time is left out (null).
+        JsonNode before = load(loadId);
+        assertThat(before.path("shipments").get(0).path("packages")).isNotEmpty().allSatisfy(p -> {
+            assertThat(p.path("labelOutdated").isBoolean()).isTrue();
+            assertThat(p.path("labelOutdated").asBoolean()).isFalse();
+            assertThat(p.hasNonNull("labelOutdatedAt")).isFalse();
+        });
+        JsonNode manifestBefore = data(dispatch(get(LOADS + "/" + loadId + "/manifest")).andExpect(status().isOk()));
+        assertThat(manifestBefore.path("shipments").get(0).path("packages").get(0).path("labelOutdated").asBoolean())
+                .isFalse();
+
+        book(loadId, ghn, "51C-888.88");
+        dispatch(post(LOADS + "/" + loadId + "/loading-start")).andExpect(status().isOk());
+        UUID rest = jdbc.queryForObject("SELECT shipment_id FROM fulfillment.package WHERE id = ?::uuid", UUID.class,
+                stays);
+        assertThat(rest).isNotEqualTo(shipment);
+
+        // The parcel that stays on the vehicle: 1/1 now - its label is outdated, on the load and on the manifest.
+        JsonNode loaded = load(loadId);
+        JsonNode onLoad = loaded.path("shipments").get(0).path("packages").get(0);
+        assertThat(onLoad.path("packageId").asText()).isEqualTo(goes);
+        assertThat(onLoad.path("labelOutdated").asBoolean()).isTrue();
+        assertThat(onLoad.hasNonNull("labelOutdatedAt")).isTrue();
+        Instant since = Instant.parse(onLoad.path("labelOutdatedAt").asText());
+        assertThat(since).isBeforeOrEqualTo(Instant.now());
+        JsonNode manifest = data(dispatch(get(LOADS + "/" + loadId + "/manifest")).andExpect(status().isOk()));
+        JsonNode onManifest = manifest.path("shipments").get(0).path("packages").get(0);
+        assertThat(onManifest.path("labelOutdated").asBoolean()).isTrue();
+        assertThat(Instant.parse(onManifest.path("labelOutdatedAt").asText())).isEqualTo(since);
+        scanOnto(loadId, labels(loaded).getFirst()).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("LABEL_OUTDATED"));
+
+        // The parcel moved to the new shipment: on its detail and in the packing session.
+        JsonNode moved = data(dispatch(get(BASE + "/shipments/" + rest)).andExpect(status().isOk()))
+                .path("packages").get(0);
+        assertThat(moved.path("packageId").asText()).isEqualTo(stays);
+        assertThat(moved.path("labelOutdated").asBoolean()).isTrue();
+        assertThat(moved.hasNonNull("labelOutdatedAt")).isTrue();
+        JsonNode session = data(packer(get(BASE + "/tasks/" + task + "/packing-session")).andExpect(status().isOk()));
+        Map<String, Boolean> flags = new HashMap<>();
+        session.path("packages").forEach(p -> flags.put(p.path("packageId").asText(),
+                p.path("labelOutdated").asBoolean() && p.hasNonNull("labelOutdatedAt")));
+        assertThat(flags).containsEntry(goes, true).containsEntry(stays, true);
+
+        // A reprint of the moved parcel's label clears only its own flag; the other follows its own reprint.
+        packer(get(BASE + "/tasks/" + task + "/packages/" + stays + "/label")).andExpect(status().isOk());
+        JsonNode afterOne = data(dispatch(get(BASE + "/shipments/" + rest)).andExpect(status().isOk()))
+                .path("packages").get(0);
+        assertThat(afterOne.path("labelOutdated").asBoolean()).isFalse();
+        assertThat(afterOne.hasNonNull("labelOutdatedAt")).isFalse();
+        assertThat(load(loadId).path("shipments").get(0).path("packages").get(0).path("labelOutdated").asBoolean())
+                .isTrue();
+        packer(get(BASE + "/tasks/" + task + "/packages/" + goes + "/label")).andExpect(status().isOk());
+        JsonNode cleared = load(loadId).path("shipments").get(0).path("packages").get(0);
+        assertThat(cleared.path("labelOutdated").asBoolean()).isFalse();
+        assertThat(cleared.hasNonNull("labelOutdatedAt")).isFalse();
+        assertThat(data(dispatch(get(LOADS + "/" + loadId + "/manifest")).andExpect(status().isOk()))
+                .path("shipments").get(0).path("packages").get(0).path("labelOutdated").asBoolean()).isFalse();
+        session = data(packer(get(BASE + "/tasks/" + task + "/packing-session")).andExpect(status().isOk()));
+        assertThat(session.path("packages")).allSatisfy(p -> assertThat(p.path("labelOutdated").asBoolean()).isFalse());
+        scanOnto(loadId, labels(load(loadId)).getFirst()).andExpect(status().isOk());
+    }
+
     // ---- the database, a second time (V20261022001400) ---------------------------------------
 
     @Test

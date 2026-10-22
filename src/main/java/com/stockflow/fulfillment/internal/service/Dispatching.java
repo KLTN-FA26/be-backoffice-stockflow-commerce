@@ -35,7 +35,7 @@ public interface Dispatching {
 
     /** @param kit the kit it is a part of (SCRUM-287 LP2-6): every part is scanned; null for an ordinary parcel */
     record LoadParcel(UUID packageId, String labelCode, BigDecimal weightKg, boolean loaded, Instant loadedAt,
-                      UUID loadedBy, com.stockflow.fulfillment.internal.domain.KitPart kit) { }
+                      UUID loadedBy, com.stockflow.fulfillment.internal.domain.KitPart kit, Instant labelOutdatedAt) { }
 
     /**
      * A shipment on the manifest.
@@ -81,7 +81,8 @@ public interface Dispatching {
                             boolean codChangedSinceLabel, List<ManifestParcel> packages, UUID transferOrderId) { }
 
     record ManifestParcel(String labelCode, BigDecimal weightKg, BigDecimal lengthCm, BigDecimal widthCm,
-                          BigDecimal heightCm, boolean loaded, com.stockflow.fulfillment.internal.domain.KitPart kit) { }
+                          BigDecimal heightCm, boolean loaded, com.stockflow.fulfillment.internal.domain.KitPart kit,
+                          Instant labelOutdatedAt) { }
 
     /**
      * @param shipmentIds the shipments to put on the manifest now; null or empty: every shipment of that warehouse
@@ -97,8 +98,14 @@ public interface Dispatching {
     record Handover(Long version, String carrierRepresentative, String vehiclePlate, String driverPhone,
                     String signatureRef, Boolean signed, String note) { }
 
-    /** Loads of the caller's warehouses, newest first; filters optional ({@code search}: load code or plate). */
-    PageResponse<LoadRow> list(UUID warehouseId, String status, UUID carrierId, String search, int page, int size);
+    /**
+     * Loads of the caller's warehouses, newest first; filters optional ({@code mode}: PARCEL or FULL_TRUCKLOAD,
+     * {@code search}: load code, plate or - for a plan's vehicle - the load plan's code).
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code UNSUPPORTED_PARAMETER} for an unknown status or mode
+     */
+    PageResponse<LoadRow> list(UUID warehouseId, String status, String mode, UUID carrierId, String search, int page,
+                               int size);
 
     /** @throws com.stockflow.common.error.BusinessException {@code LOAD_NOT_FOUND}; {@code OUT_OF_DATA_SCOPE} */
     LoadDetail get(UUID loadId);
