@@ -6,6 +6,8 @@ import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
+import com.stockflow.inventory.api.PackagingSpec;
+import com.stockflow.inventory.api.PackagingSpecResolver;
 import com.stockflow.inventory.api.StorageClass;
 import com.stockflow.inventory.internal.controller.dto.InventoryItemResponse;
 import com.stockflow.inventory.internal.controller.dto.InventoryItemSummaryResponse;
@@ -48,10 +50,12 @@ class InventoryItemController {
 
     private final InventoryItems items;
     private final InventoryItemWebMapper mapper;
+    private final PackagingSpecResolver packaging;
 
-    InventoryItemController(InventoryItems items, InventoryItemWebMapper mapper) {
+    InventoryItemController(InventoryItems items, InventoryItemWebMapper mapper, PackagingSpecResolver packaging) {
         this.items = items;
         this.mapper = mapper;
+        this.packaging = packaging;
     }
 
     @GetMapping
@@ -74,6 +78,16 @@ class InventoryItemController {
     @RequiresPermission(resource = InventoryResources.INVENTORY_ITEMS, action = Action.READ)
     public ApiResponse<InventoryItemResponse> get(@PathVariable UUID id) {
         return ApiResponse.ok(mapper.toResponse(items.get(id)));
+    }
+
+    @GetMapping("/{id}/packaging-preview")
+    @Operation(summary = "How a quantity of this item would be packed for load planning (advisory)",
+            description = "quantity is in base units. Returns the carton, the full cartons and the remainder, the "
+                    + "rule level used and any warnings; status MISSING (still 200) when not even the item's own "
+                    + "unit has a size and weight. Read-only: nothing is stored.")
+    @RequiresPermission(resource = InventoryResources.INVENTORY_ITEMS, action = Action.READ)
+    public ApiResponse<PackagingSpec> packagingPreview(@PathVariable UUID id, @RequestParam int quantity) {
+        return ApiResponse.ok(packaging.resolve(id, quantity));
     }
 
     @PutMapping("/{id}/logistics")

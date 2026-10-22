@@ -24,8 +24,11 @@ import java.util.stream.Collectors;
 
 /**
  * See {@link UomConversionService}. Writes take the SKU's advisory lock (the one logistics and policy
- * edits take), so two people marking different default purchase units are serialised and the
- * {@code uk_uom_conversions_default_purchase} index never surfaces as a 500.
+ * edits take), so two people marking different default purchase (or default shipping) units are serialised and
+ * the {@code uk_uom_conversions_default_purchase} and {@code uk_uom_conversions_default_shipping} indexes never
+ * surface as a 500. Marking a default shipping unit unmarks the previous one in the same transaction rather than
+ * answering 409: the user's intent ("this is the carton") is unambiguous, and it is how the default purchase unit
+ * already behaves.
  *
  * <p>BR-10 ("hệ số quy đổi đã phát sinh giao dịch không được sửa"): no document records the unit it was
  * entered in yet (orders, carts and purchase orders still count in the base unit), so no unit is "in a
@@ -86,6 +89,7 @@ class UomConversionServiceImpl implements UomConversionService {
         String actor = actor();
         UUID id = Identifiers.newId();
         if (draft.defaultPurchase()) conversions.clearDefaultPurchase(itemId, id, actor);
+        if (draft.defaultShipping()) conversions.clearDefaultShipping(itemId, id, actor);
         conversions.insert(id, itemId, draft, actor);
         return conversion(sku, id);
     }
@@ -104,6 +108,7 @@ class UomConversionServiceImpl implements UomConversionService {
         if (current.version() != expectedVersion) throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
         String actor = actor();
         if (draft.defaultPurchase() && !current.defaultPurchase()) conversions.clearDefaultPurchase(itemId, id, actor);
+        if (draft.defaultShipping() && !current.defaultShipping()) conversions.clearDefaultShipping(itemId, id, actor);
         if (!conversions.update(id, expectedVersion, draft, current.base(), actor)) {
             throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
         }

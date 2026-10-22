@@ -46,6 +46,28 @@ class UomConversionRulesTest {
         refused(() -> UomConversionRules.validateBase(BASE, draft("EACH", 1, false, true)), "defaultPurchase");
     }
 
+    @Test
+    void aRetiredUnitIsNotTheDefaultShippingUnit() {
+        refused(() -> UomConversionRules.validatePacking(shipping("CARTON", 10, false, true, false)), "defaultShipping");
+        assertThatCode(() -> UomConversionRules.validatePacking(shipping("CARTON", 10, false, true, true)))
+                .doesNotThrowAnyException();
+        assertThatCode(() -> UomConversionRules.validatePacking(shipping("CARTON", 10, false, false, false)))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void theBaseUnitMayBeTheDefaultShippingUnitOrNot() {
+        assertThatCode(() -> UomConversionRules.validateBase(BASE, shipping("EACH", 1, true, true, true)))
+                .doesNotThrowAnyException();
+        assertThatCode(() -> UomConversionRules.validateBase(BASE, shipping("EACH", 1, true, false, true)))
+                .doesNotThrowAnyException();
+    }
+
+    private static UomConversionDraft shipping(String code, int factor, boolean defaultPurchase,
+                                               boolean defaultShipping, boolean active) {
+        return new UomConversionDraft(code, factor, null, null, null, null, defaultPurchase, active, defaultShipping);
+    }
+
     private static UomConversionDraft draft(String code, int factor, boolean defaultPurchase, boolean active) {
         return new UomConversionDraft(code, factor, null, null, null, null, defaultPurchase, active);
     }
