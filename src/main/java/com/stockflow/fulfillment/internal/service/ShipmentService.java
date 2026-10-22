@@ -247,7 +247,7 @@ class ShipmentService implements Shipments {
         ShipmentRow view = rows(List.of(row)).getFirst();
         List<Parcel> parcels = packages.findByShipmentIdOrderByPackageNoAsc(row.getId()).stream()
                 .map(p -> new Parcel(p.getId(), p.getLabelCode(), p.getStatus().name(), p.getWeightKg(),
-                        p.getLengthCm(), p.getWidthCm(), p.getHeightCm())).toList();
+                        p.getLengthCm(), p.getWidthCm(), p.getHeightCm(), p.getKit())).toList();
         List<ShipmentEventJpaEntity> steps = events.findByShipmentIdOrderByOccurredAtAscIdAsc(row.getId());
         Map<UUID, String> names = new java.util.HashMap<>(identities.displayNames(steps.stream()
                 .map(ShipmentEventJpaEntity::getRecordedBy).filter(Objects::nonNull).distinct().toList()));

@@ -73,6 +73,8 @@ class PackEarlyIntegrationTest {
     private static final String PRINT_SHOP = "HCM-PRD01";
     private static final String PACKING = "HCM-PACK01";
     private static final Sku BLANK = new Sku(ProductionFixtures.BLANK);
+    /** KIT-FORCE: the blank ships as 2 boxes; packed in an ordinary package, it needs a reason. */
+    private static final String ONE_CARTON = "test: packed as one carton";
     private static final Duration ASYNC = Duration.ofSeconds(15);
 
     @Autowired com.stockflow.common.security.RoleAuthorizationLookup grants;
@@ -232,7 +234,7 @@ class PackEarlyIntegrationTest {
     }
 
     private UUID sealed(UUID task, UUID lineId, int quantity) {
-        UUID parcel = packing.openPackage(task, null, picker).packageId();
+        UUID parcel = packing.openPackage(task, null, ONE_CARTON, picker).packageId();
         packing.scan(task, parcel, new Packing.Scan(UUID.randomUUID(), BLANK.code(), null, null, quantity, lineId),
                 picker);
         packing.seal(task, parcel, new Packing.Seal(new BigDecimal("2"), new BigDecimal("30"), new BigDecimal("30"),
@@ -284,7 +286,7 @@ class PackEarlyIntegrationTest {
         UUID task = pickedStock(order);
         assertThat(order(order).status()).as("picked in parallel").isEqualTo(OrderStatus.IN_PRODUCTION);
         packing.start(task, picker);
-        UUID tooEarly = packing.openPackage(task, null, picker).packageId();
+        UUID tooEarly = packing.openPackage(task, null, ONE_CARTON, picker).packageId();
         assertThat(code(catchThrowable(() -> packing.scan(task, tooEarly, new Packing.Scan(UUID.randomUUID(),
                 BLANK.code(), null, null, 1, order.printLine()), picker))))
                 .as("the prints are not at packing yet").isNotNull();
@@ -345,7 +347,7 @@ class PackEarlyIntegrationTest {
         assertThat(code(catchThrowable(() -> fulfillment.completePacking(task,
                 new PackingCompletion(UUID.randomUUID(), true, "only the stock"), picker))))
                 .as("a part of the order, Sales did not allow it").isEqualTo(ErrorCode.PACK_PARTIAL_NOT_ALLOWED);
-        packing.scan(task, packing.openPackage(task, null, picker).packageId(), new Packing.Scan(UUID.randomUUID(),
+        packing.scan(task, packing.openPackage(task, null, ONE_CARTON, picker).packageId(), new Packing.Scan(UUID.randomUUID(),
                 BLANK.code(), null, null, 2, order.printLine()), picker);
         UUID second = jdbc.queryForObject("SELECT id FROM fulfillment.package WHERE pack_id = (SELECT id FROM "
                 + "fulfillment.pack WHERE pick_id = ?) AND status = 'OPEN'", UUID.class, task);

@@ -1,5 +1,7 @@
 package com.stockflow.fulfillment.internal.controller.dto;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
@@ -32,7 +34,8 @@ public record LoadResponse(UUID loadId, String code, UUID warehouseId, String mo
                            String currency, List<Parcel> packages) {
     }
 
+    /** @param kit the kit it is a part of (SCRUM-287 LP2-6); absent for an ordinary parcel */
     public record Parcel(UUID packageId, String labelCode, BigDecimal weightKg, boolean loaded, Instant loadedAt,
-                         UUID loadedBy) {
+                         UUID loadedBy, @JsonInclude(JsonInclude.Include.NON_NULL) KitPartResponse kit) {
     }
 }

@@ -31,7 +31,7 @@ public interface Shipments {
                        Instant outcomeAt, String failureReason, boolean wholeOrderHandover, long version) { }
 
     record Parcel(UUID packageId, String labelCode, String status, BigDecimal weightKg, BigDecimal lengthCm,
-                  BigDecimal widthCm, BigDecimal heightCm) { }
+                  BigDecimal widthCm, BigDecimal heightCm, com.stockflow.fulfillment.internal.domain.KitPart kit) { }
 
     /** One step of the timeline, with who recorded it (09 BR-02). */
     record Step(String status, Instant occurredAt, UUID recordedBy, String recordedByName, String note) { }
