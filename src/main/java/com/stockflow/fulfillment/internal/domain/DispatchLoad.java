@@ -559,7 +559,8 @@ public final class DispatchLoad {
         if (!missing.isEmpty()) {
             throw new BusinessException(ErrorCode.LOAD_NOT_FULLY_LOADED, "Not scanned onto the vehicle yet: %s. Scan "
                     .formatted(String.join(", ", missing.stream().sorted().toList()))
-                    + "them, or take their shipment off the manifest");
+                    + (mode == DeliveryMode.FULL_TRUCKLOAD ? "them: the plan placed them on this vehicle"
+                    : "them, or take their shipment off the manifest"));
         }
         status = LoadStatus.DISPATCHED;
         carrierRepresentative = representative;
