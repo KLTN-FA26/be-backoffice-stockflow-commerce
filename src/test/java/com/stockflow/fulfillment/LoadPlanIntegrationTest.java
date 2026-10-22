@@ -314,6 +314,10 @@ class LoadPlanIntegrationTest {
     void theWholeFlow() throws Exception {
         OrderSummary orderA = ftlOrder(2);
         OrderSummary orderB = ftlOrder(1);
+        // The coordinator's advisory estimate of order A before packing (PR EST); order B has none.
+        String estimateId = data(oc(body(post(BASE + "/load-estimates"), "{\"sources\":[{\"type\":\"ORDER\",\"id\":\""
+                + orderA.orderId() + "\"}],\"vehicleTypeIds\":[\"" + truck5t + "\"]}")).andExpect(status().isCreated()))
+                .path("id").asText();
         UUID shipmentA = packed(orderA, true)[0];
         UUID shipmentB = packed(orderB, false)[0];
 
@@ -361,9 +365,13 @@ class LoadPlanIntegrationTest {
         assertThat(layout.path("usedWeightKg").decimalValue()).isEqualByComparingTo("197.5");
         assertThat(layout.path("usedVolumeMm3").asLong()).isPositive();
         JsonNode anyBox = layout.path("boxes").get(0);
+        // The shared Layout of PR EST (Layouts.of): the FE #71 fields, plus loadSequence and the fill percentages.
+        // Null fields are left out by the API's mapper; the FE schema defaults sourceRef and kitGroup to null.
         assertThat(anyBox.fieldNames()).toIterable().contains("xMm", "yMm", "zMm", "wMm", "hMm", "dMm", "ref",
-                "sourceRef", "label", "partName", "kitGroup", "origMm", "orientation", "rotatable", "weightKg");
-        assertThat(anyBox.path("sourceRef").isNull()).isTrue();
+                "label", "partName", "origMm", "orientation", "rotatable", "weightKg", "loadSequence");
+        assertThat(anyBox.hasNonNull("sourceRef")).as("a sealed parcel has no source line").isFalse();
+        assertThat(layout.path("boxes").findValuesAsText("kitGroup")).hasSize(4);
+        assertThat(layout.path("volumeFillPct").decimalValue()).isPositive();
         assertThat(anyBox.path("label").asText()).startsWith("PKG-");
         assertThat(anyBox.path("orientation").asText()).isIn("LWH", "LHW", "WLH", "WHL", "HLW", "HWL");
         assertThat(data(dispatch(get(PLANS + "/" + id + "/layouts")).andExpect(status().isOk()))).hasSize(1);
@@ -495,7 +503,22 @@ class LoadPlanIntegrationTest {
                     assertThat(o.path("leftBehind").asInt()).isEqualTo(1);
                     assertThat(o.path("placed").asInt()).isZero();
                 });
-        assertThat(check.path("vsEstimate").isNull() || check.path("vsEstimate").isMissingNode()).isTrue();
+        // Against the CURRENT estimates: order A's compared, order B has none.
+        JsonNode vs = check.path("vsEstimate");
+        assertThat(vs.path("estimateIds").get(0).asText()).isEqualTo(estimateId);
+        assertThat(vs.path("ordersWithoutEstimate").get(0).asText()).isEqualTo(orderB.orderId().toString());
+        List<String> flags = new ArrayList<>();
+        vs.path("flags").forEach(f -> flags.add(f.asText()));
+        assertThat(flags).contains("NO_ESTIMATE");
+        assertThat(vs.path("vehiclesByType")).filteredOn(t -> t.path("code").asText().equals("TRUCK-5T"))
+                .singleElement().satisfies(t -> assertThat(t.path("actual").asInt()).isEqualTo(1));
+        assertThat(vs.path("cartonsByLine")).filteredOn(l -> l.path("orderLineId").asText()
+                .equals(orderA.lines().getFirst().lineId().toString())).singleElement().satisfies(l -> {
+                    assertThat(l.path("actual").asInt()).isEqualTo(4);
+                    assertThat(l.path("estimated").asLong()).isPositive();
+                });
+        assertThat(vs.path("weightKg").path("actual").decimalValue()).isEqualByComparingTo("197.5");
+        assertThat(vs.path("volumeMm3").path("estimated").decimalValue()).isPositive();
 
         // Reopened (LP-11): the PLANNED load is cancelled with the reason.
         dispatch(body(post(PLANS + "/" + id + "/reopening"), "{\"expectedVersion\":" + plan.path("version").asLong()

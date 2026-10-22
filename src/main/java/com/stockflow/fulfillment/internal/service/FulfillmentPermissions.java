@@ -41,6 +41,12 @@ public final class FulfillmentPermissions {
     public static final String VEHICLE_TYPES = "fulfillment-vehicle-types";
 
     /**
+     * CREATE: estimate how a released order loads before packing (advisory, LP2-1); READ: an estimate and the current
+     * estimate of an order (V20261022001200).
+     */
+    public static final String LOAD_ESTIMATES = "fulfillment-load-estimates";
+
+    /**
      * CREATE: open a load; UPDATE: choose a shipment's carrier, put shipments on a load, scan and unscan parcels, and
      * sign the manifest (handover).
      */

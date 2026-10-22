@@ -22,7 +22,12 @@ import com.stockflow.fulfillment.internal.domain.loadplanning.KitDistribution;
 import com.stockflow.fulfillment.internal.domain.loadplanning.LoadPlanMeta;
 import com.stockflow.fulfillment.internal.domain.loadplanning.LoadPlanRequest;
 import com.stockflow.fulfillment.internal.domain.loadplanning.LoadPlanResult;
+import com.stockflow.fulfillment.internal.domain.loadplanning.Layout;
+import com.stockflow.fulfillment.internal.domain.loadplanning.Layouts;
 import com.stockflow.fulfillment.internal.domain.loadplanning.LoadPlanner;
+import com.stockflow.fulfillment.internal.domain.loadplanning.Placement;
+import com.stockflow.fulfillment.internal.domain.loadplanning.PlacementValidator;
+import com.stockflow.fulfillment.internal.domain.loadplanning.PlannedVehicle;
 import com.stockflow.fulfillment.internal.domain.loadplanning.Orientation;
 import com.stockflow.fulfillment.internal.domain.loadplanning.SelectionMode;
 import com.stockflow.fulfillment.internal.domain.loadplanning.VehicleKind;
@@ -449,7 +454,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         LoadPlanJpaEntity header = read(loadPlanId);
         LoadPlan plan = store.load(header);
         LoadPlan.Vehicle vehicle = plan.requireVehicle(seq);
-        return LoadPlanLayoutMapper.toLayout(vehicle, parcels.of(placedOn(List.of(vehicle))));
+        return layoutOf(vehicle, parcels.of(placedOn(List.of(vehicle))));
     }
 
     @Override
@@ -459,7 +464,42 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         LoadPlan plan = store.load(header);
         List<LoadPlan.Vehicle> vehicles = plan.activeVehicles();
         Map<UUID, LoadPlanParcels.Parcel> described = parcels.of(placedOn(vehicles));
-        return vehicles.stream().map(v -> LoadPlanLayoutMapper.toLayout(v, described)).toList();
+        return vehicles.stream().map(v -> layoutOf(v, described)).toList();
+    }
+
+    /**
+     * A stored vehicle as the viewer's {@link Layout}, through {@link Layouts#of} - the one mapper of the estimate and
+     * the plan: the stored places are handed to it as the planner's answer for that vehicle, with their load order
+     * ({@link LoadPlanner#loadSequence}, which also orders a hand-edited vehicle). {@code label} is the parcel's label
+     * code, {@code partName} its SKU ({@code SKU n/N} for a kit part).
+     */
+    private static Layout layoutOf(LoadPlan.Vehicle vehicle, Map<UUID, LoadPlanParcels.Parcel> described) {
+        List<CargoPackage> cartons = new ArrayList<>();
+        List<PlacementValidator.Item> items = new ArrayList<>();
+        for (LoadPlan.Placed p : vehicle.placements()) {
+            CargoPackage c = described.get(p.packageId()).carton();
+            cartons.add(c);
+            items.add(new PlacementValidator.Item(c, p.x(), p.y(), p.z(), p.w(), p.h(), p.d()));
+        }
+        int[] sequence = LoadPlanner.loadSequence(items);
+        List<Placement> placements = new ArrayList<>();
+        for (int i = 0; i < items.size(); i++) {
+            LoadPlan.Placed p = vehicle.placements().get(i);
+            CargoPackage c = cartons.get(i);
+            placements.add(new Placement(c.ref(), null, c.partCode(), c.kitGroup(), p.x(), p.y(), p.z(), p.w(), p.h(),
+                    p.d(), c.lengthMm(), c.widthMm(), c.heightMm(), p.orientation(), c.rotatable(), c.weightKg(),
+                    sequence[i], false));
+        }
+        placements.sort(Comparator.comparingInt(Placement::loadSequence));
+        VehicleSpec spec = vehicle.spec();
+        PlannedVehicle planned = new PlannedVehicle(spec.typeId(), spec.code(), vehicle.seq(), placements,
+                vehicle.usedVolumeMm3(), vehicle.usedWeightKg(), vehicle.volumeFillPct(), vehicle.weightFillPct());
+        LoadPlanRequest request = new LoadPlanRequest(cartons, List.of(spec), SelectionMode.SINGLE_TYPE, List.of(),
+                KitDistribution.AUTO, false, null, 0L, null);
+        Map<String, String> labels = new HashMap<>();
+        described.forEach((id, p) -> labels.put(id.toString(), p.row().getLabelCode()));
+        return Layouts.of(request, new LoadPlanResult(List.of(planned), List.of(), null),
+                c -> labels.get(c.ref())).vehicles().getFirst();
     }
 
     private static List<UUID> placedOn(List<LoadPlan.Vehicle> vehicles) {
@@ -653,7 +693,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         });
         int notInPlan = perShipment.stream().mapToInt(PieceCount::notInPlan).sum();
         return new Reconciliation(count(plan.id().toString(), plan.code(), total, notInPlan), perShipment, perOrder,
-                estimates.compare(plan.id()));
+                estimates.compare(orders.values(), parcels.of(counted.keySet()).values(), plan.activeVehicles()));
     }
 
     private static PieceCount count(String key, String code, int[] c, int notInPlan) {

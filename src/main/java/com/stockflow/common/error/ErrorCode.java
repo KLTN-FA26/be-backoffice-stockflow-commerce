@@ -411,9 +411,17 @@ public enum ErrorCode {
     /** SCRUM-287 load planning: the vehicle-type catalogue (kltn-docs 09 §3). */
     VEHICLE_TYPE_NOT_FOUND("Vehicle type not found", 404),
     VEHICLE_TYPE_CODE_EXISTS("Vehicle type code already exists", 409),
-    INVALID_LOAD_TRANSITION("The load cannot do that in its current status", 409),
-    /** SCRUM-287 PR D: a vehicle type retired from the catalogue is not offered to a new load plan. */
+    /**
+     * SCRUM-287 PR EST: the advisory load estimate (design v2 §2, LP2-1 to LP2-5). PACKAGING_MISSING names each blocked
+     * line's inventory item in the field errors, so the screen links to the item to complete.
+     */
+    LOAD_ESTIMATE_NOT_FOUND("Load estimate not found", 404),
+    LOAD_ESTIMATE_PACKAGING_MISSING("No line has an item with a size and weight to estimate its cartons", 422),
+    LOAD_ESTIMATE_SOURCE_NOT_ELIGIBLE("This order cannot be estimated in its current status, or has nothing left to ship", 409),
+    LOAD_ESTIMATE_SOURCE_UNSUPPORTED("This kind of source cannot be estimated yet", 400),
+    LOAD_ESTIMATE_TOO_MANY_CARTONS("The order has too many cartons to estimate at once", 422),
     VEHICLE_TYPE_INACTIVE("This vehicle type is no longer in use", 409),
+    INVALID_LOAD_TRANSITION("The load cannot do that in its current status", 409),
     // ---- SCRUM-287 PR D load plans (kltn-docs 09 §4.2, §5, BR-09..BR-15)
     /** A load plan of a warehouse outside the caller's scope is OUT_OF_DATA_SCOPE, not this. */
     LOAD_PLAN_NOT_FOUND("Load plan not found", 404),

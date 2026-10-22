@@ -15,6 +15,7 @@ import com.stockflow.fulfillment.internal.controller.dto.LoadPlanInputsRequest;
 import com.stockflow.fulfillment.internal.controller.dto.LoadPlanReasonRequest;
 import com.stockflow.fulfillment.internal.controller.dto.LoadPlanVersionRequest;
 import com.stockflow.fulfillment.internal.controller.dto.VehicleRecalculationRequest;
+import com.stockflow.fulfillment.internal.domain.loadplanning.Layout;
 import com.stockflow.fulfillment.internal.service.LoadPlans;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -118,14 +119,14 @@ class LoadPlanController {
     @GetMapping("/load-plans/{loadPlanId}/layouts")
     @Operation(summary = "The Layout of every vehicle of the plan, in seq order (one colour map for the whole plan)")
     @RequiresPermission(resource = FulfillmentResources.LOAD_PLANS, action = Action.READ)
-    public ApiResponse<List<LoadPlans.Layout>> layouts(@PathVariable UUID loadPlanId) {
+    public ApiResponse<List<Layout>> layouts(@PathVariable UUID loadPlanId) {
         return ApiResponse.ok(loadPlans.layouts(loadPlanId));
     }
 
     @GetMapping("/load-plans/{loadPlanId}/vehicles/{seq}/layout")
     @Operation(summary = "One vehicle's Layout for the 3D viewer (FE #71 contract); 404 LOAD_PLAN_VEHICLE_NOT_FOUND")
     @RequiresPermission(resource = FulfillmentResources.LOAD_PLANS, action = Action.READ)
-    public ApiResponse<LoadPlans.Layout> layout(@PathVariable UUID loadPlanId, @PathVariable int seq) {
+    public ApiResponse<Layout> layout(@PathVariable UUID loadPlanId, @PathVariable int seq) {
         return ApiResponse.ok(loadPlans.layout(loadPlanId, seq));
     }
 

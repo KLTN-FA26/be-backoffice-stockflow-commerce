@@ -32,26 +32,7 @@ public final class PlacementValidator {
         }
     }
 
-    /**
-     * A reserved block of the cargo box: corner at {@code (x, y, z)}, sizes {@code w} along {@code x}, {@code h} along
-     * {@code y}, {@code d} along {@code z} - the {@code Block} of the shared layout contract with the 3D viewer.
-     */
-    public record Block(int x, int y, int z, int w, int h, int d) { }
-
     private PlacementValidator() {
-    }
-
-    /**
-     * The reinforced ceiling corners this vehicle keeps clear (BR-10), exactly as {@link #validate} checks them: what a
-     * layout shows as {@code gussets}. Whole millimetres (see {@link Gussets}).
-     */
-    public static List<Block> gussets(VehicleSpec vehicle) {
-        List<Block> out = new ArrayList<>();
-        for (BoxPlacement g : Gussets.of(new Bin(vehicle))) {
-            out.add(new Block((int) Math.round(g.x), (int) Math.round(g.y), (int) Math.round(g.z),
-                    (int) Math.round(g.w), (int) Math.round(g.h), (int) Math.round(g.d)));
-        }
-        return out;
     }
 
     /** Every rule each carton breaks, at most once per carton and rule, in the order of the items. */

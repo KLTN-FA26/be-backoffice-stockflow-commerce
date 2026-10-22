@@ -651,7 +651,7 @@ public final class LoadPlanner {
      * one nearest the front wall, then the lowest, then the leftmost. The original returned cartons in the order the
      * search placed them, which is not a physical order: a block filler places whole blocks wherever they fit.
      */
-    static int[] loadSequence(List<PlacementValidator.Item> items) {
+    public static int[] loadSequence(List<PlacementValidator.Item> items) {
         int n = items.size();
         List<List<Integer>> above = new ArrayList<>();
         int[] below = new int[n];

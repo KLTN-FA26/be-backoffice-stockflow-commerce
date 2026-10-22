@@ -17,6 +17,7 @@ final class FulfillmentResources {
     static final String VEHICLE_TYPES = FulfillmentPermissions.VEHICLE_TYPES;
     /** SCRUM-287 PR D (V20261022001300): READ plans and candidates; CREATE a plan; UPDATE everything else. */
     static final String LOAD_PLANS = "fulfillment-load-plans";
+    static final String LOAD_ESTIMATES = FulfillmentPermissions.LOAD_ESTIMATES;
     static final String DISPATCH = FulfillmentPermissions.DISPATCH;
     static final String LOAD_CANCELLATIONS = FulfillmentPermissions.LOAD_CANCELLATIONS;
     static final String DELIVERY_OUTCOMES = FulfillmentPermissions.DELIVERY_OUTCOMES;
