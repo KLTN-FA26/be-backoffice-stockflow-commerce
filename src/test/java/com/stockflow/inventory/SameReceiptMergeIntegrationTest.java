@@ -130,15 +130,29 @@ class SameReceiptMergeIntegrationTest {
         return order;
     }
 
+    /**
+     * SCRUM-152: a checkout reservation holds the SKU on no bin; the order's release allocates it. Each reservation's
+     * one allocation here (a single FIFO layer serves it), in the order the reservations are given.
+     */
+    private List<UUID> allocated(UUID order, List<UUID> reservations) {
+        java.util.Map<UUID, UUID> holdOf = new java.util.HashMap<>();
+        inventory.allocate(new com.stockflow.inventory.api.AllocateStockCommand(order, "HCM")).allocations()
+                .forEach(allocation -> holdOf.put(allocation.reservationId(), allocation.holdIds().getFirst()));
+        return reservations.stream().map(holdOf::get).toList();
+    }
+
     @Test
     @DisplayName("two holds of one FIFO receipt issued to the print shop land in one layer there, both still held")
     void secondIssueMerges() {
         UUID order = confirmedOrder();
         List<UUID> holds = tx.execute(s -> {
             List<UUID> ids = new java.util.ArrayList<>();
-            ids.addAll(inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), 3, order)).reservationIds());
-            ids.addAll(inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), 4, order)).reservationIds());
+            inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), 3, order));
+            inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), 4, order));
             inventory.pinReservations(order);
+            // SCRUM-152: checkout holds the SKU; the release puts each reservation on the FIFO layer as an allocation.
+            inventory.allocate(new com.stockflow.inventory.api.AllocateStockCommand(order, "HCM")).allocations()
+                    .forEach(allocation -> ids.addAll(allocation.holdIds()));
             return ids;
         });
         for (UUID hold : holds) {
@@ -161,7 +175,7 @@ class SameReceiptMergeIntegrationTest {
             UUID second = inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), 4, order))
                     .reservationIds().getFirst();
             inventory.pinReservations(order);
-            return List.of(first, second);
+            return allocated(order, List.of(first, second));
         });
         List<UUID> lines = List.of(Identifiers.newId(), Identifiers.newId());
         for (int i = 0; i < holds.size(); i++) {
@@ -206,7 +220,7 @@ class SameReceiptMergeIntegrationTest {
             UUID id = inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), 3, order))
                     .reservationIds().getFirst();
             inventory.pinReservations(order);
-            return id;
+            return allocated(order, List.of(id)).getFirst();
         });
         UUID line = Identifiers.newId();
         tx.executeWithoutResult(s -> pickConsumption.consumeForPick(hold, line, clerk));

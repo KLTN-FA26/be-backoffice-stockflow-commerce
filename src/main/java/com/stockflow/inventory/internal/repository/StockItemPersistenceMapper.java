@@ -45,7 +45,7 @@ final class StockItemPersistenceMapper {
                 Quantity.of(entity.getOnHand()),
                 entity.getStatus(),
                 reservations,
-                entity.getVersion(), entity.getReceivedAt(), entity.getSerialNumber(),
+                entity.getVersion(), entity.getReceivedAt(), entity.getSerialNumber(), entity.getLotId(),
                 entity.getStockPackageId() == null ? null : new StockPackageId(entity.getStockPackageId()));
     }
 
@@ -61,7 +61,8 @@ final class StockItemPersistenceMapper {
                 entity.getExpiresAt(),
                 entity.getStatus(),
                 entity.getReleaseReason(),
-                entity.getClosedAt());
+                entity.getClosedAt(),
+                entity.getAllocatedFrom());
     }
 
     /** Fresh row for an aggregate that has never been persisted. */
@@ -74,7 +75,7 @@ final class StockItemPersistenceMapper {
                 item.expiryDate(),
                 item.onHand().value(),
                 item.reserved().value(),
-                item.status(), item.receivedAt(), item.serialNumber(),
+                item.status(), item.receivedAt(), item.serialNumber(), item.lotId(),
                 item.stockPackageId() == null ? null : item.stockPackageId().value());
         entity.replaceReservations(toEntities(item));
         return entity;
@@ -95,6 +96,7 @@ final class StockItemPersistenceMapper {
         return item.reservations().stream()
                 .map(r -> new ReservationJpaEntity(
                         r.id().value(),
+                        item.sku().code(),
                         r.orderId(),
                         r.productionOrderId(),
                         r.rootRequestId(),
@@ -104,7 +106,8 @@ final class StockItemPersistenceMapper {
                         r.expiresAt(),
                         r.status(),
                         r.releaseReason(),
-                        r.closedAt()))
+                        r.closedAt(),
+                        r.allocatedFrom()))
                 .toList();
     }
 }

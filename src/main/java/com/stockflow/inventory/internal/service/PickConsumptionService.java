@@ -71,10 +71,13 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
     private final InventoryPolicyRepository policies;
     private final StockPackageContents cartons;
     private final Clock clock;
+    private final com.stockflow.inventory.internal.domain.Recounts recounts;
 
     PickConsumptionService(StockItemRepository stockItems, StockMovementLog ledger, InventoryEventPublisher events,
                            LocationDirectory locations, InventoryPolicyRepository policies,
-                           StockPackageContents cartons, Clock clock) {
+                           StockPackageContents cartons, Clock clock,
+                           com.stockflow.inventory.internal.domain.Recounts recounts) {
+        this.recounts = recounts;
         this.stockItems = stockItems;
         this.ledger = ledger;
         this.events = events;
@@ -173,8 +176,7 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
         Optional<StockItem> destinationView = sourceView.location().equals(target) && sourceView.isLoose()
                 ? Optional.of(sourceView)
                 : stockItems.findLooseBySkuAndLocation(sourceView.sku(), target).stream()
-                        .filter(item -> item.isLayer(sourceView.lotNumber(), sourceView.serialNumber(),
-                                sourceView.receivedAt()))
+                        .filter(item -> item.isSameGoodsAs(sourceView))
                         .findFirst();
         List<StockItem> toLock = destinationView.isPresent() && !destinationView.get().id().equals(sourceView.id())
                 ? List.of(sourceView, destinationView.get()) : List.of(sourceView);
@@ -205,8 +207,41 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
         Instant now = clock.instant();
         ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.PUT_BACK,
                 source.sku(), source.lotNumber(), null, target, quantity.value(), StockStatus.AVAILABLE,
-                StockMovement.ReferenceType.PICK_LINE, command.pickLineId(), null, command.actorId(), now));
+                StockMovement.ReferenceType.PICK_LINE, command.pickLineId(), null, command.actorId(), now)
+                .ofLot(source.lotId())
+                .forOrder(source.findReservation(ReservationId.of(command.reservationId()))
+                        .map(Reservation::orderId).orElse(null)));
         log.info("Pick line {} put back: {} x {} onto {}", command.pickLineId(), quantity, source.sku(), target);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One open recount per bin, SKU and lot: a second short line on the same bin, or the same report again, finds
+     * the first instead of queueing the same count twice. The expected quantity is the book on-hand of the layer.</p>
+     */
+    @Override
+    public com.stockflow.inventory.consumption.ShortPickRecount requestRecount(UUID reservationId, UUID pickLineId,
+                                                                              int found) {
+        Objects.requireNonNull(pickLineId, "pickLineId");
+        StockItem item = stockItems.findIdByReservationId(ReservationId.of(reservationId))
+                .flatMap(stockItems::findById)
+                .orElseThrow(() -> new BusinessException(ErrorCode.RESERVATION_NOT_FOUND,
+                        "No allocation with id " + reservationId));
+        WarehouseScope.requireLocation(item.location().code());
+        Reservation hold = item.findReservation(ReservationId.of(reservationId)).orElseThrow();
+        var open = recounts.findOpenFor(item.location(), item.sku(), item.lotNumber());
+        if (open.isPresent()) {
+            return new com.stockflow.inventory.consumption.ShortPickRecount(open.get().id(), open.get().number(), false);
+        }
+        UUID warehouse = locations.warehouseOf(item.location()).orElseThrow(() ->
+                new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + item.location()));
+        var recount = recounts.openShortPick(warehouse, item.location(), item.sku(), item.lotNumber(),
+                item.onHand().value(), "Short pick: line %s found %d of %s".formatted(pickLineId, found,
+                        hold.quantity()), com.stockflow.common.domain.BusinessCalendar.date(clock.instant()));
+        log.info("Short pick at {} ({} {}): recount {} opened", item.location(), item.sku(),
+                item.lotNumber() == null ? "" : item.lotNumber(), recount.number());
+        return new com.stockflow.inventory.consumption.ShortPickRecount(recount.id(), recount.number(), true);
     }
 
     private void deduct(StockItem item, UUID reservationId, StockMovement.ReferenceType referenceType,
@@ -220,7 +255,8 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
         events.publishEventsOf(item);
         ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.PICK, item.sku(),
                 item.lotNumber(), item.location(), null, hold.quantity().value(), status, referenceType,
-                referenceId, null, actorId, now).leaving(item.stockPackageId()));
+                referenceId, null, actorId, now).ofLot(item.lotId()).forOrder(hold.orderId())
+                .leaving(item.stockPackageId()));
     }
 
     /**

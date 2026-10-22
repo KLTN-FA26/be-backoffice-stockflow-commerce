@@ -402,6 +402,10 @@ class FulfillmentServiceImpl implements FulfillmentService {
         List<OrderHold> holds = inventory.holdsOf(order.orderId());
         Map<UUID, Set<String>> skusByWarehouse = new java.util.LinkedHashMap<>();
         for (OrderHold hold : holds) {
+            if (hold.locationCode() == null) {
+                // A SKU reservation (SCRUM-152): the release turned it into allocations, which name the bins.
+                continue;
+            }
             UUID where = warehouses.findLocation(hold.locationCode()).map(StorageLocationView::warehouseId)
                     .orElseThrow(() -> new BusinessException(ErrorCode.LOCATION_NOT_FOUND,
                             "Stock held for the order sits at an unknown location"));

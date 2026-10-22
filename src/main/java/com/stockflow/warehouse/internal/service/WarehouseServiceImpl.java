@@ -77,6 +77,19 @@ class WarehouseServiceImpl implements WarehouseService {
     }
 
     @Override
+    public java.util.Map<String, UUID> pickableLocations(java.util.Collection<String> locationCodes) {
+        java.util.Map<String, UUID> pickable = new java.util.HashMap<>();
+        if (locationCodes == null || locationCodes.isEmpty()) {
+            return pickable;
+        }
+        locations.findPickable(java.util.Set.copyOf(locationCodes)).stream()
+                .map(WarehouseServiceImpl::toView)
+                .filter(StorageLocationView::usable)
+                .forEach(view -> pickable.put(view.locationCode(), view.warehouseId()));
+        return pickable;
+    }
+
+    @Override
     public Optional<WarehouseView> findWarehouse(UUID warehouseId) {
         if (warehouseId == null) {
             return Optional.empty();

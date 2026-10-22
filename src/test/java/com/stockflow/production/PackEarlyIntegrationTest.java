@@ -186,13 +186,16 @@ class PackEarlyIntegrationTest {
             jdbc.update("""
                     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
                     VALUES (?, ?, ?, ?, ?, 'VND')""", stockLine, orderId, ProductionFixtures.BLANK, stocked, stockPrice);
-            inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), BLANK, printed, orderId)).reservationIds()
-                    .forEach(id -> jdbc.update("INSERT INTO ordering.order_line_reservation (order_line_id, "
-                            + "reservation_id) VALUES (?, ?)", printLine, id));
-            inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), BLANK, stocked, orderId)).reservationIds()
-                    .forEach(id -> jdbc.update("INSERT INTO ordering.order_line_reservation (order_line_id, "
-                            + "reservation_id) VALUES (?, ?)", stockLine, id));
+            UUID printedHold = inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), BLANK, printed, orderId))
+                    .reservationIds().getFirst();
+            inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), BLANK, stocked, orderId));
             inventory.pinReservations(orderId);
+            // As the release does (SCRUM-152): each SKU reservation becomes allocations on HCM bins, which its line
+            // then holds instead.
+            inventory.allocate(new com.stockflow.inventory.api.AllocateStockCommand(orderId, "HCM")).allocations()
+                    .forEach(allocation -> allocation.holdIds().forEach(id -> jdbc.update(
+                            "INSERT INTO ordering.order_line_reservation (order_line_id, reservation_id) VALUES (?, ?)",
+                            allocation.reservationId().equals(printedHold) ? printLine : stockLine, id)));
         });
         UUID productionOrderId = orderProduction.createFor(new OrderLinesReleasedForProduction(orderId, number, hcm,
                 List.of(new OrderLinesReleasedForProduction.Line(printLine, ProductionFixtures.BLANK, printed,

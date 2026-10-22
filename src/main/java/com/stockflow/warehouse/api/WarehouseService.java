@@ -43,6 +43,14 @@ public interface WarehouseService {
     /** The storage areas of {@code type} in a warehouse, by location code (the print shop finds its packing area). */
     java.util.List<StorageLocationView> areasOf(UUID warehouseId, StorageLocationView.AreaType type);
 
+    /**
+     * The locations among {@code locationCodes} a picker may take stock from right now: flagged pickable
+     * ({@code is_pickable}, module 06 BR-12) and usable, i.e. their effective status is ACTIVE. Each maps to its
+     * warehouse. A code that is unknown, not pickable or not usable is absent. Allocation (SCRUM-152) chooses bins
+     * from these only, so an order is never allocated stock in a receiving area, a QC area or a blocked bin.
+     */
+    java.util.Map<String, UUID> pickableLocations(java.util.Collection<String> locationCodes);
+
     /** @return empty when no warehouse has this id; a purchase order receives into one (SCRUM-390) */
     Optional<WarehouseView> findWarehouse(UUID warehouseId);
 }

@@ -12,6 +12,7 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.logging.LogSafe;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.inventory.api.InventoryService;
+import com.stockflow.product.api.CategoryNavigation;
 import com.stockflow.product.api.ProductPublication;
 import com.stockflow.product.api.PublishedProductCard;
 
@@ -79,12 +80,15 @@ public class CatalogSearchService {
     private final ProductPublication products;
     private final InventoryService inventory;
     private final SearchProperties properties;
+    private final CategoryNavigation categories;
 
     public CatalogSearchService(
             CatalogSearchRepository repository,
             ProductPublication products,
             InventoryService inventory,
-            SearchProperties properties) {
+            SearchProperties properties,
+            CategoryNavigation categories) {
+        this.categories = categories;
         this.repository = repository;
         this.products = products;
         this.inventory = inventory;
@@ -100,7 +104,30 @@ public class CatalogSearchService {
      */
     @Transactional(readOnly = true)
     public PageResponse<CatalogCommerceService.Card> search(String q, String sort, int page, int size) {
+        return search(q, sort, page, size, null);
+    }
+
+    /**
+     * {@link #search(String, String, int, int)} inside one category of the navigation and every category under it
+     * (SCRUM-171), decided in the database query itself, so the page and the total are those of the category.
+     *
+     * @param category a category slug; null or blank for the whole catalogue
+     * @throws BusinessException {@code CATEGORY_NOT_FOUND} for a slug that is unknown, or whose category or an
+     *                           ancestor is inactive — the navigation does not show it either
+     */
+    @Transactional(readOnly = true)
+    public PageResponse<CatalogCommerceService.Card> search(String q, String sort, int page, int size,
+                                                            String category) {
         var paging = Pages.of(page, size);
+        Set<java.util.UUID> only = null;
+        if (category != null && !category.isBlank()) {
+            Set<java.util.UUID> subtree = categories.visibleSubtree(category).orElseThrow(() ->
+                    new BusinessException(ErrorCode.CATEGORY_NOT_FOUND, "No category " + category.strip()));
+            only = categories.productsIn(subtree);
+            if (only.isEmpty()) {
+                return PageResponse.empty(page, size);
+            }
+        }
         Sort requested = Sort.parse(sort);
         SearchQuery query = SearchQueryNormalizer.normalize(q);
         boolean hasText = q != null && !q.isBlank();
@@ -114,13 +141,15 @@ public class CatalogSearchService {
         Weights weights = weights();
         List<Candidate> found;
         if (!hasText) {
-            found = repository.listAll(
-                    effective == Sort.TITLE ? CatalogSearchRepository.Order.TITLE : CatalogSearchRepository.Order.NEWEST,
-                    window);
+            var order = effective == Sort.TITLE ? CatalogSearchRepository.Order.TITLE
+                    : CatalogSearchRepository.Order.NEWEST;
+            found = only == null ? repository.listAll(order, window) : repository.listAll(order, window, only);
         } else {
-            found = repository.match(query, weights, window);
+            found = only == null ? repository.match(query, weights, window)
+                    : repository.match(query, weights, window, only);
             if (found.isEmpty()) {
-                found = repository.similar(query, weights, properties.fallbackSimilarity(), window);
+                found = only == null ? repository.similar(query, weights, properties.fallbackSimilarity(), window)
+                        : repository.similar(query, weights, properties.fallbackSimilarity(), window, only);
             }
         }
         List<Candidate> visible = liveVisible(found);

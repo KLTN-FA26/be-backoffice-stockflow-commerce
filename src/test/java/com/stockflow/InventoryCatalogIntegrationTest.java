@@ -470,13 +470,18 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
                 policy(2, RemovalStrategy.FIFO, TrackingMode.NONE, false));
         var newer = stock(f, 5, Instant.parse("2026-09-02T00:00:00Z"), null, null);
         var older = stock(f, 5, Instant.parse("2026-09-01T00:00:00Z"), null, null);
-        orders.placeOrder(
+        var placed = orders.placeOrder(
                 new PlaceOrderCommand(
                         UUID.randomUUID(),
                         DemoData.CUSTOMER_ID,
                         List.of(
                                 new PlaceOrderCommand.Line(
                                         new Sku(f.sku()), 2, Money.vnd(100), null))));
+        // SCRUM-152: checkout holds the SKU only; no layer is chosen until the order is allocated to a warehouse.
+        assertThat(jdbc.queryForObject("select coalesce(sum(reserved),0) from inventory.stock_item where id in (?,?)",
+                Integer.class, older, newer)).isZero();
+        transactions.executeWithoutResult(s -> inventory.allocate(
+                new com.stockflow.inventory.api.AllocateStockCommand(placed.orderId(), "HCM")));
         assertThat(
                         jdbc.queryForObject(
                                 "select reserved from inventory.stock_item where id=?",

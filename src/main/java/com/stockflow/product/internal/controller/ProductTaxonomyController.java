@@ -11,6 +11,7 @@ import com.stockflow.product.internal.controller.dto.CreateBrandRequest;
 import com.stockflow.product.internal.controller.dto.CreateCategoryRequest;
 import com.stockflow.product.internal.controller.dto.UpdateBrandRequest;
 import com.stockflow.product.internal.controller.dto.UpdateCategoryRequest;
+import com.stockflow.product.internal.controller.dto.MoveCategoryRequest;
 import com.stockflow.product.internal.service.ProductTaxonomyService;
 import com.stockflow.product.internal.service.ProductTaxonomyService.CategoryDetails;
 import io.swagger.v3.oas.annotations.Operation;
@@ -116,5 +117,13 @@ class ProductTaxonomyController {
         return ApiResponse.ok(mapper.toResponse(taxonomy.updateCategory(categoryId,
                 new CategoryDetails(r.name(), Objects.requireNonNullElse(r.sortOrder(), 0), r.imageUrl(),
                         r.seoTitle(), r.seoDescription(), r.active()))));
+    }
+
+    @PutMapping("/categories/{categoryId}/parent")
+    @Operation(summary = "Move a category and its descendants under a different parent")
+    @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.UPDATE)
+    public ApiResponse<CategoryResponse> moveCategory(@PathVariable UUID categoryId,
+                                                       @Valid @RequestBody MoveCategoryRequest request) {
+        return ApiResponse.ok(mapper.toResponse(taxonomy.moveCategory(categoryId, request.parentId())));
     }
 }

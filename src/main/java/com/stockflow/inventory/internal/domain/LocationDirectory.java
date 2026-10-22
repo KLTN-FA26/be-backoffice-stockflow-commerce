@@ -23,4 +23,13 @@ public interface LocationDirectory {
 
     /** Whether the location is a PACKING area: where finished custom goods wait for their package. */
     boolean isPackingArea(LocationId location);
+
+    /**
+     * The locations among {@code locations} a picker may take stock from now (pickable and usable), each with its
+     * warehouse id. Allocation chooses bins from these only (SCRUM-152, module 06 BR-12).
+     */
+    java.util.Map<String, java.util.UUID> pickable(java.util.Collection<String> locations);
+
+    /** The warehouse a location belongs to; empty for an unknown code. */
+    java.util.Optional<java.util.UUID> warehouseOf(LocationId location);
 }

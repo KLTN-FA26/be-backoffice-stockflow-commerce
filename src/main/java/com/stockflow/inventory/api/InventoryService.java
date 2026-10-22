@@ -23,9 +23,9 @@ import java.util.UUID;
 public interface InventoryService {
 
     /**
-     * Available to promise for one SKU, summed over every location holding sellable stock:
-     * {@code ATP = available − reserved}. Allocated units are not subtracted a second time,
-     * because stock leaves the {@code available} bucket the moment it is allocated.
+     * Available to promise for one SKU (docs 01): sellable units on hand — AVAILABLE, not past expiry — minus
+     * every hold on them (allocations, production holds, checkout holds made before SCRUM-152) minus the live
+     * SKU reservations, which sit on no stock item. Never negative.
      */
     int availableToPromise(Sku sku);
 
@@ -54,7 +54,9 @@ public interface InventoryService {
 
     /**
      * ATP for one SKU inside one warehouse (SCRUM-157: the storefront may promise per warehouse
-     * or system-wide, open question C3). Zero for a warehouse holding none of it.
+     * or system-wide, open question C3). Zero for a warehouse holding none of it. A SKU reservation names no
+     * warehouse, so this is the warehouse's unheld sellable stock capped at the system-wide figure: never more
+     * than {@link #availableToPromise(Sku)}.
      */
     int availableToPromise(Sku sku, String warehouseCode);
 
@@ -69,7 +71,8 @@ public interface InventoryService {
     List<StockLevel> levelsOf(Sku sku);
 
     /**
-     * Reserve stock for an order line.
+     * Reserve stock for an order line: a SKU reservation (docs 01 "Reserved"), on no location and no lot, for the
+     * checkout deadline. Bins and lots are chosen when the order is released ({@link #allocate}).
      *
      * <p>Called synchronously from {@code order} during checkout, <b>inside the caller's
      * transaction</b>. That is the whole point of the monolith: if the order row fails to persist,
@@ -79,9 +82,34 @@ public interface InventoryService {
      * @throws com.stockflow.common.error.BusinessException when ATP is below the requested quantity
      */
     ReserveStockResult reserve(ReserveStockCommand command);
-    /** Acquire policy locks and all stock rows in global order before reserving any basket line.
-     * Must join the same transaction as every subsequent reserve call. */
+    /** Take every basket SKU's advisory lock, in SKU order, before reserving any line: two checkouts sharing two
+     * SKUs then wait for each other instead of deadlocking. Must join the same transaction as the reserve calls. */
     void prepareReservation(java.util.Set<Sku> skus);
+
+    /**
+     * HELD → ALLOCATED (docs 03 §6, 04c F-FUL step 02): the order was released to a warehouse; each live SKU
+     * reservation of the order becomes allocations on pickable bins of that warehouse, chosen by BR-STK-006 —
+     * earliest expiry first, and where there is none the earliest real receipt time (FIFO) — and never on expired,
+     * blocked or non-pickable stock. Allocations are pinned (X-RESV: they do not expire). All or nothing: when the
+     * warehouse cannot cover every line, nothing is allocated. Idempotent: an order with no SKU reservation left
+     * gets an empty result. Joins the caller's transaction; locks the SKUs, then the reservations, then the stock
+     * rows in id order.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code INSUFFICIENT_STOCK} naming the SKU and warehouse;
+     *         {@code RESERVATION_NOT_ACTIVE}
+     */
+    AllocateStockResult allocate(AllocateStockCommand command);
+
+    /**
+     * X-SHORT reallocation: the allocation came up short at its bin. It is released, and the same quantity is
+     * allocated again in the same warehouse, FEFO, from any pickable bin but that one. Joins the caller's
+     * transaction. Idempotent on the command's request id.
+     *
+     * @return the new allocations, in pick order
+     * @throws com.stockflow.common.error.BusinessException {@code RESERVATION_NOT_FOUND} (unknown, or another
+     *         order's), {@code RESERVATION_NOT_ACTIVE}, {@code INSUFFICIENT_STOCK} (nothing changes)
+     */
+    List<StockReservation> reallocate(ReallocateStockCommand command);
 
     /** Release a reservation — order cancelled, payment failed, or the hold expired. */
     void release(UUID reservationId, String reason);
@@ -223,7 +251,10 @@ public interface InventoryService {
     /** See {@link ConsumeHeldStockCommand}. Joins the caller's transaction. */
     StockMove consumeHeld(ConsumeHeldStockCommand command);
 
-    /** The holds among {@code reservationIds} that are still live, with what they hold now and where. */
+    /**
+     * The holds among {@code reservationIds} that are still live, with what they hold now and where. Holds on
+     * stock items only: a SKU reservation holds no particular goods yet.
+     */
     List<StockReservation> liveHolds(Collection<UUID> reservationIds);
 
     /**

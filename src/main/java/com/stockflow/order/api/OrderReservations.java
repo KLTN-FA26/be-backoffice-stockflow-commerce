@@ -18,4 +18,13 @@ public interface OrderReservations {
      * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND} for an unknown order or line
      */
     void addProductionHolds(UUID orderId, UUID orderLineId, Collection<UUID> reservationIds);
+
+    /**
+     * A hold of the order was allocated again elsewhere (X-SHORT, SCRUM-152): the line holding
+     * {@code reservationId} holds {@code replacements} instead, which a cancellation then releases. In the caller's
+     * transaction, under the order's lock. Idempotent: a hold no longer on the order changes nothing.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND} for an unknown order
+     */
+    void replaceHold(UUID orderId, UUID reservationId, Collection<UUID> replacements);
 }

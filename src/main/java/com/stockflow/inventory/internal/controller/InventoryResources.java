@@ -23,6 +23,8 @@ public final class InventoryResources {
     public static final String STOCK_ADJUSTMENTS = "inventory-stock-adjustments";
     public static final String TRANSFER_ORDERS = "inventory-transfer-orders";
     public static final String ALERTS = "inventory-alerts";
+    /** Seeded by V20260903000100; read by the recounts a short pick opens (X-SHORT). */
+    public static final String CYCLE_COUNTS = "inventory-cycle-counts";
     public static final String INVENTORY_ITEMS = "inventory-inventory-items";
 
     private InventoryResources() {
