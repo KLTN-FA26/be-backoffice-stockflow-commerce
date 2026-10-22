@@ -23,12 +23,15 @@ public interface OrderReleases {
 
     /**
      * As {@link #release(UUID, UUID, UUID)}, choosing how the order travels on the way (LP-1, lead's decision
-     * 2026-10-22): null keeps the order's mode (PARCEL unless changed before). A change is recorded in the order's
-     * history; whether the caller may make it is the controller's to check.
+     * 2026-10-22): null keeps the order's mode (PARCEL unless changed before). A mode other than the order's - read
+     * under the order's row lock, so a change racing the release is seen - needs
+     * {@code sales-order-delivery-modes:UPDATE} as well; the change is recorded in the order's history.
      *
+     * @throws com.stockflow.common.security.PermissionDeniedException a mode other than the order's without that
+     *         permission: nothing is released
      * @throws com.stockflow.common.error.BusinessException also {@code DELIVERY_MODE_FTL_NO_COD} (LP-2): nothing is
      *         released then
      */
     OrderSummary release(UUID orderId, UUID warehouseId, com.stockflow.order.api.DeliveryMode deliveryMode,
-                         UUID releasedBy);
+                         com.stockflow.common.security.CurrentUser actor);
 }

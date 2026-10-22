@@ -71,15 +71,29 @@ class OrderReleaseService implements OrderReleases {
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "order", resourceId = "#orderId")
     public OrderSummary release(UUID orderId, UUID warehouseId, UUID releasedBy) {
-        return release(orderId, warehouseId, null, releasedBy);
+        return releaseLocked(orderId, warehouseId, null, null, releasedBy);
     }
 
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "order", resourceId = "#orderId")
     public OrderSummary release(UUID orderId, UUID warehouseId, com.stockflow.order.api.DeliveryMode deliveryMode,
-                                UUID releasedBy) {
+                                com.stockflow.common.security.CurrentUser actor) {
+        java.util.Objects.requireNonNull(actor, "actor");
+        return releaseLocked(orderId, warehouseId, deliveryMode, actor, actor.userId());
+    }
+
+    /** @param actor whose permissions a delivery mode is checked against; only read when {@code deliveryMode} is set */
+    private OrderSummary releaseLocked(UUID orderId, UUID warehouseId,
+                                       com.stockflow.order.api.DeliveryMode deliveryMode,
+                                       com.stockflow.common.security.CurrentUser actor, UUID releasedBy) {
         Order order = repository.findByIdForUpdate(new OrderId(orderId))
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + orderId));
+        if (deliveryMode != null && deliveryMode != order.deliveryMode()) {
+            // LP-1 (review of #157): releasing does not by itself let the caller choose the mode. Decided here, under
+            // the order's row lock, so a change made meanwhile by someone allowed to is never undone by someone who
+            // is not; keeping the order's own mode needs nothing more.
+            actor.require(OrderPermissions.DELIVERY_MODES, com.stockflow.common.security.Action.UPDATE);
+        }
         String warehouseCode = warehouses.codeOf(warehouseId).orElseThrow(() ->
                 new BusinessException(ErrorCode.WAREHOUSE_NOT_FOUND, "No warehouse " + warehouseId));
 

@@ -97,6 +97,7 @@ class OrderDeliveryModeIntegrationTest {
     @Autowired CustomerService customers;
     @Autowired ReceivableService receivables;
     @Autowired CreditHoldService creditHolds;
+    @Autowired com.stockflow.order.internal.service.OrderReleases releases;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
@@ -381,12 +382,9 @@ class OrderDeliveryModeIntegrationTest {
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.deliveryMode").value("FULL_TRUCKLOAD"));
     }
 
-    @Test
-    @DisplayName("the other way round: a full-truckload order on credit hold switched to a deposit its customer pays on "
-            + "delivery is refused (DELIVERY_MODE_FTL_NO_COD) and stays on hold, on credit terms")
-    void codRefusedOnFullTruckload() throws Exception {
+    /** A CREDIT order over its new customer's limit - ON_HOLD for credit - whose deposit default is ON_DELIVERY. */
+    private OrderSummary creditHeldOrderOfCodCustomer(UUID accountant) {
         UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
-        UUID accountant = tx.execute(s -> ReferenceRows.user(entityManager));
         customers.saveCreditTerms(new SaveCreditTermsCommand(customer, true, true, true, CommercialTerm.CREDIT,
                 new BigDecimal("30"), new BigDecimal("1000000"), 30, "test terms", accountant, null,
                 DepositBalancePolicy.ON_DELIVERY));
@@ -394,22 +392,76 @@ class OrderDeliveryModeIntegrationTest {
                 List.of(new PlaceOrderCommand.Line(SOFA, 1, Money.vnd(5_000_000), null)), PaymentTerm.CREDIT, null));
         placed.add(order.orderId());
         assertThat(order.status()).as("over its credit limit").isEqualTo(OrderStatus.ON_HOLD);
-        oc(body(put(ORDERS + "/" + order.orderId() + "/delivery-mode"), mode("FULL_TRUCKLOAD", null)))
+        return order;
+    }
+
+    @Test
+    @DisplayName("the other way round (review of #157): a full-truckload order on credit hold switched to a deposit takes "
+            + "BEFORE_DELIVERY, not its customer's ON_DELIVERY default, and the decision's note says why; a parcel order "
+            + "keeps the default")
+    void creditRefusalOnFullTruckloadPaysBeforeDelivery() throws Exception {
+        UUID accountant = tx.execute(s -> ReferenceRows.user(entityManager));
+        OrderSummary ftl = creditHeldOrderOfCodCustomer(accountant);
+        oc(body(put(ORDERS + "/" + ftl.orderId() + "/delivery-mode"), mode("FULL_TRUCKLOAD", null)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.deliveryMode").value("FULL_TRUCKLOAD"));
 
-        assertThat(codeOf(catchThrowable(() -> creditHolds.refuse(order.orderId(),
-                CreditHoldService.RefusalAction.SWITCH_TO_DEPOSIT, null, "trả cọc", accountant))))
-                .isEqualTo(ErrorCode.DELIVERY_MODE_FTL_NO_COD);
-        OrderSummary after = orders.findById(order.orderId()).orElseThrow();
-        assertThat(after.status()).isEqualTo(OrderStatus.ON_HOLD);
-        assertThat(after.paymentTerm()).isEqualTo(PaymentTerm.CREDIT);
-
-        // Back to parcels, the same switch goes through.
-        oc(body(put(ORDERS + "/" + order.orderId() + "/delivery-mode"), mode("PARCEL", null))).andExpect(status().isOk());
-        OrderSummary switched = creditHolds.refuse(order.orderId(), CreditHoldService.RefusalAction.SWITCH_TO_DEPOSIT,
-                null, "trả cọc", accountant);
+        OrderSummary switched = creditHolds.refuse(ftl.orderId(), CreditHoldService.RefusalAction.SWITCH_TO_DEPOSIT,
+                null, "khách trả cọc", accountant);
         assertThat(switched.status()).isEqualTo(OrderStatus.PENDING_PAYMENT);
-        assertThat(switched.payment().balancePolicy()).isEqualTo(com.stockflow.order.api.BalancePolicy.ON_DELIVERY);
+        assertThat(switched.paymentTerm()).isEqualTo(PaymentTerm.DEPOSIT);
+        assertThat(switched.payment().balancePolicy()).isEqualTo(com.stockflow.order.api.BalancePolicy.BEFORE_DELIVERY);
+        assertThat(switched.lifecycle().deliveryMode()).isEqualTo(com.stockflow.order.api.DeliveryMode.FULL_TRUCKLOAD);
+        assertThat(jdbc.queryForObject("""
+                SELECT note FROM ordering.order_credit_check WHERE order_id = ? AND outcome = 'REJECTED'
+                ORDER BY checked_at DESC, created_at DESC LIMIT 1""", String.class, ftl.orderId()))
+                .startsWith("khách trả cọc").contains("balance before delivery").contains("LP-2");
+
+        OrderSummary parcel = creditHeldOrderOfCodCustomer(accountant);
+        OrderSummary parcelSwitched = creditHolds.refuse(parcel.orderId(),
+                CreditHoldService.RefusalAction.SWITCH_TO_DEPOSIT, null, "khách trả cọc", accountant);
+        assertThat(parcelSwitched.payment().balancePolicy())
+                .as("the customer's default stands on a parcel order")
+                .isEqualTo(com.stockflow.order.api.BalancePolicy.ON_DELIVERY);
+        assertThat(jdbc.queryForObject("""
+                SELECT note FROM ordering.order_credit_check WHERE order_id = ? AND outcome = 'REJECTED'
+                ORDER BY checked_at DESC, created_at DESC LIMIT 1""", String.class, parcel.orderId()))
+                .isEqualTo("khách trả cọc");
+        // ON_DELIVERY chosen explicitly for a full-truckload order stays 409 (OrderDeliveryModeTest.codRefusedForFtl).
+    }
+
+    @Test
+    @DisplayName("release with a mode (review of #157): decided under the order's lock against the mode it has then - "
+            + "an approver without sales-order-delivery-modes:UPDATE may keep the mode a coordinator just chose but "
+            + "not undo it (403, nothing released); the coordinator may")
+    void releaseModeDecidedUnderTheLock() throws Exception {
+        OrderSummary order = confirmedOrder(1);
+        UUID id = order.orderId();
+        // A coordinator chose a full truckload a moment before the release.
+        oc(body(put(ORDERS + "/" + id + "/delivery-mode"), mode("FULL_TRUCKLOAD", null))).andExpect(status().isOk());
+        com.stockflow.common.security.CurrentUser approver = new com.stockflow.common.security.CurrentUser(sales,
+                "approver", java.util.Set.of(), java.util.Set.of(com.stockflow.common.security.PermissionCode.of(
+                        "sales-orders", com.stockflow.common.security.Action.APPROVE)), DataScope.ALL,
+                java.util.Set.of());
+
+        Throwable refused = catchThrowable(() -> releases.release(id, HCM,
+                com.stockflow.order.api.DeliveryMode.PARCEL, approver));
+        assertThat(refused).isInstanceOf(com.stockflow.common.security.PermissionDeniedException.class);
+        OrderSummary after = orders.findById(id).orElseThrow();
+        assertThat(after.status()).as("nothing released").isEqualTo(OrderStatus.CONFIRMED);
+        assertThat(after.lifecycle().deliveryMode()).isEqualTo(com.stockflow.order.api.DeliveryMode.FULL_TRUCKLOAD);
+
+        OrderSummary released = releases.release(id, HCM, com.stockflow.order.api.DeliveryMode.FULL_TRUCKLOAD,
+                approver);
+        assertThat(released.status()).as("keeping the order's mode needs nothing more")
+                .isEqualTo(OrderStatus.READY_TO_FULFILL);
+        assertThat(released.lifecycle().deliveryMode()).isEqualTo(com.stockflow.order.api.DeliveryMode.FULL_TRUCKLOAD);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.order_delivery_mode_change WHERE order_id = ?",
+                Integer.class, id)).as("only the coordinator's change").isEqualTo(1);
+
+        // Through HTTP: the coordinator holds both permissions and changes it with the release.
+        OrderSummary other = confirmedOrder(1);
+        oc(body(post(ORDERS + "/" + other.orderId() + "/release"), release("FULL_TRUCKLOAD"))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.deliveryMode").value("FULL_TRUCKLOAD"));
     }
 
     // ---- who may ---------------------------------------------------------------------------------

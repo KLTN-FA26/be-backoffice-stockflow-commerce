@@ -113,17 +113,9 @@ class OrderReleaseController {
     public ApiResponse<OrderResponse> release(@PathVariable UUID orderId,
                                               @Valid @RequestBody ReleaseOrderRequest request,
                                               @AuthenticatedUser CurrentUser user) {
-        if (request.deliveryMode() != null && !user.can(OrderResources.DELIVERY_MODES, Action.UPDATE)) {
-            // LP-1: releasing does not by itself let the caller choose the mode; keeping the order's own is fine.
-            com.stockflow.order.api.DeliveryMode current = orders.findById(orderId)
-                    .map(order -> order.lifecycle() == null ? com.stockflow.order.api.DeliveryMode.PARCEL
-                            : order.lifecycle().deliveryMode())
-                    .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + orderId));
-            if (current != request.deliveryMode()) {
-                user.require(OrderResources.DELIVERY_MODES, Action.UPDATE);
-            }
-        }
+        // LP-1: a mode other than the order's also needs sales-order-delivery-modes:UPDATE - decided by the release
+        // under the order's row lock (review of #157), so a racing change is never undone by a caller without it.
         return ApiResponse.ok(OrderWebMapper.toResponse(releases.release(orderId, request.warehouseId(),
-                request.deliveryMode(), user.userId())));
+                request.deliveryMode(), user)));
     }
 }

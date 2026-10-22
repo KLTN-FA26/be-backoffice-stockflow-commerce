@@ -38,7 +38,8 @@ public final class OrderResources {
      * since, until packing starts. Its own resource: {@code sales-orders:APPROVE} releases orders, and a mode other
      * than the order's at release needs this as well. Seeded by V20261022000800 for ORDER_COORDINATOR and SYSTEM_ADMIN.
      */
-    public static final String DELIVERY_MODES = "sales-order-delivery-modes";
+    public static final String DELIVERY_MODES =
+            com.stockflow.order.internal.service.OrderPermissions.DELIVERY_MODES;
 
     private OrderResources() {
     }
