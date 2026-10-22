@@ -271,6 +271,8 @@ class PackingService implements Packing {
         UUID groupId = Identifiers.newId();
         List<PackingSession.Parcel> kit = session.openKit(groupId, ids, request.orderLineId(), request.partCount(),
                 packageType(request.packageType()), clock.instant());
+        // LP-1: a kit opens packages as openPackage does - packing started, the delivery mode is locked from now on.
+        orders.recordPackingStarted(ctx.order().orderId());
         store.save(session, ctx.pack());
         Map<UUID, String> skus = skus(session);
         log.info("Order {}: kit {} of {} parts opened for line {}", ctx.pick().getOrderNumber(), groupId, kit.size(),

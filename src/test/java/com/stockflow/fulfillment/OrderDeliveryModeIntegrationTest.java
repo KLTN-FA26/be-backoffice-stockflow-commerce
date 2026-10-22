@@ -488,4 +488,26 @@ class OrderDeliveryModeIntegrationTest {
         assertThat(orders.findById(order.orderId()).orElseThrow().lifecycle().deliveryMode())
                 .isEqualTo(com.stockflow.order.api.DeliveryMode.FULL_TRUCKLOAD);
     }
+
+    @Test
+    @DisplayName("LP-1 with a kit (review of #155): a kit opened as the first package starts packing - the delivery mode "
+            + "is locked (409 DELIVERY_MODE_LOCKED)")
+    void aKitOpenedFirstLocksTheDeliveryMode() throws Exception {
+        OrderSummary order = confirmedOrder(1);
+        UUID id = order.orderId();
+        oc(body(post(ORDERS + "/" + id + "/release"), release("FULL_TRUCKLOAD"))).andExpect(status().isOk());
+        UUID task = pickedTask(id);
+        packer(post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());
+        oc(body(put(ORDERS + "/" + id + "/delivery-mode"), mode("FULL_TRUCKLOAD", null))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.deliveryModeLocked").value(false));
+        UUID line = order.lines().getFirst().lineId();
+        packer(body(post(BASE + "/tasks/" + task + "/package-kits"), "{\"orderLineId\":\"" + line + "\"}"))
+                .andExpect(status().isCreated()).andExpect(jsonPath("$.data.packages.length()").value(2));
+        assertThat(jdbc.queryForObject("SELECT packing_started_at IS NOT NULL FROM ordering.customer_order WHERE id = ?",
+                Boolean.class, id)).isTrue();
+        oc(body(put(ORDERS + "/" + id + "/delivery-mode"), mode("PARCEL", null))).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("DELIVERY_MODE_LOCKED"));
+        oc(get(ORDERS + "/" + id)).andExpect(jsonPath("$.data.deliveryModeLocked").value(true))
+                .andExpect(jsonPath("$.data.deliveryMode").value("FULL_TRUCKLOAD"));
+    }
 }
