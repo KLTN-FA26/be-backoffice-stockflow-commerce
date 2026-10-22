@@ -94,7 +94,7 @@ class LotTraceSearchAdapter implements LotTraceSearch {
         MapSqlParameterSource params = new MapSqlParameterSource().addValue("lotId", lotId);
         String sql = """
                 SELECT m.order_id, max(m.order_number) AS order_number,
-                       sum(CASE WHEN m.movement_type = 'PICK' THEN m.quantity ELSE 0 END) AS picked,
+                       sum(CASE WHEN m.movement_type IN ('PICK', 'CONSUMPTION') THEN m.quantity ELSE 0 END) AS picked,
                        sum(CASE WHEN m.movement_type = 'PUT_BACK' THEN m.quantity ELSE 0 END) AS put_back,
                        min(m.occurred_at) AS first_at, max(m.occurred_at) AS last_at
                   FROM inventory.stock_movement m

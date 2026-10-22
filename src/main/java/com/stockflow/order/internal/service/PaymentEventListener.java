@@ -37,6 +37,13 @@ class PaymentEventListener {
 
     private final OrderServiceImpl orders;
 
+    /** A receivable's payment; the fee kind pays a fee a closure left owed (re-review of #150). */
+    private static final String FEE_RECEIVABLE_ALLOCATION = "FEE_RECEIVABLE_ALLOCATION";
+
+    private static boolean ofReceivable(String source) {
+        return "RECEIVABLE_ALLOCATION".equals(source) || FEE_RECEIVABLE_ALLOCATION.equals(source);
+    }
+
     PaymentEventListener(OrderServiceImpl orders) {
         this.orders = orders;
     }
@@ -47,7 +54,7 @@ class PaymentEventListener {
         // A receivable's payment pays what a delivery billed: the order keeps it apart, so what it still has to bill
         // (credit exposure, G3-2) is not lowered twice.
         orders.recordPayment(event.orderId(), event.paymentId(), event.amount(), event.currency(),
-                "RECEIVABLE_ALLOCATION".equals(event.source()));
+                ofReceivable(event.source()), FEE_RECEIVABLE_ALLOCATION.equals(event.source()));
         log.info("Order {}: payment {} captured {} {}",
                 event.orderId(), event.paymentId(), event.amount(), event.currency());
     }
@@ -59,7 +66,7 @@ class PaymentEventListener {
     @ApplicationModuleListener
     public void on(PaymentReversed event) {
         orders.reversePayment(event.orderId(), event.reversalId(), event.amount(), event.currency(),
-                "RECEIVABLE_ALLOCATION".equals(event.source()),
+                ofReceivable(event.source()), FEE_RECEIVABLE_ALLOCATION.equals(event.source()),
                 "allocation %s reversed (reversal %s)".formatted(event.allocationId(), event.reversalId()),
                 event.reversedBy(), event.reversedAt());
         log.info("Order {}: payment {} reversed, {} {} taken back", event.orderId(), event.allocationId(),

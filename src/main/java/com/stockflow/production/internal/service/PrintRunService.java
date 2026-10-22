@@ -125,7 +125,7 @@ class PrintRunService implements PrintRuns {
         }
         if (order.type() == ProductionOrder.Type.ORDER && salesOrderCancelled(order)) {
             throw new BusinessException(ErrorCode.INVALID_PRODUCTION_TRANSITION,
-                    "The order of production order %s is cancelled; stop the job instead".formatted(order.orderNumber()));
+                    "The order of production order %s is cancelled, or its line closed; stop the job instead".formatted(order.orderNumber()));
         }
         Instant now = now();
         int round = records.qcRoundsOf(order.id()).size() + 1;
@@ -271,8 +271,27 @@ class PrintRunService implements PrintRuns {
      * under their own name; a job with nothing issued yet is still cancelled at once.</p>
      */
     public void onOrderCancelled(UUID salesOrderId, String orderNumber, UUID cancelledBy) {
+        stopForOrder(salesOrderId, orderNumber, null, cancelledBy);
+    }
+
+    /**
+     * PACK-EARLY: staff closed print lines of an order whose stock already shipped ({@code OrderRemainderClosed}). Their
+     * production orders stop as for a cancelled order ({@link #onOrderCancelled}); the order's other lines go on.
+     */
+    public void onLinesClosed(UUID salesOrderId, String orderNumber, java.util.Set<UUID> lineIds, UUID closedBy) {
+        if (lineIds.isEmpty()) {
+            return;
+        }
+        stopForOrder(salesOrderId, orderNumber, lineIds, closedBy);
+    }
+
+    /** @param lineIds the lines whose jobs stop; null: every job of the order */
+    private void stopForOrder(UUID salesOrderId, String orderNumber, java.util.Set<UUID> lineIds, UUID cancelledBy) {
         for (UUID id : orders.idsOfSalesOrder(salesOrderId)) {
             ProductionOrder order = orders.findByIdForUpdate(id).orElseThrow();
+            if (lineIds != null && !lineIds.contains(order.salesOrderLineId())) {
+                continue;
+            }
             Instant now = now();
             ProductionOrder.Status effective = order.effectiveStatus();
             if (order.mode() == ProductionOrder.Mode.SUBCONTRACTED) {
@@ -350,8 +369,12 @@ class PrintRunService implements PrintRuns {
      * completion's stock locks follow.
      */
     private boolean salesOrderCancelled(ProductionOrder order) {
-        return salesOrders.lockedStatus(order.salesOrderId())
-                .map(status -> status == OrderStatus.CANCELLED).orElse(true);
+        if (order.salesOrderLineId() == null) {
+            return salesOrders.lockedStatus(order.salesOrderId())
+                    .map(status -> status == OrderStatus.CANCELLED).orElse(true);
+        }
+        // PACK-EARLY: the line closed out of an order whose stock shipped first is withdrawn just the same.
+        return salesOrders.lockedLineWithdrawn(order.salesOrderId(), order.salesOrderLineId());
     }
 
     private ProductionOrder lock(CurrentUser user, UUID productionOrderId) {

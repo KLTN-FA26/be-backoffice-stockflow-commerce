@@ -203,8 +203,10 @@ public class MoneyLedgerService {
                     "Order %s would be left short of its %s terms; agree to put it on hold".formatted(
                             order.orderNumber(), order.paymentTerm()));
         }
+        String source = original.paysOrder() ? OrderAllocator.ORDER_ALLOCATION : ReceivableService.ALLOCATION_SOURCE;
         if (original.receivableId() != null) {
             Receivable receivable = book.lockReceivable(original.receivableId()).orElseThrow();
+            source = ReceivableService.sourceOf(receivable);
             receivable.unallocate(original.amount(), LocalDate.ofInstant(clock.instant(), BUSINESS_ZONE));
             book.save(receivable);
         }
@@ -220,8 +222,7 @@ public class MoneyLedgerService {
         }
         CustomerTransfer saved = book.save(transfer);
         events.publishEvent(new PaymentReversed(order.orderId(), reversal.id(), original.id(), original.amount(),
-                transfer.currency(), original.paysOrder() ? OrderAllocator.ORDER_ALLOCATION
-                        : ReceivableService.ALLOCATION_SOURCE, command.by(), now));
+                transfer.currency(), source, command.by(), now));
         log.info("Allocation {} of transfer {} reversed: {} {} back from order {}", original.id(), transfer.id(),
                 original.amount(), transfer.currency(), order.orderNumber());
         return new AllocationResult(saved, reversal);
@@ -338,7 +339,7 @@ public class MoneyLedgerService {
                 receivable.id(), applied, now, by);
         events.publishEvent(new PaymentCaptured(receivable.orderId(), allocation.id(), applied, receivable.currency(),
                 transfer.channel() == TransferChannel.CARRIER_REMITTANCE ? PaymentMethod.COD
-                        : PaymentMethod.BANK_TRANSFER, ReceivableService.ALLOCATION_SOURCE));
+                        : PaymentMethod.BANK_TRANSFER, ReceivableService.sourceOf(receivable)));
         return allocation;
     }
 

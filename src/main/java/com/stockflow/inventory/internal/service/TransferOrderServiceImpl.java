@@ -63,6 +63,7 @@ class TransferOrderServiceImpl implements TransferOrders {
     private final InventoryControlService controls;
     private final InventoryPolicyRepository policies;
     private final com.stockflow.inventory.internal.domain.SkuReservationRepository skuReservations;
+    private final StockPackageContents cartons;
 
     TransferOrderServiceImpl(TransferOrderRepository transfers, TransferOrderSearch search,
                              WarehouseDirectory warehouses, StockItemRepository stockItems, StockMovementLog ledger,
@@ -70,8 +71,10 @@ class TransferOrderServiceImpl implements TransferOrders {
             InventoryControlService controls,
             InventoryPolicyRepository policies,
                              com.stockflow.inventory.internal.domain.SkuReservationRepository skuReservations,
+                             StockPackageContents cartons,
                              @Value("${stockflow.inventory.transfer.approval-threshold-units:100}") int approvalThreshold) {
         this.skuReservations = skuReservations;
+        this.cartons = cartons;
         this.transfers = transfers;
         this.search = search;
         this.warehouses = warehouses;
@@ -268,18 +271,23 @@ class TransferOrderServiceImpl implements TransferOrders {
                 .sorted(Comparator.comparing(id -> id.value().toString()))
                 .forEach(id -> locked.put(id, stockItems.findByIdForUpdate(id).orElseThrow(() ->
                         new IllegalStateException("Stock item %s vanished mid-dispatch".formatted(id)))));
+        // Already locked by lockReservationStock, ahead of the rows; read here so taking from one opens or empties it.
+        // Transfers do not move cartons yet (V20261020000100 "Not yet"): the units leave their carton and travel loose.
+        StockPackageContents.LockedCartons cartonsTaken = cartons.lockFor(locked.values());
         for (Take take : takes) {
             StockItem item = locked.get(take.stockItemId());
             if (!item.status().isReservable()) {
                 throw new InsufficientStockException(item.sku().code(), take.quantity().value(), 0);
             }
+            cartonsTaken.tookFrom(item);
             item.moveOut(take.quantity());
             ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.TRANSFER_OUT,
                     item.sku(), item.lotNumber(), item.location(), null, take.quantity().value(), StockStatus.AVAILABLE,
                     StockMovement.ReferenceType.TRANSFER_ORDER_LINE, take.line().id(),
-                    "Transfer " + order.number(), userId, now).ofLot(item.lotId()));
+                    "Transfer " + order.number(), userId, now).ofLot(item.lotId()).leaving(item.stockPackageId()));
         }
         locked.values().forEach(stockItems::save);
+        cartons.settle(cartonsTaken, now);
         TransferOrder saved = transfers.save(order);
         log.info("Dispatched transfer {}: {} unit(s) from {} stock row(s)", order.number(),
                 takes.stream().mapToInt(t -> t.quantity().value()).sum(), locked.size());

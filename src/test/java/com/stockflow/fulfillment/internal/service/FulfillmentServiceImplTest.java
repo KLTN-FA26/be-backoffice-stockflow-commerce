@@ -119,10 +119,13 @@ class FulfillmentServiceImplTest {
     }
 
     @Test
-    void onlyQcOrAManagerReverifiesAndOnlyWarehouseStaffPack() {
+    void onlyAManagerReverifiesAndOnlyWarehouseStaffPack() {
         var pick = pickedTask(UUID.randomUUID());
         assertThatThrownBy(() -> service.reverifyDesignIntegrity(pick.getId(), "note",
                 user(UUID.randomUUID(), Role.WAREHOUSE_STAFF))).isInstanceOf(BusinessException.class);
+        // QC-REVERIFY-1022: QC may see a held task but not release the hold.
+        assertThatThrownBy(() -> service.reverifyDesignIntegrity(pick.getId(), "note",
+                user(UUID.randomUUID(), Role.QC_STAFF))).isInstanceOf(BusinessException.class);
         assertThatThrownBy(() -> service.completePacking(pick.getId(), user(UUID.randomUUID(), Role.QC_STAFF)))
                 .isInstanceOf(BusinessException.class);
         verify(packing, never()).reverify(any(), any(), any());
@@ -180,7 +183,7 @@ class FulfillmentServiceImplTest {
     }
 
     private CurrentUser staffOf(UUID... warehouseIds) {
-        return new CurrentUser(UUID.randomUUID(), "packer", Set.of(Role.WAREHOUSE_STAFF), Set.of(),
+        return new CurrentUser(UUID.randomUUID(), "packer", Set.of(Role.WAREHOUSE_STAFF), seeded(Role.WAREHOUSE_STAFF),
                 DataScope.WAREHOUSE, Set.of(), Set.of(warehouseIds));
     }
 
@@ -244,12 +247,12 @@ class FulfillmentServiceImplTest {
     }
 
     private CurrentUser coordinator() {
-        return new CurrentUser(UUID.randomUUID(), "oc", Set.of(Role.ORDER_COORDINATOR), Set.of(), DataScope.ALL,
+        return new CurrentUser(UUID.randomUUID(), "oc", Set.of(Role.ORDER_COORDINATOR), seeded(Role.ORDER_COORDINATOR), DataScope.ALL,
                 Set.of(), Set.of());
     }
 
     private CurrentUser managerOf(UUID... warehouseIds) {
-        return new CurrentUser(UUID.randomUUID(), "manager", Set.of(Role.WAREHOUSE_MANAGER), Set.of(),
+        return new CurrentUser(UUID.randomUUID(), "manager", Set.of(Role.WAREHOUSE_MANAGER), seeded(Role.WAREHOUSE_MANAGER),
                 DataScope.WAREHOUSE, Set.of(), Set.of(warehouseIds));
     }
 
@@ -436,7 +439,7 @@ class FulfillmentServiceImplTest {
 
     @Test
     void aCustomerStyleCallerWithNoWarehouseRoleCannotListTasks() {
-        var nobody = new CurrentUser(UUID.randomUUID(), "x", Set.of(Role.SALES_STAFF), Set.of(), DataScope.ALL, Set.of());
+        var nobody = new CurrentUser(UUID.randomUUID(), "x", Set.of(Role.SALES_STAFF), seeded(Role.SALES_STAFF), DataScope.ALL, Set.of());
 
         assertThat(refusal(() -> service.listTasks(nobody, new FulfillmentTaskQuery(null, null, null, 0, 20))).errorCode())
                 .isEqualTo(ErrorCode.FORBIDDEN);
@@ -586,6 +589,38 @@ class FulfillmentServiceImplTest {
     }
 
     private CurrentUser user(UUID id, Role role) {
-        return new CurrentUser(id, role.name().toLowerCase(), Set.of(role), Set.of(), DataScope.ALL, Set.of());
+        return new CurrentUser(id, role.name().toLowerCase(), Set.of(role), seeded(role), DataScope.ALL, Set.of());
+    }
+
+    /**
+     * The fulfillment permissions a service checks, as V20261022000200 seeds them for the role (the endpoint guards are
+     * PermissionMatrixTest's): the service asks for permissions, never for role names.
+     */
+    private static Set<com.stockflow.common.security.PermissionCode> seeded(Role role) {
+        java.util.function.BiFunction<String, com.stockflow.common.security.Action,
+                com.stockflow.common.security.PermissionCode> code = com.stockflow.common.security.PermissionCode::of;
+        var read = com.stockflow.common.security.Action.READ;
+        var create = com.stockflow.common.security.Action.CREATE;
+        var update = com.stockflow.common.security.Action.UPDATE;
+        var approve = com.stockflow.common.security.Action.APPROVE;
+        return switch (role) {
+            case WAREHOUSE_STAFF -> Set.of(code.apply(FulfillmentPermissions.PICK_LISTS, read),
+                    code.apply(FulfillmentPermissions.PICKING, update), code.apply(FulfillmentPermissions.PACKING, update));
+            case WAREHOUSE_MANAGER -> Set.of(code.apply(FulfillmentPermissions.PICK_LISTS, read),
+                    code.apply(FulfillmentPermissions.TASK_ASSIGNMENT, create),
+                    code.apply(FulfillmentPermissions.TASK_ASSIGNMENT, update),
+                    code.apply(FulfillmentPermissions.TASK_OVERSIGHT, read),
+                    code.apply(FulfillmentPermissions.PICKING, update), code.apply(FulfillmentPermissions.PACKING, update),
+                    code.apply(FulfillmentPermissions.PACKING, approve),
+                    code.apply(FulfillmentPermissions.DESIGN_REVERIFICATION, read),
+                    code.apply(FulfillmentPermissions.DESIGN_REVERIFICATION, update));
+            case ORDER_COORDINATOR -> Set.of(code.apply(FulfillmentPermissions.PICK_LISTS, read),
+                    code.apply(FulfillmentPermissions.TASK_ASSIGNMENT, create),
+                    code.apply(FulfillmentPermissions.TASK_ASSIGNMENT, update),
+                    code.apply(FulfillmentPermissions.TASK_OVERSIGHT, read));
+            case QC_STAFF -> Set.of(code.apply(FulfillmentPermissions.PICK_LISTS, read),
+                    code.apply(FulfillmentPermissions.DESIGN_REVERIFICATION, read));
+            default -> Set.of();
+        };
     }
 }

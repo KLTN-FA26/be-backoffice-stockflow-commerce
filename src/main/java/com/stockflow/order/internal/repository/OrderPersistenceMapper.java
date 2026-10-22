@@ -68,6 +68,11 @@ final class OrderPersistenceMapper {
                 entity.getCancellationFeeDetail());
         order.restoreFulfilmentFacts(entity.getPrintingStartedAt(), entity.getPackedAt());
         order.restoreBalance(entity.getBalancePolicy(), entity.getCodAmount());
+        order.restorePartialShipment(entity.isAllowPartialShipment(), entity.isAwaitingProduction());
+        order.restoreRemainderFee(entity.getRemainderFeeAmount(), entity.getRemainderFeeRetainedAmount(),
+                entity.getRemainderFeePaidAmount());
+        order.restoreFulfilmentStarted(entity.getFulfilmentStartedAt());
+        order.restoreDeliveryMode(entity.getDeliveryMode(), entity.getPackingStartedAt());
         order.restoreLifecycle(entity.getHoldReason(), entity.getStatusBeforeHold(), entity.getHoldNote(),
                 entity.getShippedAt(), entity.getDeliveredAt(), entity.getDeliveryFailureReason(),
                 entity.getCompletedAt(), entity.getRefundedAt(), entity.getClosedAt(), entity.getBilledAmount(),
@@ -109,6 +114,11 @@ final class OrderPersistenceMapper {
                 order.cancellationFeeDetail());
         entity.applyFulfilmentFacts(order.printingStartedAt(), order.packedAt());
         entity.applyBalance(order.balancePolicy(), order.codAmount());
+        entity.applyPartialShipment(order.allowPartialShipment(), order.awaitingProduction());
+        entity.applyRemainderFee(order.remainderFeeAmount(), order.remainderFeeRetainedAmount(),
+                order.remainderFeePaidAmount());
+        entity.applyFulfilmentStarted(order.fulfilmentStartedAt());
+        entity.applyDeliveryMode(order.deliveryMode(), order.packingStartedAt());
         entity.applyLifecycle(order.holdReason(), order.statusBeforeHold(), order.holdNote(), order.shippedAt(),
                 order.deliveredAt(), order.deliveryFailureReason(), order.completedAt(), order.refundedAt(),
                 order.closedAt(), order.billedAmount(), order.receivablePaidAmount(), order.remainderRefundAmount());
@@ -162,7 +172,21 @@ final class OrderPersistenceMapper {
                 new OrderSummary.Lifecycle(entity.getHoldReason(), entity.getStatusBeforeHold(), entity.getHoldNote(),
                         entity.getPackedAt(), entity.getShippedAt(), entity.getDeliveredAt(),
                         entity.getDeliveryFailureReason(), entity.getCompletedAt(), entity.getClosedAt(),
-                        entity.getBilledAmount(), null, null, null, List.of(), List.of()));
+                        entity.getBilledAmount(), null, null, null, List.of(), List.of(), null, null,
+                        entity.isAllowPartialShipment(), printLinesReady(entity), entity.getDeliveryMode(),
+                        com.stockflow.order.internal.domain.Order.deliveryModeLocked(entity.getStatus(),
+                                entity.getStatusBeforeHold(), entity.getPackingStartedAt(), entity.getPackedAt())));
+    }
+
+    /**
+     * A list row's view of {@code Order#printLinesReady} without its lines: not while it is printed (or held from
+     * there), nor while it waits for production after its stock left (review of #150). An order with no print line
+     * reads as not ready only in the first two cases, which a stock-only order never is in.
+     */
+    private static boolean printLinesReady(OrderJpaEntity entity) {
+        boolean printing = entity.getStatus() == OrderStatus.IN_PRODUCTION
+                || entity.getStatus() == OrderStatus.ON_HOLD && entity.getStatusBeforeHold() == OrderStatus.IN_PRODUCTION;
+        return !printing && !entity.isAwaitingProduction();
     }
 
     private static OrderSummary.AddressSummary toSummary(OrderAddressJpaEmbeddable a) {

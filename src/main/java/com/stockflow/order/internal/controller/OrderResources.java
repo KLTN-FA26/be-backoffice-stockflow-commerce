@@ -26,6 +26,21 @@ public final class OrderResources {
      */
     public static final String QUOTE_CONVERSIONS = "sales-quote-conversions";
 
+    /**
+     * PACK-PARTIAL (lead's decision 2026-10-21): Sales decides whether an order may ship in parts. Its own resource,
+     * not {@code sales-orders:UPDATE}, which the portal customer holds for their own orders. Seeded by V20261022000400
+     * for SALES_STAFF (and SYSTEM_ADMIN, who holds everything).
+     */
+    public static final String PARTIAL_SHIPMENTS = "sales-order-partial-shipments";
+
+    /**
+     * LP-1 (lead's decision 2026-10-22): the Order Coordinator chooses how an order travels - with the release, or
+     * since, until packing starts. Its own resource: {@code sales-orders:APPROVE} releases orders, and a mode other
+     * than the order's at release needs this as well. Seeded by V20261022000800 for ORDER_COORDINATOR and SYSTEM_ADMIN.
+     */
+    public static final String DELIVERY_MODES =
+            com.stockflow.order.internal.service.OrderPermissions.DELIVERY_MODES;
+
     private OrderResources() {
     }
 }

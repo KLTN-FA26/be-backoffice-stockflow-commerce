@@ -10,7 +10,7 @@ import com.stockflow.common.security.AuthenticatedUser;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
-import com.stockflow.common.security.Role;
+import com.stockflow.common.security.ScopeGuards;
 import com.stockflow.customer.api.ChangeCustomerStatusCommand;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.CustomerStatusEntry;
@@ -100,12 +100,12 @@ class CustomerController {
                 request.taxCode()))));
     }
 
+    /** Activating, suspending or closing a customer account: its own resource, seeded for the E-commerce Admin. */
     @PostMapping("/{customerId}/status")
-    @RequiresPermission(resource = CustomerResources.CUSTOMERS, action = Action.APPROVE)
+    @RequiresPermission(resource = CustomerResources.STATUS, action = Action.APPROVE)
     public ApiResponse<CustomerResponse> changeStatus(@PathVariable UUID customerId,
                                                       @AuthenticatedUser CurrentUser user,
                                                       @Valid @RequestBody ChangeCustomerStatusRequest request) {
-        if (!user.hasRole(Role.ECOMMERCE_ADMIN)) throw new BusinessException(ErrorCode.FORBIDDEN);
         return ApiResponse.ok(CustomerWebMapper.toMaskedResponse(customers.changeStatus(new ChangeCustomerStatusCommand(
                 customerId, request.status(), request.reason(), user.userId()))));
     }
@@ -127,9 +127,11 @@ class CustomerController {
         return ApiResponse.ok(customers.changeHistory(customerId));
     }
 
+    /**
+     * Data scope: a portal customer holds customer-customers:READ / UPDATE for its own profile ({@code /me}); every
+     * other customer's record is the back office's.
+     */
     private static void requireStaff(CurrentUser user) {
-        if (!user.hasAnyRole(Role.ECOMMERCE_ADMIN, Role.SALES_STAFF)) {
-            throw new BusinessException(ErrorCode.FORBIDDEN);
-        }
+        ScopeGuards.requireBackOffice(user);
     }
 }

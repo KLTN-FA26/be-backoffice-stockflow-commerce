@@ -257,7 +257,7 @@ class B2bOnboardingIntegrationTest {
         assertThat(count("customer.customer")).isEqualTo(customers);
 
         create(ecommerceAdmin, body, null).andExpect(status().isCreated());
-        // SYSTEM_ADMIN passes every role check (CurrentUser.hasAnyRole), here as everywhere else.
+        // SYSTEM_ADMIN holds every permission, here as everywhere else.
         // customer-customers:CREATE is seeded for SYSTEM_ADMIN too.
         create(systemAdmin, json(Map.of("companyName", "Cong ty B", "taxCode", mst(), "contactName", "C",
                 "email", unique("perm-admin"))), null).andExpect(status().isCreated());

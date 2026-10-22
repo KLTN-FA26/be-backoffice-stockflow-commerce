@@ -18,6 +18,18 @@ public record CloseRemainderRequest(
         CancellationReasonCode reasonCode,
 
         @Size(max = 1000, message = "note is at most 1000 characters")
-        String note
+        String note,
+
+        @io.swagger.v3.oas.annotations.media.Schema(description = "Optional amount agreed with the customer for print "
+                + "lines closed after printing started, at most their value (review of #150): the money received pays "
+                + "it first, the rest is refunded, what it does not cover is owed as a receivable. Before printing: "
+                + "409 CANCELLATION_FEE_BEFORE_PRINTING")
+        @jakarta.validation.Valid
+        CancellationFeeRequest agreedFee
 ) {
+
+    /** Without a fee (callers written before the review of #150). */
+    public CloseRemainderRequest(CancellationReasonCode reasonCode, String note) {
+        this(reasonCode, note, null);
+    }
 }

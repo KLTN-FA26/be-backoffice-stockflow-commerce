@@ -71,6 +71,13 @@ public class StockMovementJpaEntity extends BaseEntity {
     @Column(name = "order_id", updatable = false)
     private UUID orderId;
 
+    /** The stock package the units left / went into (V20261020000300); null for loose stock. */
+    @Column(name = "from_stock_package_id", updatable = false)
+    private UUID fromStockPackageId;
+
+    @Column(name = "to_stock_package_id", updatable = false)
+    private UUID toStockPackageId;
+
     protected StockMovementJpaEntity() {
     }
 
@@ -78,12 +85,18 @@ public class StockMovementJpaEntity extends BaseEntity {
                                   String lotNumber, String fromLocationCode, String toLocationCode,
                                   int quantity, StockStatus fromStatus, StockStatus toStatus,
                                   StockMovement.ReferenceType referenceType, UUID referenceId,
-                                  String reason, UUID actorId, Instant occurredAt, UUID lotId, UUID orderId) {
+                                  String reason, UUID actorId, Instant occurredAt, UUID lotId, UUID orderId,
+                                  UUID fromStockPackageId, UUID toStockPackageId) {
         this(id, movementType, sku, lotNumber, fromLocationCode, toLocationCode, quantity, fromStatus, toStatus,
                 referenceType, referenceId, reason, actorId, occurredAt);
         this.lotId = lotId;
         this.orderId = orderId;
+        this.fromStockPackageId = fromStockPackageId;
+        this.toStockPackageId = toStockPackageId;
     }
+
+    public UUID getFromStockPackageId() { return fromStockPackageId; }
+    public UUID getToStockPackageId() { return toStockPackageId; }
 
     public StockMovementJpaEntity(UUID id, StockMovement.MovementType movementType, String sku,
                                   String lotNumber, String fromLocationCode, String toLocationCode,

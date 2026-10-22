@@ -14,8 +14,9 @@ import java.util.UUID;
  * @param source    where the money came from: null for a payment of the order, {@code
  *                  RECEIVABLE_ALLOCATION} for a customer transfer (or a carrier's remittance) paying a receivable of
  *                  the order (SCRUM-431), {@code ORDER_ALLOCATION} for a customer transfer paying the order itself -
- *                  prepaid, deposit or the balance before delivery (G2-3); added as a nullable field, as the
- *                  contract rules allow
+ *                  prepaid, deposit or the balance before delivery (G2-3), {@code FEE_RECEIVABLE_ALLOCATION} for a
+ *                  transfer paying the receivable of a fee a remainder closure left owed (re-review of #150: the
+ *                  order counts it as that fee's); added as a nullable field, as the contract rules allow
  */
 public record PaymentCaptured(
         UUID orderId,

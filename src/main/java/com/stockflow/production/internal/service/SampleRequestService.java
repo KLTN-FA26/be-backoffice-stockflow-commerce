@@ -12,7 +12,6 @@ import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.SortWhitelist;
 import com.stockflow.common.security.CurrentUser;
-import com.stockflow.common.security.Role;
 import com.stockflow.common.security.ScopeGuards;
 import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.customer.api.CustomerService;
@@ -361,8 +360,7 @@ class SampleRequestService implements SampleRequests {
     /** The customer a portal user acts for; empty for anyone holding a back-office role. */
     private Optional<UUID> portalCustomer(CurrentUser user) {
         Objects.requireNonNull(user, "user");
-        boolean portalOnly = !user.roles().isEmpty() && user.roles().stream().allMatch(role -> role == Role.CUSTOMER);
-        if (!portalOnly) {
+        if (!user.isPortalCustomer()) {
             return Optional.empty();
         }
         return Optional.of(customers.findByUserId(user.userId())

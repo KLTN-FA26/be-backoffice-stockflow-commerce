@@ -9,6 +9,7 @@ import com.stockflow.inventory.internal.domain.Reservation;
 import com.stockflow.inventory.internal.domain.ReservationId;
 import com.stockflow.inventory.internal.domain.StockItem;
 import com.stockflow.inventory.internal.domain.StockItemId;
+import com.stockflow.inventory.internal.domain.StockPackageId;
 import com.stockflow.common.domain.Sku;
 
 import java.util.List;
@@ -44,7 +45,8 @@ final class StockItemPersistenceMapper {
                 Quantity.of(entity.getOnHand()),
                 entity.getStatus(),
                 reservations,
-                entity.getVersion(), entity.getReceivedAt(), entity.getSerialNumber(), entity.getLotId());
+                entity.getVersion(), entity.getReceivedAt(), entity.getSerialNumber(), entity.getLotId(),
+                entity.getStockPackageId() == null ? null : new StockPackageId(entity.getStockPackageId()));
     }
 
     static Reservation toDomain(ReservationJpaEntity entity) {
@@ -73,7 +75,8 @@ final class StockItemPersistenceMapper {
                 item.expiryDate(),
                 item.onHand().value(),
                 item.reserved().value(),
-                item.status(), item.receivedAt(), item.serialNumber(), item.lotId());
+                item.status(), item.receivedAt(), item.serialNumber(), item.lotId(),
+                item.stockPackageId() == null ? null : item.stockPackageId().value());
         entity.replaceReservations(toEntities(item));
         return entity;
     }

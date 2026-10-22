@@ -106,11 +106,16 @@ class OrderReleaseController {
 
     @PostMapping("/{orderId}/release")
     @Operation(summary = "Release a paid order from a warehouse: to production when it has print lines, "
-            + "otherwise ready to fulfil (BR-PRD-08 sample, BR-PRD-09 deposit)")
+            + "otherwise ready to fulfil (BR-PRD-08 sample, BR-PRD-09 deposit). Optionally chooses how it travels "
+            + "(deliveryMode, LP-1): a mode other than the order's needs sales-order-delivery-modes:UPDATE too (403); "
+            + "409 DELIVERY_MODE_FTL_NO_COD for a full truckload whose balance is collected on delivery")
     @RequiresPermission(resource = OrderResources.ORDERS, action = Action.APPROVE, scope = DataScope.ALL)
     public ApiResponse<OrderResponse> release(@PathVariable UUID orderId,
                                               @Valid @RequestBody ReleaseOrderRequest request,
                                               @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(OrderWebMapper.toResponse(releases.release(orderId, request.warehouseId(), user.userId())));
+        // LP-1: a mode other than the order's also needs sales-order-delivery-modes:UPDATE - decided by the release
+        // under the order's row lock (review of #157), so a racing change is never undone by a caller without it.
+        return ApiResponse.ok(OrderWebMapper.toResponse(releases.release(orderId, request.warehouseId(),
+                request.deliveryMode(), user)));
     }
 }

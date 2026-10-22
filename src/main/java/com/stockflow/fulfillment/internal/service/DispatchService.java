@@ -202,9 +202,14 @@ class DispatchService implements Dispatching {
                 numbers.next(LocalDate.ofInstant(now, BUSINESS_ZONE)), request.requestId(), request.warehouseId(),
                 carrier.getId(), request.vehiclePlate(), request.driverName(), request.driverPhone(),
                 actor.userId(), now);
-        List<UUID> wanted = request.shipmentIds() == null || request.shipmentIds().isEmpty()
-                ? waitingFor(request.warehouseId(), carrier.getId())
-                : request.shipmentIds();
+        boolean chosen = request.shipmentIds() != null && !request.shipmentIds().isEmpty();
+        List<UUID> wanted = chosen ? request.shipmentIds() : waitingFor(request.warehouseId(), carrier.getId());
+        if (!chosen) {
+            // PACK-PARTIAL (review of #150): by default, an order that may not ship in parts comes along whole or not
+            // at all - its shipments that would leave part of it behind stay at dispatch.
+            Set<UUID> splitting = splittingShipments(List.of(), wanted);
+            wanted = wanted.stream().filter(id -> !splitting.contains(id)).toList();
+        }
         add(load, wanted, actor.userId(), now);
         DispatchLoadJpaEntity header = store.insert(load);
         log.info("Load {} opened at warehouse {} for carrier {}: {} shipment(s)", load.code(), load.warehouseId(),
@@ -242,6 +247,18 @@ class DispatchService implements Dispatching {
         Set<UUID> ids = new LinkedHashSet<>(shipmentIds);
         Map<UUID, ShipmentJpaEntity> rows = locks.lock(ids).stream()
                 .collect(Collectors.toMap(ShipmentJpaEntity::getId, Function.identity()));
+        // PACK-PARTIAL (review of #150): refused now, not at the signature - a manifest that would hand over part of an
+        // order whose Sales did not allow partial shipments.
+        Set<UUID> splitting = splittingShipments(load.activeShipments(), ids);
+        if (!splitting.isEmpty()) {
+            List<String> codes = rows.values().stream().filter(row -> splitting.contains(row.getId()))
+                    .map(ShipmentJpaEntity::getCode).sorted().toList();
+            throw new BusinessException(ErrorCode.ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED, ("Shipment(s) %s would hand over "
+                    + "part of an order that does not allow partial shipments: put every shipment of the order on the "
+                    + "load together, once all of it is packed, or ask Sales to allow partial shipment")
+                    .formatted(String.join(", ", codes)),
+                    codes.stream().map(code -> com.stockflow.common.api.FieldError.of("shipmentCode", code)).toList());
+        }
         Map<UUID, String> elsewhere = otherLoads(ids, load.id());
         boolean changed = false;
         for (UUID id : ids) {
@@ -249,9 +266,54 @@ class DispatchService implements Dispatching {
             if (row == null) {
                 throw new BusinessException(ErrorCode.SHIPMENT_NOT_FOUND, "No shipment " + id);
             }
-            changed |= load.addShipment(facts(row, elsewhere.get(id)), row.getCodAmount(), by, at);
+            changed |= load.addShipment(facts(row, elsewhere.get(id)), row.getLabelCodAmount(), by, at);
         }
         return changed;
+    }
+
+    /**
+     * PACK-PARTIAL: the shipments among {@code adding} whose order does not allow partial shipments and would not leave
+     * whole with the shipments on the load ({@code onLoad}) and the others being added: units of it stay behind -
+     * not packed yet, or packed in a shipment not on the load. Shipments packed before contents were recorded leave as
+     * the whole order and are not checked.
+     */
+    private Set<UUID> splittingShipments(java.util.Collection<UUID> onLoad, java.util.Collection<UUID> adding) {
+        if (adding.isEmpty()) {
+            return Set.of();
+        }
+        Set<UUID> all = new LinkedHashSet<>(onLoad);
+        all.addAll(adding);
+        List<ShipmentJpaEntity> rows = shipments.findAllById(all);
+        Map<UUID, List<ShipmentHandover.Line>> contents = linesOf(packages.findByShipmentIdIn(all).stream()
+                .filter(p -> p.getStatus() == PackageStatus.SEALED).toList());
+        Map<UUID, List<ShipmentJpaEntity>> byOrder = rows.stream()
+                .collect(Collectors.groupingBy(ShipmentJpaEntity::getOrderId));
+        Set<UUID> splitting = new HashSet<>();
+        Set<UUID> added = new HashSet<>(adding);
+        byOrder.forEach((orderId, ofOrder) -> {
+            if (ofOrder.stream().noneMatch(row -> added.contains(row.getId()))) {
+                return;
+            }
+            OrderSummary order = orders.findById(orderId).orElse(null);
+            if (order == null || order.lifecycle() == null || order.lifecycle().allowPartialShipment()) {
+                return;
+            }
+            Map<UUID, Integer> progress = new HashMap<>();
+            Map<UUID, Integer> closed = new HashMap<>();
+            order.lifecycle().lines().forEach(line -> {
+                progress.put(line.lineId(), line.shippedQuantity());
+                closed.put(line.lineId(), line.cancelledQuantity());
+            });
+            int outstanding = order.lines().stream().mapToInt(line -> line.quantity()
+                    - closed.getOrDefault(line.lineId(), 0) - progress.getOrDefault(line.lineId(), 0)).sum();
+            boolean recorded = ofOrder.stream().allMatch(row -> contents.containsKey(row.getId()));
+            int leaving = ofOrder.stream().flatMap(row -> contents.getOrDefault(row.getId(), List.of()).stream())
+                    .mapToInt(ShipmentHandover.Line::quantity).sum();
+            if (recorded && leaving < outstanding) {
+                ofOrder.stream().map(ShipmentJpaEntity::getId).filter(added::contains).forEach(splitting::add);
+            }
+        });
+        return splitting;
     }
 
     @Override
@@ -341,6 +403,9 @@ class DispatchService implements Dispatching {
                 throw new BusinessException(ErrorCode.PACKAGE_NOT_READY, "Shipment %s is %s; take it off the manifest"
                         .formatted(row.getCode(), row.getStatus()));
             }
+            // The label as last printed, read under the shipment's lock: what the signed manifest compares the fixed
+            // COD with (a load recorded before reprints refreshed it may still hold an older figure).
+            load.relabel(id, row.getLabelCodAmount());
         }
         List<PackageJpaEntity> sealed = onManifest.isEmpty() ? List.of() : packages.findByShipmentIdIn(onManifest)
                 .stream().filter(p -> p.getStatus() == PackageStatus.SEALED).toList();
@@ -360,8 +425,17 @@ class DispatchService implements Dispatching {
                 .sorted(Comparator.comparing(ShipmentJpaEntity::getOrderId).thenComparing(ShipmentJpaEntity::getReadyAt)
                         .thenComparing(ShipmentJpaEntity::getId))
                 .toList();
-        for (ShipmentJpaEntity row : ordered) {
-            handOver(row, load, carrier, linesByShipment.getOrDefault(row.getId(), List.of()),
+        for (int i = 0; i < ordered.size(); i++) {
+            ShipmentJpaEntity row = ordered.get(i);
+            // PACK-PARTIAL: the order's shipments signed over after this one leave with it - an order that does not
+            // allow partial shipments lets this one go when, with them, nothing of it is left behind.
+            List<ShipmentHandover.Line> leavingWith = new ArrayList<>();
+            for (ShipmentJpaEntity later : ordered.subList(i + 1, ordered.size())) {
+                if (later.getOrderId().equals(row.getOrderId())) {
+                    leavingWith.addAll(linesByShipment.getOrDefault(later.getId(), List.of()));
+                }
+            }
+            handOver(row, load, carrier, linesByShipment.getOrDefault(row.getId(), List.of()), leavingWith,
                     parcelsByShipment.get(row.getId()).size(), by, now);
         }
         header = store.save(load, header);
@@ -382,7 +456,8 @@ class DispatchService implements Dispatching {
      * order's own.</p>
      */
     private void handOver(ShipmentJpaEntity row, DispatchLoad load, CarrierJpaEntity carrier,
-                          List<ShipmentHandover.Line> lines, int parcels, UUID by, Instant at) {
+                          List<ShipmentHandover.Line> lines, List<ShipmentHandover.Line> leavingWith, int parcels,
+                          UUID by, Instant at) {
         Shipment shipment = row.toDomain();
         boolean wholeOrder = lines.isEmpty();
         OrderSummary order;
@@ -395,7 +470,7 @@ class DispatchService implements Dispatching {
             } else {
                 order = orders.recordHandover(row.getOrderId(), new ShipmentHandover(row.getId(), lines, at, by,
                         earlierPending(row), new ShipmentHandover.Carriage(row.getCode(), parcels, carrier.getName(),
-                        row.getDeliveryMode().name())));
+                        row.getDeliveryMode().name()), leavingWith));
                 cod = order.lifecycle().shipments().stream().filter(s -> s.shipmentId().equals(row.getId()))
                         .findFirst().map(OrderSummary.Shipment::codAmount).orElseThrow();
             }

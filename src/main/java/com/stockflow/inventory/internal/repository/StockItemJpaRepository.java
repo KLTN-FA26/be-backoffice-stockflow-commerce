@@ -127,10 +127,14 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
     @Query("""
             select distinct s from StockItemJpaEntity s
             left join fetch s.reservations
-            where s.sku = :sku and s.locationCode = :locationCode
+            where s.sku = :sku and s.locationCode = :locationCode and s.stockPackageId is null
             """)
-    List<StockItemJpaEntity> findBySkuAndLocation(@Param("sku") String sku,
-                                                  @Param("locationCode") String locationCode);
+    List<StockItemJpaEntity> findLooseBySkuAndLocation(@Param("sku") String sku,
+                                                       @Param("locationCode") String locationCode);
+
+    /** JPQL on purpose: Hibernate flushes this session's pending stock rows before running it (FlushMode.AUTO). */
+    @Query("select coalesce(sum(s.onHand), 0) from StockItemJpaEntity s where s.stockPackageId = :stockPackageId")
+    long sumOnHandInStockPackage(@Param("stockPackageId") UUID stockPackageId);
 
     /** Ids only, so the sweeper can page through the backlog before locking anything. */
     @Query("""
@@ -148,10 +152,12 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
             """)
     List<UUID> findStockItemIdsForRequest(@Param("rootRequestId") UUID rootRequestId);
 
+    /** In id order: the caller locks each in turn, and two orders sharing rows must never lock them crosswise. */
     @Query("""
             select distinct s.id from ReservationJpaEntity r join r.stockItem s
             where r.orderId = :orderId
               and r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
+            order by r.stockItem.id
             """)
     List<UUID> findStockItemIdsHoldingOrder(@Param("orderId") UUID orderId);
 

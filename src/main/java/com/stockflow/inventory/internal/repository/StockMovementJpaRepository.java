@@ -16,4 +16,10 @@ interface StockMovementJpaRepository extends BaseJpaRepository<StockMovementJpaE
             StockMovement.MovementType movementType, StockMovement.ReferenceType referenceType, String reason,
             String toLocationCode, com.stockflow.inventory.internal.domain.StockStatus fromStatus,
             com.stockflow.inventory.internal.domain.StockStatus toStatus);
+
+    boolean existsByMovementTypeAndReferenceTypeAndReasonAndFromLocationCode(StockMovement.MovementType movementType,
+            StockMovement.ReferenceType referenceType, String reason, String fromLocationCode);
+
+    boolean existsByMovementTypeAndReferenceTypeAndReasonAndToLocationCode(StockMovement.MovementType movementType,
+            StockMovement.ReferenceType referenceType, String reason, String toLocationCode);
 }

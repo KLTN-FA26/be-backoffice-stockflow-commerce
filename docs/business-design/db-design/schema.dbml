@@ -566,6 +566,7 @@ Enum ordering.order_cancellation_request_status {
   PENDING
   APPROVED
   REJECTED
+  EXPIRED
 }
 
 Enum ordering.order_credit_check_outcome {

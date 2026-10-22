@@ -45,11 +45,15 @@ import java.util.UUID;
  * hold was used, not by whom — which is how a second pick line pointing at the same hold is told apart
  * ({@code RESERVATION_NOT_ACTIVE}) from the same line confirmed twice (answered as done).</p>
  *
- * <p><b>Locks.</b> Every method locks the stock row it changes ({@code SELECT … FOR UPDATE} plus a
- * refresh), which is what serialises a pick against a cancellation releasing the same hold: whichever
- * commits second sees the hold closed. A put-back also takes the SKU's advisory lock first, as moves
- * do, and locks two stock rows in id order. Callers that lock their own rows (fulfillment's pick task)
- * take them before calling in here.</p>
+ * <p><b>Locks.</b> Every method takes the SKU's advisory lock, then the carton (stock package) the hold's
+ * row is in if it is in one, then the stock row it changes ({@code SELECT … FOR UPDATE} plus a refresh): the
+ * lock order every writer of a carton keeps (V20261020000100). The row lock is what serialises a pick against
+ * a cancellation releasing the same hold: whichever commits second sees the hold closed. A put-back locks two
+ * stock rows in id order. Callers that lock their own rows (fulfillment's pick task, its package) take them
+ * before calling in here, and nothing takes a SKU lock and then such a row.</p>
+ *
+ * <p>Units picked out of a carton open it, and the last unit closes it CONSUMED, in the same transaction
+ * ({@link StockPackageContents}).</p>
  *
  * <p>Joins the caller's transaction ({@code REQUIRED}): the pick line and the deduction commit or roll
  * back together.</p>
@@ -65,11 +69,13 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
     private final InventoryEventPublisher events;
     private final LocationDirectory locations;
     private final InventoryPolicyRepository policies;
+    private final StockPackageContents cartons;
     private final Clock clock;
     private final com.stockflow.inventory.internal.domain.Recounts recounts;
 
     PickConsumptionService(StockItemRepository stockItems, StockMovementLog ledger, InventoryEventPublisher events,
-                           LocationDirectory locations, InventoryPolicyRepository policies, Clock clock,
+                           LocationDirectory locations, InventoryPolicyRepository policies,
+                           StockPackageContents cartons, Clock clock,
                            com.stockflow.inventory.internal.domain.Recounts recounts) {
         this.recounts = recounts;
         this.stockItems = stockItems;
@@ -77,12 +83,14 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
         this.events = events;
         this.locations = locations;
         this.policies = policies;
+        this.cartons = cartons;
         this.clock = clock;
     }
 
     @Override
     public ConsumedPick consumeForPick(UUID reservationId, UUID pickLineId, UUID actorId) {
         Objects.requireNonNull(pickLineId, "pickLineId");
+        StockPackageContents.LockedCartons locked = lockSkusAndCartons(List.of(reservationId));
         StockItem item = holderOf(reservationId);
         Reservation hold = item.findReservation(ReservationId.of(reservationId)).orElseThrow();
         requireOrderStock(item, hold);
@@ -91,48 +99,24 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
         if (done.isPresent()) {
             return toConsumed(item, hold, true);
         }
-        deduct(item, reservationId, StockMovement.ReferenceType.PICK_LINE, pickLineId, actorId);
+        deduct(item, reservationId, StockMovement.ReferenceType.PICK_LINE, pickLineId, actorId, locked);
+        cartons.settle(locked, clock.instant());
         log.info("Pick line {} consumed hold {}: {} x {} off {}", pickLineId, reservationId,
                 hold.quantity(), item.sku(), item.location());
         return toConsumed(item, hold, false);
     }
 
-    @Override
-    public List<ConsumedPick> consumeForPack(UUID packId, UUID orderId, java.util.Collection<UUID> reservationIds,
-                                             UUID actorId) {
-        Objects.requireNonNull(packId, "packId");
-        Objects.requireNonNull(orderId, "orderId");
-        boolean packed = ledger.findByReference(StockMovement.MovementType.PICK, StockMovement.ReferenceType.PACKAGE,
-                packId).isPresent();
-        // Stock rows in id order: two packages sharing rows never lock them in opposite orders.
-        List<UUID> ordered = reservationIds.stream().distinct()
-                .sorted(Comparator.comparing((UUID id) -> stockItems.findIdByReservationId(ReservationId.of(id))
-                        .map(item -> item.value().toString()).orElse("")).thenComparing(UUID::toString))
-                .toList();
-        List<ConsumedPick> consumed = new java.util.ArrayList<>();
-        for (UUID reservationId : ordered) {
-            StockItem item = holderOf(reservationId);
-            Reservation hold = item.findReservation(ReservationId.of(reservationId)).orElseThrow();
-            requireOrderStock(item, hold);
-            if (!orderId.equals(hold.orderId())) {
-                throw new BusinessException(ErrorCode.RESERVATION_NOT_ACTIVE,
-                        "Hold %s is not order %s's".formatted(reservationId, orderId));
-            }
-            if (!packed && !locations.isPackingArea(item.location())) {
-                // A package takes the printed goods waiting in packing - never blanks still on a storage bin.
-                throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH, "Hold %s is at %s, not in a packing area"
-                        .formatted(reservationId, item.location()));
-            }
-            if (packed) {
-                consumed.add(toConsumed(item, hold, true));
-                continue;
-            }
-            deduct(item, reservationId, StockMovement.ReferenceType.PACKAGE, packId, actorId);
-            consumed.add(toConsumed(item, hold, false));
-            log.info("Package {} consumed hold {}: {} x {} off {}", packId, reservationId, hold.quantity(), item.sku(),
-                    item.location());
-        }
-        return consumed;
+    /**
+     * The first two locks of the order every carton writer keeps: the SKUs of these holds' rows (sorted), then the
+     * cartons those rows are in. The rows themselves are locked after, one by one, by the caller. A hold is moved
+     * from row to row only under its SKU lock, so the rows are read again once that lock is held.
+     */
+    private StockPackageContents.LockedCartons lockSkusAndCartons(java.util.Collection<UUID> reservationIds) {
+        java.util.function.Function<UUID, Optional<StockItem>> row = id ->
+                stockItems.findIdByReservationId(ReservationId.of(id)).flatMap(stockItems::findById);
+        reservationIds.stream().map(row).flatMap(Optional::stream).map(item -> item.sku().code())
+                .distinct().sorted().forEach(policies::lock);
+        return cartons.lockFor(reservationIds.stream().map(row).flatMap(Optional::stream).toList());
     }
 
     /**
@@ -144,10 +128,12 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "stock-reservation", resourceId = "#reservationId")
     public void consume(UUID reservationId, UUID actorId) {
+        StockPackageContents.LockedCartons locked = lockSkusAndCartons(List.of(reservationId));
         StockItem item = holderOf(reservationId);
         Reservation hold = item.findReservation(ReservationId.of(reservationId)).orElseThrow();
         requireOrderStock(item, hold);
-        deduct(item, reservationId, StockMovement.ReferenceType.ORDER, hold.orderId(), actorId);
+        deduct(item, reservationId, StockMovement.ReferenceType.ORDER, hold.orderId(), actorId, locked);
+        cartons.settle(locked, clock.instant());
         log.info("Consumed reservation {} by hand: stock deducted for real", reservationId);
     }
 
@@ -183,11 +169,13 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
                 .orElseThrow(() -> new BusinessException(ErrorCode.RESERVATION_NOT_FOUND,
                         "No reservation with id " + command.reservationId()));
         // The goods come back as the layer they left: same SKU, lot, expiry and receipt time, so FEFO and
-        // FIFO still see them in their place. At the bin they left, that layer is the source row itself
-        // (one row per SKU, location, lot, serial and receipt); elsewhere it may already exist too.
-        Optional<StockItem> destinationView = sourceView.location().equals(target)
+        // FIFO still see them in their place - as loose stock. At the bin they left, that layer is the source
+        // row itself when it is loose; a carton's row is never refilled by a put-back, whatever bin it is on:
+        // emptied by the pick, the carton is CONSUMED and must stay empty, and opened, it would take back units
+        // that may never have left it (the put-back names no carton). Picking from a carton is SCRUM-473's.
+        Optional<StockItem> destinationView = sourceView.location().equals(target) && sourceView.isLoose()
                 ? Optional.of(sourceView)
-                : stockItems.findBySkuAndLocation(sourceView.sku(), target).stream()
+                : stockItems.findLooseBySkuAndLocation(sourceView.sku(), target).stream()
                         .filter(item -> item.isSameGoodsAs(sourceView))
                         .findFirst();
         List<StockItem> toLock = destinationView.isPresent() && !destinationView.get().id().equals(sourceView.id())
@@ -208,11 +196,13 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
         Objects.requireNonNull(source, "source");
         Quantity quantity = Quantity.of(command.quantity());
         if (destination == null) {
-            destination = StockItem.arrivedAs(source, target, quantity, StockStatus.AVAILABLE);
+            stockItems.save(StockItem.arrivedAs(source, target, quantity, StockStatus.AVAILABLE));
         } else {
+            // Units rejoining their own receipt layer, not replenishment: a FIFO SKU's policy trigger refuses
+            // the raised on_hand unless the row is named as a same-receipt merge (V20261017000450).
             destination.putBack(quantity);
+            stockItems.saveMerged(destination);
         }
-        stockItems.save(destination);
 
         Instant now = clock.instant();
         ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.PUT_BACK,
@@ -255,16 +245,18 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
     }
 
     private void deduct(StockItem item, UUID reservationId, StockMovement.ReferenceType referenceType,
-                        UUID referenceId, UUID actorId) {
+                        UUID referenceId, UUID actorId, StockPackageContents.LockedCartons locked) {
         Instant now = clock.instant();
         Reservation hold = item.findReservation(ReservationId.of(reservationId)).orElseThrow();
         StockStatus status = item.status();
+        locked.tookFrom(item);
         item.consumeReservation(ReservationId.of(reservationId), now);
         stockItems.save(item);
         events.publishEventsOf(item);
         ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.PICK, item.sku(),
                 item.lotNumber(), item.location(), null, hold.quantity().value(), status, referenceType,
-                referenceId, null, actorId, now).ofLot(item.lotId()).forOrder(hold.orderId()));
+                referenceId, null, actorId, now).ofLot(item.lotId()).forOrder(hold.orderId())
+                .leaving(item.stockPackageId()));
     }
 
     /**

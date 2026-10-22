@@ -18,9 +18,12 @@ import java.util.UUID;
  *                       ({@link OrderService#codFor}, 09 BR-04). Empty when there are none
  * @param carriage      what the customer may read of the shipment besides its status (G4-2a, 09 BR-05): its number,
  *                      parcels, carrier and delivery mode. Null from callers that do not know them
+ * @param leavingWith   the units of the order's other shipments handed over in the same signature after this one
+ *                      (PACK-PARTIAL): an order that does not allow partial shipments lets this one go only when, with
+ *                      them, nothing of the order is left behind. Empty when there are none
  */
 public record ShipmentHandover(UUID shipmentId, List<Line> lines, Instant handedOverAt, UUID handedOverBy,
-                               List<Line> earlierPending, Carriage carriage) {
+                               List<Line> earlierPending, Carriage carriage, List<Line> leavingWith) {
 
     public ShipmentHandover {
         if (shipmentId == null || handedOverAt == null) {
@@ -28,6 +31,13 @@ public record ShipmentHandover(UUID shipmentId, List<Line> lines, Instant handed
         }
         lines = lines == null ? List.of() : List.copyOf(lines);
         earlierPending = earlierPending == null ? List.of() : List.copyOf(earlierPending);
+        leavingWith = leavingWith == null ? List.of() : List.copyOf(leavingWith);
+    }
+
+    /** Without the other shipments leaving in the same signature (callers written before PACK-PARTIAL). */
+    public ShipmentHandover(UUID shipmentId, List<Line> lines, Instant handedOverAt, UUID handedOverBy,
+                            List<Line> earlierPending, Carriage carriage) {
+        this(shipmentId, lines, handedOverAt, handedOverBy, earlierPending, carriage, List.of());
     }
 
     /** Without the carriage (callers written before G4-2a). */

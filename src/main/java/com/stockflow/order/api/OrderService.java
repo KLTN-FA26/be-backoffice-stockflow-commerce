@@ -169,7 +169,20 @@ public interface OrderService {
      * delivered; their stock holds are released, payment refunds money received above what the order is now worth
      * ({@code OrderRemainderClosed}). Only from PARTIALLY_FULFILLED.
      */
-    OrderSummary closeRemainder(UUID orderId, CancellationReasonCode reasonCode, String note, UUID by);
+    default OrderSummary closeRemainder(UUID orderId, CancellationReasonCode reasonCode, String note, UUID by) {
+        return closeRemainder(orderId, reasonCode, note, null, by);
+    }
+
+    /**
+     * The same, keeping {@code fee} - an amount agreed with the customer for print lines closed after printing
+     * started, at most their value (review of #150): the money received pays it first, the rest is refunded, what it
+     * does not cover is owed. Printed goods not shipped are scrapped; production stops the closed lines' jobs.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code CANCELLATION_FEE_BEFORE_PRINTING},
+     *         {@code VALIDATION_FAILED}, {@code ORDER_INVALID_TRANSITION}
+     */
+    OrderSummary closeRemainder(UUID orderId, CancellationReasonCode reasonCode, String note, CancellationFee fee,
+                                UUID by);
 
     /** A printed design did not match at packing (BR-DSG-003): ON_HOLD for QC, reason DESIGN_MISMATCH. */
     void putOnDesignHold(UUID orderId, String reason);
@@ -189,11 +202,29 @@ public interface OrderService {
     void recordPacked(UUID orderId);
 
     /**
+     * LP-1 (lead's decision 2026-10-22): fulfillment opened a package of the order - packing started, and the order's
+     * delivery mode is locked from now on. Joins the caller's transaction and takes the order's row lock, so a change of
+     * the mode in flight either came first (packing goes on with the new mode) or is refused afterwards
+     * ({@code DELIVERY_MODE_LOCKED}). Idempotent.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code ORDER_CANCELLED}
+     */
+    void recordPackingStarted(UUID orderId);
+
+    /**
      * The order's status read under its row lock, in the caller's transaction: what production checks before it
      * completes, releases or carries on work for the order, so a cancellation cannot slip in between the check and
      * the work (audit of #109). Empty for an unknown order.
      */
     Optional<OrderStatus> lockedStatus(UUID orderId);
+
+    /**
+     * Whether a line's goods are no longer wanted, read under the order's row lock in the caller's transaction: the
+     * order is cancelled (or unknown), or every unit of the line was closed out of it ({@link #closeRemainder}, e.g.
+     * the print lines of a mixed order whose stock already shipped, PACK-EARLY). Production stops the line's work then,
+     * as for a cancelled order.
+     */
+    boolean lockedLineWithdrawn(UUID orderId, UUID lineId);
 
     /** QC reverified the design: the DESIGN_MISMATCH hold is resolved back to where it was held from. */
     void resolveDesignHold(UUID orderId, UUID resolvedBy, String note);

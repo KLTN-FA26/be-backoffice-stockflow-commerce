@@ -174,7 +174,8 @@ UPDATE inventory.stock_movement m
         HAVING count(DISTINCT l.id) = 1) one
  WHERE m.id = one.id;
 
--- (e) the customer order of every pick, put-back and package deduction already in the ledger
+-- (e) the customer order of every pick, put-back, package deduction and printed-goods consumption already in the
+--     ledger
 UPDATE inventory.stock_movement m SET order_id = m.reference_id
  WHERE m.order_id IS NULL AND m.reference_type = 'ORDER'
    AND EXISTS (SELECT 1 FROM ordering.customer_order o WHERE o.id = m.reference_id);
@@ -184,6 +185,12 @@ UPDATE inventory.stock_movement m SET order_id = p.order_id
 UPDATE inventory.stock_movement m SET order_id = p.order_id
   FROM fulfillment.pack pa JOIN fulfillment.pick p ON p.id = pa.pick_id
  WHERE m.order_id IS NULL AND m.reference_type = 'PACKAGE' AND pa.id = m.reference_id;
+-- Printed goods consumed when their production order completed (G4-Q2, V20261022000300): the line names the
+-- order's finished-goods hold ("Hold <id>"), never a production hold of blanks.
+UPDATE inventory.stock_movement m SET order_id = r.order_id
+  FROM inventory.stock_reservation r
+ WHERE m.order_id IS NULL AND m.movement_type = 'CONSUMPTION' AND m.reference_type = 'PRODUCTION_ORDER'
+   AND m.reason = 'Hold ' || r.id AND r.order_id IS NOT NULL AND r.production_order_id IS NULL;
 
 UPDATE inventory.stock_movement m SET order_number = o.order_number
   FROM ordering.customer_order o WHERE m.order_id = o.id AND m.order_number IS NULL;

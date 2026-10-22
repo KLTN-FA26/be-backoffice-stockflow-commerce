@@ -82,11 +82,17 @@ class StockOperationsServiceImpl implements StockOperations {
     private final Clock clock;
     private final InventoryPolicyRepository policies;
     private final StockLots lots;
+    private final InventoryEventPublisher events;
+    /** Taking from a carton opens it and the last unit closes it; its lock comes between the SKU's and the rows'. */
+    private final StockPackageContents cartons;
 
     StockOperationsServiceImpl(StockItemRepository stockItems, StockAdjustmentRepository adjustments,
                                StockAdjustmentSearch adjustmentSearch, StockMovementLog ledger,
                                StockLedgerSearch ledgerSearch, LocationDirectory locations, Clock clock,
-                               InventoryPolicyRepository policies, StockLots lots) {
+                               InventoryPolicyRepository policies, StockLots lots, StockPackageContents cartons,
+                               InventoryEventPublisher events) {
+        this.cartons = cartons;
+        this.events = events;
         this.stockItems = stockItems;
         this.adjustments = adjustments;
         this.adjustmentSearch = adjustmentSearch;
@@ -201,6 +207,7 @@ class StockOperationsServiceImpl implements StockOperations {
         }
 
         StockStatus before = source.status();
+        requireLoose(source);
         source.moveOut(quantity);
         stockItems.save(source);
         if (destination == null) {
@@ -275,9 +282,10 @@ class StockOperationsServiceImpl implements StockOperations {
                     "%s cannot take stock now: it, its shelf or its warehouse is not active".formatted(to));
             case USABLE -> { }
         }
-        Optional<StockItem> destinationView = stockItems.findBySkuAndLocation(sourceView.sku(), to).stream()
-                .filter(item -> item.isSameGoodsAs(sourceView))
-                .findFirst();
+        // The hold arrives as loose stock: never into a carton's row, whose counted contents it would change.
+        Optional<StockItem> destinationView = sameLayerAt(sourceView, to);
+        // A checkout hold may sit in a carton: it leaves it, which opens or empties it. Its lock comes before the rows'.
+        StockPackageContents.LockedCartons lockedCartons = cartons.lockFor(List.of(sourceView));
 
         List<StockItem> toLock = destinationView.isPresent()
                 ? List.of(sourceView, destinationView.get()) : List.of(sourceView);
@@ -306,15 +314,18 @@ class StockOperationsServiceImpl implements StockOperations {
         if (destination == null) {
             destination = StockItem.emptyLayerOf(source, to, arriving);
         }
+        lockedCartons.tookFrom(source);
         source.handOverReservation(reservationId);
         destination.takeOverReservation(source, hold);
         stockItems.saveHandOver(source, destination, reservationId);
 
         Instant now = clock.instant();
+        cartons.settle(lockedCartons, now);
         StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.MOVE,
                 source.sku(), source.lotNumber(), from, to, hold.quantity().value(), source.status(), arriving,
                 StockMovement.ReferenceType.PRODUCTION_ORDER, command.productionOrderId(),
-                "Hold " + hold.id().value(), command.actorId(), now).ofLot(source.lotId());
+                "Hold " + hold.id().value(), command.actorId(), now)
+                .ofLot(source.lotId()).leaving(source.stockPackageId());
         ledger.append(line);
         log.info("Issued hold {} ({} x {}{}) from {} to {} for production order {}", hold.id().value(),
                 hold.quantity(), source.sku(), lotSuffix(source.lotNumber()), from, to, command.productionOrderId());
@@ -410,7 +421,134 @@ class StockOperationsServiceImpl implements StockOperations {
     public boolean isFinishedCustomGoods(StockItem item, Reservation hold) {
         return hold.status().isActive() && hold.orderId() != null && hold.productionOrderId() == null
                 && item.status() == StockStatus.AVAILABLE && locations.isPackingArea(item.location())
-                && ledger.handedOverFromProduction(hold.id(), item.location());
+                && (ledger.handedOverFromProduction(hold.id(), item.location())
+                        // G4-Q2: a cancelled order's consumed printed goods, brought back only to be scrapped.
+                        || ledger.bookedBackForScrap(hold.id(), item.location()));
+    }
+
+    /**
+     * Decision G4-Q2: under the SKU lock, then the row's, as every hold step. The hold must be live finished goods of
+     * {@code orderId} that production handed to a packing area - never free stock somebody moved there, never blanks.
+     */
+    @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "stock-move", resourceId = "#reservationId")
+    public StockMove consumeFinishedGoods(UUID reservationId, UUID orderId, UUID productionOrderId, UUID actorId) {
+        Objects.requireNonNull(orderId, "orderId");
+        Objects.requireNonNull(productionOrderId, "productionOrderId");
+        ReservationId id = ReservationId.of(reservationId);
+        policies.lock(holder(id).sku().code());
+        StockItem view = holder(id);
+        WarehouseScope.requireLocation(view.location().code());
+        StockPackageContents.LockedCartons locked = cartons.lockFor(List.of(view));
+        StockItem item = stockItems.findByIdForUpdate(view.id()).orElseThrow();
+        Reservation hold = owned(item, id, orderId, null);
+        if (!hold.status().isActive()) {
+            throw new BusinessException(ErrorCode.RESERVATION_NOT_ACTIVE,
+                    "Hold %s is already %s".formatted(reservationId, hold.status()));
+        }
+        if (!isFinishedCustomGoods(item, hold)) {
+            throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH, ("Hold %s (%s at %s) is not finished goods "
+                    + "production handed to a packing area").formatted(reservationId, item.status(), item.location()));
+        }
+        Instant now = clock.instant();
+        StockStatus status = item.status();
+        locked.tookFrom(item);
+        item.consumeReservation(id, now);
+        stockItems.save(item);
+        cartons.settle(locked, now);
+        events.publishEventsOf(item);
+        StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.CONSUMPTION, item.sku(),
+                item.lotNumber(), item.location(), null, hold.quantity().value(), status,
+                StockMovement.ReferenceType.PRODUCTION_ORDER, productionOrderId, "Hold " + reservationId, actorId, now)
+                .ofLot(item.lotId()).forOrder(orderId).leaving(item.stockPackageId());
+        ledger.append(line);
+        log.info("Production order {} completed: hold {} ({} x {}) consumed at {}", productionOrderId, reservationId,
+                hold.quantity(), item.sku(), item.location());
+        return toMove(line);
+    }
+
+    /**
+     * BR-10 for goods consumed at completion (G4-Q2). Each hold is taken under the SKU lock and its row's, in stock
+     * row id order, so two cancellations sharing rows never lock them in opposite orders.
+     */
+    @Override
+    @Auditable(action = AuditAction.CREATE, resourceType = "stock-adjustment", resourceId = "#command.orderId()")
+    public List<StockAdjustmentSummary> scrapCancelledPrint(com.stockflow.inventory.api.ScrapCancelledPrintCommand command) {
+        List<StockAdjustmentSummary> asked = new java.util.ArrayList<>();
+        int remaining = command.quantity();
+        List<UUID> ordered = command.reservationIds().stream().distinct()
+                .sorted(Comparator.comparing((UUID id) -> stockItems.findIdByReservationId(ReservationId.of(id))
+                        .map(item -> item.value().toString()).orElse("")).thenComparing(UUID::toString))
+                .toList();
+        for (UUID reservationId : ordered) {
+            if (remaining <= 0) {
+                break;
+            }
+            ReservationId id = ReservationId.of(reservationId);
+            Optional<StockItem> first = stockItems.findIdByReservationId(id).flatMap(stockItems::findById);
+            if (first.isEmpty()) {
+                continue;
+            }
+            policies.lock(first.get().sku().code());
+            StockItem view = holder(id);
+            WarehouseScope.requireLocation(view.location().code());
+            StockItem item = stockItems.findByIdForUpdate(view.id()).orElseThrow();
+            Reservation hold = item.findReservation(id).orElseThrow();
+            if (!command.orderId().equals(hold.orderId())) {
+                continue;
+            }
+            if (isFinishedCustomGoods(item, hold)) {
+                // Handed over before G4-Q2 and never consumed: scrapped whole, as before.
+                scrapCancelledPrint(reservationId, command.orderId(), command.note(), command.requestedBy())
+                        .ifPresent(asked::add);
+                remaining -= hold.quantity().value();
+                continue;
+            }
+            if (hold.status() != com.stockflow.inventory.internal.domain.ReservationStatus.CONSUMED
+                    || !ledger.consumedAtCompletion(id, item.location())) {
+                continue;   // never printed, picked, or released: not printed goods of this order
+            }
+            UUID requestId = UUID.nameUUIDFromBytes((command.requestId() + ":" + reservationId)
+                    .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            Optional<Reservation> standing = item.reservations().stream()
+                    .filter(r -> r.requestId().equals(requestId)).findFirst();
+            if (standing.isPresent()) {
+                // The same cancellation or closure again: its write-off as it stands, nothing brought back twice.
+                adjustments.findLatestForHold(standing.get().id().value()).map(StockOperationsServiceImpl::toSummary)
+                        .ifPresent(asked::add);
+                remaining -= standing.get().quantity().value();
+                continue;
+            }
+            if (command.requestedBy() == null) {
+                log.warn("Hold {}: printed goods of cancelled order {} were consumed at completion; nobody to ask "
+                        + "their SCRAP write-off in the name of, nothing booked back", reservationId, command.orderId());
+                continue;
+            }
+            Instant now = clock.instant();
+            Optional<Reservation> back = item.bookBackForScrap(id, command.orderId(), requestId,
+                    Quantity.of(remaining), now);
+            if (back.isEmpty()) {
+                continue;   // everything this hold consumed is already back for scrap
+            }
+            Reservation scrapHold = back.get();
+            int quantity = scrapHold.quantity().value();
+            stockItems.save(item);
+            ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.PUT_BACK, item.sku(),
+                    item.lotNumber(), null, item.location(), quantity, StockStatus.AVAILABLE,
+                    StockMovement.ReferenceType.ORDER, command.orderId(), "Hold " + scrapHold.id().value(),
+                    command.requestedBy(), now).ofLot(item.lotId()).forOrder(command.orderId()));
+            StockAdjustment adjustment = StockAdjustment.request(adjustments.nextNumber(LocalDate.ofInstant(now,
+                            BUSINESS_ZONE)), item.location(), item.sku(), item.lotNumber(), -quantity,
+                            AdjustmentReason.SCRAP, command.note(), command.requestedBy(), now)
+                    .atLayer(item.receivedAt()).forHold(scrapHold.id().value());
+            StockAdjustmentSummary saved = toSummary(adjustments.save(adjustment));
+            asked.add(saved);
+            remaining -= quantity;
+            log.info("Hold {}: {} x {} printed for order {} and consumed at completion booked back at {} under hold {}; "
+                    + "SCRAP write-off {} asked for", reservationId, quantity, item.sku(), command.orderId(),
+                    item.location(), scrapHold.id().value(), saved.number());
+        }
+        return asked;
     }
 
     /** The same hand-over the other way: finished goods, still held, from the print shop to packing. */
@@ -428,16 +566,16 @@ class StockOperationsServiceImpl implements StockOperations {
     }
 
     /**
-     * The receipt's own layer, found by its identity (SKU, location, lot, receipt time), locked after the SKU lock
-     * as a move takes it; the hold is pinned and named by the caller's request id, so a retried receipt event
-     * holds nothing twice.
+     * The receipt's own loose layer, found by its identity (SKU, location, lot, receipt time), locked after the SKU
+     * lock as a move takes it; the hold is pinned and named by the caller's request id, so a retried receipt event
+     * holds nothing twice. A receipt counted into cartons (#143) names its stock rows instead.
      */
     @Override
     public com.stockflow.inventory.api.StockReservation holdReceived(com.stockflow.inventory.api.HoldReceivedStockCommand command) {
         policies.lock(command.sku().code());
         LocationId location = new LocationId(command.locationCode());
         String lot = blankToNull(command.lotNumber());
-        StockItem view = stockItems.findBySkuAndLocation(command.sku(), location).stream()
+        StockItem view = stockItems.findLooseBySkuAndLocation(command.sku(), location).stream()
                 .filter(item -> Objects.equals(item.lotNumber(), lot)
                         && command.receivedAt().equals(item.receivedAt()))
                 .findFirst()
@@ -461,6 +599,7 @@ class StockOperationsServiceImpl implements StockOperations {
         policies.lock(holder(reservationId).sku().code());
         StockItem view = holder(reservationId);
         WarehouseScope.requireLocation(view.location().code());
+        StockPackageContents.LockedCartons locked = cartons.lockFor(List.of(view));
         StockItem item = stockItems.findByIdForUpdate(view.id()).orElseThrow();
         Reservation hold = owned(item, reservationId, command.orderId(), command.productionOrderId());
         if (!hold.status().isActive() || hold.quantity().isLessThan(Quantity.of(command.quantity()))) {
@@ -469,13 +608,15 @@ class StockOperationsServiceImpl implements StockOperations {
         }
         requireInPrintShop(item);
         Instant now = clock.instant();
+        locked.tookFrom(item);
         item.consumeFromHold(reservationId, Quantity.of(command.quantity()), now);
         stockItems.save(item);
+        cartons.settle(locked, now);
         StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.CONSUMPTION, item.sku(),
                 item.lotNumber(), item.location(), null, command.quantity(), item.status(),
                 StockMovement.ReferenceType.PRODUCTION_ORDER, command.productionOrderId(),
                 command.note() == null ? "Used by the subcontractor" : command.note(), command.actorId(), now)
-                .ofLot(item.lotId());
+                .ofLot(item.lotId()).leaving(item.stockPackageId());
         ledger.append(line);
         log.info("{} x {} consumed at {} out of hold {}", command.quantity(), item.sku(), item.location(),
                 hold.id().value());
@@ -536,6 +677,7 @@ class StockOperationsServiceImpl implements StockOperations {
             case USABLE -> { }
         }
         Optional<StockItem> destinationView = sameLayerAt(sourceView, to);
+        StockPackageContents.LockedCartons lockedCartons = cartons.lockFor(List.of(sourceView));
         StockItem[] locked = lockPair(sourceView, destinationView);
         StockItem source = locked[0];
         StockItem destination = locked[1];
@@ -548,6 +690,7 @@ class StockOperationsServiceImpl implements StockOperations {
         Quantity quantity = Quantity.of(command.quantity());
         Instant now = clock.instant();
         takeFromHold(source, hold, quantity, ReleaseReason.RETURNED_FROM_PRODUCTION, now);
+        lockedCartons.tookFrom(source);
         source.moveOut(quantity);
         stockItems.save(source);
         if (destination == null) {
@@ -556,19 +699,24 @@ class StockOperationsServiceImpl implements StockOperations {
             destination.moveIn(quantity);
             stockItems.saveMerged(destination);
         }
+        cartons.settle(lockedCartons, now);
         StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.MOVE, source.sku(),
                 source.lotNumber(), from, to, quantity.value(), StockStatus.IN_PRODUCTION, StockStatus.AVAILABLE,
                 StockMovement.ReferenceType.PRODUCTION_ORDER, command.productionOrderId(),
-                "Unprinted, from hold " + hold.id().value(), command.actorId(), now).ofLot(source.lotId());
+                "Unprinted, from hold " + hold.id().value(), command.actorId(), now)
+                .ofLot(source.lotId()).leaving(source.stockPackageId());
         ledger.append(line);
         log.info("Returned {} unprinted x {} from {} to {} (hold {})", quantity, source.sku(), from, to,
                 hold.id().value());
         return toMove(line);
     }
 
-    /** The layer of the same goods (SKU, lot, receipt, serial) at {@code location}, if there is one. */
+    /**
+     * The loose layer of the same goods (SKU, lot, receipt, serial) at {@code location}, if there is one. Goods
+     * arriving somewhere arrive loose: a carton's row is never a destination, or its counted contents would change.
+     */
     private Optional<StockItem> sameLayerAt(StockItem source, LocationId location) {
-        return stockItems.findBySkuAndLocation(source.sku(), location).stream()
+        return stockItems.findLooseBySkuAndLocation(source.sku(), location).stream()
                 .filter(item -> item.isSameGoodsAs(source))
                 .findFirst();
     }
@@ -754,6 +902,7 @@ class StockOperationsServiceImpl implements StockOperations {
             }
             item.releaseReservation(held, ReleaseReason.SCRAPPED, now);
         }
+        requireLoose(item);
         adjustment.approveAndPost(approverId, item, now);
         stockItems.save(item);
         StockAdjustment saved = adjustments.save(adjustment);
@@ -829,21 +978,36 @@ class StockOperationsServiceImpl implements StockOperations {
                 .orElse(true);
     }
 
-    /** {@link #findOne}, or the one layer received at {@code receivedAt} when it is given. */
+    /**
+     * {@link #findOne}, or the one loose layer received at {@code receivedAt} when it is given. Loose stock only:
+     * a move, a reclassification or an adjustment named by (SKU, location, lot, receipt time) cannot tell one
+     * carton of a receipt from another, so stock in a carton is moved and adjusted through its carton.
+     */
     private Optional<StockItem> findLayer(Sku sku, LocationId location, String lotNumber, Instant receivedAt) {
         if (receivedAt == null) {
             return findOne(sku, location, lotNumber);
         }
         String lot = blankToNull(lotNumber);
-        return stockItems.findBySkuAndLocation(sku, location).stream()
+        return stockItems.findLooseBySkuAndLocation(sku, location).stream()
                 .filter(item -> Objects.equals(item.lotNumber(), lot) && receivedAt.equals(item.receivedAt()))
                 .findFirst();
+    }
+
+    /**
+     * A move or an adjustment named by (SKU, location, lot, receipt time) reaches loose stock only ({@link #findLayer});
+     * stated here as well, so a lookup changed later cannot take units out of a carton without opening it (#141).
+     */
+    private static void requireLoose(StockItem item) {
+        if (!item.isLoose()) {
+            throw new IllegalStateException("Stock row %s is in stock package %s; it is changed through its carton"
+                    .formatted(item.id(), item.stockPackageId()));
+        }
     }
 
     private Optional<StockItem> findOne(Sku sku, LocationId location, String lotNumber) {
         String lot = blankToNull(lotNumber);
         var matches =
-                stockItems.findBySkuAndLocation(sku, location).stream()
+                stockItems.findLooseBySkuAndLocation(sku, location).stream()
                 .filter(item -> Objects.equals(item.lotNumber(), lot))
                         .toList();
         if (matches.size() > 1) {

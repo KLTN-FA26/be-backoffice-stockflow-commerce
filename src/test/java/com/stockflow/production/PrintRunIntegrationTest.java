@@ -220,6 +220,22 @@ class PrintRunIntegrationTest {
                 line.productionOrderId());
     }
 
+    /**
+     * G4-Q2 (2026-10-21): units of the order or the LSX that left stock at {@code location} when production completed -
+     * consumed holds with their CONSUMPTION ledger row.
+     */
+    private int consumedAt(Line line, String location) {
+        return jdbc.queryForObject("""
+                SELECT COALESCE(SUM(r.quantity), 0) FROM inventory.stock_reservation r
+                  JOIN inventory.stock_item s ON s.id = r.stock_item_id
+                 WHERE r.status = 'CONSUMED' AND s.location_code = ?
+                   AND (r.order_id = ? OR r.production_order_id = ?)
+                   AND EXISTS (SELECT 1 FROM inventory.stock_movement m WHERE m.movement_type = 'CONSUMPTION'
+                                  AND m.reference_type = 'PRODUCTION_ORDER' AND m.reason = 'Hold ' || r.id
+                                  AND m.from_location_code = s.location_code)""", Integer.class, location,
+                line.orderId(), line.productionOrderId());
+    }
+
     private int onHandAt(String location) {
         return jdbc.queryForObject("SELECT COALESCE(SUM(on_hand), 0) FROM inventory.stock_item WHERE sku = ? AND location_code = ?",
                 Integer.class, BLANK.code(), location);
@@ -303,12 +319,10 @@ class PrintRunIntegrationTest {
         assertThat(done.summary().status()).isEqualTo(ProductionOrder.Status.COMPLETED);
         assertThat(done.summary().goodQuantity()).isEqualTo(10);
         assertThat(done.completedAt()).isNotNull();
-        assertThat(heldAt(line, PACKING)).as("all 10 good, held for the order, in packing").isEqualTo(10);
+        // G4-Q2: handed to packing and deducted there as the order completed; nothing of it is held any more.
+        assertThat(consumedAt(line, PACKING)).as("all 10 good, the order's, deducted in packing").isEqualTo(10);
+        assertThat(heldAt(line, PACKING)).isZero();
         assertThat(heldAt(line, PRINT_SHOP)).isZero();
-        assertThat(jdbc.queryForList("""
-                SELECT DISTINCT s.status FROM inventory.stock_reservation r JOIN inventory.stock_item s
-                    ON s.id = r.stock_item_id WHERE r.status = 'HELD' AND (r.order_id = ? OR r.production_order_id = ?)""",
-                String.class, line.orderId(), line.productionOrderId())).containsExactly("AVAILABLE");
         assertThat(inventory.availableToPromise(BLANK)).as("held: nobody else's").isEqualTo(atp - 3);
         assertThat(recorded.matching(ProductionCompleted.class, e -> e.productionOrderId().equals(line.productionOrderId())))
                 .singleElement().isEqualTo(new ProductionCompleted(line.orderId(),
@@ -318,7 +332,7 @@ class PrintRunIntegrationTest {
         // Fulfilment sees every good unit: the reprint hold is the order's now, and on its line.
         List<UUID> held = jdbc.queryForList("""
                 SELECT r.id FROM inventory.stock_reservation r JOIN inventory.stock_item s ON s.id = r.stock_item_id
-                 WHERE r.status = 'HELD' AND s.location_code = ? AND r.order_id = ?""", UUID.class, PACKING,
+                 WHERE r.status = 'CONSUMED' AND s.location_code = ? AND r.order_id = ?""", UUID.class, PACKING,
                 line.orderId());
         assertThat(jdbc.queryForObject("SELECT COALESCE(SUM(quantity), 0) FROM inventory.stock_reservation WHERE id IN ("
                 + String.join(",", java.util.Collections.nCopies(held.size(), "?")) + ")", Integer.class,
@@ -383,7 +397,7 @@ class PrintRunIntegrationTest {
         runs.recordOutput(printer, line.productionOrderId(), 1, List.of());
         ProductionOrders.Detail done = runs.recordQc(inspector, line.productionOrderId(), 1, 0, null, PACKING);
         assertThat(done.summary().status()).isEqualTo(ProductionOrder.Status.COMPLETED);
-        assertThat(heldAt(line, PACKING)).isEqualTo(10);
+        assertThat(consumedAt(line, PACKING)).isEqualTo(10);
         assertThat(done.history()).extracting(ProductionOrders.StatusChange::toStatus).containsSubsequence(
                 "QC", "READY", "MATERIAL_ISSUED", "PRINTING", "QC", "COMPLETED");
     }
@@ -631,7 +645,7 @@ class PrintRunIntegrationTest {
                 .satisfies(e -> assertThat(code((Throwable) e)).isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION));
         assertThat(recorded.matching(ProductionCompleted.class, e -> e.productionOrderId().equals(line.productionOrderId())))
                 .hasSize(1);
-        assertThat(heldAt(line, PACKING)).isEqualTo(3);
+        assertThat(consumedAt(line, PACKING)).as("deducted once").isEqualTo(3);
     }
 
     private static List<Object> race(List<Callable<?>> tasks) throws Exception {
@@ -914,7 +928,7 @@ class PrintRunIntegrationTest {
         assertThat(heldForProduction(child.summary().id(), null)).as("nothing left the child's own").isZero();
         List<UUID> packed = jdbc.queryForList("""
                 SELECT r.id FROM inventory.stock_reservation r JOIN inventory.stock_item s ON s.id = r.stock_item_id
-                 WHERE r.status = 'HELD' AND s.location_code = ? AND s.status = 'AVAILABLE' AND r.order_id = ?
+                 WHERE r.status = 'CONSUMED' AND s.location_code = ? AND s.status = 'AVAILABLE' AND r.order_id = ?
                    AND r.production_order_id IS NULL""", UUID.class, PACKING, line.orderId());
         assertThat(jdbc.queryForObject("SELECT COALESCE(SUM(quantity), 0) FROM inventory.stock_reservation WHERE id = ANY(?)",
                 Integer.class, (Object) packed.toArray(UUID[]::new))).as("the 4 subcontracted cups are the order's").isEqualTo(4);

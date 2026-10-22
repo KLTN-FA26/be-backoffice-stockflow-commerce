@@ -238,11 +238,32 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         // its locks in the same order.
         CreditTerms terms = customers.lockCreditTerms(command.customerId());
         PaymentTerm term = termFor(command.paymentTerm(), terms);
-        order.applyTerms(term,
-                term == PaymentTerm.DEPOSIT && command.depositPercent() == null ? terms.depositPercent()
-                        : command.depositPercent(),
-                term == PaymentTerm.CREDIT ? terms.creditTermDays() : null,
-                balancePolicyFor(term, command.balancePolicy(), terms));
+        com.stockflow.order.api.BalancePolicy policy = balancePolicyFor(term, command.balancePolicy(), terms);
+        boolean balanceOnCredit = policy == com.stockflow.order.api.BalancePolicy.ON_CREDIT;
+        BigDecimal depositPercent = term == PaymentTerm.DEPOSIT && command.depositPercent() == null
+                ? terms.depositPercent() : command.depositPercent();
+        order.applyTerms(term, depositPercent,
+                term == PaymentTerm.CREDIT || balanceOnCredit ? terms.creditTermDays() : null,
+                policy);
+        // BALCREDIT: the balance goes on credit only within the limit - checked here, before any stock is held.
+        BalanceCredit balanceCredit = null;
+        if (balanceOnCredit) {
+            try {
+                balanceCredit = requireBalanceWithinLimit(order, terms);
+            } catch (BusinessException refused) {
+                boolean creditRefusal = refused.errorCode() == ErrorCode.BALANCE_CREDIT_LIMIT_EXCEEDED
+                        || refused.errorCode() == ErrorCode.CUSTOMER_CREDIT_OVERDUE;
+                if (!creditRefusal || command.balancePolicy() != null) {
+                    throw refused;          // Sales asked for ON_CREDIT: Sales changes the terms (409)
+                }
+                // Review of #150: ON_CREDIT came from the customer's terms (the portal cannot choose a policy) - the
+                // balance is then paid before delivery, the policy that never lets unpaid goods leave, instead of
+                // refusing an order the customer could not have placed any other way.
+                order.applyTerms(term, depositPercent, null, com.stockflow.order.api.BalancePolicy.BEFORE_DELIVERY);
+                log.info("Order {}: the balance of customer {} does not fit on credit ({}); paid before delivery instead",
+                        orderNumber, command.customerId(), refused.errorCode());
+            }
+        }
 
         // Direct in-process call across the module boundary, through inventory's published port.
         // It joins this transaction. If reserve() throws InsufficientStockException on line 3,
@@ -270,6 +291,11 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
             order.submit();
             saved = repository.save(order);
         }
+        if (balanceCredit != null) {
+            creditChecks.record(new CreditChecks.Check(order.id().value(), clock.instant(), terms.creditLimit(),
+                    balanceCredit.exposure(), balanceCredit.amount(), CreditChecks.Outcome.WITHIN_LIMIT, null, null,
+                    "Deposit balance on credit"));
+        }
         events.publishEventsOf(order);
 
         log.info("Placed order {} for customer {} with {} line(s), total {}, {} ({})",
@@ -278,9 +304,10 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     }
 
     /**
-     * G2-3 (15 §4.2 step 3, "theo chính sách của khách"): a deposit order's balance is collected as the customer's terms
+    * G2-3 (15 §4.2 step 3, "theo chính sách của khách"): a deposit order's balance is collected as the customer's terms
      * say. Staff may tighten it to BEFORE_DELIVERY - goods leave only paid - but not collect on delivery for a customer
-     * whose terms do not allow it ({@code BALANCE_POLICY_NOT_ALLOWED}). Other terms have no balance to collect.
+     * whose terms do not allow it ({@code BALANCE_POLICY_NOT_ALLOWED}). ON_CREDIT (BALCREDIT) needs a customer allowed
+     * credit, whether their terms or Sales chose it. Other terms have no balance to collect.
      */
     static com.stockflow.order.api.BalancePolicy balancePolicyFor(PaymentTerm term,
                                                                   com.stockflow.order.api.BalancePolicy requested,
@@ -294,6 +321,16 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         com.stockflow.order.api.BalancePolicy customers = terms.depositBalancePolicy() == null
                 ? com.stockflow.order.api.BalancePolicy.BEFORE_DELIVERY
                 : com.stockflow.order.api.BalancePolicy.valueOf(terms.depositBalancePolicy().name());
+        com.stockflow.order.api.BalancePolicy chosen = requested == null ? customers : requested;
+        if (chosen == com.stockflow.order.api.BalancePolicy.ON_CREDIT) {
+            // BALCREDIT: the balance on credit is the customer's debt - only for a customer allowed credit (Sales may
+            // choose it for one; the limit is checked when the order is placed).
+            if (!terms.allowCredit()) {
+                throw new BusinessException(ErrorCode.BALANCE_POLICY_NOT_ALLOWED,
+                        "Customer %s is not allowed credit: the balance cannot go on credit".formatted(terms.customerId()));
+            }
+            return chosen;
+        }
         if (requested == null || requested == customers) {
             return customers;
         }
@@ -302,6 +339,46 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         }
         throw new BusinessException(ErrorCode.BALANCE_POLICY_NOT_ALLOWED,
                 "Customer %s pays the balance of a deposit order %s".formatted(terms.customerId(), customers));
+    }
+
+    /** What the customer owed on credit before the order, and the balance it puts on credit. */
+    private record BalanceCredit(BigDecimal exposure, BigDecimal amount) {
+    }
+
+    /**
+     * BALCREDIT (lead's decision 2026-10-21; kltn-docs 15 §4.2 step 3, BR-03): a deposit order's balance goes on credit
+     * only when what the customer already owes on credit - undelivered credit (orders on credit, balances on credit) and
+     * open receivables - plus this balance stays within their limit, and they are not overdue (15 §4.3 step 4). Over
+     * it the order is refused, never held: Sales changes the terms (409 {@code BALANCE_CREDIT_LIMIT_EXCEEDED},
+     * {@code CUSTOMER_CREDIT_OVERDUE}). The customer's row is locked (lockCreditTerms), so two orders are checked one
+     * after the other.
+     */
+    private BalanceCredit requireBalanceWithinLimit(Order order, CreditTerms terms) {
+        var position = paymentService.creditPosition(order.customerId());
+        BigDecimal amount = order.creditAmount();
+        if (position.hasOverdue()) {
+            throw new BusinessException(ErrorCode.CUSTOMER_CREDIT_OVERDUE, ("Customer %s has overdue receivables: the "
+                    + "balance of a deposit order cannot go on credit; choose BEFORE_DELIVERY or ON_DELIVERY")
+                    .formatted(terms.customerId()), List.of(new com.stockflow.common.api.FieldError("balancePolicy",
+                    "the customer is overdue", "CreditOverdue")));
+        }
+        BigDecimal exposure = creditChecks.undeliveredCreditExposure(order.customerId(), order.id().value())
+                .add(position.outstandingReceivables());
+        if (exposure.add(amount).compareTo(terms.creditLimit()) > 0) {
+            String currency = order.total().currency().getCurrencyCode();
+            throw new BusinessException(ErrorCode.BALANCE_CREDIT_LIMIT_EXCEEDED, ("The balance on credit, %s %s, would "
+                    + "take customer %s to %s %s owed on credit, above their limit of %s %s (%s %s available): change "
+                    + "the balance policy or the deposit").formatted(plain(amount), currency, terms.customerId(),
+                    plain(exposure.add(amount)), currency, plain(terms.creditLimit()), currency,
+                    plain(terms.creditLimit().subtract(exposure).max(BigDecimal.ZERO)), currency),
+                    List.of(new com.stockflow.common.api.FieldError("balancePolicy",
+                            "over the customer's credit limit", "CreditLimitExceeded")));
+        }
+        return new BalanceCredit(exposure, amount);
+    }
+
+    private static String plain(BigDecimal value) {
+        return value.stripTrailingZeros().toPlainString();
     }
 
     /** kltn-docs 15 BR-01: the term asked for, or the customer's default, and only one they may use. */
@@ -398,10 +475,21 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     }
 
     @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public void recordPackingStarted(UUID orderId) {
+        Order order = lockOrder(orderId);
+        if (order.recordPackingStarted(clock.instant())) {
+            repository.save(order);
+            log.info("Order {}: packing started, delivery mode {} locked", order.orderNumber(), order.deliveryMode());
+        }
+    }
+
+    @Override
     public void recordPacked(UUID orderId) {
         Order order = lockOrder(orderId);
         if (order.recordPacked(clock.instant())) {
             repository.save(order);
+            closeUndecidableCancellationRequest(order);
             log.info("Order {}: packed", order.orderNumber());
         }
     }
@@ -410,6 +498,14 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
     public Optional<OrderStatus> lockedStatus(UUID orderId) {
         return repository.findByIdForUpdate(new OrderId(orderId)).map(Order::status);
+    }
+
+    @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public boolean lockedLineWithdrawn(UUID orderId, UUID lineId) {
+        return repository.findByIdForUpdate(new OrderId(orderId))
+                .map(order -> order.status() == OrderStatus.CANCELLED || order.lineWithdrawn(lineId))
+                .orElse(true);
     }
 
     /**
@@ -480,12 +576,16 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                 clock.instant());
 
         if (wasHoldingStock) {
-            releaseHolds(order, order.lines(), "Order %s cancelled: printed custom goods (BR-PRD-10)"
-                    .formatted(order.orderNumber()), command.cancelledBy());
+            // Nothing has shipped (a cancellation after a package is refused): every open unit of a print line is scrap.
+            releaseHolds(order, order.lines().stream().collect(Collectors.toMap(line -> line,
+                            line -> line.quantity() - line.cancelledQuantity(), (a, b) -> a, java.util.LinkedHashMap::new)),
+                    "cancel", "Order %s cancelled: printed custom goods (BR-PRD-10)".formatted(order.orderNumber()),
+                    command.cancelledBy());
             order.clearReservations();
         }
 
         Order saved = repository.save(order);
+        closeUndecidableCancellationRequest(order);
         events.publishEventsOf(order);
         // The code, not the reason text: the text carries the customer's note, and a line break in it
         // would forge log lines (CodeQL java/log-injection).
@@ -494,19 +594,27 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     }
 
     /**
-     * Frees the stock holds of {@code lines}. BR-PRD-10 (decision 2026-10-16): goods printed for this order and waiting
-     * in packing are scrapped, never sold - kept under their hold, a SCRAP write-off asked for in {@code by}'s name.
-     * Inventory decides from the goods' state which holds those are; the release leaves them alone, and releasing a
-     * hold already consumed or closed does nothing.
+     * Frees the stock holds of {@code closed}'s lines. BR-PRD-10 (decision 2026-10-16, 19/10: cancel allowed with a
+     * production fee, the printed cups are SCRAP): the printed goods of a print line that will not ship - as many as
+     * {@code closed} says for it - are scrapped, never sold: since G4-Q2 (2026-10-21) they left stock when production
+     * completed, so inventory books exactly those units back under a hold of their own and asks a SCRAP write-off of
+     * them in {@code by}'s name. Inventory decides from the goods' state which holds are printed goods; the release
+     * leaves those alone, and releasing a hold already consumed or closed does nothing.
+     *
+     * @param step what closes the units ("cancel", "closure"): with the line and its closed count after the step, the
+     *             idempotency key of the write-off
      */
-    private void releaseHolds(Order order, List<OrderLine> lines, String scrapNote, UUID by) {
+    private void releaseHolds(Order order, java.util.Map<OrderLine, Integer> closed, String step, String scrapNote,
+                              UUID by) {
         // SKU order: each write-off takes its SKU's lock, and checkout takes them sorted too (no deadlock).
-        lines.stream().filter(OrderLine::isMadeToOrder)
-                .sorted(java.util.Comparator.comparing(line -> line.sku().code()))
-                .flatMap(line -> line.reservationIds().stream())
-                .forEach(reservationId -> inventory.scrapCancelledPrint(reservationId, order.id().value(), scrapNote,
-                        by));
-        lines.stream().flatMap(line -> line.reservationIds().stream())
+        closed.entrySet().stream().filter(entry -> entry.getKey().isMadeToOrder() && entry.getValue() > 0)
+                .sorted(java.util.Comparator.comparing(entry -> entry.getKey().sku().code()))
+                .forEach(entry -> inventory.scrapCancelledPrint(new com.stockflow.inventory.api.ScrapCancelledPrintCommand(
+                        order.id().value(), UUID.nameUUIDFromBytes("print-scrap:%s:%s:%d".formatted(step,
+                                entry.getKey().id(), entry.getKey().cancelledQuantity())
+                                .getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+                        entry.getKey().reservationIds(), entry.getValue(), scrapNote, by)));
+        closed.keySet().stream().flatMap(line -> line.reservationIds().stream())
                 .forEach(reservationId -> inventory.release(reservationId, "ORDER_CANCELLED"));
     }
 
@@ -574,15 +682,16 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
             referToStaff(order, CancellationReasonCode.PAYMENT_FAILED);
             return;
         }
-        if (!order.status().canTransitionTo(OrderStatus.CANCELLED) || order.packedAt() != null) {
+        if (!order.status().canTransitionTo(OrderStatus.CANCELLED) || order.packedForGood()) {
             // A listener must not throw for a state it cannot change: the publication would be retried for ever.
             log.warn("Payment of order {} failed ({}), but the order is {}{}: left for Sales", order.orderNumber(),
-                    failureCode, order.status(), order.packedAt() != null ? " and packed" : "");
+                    failureCode, order.status(), order.packedForGood() ? " and packed" : "");
             return;
         }
         order.cancel(CancellationReasonCode.PAYMENT_FAILED, failureCode, null, null, clock.instant());
         order.clearReservations();
         repository.save(order);
+        closeUndecidableCancellationRequest(order);
         events.publishEventsOf(order);
     }
 
@@ -606,6 +715,12 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     /** @param ofReceivable the payment paid a receivable of the order (payment's allocation, G3-2 credit exposure) */
     public void recordPayment(UUID orderId, UUID paymentId, java.math.BigDecimal amount, String currency,
                               boolean ofReceivable) {
+        recordPayment(orderId, paymentId, amount, currency, ofReceivable, false);
+    }
+
+    /** @param ofFeeReceivable the money paid a closure fee's receivable (re-review of #150) */
+    public void recordPayment(UUID orderId, UUID paymentId, java.math.BigDecimal amount, String currency,
+                              boolean ofReceivable, boolean ofFeeReceivable) {
         Order order = repository.findByIdForUpdate(new OrderId(orderId))
                 .orElseThrow(() -> new IllegalArgumentException("No order with id " + orderId));
         if (!order.total().currency().getCurrencyCode().equals(currency)) {
@@ -617,7 +732,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
             return; // Redelivered event; already counted.
         }
         boolean confirmed = order.recordPayment(new Money(amount, order.total().currency()), clock.instant(),
-                ofReceivable);
+                ofReceivable, ofFeeReceivable);
         if (confirmed) {
             inventory.pinReservations(orderId);
         }
@@ -637,6 +752,13 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
      */
     public void reversePayment(UUID orderId, UUID reversalId, java.math.BigDecimal amount, String currency,
                                boolean ofReceivable, String reason, UUID by, java.time.Instant at) {
+        reversePayment(orderId, reversalId, amount, currency, ofReceivable, false, reason, by, at);
+    }
+
+    /** @param ofFeeReceivable the money had paid a closure fee's receivable (re-review of #150) */
+    public void reversePayment(UUID orderId, UUID reversalId, java.math.BigDecimal amount, String currency,
+                               boolean ofReceivable, boolean ofFeeReceivable, String reason, UUID by,
+                               java.time.Instant at) {
         Order order = repository.findByIdForUpdate(new OrderId(orderId))
                 .orElseThrow(() -> new IllegalArgumentException("No order with id " + orderId));
         if (!order.total().currency().getCurrencyCode().equals(currency)) {
@@ -647,8 +769,8 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         if (!payments.record(reversalId, orderId, amount.negate(), currency, clock.instant())) {
             return; // Redelivered event; already counted.
         }
-        boolean held = order.reversePayment(new Money(amount, order.total().currency()), ofReceivable, reason, by,
-                at == null ? clock.instant() : at);
+        boolean held = order.reversePayment(new Money(amount, order.total().currency()), ofReceivable,
+                ofFeeReceivable, reason, by, at == null ? clock.instant() : at);
         if (held) {
             log.warn("Order {} put on hold: {} {} of its payment was taken back ({})", order.orderNumber(), amount,
                     currency, reason);
@@ -855,16 +977,27 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     @com.stockflow.common.audit.Auditable(action = com.stockflow.common.audit.AuditAction.TRANSITION,
             resourceType = "order", resourceId = "#orderId")
     public OrderSummary closeRemainder(UUID orderId, CancellationReasonCode reasonCode, String note, UUID by) {
+        // Declared here, not left to the interface's default: the class's @Transactional must cover it.
+        return closeRemainder(orderId, reasonCode, note, null, by);
+    }
+
+    @Override
+    @com.stockflow.common.audit.Auditable(action = com.stockflow.common.audit.AuditAction.TRANSITION,
+            resourceType = "order", resourceId = "#orderId")
+    public OrderSummary closeRemainder(UUID orderId, CancellationReasonCode reasonCode, String note,
+                                       com.stockflow.order.api.CancellationFee fee, UUID by) {
         Order order = lockOrder(orderId);
         java.util.Map<UUID, Integer> closedBefore = order.lines().stream()
                 .collect(Collectors.toMap(OrderLine::id, OrderLine::cancelledQuantity));
-        BigDecimal closed = order.closeRemainder(reasonCode, note, by, clock.instant());
-        List<OrderLine> closedLines = order.lines().stream()
+        BigDecimal closed = order.closeRemainder(reasonCode, note, fee, by, clock.instant());
+        java.util.Map<OrderLine, Integer> closedLines = order.lines().stream()
                 .filter(line -> line.cancelledQuantity() > closedBefore.get(line.id()))
-                .toList();
-        // The holds of the units that will not go: still held stock is freed, printed goods are scrapped (BR-PRD-10),
-        // a hold already consumed by a pick is left as it is (its goods are fulfillment's to put back, G4-4).
-        releaseHolds(order, closedLines, "Order %s: rest closed, printed custom goods (BR-PRD-10)"
+                .collect(Collectors.toMap(line -> line, line -> line.cancelledQuantity() - closedBefore.get(line.id()),
+                        (a, b) -> a, java.util.LinkedHashMap::new));
+        // The holds of the units that will not go: still held stock is freed, printed goods not shipped are scrapped
+        // (BR-PRD-10) - only the closed units, the shipped ones are the customer's - and a hold already consumed by a
+        // pick is left as it is (its goods are fulfillment's to put back, G4-4).
+        releaseHolds(order, closedLines, "closure", "Order %s: rest closed, printed custom goods (BR-PRD-10)"
                 .formatted(order.orderNumber()), by);
         log.info("Order {}: rest closed ({}), {} {} worth; now {}", order.orderNumber(), reasonCode, closed,
                 order.total().currency(), order.status());
@@ -873,8 +1006,36 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
 
     private OrderSummary saved(Order order) {
         Order saved = repository.save(order);
+        closeUndecidableCancellationRequest(order);
         events.publishEventsOf(order);
         return toSummary(saved);
+    }
+
+    /**
+     * E2E QA 2026-10-21: a customer's cancellation request still waiting when the order passes the point where
+     * cancelling can be decided - its first package completed (decision 2026-10-17), handed over, delivered - or is
+     * cancelled another way, could only ever be refused ({@code ORDER_NOT_CANCELLABLE}), and the customer saw it pending
+     * for good. It closes here, in the transaction that moved the order, as {@code EXPIRED} with a note the customer
+     * reads on the order. Called after every save that may move the order; nothing to do in the common case.
+     */
+    private void closeUndecidableCancellationRequest(Order order) {
+        OrderStatus status = order.status();
+        String why;
+        if (status == OrderStatus.CANCELLED) {
+            why = "Closed: the order was cancelled.";
+        } else if (order.packedForGood() || !status.canTransitionTo(OrderStatus.CANCELLED)) {
+            why = "Closed: the order is %s and can no longer be cancelled; ask for a return instead."
+                    .formatted(order.packedForGood() && status.canTransitionTo(OrderStatus.CANCELLED)
+                            ? OrderStatus.PACKED : status);
+        } else {
+            return;
+        }
+        cancellationRequests.findPending(order.id().value()).ifPresent(request -> {
+            request.expire(why, clock.instant());
+            cancellationRequests.save(request);
+            log.info("Order {}: cancellation request {} closed as EXPIRED ({})", order.orderNumber(), request.id(),
+                    status);
+        });
     }
 
     @Override
@@ -978,7 +1139,9 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         return new OrderSummary.Lifecycle(order.holdReason(), order.statusBeforeHold(), order.holdNote(),
                 order.packedAt(), order.shippedAt(), order.deliveredAt(), order.deliveryFailureReason(), order.completedAt(),
                 order.closedAt(), order.billedAmount(), order.billable(), order.amountDue(),
-                order.amountDueBeforeHandover(), progress, shipments, order.amountDueOnDelivery(), order.codAmount());
+                order.amountDueBeforeHandover(), progress, shipments, order.amountDueOnDelivery(), order.codAmount(),
+                order.allowPartialShipment(), order.printLinesReady(), order.deliveryMode(),
+                order.deliveryModeLocked());
     }
 
     private static OrderAddressSnapshot toSnapshot(CheckoutCustomer.CheckoutAddress address) {

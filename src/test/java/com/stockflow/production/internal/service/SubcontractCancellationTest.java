@@ -83,7 +83,9 @@ class SubcontractCancellationTest {
         OrderSummary sales = mock(OrderSummary.class);
         when(sales.status()).thenReturn(salesOrderStatus);
         when(salesOrders.findById(child.salesOrderId())).thenReturn(Optional.of(sales));
-        when(salesOrders.lockedStatus(child.salesOrderId())).thenReturn(Optional.of(salesOrderStatus));
+        // A job of a sales order line asks whether that line is still wanted (cancelled order, or the line closed).
+        when(salesOrders.lockedLineWithdrawn(child.salesOrderId(), child.salesOrderLineId()))
+                .thenReturn(salesOrderStatus == com.stockflow.order.api.OrderStatus.CANCELLED);
         when(stock.holdForReprint(any(), anyInt())).thenReturn(true);
         return child;
     }

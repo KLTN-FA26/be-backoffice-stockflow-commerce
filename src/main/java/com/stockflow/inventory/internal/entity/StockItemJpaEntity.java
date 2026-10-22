@@ -58,11 +58,13 @@ public class StockItemJpaEntity extends BaseEntity {
         this.receivedAt = receivedAt; this.serialNumber = serialNumber;
     }
 
+    /** A new row as the mapper writes it: its lot (null: the trigger resolves it) and its stock package (null: loose). */
     public StockItemJpaEntity(UUID id, String sku, String locationCode, String lotNumber,
                        LocalDate expiryDate, int onHand, int reserved, StockStatus status,
-                       java.time.Instant receivedAt, String serialNumber, UUID lotId) {
+                       java.time.Instant receivedAt, String serialNumber, UUID lotId, UUID stockPackageId) {
         this(id, sku, locationCode, lotNumber, expiryDate, onHand, reserved, status, receivedAt, serialNumber);
         this.lotId = lotId;
+        this.stockPackageId = stockPackageId;
     }
 
     @Column(name = "sku", nullable = false, length = 64)
@@ -99,6 +101,15 @@ public class StockItemJpaEntity extends BaseEntity {
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 32)
     private StockStatus status;
+
+    /**
+     * The stock package (carton) the row is the contents of; null for loose stock (V20261020000200). Written
+     * when the row is made and not changed afterwards: moving a carton moves its rows, it does not re-parent them.
+     */
+    @Column(name = "stock_package_id", updatable = false)
+    private UUID stockPackageId;
+
+    public UUID getStockPackageId() { return stockPackageId; }
 
     /**
      * Reservations are part of the aggregate, so they are loaded and saved with it —

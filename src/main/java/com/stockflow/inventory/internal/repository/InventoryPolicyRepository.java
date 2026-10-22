@@ -12,9 +12,12 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
 import java.time.LocalDate;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 
 /** Writes only inventory schema. The same advisory lock is taken by the stock-row trigger. */
 @Repository
@@ -29,10 +32,23 @@ public class InventoryPolicyRepository {
         jdbc.query("select pg_advisory_xact_lock(hashtextextended(?, 701))", rs -> {}, sku);
     }
 
+    /**
+     * The SKU locks (sorted), then these SKUs' cartons in stock, then every stock row of them, each in id order: the
+     * lock order of V20261020000100. The cartons come before the rows because a caller here may take units out of a
+     * carton's row (a transfer dispatch), and every carton writer takes the carton first; locking the rows first
+     * would wait in a circle with a pick holding a carton and waiting for its row.
+     */
     public void lockReservationStock(Set<String> skus) {
         if (skus.isEmpty()) return;
         skus.stream().sorted().forEach(this::lock);
         String placeholders = String.join(",", Collections.nCopies(skus.size(), "?"));
+        jdbc.query("""
+                        select p.id from inventory.stock_package p
+                          join inventory.inventory_items i on i.id = p.inventory_item_id
+                         where i.sku in (""" + placeholders + """
+                        ) and p.status = 'IN_STOCK' order by p.id for update of p""",
+                r -> {},
+                skus.toArray());
         jdbc.query(
                 "select id from inventory.stock_item where sku in ("
                         + placeholders
@@ -96,6 +112,17 @@ public class InventoryPolicyRepository {
         return jdbc.query("select * from inventory.inventory_items where id = ?", (rs, n) ->
                 new ItemRow(rs.getObject("id", java.util.UUID.class), rs.getString("sku"), rs.getLong("version"),
                         logistics(rs), policy(rs)), id).stream().findFirst();
+    }
+
+    /** The items with these SKUs, in one SELECT; a SKU without an item is simply absent. */
+    public List<ItemRow> findBySkus(Collection<String> skus) {
+        if (skus.isEmpty()) {
+            return List.of();
+        }
+        return jdbc.query("select * from inventory.inventory_items where sku = any (?)", ps ->
+                ps.setArray(1, ps.getConnection().createArrayOf("text", skus.toArray())), (rs, n) ->
+                new ItemRow(rs.getObject("id", UUID.class), rs.getString("sku"), rs.getLong("version"),
+                        logistics(rs), policy(rs)));
     }
 
     private static InventoryPolicy policy(java.sql.ResultSet rs) throws java.sql.SQLException {

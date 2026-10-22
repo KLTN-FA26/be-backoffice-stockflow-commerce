@@ -110,6 +110,8 @@ public enum ErrorCode {
     LOCATION_NOT_FOUND("Location not found", 404),
     /** No stock of this SKU (and lot) is held at this location. */
     STOCK_ITEM_NOT_FOUND("No such stock at this location", 404),
+    /** No stock package (carton) with this id or LPN (SCRUM-473). */
+    STOCK_PACKAGE_NOT_FOUND("No such stock package", 404),
     STOCK_ADJUSTMENT_NOT_FOUND("Stock adjustment not found", 404),
     CANCELLATION_REQUEST_NOT_FOUND("Cancellation request not found", 404),
     RECEIVABLE_NOT_FOUND("Receivable not found", 404),
@@ -183,6 +185,8 @@ public enum ErrorCode {
     ADJUSTMENT_SELF_APPROVAL("A stock adjustment cannot be decided by the person who requested it", 409),
     INVALID_ADJUSTMENT_TRANSITION("This stock adjustment has already been decided", 409),
     INVALID_TRANSFER_TRANSITION("This transfer order cannot move to that status right now", 409),
+    /** The life of a stock package (V20261020000100): RECEIVING → IN_STOCK | VOID, IN_STOCK → CONSUMED | LOST, LOST → IN_STOCK. */
+    INVALID_STOCK_PACKAGE_TRANSITION("This stock package cannot do that in its current status", 409),
     /** Four eyes on a transfer above the approval threshold. */
     TRANSFER_SELF_APPROVAL("A transfer order cannot be decided by the person who submitted it", 409),
     /** BR-01 (docs 03): goods are received only against a CONFIRMED or PARTIALLY_RECEIVED purchase order. */
@@ -203,6 +207,8 @@ public enum ErrorCode {
     /** Two receipt lines for the same PO line and lot (uk_goods_receipt_lines_lot). */
     DUPLICATE_RECEIPT_LINE("The same purchase order line and lot appear twice on this receipt", 409),
     RECEIPT_LINE_NOT_ON_PO("This line is not a line of the receipt's purchase order", 409),
+    /** Cartons were labelled on the line (SCRUM-473): void or recount them before the line is dropped. */
+    RECEIPT_LINE_HAS_PACKAGES("This receipt line has labelled cartons", 409),
     /** The PO line is closed, cancelled or fully received: nothing more is received against it. */
     PO_LINE_NOT_OPEN("This purchase order line is no longer open for receiving", 409),
     /** One stock row per SKU, location and lot: quarantined and rejected goods need two areas. */
@@ -310,6 +316,22 @@ public enum ErrorCode {
     PAYMENT_REVERSAL_NOT_ALLOWED("This payment can no longer be taken back", 409),
     /** G2-3 (15 §4.2 step 3): the customer's terms do not let the balance be collected that way. */
     BALANCE_POLICY_NOT_ALLOWED("This customer may not use that way of paying the balance", 409),
+    /**
+     * BALCREDIT (lead's decision 2026-10-21): a deposit order's balance on credit would take the customer past their
+     * credit limit, or they are overdue. Refused at placement, never held: Sales changes the terms.
+     */
+    BALANCE_CREDIT_LIMIT_EXCEEDED("The balance on credit would exceed the customer's credit limit", 409),
+    /** PACK-PARTIAL (lead's decision 2026-10-21): the order does not allow a partial shipment; Sales decides. */
+    ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED("This order does not allow partial shipments", 409),
+    /** PACK-PARTIAL: whether the order may ship in parts can no longer change once everything left or it is closed. */
+    ORDER_PARTIAL_SHIPMENT_LOCKED("Partial shipment can no longer be changed on this order", 409),
+    /** LP-1 (lead's decision 2026-10-22): the delivery mode is locked once packing of the order started. */
+    DELIVERY_MODE_LOCKED("The delivery mode can no longer be changed on this order", 409),
+    /**
+     * LP-2 (lead's decision 2026-10-22): a full truckload is never paid by a carrier collecting on delivery
+     * ({@code ck_shipment_ftl_no_cod}); Sales changes the balance policy, or the order stays a parcel shipment.
+     */
+    DELIVERY_MODE_FTL_NO_COD("A full-truckload order cannot have its balance collected on delivery", 409),
     /** G2-3: a carrier remittance names a receivable the customer pays themselves. */
     RECEIVABLE_NOT_CARRIER_COLLECTED("This receivable is not collected by a carrier", 409),
     /** G2-3: the customer paid this balance to the carrier; record the carrier's remittance instead. */
@@ -365,7 +387,7 @@ public enum ErrorCode {
     PACKAGE_SHIPPED("The package is in a shipment already", 409),
     /** Docs 08 BR-01: everything the order still wants must be packed, or a partial shipment asked for. */
     PACKING_INCOMPLETE("Not everything is packed yet", 409),
-    /** The split-shipment policy is off (stockflow.fulfillment.packing.partial-shipments). */
+    /** PACK-PARTIAL (lead's decision 2026-10-21): the order does not allow a partial shipment; Sales decides. */
     PACK_PARTIAL_NOT_ALLOWED("Partial shipments are not allowed", 409),
     PACK_NOTHING_TO_SHIP("No sealed package is waiting to ship", 409),
     /** Docs 09 §5: the shipment's status does not allow the step. */
@@ -378,6 +400,9 @@ public enum ErrorCode {
     HANDOVER_NOT_SIGNED("Both sides must sign the manifest", 400),
     CARRIER_CODE_EXISTS("Carrier code already exists", 409),
     CARRIER_INACTIVE("This carrier is no longer in use", 409),
+    /** SCRUM-287 load planning: the vehicle-type catalogue (kltn-docs 09 §3). */
+    VEHICLE_TYPE_NOT_FOUND("Vehicle type not found", 404),
+    VEHICLE_TYPE_CODE_EXISTS("Vehicle type code already exists", 409),
     INVALID_LOAD_TRANSITION("The load cannot do that in its current status", 409),
     /** Docs 09 edge: a parcel of another shipment, warehouse or load scanned by mistake; the message names where it belongs. */
     PACKAGE_NOT_IN_LOAD("This package is not on this load's manifest", 409),

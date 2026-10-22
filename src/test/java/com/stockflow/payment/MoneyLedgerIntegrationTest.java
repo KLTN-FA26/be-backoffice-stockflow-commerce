@@ -126,6 +126,9 @@ class MoneyLedgerIntegrationTest {
         OrderSummary order = orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), who, null, null, false,
                 List.of(new PlaceOrderCommand.Line(SOFA, units, Money.vnd(PRICE), null)), term, null, policy));
         placed.add(order.orderId());
+        // Split shipments throughout: Sales allowed them on the order (PACK-PARTIAL, lead's decision 2026-10-21).
+        tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE ordering.customer_order SET allow_partial_shipment = TRUE WHERE id = ?", order.orderId()));
         return order;
     }
 
@@ -137,6 +140,9 @@ class MoneyLedgerIntegrationTest {
         OrderSummary order = orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), customer, null, null, false,
                 List.of(new PlaceOrderCommand.Line(SOFA, 1, Money.vnd(price), null)), term, depositPercent, null));
         placed.add(order.orderId());
+        // Split shipments throughout: Sales allowed them on the order (PACK-PARTIAL, lead's decision 2026-10-21).
+        tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE ordering.customer_order SET allow_partial_shipment = TRUE WHERE id = ?", order.orderId()));
         return order;
     }
 
@@ -388,9 +394,13 @@ class MoneyLedgerIntegrationTest {
         terms(customer, DepositBalancePolicy.ON_DELIVERY);
         OrderSummary order = place(PaymentTerm.DEPOSIT, 2);            // 10M, deposit 3M
         assertThat(order.payment().balancePolicy()).isEqualTo(BalancePolicy.ON_DELIVERY);
-        assertThat(order.lifecycle().amountDueOnDelivery()).isEqualByComparingTo("10000000");
+        // 15 BR-08: what is collected on delivery is the balance after the deposit, shown so before the deposit is in
+        // (E2E QA 2026-10-21: it showed the whole 10M), and unchanged once it is.
+        assertThat(order.lifecycle().amountDueOnDelivery()).isEqualByComparingTo("7000000");
         transfer(ref(), 3_000_000, List.of(pay(order, 3_000_000)));
         awaitStatus(order, OrderStatus.CONFIRMED);
+        assertThat(orders.findById(order.orderId()).orElseThrow().lifecycle().amountDueOnDelivery())
+                .isEqualByComparingTo("7000000");
         releases.release(order.orderId(), DemoData.WAREHOUSE_HCM, accountant);
         orders.startPicking(order.orderId(), accountant);
         UUID s1 = UUID.randomUUID();

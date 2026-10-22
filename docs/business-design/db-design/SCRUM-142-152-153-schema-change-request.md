@@ -1,12 +1,13 @@
 # Yêu cầu duyệt schema — SCRUM-142 / 152 / 153 (Sprint 3)
 
 Ngày đề xuất: 19/10/2026. Người duyệt schema: **Tú**. Nhánh `feature/sprint3-batch-fefo-traceability-category`,
-rebase trên develop `5f00ef5a`, sau đó merge develop `535e6c38` (19/10) `1407fff5` và `db9a3df9` (21/10). Chi tiết nghiệp vụ và API: `docs/SCRUM-142-152-153-171-183-backend.md`.
+rebase trên develop `5f00ef5a`, sau đó merge develop `535e6c38` (19/10) `1407fff5`, `db9a3df9`, `59fa5359` (21/10) và `56177641` (22/10). Chi tiết nghiệp vụ và API: `docs/SCRUM-142-152-153-171-183-backend.md`.
 
-Ba migration mới, version cao hơn bản mới nhất trên develop (`V20261021000500`, PR #137). PR #144 đang mở dùng `001100`/`001200`: nhánh này cần merge trước, nếu không phải đổi số. Không sửa migration đã áp,
-không reset dữ liệu, không kích hoạt gì trong `db/pending`.
+Ba migration mới, version cao hơn bản mới nhất trên develop (`V20261022000900`, sau khi merge develop `56177641`
+ngày 22/10) và cao hơn các PR đang mở #155 (`001000`) và #158 (`001100`). Không sửa migration đã áp, không reset dữ
+liệu, không kích hoạt gì trong `db/pending`.
 
-## 1. `V20261021000600__inventory_sku_reservation_and_allocation.sql` (SCRUM-152)
+## 1. `V20261022001200__inventory_sku_reservation_and_allocation.sql` (SCRUM-152)
 
 **Vì sao.** Docs 01 tách *Reserved* (giữ mềm theo SKU, có hạn, chưa gắn vị trí) và *Allocated* (giữ cứng ở bin + lô,
 tạo khi release đơn, FEFO — BR-STK-006). Code cũ chọn bin/lô ngay lúc checkout.
@@ -24,7 +25,7 @@ tạo khi release đơn, FEFO — BR-STK-006). Code cũ chọn bin/lô ngay lúc
 
 Dữ liệu cũ: mọi dòng hiện có đều trên `stock_item`, chỉ được điền `sku`. Hold checkout cũ vẫn hợp lệ và vẫn pick được.
 
-## 2. `V20261021000700__inventory_stock_lot_traceability.sql` (SCRUM-142/153)
+## 2. `V20261022001300__inventory_stock_lot_traceability.sql` (SCRUM-142/153)
 
 | Thay đổi | Ý nghĩa |
 |---|---|
@@ -35,7 +36,7 @@ Dữ liệu cũ: mọi dòng hiện có đều trên `stock_item`, chỉ đượ
 | `inventory.item_in_use` | thân hàm của develop `V20261020000100` (đã có `stock_package`) + thêm `stock_reservation`, `stock_lot`, để guard đổi SKU trả lỗi nghiệp vụ trước khi đụng FK |
 | backfill | lô theo phiếu nhập từ sổ cái; còn lại UNTRACED theo định danh lớp tồn; `lot_id`/`order_id`/`order_number` của sổ cái khi xác định được duy nhất. Trigger append-only của `stock_movement` chỉ tạm tắt cho các câu backfill này |
 
-## 3. `V20261021000800__inventory_cycle_count_counter_grant.sql` (X-SHORT / F-CNT)
+## 3. `V20261022001400__inventory_cycle_count_counter_grant.sql` (X-SHORT / F-CNT)
 
 Cấp `inventory-cycle-counts:VIEW_PAGE`, `READ` cho `WAREHOUSE_STAFF` (docs 04c F-CNT: NV kho là người đếm); seed
 `V20260903000100` chỉ cấp cho QL kho và Inventory Planner nên NV kho bị 403 ở danh sách phiếu kiểm kê mù. Tăng
@@ -43,8 +44,9 @@ Cấp `inventory-cycle-counts:VIEW_PAGE`, `READ` cho `WAREHOUSE_STAFF` (docs 04c
 
 ## 4. Đã kiểm tra
 
-- Full `mvn test` (Testcontainers) sau khi merge develop `59fa5359` (21/10): 2.664 test, 0 lỗi; `SkuReservationLotMigrationUpgradeTest` nâng cấp từ `20261021000300` có dữ liệu cũ.
-- Docker, DB trống: 162 migration lên `20261021000800`; bộ QA `tools/db/qa/run.sh` 01–17 (thêm
+- Full `mvn test` (Testcontainers) sau khi merge develop `56177641` (22/10): 2.845 test; 11 lỗi ở 3 test mới của develop
+  viết theo cách giữ hàng cũ (đã thêm bước phân bổ, chạy lại 15/15 đạt); `SkuReservationLotMigrationUpgradeTest` nâng cấp từ `20261022000900` có dữ liệu cũ.
+- Docker, DB trống: 162 migration lên `20261022001400`; bộ QA `tools/db/qa/run.sh` 01–17 (thêm
   `15_sku_reservation_and_lots.sql`) không FAIL.
 - `schema.dbml`: phần bảng của nhánh đã có; không sinh lại cả file vì bản trên develop có ghi chú viết tay.
 

@@ -9,7 +9,6 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
-import com.stockflow.common.security.Role;
 import com.stockflow.inventory.internal.domain.Recounts;
 import com.stockflow.inventory.internal.service.CycleCounts;
 import io.swagger.v3.oas.annotations.Operation;
@@ -34,7 +33,8 @@ import java.util.UUID;
 /**
  * Cycle counts (WBS 3.10.5), so far the blind recounts a short pick opens (docs 04c X-SHORT step 03): listed, and
  * called off by the warehouse manager. Counting and posting the difference belong to the cycle-count story. A counter
- * sees what to count, not what the books say; a warehouse manager sees both.
+ * sees what to count, not what the books say; whoever may approve counts
+ * ({@code inventory-cycle-counts:APPROVE}) sees both.
  */
 @RestController
 @RequestMapping("/api/v1/inventory/cycle-counts")
@@ -76,8 +76,9 @@ class CycleCountController {
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size,
             @AuthenticatedUser CurrentUser actor) {
-        boolean manager = actor != null && actor.hasAnyRole(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN);
-        return ApiResponse.ok(counts.list(status, warehouseId, manager, page,
+        // Who decides counts (APPROVE: the warehouse manager by the seeded grants) sees the books; a counter does not.
+        boolean decides = actor.can(InventoryResources.CYCLE_COUNTS, Action.APPROVE);
+        return ApiResponse.ok(counts.list(status, warehouseId, decides, page,
                 size == null ? Pages.DEFAULT_PAGE_SIZE : size).map(CycleCountController::toResponse));
     }
 

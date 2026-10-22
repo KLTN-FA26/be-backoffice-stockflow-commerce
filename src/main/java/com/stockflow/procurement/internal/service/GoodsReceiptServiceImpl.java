@@ -197,8 +197,28 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
             }
         }
         errors.throwIfAny();
+        requireNoCartonsOnDroppedLines(receipt, counted);
         receipt.replaceLines(counted);
         return view(receipts.save(receipt), order);
+    }
+
+    /**
+     * A draft line that cartons were labelled on is not dropped from the count: the cartons point at it with a
+     * restricting foreign key (V20261020000100), which would otherwise refuse the save as a bare 409 naming no line.
+     */
+    private void requireNoCartonsOnDroppedLines(GoodsReceipt receipt, List<ReceiptLine> counted) {
+        Set<UUID> kept = new HashSet<>();
+        counted.forEach(line -> kept.add(line.id()));
+        List<UUID> dropped = receipt.lines().stream().map(ReceiptLine::id).filter(id -> !kept.contains(id)).toList();
+        if (dropped.isEmpty()) {
+            return;
+        }
+        Set<UUID> labelled = inventory.receiptLinesWithStockPackages(dropped);
+        if (!labelled.isEmpty()) {
+            throw new BusinessException(ErrorCode.RECEIPT_LINE_HAS_PACKAGES,
+                    "Receipt %s: %d line(s) left out of the count have labelled cartons; void or recount those first"
+                            .formatted(receipt.number(), labelled.size()));
+        }
     }
 
     /** What identifies a line within one receipt: its PO line and lot ({@code uk_goods_receipt_lines_lot}). */
@@ -332,6 +352,8 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
     public ReceiptView cancel(UUID receiptId) {
         GoodsReceipt receipt = load(receiptId);
         receipt.cancel();
+        // Cartons labelled while counting held no stock and their labels are no longer valid (RECEIVING → VOID).
+        inventory.voidStockPackagesOfReceiptLines(receipt.lines().stream().map(ReceiptLine::id).toList());
         return view(receipts.save(receipt), orderOf(receipt));
     }
 

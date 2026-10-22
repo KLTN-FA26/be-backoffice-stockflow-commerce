@@ -4,6 +4,7 @@ import com.stockflow.common.api.FieldError;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.common.security.Action;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.Role;
 import com.stockflow.common.security.WarehouseScope;
@@ -53,6 +54,8 @@ import org.springframework.transaction.annotation.Transactional;
 @Transactional
 class FulfillmentServiceImpl implements FulfillmentService {
 
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(FulfillmentServiceImpl.class);
+
     /** Who a pick can be given to: the two warehouse roles that work orders. */
     private static final Set<String> ASSIGNEE_ROLES = Set.of(
             Role.WAREHOUSE_STAFF.authority(), Role.WAREHOUSE_MANAGER.authority());
@@ -88,7 +91,7 @@ class FulfillmentServiceImpl implements FulfillmentService {
 
     @Override
     public FulfillmentTask createTask(UUID orderId, UUID assignedUserId, CurrentUser actor) {
-        requireRole(actor, Role.ORDER_COORDINATOR, Role.WAREHOUSE_MANAGER);
+        require(actor, FulfillmentPermissions.TASK_ASSIGNMENT, Action.CREATE);
         var existing = picks.findByOrderId(orderId);
         if (existing.isPresent()) {
             requireWarehouseAssignee(assignedUserId, existing.get().getWarehouseId());
@@ -96,16 +99,23 @@ class FulfillmentServiceImpl implements FulfillmentService {
             return toTask(existing.get());
         }
         OrderSummary order = requireOrder(orderId);
-        // READY_TO_FULFILL only: released - its warehouse chosen - and production (if any) delivered (SCRUM-423,
-        // kltn-docs 17 BR-02). A CONFIRMED order is released by the coordinator first (G3-2).
-        if (order.status() != OrderStatus.READY_TO_FULFILL) {
-            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT,
-                    "Only a released order (READY_TO_FULFILL) can enter fulfillment; it is " + order.status());
+        // Released - its warehouse chosen - and production (if any) delivered: READY_TO_FULFILL (SCRUM-423, kltn-docs
+        // 17 BR-02). A CONFIRMED order is released by the coordinator first (G3-2). A mixed order IN_PRODUCTION has its
+        // stock lines picked in parallel (17 §4.2 step 5, PACK-EARLY); the order stays IN_PRODUCTION meanwhile and the
+        // goods wait at packing - or, when Sales allowed partial shipments, are packed and shipped ahead of the prints.
+        boolean parallel = order.status() == OrderStatus.IN_PRODUCTION
+                && order.lines().stream().anyMatch(line -> line.designSnapshotId() == null);
+        if (order.status() != OrderStatus.READY_TO_FULFILL && !parallel) {
+            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT, order.status() == OrderStatus.IN_PRODUCTION
+                    ? "Order %s has only print lines: its task opens when production completes".formatted(
+                            order.orderNumber())
+                    : "Only a released order (READY_TO_FULFILL, or IN_PRODUCTION with stock lines) can enter "
+                            + "fulfillment; it is " + order.status());
         }
         UUID warehouseId = pickingWarehouse(order);
         WarehouseScope.requireWarehouse(warehouseId);
         requireWarehouseAssignee(assignedUserId, warehouseId);
-        // In this transaction, under the order's row lock (A1): READY_TO_FULFILL → PICKING.
+        // In this transaction, under the order's row lock (A1): READY_TO_FULFILL → PICKING; IN_PRODUCTION stays.
         orders.startPicking(orderId, actor.userId());
         var now = clock.instant();
         var pick = new PickJpaEntity(Identifiers.newId(), null, orderId, order.orderNumber(), warehouseId,
@@ -136,11 +146,11 @@ class FulfillmentServiceImpl implements FulfillmentService {
         if (query.assignedUserId() != null) {
             filters.add((root, q, cb) -> cb.equal(root.get("assignedUserId"), query.assignedUserId()));
         }
-        // The role decides whose tasks: managers and coordinators all of them, QC those on a design hold,
-        // a picker their own.
-        if (actor.hasAnyRole(Role.WAREHOUSE_MANAGER, Role.ORDER_COORDINATOR)) {
+        // Whose tasks (data scope, not access - the endpoint's permission decided that): every task of the caller's
+        // warehouses with oversight, those on a design hold for whoever re-verifies designs, otherwise the caller's own.
+        if (actor.can(FulfillmentPermissions.TASK_OVERSIGHT, Action.READ)) {
             // no further filter
-        } else if (actor.hasRole(Role.QC_STAFF)) {
+        } else if (actor.can(FulfillmentPermissions.DESIGN_REVERIFICATION, Action.READ)) {
             filters.add((root, q, cb) -> {
                 var held = q.subquery(UUID.class);
                 var pack = held.from(PackJpaEntity.class);
@@ -148,23 +158,26 @@ class FulfillmentServiceImpl implements FulfillmentService {
                         cb.equal(pack.get("status"), PackStatus.ON_HOLD));
                 return cb.exists(held);
             });
-        } else if (actor.hasRole(Role.WAREHOUSE_STAFF)) {
-            filters.add((root, q, cb) -> cb.equal(root.get("assignedUserId"), actor.userId()));
         } else {
-            throw new BusinessException(ErrorCode.FORBIDDEN);
+            actor.require(FulfillmentPermissions.PICK_LISTS, Action.READ);
+            filters.add((root, q, cb) -> cb.equal(root.get("assignedUserId"), actor.userId()));
         }
         var newestFirst = Sort.by(Sort.Direction.DESC, "createdAt", "id");
         Page<PickJpaEntity> selected = picks.findAll(Specification.allOf(filters),
                 Pages.of(query.page(), query.size(), newestFirst));
         Map<UUID, String> names = identities.displayNames(selected.getContent().stream()
                 .map(PickJpaEntity::getAssignedUserId).toList());
-        return Pages.toResponse(selected, pick -> toTask(pick, names.get(pick.getAssignedUserId()), null));
+        List<UUID> pickIds = selected.getContent().stream().map(PickJpaEntity::getId).toList();
+        Map<UUID, PackJpaEntity> packByPick = pickIds.isEmpty() ? Map.of() : packs.findByPickIdIn(pickIds).stream()
+                .collect(Collectors.toMap(PackJpaEntity::getPickId, java.util.function.Function.identity()));
+        return Pages.toResponse(selected, pick -> toTask(pick, packByPick.get(pick.getId()),
+                names.get(pick.getAssignedUserId()), null));
     }
 
     @Override
     @Transactional(readOnly = true)
     public List<FulfillmentAssignee> assignees(UUID warehouseId, CurrentUser actor) {
-        requireRole(actor, Role.ORDER_COORDINATOR, Role.WAREHOUSE_MANAGER);
+        require(actor, FulfillmentPermissions.TASK_ASSIGNMENT, Action.UPDATE);
         WarehouseScope.requireWarehouse(warehouseId);
         if (warehouses.findWarehouse(warehouseId).isEmpty()) {
             throw new BusinessException(ErrorCode.WAREHOUSE_NOT_FOUND);
@@ -176,7 +189,7 @@ class FulfillmentServiceImpl implements FulfillmentService {
 
     @Override
     public FulfillmentTask assign(UUID taskId, UUID assignedUserId, CurrentUser actor) {
-        requireRole(actor, Role.ORDER_COORDINATOR, Role.WAREHOUSE_MANAGER);
+        require(actor, FulfillmentPermissions.TASK_ASSIGNMENT, Action.UPDATE);
         var pick = lockPick(taskId);
         WarehouseScope.requireWarehouse(pick.getWarehouseId());
         requireWarehouseAssignee(assignedUserId, pick.getWarehouseId());
@@ -255,7 +268,7 @@ class FulfillmentServiceImpl implements FulfillmentService {
     /** G4-5: see {@link PackingService#complete}; the answer is the task, with the shipment and the payment warning. */
     @Override
     public FulfillmentTask completePacking(UUID taskId, PackingCompletion completion, CurrentUser actor) {
-        requireRole(actor, Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER);
+        require(actor, FulfillmentPermissions.PACKING, Action.UPDATE);
         PackingService.Completed outcome = packing.complete(taskId, completion == null ? PackingCompletion.whole()
                 : completion, actor);
         FulfillmentTask task = toTask(requirePick(taskId));
@@ -265,7 +278,7 @@ class FulfillmentServiceImpl implements FulfillmentService {
 
     @Override
     public FulfillmentTask reverifyDesignIntegrity(UUID taskId, String resolutionNote, CurrentUser actor) {
-        requireRole(actor, Role.QC_STAFF, Role.WAREHOUSE_MANAGER);
+        require(actor, FulfillmentPermissions.DESIGN_REVERIFICATION, Action.UPDATE);
         packing.reverify(taskId, resolutionNote, actor);
         return toTask(requirePick(taskId));
     }
@@ -276,15 +289,32 @@ class FulfillmentServiceImpl implements FulfillmentService {
 
     private FulfillmentTask toTask(PickJpaEntity pick, String assignedUserName,
                                    List<FulfillmentTask.Line> lines) {
-        var pack = requirePack(pick.getId());
-        var evidence = verifications.findByPackIdOrderByVerifiedAtDesc(pack.getId()).stream()
+        return toTask(pick, packs.findByPickId(pick.getId()).orElse(null), assignedUserName, lines);
+    }
+
+    /**
+     * A task as the API shows it. {@code pack} null - a pick without its pack row, which {@link #createTask} never
+     * leaves but data loaded around it did (E2E QA 2026-10-21: three seeded picks made {@code GET /tasks} 404 for
+     * everyone) - reads as packing not started ({@code PENDING}), logged, rather than failing the task or, worse, a
+     * whole list of tasks for one row. Packing itself still requires the row ({@code PackingService}).
+     */
+    private FulfillmentTask toTask(PickJpaEntity pick, PackJpaEntity pack, String assignedUserName,
+                                   List<FulfillmentTask.Line> lines) {
+        if (pack == null) {
+            log.warn("Fulfillment task {} (order {}) has no pack row; shown as packing not started", pick.getId(),
+                    pick.getOrderNumber());
+        }
+        var evidence = pack == null ? List.<FulfillmentTask.IntegrityEvidence>of()
+                : verifications.findByPackIdOrderByVerifiedAtDesc(pack.getId()).stream()
                 .map(value -> new FulfillmentTask.IntegrityEvidence(value.getOrderLineId(), value.getSnapshotId(),
                         value.getExpectedChecksum(), value.getActualChecksum(),
                         value.getResult() == DesignVerificationResult.MATCH, value.getVerifiedAt()))
                 .toList();
         return new FulfillmentTask(pick.getId(), pick.getOrderId(), pick.getOrderNumber(), pick.getWarehouseId(),
-                pick.getAssignedUserId(), assignedUserName, pick.getStatus().name(), pack.getStatus().name(),
-                pick.getAssignedAt(), pick.getStartedAt(), pick.getPickedAt(), pack.getPackedAt(), evidence, lines);
+                pick.getAssignedUserId(), assignedUserName, pick.getStatus().name(),
+                (pack == null ? PackStatus.PENDING : pack.getStatus()).name(),
+                pick.getAssignedAt(), pick.getStartedAt(), pick.getPickedAt(), pack == null ? null : pack.getPackedAt(),
+                evidence, lines);
     }
 
     /**
@@ -332,10 +362,6 @@ class FulfillmentServiceImpl implements FulfillmentService {
         return picks.lockById(taskId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
     }
 
-    private PackJpaEntity requirePack(UUID pickId) {
-        return packs.findByPickId(pickId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
-    }
-
     private OrderSummary requireOrderInFulfilment(PickJpaEntity pick) {
         return TaskAccess.orderInFulfilment(orders, pick);
     }
@@ -344,10 +370,11 @@ class FulfillmentServiceImpl implements FulfillmentService {
         return orders.findById(orderId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
     }
 
-    private static void requireRole(CurrentUser actor, Role... roles) {
-        if (actor == null || !actor.hasAnyRole(roles)) {
+    private static void require(CurrentUser actor, String resource, Action action) {
+        if (actor == null) {
             throw new BusinessException(ErrorCode.FORBIDDEN);
         }
+        actor.require(resource, action);
     }
 
     /**

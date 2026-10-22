@@ -360,6 +360,8 @@ stateDiagram-v2
     CONFIRMED --> IN_PRODUCTION: released, has print lines
     CONFIRMED --> READY_TO_FULFILL: released, no print lines
     IN_PRODUCTION --> READY_TO_FULFILL: every production order completed
+    IN_PRODUCTION --> PARTIALLY_FULFILLED: stock handed over while printing (PACK-EARLY)
+    READY_TO_FULFILL --> PARTIALLY_FULFILLED: stock packed while printing, handed over (PACK-EARLY)
     READY_TO_FULFILL --> PICKING: task created (startPicking)
     READY_TO_FULFILL --> PACKED: printed goods only (17 §4.2.6)
     PICKING --> PACKED: everything packed (markPacked)
@@ -406,9 +408,9 @@ stateDiagram-v2
 
 | From | To | Called by | Guard |
 |---|---|---|---|
-| READY_TO_FULFILL | PICKING | fulfillment `createTask` → `OrderService.startPicking` (same transaction, A1) | released; IN_PRODUCTION is a no-op (stock lines picked in parallel, 17 §4.2.5) |
-| READY_TO_FULFILL / PICKING / PARTIALLY_FULFILLED | PACKED | fulfillment `completePacking` → `markPacked` | not ON_HOLD (resolve first); records `packed_at` |
-| PICKING / PACKED / PARTIALLY_FULFILLED | PARTIALLY_FULFILLED / SHIPPED | G4-2a handover → `recordHandover(shipment, lines)` | `ORDER_BALANCE_NOT_PAID` when money is due before the goods leave (G3-Q4); units ≤ what is left; everything at once from PICKING is refused (pack first) |
+| READY_TO_FULFILL | PICKING | fulfillment `createTask` → `OrderService.startPicking` (same transaction, A1) | released; IN_PRODUCTION with stock lines is a no-op (stock lines picked in parallel, 17 §4.2.5); IN_PRODUCTION with print lines only is refused |
+| READY_TO_FULFILL / PICKING / PARTIALLY_FULFILLED | PACKED | fulfillment `completePacking` → `markPacked` | not ON_HOLD (resolve first); records `packed_at`; a completion leaving goods behind needs `allow_partial_shipment` (`PACK_PARTIAL_NOT_ALLOWED`) |
+| PICKING / PACKED / PARTIALLY_FULFILLED, and IN_PRODUCTION / READY_TO_FULFILL (PACK-EARLY) | PARTIALLY_FULFILLED / SHIPPED | G4-2a handover → `recordHandover(shipment, lines, leavingWith)` | `ORDER_BALANCE_NOT_PAID` when money is due before the goods leave (G3-Q4); units ≤ what is left; everything at once from PICKING / IN_PRODUCTION / READY_TO_FULFILL is refused (pack first); goods left behind (not in this shipment nor in the order's others signed with it) need `allow_partial_shipment` (`ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED`) |
 | PACKED | SHIPPED | `markShipped` (whole order, no shipment recorded) | as above |
 | SHIPPED … | DELIVERED / DELIVERY_FAILED / RETURNED / PARTIALLY_FULFILLED | `recordShipmentDelivered / …DeliveryFailed / …Returned` per shipment; `POST /orders/{id}/delivery`, `/delivery-failure` for an order without shipments (`ORDER_DELIVERY_VIA_SHIPMENT` otherwise, G4-Q5) | failure needs a reason (09 BR-02) |
 | PARTIALLY_FULFILLED | the shipments' status | `POST /orders/{id}/remainder-closure` (Sales / coordinator) | the unshipped units are closed (`order_line.cancelled_quantity`), their holds released, `OrderRemainderClosed` asks payment to refund what was received above the order's new worth |
@@ -424,6 +426,58 @@ counts, per order, what is still unbilled - total less closed units less billed 
 for the statuses `OrderStatus.countsTowardCreditExposure` names, plus the open receivables, so a split order is counted
 once and a new status cannot leak out of the limit. A deposit order's balance policy (before / on delivery / credit)
 comes with G2-3; until then nothing is billed per shipment for it and nothing blocks its handover.
+
+**Partial shipments are Sales' decision (PACK-PARTIAL, lead 2026-10-21).** `customer_order.allow_partial_shipment`,
+false by default, set by `PUT /orders/{id}/partial-shipment` (`sales-order-partial-shipments:UPDATE`, SALES_STAFF)
+until the order is SHIPPED or later (`ORDER_PARTIAL_SHIPMENT_LOCKED`); each decision is a row of
+`ordering.order_partial_shipment_decision`, shown to staff in `GET /orders/{id}/history` as an entry of
+`type = PARTIAL_SHIPMENT_DECISION` (`partialShipmentAllowed`, the note as `reason`; status changes are
+`type = STATUS_CHANGE`). Without it the packer cannot complete part of the order and the dispatcher cannot put part of
+it on a load (refused when the shipment is added, 409 `ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED`) or hand it over; the packer
+still says why when completing a part. It cannot be stopped while the order waits for production after its stock left
+(409 `ORDER_PARTIAL_SHIPMENT_LOCKED`).
+
+**Delivery mode is the coordinator's, until packing starts (LP-1 / LP-2, lead 2026-10-22; 09 §3, 17 §4.2 step 4).**
+`customer_order.delivery_mode` is `PARCEL` (default; every order before V20261022000800) or `FULL_TRUCKLOAD`. The Order
+Coordinator sets it with the release (`POST /orders/{id}/release {warehouseId, deliveryMode?}`; a mode other than the
+order's needs `sales-order-delivery-modes:UPDATE` besides `sales-orders:APPROVE`) or with
+`PUT /orders/{id}/delivery-mode {deliveryMode, note?}` (`sales-order-delivery-modes:UPDATE`: ORDER_COORDINATOR,
+SYSTEM_ADMIN). Open while the order is DRAFT..PICKING (or on hold from there) and no package of it was opened yet:
+fulfillment records `packing_started_at` (`OrderService.recordPackingStarted`, under the order's row lock) when it opens
+the first package; from then on, and from PARTIALLY_FULFILLED on, 409 `DELIVERY_MODE_LOCKED`. A full truckload is never
+collected on delivery: `FULL_TRUCKLOAD` on a DEPOSIT / ON_DELIVERY order, and ON_DELIVERY terms on a full-truckload
+order (a draft's terms, a switch after a credit refusal), are 409 `DELIVERY_MODE_FTL_NO_COD` (DB: `ck_order_ftl_no_cod`,
+twin of `ck_shipment_ftl_no_cod`). Each change is a row of `ordering.order_delivery_mode_change`, shown to staff as
+`type = DELIVERY_MODE_CHANGE` (`deliveryMode`, `previousDeliveryMode`, note as `reason`). Packing copies the mode onto
+every shipment; a FULL_TRUCKLOAD shipment is refused on a parcel load (409 `PACKAGE_REQUIRES_LOAD_PLAN`, and a load
+opened without ids picks PARCEL shipments only), so it waits at READY_TO_DISPATCH until load-plan dispatch (PR E).
+
+**Stock first, prints later (PACK-EARLY, lead 2026-10-21; 17 BR-06 "trừ khi chính sách split-ship", D9).** A mixed
+order IN_PRODUCTION gets its fulfillment task for the stock lines (the order stays IN_PRODUCTION). With partial
+shipments allowed, the stock is packed as a partial shipment (the print lines are not at packing:
+`OrderSummary.Lifecycle.printLinesReady` is false) and handed over: IN_PRODUCTION → PARTIALLY_FULFILLED with
+`awaiting_production`. When production completes the flag clears (the status stays), the printed goods are at packing,
+and the rest follows the split-order path: PARTIALLY_FULFILLED → PACKED → SHIPPED. Staff may instead close the print
+lines (`remainder-closure`): production stops their jobs as on a cancellation (`OrderRemainderClosed`), printed goods
+not shipped are scrapped, and after printing started Sales may keep an agreed fee (at most the value of the print units
+closed; the money above the order's new worth pays it first - a deposit included - the rest is refunded, a shortfall is a
+receivable, decisions 2026-10-17 / 2026-10-19). Stock packed while printing but not handed over does not stop a
+cancellation (with the printing fee rules): its shipment is cancelled, parcels voided, the picked stock put back
+(17 §4.5 step 15); once a shipment left, the order is returned. Production
+completing before the stock left takes the order to READY_TO_FULFILL as usual; its packed stock may still leave first
+(READY_TO_FULFILL → PARTIALLY_FULFILLED). Money per shipment as for any split order: a credit (or ON_CREDIT) delivery
+bills its shipment, the carrier collects each ON_DELIVERY shipment's COD, money paid ahead goes to the earliest
+shipments first.
+
+**Deposit balance on credit (BALCREDIT, lead 2026-10-21; 15 §4.2 step 3).** `balance_policy = ON_CREDIT`, for a
+customer allowed CREDIT: placement checks the remaining balance (total − deposit) plus what the customer owes on credit
+against the limit, and an overdue customer, and refuses with 409 (`BALANCE_CREDIT_LIMIT_EXCEEDED`,
+`CUSTOMER_CREDIT_OVERDUE`) rather than holding the order - when Sales asked for ON_CREDIT; when it came from the
+customer's terms (a portal checkout cannot choose), the order falls back to BEFORE_DELIVERY. An overdue customer's
+ON_CREDIT order is not released, as a credit order is not. Only the deposit is wanted before the handover; each delivery
+bills its goods less the deposit not yet used as a DEPOSIT_BALANCE receivable of the customer, due after
+`credit_term_days`. The exposure counts such an order from PENDING_PAYMENT, its deposit as paid ahead, so the balance is
+counted once: here until delivered, then as the receivable.
 
 ### Who may cancel, and until when
 

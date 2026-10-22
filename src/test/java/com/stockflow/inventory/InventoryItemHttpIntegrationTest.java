@@ -119,6 +119,47 @@ class InventoryItemHttpIntegrationTest {
     }
 
     @Test
+    void packagingPreviewResolvesTheItemsOwnBox() throws Exception {
+        UUID id = item("HTTP-K-" + suffix, null, "NORMAL");
+        tx.executeWithoutResult(s -> jdbc.update("""
+                update inventory.inventory_items set weight_kg = 0.5, length_cm = 10, width_cm = 8, height_cm = 6,
+                    package_weight_kg = 0.7, package_length_cm = 12, package_width_cm = 9, package_height_cm = 7
+                where id = ?""", id));
+        mvc.perform(get(BASE + "/" + id + "/packaging-preview").param("quantity", "4"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("RESOLVED"))
+                .andExpect(jsonPath("$.data.level").value("ITEM_BOX"))
+                .andExpect(jsonPath("$.data.unitOfMeasure").value("EACH"))
+                .andExpect(jsonPath("$.data.fullCartons").value(4))
+                .andExpect(jsonPath("$.data.partialCarton").doesNotExist())
+                .andExpect(jsonPath("$.data.carton.lengthMm").value(120))
+                .andExpect(jsonPath("$.data.carton.weightKg").value(0.7))
+                .andExpect(jsonPath("$.data.carton.rotatable").value(true))
+                .andExpect(jsonPath("$.data.kitParts").value(1));
+    }
+
+    @Test
+    void packagingPreviewOfAnItemWithoutDataIsMissingButStill200() throws Exception {
+        UUID id = item("HTTP-M-" + suffix, null, "NORMAL");
+        mvc.perform(get(BASE + "/" + id + "/packaging-preview").param("quantity", "1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("MISSING"))
+                .andExpect(jsonPath("$.data.missing.code").value("PACKAGING_MISSING"))
+                .andExpect(jsonPath("$.data.missing.fields[0]").value("lengthCm"));
+    }
+
+    @Test
+    void packagingPreviewRefusesABadQuantityAndAnUnknownItem() throws Exception {
+        UUID id = item("HTTP-Q-" + suffix, null, "NORMAL");
+        mvc.perform(get(BASE + "/" + id + "/packaging-preview").param("quantity", "0"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(get(BASE + "/" + id + "/packaging-preview")).andExpect(status().isBadRequest());
+        mvc.perform(get(BASE + "/" + UUID.randomUUID() + "/packaging-preview").param("quantity", "1"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.errorCode").value("INVENTORY_ITEM_NOT_FOUND"));
+    }
+
+    @Test
     void unknownIdIs404() throws Exception {
         mvc.perform(get(BASE + "/" + UUID.randomUUID()))
                 .andExpect(status().isNotFound())

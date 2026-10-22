@@ -19,6 +19,10 @@ import java.util.UUID;
  * {@code CustomerService}, never through this repository.</p>
  */
 interface CustomerJpaRepository extends BaseJpaRepository<CustomerJpaEntity> {
+
+    /** {@code [id, fullName]} of each of these customers, in one query. */
+    @org.springframework.data.jpa.repository.Query("select c.id, c.fullName from CustomerJpaEntity c where c.id in :ids")
+    java.util.List<Object[]> findNames(@Param("ids") java.util.Collection<UUID> ids);
     Optional<CustomerJpaEntity> findByUserId(UUID userId);
     Optional<CustomerJpaEntity> findByEmailIgnoreCase(String email);
 

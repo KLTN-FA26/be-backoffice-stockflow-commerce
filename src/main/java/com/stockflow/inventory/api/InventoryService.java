@@ -186,6 +186,39 @@ public interface InventoryService {
     java.util.Optional<StockAdjustmentSummary> scrapCancelledPrint(UUID reservationId, UUID orderId, String note,
                                                                    UUID requestedBy);
 
+    /**
+     * kltn-docs 19 BR-10 for goods consumed when their production order completed (decision G4-Q2, 2026-10-21):
+     * the printed goods of one print line that will not ship - their order cancelled, or its unshipped rest
+     * closed - are written off as SCRAP, never sold. They left stock as {@code CONSUMPTION} when production
+     * completed, so they first come back onto their packing-area layer ({@code PUT_BACK}, reference {@code ORDER})
+     * under a new pinned hold of the order - out of available-to-promise, out of every other order's reach - and a
+     * SCRAP write-off of exactly that hold is asked for in {@code requestedBy}'s name, for a second person to approve
+     * (SCRUM-145). Approved, the hold closes and stock falls again: the units leave the books once, as scrap.
+     * Rejected, they stay held and are asked again ({@code askScrapAgain}).
+     *
+     * <p>A hold still live as finished goods in packing (an order handed over before G4-Q2 and cancelled before the
+     * in-flight data was converted) is scrapped whole as {@link #scrapCancelledPrint(UUID, UUID, String, UUID)}
+     * does. No more units come back than the line's holds consumed; a hold never printed, released, or picked is
+     * skipped. Joins the caller's transaction. Idempotent on {@code requestId}.</p>
+     *
+     * @return the write-offs asked for, or standing
+     */
+    java.util.List<StockAdjustmentSummary> scrapCancelledPrint(ScrapCancelledPrintCommand command);
+
+    /**
+     * Decision G4-Q2 (2026-10-21): printed goods leave stock when their production order COMPLETES, not when they are
+     * packed. A hold of finished goods production has just handed to a PACKING area for its order ({@link #finishHeld})
+     * is consumed whole: {@code on_hand} falls by it, the hold becomes CONSUMED, one {@code CONSUMPTION} ledger line
+     * (reference {@code PRODUCTION_ORDER}, "Hold &lt;id&gt;") is written and {@code StockDeducted} is published.
+     * Packing then only puts the goods into parcels, as it does with picked goods; it deducts nothing. Joins the
+     * caller's transaction.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code RESERVATION_NOT_FOUND};
+     *         {@code RESERVATION_NOT_ISSUABLE} for a hold not {@code orderId}'s; {@code RESERVATION_NOT_ACTIVE} for a
+     *         closed one; {@code STOCK_STATUS_MISMATCH} for goods production did not hand to a packing area
+     */
+    StockMove consumeFinishedGoods(UUID reservationId, UUID orderId, UUID productionOrderId, UUID actorId);
+
     /** See {@link WriteOffHeldStockCommand}. Joins the caller's transaction. @return the write-off asked for */
     StockAdjustmentSummary writeOffHeld(WriteOffHeldStockCommand command);
 
@@ -334,4 +367,17 @@ public interface InventoryService {
      * different person approves it; production records scrapped blanks through this.
      */
     StockAdjustmentSummary requestAdjustment(RequestAdjustmentCommand command);
+
+    /**
+     * The goods receipt lines among {@code receiptLineIds} that cartons (stock packages) were labelled on
+     * ({@code inventory.stock_package.goods_receipt_line_id}, V20261020000100). Such a line is not deleted: the
+     * carton points at it with a restricting foreign key (SCRUM-473).
+     */
+    java.util.Set<UUID> receiptLinesWithStockPackages(java.util.Collection<UUID> receiptLineIds);
+
+    /**
+     * A receipt cancelled before it was posted: the cartons labelled on these lines and still being received are
+     * voided (RECEIVING → VOID), in the caller's transaction. They held no stock; their labels are never valid.
+     */
+    void voidStockPackagesOfReceiptLines(java.util.Collection<UUID> receiptLineIds);
 }

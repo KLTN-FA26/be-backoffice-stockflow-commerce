@@ -221,8 +221,10 @@ management:
     health:
       show-details: when-authorized
       # when-authorized alone means ANY authenticated user - a CUSTOMER - sees every detail,
-      # including the storage bucket and endpoint. Naming the role narrows it to administrators.
-      roles: ECOMMERCE_ADMIN
+      # including the storage bucket and endpoint. Boot matches these against the caller's
+      # authorities, so a permission works here: whoever holds platform-actuator:READ
+      # (ActuatorPermission, granted in the role matrix) - never a role name.
+      roles: platform-actuator:READ
       probes:
         # /actuator/health/liveness and /readiness, which is what Kubernetes probes.
         enabled: true
@@ -455,6 +457,14 @@ stockflow:
     # only bounds how long an abandoned or stolen device keeps working. Changing it affects tokens
     # issued from then on; existing ones keep the lifetime they were signed with.
     token-ttl: PT8H
+    jwt:
+      # The RSA key tokens are signed with (JwtSigningKey). key-path: a PKCS#8 PEM file, generated and written there
+      # (owner-only) on the first start if missing, read on every start after - so tokens survive a restart or a
+      # deploy. private-key: the PEM content itself, for platforms that inject secrets as variables; wins over
+      # key-path. Neither: a key generated per process, as local development and tests want. A configured key that
+      # cannot be read or parsed stops the application at startup.
+      key-path: ${JWT_PRIVATE_KEY_PATH:}
+      private-key: ${JWT_PRIVATE_KEY:}
     cors:
       # Browser origins that may call the API (CorsProperties). Patterns: a port or a subdomain may
       # be '*', the host itself may not. A deployment overrides this with

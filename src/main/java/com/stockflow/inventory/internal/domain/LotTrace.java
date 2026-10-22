@@ -41,7 +41,8 @@ public record LotTrace(Summary lot, List<Balance> balances, List<Hold> holds, Li
                        Instant closedAt) { }
 
     /**
-     * A customer order the lot left for: units picked or packed out, units put back.
+     * A customer order the lot left for: units picked, or printed and consumed when their production order
+     * completed (G4-Q2), and units put back.
      *
      * @param orderNumber the order's number as it read when the units moved (a snapshot on the ledger line)
      */

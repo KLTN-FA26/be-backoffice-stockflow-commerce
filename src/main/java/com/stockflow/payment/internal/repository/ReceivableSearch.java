@@ -14,8 +14,8 @@ import java.util.UUID;
 public interface ReceivableSearch {
 
     /** Every filter null means "any"; {@code dueBefore} keeps receivables due before that day. */
-    Page<Receivable> receivables(UUID customerId, ReceivableStatus status, LocalDate dueBefore, Collector collector,
-                                 String kind, Pageable pageable);
+    Page<Receivable> receivables(UUID customerId, UUID orderId, ReceivableStatus status, LocalDate dueBefore,
+                                 Collector collector, String kind, Pageable pageable);
 
     /** {@code withCreditOnly}: only transfers with money not yet allocated (the customer's credit, G2-3). */
     Page<CustomerTransfer> transfers(UUID customerId, boolean withCreditOnly, Pageable pageable);
