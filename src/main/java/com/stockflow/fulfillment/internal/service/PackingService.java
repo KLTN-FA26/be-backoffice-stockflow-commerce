@@ -120,6 +120,7 @@ class PackingService implements Packing {
     private final Clock clock;
     private final int dimDivisor;
     private final com.stockflow.common.audit.AuditTrail audit;
+    private final LoadPlanReleases loadPlans;
 
     @SuppressWarnings("java:S107")
     PackingService(PickJpaRepository picks, PickLineJpaRepository pickLines, PackJpaRepository packs,
@@ -134,7 +135,7 @@ class PackingService implements Packing {
                    com.stockflow.fulfillment.internal.repository.DispatchLoadJpaRepository loads,
                    com.stockflow.fulfillment.internal.repository.DispatchLoadStore loadStore, Clock clock,
                    @Value("${stockflow.fulfillment.packing.dim-divisor:6000}") int dimDivisor,
-                   com.stockflow.common.audit.AuditTrail audit) {
+                   com.stockflow.common.audit.AuditTrail audit, LoadPlanReleases loadPlans) {
         this.picks = picks;
         this.pickLines = pickLines;
         this.packs = packs;
@@ -156,6 +157,7 @@ class PackingService implements Packing {
         this.clock = clock;
         this.dimDivisor = dimDivisor;
         this.audit = audit;
+        this.loadPlans = loadPlans;
     }
 
     // ------------------------------------------------------------------ the queue
@@ -365,6 +367,7 @@ class PackingService implements Packing {
     @Override
     public Parcel reopen(UUID taskId, UUID packageId, CurrentUser actor) {
         Context ctx = forWork(taskId);
+        requireNotPlanned(ctx, packageId);
         requirePackable(ctx.order());
         PackingSession session = load(ctx);
         session.requireWorkable(actor.userId(), isManager(actor));
@@ -376,6 +379,7 @@ class PackingService implements Packing {
     @Override
     public Session voidPackage(UUID taskId, UUID packageId, CurrentUser actor) {
         Context ctx = forWork(taskId);
+        requireNotPlanned(ctx, packageId);
         requirePackable(ctx.order());
         PackingSession session = load(ctx);
         session.requireWorkable(actor.userId(), isManager(actor));
@@ -557,6 +561,24 @@ class PackingService implements Packing {
     }
 
     /**
+     * SCRUM-287 PR D (09 BR-09): a parcel a load plan holds - or any part of its kit, which is voided whole - is not
+     * voided or re-opened: 409 {@code PACKAGE_IN_LOAD_PLAN}, before the station's own "already shipped" refusal.
+     */
+    private void requireNotPlanned(Context ctx, UUID packageId) {
+        PackageJpaEntity parcel = packages.findById(packageId).orElse(null);
+        if (parcel == null) {
+            return;
+        }
+        java.util.List<UUID> ids = new java.util.ArrayList<>(List.of(packageId));
+        if (parcel.getKit() != null) {
+            packages.findByPackIdOrderByPackageNoAsc(ctx.pack().getId()).stream()
+                    .filter(p -> p.getKit() != null && p.getKit().groupId().equals(parcel.getKit().groupId()))
+                    .forEach(p -> ids.add(p.getId()));
+        }
+        loadPlans.requireNotPlanned(ids);
+    }
+
+    /**
      * The order was cancelled (08 BR-05, 17 §4.5 step 15): parcels that did not ship are voided with their labels, a
      * shipment still waiting for dispatch is cancelled. The goods in them were picked: the pick's put-back covers them.
      */
@@ -565,6 +587,8 @@ class PackingService implements Packing {
         for (ShipmentJpaEntity row : shipments.findByPackIdOrderByReadyAtAscIdAsc(pack.getId())) {
             Shipment shipment = row.toDomain();
             if (shipment.status() == ShipmentStatus.READY_TO_DISPATCH) {
+                // SCRUM-287 PR D: out of its load plan first (plan lock before any load's), then off its load.
+                loadPlans.releaseShipment(row.getId(), now);
                 takeOffLoad(row.getId(), now);
                 shipment.cancel("The order was cancelled", null, now);
                 row.apply(shipment);
