@@ -1,5 +1,7 @@
 package com.stockflow.fulfillment.internal.controller.dto;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.UUID;
@@ -13,6 +15,8 @@ import java.util.UUID;
  * @param codAmount    what the carrier collects for the shipment (09 BR-04: the balance of a deposit order whose carrier
  *                     collects it), 0 otherwise; as of now, fixed at the handover
  * @param returnAddress the warehouse's address, where the carrier returns what it cannot deliver (09 Input)
+ * @param kit          the kit it is a part of (SCRUM-287 LP2-6): the label prints "Bộ partNo/partCount"; absent for an
+ *                     ordinary package
  */
 public record PackageLabelResponse(String labelCode, UUID packageId, String orderNumber, UUID shipmentId,
                                    String shipmentCode, int packageNo, int packageCount, boolean provisional,
@@ -20,7 +24,8 @@ public record PackageLabelResponse(String labelCode, UUID packageId, String orde
                                    String returnWarehouseName, String returnAddress, String packageType,
                                    BigDecimal weightKg, BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm,
                                    BigDecimal dimWeightKg, boolean fragile, boolean rotatable,
-                                   List<PackageResponse.Content> contents) {
+                                   List<PackageResponse.Content> contents,
+                                   @JsonInclude(JsonInclude.Include.NON_NULL) KitPartResponse kit) {
 
     public record Recipient(String name, String phone, String line1, String line2, String wardName,
                             String provinceName, String countryCode, String postalCode) { }

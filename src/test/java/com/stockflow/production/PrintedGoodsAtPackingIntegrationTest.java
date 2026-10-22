@@ -93,6 +93,8 @@ class PrintedGoodsAtPackingIntegrationTest {
     private static final String PRINT_SHOP = "HCM-PRD01";
     private static final String PACKING = "HCM-PACK01";
     private static final Sku BLANK = new Sku(ProductionFixtures.BLANK);
+    /** KIT-FORCE: the blank ships as 2 boxes; packed in an ordinary package, it needs a reason. */
+    private static final String ONE_CARTON = "test: packed as one carton";
     private static final Duration ASYNC = Duration.ofSeconds(15);
 
     @Autowired PrintRuns runs;
@@ -273,7 +275,7 @@ class PrintedGoodsAtPackingIntegrationTest {
      */
     private UUID sealedPackage(UUID task, UUID lineId, int quantity) {
         packing.start(task, picker);
-        UUID parcel = packing.openPackage(task, null, picker).packageId();
+        UUID parcel = packing.openPackage(task, null, ONE_CARTON, picker).packageId();
         packing.scan(task, parcel, new Packing.Scan(UUID.randomUUID(), BLANK.code(), null, null, quantity, lineId),
                 picker);
         packing.seal(task, parcel, new Packing.Seal(new java.math.BigDecimal("3.5"), new java.math.BigDecimal("40"),
@@ -473,7 +475,7 @@ class PrintedGoodsAtPackingIntegrationTest {
         assertThat(part.packStatus()).isEqualTo("PACKING");
         assertThat(onHandInWarehouse()).isEqualTo(onHand);
 
-        UUID second = packing.openPackage(task, null, picker).packageId();
+        UUID second = packing.openPackage(task, null, ONE_CARTON, picker).packageId();
         packing.scan(task, second, new Packing.Scan(UUID.randomUUID(), BLANK.code(), null, null, 3, line.lineId()),
                 picker);
         packing.seal(task, second, new Packing.Seal(new java.math.BigDecimal("2"), new java.math.BigDecimal("30"),
@@ -764,7 +766,7 @@ class PrintedGoodsAtPackingIntegrationTest {
         UUID parcel = sealedPackage(task, line.lineId(), 2);
         assertThat(fulfillment.completePacking(task, picker).packStatus()).isEqualTo("ON_HOLD");
         assertThat(salesOrders.findById(line.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.ON_HOLD);
-        assertThat(code(catchThrowable(() -> packing.openPackage(task, null, picker))))
+        assertThat(code(catchThrowable(() -> packing.openPackage(task, null, ONE_CARTON, picker))))
                 .as("nothing changes while held").isEqualTo(ErrorCode.PACK_STATE_CONFLICT);
 
         // Still wrong: the manager's attempt is kept as evidence, the hold stays.
@@ -807,7 +809,7 @@ class PrintedGoodsAtPackingIntegrationTest {
         assertThat(onHandInWarehouse()).as("the stock line, when picked").isEqualTo(beforePicking - 3);
 
         packing.start(task, picker);
-        UUID first = packing.openPackage(task, null, picker).packageId();
+        UUID first = packing.openPackage(task, null, ONE_CARTON, picker).packageId();
         assertThat(code(catchThrowable(() -> packing.scan(task, first, new Packing.Scan(UUID.randomUUID(), BLANK.code(),
                 null, null, 1, null), picker)))).as("the SKU is on both lines").isEqualTo(ErrorCode.PACK_SCAN_AMBIGUOUS);
         packing.scan(task, first, new Packing.Scan(UUID.randomUUID(), BLANK.code(), null, null, 3, stockLine), picker);
@@ -826,7 +828,7 @@ class PrintedGoodsAtPackingIntegrationTest {
         assertThat(code(catchThrowable(() -> cancel(line)))).as("a package was completed")
                 .isEqualTo(ErrorCode.ORDER_NOT_CANCELLABLE);
 
-        UUID second = packing.openPackage(task, null, picker).packageId();
+        UUID second = packing.openPackage(task, null, ONE_CARTON, picker).packageId();
         // The stock line is full: the SKU now means the printed line.
         packing.scan(task, second, new Packing.Scan(UUID.randomUUID(), BLANK.code(), null, null, 2, null), picker);
         packing.seal(task, second, new Packing.Seal(new java.math.BigDecimal("1.5"), new java.math.BigDecimal("30"),

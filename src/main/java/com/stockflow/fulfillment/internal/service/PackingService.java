@@ -14,6 +14,7 @@ import com.stockflow.design.api.DesignService;
 import com.stockflow.fulfillment.api.PackingCompletion;
 import com.stockflow.fulfillment.internal.domain.DeliveryMode;
 import com.stockflow.fulfillment.internal.domain.DesignVerificationResult;
+import com.stockflow.fulfillment.internal.domain.KitPart;
 import com.stockflow.fulfillment.internal.domain.PackStatus;
 import com.stockflow.fulfillment.internal.domain.PackageStatus;
 import com.stockflow.fulfillment.internal.domain.PackageType;
@@ -118,6 +119,7 @@ class PackingService implements Packing {
     private final com.stockflow.fulfillment.internal.repository.DispatchLoadStore loadStore;
     private final Clock clock;
     private final int dimDivisor;
+    private final com.stockflow.common.audit.AuditTrail audit;
 
     @SuppressWarnings("java:S107")
     PackingService(PickJpaRepository picks, PickLineJpaRepository pickLines, PackJpaRepository packs,
@@ -131,7 +133,8 @@ class PackingService implements Packing {
                    com.stockflow.fulfillment.internal.repository.DispatchLoadShipmentJpaRepository loadMembers,
                    com.stockflow.fulfillment.internal.repository.DispatchLoadJpaRepository loads,
                    com.stockflow.fulfillment.internal.repository.DispatchLoadStore loadStore, Clock clock,
-                   @Value("${stockflow.fulfillment.packing.dim-divisor:6000}") int dimDivisor) {
+                   @Value("${stockflow.fulfillment.packing.dim-divisor:6000}") int dimDivisor,
+                   com.stockflow.common.audit.AuditTrail audit) {
         this.picks = picks;
         this.pickLines = pickLines;
         this.packs = packs;
@@ -152,6 +155,7 @@ class PackingService implements Packing {
         this.loadStore = loadStore;
         this.clock = clock;
         this.dimDivisor = dimDivisor;
+        this.audit = audit;
     }
 
     // ------------------------------------------------------------------ the queue
@@ -243,16 +247,49 @@ class PackingService implements Packing {
 
     @Override
     public Parcel openPackage(UUID taskId, String type, CurrentUser actor) {
+        return openPackage(taskId, type, null, actor);
+    }
+
+    @Override
+    public Parcel openPackage(UUID taskId, String type, String kitOverrideReason, CurrentUser actor) {
         Context ctx = forWork(taskId);
         requirePackable(ctx.order());
         PackingSession session = load(ctx);
         session.requireWorkable(actor.userId(), isManager(actor));
-        PackingSession.Parcel parcel = session.openPackage(Identifiers.newId(), packageType(type), clock.instant());
+        PackingSession.Parcel parcel = session.openPackage(Identifiers.newId(), packageType(type), kitOverrideReason,
+                clock.instant());
+        auditKitOverride(parcel, null, actor);
         // LP-1: packing started - the order's delivery mode is locked from now on (under the order's row lock, after
         // the pick's, as completion takes them).
         orders.recordPackingStarted(ctx.order().orderId());
         store.save(session, ctx.pack());
         return parcelView(parcel, skus(session));
+    }
+
+    @Override
+    public Kit openKit(UUID taskId, OpenKit request, CurrentUser actor) {
+        Context ctx = forWork(taskId);
+        requirePackable(ctx.order());
+        PackingSession session = load(ctx);
+        session.requireWorkable(actor.userId(), isManager(actor));
+        // One id per part; the item's package_count (read with the session's facts) is the kit's size.
+        int parts = session.lines().stream().filter(l -> l.orderLineId().equals(request.orderLineId()))
+                .mapToInt(PackingSession.Line::packageCount).findFirst().orElse(0);
+        List<UUID> ids = new ArrayList<>();
+        for (int i = 0; i < parts; i++) {
+            ids.add(Identifiers.newId());
+        }
+        UUID groupId = Identifiers.newId();
+        List<PackingSession.Parcel> kit = session.openKit(groupId, ids, request.orderLineId(), request.partCount(),
+                packageType(request.packageType()), clock.instant());
+        // LP-1: a kit opens packages as openPackage does - packing started, the delivery mode is locked from now on.
+        orders.recordPackingStarted(ctx.order().orderId());
+        store.save(session, ctx.pack());
+        Map<UUID, String> skus = skus(session);
+        log.info("Order {}: kit {} of {} parts opened for line {}", ctx.pick().getOrderNumber(), groupId, kit.size(),
+                request.orderLineId());
+        return new Kit(groupId, request.orderLineId(), skus.get(request.orderLineId()), kit.size(),
+                kit.stream().map(parcel -> parcelView(parcel, skus)).toList());
     }
 
     @Override
@@ -264,9 +301,11 @@ class PackingService implements Packing {
         requirePackable(ctx.order());
         PackingSession session = load(ctx);
         session.requireWorkable(actor.userId(), isManager(actor));
+        String before = session.parcel(packageId).map(PackingSession.Parcel::kitOverrideReason).orElse(null);
         if (session.scan(scan.scanId(), packageId, scan.scannedCode(), scan.lotNumber(), scan.serialNumber(),
-                scan.quantity(), scan.orderLineId(), actor.userId(), clock.instant())) {
+                scan.quantity(), scan.orderLineId(), scan.kitOverrideReason(), actor.userId(), clock.instant())) {
             store.save(session, ctx.pack());
+            session.parcel(packageId).ifPresent(parcel -> auditKitOverride(parcel, before, actor));
         }
         return view(ctx, session);
     }
@@ -313,11 +352,13 @@ class PackingService implements Packing {
         requirePackable(ctx.order());
         PackingSession session = load(ctx);
         session.requireWorkable(actor.userId(), isManager(actor));
+        String before = session.parcel(packageId).map(PackingSession.Parcel::kitOverrideReason).orElse(null);
         PackingSession.Parcel parcel = session.seal(packageId, new PackingSession.Measures(seal.weightKg(),
                         seal.lengthCm(), seal.widthCm(), seal.heightCm()), seal.rotatable(), seal.fragile(),
-                seal.packageType() == null ? null : packageType(seal.packageType()), dimDivisor, actor.userId(),
-                clock.instant());
+                seal.packageType() == null ? null : packageType(seal.packageType()), seal.kitOverrideReason(),
+                dimDivisor, actor.userId(), clock.instant());
         store.save(session, ctx.pack());
+        auditKitOverride(parcel, before, actor);
         return parcelView(parcel, skus(session));
     }
 
@@ -409,7 +450,7 @@ class PackingService implements Packing {
                 shipment == null, cod, order.total().currency().getCurrencyCode(), recipient,
                 warehouse.map(w -> w.name()).orElse(null), warehouse.map(w -> w.address()).orElse(null),
                 parcel.type().name(), m.weightKg(), m.lengthCm(), m.widthCm(), m.heightCm(), parcel.dimWeightKg(),
-                parcel.fragile(), parcel.rotatable(), contents(parcel, skus));
+                parcel.fragile(), parcel.rotatable(), contents(parcel, skus), parcel.kit());
     }
 
     // ------------------------------------------------------------------ completing
@@ -670,7 +711,7 @@ class PackingService implements Packing {
             }
             lines.add(new PackingSession.Line(line.lineId(), line.sku(), item.barcode(), wanted, available, print,
                     line.designSnapshotId(), lots, serials, item.rotatable(),
-                    item.storageClass() == StorageClass.FRAGILE));
+                    item.storageClass() == StorageClass.FRAGILE, item.packageCount()));
         }
         return lines;
     }
@@ -778,7 +819,8 @@ class PackingService implements Packing {
             return new Line(line.orderLineId(), line.sku(), line.barcode(), line.printLine(), line.designSnapshotId(),
                     line.wanted(), line.available(), packed, session.shippedOf(line.orderLineId()),
                     Math.max(0, line.wanted() - packed), line.lots().keySet().stream()
-                    .anyMatch(lot -> !PackingSession.NO_LOT.equals(lot)), !line.serials().isEmpty(), lots);
+                    .anyMatch(lot -> !PackingSession.NO_LOT.equals(lot)), !line.serials().isEmpty(), lots,
+                    line.packageCount(), line.packageCount() >= KitPart.MIN_PARTS);
         }).toList();
         List<Parcel> parcels = session.parcels().stream().map(parcel -> parcelView(parcel, skus)).toList();
         List<ShipmentSummary> made = shipments.findByPackIdOrderByReadyAtAscIdAsc(ctx.pack().getId()).stream()
@@ -806,7 +848,8 @@ class PackingService implements Packing {
                 parcel.status().name(), parcel.shipmentId(), m == null ? null : m.weightKg(),
                 m == null ? null : m.lengthCm(), m == null ? null : m.widthCm(), m == null ? null : m.heightCm(),
                 parcel.dimWeightKg(), parcel.rotatable(), parcel.rotatableOverridden(), parcel.fragile(),
-                parcel.fragileOverridden(), parcel.sealedAt(), contents(parcel, skus));
+                parcel.fragileOverridden(), parcel.sealedAt(), contents(parcel, skus), parcel.kit(),
+                parcel.kitOverrideReason());
     }
 
     private static List<Content> contents(PackingSession.Parcel parcel, Map<UUID, String> skus) {
@@ -818,6 +861,53 @@ class PackingService implements Packing {
     private static Map<UUID, String> skus(PackingSession session) {
         return session.lines().stream().collect(Collectors.toMap(PackingSession.Line::orderLineId,
                 PackingSession.Line::sku));
+    }
+
+    /**
+     * KIT-FORCE: a reason given for packing an item that ships as several boxes in an ordinary parcel goes in the audit
+     * trail, with the parcel and its label, when it is new or changed. The reason is the packer's own text: kept as
+     * the details, never in a log line.
+     */
+    private void auditKitOverride(PackingSession.Parcel parcel, String before, CurrentUser actor) {
+        String reason = parcel.kitOverrideReason();
+        if (reason == null || reason.equals(before)) {
+            return;
+        }
+        var entry = new com.stockflow.common.audit.AuditEntry(actor.userId(), actor.username(),
+                com.stockflow.common.audit.AuditAction.UPDATE, "fulfillment-package", parcel.id().toString(),
+                com.stockflow.common.audit.AuditEntry.Outcome.SUCCESS,
+                org.slf4j.MDC.get(com.stockflow.common.web.CorrelationIdFilter.MDC_KEY), null,
+                "{\"kitOverrideReason\":%s,\"labelCode\":%s}".formatted(json(reason), json(parcel.labelCode())),
+                clock.instant());
+        // Once the reason is stored: a write that rolls back leaves no entry for a reason that never was.
+        org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                new org.springframework.transaction.support.TransactionSynchronization() {
+                    @Override
+                    public void afterCommit() {
+                        audit.record(entry);
+                    }
+                });
+    }
+
+    private static String json(String value) {
+        StringBuilder out = new StringBuilder(value.length() + 8).append('"');
+        for (char c : value.toCharArray()) {
+            switch (c) {
+                case '"' -> out.append("\\\"");
+                case '\\' -> out.append("\\\\");
+                case '\n' -> out.append("\\n");
+                case '\r' -> out.append("\\r");
+                case '\t' -> out.append("\\t");
+                default -> {
+                    if (c < 0x20) {
+                        out.append("\\u%04x".formatted((int) c));
+                    } else {
+                        out.append(c);
+                    }
+                }
+            }
+        }
+        return out.append('"').toString();
     }
 
     /** May work, or take over, a session another packer started: {@code fulfillment-packing:APPROVE}. */

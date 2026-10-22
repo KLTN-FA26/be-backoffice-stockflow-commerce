@@ -27,8 +27,9 @@ public interface Dispatching {
                    String carrierName, String vehiclePlate, String driverName, int shipmentCount, int packageCount,
                    BigDecimal codTotal, Instant loadingStartedAt, Instant dispatchedAt, long version) { }
 
+    /** @param kit the kit it is a part of (SCRUM-287 LP2-6): every part is scanned; null for an ordinary parcel */
     record LoadParcel(UUID packageId, String labelCode, BigDecimal weightKg, boolean loaded, Instant loadedAt,
-                      UUID loadedBy) { }
+                      UUID loadedBy, com.stockflow.fulfillment.internal.domain.KitPart kit) { }
 
     /**
      * A shipment on the manifest.
@@ -63,7 +64,7 @@ public interface Dispatching {
                             boolean codChangedSinceLabel, List<ManifestParcel> packages) { }
 
     record ManifestParcel(String labelCode, BigDecimal weightKg, BigDecimal lengthCm, BigDecimal widthCm,
-                          BigDecimal heightCm, boolean loaded) { }
+                          BigDecimal heightCm, boolean loaded, com.stockflow.fulfillment.internal.domain.KitPart kit) { }
 
     /**
      * @param shipmentIds the shipments to put on the manifest now; null or empty: every shipment of that warehouse

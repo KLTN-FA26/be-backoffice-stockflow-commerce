@@ -52,4 +52,31 @@ class IntegrityViolationMappingTest {
         assertThat(response.getStatusCode().value()).isEqualTo(409);
         assertThat(response.getBody().errorCode()).isEqualTo("CONFLICT");
     }
+
+    /**
+     * Review of #155: a deferred constraint trigger refuses the transaction at the commit; Spring reports it as a failed
+     * commit, which was a 500. With an integrity SQLSTATE it is the same refusal as above.
+     */
+    @Test
+    void aRuleCheckedAtTheCommitIsAConflictNotAServerError() {
+        var sql = new SQLException("ERROR: tg_package_kit_ships_whole: kit ships whole", "23514");
+        var commit = new org.springframework.transaction.TransactionSystemException("Could not commit JPA transaction",
+                new RuntimeException("rollback", sql));
+        var jpa = new org.springframework.orm.jpa.JpaSystemException(new RuntimeException("commit", sql));
+
+        for (Exception failed : java.util.List.of(commit, jpa)) {
+            var response = handler.handleFailedCommit(failed);
+            assertThat(response.getStatusCode().value()).isEqualTo(409);
+            assertThat(response.getBody().errorCode()).isEqualTo("CONFLICT");
+            assertThat(response.getBody().message()).doesNotContain("tg_package_kit");
+        }
+    }
+
+    @Test
+    void aFailedCommitWithoutAnIntegritySqlStateIsStillADefect() {
+        var response = handler.handleFailedCommit(new org.springframework.transaction.TransactionSystemException(
+                "Could not commit", new SQLException("connection reset", "08006")));
+
+        assertThat(response.getStatusCode().value()).isEqualTo(500);
+    }
 }
