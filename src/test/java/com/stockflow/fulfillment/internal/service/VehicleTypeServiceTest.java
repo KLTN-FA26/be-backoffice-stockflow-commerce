@@ -21,7 +21,7 @@ import static org.mockito.Mockito.when;
 class VehicleTypeServiceTest {
 
     private static final VehicleTypes.SaveVehicleType TRUCK = new VehicleTypes.SaveVehicleType("TRUCK-X", "Truck",
-            "TRUCK", 4000, 1800, 1800, 0, new BigDecimal("2000"), 2, null, null, null);
+            "TRUCK", 4000, 1800, 1800, 0, null, null, new BigDecimal("2000"), 2, null, null, null);
 
     private final VehicleTypeJpaRepository repository = mock(VehicleTypeJpaRepository.class);
     private final VehicleTypeService service = new VehicleTypeService(repository);
@@ -52,11 +52,11 @@ class VehicleTypeServiceTest {
     void presetKeepsItsKind() {
         VehicleTypeJpaEntity preset = new VehicleTypeJpaEntity(java.util.UUID.randomUUID(), "20DC");
         org.springframework.test.util.ReflectionTestUtils.setField(preset, "preset", true);
-        preset.apply("20'", "CONTAINER", 5898, 2352, 2393, 150, new BigDecimal("28200"), 10, null, "ACTIVE");
+        preset.apply("20'", "CONTAINER", 5898, 2352, 2393, 150, null, null, new BigDecimal("28200"), 10, null, "ACTIVE");
         when(repository.findById(preset.getId())).thenReturn(Optional.of(preset));
 
         VehicleTypes.SaveVehicleType asTruck = new VehicleTypes.SaveVehicleType(null, "20'", "TRUCK", 5898, 2352, 2393,
-                150, new BigDecimal("28200"), 10, null, null, 0L);
+                150, null, null, new BigDecimal("28200"), 10, null, null, 0L);
         assertThatThrownBy(() -> service.update(preset.getId(), asTruck)).isInstanceOfSatisfying(BusinessException.class,
                 e -> assertThat(e.fieldErrors()).extracting(f -> f.code()).containsExactly("VEHICLE_TYPE_KIND_IMMUTABLE"));
     }

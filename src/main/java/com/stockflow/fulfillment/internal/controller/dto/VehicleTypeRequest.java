@@ -19,6 +19,8 @@ import java.math.BigDecimal;
  * @param kind            CONTAINER, TRUCK or PICKUP
  * @param gussetMm        gusset: edge in mm of the reinforcement cube the placement solver keeps free in the top corners - two cubes at the front-end top corners (z = 0), or, on a 45' box (inner length of 12 500 mm or more), four at the corner-post positions of the 40' post span instead of those two; 0 = none; optional (none = 0); 2 x gusset must be less than the inner width and the gusset less
  *                        than the inner height (0..1000)
+ * @param doorWidthMm     clear door opening width, mm (1..30000), optional (none = no door limit); at most the inner width
+ * @param doorHeightMm    clear door opening height, mm (1..30000), optional (none = no door limit); at most the inner height
  * @param innerLengthMm   inner cargo space, mm (1..30000)
  * @param maxPayloadKg    maximum payload, kg (more than 0, at most 100000)
  * @param availableCount  how many vehicles of this type a plan may use (BR-12)
@@ -33,6 +35,8 @@ public record VehicleTypeRequest(
         @NotNull @Min(1) @Max(30000) Integer innerWidthMm,
         @NotNull @Min(1) @Max(30000) Integer innerHeightMm,
         @Min(0) @Max(1000) Integer gussetMm,
+        @Min(1) @Max(30000) Integer doorWidthMm,
+        @Min(1) @Max(30000) Integer doorHeightMm,
         @NotNull @DecimalMin(value = "0", inclusive = false) @DecimalMax("100000") @Digits(integer = 6, fraction = 3)
         BigDecimal maxPayloadKg,
         @NotNull @Min(0) @Max(10000) Integer availableCount,
