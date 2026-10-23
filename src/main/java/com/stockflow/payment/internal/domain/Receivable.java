@@ -36,6 +36,8 @@ public final class Receivable extends AggregateRoot {
     private String kind = "CREDIT_ORDER";
     /** G3-2: the delivered shipment of a split order this bills; null for a whole-order delivery or a fee. */
     private UUID shipmentId;
+    /** SCRUM-193: the number of the order it is for, for display; null when not known (a row older than the column). */
+    private String orderNumber;
     /** G2-3: who pays it; CARRIER only for a deposit balance collected on delivery. */
     private Collector collector = Collector.CUSTOMER;
 
@@ -102,6 +104,13 @@ public final class Receivable extends AggregateRoot {
     }
 
     public String kind() { return kind; }
+
+    public Receivable forOrderNumber(String number) {
+        this.orderNumber = number;
+        return this;
+    }
+
+    public String orderNumber() { return orderNumber; }
 
     public Receivable forShipment(UUID shipment) {
         this.shipmentId = shipment;

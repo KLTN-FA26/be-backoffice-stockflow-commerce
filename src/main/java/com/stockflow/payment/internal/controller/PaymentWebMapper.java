@@ -29,7 +29,7 @@ final class PaymentWebMapper {
     }
 
     static ReceivableResponse toResponse(Receivable r, List<ReceivableBook.Allocation> allocations) {
-        return new ReceivableResponse(r.id(), r.orderId(), r.customerId(), r.kind(), r.collector().name(),
+        return new ReceivableResponse(r.id(), r.orderId(), r.orderNumber(), r.customerId(), r.kind(), r.collector().name(),
                 r.shipmentId(), r.amount(), r.paidAmount(), r.outstanding(), r.currency(), r.issuedAt(), r.dueDate(),
                 r.status().name(), r.settledAt(),
                 allocations == null ? null : allocations.stream().map(PaymentWebMapper::toResponse).toList());

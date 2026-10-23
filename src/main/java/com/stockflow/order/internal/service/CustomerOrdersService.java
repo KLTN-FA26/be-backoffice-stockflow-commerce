@@ -114,7 +114,8 @@ class CustomerOrdersService implements CustomerOrders {
                         .map(r -> new CancellationRequestView(r.status().name(), r.reasonCode(), r.note(),
                                 r.requestedAt(), r.decidedAt(), r.decisionNote()))
                         .orElse(null),
-                shipments(summary));
+                shipments(summary),
+                summary.lifecycle() == null ? null : summary.lifecycle().deliveryMode().name());
     }
 
     /**
