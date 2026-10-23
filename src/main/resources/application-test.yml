@@ -33,6 +33,9 @@ spring:
         max-size: 1
 
 stockflow:
+  reporting:
+    # The tests rebuild by hand against the orders they place; a backfill racing the first test would only add noise.
+    backfill-on-startup: false
   inventory:
     # The alert jobs are driven by the tests, not by the clock: nothing may drain, reconcile or sweep behind their back.
     alert-drain-interval: PT24H

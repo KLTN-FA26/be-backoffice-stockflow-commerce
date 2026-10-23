@@ -10,9 +10,10 @@ import java.math.BigDecimal;
 import java.util.UUID;
 
 /**
- * JPA mapping of a per-SKU sales summary (table {@code reporting.product_sales_summary}). STARTER ENTITY.
+ * JPA mapping of a per-SKU sales summary (table {@code reporting.product_sales_summary}).
  *
- * <p>{@code period} is a key like {@code 2026-09}. A read model projected from events.</p>
+ * <p>{@code period} is the day, an ISO date like {@code 2026-10-24}: one row per SKU per Asia/Ho_Chi_Minh day. A read
+ * model projected from order events, written with SQL upserts by {@code SalesRollupLedgerAdapter}.</p>
  */
 @Entity
 @Table(name = "product_sales_summary", schema = "reporting",
@@ -23,7 +24,7 @@ public class ProductSalesSummaryJpaEntity extends BaseEntity {
     @Column(name = "sku", nullable = false, length = 64)
     private String sku;
 
-    @Column(name = "period", nullable = false, length = 7)
+    @Column(name = "period", nullable = false, length = 10)
     private String period;
 
     @Column(name = "quantity_sold", nullable = false)

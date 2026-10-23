@@ -3,8 +3,9 @@
  *
  * <p>WBS 3.20 · database schema {@code reporting}</p>
  *
- * <p><b>May depend on:</b> none — this module calls no other business module. Plus {@code common} and {@code contracts}, which are
- * available to every module.</p>
+ * <p><b>May depend on:</b> order (the orders behind the rollups and the live status counts) and product (a SKU's
+ * name). It listens to {@code OrderPlaced} and {@code OrderCancelled} from {@code contracts}. Plus {@code common} and
+ * {@code contracts}, which are available to every module.</p>
  *
  * <p>The module has two packages and the split is the whole point:</p>
  * <ul>
@@ -14,5 +15,5 @@
  *       you reaching in; {@code ModularityTest} will.</li>
  * </ul>
  */
-@org.springframework.modulith.ApplicationModule(allowedDependencies = {})
+@org.springframework.modulith.ApplicationModule(allowedDependencies = {"order :: api", "product :: api"})
 package com.stockflow.reporting;
