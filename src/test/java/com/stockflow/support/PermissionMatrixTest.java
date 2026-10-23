@@ -255,7 +255,11 @@ class PermissionMatrixTest {
             Map.entry("sales-orders:READ", Set.of(Role.CUSTOMER, Role.SALES_STAFF, Role.ORDER_COORDINATOR, Role.ACCOUNTANT,
                     Role.SYSTEM_ADMIN)),
             Map.entry("sales-orders:VIEW_PAGE", Set.of(Role.CUSTOMER, Role.SALES_STAFF, Role.ORDER_COORDINATOR,
-                    Role.ACCOUNTANT, Role.SYSTEM_ADMIN)));
+                    Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
+            // WH-READ-COORD (V20261023000500): the release dialog needs a warehouse to pick.
+            Map.entry("warehouse-warehouses:READ", Set.of(Role.WAREHOUSE_MANAGER, Role.WAREHOUSE_STAFF,
+                    Role.INVENTORY_PLANNER, Role.PROCUREMENT_STAFF, Role.SALES_STAFF, Role.ORDER_COORDINATOR,
+                    Role.SYSTEM_ADMIN)));
 
     /** A valid body for the customer-reachable write handlers, so validation (400) cannot hide a missing owner check. */
     private Map<String, String> attackBodies() {
@@ -649,6 +653,24 @@ class PermissionMatrixTest {
                 .as("customer-status:APPROVE was not granted").isEqualTo(403);
         assertThat(as.apply(MockMvcRequestBuilders.get("/api/v1/orders"))).as("sales-orders:READ was not granted")
                 .isEqualTo(403);
+    }
+
+    /**
+     * WH-READ-COORD (V20261023000500): the order-release dialog makes the coordinator pick a warehouse, so the list
+     * must answer 200 to that role - READ only, so the screen and the writes stay refused.
+     */
+    @Test
+    void theOrderCoordinatorListsWarehousesToReleaseTo() throws Exception {
+        SecuredMvc http = new SecuredMvc(mvc, decoder);
+        UUID coordinator = tx.execute(s -> ReferenceRows.user(entityManager));
+        assertThat(http.asRole(Role.ORDER_COORDINATOR, coordinator, MockMvcRequestBuilders.get("/api/v1/warehouses"))
+                .andReturn().getResponse().getStatus()).as("GET /api/v1/warehouses as ORDER_COORDINATOR").isEqualTo(200);
+        // Spring validates a body before the guard runs (400), so the refused writes are read from the grants.
+        assertThat(roles.resolve(List.of(Role.ORDER_COORDINATOR.authority())).permissions())
+                .contains(PermissionCode.parse("warehouse-warehouses:READ"))
+                .doesNotContain(PermissionCode.parse("warehouse-warehouses:VIEW_PAGE"),
+                        PermissionCode.parse("warehouse-warehouses:CREATE"),
+                        PermissionCode.parse("warehouse-warehouses:UPDATE"));
     }
 
     @Test
