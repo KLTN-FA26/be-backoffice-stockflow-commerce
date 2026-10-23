@@ -320,6 +320,14 @@ stockflow:
     version: v1
 
   # ---------------------------------------------------------------------------
+  # Reporting (SCRUM-344): the sales rollups behind the dashboard.
+  # ---------------------------------------------------------------------------
+  reporting:
+    # On the first start after deploy, roll up the orders placed before the listeners existed. Does nothing once the
+    # history is in. POST /api/v1/reports/rebuild does the same by hand.
+    backfill-on-startup: true
+
+  # ---------------------------------------------------------------------------
   # HTTP idempotency. Applies to any unsafe request carrying an Idempotency-Key header.
   # ---------------------------------------------------------------------------
   idempotency:
