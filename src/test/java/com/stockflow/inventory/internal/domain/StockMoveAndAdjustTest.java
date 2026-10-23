@@ -201,6 +201,35 @@ class StockMoveAndAdjustTest {
         }
 
         @Test
+        @DisplayName("a count variance names the count line it comes from")
+        void countVarianceNamesItsLine() {
+            UUID line = UUID.randomUUID();
+            StockAdjustment adjustment = writeOff(-2, AdjustmentReason.COUNT_VARIANCE, null).forCountLine(line);
+
+            assertThat(adjustment.cycleCountLineId()).isEqualTo(line);
+            assertThat(writeOff(-2, AdjustmentReason.DAMAGED, null).cycleCountLineId()).isNull();
+        }
+
+        @Test
+        @DisplayName("a carton's adjustment keeps its carton and is approved for the carton, not onto one row")
+        void cartonAdjustmentKeepsItsCarton() {
+            StockPackageId carton = new StockPackageId(UUID.randomUUID());
+            StockAdjustment adjustment = writeOff(-2, AdjustmentReason.COUNT_VARIANCE, null).inPackage(carton);
+
+            assertThat(adjustment.stockPackageId()).isEqualTo(carton);
+            assertThatThrownBy(() -> adjustment.approveAndPost(MANAGER, available(5), NOW))
+                    .isInstanceOf(IllegalStateException.class);
+            assertThatThrownBy(() -> adjustment.approveForCarton(CLERK, NOW))
+                    .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.ADJUSTMENT_SELF_APPROVAL);
+
+            adjustment.approveForCarton(MANAGER, NOW);
+            assertThat(adjustment.status()).isEqualTo(AdjustmentStatus.POSTED);
+            assertThat(adjustment.postedAt()).isEqualTo(NOW);
+            assertThatThrownBy(() -> writeOff(-2, AdjustmentReason.DAMAGED, null).approveForCarton(MANAGER, NOW))
+                    .isInstanceOf(IllegalStateException.class);
+        }
+
+        @Test
         @DisplayName("only the requester may withdraw, and only before it is decided")
         void onlyRequesterWithdrawsBeforeDecision() {
             StockAdjustment adjustment = writeOff(-2, AdjustmentReason.DAMAGED, null);
