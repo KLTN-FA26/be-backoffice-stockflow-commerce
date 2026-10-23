@@ -77,9 +77,10 @@ class StockPackageContents {
      * spec 2026-10-23 section 6). Call under the SKU lock; the carton and then its rows, by id, are locked here.
      *
      * <ul>
-     *   <li>Written up: a LOST carton is found first, then the units go onto its first row - rows are never deleted
-     *       at zero, so a lost carton still has the row it was emptied from. An IN_STOCK one must already be open:
-     *       an unopened carton holds exactly what was counted into it.</li>
+     *   <li>Written up: a LOST carton is found first. The units go onto the row that holds the carton's stock, or
+     *       onto its first row when none does - rows are never deleted at zero, so a lost carton still has the row it
+     *       was emptied from. An IN_STOCK one must already be open: an unopened carton holds exactly what was counted
+     *       into it. Never above what was counted into it ({@code STOCK_PACKAGE_OVERFILLED}).</li>
      *   <li>Written down: the units come from its rows in id order, each giving at most what no hold covers. A
      *       shortfall that would cut into a hold is refused whole ({@link InsufficientStockException}), as for loose
      *       stock: a customer's hold is never cancelled by a correction; the holds are reallocated first.</li>
@@ -109,7 +110,16 @@ class StockPackageContents {
         List<RowChange> changes = delta > 0
                 ? fill(carton, rows, delta)
                 : drain(carton, rows, -delta, missingWhenEmpty, now);
-        changes.forEach(change -> stockItems.save(change.row()));
+        for (RowChange change : changes) {
+            if (change.delta() > 0) {
+                // Units back in the carton they were counted into: the same receipt, proven by the LPN, so no age is
+                // lost. saveMerged tells the FIFO trigger so (V20261017000450), which would otherwise refuse raising
+                // an existing layer and ask for a new one - and a carton's units cannot be a second layer of it.
+                stockItems.saveMerged(change.row());
+            } else {
+                stockItems.save(change.row());
+            }
+        }
         stockPackages.save(carton);
         return changes;
     }
@@ -126,13 +136,16 @@ class StockPackageContents {
         }
         int after = held(rows) + units;
         if (after > carton.receivedQty()) {
-            // Rule 5 of V20261022000100, said first: units found above the count are loose stock.
-            throw new IllegalStateException("%s was counted in at %d and cannot hold %d"
+            // Rule 5 of V20261022000100, said first: units found above the count are loose stock. Reachable at
+            // approval (two pending write-ups of one carton), so a client error, not a 500.
+            throw new BusinessException(ErrorCode.STOCK_PACKAGE_OVERFILLED, "%s was counted in at %d and cannot hold %d"
                     .formatted(carton.lpn(), carton.receivedQty(), after));
         }
-        StockItem first = rows.getFirst();
-        first.adjustBy(units);
-        return List.of(new RowChange(first, units));
+        // The row that holds the carton's stock, so the units join it rather than a row emptied earlier; a carton
+        // holding nothing (a LOST one) takes them back on its first row.
+        StockItem target = rows.stream().filter(row -> !row.onHand().isZero()).findFirst().orElse(rows.getFirst());
+        target.adjustBy(units);
+        return List.of(new RowChange(target, units));
     }
 
     private static List<RowChange> drain(StockPackage carton, List<StockItem> rows, int units,

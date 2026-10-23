@@ -891,7 +891,7 @@ class StockOperationsServiceImpl implements StockOperations {
      * stock row. A carton's is one adjustment naming the carton: its approval changes the carton's state once.
      */
     @Override
-    @Auditable(action = AuditAction.CREATE, resourceType = "stock-adjustment", resourceId = "#cycleCountLineId")
+    @Auditable(action = AuditAction.CREATE, resourceType = "cycle-count-line", resourceId = "#cycleCountLineId")
     public List<StockAdjustmentSummary> requestCountVariance(UUID cycleCountLineId, CountSlot slot, int delta,
                                                              UUID requestedBy, String note) {
         Objects.requireNonNull(cycleCountLineId, "cycleCountLineId");
@@ -957,17 +957,23 @@ class StockOperationsServiceImpl implements StockOperations {
             item.releaseReservation(held, ReleaseReason.SCRAPPED, now);
         }
         requireLoose(item);
-        adjustment.approveAndPost(approverId, item, now);
-        stockItems.save(item);
+        int delta = adjustment.quantityDelta();
+        // A configured FIFO SKU's layer is never raised (inventory.enforce_sku_policy: "reconcile via a new stock
+        // layer"): loose units found have no provable receipt, and putting them on an old layer would make them as
+        // old as it and first out. They land on a new layer beside it, received now; the adjustment still names the
+        // layer it was asked against. FEFO and unconfigured SKUs write the named layer up, as before.
+        StockItem target = delta > 0 && policies.replenishesByNewLayer(adjustment.sku().code())
+                ? StockItem.newLayerBeside(item, now)
+                : item;
+        adjustment.approveAndPost(approverId, target, now);
+        stockItems.save(target);
         StockAdjustment saved = adjustments.save(adjustment);
 
-        int delta = adjustment.quantityDelta();
         ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.ADJUSTMENT,
                 adjustment.sku(), adjustment.lotNumber(),
                 delta < 0 ? adjustment.location() : null, delta > 0 ? adjustment.location() : null,
-                Math.abs(delta), item.status(), StockMovement.ReferenceType.STOCK_ADJUSTMENT, adjustment.id(),
-                adjustment.reason() + (adjustment.note() == null ? "" : ": " + adjustment.note()),
-                approverId, now).ofLot(item.lotId()));
+                Math.abs(delta), target.status(), StockMovement.ReferenceType.STOCK_ADJUSTMENT, adjustment.id(),
+                ledgerReason(adjustment), approverId, now).ofLot(target.lotId()));
         log.info("Posted adjustment {}: {} {} at {}", adjustment.number(), delta, adjustment.sku(), adjustment.location());
         return toSummary(saved);
     }
@@ -985,7 +991,7 @@ class StockOperationsServiceImpl implements StockOperations {
         List<StockPackageContents.RowChange> changes = cartons.adjust(adjustment.stockPackageId(),
                 adjustment.quantityDelta(), adjustment.reason() == AdjustmentReason.COUNT_VARIANCE, now);
         StockAdjustment saved = adjustments.save(adjustment);
-        String reason = adjustment.reason() + (adjustment.note() == null ? "" : ": " + adjustment.note());
+        String reason = ledgerReason(adjustment);
         for (StockPackageContents.RowChange change : changes) {
             StockItem row = change.row();
             boolean down = change.delta() < 0;
@@ -998,6 +1004,11 @@ class StockOperationsServiceImpl implements StockOperations {
         log.info("Posted adjustment {}: {} {} in carton {} at {}", adjustment.number(), adjustment.quantityDelta(),
                 adjustment.sku(), adjustment.stockPackageId().value(), adjustment.location());
         return toSummary(saved);
+    }
+
+    /** The ledger's reason for a posted adjustment: its reason code, and the note when there is one. */
+    private static String ledgerReason(StockAdjustment adjustment) {
+        return adjustment.reason() + (adjustment.note() == null ? "" : ": " + adjustment.note());
     }
 
     @Override

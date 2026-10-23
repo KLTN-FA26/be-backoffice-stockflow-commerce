@@ -65,6 +65,8 @@ class CountVarianceAdjustmentIntegrationTest {
 
     private String sku;
     private String lot;
+    /** What a carton's row expires on; null once {@link #fifo} turns expiry tracking off. */
+    private LocalDate cartonExpiry = LocalDate.now().plusYears(1);
     private UUID item;
     private UUID cartonUnit;
     private UUID clerk;
@@ -95,12 +97,19 @@ class CountVarianceAdjustmentIntegrationTest {
 
     // ------------------------------------------------------------------ fixtures
 
+    /** The SKU becomes FIFO, before it holds stock: expiry tracking goes with FEFO (ck_inventory_control_removal). */
+    private void fifo() {
+        tx.executeWithoutResult(s -> jdbc.update("update inventory.inventory_items set expiry_tracked=false,"
+                + " removal_strategy='FIFO' where sku=?", sku));
+        cartonExpiry = null;
+    }
+
     private UUID loose(Instant receivedAt, LocalDate expiry, int onHand) {
         UUID id = Identifiers.newId();
         tx.executeWithoutResult(s -> jdbc.update("""
                 insert into inventory.stock_item (id, sku, location_code, lot_number, expiry_date, received_at, on_hand,
                     reserved, status, version, created_at) values (?, ?, ?, ?, ?, ?, ?, 0, 'AVAILABLE', 0, now())""",
-                id, sku, BIN, lot, Date.valueOf(expiry), Timestamp.from(receivedAt), onHand));
+                id, sku, BIN, lot, expiry == null ? null : Date.valueOf(expiry), Timestamp.from(receivedAt), onHand));
         return id;
     }
 
@@ -116,7 +125,7 @@ class CountVarianceAdjustmentIntegrationTest {
                     insert into inventory.stock_item (id, sku, location_code, lot_number, expiry_date, received_at,
                         on_hand, reserved, status, version, created_at, stock_package_id)
                     values (?, ?, ?, ?, ?, ?, ?, 0, 'AVAILABLE', 0, now(), ?)""",
-                    Identifiers.newId(), sku, BIN, lot, Date.valueOf(LocalDate.now().plusYears(1)),
+                    Identifiers.newId(), sku, BIN, lot, cartonExpiry == null ? null : Date.valueOf(cartonExpiry),
                     Timestamp.from(EARLY), quantity, id);
         });
         return id;
@@ -130,7 +139,8 @@ class CountVarianceAdjustmentIntegrationTest {
             jdbc.update("""
                     insert into inventory.cycle_count (id, count_number, warehouse_id, trigger_type)
                     select ?, ?, id, 'MANUAL' from warehouse.warehouse where prefix = 'HCM'""",
-                    count, "CC-IT-" + count.toString().substring(0, 8).toUpperCase(Locale.ROOT));
+                    // The random tail: a UUIDv7's head is its millisecond clock, the same for every count of a run.
+                    count, "CC-IT-" + count.toString().substring(24).toUpperCase(Locale.ROOT));
             jdbc.update("""
                     insert into inventory.cycle_count_line (id, cycle_count_id, location_code, sku, lot_number,
                         expected_qty, stock_package_id) values (?, ?, ?, ?, ?, 0, ?)""",
@@ -248,6 +258,49 @@ class CountVarianceAdjustmentIntegrationTest {
             assertThat(row.get("to_location_code")).isEqualTo(BIN);
             assertThat(row.get("from_location_code")).isNull();
         });
+    }
+
+    @Test
+    @DisplayName("FIFO: a loose surplus opens a new layer received at approval; the counted layer is not raised")
+    void fifoLooseSurplusOpensANewLayer() {
+        fifo();
+        UUID old = loose(EARLY, null, 4);
+        UUID line = countLine(null);
+
+        List<StockAdjustmentSummary> asked = operations.requestCountVariance(line, looseSlot(), 3, clerk, null);
+        assertThat(asked).singleElement().satisfies(a -> assertThat(a.quantityDelta()).isEqualTo(3));
+        operations.approve(asked.getFirst().adjustmentId(), manager);
+
+        assertThat(onHand(old)).isEqualTo(4);
+        assertThat(jdbc.queryForList("""
+                select on_hand, received_at, lot_number, location_code, stock_package_id from inventory.stock_item
+                 where sku = ? and id <> ?""", sku, old)).singleElement().satisfies(row -> {
+                    assertThat(row).containsEntry("on_hand", 3).containsEntry("lot_number", lot)
+                            .containsEntry("location_code", BIN);
+                    assertThat(row.get("stock_package_id")).isNull();
+                    assertThat(((Timestamp) row.get("received_at")).toInstant()).isAfter(EARLY);
+                });
+        assertThat(adjustmentLedger()).singleElement().satisfies(row -> {
+            assertThat(row.get("to_location_code")).isEqualTo(BIN);
+            assertThat(row.get("quantity")).isEqualTo(3);
+        });
+    }
+
+    @Test
+    @DisplayName("FIFO: a LOST carton found again is refilled on its own row, not a new layer")
+    void fifoCartonFoundAgainRefillsItsOwnRow() {
+        fifo();
+        UUID box = carton("R", 20, true);
+        operations.approve(operations.requestCountVariance(countLine(box), cartonSlot(box), -20, clerk, null)
+                .getFirst().adjustmentId(), manager);
+        assertThat(cartonState(box)).containsEntry("status", "LOST");
+
+        operations.approve(operations.requestCountVariance(countLine(box), cartonSlot(box), 20, clerk, null)
+                .getFirst().adjustmentId(), manager);
+
+        assertThat(cartonState(box)).containsEntry("status", "IN_STOCK").containsEntry("held", 20L);
+        assertThat(jdbc.queryForObject("select count(*) from inventory.stock_item where sku = ?", Integer.class, sku))
+                .as("the carton's one row, no new layer").isEqualTo(1);
     }
 
     @Test
