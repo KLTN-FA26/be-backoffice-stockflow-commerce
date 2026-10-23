@@ -45,7 +45,8 @@ public class CreditHoldService {
     public enum RefusalAction { CANCEL, SWITCH_TO_PREPAID, SWITCH_TO_DEPOSIT }
 
     /** The terms a customer may use and the credit left, for the checkout and the back office. */
-    public record CreditPosition(CreditTerms terms, BigDecimal exposure, BigDecimal available, boolean hasOverdue) {
+    public record CreditPosition(CreditTerms terms, BigDecimal exposure, BigDecimal available, boolean hasOverdue,
+                                 BigDecimal overdueAmount, java.time.LocalDate oldestOverdueDueDate) {
     }
 
     private final OrderRepository repository;
@@ -86,7 +87,8 @@ public class CreditHoldService {
         BigDecimal exposure = creditChecks.undeliveredCreditExposure(customerId, null)
                 .add(receivables.outstandingReceivables());
         BigDecimal available = terms.allowCredit() ? terms.creditLimit().subtract(exposure).max(BigDecimal.ZERO) : null;
-        return new CreditPosition(terms, exposure, available, receivables.hasOverdue());
+        return new CreditPosition(terms, exposure, available, receivables.hasOverdue(), receivables.overdueAmount(),
+                receivables.oldestOverdueDueDate());
     }
 
     @Transactional(readOnly = true)

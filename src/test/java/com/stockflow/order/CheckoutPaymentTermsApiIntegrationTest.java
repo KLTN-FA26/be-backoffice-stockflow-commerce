@@ -176,4 +176,53 @@ class CheckoutPaymentTermsApiIntegrationTest {
                 .andExpect(status().isCreated()));
         assertThat(body.at("/data/depositRequired").decimalValue()).isEqualByComparingTo("3750000");
     }
+
+    /** A receivable of {@code amount}, {@code paid} of it settled, on a fresh order of the customer. */
+    private void receivable(String status, String collector, long amount, long paid, int dueInDays) throws Exception {
+        UUID order = UUID.fromString(placedBody(place(",\"paymentTerm\":\"PREPAID\"").andExpect(status().isCreated()))
+                .at("/data/orderId").asText());
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO payment.receivable (id, order_id, customer_id, amount, paid_amount, currency, issued_at,
+                    due_date, status, collector, kind)
+                VALUES (gen_random_uuid(), ?, ?, ?, ?, 'VND', NOW() - INTERVAL '40 days', CURRENT_DATE + ?, ?, ?, ?)""",
+                order, customer, amount, paid, dueInDays, status, collector,
+                "CARRIER".equals(collector) ? "DEPOSIT_BALANCE" : "CREDIT_ORDER"));
+    }
+
+    @Test
+    @DisplayName("SCRUM-193: a customer with nothing overdue sees overdueAmount 0 and no oldestOverdueDueDate")
+    void nothingOverdue() throws Exception {
+        terms(false, true, CommercialTerm.CREDIT);
+        receivable("OPEN", "CUSTOMER", 2_000_000, 0, 20);
+        http().asCustomer(user, get(TERMS)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.hasOverdue").value(false))
+                .andExpect(jsonPath("$.data.overdueAmount").value(0))
+                .andExpect(jsonPath("$.data.oldestOverdueDueDate").doesNotExist());
+    }
+
+    @Test
+    @DisplayName("SCRUM-193: overdueAmount sums what is still unpaid on the customer's OVERDUE receivables and "
+            + "oldestOverdueDueDate is the earliest due date; open, paid and carrier-collected ones do not count")
+    void overdueAmountAndOldestDueDate() throws Exception {
+        terms(false, true, CommercialTerm.CREDIT);
+        receivable("OVERDUE", "CUSTOMER", 1_000_000, 200_000, -10);     // 800k unpaid, the oldest
+        receivable("OVERDUE", "CUSTOMER", 500_000, 0, -3);              // 500k unpaid
+        receivable("OPEN", "CUSTOMER", 9_000_000, 0, 15);               // not due yet
+        receivable("OVERDUE", "CARRIER", 7_000_000, 0, -30);            // the carrier's to collect, not the customer's
+        String oldest = java.time.LocalDate.now().minusDays(10).toString();
+
+        http().asCustomer(user, get(TERMS)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.hasOverdue").value(true))
+                .andExpect(jsonPath("$.data.overdueAmount").value(1300000))
+                .andExpect(jsonPath("$.data.oldestOverdueDueDate").value(oldest))
+                // the existing fields are unchanged
+                .andExpect(jsonPath("$.data.customerId").value(customer.toString()))
+                .andExpect(jsonPath("$.data.currency").value("VND"))
+                .andExpect(jsonPath("$.data.creditLimit").value(50000000));
+        // the staff read of the same customer carries the same two fields
+        http().asRole(com.stockflow.common.security.Role.ACCOUNTANT, approver, get("/api/v1/orders/credit-position/" + customer))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.overdueAmount").value(1300000))
+                .andExpect(jsonPath("$.data.oldestOverdueDueDate").value(oldest));
+    }
 }
