@@ -201,6 +201,21 @@ class StockMoveAndAdjustTest {
         }
 
         @Test
+        @DisplayName("a count variance is approved or rejected, never withdrawn - not even by its requester")
+        void countVarianceIsNotWithdrawn() {
+            StockAdjustment adjustment = writeOff(-2, AdjustmentReason.COUNT_VARIANCE, null)
+                    .forCountLine(UUID.randomUUID());
+
+            assertThatThrownBy(() -> adjustment.withdraw(CLERK, NOW))
+                    .isInstanceOfSatisfying(BusinessException.class, e -> {
+                        assertThat(e.errorCode()).isEqualTo(ErrorCode.COUNT_VARIANCE_NOT_WITHDRAWABLE);
+                        assertThat(e.getMessage()).contains("approved or rejected");
+                    });
+            assertThat(adjustment.status()).isEqualTo(AdjustmentStatus.PENDING_APPROVAL);
+            assertThat(adjustment.withdrawnAt()).isNull();
+        }
+
+        @Test
         @DisplayName("a count variance names the count line it comes from")
         void countVarianceNamesItsLine() {
             UUID line = UUID.randomUUID();

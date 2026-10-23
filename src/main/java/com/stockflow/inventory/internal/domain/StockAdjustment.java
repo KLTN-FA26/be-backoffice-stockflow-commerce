@@ -210,11 +210,21 @@ public final class StockAdjustment extends AggregateRoot {
      * The requester takes back a request nobody has decided yet. Stock was never touched, so there
      * is nothing to undo.
      *
+     * <p>Not a {@code COUNT_VARIANCE}: it is the variance of a submitted count, raised by the system on the counter's
+     * behalf, and the count stays COMPLETED whatever happens to it. Withdrawn, it would leave a completed count whose
+     * variance nobody decided - the slot free for a new count while the doubt it recorded was never settled. It is
+     * decided by approval or rejection (and a rejected one is recounted).</p>
+     *
      * @throws BusinessException {@code ADJUSTMENT_NOT_REQUESTER} when someone else tries;
-     *         {@code INVALID_ADJUSTMENT_TRANSITION} when it is no longer pending
+     *         {@code INVALID_ADJUSTMENT_TRANSITION} when it is no longer pending;
+     *         {@code COUNT_VARIANCE_NOT_WITHDRAWABLE} for a count's variance
      */
     public void withdraw(UUID userId, Instant now) {
         requirePending();
+        if (reason == AdjustmentReason.COUNT_VARIANCE) {
+            throw new BusinessException(ErrorCode.COUNT_VARIANCE_NOT_WITHDRAWABLE,
+                    "Adjustment %s is a count's variance: it is approved or rejected, not withdrawn".formatted(number));
+        }
         if (!requestedBy.equals(Objects.requireNonNull(userId, "userId"))) {
             throw new BusinessException(ErrorCode.ADJUSTMENT_NOT_REQUESTER,
                     "Only the person who requested adjustment %s can withdraw it".formatted(number));

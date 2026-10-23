@@ -365,6 +365,8 @@ public enum ErrorCode {
     CYCLE_COUNT_UNKNOWN_LAYER("The surplus cannot be placed on any receipt layer", 422),
     /** A shortage larger than what the slot holds now. */
     CYCLE_COUNT_STALE("Stock changed since it was counted - recount the line", 409),
+    /** A COUNT_VARIANCE adjustment withdrawn by its requester: a count's variance is approved or rejected. */
+    COUNT_VARIANCE_NOT_WITHDRAWABLE("A count variance is approved or rejected, not withdrawn", 409),
     /** A carton counted at a location it is not in. */
     STOCK_PACKAGE_WRONG_LOCATION("The carton is not at this location", 422),
     /** A carton counted above its received quantity. */
