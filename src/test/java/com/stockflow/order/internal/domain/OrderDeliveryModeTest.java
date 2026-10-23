@@ -236,4 +236,55 @@ class OrderDeliveryModeTest {
             assertThat(order.balancePolicy()).isEqualTo(BalancePolicy.BEFORE_DELIVERY);
         }
     }
+
+    @Nested
+    @DisplayName("FTL-CREDIT (SCRUM-193): a full truckload leaves paid, except on credit terms")
+    class FullTruckloadHandoverGate {
+
+        private Order picking(Order order) {
+            order.changeDeliveryMode(DeliveryMode.FULL_TRUCKLOAD);
+            order.release(HCM, "HCM", STAFF, NOW, Map.of());
+            order.startPicking(STAFF, NOW);
+            assertThat(order.deliveryMode()).isEqualTo(DeliveryMode.FULL_TRUCKLOAD);
+            return order;
+        }
+
+        @Test
+        @DisplayName("CREDIT: nothing is due before the handover and it is allowed unpaid")
+        void creditLeavesUnpaid() {
+            Order order = draft(PaymentTerm.CREDIT, null);
+            order.submitOnCredit(true);
+            picking(order);
+            assertThat(order.amountDueBeforeHandover()).isZero();
+            order.requireHandoverAllowed(null);
+        }
+
+        @Test
+        @DisplayName("DEPOSIT paid before delivery: the unpaid balance blocks the handover (409 ORDER_BALANCE_NOT_PAID) "
+                + "until it is in")
+        void depositNeedsItsBalance() {
+            Order order = picking(confirmed(PaymentTerm.DEPOSIT, BalancePolicy.BEFORE_DELIVERY));  // 20M, 6M paid
+            assertThat(order.amountDueBeforeHandover()).isEqualByComparingTo("14000000");
+            assertThat(code(catchThrowable(() -> order.requireHandoverAllowed(null))))
+                    .isEqualTo(ErrorCode.ORDER_BALANCE_NOT_PAID);
+            order.recordPayment(Money.vnd(14_000_000), NOW);
+            order.requireHandoverAllowed(null);
+        }
+
+        @Test
+        @DisplayName("DEPOSIT with the balance on credit: only the deposit is wanted, as for a parcel")
+        void depositOnCreditOwesOnlyTheDeposit() {
+            Order order = picking(confirmed(PaymentTerm.DEPOSIT, BalancePolicy.ON_CREDIT));
+            assertThat(order.amountDueBeforeHandover()).isZero();
+            order.requireHandoverAllowed(null);
+        }
+
+        @Test
+        @DisplayName("PREPAID: paid in full to be confirmed, and a ledger short of it does not lower what was paid")
+        void prepaidIsPaid() {
+            Order order = picking(confirmed(PaymentTerm.PREPAID, null));
+            assertThat(order.amountDueBeforeHandover()).isZero();
+            order.requireHandoverAllowed(new Order.LedgerMoney(BigDecimal.ONE, BigDecimal.ONE));
+        }
+    }
 }
