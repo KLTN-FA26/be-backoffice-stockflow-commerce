@@ -3,7 +3,6 @@ package com.stockflow.inventory.internal.service;
 import com.stockflow.common.api.FieldError;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.domain.BusinessCalendar;
-import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Pages;
@@ -61,6 +60,7 @@ class CycleCountService implements CycleCounts {
             Set.of(Role.WAREHOUSE_STAFF.authority(), Role.WAREHOUSE_MANAGER.authority());
 
     private static final String REJECTED = "REJECTED";
+    private static final String PENDING = "PENDING_APPROVAL";
 
     private final CycleCountRepository counts;
     private final CycleCountViews views;
@@ -136,37 +136,44 @@ class CycleCountService implements CycleCounts {
         if (command.assignedUserId() != null) {
             requireAssignable(command.assignedUserId(), warehouseId);
         }
-        List<String> codes = command.locationCodes().stream().map(CycleCountService::upper).distinct().toList();
+        List<String> codes = command.locationCodes().stream().map(CycleCountInput::upper).filter(Objects::nonNull)
+                .distinct().toList();
         List<String> foreign = codes.stream().filter(code -> !prefix.equals(WarehouseScope.prefixOf(code))).toList();
         if (!foreign.isEmpty()) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
                     "Not locations of warehouse %s: %s".formatted(prefix, String.join(", ", foreign)));
         }
         Set<String> shelves = new TreeSet<>();
-        command.shelfCodes().stream().map(CycleCountService::upper).forEach(shelves::add);
-        command.zoneIds().stream().distinct().map(warehouses::shelfCodesOf).forEach(shelves::addAll);
+        command.shelfCodes().stream().map(CycleCountInput::upper).filter(Objects::nonNull).forEach(shelves::add);
+        for (UUID zone : new LinkedHashSet<>(command.zoneIds())) {
+            // Empty for a zone of another warehouse as for an unknown one: its shelf codes would otherwise be read
+            // against this warehouse's prefix and count whatever shelves here happen to share them.
+            List<String> ofZone = warehouses.shelfCodesOf(warehouseId, zone);
+            if (ofZone.isEmpty()) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Zone %s has no shelves in warehouse %s"
+                        .formatted(zone, prefix), List.of(new FieldError("scope.zoneIds",
+                        "Zone %s has no shelves in warehouse %s".formatted(zone, prefix), "UnknownZone")));
+            }
+            shelves.addAll(ofZone);
+        }
         // With the trailing dash: shelf A01 must not match the bins of a shelf A011.
         List<String> prefixes = shelves.stream().map(shelf -> prefix + "-" + shelf + "-").toList();
-        List<String> skus = command.skus().stream().map(sku -> new Sku(sku).code()).distinct().toList();
+        List<String> skus = command.skus().stream().map(sku -> CycleCountInput.sku("scope.skus", sku).code())
+                .distinct().toList();
 
-        boolean byLocation = !command.zoneIds().isEmpty() || !command.shelfCodes().isEmpty() || !codes.isEmpty();
+        // From what was resolved, not what was sent: blank codes must not leave an empty location scope that
+        // stockIn would read as the whole warehouse.
+        boolean byLocation = !codes.isEmpty() || !shelves.isEmpty();
         if (!byLocation && skus.isEmpty()) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Name at least one zone, shelf, bin or SKU");
         }
-        List<CountLineDraft> drafts;
-        if (byLocation && codes.isEmpty() && prefixes.isEmpty()) {
-            // Zones without shelves select nothing. Asking with no location criterion would select the whole
-            // warehouse, the opposite of what was asked.
-            drafts = List.of();
-        } else {
-            drafts = counts.stockIn(prefix, codes, prefixes, skus);
-        }
+        List<CountLineDraft> drafts = counts.stockIn(prefix, codes, prefixes, skus);
         if (!byLocation) {
             drafts = onlyBins(drafts);
         }
         if (drafts.size() > maxLines) {
-            throw new BusinessException(ErrorCode.CYCLE_COUNT_TOO_LARGE, "The scope holds %d slots; a count takes at most %d"
-                    .formatted(drafts.size(), maxLines));
+            throw new BusinessException(ErrorCode.CYCLE_COUNT_TOO_LARGE,
+                    "The scope holds %d slots; a count takes at most %d".formatted(drafts.size(), maxLines));
         }
 
         Map<CountSlot, String> busy = counts.claim(drafts.stream().map(CountLineDraft::slot).toList());
@@ -245,9 +252,10 @@ class CycleCountService implements CycleCounts {
     // ------------------------------------------------------------------ deciding
 
     /**
-     * Only a line whose variance the manager rejected is recounted: a pending one is still to be decided, and an
-     * approved one is already in the books - recounting it would be a new count, which is what planning is for.
-     * The slots are claimed like a plan's; the rejected adjustment no longer holds them.
+     * Only a line whose variance the manager rejected, with no share of it still pending, is recounted: a pending one
+     * is still to be decided, and an approved one is already in the books - recounting it would be a new count, which
+     * is what planning is for. Checked before any line is flagged, so the refusal names the line and its state. The
+     * slots are then claimed like a plan's; a decided adjustment no longer holds them.
      */
     @Override
     @Transactional
@@ -263,7 +271,10 @@ class CycleCountService implements CycleCounts {
             throw new BusinessException(ErrorCode.NOT_FOUND, "Not lines of count %s: %s".formatted(count.number(),
                     unknown.stream().map(UUID::toString).collect(Collectors.joining(", "))));
         }
-        List<CountSlot> slots = count.markRecount(wanted);
+        if (count.status() != CycleCountStatus.COMPLETED) {
+            throw new BusinessException(ErrorCode.CYCLE_COUNT_NOT_OPEN,
+                    "Only a submitted count is sent for recount; %s is %s".formatted(count.number(), count.status()));
+        }
         Map<UUID, List<CycleCountRepository.LineAdjustment>> adjustments = counts.adjustmentsOf(wanted);
         List<UUID> notRejected = wanted.stream().filter(line -> adjustments.getOrDefault(line, List.of()).stream()
                 .noneMatch(adjustment -> REJECTED.equals(adjustment.status()))).toList();
@@ -271,6 +282,13 @@ class CycleCountService implements CycleCounts {
             throw new BusinessException(ErrorCode.CONFLICT, "Only a line whose variance was rejected is recounted: "
                     + notRejected.stream().map(UUID::toString).collect(Collectors.joining(", ")));
         }
+        List<UUID> stillPending = wanted.stream().filter(line -> adjustments.get(line).stream()
+                .anyMatch(adjustment -> PENDING.equals(adjustment.status()))).toList();
+        if (!stillPending.isEmpty()) {
+            throw new BusinessException(ErrorCode.CONFLICT, "Part of the variance still waits for approval: "
+                    + stillPending.stream().map(UUID::toString).collect(Collectors.joining(", ")));
+        }
+        List<CountSlot> slots = count.markRecount(wanted);
         Map<CountSlot, String> busy = counts.claim(slots);
         if (!busy.isEmpty()) {
             throw new BusinessException(ErrorCode.CYCLE_COUNT_SLOT_BUSY, "Already on another count: "
@@ -334,10 +352,6 @@ class CycleCountService implements CycleCounts {
 
     private static BusinessException notFound(UUID id) {
         return new BusinessException(ErrorCode.NOT_FOUND, "No cycle count with id " + id);
-    }
-
-    private static String upper(String code) {
-        return code.strip().toUpperCase(Locale.ROOT);
     }
 
     private static CycleCountStatus parse(String status) {

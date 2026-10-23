@@ -40,7 +40,10 @@ final class CycleCountPersistenceMapper {
         return entity;
     }
 
-    /** Copies what the aggregate moved onto the managed row: its header, each line's count, and any added line. */
+    /**
+     * Copies what the aggregate moved onto the managed row: its header, each line's count (and a carton line's bin),
+     * and any added line.
+     */
     static void apply(CycleCount count, CycleCountJpaEntity entity) {
         applyHeader(count, entity);
         for (CycleCountLine line : count.lines()) {
@@ -54,6 +57,9 @@ final class CycleCountPersistenceMapper {
     }
 
     private static void applyCount(CycleCountLine line, CycleCountLineJpaEntity row) {
+        if (!row.getLocationCode().equals(line.slot().location().code())) {
+            row.relocate(line.slot().location().code());
+        }
         row.apply(line.expectedQty(), line.countedQty(), line.countedBy(), line.countedAt(), line.recountRequired());
     }
 

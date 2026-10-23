@@ -8,6 +8,7 @@ import com.stockflow.inventory.internal.domain.CountSlot;
 import com.stockflow.inventory.internal.domain.CycleCount;
 import com.stockflow.inventory.internal.domain.CycleCountLine;
 import com.stockflow.inventory.internal.domain.CycleCountRepository;
+import com.stockflow.inventory.internal.domain.CycleCountStatus;
 import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.StockItem;
 import com.stockflow.inventory.internal.domain.StockItemRepository;
@@ -26,11 +27,11 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Clock;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * The counter's side of a cycle count (spec §5, §6): counting a line, adding a slot found on the shelf, and
@@ -73,7 +74,8 @@ class CycleCountCounting {
 
     /**
      * A carton line takes a quantity, or {@code present} when the carton is still sealed: the count at receipt is
-     * trusted (#125), so scanning it is the count. An opened carton has no trusted figure and must be counted.
+     * trusted (#125), so scanning it is the count. An opened carton has no trusted figure and must be counted. A
+     * carton moved whole since planning is counted where it is now: the line follows it.
      */
     @Transactional
     public CycleCountView count(UUID id, UUID lineId, Integer countedQty, Boolean present,
@@ -85,12 +87,11 @@ class CycleCountCounting {
         requireOpen(count);
         CycleCountLine line = count.lines().stream().filter(l -> l.id().equals(lineId)).findFirst()
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No such line on this count"));
-        CountSlot slot = line.slot();
-        policies.lock(slot.sku().code());
+        policies.lock(line.slot().sku().code());
         int counted;
-        if (slot.isCarton()) {
-            StockPackage carton = lockCarton(slot.stockPackageId());
-            requireAt(carton, slot.location());
+        if (line.slot().isCarton()) {
+            StockPackage carton = lockCarton(line.slot().stockPackageId());
+            follow(count, line, carton, prefixOf(count));
             counted = cartonCount(carton, countedQty, present);
         } else {
             if (present != null) {
@@ -99,46 +100,53 @@ class CycleCountCounting {
             }
             counted = countedQty;
         }
-        count.count(lineId, counted, counts.bookQuantity(slot), actor, clock.instant());
+        count.count(lineId, counted, counts.bookQuantity(line.slot()), actor, clock.instant());
         return views.of(counts.save(count), mayDecide);
     }
 
     /**
      * A found loose slot must already have a row in that bin (spec D6): goods of a SKU and lot the bin has no record
      * of were put in the wrong place, and the fix is a move, not a write-up that would leave the stock they came from
-     * overstated. A found carton must be where it is recorded, for the same reason - a LOST one included.
+     * overstated. A found carton is scanned in a bin and must be recorded there, for the same reason - a LOST one
+     * included: it is moved (or brought back) first, then counted.
      */
     @Transactional
     public CycleCountView addLine(UUID id, AddCountLineCommand command) {
         CycleCount count = lockForCounting(id, command.actor(), command.mayDecide());
         requireOpen(count);
-        String prefix = warehouseDirectory.prefixOf(count.warehouseId()).orElseThrow();
-        String lpn = upper(command.lpn());
-        String locationCode = upper(command.locationCode());
+        String prefix = prefixOf(count);
+        String lpn = CycleCountInput.upper(command.lpn());
+        LocationId location = CycleCountInput.location("locationCode", command.locationCode());
+        if (!prefix.equals(location.warehouseCode())) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "%s is not a location of warehouse %s".formatted(location, prefix));
+        }
         CountSlot slot;
         int counted;
         if (lpn != null) {
-            StockPackage found = stockPackages.findByLpn(lpn).orElseThrow(() -> new BusinessException(
-                    ErrorCode.STOCK_PACKAGE_NOT_FOUND, "No carton with LPN " + lpn));
+            // A carton of another warehouse is answered as not found, without its whereabouts, and before any lock
+            // is taken on its behalf.
+            StockPackage found = stockPackages.findByLpn(lpn)
+                    .filter(carton -> prefix.equals(carton.location().warehouseCode()))
+                    .orElseThrow(() -> new BusinessException(ErrorCode.STOCK_PACKAGE_NOT_FOUND,
+                            "No carton with LPN %s in warehouse %s".formatted(lpn, prefix)));
             StockItem content = contentOf(found);
             policies.lock(content.sku().code());
             requireFree(count, CountSlot.carton(found.location(), content.sku(), content.lotNumber(), found.id()));
             StockPackage carton = lockCarton(found.id());
-            if (!prefix.equals(carton.location().warehouseCode())) {
-                throw wrongLocation(carton, "warehouse " + prefix);
+            if (carton.status() != StockPackageStatus.IN_STOCK && carton.status() != StockPackageStatus.LOST) {
+                throw new BusinessException(ErrorCode.CONFLICT,
+                        "Carton %s is %s and cannot be counted".formatted(carton.lpn(), carton.status()));
             }
-            if (locationCode != null) {
-                requireAt(carton, new LocationId(locationCode));
+            if (!carton.location().equals(location)) {
+                throw new BusinessException(ErrorCode.STOCK_PACKAGE_WRONG_LOCATION,
+                        "Carton %s is recorded at %s, not %s; move it (or bring it back) before counting it here"
+                                .formatted(carton.lpn(), carton.location(), location));
             }
             slot = CountSlot.carton(carton.location(), content.sku(), content.lotNumber(), carton.id());
             counted = cartonCount(carton, command.countedQty(), null);
         } else {
-            LocationId location = new LocationId(Objects.requireNonNull(locationCode, "locationCode"));
-            if (!prefix.equals(location.warehouseCode())) {
-                throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                        "%s is not a location of warehouse %s".formatted(location, prefix));
-            }
-            Sku sku = new Sku(Objects.requireNonNull(command.sku(), "sku"));
+            Sku sku = CycleCountInput.sku("sku", command.sku());
             slot = CountSlot.loose(location, sku, command.lotNumber());
             policies.lock(sku.code());
             String lot = slot.lotNumber();
@@ -161,29 +169,63 @@ class CycleCountCounting {
      * line - stock left the slot after it was counted ({@code CYCLE_COUNT_STALE}) - rolls back the whole submission,
      * so the count stays open and no half of it waits for approval.
      *
-     * <p>The lines are asked in SKU order, then by slot: each request takes its SKU's advisory lock, and two
-     * submissions taking the same two SKUs in opposite orders would deadlock.</p>
+     * <p>Locks first, in the order of every stock writer: the SKUs of the differing lines in sorted order, then their
+     * cartons in id order. Each request then takes its SKU lock again (an advisory lock is re-entrant), so SKUs are
+     * never taken out of order and two submissions over the same SKUs cannot deadlock. Under the carton locks a
+     * carton line follows its carton once more, so the adjustment names the bin the carton is in now; a whole-carton
+     * move never changes what is in it, so the counted delta still holds.</p>
      */
     @Transactional
     public CycleCountView submit(UUID id, UUID actor, boolean mayDecide) {
         CycleCount count = lockForCounting(id, actor, mayDecide);
-        if (!count.submit(clock.instant())) {
+        if (count.status() == CycleCountStatus.COMPLETED) {
             return views.of(count, mayDecide);
         }
-        String note = "Count " + count.number();
         List<CycleCountLine> differing = count.lines().stream()
-                .filter(line -> line.delta() != 0)
+                .filter(line -> line.isCounted() && line.delta() != 0)
+                .toList();
+        differing.stream().map(line -> line.slot().sku().code()).distinct().sorted().forEach(policies::lock);
+        Map<UUID, CycleCountLine> cartonLines = differing.stream().filter(line -> line.slot().isCarton())
+                .collect(Collectors.toMap(line -> line.slot().stockPackageId().value(), line -> line));
+        if (!cartonLines.isEmpty()) {
+            String prefix = prefixOf(count);
+            stockPackages.findAllByIdForUpdate(cartonLines.values().stream()
+                            .map(line -> line.slot().stockPackageId()).toList())
+                    .forEach(carton -> follow(count, cartonLines.get(carton.id().value()), carton, prefix));
+        }
+        count.submit(clock.instant());
+        String note = "Count " + count.number();
+        List<CycleCountLine> ordered = differing.stream()
                 .sorted(Comparator.comparing((CycleCountLine line) -> line.slot().sku().code())
                         .thenComparing(line -> line.slot().lockKey()))
                 .toList();
         int asked = 0;
-        for (CycleCountLine line : differing) {
+        for (CycleCountLine line : ordered) {
             asked += operations.requestCountVariance(line.id(), line.slot(), line.delta(), actor, note).size();
         }
         CycleCount saved = counts.save(count);
         log.info("Cycle count {} submitted by {}: {} line(s) differ, {} adjustment(s) asked", count.number(), actor,
-                differing.size(), asked);
+                ordered.size(), asked);
         return views.of(saved, mayDecide);
+    }
+
+    /**
+     * The line follows its carton to the bin it was moved to whole, inside the count's warehouse. A carton that left
+     * the warehouse (a transfer) is no longer this count's to count.
+     */
+    private static void follow(CycleCount count, CycleCountLine line, StockPackage carton, String prefix) {
+        if (carton.location().equals(line.slot().location())) {
+            return;
+        }
+        if (!prefix.equals(carton.location().warehouseCode())) {
+            throw new BusinessException(ErrorCode.STOCK_PACKAGE_WRONG_LOCATION,
+                    "Carton %s has left warehouse %s".formatted(carton.lpn(), prefix));
+        }
+        count.relocateCarton(line.id(), carton.location());
+    }
+
+    private String prefixOf(CycleCount count) {
+        return warehouseDirectory.prefixOf(count.warehouseId()).orElseThrow();
     }
 
     private CycleCount lockForCounting(UUID id, UUID actor, boolean mayDecide) {
@@ -224,6 +266,11 @@ class CycleCountCounting {
                         "Carton %s has never held stock".formatted(carton.lpn())));
     }
 
+    /**
+     * {@code present=true} records {@code received_qty}, not the line's expected quantity: for a sealed carton in
+     * stock the two are equal (V20261020000100 holds a sealed carton at what was counted into it), and for a LOST one
+     * found sealed the books say 0 while the carton holds what it was received with.
+     */
     private int cartonCount(StockPackage carton, Integer countedQty, Boolean present) {
         int counted;
         if (present != null) {
@@ -237,27 +284,17 @@ class CycleCountCounting {
         }
         // V20261022000100 rule 5: a carton never holds more than was counted into it. Units above that are loose.
         if (carton.receivedQty() != null && counted > carton.receivedQty()) {
+            // No figures: the received quantity of a sealed carton is its book quantity, which a blind counter
+            // must not learn by probing.
             throw new BusinessException(ErrorCode.STOCK_PACKAGE_OVERFILLED,
-                    "Carton %s was received with %d; count the %d above it as loose stock"
-                            .formatted(carton.lpn(), carton.receivedQty(), counted - carton.receivedQty()));
+                    "Carton %s cannot hold that many; count the units above what it was received with as loose stock"
+                            .formatted(carton.lpn()));
         }
         if (counted > 0 && carton.status() != StockPackageStatus.IN_STOCK && carton.status() != StockPackageStatus.LOST) {
             throw new BusinessException(ErrorCode.CONFLICT,
                     "Carton %s is %s and cannot hold stock".formatted(carton.lpn(), carton.status()));
         }
         return counted;
-    }
-
-    private static void requireAt(StockPackage carton, LocationId location) {
-        if (!carton.location().equals(location)) {
-            throw wrongLocation(carton, location.code());
-        }
-    }
-
-    private static BusinessException wrongLocation(StockPackage carton, String expected) {
-        return new BusinessException(ErrorCode.STOCK_PACKAGE_WRONG_LOCATION,
-                "Carton %s is recorded at %s, not %s; move it before counting it here"
-                        .formatted(carton.lpn(), carton.location(), expected));
     }
 
     /** Another open count, or a variance still pending approval, holds the slot (the plan's rule). */
@@ -268,9 +305,5 @@ class CycleCountCounting {
             throw new BusinessException(ErrorCode.CYCLE_COUNT_SLOT_BUSY,
                     "%s is on count %s".formatted(slot.lockKey(), holder));
         }
-    }
-
-    private static String upper(String value) {
-        return value == null || value.isBlank() ? null : value.strip().toUpperCase(Locale.ROOT);
     }
 }

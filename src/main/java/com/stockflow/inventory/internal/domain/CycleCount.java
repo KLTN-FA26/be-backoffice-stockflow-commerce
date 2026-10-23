@@ -128,6 +128,18 @@ public final class CycleCount extends AggregateRoot {
         return line;
     }
 
+    /**
+     * A carton line follows its carton to the bin it was moved to whole, so the count and the variance it raises name
+     * the carton where it is. Only while the count is open: a submitted count is history.
+     */
+    public CycleCountLine relocateCarton(UUID lineId, LocationId to) {
+        requireOpen();
+        CycleCountLine line = lines.stream().filter(l -> l.id().equals(lineId)).findFirst()
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No such line on this count"));
+        line.relocate(Objects.requireNonNull(to, "to"));
+        return line;
+    }
+
     /** A slot found on the shelf that the plan did not list. */
     public CycleCountLine addLine(CountSlot slot, int countedQty, int bookQty, UUID by, Instant at) {
         requireOpen();

@@ -19,8 +19,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * The two lookups a cycle count plans with (SCRUM-162), on the demo map of {@code HCM}: zone A holds shelves
- * {@code A01} and {@code A02}; bins and areas by code, whatever their status - a count must still count a blocked
- * bin, which {@code pickableLocations} would drop. Every test rolls back.
+ * {@code A01} and {@code A02}, and is no other warehouse's; bins and areas by code, whatever their status - a
+ * count must still count a blocked bin, which {@code pickableLocations} would drop. Every test rolls back.
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
@@ -31,11 +31,13 @@ class WarehouseLocationLookupIntegrationTest {
     @Autowired JdbcTemplate jdbc;
 
     @Test
-    @DisplayName("a zone's shelf codes are its shelves' own codes, sorted")
+    @DisplayName("a zone's shelf codes are its shelves' own codes, sorted; none for a zone of another warehouse")
     void shelfCodesOfADemoZone() {
-        assertThat(warehouses.shelfCodesOf(DemoData.ZONE_HCM_A)).containsExactly("A01", "A02");
-        assertThat(warehouses.shelfCodesOf(DemoData.ZONE_HCM_B)).containsExactly("B01");
-        assertThat(warehouses.shelfCodesOf(UUID.randomUUID())).as("an unknown zone").isEmpty();
+        assertThat(warehouses.shelfCodesOf(DemoData.WAREHOUSE_HCM, DemoData.ZONE_HCM_A)).containsExactly("A01", "A02");
+        assertThat(warehouses.shelfCodesOf(DemoData.WAREHOUSE_HCM, DemoData.ZONE_HCM_B)).containsExactly("B01");
+        assertThat(warehouses.shelfCodesOf(DemoData.WAREHOUSE_HCM, UUID.randomUUID())).as("an unknown zone").isEmpty();
+        assertThat(warehouses.shelfCodesOf(UUID.randomUUID(), DemoData.ZONE_HCM_A)).as("asked for another warehouse")
+                .isEmpty();
     }
 
     @Test

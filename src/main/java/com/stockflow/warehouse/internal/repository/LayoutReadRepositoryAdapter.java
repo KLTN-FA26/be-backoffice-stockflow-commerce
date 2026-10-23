@@ -211,11 +211,14 @@ class LayoutReadRepositoryAdapter implements LayoutReadRepository, LocationLooku
     }
 
     @Override
-    public java.util.List<String> findShelfCodesInZone(UUID zoneId) {
+    public java.util.List<String> findShelfCodesInZone(UUID warehouseId, UUID zoneId) {
         return entityManager.createQuery("""
-                        select s.code from ShelfJpaEntity s where s.zoneId = :zoneId order by s.code
+                        select s.code from ShelfJpaEntity s join ZoneJpaEntity z on z.id = s.zoneId
+                        where z.id = :zoneId and z.warehouseId = :warehouseId and s.warehouseId = :warehouseId
+                        order by s.code
                         """, String.class)
                 .setParameter("zoneId", zoneId)
+                .setParameter("warehouseId", warehouseId)
                 .getResultList();
     }
 

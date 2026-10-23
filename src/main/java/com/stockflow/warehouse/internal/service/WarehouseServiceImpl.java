@@ -99,11 +99,11 @@ class WarehouseServiceImpl implements WarehouseService {
     }
 
     @Override
-    public java.util.List<String> shelfCodesOf(UUID zoneId) {
-        if (zoneId == null) {
+    public java.util.List<String> shelfCodesOf(UUID warehouseId, UUID zoneId) {
+        if (warehouseId == null || zoneId == null) {
             return java.util.List.of();
         }
-        return locations.findShelfCodesInZone(zoneId);
+        return locations.findShelfCodesInZone(warehouseId, zoneId);
     }
 
     /** Exact codes: the caller asks with codes it read from its own rows, which are stored upper-cased. */

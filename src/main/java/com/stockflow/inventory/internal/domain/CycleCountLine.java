@@ -18,7 +18,8 @@ import java.util.UUID;
 public final class CycleCountLine {
 
     private final UUID id;
-    private final CountSlot slot;
+    /** Fixed, except that a carton line's bin follows its carton ({@link #relocate}). */
+    private CountSlot slot;
     private int expectedQty;
     private Integer countedQty;
     private UUID countedBy;
@@ -54,6 +55,17 @@ public final class CycleCountLine {
         this.countedBy = Objects.requireNonNull(by, "by");
         this.countedAt = Objects.requireNonNull(at, "at");
         this.recountRequired = false;
+    }
+
+    /**
+     * The carton was moved whole since the line was planned. The line follows it: the carton is the identity being
+     * counted, the bin only where it happens to be, and its contents did not change on the way.
+     */
+    void relocate(LocationId to) {
+        if (!slot.isCarton()) {
+            throw new IllegalStateException("Only a carton line follows its carton; loose stock is counted where it is");
+        }
+        this.slot = CountSlot.carton(to, slot.sku(), slot.lotNumber(), slot.stockPackageId());
     }
 
     void requireRecount() {

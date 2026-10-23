@@ -46,8 +46,8 @@ public interface CycleCounts {
      * waits for approval, is left out and reported in {@link PlannedCount#skipped()}, so two counts never correct
      * the same stock. The returned view is blinded: planning does not make the planner one who decides.
      *
-     * @throws com.stockflow.common.error.BusinessException {@code VALIDATION_FAILED} for no criterion, a bin of another
-     *         warehouse or an assignee who may not count there; {@code WAREHOUSE_NOT_FOUND};
+     * @throws com.stockflow.common.error.BusinessException {@code VALIDATION_FAILED} for no criterion, a bin or zone of
+     *         another warehouse, a malformed SKU or an assignee who may not count there; {@code WAREHOUSE_NOT_FOUND};
      *         {@code CYCLE_COUNT_EMPTY_SCOPE}; {@code CYCLE_COUNT_TOO_LARGE}; {@code OUT_OF_DATA_SCOPE}
      */
     PlannedCount plan(PlanCycleCountCommand command);
@@ -63,21 +63,25 @@ public interface CycleCounts {
     /**
      * Records what was found on one line: a quantity, or for an unopened carton whether it is there
      * ({@code present}). The book quantity is re-read at this moment and the variance is judged against it (spec
-     * D3). Repeating it before submission overwrites the count.
+     * D3). Repeating it before submission overwrites the count. A carton line follows a carton moved whole within
+     * the warehouse since planning.
      *
      * @param mayDecide the caller holds {@code inventory-cycle-counts:APPROVE}: counts any line, sees the books
      * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code CYCLE_COUNT_NOT_OPEN};
      *         {@code CYCLE_COUNT_NOT_ASSIGNEE}; {@code VALIDATION_FAILED} ({@code present} on loose stock or an opened
-     *         carton); {@code STOCK_PACKAGE_WRONG_LOCATION}; {@code STOCK_PACKAGE_OVERFILLED}; {@code OUT_OF_DATA_SCOPE}
+     *         carton); {@code STOCK_PACKAGE_WRONG_LOCATION} (the carton left the warehouse);
+     *         {@code STOCK_PACKAGE_OVERFILLED}; {@code OUT_OF_DATA_SCOPE}
      */
     CycleCountView count(UUID id, UUID lineId, Integer countedQty, Boolean present, UUID actor, boolean mayDecide);
 
     /**
      * Adds a slot the plan did not list and the counter found: loose stock of a SKU and lot in a bin that already
-     * holds a row of it, or a carton by its LPN - a LOST carton included, which is how it is found again.
+     * holds a row of it, or a carton by its LPN scanned in the bin it is recorded at - a LOST carton included, which
+     * is how it is found again.
      *
      * @throws com.stockflow.common.error.BusinessException {@code CYCLE_COUNT_UNKNOWN_LAYER} (misplaced goods are a
-     *         move, not an adjustment); {@code STOCK_PACKAGE_NOT_FOUND}; {@code STOCK_PACKAGE_WRONG_LOCATION};
+     *         move, not an adjustment); {@code STOCK_PACKAGE_NOT_FOUND} (also for a carton of another warehouse);
+     *         {@code STOCK_PACKAGE_WRONG_LOCATION} (scanned away from its recorded bin);
      *         {@code STOCK_PACKAGE_OVERFILLED}; {@code CYCLE_COUNT_SLOT_BUSY}; and as {@link #count}
      */
     CycleCountView addLine(UUID id, AddCountLineCommand command);
@@ -98,8 +102,9 @@ public interface CycleCounts {
      * {@code MANUAL} count of just those slots is opened. Returns the new count, unblinded (only who decides asks).
      *
      * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND} for a line not on the count;
-     *         {@code CONFLICT} for a line without a rejected adjustment; {@code CYCLE_COUNT_NOT_OPEN} for a count not
-     *         submitted; {@code CYCLE_COUNT_SLOT_BUSY}; {@code OUT_OF_DATA_SCOPE}
+     *         {@code CONFLICT} for a line without a rejected adjustment, or with a share still pending;
+     *         {@code CYCLE_COUNT_NOT_OPEN} for a count not submitted; {@code CYCLE_COUNT_SLOT_BUSY};
+     *         {@code OUT_OF_DATA_SCOPE}
      */
     CycleCountView recount(UUID id, List<UUID> lineIds, String note, UUID actor);
 
@@ -140,8 +145,8 @@ public interface CycleCounts {
     }
 
     /**
-     * A found slot: {@code lpn} for a carton, or {@code locationCode} and {@code sku} (and the lot) for loose stock.
-     * With an LPN, {@code locationCode} may name the bin it was scanned in, which must be where it is recorded.
+     * A found slot, always with {@code locationCode}, the bin it was found in: with {@code lpn} for a carton, which
+     * must be recorded at that bin, or with {@code sku} (and the lot) for loose stock.
      */
     record AddCountLineCommand(String locationCode, String sku, String lotNumber, String lpn, int countedQty,
                                UUID actor, boolean mayDecide) { }

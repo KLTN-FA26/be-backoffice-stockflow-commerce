@@ -130,7 +130,7 @@ class CycleCountController {
     }
 
     @PostMapping("/{countId}/lines")
-    @Operation(summary = "Add a slot found on the shelf: a carton by LPN, or loose stock by bin, SKU and lot")
+    @Operation(summary = "Add a slot found on the shelf: the bin it was found in, with a carton's LPN or a SKU and lot")
     @RequiresPermission(resource = InventoryResources.CYCLE_COUNTS, action = Action.UPDATE, scope = DataScope.WAREHOUSE)
     public ApiResponse<CycleCountResponse> addLine(@PathVariable UUID countId,
                                                    @Valid @RequestBody AddCountLineRequest request,

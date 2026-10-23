@@ -12,8 +12,8 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * {@code inventory.cycle_count_line}. The slot (bin, SKU, lot, carton) is fixed when the line is created; only what
- * the count found changes afterwards.
+ * {@code inventory.cycle_count_line}. The slot (bin, SKU, lot, carton) is fixed when the line is created, except that a
+ * carton line's bin follows its carton when it is moved whole; otherwise only what the count found changes.
  */
 @Entity
 @Table(name = "cycle_count_line", schema = "inventory")
@@ -23,7 +23,7 @@ public class CycleCountLineJpaEntity extends BaseEntity {
     @JoinColumn(name = "cycle_count_id", nullable = false, updatable = false)
     private CycleCountJpaEntity cycleCount;
 
-    @Column(name = "location_code", nullable = false, length = 64, updatable = false)
+    @Column(name = "location_code", nullable = false, length = 64)
     private String locationCode;
 
     @Column(name = "sku", nullable = false, length = 64, updatable = false)
@@ -62,6 +62,11 @@ public class CycleCountLineJpaEntity extends BaseEntity {
         this.lotNumber = lotNumber;
         this.stockPackageId = stockPackageId;
         apply(expectedQty, countedQty, countedBy, countedAt, recountRequired);
+    }
+
+    /** A carton line following its carton; the line trigger re-checks the carton is at this bin. */
+    public void relocate(String locationCode) {
+        this.locationCode = locationCode;
     }
 
     void attachTo(CycleCountJpaEntity count) {
