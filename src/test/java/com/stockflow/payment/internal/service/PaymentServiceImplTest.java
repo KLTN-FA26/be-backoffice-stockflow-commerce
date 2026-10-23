@@ -7,6 +7,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -17,7 +18,7 @@ import static org.mockito.Mockito.when;
 class PaymentServiceImplTest {
 
     private final ReceivableBook book = mock(ReceivableBook.class);
-    private final PaymentServiceImpl service = new PaymentServiceImpl(book);
+    private final PaymentServiceImpl service = new PaymentServiceImpl(book, new CompanyBankProperties(null, null, null));
     private final UUID id = UUID.randomUUID();
 
     @Test
@@ -25,17 +26,21 @@ class PaymentServiceImplTest {
     void creditPosition() {
         when(book.outstanding(id)).thenReturn(new BigDecimal("4500000"));
         when(book.hasOverdue(id)).thenReturn(true);
+        when(book.overdue(id)).thenReturn(new ReceivableBook.Overdue(new BigDecimal("1500000"), LocalDate.of(2026, 9, 30)));
 
         CreditPosition position = service.creditPosition(id);
 
         assertThat(position.outstandingReceivables()).isEqualByComparingTo("4500000");
         assertThat(position.hasOverdue()).isTrue();
+        assertThat(position.overdueAmount()).isEqualByComparingTo("1500000");
+        assertThat(position.oldestOverdueDueDate()).isEqualTo(LocalDate.of(2026, 9, 30));
     }
 
     @Test
     @DisplayName("credit position of a customer with no debt: zero and not overdue")
     void creditPositionNoDebt() {
         when(book.outstanding(id)).thenReturn(BigDecimal.ZERO);
+        when(book.overdue(id)).thenReturn(new ReceivableBook.Overdue(BigDecimal.ZERO, null));
         CreditPosition position = service.creditPosition(id);
         assertThat(position.outstandingReceivables()).isEqualByComparingTo("0");
         assertThat(position.hasOverdue()).isFalse();
