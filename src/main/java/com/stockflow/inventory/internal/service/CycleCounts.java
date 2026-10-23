@@ -96,7 +96,8 @@ public interface CycleCounts {
      * Submitting a completed count again returns it unchanged.
      *
      * @throws com.stockflow.common.error.BusinessException {@code CYCLE_COUNT_LINE_NOT_COUNTED};
-     *         {@code CYCLE_COUNT_STALE} (stock left the slot after it was counted: count it again);
+     *         {@code CYCLE_COUNT_STALE} (stock left the slot after it was counted, or a counted carton was emptied:
+     *         count it again);
      *         {@code CYCLE_COUNT_UNKNOWN_LAYER}; {@code CYCLE_COUNT_NOT_OPEN} once cancelled; and as {@link #count}
      */
     CycleCountView submit(UUID id, UUID actor, boolean mayDecide);
@@ -108,7 +109,7 @@ public interface CycleCounts {
      * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND} for a line not on the count;
      *         {@code CONFLICT} for a line without a rejected adjustment, or with a share still pending;
      *         {@code CYCLE_COUNT_NOT_OPEN} for a count not submitted; {@code CYCLE_COUNT_SLOT_BUSY};
-     *         {@code OUT_OF_DATA_SCOPE}
+     *         {@code CYCLE_COUNT_STALE} for a carton emptied since; {@code OUT_OF_DATA_SCOPE}
      */
     CycleCountView recount(UUID id, List<UUID> lineIds, String note, UUID actor);
 

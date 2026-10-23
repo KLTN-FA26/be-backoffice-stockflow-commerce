@@ -53,6 +53,22 @@ class CycleCountTest {
     }
 
     @Test
+    void oneCartonIsOneSlotWhateverBinItIsRecordedAt() {
+        StockPackageId carton = new StockPackageId(UUID.randomUUID());
+        CountSlot here = CountSlot.carton(new LocationId("HN-A01-1-01"), new Sku("CUP-250"), "L1", carton);
+        CountSlot moved = CountSlot.carton(new LocationId("HN-A01-1-02"), new Sku("CUP-250"), "L1", carton);
+
+        assertThatThrownBy(() -> CycleCount.plan("CC-1", WAREHOUSE, CycleCountTrigger.MANUAL, false, null,
+                LocalDate.of(2026, 10, 23), null, List.of(new CountLineDraft(here, 5), new CountLineDraft(moved, 5))))
+                .as("the claim and the advisory lock key a carton by its package alone")
+                .isInstanceOf(IllegalArgumentException.class);
+        CycleCount count = CycleCount.plan("CC-1", WAREHOUSE, CycleCountTrigger.MANUAL, false, null,
+                LocalDate.of(2026, 10, 23), null, List.of(new CountLineDraft(here, 5)));
+        assertThatThrownBy(() -> count.addLine(moved, 5, 5, counter, T1))
+                .satisfies(t -> assertCode(t, ErrorCode.CYCLE_COUNT_SLOT_BUSY));
+    }
+
+    @Test
     void firstCountStartsTheCountAndOverwritesTheBook() {
         CycleCount count = planOne(null, null);
         CycleCountLine line = count.lines().get(0);

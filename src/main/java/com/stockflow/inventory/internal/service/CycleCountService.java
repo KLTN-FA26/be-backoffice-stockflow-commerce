@@ -18,6 +18,7 @@ import com.stockflow.inventory.internal.domain.CycleCountRepository;
 import com.stockflow.inventory.internal.domain.CycleCountStatus;
 import com.stockflow.inventory.internal.domain.CycleCountTrigger;
 import com.stockflow.inventory.internal.domain.StockPackageId;
+import com.stockflow.inventory.internal.domain.StockPackageRepository;
 import com.stockflow.inventory.internal.domain.WarehouseDirectory;
 import com.stockflow.warehouse.api.StorageLocationView;
 import com.stockflow.warehouse.api.WarehouseService;
@@ -66,6 +67,7 @@ class CycleCountService implements CycleCounts {
     private final CycleCountViews views;
     private final CycleCountCounting counting;
     private final WarehouseDirectory warehouseDirectory;
+    private final StockPackageRepository stockPackages;
     private final WarehouseService warehouses;
     private final IdentityService identities;
     private final Clock clock;
@@ -73,12 +75,14 @@ class CycleCountService implements CycleCounts {
     private int maxLines;
 
     CycleCountService(CycleCountRepository counts, CycleCountViews views, CycleCountCounting counting,
-                      WarehouseDirectory warehouseDirectory, WarehouseService warehouses, IdentityService identities,
-                      Clock clock, @Value("${stockflow.inventory.cycle-count-max-lines:500}") int maxLines) {
+                      WarehouseDirectory warehouseDirectory, StockPackageRepository stockPackages,
+                      WarehouseService warehouses, IdentityService identities, Clock clock,
+                      @Value("${stockflow.inventory.cycle-count-max-lines:500}") int maxLines) {
         this.counts = counts;
         this.views = views;
         this.counting = counting;
         this.warehouseDirectory = warehouseDirectory;
+        this.stockPackages = stockPackages;
         this.warehouses = warehouses;
         this.identities = identities;
         this.clock = clock;
@@ -256,7 +260,8 @@ class CycleCountService implements CycleCounts {
      * Only a line whose variance the manager rejected, with no share of it still pending, is recounted: a pending one
      * is still to be decided, and an approved one is already in the books - recounting it would be a new count, which
      * is what planning is for. Checked before any line is flagged, so the refusal names the line and its state. The
-     * slots are then claimed like a plan's; a decided adjustment no longer holds them.
+     * slots are then claimed like a plan's; a decided adjustment no longer holds them. A carton emptied since
+     * (CONSUMED) has nothing left to count: {@code CYCLE_COUNT_STALE}, naming the line.
      */
     @Override
     @Transactional
@@ -288,6 +293,13 @@ class CycleCountService implements CycleCounts {
         if (!stillPending.isEmpty()) {
             throw new BusinessException(ErrorCode.CONFLICT, "Part of the variance still waits for approval: "
                     + stillPending.stream().map(UUID::toString).collect(Collectors.joining(", ")));
+        }
+        // An emptied carton has nothing left to recount: said here, naming the line, rather than by the count of it.
+        for (CycleCountLine line : count.lines()) {
+            if (wanted.contains(line.id()) && line.slot().isCarton()) {
+                stockPackages.findById(line.slot().stockPackageId())
+                        .ifPresent(carton -> CycleCountCounting.requireCountable(carton, line));
+            }
         }
         List<CountSlot> slots = count.markRecount(wanted);
         Map<CountSlot, String> busy = counts.claim(slots);

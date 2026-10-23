@@ -173,7 +173,9 @@ class CycleCountCounting {
      * cartons in id order. Each request then takes its SKU lock again (an advisory lock is re-entrant), so SKUs are
      * never taken out of order and two submissions over the same SKUs cannot deadlock. Under the carton locks a
      * carton line follows its carton once more, so the adjustment names the bin the carton is in now; a whole-carton
-     * move never changes what is in it, so the counted delta still holds.</p>
+     * move never changes what is in it, so the counted delta still holds. A carton that is no longer IN_STOCK or LOST
+     * (emptied by a pick since it was counted) is {@code CYCLE_COUNT_STALE} for its line: the variance was judged
+     * against contents it no longer has.</p>
      */
     @Transactional
     public CycleCountView submit(UUID id, UUID actor, boolean mayDecide) {
@@ -189,9 +191,12 @@ class CycleCountCounting {
                 .collect(Collectors.toMap(line -> line.slot().stockPackageId().value(), line -> line));
         if (!cartonLines.isEmpty()) {
             String prefix = prefixOf(count);
-            stockPackages.findAllByIdForUpdate(cartonLines.values().stream()
-                            .map(line -> line.slot().stockPackageId()).toList())
-                    .forEach(carton -> follow(count, cartonLines.get(carton.id().value()), carton, prefix));
+            for (StockPackage carton : stockPackages.findAllByIdForUpdate(cartonLines.values().stream()
+                    .map(line -> line.slot().stockPackageId()).toList())) {
+                CycleCountLine line = cartonLines.get(carton.id().value());
+                requireCountable(carton, line);
+                follow(count, line, carton, prefix);
+            }
         }
         count.submit(clock.instant());
         String note = "Count " + count.number();
@@ -207,6 +212,19 @@ class CycleCountCounting {
         log.info("Cycle count {} submitted by {}: {} line(s) differ, {} adjustment(s) asked", count.number(), actor,
                 ordered.size(), asked);
         return views.of(saved, mayDecide);
+    }
+
+    /**
+     * A counted carton still holds, or may again hold, what the count was about: IN_STOCK, or LOST (a count may find
+     * it). Emptied (CONSUMED) or voided since, the counted variance no longer describes it - a stale line, named, so
+     * the counter knows which one to count again.
+     */
+    static void requireCountable(StockPackage carton, CycleCountLine line) {
+        if (carton.status() != StockPackageStatus.IN_STOCK && carton.status() != StockPackageStatus.LOST) {
+            throw new BusinessException(ErrorCode.CYCLE_COUNT_STALE,
+                    "Line %s: carton %s is %s since it was counted; count the line again"
+                            .formatted(line.id(), carton.lpn(), carton.status()));
+        }
     }
 
     /**
@@ -267,9 +285,11 @@ class CycleCountCounting {
     }
 
     /**
-     * {@code present=true} records {@code received_qty}, not the line's expected quantity: for a sealed carton in
-     * stock the two are equal (V20261020000100 holds a sealed carton at what was counted into it), and for a LOST one
-     * found sealed the books say 0 while the carton holds what it was received with.
+     * {@code present=true} records {@code received_qty}, not the line's expected quantity, though for a sealed carton
+     * in stock the two are equal (V20261020000100 holds a sealed carton at what was counted into it): the received
+     * quantity is the trusted figure the scan stands for. Only a sealed carton takes {@code present}, so never a LOST
+     * one - {@code StockPackage.lose} clears {@code unopened}, since nobody knows what a lost carton still holds; found
+     * again, it is counted in units.
      */
     private int cartonCount(StockPackage carton, Integer countedQty, Boolean present) {
         int counted;

@@ -82,10 +82,12 @@ public final class CycleCount extends AggregateRoot {
         if (lines == null || lines.isEmpty()) {
             throw new BusinessException(ErrorCode.CYCLE_COUNT_EMPTY_SCOPE, "The scope matches no stock to count");
         }
-        Set<CountSlot> seen = new HashSet<>();
+        // By lock key, not record equality: a carton is one slot wherever it stands, so two drafts of one carton at
+        // different bins (it moved between two reads) are the same slot, as the claim and the advisory lock see it.
+        Set<String> seen = new HashSet<>();
         List<CycleCountLine> built = new ArrayList<>(lines.size());
         for (CountLineDraft draft : lines) {
-            if (!seen.add(draft.slot())) {
+            if (!seen.add(draft.slot().lockKey())) {
                 throw new IllegalArgumentException("Slot planned twice: " + draft.slot().lockKey());
             }
             built.add(new CycleCountLine(draft.slot(), draft.expectedQty()));
@@ -143,7 +145,8 @@ public final class CycleCount extends AggregateRoot {
     /** A slot found on the shelf that the plan did not list. */
     public CycleCountLine addLine(CountSlot slot, int countedQty, int bookQty, UUID by, Instant at) {
         requireOpen();
-        if (lines.stream().anyMatch(l -> l.slot().equals(slot))) {
+        // By lock key: a carton line that followed its carton to another bin is still that carton's line.
+        if (lines.stream().anyMatch(l -> l.slot().lockKey().equals(slot.lockKey()))) {
             throw new BusinessException(ErrorCode.CYCLE_COUNT_SLOT_BUSY, "This slot is already on the count");
         }
         CycleCountLine line = new CycleCountLine(slot, bookQty);

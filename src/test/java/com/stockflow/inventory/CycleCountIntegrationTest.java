@@ -456,6 +456,48 @@ class CycleCountIntegrationTest {
         assertThat(cartonLine(cycleCounts.get(planned.id(), true), box).locationCode()).isEqualTo(BIN3);
     }
 
+    /** The carton emptied as a last pick would leave it, in one transaction for the commit-time carton check. */
+    private void consumeWhole(UUID carton) {
+        tx.executeWithoutResult(s -> {
+            jdbc.update("update inventory.stock_item set on_hand = 0 where stock_package_id = ?", carton);
+            jdbc.update("update inventory.stock_package set status = 'CONSUMED', unopened = false, closed_at = now()"
+                    + " where id = ?", carton);
+        });
+    }
+
+    @Test
+    @DisplayName("a carton emptied after it was counted is CYCLE_COUNT_STALE naming its line, at submission and at "
+            + "recount")
+    void emptiedCartonIsStale() {
+        UUID box = carton(BIN, "E", 20, false);
+        CycleCountView planned = planBin(BIN).count();
+        UUID line = cartonLine(planned, box).id();
+        cycleCounts.count(planned.id(), line, 18, null, counter, false);
+        consumeWhole(box);
+
+        Throwable stale = catchThrowable(() -> cycleCounts.submit(planned.id(), counter, false));
+
+        assertThat(code(stale)).isEqualTo(ErrorCode.CYCLE_COUNT_STALE);
+        assertThat(stale).hasMessageContaining(line.toString()).hasMessageContaining(lpn("E"));
+        assertThat(adjustments()).isEmpty();
+
+        // Another carton, emptied after its variance was rejected: nothing is left to recount.
+        UUID other = carton(BIN2, "R", 20, false);
+        CycleCountView second = planBin(BIN2).count();
+        UUID doubted = cartonLine(second, other).id();
+        cycleCounts.count(second.id(), doubted, 15, null, counter, false);
+        cycleCounts.submit(second.id(), counter, false);
+        operations.reject((UUID) adjustments().get(0).get("id"), manager, "Doubtful");
+        consumeWhole(other);
+
+        Throwable recount = catchThrowable(() -> cycleCounts.recount(second.id(), List.of(doubted), null, manager));
+
+        assertThat(code(recount)).isEqualTo(ErrorCode.CYCLE_COUNT_STALE);
+        assertThat(recount).hasMessageContaining(doubted.toString());
+        assertThat(cartonLine(cycleCounts.get(second.id(), true), other).recountRequired()).as("nothing flagged")
+                .isFalse();
+    }
+
     @Test
     @DisplayName("a sealed carton scanned present has no variance; one not found is one adjustment and goes LOST")
     void cartonPresentAndMissing() {
