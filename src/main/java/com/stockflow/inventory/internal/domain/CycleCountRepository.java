@@ -1,5 +1,6 @@
 package com.stockflow.inventory.internal.domain;
 
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.Collection;
 import java.util.List;
@@ -42,7 +43,11 @@ public interface CycleCountRepository {
     /** Committed on_hand, read FOR SHARE. */
     int bookQuantity(CountSlot slot);
 
-    List<CycleCount> find(CycleCountStatus status, Set<UUID> warehouses, long offset, int limit);
+    /**
+     * A page of counts, newest first, as headers with their line tallies. No line is loaded: a list of counts must
+     * not grow with the lines on them.
+     */
+    List<Header> findHeaders(CycleCountStatus status, Set<UUID> warehouses, long offset, int limit);
 
     long count(CycleCountStatus status, Set<UUID> warehouses);
 
@@ -57,4 +62,12 @@ public interface CycleCountRepository {
 
     /** Stock held back from picking by an open SHORT_PICK recount. */
     record Frozen(UUID stockItemId, String sku, String locationCode, long free) { }
+
+    /**
+     * A count without its lines: {@code lineCount} lines, {@code countedCount} of them counted, {@code varianceCount}
+     * of those counted differently from the books (a figure only who decides counts may see).
+     */
+    record Header(UUID id, String number, UUID warehouseId, CycleCountTrigger trigger, CycleCountStatus status,
+                  boolean blind, UUID assignedUserId, LocalDate plannedDate, Instant startedAt, Instant completedAt,
+                  String note, Instant createdAt, int lineCount, int countedCount, int varianceCount) { }
 }

@@ -22,15 +22,17 @@ import java.util.UUID;
 public interface CycleCounts {
 
     /**
-     * Counts, newest first. A blind count hides its expected quantity, note and adjustments from the caller unless
-     * they may decide counts ({@code showExpected}). A warehouse-bound caller sees their own warehouses only.
+     * Counts, newest first, without their lines: each with how many lines it has and how many are counted, and - for
+     * a caller who may decide counts ({@code showExpected}) - how many differ from the books. A blind count hides its
+     * note from the others. The lines are read one count at a time ({@link #get}). A warehouse-bound caller sees their
+     * own warehouses only.
      *
      * @param status    PLANNED, IN_PROGRESS, COMPLETED or CANCELLED, in any case; null for any
      * @param warehouse one warehouse; null for every warehouse the caller may see
      * @throws com.stockflow.common.error.BusinessException {@code UNSUPPORTED_PARAMETER} for an unknown status;
      *         {@code OUT_OF_DATA_SCOPE}
      */
-    PageResponse<CycleCountView> list(String status, UUID warehouse, boolean showExpected, int page, int size);
+    PageResponse<CycleCountSummary> list(String status, UUID warehouse, boolean showExpected, int page, int size);
 
     /**
      * One count with its lines, blinded as {@link #list} does.
@@ -44,13 +46,15 @@ public interface CycleCounts {
      * any are named; SKUs alone mean every bin (not area) of the warehouse holding them. One line per loose (bin,
      * SKU, lot) with stock and per carton in stock. A slot already on another open count, or whose variance still
      * waits for approval, is left out and reported in {@link PlannedCount#skipped()}, so two counts never correct
-     * the same stock. The returned view is blinded: planning does not make the planner one who decides.
+     * the same stock. The returned view is blinded as {@link #get} blinds it: planning does not make the planner one
+     * who decides, but who decides sees the books of what they planned.
      *
+     * @param showExpected the caller may decide counts ({@code inventory-cycle-counts:APPROVE})
      * @throws com.stockflow.common.error.BusinessException {@code VALIDATION_FAILED} for no criterion, a bin or zone of
      *         another warehouse, a malformed SKU or an assignee who may not count there; {@code WAREHOUSE_NOT_FOUND};
      *         {@code CYCLE_COUNT_EMPTY_SCOPE}; {@code CYCLE_COUNT_TOO_LARGE}; {@code OUT_OF_DATA_SCOPE}
      */
-    PlannedCount plan(PlanCycleCountCommand command);
+    PlannedCount plan(PlanCycleCountCommand command, boolean showExpected);
 
     /**
      * Hands a planned count to an active warehouse staff member or manager of its warehouse.

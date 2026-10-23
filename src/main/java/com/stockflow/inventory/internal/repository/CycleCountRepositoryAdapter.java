@@ -6,6 +6,7 @@ import com.stockflow.inventory.internal.domain.CycleCount;
 import com.stockflow.inventory.internal.domain.CycleCount.CountLineDraft;
 import com.stockflow.inventory.internal.domain.CycleCountRepository;
 import com.stockflow.inventory.internal.domain.CycleCountStatus;
+import com.stockflow.inventory.internal.domain.CycleCountTrigger;
 import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.StockPackageId;
 import com.stockflow.inventory.internal.entity.CycleCountJpaEntity;
@@ -18,7 +19,9 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
 
 import java.sql.ResultSet;
+import java.sql.Timestamp;
 import java.sql.Types;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -281,21 +284,45 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
         return total == null ? 0 : total.intValue();
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One query: the tallies are correlated subqueries over {@code cycle_count_line} by its count, so the page's
+     * size, not the number of its lines, bounds the work. A variance is a counted line whose count differs from the
+     * book quantity it was judged against (re-read at counting).</p>
+     */
     @Override
-    public List<CycleCount> find(CycleCountStatus status, Set<UUID> warehouses, long offset, int limit) {
+    public List<Header> findHeaders(CycleCountStatus status, Set<UUID> warehouses, long offset, int limit) {
         MapSqlParameterSource params = new MapSqlParameterSource().addValue("offset", offset).addValue("limit", limit);
         String where = where(status, warehouses, params);
         if (where == null) {
             return List.of();
         }
-        List<UUID> ids = jdbc.queryForList("SELECT c.id FROM inventory.cycle_count c WHERE " + where
-                + " ORDER BY c.created_at DESC, c.id DESC LIMIT :limit OFFSET :offset", params, UUID.class);
-        if (ids.isEmpty()) {
-            return List.of();
-        }
-        Map<UUID, CycleCountJpaEntity> byId = new HashMap<>();
-        jpa.findAllWithLines(ids).forEach(entity -> byId.put(entity.getId(), entity));
-        return ids.stream().map(byId::get).map(CycleCountPersistenceMapper::toDomain).toList();
+        return jdbc.query("""
+                SELECT c.id, c.count_number, c.warehouse_id, c.trigger_type, c.status, c.is_blind, c.assigned_user_id,
+                       c.planned_date, c.started_at, c.completed_at, c.note, c.created_at,
+                       (SELECT count(*) FROM inventory.cycle_count_line l WHERE l.cycle_count_id = c.id) AS line_count,
+                       (SELECT count(*) FROM inventory.cycle_count_line l
+                         WHERE l.cycle_count_id = c.id AND l.counted_qty IS NOT NULL) AS counted_count,
+                       (SELECT count(*) FROM inventory.cycle_count_line l
+                         WHERE l.cycle_count_id = c.id AND l.counted_qty IS NOT NULL
+                           AND l.counted_qty <> l.expected_qty) AS variance_count
+                  FROM inventory.cycle_count c
+                 WHERE %s
+                 ORDER BY c.created_at DESC, c.id DESC LIMIT :limit OFFSET :offset""".formatted(where), params,
+                (rs, row) -> new Header(rs.getObject("id", UUID.class), rs.getString("count_number"),
+                        rs.getObject("warehouse_id", UUID.class),
+                        CycleCountTrigger.valueOf(rs.getString("trigger_type")),
+                        CycleCountStatus.valueOf(rs.getString("status")), rs.getBoolean("is_blind"),
+                        rs.getObject("assigned_user_id", UUID.class), rs.getObject("planned_date", LocalDate.class),
+                        instant(rs, "started_at"), instant(rs, "completed_at"), rs.getString("note"),
+                        instant(rs, "created_at"), rs.getInt("line_count"), rs.getInt("counted_count"),
+                        rs.getInt("variance_count")));
+    }
+
+    private static Instant instant(ResultSet rs, String column) throws java.sql.SQLException {
+        Timestamp at = rs.getTimestamp(column);
+        return at == null ? null : at.toInstant();
     }
 
     @Override

@@ -88,8 +88,8 @@ class CycleCountService implements CycleCounts {
     // ------------------------------------------------------------------ reads
 
     @Override
-    public PageResponse<CycleCountView> list(String status, UUID warehouse, boolean showExpected, int page,
-                                             int size) {
+    public PageResponse<CycleCountSummary> list(String status, UUID warehouse, boolean showExpected, int page,
+                                                int size) {
         Pageable paging = Pages.of(page, size);
         CycleCountStatus wanted = parse(status);
         Set<UUID> scoped;
@@ -100,9 +100,10 @@ class CycleCountService implements CycleCounts {
             scoped = WarehouseScope.restriction().map(allowed -> Set.copyOf(allowed.ids())).orElse(null);
         }
         long total = counts.count(wanted, scoped);
-        List<CycleCount> found = total == 0 ? List.of()
-                : counts.find(wanted, scoped, paging.getOffset(), paging.getPageSize());
-        return PageResponse.of(views.of(found, showExpected), paging.getPageNumber(), paging.getPageSize(), total);
+        List<CycleCountSummary> found = total == 0 ? List.of()
+                : counts.findHeaders(wanted, scoped, paging.getOffset(), paging.getPageSize()).stream()
+                        .map(header -> CycleCountViews.summary(header, showExpected)).toList();
+        return PageResponse.of(found, paging.getPageNumber(), paging.getPageSize(), total);
     }
 
     @Override
@@ -129,7 +130,7 @@ class CycleCountService implements CycleCounts {
      */
     @Override
     @Transactional
-    public PlannedCount plan(PlanCycleCountCommand command) {
+    public PlannedCount plan(PlanCycleCountCommand command, boolean showExpected) {
         UUID warehouseId = Objects.requireNonNull(command.warehouseId(), "warehouseId");
         WarehouseScope.requireWarehouse(warehouseId);
         String prefix = prefixOf(warehouseId);
@@ -188,7 +189,7 @@ class CycleCountService implements CycleCounts {
                 command.plannedDate() == null ? day : command.plannedDate(), command.note(), free));
         log.info("Cycle count {} planned in {}: {} line(s), {} skipped", planned.number(), prefix,
                 planned.lines().size(), busy.size());
-        return new PlannedCount(views.of(planned, false), skipped(busy));
+        return new PlannedCount(views.of(planned, showExpected), skipped(busy));
     }
 
     /** SKUs alone mean bins: stock in a receiving or QC area is still being received or inspected, not stored. */

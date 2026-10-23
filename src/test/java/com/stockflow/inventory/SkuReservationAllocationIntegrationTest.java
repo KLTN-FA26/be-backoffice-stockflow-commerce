@@ -403,16 +403,24 @@ class SkuReservationAllocationIntegrationTest {
         assertThat(first.countNumber()).startsWith("CC-");
         assertThat(again.created()).as("one open recount per bin, SKU and lot").isFalse();
         assertThat(again.cycleCountId()).isEqualTo(first.cycleCountId());
-        var counter = cycleCounts.list("planned", DemoData.WAREHOUSE_HCM, false, 0, 200).items().stream()
+        var listed = cycleCounts.list("planned", DemoData.WAREHOUSE_HCM, false, 0, 200).items().stream()
                 .filter(c -> c.id().equals(first.cycleCountId())).findFirst().orElseThrow();
+        assertThat(listed.triggerType()).isEqualTo("SHORT_PICK");
+        assertThat(listed.lineCount()).as("the list carries no lines, only how many").isEqualTo(1);
+        assertThat(listed.countedCount()).isZero();
+        assertThat(listed.varianceCount()).as("part of the variance: not for a counter").isNull();
+        assertThat(listed.note()).as("blind in the list too").isNull();
+        assertThat(cycleCounts.list(null, DemoData.WAREHOUSE_HCM, true, 0, 200).items().stream()
+                .filter(c -> c.id().equals(first.cycleCountId())).findFirst().orElseThrow().varianceCount())
+                .as("for who decides").isZero();
+        var counter = cycleCounts.get(first.cycleCountId(), false);
         assertThat(counter.triggerType()).isEqualTo("SHORT_PICK");
         assertThat(counter.lines()).singleElement().satisfies(line -> {
             assertThat(line.locationCode()).isEqualTo(allocation.locationCode());
             assertThat(line.sku()).isEqualTo(sku);
             assertThat(line.expectedQty()).as("blind").isNull();
         });
-        var manager = cycleCounts.list(null, DemoData.WAREHOUSE_HCM, true, 0, 200).items().stream()
-                .filter(c -> c.id().equals(first.cycleCountId())).findFirst().orElseThrow();
+        var manager = cycleCounts.get(first.cycleCountId(), true);
         assertThat(manager.lines().get(0).expectedQty()).as("the books, for who decides").isEqualTo(5);
         assertThat(manager.note()).contains("found 1");
         assertThat(counter.note()).as("what the picker found would anchor the count too").isNull();

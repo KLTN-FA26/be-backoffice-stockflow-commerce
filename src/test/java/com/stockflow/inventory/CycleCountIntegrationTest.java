@@ -188,7 +188,7 @@ class CycleCountIntegrationTest {
     private PlannedCount plan(UUID assignee, List<UUID> zones, List<String> shelves, List<String> codes,
                               List<String> skus) {
         return cycleCounts.plan(new PlanCycleCountCommand(WAREHOUSE_HCM, null, assignee, true, "Fixture count",
-                zones, shelves, codes, skus));
+                zones, shelves, codes, skus), false);
     }
 
     /** Shelf A01, this test's SKU only. */

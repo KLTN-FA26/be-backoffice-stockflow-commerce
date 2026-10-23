@@ -14,9 +14,11 @@ import com.stockflow.inventory.internal.controller.dto.AssignCycleCountRequest;
 import com.stockflow.inventory.internal.controller.dto.CountLineRequest;
 import com.stockflow.inventory.internal.controller.dto.CycleCountAssigneeResponse;
 import com.stockflow.inventory.internal.controller.dto.CycleCountResponse;
+import com.stockflow.inventory.internal.controller.dto.CycleCountSummaryResponse;
 import com.stockflow.inventory.internal.controller.dto.PlanCycleCountRequest;
 import com.stockflow.inventory.internal.controller.dto.PlannedCycleCountResponse;
 import com.stockflow.inventory.internal.controller.dto.RecountRequest;
+import com.stockflow.inventory.internal.service.CycleCountSummary;
 import com.stockflow.inventory.internal.service.CycleCountView;
 import com.stockflow.inventory.internal.service.CycleCounts;
 import io.swagger.v3.oas.annotations.Operation;
@@ -67,16 +69,16 @@ class CycleCountController {
     }
 
     @GetMapping
-    @Operation(summary = "Cycle counts, newest first; by status and warehouse")
+    @Operation(summary = "Cycle counts, newest first, without their lines; by status and warehouse")
     @RequiresPermission(resource = InventoryResources.CYCLE_COUNTS, action = Action.READ, scope = DataScope.WAREHOUSE)
-    public ApiResponse<PageResponse<CycleCountResponse>> list(
+    public ApiResponse<PageResponse<CycleCountSummaryResponse>> list(
             @RequestParam(required = false) String status,
             @RequestParam(required = false) UUID warehouseId,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size,
             @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(counts.list(status, warehouseId, decides(actor), page,
-                size == null ? Pages.DEFAULT_PAGE_SIZE : size).map(CycleCountController::toResponse));
+                size == null ? Pages.DEFAULT_PAGE_SIZE : size).map(CycleCountController::toSummary));
     }
 
     @GetMapping("/{countId}")
@@ -100,11 +102,12 @@ class CycleCountController {
     @ResponseStatus(HttpStatus.CREATED)
     @Operation(summary = "Plan a count over zones, shelves, bins and SKUs; slots on another count are skipped")
     @RequiresPermission(resource = InventoryResources.CYCLE_COUNTS, action = Action.CREATE, scope = DataScope.WAREHOUSE)
-    public ApiResponse<PlannedCycleCountResponse> plan(@Valid @RequestBody PlanCycleCountRequest request) {
+    public ApiResponse<PlannedCycleCountResponse> plan(@Valid @RequestBody PlanCycleCountRequest request,
+                                                       @AuthenticatedUser CurrentUser actor) {
         PlanCycleCountRequest.Scope scope = request.scope();
         CycleCounts.PlannedCount planned = counts.plan(new CycleCounts.PlanCycleCountCommand(request.warehouseId(),
                 request.plannedDate(), request.assignedUserId(), request.blindOrDefault(), request.note(),
-                scope.zoneIds(), scope.shelfCodes(), scope.locationCodes(), scope.skus()));
+                scope.zoneIds(), scope.shelfCodes(), scope.locationCodes(), scope.skus()), decides(actor));
         return ApiResponse.ok(new PlannedCycleCountResponse(toResponse(planned.count()), planned.skipped().stream()
                 .map(slot -> new PlannedCycleCountResponse.Skipped(slot.locationCode(), slot.sku(), slot.lotNumber(),
                         slot.lpn(), slot.countNumber()))
@@ -171,6 +174,13 @@ class CycleCountController {
     /** Who decides counts (APPROVE: the warehouse manager by the seeded grants) sees the books; a counter does not. */
     private static boolean decides(CurrentUser actor) {
         return actor.can(InventoryResources.CYCLE_COUNTS, Action.APPROVE);
+    }
+
+    private static CycleCountSummaryResponse toSummary(CycleCountSummary count) {
+        return new CycleCountSummaryResponse(count.id(), count.number(), count.warehouseId(), count.triggerType(),
+                count.status(), count.blind(), count.assignedUserId(), count.plannedDate(), count.startedAt(),
+                count.completedAt(), count.note(), count.createdAt(), count.lineCount(), count.countedCount(),
+                count.varianceCount());
     }
 
     private static CycleCountResponse toResponse(CycleCountView count) {

@@ -108,12 +108,12 @@ class CycleCountHttpSecurityIntegrationTest {
     /** A blind count of this test's SKU in {@link #BIN}, planned below HTTP (no caller scope: the system). */
     private CycleCountView planned() {
         return cycleCounts.plan(new PlanCycleCountCommand(WAREHOUSE_HCM, null, null, true, "Count the top shelf",
-                List.of(), List.of(), List.of(BIN), List.of(sku))).count();
+                List.of(), List.of(), List.of(BIN), List.of(sku)), false).count();
     }
 
     private String planBody() {
         return """
-                {"warehouseId":"%s","scope":{"locationCodes":["%s"],"skus":["%s"]}}"""
+                {"warehouseId":"%s","note":"Count the top shelf","scope":{"locationCodes":["%s"],"skus":["%s"]}}"""
                 .formatted(WAREHOUSE_HCM, BIN, sku);
     }
 
@@ -137,6 +137,44 @@ class CycleCountHttpSecurityIntegrationTest {
                 .andExpect(jsonPath("$.data.lines[0].adjustments[0].quantityDelta").value(-3))
                 .andExpect(jsonPath("$.data.lines[0].adjustments[0].status").value("PENDING_APPROVAL"))
                 .andExpect(jsonPath("$.data.note").value("Count the top shelf"));
+    }
+
+    @Test
+    @DisplayName("a plan answers with the books only to who decides; the list carries line tallies, never lines, and "
+            + "the variance tally only for who decides")
+    void planAndListShowTheBooksOnlyToWhoDecides() throws Exception {
+        String planned = mvc.asRole(Role.INVENTORY_PLANNER, planner, post(BASE)
+                        .contentType(MediaType.APPLICATION_JSON).content(planBody()))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.count.lines[0].countedQty").doesNotExist())
+                .andExpect(jsonPath("$.data.count.lines[0].expectedQty").doesNotExist())
+                .andReturn().getResponse().getContentAsString();
+        UUID first = UUID.fromString(com.jayway.jsonpath.JsonPath.read(planned, "$.data.count.id"));
+        cycleCounts.cancel(first, "Planned again by the manager", "test");
+
+        String managers = mvc.asRole(Role.WAREHOUSE_MANAGER, manager, post(BASE)
+                        .contentType(MediaType.APPLICATION_JSON).content(planBody()))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.count.lines[0].expectedQty").value(10))
+                .andReturn().getResponse().getContentAsString();
+        String id = com.jayway.jsonpath.JsonPath.read(managers, "$.data.count.id");
+        cycleCounts.count(UUID.fromString(id), UUID.fromString(com.jayway.jsonpath.JsonPath.read(managers,
+                "$.data.count.lines[0].id")), 7, null, planner, false);
+
+        String row = "$.data.items[?(@.id == '" + id + "')]";
+        String list = BASE + "?warehouseId=" + WAREHOUSE_HCM + "&status=IN_PROGRESS&size=50";
+        mvc.asRole(Role.INVENTORY_PLANNER, planner, get(list))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath(row + ".lineCount").value(org.hamcrest.Matchers.contains(1)))
+                .andExpect(jsonPath(row + ".countedCount").value(org.hamcrest.Matchers.contains(1)))
+                .andExpect(jsonPath(row + ".varianceCount").doesNotExist())
+                .andExpect(jsonPath(row + ".note").doesNotExist())
+                .andExpect(jsonPath(row + ".lines").doesNotExist());
+        mvc.asRole(Role.WAREHOUSE_MANAGER, manager, get(list))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath(row + ".varianceCount").value(org.hamcrest.Matchers.contains(1)))
+                .andExpect(jsonPath(row + ".note").value(org.hamcrest.Matchers.contains("Count the top shelf")))
+                .andExpect(jsonPath(row + ".lines").doesNotExist());
     }
 
     @Test

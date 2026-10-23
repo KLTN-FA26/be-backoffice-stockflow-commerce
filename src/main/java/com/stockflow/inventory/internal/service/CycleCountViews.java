@@ -13,9 +13,9 @@ import java.util.Objects;
 import java.util.UUID;
 
 /**
- * Turns counts into {@link CycleCountView}s, applying the blind rule. One place for it, because every answer of
- * {@link CycleCounts} - the list, one count, and what each counting step returns - must hide the same three things,
- * and a second copy of the rule is the one that would forget one of them.
+ * Turns counts into {@link CycleCountView}s and list rows into {@link CycleCountSummary}s, applying the blind rule. One
+ * place for it, because every answer of {@link CycleCounts} - the list, one count, and what each counting step returns
+ * - must hide the same things, and a second copy of the rule is the one that would forget one of them.
  */
 @Component
 class CycleCountViews {
@@ -47,6 +47,18 @@ class CycleCountViews {
                 .flatMap(count -> count.lines().stream()).map(CycleCountLine::id).toList();
         Map<UUID, List<CycleCountRepository.LineAdjustment>> adjustments = counts.adjustmentsOf(shown);
         return found.stream().map(count -> view(count, showExpected || !count.blind(), lpns, adjustments)).toList();
+    }
+
+    /**
+     * A list row. The blind rule as for a view: the note of a blind count only for who decides. The number of
+     * differing lines only for who decides, blind or not - it is part of the variance, which is theirs to judge.
+     */
+    static CycleCountSummary summary(CycleCountRepository.Header header, boolean showExpected) {
+        boolean reveal = showExpected || !header.blind();
+        return new CycleCountSummary(header.id(), header.number(), header.warehouseId(), header.trigger().name(),
+                header.status().name(), header.blind(), header.assignedUserId(), header.plannedDate(),
+                header.startedAt(), header.completedAt(), reveal ? header.note() : null, header.createdAt(),
+                header.lineCount(), header.countedCount(), showExpected ? header.varianceCount() : null);
     }
 
     private static CycleCountView view(CycleCount count, boolean reveal, Map<UUID, String> lpns,
