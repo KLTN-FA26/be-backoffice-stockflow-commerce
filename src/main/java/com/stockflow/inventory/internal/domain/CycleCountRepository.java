@@ -27,8 +27,11 @@ public interface CycleCountRepository {
 
     String nextNumber(LocalDate day);
 
-    /** Takes the slot's advisory lock (seed 703) and returns the open count holding it, if any. */
-    Optional<CycleCount> findOpenFor(CountSlot slot);
+    /**
+     * Takes the slot's advisory lock (seed 703) and returns the count holding it, if any: held as {@link #claim} means
+     * busy - on an open count, or on a completed one whose variance adjustment is still pending approval.
+     */
+    Optional<CycleCount> findHolding(CountSlot slot);
 
     /**
      * Locks all slots in sorted key order; returns each busy slot with the number of the count holding it. Busy: on
@@ -60,7 +63,10 @@ public interface CycleCountRepository {
     /** A variance adjustment raised from a count line. */
     record LineAdjustment(UUID id, String number, int quantityDelta, String status) { }
 
-    /** Stock held back from picking by an open SHORT_PICK recount. */
+    /**
+     * Stock held back from picking: by an open SHORT_PICK recount (or one whose variance waits for approval), or by a
+     * pending shortage of any count.
+     */
     record Frozen(UUID stockItemId, String sku, String locationCode, long free) { }
 
     /**

@@ -305,7 +305,7 @@ class PickConsumptionServiceTest {
                     Quantity.of(4), StockStatus.AVAILABLE, List.of(hold), 0L, NOW.minusSeconds(86_400), null, carton);
             when(stockItems.findIdByReservationId(ReservationId.of(holdId))).thenReturn(Optional.of(item.id()));
             when(stockItems.findById(item.id())).thenReturn(Optional.of(item));
-            when(cycleCounts.findOpenFor(any())).thenReturn(Optional.empty());
+            when(cycleCounts.findHolding(any())).thenReturn(Optional.empty());
             when(cycleCounts.bookQuantity(any())).thenReturn(12);
             when(cycleCounts.nextNumber(any())).thenReturn("CC-20261014-0001");
             when(cycleCounts.save(any())).thenAnswer(call -> call.getArgument(0));
@@ -314,7 +314,7 @@ class PickConsumptionServiceTest {
             var recount = service.requestRecount(holdId, UUID.randomUUID(), 1);
 
             var slot = org.mockito.ArgumentCaptor.forClass(com.stockflow.inventory.internal.domain.CountSlot.class);
-            verify(cycleCounts).findOpenFor(slot.capture());
+            verify(cycleCounts).findHolding(slot.capture());
             assertThat(slot.getValue().stockPackageId()).isEqualTo(carton);
             var saved = org.mockito.ArgumentCaptor.forClass(com.stockflow.inventory.internal.domain.CycleCount.class);
             verify(cycleCounts).save(saved.capture());

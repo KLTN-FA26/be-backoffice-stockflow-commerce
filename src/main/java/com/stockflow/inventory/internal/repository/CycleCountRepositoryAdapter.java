@@ -52,6 +52,19 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
     private static final Map<String, Object> LOCK_TIMEOUT =
             Map.of("jakarta.persistence.lock.timeout", 3000);
 
+    /**
+     * When line {@code l} of count {@code c} holds its slot: the count is open, or it is submitted and a
+     * {@code COUNT_VARIANCE} adjustment of the line still waits for approval. One fragment for {@link #claim} (plans,
+     * found lines, recounts) and {@link #findHolding} (short picks), so the two can never disagree on what busy is.
+     */
+    private static final String BUSY = """
+            (c.status IN ('PLANNED', 'IN_PROGRESS')
+             OR (c.status = 'COMPLETED'
+                 AND EXISTS (SELECT 1 FROM inventory.stock_adjustment a
+                              WHERE a.cycle_count_line_id = l.id
+                                AND a.reason_code = 'COUNT_VARIANCE'
+                                AND a.status = 'PENDING_APPROVAL')))""";
+
     private final CycleCountJpaRepository jpa;
     private final EntityManager entityManager;
     private final NamedParameterJdbcTemplate jdbc;
@@ -116,18 +129,22 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
      * {@inheritDoc}
      *
      * <p>Takes a transaction-scoped advisory lock on the slot first (seed 703; 701 is the SKU's, 702 the alerts').
-     * No constraint says one open count per slot, so without it two short reports on one bin in different picks
-     * would both find none and both open one. A loose slot matches only loose lines, a carton only its package.</p>
+     * No constraint says one count per slot, so without it two short reports on one bin in different picks would
+     * both find none and both open one. A loose slot matches only loose lines, a carton only its package.</p>
+     *
+     * <p>Held means what {@link #claim} means ({@link #BUSY}): a short pick on a slot whose count still waits for its
+     * variance to be decided must not open a second count of the same stock, or approving both would correct it
+     * twice.</p>
      */
     @Override
-    public Optional<CycleCount> findOpenFor(CountSlot slot) {
+    public Optional<CycleCount> findHolding(CountSlot slot) {
         lock(slot.lockKey());
         MapSqlParameterSource params = new MapSqlParameterSource();
         String match = slotMatch(slot, "l", params);
         List<UUID> ids = jdbc.queryForList("""
                 SELECT c.id FROM inventory.cycle_count c JOIN inventory.cycle_count_line l ON l.cycle_count_id = c.id
-                 WHERE c.status IN ('PLANNED', 'IN_PROGRESS') AND %s
-                 ORDER BY c.created_at, c.id LIMIT 1""".formatted(match), params, UUID.class);
+                 WHERE %s AND %s
+                 ORDER BY c.created_at, c.id LIMIT 1""".formatted(BUSY, match), params, UUID.class);
         return ids.stream().findFirst().flatMap(this::findById);
     }
 
@@ -176,14 +193,9 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
         jdbc.query("""
                 SELECT c.count_number, l.location_code, l.sku, l.lot_number, l.stock_package_id
                   FROM inventory.cycle_count c JOIN inventory.cycle_count_line l ON l.cycle_count_id = c.id
-                 WHERE (c.status IN ('PLANNED', 'IN_PROGRESS')
-                        OR (c.status = 'COMPLETED'
-                            AND EXISTS (SELECT 1 FROM inventory.stock_adjustment a
-                                         WHERE a.cycle_count_line_id = l.id
-                                           AND a.reason_code = 'COUNT_VARIANCE'
-                                           AND a.status = 'PENDING_APPROVAL')))
-                   AND (%s)
-                 ORDER BY c.created_at, c.id""".formatted(String.join(" OR ", any)), params, (RowCallbackHandler) rs -> {
+                 WHERE %s AND (%s)
+                 ORDER BY c.created_at, c.id""".formatted(BUSY, String.join(" OR ", any)), params,
+                (RowCallbackHandler) rs -> {
             CountSlot held = slotOf(rs);
             CountSlot wanted = byKey.get(held.lockKey());
             if (wanted != null) {
@@ -374,6 +386,16 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
      * <p>The freeze lasts while the SHORT_PICK count is open, and (SCRUM-146 D7) after it completes until every
      * {@code COUNT_VARIANCE} adjustment of the line is decided: between submission and approval the books still hold
      * the units a picker could not find, and promising them again would repeat the short pick.</p>
+     *
+     * <p>A slot with a pending <em>shortage</em> ({@code COUNT_VARIANCE} below zero) is frozen whatever its count's
+     * trigger: a MANUAL count that found fewer units than the books is the same doubt a short pick is, and a short
+     * pick on that slot reuses the count rather than opening a SHORT_PICK one ({@link #findHolding}), so without this
+     * branch nothing would hold the doubted units back. A pending surplus freezes nothing: the books hold fewer units
+     * than the shelf, none of which can be over-promised.</p>
+     *
+     * <p>Accepted gap (final review C1): a short pick on a slot an <em>open</em> MANUAL count holds reuses that count,
+     * and the slot stays unfrozen until the count is submitted with a shortage. For that window the allocator may
+     * promise the doubted free units again; the count is already on its way to settle them.</p>
      */
     @Override
     public List<Frozen> frozen(Collection<String> skus, LocalDate today) {
@@ -387,17 +409,18 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
                    AND (s.expiry_date IS NULL OR s.expiry_date >= :today)
                    AND EXISTS (SELECT 1 FROM inventory.cycle_count c
                                  JOIN inventory.cycle_count_line l ON l.cycle_count_id = c.id
-                                WHERE c.trigger_type = 'SHORT_PICK'
-                                  AND (c.status IN ('PLANNED', 'IN_PROGRESS')
+                                WHERE ((c.trigger_type = 'SHORT_PICK' AND %s)
                                        OR (c.status = 'COMPLETED'
                                            AND EXISTS (SELECT 1 FROM inventory.stock_adjustment a
                                                         WHERE a.cycle_count_line_id = l.id
                                                           AND a.reason_code = 'COUNT_VARIANCE'
-                                                          AND a.status = 'PENDING_APPROVAL')))
+                                                          AND a.status = 'PENDING_APPROVAL'
+                                                          AND a.quantity_delta < 0)))
                                   AND (l.stock_package_id = s.stock_package_id
                                        OR (l.stock_package_id IS NULL AND s.stock_package_id IS NULL
                                            AND l.location_code = s.location_code AND l.sku = s.sku
-                                           AND COALESCE(l.lot_number, '') = COALESCE(s.lot_number, ''))))""",
+                                           AND COALESCE(l.lot_number, '') = COALESCE(s.lot_number, ''))))"""
+                        .formatted(BUSY),
                 new MapSqlParameterSource().addValue("skus", skus).addValue("today", today),
                 (rs, row) -> new Frozen(rs.getObject("id", UUID.class), rs.getString("sku"),
                         rs.getString("location_code"), rs.getLong("free")));

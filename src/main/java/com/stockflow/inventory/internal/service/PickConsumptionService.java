@@ -217,10 +217,17 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
     /**
      * {@inheritDoc}
      *
-     * <p>One open recount per slot: a second short line on the same bin, SKU and lot (or the same carton), or the same
-     * report again, finds the first instead of queueing the same count twice. A row of a carton is counted as that
-     * carton, with the carton's book quantity: counted as a loose slot its book would read 0 and the whole carton
-     * would come out as surplus. Loose stock is counted by bin, SKU and lot, expecting the layer's on-hand.</p>
+     * <p>One count per slot: a short pick on a slot another count holds - open, or submitted with its variance still
+     * pending approval, whatever its trigger (the rule a plan's claim keeps) - answers with that count instead of
+     * opening a second count of the same stock, whose variance would correct the books a second time. So does a
+     * second short line on the same bin, SKU and lot (or the same carton), or the same report again. A row of a
+     * carton is counted as that carton: counted as a loose slot its book would read 0 and the whole carton would come
+     * out as surplus. Either way the line expects the slot's book quantity - every loose layer of the bin, SKU and
+     * lot, or the carton's rows - as a plan's line does, not the on-hand of the one layer the pick drew on.</p>
+     *
+     * <p>Reusing an <em>open</em> MANUAL count leaves the slot unfrozen until that count is submitted (only a
+     * SHORT_PICK count freezes while open; a pending shortage freezes whatever the trigger): an accepted window in
+     * which the doubted free units may be promised again (final review C1).</p>
      */
     @Override
     public com.stockflow.inventory.consumption.ShortPickRecount requestRecount(UUID reservationId, UUID pickLineId,
@@ -237,14 +244,15 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
                         item.lotNumber())
                 : com.stockflow.inventory.internal.domain.CountSlot.carton(item.location(), item.sku(),
                         item.lotNumber(), item.stockPackageId());
-        var open = cycleCounts.findOpenFor(slot);
-        if (open.isPresent()) {
-            return new com.stockflow.inventory.consumption.ShortPickRecount(open.get().id(), open.get().number(), false);
+        var holding = cycleCounts.findHolding(slot);
+        if (holding.isPresent()) {
+            return new com.stockflow.inventory.consumption.ShortPickRecount(holding.get().id(), holding.get().number(),
+                    false);
         }
         UUID warehouse = locations.warehouseOf(item.location()).orElseThrow(() ->
                 new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + item.location()));
         var day = com.stockflow.common.domain.BusinessCalendar.date(clock.instant());
-        int book = slot.isCarton() ? cycleCounts.bookQuantity(slot) : item.onHand().value();
+        int book = cycleCounts.bookQuantity(slot);
         var recount = cycleCounts.save(com.stockflow.inventory.internal.domain.CycleCount.shortPick(
                 cycleCounts.nextNumber(day), warehouse, slot, book,
                 "Short pick: line %s found %d of %s".formatted(pickLineId, found, hold.quantity()), day));

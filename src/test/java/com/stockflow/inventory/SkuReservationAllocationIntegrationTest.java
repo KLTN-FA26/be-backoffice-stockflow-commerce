@@ -73,6 +73,7 @@ class SkuReservationAllocationIntegrationTest {
     @Autowired com.stockflow.inventory.internal.service.CycleCounts cycleCounts;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
+    @Autowired jakarta.persistence.EntityManager entityManager;
 
     private String sku;
     private final Map<String, UUID> rows = new java.util.HashMap<>();
@@ -461,6 +462,65 @@ class SkuReservationAllocationIntegrationTest {
         assertThat(code(catchThrowable(() -> com.stockflow.support.WithCurrentUser.call(elsewhere, elsewhere.scope(),
                 () -> cycleCounts.list(null, DemoData.WAREHOUSE_HCM, false, 0, 20)))))
                 .isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE);
+    }
+
+    /** A MANUAL count of one bin of this SKU, planned below HTTP (no caller scope: the system). */
+    private com.stockflow.inventory.internal.service.CycleCountView planBin(String location) {
+        return cycleCounts.plan(new com.stockflow.inventory.internal.service.CycleCounts.PlanCycleCountCommand(
+                DemoData.WAREHOUSE_HCM, null, null, true, "Shelf check", List.of(), List.of(), List.of(location),
+                List.of(sku)), false).count();
+    }
+
+    private int countsOf(String trigger) {
+        return jdbc.queryForObject("""
+                SELECT count(DISTINCT c.id) FROM inventory.cycle_count c
+                  JOIN inventory.cycle_count_line l ON l.cycle_count_id = c.id
+                 WHERE l.sku = ? AND c.trigger_type = ?""", Integer.class, sku, trigger);
+    }
+
+    @Test
+    @DisplayName("a short pick on a slot whose MANUAL count's shortage waits for approval reuses that count; the "
+            + "bin's free units are frozen by the pending shortage")
+    void shortPickOnAPendingManualShortageReusesItsCount() {
+        UUID counter = tx.execute(s -> com.stockflow.support.ReferenceRows.user(entityManager));
+        UUID order = order();
+        reserve(order, 4);
+        StockReservation allocation = allocate(order, "HCM").allocations().get(0).holds().get(0);
+        assertThat(allocation.locationCode()).isEqualTo("HCM-A01-1-B");
+        var manual = planBin("HCM-A01-1-B");
+        cycleCounts.count(manual.id(), manual.lines().get(0).id(), 4, null, counter, false);
+        cycleCounts.submit(manual.id(), counter, false);
+        assertThat(jdbc.queryForObject("""
+                SELECT quantity_delta FROM inventory.stock_adjustment WHERE sku = ? AND status = 'PENDING_APPROVAL'
+                   AND reason_code = 'COUNT_VARIANCE'""", Integer.class, sku)).isEqualTo(-1);
+        assertThat(atp()).as("22 - 4 reserved - the 1 free unit a pending shortage doubts").isEqualTo(17);
+
+        var recount = tx.execute(s -> consumption.requestRecount(allocation.reservationId(), UUID.randomUUID(), 3));
+
+        assertThat(recount.created()).as("the slot is busy: its variance waits for approval").isFalse();
+        assertThat(recount.cycleCountId()).isEqualTo(manual.id());
+        assertThat(recount.countNumber()).isEqualTo(manual.number());
+        assertThat(countsOf("SHORT_PICK")).as("no second count of the same stock").isZero();
+        assertThat(atp()).as("still frozen").isEqualTo(17);
+        assertThat(inventory.availabilityOf(new Sku(sku))).extracting(StockAvailability::locationCode)
+                .doesNotContain("HCM-A01-1-B");
+    }
+
+    @Test
+    @DisplayName("a short pick on a slot an open MANUAL count holds reuses that count; the slot stays sellable until "
+            + "the count is submitted (the accepted window)")
+    void shortPickOnAnOpenManualCountReusesIt() {
+        UUID order = order();
+        reserve(order, 4);
+        StockReservation allocation = allocate(order, "HCM").allocations().get(0).holds().get(0);
+        var manual = planBin(allocation.locationCode());
+
+        var recount = tx.execute(s -> consumption.requestRecount(allocation.reservationId(), UUID.randomUUID(), 3));
+
+        assertThat(recount.created()).isFalse();
+        assertThat(recount.cycleCountId()).isEqualTo(manual.id());
+        assertThat(countsOf("SHORT_PICK")).isZero();
+        assertThat(atp()).as("a MANUAL count freezes nothing while open: 22 - 4 reserved").isEqualTo(18);
     }
 
     @Test
