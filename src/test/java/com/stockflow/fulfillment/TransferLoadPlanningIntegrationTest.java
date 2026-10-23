@@ -835,7 +835,9 @@ class TransferLoadPlanningIntegrationTest {
                 + "transfer_order_id = ?", transfer));
         String cartonId = carton;
         JsonNode label = data(packer(get(PACKS + "/" + pack + "/packages/" + cartonId + "/label"))
-                .andExpect(status().isOk()));
+                .andExpect(status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header()
+                        .string("Cache-Control", org.hamcrest.Matchers.containsString("no-store"))));
         assertThat(label.path("transferOrderId").asText()).isEqualTo(transfer.toString());
         assertThat(label.path("packageCount").asInt()).isEqualTo(3);
         assertThat(label.path("toWarehouseName").asText()).isEqualTo("Destination");
@@ -866,6 +868,24 @@ class TransferLoadPlanningIntegrationTest {
         assertThat(data(packer(body(post(PACKS + "/" + otherPack + "/packages/" + parcel + "/seal"), CARTON_MEASURES))
                 .andExpect(status().isOk())).path("status").asText()).isEqualTo("SEALED");
         packer(post(PACKS + "/" + pack + "/packages/" + cartonId + "/reopening")).andExpect(status().isConflict());
+    }
+
+    @Test
+    @DisplayName("10 BR-02, review of #164: opening the pack of a transfer the source cannot cover is 409 "
+            + "INSUFFICIENT_STOCK naming the SKU and the shortfall; nothing is held and picking does not start")
+    void openingRefusesAShortTransferNamingTheShortfall() throws Exception {
+        // No stock of the carton SKU at all (this test's fresh SKU): 10 requested, none free.
+        UUID transfer = approvedTransfer("FULL_TRUCKLOAD");
+        JsonNode refused = json.readTree(packer(body(post(PACKS), "{\"transferOrderId\":\"" + transfer + "\"}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("INSUFFICIENT_STOCK"))
+                .andReturn().getResponse().getContentAsString());
+        assertThat(refused.path("message").asText()).contains(cartonSku).contains("short by");
+        java.util.Map<String, String> fields = new java.util.HashMap<>();
+        refused.path("fieldErrors").forEach(f -> fields.put(f.path("field").asText(), f.path("message").asText()));
+        assertThat(fields).containsEntry("sku", cartonSku).containsKey("shortfall");
+        assertThat(fields).containsEntry("shortfall", "10");
+        assertThat(holds(transfer, "HELD")).isZero();
+        assertThat(transferStatus(transfer)).isEqualTo("APPROVED");
     }
 
     private static MockHttpServletRequestBuilder put(String url) {

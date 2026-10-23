@@ -18,7 +18,9 @@ import com.stockflow.fulfillment.internal.service.TransferPacks;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -80,9 +82,11 @@ class TransferPackController {
     @Operation(summary = "The internal label of a sealed transfer package (transfer, n of N, from / to warehouse, "
             + "weight, size, flags, contents, kit part); printing it makes an outdated label current again")
     @RequiresPermission(resource = FulfillmentResources.PACKING, action = Action.READ)
-    public ApiResponse<TransferPacks.Label> label(@PathVariable UUID packId, @PathVariable UUID packageId,
-                                                  @AuthenticatedUser CurrentUser actor) {
-        return ApiResponse.ok(packs.label(packId, packageId, actor));
+    public ResponseEntity<ApiResponse<TransferPacks.Label>> label(@PathVariable UUID packId,
+            @PathVariable UUID packageId, @AuthenticatedUser CurrentUser actor) {
+        // Never cached: a reprint must show the label as it is now (as the order label).
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(ApiResponse.ok(packs.label(packId,
+                packageId, actor)));
     }
 
     @GetMapping("/{packId}")

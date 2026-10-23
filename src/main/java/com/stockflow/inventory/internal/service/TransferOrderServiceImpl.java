@@ -484,6 +484,24 @@ class TransferOrderServiceImpl implements TransferOrders, TransferFulfillment {
      */
     private void rehold(TransferOrder order, Map<UUID, Integer> unitsByLine, Map<UUID, List<UUID>> cartonsByLine,
                         Instant at) {
+        try {
+            holdExactly(order, unitsByLine, cartonsByLine, at);
+        } catch (InsufficientStockException shortage) {
+            // Review of #164: the packer is told which SKU is short at the source, and by how much.
+            int shortfall = Math.max(0, shortage.requested() - shortage.available());
+            String source = prefixOf(order.fromWarehouseId());
+            BusinessException named = new BusinessException(ErrorCode.INSUFFICIENT_STOCK, ("Transfer %s: SKU %s needs %d "
+                    + "unit(s) at %s, only %d are free there - short by %d").formatted(order.number(), shortage.sku(),
+                    shortage.requested(), source, shortage.available(), shortfall),
+                    List.of(com.stockflow.common.api.FieldError.of("sku", shortage.sku()),
+                            com.stockflow.common.api.FieldError.of("shortfall", String.valueOf(shortfall))));
+            named.initCause(shortage);
+            throw named;
+        }
+    }
+
+    private void holdExactly(TransferOrder order, Map<UUID, Integer> unitsByLine,
+                             Map<UUID, List<UUID>> cartonsByLine, Instant at) {
         String sourcePrefix = prefixOf(order.fromWarehouseId());
         releaseHolds(order, at);
         record Hold(TransferLine line, StockItemId row, Quantity quantity) {

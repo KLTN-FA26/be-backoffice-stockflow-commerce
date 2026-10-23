@@ -2241,7 +2241,7 @@ add("inventory.cycle_count", id=uid("cc:cancel"), count_number="CC-20260928-0001
 
 
 # transfers
-def transfer(key, frm, to, status, d, items, reason="REBALANCING", damaged=0, carrier=None):
+def transfer(key, frm, to, status, d, items, reason="REBALANCING", damaged=0, carrier=None, delivery_mode="PARCEL"):
     tid = uid("to:" + key)
     t = at(d, 9)
     number = next_no("TO", d)
@@ -2259,7 +2259,10 @@ def transfer(key, frm, to, status, d, items, reason="REBALANCING", damaged=0, ca
         dispatched_at=t + timedelta(days=1) if dispatched else None,
         received_at=t + timedelta(days=3) if received else None,
         closed_at=t + timedelta(days=4) if status == "COMPLETED" else None, close_reason=None,
-        cancel_reason="Kho đích đã nhập đủ từ NCC" if status == "CANCELLED" else None, created_at=t)
+        cancel_reason="Kho đích đã nhập đủ từ NCC" if status == "CANCELLED" else None,
+        # SCRUM-287 PR T: transfers seeded as they were before load planning travel PARCEL (dispatched by hand), as
+        # V20261023000400 backfills existing rows; only the one below is a FULL_TRUCKLOAD waiting to be packed.
+        delivery_mode=delivery_mode, created_at=t)
     for n, (sku, qty) in enumerate(items, 1):
         lid = uid(f"to:{key}:{n}")
         dmg = damaged if n == 1 else 0
@@ -2536,12 +2539,46 @@ add("ordering.cart", id=uid("cart:converted"), customer_id=CUST[conv_o["cust"]][
     status="CONVERTED", currency="VND", converted_order_id=conv_o["id"], merged_into_cart_id=None,
     last_activity_at=conv_o["row"]["placed_at"], expires_at=None, created_at=conv_o["row"]["placed_at"] - timedelta(hours=1))
 
+# SCRUM-287 PR T (LP2-8): a full-truckload transfer waiting to be packed, its goods in two unopened cartons of 20 at
+# HN - repacked from loose stock by a completed move task - so the "ship the carton as it is" flow can be shown.
+s_c = find_stock("HN", min_free=40, skip=used); used.add(s_c.id)
+carton_bin = next(c for c in BINS["HN"][VAR[s_c.sku]["cls"]] if c != s_c.loc)
+carton_unit = uid("uom:" + s_c.sku + ":CTN20")
+POST.append(("procurement.supplier_items",
+             "INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base, "
+             "weight_kg, length_cm, width_cm, height_cm, default_purchase, active, default_shipping, created_by) "
+             f"SELECT {q(carton_unit)}, i.id, 'CTN20', 20, FALSE, 12.5, 60, 40, 40, FALSE, TRUE, FALSE, {q(BY)} "
+             f"FROM inventory.inventory_items i WHERE i.sku = {q(s_c.sku)};"))
+mt_carton = uid("mt:carton")
+add("warehouse.move_task", id=mt_carton, task_number=next_no("MT", date(2026, 10, 9)), warehouse_id=WH["HN"],
+    origin="MANUAL", reason="CONSOLIDATION", sku=s_c.sku, lot_number=None, from_location_id=LOC[s_c.loc]["id"],
+    to_location_id=LOC[carton_bin]["id"], requested_qty=40, picked_qty=40, placed_qty=40, status="COMPLETED",
+    priority=1, assigned_user_id=U["kho.hn1"], approved_by=None, started_at=at(date(2026, 10, 9), 9),
+    completed_at=at(date(2026, 10, 9), 10), note="Đóng 40 đơn vị vào 2 thùng 20 (LPN) cho lệnh chuyển kho",
+    receipt_line_id=None, created_at=at(date(2026, 10, 9), 8))
+s_c.on_hand -= 40
+for k in (1, 2):
+    lpn = f"LPN-SEED-CTN-{k:04d}"
+    carton = uid(f"spkg:{lpn}")
+    POST.append(("procurement.supplier_items",
+                 "INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, "
+                 "received_qty, location_code, status, unopened, goods_receipt_line_id, created_at, created_by) "
+                 f"SELECT {q(carton)}, {q(lpn)}, i.id, {q(carton_unit)}, 20, 20, {q(carton_bin)}, 'IN_STOCK', TRUE, "
+                 f"NULL, {q(at(date(2026, 10, 9), 10))}, {q(BY)} FROM inventory.inventory_items i "
+                 f"WHERE i.sku = {q(s_c.sku)};"))
+    row = Stock(s_c.sku, carton_bin, 20, s_c.received + timedelta(seconds=k), key=f"carton:{lpn}")
+    row.pkg = carton
+    move("MOVE", s_c.sku, 20, "MOVE_TASK", mt_carton, at(date(2026, 10, 9), 10), "kho.hn1", frm=s_c.loc,
+         to=carton_bin, fs="AVAILABLE", ts_="AVAILABLE")
+transfer("ftl", "HN", "BD", "APPROVED", date(2026, 10, 12), [(s_c.sku, 40)], reason="DEMAND",
+         delivery_mode="FULL_TRUCKLOAD")
+
 # ============================================================================ 11. stock rows and ledger
 for s in STOCK:
     assert 0 <= s.reserved <= s.on_hand, (s.sku, s.loc, s.on_hand, s.reserved)
     add("inventory.stock_item", id=s.id, sku=s.sku, location_code=s.loc, lot_number=s.lot, expiry_date=s.expiry,
         on_hand=s.on_hand, reserved=s.reserved, status=s.status, received_at=s.received, serial_number=None,
-        created_at=s.received)
+        stock_package_id=getattr(s, "pkg", None), created_at=s.received)
 for m in MOVES:
     ROWS.setdefault("inventory.stock_movement", []).append({**m, "created_by": BY})
 for issue in ISSUES:
