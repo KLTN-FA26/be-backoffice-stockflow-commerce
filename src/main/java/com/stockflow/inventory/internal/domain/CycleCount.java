@@ -217,59 +217,59 @@ public final class CycleCount extends AggregateRoot {
         return value == null || value.isBlank() ? null : value.trim();
     }
 
-    public UUID getId() {
+    public UUID id() {
         return id;
     }
 
-    public String getNumber() {
+    public String number() {
         return number;
     }
 
-    public UUID getWarehouseId() {
+    public UUID warehouseId() {
         return warehouseId;
     }
 
-    public CycleCountTrigger getTrigger() {
+    public CycleCountTrigger trigger() {
         return trigger;
     }
 
-    public CycleCountStatus getStatus() {
+    public CycleCountStatus status() {
         return status;
     }
 
-    public boolean isBlind() {
+    public boolean blind() {
         return blind;
     }
 
-    public UUID getAssignedUserId() {
+    public UUID assignedUserId() {
         return assignedUserId;
     }
 
-    public LocalDate getPlannedDate() {
+    public LocalDate plannedDate() {
         return plannedDate;
     }
 
-    public Instant getStartedAt() {
+    public Instant startedAt() {
         return startedAt;
     }
 
-    public Instant getCompletedAt() {
+    public Instant completedAt() {
         return completedAt;
     }
 
-    public String getNote() {
+    public String note() {
         return note;
     }
 
-    public Instant getCreatedAt() {
+    public Instant createdAt() {
         return createdAt;
     }
 
-    public List<CycleCountLine> getLines() {
+    public List<CycleCountLine> lines() {
         return List.copyOf(lines);
     }
 
-    public long getVersion() {
+    public long version() {
         return version;
     }
 }
