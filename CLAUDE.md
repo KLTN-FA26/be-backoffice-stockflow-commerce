@@ -245,6 +245,19 @@ hold by hand) and runs the same implementation, writing a `PICK` ledger row that
 in the repo calls it; picking never goes over HTTP. (The original design did — "fulfillment calls the
 consumption endpoint over HTTP" — and was replaced so the pick line and the deduction commit together.)
 
+### Cycle count — a thin document over the adjustment (SCRUM-146)
+
+The count lives in `inventory`: aggregate `CycleCount` (`PLANNED → IN_PROGRESS → COMPLETED`, `CANCELLED`)
+with `CountSlot` (a bin + SKU + lot, or one carton) and the pure `CountVariance` split in `internal/domain/`;
+planning in `CycleCountService`, counting and submission in `CycleCountCounting`. Counting re-reads the book
+quantity, so nothing is frozen while people count. `CycleCountCounting.submit` is one `@Transactional`
+method: count row `FOR UPDATE` → SKU advisory locks in sorted order → cartons `FOR UPDATE` (a carton line
+follows its carton to its current bin) → `COMPLETED` → `StockOperations.requestCountVariance` per differing
+line, which raises pending `COUNT_VARIANCE` adjustments through the SCRUM-145 four-eyes mechanism — a loose
+shortage split FEFO over the slot's rows (`CYCLE_COUNT_STALE` rolls the whole submission back), one
+adjustment per carton. Nothing posts here: review and posting are the adjustment's own `PENDING_APPROVAL →
+POSTED`, and a SHORT_PICK slot stays out of ATP until its line's adjustments are decided.
+
 ---
 
 ## 5. Known traps — do not reintroduce these
