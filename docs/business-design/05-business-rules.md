@@ -25,7 +25,7 @@ that a Kafka consumer bypasses. Rules that protect an invariant belong in the ag
 | Id | Rule | Enforced in | WBS |
 |---|---|---|---|
 | BR-PO-001 | A PO line quantity must meet the supplier's MOQ for that SKU. | `SupplierItem.orderQuantityViolations`, via `ProcurementServiceImpl.checkLines` (create and draft edit; SCRUM-78) | 3.1.4.2 |
-| BR-PO-002 | A PO may only be approved by someone whose approval limit is at least the PO total. | `PurchaseOrder.approve()` | 3.2.2.1 |
+| BR-PO-002 | A PO may only be approved by someone whose approval limit is at least the PO total, and not by whoever submitted it. A PO within the submitter's own limit is approved at submit (`autoApproved`, recording the limit used); a user with no limit has a limit of zero. The limit is the highest of the user's roles' rows in `procurement.approval_limits` in force today in the PO's currency. | `PurchaseOrder.approve()`, `PurchaseOrder.submitWithinLimit()`; `ck_purchase_orders_four_eyes` | 3.2.2.1 |
 | BR-PO-003 | Two POs to the same supplier, same SKU, same delivery date are flagged as possible duplicates. | `procurement-service` query on create | 3.2.8.2 |
 | BR-PO-004 | A PO cannot be amended once any receipt has been posted against it. | `PurchaseOrder.amend()` | 3.2.5.1 |
 | BR-RCP-001 | Received quantity may exceed the ordered quantity by at most the configured tolerance (default 5%); beyond that the receipt cannot be posted without warehouse-manager approval. | `GoodsReceipt.post()` | 3.3.8.1 |

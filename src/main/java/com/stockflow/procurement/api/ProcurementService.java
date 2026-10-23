@@ -34,10 +34,16 @@ public interface ProcurementService {
      */
     PurchaseOrderSummary reviseDraft(UUID purchaseOrderId, RevisePurchaseOrderCommand command);
 
-    /** DRAFT → PENDING_APPROVAL, freezing the order as a revision (SCRUM-114). */
+    /**
+     * DRAFT → PENDING_APPROVAL, freezing the order as a revision (SCRUM-114) - or straight to APPROVED when the total is
+     * within the submitter's own approval limit ({@code autoApproved}; kltn-docs 02 §4 step 7). No limit is zero.
+     */
     PurchaseOrderSummary submit(UUID purchaseOrderId, UUID submittedBy);
 
-    /** PENDING_APPROVAL → APPROVED. Four-eyes: {@code approverId} must not be who submitted it. */
+    /**
+     * PENDING_APPROVAL → APPROVED. Four-eyes: {@code approverId} must not be who submitted it
+     * (SELF_APPROVAL_NOT_ALLOWED), and the approver's own limit must cover the total (403 PO_APPROVAL_LIMIT_EXCEEDED).
+     */
     PurchaseOrderSummary approve(UUID purchaseOrderId, UUID approverId);
 
     /** PENDING_APPROVAL → DRAFT, with a reason. */
@@ -55,7 +61,10 @@ public interface ProcurementService {
     /** → CANCELLED with a reason, while nothing has been received. A confirmed order's supplier is told. */
     PurchaseOrderSummary cancel(UUID purchaseOrderId, UUID userId, String reason);
 
-    /** PARTIALLY_RECEIVED → CLOSED (SHORT_CLOSE): the rest is written off with a reason. */
+    /**
+     * PARTIALLY_RECEIVED → CLOSED (SHORT_CLOSE): the rest is written off with a reason. CONFIRMED → CLOSED
+     * (FORCE_CLOSE) when nothing was received and will not be (kltn-docs 02 §5); the reason is mandatory.
+     */
     PurchaseOrderSummary closeShort(UUID purchaseOrderId, UUID userId, String reason);
 
     /** RECEIVED → CLOSED (NORMAL). */

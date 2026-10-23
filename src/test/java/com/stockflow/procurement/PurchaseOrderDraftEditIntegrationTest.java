@@ -14,6 +14,7 @@ import com.stockflow.procurement.api.PurchaseOrderSummary;
 import com.stockflow.procurement.api.RevisePOLineCommand;
 import com.stockflow.procurement.api.RevisePurchaseOrderCommand;
 import com.stockflow.procurement.api.SupplierItemService;
+import com.stockflow.support.ApprovalLimitFixtures;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -201,7 +202,7 @@ class PurchaseOrderDraftEditIntegrationTest {
     @DisplayName("SCRUM-462: after a rejection a frozen line taken off the draft is WITHDRAWN, so the rejected revision keeps it")
     void editAfterRejection() {
         UUID submitter = tx.execute(s -> ReferenceRows.user(entityManager));
-        UUID approver = tx.execute(s -> ReferenceRows.user(entityManager));
+        UUID approver = tx.execute(s -> ApprovalLimitFixtures.approver(entityManager));
         PurchaseOrderSummary order = draft(DemoData.WAREHOUSE_HCM);
         procurement.submit(order.purchaseOrderId(), submitter);
         assertThat(codeOf(catchThrowable(() -> procurement.reviseDraft(order.purchaseOrderId(),

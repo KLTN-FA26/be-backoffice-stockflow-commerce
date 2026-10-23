@@ -113,7 +113,7 @@ class ProcurementPurchasabilityTest {
                 Clock.fixed(Instant.parse("2026-10-14T03:00:00Z"), ZoneOffset.UTC), suppliers,
                 mock(ApplicationEventPublisher.class), mock(NotificationService.class),
                 mock(PoDeliveryDecisionRepository.class), null, products, inventory, inventoryControl, warehouses,
-                mock(CurrentUserProvider.class), supplierItems);
+                mock(CurrentUserProvider.class), supplierItems, noLimits());
     }
 
     private CreatePurchaseOrderCommand create(String... skus) {
@@ -129,6 +129,13 @@ class ProcurementPurchasabilityTest {
         }
         return PurchaseOrder.draft("PO-D", supplierId, warehouseId, Money.VND, lines, LocalDate.parse("2026-10-14"),
                 LocalDate.parse("2026-10-20"), null, 30, 7);
+    }
+
+    /** Nobody has an approval limit: every submit waits for approval, which is what these tests were written against. */
+    private static ApprovalLimits noLimits() {
+        ApprovalLimits limits = mock(ApprovalLimits.class);
+        when(limits.limitOf(any(), any(), any())).thenReturn(Money.zero(Money.VND));
+        return limits;
     }
 
     private void verdicts(Object... skuAndVerdict) {

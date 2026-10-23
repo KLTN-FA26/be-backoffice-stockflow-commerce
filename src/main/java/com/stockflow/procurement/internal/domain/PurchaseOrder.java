@@ -24,7 +24,9 @@ import java.util.UUID;
  *
  * <p>The lifecycle is {@link PurchaseOrderStatus}'s (decision D4). What this class decides: the order
  * of the steps; that whoever approves did not submit (four-eyes, BR-PO-002, stated again by
- * {@code ck_purchase_orders_four_eyes}); that an order leaving DRAFT does so with a revision — the
+ * {@code ck_purchase_orders_four_eyes}) - except an order approved at submission within the submitter's own
+ * approval limit, which nobody else decides (kltn-docs 02 §4 step 7, {@link #submitWithinLimit}); that an
+ * approver's own limit covers the total ({@link #approve}); that an order leaving DRAFT does so with a revision — the
  * frozen copy of what was approved ({@code ck_purchase_orders_revision}); the delivery-date rules of
  * sending (#36); that the supplier's answer is final once given; and that only an order with nothing
  * received may be cancelled. Receiving is not here: a goods receipt moves CONFIRMED and
@@ -65,6 +67,8 @@ public final class PurchaseOrder extends AggregateRoot {
     private Instant submittedAt;
     private UUID approvedBy;
     private Instant approvedAt;
+    /** Approved at submission, within the submitter's own limit: nobody else decided it (docs 02 §4 step 7). */
+    private boolean autoApproved;
     private UUID confirmedBy;
     private Instant confirmedAt;
     private UUID closedBy;
@@ -90,7 +94,7 @@ public final class PurchaseOrder extends AggregateRoot {
                         LocalDate orderDate, LocalDate expectedAt, String note, int paymentTermDays,
                         int leadTimeDays, long revisionNo, UUID activeRevisionId, UUID pendingRevisionId,
                         UUID submittedBy, Instant submittedAt, UUID approvedBy, Instant approvedAt,
-                        UUID confirmedBy, Instant confirmedAt, UUID closedBy, Instant closedAt,
+                        boolean autoApproved, UUID confirmedBy, Instant confirmedAt, UUID closedBy, Instant closedAt,
                         CloseKind closeKind, String closeReason, String cancelReason,
                         SupplierConfirmationStatus supplierConfirmationStatus, Instant supplierRespondedAt,
                         String supplierReference, String supplierResponseNote, long version, Instant createdAt,
@@ -128,6 +132,7 @@ public final class PurchaseOrder extends AggregateRoot {
         this.submittedAt = s.submittedAt();
         this.approvedBy = s.approvedBy();
         this.approvedAt = s.approvedAt();
+        this.autoApproved = s.autoApproved();
         this.confirmedBy = s.confirmedBy();
         this.confirmedAt = s.confirmedAt();
         this.closedBy = s.closedBy();
@@ -157,7 +162,7 @@ public final class PurchaseOrder extends AggregateRoot {
         }
         return new PurchaseOrder(new State(PurchaseOrderId.newId(), poNumber, Type.STANDARD, null, supplierId,
                 warehouseId, PurchaseOrderStatus.DRAFT, currency, lines, orderDate, expectedAt, note, paymentTermDays,
-                leadTimeDays, 0, null, null, null, null, null, null, null, null, null, null, null, null, null,
+                leadTimeDays, 0, null, null, null, null, null, null, false, null, null, null, null, null, null, null,
                 SupplierConfirmationStatus.NOT_SENT, null, null, null, 0L, null, null, null, null));
     }
 
@@ -178,8 +183,8 @@ public final class PurchaseOrder extends AggregateRoot {
         }
         return new PurchaseOrder(new State(PurchaseOrderId.newId(), poNumber, Type.SUBCONTRACT, productionOrderId,
                 supplierId, warehouseId, PurchaseOrderStatus.DRAFT, currency, List.of(line), orderDate, expectedAt,
-                null, paymentTermDays, leadTimeDays, 0, null, null, null, null, null, null, null, null, null, null,
-                null, null, null, SupplierConfirmationStatus.NOT_SENT, null, null, null, 0L, null, null, null, null));
+                null, paymentTermDays, leadTimeDays, 0, null, null, null, null, null, null, false, null, null, null,
+                null, null, null, null, SupplierConfirmationStatus.NOT_SENT, null, null, null, 0L, null, null, null, null));
     }
 
     /** Line numbers of a new order: 1, 2, 3… in the order given. */
@@ -287,13 +292,61 @@ public final class PurchaseOrder extends AggregateRoot {
         this.revisionNo = revisionNo;
     }
 
-    /** PENDING_APPROVAL → APPROVED. BR-PO-002 four-eyes: the approver did not submit it. */
-    public void approve(UUID approverId, Instant now) {
-        requireCanTransitionTo(PurchaseOrderStatus.APPROVED);
+    /**
+     * Whether {@code limit} (an approval limit, in this order's currency) covers the order's total. A limit of zero
+     * or less covers nothing: "no limit configured" is zero, and an order of any size then needs someone else.
+     */
+    public boolean coveredBy(Money limit) {
+        return limit.amount().signum() > 0 && totalAmount().compareTo(limit) <= 0;
+    }
+
+    /**
+     * DRAFT → APPROVED at submission, the one way a draft reaches APPROVED (docs 02 §4 step 7 and §5: "Submit (dưới hạn
+     * mức)"; owner decision POLIMIT2): the total is within the submitter's own approval limit, so nobody else decides.
+     * The submitter is recorded as the approver and the order is flagged {@link #autoApproved()}, which is what lets
+     * {@code ck_purchase_orders_four_eyes} stand aside for exactly this case. Above the limit the order is
+     * {@link #submit submitted} to PENDING_APPROVAL instead.
+     */
+    public void submitWithinLimit(UUID userId, UUID revisionId, long revisionNo, Money limit, Instant now) {
+        if (status != PurchaseOrderStatus.DRAFT) {   // PENDING_APPROVAL → APPROVED is approve(), not a submission
+            throw new InvalidPurchaseOrderTransitionException(id, status, PurchaseOrderStatus.APPROVED);
+        }
+        if (!coveredBy(limit)) {
+            throw new BusinessException(ErrorCode.PO_APPROVAL_LIMIT_EXCEEDED,
+                    "Purchase order %s totals %s, above the %s limit; it needs someone else's approval"
+                            .formatted(poNumber, totalAmount(), limit));
+        }
+        this.status = PurchaseOrderStatus.APPROVED;
+        this.submittedBy = Objects.requireNonNull(userId, "userId");
+        this.submittedAt = Objects.requireNonNull(now, "now");
+        this.approvedBy = userId;
+        this.approvedAt = now;
+        this.autoApproved = true;
+        this.activeRevisionId = Objects.requireNonNull(revisionId, "revisionId");
+        this.pendingRevisionId = null;
+        this.revisionNo = revisionNo;
+    }
+
+    /**
+     * PENDING_APPROVAL → APPROVED. BR-PO-002 four-eyes: the approver did not submit it. And the approver's own limit
+     * covers the total (owner decision POLIMIT2): an order above it waits for someone with a bigger one.
+     *
+     * @param approverLimit the highest approval limit the approver holds in this order's currency; zero for none
+     */
+    public void approve(UUID approverId, Money approverLimit, Instant now) {
+        if (status != PurchaseOrderStatus.PENDING_APPROVAL) {
+            // DRAFT → APPROVED is legal only as submitWithinLimit; approving a draft by hand is not.
+            throw new InvalidPurchaseOrderTransitionException(id, status, PurchaseOrderStatus.APPROVED);
+        }
         Objects.requireNonNull(approverId, "approverId");
         if (approverId.equals(submittedBy)) {
             throw new BusinessException(ErrorCode.SELF_APPROVAL_NOT_ALLOWED,
                     "A purchase order is approved by someone other than who submitted it");
+        }
+        if (!coveredBy(approverLimit)) {
+            throw new BusinessException(ErrorCode.PO_APPROVAL_LIMIT_EXCEEDED,
+                    "Purchase order %s totals %s; your approval limit is %s".formatted(poNumber, totalAmount(),
+                            approverLimit));
         }
         this.status = PurchaseOrderStatus.APPROVED;
         this.approvedBy = approverId;
@@ -420,13 +473,19 @@ public final class PurchaseOrder extends AggregateRoot {
         this.revisionNo = revisionNo;
     }
 
-    /** PARTIALLY_RECEIVED → CLOSED (SHORT_CLOSE): the open remainder is written off with a reason. */
+    /**
+     * → CLOSED with a reason, the order not to be received any more (docs 02 §4 step 14, §5). From PARTIALLY_RECEIVED
+     * the open remainder is written off ({@link CloseKind#SHORT_CLOSE}); from CONFIRMED nothing was received at all,
+     * and it is a force close ({@link CloseKind#FORCE_CLOSE}). Either way the reason is mandatory.
+     */
     public void closeShort(String reason, UUID userId, Instant now) {
-        if (status != PurchaseOrderStatus.PARTIALLY_RECEIVED) {
-            throw new InvalidPurchaseOrderTransitionException(id, status, PurchaseOrderStatus.CLOSED);
-        }
+        CloseKind kind = switch (status) {
+            case PARTIALLY_RECEIVED -> CloseKind.SHORT_CLOSE;
+            case CONFIRMED -> CloseKind.FORCE_CLOSE;
+            default -> throw new InvalidPurchaseOrderTransitionException(id, status, PurchaseOrderStatus.CLOSED);
+        };
         requireReason(reason, 255);
-        close(CloseKind.SHORT_CLOSE, reason.trim(), userId, now);
+        close(kind, reason.trim(), userId, now);
     }
 
     /** RECEIVED → CLOSED (NORMAL): everything arrived; the order is done. */
@@ -500,6 +559,7 @@ public final class PurchaseOrder extends AggregateRoot {
     public Instant submittedAt() { return submittedAt; }
     public UUID approvedBy() { return approvedBy; }
     public Instant approvedAt() { return approvedAt; }
+    public boolean autoApproved() { return autoApproved; }
     public UUID confirmedBy() { return confirmedBy; }
     public Instant confirmedAt() { return confirmedAt; }
     public UUID closedBy() { return closedBy; }
