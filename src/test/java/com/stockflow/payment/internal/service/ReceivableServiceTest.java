@@ -5,7 +5,6 @@ import com.stockflow.contracts.OrderCancelled;
 import com.stockflow.contracts.OrderDelivered;
 import com.stockflow.contracts.PaymentCaptured;
 import com.stockflow.payment.api.OrderPayables;
-import com.stockflow.payment.api.PayableOrder;
 import com.stockflow.payment.internal.domain.CustomerTransfer;
 import com.stockflow.payment.internal.domain.Receivable;
 import com.stockflow.payment.internal.domain.ReceivableBook;
