@@ -49,14 +49,16 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * and transfers kept apart; picking not cancelled once goods left, nor while a vehicle loads; an estimate of a
  * transfer; guards and scope.
  *
- * <p>Its own context, hence its own database.</p>
+ * <p>Shares {@link FtlDispatchIntegrationTest}'s context (the same configuration, one application context fewer for the
+ * build's heap - CI ran out of it with one context per class); every fixture here is its own (SKUs, transfers,
+ * cartons), and each test compares stock with what it was before.</p>
  */
 @IntegrationTest
 @Import({PostgresContainer.class, RedisContainer.class})
 @AutoConfigureMockMvc
 @TestPropertySource(properties = {"stockflow.security.enabled=true", "stockflow.catalog.projection-retry-ms=3600000",
         "stockflow.fulfillment.packing.dim-divisor=6000", "stockflow.fulfillment.load-planning.solver-budget=PT2S",
-        "stockflow.test.context=transfer-load-planning"})
+        "stockflow.test.context=ftl-dispatch"})
 class TransferLoadPlanningIntegrationTest {
 
     private static final String SOFA = "SOFA-3S-GREY";
