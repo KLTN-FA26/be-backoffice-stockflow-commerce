@@ -66,7 +66,11 @@ public record CustomerOrderDetailResponse(
 
         @Schema(description = "G4-2a: the shipments handed over to a carrier, oldest first (kltn-docs 09 BR-05); empty "
                 + "until the first handover. Nothing is tracked between handover and the outcome staff record")
-        List<Shipment> shipments
+        List<Shipment> shipments,
+
+        @Schema(example = "PARCEL", description = "SCRUM-209: how the order travels, PARCEL or FULL_TRUCKLOAD, as the "
+                + "coordinator set it; null when not set. Shipments carry their own mode too")
+        String deliveryMode
 ) {
 
     @Schema(name = "CustomerOrderShipment")

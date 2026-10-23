@@ -14,7 +14,10 @@ import java.util.UUID;
  * the detail.
  */
 @Schema(name = "Receivable")
-public record ReceivableResponse(UUID receivableId, UUID orderId, UUID customerId,
+public record ReceivableResponse(UUID receivableId, UUID orderId,
+                                 @Schema(example = "SO-20261021-000123",
+                                         description = "SCRUM-193: the number of the order it is for; null when not known")
+                                 String orderNumber, UUID customerId,
                                  @Schema(example = "CREDIT_ORDER",
                                          allowableValues = {"CREDIT_ORDER", "CANCELLATION_FEE", "DEPOSIT_BALANCE"})
                                  String kind,

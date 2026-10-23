@@ -32,6 +32,10 @@ public class ReceivableJpaEntity extends BaseEntity {
     @Column(name = "shipment_id", updatable = false)
     private UUID shipmentId;
 
+    /** SCRUM-193: the number of the order it is for, copied from the order event; null on a row older than the column. */
+    @Column(name = "order_number", updatable = false, length = 32)
+    private String orderNumber;
+
     /** G2-3: CARRIER for a deposit balance the carrier collected on delivery. */
     @Enumerated(EnumType.STRING)
     @Column(name = "collector", nullable = false, length = 16, updatable = false)
@@ -82,6 +86,13 @@ public class ReceivableJpaEntity extends BaseEntity {
     }
 
     public String getKind() { return kind; }
+
+    public ReceivableJpaEntity ofOrderNumber(String number) {
+        this.orderNumber = number;
+        return this;
+    }
+
+    public String getOrderNumber() { return orderNumber; }
 
     public ReceivableJpaEntity ofShipment(UUID shipment) {
         this.shipmentId = shipment;

@@ -9,6 +9,7 @@ import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.order.api.CancellationReasonCode;
+import com.stockflow.order.api.DeliveryMode;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
@@ -16,6 +17,7 @@ import com.stockflow.order.api.PlaceOrderCommand;
 import com.stockflow.order.internal.domain.CreditChecks;
 import com.stockflow.order.internal.domain.ProductionRecords;
 import com.stockflow.order.internal.service.CustomerOrders;
+import com.stockflow.order.internal.service.DeliveryModes;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.SecuredIntegrationTest;
@@ -67,6 +69,7 @@ class CustomerOrderPortalIntegrationTest {
     @MockitoBean JwtDecoder decoder;
     @Autowired OrderService orders;
     @Autowired CustomerOrders customerOrders;
+    @Autowired DeliveryModes deliveryModes;
     @Autowired ProductionRecords productionRecords;
     @Autowired CreditChecks creditChecks;
     @Autowired JdbcTemplate jdbc;
@@ -338,6 +341,7 @@ class CustomerOrderPortalIntegrationTest {
                 .andExpect(jsonPath("$.data.total").value(30_000_000))
                 .andExpect(jsonPath("$.data.currency").value("VND"))
                 .andExpect(jsonPath("$.data.deliveryState").value("NOT_SHIPPED"))
+                .andExpect(jsonPath("$.data.deliveryMode").value("PARCEL"))
                 .andExpect(jsonPath("$.data.payment.status").value("UNPAID"))
                 .andExpect(jsonPath("$.data.payment.paidAmount").value(0))
                 .andExpect(jsonPath("$.data.lines.length()").value(2))
@@ -355,6 +359,51 @@ class CustomerOrderPortalIntegrationTest {
         assertThat(body).doesNotContain("reservationIds").doesNotContain("designChecksum").doesNotContain("createdBy")
                 .doesNotContain("lastModifiedBy").doesNotContain("warehouseId").doesNotContain("contactEmail")
                 .doesNotContain("contactPhone").doesNotContain("customerId");
+    }
+
+    @Test
+    @DisplayName("SCRUM-209: the detail carries the order-level delivery mode the coordinator set")
+    void detailDeliveryMode() throws Exception {
+        deliveryModes.change(oneLine.orderId(), DeliveryMode.FULL_TRUCKLOAD, "whole truck", staffUser);
+
+        mvc.perform(get("/api/v1/orders/me/" + oneLine.orderId()).header("Authorization", customerA()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.deliveryMode").value("FULL_TRUCKLOAD"));
+        // Another order is untouched, and another customer still cannot read it.
+        mvc.perform(get("/api/v1/orders/me/" + twoLines.orderId()).header("Authorization", customerA()))
+                .andExpect(jsonPath("$.data.deliveryMode").value("PARCEL"));
+        mvc.perform(get("/api/v1/orders/me/" + oneLine.orderId()).header("Authorization", token(userB, "CUSTOMER")))
+                .andExpect(status().isNotFound());
+    }
+
+    private void receivable(UUID customer, UUID order, String orderNumber, int amount) {
+        tx.executeWithoutResult(t -> jdbc.update("""
+                INSERT INTO payment.receivable (id, order_id, customer_id, kind, amount, paid_amount, currency,
+                                                issued_at, due_date, status, order_number)
+                VALUES (?, ?, ?, 'CREDIT_ORDER', ?, 0, 'VND', NOW(), CURRENT_DATE + 30, 'OPEN', ?)""",
+                Identifiers.newId(), order, customer, amount, orderNumber));
+    }
+
+    @Test
+    @DisplayName("SCRUM-193: my receivables show the order number (null for a row older than the column), own rows only")
+    void myReceivablesCarryOrderNumber() throws Exception {
+        receivable(customerA, twoLines.orderId(), twoLines.orderNumber(), 1_000_000);
+        receivable(customerA, oneLine.orderId(), null, 2_000_000);
+        receivable(customerB, ofB.orderId(), ofB.orderNumber(), 3_000_000);
+
+        var body = mvc.perform(get("/api/v1/receivables/me").header("Authorization", customerA()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items.length()").value(2))
+                .andExpect(jsonPath("$.data.items[?(@.orderId == '" + twoLines.orderId() + "')].orderNumber")
+                        .value(org.hamcrest.Matchers.contains(twoLines.orderNumber())))
+                .andExpect(jsonPath("$.data.items[?(@.orderId == '" + oneLine.orderId() + "')].orderNumber")
+                        .isEmpty())   // null is omitted from the JSON
+                .andReturn().getResponse().getContentAsString();
+        assertThat(body).doesNotContain(ofB.orderNumber());
+
+        mvc.perform(get("/api/v1/receivables/me").header("Authorization", token(userB, "CUSTOMER")))
+                .andExpect(jsonPath("$.data.items.length()").value(1))
+                .andExpect(jsonPath("$.data.items[0].orderNumber").value(ofB.orderNumber()));
     }
 
     @Test
