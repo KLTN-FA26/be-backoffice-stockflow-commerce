@@ -17,9 +17,11 @@ import java.util.UUID;
 class PaymentServiceImpl implements PaymentService {
 
     private final ReceivableBook book;
+    private final CompanyBankProperties bank;
 
-    PaymentServiceImpl(ReceivableBook book) {
+    PaymentServiceImpl(ReceivableBook book, CompanyBankProperties bank) {
         this.book = book;
+        this.bank = bank;
     }
 
     @Override
@@ -35,5 +37,14 @@ class PaymentServiceImpl implements PaymentService {
         java.math.BigDecimal collected = book.collectedFor(orderId);
         return new com.stockflow.payment.api.OrderLedger(collected,
                 collected.subtract(book.collectedOnReceivablesOf(orderId)).max(java.math.BigDecimal.ZERO));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public java.util.Optional<com.stockflow.payment.api.CompanyBankAccount> companyBankAccount() {
+        return bank.configured()
+                ? java.util.Optional.of(new com.stockflow.payment.api.CompanyBankAccount(bank.bankName().strip(),
+                        bank.accountNumber().strip(), bank.accountName().strip()))
+                : java.util.Optional.empty();
     }
 }

@@ -593,6 +593,8 @@ public enum ErrorCode {
     STORAGE_ERROR("File storage is unavailable", 503),
     /** No portal activation address is configured, so no invitation link can be built. */
     PORTAL_INVITATION_UNAVAILABLE("Portal invitations cannot be sent right now", 503),
+    /** The company bank account customers transfer to is not configured for this deployment (SCRUM-193). */
+    TRANSFER_INSTRUCTIONS_UNAVAILABLE("Transfer details cannot be shown right now", 503),
     /** The caller's permissions could not be looked up (ADR-0008). The token itself may be fine,
      *  which is why this is a 503 and not a 401 that would sign the user out. */
     AUTHORIZATION_UNAVAILABLE("Permissions cannot be checked right now, please retry", 503);

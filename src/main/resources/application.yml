@@ -434,6 +434,15 @@ stockflow:
     alert-reconcile-cron: "0 30 1 * * *"
     expiry-sweep-cron: "0 0 2 * * *"
 
+  payment:
+    # The company's bank account a customer transfers to (SCRUM-193, kltn-docs 15 §4.1 step 1). Blank here on purpose and
+    # in prod: GET /orders/me/{id}/transfer-instructions answers 503 TRANSFER_INSTRUCTIONS_UNAVAILABLE until all three
+    # are set per deployment, so a customer is never shown a made-up account. local, dev and test carry a demo one.
+    company-bank:
+      bank-name: ${COMPANY_BANK_NAME:}
+      account-number: ${COMPANY_BANK_ACCOUNT_NUMBER:}
+      account-name: ${COMPANY_BANK_ACCOUNT_NAME:}
+
   customer:
     # Where the portal invitation e-mail sends the customer's contact (SCRUM-450); the token is
     # appended as a URL fragment, which browsers never send to a server. Blank switches invitations
