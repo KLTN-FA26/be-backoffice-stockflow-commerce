@@ -11,13 +11,15 @@ import java.time.LocalDate;
 import java.util.UUID;
 
 /**
- * JPA mapping of a daily sales summary (table {@code reporting.sales_daily_summary}). STARTER ENTITY.
+ * JPA mapping of a daily sales summary (table {@code reporting.sales_daily_summary}).
  *
- * <p>A read model projected from order/payment events — not a source of truth.</p>
+ * <p>A read model projected from order events — not a source of truth. Written with SQL upserts by
+ * {@code SalesRollupLedgerAdapter} (an increment, never read-modify-write); this mapping describes the row.</p>
  */
 @Entity
 @Table(name = "sales_daily_summary", schema = "reporting",
-        uniqueConstraints = @UniqueConstraint(name = "uk_sales_daily_summary_day", columnNames = "day"))
+        uniqueConstraints = @UniqueConstraint(name = "uk_sales_daily_summary_day_currency",
+                columnNames = {"day", "currency"}))
 public class SalesDailySummaryJpaEntity extends BaseEntity {
 
     @Column(name = "day", nullable = false)
