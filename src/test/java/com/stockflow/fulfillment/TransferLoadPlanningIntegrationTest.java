@@ -30,7 +30,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
@@ -60,6 +60,17 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "stockflow.fulfillment.packing.dim-divisor=6000", "stockflow.fulfillment.load-planning.solver-budget=PT2S",
         "stockflow.test.context=ftl-dispatch"})
 class TransferLoadPlanningIntegrationTest {
+
+    /**
+     * This class shares its context, and so its database, with FtlDispatchIntegrationTest: every number a fixture
+     * writes into a unique column comes from a UUID or this sequence, never a short random draw that can repeat.
+     */
+    private static final AtomicLong SEQUENCE = new AtomicLong();
+
+    /** {@code length} upper-case hex characters of a fresh UUID (at most 32), for unique business numbers. */
+    private static String unique(int length) {
+        return UUID.randomUUID().toString().replace("-", "").substring(0, length).toUpperCase(Locale.ROOT);
+    }
 
     private static final String SOFA = "SOFA-3S-GREY";
     private static final String SOFA_BARCODE = "8930000000011";
@@ -109,7 +120,7 @@ class TransferLoadPlanningIntegrationTest {
                 UUID.class);
         ghn = jdbc.queryForObject("SELECT id FROM fulfillment.carrier WHERE code = 'GHN'", UUID.class);
         // A SKU received by the carton of 10: the carton unit says 120 x 100 x 100 cm, 1200 kg (LP2-8).
-        cartonSku = "TCTN-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
+        cartonSku = "TCTN-" + unique(12);
         cartonUnit = Identifiers.newId();
         tx.executeWithoutResult(s -> {
             UUID product = Identifiers.newId();
@@ -135,7 +146,7 @@ class TransferLoadPlanningIntegrationTest {
                 INSERT INTO warehouse.warehouse (id, name, status, prefix, address, map_unit, map_width, map_height,
                                                  version, created_at)
                 VALUES (?, ?, 'ACTIVE', ?, '1 Destination Road', 'M', 50, 50, 0, NOW())""", id, name,
-                "T" + UUID.randomUUID().toString().substring(0, 5).toUpperCase(Locale.ROOT));
+                "T" + unique(9));
         return id;
     }
 
@@ -179,7 +190,7 @@ class TransferLoadPlanningIntegrationTest {
 
     /** Loose sofas on the shelf, and one unopened carton of 10 of the carton SKU (#129) plus 5 loose ones before it. */
     private String stock() {
-        String lpn = "LPN-" + cartonSku + "-" + ThreadLocalRandom.current().nextInt(1_000_000);
+        String lpn = "LPN-" + cartonSku.substring("TCTN-".length()) + "-" + SEQUENCE.incrementAndGet();
         tx.executeWithoutResult(s -> {
             jdbc.update("""
                     INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version,
@@ -216,7 +227,7 @@ class TransferLoadPlanningIntegrationTest {
                     INSERT INTO inventory.transfer_order (id, transfer_number, from_warehouse_id, to_warehouse_id,
                         status, reason, approved_by, approved_at, delivery_mode, version, created_at)
                     VALUES (?, ?, ?, ?, 'APPROVED', 'REBALANCING', ?, NOW(), ?, 0, NOW())""", id,
-                    "TO-20991231-%04d".formatted(ThreadLocalRandom.current().nextInt(10_000)), HCM, destination,
+                    "TO-T287-" + unique(16), HCM, destination,
                     approver, deliveryMode);
             jdbc.update("""
                     INSERT INTO inventory.transfer_order_line (id, transfer_order_id, line_no, sku, requested_qty)
@@ -649,7 +660,7 @@ class TransferLoadPlanningIntegrationTest {
                 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
                     currency, placed_at, version, created_at, paid_amount, paid_in_full_at)
                 VALUES (?, ?, ?, ?, 'CONFIRMED', 1, 'VND', NOW(), 0, NOW(), 1, NOW())""", order,
-                "SO-20991230-%06d".formatted(ThreadLocalRandom.current().nextInt(1_000_000)), DemoData.CUSTOMER_ID,
+                "SO-T287-" + unique(16), DemoData.CUSTOMER_ID,
                 UUID.randomUUID()));
         return order;
     }
