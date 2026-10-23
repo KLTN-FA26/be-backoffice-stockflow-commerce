@@ -254,9 +254,12 @@ quantity, so nothing is frozen while people count. `CycleCountCounting.submit` i
 method: count row `FOR UPDATE` → SKU advisory locks in sorted order → cartons `FOR UPDATE` (a carton line
 follows its carton to its current bin) → `COMPLETED` → `StockOperations.requestCountVariance` per differing
 line, which raises pending `COUNT_VARIANCE` adjustments through the SCRUM-145 four-eyes mechanism — a loose
-shortage split FEFO over the slot's rows (`CYCLE_COUNT_STALE` rolls the whole submission back), one
-adjustment per carton. Nothing posts here: review and posting are the adjustment's own `PENDING_APPROVAL →
-POSTED`, and a SHORT_PICK slot stays out of ATP until its line's adjustments are decided.
+shortage split over the slot's rows, free units first then held ones, each FEFO (`CYCLE_COUNT_STALE` rolls
+the whole submission back), one adjustment per carton. Nothing posts here: review and posting are the
+adjustment's own `PENDING_APPROVAL → POSTED`, and a SHORT_PICK slot stays out of ATP until its line's
+adjustments are decided. A slot with a pending `COUNT_VARIANCE` adjustment is busy — for new counts and for
+short picks, which reuse the count holding it (`CycleCountRepositoryAdapter.BUSY`, one predicate for
+`claim` and `findHolding`).
 
 ---
 

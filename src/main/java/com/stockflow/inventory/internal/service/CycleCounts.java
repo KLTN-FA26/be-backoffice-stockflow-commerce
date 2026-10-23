@@ -13,9 +13,14 @@ import java.util.UUID;
  * SCRUM-145, and sent for a recount when the manager doubts a figure. The blind recounts a short pick opens (docs
  * 04c X-SHORT step 03) are counted and submitted the same way.
  *
- * <p>The blind rule holds on every answer: for a caller who may not decide counts, a blind count carries no
- * expected quantity, no note and no adjustments, before or after submission - the variance would give the book
- * quantity away, and a counter who knows what to find finds it.</p>
+ * <p>The count screen never shows the book quantity to a caller who may not decide counts: on every answer here a
+ * blind count carries no expected quantity, no note and no adjustments for them, before or after submission - the
+ * variance would give the book quantity away, and a counter who knows what to find finds it. The list carries no
+ * lines at all, and no variance tally for them.</p>
+ *
+ * <p>That is the count screen, not the system: whoever holds {@code READ} on stock items, stock adjustments or the
+ * stock ledger still sees quantities there. Restricting those while a blind count is open is an owner decision
+ * (final review I4), not something this interface does.</p>
  *
  * <p>Inside {@code internal}: only this module's web layer reads it.</p>
  */

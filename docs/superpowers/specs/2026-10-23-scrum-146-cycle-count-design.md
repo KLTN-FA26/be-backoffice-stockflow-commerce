@@ -80,15 +80,24 @@ PLANNED ──first count entered──▶ IN_PROGRESS ──submit (every line 
     a physical count counts what is on the shelf, damaged and quarantined included;
   - one **carton line** per `IN_STOCK` carton in scope.
   `expected_qty` is filled at planning and overwritten when the line is counted (§5).
-- A slot (bin, SKU, lot) or carton already on another open count is **skipped and listed** in the response
-  (`skipped: [...]`), so two counts can never raise adjustments for the same stock. Slots are claimed under
-  the same advisory lock `findOpenFor` uses (seed 703), taken in sorted key order.
+- A **busy** slot (bin, SKU, lot) or carton is **skipped and listed** in the response (`skipped: [...]`), so two
+  counts can never raise adjustments for the same stock. Busy: on another open count, or on a `COMPLETED` one
+  whose `COUNT_VARIANCE` adjustment of that line is still `PENDING_APPROVAL` (approving both would post the
+  difference twice; once it is decided the slot is free, which is what lets a rejected line be recounted).
+  Slots are claimed under the same advisory lock `findHolding` uses (seed 703), taken in sorted key order, and
+  both read the one busy predicate (`CycleCountRepositoryAdapter.BUSY`). A carton is one slot whatever bin it is
+  recorded at: slots are compared by their lock key (the package alone), not by record equality.
 - An empty result is `422 CYCLE_COUNT_EMPTY_SCOPE`. More than
-  `stockflow.inventory.cycle-count.max-lines` (default 500) is `422 CYCLE_COUNT_TOO_LARGE`.
+  `stockflow.inventory.cycle-count-max-lines` (default 500) is `422 CYCLE_COUNT_TOO_LARGE`.
 - The assignee, when given, must be an active staff member of that warehouse holding `WAREHOUSE_STAFF` or
   `WAREHOUSE_MANAGER` (`IdentityService.assignableUsers`, as fulfillment's task assignment does).
   `GET /cycle-counts/assignees?warehouseId=` returns that list for the picker.
-- `trigger_type = MANUAL`. SHORT_PICK counts keep being opened by `PickConsumption` as today.
+- `trigger_type = MANUAL`. SHORT_PICK counts keep being opened by `PickConsumption.requestRecount`, one per slot
+  (bin, SKU and lot, or the carton a carton row belongs to): a short pick on a busy slot reuses the count holding
+  it, whatever its trigger (`created = false`), instead of opening a second count of the same stock. Its line
+  expects the slot's book quantity (`bookQuantity`, every loose row of the slot or the carton's rows), as a
+  plan's does.
+- The plan's answer is blinded as `GET /{id}` is: whoever holds `APPROVE` sees the books of what they planned.
 
 `PUT /{id}/assignment` (`CREATE`) changes the assignee while the count is `PLANNED`.
 
@@ -100,22 +109,32 @@ may. Anyone else gets `403 CYCLE_COUNT_NOT_ASSIGNEE`.
 | Endpoint | Body | Effect |
 |---|---|---|
 | `PUT /{id}/lines/{lineId}/count` | `{ "countedQty": 37 }` — or, for an unopened carton, `{ "present": true }` | Records who, when, how many, and re-reads the book quantity into `expected_qty` (D3). Repeating it overwrites all four until submission. First entry moves the count to `IN_PROGRESS`. |
-| `POST /{id}/lines` | `{ "locationCode", "sku", "lotNumber", "countedQty" }` or `{ "lpn", "countedQty" }` | Adds a found line. Refused with `CYCLE_COUNT_UNKNOWN_LAYER` when the bin holds no row of that SKU and lot (D6), with `STOCK_PACKAGE_WRONG_LOCATION` for a carton recorded elsewhere, with `CYCLE_COUNT_SLOT_BUSY` when another open count has it. A LOST carton is accepted: that is how it is found again. |
+| `POST /{id}/lines` | `{ "locationCode", "sku", "lotNumber", "countedQty" }` or `{ "locationCode", "lpn", "countedQty" }` | Adds a found line. `locationCode` is always required: for a carton it is the bin it was scanned in (`400 VALIDATION_FAILED` without it). Refused with `CYCLE_COUNT_UNKNOWN_LAYER` when the bin holds no row of that SKU and lot (D6), with `STOCK_PACKAGE_WRONG_LOCATION` for a carton recorded elsewhere, with `CYCLE_COUNT_SLOT_BUSY` when the slot is busy (§4). A LOST carton is accepted: that is how it is found again. |
 | `POST /{id}/submission` | — | §6. `409 CYCLE_COUNT_LINE_NOT_COUNTED` while any line has no count. |
 
 - **Book quantity** of a loose line: the sum of `on_hand` over the loose rows of that (bin, SKU, lot), read
   `FOR SHARE` so it is a committed value. Of a carton line: the sum over the carton's rows
   (`inventory.stock_package_balance`).
-- `{ "present": true }` on an unopened carton records `countedQty = expected_qty` (the count at receipt is
-  trusted, #125); `false` records `0`. On an opened carton `present` is refused: count it.
+- `{ "present": true }` on an unopened carton records `countedQty = received_qty` (the count at receipt is
+  trusted, #125; for a sealed carton in stock it equals the book quantity); `false` records `0`. On an opened
+  carton `present` is refused: count it. A LOST carton is never unopened (`lose()` clears the flag), so it is
+  always counted in units.
+- **Carton lines follow their carton.** A carton moved whole to another bin of the same warehouse since planning
+  is counted where it is: counting and submission move the line to the carton's current bin, and the variance
+  names that bin. A carton that left the warehouse is `STOCK_PACKAGE_WRONG_LOCATION`.
 - A carton counted above what was counted into it at receipt (`received_qty`) is refused
   (`422 STOCK_PACKAGE_OVERFILLED`): the database never lets a carton hold more (`V20261022000100` rule 5), and
   the extra units are loose stock — a loose line of their own.
 - **Lock order**, the same everywhere stock is touched (#125): cycle-count row `FOR UPDATE` → SKU advisory lock
   → `stock_package FOR UPDATE` → stock rows by id.
 
-Reads: `GET /{id}` is new; the list stays as it is. Whoever lacks `APPROVE` never sees `expected_qty`, the note,
-or the adjustments of a blind count, before or after submission — the delta would give the book quantity away.
+Reads: `GET /{id}` is new and carries the lines. The list returns count headers only, with `lineCount`,
+`countedCount` and — for whoever holds `APPROVE` — `varianceCount` (counted lines that differ from the books);
+it never carries lines, so a page stays the size of the page. On the count screen, whoever lacks `APPROVE`
+never sees `expected_qty`, the note, or the adjustments of a blind count, before or after submission — the
+delta would give the book quantity away. **Limitation:** that is the count screen only. `READ` on stock items,
+stock adjustments and the stock ledger still shows quantities; restricting those while a count is open is an
+owner decision, not part of this design.
 
 ## 6. Submission, adjustments, approval, recount (SCRUM-164)
 
@@ -123,9 +142,9 @@ or the adjustments of a blind count, before or after submission — the delta wo
 
 | Line | `delta` | Adjustment(s) requested, `reason = COUNT_VARIANCE`, `cycle_count_line_id` set, requested by the submitter |
 |---|---|---|
-| loose | `> 0` | One, on the most recently received loose row of the slot. |
-| loose | `< 0` | One per row, each at most that row's `on_hand`, rows taken in FEFO order (the order a picker takes them). A shortage larger than what the slot holds *now* means stock left after the line was counted: submission is refused with `409 CYCLE_COUNT_STALE` naming the line, and the counter counts it again. |
-| carton | `≠ 0` | **One** per carton, `stock_package_id` set; approval spreads it over the carton's rows (§ below). |
+| loose | `> 0` | One, on the most recently received loose row of the slot. For a FIFO SKU, whose layers are never raised (`inventory.enforce_sku_policy`), approval posts it into a **new layer** beside that row, received at approval: found units have no provable receipt and must not be as old as the layer, first out. FEFO and unconfigured SKUs write the named row up. |
+| loose | `< 0` | One per row, each at most that row's `on_hand`. Free units (`on_hand − reserved`) are taken first, rows in FEFO order (the order a picker takes them); only then held units, again in FEFO order — writing a held unit down while a free one stands on the books would ask for an adjustment approval refuses. A shortage larger than what the slot holds *now* (held or not) means stock left after the line was counted: submission is refused with `409 CYCLE_COUNT_STALE`, and the counter counts it again. Holds that move between submission and approval are refused at approval (below). |
+| carton | `≠ 0` | **One** per carton, `stock_package_id` set; approval spreads it over the carton's rows (§ below). A carton emptied (`CONSUMED`) after it was counted makes submission `409 CYCLE_COUNT_STALE` naming the line; a recount of such a carton is refused the same way. |
 | any | `0` | None. |
 
 Then the count is `COMPLETED`. A loose adjustment names its row by `received_at`, as SCRUM-145 already does; a
@@ -140,7 +159,8 @@ maps `stock_package_id`. A loose adjustment behaves exactly as today (`requireLo
 adjustment takes the carton path, in the #125 lock order (SKU, carton, its rows by id):
 
 - LOST and written up → `found()` first, then the units go onto its first row (stock rows are never deleted at
-  zero, so a LOST carton keeps the row to write back into);
+  zero, so a LOST carton keeps the row to write back into). A carton write-up always refills the carton's own
+  row, FIFO or not — never a new layer: the carton is the identity of its units;
 - written down → taken from its rows in id order, each at most what is not reserved; a shortfall that would cut
   into a hold is refused as for loose stock (below);
 - then, by what is left: nothing left after a `COUNT_VARIANCE` → `lose()` (a count that finds nothing found the
@@ -153,7 +173,9 @@ A count variance is requested through a new `StockOperations.requestCountVarianc
 with the slot already chosen, so the (SKU, location, lot) ambiguity `findOne` refuses never arises.
 
 **Approval** stays where it is: the manager approves or rejects each adjustment on the existing adjustment
-screen (FE #26). No new approval endpoint. A shortage that would cut into reserved units is refused by
+screen (FE #26). No new approval endpoint. A `COUNT_VARIANCE` adjustment is never withdrawn, not even by the
+submitter (`409 COUNT_VARIANCE_NOT_WITHDRAWABLE`): withdrawn, it would leave a completed count whose variance
+nobody decided. A typed-in adjustment request cannot claim `COUNT_VARIANCE` (`400 VALIDATION_FAILED`). A shortage that would cut into reserved units is refused by
 `StockItem.adjustBy` as today (`InsufficientStockException`): the manager reallocates or releases the holds first
 (X-SHORT reallocation), then approves. A customer's hold is never cancelled silently by a count.
 
@@ -161,9 +183,12 @@ screen (FE #26). No new approval endpoint. A shortage that would cut into reserv
 `COUNT_VARIANCE` adjustment was rejected: sets `recount_required` on those lines and opens a new blind `MANUAL`
 count with just those slots and cartons, noted "Recount of CC-…". Returns the new count.
 
-**SHORT_PICK freeze (D7).** `Recounts.frozen` also holds back a slot of a `COMPLETED` SHORT_PICK count while one of
-its line's `COUNT_VARIANCE` adjustments is `PENDING_APPROVAL`. Otherwise, between submission and approval, the
-system would promise again exactly the units a picker could not find.
+**SHORT_PICK freeze (D7).** `CycleCountRepository.frozen` also holds back a slot of a `COMPLETED` SHORT_PICK count
+while one of its line's `COUNT_VARIANCE` adjustments is `PENDING_APPROVAL`. Otherwise, between submission and
+approval, the system would promise again exactly the units a picker could not find. It also freezes the free units
+of any slot with a pending **negative** `COUNT_VARIANCE` adjustment, whatever the count's trigger: a short pick on
+such a slot reuses that (possibly MANUAL) count, so the freeze must not depend on the trigger. Accepted gap: a short
+pick that reuses an *open* MANUAL count leaves the slot unfrozen until that count is submitted.
 
 ## 7. Code shape
 
@@ -173,11 +198,11 @@ All in `inventory`; no new module dependency (`identity :: api` and `warehouse :
 |---|---|
 | `domain` | New aggregate `CycleCount` (lines, `plan`, `count`, `addLine`, `submit`, `cancel`, `requireAssignee`) with `CycleCountLine`, `CycleCountStatus`, `CycleCountRepository` port. The pure variance split of §6 as `CountVariance` (no Spring), unit-tested on its own. `Recounts` is folded into the repository port; `CycleCount.shortPick(...)` replaces `openShortPick`. `StockAdjustment` gains `stockPackageId`, `cycleCountLineId`. |
 | `entity` | `CycleCountJpaEntity`, `CycleCountLineJpaEntity` (`EnumType.STRING`, `BaseEntity`). `StockAdjustmentJpaEntity` maps `stock_package_id`. |
-| `repository` | `CycleCountRepositoryAdapter` + mapper; `findOpenFor`, `frozen` and scope generation stay native SQL. |
+| `repository` | `CycleCountRepositoryAdapter` + mapper; `findHolding`, `claim`, `frozen`, the list's headers and scope generation stay native SQL. |
 | `service` | `CycleCountService` grows plan / assign / count / addLine / submit / recount; `StockOperationsServiceImpl` gains `requestCountVariance` and the carton approval path. |
 | `controller` | `CycleCountController` grows the endpoints above; DTOs in `controller/dto`. |
 | `warehouse :: api` | `WarehouseService.shelfCodesOf(zoneId)` and a bulk `findLocations(Collection<String> codes)` returning `StorageLocationView`s. `pickableLocations` does not do: it drops blocked bins, and a blocked bin still holds stock to count. |
-| `common/error` | `CYCLE_COUNT_EMPTY_SCOPE`, `CYCLE_COUNT_TOO_LARGE`, `CYCLE_COUNT_NOT_ASSIGNEE`, `CYCLE_COUNT_LINE_NOT_COUNTED`, `CYCLE_COUNT_SLOT_BUSY`, `CYCLE_COUNT_UNKNOWN_LAYER`, `CYCLE_COUNT_STALE`, `STOCK_PACKAGE_WRONG_LOCATION`, `STOCK_PACKAGE_OVERFILLED`, with `_vi` messages. |
+| `common/error` | `CYCLE_COUNT_EMPTY_SCOPE`, `CYCLE_COUNT_TOO_LARGE`, `CYCLE_COUNT_NOT_ASSIGNEE`, `CYCLE_COUNT_LINE_NOT_COUNTED`, `CYCLE_COUNT_SLOT_BUSY`, `CYCLE_COUNT_UNKNOWN_LAYER`, `CYCLE_COUNT_STALE`, `COUNT_VARIANCE_NOT_WITHDRAWABLE`, `STOCK_PACKAGE_WRONG_LOCATION`, `STOCK_PACKAGE_OVERFILLED`, with `_vi` messages. |
 
 ## 8. Schema: one migration, Tú's
 

@@ -40,9 +40,14 @@ It is the same shape as `V20261023000300__inventory_cycle_count_counter_grant.sq
   `PUT /api/v1/inventory/cycle-counts/{id}/lines/{lineId}/count`, `POST /{id}/lines` (a found line) and
   `POST /{id}/submission`. The counter is the warehouse staff (docs 04c F-CNT step 03); today only
   `WAREHOUSE_MANAGER` and `INVENTORY_PLANNER` hold `UPDATE`, so the people a blind count is made for get 403.
-- Granting `UPDATE` does not let staff see the book quantity: `GET` hides `expected_qty`, the note and the
-  adjustments from whoever lacks `APPROVE`. On an assigned count only the assignee (or an `APPROVE` holder)
-  may count; anyone else gets `403 CYCLE_COUNT_NOT_ASSIGNEE`.
+- Granting `UPDATE` does not show staff the book quantity on the count screen: every cycle-count answer
+  (`GET`, and what counting, adding a line and submitting return) hides `expected_qty`, the note and the
+  adjustments of a blind count from whoever lacks `APPROVE`, and the list carries no lines. On an assigned
+  count only the assignee (or an `APPROVE` holder) may count; anyone else gets `403 CYCLE_COUNT_NOT_ASSIGNEE`.
+- **Limitation, not changed by this grant:** the count screen is blind, the rest of the system is not.
+  Staff who hold `READ` on stock items, stock adjustments or the stock ledger can still see quantities there.
+  Whether to restrict those screens while a blind count is open is an owner decision; nothing in the code
+  does it today.
 - Submission only raises `COUNT_VARIANCE` adjustments `PENDING_APPROVAL`; nothing touches stock until a
   manager approves (four-eyes, BR-STK-005). Staff get no new power over stock.
 - **The version bump is required** (ADR-0008, CLAUDE.md §5): without it, staff keep their cached grants for
