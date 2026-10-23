@@ -291,6 +291,23 @@ class ReceivableBookAdapter implements ReceivableBook, ReceivableSearch {
     }
 
     @Override
+    public Overdue overdue(UUID customerId) {
+        // The same rows hasOverdue looks at, so overdueAmount > 0 exactly when hasOverdue.
+        Object[] row = (Object[]) entityManager.createNativeQuery("""
+                        SELECT COALESCE(SUM(amount - paid_amount), 0), MIN(due_date) FROM payment.receivable
+                         WHERE customer_id = :customer AND collector = 'CUSTOMER' AND status = 'OVERDUE'""")
+                .setParameter("customer", customerId)
+                .getSingleResult();
+        LocalDate oldest = switch (row[1]) {
+            case null -> null;
+            case LocalDate d -> d;
+            case java.sql.Date d -> d.toLocalDate();
+            default -> LocalDate.parse(row[1].toString());
+        };
+        return new Overdue(decimal(row[0]), oldest);
+    }
+
+    @Override
     public Page<Receivable> receivables(UUID customerId, UUID orderId, ReceivableStatus status, LocalDate dueBefore,
                                         Collector collector, String kind, Pageable pageable) {
         Specification<ReceivableJpaEntity> spec = Specification

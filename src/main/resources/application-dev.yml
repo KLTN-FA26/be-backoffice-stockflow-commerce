@@ -85,6 +85,12 @@ logging:
     # org.hibernate.orm.jdbc.bind: TRACE
 
 stockflow:
+  payment:
+    # Obviously not a real account (SCRUM-193): demo values so the transfer instructions render here.
+    company-bank:
+      bank-name: ${COMPANY_BANK_NAME:DEMO BANK (not a real bank)}
+      account-number: ${COMPANY_BANK_ACCOUNT_NUMBER:0000000000}
+      account-name: ${COMPANY_BANK_ACCOUNT_NAME:DEMO STOCKFLOW CO LTD}
   security:
     # ON. A server never runs with security off — that is what the `local` profile is for, and it
     # must never leave a laptop.
