@@ -75,6 +75,7 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
             return Optional.empty();
         }
         return jpa.findByIdWithLines(id).map(entity -> {
+            // Header only: lines do not cascade REFRESH, they were read by the join fetch just above, after the lock.
             entityManager.refresh(entity, LockModeType.PESSIMISTIC_WRITE, LOCK_TIMEOUT);
             return CycleCountPersistenceMapper.toDomain(entity);
         });
@@ -329,6 +330,9 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
     /**
      * {@inheritDoc}
      *
+     * <p>A carton line freezes the stock rows of that carton ({@code stock_package_id} equal); a loose line only
+     * loose rows of its bin, SKU and lot.</p>
+     *
      * <p>The freeze lasts while the SHORT_PICK count is open, and (SCRUM-146 D7) after it completes until every
      * {@code COUNT_VARIANCE} adjustment of the line is decided: between submission and approval the books still hold
      * the units a picker could not find, and promising them again would repeat the short pick.</p>
@@ -352,8 +356,10 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
                                                         WHERE a.cycle_count_line_id = l.id
                                                           AND a.reason_code = 'COUNT_VARIANCE'
                                                           AND a.status = 'PENDING_APPROVAL')))
-                                  AND l.location_code = s.location_code AND l.sku = s.sku
-                                  AND COALESCE(l.lot_number, '') = COALESCE(s.lot_number, ''))""",
+                                  AND (l.stock_package_id = s.stock_package_id
+                                       OR (l.stock_package_id IS NULL AND s.stock_package_id IS NULL
+                                           AND l.location_code = s.location_code AND l.sku = s.sku
+                                           AND COALESCE(l.lot_number, '') = COALESCE(s.lot_number, ''))))""",
                 new MapSqlParameterSource().addValue("skus", skus).addValue("today", today),
                 (rs, row) -> new Frozen(rs.getObject("id", UUID.class), rs.getString("sku"),
                         rs.getString("location_code"), rs.getLong("free")));

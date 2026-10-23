@@ -59,7 +59,9 @@ public class CycleCountJpaEntity extends BaseEntity {
     @Column(name = "note", length = 1000)
     private String note;
 
-    @OneToMany(mappedBy = "cycleCount", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
+    // No REFRESH cascade: the pessimistic refresh of the header must not reload each line one by one (N+1).
+    @OneToMany(mappedBy = "cycleCount", cascade = {CascadeType.PERSIST, CascadeType.MERGE, CascadeType.REMOVE},
+            orphanRemoval = true, fetch = FetchType.LAZY)
     @OrderBy("locationCode ASC, sku ASC, id ASC")
     private List<CycleCountLineJpaEntity> lines = new ArrayList<>();
 

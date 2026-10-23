@@ -217,8 +217,10 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
     /**
      * {@inheritDoc}
      *
-     * <p>One open recount per bin, SKU and lot: a second short line on the same bin, or the same report again, finds
-     * the first instead of queueing the same count twice. The expected quantity is the book on-hand of the layer.</p>
+     * <p>One open recount per slot: a second short line on the same bin, SKU and lot (or the same carton), or the same
+     * report again, finds the first instead of queueing the same count twice. A row of a carton is counted as that
+     * carton, with the carton's book quantity: counted as a loose slot its book would read 0 and the whole carton
+     * would come out as surplus. Loose stock is counted by bin, SKU and lot, expecting the layer's on-hand.</p>
      */
     @Override
     public com.stockflow.inventory.consumption.ShortPickRecount requestRecount(UUID reservationId, UUID pickLineId,
@@ -230,8 +232,11 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
                         "No allocation with id " + reservationId));
         WarehouseScope.requireLocation(item.location().code());
         Reservation hold = item.findReservation(ReservationId.of(reservationId)).orElseThrow();
-        var slot = com.stockflow.inventory.internal.domain.CountSlot.loose(item.location(), item.sku(),
-                item.lotNumber());
+        var slot = item.stockPackageId() == null
+                ? com.stockflow.inventory.internal.domain.CountSlot.loose(item.location(), item.sku(),
+                        item.lotNumber())
+                : com.stockflow.inventory.internal.domain.CountSlot.carton(item.location(), item.sku(),
+                        item.lotNumber(), item.stockPackageId());
         var open = cycleCounts.findOpenFor(slot);
         if (open.isPresent()) {
             return new com.stockflow.inventory.consumption.ShortPickRecount(open.get().id(), open.get().number(), false);
@@ -239,8 +244,9 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
         UUID warehouse = locations.warehouseOf(item.location()).orElseThrow(() ->
                 new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + item.location()));
         var day = com.stockflow.common.domain.BusinessCalendar.date(clock.instant());
+        int book = slot.isCarton() ? cycleCounts.bookQuantity(slot) : item.onHand().value();
         var recount = cycleCounts.save(com.stockflow.inventory.internal.domain.CycleCount.shortPick(
-                cycleCounts.nextNumber(day), warehouse, slot, item.onHand().value(),
+                cycleCounts.nextNumber(day), warehouse, slot, book,
                 "Short pick: line %s found %d of %s".formatted(pickLineId, found, hold.quantity()), day));
         log.info("Short pick at {} ({} {}): recount {} opened", item.location(), item.sku(),
                 item.lotNumber() == null ? "" : item.lotNumber(), recount.number());
