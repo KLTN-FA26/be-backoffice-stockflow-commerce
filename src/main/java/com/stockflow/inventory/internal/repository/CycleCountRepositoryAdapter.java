@@ -133,6 +133,11 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
      *
      * <p>The locks are taken in sorted key order, so two claims over overlapping slots cannot deadlock. The one
      * query then over-fetches by bin and SKU (for loose lines) or package, and the exact slot is matched here.</p>
+     *
+     * <p>A slot stays busy after its count is submitted while a {@code COUNT_VARIANCE} adjustment of its line is
+     * still {@code PENDING_APPROVAL}: a second count would raise a second correction of the same stock against the
+     * same books, and approving both would post the difference twice. Once the adjustment is decided the slot is
+     * free again, which is what lets a rejected variance be recounted.</p>
      */
     @Override
     public Map<CountSlot, String> claim(Collection<CountSlot> slots) {
@@ -168,7 +173,13 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
         jdbc.query("""
                 SELECT c.count_number, l.location_code, l.sku, l.lot_number, l.stock_package_id
                   FROM inventory.cycle_count c JOIN inventory.cycle_count_line l ON l.cycle_count_id = c.id
-                 WHERE c.status IN ('PLANNED', 'IN_PROGRESS') AND (%s)
+                 WHERE (c.status IN ('PLANNED', 'IN_PROGRESS')
+                        OR (c.status = 'COMPLETED'
+                            AND EXISTS (SELECT 1 FROM inventory.stock_adjustment a
+                                         WHERE a.cycle_count_line_id = l.id
+                                           AND a.reason_code = 'COUNT_VARIANCE'
+                                           AND a.status = 'PENDING_APPROVAL')))
+                   AND (%s)
                  ORDER BY c.created_at, c.id""".formatted(String.join(" OR ", any)), params, (RowCallbackHandler) rs -> {
             CountSlot held = slotOf(rs);
             CountSlot wanted = byKey.get(held.lockKey());

@@ -1,13 +1,21 @@
 package com.stockflow.inventory.internal.service;
 
 import com.stockflow.common.api.PageResponse;
+import com.stockflow.identity.api.AssignableUser;
 
+import java.time.LocalDate;
+import java.util.List;
 import java.util.UUID;
 
 /**
- * Cycle counts: listed for the warehouse that has to count, and called off by the manager. The blind recounts a short
- * pick opens (docs 04c X-SHORT step 03) are the first of them; planning, counting and posting the difference grow
- * here (SCRUM-146).
+ * Cycle counts (SCRUM-146): planned by a manager or planner over a scope of the warehouse, counted on the shelf,
+ * submitted so every variance becomes a {@code COUNT_VARIANCE} adjustment through the four-eyes approval of
+ * SCRUM-145, and sent for a recount when the manager doubts a figure. The blind recounts a short pick opens (docs
+ * 04c X-SHORT step 03) are counted and submitted the same way.
+ *
+ * <p>The blind rule holds on every answer: for a caller who may not decide counts, a blind count carries no
+ * expected quantity, no note and no adjustments, before or after submission - the variance would give the book
+ * quantity away, and a counter who knows what to find finds it.</p>
  *
  * <p>Inside {@code internal}: only this module's web layer reads it.</p>
  */
@@ -25,6 +33,84 @@ public interface CycleCounts {
     PageResponse<CycleCountView> list(String status, UUID warehouse, boolean showExpected, int page, int size);
 
     /**
+     * One count with its lines, blinded as {@link #list} does.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code OUT_OF_DATA_SCOPE}
+     */
+    CycleCountView get(UUID id, boolean showExpected);
+
+    /**
+     * Plans a {@code MANUAL} count over the union of the zones, shelves and bins named, narrowed to the SKUs when
+     * any are named; SKUs alone mean every bin (not area) of the warehouse holding them. One line per loose (bin,
+     * SKU, lot) with stock and per carton in stock. A slot already on another open count, or whose variance still
+     * waits for approval, is left out and reported in {@link PlannedCount#skipped()}, so two counts never correct
+     * the same stock. The returned view is blinded: planning does not make the planner one who decides.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code VALIDATION_FAILED} for no criterion, a bin of another
+     *         warehouse or an assignee who may not count there; {@code WAREHOUSE_NOT_FOUND};
+     *         {@code CYCLE_COUNT_EMPTY_SCOPE}; {@code CYCLE_COUNT_TOO_LARGE}; {@code OUT_OF_DATA_SCOPE}
+     */
+    PlannedCount plan(PlanCycleCountCommand command);
+
+    /**
+     * Hands a planned count to an active warehouse staff member or manager of its warehouse.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code VALIDATION_FAILED};
+     *         {@code CONFLICT} once counting started; {@code OUT_OF_DATA_SCOPE}
+     */
+    CycleCountView assign(UUID id, UUID userId);
+
+    /**
+     * Records what was found on one line: a quantity, or for an unopened carton whether it is there
+     * ({@code present}). The book quantity is re-read at this moment and the variance is judged against it (spec
+     * D3). Repeating it before submission overwrites the count.
+     *
+     * @param mayDecide the caller holds {@code inventory-cycle-counts:APPROVE}: counts any line, sees the books
+     * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code CYCLE_COUNT_NOT_OPEN};
+     *         {@code CYCLE_COUNT_NOT_ASSIGNEE}; {@code VALIDATION_FAILED} ({@code present} on loose stock or an opened
+     *         carton); {@code STOCK_PACKAGE_WRONG_LOCATION}; {@code STOCK_PACKAGE_OVERFILLED}; {@code OUT_OF_DATA_SCOPE}
+     */
+    CycleCountView count(UUID id, UUID lineId, Integer countedQty, Boolean present, UUID actor, boolean mayDecide);
+
+    /**
+     * Adds a slot the plan did not list and the counter found: loose stock of a SKU and lot in a bin that already
+     * holds a row of it, or a carton by its LPN - a LOST carton included, which is how it is found again.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code CYCLE_COUNT_UNKNOWN_LAYER} (misplaced goods are a
+     *         move, not an adjustment); {@code STOCK_PACKAGE_NOT_FOUND}; {@code STOCK_PACKAGE_WRONG_LOCATION};
+     *         {@code STOCK_PACKAGE_OVERFILLED}; {@code CYCLE_COUNT_SLOT_BUSY}; and as {@link #count}
+     */
+    CycleCountView addLine(UUID id, AddCountLineCommand command);
+
+    /**
+     * Completes the count and asks for one or more pending {@code COUNT_VARIANCE} adjustments per line whose count
+     * differs from the books, in one transaction: a refusal of any line leaves the count open and asks for nothing.
+     * Submitting a completed count again returns it unchanged.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code CYCLE_COUNT_LINE_NOT_COUNTED};
+     *         {@code CYCLE_COUNT_STALE} (stock left the slot after it was counted: count it again);
+     *         {@code CYCLE_COUNT_UNKNOWN_LAYER}; {@code CYCLE_COUNT_NOT_OPEN} once cancelled; and as {@link #count}
+     */
+    CycleCountView submit(UUID id, UUID actor, boolean mayDecide);
+
+    /**
+     * The manager doubts a variance and rejected its adjustment: the lines are flagged and a new blind
+     * {@code MANUAL} count of just those slots is opened. Returns the new count, unblinded (only who decides asks).
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND} for a line not on the count;
+     *         {@code CONFLICT} for a line without a rejected adjustment; {@code CYCLE_COUNT_NOT_OPEN} for a count not
+     *         submitted; {@code CYCLE_COUNT_SLOT_BUSY}; {@code OUT_OF_DATA_SCOPE}
+     */
+    CycleCountView recount(UUID id, List<UUID> lineIds, String note, UUID actor);
+
+    /**
+     * Who a count of this warehouse may be handed to: its active warehouse staff and managers.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code WAREHOUSE_NOT_FOUND}; {@code OUT_OF_DATA_SCOPE}
+     */
+    List<AssignableUser> assignees(UUID warehouseId);
+
+    /**
      * The warehouse manager calls a count off (it is not needed, or the bin was checked by hand), which also lifts
      * the freeze a SHORT_PICK recount puts on the bin, SKU and lot. Cancelling a cancelled count again is a no-op.
      *
@@ -33,4 +119,41 @@ public interface CycleCounts {
      *         {@code CYCLE_COUNT_NOT_OPEN} once COMPLETED
      */
     CycleCountView cancel(UUID id, String reason, String actor);
+
+    /**
+     * What to count. Location criteria (zones, shelves by their own code such as {@code A01}, full bin codes) are a
+     * union; {@code skus} narrows them, or alone selects every bin holding those SKUs.
+     *
+     * @param plannedDate null for today
+     * @param blind       whether a counter is kept from the book quantities
+     */
+    record PlanCycleCountCommand(UUID warehouseId, LocalDate plannedDate, UUID assignedUserId, boolean blind,
+                                 String note, List<UUID> zoneIds, List<String> shelfCodes, List<String> locationCodes,
+                                 List<String> skus) {
+
+        public PlanCycleCountCommand {
+            zoneIds = zoneIds == null ? List.of() : List.copyOf(zoneIds);
+            shelfCodes = shelfCodes == null ? List.of() : List.copyOf(shelfCodes);
+            locationCodes = locationCodes == null ? List.of() : List.copyOf(locationCodes);
+            skus = skus == null ? List.of() : List.copyOf(skus);
+        }
+    }
+
+    /**
+     * A found slot: {@code lpn} for a carton, or {@code locationCode} and {@code sku} (and the lot) for loose stock.
+     * With an LPN, {@code locationCode} may name the bin it was scanned in, which must be where it is recorded.
+     */
+    record AddCountLineCommand(String locationCode, String sku, String lotNumber, String lpn, int countedQty,
+                               UUID actor, boolean mayDecide) { }
+
+    /** The planned count and the slots left out because another count holds them. */
+    record PlannedCount(CycleCountView count, List<SkippedSlot> skipped) {
+
+        public PlannedCount {
+            skipped = List.copyOf(skipped);
+        }
+    }
+
+    /** A slot left out of a plan, with the number of the count holding it; {@code lpn} null for loose stock. */
+    record SkippedSlot(String locationCode, String sku, String lotNumber, String lpn, String countNumber) { }
 }

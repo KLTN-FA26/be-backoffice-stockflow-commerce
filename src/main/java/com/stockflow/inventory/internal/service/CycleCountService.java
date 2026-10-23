@@ -1,69 +1,299 @@
 package com.stockflow.inventory.internal.service;
 
+import com.stockflow.common.api.FieldError;
 import com.stockflow.common.api.PageResponse;
+import com.stockflow.common.domain.BusinessCalendar;
+import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Pages;
+import com.stockflow.common.security.Role;
 import com.stockflow.common.security.WarehouseScope;
+import com.stockflow.identity.api.AssignableUser;
+import com.stockflow.identity.api.IdentityService;
+import com.stockflow.inventory.internal.domain.CountSlot;
 import com.stockflow.inventory.internal.domain.CycleCount;
+import com.stockflow.inventory.internal.domain.CycleCount.CountLineDraft;
 import com.stockflow.inventory.internal.domain.CycleCountLine;
 import com.stockflow.inventory.internal.domain.CycleCountRepository;
 import com.stockflow.inventory.internal.domain.CycleCountStatus;
+import com.stockflow.inventory.internal.domain.CycleCountTrigger;
 import com.stockflow.inventory.internal.domain.StockPackageId;
+import com.stockflow.inventory.internal.domain.WarehouseDirectory;
+import com.stockflow.warehouse.api.StorageLocationView;
+import com.stockflow.warehouse.api.WarehouseService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
-import java.util.Collection;
+import java.time.LocalDate;
+import java.util.Comparator;
 import java.util.EnumSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
-/** {@link CycleCounts}: the caller's warehouses (BR-SEC-002) narrow the list before anything is read. */
+/**
+ * {@link CycleCounts}: reading counts, and the planner's and manager's side of them - planning, assigning,
+ * cancelling and sending lines for a recount. The counter's side (counting a line, adding a found one, submitting)
+ * is {@link CycleCountCounting}, delegated to: it holds the stock-side lock order and the carton rules, which have
+ * nothing to do with choosing what to count. The caller's warehouses (BR-SEC-002) are checked before anything is
+ * read or written.
+ */
 @Service
 @Transactional(readOnly = true)
 class CycleCountService implements CycleCounts {
 
     private static final Logger log = LoggerFactory.getLogger(CycleCountService.class);
 
-    private final CycleCountRepository counts;
-    private final Clock clock;
+    /** Who a count may be handed to: the same people fulfillment hands pick tasks to. */
+    private static final Set<String> ASSIGNEE_ROLES =
+            Set.of(Role.WAREHOUSE_STAFF.authority(), Role.WAREHOUSE_MANAGER.authority());
 
-    CycleCountService(CycleCountRepository counts, Clock clock) {
+    private static final String REJECTED = "REJECTED";
+
+    private final CycleCountRepository counts;
+    private final CycleCountViews views;
+    private final CycleCountCounting counting;
+    private final WarehouseDirectory warehouseDirectory;
+    private final WarehouseService warehouses;
+    private final IdentityService identities;
+    private final Clock clock;
+    /** Not final: a test lowers it to reach the cap without planning 500 lines. */
+    private int maxLines;
+
+    CycleCountService(CycleCountRepository counts, CycleCountViews views, CycleCountCounting counting,
+                      WarehouseDirectory warehouseDirectory, WarehouseService warehouses, IdentityService identities,
+                      Clock clock, @Value("${stockflow.inventory.cycle-count-max-lines:500}") int maxLines) {
         this.counts = counts;
+        this.views = views;
+        this.counting = counting;
+        this.warehouseDirectory = warehouseDirectory;
+        this.warehouses = warehouses;
+        this.identities = identities;
         this.clock = clock;
+        this.maxLines = maxLines;
     }
+
+    // ------------------------------------------------------------------ reads
 
     @Override
     public PageResponse<CycleCountView> list(String status, UUID warehouse, boolean showExpected, int page,
                                              int size) {
         Pageable paging = Pages.of(page, size);
         CycleCountStatus wanted = parse(status);
-        Set<UUID> warehouses;
+        Set<UUID> scoped;
         if (warehouse != null) {
             WarehouseScope.requireWarehouse(warehouse);
-            warehouses = Set.of(warehouse);
+            scoped = Set.of(warehouse);
         } else {
-            warehouses = WarehouseScope.restriction().map(allowed -> Set.copyOf(allowed.ids())).orElse(null);
+            scoped = WarehouseScope.restriction().map(allowed -> Set.copyOf(allowed.ids())).orElse(null);
         }
-        long total = counts.count(wanted, warehouses);
+        long total = counts.count(wanted, scoped);
         List<CycleCount> found = total == 0 ? List.of()
-                : counts.find(wanted, warehouses, paging.getOffset(), paging.getPageSize());
-        return PageResponse.of(views(found, showExpected), paging.getPageNumber(), paging.getPageSize(), total);
+                : counts.find(wanted, scoped, paging.getOffset(), paging.getPageSize());
+        return PageResponse.of(views.of(found, showExpected), paging.getPageNumber(), paging.getPageSize(), total);
+    }
+
+    @Override
+    public CycleCountView get(UUID id, boolean showExpected) {
+        CycleCount count = counts.findById(id).orElseThrow(() -> notFound(id));
+        WarehouseScope.requireWarehouse(count.warehouseId());
+        return views.of(count, showExpected);
+    }
+
+    @Override
+    public List<AssignableUser> assignees(UUID warehouseId) {
+        WarehouseScope.requireWarehouse(warehouseId);
+        prefixOf(warehouseId);
+        return identities.assignableUsers(ASSIGNEE_ROLES, warehouseId);
+    }
+
+    // ------------------------------------------------------------------ planning
+
+    /**
+     * The order is the spec's (§4): resolve the scope to codes and prefixes, read the stocked slots, narrow a
+     * SKU-only scope to bins, check the cap, then claim. The cap comes before the claim so an over-wide scope is
+     * refused without taking a thousand advisory locks first; the claim comes last so the locks are held for as
+     * short a time as the transaction allows.
+     */
+    @Override
+    @Transactional
+    public PlannedCount plan(PlanCycleCountCommand command) {
+        UUID warehouseId = Objects.requireNonNull(command.warehouseId(), "warehouseId");
+        WarehouseScope.requireWarehouse(warehouseId);
+        String prefix = prefixOf(warehouseId);
+        if (command.assignedUserId() != null) {
+            requireAssignable(command.assignedUserId(), warehouseId);
+        }
+        List<String> codes = command.locationCodes().stream().map(CycleCountService::upper).distinct().toList();
+        List<String> foreign = codes.stream().filter(code -> !prefix.equals(WarehouseScope.prefixOf(code))).toList();
+        if (!foreign.isEmpty()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "Not locations of warehouse %s: %s".formatted(prefix, String.join(", ", foreign)));
+        }
+        Set<String> shelves = new TreeSet<>();
+        command.shelfCodes().stream().map(CycleCountService::upper).forEach(shelves::add);
+        command.zoneIds().stream().distinct().map(warehouses::shelfCodesOf).forEach(shelves::addAll);
+        // With the trailing dash: shelf A01 must not match the bins of a shelf A011.
+        List<String> prefixes = shelves.stream().map(shelf -> prefix + "-" + shelf + "-").toList();
+        List<String> skus = command.skus().stream().map(sku -> new Sku(sku).code()).distinct().toList();
+
+        boolean byLocation = !command.zoneIds().isEmpty() || !command.shelfCodes().isEmpty() || !codes.isEmpty();
+        if (!byLocation && skus.isEmpty()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Name at least one zone, shelf, bin or SKU");
+        }
+        List<CountLineDraft> drafts;
+        if (byLocation && codes.isEmpty() && prefixes.isEmpty()) {
+            // Zones without shelves select nothing. Asking with no location criterion would select the whole
+            // warehouse, the opposite of what was asked.
+            drafts = List.of();
+        } else {
+            drafts = counts.stockIn(prefix, codes, prefixes, skus);
+        }
+        if (!byLocation) {
+            drafts = onlyBins(drafts);
+        }
+        if (drafts.size() > maxLines) {
+            throw new BusinessException(ErrorCode.CYCLE_COUNT_TOO_LARGE, "The scope holds %d slots; a count takes at most %d"
+                    .formatted(drafts.size(), maxLines));
+        }
+
+        Map<CountSlot, String> busy = counts.claim(drafts.stream().map(CountLineDraft::slot).toList());
+        List<CountLineDraft> free = drafts.stream().filter(draft -> !busy.containsKey(draft.slot())).toList();
+        if (free.isEmpty() && !busy.isEmpty()) {
+            throw new BusinessException(ErrorCode.CYCLE_COUNT_EMPTY_SCOPE, "Every slot in scope is on another count: "
+                    + busy.values().stream().distinct().sorted().collect(Collectors.joining(", ")));
+        }
+        LocalDate day = BusinessCalendar.date(clock.instant());
+        CycleCount planned = counts.save(CycleCount.plan(counts.nextNumber(day), warehouseId, CycleCountTrigger.MANUAL,
+                command.blind(), command.assignedUserId(),
+                command.plannedDate() == null ? day : command.plannedDate(), command.note(), free));
+        log.info("Cycle count {} planned in {}: {} line(s), {} skipped", planned.number(), prefix,
+                planned.lines().size(), busy.size());
+        return new PlannedCount(views.of(planned, false), skipped(busy));
+    }
+
+    /** SKUs alone mean bins: stock in a receiving or QC area is still being received or inspected, not stored. */
+    private List<CountLineDraft> onlyBins(List<CountLineDraft> drafts) {
+        if (drafts.isEmpty()) {
+            return drafts;
+        }
+        Set<String> bins = warehouses.findLocations(drafts.stream().map(draft -> draft.slot().location().code())
+                        .collect(Collectors.toSet())).stream()
+                .filter(location -> location.kind() == StorageLocationView.Kind.BIN)
+                .map(StorageLocationView::locationCode).collect(Collectors.toSet());
+        return drafts.stream().filter(draft -> bins.contains(draft.slot().location().code())).toList();
+    }
+
+    private List<SkippedSlot> skipped(Map<CountSlot, String> busy) {
+        if (busy.isEmpty()) {
+            return List.of();
+        }
+        Map<UUID, String> lpns = counts.lpnsOf(busy.keySet().stream().map(CountSlot::stockPackageId)
+                .filter(Objects::nonNull).distinct().toList());
+        return busy.entrySet().stream()
+                .sorted(Comparator.comparing((Map.Entry<CountSlot, String> e) -> e.getKey().lockKey()))
+                .map(e -> {
+                    CountSlot slot = e.getKey();
+                    StockPackageId pkg = slot.stockPackageId();
+                    return new SkippedSlot(slot.location().code(), slot.sku().code(), slot.lotNumber(),
+                            pkg == null ? null : lpns.get(pkg.value()), e.getValue());
+                }).toList();
+    }
+
+    @Override
+    @Transactional
+    public CycleCountView assign(UUID id, UUID userId) {
+        CycleCount count = lock(id);
+        requireAssignable(userId, count.warehouseId());
+        count.assign(userId);
+        return views.of(counts.save(count), false);
+    }
+
+    // ------------------------------------------------------------------ counting, delegated
+
+    @Override
+    @Transactional
+    public CycleCountView count(UUID id, UUID lineId, Integer countedQty, Boolean present, UUID actor,
+                                boolean mayDecide) {
+        return counting.count(id, lineId, countedQty, present, actor, mayDecide);
+    }
+
+    @Override
+    @Transactional
+    public CycleCountView addLine(UUID id, AddCountLineCommand command) {
+        return counting.addLine(id, command);
+    }
+
+    @Override
+    @Transactional
+    public CycleCountView submit(UUID id, UUID actor, boolean mayDecide) {
+        return counting.submit(id, actor, mayDecide);
+    }
+
+    // ------------------------------------------------------------------ deciding
+
+    /**
+     * Only a line whose variance the manager rejected is recounted: a pending one is still to be decided, and an
+     * approved one is already in the books - recounting it would be a new count, which is what planning is for.
+     * The slots are claimed like a plan's; the rejected adjustment no longer holds them.
+     */
+    @Override
+    @Transactional
+    public CycleCountView recount(UUID id, List<UUID> lineIds, String note, UUID actor) {
+        CycleCount count = lock(id);
+        Set<UUID> wanted = new LinkedHashSet<>(lineIds == null ? List.of() : lineIds);
+        if (wanted.isEmpty()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Name at least one line to recount");
+        }
+        Set<UUID> onCount = count.lines().stream().map(CycleCountLine::id).collect(Collectors.toSet());
+        List<UUID> unknown = wanted.stream().filter(line -> !onCount.contains(line)).toList();
+        if (!unknown.isEmpty()) {
+            throw new BusinessException(ErrorCode.NOT_FOUND, "Not lines of count %s: %s".formatted(count.number(),
+                    unknown.stream().map(UUID::toString).collect(Collectors.joining(", "))));
+        }
+        List<CountSlot> slots = count.markRecount(wanted);
+        Map<UUID, List<CycleCountRepository.LineAdjustment>> adjustments = counts.adjustmentsOf(wanted);
+        List<UUID> notRejected = wanted.stream().filter(line -> adjustments.getOrDefault(line, List.of()).stream()
+                .noneMatch(adjustment -> REJECTED.equals(adjustment.status()))).toList();
+        if (!notRejected.isEmpty()) {
+            throw new BusinessException(ErrorCode.CONFLICT, "Only a line whose variance was rejected is recounted: "
+                    + notRejected.stream().map(UUID::toString).collect(Collectors.joining(", ")));
+        }
+        Map<CountSlot, String> busy = counts.claim(slots);
+        if (!busy.isEmpty()) {
+            throw new BusinessException(ErrorCode.CYCLE_COUNT_SLOT_BUSY, "Already on another count: "
+                    + busy.entrySet().stream().map(e -> e.getKey().lockKey() + " (" + e.getValue() + ")")
+                    .sorted().collect(Collectors.joining(", ")));
+        }
+        LocalDate day = BusinessCalendar.date(clock.instant());
+        List<CountLineDraft> drafts = slots.stream()
+                .map(slot -> new CountLineDraft(slot, counts.bookQuantity(slot))).toList();
+        String text = "Recount of " + count.number() + (note == null || note.isBlank() ? "" : ": " + note.strip());
+        counts.save(count);
+        // Blind whatever the first count was: the counter must not be told what the doubted figure was.
+        CycleCount opened = counts.save(CycleCount.plan(counts.nextNumber(day), count.warehouseId(),
+                CycleCountTrigger.MANUAL, true, null, day, text, drafts));
+        log.info("Cycle count {}: {} line(s) sent for recount by {} as {}", count.number(), slots.size(), actor,
+                opened.number());
+        return views.of(opened, true);
     }
 
     @Override
     @Transactional
     public CycleCountView cancel(UUID id, String reason, String actor) {
-        CycleCount count = counts.findByIdForUpdate(id).orElseThrow(() -> new BusinessException(
-                ErrorCode.NOT_FOUND, "No cycle count with id " + id));
-        WarehouseScope.requireWarehouse(count.warehouseId());
+        CycleCount count = lock(id);
         if (count.status() == CycleCountStatus.COMPLETED) {
             throw new BusinessException(ErrorCode.CYCLE_COUNT_NOT_OPEN,
                     "Cycle count %s is already COMPLETED".formatted(count.number()));
@@ -73,7 +303,41 @@ class CycleCountService implements CycleCounts {
             log.info("Cycle count {} cancelled by {}", count.number(), actor);
         }
         // Whoever may cancel may also decide, so the view is the full one.
-        return views(List.of(count), true).get(0);
+        return views.of(count, true);
+    }
+
+    // ------------------------------------------------------------------ helpers
+
+    /** The count row locked first, as every write to a count starts (lock order: count, SKU, carton, rows). */
+    private CycleCount lock(UUID id) {
+        CycleCount count = counts.findByIdForUpdate(id).orElseThrow(() -> notFound(id));
+        WarehouseScope.requireWarehouse(count.warehouseId());
+        return count;
+    }
+
+    private String prefixOf(UUID warehouseId) {
+        return warehouseDirectory.prefixOf(warehouseId).orElseThrow(() -> new BusinessException(
+                ErrorCode.WAREHOUSE_NOT_FOUND, "No warehouse with id " + warehouseId));
+    }
+
+    /** BR-SEC-002, as fulfillment's task assignment: an active staff member or manager of that warehouse. */
+    private void requireAssignable(UUID userId, UUID warehouseId) {
+        boolean eligible = userId != null && identities.assignableUsers(ASSIGNEE_ROLES, warehouseId).stream()
+                .anyMatch(user -> user.userId().equals(userId));
+        if (!eligible) {
+            String message = "Assignee must be an active warehouse staff member or warehouse manager "
+                    + "assigned to this warehouse";
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, message,
+                    List.of(new FieldError("assignedUserId", message, "NotAssignable")));
+        }
+    }
+
+    private static BusinessException notFound(UUID id) {
+        return new BusinessException(ErrorCode.NOT_FOUND, "No cycle count with id " + id);
+    }
+
+    private static String upper(String code) {
+        return code.strip().toUpperCase(Locale.ROOT);
     }
 
     private static CycleCountStatus parse(String status) {
@@ -86,39 +350,5 @@ class CycleCountService implements CycleCounts {
             throw new BusinessException(ErrorCode.UNSUPPORTED_PARAMETER, "status must be one of "
                     + String.join(", ", EnumSet.allOf(CycleCountStatus.class).stream().map(Enum::name).sorted().toList()));
         }
-    }
-
-    /**
-     * The views of these counts, the LPNs and adjustments of all their lines read in one query each. A blind count
-     * hides what the books say from a counter (V20260928005000: is_blind): the expected quantity, the note (a short
-     * pick's note carries what the picker found, which would anchor the count just as the book quantity does) and
-     * the adjustments, which state the variance.
-     */
-    private List<CycleCountView> views(List<CycleCount> found, boolean showExpected) {
-        if (found.isEmpty()) {
-            return List.of();
-        }
-        List<CycleCountLine> lines = found.stream().flatMap(count -> count.lines().stream()).toList();
-        Map<UUID, String> lpns = counts.lpnsOf(lines.stream().map(line -> line.slot().stockPackageId())
-                .filter(java.util.Objects::nonNull).distinct().toList());
-        Collection<UUID> shown = found.stream().filter(count -> showExpected || !count.blind())
-                .flatMap(count -> count.lines().stream()).map(CycleCountLine::id).toList();
-        Map<UUID, List<CycleCountRepository.LineAdjustment>> adjustments = counts.adjustmentsOf(shown);
-        return found.stream().map(count -> view(count, showExpected || !count.blind(), lpns, adjustments)).toList();
-    }
-
-    private static CycleCountView view(CycleCount count, boolean reveal, Map<UUID, String> lpns,
-                                       Map<UUID, List<CycleCountRepository.LineAdjustment>> adjustments) {
-        return new CycleCountView(count.id(), count.number(), count.warehouseId(), count.trigger().name(),
-                count.status().name(), count.blind(), count.assignedUserId(), count.plannedDate(), count.startedAt(),
-                count.completedAt(), reveal ? count.note() : null, count.createdAt(),
-                count.lines().stream().map(line -> {
-                    StockPackageId pkg = line.slot().stockPackageId();
-                    return new CycleCountView.Line(line.id(), line.slot().location().code(), line.slot().sku().code(),
-                            line.slot().lotNumber(), pkg == null ? null : pkg.value(),
-                            pkg == null ? null : lpns.get(pkg.value()), reveal ? line.expectedQty() : null,
-                            line.countedQty(), line.countedBy(), line.countedAt(), line.recountRequired(),
-                            reveal ? adjustments.getOrDefault(line.id(), List.of()) : List.of());
-                }).toList());
     }
 }

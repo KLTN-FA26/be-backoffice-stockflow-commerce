@@ -24,6 +24,12 @@ public interface LocationLookupRepository {
     /** The locations among {@code locationCodes} flagged {@code is_pickable}, whatever their status. */
     java.util.List<LocationRow> findPickable(java.util.Collection<String> locationCodes);
 
+    /** The locations with these exact codes, whatever their status or flags; unknown codes are absent. */
+    java.util.List<LocationRow> findByLocationCodes(java.util.Collection<String> locationCodes);
+
+    /** The own codes of the zone's shelves, sorted; empty for an unknown zone. */
+    java.util.List<String> findShelfCodesInZone(UUID zoneId);
+
     /** The warehouse itself, for other modules naming it on a document (a purchase order's receiving warehouse). */
     Optional<WarehouseHeader> findWarehouseHeader(UUID warehouseId);
 

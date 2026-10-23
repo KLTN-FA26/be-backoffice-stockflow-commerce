@@ -53,4 +53,24 @@ public interface WarehouseService {
 
     /** @return empty when no warehouse has this id; a purchase order receives into one (SCRUM-390) */
     Optional<WarehouseView> findWarehouse(UUID warehouseId);
+
+    /**
+     * The own codes of the shelves in a zone ({@code A01}, not {@code HCM-A01}), sorted. A cycle count planned by
+     * zone (SCRUM-162) counts the bins of these shelves: a zone is a group of shelves this module owns, while a
+     * shelf code is part of every bin's location code ({@code <prefix>-<shelf>-<level>-<bin>}), so the count can
+     * select stock by code prefix without asking for every bin.
+     *
+     * @return empty for an unknown zone, or one with no shelves
+     */
+    java.util.List<String> shelfCodesOf(UUID zoneId);
+
+    /**
+     * The locations with these codes, whatever their status, in one query. Unlike {@link #pickableLocations} a
+     * blocked or inactive location is returned: a cycle count must still count the stock sitting in a bin nobody
+     * may pick from, and it asks here only which codes are bins and which are areas.
+     *
+     * @param locationCodes exact codes as stored (upper case)
+     * @return one view per known code; an unknown code is absent
+     */
+    java.util.List<StorageLocationView> findLocations(java.util.Collection<String> locationCodes);
 }

@@ -29,7 +29,10 @@ public interface CycleCountRepository {
     /** Takes the slot's advisory lock (seed 703) and returns the open count holding it, if any. */
     Optional<CycleCount> findOpenFor(CountSlot slot);
 
-    /** Locks all slots in sorted key order; returns each busy slot with the number of the count holding it. */
+    /**
+     * Locks all slots in sorted key order; returns each busy slot with the number of the count holding it. Busy: on
+     * an open count, or on a completed one whose variance adjustment is still pending approval.
+     */
     Map<CountSlot, String> claim(Collection<CountSlot> slots);
 
     /** The stocked slots a scope selects, with their book quantities. */
