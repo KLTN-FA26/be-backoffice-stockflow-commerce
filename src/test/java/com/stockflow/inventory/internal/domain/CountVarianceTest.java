@@ -19,7 +19,11 @@ class CountVarianceTest {
     private static final Instant T2 = Instant.parse("2026-10-01T00:00:00Z");
 
     private static Layer layer(Instant receivedAt, LocalDate expiry, int onHand) {
-        return new Layer(StockItemId.newId(), receivedAt, expiry, onHand);
+        return layer(receivedAt, expiry, onHand, 0);
+    }
+
+    private static Layer layer(Instant receivedAt, LocalDate expiry, int onHand, int reserved) {
+        return new Layer(StockItemId.newId(), receivedAt, expiry, onHand, reserved);
     }
 
     @Test
@@ -41,6 +45,25 @@ class CountVarianceTest {
         List<Share> shares = CountVariance.split(-5, List.of(none, dec, nov));
 
         assertThat(shares).containsExactly(new Share(nov.id(), T2, -2), new Share(dec.id(), T1, -3));
+    }
+
+    @Test
+    void shortageTakesFreeUnitsBeforeHeldOnes() {
+        // FEFO would start with nov, but all of it is held for customers; dec has 6 free of 10.
+        Layer nov = layer(T2, LocalDate.of(2026, 11, 1), 4, 4);
+        Layer dec = layer(T1, LocalDate.of(2026, 12, 1), 10, 4);
+
+        assertThat(CountVariance.split(-5, List.of(nov, dec))).as("free units only, from the layer that has them")
+                .containsExactly(new Share(dec.id(), T1, -5));
+        assertThat(CountVariance.split(-8, List.of(nov, dec)))
+                .as("every free unit first, then held ones in FEFO order: nov's held before dec's")
+                .containsExactly(new Share(nov.id(), T2, -2), new Share(dec.id(), T1, -6));
+        assertThat(CountVariance.split(-14, List.of(nov, dec))).as("everything on hand, held or not")
+                .containsExactly(new Share(nov.id(), T2, -4), new Share(dec.id(), T1, -10));
+        assertThatThrownBy(() -> CountVariance.split(-15, List.of(nov, dec)))
+                .as("still stale only beyond what is on hand")
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.CYCLE_COUNT_STALE));
     }
 
     @Test

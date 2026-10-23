@@ -886,9 +886,9 @@ class StockOperationsServiceImpl implements StockOperations {
     /**
      * The slot is the one submission chose, so the (SKU, location, lot) ambiguity {@link #findOne} refuses never
      * arises here, and the assignee and the count's state were checked by the caller. A loose variance is split over
-     * the slot's receipt layers as they stand now, under the SKU lock ({@link CountVariance#split}: a shortage in FEFO
-     * order, a surplus on the newest layer), one adjustment per layer, because approval posts an adjustment onto one
-     * stock row. A carton's is one adjustment naming the carton: its approval changes the carton's state once.
+     * the slot's receipt layers as they stand now, under the SKU lock ({@link CountVariance#split}: a shortage from
+     * free units first, then held ones, each in FEFO order; a surplus on the newest layer), one adjustment per layer,
+     * because approval posts an adjustment onto one stock row. A carton's is one adjustment naming the carton: its approval changes the carton's state once.
      */
     @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "cycle-count-line", resourceId = "#cycleCountLineId")
@@ -911,7 +911,7 @@ class StockOperationsServiceImpl implements StockOperations {
         List<CountVariance.Layer> layers = stockItems.findLooseBySkuAndLocation(slot.sku(), slot.location()).stream()
                 .filter(item -> Objects.equals(blankToNull(item.lotNumber()), slot.lotNumber()))
                 .map(item -> new CountVariance.Layer(item.id(), item.receivedAt(), item.expiryDate(),
-                        item.onHand().value()))
+                        item.onHand().value(), item.reserved().value()))
                 .toList();
         List<StockAdjustmentSummary> asked = new ArrayList<>();
         for (CountVariance.Share share : CountVariance.split(delta, layers)) {

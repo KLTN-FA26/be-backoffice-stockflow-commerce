@@ -241,6 +241,28 @@ class CountVarianceAdjustmentIntegrationTest {
     }
 
     @Test
+    @DisplayName("a loose shortage takes free units first: a FEFO-first layer held whole for a customer is left alone")
+    void looseShortageSparesAFullyHeldLayer() {
+        UUID soon = loose(LATE, LocalDate.now().plusMonths(6), 3);
+        UUID later = loose(EARLY, LocalDate.now().plusYears(1), 10);
+        UUID hold = hold(confirmedOrder(), 3);
+        assertThat(jdbc.queryForObject("select reserved from inventory.stock_item where id = ?", Integer.class, soon))
+                .as("FEFO allocated the whole of the earliest-expiring layer").isEqualTo(3);
+        UUID line = countLine(null);
+
+        List<StockAdjustmentSummary> asked = operations.requestCountVariance(line, looseSlot(), -2, clerk, "CC-1");
+
+        assertThat(asked).as("one adjustment, on the layer with free units").singleElement()
+                .satisfies(a -> assertThat(a.quantityDelta()).isEqualTo(-2));
+        operations.approve(asked.getFirst().adjustmentId(), manager);
+
+        assertThat(onHand(soon)).as("the held layer is untouched").isEqualTo(3);
+        assertThat(onHand(later)).isEqualTo(8);
+        assertThat(jdbc.queryForObject("select status || ':' || quantity from inventory.stock_reservation where id = ?",
+                String.class, hold)).endsWith(":3");
+    }
+
+    @Test
     @DisplayName("a loose surplus lands on the newest layer")
     void looseSurplusOnTheNewestLayer() {
         UUID older = loose(EARLY, LocalDate.now().plusMonths(6), 4);
