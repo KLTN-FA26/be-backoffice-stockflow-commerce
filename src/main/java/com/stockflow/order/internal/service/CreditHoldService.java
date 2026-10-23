@@ -46,7 +46,8 @@ public class CreditHoldService {
 
     /** The terms a customer may use and the credit left, for the checkout and the back office. */
     public record CreditPosition(CreditTerms terms, BigDecimal exposure, BigDecimal available, boolean hasOverdue,
-                                 BigDecimal overdueAmount, java.time.LocalDate oldestOverdueDueDate) {
+                                 BigDecimal overdueAmount, java.time.LocalDate oldestOverdueDueDate,
+                                 java.util.List<com.stockflow.order.api.BalancePolicy> allowedBalancePolicies) {
     }
 
     private final OrderRepository repository;
@@ -88,7 +89,7 @@ public class CreditHoldService {
                 .add(receivables.outstandingReceivables());
         BigDecimal available = terms.allowCredit() ? terms.creditLimit().subtract(exposure).max(BigDecimal.ZERO) : null;
         return new CreditPosition(terms, exposure, available, receivables.hasOverdue(), receivables.overdueAmount(),
-                receivables.oldestOverdueDueDate());
+                receivables.oldestOverdueDueDate(), OrderServiceImpl.allowedBalancePolicies(terms));
     }
 
     @Transactional(readOnly = true)

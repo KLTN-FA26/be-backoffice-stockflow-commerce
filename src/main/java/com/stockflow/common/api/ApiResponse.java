@@ -5,6 +5,7 @@ import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 
 /**
  * The envelope every endpoint returns, success or failure, so a client writes one response handler.
@@ -61,6 +62,10 @@ public record ApiResponse<T>(
         @Schema(description = "Per-field validation failures, so a form can place each message")
         List<FieldError> fieldErrors,
 
+        @Schema(description = "Machine-readable facts a client may show with the refusal (amounts, currency); the "
+                + "keys belong to the errorCode that carries them. Absent on most failures")
+        Map<String, Object> details,
+
         @Schema(description = "Ties this response to the server logs; quote it in a support ticket")
         String correlationId,
 
@@ -68,26 +73,34 @@ public record ApiResponse<T>(
 ) {
 
     public static <T> ApiResponse<T> ok(T data) {
-        return new ApiResponse<>(true, data, null, null, null, null, Instant.now());
+        return new ApiResponse<>(true, data, null, null, null, null, null, Instant.now());
     }
 
     /** Success with no body - a 204-like response that still carries the envelope. */
     public static ApiResponse<Void> ok() {
-        return new ApiResponse<>(true, null, null, null, null, null, Instant.now());
+        return new ApiResponse<>(true, null, null, null, null, null, null, Instant.now());
     }
 
     public static <T> ApiResponse<T> error(String errorCode, String message) {
-        return new ApiResponse<>(false, null, errorCode, message, null, null, Instant.now());
+        return new ApiResponse<>(false, null, errorCode, message, null, null, null, Instant.now());
     }
 
     public static <T> ApiResponse<T> error(String errorCode, String message, String correlationId) {
-        return new ApiResponse<>(false, null, errorCode, message, null, correlationId, Instant.now());
+        return new ApiResponse<>(false, null, errorCode, message, null, null, correlationId, Instant.now());
     }
 
     public static <T> ApiResponse<T> error(String errorCode, String message,
                                            List<FieldError> fieldErrors, String correlationId) {
+        return error(errorCode, message, fieldErrors, null, correlationId);
+    }
+
+    /** A refusal that also carries the facts behind it (SCRUM-193: the credit left, in a currency). */
+    public static <T> ApiResponse<T> error(String errorCode, String message, List<FieldError> fieldErrors,
+                                           Map<String, Object> details, String correlationId) {
         return new ApiResponse<>(false, null, errorCode, message,
                 fieldErrors == null || fieldErrors.isEmpty() ? null : List.copyOf(fieldErrors),
+                details == null || details.isEmpty() ? null : java.util.Collections.unmodifiableMap(
+                        new java.util.LinkedHashMap<>(details)),
                 correlationId, Instant.now());
     }
 
@@ -185,7 +198,7 @@ public record ApiResponse<T>(
                 }
             }
             return new ApiResponse<>(success, data, errorCode, message,
-                    hasFieldErrors ? List.copyOf(fieldErrors) : null,
+                    hasFieldErrors ? List.copyOf(fieldErrors) : null, null,
                     correlationId, Instant.now());
         }
     }

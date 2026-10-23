@@ -69,6 +69,7 @@ class DepositBalanceOnCreditIntegrationTest {
     private static final LocalDate TODAY = LocalDate.now(ZoneId.of("Asia/Ho_Chi_Minh"));
 
     @Autowired OrderService orders;
+    @Autowired com.stockflow.order.internal.service.QuotedOrders quotedOrders;
     @Autowired OrderReleases releases;
     @Autowired CustomerService customers;
     @Autowired ReceivableService receivables;
@@ -225,10 +226,13 @@ class DepositBalanceOnCreditIntegrationTest {
         assertThat(payments.creditPosition(customer).hasOverdue()).isTrue();
         assertThat(code(catchThrowable(() -> place(PaymentTerm.DEPOSIT, 1, BalancePolicy.ON_CREDIT))))
                 .isEqualTo(ErrorCode.CUSTOMER_CREDIT_OVERDUE);
-        // Review of #150, item 3: ON_CREDIT from the customer's terms (a portal checkout cannot choose) falls back.
-        OrderSummary fallback = place(PaymentTerm.DEPOSIT, 1, null);
-        assertThat(fallback.payment().balancePolicy()).isEqualTo(BalancePolicy.BEFORE_DELIVERY);
-        assertThat(fallback.payment().creditTermDays()).isNull();
+        // SCRUM-193 (CREDIT-PORTAL): ON_CREDIT from the customer's terms is refused too - no quiet fallback (it was #150
+        // item 3); choosing BEFORE_DELIVERY explicitly is the way out.
+        assertThat(code(catchThrowable(() -> place(PaymentTerm.DEPOSIT, 1, null))))
+                .isEqualTo(ErrorCode.CUSTOMER_CREDIT_OVERDUE);
+        OrderSummary chosen = place(PaymentTerm.DEPOSIT, 1, BalancePolicy.BEFORE_DELIVERY);
+        assertThat(chosen.payment().balancePolicy()).isEqualTo(BalancePolicy.BEFORE_DELIVERY);
+        assertThat(chosen.payment().creditTermDays()).isNull();
 
         UUID cash = tx.execute(s -> ReferenceRows.customer(entityManager));
         UUID other = customer;
@@ -242,16 +246,50 @@ class DepositBalanceOnCreditIntegrationTest {
     }
 
     @Test
-    @DisplayName("review of #150, item 3: the customer's default ON_CREDIT over the limit falls back to BEFORE_DELIVERY "
-            + "(placed, nothing on credit); Sales asking for ON_CREDIT explicitly still gets 409")
-    void defaultOnCreditFallsBack() {
-        OrderSummary order = place(PaymentTerm.DEPOSIT, 6, null);         // 30M, balance 21M > 20M
-        assertThat(order.status()).isEqualTo(OrderStatus.PENDING_PAYMENT);
-        assertThat(order.payment().balancePolicy()).isEqualTo(BalancePolicy.BEFORE_DELIVERY);
-        assertThat(order.payment().creditTermDays()).isNull();
+    @DisplayName("SCRUM-193: the customer's default ON_CREDIT over the limit is refused like Sales' explicit one - "
+            + "409 BALANCE_CREDIT_LIMIT_EXCEEDED, nothing placed; it no longer falls back to BEFORE_DELIVERY")
+    void defaultOnCreditIsRefused() {
+        UUID request = UUID.randomUUID();
+        Throwable refused = catchThrowable(() -> orders.placeOrder(new PlaceOrderCommand(request, customer, null, null,
+                false, List.of(new PlaceOrderCommand.Line(SOFA, 6, Money.vnd(PRICE), null)), PaymentTerm.DEPOSIT,
+                null, null)));                                           // 30M, balance 21M > 20M, policy from the terms
+        assertThat(code(refused)).isEqualTo(ErrorCode.BALANCE_CREDIT_LIMIT_EXCEEDED);
+        assertThat(heldFor(request)).isZero();
         assertThat(exposure()).as("nothing on credit").isZero();
         assertThat(code(catchThrowable(() -> place(PaymentTerm.DEPOSIT, 6, BalancePolicy.ON_CREDIT))))
                 .isEqualTo(ErrorCode.BALANCE_CREDIT_LIMIT_EXCEEDED);
+        // the way out: pay the balance before delivery
+        OrderSummary order = place(PaymentTerm.DEPOSIT, 6, BalancePolicy.BEFORE_DELIVERY);
+        assertThat(order.status()).isEqualTo(OrderStatus.PENDING_PAYMENT);
+        assertThat(order.payment().balancePolicy()).isEqualTo(BalancePolicy.BEFORE_DELIVERY);
+        assertThat(order.payment().creditTermDays()).isNull();
+    }
+
+    @Test
+    @DisplayName("SCRUM-193: converting an accepted quote has no balance policy to choose, so the customer's default "
+            + "ON_CREDIT over the limit still gives way to BEFORE_DELIVERY there (and only there)")
+    void convertedQuoteStillFallsBack() {
+        OrderSummary order = quotedOrders.placeQuotedOrder(new PlaceOrderCommand(UUID.randomUUID(), customer, null, null,
+                false, List.of(new PlaceOrderCommand.Line(SOFA, 6, Money.vnd(PRICE), null)), PaymentTerm.DEPOSIT, null,
+                null));
+        placed.add(order.orderId());
+        assertThat(order.status()).isEqualTo(OrderStatus.PENDING_PAYMENT);
+        assertThat(order.payment().balancePolicy()).isEqualTo(BalancePolicy.BEFORE_DELIVERY);
+        assertThat(order.payment().creditTermDays()).isNull();
+    }
+
+    @Test
+    @DisplayName("SCRUM-193: the refusal's details carry the credit left (limit - owed, never below 0), the limit, what "
+            + "is owed, the balance asked for and the currency")
+    void refusalCarriesTheCreditLeft() {
+        place(PaymentTerm.CREDIT, 3, null);                                // 15M on credit: 5M of the 20M left
+        BusinessException refused = (BusinessException) catchThrowable(() -> place(PaymentTerm.DEPOSIT, 2, null));
+        assertThat(refused.errorCode()).isEqualTo(ErrorCode.BALANCE_CREDIT_LIMIT_EXCEEDED);   // balance 7M > 5M
+        assertThat(refused.details()).containsEntry("currency", "VND");
+        assertThat((BigDecimal) refused.details().get("availableCredit")).isEqualByComparingTo("5000000");
+        assertThat((BigDecimal) refused.details().get("creditLimit")).isEqualByComparingTo("20000000");
+        assertThat((BigDecimal) refused.details().get("exposure")).isEqualByComparingTo("15000000");
+        assertThat((BigDecimal) refused.details().get("requiredAmount")).isEqualByComparingTo("7000000");
     }
 
     @Test

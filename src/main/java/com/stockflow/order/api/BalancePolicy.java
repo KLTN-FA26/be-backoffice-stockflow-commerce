@@ -2,8 +2,8 @@ package com.stockflow.order.api;
 
 /**
  * How a deposit order's balance is collected (kltn-docs 15 §4.2 step 3; G2-3), copied from the customer's terms when
- * the order is placed - Sales may tighten it to BEFORE_DELIVERY, never loosen it, and may put it ON_CREDIT for a customer
- * allowed credit - and kept with the order.
+ * the order is placed - whoever places it (Sales, or the customer on the portal, SCRUM-193) may tighten it to
+ * BEFORE_DELIVERY, never loosen it, and may put it ON_CREDIT for a customer allowed credit - and kept with the order.
  */
 public enum BalancePolicy {
     /** By transfer before the goods are handed to the carrier: the handover waits for it (decision G3-Q4). */

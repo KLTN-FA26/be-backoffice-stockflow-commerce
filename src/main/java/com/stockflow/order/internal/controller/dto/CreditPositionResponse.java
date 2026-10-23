@@ -32,6 +32,10 @@ public record CreditPositionResponse(
         @Schema(description = "What is still unpaid on receivables past their due date; zero when none (SCRUM-193)")
         BigDecimal overdueAmount,
         @Schema(description = "The earliest due date among the overdue receivables; absent when nothing is overdue")
-        LocalDate oldestOverdueDueDate
+        LocalDate oldestOverdueDueDate,
+        @Schema(example = "[\"BEFORE_DELIVERY\",\"ON_CREDIT\"]", description = "The balance policies a deposit "
+                + "order of this customer may be placed on (the balancePolicy of POST /orders): empty without deposits "
+                + "(SCRUM-193)")
+        List<String> allowedBalancePolicies
 ) {
 }

@@ -48,4 +48,38 @@ class BalancePolicyForTest {
         assertThat(OrderServiceImpl.balancePolicyFor(PaymentTerm.CREDIT, null,
                 terms(true, DepositBalancePolicy.ON_CREDIT))).isNull();
     }
+
+    @Test
+    @DisplayName("SCRUM-193: allowedBalancePolicies is exactly what balancePolicyFor accepts from the customer")
+    void allowedListMatchesWhatIsAccepted() {
+        for (boolean credit : new boolean[] {false, true}) {
+            for (DepositBalancePolicy own : credit ? DepositBalancePolicy.values()
+                    : new DepositBalancePolicy[] {DepositBalancePolicy.BEFORE_DELIVERY, DepositBalancePolicy.ON_DELIVERY}) {
+                CreditTerms terms = terms(credit, own);
+                var allowed = OrderServiceImpl.allowedBalancePolicies(terms);
+                for (BalancePolicy asked : BalancePolicy.values()) {
+                    boolean accepted;
+                    try {
+                        OrderServiceImpl.balancePolicyFor(PaymentTerm.DEPOSIT, asked, terms);
+                        accepted = true;
+                    } catch (BusinessException refused) {
+                        assertThat(refused.errorCode()).isEqualTo(ErrorCode.BALANCE_POLICY_NOT_ALLOWED);
+                        accepted = false;
+                    }
+                    assertThat(allowed.contains(asked)).as("%s for credit=%s own=%s", asked, credit, own)
+                            .isEqualTo(accepted);
+                }
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("SCRUM-193: the list in the order paid first, then own policy, then credit; empty without deposits")
+    void allowedListShape() {
+        assertThat(OrderServiceImpl.allowedBalancePolicies(terms(true, DepositBalancePolicy.ON_CREDIT)))
+                .containsExactly(BalancePolicy.BEFORE_DELIVERY, BalancePolicy.ON_CREDIT);
+        assertThat(OrderServiceImpl.allowedBalancePolicies(terms(false, DepositBalancePolicy.ON_DELIVERY)))
+                .containsExactly(BalancePolicy.BEFORE_DELIVERY, BalancePolicy.ON_DELIVERY);
+        assertThat(OrderServiceImpl.allowedBalancePolicies(CreditTerms.prepaidOnly(UUID.randomUUID()))).isEmpty();
+    }
 }
