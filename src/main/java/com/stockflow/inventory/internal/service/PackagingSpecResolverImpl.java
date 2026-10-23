@@ -50,6 +50,23 @@ class PackagingSpecResolverImpl implements PackagingSpecResolver {
     }
 
     @Override
+    public java.util.Optional<PackagingSpec.CartonSpec> unitCarton(Sku sku, UUID uomConversionId) {
+        UomConversion unit = conversions.find(sku.code(), uomConversionId).orElse(null);
+        if (unit == null || !positive(unit.lengthCm()) || !positive(unit.widthCm()) || !positive(unit.heightCm())
+                || !positive(unit.weightKg())) {
+            return java.util.Optional.empty();
+        }
+        boolean rotatable = items.findBySkus(java.util.Set.of(sku.code())).stream().findFirst()
+                .map(row -> row.logistics().rotatable()).orElse(true);
+        return java.util.Optional.of(new PackagingSpec.CartonSpec(PackagingRules.mm(unit.lengthCm()),
+                PackagingRules.mm(unit.widthCm()), PackagingRules.mm(unit.heightCm()), unit.weightKg(), rotatable));
+    }
+
+    private static boolean positive(java.math.BigDecimal value) {
+        return value != null && value.signum() > 0;
+    }
+
+    @Override
     public List<PackagingSpec> resolveAll(List<PackagingRequest> lines) {
         for (PackagingRequest line : lines) {
             if (line.quantity() < 1) {

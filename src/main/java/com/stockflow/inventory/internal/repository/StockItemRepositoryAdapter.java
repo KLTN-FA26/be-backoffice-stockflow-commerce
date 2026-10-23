@@ -159,6 +159,13 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     }
 
     @Override
+    public List<com.stockflow.inventory.internal.domain.StockItemId> findIdsInStockPackage(
+            com.stockflow.inventory.internal.domain.StockPackageId stockPackageId) {
+        return jpa.findIdsInStockPackage(stockPackageId.value()).stream()
+                .map(com.stockflow.inventory.internal.domain.StockItemId::new).toList();
+    }
+
+    @Override
     public List<StockItem> findLooseBySkuAndLocation(Sku sku, LocationId location) {
         return jpa.findLooseBySkuAndLocation(sku.code(), location.code()).stream()
                 .map(StockItemPersistenceMapper::toDomain)
@@ -183,6 +190,15 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     @Override
     public List<StockItem> findWithReservationsForProductionOrder(UUID productionOrderId) {
         return jpa.findStockItemIdsHoldingProductionOrder(productionOrderId).stream()
+                .sorted(java.util.Comparator.comparing(UUID::toString))
+                .map(id -> findByIdForUpdate(new StockItemId(id)))
+                .flatMap(Optional::stream)
+                .toList();
+    }
+
+    @Override
+    public List<StockItem> findWithReservationsForTransferOrder(UUID transferOrderId) {
+        return jpa.findStockItemIdsHoldingTransferOrder(transferOrderId).stream()
                 .sorted(java.util.Comparator.comparing(UUID::toString))
                 .map(id -> findByIdForUpdate(new StockItemId(id)))
                 .flatMap(Optional::stream)

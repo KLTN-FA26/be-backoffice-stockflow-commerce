@@ -23,7 +23,9 @@ public class LoadPlanPackageJpaEntity extends BaseEntity {
 
     @Column(name = "load_plan_id", nullable = false, updatable = false) private UUID loadPlanId;
     @Column(name = "package_id", nullable = false, updatable = false) private UUID packageId;
-    @Column(name = "shipment_id", nullable = false) private UUID shipmentId;
+    @Column(name = "shipment_id") private UUID shipmentId;
+    /** SCRUM-287 PR T: the transfer order of a TRANSFER plan's parcel (shipment_id null then). */
+    @Column(name = "transfer_order_id") private UUID transferOrderId;
     @Column(name = "active", nullable = false) private boolean active;
     @Enumerated(EnumType.STRING)
     @Column(name = "unplaced_reason", length = 24) private LoadPlanUnplacedReason unplacedReason;
@@ -42,8 +44,10 @@ public class LoadPlanPackageJpaEntity extends BaseEntity {
         this.packageId = packageId;
     }
 
-    public void apply(LoadPlan.Member m) {
-        this.shipmentId = m.shipmentId();
+    /** @param transfer the plan is a TRANSFER plan: the member's key is its transfer order */
+    public void apply(LoadPlan.Member m, boolean transfer) {
+        this.shipmentId = transfer ? null : m.shipmentId();
+        this.transferOrderId = transfer ? m.shipmentId() : null;
         this.active = m.active();
         this.unplacedReason = m.unplacedReason();
         this.addedAt = m.addedAt();
@@ -53,13 +57,15 @@ public class LoadPlanPackageJpaEntity extends BaseEntity {
     }
 
     public LoadPlan.Member toMember() {
-        return new LoadPlan.Member(packageId, shipmentId, active, unplacedReason, addedAt, addedBy, releasedAt,
+        return new LoadPlan.Member(packageId, shipmentId != null ? shipmentId : transferOrderId, active,
+                unplacedReason, addedAt, addedBy, releasedAt,
                 releaseReason);
     }
 
     public UUID getLoadPlanId() { return loadPlanId; }
     public UUID getPackageId() { return packageId; }
     public UUID getShipmentId() { return shipmentId; }
+    public UUID getTransferOrderId() { return transferOrderId; }
     public boolean isActive() { return active; }
     public LoadPlanUnplacedReason getUnplacedReason() { return unplacedReason; }
     public LoadPlanReleaseReason getReleaseReason() { return releaseReason; }

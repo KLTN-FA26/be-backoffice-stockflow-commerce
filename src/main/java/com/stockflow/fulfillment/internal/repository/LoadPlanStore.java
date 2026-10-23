@@ -114,7 +114,7 @@ public class LoadPlanStore {
             if (row == null) {
                 row = new LoadPlanPackageJpaEntity(Identifiers.newId(), planId, m.packageId());
             }
-            row.apply(m);
+            row.apply(m, LoadPlan.SOURCE_TRANSFER.equals(s.sourceType()));
             (m.active() ? membersOn : membersOff).add(row);
         }
         packages.saveAllAndFlush(membersOn);

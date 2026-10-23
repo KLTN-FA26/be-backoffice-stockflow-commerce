@@ -9,7 +9,8 @@ import java.util.UUID;
  * group. Part 1 holds the unit (its {@code package_line}); parts 2..N hold no goods of their own, only the kit code.
  * All parts are of one order (08 BR-04), are sealed with their own weight and size, and ship in one shipment. Load
  * planning keeps a kit's parts together per vehicle by {@code groupId}. {@code orderLineId} is the line whose unit the
- * kit was opened for: part 1 takes that line's item and no other.
+ * kit was opened for: part 1 takes that line's item and no other - a transfer line in a transfer's packing session
+ * (SCRUM-287 PR T).
  *
  * <p>The label prints it as "Bộ {@code partNo}/{@code partCount}".</p>
  */

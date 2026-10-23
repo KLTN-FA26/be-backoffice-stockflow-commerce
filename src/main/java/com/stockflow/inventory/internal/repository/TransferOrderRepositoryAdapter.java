@@ -37,6 +37,17 @@ class TransferOrderRepositoryAdapter implements TransferOrderRepository, Transfe
         return jpa.findByIdWithLines(id).map(TransferOrderRepositoryAdapter::toDomain);
     }
 
+    @Override
+    public List<TransferOrder> findAllById(java.util.Collection<UUID> ids) {
+        return ids.isEmpty() ? List.of() : jpa.findAllWithLines(ids).stream()
+                .map(TransferOrderRepositoryAdapter::toDomain).toList();
+    }
+
+    @Override
+    public List<TransferOrder> findAwaitingDispatch(UUID warehouseId) {
+        return jpa.findAwaitingDispatch(warehouseId).stream().map(TransferOrderRepositoryAdapter::toDomain).toList();
+    }
+
     /** Same counter table and upsert as stock adjustment numbers; see StockAdjustmentRepositoryAdapter. */
     @Override
     public String nextNumber(LocalDate day) {
@@ -71,6 +82,7 @@ class TransferOrderRepositoryAdapter implements TransferOrderRepository, Transfe
         });
         entity.apply(order.status(), order.submittedBy(), order.submittedAt(), order.approvedBy(),
                 order.approvedAt(), order.dispatchedBy(), order.dispatchedAt(), order.cancelReason());
+        entity.applyFulfillment(order.deliveryMode(), order.packedAt(), order.goodsLeftAt());
         for (TransferLine line : order.lines()) {
             entity.getLines().stream().filter(row -> row.getId().equals(line.id())).findFirst()
                     .ifPresent(row -> row.ship(line.shipped()));
@@ -103,7 +115,8 @@ class TransferOrderRepositoryAdapter implements TransferOrderRepository, Transfe
                         ? null : Specs.in("status", criteria.statuses()))
                 .and(com.stockflow.common.security.WarehouseScope.warehousesIn("fromWarehouseId", "toWarehouseId"));
         return jpa.findAll(spec, pageable).map(e -> new Row(e.getId(), e.getTransferNumber(), e.getFromWarehouseId(),
-                e.getToWarehouseId(), e.getStatus(), e.getExpectedDate(), e.getCreatedAt(), e.getDispatchedAt()));
+                e.getToWarehouseId(), e.getStatus(), e.getExpectedDate(), e.getCreatedAt(), e.getDispatchedAt(),
+                e.getDeliveryMode(), e.getPackedAt()));
     }
 
     static TransferOrder toDomain(TransferOrderJpaEntity e) {
@@ -112,6 +125,7 @@ class TransferOrderRepositoryAdapter implements TransferOrderRepository, Transfe
                 e.getLines().stream().map(l -> new TransferLine(l.getId(), l.getLineNo(), new Sku(l.getSku()),
                         l.getLotNumber(), l.getRequestedQty(), l.getShippedQty())).toList(),
                 e.getStatus(), e.getSubmittedBy(), e.getSubmittedAt(), e.getApprovedBy(), e.getApprovedAt(),
-                e.getDispatchedBy(), e.getDispatchedAt(), e.getCancelReason(), e.getVersion(), e.getCreatedAt());
+                e.getDispatchedBy(), e.getDispatchedAt(), e.getCancelReason(), e.getVersion(), e.getCreatedAt())
+                .restoreFulfillment(e.getDeliveryMode(), e.getPackedAt(), e.getGoodsLeftAt());
     }
 }

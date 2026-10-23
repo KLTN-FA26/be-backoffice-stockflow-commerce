@@ -17,7 +17,9 @@ import java.util.UUID;
 public class PackageScanJpaEntity extends BaseEntity {
 
     @Column(name = "package_id", nullable = false, updatable = false) private UUID packageId;
-    @Column(name = "order_line_id", nullable = false, updatable = false) private UUID orderLineId;
+    @Column(name = "order_line_id", updatable = false) private UUID orderLineId;
+    /** SCRUM-287 PR T: the transfer line scanned, at a transfer's packing (order_line_id null then). */
+    @Column(name = "transfer_line_id", updatable = false) private UUID transferLineId;
     @Column(name = "scanned_code", nullable = false, updatable = false, length = 64) private String scannedCode;
     @Column(name = "lot_number", updatable = false, length = 64) private String lotNumber;
     @Column(name = "serial_number", updatable = false, length = 100) private String serialNumber;
@@ -42,7 +44,21 @@ public class PackageScanJpaEntity extends BaseEntity {
         this.scannedAt = scannedAt;
     }
 
+    /** A scan at a transfer's packing (SCRUM-287 PR T): {@code lineId} is a transfer line. */
+    @SuppressWarnings("java:S107")
+    public static PackageScanJpaEntity ofTransfer(UUID id, UUID packageId, UUID transferLineId, String scannedCode,
+                                                  String lotNumber, int quantity, UUID scannedBy, Instant scannedAt) {
+        PackageScanJpaEntity scan = new PackageScanJpaEntity(id, packageId, null, scannedCode, lotNumber, null,
+                quantity, scannedBy, scannedAt);
+        scan.transferLineId = transferLineId;
+        return scan;
+    }
+
     public UUID getPackageId() { return packageId; }
+    public UUID getTransferLineId() { return transferLineId; }
+
+    /** The line scanned: the order line, or the transfer line at a transfer's packing. */
+    public UUID getLineId() { return orderLineId != null ? orderLineId : transferLineId; }
     public UUID getOrderLineId() { return orderLineId; }
     public String getScannedCode() { return scannedCode; }
     public String getLotNumber() { return lotNumber; }

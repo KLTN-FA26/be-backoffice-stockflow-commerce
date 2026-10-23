@@ -432,12 +432,15 @@
         Spring context until it exits; together with Docker that froze 16 GB laptops. The context cache
         is capped in src/test/resources/spring.properties, which is what keeps the suite inside this.
         @{argLine} (late-bound) keeps the JaCoCo agent that prepare-agent puts there.
+        3 GB since 2026-10-23: with ~3000 tests the suite ran out of 2 GB on GitHub's runners (7 GB) late
+        in the run - OutOfMemoryError while a context loaded (#164, runs 39868719561 / 39874622762).
+        3 GB still leaves the runner's Postgres and Redis containers their room.
       -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
         <configuration>
-          <argLine>@{argLine} -Xmx2g</argLine>
+          <argLine>@{argLine} -Xmx3g</argLine>
         </configuration>
       </plugin>
 

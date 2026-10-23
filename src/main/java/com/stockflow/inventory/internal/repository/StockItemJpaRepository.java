@@ -133,6 +133,9 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
                                                        @Param("locationCode") String locationCode);
 
     /** JPQL on purpose: Hibernate flushes this session's pending stock rows before running it (FlushMode.AUTO). */
+    @Query("select s.id from StockItemJpaEntity s where s.stockPackageId = :stockPackageId order by s.id")
+    List<UUID> findIdsInStockPackage(@Param("stockPackageId") UUID stockPackageId);
+
     @Query("select coalesce(sum(s.onHand), 0) from StockItemJpaEntity s where s.stockPackageId = :stockPackageId")
     long sumOnHandInStockPackage(@Param("stockPackageId") UUID stockPackageId);
 
@@ -187,6 +190,14 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
               and r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
             """)
     List<UUID> findStockItemIdsHoldingProductionOrder(@Param("productionOrderId") UUID productionOrderId);
+
+    /** SCRUM-287 PR T: the stock rows holding a transfer order's live allocation. */
+    @Query("""
+            select distinct r.stockItem.id from ReservationJpaEntity r
+            where r.transferOrderId = :transferOrderId
+              and r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
+            """)
+    List<UUID> findStockItemIdsHoldingTransferOrder(@Param("transferOrderId") UUID transferOrderId);
 
     /** The live holds of a production order, oldest first; nothing is locked. */
     @Query("""

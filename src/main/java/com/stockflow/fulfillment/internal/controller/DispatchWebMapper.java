@@ -37,7 +37,8 @@ class DispatchWebMapper {
                         s.labelCodAmount(), s.codAmount(), s.currency(), s.packages().stream().map(p -> new LoadResponse.Parcel(
                                 p.packageId(), p.labelCode(), p.weightKg(), p.loaded(), p.loadedAt(), p.loadedBy(),
                                 PackingWebMapper.kit(p.kit()), p.labelOutdatedAt() != null, p.labelOutdatedAt()))
-                        .toList())).toList(), d.loadPlanId(), d.loadPlanCode(), d.vehicleSeq(), d.vehicleTypeCode(),
+                        .toList(), s.transferOrderId())).toList(), d.loadPlanId(), d.loadPlanCode(), d.vehicleSeq(),
+                d.vehicleTypeCode(),
                 d.bookedAt(), d.bookedBy(), d.bookingCancelledAt(), d.bookingCancelReason(),
                 d.pendingUnloads().stream().map(u -> new LoadResponse.PendingUnload(u.packageId(), u.labelCode(),
                         u.shipmentId(), u.shipmentCode(), u.reason(), u.requestedAt())).toList(),
@@ -54,7 +55,7 @@ class DispatchWebMapper {
                         s.packages().stream().map(p -> new ManifestResponse.Parcel(p.labelCode(), p.weightKg(),
                                 p.lengthCm(), p.widthCm(), p.heightCm(), p.loaded(), PackingWebMapper.kit(p.kit()),
                                 p.labelOutdatedAt() != null, p.labelOutdatedAt()))
-                                .toList())).toList(),
+                                .toList(), s.transferOrderId())).toList(),
                 m.shipmentCount(), m.packageCount(), m.totalWeightKg(), m.codTotal(), m.currency(), m.printedAt(),
                 m.mode(), m.loadPlanCode(), m.vehicleSeq(), m.vehicleTypeCode());
     }

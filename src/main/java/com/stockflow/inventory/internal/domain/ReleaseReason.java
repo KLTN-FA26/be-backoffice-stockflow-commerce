@@ -24,7 +24,9 @@ public enum ReleaseReason {
     /** Part of a production order went to a subcontractor who sources its own blanks (SCRUM-441, G3). */
     SUBCONTRACTED,
     /** A picker found fewer units at the bin than were allocated there; the units were allocated elsewhere (X-SHORT). */
-    SHORT_PICKED;
+    SHORT_PICKED,
+    /** Picking of a transfer order was cancelled before its goods left: its hold is free again (SCRUM-287 PR T). */
+    TRANSFER_CANCELLED;
 
     public com.stockflow.contracts.ReleaseReason toContract() {
         return switch (this) {
@@ -34,8 +36,10 @@ public enum ReleaseReason {
             case MANUAL_OVERRIDE -> com.stockflow.contracts.ReleaseReason.MANUAL_OVERRIDE;
             // A production hold announces nothing to order (StockItem#releaseReservation). SCRAPPED reaches it only
             // for a cancelled order's printed goods (BR-PRD-10), which the order no longer acts on.
-            // SHORT_PICKED: the order keeps its stock, on another bin; nothing for it to act on.
-            case PRODUCTION_CANCELLED, SCRAPPED, RETURNED_FROM_PRODUCTION, SUBCONTRACTED, SHORT_PICKED ->
+            // SHORT_PICKED: the order keeps its stock, on another bin; nothing for it to act on. TRANSFER_CANCELLED: a
+            // transfer's hold, no order's.
+            case PRODUCTION_CANCELLED, SCRAPPED, RETURNED_FROM_PRODUCTION, SUBCONTRACTED, SHORT_PICKED,
+                 TRANSFER_CANCELLED ->
                     com.stockflow.contracts.ReleaseReason.MANUAL_OVERRIDE;
         };
     }

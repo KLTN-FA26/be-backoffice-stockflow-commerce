@@ -15,7 +15,9 @@ public class DispatchLoadPackageJpaEntity extends BaseEntity {
 
     @Column(name = "load_id", nullable = false, updatable = false) private UUID loadId;
     @Column(name = "package_id", nullable = false, updatable = false) private UUID packageId;
-    @Column(name = "shipment_id", nullable = false, updatable = false) private UUID shipmentId;
+    @Column(name = "shipment_id", updatable = false) private UUID shipmentId;
+    /** SCRUM-287 PR T: the transfer order of a parcel on a TRANSFER plan's vehicle (shipment_id null then). */
+    @Column(name = "transfer_order_id", updatable = false) private UUID transferOrderId;
     @Column(name = "scan_id", nullable = false) private UUID scanId;
     @Column(name = "loaded_at", nullable = false) private Instant loadedAt;
     @Column(name = "loaded_by", nullable = false) private UUID loadedBy;
@@ -27,10 +29,16 @@ public class DispatchLoadPackageJpaEntity extends BaseEntity {
     }
 
     public DispatchLoadPackageJpaEntity(UUID id, UUID loadId, UUID packageId, UUID shipmentId) {
+        this(id, loadId, packageId, shipmentId, false);
+    }
+
+    /** @param transfer {@code key} is the parcel's transfer order (SCRUM-287 PR T), not a shipment */
+    public DispatchLoadPackageJpaEntity(UUID id, UUID loadId, UUID packageId, UUID key, boolean transfer) {
         super(id);
         this.loadId = loadId;
         this.packageId = packageId;
-        this.shipmentId = shipmentId;
+        this.shipmentId = transfer ? null : key;
+        this.transferOrderId = transfer ? key : null;
     }
 
     public void apply(UUID scanId, Instant loadedAt, UUID loadedBy, boolean active, Instant removedAt, UUID removedBy) {
@@ -45,6 +53,10 @@ public class DispatchLoadPackageJpaEntity extends BaseEntity {
     public UUID getLoadId() { return loadId; }
     public UUID getPackageId() { return packageId; }
     public UUID getShipmentId() { return shipmentId; }
+    public UUID getTransferOrderId() { return transferOrderId; }
+
+    /** What it is loaded with: its shipment, or its transfer order. */
+    public UUID getKey() { return shipmentId != null ? shipmentId : transferOrderId; }
     public UUID getScanId() { return scanId; }
     public Instant getLoadedAt() { return loadedAt; }
     public UUID getLoadedBy() { return loadedBy; }

@@ -479,6 +479,25 @@ public final class StockItem extends AggregateRoot {
         return reservation;
     }
 
+    /**
+     * Hold this row's units for a transfer order at its source (SCRUM-287 PR T; kltn-docs 10 step 4, BR-02/03): a hold
+     * on this bin and lot like a production hold - the same checks as {@link #allocate}, pinned from the start,
+     * announced to nobody (no order has a stake in it), never an allocation of a SKU reservation. Consumed when the
+     * transfer is dispatched, released when its picking is cancelled. Idempotent on {@code requestId}.
+     */
+    public Reservation reserveForTransfer(UUID transferOrderId, UUID rootRequestId, UUID requestId, Quantity quantity,
+                                          Instant now) {
+        Optional<Reservation> alreadyServed = findByRequestId(requestId);
+        if (alreadyServed.isPresent()) {
+            return alreadyServed.get();
+        }
+        requireHoldable(quantity, now, "transfer order " + transferOrderId);
+        Reservation reservation = Reservation.openForTransfer(transferOrderId, rootRequestId, requestId, quantity, now);
+        reservations.add(reservation);
+        checkInvariants();
+        return reservation;
+    }
+
     private void requireHoldable(Quantity quantity, Instant now, String holder) {
         if (expiryDate != null && expiryDate.isBefore(BusinessCalendar.date(now))) {
             throw new BusinessException(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT);

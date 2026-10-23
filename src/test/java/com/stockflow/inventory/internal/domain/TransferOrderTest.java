@@ -157,4 +157,41 @@ class TransferOrderTest {
         big.submit(PLANNER, 100, NOW);
         assertThat(big.status()).isEqualTo(TransferStatus.APPROVED);
     }
+
+    @Test
+    @DisplayName("SCRUM-287 PR T (LP2-8, 10 §5): a full truckload is packed from APPROVED (picking starts) or PICKING; "
+            + "a PARCEL transfer is not; packed and goods left are kept; once goods left picking is not cancelled "
+            + "(BR-04), before that cancelling it undoes the packing; the delivery mode is chosen while DRAFT")
+    void packingAndGoodsLeft() {
+        TransferOrder parcel = draft(5);
+        parcel.travelAs(com.stockflow.inventory.api.TransferDeliveryMode.PARCEL);
+        parcel.submit(PLANNER, 100, NOW);
+        assertThatThrownBy(parcel::beginPacking).extracting(TransferOrderTest::code)
+                .isEqualTo(ErrorCode.TRANSFER_NOT_FULL_TRUCKLOAD);
+        assertThatThrownBy(() -> parcel.travelAs(com.stockflow.inventory.api.TransferDeliveryMode.FULL_TRUCKLOAD))
+                .extracting(TransferOrderTest::code).isEqualTo(ErrorCode.TRANSFER_ORDER_NOT_EDITABLE);
+
+        TransferOrder order = draft(5);
+        assertThat(order.deliveryMode()).isEqualTo(com.stockflow.inventory.api.TransferDeliveryMode.FULL_TRUCKLOAD);
+        assertThatThrownBy(order::beginPacking).extracting(TransferOrderTest::code)
+                .isEqualTo(ErrorCode.INVALID_TRANSFER_TRANSITION);
+        order.submit(PLANNER, 100, NOW);
+        assertThat(order.beginPacking()).isTrue();
+        assertThat(order.status()).isEqualTo(TransferStatus.PICKING);
+        assertThat(order.beginPacking()).isFalse();
+        order.markPacked(NOW);
+        order.cancelPicking();
+        assertThat(order.status()).isEqualTo(TransferStatus.APPROVED);
+        assertThat(order.packedAt()).isNull();
+
+        order.beginPacking();
+        order.markPacked(NOW);
+        assertThat(order.recordGoodsLeft(NOW)).isTrue();
+        assertThat(order.recordGoodsLeft(NOW.plusSeconds(60))).isFalse();
+        assertThat(order.goodsLeftAt()).isEqualTo(NOW);
+        assertThatThrownBy(order::cancelPicking).extracting(TransferOrderTest::code)
+                .isEqualTo(ErrorCode.TRANSFER_GOODS_LEFT);
+        order.dispatch(PLANNER, Map.of(order.lines().get(0).id(), 5), NOW);
+        assertThat(order.status()).isEqualTo(TransferStatus.IN_TRANSIT);
+    }
 }

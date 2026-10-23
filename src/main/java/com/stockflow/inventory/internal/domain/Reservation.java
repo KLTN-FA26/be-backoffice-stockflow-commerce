@@ -34,6 +34,11 @@ public final class Reservation {
      */
     private UUID productionOrderId;
     /**
+     * The transfer order, for stock allocated to a transfer at its source (SCRUM-287 PR T; kltn-docs 10 step 4, BR-02/03):
+     * no order may sell it. Pinned like a production hold; consumed when the transfer is dispatched.
+     */
+    private UUID transferOrderId;
+    /**
      * The caller's own idempotency key, shared by every hold this one reservation call produced.
      *
      * <p>Kept alongside {@link #requestId} rather than instead of it because they answer different
@@ -67,17 +72,30 @@ public final class Reservation {
                 reservedAt, expiresAt, status, releaseReason, closedAt);
     }
 
-    /** A hold that was not allocated from a SKU reservation, as stored. */
+    /** A hold that was not allocated from a SKU reservation, as stored (an order's or a production order's). */
     public Reservation(ReservationId id, UUID orderId, UUID productionOrderId, UUID rootRequestId, UUID requestId,
                        Quantity quantity, Instant reservedAt, Instant expiresAt,
                        ReservationStatus status, ReleaseReason releaseReason, Instant closedAt) {
-        this(id, orderId, productionOrderId, rootRequestId, requestId, quantity, reservedAt, expiresAt, status,
+        this(id, orderId, productionOrderId, null, rootRequestId, requestId, quantity, reservedAt, expiresAt, status,
                 releaseReason, closedAt, null);
     }
 
-    /** Full constructor, used by the persistence mapper when rehydrating a stored row. */
+    /** An order's or production order's hold, as stored, with the SKU reservation it was allocated from (#147). */
     public Reservation(ReservationId id, UUID orderId, UUID productionOrderId, UUID rootRequestId, UUID requestId,
                        Quantity quantity, Instant reservedAt, Instant expiresAt,
+                       ReservationStatus status, ReleaseReason releaseReason, Instant closedAt, UUID allocatedFrom) {
+        this(id, orderId, productionOrderId, null, rootRequestId, requestId, quantity, reservedAt, expiresAt, status,
+                releaseReason, closedAt, allocatedFrom);
+    }
+
+    /**
+     * Full constructor, used by the persistence mapper when rehydrating a stored row. Exactly one owner: an order, a
+     * production order or a transfer order (SCRUM-287 PR T). A transfer's hold is a hold on one stock row like a
+     * production hold - never an allocation of a SKU reservation, never expiring.
+     */
+    @SuppressWarnings("java:S107")
+    public Reservation(ReservationId id, UUID orderId, UUID productionOrderId, UUID transferOrderId,
+                       UUID rootRequestId, UUID requestId, Quantity quantity, Instant reservedAt, Instant expiresAt,
                        ReservationStatus status, ReleaseReason releaseReason, Instant closedAt, UUID allocatedFrom) {
         this.id = java.util.Objects.requireNonNull(id, "id");
         if (status == ReservationStatus.ALLOCATED) {
@@ -87,14 +105,17 @@ public final class Reservation {
             throw new IllegalArgumentException("An allocation belongs to an order and does not expire");
         }
         this.allocatedFrom = allocatedFrom;
-        if ((orderId == null) == (productionOrderId == null)) {
-            throw new IllegalArgumentException("A hold belongs to exactly one order or one production order");
+        int owners = (orderId == null ? 0 : 1) + (productionOrderId == null ? 0 : 1) + (transferOrderId == null ? 0 : 1);
+        if (owners != 1) {
+            throw new IllegalArgumentException(
+                    "A hold belongs to exactly one order, one production order or one transfer order");
         }
-        if (productionOrderId != null && expiresAt != null) {
-            throw new IllegalArgumentException("A production hold does not expire");
+        if ((productionOrderId != null || transferOrderId != null) && expiresAt != null) {
+            throw new IllegalArgumentException("A production or transfer hold does not expire");
         }
         this.orderId = orderId;
         this.productionOrderId = productionOrderId;
+        this.transferOrderId = transferOrderId;
         this.rootRequestId = java.util.Objects.requireNonNull(rootRequestId, "rootRequestId");
         this.requestId = java.util.Objects.requireNonNull(requestId, "requestId");
         this.quantity = java.util.Objects.requireNonNull(quantity, "quantity");
@@ -133,6 +154,14 @@ public final class Reservation {
         return new Reservation(ReservationId.newId(), null,
                 java.util.Objects.requireNonNull(productionOrderId, "productionOrderId"), rootRequestId, requestId,
                 quantity, now, null, ReservationStatus.HELD, null, null);
+    }
+
+    /** A transfer order's hold (SCRUM-287 PR T): pinned from the start. Package-private, like {@link #open}. */
+    static Reservation openForTransfer(UUID transferOrderId, UUID rootRequestId, UUID requestId, Quantity quantity,
+                                       Instant now) {
+        return new Reservation(ReservationId.newId(), null, null,
+                java.util.Objects.requireNonNull(transferOrderId, "transferOrderId"), rootRequestId, requestId,
+                quantity, now, null, ReservationStatus.HELD, null, null, null);
     }
 
     /**
@@ -184,7 +213,8 @@ public final class Reservation {
      * @return true if this call gave an active pinned hold its deadline
      */
     boolean rearm(Instant deadline) {
-        if (!status.isActive() || expiresAt != null || productionOrderId != null || allocatedFrom != null) {
+        if (!status.isActive() || expiresAt != null || productionOrderId != null || transferOrderId != null
+                || allocatedFrom != null) {
             return false;
         }
         this.expiresAt = java.util.Objects.requireNonNull(deadline, "deadline");
@@ -235,6 +265,7 @@ public final class Reservation {
     public ReservationId id() { return id; }
     public UUID orderId() { return orderId; }
     public UUID productionOrderId() { return productionOrderId; }
+    public UUID transferOrderId() { return transferOrderId; }
     public UUID rootRequestId() { return rootRequestId; }
     public UUID requestId() { return requestId; }
     public Quantity quantity() { return quantity; }

@@ -44,10 +44,10 @@ class LoadEstimateController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    @Operation(summary = "Estimate how an order's remaining units load (advisory; synchronous within the solver budget) "
-            + "and make it the order's current estimate. CONFIRMED needs warehouseId. Lines without size or weight are "
-            + "listed in missing (incomplete=true). 400 LOAD_ESTIMATE_SOURCE_UNSUPPORTED (TRANSFER) / "
-            + "VALIDATION_FAILED, 404, 409 LOAD_ESTIMATE_SOURCE_NOT_ELIGIBLE / VEHICLE_TYPE_INACTIVE, 422 "
+    @Operation(summary = "Estimate how an order's remaining units - or a transfer order's lines, until it is "
+            + "dispatched, at its source warehouse (SCRUM-287 PR T) - load (advisory; synchronous within the solver "
+            + "budget) and make it the source's current estimate. CONFIRMED needs warehouseId. Lines without size or "
+            + "weight are listed in missing (incomplete=true). 400 VALIDATION_FAILED, 404, 409 LOAD_ESTIMATE_SOURCE_NOT_ELIGIBLE / VEHICLE_TYPE_INACTIVE, 422 "
             + "LOAD_ESTIMATE_PACKAGING_MISSING when no line resolves (field inventoryItems[<itemId>] per line) / "
             + "LOAD_ESTIMATE_TOO_MANY_CARTONS")
     @RequiresPermission(resource = FulfillmentResources.LOAD_ESTIMATES, action = Action.CREATE)

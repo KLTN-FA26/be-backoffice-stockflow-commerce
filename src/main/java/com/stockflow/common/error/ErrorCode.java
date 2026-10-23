@@ -440,6 +440,20 @@ public enum ErrorCode {
     LOAD_PLAN_UNPLACED_NOT_ACKNOWLEDGED("Acknowledge the packages left unplaced before confirming", 409),
     /** Docs 09 BR-14: once a vehicle of the plan started loading, the plan is neither reopened nor cancelled here. */
     LOAD_PLAN_LOADING_STARTED("A vehicle of this load plan is already being loaded", 409),
+    /** SCRUM-287 PR T (LP2-8): only a transfer that travels as a full truckload is packed for a load plan. */
+    TRANSFER_NOT_FULL_TRUCKLOAD("This transfer order does not travel as a full truckload", 409),
+    /** Docs 10 BR-04: goods of the transfer left on a load plan's vehicle; its picking is no longer cancelled. */
+    TRANSFER_GOODS_LEFT("Goods of this transfer order already left the source warehouse", 409),
+    /** SCRUM-287 PR T: a transfer packed for a load plan is dispatched by the plan's last vehicle, not by hand. */
+    TRANSFER_DISPATCH_BY_LOAD_PLAN("This transfer order is dispatched by its load plan's last vehicle", 409),
+    /** Docs 09 BR-09 / LP2-1: only a packed transfer goes into a load plan. */
+    TRANSFER_NOT_PACKED("This transfer order is not packed for dispatch", 409),
+    /** Docs 09 §4.2 step 1 / 10 step 5: a transfer leaves whole with its load plan; nothing of it stays behind. */
+    TRANSFER_SHIPS_WHOLE("A transfer order leaves whole with its load plan", 409),
+    /** Docs 09 §3 LoadPlan.source_type: a plan holds customer orders' shipments or one transfer order, not both. */
+    LOAD_PLAN_SOURCE_MISMATCH("This load plan holds another kind of source", 409),
+    /** LP2-8: the stock carton is not an unopened carton of this transfer's goods at the source warehouse. */
+    STOCK_CARTON_NOT_SHIPPABLE("This stock carton cannot ship as it is", 409),
     /** Docs 09 BR-10 / BR-11: a placement breaks a loading rule; the field errors name each package and rule. */
     PLACEMENT_RULE_VIOLATION("A placement breaks a loading rule", 422),
     /** Docs 09 edge "bỏ kiện & tính lại": parcels were taken out of a vehicle; recalculate it before confirming. */

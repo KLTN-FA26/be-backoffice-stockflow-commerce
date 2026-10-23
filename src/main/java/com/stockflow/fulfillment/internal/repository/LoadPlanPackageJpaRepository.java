@@ -17,4 +17,7 @@ public interface LoadPlanPackageJpaRepository extends BaseJpaRepository<LoadPlan
     List<LoadPlanPackageJpaEntity> findByShipmentIdAndActiveTrue(UUID shipmentId);
 
     boolean existsByPackageIdAndActiveTrue(UUID packageId);
+
+    /** SCRUM-287 PR T: the parcels of a transfer order held by a live plan. */
+    List<LoadPlanPackageJpaEntity> findByTransferOrderIdAndActiveTrue(UUID transferOrderId);
 }

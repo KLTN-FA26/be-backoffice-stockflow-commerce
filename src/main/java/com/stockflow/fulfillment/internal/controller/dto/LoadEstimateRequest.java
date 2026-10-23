@@ -12,7 +12,8 @@ import java.util.UUID;
 /**
  * Estimate how a source loads before it is packed (SCRUM-287 PR EST; advisory, LP2-1).
  *
- * @param sources        exactly one for now: {@code {type: ORDER, id}}; TRANSFER is reserved (400 until PR T)
+ * @param sources        exactly one for now: {@code {type: ORDER, id}} or {@code {type: TRANSFER, id}} (a transfer order's lines; orderLineId of an estimate
+ *                       line is then the transfer line's id)
  * @param warehouseId    required for a CONFIRMED order (estimated in the release dialog, before it has a warehouse):
  *                       the warehouse it is about to be released to; for a released order leave it out (or send its
  *                       own)

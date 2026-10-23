@@ -26,25 +26,35 @@ public interface LoadPlans {
     record ParcelView(UUID packageId, String labelCode, UUID shipmentId, String shipmentCode, String partName,
                       int lengthMm, int widthMm, int heightMm, BigDecimal weightKg, boolean rotatable,
                       UUID kitGroupId, Integer kitPartNo, Integer kitPartCount, Integer vehicleSeq,
-                      String unplacedReason) { }
+                      String unplacedReason, UUID transferOrderId) { }
 
     /**
      * A full-truckload shipment waiting for dispatch with the parcels no live plan holds (LP-5: chosen whole).
      * {@code packagesInOtherPlans} counts its parcels another plan holds (only after a plan left some behind).
+     *
+     * <p>With {@code sourceType} TRANSFER (SCRUM-287 PR T) it is a packed transfer order instead, whole:
+     * {@code shipmentId}, {@code orderId} and {@code orderNumber} are null, {@code code} is the transfer's number,
+     * {@code readyAt} when its packing completed, {@code transferOrderId} and {@code toWarehouseId} name it.</p>
      */
     record CandidateShipment(UUID shipmentId, String code, UUID orderId, String orderNumber,
                              boolean allowPartialShipment, Instant readyAt, int packageCount, int packagesInOtherPlans,
-                             BigDecimal weightKg, long volumeMm3, List<ParcelView> packages) { }
+                             BigDecimal weightKg, long volumeMm3, List<ParcelView> packages, String sourceType,
+                             UUID transferOrderId, UUID toWarehouseId) { }
 
+    /** {@code shipmentCount}: the shipments of an ORDER plan; 1 for a TRANSFER plan's transfer order. */
     record PlanRow(UUID loadPlanId, String code, UUID warehouseId, String status, String selectionMode,
                    int shipmentCount, int packageCount, int vehicleCount, int unplacedCount, Instant createdAt,
-                   Instant calculatedAt, Instant confirmedAt, long version) { }
+                   Instant calculatedAt, Instant confirmedAt, long version, String sourceType) { }
 
     record VehicleTypeChoice(UUID vehicleTypeId, String code, String name, String kind, int availableCount,
                              String status) { }
 
     record ShipmentInPlan(UUID shipmentId, String code, UUID orderId, String orderNumber,
                           boolean allowPartialShipment, int packageCount) { }
+
+    /** The transfer order of a TRANSFER plan (SCRUM-287 PR T): its number, warehouses and status (10 §5). */
+    record TransferInPlan(UUID transferOrderId, String number, UUID fromWarehouseId, UUID toWarehouseId,
+                          String status, int packageCount) { }
 
     /** The dispatch load a confirmed vehicle became (PLANNED until PR E books it). */
     record LoadRef(UUID loadId, String code, String status) { }
@@ -62,7 +72,7 @@ public interface LoadPlans {
                       int packageCount, int placedCount, int unplacedCount, Acknowledgement unplacedAcknowledgement,
                       Instant calculatedAt, Map<String, Object> solverMeta, Instant confirmedAt, Instant reopenedAt,
                       String reopenReason, Instant dispatchedAt, Instant cancelledAt, String cancelReason,
-                      Instant createdAt, long version) { }
+                      Instant createdAt, long version, TransferInPlan transferOrder) { }
 
     // ---- reconciliation (design v2 §1 "nesting-reconcile": pieces in = placed + unplaced) ---------------------------
 
@@ -123,10 +133,27 @@ public interface LoadPlans {
 
     // ---- commands --------------------------------------------------------------------------------------------------
 
+    /**
+     * @param sourceType      ORDER (default: {@code shipmentIds}) or TRANSFER ({@code transferOrderIds}: one packed
+     *                        transfer, 09 §4.2 step 1); a plan never holds both (LOAD_PLAN_SOURCE_MISMATCH)
+     */
     record CreatePlan(UUID requestId, UUID warehouseId, List<UUID> shipmentIds, List<UUID> vehicleTypeIds,
-                      String selectionMode, String note) { }
+                      String selectionMode, String note, String sourceType, List<UUID> transferOrderIds) {
 
-    record Inputs(Long expectedVersion, List<UUID> shipmentIds, List<UUID> vehicleTypeIds, String selectionMode) { }
+        public CreatePlan(UUID requestId, UUID warehouseId, List<UUID> shipmentIds, List<UUID> vehicleTypeIds,
+                          String selectionMode, String note) {
+            this(requestId, warehouseId, shipmentIds, vehicleTypeIds, selectionMode, note, null, null);
+        }
+    }
+
+    /** {@code transferOrderIds} for a TRANSFER plan (its one transfer), {@code shipmentIds} for an ORDER plan. */
+    record Inputs(Long expectedVersion, List<UUID> shipmentIds, List<UUID> vehicleTypeIds, String selectionMode,
+                  List<UUID> transferOrderIds) {
+
+        public Inputs(Long expectedVersion, List<UUID> shipmentIds, List<UUID> vehicleTypeIds, String selectionMode) {
+            this(expectedVersion, shipmentIds, vehicleTypeIds, selectionMode, null);
+        }
+    }
 
     /**
      * A parcel's place in a manual edit: corner and placed sizes; {@code orientation} optional - the sizes decide, and
@@ -141,7 +168,15 @@ public interface LoadPlans {
     // ---- operations ------------------------------------------------------------------------------------------------
 
     /** Full-truckload shipments of the warehouse waiting for dispatch, with the parcels free to plan. */
-    List<CandidateShipment> candidates(UUID warehouseId, UUID loadPlanId);
+    default List<CandidateShipment> candidates(UUID warehouseId, UUID loadPlanId) {
+        return candidates(warehouseId, loadPlanId, null);
+    }
+
+    /**
+     * As {@link #candidates(UUID, UUID)} for {@code sourceType} ORDER (the default); TRANSFER: the packed full-truckload
+     * transfer orders leaving from the warehouse, whole, that no other live plan holds (SCRUM-287 PR T).
+     */
+    List<CandidateShipment> candidates(UUID warehouseId, UUID loadPlanId, String sourceType);
 
     /** A new DRAFT plan, idempotent by {@code requestId}; shipments and vehicle types may be given at once. */
     PlanDetail create(CreatePlan request, CurrentUser actor);

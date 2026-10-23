@@ -631,8 +631,8 @@ public final class PackingSession {
         requireWholeKits();
         List<Parcel> open = parcels.stream().filter(p -> p.status == PackageStatus.OPEN && !p.isEmpty()).toList();
         if (!open.isEmpty()) {
-            throw new BusinessException(ErrorCode.PACKAGE_NOT_SEALED, "Package(s) %s still open: weigh, measure and "
-                    + "seal them, or take them apart".formatted(open.stream().map(p -> String.valueOf(p.packageNo))
+            throw new BusinessException(ErrorCode.PACKAGE_NOT_SEALED, ("Package(s) %s still open: weigh, measure and "
+                    + "seal them, or take them apart").formatted(open.stream().map(p -> String.valueOf(p.packageNo))
                     .collect(Collectors.joining(", "))));
         }
         List<Parcel> toShip = parcels.stream().filter(p -> p.status == PackageStatus.SEALED && !p.shipped()).toList();
@@ -685,6 +685,17 @@ public final class PackingSession {
             packedAt = now;
             packedBy = actor;
         }
+    }
+
+    /**
+     * A transfer's packing completed (SCRUM-287 PR T, 10 step 5): its sealed parcels stay with the transfer - no
+     * shipment is made (a parcel is of a shipment or of a transfer) - and the session is PACKED. Call after
+     * {@link #complete}, which checked the kits and the parcels.
+     */
+    public void finishTransfer(UUID actor, Instant now) {
+        status = PackStatus.PACKED;
+        packedAt = now;
+        packedBy = actor;
     }
 
     /** A printed design did not match its snapshot (BR-DSG-003, 08 BR-02): QC or a manager decides. */

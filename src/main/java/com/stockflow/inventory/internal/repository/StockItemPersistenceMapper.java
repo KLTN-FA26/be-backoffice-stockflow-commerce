@@ -54,6 +54,7 @@ final class StockItemPersistenceMapper {
                 new ReservationId(entity.getId()),
                 entity.getOrderId(),
                 entity.getProductionOrderId(),
+                entity.getTransferOrderId(),
                 entity.getRootRequestId(),
                 entity.getRequestId(),
                 Quantity.of(entity.getQuantity()),
@@ -107,7 +108,7 @@ final class StockItemPersistenceMapper {
                         r.status(),
                         r.releaseReason(),
                         r.closedAt(),
-                        r.allocatedFrom()))
+                        r.allocatedFrom()).forTransfer(r.transferOrderId()))
                 .toList();
     }
 }

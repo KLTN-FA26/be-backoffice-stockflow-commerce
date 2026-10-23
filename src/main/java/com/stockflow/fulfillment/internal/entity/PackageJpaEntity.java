@@ -49,6 +49,12 @@ public class PackageJpaEntity extends BaseEntity {
     @Column(name = "kit_part_no", updatable = false) private Short kitPartNo;
     @Column(name = "kit_part_count", updatable = false) private Short kitPartCount;
     @Column(name = "kit_order_line_id", updatable = false) private UUID kitOrderLineId;
+    /** SCRUM-287 PR T: the transfer line a transfer's kit holds a unit of (kit_order_line_id for an order's). */
+    @Column(name = "kit_transfer_line_id", updatable = false) private UUID kitTransferLineId;
+    /** SCRUM-287 PR T: the transfer order this parcel carries (its pack's); never with a shipment. */
+    @Column(name = "transfer_order_id", updatable = false) private UUID transferOrderId;
+    /** LP2-8: the unopened stock carton shipped as it is in this parcel (a transfer's only). */
+    @Column(name = "stock_package_id") private UUID stockPackageId;
     /** KIT-FORCE: why this ordinary parcel holds units of an item that ships as several boxes. */
     @Column(name = "kit_override_reason", length = 500) private String kitOverrideReason;
     /** SCRUM-392: moved to another shipment since its label was printed; reprint before loading. */
@@ -69,12 +75,25 @@ public class PackageJpaEntity extends BaseEntity {
 
     /** A part of a kit (LP2-6): its group, part number and the kit's size are fixed when the kit is opened. */
     public PackageJpaEntity(UUID id, UUID packId, int packageNo, String labelCode, KitPart kit) {
+        this(id, packId, packageNo, labelCode, kit, null);
+    }
+
+    /**
+     * A parcel of a transfer's packing session when {@code transferOrderId} is given (SCRUM-287 PR T): its kit, if any,
+     * holds a unit of a transfer line ({@link KitPart#orderLineId} is then that line's id).
+     */
+    public PackageJpaEntity(UUID id, UUID packId, int packageNo, String labelCode, KitPart kit, UUID transferOrderId) {
         this(id, packId, packageNo, labelCode);
+        this.transferOrderId = transferOrderId;
         if (kit != null) {
             this.kitGroupId = kit.groupId();
             this.kitPartNo = (short) kit.partNo();
             this.kitPartCount = (short) kit.partCount();
-            this.kitOrderLineId = kit.orderLineId();
+            if (transferOrderId == null) {
+                this.kitOrderLineId = kit.orderLineId();
+            } else {
+                this.kitTransferLineId = kit.orderLineId();
+            }
         }
     }
 
@@ -102,6 +121,11 @@ public class PackageJpaEntity extends BaseEntity {
     }
 
     public UUID getPackId() { return packId; }
+    public UUID getTransferOrderId() { return transferOrderId; }
+    public UUID getStockPackageId() { return stockPackageId; }
+
+    /** LP2-8: the unopened stock carton this parcel ships as it is. */
+    public void shipsCarton(UUID stockPackageId) { this.stockPackageId = stockPackageId; }
     public UUID getShipmentId() { return shipmentId; }
     public int getPackageNo() { return packageNo; }
     public String getLabelCode() { return labelCode; }
@@ -133,6 +157,7 @@ public class PackageJpaEntity extends BaseEntity {
 
     /** The kit part it is, or null for an ordinary parcel. */
     public KitPart getKit() {
-        return kitGroupId == null ? null : new KitPart(kitGroupId, kitPartNo, kitPartCount, kitOrderLineId);
+        return kitGroupId == null ? null : new KitPart(kitGroupId, kitPartNo, kitPartCount,
+                kitOrderLineId != null ? kitOrderLineId : kitTransferLineId);
     }
 }
