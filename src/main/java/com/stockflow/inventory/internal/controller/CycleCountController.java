@@ -9,7 +9,7 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
-import com.stockflow.inventory.internal.domain.Recounts;
+import com.stockflow.inventory.internal.service.CycleCountView;
 import com.stockflow.inventory.internal.service.CycleCounts;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -31,9 +31,9 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Cycle counts (WBS 3.10.5), so far the blind recounts a short pick opens (docs 04c X-SHORT step 03): listed, and
- * called off by the warehouse manager. Counting and posting the difference belong to the cycle-count story. A counter
- * sees what to count, not what the books say; whoever may approve counts
+ * Cycle counts (WBS 3.10.5): listed, and called off by the warehouse manager. Planning, counting and posting the
+ * difference are added here by SCRUM-146. A counter of a blind count (a short pick's recount, docs 04c X-SHORT
+ * step 03) sees what to count, not what the books say; whoever may approve counts
  * ({@code inventory-cycle-counts:APPROVE}) sees both.
  */
 @RestController
@@ -93,7 +93,7 @@ class CycleCountController {
         return ApiResponse.ok(toResponse(counts.cancel(countId, request.reason(), actor.userId().toString())));
     }
 
-    private static CycleCountResponse toResponse(Recounts.Recount count) {
+    private static CycleCountResponse toResponse(CycleCountView count) {
         return new CycleCountResponse(count.id(), count.number(), count.warehouseId(), count.triggerType(),
                 count.status(), count.blind(), count.plannedDate(), count.note(), count.createdAt(),
                 count.lines().stream().map(line -> new LineResponse(line.id(), line.locationCode(), line.sku(),

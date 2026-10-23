@@ -71,13 +71,13 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
     private final InventoryPolicyRepository policies;
     private final StockPackageContents cartons;
     private final Clock clock;
-    private final com.stockflow.inventory.internal.domain.Recounts recounts;
+    private final com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts;
 
     PickConsumptionService(StockItemRepository stockItems, StockMovementLog ledger, InventoryEventPublisher events,
                            LocationDirectory locations, InventoryPolicyRepository policies,
                            StockPackageContents cartons, Clock clock,
-                           com.stockflow.inventory.internal.domain.Recounts recounts) {
-        this.recounts = recounts;
+                           com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts) {
+        this.cycleCounts = cycleCounts;
         this.stockItems = stockItems;
         this.ledger = ledger;
         this.events = events;
@@ -230,15 +230,18 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
                         "No allocation with id " + reservationId));
         WarehouseScope.requireLocation(item.location().code());
         Reservation hold = item.findReservation(ReservationId.of(reservationId)).orElseThrow();
-        var open = recounts.findOpenFor(item.location(), item.sku(), item.lotNumber());
+        var slot = com.stockflow.inventory.internal.domain.CountSlot.loose(item.location(), item.sku(),
+                item.lotNumber());
+        var open = cycleCounts.findOpenFor(slot);
         if (open.isPresent()) {
             return new com.stockflow.inventory.consumption.ShortPickRecount(open.get().id(), open.get().number(), false);
         }
         UUID warehouse = locations.warehouseOf(item.location()).orElseThrow(() ->
                 new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + item.location()));
-        var recount = recounts.openShortPick(warehouse, item.location(), item.sku(), item.lotNumber(),
-                item.onHand().value(), "Short pick: line %s found %d of %s".formatted(pickLineId, found,
-                        hold.quantity()), com.stockflow.common.domain.BusinessCalendar.date(clock.instant()));
+        var day = com.stockflow.common.domain.BusinessCalendar.date(clock.instant());
+        var recount = cycleCounts.save(com.stockflow.inventory.internal.domain.CycleCount.shortPick(
+                cycleCounts.nextNumber(day), warehouse, slot, item.onHand().value(),
+                "Short pick: line %s found %d of %s".formatted(pickLineId, found, hold.quantity()), day));
         log.info("Short pick at {} ({} {}): recount {} opened", item.location(), item.sku(),
                 item.lotNumber() == null ? "" : item.lotNumber(), recount.number());
         return new com.stockflow.inventory.consumption.ShortPickRecount(recount.id(), recount.number(), true);
