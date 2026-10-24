@@ -110,6 +110,10 @@ class SubcontractService implements Subcontracting {
             throw new BusinessException(ErrorCode.SUPPLIER_NOT_SUBCONTRACTOR,
                     "%s does not print for us".formatted(terms.name()));
         }
+        if (!terms.active()) {
+            throw new BusinessException(ErrorCode.SUPPLIER_INACTIVE,
+                    "%s is not an active supplier and takes no new work".formatted(terms.name()));
+        }
         Instant now = now();
         if (parent.wholeOrder(split.quantity())) {
             return convert(user, parent, split, now);

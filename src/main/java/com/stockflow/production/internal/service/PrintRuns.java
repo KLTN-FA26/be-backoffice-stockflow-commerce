@@ -30,14 +30,17 @@ public interface PrintRuns {
 
     /**
      * SCRUM-399/400. A QC round over every good unit waiting for it (BR-PRD-05: a SAMPLE against the print file,
-     * an ORDER against its approved sample, {@code approvedSampleId} on the order). Failed units are scrap.
+     * an ORDER against its approved sample, {@code approvedSampleId} on the order). The round names the sample it
+     * compared the goods with — exactly the order's approved round, still APPROVED for its design, or null when the
+     * order has none (SAMPLE, or a repeat design, BR-PRD-08) — and the sample is kept in the order's status history;
+     * otherwise {@code VALIDATION_FAILED}, or {@code CONFLICT} for a sample no longer approved. Failed units are scrap.
      * Enough good units: COMPLETED — an ORDER's goods go, still held for it, to {@code packingLocation} (or the
      * warehouse's only PACKING area) and {@code ProductionCompleted} is published; a SAMPLE's are written off as
      * SAMPLE and its round becomes READY. Short: READY, and the missing blanks are held now, or the order goes
      * ON_HOLD (BLANKS_SHORT) and purchasing is told.
      */
     ProductionOrders.Detail recordQc(CurrentUser user, UUID productionOrderId, int passed, int failed, String note,
-                                     String packingLocation);
+                                     String packingLocation, UUID approvedSampleId);
 
     /**
      * SCRUM-401. Cancel before printing (PENDING_PREPRESS, READY, MATERIAL_ISSUED, or ON_HOLD from one of them):

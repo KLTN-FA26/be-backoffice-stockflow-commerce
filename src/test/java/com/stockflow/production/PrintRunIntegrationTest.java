@@ -300,7 +300,8 @@ class PrintRunIntegrationTest {
                 .extracting(PrintRunIntegrationTest::code).isEqualTo(ErrorCode.INVALID_ADJUSTMENT_TRANSITION);
         assertThat(inventory.availableToPromise(BLANK)).isEqualTo(atp);
 
-        ProductionOrders.Detail short1 = runs.recordQc(inspector, line.productionOrderId(), 7, 1, "Colour off", null);
+        ProductionOrders.Detail short1 = runs.recordQc(inspector, line.productionOrderId(), 7, 1, "Colour off", null,
+                sampleOf(line.productionOrderId()));
         assertThat(short1.summary().status()).isEqualTo(ProductionOrder.Status.READY);
         assertThat(short1.summary().goodQuantity()).isEqualTo(7);
         assertThat(inventory.productionHolds(line.productionOrderId())).as("3 blanks held for the reprint")
@@ -314,7 +315,8 @@ class PrintRunIntegrationTest {
         issueAll(line.productionOrderId());
         runs.startPrinting(printer, line.productionOrderId());
         runs.recordOutput(printer, line.productionOrderId(), 3, List.of());
-        ProductionOrders.Detail done = runs.recordQc(inspector, line.productionOrderId(), 3, 0, null, null);
+        ProductionOrders.Detail done = runs.recordQc(inspector, line.productionOrderId(), 3, 0, null, null,
+                sampleOf(line.productionOrderId()));
 
         assertThat(done.summary().status()).isEqualTo(ProductionOrder.Status.COMPLETED);
         assertThat(done.summary().goodQuantity()).isEqualTo(10);
@@ -387,7 +389,8 @@ class PrintRunIntegrationTest {
         runs.startPrinting(printer, line.productionOrderId());
         runs.recordOutput(printer, line.productionOrderId(), 9, List.of());
 
-        ProductionOrders.Detail afterQc = runs.recordQc(inspector, line.productionOrderId(), 9, 0, null, null);
+        ProductionOrders.Detail afterQc = runs.recordQc(inspector, line.productionOrderId(), 9, 0, null, null,
+                sampleOf(line.productionOrderId()));
 
         assertThat(afterQc.summary().status()).as("the 1 unprinted blank covers the shortfall")
                 .isEqualTo(ProductionOrder.Status.MATERIAL_ISSUED);
@@ -395,7 +398,8 @@ class PrintRunIntegrationTest {
         assertThat(heldAt(line, PRINT_SHOP)).isEqualTo(10);
         runs.startPrinting(printer, line.productionOrderId());
         runs.recordOutput(printer, line.productionOrderId(), 1, List.of());
-        ProductionOrders.Detail done = runs.recordQc(inspector, line.productionOrderId(), 1, 0, null, PACKING);
+        ProductionOrders.Detail done = runs.recordQc(inspector, line.productionOrderId(), 1, 0, null, PACKING,
+                sampleOf(line.productionOrderId()));
         assertThat(done.summary().status()).isEqualTo(ProductionOrder.Status.COMPLETED);
         assertThat(consumedAt(line, PACKING)).isEqualTo(10);
         assertThat(done.history()).extracting(ProductionOrders.StatusChange::toStatus).containsSubsequence(
@@ -409,7 +413,8 @@ class PrintRunIntegrationTest {
         issueAll(line.productionOrderId());
         runs.startPrinting(printer, line.productionOrderId());
         runs.recordOutput(printer, line.productionOrderId(), 10, List.of());
-        assertThat(runs.recordQc(inspector, line.productionOrderId(), 7, 3, "Colour off", null).summary().status())
+        assertThat(runs.recordQc(inspector, line.productionOrderId(), 7, 3, "Colour off", null,
+                sampleOf(line.productionOrderId())).summary().status())
                 .isEqualTo(ProductionOrder.Status.READY);
         int atp = inventory.availableToPromise(BLANK);
 
@@ -441,7 +446,8 @@ class PrintRunIntegrationTest {
         issueAll(bySales.productionOrderId());
         runs.startPrinting(printer, bySales.productionOrderId());
         runs.recordOutput(printer, bySales.productionOrderId(), 4, List.of());
-        runs.recordQc(inspector, bySales.productionOrderId(), 3, 1, "Smudge", null);
+        runs.recordQc(inspector, bySales.productionOrderId(), 3, 1, "Smudge", null,
+                sampleOf(bySales.productionOrderId()));
         cancelOrder(bySales.orderId(), "Customer withdrew");
         Await.until("the job is cancelled", ASYNC, () -> detail(bySales.productionOrderId()).summary().status()
                 == ProductionOrder.Status.CANCELLED);
@@ -484,7 +490,8 @@ class PrintRunIntegrationTest {
         int printShop = onHandAt(PRINT_SHOP);
         UUID writeOff = (UUID) writeOffs(line.productionOrderId()).get(0).get("id");
 
-        ProductionOrders.Detail qc = runs.recordQc(inspector, line.productionOrderId(), 3, 0, null, null);
+        ProductionOrders.Detail qc = runs.recordQc(inspector, line.productionOrderId(), 3, 0, null, null,
+                sampleOf(line.productionOrderId()));
         assertThat(qc.summary().status()).as("did not wait for the approval").isEqualTo(ProductionOrder.Status.READY);
         stockOperations.reject(writeOff, approver.userId(), "Counted again: it was spoilt, but the form is wrong");
 
@@ -514,7 +521,8 @@ class PrintRunIntegrationTest {
         List<UUID> drained = tx.execute(s -> inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), BLANK, free,
                 other)).reservationIds());
 
-        ProductionOrders.Detail held = runs.recordQc(inspector, line.productionOrderId(), 0, 2, "All smeared", null);
+        ProductionOrders.Detail held = runs.recordQc(inspector, line.productionOrderId(), 0, 2, "All smeared", null,
+                sampleOf(line.productionOrderId()));
         assertThat(held.summary().status()).isEqualTo(ProductionOrder.Status.ON_HOLD);
         assertThat(held.summary().holdReason()).isEqualTo("BLANKS_SHORT");
         assertThat(inventory.productionHolds(line.productionOrderId())).isEmpty();
@@ -617,7 +625,7 @@ class PrintRunIntegrationTest {
         runs.startPrinting(printer, lsx);
         assertThat(samples.get(sales, draft.id()).status()).isEqualTo(SampleStatus.IN_PRODUCTION);
         runs.recordOutput(printer, lsx, 2, List.of());
-        ProductionOrders.Detail done = runs.recordQc(inspector, lsx, 2, 0, null, null);
+        ProductionOrders.Detail done = runs.recordQc(inspector, lsx, 2, 0, null, null, sampleOf(lsx));
 
         assertThat(done.summary().status()).isEqualTo(ProductionOrder.Status.COMPLETED);
         assertThat(samples.get(sales, draft.id()).status()).isEqualTo(SampleStatus.READY);
@@ -638,8 +646,10 @@ class PrintRunIntegrationTest {
         runs.recordOutput(printer, line.productionOrderId(), 3, List.of());
 
         List<Object> outcomes = race(List.of(
-                () -> runs.recordQc(inspector, line.productionOrderId(), 3, 0, null, null),
-                () -> runs.recordQc(inspector, line.productionOrderId(), 3, 0, null, null)));
+                () -> runs.recordQc(inspector, line.productionOrderId(), 3, 0, null, null,
+                        sampleOf(line.productionOrderId())),
+                () -> runs.recordQc(inspector, line.productionOrderId(), 3, 0, null, null,
+                        sampleOf(line.productionOrderId()))));
         assertThat(outcomes).filteredOn(ProductionOrders.Detail.class::isInstance).hasSize(1);
         assertThat(outcomes).filteredOn(BusinessException.class::isInstance).singleElement()
                 .satisfies(e -> assertThat(code((Throwable) e)).isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION));
@@ -812,7 +822,7 @@ class PrintRunIntegrationTest {
         runs.startPrinting(printer, a.productionOrderId());
         runs.recordOutput(printer, a.productionOrderId(), 4,
                 List.of(new PrintRuns.ScrapLine(ProductionRecords.ScrapReason.PRINT_DEFECT, 1, null)));
-        runs.recordQc(inspector, a.productionOrderId(), 2, 1, "smudge", PACKING);
+        runs.recordQc(inspector, a.productionOrderId(), 2, 1, "smudge", PACKING, sampleOf(a.productionOrderId()));
         // Order B: a run of 3 (1 spoilt) recorded by the stop itself; its 2 good units are written off with it.
         Line b = released(3);
         issueAll(b.productionOrderId());
@@ -919,10 +929,12 @@ class PrintRunIntegrationTest {
         assertThat(detail(child.summary().id()).printedQuantity()).as("counted once").isEqualTo(3);
         assertThat(heldForProduction(child.summary().id(), "IN_PRODUCTION")).as("held once").isEqualTo(3);
 
-        assertThat(runs.recordQc(inspector, child.summary().id(), 3, 0, null, PACKING).summary().status())
+        assertThat(runs.recordQc(inspector, child.summary().id(), 3, 0, null, PACKING,
+                sampleOf(child.summary().id())).summary().status())
                 .as("1 still to come from the subcontractor").isEqualTo(ProductionOrder.Status.READY);
         receiveSubcontracted(poId, 1);
-        ProductionOrders.Detail done = runs.recordQc(inspector, child.summary().id(), 1, 0, null, PACKING);
+        ProductionOrders.Detail done = runs.recordQc(inspector, child.summary().id(), 1, 0, null, PACKING,
+                sampleOf(child.summary().id()));
 
         assertThat(done.summary().status()).isEqualTo(ProductionOrder.Status.COMPLETED);
         assertThat(heldForProduction(child.summary().id(), null)).as("nothing left the child's own").isZero();
@@ -995,7 +1007,7 @@ class PrintRunIntegrationTest {
                 SELECT COALESCE(SUM(quantity), 0) FROM inventory.stock_movement WHERE movement_type = 'CONSUMPTION'
                    AND reference_type = 'PRODUCTION_ORDER' AND reference_id = ?""", Integer.class, childId)).isEqualTo(1);
         assertThat(heldForProduction(childId, "IN_PRODUCTION")).as("1 cup + 2 blanks, all the child's").isEqualTo(3);
-        assertThatThrownBy(() -> runs.recordQc(inspector, childId, 1, 0, null, PACKING))
+        assertThatThrownBy(() -> runs.recordQc(inspector, childId, 1, 0, null, PACKING, sampleOf(childId)))
                 .as("BR-PRD-16: reconciled first").extracting(PrintRunIntegrationTest::code)
                 .isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
         assertThatThrownBy(() -> subcontracts.reconcile(storekeeper, childId, first, 2, 1, null))
@@ -1016,7 +1028,8 @@ class PrintRunIntegrationTest {
                 .satisfies(row -> assertThat(row).containsEntry("quantity_delta", -1).containsEntry("status", "PENDING_APPROVAL"));
 
         // QC fails the cup: it is scrapped as a cup, never a blank again.
-        ProductionOrders.Detail afterQc = runs.recordQc(inspector, childId, 0, 1, "smudged", PACKING);
+        ProductionOrders.Detail afterQc = runs.recordQc(inspector, childId, 0, 1, "smudged", PACKING,
+                sampleOf(childId));
         assertThat(afterQc.summary().status()).as("short: G9 back to READY").isEqualTo(ProductionOrder.Status.READY);
         assertThat(writeOffs(childId)).extracting(row -> row.get("reason_code")).containsExactly("SCRAP");
         assertThat(inventory.availableToPromise(BLANK)).as("no cup became a blank").isEqualTo(atp);
@@ -1031,7 +1044,7 @@ class PrintRunIntegrationTest {
         assertThat(subcontracts.receipts(manager, childId)).extracting(ProductionRecords.SubcontractReceipt::quantity,
                         ProductionRecords.SubcontractReceipt::usedBlanks, ProductionRecords.SubcontractReceipt::spoiltBlanks)
                 .containsExactly(org.assertj.core.groups.Tuple.tuple(1, 1, 1), org.assertj.core.groups.Tuple.tuple(1, 1, 0));
-        assertThat(runs.recordQc(inspector, childId, 1, 0, null, PACKING).summary().status())
+        assertThat(runs.recordQc(inspector, childId, 1, 0, null, PACKING, sampleOf(childId)).summary().status())
                 .as("1 good of 3").isEqualTo(ProductionOrder.Status.READY);
 
         // G9 "gửi bù": the PO of 3 had 2 received; 2 are owed, so it is supplemented first - approved, it takes an
@@ -1214,13 +1227,14 @@ class PrintRunIntegrationTest {
             assertThat(freeAtReceipt(receipt)).isZero();
             assertThat(inventory.availableToPromise(BLANK)).as("not sellable").isEqualTo(atp);
 
-            assertThat(runs.recordQc(inspector, childId, 0, 1, "colour off the approved sample", PACKING).summary()
+            assertThat(runs.recordQc(inspector, childId, 0, 1, "colour off the approved sample", PACKING,
+                    sampleOf(childId)).summary()
                     .status()).isEqualTo(ProductionOrder.Status.READY);
             assertThat(writeOffs(childId)).extracting(row -> row.get("reason_code")).containsExactly("SCRAP");
             assertThat(inventory.availableToPromise(BLANK)).as("the failed cup is no blank").isEqualTo(atp);
 
             receiveSubcontracted(poId, 1);
-            assertThat(runs.recordQc(inspector, childId, 1, 0, null, PACKING).summary().status())
+            assertThat(runs.recordQc(inspector, childId, 1, 0, null, PACKING, sampleOf(childId)).summary().status())
                     .as("1 good of 2").isEqualTo(ProductionOrder.Status.READY);
         } finally {
             tx.executeWithoutResult(s -> jdbc.update(
@@ -1292,7 +1306,7 @@ class PrintRunIntegrationTest {
 
         UUID receipt = receiveSubcontracted(poId, 3);
         subcontracts.reconcile(storekeeper, childId, receipt, 0, 0, null);
-        assertThat(runs.recordQc(inspector, childId, 3, 0, null, PACKING).summary().status())
+        assertThat(runs.recordQc(inspector, childId, 3, 0, null, PACKING, sampleOf(childId)).summary().status())
                 .isEqualTo(ProductionOrder.Status.READY);
         assertThatThrownBy(() -> subcontracts.takeInHouse(manager, childId, 1, "subcontractor out of ink", PACKING))
                 .as("BR-PRD-16: the blank still there is accounted for first")
@@ -1338,7 +1352,8 @@ class PrintRunIntegrationTest {
         issueAll(inHouse.summary().id());
         runs.startPrinting(printer, inHouse.summary().id());
         runs.recordOutput(printer, inHouse.summary().id(), 1, List.of());
-        assertThat(runs.recordQc(inspector, inHouse.summary().id(), 1, 0, null, PACKING).summary().status())
+        assertThat(runs.recordQc(inspector, inHouse.summary().id(), 1, 0, null, PACKING,
+                sampleOf(inHouse.summary().id())).summary().status())
                 .isEqualTo(ProductionOrder.Status.COMPLETED);
         assertThat(detail(line.productionOrderId()).issuedQuantity()).as("the root's blanks untouched").isZero();
     }
@@ -1439,7 +1454,7 @@ class PrintRunIntegrationTest {
         subcontracts.sendOut(storekeeper, childId);
         sendPurchaseOrder(poId);
         receiveSubcontracted(poId, 1);
-        runs.recordQc(inspector, childId, 1, 0, null, PACKING);
+        runs.recordQc(inspector, childId, 1, 0, null, PACKING, sampleOf(childId));
 
         cancelOrder(line.orderId(), "customer withdrew");
         Await.until("held", ASYNC, () -> detail(childId).summary().status() == ProductionOrder.Status.ON_HOLD);
@@ -1471,7 +1486,7 @@ class PrintRunIntegrationTest {
         assertThatThrownBy(() -> runs.cancel(manager, childId, "subcontractor gave up", null, null))
                 .as("its received unit is inspected first").extracting(PrintRunIntegrationTest::code)
                 .isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
-        runs.recordQc(inspector, childId, 1, 0, null, PACKING);
+        runs.recordQc(inspector, childId, 1, 0, null, PACKING, sampleOf(childId));
 
         ProductionOrders.Detail ended = runs.cancel(manager, childId, "subcontractor gave up", new BigDecimal("20000"),
                 "setup costs agreed");
@@ -1505,11 +1520,13 @@ class PrintRunIntegrationTest {
         assertThat(held.summary().status()).isEqualTo(ProductionOrder.Status.ON_HOLD);
         assertThat(jdbc.queryForObject("SELECT status_before_hold FROM production.production_order WHERE id = ?",
                 String.class, line.productionOrderId())).isEqualTo("QC");
-        assertThatThrownBy(() -> runs.recordQc(inspector, line.productionOrderId(), 2, 0, null, PACKING))
+        assertThatThrownBy(() -> runs.recordQc(inspector, line.productionOrderId(), 2, 0, null, PACKING,
+                sampleOf(line.productionOrderId())))
                 .extracting(PrintRunIntegrationTest::code).isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
         assertThat(workflow.resume(manager, line.productionOrderId()).summary().status())
                 .isEqualTo(ProductionOrder.Status.QC);
-        assertThat(runs.recordQc(inspector, line.productionOrderId(), 2, 0, null, PACKING).summary().status())
+        assertThat(runs.recordQc(inspector, line.productionOrderId(), 2, 0, null, PACKING,
+                sampleOf(line.productionOrderId())).summary().status())
                 .isEqualTo(ProductionOrder.Status.COMPLETED);
     }
 
@@ -1658,5 +1675,38 @@ class PrintRunIntegrationTest {
                 equal.orderId())).isZero();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM payment.receivable WHERE order_id = ?", Integer.class,
                 equal.orderId())).isZero();
+    }
+
+    @Test
+    @DisplayName("SCRUM-487 (BR-PRD-05): a QC round names the order's approved sample, and the order's history keeps it")
+    void qcNamesTheApprovedSample() throws Exception {
+        Line line = released(2);
+        issueAll(line.productionOrderId());
+        runs.startPrinting(printer, line.productionOrderId());
+        runs.recordOutput(printer, line.productionOrderId(), 2, List.of());
+        UUID sample = sampleOf(line.productionOrderId());
+        assertThat(sample).as("a released new design carries its approved sample").isNotNull();
+
+        assertThatThrownBy(() -> runs.recordQc(inspector, line.productionOrderId(), 2, 0, null, null, null))
+                .as("names no sample").extracting(PrintRunIntegrationTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThatThrownBy(() -> runs.recordQc(inspector, line.productionOrderId(), 2, 0, null, null, UUID.randomUUID()))
+                .as("names another one").extracting(PrintRunIntegrationTest::code)
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(runs.qcRoundsOf(manager, line.productionOrderId())).as("neither was recorded").isEmpty();
+
+        assertThat(runs.recordQc(inspector, line.productionOrderId(), 2, 0, null, null, sample).summary().status())
+                .isEqualTo(ProductionOrder.Status.COMPLETED);
+        String number = jdbc.queryForObject("SELECT request_number FROM production.sample_request WHERE id = ?",
+                String.class, sample);
+        assertThat(jdbc.queryForList("""
+                SELECT reason FROM production.production_order_status_history
+                 WHERE production_order_id = ? AND to_status = 'COMPLETED'""", String.class, line.productionOrderId()))
+                .singleElement().asString().contains("compared with approved sample " + number);
+    }
+
+    /** The approved sample a QC round of this order names (BR-PRD-05, SCRUM-487); null when it has none. */
+    private UUID sampleOf(UUID productionOrderId) {
+        return jdbc.queryForObject("SELECT approved_sample_id FROM production.production_order WHERE id = ?",
+                UUID.class, productionOrderId);
     }
 }

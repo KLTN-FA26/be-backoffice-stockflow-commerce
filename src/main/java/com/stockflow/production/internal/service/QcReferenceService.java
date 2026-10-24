@@ -12,8 +12,6 @@ import com.stockflow.design.api.FulfillmentArtifact;
 import com.stockflow.production.internal.domain.ProductionOrder;
 import com.stockflow.production.internal.domain.ProductionOrderRepository;
 import com.stockflow.production.internal.domain.SampleRequest;
-import com.stockflow.production.internal.domain.SampleRequestRepository;
-import com.stockflow.production.internal.domain.SampleStatus;
 import com.stockflow.production.internal.repository.ProductionOrderSearch;
 import com.stockflow.warehouse.api.StorageLocationView;
 import org.springframework.stereotype.Service;
@@ -32,15 +30,15 @@ import java.util.UUID;
 class QcReferenceService implements QcReferences {
 
     private final ProductionOrderRepository orders;
-    private final SampleRequestRepository samples;
+    private final ApprovedSamples approvedSamples;
     private final ProductionOrderSearch search;
     private final DesignService designs;
     private final WorkshopStock stock;
 
-    QcReferenceService(ProductionOrderRepository orders, SampleRequestRepository samples, ProductionOrderSearch search,
+    QcReferenceService(ProductionOrderRepository orders, ApprovedSamples approvedSamples, ProductionOrderSearch search,
                        DesignService designs, WorkshopStock stock) {
         this.orders = orders;
-        this.samples = samples;
+        this.approvedSamples = approvedSamples;
         this.search = search;
         this.designs = designs;
         this.stock = stock;
@@ -49,19 +47,8 @@ class QcReferenceService implements QcReferences {
     @Override
     public ApprovedSample approvedSample(CurrentUser user, UUID productionOrderId) {
         ProductionOrder order = visible(user, productionOrderId);
-        if (order.type() != ProductionOrder.Type.ORDER || order.approvedSampleId() == null) {
-            throw new NotFoundException("approved-sample", productionOrderId);
-        }
-        SampleRequest sample = samples.findById(order.approvedSampleId())
+        SampleRequest sample = approvedSamples.of(order)
                 .orElseThrow(() -> new NotFoundException("approved-sample", productionOrderId));
-        // Released only for an APPROVED round of this customer, design and blank (BR-PRD-08); anything else is
-        // data that changed underneath, and showing it as "approved" would mislead QC.
-        if (sample.status() != SampleStatus.APPROVED
-                || !sample.specification().designSnapshotId().equals(order.work().designSnapshotId())) {
-            throw new BusinessException(ErrorCode.CONFLICT,
-                    "Sample %s is no longer the approved round of production order %s"
-                            .formatted(sample.requestNumber(), order.orderNumber()));
-        }
         ProductionOrderSearch.Row printed = search.forSamples(List.of(sample.id())).get(sample.id());
         return new ApprovedSample(order.id(), order.orderNumber(), sample.id(), sample.requestNumber(), sample.round(),
                 sample.respondedAt(), order.work().designSnapshotId(), order.work().designChecksum(),

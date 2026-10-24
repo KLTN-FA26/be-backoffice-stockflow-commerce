@@ -214,7 +214,8 @@ class PackEarlyIntegrationTest {
     private void finishProduction(Mixed order, int printed) {
         runs.startPrinting(printer, order.productionOrderId());
         runs.recordOutput(printer, order.productionOrderId(), printed, List.of());
-        ProductionOrders.Detail done = runs.recordQc(inspector, order.productionOrderId(), printed, 0, null, PACKING);
+        ProductionOrders.Detail done = runs.recordQc(inspector, order.productionOrderId(), printed, 0, null, PACKING,
+                sampleOf(order.productionOrderId()));
         assertThat(done.summary().status()).isEqualTo(ProductionOrder.Status.COMPLETED);
     }
 
@@ -574,5 +575,11 @@ class PackEarlyIntegrationTest {
         }
         dispatching.handOver(loadId, new Dispatching.Handover(load.version(), "Nguyen Van Tai", null, null, null, true,
                 null), picker);
+    }
+
+    /** The approved sample a QC round of this order names (BR-PRD-05, SCRUM-487); null when it has none. */
+    private UUID sampleOf(UUID productionOrderId) {
+        return jdbc.queryForObject("SELECT approved_sample_id FROM production.production_order WHERE id = ?",
+                UUID.class, productionOrderId);
     }
 }
