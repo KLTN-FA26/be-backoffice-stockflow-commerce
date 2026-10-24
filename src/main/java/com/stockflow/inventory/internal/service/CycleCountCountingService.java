@@ -46,12 +46,12 @@ import java.util.stream.Collectors;
  * <p>Package-private class with public methods: the transactional proxy advises public methods only.</p>
  */
 @Service
-class CycleCountCounting {
+class CycleCountCountingService {
 
-    private static final Logger log = LoggerFactory.getLogger(CycleCountCounting.class);
+    private static final Logger log = LoggerFactory.getLogger(CycleCountCountingService.class);
 
     private final CycleCountRepository counts;
-    private final CycleCountViews views;
+    private final CycleCountViewMapper views;
     private final InventoryPolicyRepository policies;
     private final StockPackageRepository stockPackages;
     private final StockItemRepository stockItems;
@@ -59,9 +59,10 @@ class CycleCountCounting {
     private final WarehouseDirectory warehouseDirectory;
     private final Clock clock;
 
-    CycleCountCounting(CycleCountRepository counts, CycleCountViews views, InventoryPolicyRepository policies,
-                       StockPackageRepository stockPackages, StockItemRepository stockItems, StockOperations operations,
-                       WarehouseDirectory warehouseDirectory, Clock clock) {
+    CycleCountCountingService(CycleCountRepository counts, CycleCountViewMapper views,
+                              InventoryPolicyRepository policies, StockPackageRepository stockPackages,
+                              StockItemRepository stockItems, StockOperations operations,
+                              WarehouseDirectory warehouseDirectory, Clock clock) {
         this.counts = counts;
         this.views = views;
         this.policies = policies;

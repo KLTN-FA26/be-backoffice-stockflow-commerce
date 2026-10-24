@@ -249,9 +249,9 @@ consumption endpoint over HTTP" — and was replaced so the pick line and the de
 
 The count lives in `inventory`: aggregate `CycleCount` (`PLANNED → IN_PROGRESS → COMPLETED`, `CANCELLED`)
 with `CountSlot` (a bin + SKU + lot, or one carton) and the pure `CountVariance` split in `internal/domain/`;
-planning in `CycleCountService`, counting and submission in `CycleCountCounting`. Counting re-reads the book
-quantity, so nothing is frozen while people count. `CycleCountCounting.submit` is one `@Transactional`
-method: count row `FOR UPDATE` → SKU advisory locks in sorted order → cartons `FOR UPDATE` (a carton line
+planning in `CycleCountService`, counting and submission in `CycleCountCountingService`. Counting re-reads the
+book quantity, so nothing is frozen while people count. `CycleCountCountingService.submit` is one
+`@Transactional` method: count row `FOR UPDATE` → SKU advisory locks in sorted order → cartons `FOR UPDATE` (a carton line
 follows its carton to its current bin) → `COMPLETED` → `StockOperations.requestCountVariance` per differing
 line, which raises pending `COUNT_VARIANCE` adjustments through the SCRUM-145 four-eyes mechanism — a loose
 shortage split over the slot's rows, free units first then held ones, each FEFO (`CYCLE_COUNT_STALE` rolls

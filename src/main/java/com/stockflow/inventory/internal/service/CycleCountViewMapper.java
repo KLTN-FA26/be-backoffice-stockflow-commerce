@@ -18,11 +18,11 @@ import java.util.UUID;
  * - must hide the same things, and a second copy of the rule is the one that would forget one of them.
  */
 @Component
-class CycleCountViews {
+class CycleCountViewMapper {
 
     private final CycleCountRepository counts;
 
-    CycleCountViews(CycleCountRepository counts) {
+    CycleCountViewMapper(CycleCountRepository counts) {
         this.counts = counts;
     }
 

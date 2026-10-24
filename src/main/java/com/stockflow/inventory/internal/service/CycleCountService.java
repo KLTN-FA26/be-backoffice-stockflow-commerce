@@ -46,9 +46,9 @@ import java.util.stream.Collectors;
 /**
  * {@link CycleCounts}: reading counts, and the planner's and manager's side of them - planning, assigning,
  * cancelling and sending lines for a recount. The counter's side (counting a line, adding a found one, submitting)
- * is {@link CycleCountCounting}, delegated to: it holds the stock-side lock order and the carton rules, which have
- * nothing to do with choosing what to count. The caller's warehouses (BR-SEC-002) are checked before anything is
- * read or written.
+ * is {@link CycleCountCountingService}, delegated to: it holds the stock-side lock order and the carton rules, which
+ * have nothing to do with choosing what to count. The caller's warehouses (BR-SEC-002) are checked before anything
+ * is read or written.
  */
 @Service
 @Transactional(readOnly = true)
@@ -64,8 +64,8 @@ class CycleCountService implements CycleCounts {
     private static final String PENDING = "PENDING_APPROVAL";
 
     private final CycleCountRepository counts;
-    private final CycleCountViews views;
-    private final CycleCountCounting counting;
+    private final CycleCountViewMapper views;
+    private final CycleCountCountingService counting;
     private final WarehouseDirectory warehouseDirectory;
     private final StockPackageRepository stockPackages;
     private final WarehouseService warehouses;
@@ -74,7 +74,7 @@ class CycleCountService implements CycleCounts {
     /** Not final: a test lowers it to reach the cap without planning 500 lines. */
     private int maxLines;
 
-    CycleCountService(CycleCountRepository counts, CycleCountViews views, CycleCountCounting counting,
+    CycleCountService(CycleCountRepository counts, CycleCountViewMapper views, CycleCountCountingService counting,
                       WarehouseDirectory warehouseDirectory, StockPackageRepository stockPackages,
                       WarehouseService warehouses, IdentityService identities, Clock clock,
                       @Value("${stockflow.inventory.cycle-count-max-lines:500}") int maxLines) {
@@ -106,7 +106,7 @@ class CycleCountService implements CycleCounts {
         long total = counts.count(wanted, scoped);
         List<CycleCountSummary> found = total == 0 ? List.of()
                 : counts.findHeaders(wanted, scoped, paging.getOffset(), paging.getPageSize()).stream()
-                        .map(header -> CycleCountViews.summary(header, showExpected)).toList();
+                        .map(header -> CycleCountViewMapper.summary(header, showExpected)).toList();
         return PageResponse.of(found, paging.getPageNumber(), paging.getPageSize(), total);
     }
 
@@ -304,7 +304,7 @@ class CycleCountService implements CycleCounts {
         for (CycleCountLine line : count.lines()) {
             if (wanted.contains(line.id()) && line.slot().isCarton()) {
                 stockPackages.findById(line.slot().stockPackageId())
-                        .ifPresent(carton -> CycleCountCounting.requireCountable(carton, line));
+                        .ifPresent(carton -> CycleCountCountingService.requireCountable(carton, line));
             }
         }
         List<CountSlot> slots = count.markRecount(wanted);
