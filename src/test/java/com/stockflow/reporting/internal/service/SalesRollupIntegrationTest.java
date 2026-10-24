@@ -259,6 +259,10 @@ class SalesRollupIntegrationTest {
             + "replacement-only resolution takes nothing")
     void returnTakesRevenueOff() {
         LocalDate today = BusinessDay.today(clock);
+        // Other classes insert orders placed today with SQL, never announced: the listeners did not count them and a
+        // rebuild would. Rebuilt first, so the comparison below sees this test's order and return only.
+        awaitRollupsIdle();
+        reports.rebuild(today, today);
         OrderSummary order = place(3, 4_000_000);
         awaitPlaced(order);
         var before = dayRow(today);
