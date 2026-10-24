@@ -598,16 +598,10 @@ class InventoryServiceImpl implements InventoryService {
     /**
      * Sellable stock of the SKU on pickable, usable locations of one warehouse (module 06 BR-12), never at
      * {@code excluded}; read as projections, so nothing lands in the persistence context before the locked reads.
+     * The one definition, shared with the damage reported at picking: {@link PickableStock}.
      */
     private List<StockAllocator.Candidate> pickableCandidates(Sku sku, String warehouse, LocationId excluded) {
-        Set<StockItemId> frozen = frozenLayers(sku, BusinessCalendar.date(clock.instant()));
-        List<StockAllocator.Candidate> inWarehouse = repository.findAvailabilityBySku(sku).stream()
-                .filter(c -> c.location().warehouseCode().equals(warehouse))
-                .filter(c -> !c.location().equals(excluded))
-                .filter(c -> !frozen.contains(c.stockItemId()))
-                .toList();
-        Map<String, UUID> pickable = locations.pickable(inWarehouse.stream().map(c -> c.location().code()).toList());
-        return inWarehouse.stream().filter(c -> pickable.containsKey(c.location().code())).toList();
+        return new PickableStock(repository, locations, recounts).candidates(sku, warehouse, excluded, clock.instant());
     }
 
     /**
