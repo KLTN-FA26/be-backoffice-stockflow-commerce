@@ -1,6 +1,7 @@
 package com.stockflow.order.internal.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.common.api.FieldError;
 import com.stockflow.common.api.PageResponse;
@@ -161,7 +162,7 @@ class QuoteService implements Quotes {
     public QuoteView get(CurrentUser user, UUID quoteId) {
         Quote quote = quotes.findById(quoteId).orElseThrow(() -> new NotFoundException("quote", quoteId));
         requireVisible(user, quote);
-        return view(quote);
+        return view(quote, portalCustomer(user).isPresent());
     }
 
     @Override
@@ -196,7 +197,7 @@ class QuoteService implements Quotes {
     @Auditable(action = AuditAction.APPROVE, resourceType = "quote", resourceId = "#quoteId")
     public QuoteView accept(CurrentUser user, UUID quoteId, Acceptance acceptance) {
         requireCustomerAnswer(user);
-        Quote quote = lock(user, quoteId, acceptance.version());
+        Quote quote = lockToAnswer(user, quoteId, acceptance.version());
         Instant now = clock.instant();
         requireNewWorkFor(quote.customerId());
         requireTermAllowed(quote.customerId(), quote.offer());
@@ -230,7 +231,7 @@ class QuoteService implements Quotes {
     @Auditable(action = AuditAction.REJECT, resourceType = "quote", resourceId = "#quoteId")
     public QuoteView requestChanges(CurrentUser user, UUID quoteId, long version, String feedback) {
         requireCustomerAnswer(user);
-        Quote quote = lock(user, quoteId, version);
+        Quote quote = lockToAnswer(user, quoteId, version);
         QuoteStatus from = quote.status();
         quote.requestChanges(feedback, user.userId(), clock.instant());
         quotes.save(quote);
@@ -402,10 +403,29 @@ class QuoteService implements Quotes {
     }
 
     private Quote lock(CurrentUser user, UUID quoteId, long version) {
+        Quote quote = lockVisible(user, quoteId);
+        requireVersion(quote, version);
+        return quote;
+    }
+
+    /**
+     * The customer's answer (accept, ask for changes) to a quote Sales withdrew: told so, with Sales' reason, before
+     * the version - which the withdrawal itself moved - so they read why and not "changed since" (review of S8).
+     */
+    private Quote lockToAnswer(CurrentUser user, UUID quoteId, long version) {
+        Quote quote = lockVisible(user, quoteId);
+        if (quote.status() == QuoteStatus.CANCELLED) {
+            throw new BusinessException(ErrorCode.INVALID_QUOTE_TRANSITION, "Quote %s was withdrawn: %s".formatted(
+                    quote.quoteNumber(), quote.cancellationReason()));
+        }
+        requireVersion(quote, version);
+        return quote;
+    }
+
+    private Quote lockVisible(CurrentUser user, UUID quoteId) {
         Quote quote = quotes.findByIdForUpdate(Objects.requireNonNull(quoteId, "quoteId"))
                 .orElseThrow(() -> new NotFoundException("quote", quoteId));
         requireVisible(user, quote);
-        requireVersion(quote, version);
         return quote;
     }
 
@@ -646,20 +666,45 @@ class QuoteService implements Quotes {
     }
 
     private QuoteView view(Quote quote) {
+        return view(quote, false);
+    }
+
+    /**
+     * @param forCustomer read by the customer (portal): a revision Sales reopened and then dropped before sending it
+     *                    was never offered (review 2026-10-25 of S8) - the customer sees the quote end with the offer
+     *                    they were last sent, as its SENT history row kept it, not the draft's working terms
+     */
+    private QuoteView view(Quote quote, boolean forCustomer) {
         Instant now = clock.instant();
         QuoteSearch.Row row = search.findRow(quote.id()).orElseThrow();
+        List<QuoteSearch.Transition> rows = search.history(quote.id());
+        List<Transition> history = rows.stream()
+                .map(t -> new Transition(t.revision(), t.fromStatus(), t.toStatus(), t.reason(), t.changedAt(),
+                        t.changedBy()))
+                .toList();
+        Quote.Offer offer = quote.offer();
+        int revision = quote.revision();
+        boolean neverOffered = forCustomer && quote.status() == QuoteStatus.CANCELLED && rows.stream()
+                .filter(t -> t.toStatus() == QuoteStatus.CANCELLED).reduce((first, last) -> last)
+                .map(t -> t.fromStatus() == QuoteStatus.DRAFT).orElse(false);
+        Optional<QuoteSearch.Transition> lastSent = rows.stream()
+                .filter(t -> t.toStatus() == QuoteStatus.SENT && t.offer() != null).reduce((first, last) -> last);
+        if (neverOffered && lastSent.isPresent()) {
+            offer = sentOffer(quote, lastSent.get().offer());
+            revision = lastSent.get().revision();
+        }
         BigDecimal acceptedTotal = null;
-        boolean priced = quote.offer().priced();
+        boolean priced = offer.priced();
         BigDecimal proposedTotal = priced ? BigDecimal.ZERO : null;
         List<LineView> lines = new ArrayList<>();
-        for (QuoteLine line : quote.offer().lines()) {
+        for (QuoteLine line : offer.lines()) {
             BigDecimal lineTotal = line.acceptedQuantity() == null ? null
                     : line.acceptedUnitPrice().amount().multiply(BigDecimal.valueOf(line.acceptedQuantity()));
             if (lineTotal != null) {
                 acceptedTotal = acceptedTotal == null ? lineTotal : acceptedTotal.add(lineTotal);
             }
             BigDecimal proposedPrice = !line.priced() ? null
-                    : line.priceFor(quote.offer().proposedUnits(line.blankSku().code())).amount();
+                    : line.priceFor(offer.proposedUnits(line.blankSku().code())).amount();
             BigDecimal proposedLineTotal = proposedPrice == null ? null
                     : proposedPrice.multiply(BigDecimal.valueOf(line.quantity()));
             if (priced) {
@@ -675,18 +720,44 @@ class QuoteService implements Quotes {
         ConvertedOrder converted = quote.convertedOrderId() == null ? null : orders.findById(quote.convertedOrderId())
                 .map(o -> new ConvertedOrder(o.orderId(), o.orderNumber(), o.status(), o.total().amount()))
                 .orElse(null);
-        List<Transition> history = search.history(quote.id()).stream()
-                .map(t -> new Transition(t.revision(), t.fromStatus(), t.toStatus(), t.reason(), t.changedAt(),
-                        t.changedBy()))
-                .toList();
-        Quote.Offer offer = quote.offer();
-        return new QuoteView(quote.id(), quote.quoteNumber(), quote.customerId(), quote.statusAt(now), quote.revision(),
+        return new QuoteView(quote.id(), quote.quoteNumber(), quote.customerId(), quote.statusAt(now), revision,
                 offer.paymentTerm(), offer.depositPercent(), offer.validUntil(), offer.terms(), lines, priced,
                 proposedTotal,
                 acceptedTotal,
                 quote.sentAt(), quote.sentBy(), quote.respondedAt(), quote.respondedBy(), quote.customerFeedback(),
                 quote.cancellationReason(), converted, quote.convertedAt(), history, row.createdAt(), row.createdBy(),
                 row.version());
+    }
+
+    /** The offer as {@link #offerJson} kept it when it was sent; its lines keep their ids where the quote still has them. */
+    private Quote.Offer sentOffer(Quote quote, String document) {
+        try {
+            JsonNode sent = json.readTree(document);
+            Map<Integer, UUID> ids = new LinkedHashMap<>();
+            quote.offer().lines().forEach(line -> ids.put(line.lineNo(), line.id()));
+            List<QuoteLine> lines = new ArrayList<>();
+            for (JsonNode line : sent.path("lines")) {
+                int lineNo = line.path("lineNo").asInt();
+                List<PriceTier> tiers = new ArrayList<>();
+                for (JsonNode tier : line.path("tiers")) {
+                    tiers.add(PriceTier.of(tier.path("minQuantity").asInt(), tier.path("unitPrice").decimalValue()));
+                }
+                lines.add(new QuoteLine(ids.getOrDefault(lineNo, UUID.nameUUIDFromBytes(("quote-line:" + quote.id()
+                        + ":" + lineNo).getBytes(StandardCharsets.UTF_8))), lineNo, new Sku(line.path("blankSku").asText()),
+                        UUID.fromString(line.path("designSnapshotId").asText()), textOrNull(line.path("printSpec")),
+                        line.path("quantity").asInt(), tiers, null, null));
+            }
+            JsonNode deposit = sent.path("depositPercent");
+            return new Quote.Offer(com.stockflow.order.api.PaymentTerm.valueOf(sent.path("paymentTerm").asText()),
+                    deposit.isNumber() ? deposit.decimalValue() : null, Instant.parse(sent.path("validUntil").asText()),
+                    textOrNull(sent.path("terms")), lines);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Unreadable offer on the history of quote " + quote.quoteNumber(), e);
+        }
+    }
+
+    private static String textOrNull(JsonNode node) {
+        return node.isTextual() ? node.asText() : null;
     }
 
     private LocalDate today() {

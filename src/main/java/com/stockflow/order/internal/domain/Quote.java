@@ -254,6 +254,12 @@ public final class Quote {
         return true;
     }
 
+    /**
+     * Withdrawn or dropped, with a reason the customer reads too: a DRAFT (the first nobody saw; for a later revision
+     * the customer sees the quote end with the offer they were last sent - the service's view), a SENT offer Sales
+     * takes back before the customer answers (it can no longer be accepted, even if its validity has not run out), a
+     * CHANGES_REQUESTED one whose changes are not offered, or - Sales' service decides when - an ACCEPTED one.
+     */
     public void cancel(String reason) {
         String text = reason == null ? "" : reason.strip();
         if (text.isEmpty() || text.length() > MAX_CANCELLATION_REASON) {

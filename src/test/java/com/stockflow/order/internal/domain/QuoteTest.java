@@ -56,8 +56,10 @@ class QuoteTest {
     void onlyTheDocumentedEdgesExist() {
         Map<QuoteStatus, Set<QuoteStatus>> allowed = Map.of(
                 QuoteStatus.DRAFT, EnumSet.of(QuoteStatus.SENT, QuoteStatus.CANCELLED),
-                QuoteStatus.SENT, EnumSet.of(QuoteStatus.ACCEPTED, QuoteStatus.CHANGES_REQUESTED, QuoteStatus.EXPIRED),
-                QuoteStatus.CHANGES_REQUESTED, EnumSet.of(QuoteStatus.DRAFT),
+                // CANCELLED: Sales withdraws a sent offer, or drops one whose changes it will not make.
+                QuoteStatus.SENT, EnumSet.of(QuoteStatus.ACCEPTED, QuoteStatus.CHANGES_REQUESTED, QuoteStatus.EXPIRED,
+                        QuoteStatus.CANCELLED),
+                QuoteStatus.CHANGES_REQUESTED, EnumSet.of(QuoteStatus.DRAFT, QuoteStatus.CANCELLED),
                 // CANCELLED: decision 2026-10-17, a SKU on the accepted quote stopped (Sales, with a reason).
                 QuoteStatus.ACCEPTED, EnumSet.of(QuoteStatus.CONVERTED, QuoteStatus.CANCELLED),
                 QuoteStatus.EXPIRED, EnumSet.noneOf(QuoteStatus.class),
@@ -230,15 +232,20 @@ class QuoteTest {
     }
 
     @Test
-    void onlyADraftIsCancelledWithAReasonAndOnlyAnAcceptedQuoteConvertsOnce() {
+    void aCancellationSaysWhyAndOnlyAnAcceptedQuoteConvertsOnce() {
         Quote draft = draft();
         assertThatThrownBy(() -> draft.cancel(" ")).isInstanceOf(BusinessException.class);
         draft.cancel("Customer went elsewhere");
         assertThat(draft.status()).isEqualTo(QuoteStatus.CANCELLED);
 
-        Quote quote = sent();
-        assertThatThrownBy(() -> quote.cancel("too late")).extracting(QuoteTest::code)
+        Quote typo = sent();
+        typo.cancel("250 typed for 2,500: a corrected quote follows");
+        assertThat(typo.status()).as("withdrawn before the customer answered").isEqualTo(QuoteStatus.CANCELLED);
+        assertThat(typo.seenByCustomer()).as("the customer saw it, and sees it withdrawn").isTrue();
+        assertThatThrownBy(() -> typo.accept(Map.of(), customerUser, NOW)).extracting(QuoteTest::code)
                 .isEqualTo(ErrorCode.INVALID_QUOTE_TRANSITION);
+
+        Quote quote = sent();
         assertThatThrownBy(() -> quote.convert(UUID.randomUUID(), NOW)).as("not accepted")
                 .extracting(QuoteTest::code).isEqualTo(ErrorCode.INVALID_QUOTE_TRANSITION);
         quote.accept(Map.of(), customerUser, NOW);
