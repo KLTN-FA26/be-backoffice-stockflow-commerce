@@ -207,10 +207,12 @@ class SubcontractOrderStoreAdapter implements SubcontractOrderStore {
     @Override
     public void approveAmendment(Row row, Amendment amendment, UUID approverId) {
         entityManager.flush();
+        // An amendment changes how many, never the unit: the line keeps its uom_conversion_id. A revision that
+        // froze no unit for a line that has one (written before revisions carried it) then fails
+        // ck_purchase_order_lines_unit instead of quietly moving the line back to the base unit.
         entityManager.createNativeQuery("""
                         UPDATE procurement.purchase_order_lines l
                            SET ordered_qty = lr.ordered_qty, unit_qty = lr.unit_qty,
-                               uom_conversion_id = lr.uom_conversion_id,
                                line_subtotal = lr.line_subtotal, line_net = lr.line_net,
                                line_tax = lr.line_tax, line_total = lr.line_total, po_revision_id = lr.po_revision_id,
                                status = CASE WHEN l.status = 'RECEIVED' THEN 'PARTIALLY_RECEIVED' ELSE l.status END,
