@@ -99,6 +99,10 @@ class SalesRollupRebuilder {
                 }
             }
         } while (rows.hasNext());
+        // What returns credited back for the orders of this day: kept through the clear, taken off again.
+        for (OrderContribution taken : ledger.returnsOf(day)) {
+            ledger.applyReturn(taken);
+        }
         return new long[] {seen, counted};
     }
 }

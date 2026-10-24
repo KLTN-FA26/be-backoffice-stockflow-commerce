@@ -21,6 +21,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Repository;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
@@ -154,7 +155,7 @@ class ReturnRequestRepositoryAdapter implements ReturnRequestRepository, ReturnR
     private static ReturnRequestJpaEntity newEntity(ReturnRequest r) {
         ReturnRequestJpaEntity entity = new ReturnRequestJpaEntity(r.id(), r.rmaNumber(), r.orderId(), r.orderNumber(),
                 r.customerId(), r.requestId(), r.channel(), r.reason(), r.description(), r.requestedResolution(),
-                r.requestedBy(), r.requestedAt(), r.currency());
+                r.requestedBy(), r.requestedAt(), r.currency(), r.windowOverride());
         for (ReturnLine line : r.lines()) {
             entity.addLine(new ReturnRequestLineJpaEntity(line.id(), line.orderLineId(), line.sku(),
                     line.customPrinted(), line.unitPrice(), line.requestedQuantity()));
@@ -166,12 +167,16 @@ class ReturnRequestRepositoryAdapter implements ReturnRequestRepository, ReturnR
         entity.applyStatus(r.status());
         entity.applyReview(r.decidedBy(), r.decidedAt(), r.decisionNote(), r.rejectionReason(), r.returnRequired(),
                 r.returnDeadline());
-        entity.applyReceipt(r.receivedBy(), r.receivedAt(), r.receivingLocation(), r.receiptNote());
+        entity.applyReceipt(r.receivedBy(), r.receivedAt(), r.receivingLocation(), r.receiptNote(), r.parcelCount());
         entity.applyInspection(r.inspectedBy(), r.inspectedAt(), r.inspectionNote());
         entity.applyResolution(r.moneyMode(), r.settlementAmount(), r.proposedBy(), r.proposedAt(), r.resolutionNote(),
                 r.settledBy(), r.settledAt(), r.money().refunded(), r.money().credited(), r.money().offset(),
                 r.money().creditTransferId(), r.replacementOrderId(), r.vatAdjustmentRequired());
         entity.applyEnd(r.cancelledBy(), r.cancellationReason(), r.closedAt());
+        entity.applyWithdrawal(r.withdrawalStatus(), r.withdrawalReason(), r.withdrawalAmount(),
+                r.withdrawalProposedBy(), r.withdrawalProposedAt(), r.withdrawalDecidedBy(), r.withdrawalDecidedAt(),
+                r.withdrawalDecisionNote(), r.withdrawalMoney().offset(), r.withdrawalMoney().credited(),
+                r.withdrawalMoney().creditTransferId());
         Map<UUID, ReturnRequestLineJpaEntity> rows = entity.getLines().stream()
                 .collect(Collectors.toMap(ReturnRequestLineJpaEntity::getId, Function.identity()));
         for (ReturnLine line : r.lines()) {
@@ -181,7 +186,7 @@ class ReturnRequestRepositoryAdapter implements ReturnRequestRepository, ReturnR
                     line.restockQuantity(), line.scrapQuantity(), line.customerReturnQuantity(),
                     line.restockLocation(), line.scrapAdjustmentId(), line.customerReturnAdjustmentId(),
                     line.replacementQuantity(), line.creditQuantity(), line.creditAmount(),
-                    line.replacementOrderLineId());
+                    line.replacementOrderLineId(), line.receivedPlain(), line.disposalConsent());
         }
     }
 
@@ -193,16 +198,22 @@ class ReturnRequestRepositoryAdapter implements ReturnRequestRepository, ReturnR
                         row.getRejectedQuantity(), row.getItemCondition(), row.getInspectionNote(),
                         row.getRestockQuantity(), row.getScrapQuantity(), row.getCustomerReturnQuantity(),
                         row.getRestockLocationCode(), row.getScrapAdjustmentId(), row.getCustomerReturnAdjustmentId(),
-                        row.getReplacementQuantity(), row.getCreditQuantity(), row.getReplacementOrderLineId()))
+                        row.getReplacementQuantity(), row.getCreditQuantity(), row.getReplacementOrderLineId(),
+                        row.getReceivedPlain(), row.getDisposalConsentNote()))
                 .toList();
         ReturnRequest request = new ReturnRequest(e.getId(), e.getRmaNumber(), e.getOrderId(), e.getOrderNumber(),
                 e.getCustomerId(), e.getRequestId(), e.getChannel(), e.getReasonCode(), e.getNote(),
                 e.getRequestedResolution(), e.getRequestedBy(), e.getRequestedAt(), e.getCurrency(), lines,
-                e.getStatus(), e.getVersion());
+                e.getWindowOverrideReason(), e.getStatus(), e.getVersion());
         request.restoreProgress(e.getDecidedBy(), e.getDecidedAt(), e.getDecisionNote(), e.getRejectionReason(),
                 e.getReturnRequired(), e.getReturnDeadline(), e.getReceivedBy(), e.getReceivedAt(),
                 e.getReceivingLocationCode(), e.getReceiptNote(), e.getInspectedBy(), e.getInspectedAt(),
-                e.getInspectionNote());
+                e.getInspectionNote(), e.getParcelCount());
+        request.restoreWithdrawal(e.getWithdrawalStatus(), e.getWithdrawalReason(), e.getWithdrawalAmount(),
+                e.getWithdrawalProposedBy(), e.getWithdrawalProposedAt(), e.getWithdrawalDecidedBy(),
+                e.getWithdrawalDecidedAt(), e.getWithdrawalDecisionNote(),
+                new ReturnRequest.MoneyOutcome(e.getWithdrawalOffsetAmount(), BigDecimal.ZERO,
+                        e.getWithdrawalCreditedAmount(), e.getWithdrawalCreditTransferId()));
         request.restoreResolution(e.getMoneyMode(), e.getSettlementAmount(), e.getProposedBy(), e.getProposedAt(),
                 e.getResolutionNote(), e.getSettledBy(), e.getSettledAt(),
                 new ReturnRequest.MoneyOutcome(e.getOffsetAmount(), e.getRefundedAmount(), e.getCreditedAmount(),

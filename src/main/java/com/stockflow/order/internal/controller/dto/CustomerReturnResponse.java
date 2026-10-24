@@ -34,11 +34,17 @@ public record CustomerReturnResponse(
         BigDecimal creditedAmount,
         BigDecimal offsetAmount,
         UUID replacementOrderId,
+        @Schema(description = "Set once the replacement order was withdrawn and its units credited instead")
+        ReplacementWithdrawn replacementWithdrawn,
         List<Line> lines,
         List<Discrepancy> discrepancies,
         List<Evidence> evidence,
         List<Step> history,
-        long version) {
+        long version) implements ReturnView {
+
+    /** The replacement order was cancelled and its units credited: set off against what is owed, or kept as credit. */
+    public record ReplacementWithdrawn(Instant withdrawnAt, BigDecimal offsetAmount, BigDecimal creditedAmount) {
+    }
 
     public record Line(UUID id, UUID orderLineId, String sku, int requestedQuantity, Integer approvedQuantity,
                        Integer receivedQuantity, Integer acceptedQuantity, Integer rejectedQuantity,

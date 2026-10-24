@@ -19,6 +19,7 @@ import com.stockflow.order.internal.controller.dto.EvidenceLinkResponse;
 import com.stockflow.order.internal.controller.dto.ReturnRequestResponse;
 import com.stockflow.order.internal.controller.dto.ReturnRequestRowResponse;
 import com.stockflow.order.internal.controller.dto.ReturnRequests;
+import com.stockflow.order.internal.controller.dto.ReturnView;
 import com.stockflow.order.internal.domain.ReturnEvidence;
 import com.stockflow.order.internal.domain.ReturnRequest;
 import com.stockflow.order.internal.domain.ReturnStatus;
@@ -87,13 +88,14 @@ class ReturnRequestController {
             + "reason, description, the resolution wanted. Custom-printed goods only when defective (BR-RMA-002). "
             + "Idempotent on requestId. The customer on their own order (portal); Sales on any")
     @RequiresPermission(resource = OrderResources.RMAS, action = Action.CREATE, scope = DataScope.OWN)
-    public ApiResponse<ReturnRequestResponse> open(@PathVariable UUID orderId,
-                                                   @Valid @RequestBody ReturnRequests.Open request,
-                                                   @AuthenticatedUser CurrentUser user) {
+    public ApiResponse<ReturnView> open(@PathVariable UUID orderId,
+                                        @Valid @RequestBody ReturnRequests.Open request,
+                                        @AuthenticatedUser CurrentUser user) {
         var command = ReturnWebMapper.toCommand(orderId, request);
-        ReturnRequest opened = ScopeGuards.isBackOffice(user) ? returns.openForCustomer(command, user.userId())
+        boolean backOffice = ScopeGuards.isBackOffice(user);
+        ReturnRequest opened = backOffice ? returns.openForCustomer(command, user.userId())
                 : returns.openOwn(ownCustomerId(user), command, user.userId());
-        return ApiResponse.ok(ReturnWebMapper.toResponse(opened, List.of()));
+        return ApiResponse.ok(view(opened, backOffice));
     }
 
     @PostMapping(value = "/returns/{returnId}/evidence", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -101,7 +103,7 @@ class ReturnRequestController {
     @Operation(summary = "Add a photo (JPEG, PNG, WebP, at most 15 MB): the customer's of the problem while the "
             + "claim is open; staff may add stage RECEIPT or INSPECTION photos")
     @RequiresPermission(resource = OrderResources.RMAS, action = Action.CREATE, scope = DataScope.OWN)
-    public ApiResponse<ReturnRequestResponse> addEvidence(@PathVariable UUID returnId,
+    public ApiResponse<ReturnView> addEvidence(@PathVariable UUID returnId,
                                                           @RequestPart("file") MultipartFile file,
                                                           @RequestParam(required = false) ReturnEvidence.Stage stage,
                                                           @AuthenticatedUser CurrentUser user) throws IOException {
@@ -110,7 +112,7 @@ class ReturnRequestController {
             FileUpload upload = new FileUpload(file.getOriginalFilename() == null ? "photo" : file.getOriginalFilename(),
                     file.getContentType(), file.getSize(), content);
             ReturnRequest request = returns.addEvidence(returnId, own, stage, upload, user.userId());
-            return ApiResponse.ok(ReturnWebMapper.toResponse(request, List.of()));
+            return ApiResponse.ok(view(request, own == null));
         }
     }
 
@@ -127,11 +129,18 @@ class ReturnRequestController {
     @Operation(summary = "Withdraw a return before its goods are back (REQUESTED or AWAITING_RETURN → CANCELLED); "
             + "the customer their own, Sales any")
     @RequiresPermission(resource = OrderResources.RMAS, action = Action.UPDATE, scope = DataScope.OWN)
-    public ApiResponse<ReturnRequestResponse> cancel(@PathVariable UUID returnId,
-                                                     @Valid @RequestBody(required = false) ReturnRequests.Cancel request,
-                                                     @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(ReturnWebMapper.toResponse(returns.cancel(returnId, ownCustomerIdOrNull(user),
-                request == null ? null : request.reason(), user.userId()), List.of()));
+    public ApiResponse<ReturnView> cancel(@PathVariable UUID returnId,
+                                          @Valid @RequestBody(required = false) ReturnRequests.Cancel request,
+                                          @AuthenticatedUser CurrentUser user) {
+        UUID own = ownCustomerIdOrNull(user);
+        return ApiResponse.ok(view(returns.cancel(returnId, own, request == null ? null : request.reason(),
+                user.userId()), own == null));
+    }
+
+    /** The caller's own view: staff see every step and note, a customer only what is theirs to see. */
+    private static ReturnView view(ReturnRequest request, boolean backOffice) {
+        return backOffice ? ReturnWebMapper.toResponse(request, List.of())
+                : ReturnWebMapper.toCustomerResponse(request, List.of());
     }
 
     @GetMapping("/returns/me")

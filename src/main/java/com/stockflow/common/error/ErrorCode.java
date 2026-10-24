@@ -321,9 +321,22 @@ public enum ErrorCode {
     /** Goods worth more than the no-return threshold must come back before anything is credited. */
     RETURN_GOODS_REQUIRED("Goods of this value must be sent back before the return is decided", 409),
     /** OQ-12 / BR-RMA-002: printed goods never go back on sale; only stock items that pass QC do. */
-    RETURN_RESTOCK_NOT_ALLOWED("Custom-printed goods cannot go back on sale", 409),
-    /** Four eyes where money moves (BR-PAY-003 without approver limits): a settlement is approved by someone else. */
-    RETURN_SELF_APPROVAL("A return settlement cannot be approved by the person who proposed it", 409),
+    RETURN_RESTOCK_NOT_ALLOWED("Only plain stock goes back on sale; custom-printed goods never do", 409),
+    /**
+     * Four eyes on anything of value (BR-PAY-003 without approver limits): a claim Sales opened, a resolution, the
+     * withdrawal of a replacement - each approved by someone else than who opened or proposed it.
+     */
+    RETURN_SELF_APPROVAL("A return cannot be approved by the person who opened or proposed it", 409),
+    /** Rejected units are still the customer's: scrapped only when the customer agreed, and the consent is recorded. */
+    RETURN_DISPOSAL_CONSENT_REQUIRED("Rejected goods belong to the customer: send them back, or record the customer's "
+            + "consent to scrap them", 409),
+    /** Goods back on sale go to a usable bin of the warehouse that received them, where they can be picked. */
+    RETURN_RESTOCK_LOCATION_INVALID("Returned goods go back on sale at a usable bin of the same warehouse", 409),
+    /** A free replacement order is cancelled only by withdrawing it through its return, which credits the units. */
+    RETURN_REPLACEMENT_ORDER_LOCKED("A replacement order is cancelled through its return, which credits the units "
+            + "instead", 409),
+    /** The replacement order already left for picking or shipping: it can no longer be withdrawn. */
+    RETURN_REPLACEMENT_NOT_WITHDRAWABLE("This replacement order can no longer be withdrawn", 409),
     /** The order received less money than the refund asks; credit the rest instead. */
     RETURN_REFUND_EXCEEDS_PAID("The refund is more than the order has received", 409),
     /** A customer with overdue receivables is credited, never paid out in cash. */

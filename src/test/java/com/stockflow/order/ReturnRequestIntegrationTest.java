@@ -129,8 +129,11 @@ class ReturnRequestIntegrationTest {
     @AfterEach
     void putTheStockBack() {
         WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> placed.forEach(id -> {
-            OrderStatus status = orders.findById(id).orElseThrow().status();
-            if (status.canTransitionTo(OrderStatus.CANCELLED)) {
+            OrderSummary order = orders.findById(id).orElseThrow();
+            OrderStatus status = order.status();
+            // A replacement order is cancelled only through its return: its holds are released instead.
+            boolean replacement = order.lifecycle() != null && order.lifecycle().replacesReturnRequestId() != null;
+            if (status.canTransitionTo(OrderStatus.CANCELLED) && !replacement) {
                 orders.cancel(id, new CancelOrderCommand(CancellationReasonCode.OTHER, "test cleanup", null, null));
             } else {
                 jdbc.queryForList("SELECT id FROM inventory.stock_reservation WHERE order_id = ? AND status = 'HELD'",
@@ -241,10 +244,28 @@ class ReturnRequestIntegrationTest {
                 new FileUpload("loi.png", "image/png", PNG.length, new ByteArrayInputStream(PNG)), customerUser);
     }
 
+    /** Approved on a photo - by the coordinator when Sales opened it: never by who opened it. */
     private ReturnRequest approved(ReturnRequest request, Boolean goodsBack) {
         withPhoto(request);
+        UUID approver = request.channel().name().equals("BACK_OFFICE") ? coordinator : sales;
         return returns.approve(request.id(), new ReturnRequestService.ApproveReturnCommand(null, goodsBack, null, null),
-                sales);
+                approver);
+    }
+
+    /** Proposed by Sales, approved by the accountant: every resolution has two people. */
+    private ReturnRequest resolved(ReturnRequest request, int replaced, int credited, ReturnResolution mode) {
+        returns.proposeResolution(request.id(), new ReturnRequestService.ResolveReturnCommand(
+                List.of(new ReturnRequest.Remedy(only(request), replaced, credited)), mode, null, null), sales);
+        return returns.approveSettlement(request.id(), null, accountant);
+    }
+
+    /** Released, picked, packed, handed over and delivered: the way any order - a replacement too - reaches a customer. */
+    private void deliver(UUID orderId) {
+        releases.release(orderId, DemoData.WAREHOUSE_HCM, coordinator);
+        orders.startPicking(orderId, warehouse);
+        orders.markPacked(orderId, warehouse);
+        orders.markShipped(orderId, null, warehouse);
+        orders.recordDelivery(orderId, coordinator);
     }
 
     private static UUID only(ReturnRequest request) {
@@ -486,12 +507,23 @@ class ReturnRequestIntegrationTest {
     void replacementOrder() {
         OrderSummary order = delivered(PaymentTerm.PREPAID, 3);
         ReturnRequest request = open(order.orderId(), ReturnReason.SHORT_DELIVERY, ReturnResolution.REPLACEMENT, 1);
+        assertThat(code(catchThrowable(() -> returns.approve(request.id(), new ReturnRequestService.ApproveReturnCommand(
+                null, null, "giao thiếu 1", null), sales)))).as("the signed delivery note, photographed")
+                .isEqualTo(ErrorCode.RETURN_EVIDENCE_REQUIRED);
+        withPhoto(request);
         ReturnRequest inspected = returns.approve(request.id(), new ReturnRequestService.ApproveReturnCommand(null,
                 null, "giao thiếu 1", null), sales);
         assertThat(inspected.status()).as("nothing to send back for a short delivery").isEqualTo(ReturnStatus.INSPECTED);
 
-        ReturnRequest resolved = returns.proposeResolution(request.id(), new ReturnRequestService.ResolveReturnCommand(
+        ReturnRequest pending = returns.proposeResolution(request.id(), new ReturnRequestService.ResolveReturnCommand(
                 List.of(new ReturnRequest.Remedy(only(request), 1, 0)), null, null, null), sales);
+        assertThat(pending.status()).as("free goods wait for a second person too")
+                .isEqualTo(ReturnStatus.SETTLEMENT_PENDING);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.customer_order WHERE replaces_return_request_id = ?",
+                Long.class, request.id())).as("nothing placed before the approval").isZero();
+        assertThat(code(catchThrowable(() -> returns.approveSettlement(request.id(), null, sales))))
+                .isEqualTo(ErrorCode.RETURN_SELF_APPROVAL);
+        ReturnRequest resolved = returns.approveSettlement(request.id(), null, accountant);
         assertThat(resolved.status()).isEqualTo(ReturnStatus.RESOLVED);
         assertThat(resolved.vatAdjustmentRequired()).isFalse();
         UUID replacement = resolved.replacementOrderId();
@@ -659,13 +691,16 @@ class ReturnRequestIntegrationTest {
                 List.of(new ReturnRequest.Receipt(only(request), 1, null, "LOT-9")),
                 List.of(new ReturnRequest.Unexpected("NOT-OURS-1", 2, "hàng lạ trong thùng")), null, null), warehouse);
         assertThat(received.discrepancies()).extracting(d -> d.kind().name())
-                .containsExactlyInAnyOrder("SHORT", "UNEXPECTED_ITEM");
+                .as("a shortfall is known only when no more parcels come").containsExactly("UNEXPECTED_ITEM");
 
         ReturnRequest rejected = returns.inspect(request.id(), new ReturnRequestService.InspectReturnCommand(List.of(
                 new ReturnRequest.Inspection(only(request), 0, 1, ReturnItemCondition.GOOD, 0, 0, 1, null, null)),
                 "đúng hàng, không lỗi", null), qc);
         assertThat(rejected.status()).isEqualTo(ReturnStatus.REJECTED);
-        assertThat(rejected.rejectionReason()).startsWith("NO_DEFECT_FOUND");
+        assertThat(rejected.rejectionReason()).as("QC's words stay with staff").isEqualTo("NO_DEFECT_FOUND");
+        assertThat(rejected.inspectionNote()).isEqualTo("đúng hàng, không lỗi");
+        assertThat(rejected.discrepancies()).extracting(d -> d.kind().name())
+                .containsExactlyInAnyOrder("SHORT", "UNEXPECTED_ITEM");
         assertThat(jdbc.queryForObject("SELECT status FROM inventory.stock_adjustment WHERE id = ?", String.class,
                 rejected.lines().getFirst().customerReturnAdjustmentId())).isEqualTo("PENDING_APPROVAL");
         assertThat(statusOf(order.orderId())).isEqualTo(OrderStatus.DELIVERED);
@@ -700,6 +735,137 @@ class ReturnRequestIntegrationTest {
                 + "AND movement_type = 'RETURN_IN'", Long.class, only(request));
         assertThat(quarantined).as("goods counted in exactly when the receipt won").isEqualTo(
                 end == ReturnStatus.RECEIVED ? 1L : 0L);
+    }
+
+    @Test
+    @DisplayName("goods in two parcels: one quarantine layer, one ledger line each; back on sale is a bin, not the QC "
+            + "area")
+    void parcels() {
+        OrderSummary order = delivered(PaymentTerm.PREPAID, 4);
+        ReturnRequest request = open(order.orderId(), ReturnReason.DAMAGED_IN_TRANSIT, ReturnResolution.REFUND, 3);
+        approved(request, true);
+        ReturnRequest first = returns.receive(request.id(), new ReturnRequestService.ReceiveReturnGoodsCommand(null,
+                List.of(new ReturnRequest.Receipt(only(request), 2, null, null)), List.of(), "đợt 1", null), warehouse);
+        ReturnRequest second = returns.receive(request.id(), new ReturnRequestService.ReceiveReturnGoodsCommand(null,
+                List.of(new ReturnRequest.Receipt(only(request), 1, null, null)), List.of(), "đợt 2", null), warehouse);
+        assertThat(second.parcelCount()).isEqualTo(2);
+        assertThat(second.lines().getFirst().receivedQuantity()).isEqualTo(3);
+        assertThat(jdbc.queryForObject("SELECT SUM(on_hand) FROM inventory.stock_item WHERE location_code = 'HCM-QC01'"
+                        + " AND sku = 'SOFA-3S-GREY' AND status = 'QUARANTINE' AND received_at = ?", Integer.class,
+                java.sql.Timestamp.from(first.receivedAt()))).as("both parcels in the layer QC names").isEqualTo(3);
+        assertThat(jdbc.queryForList("SELECT quantity FROM inventory.stock_movement WHERE movement_type = 'RETURN_IN' "
+                + "AND reference_id = ? ORDER BY occurred_at", Integer.class, only(request))).containsExactly(2, 1);
+
+        assertThat(code(catchThrowable(() -> returns.inspect(request.id(), new ReturnRequestService.InspectReturnCommand(
+                List.of(new ReturnRequest.Inspection(only(request), 3, 0, ReturnItemCondition.GOOD, 3, 0, 0, "HCM-QC01",
+                        null)), null, null), qc)))).as("back on sale is a bin, not the QC area")
+                .isEqualTo(ErrorCode.RETURN_RESTOCK_LOCATION_INVALID);
+    }
+
+    @Test
+    @DisplayName("an approved return expires, the goods come a week later: counted in, RECEIVED again, the order shows "
+            + "the claim again")
+    void goodsAfterTheDeadline() {
+        OrderSummary order = delivered(PaymentTerm.PREPAID, 3);
+        ReturnRequest request = open(order.orderId(), ReturnReason.PRINT_DEFECT, ReturnResolution.REFUND, 2);
+        approved(request, true);
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE ordering.return_request SET return_deadline = NOW() - "
+                + "interval '1 hour' WHERE id = ?", request.id()));
+        assertThat(returns.expire(request.id())).isTrue();
+        assertThat(statusOf(order.orderId())).isEqualTo(OrderStatus.DELIVERED);
+
+        ReturnRequest received = returns.receive(request.id(), new ReturnRequestService.ReceiveReturnGoodsCommand(null,
+                List.of(new ReturnRequest.Receipt(only(request), 2, null, null)), List.of(), "về trễ", null), warehouse);
+        assertThat(received.status()).isEqualTo(ReturnStatus.RECEIVED);
+        assertThat(received.closedAt()).isNull();
+        assertThat(statusOf(order.orderId())).isEqualTo(OrderStatus.RETURN_REQUESTED);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_movement WHERE movement_type = 'RETURN_IN' "
+                + "AND reference_id = ?", Long.class, only(request))).isEqualTo(1L);
+        assertThat(queries.detail(request.id(), null).history()).extracting(t -> t.reason())
+                .contains("RECEIVED_AFTER_DEADLINE");
+    }
+
+    @Test
+    @DisplayName("a late claim: Sales accept it with a reason on a completed order, another person approves it")
+    void lateClaimBySales() {
+        OrderSummary order = delivered(PaymentTerm.PREPAID, 2);
+        backdateDelivery(order.orderId(), 30);
+        assertThat(settlements.complete(order.orderId())).isTrue();
+        var withoutReason = new ReturnRequestService.OpenReturnCommand(UUID.randomUUID(), order.orderId(),
+                ReturnReason.PRINT_DEFECT, null, ReturnResolution.CREDIT_NOTE,
+                List.of(new ReturnRequest.Claim(lineOf(order.orderId()), 1)));
+        assertThat(code(catchThrowable(() -> returns.openForCustomer(withoutReason, sales))))
+                .isEqualTo(ErrorCode.RETURN_WINDOW_CLOSED);
+        ReturnRequest late = returns.openForCustomer(new ReturnRequestService.OpenReturnCommand(UUID.randomUUID(),
+                order.orderId(), ReturnReason.PRINT_DEFECT, null, ReturnResolution.CREDIT_NOTE,
+                List.of(new ReturnRequest.Claim(lineOf(order.orderId()), 1)), "Lỗi phát hiện khi mở pallet cuối"), sales);
+        assertThat(late.windowOverride()).isEqualTo("Lỗi phát hiện khi mở pallet cuối");
+        assertThat(statusOf(order.orderId())).isEqualTo(OrderStatus.RETURN_REQUESTED);
+        withPhoto(late);
+        assertThat(code(catchThrowable(() -> returns.approve(late.id(), new ReturnRequestService.ApproveReturnCommand(
+                null, false, null, null), sales)))).isEqualTo(ErrorCode.RETURN_SELF_APPROVAL);
+        assertThat(returns.approve(late.id(), new ReturnRequestService.ApproveReturnCommand(null, false, null, null),
+                coordinator).status()).isEqualTo(ReturnStatus.INSPECTED);
+    }
+
+    @Test
+    @DisplayName("a replacement order is cancelled only through its return: neither the customer nor staff cancel it; "
+            + "withdrawn by two people, it is cancelled and its units credited (RMA-...-W)")
+    void replacementWithdrawal() {
+        OrderSummary order = delivered(PaymentTerm.PREPAID, 3);
+        ReturnRequest request = open(order.orderId(), ReturnReason.DAMAGED_IN_TRANSIT, ReturnResolution.REPLACEMENT, 1);
+        approved(request, false);
+        ReturnRequest resolved = resolved(request, 1, 0, null);
+        UUID replacement = resolved.replacementOrderId();
+        placed.add(replacement);
+
+        assertThat(code(catchThrowable(() -> orders.cancelOwn(replacement, customer, null, null, customerUser))))
+                .isEqualTo(ErrorCode.RETURN_REPLACEMENT_ORDER_LOCKED);
+        assertThat(code(catchThrowable(() -> WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () ->
+                orders.cancel(replacement, new CancelOrderCommand(CancellationReasonCode.CUSTOMER_REQUEST, null, null,
+                        coordinator)))))).isEqualTo(ErrorCode.RETURN_REPLACEMENT_ORDER_LOCKED);
+
+        returns.proposeReplacementWithdrawal(request.id(), "Khách muốn nhận tiền thay vì hàng", null, sales);
+        assertThat(statusOf(replacement)).as("nothing changes before the approval").isEqualTo(OrderStatus.CONFIRMED);
+        assertThat(code(catchThrowable(() -> returns.approveReplacementWithdrawal(request.id(), null, sales))))
+                .isEqualTo(ErrorCode.RETURN_SELF_APPROVAL);
+        ReturnRequest withdrawn = returns.approveReplacementWithdrawal(request.id(), null, accountant);
+        assertThat(withdrawn.withdrawalStatus()).isEqualTo(ReturnRequest.WithdrawalStatus.APPROVED);
+        assertThat(withdrawn.status()).isEqualTo(ReturnStatus.RESOLVED);
+        assertThat(statusOf(replacement)).isEqualTo(OrderStatus.CANCELLED);
+        assertThat(jdbc.queryForObject("SELECT cancellation_reason_code FROM ordering.customer_order WHERE id = ?",
+                String.class, replacement)).isEqualTo("REPLACEMENT_WITHDRAWN");
+        assertThat(withdrawn.withdrawalMoney().total()).isEqualByComparingTo(BigDecimal.valueOf(PRICE));
+        assertThat(jdbc.queryForList("SELECT channel || ' ' || reference || ' ' || amount::bigint "
+                + "FROM payment.customer_transfer WHERE id = ?", String.class,
+                withdrawn.withdrawalMoney().creditTransferId()))
+                .containsExactly("RETURN_CREDIT " + request.rmaNumber() + "-W " + PRICE);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_reservation WHERE order_id = ? "
+                + "AND status = 'HELD'", Long.class, replacement)).as("its stock released").isZero();
+        assertThat(code(catchThrowable(() -> returns.proposeReplacementWithdrawal(request.id(), "again", null,
+                sales)))).isEqualTo(ErrorCode.RETURN_INVALID_TRANSITION);
+    }
+
+    @Test
+    @DisplayName("a defective reprint: the replacement order's free line is credited at what the goods were paid, on the "
+            + "original order's money")
+    void claimOnAReplacement() {
+        OrderSummary order = delivered(PaymentTerm.PREPAID, 3);
+        ReturnRequest request = open(order.orderId(), ReturnReason.DAMAGED_IN_TRANSIT, ReturnResolution.REPLACEMENT, 1);
+        approved(request, false);
+        UUID replacement = resolved(request, 1, 0, null).replacementOrderId();
+        placed.add(replacement);
+        deliver(replacement);
+        assertThat(statusOf(replacement)).isEqualTo(OrderStatus.DELIVERED);
+
+        ReturnRequest again = open(replacement, ReturnReason.DAMAGED_IN_TRANSIT, ReturnResolution.CREDIT_NOTE, 1);
+        assertThat(again.lines().getFirst().unitPrice()).as("the price paid, not the replacement's zero")
+                .isEqualByComparingTo(BigDecimal.valueOf(PRICE));
+        approved(again, false);
+        ReturnRequest credited = resolved(again, 0, 1, ReturnResolution.CREDIT_NOTE);
+        assertThat(credited.money().credited()).isEqualByComparingTo(BigDecimal.valueOf(PRICE));
+        assertThat(jdbc.queryForObject("SELECT customer_id FROM payment.customer_transfer WHERE id = ?", UUID.class,
+                credited.money().creditTransferId())).isEqualTo(customer);
     }
 
     @Test

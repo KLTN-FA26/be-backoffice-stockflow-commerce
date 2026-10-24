@@ -736,13 +736,16 @@ class OrderLifecycleTest {
         }
 
         @Test
-        @DisplayName("COMPLETED after the return window, paid, no return open; CLOSED 30 days later; then nothing")
+        @DisplayName("COMPLETED after the return window (whole calendar days), paid, no return open; CLOSED 30 days "
+                + "later; then nothing")
         void completeThenClose() {
             Order order = delivered(PaymentTerm.PREPAID);
             Duration week = Duration.ofDays(7);
-            assertThat(order.complete(NOW.plus(Duration.ofDays(6)), week, false)).isFalse();
-            assertThat(order.complete(NOW.plus(week), week, true)).as("a return is open").isFalse();
-            assertThat(order.complete(NOW.plus(week), week, false)).isTrue();
+            Instant windowEnd = ReturnPolicy.endOfDays(NOW, week);
+            assertThat(order.complete(windowEnd.minusSeconds(1), week, false))
+                    .as("the customer may still claim on the 7th day").isFalse();
+            assertThat(order.complete(windowEnd, week, true)).as("a return is open").isFalse();
+            assertThat(order.complete(windowEnd, week, false)).isTrue();
             assertThat(order.status()).isEqualTo(OrderStatus.COMPLETED);
             assertThat(order.close(NOW.plus(Duration.ofDays(20)), Duration.ofDays(30))).isFalse();
             assertThat(order.close(NOW.plus(Duration.ofDays(40)), Duration.ofDays(30))).isTrue();
@@ -769,8 +772,26 @@ class OrderLifecycleTest {
             order.markRefunded(true, STAFF, NOW);
             assertThat(order.status()).isEqualTo(OrderStatus.PARTIALLY_REFUNDED);
             assertThat(order.close(NOW.plus(Duration.ofDays(31)), Duration.ofDays(30))).isTrue();
-            assertThat(code(catchThrowable(() -> order.requestReturn(STAFF, NOW))))
-                    .isEqualTo(ErrorCode.ORDER_INVALID_TRANSITION);
+            assertThat(order.requestReturn(STAFF, NOW, "a claim after it closed")).as("BR-05: a closed order stays")
+                    .isFalse();
+            assertThat(order.status()).isEqualTo(OrderStatus.CLOSED);
+        }
+
+        @Test
+        @DisplayName("a further claim reopens a COMPLETED or (PARTIALLY_)REFUNDED order; one still owed money never closes")
+        void furtherClaims() {
+            Order completed = delivered(PaymentTerm.PREPAID);
+            completed.complete(ReturnPolicy.endOfDays(NOW, Duration.ofDays(7)), Duration.ofDays(7), false);
+            assertThat(completed.requestReturn(STAFF, NOW, "late claim")).isTrue();
+            assertThat(completed.status()).isEqualTo(OrderStatus.RETURN_REQUESTED);
+
+            Order credit = delivered(PaymentTerm.CREDIT);
+            credit.requestReturn(STAFF, NOW);
+            credit.settleReturn(false, STAFF, NOW, "RETURN_SETTLED");
+            assertThat(credit.status()).isEqualTo(OrderStatus.PARTIALLY_REFUNDED);
+            assertThat(credit.close(NOW.plus(Duration.ofDays(60)), Duration.ofDays(30)))
+                    .as("the rest of the receivable is still owed").isFalse();
+            assertThat(credit.requestReturn(STAFF, NOW, "second claim")).isTrue();
         }
     }
 }

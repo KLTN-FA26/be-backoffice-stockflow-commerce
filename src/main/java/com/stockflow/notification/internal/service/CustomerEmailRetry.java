@@ -10,6 +10,7 @@ import com.stockflow.contracts.ReturnApproved;
 import com.stockflow.contracts.ReturnClosed;
 import com.stockflow.contracts.ReturnReceived;
 import com.stockflow.contracts.ReturnRejected;
+import com.stockflow.contracts.ReturnReplacementWithdrawn;
 import com.stockflow.contracts.ReturnRequested;
 import com.stockflow.contracts.ReturnResolved;
 import com.stockflow.contracts.ShipmentStatusChanged;
@@ -85,7 +86,8 @@ class CustomerEmailRetry {
                 route(rma, ReturnRejected.class, composer::returnRejected, returns::on),
                 route(rma, ReturnReceived.class, composer::returnReceived, returns::on),
                 route(rma, ReturnResolved.class, composer::returnResolved, returns::on),
-                route(rma, ReturnClosed.class, composer::returnClosed, returns::on));
+                route(rma, ReturnClosed.class, composer::returnClosed, returns::on),
+                route(rma, ReturnReplacementWithdrawn.class, composer::returnReplacementWithdrawn, returns::on));
     }
 
     /**

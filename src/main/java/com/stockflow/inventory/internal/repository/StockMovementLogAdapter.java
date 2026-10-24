@@ -42,6 +42,12 @@ class StockMovementLogAdapter implements StockMovementLog, StockLedgerSearch {
     }
 
     @Override
+    public long quantityByReference(StockMovement.MovementType type, StockMovement.ReferenceType referenceType,
+                                    UUID referenceId) {
+        return jpa.sumQuantityByReference(type, referenceType, referenceId);
+    }
+
+    @Override
     public Page<StockMovement> search(Criteria criteria, Pageable pageable) {
         Specification<StockMovementJpaEntity> spec = Specification
                 .<StockMovementJpaEntity>where(Specs.eq("sku", upper(criteria.sku())))

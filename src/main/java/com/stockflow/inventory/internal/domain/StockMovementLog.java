@@ -16,6 +16,13 @@ public interface StockMovementLog {
                                             StockMovement.ReferenceType referenceType, UUID referenceId);
 
     /**
+     * The units a document's lines moved so far: a document booked in several steps - a return line whose goods came
+     * back in more than one parcel - recognises a retried step by the total it already reached.
+     */
+    long quantityByReference(StockMovement.MovementType type, StockMovement.ReferenceType referenceType,
+                             UUID referenceId);
+
+    /**
      * Whether production handed {@code hold}'s goods over, out of the print shop, to {@code location}: the hand-over
      * line a production move writes ({@code MOVE}, reference {@code PRODUCTION_ORDER}, "Hold &lt;id&gt;",
      * IN_PRODUCTION to AVAILABLE). Tells printed goods in a packing area from free stock somebody moved there.

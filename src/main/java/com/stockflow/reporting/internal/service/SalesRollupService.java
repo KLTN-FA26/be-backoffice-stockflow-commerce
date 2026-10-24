@@ -1,5 +1,7 @@
 package com.stockflow.reporting.internal.service;
 
+import com.stockflow.contracts.ReturnReplacementWithdrawn;
+import com.stockflow.contracts.ReturnResolved;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
@@ -13,6 +15,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -71,11 +75,62 @@ class SalesRollupService {
     }
 
     /**
-     * What an order adds to the rollups: empty for a DRAFT (never counted: a draft is not a sale) and for an order in
-     * another currency than {@link #CURRENCY}.
+     * {@code ReturnResolved}: the value a return credited back (set off, refunded, kept as credit) and the credited units
+     * come off the revenue of the day the paying order was placed. A resolution that only replaced goods takes nothing.
+     */
+    @Transactional
+    public void returnResolved(ReturnResolved event) {
+        BigDecimal value = event.offsetAmount().add(event.refundedAmount()).add(event.creditedAmount());
+        List<OrderContribution.Line> lines = event.lines().stream().filter(line -> line.creditQuantity() > 0)
+                .map(line -> new OrderContribution.Line(line.sku(), line.creditQuantity(), line.creditAmount()))
+                .toList();
+        takeReturn(event.returnRequestId(), "RESOLVED", event.moneyOrderId(), event.currency(), value, lines);
+    }
+
+    /** {@code ReturnReplacementWithdrawn}: the replaced units were credited after all - off the paying order's day. */
+    @Transactional
+    public void replacementWithdrawn(ReturnReplacementWithdrawn event) {
+        BigDecimal value = event.offsetAmount().add(event.creditedAmount());
+        List<OrderContribution.Line> lines = event.lines().stream()
+                .map(line -> new OrderContribution.Line(line.sku(), line.quantity(), line.amount())).toList();
+        takeReturn(event.returnRequestId(), "REPLACEMENT_WITHDRAWN", event.paidOrderId(), event.currency(), value,
+                lines);
+    }
+
+    private void takeReturn(UUID returnRequestId, String event, UUID paidOrderId, String currency, BigDecimal value,
+                            List<OrderContribution.Line> lines) {
+        if (value.signum() <= 0) {
+            return;
+        }
+        if (!CURRENCY.equals(currency)) {
+            LOG.warn("Sales rollup: return {} is in {}, not {}; left out", returnRequestId, currency, CURRENCY);
+            return;
+        }
+        lock.shared();
+        Optional<java.time.LocalDate> day = rollups.placedDay(paidOrderId)
+                .or(() -> orders.findById(paidOrderId).flatMap(SalesRollupService::contributionOf)
+                        .map(OrderContribution::day));
+        if (day.isEmpty()) {
+            LOG.warn("Sales rollup: order {} of return {} is not countable; return left out", paidOrderId,
+                    returnRequestId);
+            return;
+        }
+        if (!rollups.returned(returnRequestId, event,
+                new OrderContribution(paidOrderId, day.get(), currency, value, lines))) {
+            LOG.debug("Sales rollup: {} of return {} was applied before", event, returnRequestId);
+        }
+    }
+
+    /**
+     * What an order adds to the rollups: empty for a DRAFT (never counted: a draft is not a sale), for a free
+     * replacement order (its goods were sold - and counted - on the original order) and for an order in another
+     * currency than {@link #CURRENCY}.
      */
     static Optional<OrderContribution> contributionOf(OrderSummary order) {
         if (order.status() == OrderStatus.DRAFT) {
+            return Optional.empty();
+        }
+        if (order.lifecycle() != null && order.lifecycle().replacesReturnRequestId() != null) {
             return Optional.empty();
         }
         String currency = order.total().currency().getCurrencyCode();

@@ -22,6 +22,8 @@ import com.stockflow.inventory.api.ReclassifyStockCommand;
 import com.stockflow.inventory.api.RequestAdjustmentCommand;
 import com.stockflow.inventory.api.StockAdjustmentReason;
 import com.stockflow.inventory.api.StockDisposition;
+import com.stockflow.order.api.CancelOrderCommand;
+import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderId;
 import com.stockflow.order.internal.domain.OrderRepository;
@@ -92,9 +94,19 @@ public class ReturnRequestService {
     private static final Logger log = LoggerFactory.getLogger(ReturnRequestService.class);
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
 
-    /** Open a return on {@code orderId}: the lines and units claimed, why, and what the customer would like. */
+    /**
+     * Open a return on {@code orderId}: the lines and units claimed, why, and what the customer would like.
+     * {@code lateClaimReason}: Sales accept a claim outside the return window, and say why (back office only).
+     */
     public record OpenReturnCommand(UUID requestId, UUID orderId, ReturnReason reason, String description,
-                                    ReturnResolution requestedResolution, List<ReturnRequest.Claim> lines) {
+                                    ReturnResolution requestedResolution, List<ReturnRequest.Claim> lines,
+                                    String lateClaimReason) {
+
+        /** Within the return window. */
+        public OpenReturnCommand(UUID requestId, UUID orderId, ReturnReason reason, String description,
+                                 ReturnResolution requestedResolution, List<ReturnRequest.Claim> lines) {
+            this(requestId, orderId, reason, description, requestedResolution, lines, null);
+        }
     }
 
     /** Sales' review: units approved per return line (none named: all), whether the goods come back. */
@@ -124,6 +136,7 @@ public class ReturnRequestService {
     private final PaymentService payments;
     private final CustomerService customers;
     private final ReplacementOrders replacements;
+    private final OrderServiceImpl orderService;
     private final FileTransfers files;
     private final UploadInspection inspection;
     private final ReturnPolicy policy;
@@ -132,7 +145,8 @@ public class ReturnRequestService {
     ReturnRequestService(ReturnRequestRepository returns, OrderRepository orders, OrderEventPublisher events,
                          InventoryService inventory, WarehouseService warehouses, ReturnSettlement settlement,
                          PaymentService payments, CustomerService customers, ReplacementOrders replacements,
-                         FileTransfers files, UploadInspection inspection, ReturnPolicy policy, Clock clock) {
+                         OrderServiceImpl orderService, FileTransfers files, UploadInspection inspection,
+                         ReturnPolicy policy, Clock clock) {
         this.inspection = inspection;
         this.returns = returns;
         this.orders = orders;
@@ -143,6 +157,7 @@ public class ReturnRequestService {
         this.payments = payments;
         this.customers = customers;
         this.replacements = replacements;
+        this.orderService = orderService;
         this.files = files;
         this.policy = policy;
         this.clock = clock;
@@ -161,7 +176,10 @@ public class ReturnRequestService {
         return open(command, ReturnChannel.PORTAL, userId, ownCustomerId);
     }
 
-    /** Sales open a return for any customer (a phone call, a visit), a blocked customer's included. */
+    /**
+     * Sales open a return for any customer (a phone call, a visit), a blocked customer's included - also outside the
+     * return window when they say why, and on an order a return already settled. Someone else approves it.
+     */
     @Auditable(action = AuditAction.CREATE, resourceType = "return-request", resourceId = "#result?.id()")
     public ReturnRequest openForCustomer(OpenReturnCommand command, UUID staffId) {
         return open(command, ReturnChannel.BACK_OFFICE, staffId, null);
@@ -206,7 +224,8 @@ public class ReturnRequestService {
         Instant now = now();
         ReturnRequest request = ReturnRequest.open(returns.nextRmaNumber(LocalDate.ofInstant(now, BUSINESS_ZONE)),
                 command.requestId(), order, channel, command.reason(), command.description(),
-                command.requestedResolution(), command.lines(), claimed, open, by, now, policy);
+                command.requestedResolution(), command.lines(), claimed, open, by, now, policy,
+                channel == ReturnChannel.BACK_OFFICE ? command.lateClaimReason() : null, replacedPrices(order));
         if (order.requestReturn(by, now, "RETURN_REQUESTED " + request.rmaNumber())) {
             orders.save(order);
             events.publishEventsOf(order);
@@ -216,6 +235,21 @@ public class ReturnRequestService {
         log.info("Return {} opened on order {} ({}, {} line(s))", saved.rmaNumber(), order.orderNumber(),
                 command.reason(), saved.lines().size());
         return saved;
+    }
+
+    /**
+     * A free replacement order's lines cost nothing; the units they replaced were paid at the prices of the return that
+     * replaced them, and a claim on them is credited at those - per line of the replacement order.
+     */
+    private Map<UUID, BigDecimal> replacedPrices(Order order) {
+        if (order.replacesReturnRequestId() == null) {
+            return Map.of();
+        }
+        Map<UUID, BigDecimal> prices = new HashMap<>();
+        returns.findById(order.replacesReturnRequestId()).ifPresent(replaced -> replaced.lines().stream()
+                .filter(line -> line.replacementOrderLineId() != null)
+                .forEach(line -> prices.put(line.replacementOrderLineId(), line.unitPrice())));
+        return prices;
     }
 
     // ================================================================================================= evidence
@@ -286,29 +320,73 @@ public class ReturnRequestService {
     // ================================================================================================= receipt
 
     /**
-     * The warehouse counts the parcel into quarantine (03 §12: AWAITING_RETURN → RECEIVED; OQ-12). Each line's units
-     * become QUARANTINE stock of the SKU that actually arrived, through {@code InventoryService.receiveReturn}; nothing
-     * is sellable until QC decides. Restricted to the caller's warehouses by inventory (BR-SEC-002).
+     * The warehouse counts a parcel into quarantine (03 §12: AWAITING_RETURN → RECEIVED; OQ-12). Each line's units of
+     * this parcel become QUARANTINE stock of the SKU that actually arrived, through {@code InventoryService.receiveReturn}
+     * - every parcel of a return into the same quarantine layer, which QC's decisions name later; nothing is sellable
+     * until QC decides. Restricted to the caller's warehouses by inventory (BR-SEC-002).
+     *
+     * <p>A parcel may also come after the return expired, or after the customer withdrew an approved one: the goods are
+     * here, so they are counted in and the return is back to RECEIVED for QC and Sales - unless another return of the
+     * same order line is open meanwhile, which then takes the goods instead ({@code RETURN_LINE_ALREADY_OPEN}). The
+     * order shows the open claim again (RETURN_REQUESTED) unless it is closed for good.</p>
      */
     @Auditable(action = AuditAction.UPDATE, resourceType = "return-request", resourceId = "#returnId")
     public ReturnRequest receive(UUID returnId, ReceiveReturnGoodsCommand command, UUID by) {
         Locked locked = lock(returnId, null, command.version());
         ReturnRequest request = locked.request();
-        String location = receivingLocation(locked.order(), command.locationCode());
+        boolean reopening = request.receivingReopens();
+        if (reopening) {
+            requireNoOtherOpenReturn(locked);
+        }
+        String location = request.parcelCount() > 0 ? request.receivingLocation()
+                : receivingLocation(locked.order(), command.locationCode());
+        if (request.parcelCount() > 0 && command.locationCode() != null && !command.locationCode().isBlank()) {
+            location = command.locationCode().trim();
+        }
         List<ReturnRequest.Receipt> counted = new ArrayList<>();
         for (ReturnRequest.Receipt receipt : command.lines() == null ? List.<ReturnRequest.Receipt>of()
                 : command.lines()) {
             counted.add(receipt == null || receipt.quantity() <= 0 ? receipt : withLotPolicy(request, receipt));
         }
-        request.receive(by, now(), location, counted, command.unexpected(), command.note());
-        for (ReturnLine line : request.lines()) {
-            if (line.receivedQuantity() != null && line.receivedQuantity() > 0) {
-                inventory.receiveReturn(new ReceiveReturnCommand(line.id(), new Sku(line.receivedSkuOrOwn()),
-                        line.lotNumber(), location, line.receivedQuantity(), request.orderId(), by,
-                        request.receivedAt()));
+        Map<UUID, Integer> parcelUnits = new HashMap<>();
+        for (ReturnRequest.Receipt receipt : counted) {
+            if (receipt != null && receipt.lineId() != null && receipt.quantity() > 0) {
+                parcelUnits.merge(receipt.lineId(), receipt.quantity(), Integer::sum);
             }
         }
+        request.receive(by, now(), location, counted, command.unexpected(), command.note());
+        for (ReturnLine line : request.lines()) {
+            int units = parcelUnits.getOrDefault(line.id(), 0);
+            if (units > 0) {
+                inventory.receiveReturn(new ReceiveReturnCommand(line.id(), new Sku(line.receivedSkuOrOwn()),
+                        line.lotNumber(), request.receivingLocation(), units, request.orderId(), by,
+                        request.receivedAt(), line.receivedQuantity()));
+            }
+        }
+        if (reopening && locked.order().requestReturn(by, now(), "RETURN_GOODS_ARRIVED " + request.rmaNumber())) {
+            orders.save(locked.order());
+            events.publishEventsOf(locked.order());
+        }
         return finish(locked, by);
+    }
+
+    /** A return coming back to life must not claim a line another return of the order took meanwhile. */
+    private void requireNoOtherOpenReturn(Locked locked) {
+        ReturnRequest request = locked.request();
+        Set<UUID> mine = new HashSet<>();
+        request.lines().forEach(line -> mine.add(line.orderLineId()));
+        for (ReturnRequest other : returns.findByOrder(request.orderId())) {
+            if (other.id().equals(request.id()) || !other.status().isOpen()) {
+                continue;
+            }
+            for (ReturnLine line : other.lines()) {
+                if (mine.contains(line.orderLineId())) {
+                    throw new BusinessException(ErrorCode.RETURN_LINE_ALREADY_OPEN,
+                            "%s of order %s is claimed by open return %s now: count these goods in on it".formatted(
+                                    line.sku(), request.orderNumber(), other.rmaNumber()));
+                }
+            }
+        }
     }
 
     /**
@@ -355,7 +433,8 @@ public class ReturnRequestService {
      */
     private ReturnRequest.Receipt withLotPolicy(ReturnRequest request, ReturnRequest.Receipt receipt) {
         String code = receipt.sku() == null || receipt.sku().isBlank()
-                ? request.findLine(receipt.lineId()).map(ReturnLine::sku).orElse(null) : receipt.sku().trim();
+                ? request.findLine(receipt.lineId()).map(ReturnLine::receivedSkuOrOwn).orElse(null)
+                : receipt.sku().trim();
         if (code == null) {
             return receipt;
         }
@@ -386,14 +465,22 @@ public class ReturnRequestService {
 
     /**
      * QC decides every unit received (03 §12: RECEIVED → INSPECTED, or REJECTED when none holds the claim) and where it
-     * goes: stock items that passed back on sale at a bin now (QUARANTINE → AVAILABLE, OQ-12); units to scrap, and
-     * rejected units going back to the customer, as inventory adjustments a second person approves (BR-STK-005) - until
-     * then they stay in quarantine, out of sale.
+     * goes: accepted plain stock back on sale at a bin of the same warehouse now (QUARANTINE → AVAILABLE, OQ-12);
+     * accepted units to scrap, and rejected units - the customer's - going back to them or, with their consent,
+     * scrapped, as inventory adjustments a second person approves (BR-STK-005); until then they stay in quarantine, out
+     * of sale.
      */
     @Auditable(action = AuditAction.UPDATE, resourceType = "return-request", resourceId = "#returnId")
     public ReturnRequest inspect(UUID returnId, InspectReturnCommand command, UUID by) {
         Locked locked = lock(returnId, null, command.version());
         ReturnRequest request = locked.request();
+        for (ReturnRequest.Inspection line : command.lines() == null ? List.<ReturnRequest.Inspection>of()
+                : command.lines()) {
+            if (line != null && line.restock() > 0 && line.restockLocation() != null
+                    && !line.restockLocation().isBlank()) {
+                requireSellingBin(request, line.restockLocation().trim());
+            }
+        }
         request.inspect(by, now(), command.lines(), command.note());
         for (ReturnLine line : request.lines()) {
             Sku sku = new Sku(line.receivedSkuOrOwn());
@@ -405,8 +492,7 @@ public class ReturnRequestService {
             }
             UUID scrap = line.scrapQuantity() == 0 ? null : inventory.requestAdjustment(new RequestAdjustmentCommand(
                     request.receivingLocation(), sku, line.lotNumber(), -line.scrapQuantity(),
-                    StockAdjustmentReason.SCRAP, "%s: returned goods scrapped after QC".formatted(request.rmaNumber()),
-                    by, request.receivedAt())).adjustmentId();
+                    StockAdjustmentReason.SCRAP, scrapNote(request, line), by, request.receivedAt())).adjustmentId();
             UUID back = line.customerReturnQuantity() == 0 ? null : inventory.requestAdjustment(
                     new RequestAdjustmentCommand(request.receivingLocation(), sku, line.lotNumber(),
                             -line.customerReturnQuantity(), StockAdjustmentReason.OTHER,
@@ -419,32 +505,51 @@ public class ReturnRequestService {
         return finish(locked, by);
     }
 
+    /** What the approver of a scrap write-off reads: whose goods, and for the customer's, how they agreed. */
+    private static String scrapNote(ReturnRequest request, ReturnLine line) {
+        int customers = line.rejectedScrapped();
+        return customers == 0 ? "%s: returned goods scrapped after QC".formatted(request.rmaNumber())
+                : "%s: returned goods scrapped after QC, %d of them the customer's with their consent: %s".formatted(
+                        request.rmaNumber(), customers, line.disposalConsent());
+    }
+
+    /**
+     * Goods back on sale go to a bin - pickable stock - of the warehouse that received them, usable now: a quarantine,
+     * QC or dock area would count them in what may be promised while no picker can be sent there.
+     */
+    private void requireSellingBin(ReturnRequest request, String code) {
+        StorageLocationView bin = warehouses.findLocation(code)
+                .orElseThrow(() -> new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + code));
+        StorageLocationView received = request.receivingLocation() == null ? null
+                : warehouses.findLocation(request.receivingLocation()).orElse(null);
+        if (bin.kind() != StorageLocationView.Kind.BIN || !bin.usable() || received == null
+                || !bin.warehouseId().equals(received.warehouseId())) {
+            throw new BusinessException(ErrorCode.RETURN_RESTOCK_LOCATION_INVALID,
+                    "%s is not a usable bin of the warehouse that received the goods of %s".formatted(code,
+                            request.rmaNumber()));
+        }
+    }
+
     // ================================================================================================= resolution
 
     /**
-     * Sales say how the accepted units are made good. Without money (replacements only) it is carried out at once: the
-     * replacement order is placed and the return RESOLVED. With money it waits for a second person
-     * (SETTLEMENT_PENDING). Either way what would refuse the execution later is checked now: a replacement that cannot
-     * be placed, a cash refund to a customer with overdue receivables.
+     * Sales say how the accepted units are made good. Every resolution waits for a second person (SETTLEMENT_PENDING):
+     * free replacement goods are worth what money is. What would refuse the execution later is checked now: a
+     * replacement that cannot be placed, a cash refund to a customer with overdue receivables.
      */
     @Auditable(action = AuditAction.UPDATE, resourceType = "return-request", resourceId = "#returnId")
     public ReturnRequest proposeResolution(UUID returnId, ResolveReturnCommand command, UUID by) {
         Locked locked = lock(returnId, null, command.version());
         ReturnRequest request = locked.request();
-        boolean needsApproval = request.proposeResolution(by, now(), command.lines(), command.moneyMode(),
-                command.note());
+        request.proposeResolution(by, now(), command.lines(), command.moneyMode(), command.note());
         replacements.requirePlaceable(locked.order(), request);
-        if (needsApproval) {
-            requireRefundAllowed(request);
-        } else {
-            carryOut(locked, by);
-        }
+        requireRefundAllowed(request);
         return finish(locked, by);
     }
 
     /**
-     * The second person approves the money (four eyes, BR-PAY-003 without approver limits): the replacement order is
-     * placed, payment books the money, the return is RESOLVED - all in this transaction, or none of it.
+     * The second person approves the resolution (four eyes, BR-PAY-003 without approver limits): the replacement order
+     * is placed, payment books the money, the return is RESOLVED - all in this transaction, or none of it.
      */
     @Auditable(action = AuditAction.APPROVE, resourceType = "return-request", resourceId = "#returnId")
     public ReturnRequest approveSettlement(UUID returnId, Long version, UUID by) {
@@ -477,9 +582,10 @@ public class ReturnRequestService {
         ReplacementOrders.Placed placed = request.replacementUnits() == 0 ? null
                 : replacements.place(locked.order(), request, by);
         ReturnRequest.MoneyOutcome money = ReturnRequest.MoneyOutcome.NONE;
+        Order paidOn = paidOn(locked.order());
         if (request.settlementAmount().signum() > 0) {
             SettleReturnResult booked = settlement.settleReturn(new SettleReturnCommand(request.id(),
-                    request.rmaNumber(), request.orderId(), request.orderNumber(), request.customerId(),
+                    request.rmaNumber(), paidOn.id().value(), paidOn.orderNumber().value(), request.customerId(),
                     request.settlementAmount(), request.currency(), request.moneyMode() == ReturnResolution.REFUND,
                     by));
             money = new ReturnRequest.MoneyOutcome(booked.offsetAmount(), booked.refundedAmount(),
@@ -487,7 +593,88 @@ public class ReturnRequestService {
         }
         request.resolve(by, now(), placed == null ? null : placed.orderId(),
                 placed == null ? null : placed.orderNumber(), placed == null ? Map.of() : placed.lineByReturnLine(),
-                money);
+                money, paidOn.id().value());
+    }
+
+    /**
+     * The order the goods were paid on: the returned order itself, or for a free replacement order - which received
+     * no money - the order whose units it replaced, followed back through every replacement in between. Its money is
+     * what a defective reprint is refunded from or credited against.
+     */
+    private Order paidOn(Order order) {
+        Order current = order;
+        Set<UUID> seen = new HashSet<>();
+        while (current.replacesReturnRequestId() != null && seen.add(current.id().value())) {
+            ReturnRequest replaced = returns.findById(current.replacesReturnRequestId()).orElseThrow();
+            current = orders.findById(new OrderId(replaced.orderId())).orElseThrow();
+        }
+        return current;
+    }
+
+    // ================================================================================================= replacement withdrawal
+
+    /**
+     * Sales propose to withdraw a resolved return's free replacement order before it ships, crediting the replaced
+     * units instead (SCRUM-260): the customer would rather have the money, or the goods cannot be made again. Nothing
+     * changes until a second person approves; the replacement order must still be cancellable - not yet packed or
+     * handed over - now and then.
+     */
+    @Auditable(action = AuditAction.UPDATE, resourceType = "return-request", resourceId = "#returnId")
+    public ReturnRequest proposeReplacementWithdrawal(UUID returnId, String reason, Long version, UUID by) {
+        Locked locked = lock(returnId, null, version);
+        ReturnRequest request = locked.request();
+        request.proposeReplacementWithdrawal(by, now(), reason);
+        requireWithdrawable(orders.findById(new OrderId(request.replacementOrderId())).orElseThrow(), request);
+        return finish(locked, by);
+    }
+
+    /**
+     * The second person approves the withdrawal: the replacement order is cancelled (REPLACEMENT_WITHDRAWN - its holds
+     * released, anything already printed for it scrapped, BR-PRD-10) and payment credits the replaced units' value -
+     * against the original order's receivables first, the rest as the customer's credit (reference RMA number + "-W").
+     * All in this transaction, or none of it.
+     */
+    @Auditable(action = AuditAction.APPROVE, resourceType = "return-request", resourceId = "#returnId")
+    public ReturnRequest approveReplacementWithdrawal(UUID returnId, Long version, UUID by) {
+        Locked locked = lock(returnId, null, version);
+        ReturnRequest request = locked.request();
+        request.requireWithdrawalApprover(by);
+        Order replacement = orderService.loadForUpdate(request.replacementOrderId());
+        requireWithdrawable(replacement, request);
+        orderService.cancelLoaded(replacement, new CancelOrderCommand(CancellationReasonCode.REPLACEMENT_WITHDRAWN,
+                "%s: %s".formatted(request.rmaNumber(), request.withdrawalReason()), null, by));
+        ReturnRequest.MoneyOutcome money = ReturnRequest.MoneyOutcome.NONE;
+        Order paidOn = paidOn(locked.order());
+        if (request.withdrawalAmount().signum() > 0) {
+            SettleReturnResult booked = settlement.settleReturn(new SettleReturnCommand(request.id(),
+                    request.rmaNumber(), paidOn.id().value(), paidOn.orderNumber().value(), request.customerId(),
+                    request.withdrawalAmount(), request.currency(), false, by, request.rmaNumber() + "-W"));
+            money = new ReturnRequest.MoneyOutcome(booked.offsetAmount(), booked.refundedAmount(),
+                    booked.creditedAmount(), booked.creditTransferId());
+        }
+        request.approveReplacementWithdrawal(by, now(), money, paidOn.id().value());
+        log.info("Return {}: replacement order {} withdrawn, {} {} credited", request.rmaNumber(),
+                replacement.orderNumber(), request.withdrawalAmount().stripTrailingZeros().toPlainString(),
+                request.currency());
+        return finish(locked, by);
+    }
+
+    /** The approver sends the withdrawal back, saying why: the replacement ships as decided. */
+    @Auditable(action = AuditAction.REJECT, resourceType = "return-request", resourceId = "#returnId")
+    public ReturnRequest rejectReplacementWithdrawal(UUID returnId, String reason, Long version, UUID by) {
+        Locked locked = lock(returnId, null, version);
+        locked.request().rejectReplacementWithdrawal(by, now(), reason);
+        return finish(locked, by);
+    }
+
+    /** A replacement that is packed, handed over or delivered is no longer withdrawn: it comes back as a return. */
+    private static void requireWithdrawable(Order replacement, ReturnRequest request) {
+        if (!replacement.status().canTransitionTo(com.stockflow.order.api.OrderStatus.CANCELLED)
+                || replacement.packedAt() != null) {
+            throw new BusinessException(ErrorCode.RETURN_REPLACEMENT_NOT_WITHDRAWABLE,
+                    "Replacement order %s of %s is %s: it can no longer be withdrawn".formatted(
+                            replacement.orderNumber(), request.rmaNumber(), replacement.status()));
+        }
     }
 
     // ================================================================================================= expiry

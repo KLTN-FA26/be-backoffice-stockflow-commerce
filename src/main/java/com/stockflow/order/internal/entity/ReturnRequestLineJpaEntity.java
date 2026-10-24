@@ -85,6 +85,12 @@ public class ReturnRequestLineJpaEntity {
     @Column(name = "restock_location_code", length = 64)
     private String restockLocationCode;
 
+    @Column(name = "received_plain")
+    private Boolean receivedPlain;
+
+    @Column(name = "disposal_consent_note", length = 500)
+    private String disposalConsentNote;
+
     @Column(name = "scrap_adjustment_id")
     private UUID scrapAdjustmentId;
 
@@ -123,7 +129,8 @@ public class ReturnRequestLineJpaEntity {
     public void apply(Integer approved, String receivedSku, Integer received, String lot, Integer accepted,
                       Integer rejected, ReturnItemCondition condition, String inspectionNote, int restock, int scrap,
                       int customerReturn, String restockLocation, UUID scrapAdjustment, UUID customerReturnAdjustment,
-                      int replacement, int credit, BigDecimal creditAmount, UUID replacementOrderLine) {
+                      int replacement, int credit, BigDecimal creditAmount, UUID replacementOrderLine,
+                      Boolean receivedPlain, String disposalConsent) {
         this.approvedQuantity = approved;
         this.receivedSku = receivedSku;
         this.receivedQuantity = received;
@@ -142,6 +149,8 @@ public class ReturnRequestLineJpaEntity {
         this.creditQuantity = credit;
         this.creditAmount = creditAmount;
         this.replacementOrderLineId = replacementOrderLine;
+        this.receivedPlain = receivedPlain;
+        this.disposalConsentNote = disposalConsent;
     }
 
     public UUID getId() { return id; }
@@ -168,4 +177,6 @@ public class ReturnRequestLineJpaEntity {
     public int getCreditQuantity() { return creditQuantity; }
     public BigDecimal getCreditAmount() { return creditAmount; }
     public UUID getReplacementOrderLineId() { return replacementOrderLineId; }
+    public Boolean getReceivedPlain() { return receivedPlain; }
+    public String getDisposalConsentNote() { return disposalConsentNote; }
 }

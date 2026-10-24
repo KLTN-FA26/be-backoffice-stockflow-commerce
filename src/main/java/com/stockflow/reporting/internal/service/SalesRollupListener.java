@@ -2,6 +2,8 @@ package com.stockflow.reporting.internal.service;
 
 import com.stockflow.contracts.OrderCancelled;
 import com.stockflow.contracts.OrderPlaced;
+import com.stockflow.contracts.ReturnReplacementWithdrawn;
+import com.stockflow.contracts.ReturnResolved;
 import org.springframework.modulith.events.ApplicationModuleListener;
 import org.springframework.stereotype.Component;
 
@@ -29,5 +31,15 @@ class SalesRollupListener {
     @ApplicationModuleListener
     public void on(OrderCancelled event) {
         rollups.orderCancelled(event.orderId());
+    }
+
+    @ApplicationModuleListener
+    public void on(ReturnResolved event) {
+        rollups.returnResolved(event);
+    }
+
+    @ApplicationModuleListener
+    public void on(ReturnReplacementWithdrawn event) {
+        rollups.replacementWithdrawn(event);
     }
 }

@@ -30,7 +30,8 @@ final class ReturnWebMapper {
     static ReturnRequestService.OpenReturnCommand toCommand(java.util.UUID orderId, ReturnRequests.Open body) {
         return new ReturnRequestService.OpenReturnCommand(body.requestId(), orderId, body.reasonCode(),
                 body.description(), body.requestedResolution(), body.lines().stream()
-                .map(line -> new ReturnRequest.Claim(line.orderLineId(), line.quantity())).toList());
+                .map(line -> new ReturnRequest.Claim(line.orderLineId(), line.quantity())).toList(),
+                body.lateClaimReason());
     }
 
     static ReturnRequestService.ApproveReturnCommand toCommand(ReturnRequests.Approve body) {
@@ -59,7 +60,8 @@ final class ReturnWebMapper {
         return new ReturnRequestService.InspectReturnCommand(body.lines().stream()
                 .map(line -> new ReturnRequest.Inspection(line.lineId(), line.acceptedQuantity(),
                         line.rejectedQuantity(), line.condition(), line.restockQuantity(), line.scrapQuantity(),
-                        line.customerReturnQuantity(), line.restockLocationCode(), line.note())).toList(),
+                        line.customerReturnQuantity(), line.restockLocationCode(), line.note(), line.plainStock(),
+                        line.disposalConsent())).toList(),
                 body.note(), body.version());
     }
 
@@ -74,16 +76,21 @@ final class ReturnWebMapper {
     static ReturnRequestResponse toResponse(ReturnRequest r, List<ReturnTransition> history) {
         return new ReturnRequestResponse(r.id(), r.rmaNumber(), r.orderId(), r.orderNumber(), r.customerId(),
                 r.status().name(), r.reason().name(), r.description(), r.requestedResolution().name(),
-                r.channel().name(), r.requestedBy(), r.requestedAt(), r.currency(),
+                r.channel().name(), r.requestedBy(), r.requestedAt(), r.windowOverride(), r.currency(),
                 new ReturnRequestResponse.Review(r.decidedBy(), r.decidedAt(), r.decisionNote(), r.rejectionReason(),
                         r.returnRequired(), r.returnDeadline()),
                 new ReturnRequestResponse.Receipt(r.receivedBy(), r.receivedAt(), r.receivingLocation(),
-                        r.receiptNote()),
+                        r.receiptNote(), r.parcelCount()),
                 new ReturnRequestResponse.Inspection(r.inspectedBy(), r.inspectedAt(), r.inspectionNote()),
                 new ReturnRequestResponse.Resolution(r.moneyMode() == null ? null : r.moneyMode().name(),
                         r.settlementAmount(), r.proposedBy(), r.proposedAt(), r.resolutionNote(), r.settledBy(),
                         r.settledAt(), r.money().offset(), r.money().refunded(), r.money().credited(),
                         r.money().creditTransferId(), r.replacementOrderId(), r.vatAdjustmentRequired()),
+                r.withdrawalStatus() == null ? null : new ReturnRequestResponse.Withdrawal(r.withdrawalStatus().name(),
+                        r.withdrawalReason(), r.withdrawalAmount(), r.withdrawalProposedBy(), r.withdrawalProposedAt(),
+                        r.withdrawalDecidedBy(), r.withdrawalDecidedAt(), r.withdrawalDecisionNote(),
+                        r.withdrawalMoney().offset(), r.withdrawalMoney().credited(),
+                        r.withdrawalMoney().creditTransferId()),
                 r.cancelledBy(), r.cancellationReason(), r.closedAt(),
                 r.lines().stream().map(ReturnWebMapper::toLine).toList(),
                 r.evidence().stream().map(ReturnWebMapper::toEvidence).toList(),
@@ -99,6 +106,9 @@ final class ReturnWebMapper {
                 r.reason().name(), r.description(), r.requestedResolution().name(), r.requestedAt(),
                 r.returnRequired(), r.returnDeadline(), r.rejectionReason(), r.receivedAt(), r.closedAt(),
                 r.currency(), r.money().refunded(), r.money().credited(), r.money().offset(), r.replacementOrderId(),
+                r.withdrawalStatus() != ReturnRequest.WithdrawalStatus.APPROVED ? null
+                        : new CustomerReturnResponse.ReplacementWithdrawn(r.withdrawalDecidedAt(),
+                                r.withdrawalMoney().offset(), r.withdrawalMoney().credited()),
                 r.lines().stream().map(l -> new CustomerReturnResponse.Line(l.id(), l.orderLineId(), l.sku(),
                         l.requestedQuantity(), l.approvedQuantity(), l.receivedQuantity(), l.acceptedQuantity(),
                         l.rejectedQuantity(), l.replacementQuantity(), l.creditQuantity(), l.creditAmount())).toList(),
@@ -124,7 +134,8 @@ final class ReturnWebMapper {
                 l.acceptedQuantity(), l.rejectedQuantity(), l.condition() == null ? null : l.condition().name(),
                 l.inspectionNote(), l.restockQuantity(), l.scrapQuantity(), l.customerReturnQuantity(),
                 l.restockLocation(), l.scrapAdjustmentId(), l.customerReturnAdjustmentId(), l.replacementQuantity(),
-                l.creditQuantity(), l.creditAmount(), l.replacementOrderLineId());
+                l.creditQuantity(), l.creditAmount(), l.replacementOrderLineId(), l.receivedPlain(),
+                l.disposalConsent());
     }
 
     private static ReturnRequestResponse.Evidence toEvidence(ReturnEvidence e) {

@@ -81,8 +81,11 @@ class ReturnSettlementService implements ReturnSettlement {
             throw new IllegalArgumentException("Return %s does not match order %s".formatted(command.rmaNumber(),
                     order.orderNumber()));
         }
-        if (book.referenceRecorded(command.rmaNumber()) || refunds.hasRefunds(command.returnRequestId())) {
-            throw new IllegalStateException("Return %s was already settled".formatted(command.rmaNumber()));
+        // Booked once per reference: the resolution, then perhaps the withdrawal of its replacement (credit only).
+        if (book.referenceRecorded(command.reference())
+                || command.refundRest() && refunds.hasRefunds(command.returnRequestId())) {
+            throw new IllegalStateException("Return %s was already settled (%s)".formatted(command.rmaNumber(),
+                    command.reference()));
         }
         Instant now = clock.instant();
         List<Receivable> owed = book.lockUnpaid(command.customerId()).stream()
@@ -96,7 +99,7 @@ class ReturnSettlementService implements ReturnSettlement {
 
         CustomerTransfer credit = null;
         if (offset.add(kept).signum() > 0) {
-            credit = book.save(CustomerTransfer.returnCredit(command.customerId(), command.rmaNumber(),
+            credit = book.save(CustomerTransfer.returnCredit(command.customerId(), command.reference(),
                     offset.add(kept), command.currency(), LocalDate.ofInstant(now, BUSINESS_ZONE),
                     command.settledBy(), now, "Return %s of order %s".formatted(command.rmaNumber(),
                             command.orderNumber())));

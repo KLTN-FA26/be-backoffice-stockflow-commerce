@@ -254,6 +254,57 @@ class SalesRollupIntegrationTest {
         assertThat(dayRow(today).revenue()).isEqualByComparingTo(before.revenue().add(new BigDecimal("7000000")));
     }
 
+    @Test
+    @DisplayName("a return's credited value comes off the order's placed day - once, and again after a rebuild; a "
+            + "replacement-only resolution takes nothing")
+    void returnTakesRevenueOff() {
+        LocalDate today = BusinessDay.today(clock);
+        OrderSummary order = place(3, 4_000_000);
+        awaitPlaced(order);
+        var before = dayRow(today);
+        long unitsBefore = unitsOfSofa(today);
+        UUID returnId = UUID.randomUUID();
+        com.stockflow.contracts.ReturnResolved credited = new com.stockflow.contracts.ReturnResolved(returnId,
+                "RMA-IT-9", order.orderId(), order.orderNumber(), order.customerId(), null, null, BigDecimal.ZERO,
+                BigDecimal.ZERO, new BigDecimal("4000000"), "VND", true,
+                List.of(new com.stockflow.contracts.ReturnResolved.Line(UUID.randomUUID(), SOFA.code(), 1, 0, 1,
+                        new BigDecimal("4000000"))), UUID.randomUUID(), Instant.now(), order.orderId());
+        tx.executeWithoutResult(s -> publisher.publishEvent(credited));
+        Await.until("return applied", ASYNC, () -> jdbc.queryForObject("SELECT count(*) FROM "
+                + "reporting.processed_return_events WHERE return_request_id = ?", Integer.class, returnId) == 1);
+
+        assertThat(dayRow(today).ordersCount()).as("the sale happened").isEqualTo(before.ordersCount());
+        assertThat(dayRow(today).revenue()).isEqualByComparingTo(before.revenue().subtract(new BigDecimal("4000000")));
+        assertThat(unitsOfSofa(today)).isEqualTo(unitsBefore - 1);
+
+        tx.executeWithoutResult(s -> publisher.publishEvent(credited));
+        tx.executeWithoutResult(s -> publisher.publishEvent(new com.stockflow.contracts.ReturnResolved(UUID.randomUUID(),
+                "RMA-IT-10", order.orderId(), order.orderNumber(), order.customerId(), UUID.randomUUID(), "SO-X",
+                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, "VND", false, List.of(), UUID.randomUUID(),
+                Instant.now(), order.orderId())));
+        awaitRollupsIdle();
+        assertThat(dayRow(today).revenue()).as("once, and nothing for a replacement")
+                .isEqualByComparingTo(before.revenue().subtract(new BigDecimal("4000000")));
+
+        try {
+            List<String> listeners = snapshot(today);
+            reports.rebuild(today, today);
+            assertThat(snapshot(today)).as("the rebuild takes the return off again").isEqualTo(listeners);
+            assertThat(dayRow(today).revenue())
+                    .isEqualByComparingTo(before.revenue().subtract(new BigDecimal("4000000")));
+        } finally {
+            // The cleanup cancels the order, which a real one - delivered, returned - never is: the return goes first.
+            tx.executeWithoutResult(s -> {
+                jdbc.update("DELETE FROM reporting.processed_return_events WHERE return_request_id = ?", returnId);
+                jdbc.update("UPDATE reporting.sales_daily_summary SET revenue = revenue + 4000000 WHERE day = ? "
+                        + "AND currency = 'VND'", java.sql.Date.valueOf(today));
+                jdbc.update("UPDATE reporting.product_sales_summary SET quantity_sold = quantity_sold + 1, "
+                        + "revenue = revenue + 4000000 WHERE sku = ? AND period = ?", SOFA.code(),
+                        BusinessDay.period(today));
+            });
+        }
+    }
+
     // ---- the rebuild -------------------------------------------------------------------------------------------
 
     @Test

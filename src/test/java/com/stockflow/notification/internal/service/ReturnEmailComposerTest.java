@@ -4,6 +4,7 @@ import com.stockflow.contracts.ReturnApproved;
 import com.stockflow.contracts.ReturnClosed;
 import com.stockflow.contracts.ReturnReceived;
 import com.stockflow.contracts.ReturnRejected;
+import com.stockflow.contracts.ReturnReplacementWithdrawn;
 import com.stockflow.contracts.ReturnRequested;
 import com.stockflow.contracts.ReturnResolved;
 import org.junit.jupiter.api.DisplayName;
@@ -101,6 +102,32 @@ class ReturnEmailComposerTest {
                 List.of("LID-PET-90", "50", "45"));
         assertThat(all(content)).contains("Thời điểm nhận hàng: 14:05 25/10/2026", "có chênh lệch")
                 .doesNotContain("HCM-QC01");
+    }
+
+    @Test
+    @DisplayName("a second parcel is a message of its own, saying which parcel it was")
+    void secondParcel() {
+        var event = new ReturnReceived(returnId, RMA, UUID.randomUUID(), ORDER, customer, "HCM-QC01",
+                List.of(new ReturnReceived.Line(UUID.randomUUID(), "CUP-PET-500", null, 100, 105)), true,
+                UUID.randomUUID(), AT, 2);
+        CustomerMessage message = composer.returnReceived(event).orElseThrow();
+        assertThat(message.reference()).isEqualTo("customer-mail:return.received:" + returnId + ":2");
+        assertThat(message.draft().write(null).facts()).extracting(EmailContent.Fact::value).contains("2");
+    }
+
+    @Test
+    @DisplayName("a replacement withdrawn: what was set off and kept as credit, and the adjustment invoice")
+    void replacementWithdrawn() {
+        var event = new ReturnReplacementWithdrawn(returnId, RMA, UUID.randomUUID(), ORDER, customer, UUID.randomUUID(),
+                new BigDecimal("500000"), new BigDecimal("1500000"), "VND",
+                List.of(new ReturnReplacementWithdrawn.Line(UUID.randomUUID(), "CUP-PET-500", 10,
+                        new BigDecimal("2000000"))), UUID.randomUUID(), UUID.randomUUID(), AT);
+        CustomerMessage message = composer.returnReplacementWithdrawn(event).orElseThrow();
+        assertThat(message.reference()).isEqualTo("customer-mail:return.withdrawn:" + returnId);
+        String text = all(message.draft().write(null));
+        assertThat(text).contains("Đơn hàng thay thế của yêu cầu đổi trả " + RMA + " đã được rút lại",
+                "Số tiền trừ vào công nợ: 500.000 ₫", "Số tiền ghi có vào tài khoản: 1.500.000 ₫", "hoá đơn điều chỉnh")
+                .doesNotContain("null");
     }
 
     @Test

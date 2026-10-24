@@ -26,8 +26,15 @@
 --    time.
 -- 4. Evidence (photos), receipt discrepancies and the status history: append-only children of a return.
 -- 5. RMA numbers per day, as order numbers are.
--- 6. customer_order.replaces_return_request_id: the free order a return's replacement is shipped as.
+-- 6. customer_order.replaces_return_request_id: the free order a return's replacement is shipped as, cancelled only by
+--    withdrawing it through its return (cancellation reason REPLACEMENT_WITHDRAWN), which credits the units instead.
 -- 7. Grants (ADR-0008: every role that gains a row is advanced).
+--
+-- Four eyes on anything of value (business review 2026-10-25): a claim Sales opened is approved by someone else, every
+-- resolution - money or free replacement goods - and the withdrawal of a replacement by someone other than who
+-- proposed it. Goods are counted in parcel by parcel, also after the deadline or a withdrawal (they are physically
+-- here); rejected units are the customer's goods (back to them, or scrapped with their consent); only plain stock QC
+-- vouched for goes back on sale.
 --
 -- Schema owner (Tú): please review - written in the range reserved for this branch (V20261025020000-029900).
 -- =============================================================================
@@ -67,6 +74,10 @@ ALTER TABLE ordering.return_request
     ADD COLUMN received_by             UUID,
     ADD COLUMN receiving_location_code VARCHAR(64),
     ADD COLUMN receipt_note            VARCHAR(1000),
+    -- How many parcels were counted in: a B2B customer often ships one return in several consignments.
+    ADD COLUMN parcel_count            INTEGER        NOT NULL DEFAULT 0,
+    -- Sales accepted the claim outside the return window, and why (back office only).
+    ADD COLUMN window_override_reason  VARCHAR(500),
     ADD COLUMN inspected_by            UUID,
     ADD COLUMN inspected_at            TIMESTAMPTZ,
     ADD COLUMN inspection_note         VARCHAR(1000),
@@ -85,7 +96,20 @@ ALTER TABLE ordering.return_request
     ADD COLUMN vat_adjustment_required BOOLEAN        NOT NULL DEFAULT FALSE,
     ADD COLUMN cancelled_by            UUID,
     ADD COLUMN cancellation_reason     VARCHAR(500),
-    ADD COLUMN closed_at               TIMESTAMPTZ;
+    ADD COLUMN closed_at               TIMESTAMPTZ,
+    -- Withdrawing the free replacement order of a resolved return for credit: proposed, then approved by another
+    -- person (or sent back). The replaced units' value, set off against the receivables or kept as credit.
+    ADD COLUMN withdrawal_status             VARCHAR(16),
+    ADD COLUMN withdrawal_reason             VARCHAR(500),
+    ADD COLUMN withdrawal_amount             NUMERIC(19, 4) NOT NULL DEFAULT 0,
+    ADD COLUMN withdrawal_proposed_by        UUID,
+    ADD COLUMN withdrawal_proposed_at        TIMESTAMPTZ,
+    ADD COLUMN withdrawal_decided_by         UUID,
+    ADD COLUMN withdrawal_decided_at         TIMESTAMPTZ,
+    ADD COLUMN withdrawal_decision_note      VARCHAR(500),
+    ADD COLUMN withdrawal_offset_amount      NUMERIC(19, 4) NOT NULL DEFAULT 0,
+    ADD COLUMN withdrawal_credited_amount    NUMERIC(19, 4) NOT NULL DEFAULT 0,
+    ADD COLUMN withdrawal_credit_transfer_id UUID;
 
 ALTER TABLE ordering.return_request
     ADD CONSTRAINT uk_return_request_request UNIQUE (request_id),
@@ -95,6 +119,12 @@ ALTER TABLE ordering.return_request
     ADD CONSTRAINT fk_return_request_proposed_by FOREIGN KEY (proposed_by) REFERENCES identity.app_user (id),
     ADD CONSTRAINT fk_return_request_settled_by FOREIGN KEY (settled_by) REFERENCES identity.app_user (id),
     ADD CONSTRAINT fk_return_request_cancelled_by FOREIGN KEY (cancelled_by) REFERENCES identity.app_user (id),
+    ADD CONSTRAINT fk_return_request_withdrawal_proposed_by FOREIGN KEY (withdrawal_proposed_by)
+        REFERENCES identity.app_user (id),
+    ADD CONSTRAINT fk_return_request_withdrawal_decided_by FOREIGN KEY (withdrawal_decided_by)
+        REFERENCES identity.app_user (id),
+    ADD CONSTRAINT fk_return_request_withdrawal_transfer FOREIGN KEY (withdrawal_credit_transfer_id)
+        REFERENCES payment.customer_transfer (id) ON DELETE RESTRICT,
     ADD CONSTRAINT fk_return_request_receiving_location FOREIGN KEY (receiving_location_code)
         REFERENCES warehouse.storage_location (location_code) ON DELETE RESTRICT,
     ADD CONSTRAINT fk_return_request_credit_transfer FOREIGN KEY (credit_transfer_id)
@@ -115,6 +145,10 @@ ALTER TABLE ordering.return_request
     -- Reviewed: everything past REQUESTED names who decided and when (a cancellation before review names nobody).
     ADD CONSTRAINT ck_return_request_reviewed CHECK (status IN ('REQUESTED', 'CANCELLED')
         OR (decided_by IS NOT NULL AND decided_at IS NOT NULL)),
+    -- A claim Sales opened is approved by someone else (an approval is what sets return_required).
+    ADD CONSTRAINT ck_return_request_approval_four_eyes CHECK (channel <> 'BACK_OFFICE' OR return_required IS NULL
+        OR decided_by <> requested_by),
+    ADD CONSTRAINT ck_return_request_window_override CHECK (window_override_reason IS NULL OR channel = 'BACK_OFFICE'),
     ADD CONSTRAINT ck_return_request_unreviewed CHECK (status <> 'REQUESTED'
         OR (decided_at IS NULL AND return_required IS NULL)),
     ADD CONSTRAINT ck_return_request_approved CHECK (status NOT IN ('AWAITING_RETURN', 'RECEIVED', 'INSPECTED',
@@ -125,6 +159,7 @@ ALTER TABLE ordering.return_request
         OR return_required),
     ADD CONSTRAINT ck_return_request_received CHECK ((received_at IS NULL) = (received_by IS NULL)
         AND (received_at IS NULL) = (receiving_location_code IS NULL)
+        AND parcel_count >= 0 AND (received_at IS NULL) = (parcel_count = 0)
         AND (received_at IS NULL OR return_required)
         AND (status <> 'RECEIVED' OR received_at IS NOT NULL)
         AND (return_required IS NOT TRUE OR status NOT IN ('INSPECTED', 'SETTLEMENT_PENDING', 'RESOLVED')
@@ -149,16 +184,33 @@ ALTER TABLE ordering.return_request
         AND (status NOT IN ('SETTLEMENT_PENDING', 'RESOLVED') OR proposed_at IS NOT NULL)),
     ADD CONSTRAINT ck_return_request_settled CHECK ((settled_at IS NULL) = (settled_by IS NULL)
         AND (status = 'RESOLVED') = (settled_at IS NOT NULL)),
-    -- Four eyes where money moves (BR-PAY-003 in the absence of approver limits): who proposed a settlement that
-    -- refunds or credits money never approves it.
-    ADD CONSTRAINT ck_return_request_four_eyes CHECK (settlement_amount = 0 OR settled_by IS NULL
-        OR settled_by <> proposed_by),
+    -- Four eyes on every resolution (BR-PAY-003 in the absence of approver limits): free replacement goods are worth
+    -- what money is, so who proposed a resolution never approves it.
+    ADD CONSTRAINT ck_return_request_four_eyes CHECK (settled_by IS NULL OR settled_by <> proposed_by),
     -- Nghị định 123/2020 / Thông tư 78/2021: money given back after the sale was invoiced needs an adjustment
     -- invoice; the system has no e-invoicing, so the return says it for accounting.
     ADD CONSTRAINT ck_return_request_vat CHECK (vat_adjustment_required = (status = 'RESOLVED' AND settlement_amount > 0)),
     -- The credit entry payment books for a return (V20261025020100) carries exactly what was set off or kept as credit.
     ADD CONSTRAINT ck_return_request_credit_transfer CHECK ((credit_transfer_id IS NOT NULL)
-        = (credited_amount + offset_amount > 0));
+        = (credited_amount + offset_amount > 0)),
+    -- A replacement is withdrawn only from a resolved return that had one; proposed, then decided by someone else;
+    -- once approved, exactly its value was set off or kept as credit - never refunded in cash here.
+    ADD CONSTRAINT ck_return_request_withdrawal CHECK (
+        (withdrawal_status IS NULL OR withdrawal_status IN ('PENDING', 'APPROVED', 'REJECTED'))
+        AND (withdrawal_status IS NULL OR (status = 'RESOLVED' AND replacement_order_id IS NOT NULL
+             AND withdrawal_reason IS NOT NULL AND withdrawal_proposed_by IS NOT NULL
+             AND withdrawal_proposed_at IS NOT NULL))
+        AND (withdrawal_status IN ('APPROVED', 'REJECTED'))
+            = (withdrawal_decided_by IS NOT NULL AND withdrawal_decided_at IS NOT NULL)
+        AND (withdrawal_decided_by IS NULL OR withdrawal_decided_by <> withdrawal_proposed_by)
+        AND (withdrawal_status IS DISTINCT FROM 'REJECTED' OR withdrawal_decision_note IS NOT NULL)
+        AND withdrawal_amount >= 0 AND withdrawal_offset_amount >= 0 AND withdrawal_credited_amount >= 0
+        AND (withdrawal_status = 'APPROVED'
+             OR (withdrawal_offset_amount = 0 AND withdrawal_credited_amount = 0))
+        AND (withdrawal_status IS DISTINCT FROM 'APPROVED'
+             OR withdrawal_offset_amount + withdrawal_credited_amount = withdrawal_amount)
+        AND (withdrawal_credit_transfer_id IS NOT NULL)
+            = (withdrawal_offset_amount + withdrawal_credited_amount > 0));
 
 CREATE INDEX ix_return_request_customer ON ordering.return_request (customer_id, requested_at);
 -- The expiry sweep: goods that should have come back by now.
@@ -195,6 +247,10 @@ ALTER TABLE ordering.return_request_line
     ADD COLUMN scrap_quantity                INTEGER        NOT NULL DEFAULT 0,
     ADD COLUMN customer_return_quantity      INTEGER        NOT NULL DEFAULT 0,
     ADD COLUMN restock_location_code         VARCHAR(64),
+    -- QC vouched the units going back on sale are plain stock: a design is not part of a SKU.
+    ADD COLUMN received_plain                BOOLEAN,
+    -- How the customer agreed that rejected units - their goods - are scrapped rather than sent back.
+    ADD COLUMN disposal_consent_note         VARCHAR(500),
     ADD COLUMN scrap_adjustment_id           UUID,
     ADD COLUMN customer_return_adjustment_id UUID,
     ADD COLUMN replacement_quantity          INTEGER        NOT NULL DEFAULT 0,
@@ -236,6 +292,11 @@ ALTER TABLE ordering.return_request_line
             = CASE WHEN accepted_quantity IS NULL THEN 0 ELSE COALESCE(received_quantity, 0) END
         AND customer_return_quantity <= COALESCE(rejected_quantity, 0)
         AND (restock_quantity > 0) = (restock_location_code IS NOT NULL)),
+    -- Accepted units are ours once made good: back on sale or scrapped. Rejected units are the customer's: back to
+    -- them, or scrapped only with their recorded consent.
+    ADD CONSTRAINT ck_return_request_line_customer_goods CHECK (restock_quantity <= COALESCE(accepted_quantity, 0)
+        AND (customer_return_quantity >= COALESCE(rejected_quantity, 0) OR disposal_consent_note IS NOT NULL)),
+    ADD CONSTRAINT ck_return_request_line_restock_plain CHECK (restock_quantity = 0 OR received_plain IS TRUE),
     -- OQ-12 / BR-RMA-002: goods printed to a customer's design never go back on sale.
     ADD CONSTRAINT ck_return_request_line_restock_custom CHECK (NOT custom_printed OR restock_quantity = 0
         OR (received_sku IS NOT NULL AND received_sku <> sku)),
@@ -410,6 +471,25 @@ ALTER TABLE ordering.customer_order
 
 CREATE UNIQUE INDEX uk_order_replaces_return ON ordering.customer_order (replaces_return_request_id)
     WHERE replaces_return_request_id IS NOT NULL;
+
+-- A further claim after a return gave money back (03 §12: Sales open it) and a late claim Sales accepted after the
+-- order completed put the order back to RETURN_REQUESTED, so it shows the open claim and is settled again by it
+-- (OrderStatus.canTransitionTo holds the same edges; a CLOSED order changes no more, BR-05).
+INSERT INTO ordering.order_status_transition (from_status, to_status) VALUES
+    ('COMPLETED', 'RETURN_REQUESTED'),
+    ('REFUNDED', 'RETURN_REQUESTED'),
+    ('PARTIALLY_REFUNDED', 'RETURN_REQUESTED')
+ON CONFLICT DO NOTHING;
+
+-- A replacement order is cancelled only by withdrawing it through its return, which credits the units instead; and
+-- that reason is for replacement orders only.
+ALTER TABLE ordering.customer_order
+    DROP CONSTRAINT ck_order_cancellation_code_values,
+    ADD CONSTRAINT ck_order_cancellation_code_values CHECK (cancellation_reason_code IN
+        ('CUSTOMER_REQUEST', 'PAYMENT_NOT_RECEIVED', 'PAYMENT_FAILED', 'OUT_OF_STOCK', 'SUSPECTED_FRAUD',
+         'CREDIT_REJECTED', 'DUPLICATE_ORDER', 'PRODUCTION_ISSUE', 'REPLACEMENT_WITHDRAWN', 'OTHER')),
+    ADD CONSTRAINT ck_order_replacement_cancellation CHECK (status <> 'CANCELLED'
+        OR (replaces_return_request_id IS NOT NULL) = (cancellation_reason_code = 'REPLACEMENT_WITHDRAWN'));
 
 -- ---- 7. grants ------------------------------------------------------------------------------------------------------------
 -- sales-rmas (V20260903000100) already has VIEW_PAGE, READ, CREATE, APPROVE: the customer and Sales open returns, the

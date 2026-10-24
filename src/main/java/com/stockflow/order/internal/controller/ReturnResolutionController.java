@@ -47,8 +47,8 @@ class ReturnResolutionController {
 
     @PostMapping("/{returnId}/resolution")
     @Operation(summary = "Per line, accepted units replaced or credited at the price paid; moneyMode REFUND or "
-            + "CREDIT_NOTE for the credited value. Replacements only: carried out at once (a free replacement order is "
-            + "placed). With money: waits for another person's approval")
+            + "CREDIT_NOTE for the credited value. Always waits for another person's approval: free replacement goods "
+            + "are worth what money is")
     @RequiresPermission(resource = OrderResources.RMA_RESOLUTIONS, action = Action.UPDATE, scope = DataScope.ALL)
     public ApiResponse<ReturnRequestResponse> propose(@PathVariable UUID returnId,
                                                       @Valid @RequestBody ReturnRequests.Resolve request,
@@ -58,9 +58,9 @@ class ReturnResolutionController {
     }
 
     @PostMapping("/{returnId}/settlement-approval")
-    @Operation(summary = "Approve the money (not the proposer): the replacement order is placed, payment sets the value "
-            + "against the order's receivables and refunds or keeps the rest as credit, the return is RESOLVED. 409 "
-            + "RETURN_REFUND_EXCEEDS_PAID when the order received less than the refund")
+    @Operation(summary = "Approve the resolution (not the proposer): the replacement order is placed, payment sets the "
+            + "value against the order's receivables and refunds or keeps the rest as credit, the return is RESOLVED. "
+            + "409 RETURN_REFUND_EXCEEDS_PAID when the order received less than the refund")
     @RequiresPermission(resource = OrderResources.RMA_RESOLUTIONS, action = Action.APPROVE, scope = DataScope.ALL)
     public ApiResponse<ReturnRequestResponse> approve(@PathVariable UUID returnId,
                                                       @Valid @RequestBody(required = false) ReturnRequests.Version request,
@@ -77,5 +77,38 @@ class ReturnResolutionController {
                                                      @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(ReturnWebMapper.toResponse(returns.rejectSettlement(returnId, request.reason(),
                 request.version(), user.userId()), List.of()));
+    }
+
+    @PostMapping("/{returnId}/replacement-withdrawal")
+    @Operation(summary = "Propose to withdraw a resolved return's replacement order before it ships (the customer would "
+            + "rather have the money, or the goods cannot be made again): its units are credited instead once another "
+            + "person approves. 409 RETURN_REPLACEMENT_NOT_WITHDRAWABLE once the replacement is packed or shipped")
+    @RequiresPermission(resource = OrderResources.RMA_RESOLUTIONS, action = Action.UPDATE, scope = DataScope.ALL)
+    public ApiResponse<ReturnRequestResponse> proposeWithdrawal(@PathVariable UUID returnId,
+                                                                @Valid @RequestBody ReturnRequests.WithdrawReplacement request,
+                                                                @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(ReturnWebMapper.toResponse(returns.proposeReplacementWithdrawal(returnId,
+                request.reason(), request.version(), user.userId()), List.of()));
+    }
+
+    @PostMapping("/{returnId}/replacement-withdrawal/approval")
+    @Operation(summary = "Approve the withdrawal (not the proposer): the replacement order is cancelled and its units' "
+            + "value set against the original order's receivables, the rest kept as the customer's credit")
+    @RequiresPermission(resource = OrderResources.RMA_RESOLUTIONS, action = Action.APPROVE, scope = DataScope.ALL)
+    public ApiResponse<ReturnRequestResponse> approveWithdrawal(@PathVariable UUID returnId,
+                                                                @Valid @RequestBody(required = false) ReturnRequests.Version request,
+                                                                @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(ReturnWebMapper.toResponse(returns.approveReplacementWithdrawal(returnId,
+                request == null ? null : request.version(), user.userId()), List.of()));
+    }
+
+    @PostMapping("/{returnId}/replacement-withdrawal/rejection")
+    @Operation(summary = "Send the withdrawal back, saying why; the replacement ships as decided")
+    @RequiresPermission(resource = OrderResources.RMA_RESOLUTIONS, action = Action.APPROVE, scope = DataScope.ALL)
+    public ApiResponse<ReturnRequestResponse> rejectWithdrawal(@PathVariable UUID returnId,
+                                                               @Valid @RequestBody ReturnRequests.Reason request,
+                                                               @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(ReturnWebMapper.toResponse(returns.rejectReplacementWithdrawal(returnId,
+                request.reason(), request.version(), user.userId()), List.of()));
     }
 }

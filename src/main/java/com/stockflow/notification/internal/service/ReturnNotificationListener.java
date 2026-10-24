@@ -4,6 +4,7 @@ import com.stockflow.contracts.ReturnApproved;
 import com.stockflow.contracts.ReturnClosed;
 import com.stockflow.contracts.ReturnReceived;
 import com.stockflow.contracts.ReturnRejected;
+import com.stockflow.contracts.ReturnReplacementWithdrawn;
 import com.stockflow.contracts.ReturnRequested;
 import com.stockflow.contracts.ReturnResolved;
 
@@ -67,6 +68,12 @@ class ReturnNotificationListener {
     @TransactionalEventListener
     public void on(ReturnClosed event) {
         deliver(composer.returnClosed(event));
+    }
+
+    @Async
+    @TransactionalEventListener
+    public void on(ReturnReplacementWithdrawn event) {
+        deliver(composer.returnReplacementWithdrawn(event));
     }
 
     private void deliver(Optional<CustomerMessage> message) {

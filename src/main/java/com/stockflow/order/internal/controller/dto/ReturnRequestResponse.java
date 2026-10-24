@@ -25,11 +25,14 @@ public record ReturnRequestResponse(
         @Schema(example = "PORTAL") String channel,
         UUID requestedBy,
         Instant requestedAt,
+        @Schema(description = "Why Sales accepted the claim outside the return window; null within it")
+        String lateClaimReason,
         String currency,
         Review review,
         Receipt receipt,
         Inspection inspection,
         Resolution resolution,
+        Withdrawal replacementWithdrawal,
         UUID cancelledBy,
         String cancellationReason,
         Instant closedAt,
@@ -37,14 +40,15 @@ public record ReturnRequestResponse(
         List<Evidence> evidence,
         List<Discrepancy> discrepancies,
         List<HistoryEntry> history,
-        long version) {
+        long version) implements ReturnView {
 
     /** Sales' decision; {@code returnDeadline}: the goods must arrive by then, or the return expires. */
     public record Review(UUID decidedBy, Instant decidedAt, String note, String rejectionReason, Boolean returnRequired,
                          Instant returnDeadline) {
     }
 
-    public record Receipt(UUID receivedBy, Instant receivedAt, String locationCode, String note) {
+    /** The first parcel's receipt; {@code parcelCount}: how many parcels were counted in, into the same location. */
+    public record Receipt(UUID receivedBy, Instant receivedAt, String locationCode, String note, int parcelCount) {
     }
 
     public record Inspection(UUID inspectedBy, Instant inspectedAt, String note) {
@@ -62,6 +66,17 @@ public record ReturnRequestResponse(
     }
 
     /**
+     * Withdrawing the replacement order for credit: {@code status} PENDING (waiting for a second person), APPROVED (the
+     * replacement cancelled, {@code amount} set off or kept as credit) or REJECTED (sent back, the replacement ships).
+     * Null when never proposed.
+     */
+    public record Withdrawal(@Schema(example = "PENDING") String status, String reason, BigDecimal amount,
+                             UUID proposedBy, Instant proposedAt, UUID decidedBy, Instant decidedAt,
+                             String decisionNote, BigDecimal offsetAmount, BigDecimal creditedAmount,
+                             UUID creditTransferId) {
+    }
+
+    /**
      * One order line of the return, its units at every step. {@code receivedSku} is set only when another SKU than the
      * line's arrived; {@code scrapAdjustmentId} / {@code customerReturnAdjustmentId} are the inventory write-offs a
      * second person approves.
@@ -72,7 +87,7 @@ public record ReturnRequestResponse(
                        String inspectionNote, int restockQuantity, int scrapQuantity, int customerReturnQuantity,
                        String restockLocationCode, UUID scrapAdjustmentId, UUID customerReturnAdjustmentId,
                        int replacementQuantity, int creditQuantity, BigDecimal creditAmount,
-                       UUID replacementOrderLineId) {
+                       UUID replacementOrderLineId, Boolean receivedPlain, String disposalConsent) {
     }
 
     /** A photo; its bytes come from {@code GET .../evidence/{evidenceId}/download-url}, never from this response. */

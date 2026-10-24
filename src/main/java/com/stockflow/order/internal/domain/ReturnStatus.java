@@ -9,9 +9,10 @@ package com.stockflow.order.internal.domain;
  *       │       └approve, goods stay (photos)────────────────────────────────────────────────▶ INSPECTED
  *       ├─reject─▶ REJECTED              AWAITING_RETURN ─deadline passed─▶ EXPIRED
  *       └─cancel─▶ CANCELLED ◀─cancel─ AWAITING_RETURN          RECEIVED ─QC finds no defect─▶ REJECTED
- *   INSPECTED ─resolve, nothing to pay─▶ RESOLVED
- *   INSPECTED ─resolve, money─▶ SETTLEMENT_PENDING ─approved by another person─▶ RESOLVED
- *                                                  └─sent back─▶ INSPECTED
+ *   RECEIVED ─another parcel─▶ RECEIVED (no transition: the count grows)
+ *   EXPIRED, CANCELLED (after approval) ─the goods come anyway─▶ RECEIVED
+ *   INSPECTED ─resolution proposed─▶ SETTLEMENT_PENDING ─approved by another person─▶ RESOLVED
+ *                                                       └─sent back─▶ INSPECTED
  * </pre>
  *
  * <p>03 §12 drew APPROVED and AWAITING_RETURN as two states joined by "return instructions sent" by the system. With no
@@ -33,7 +34,7 @@ public enum ReturnStatus {
     /** Every unit is accepted (the claim holds) or rejected; how the accepted ones are made good is next. */
     INSPECTED,
 
-    /** A resolution that refunds or credits money waits for a second person (four eyes). */
+    /** A resolution - money, replacement goods, or both - waits for a second person (four eyes). */
     SETTLEMENT_PENDING,
 
     /** Every accepted unit was replaced or credited. */
@@ -45,7 +46,7 @@ public enum ReturnStatus {
     /** Withdrawn before the goods came back. */
     CANCELLED,
 
-    /** The approved goods did not arrive by the deadline. */
+    /** The approved goods did not arrive by the deadline; goods that come afterwards bring it back to RECEIVED. */
     EXPIRED;
 
     /** Still being worked on: it holds its units and keeps the order from completing (BR-ORD-005). */
@@ -66,11 +67,15 @@ public enum ReturnStatus {
             case REQUESTED -> target == AWAITING_RETURN || target == INSPECTED || target == REJECTED
                     || target == CANCELLED;
             case AWAITING_RETURN -> target == RECEIVED || target == CANCELLED || target == EXPIRED;
+            // Goods are physically here, so they are counted in whatever the return's state was: approved goods that
+            // came after the deadline, or after the customer withdrew. The aggregate checks a CANCELLED one was approved.
+            case EXPIRED, CANCELLED -> target == RECEIVED;
             // REJECTED: QC found nothing received defective.
             case RECEIVED -> target == INSPECTED || target == REJECTED;
-            case INSPECTED -> target == SETTLEMENT_PENDING || target == RESOLVED;
+            // Every resolution is approved by a second person: replacement goods are worth what money is.
+            case INSPECTED -> target == SETTLEMENT_PENDING;
             case SETTLEMENT_PENDING -> target == RESOLVED || target == INSPECTED;
-            case RESOLVED, REJECTED, CANCELLED, EXPIRED -> false;
+            case RESOLVED, REJECTED -> false;
         };
     }
 }

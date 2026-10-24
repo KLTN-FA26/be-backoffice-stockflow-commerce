@@ -8,6 +8,7 @@ import com.stockflow.contracts.ReturnApproved;
 import com.stockflow.contracts.ReturnClosed;
 import com.stockflow.contracts.ReturnReceived;
 import com.stockflow.contracts.ReturnRejected;
+import com.stockflow.contracts.ReturnReplacementWithdrawn;
 import com.stockflow.contracts.ReturnRequested;
 import com.stockflow.contracts.ReturnResolved;
 import com.stockflow.contracts.ShipmentStatusChanged;
@@ -62,6 +63,7 @@ class CustomerEmailComposer {
     static final String RETURN_RESOLVED = "return.resolved";
     static final String RETURN_CANCELLED = "return.cancelled";
     static final String RETURN_EXPIRED = "return.expired";
+    static final String RETURN_WITHDRAWN = "return.withdrawn";
 
     static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
 
@@ -288,13 +290,20 @@ class CustomerEmailComposer {
                 }));
     }
 
-    /** The parcel is in; QC comes next. A parcel that does not match the approval is said to be followed up. */
+    /**
+     * A parcel is in; QC comes next. A parcel that does not match the approval is said to be followed up. One message
+     * per parcel when the goods come in several: the second is a message of its own, not a repeat of the first.
+     */
     Optional<CustomerMessage> returnReceived(ReturnReceived event) {
-        return Optional.of(new CustomerMessage(RETURN_RECEIVED, event.returnRequestId().toString(),
-                event.customerId(), null,
+        int parcel = event.parcelNumber();
+        return Optional.of(new CustomerMessage(RETURN_RECEIVED, parcel == 1 ? event.returnRequestId().toString()
+                : event.returnRequestId() + ":" + parcel, event.customerId(), null,
                 addressee -> {
                     ResourceBundle m = bundle();
                     List<Fact> facts = returnFacts(m, event.rmaNumber(), event.orderNumber());
+                    if (parcel > 1) {
+                        facts.add(new Fact(m.getString("email.return.received.parcel"), Integer.toString(parcel)));
+                    }
                     if (event.receivedAt() != null) {
                         facts.add(new Fact(m.getString("email.return.received.at"), WHEN.format(event.receivedAt())));
                     }
@@ -379,6 +388,33 @@ class CustomerEmailComposer {
                                 : "email.return.cancelled.by-staff"));
                     }
                     return content(m, code, addressee, event.rmaNumber(), facts, null, outro);
+                }));
+    }
+
+    /**
+     * The replacement order will not ship after all - the customer asked for the money, or the goods cannot be made
+     * again - and its units are credited instead: what was set off against what the customer owes, what is kept as
+     * their credit.
+     */
+    Optional<CustomerMessage> returnReplacementWithdrawn(ReturnReplacementWithdrawn event) {
+        return Optional.of(new CustomerMessage(RETURN_WITHDRAWN, event.returnRequestId().toString(),
+                event.customerId(), null,
+                addressee -> {
+                    ResourceBundle m = bundle();
+                    List<Fact> facts = returnFacts(m, event.rmaNumber(), event.orderNumber());
+                    List<String> outro = new ArrayList<>();
+                    if (positive(event.offsetAmount())) {
+                        facts.add(new Fact(m.getString("email.customer.fact.offset"),
+                                money(event.offsetAmount(), event.currency())));
+                        outro.add(m.getString("email.return.resolved.offset"));
+                    }
+                    if (positive(event.creditedAmount())) {
+                        facts.add(new Fact(m.getString("email.customer.fact.credit"),
+                                money(event.creditedAmount(), event.currency())));
+                        outro.add(m.getString("email.return.resolved.credit"));
+                    }
+                    outro.add(m.getString("email.return.resolved.vat-adjustment"));
+                    return content(m, RETURN_WITHDRAWN, addressee, event.rmaNumber(), facts, null, outro);
                 }));
     }
 

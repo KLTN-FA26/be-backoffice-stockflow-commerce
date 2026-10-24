@@ -72,6 +72,13 @@ class PickConsumptionServiceTest {
         }
 
         @Override
+        public long quantityByReference(StockMovement.MovementType type, StockMovement.ReferenceType referenceType,
+                                        UUID referenceId) {
+            return ledgerRows.stream().filter(row -> row.type() == type && row.referenceType() == referenceType
+                    && row.referenceId().equals(referenceId)).mapToLong(StockMovement::quantity).sum();
+        }
+
+        @Override
         public boolean handedOverFromProduction(com.stockflow.inventory.internal.domain.ReservationId hold,
                                                 LocationId location) {
             return ledgerRows.stream().anyMatch(row -> row.type() == StockMovement.MovementType.MOVE

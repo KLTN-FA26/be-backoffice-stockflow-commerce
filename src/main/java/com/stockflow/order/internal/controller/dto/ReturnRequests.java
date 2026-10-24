@@ -40,7 +40,10 @@ public final class ReturnRequests {
             @Schema(example = "REPLACEMENT") @NotNull(message = "requestedResolution is required")
             ReturnResolution requestedResolution,
             @NotEmpty(message = "claim at least one line") @Size(max = 100, message = "at most 100 lines")
-            List<@Valid ClaimedLine> lines) {
+            List<@Valid ClaimedLine> lines,
+            @Schema(description = "Sales only: why a claim outside the return window is accepted (goods that came late, "
+                    + "a defect found after the window, goodwill). Another person approves it")
+            @Size(max = 500, message = "lateClaimReason is at most 500 characters") String lateClaimReason) {
     }
 
     @Schema(description = "Units approved of one return line (0: none of it)")
@@ -93,7 +96,8 @@ public final class ReturnRequests {
     }
 
     @Schema(description = "QC's verdict on one return line: of the units received, accepted (the claim holds) and "
-            + "rejected; and where they go - back on sale (stock items only), scrap, back to the customer (rejected only)")
+            + "rejected; and where they go. Accepted units: back on sale (plain stock only, at a bin of the warehouse) "
+            + "or scrap. Rejected units are the customer's: back to them, or scrap only with disposalConsent")
     public record InspectedLine(
             @NotNull(message = "lineId is required") UUID lineId,
             @Min(0) int acceptedQuantity,
@@ -103,7 +107,12 @@ public final class ReturnRequests {
             @Min(0) int scrapQuantity,
             @Min(0) int customerReturnQuantity,
             @Schema(description = "The bin units back on sale go to") @Size(max = 64) String restockLocationCode,
-            @Size(max = 1000) String note) {
+            @Size(max = 1000) String note,
+            @Schema(description = "QC saw the units going back on sale are plain stock, no customer print. Omitted: "
+                    + "true for the line's own SKU on a line that was not printed; another SKU must say so")
+            Boolean plainStock,
+            @Schema(description = "How the customer agreed that rejected units are scrapped instead of sent back")
+            @Size(max = 500) String disposalConsent) {
     }
 
     public record Inspect(
@@ -128,5 +137,12 @@ public final class ReturnRequests {
     }
 
     public record Version(Long version) {
+    }
+
+    @Schema(description = "Withdraw a resolved return's replacement order before it ships; its units are credited")
+    public record WithdrawReplacement(
+            @NotBlank(message = "reason is required") @Size(max = 500, message = "reason is at most 500 characters")
+            String reason,
+            Long version) {
     }
 }

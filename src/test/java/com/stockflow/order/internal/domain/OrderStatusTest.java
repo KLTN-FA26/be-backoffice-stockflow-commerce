@@ -40,9 +40,9 @@ class OrderStatusTest {
             Map.entry(DELIVERED, EnumSet.of(COMPLETED, RETURN_REQUESTED)),
             Map.entry(RETURN_REQUESTED, EnumSet.of(RETURNED, DELIVERED)),
             Map.entry(RETURNED, EnumSet.of(REFUNDED, PARTIALLY_REFUNDED)),
-            Map.entry(REFUNDED, EnumSet.of(CLOSED)),
-            Map.entry(PARTIALLY_REFUNDED, EnumSet.of(CLOSED)),
-            Map.entry(COMPLETED, EnumSet.of(CLOSED)),
+            Map.entry(REFUNDED, EnumSet.of(CLOSED, RETURN_REQUESTED)),
+            Map.entry(PARTIALLY_REFUNDED, EnumSet.of(CLOSED, RETURN_REQUESTED)),
+            Map.entry(COMPLETED, EnumSet.of(CLOSED, RETURN_REQUESTED)),
             Map.entry(CANCELLED, EnumSet.noneOf(OrderStatus.class)),
             Map.entry(CLOSED, EnumSet.noneOf(OrderStatus.class)));
 

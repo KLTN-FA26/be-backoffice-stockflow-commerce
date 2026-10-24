@@ -12,9 +12,11 @@ import java.util.UUID;
  * says by then, and whether the goods may go back on sale is a fact of the sale.</p>
  *
  * <p>The units narrow as the return goes on: asked for ({@code requestedQuantity}) ≥ approved ≥ accepted. What arrived
- * may be more or fewer than approved, or of another SKU; every unit that arrived is accepted (the claim holds) or
- * rejected, and goes back on sale, to scrap or back to the customer. Every accepted unit is then replaced or credited.
- * {@code ck_return_request_line_*} state each sum again.</p>
+ * - in one parcel or several - may be more or fewer than approved, or of another SKU; every unit that arrived is
+ * accepted (the claim holds) or rejected. Accepted units are ours once they are made good: back on sale or scrapped.
+ * Rejected units are still the customer's: they go back to the customer, and are scrapped only when the customer agreed
+ * ({@code disposalConsent}). Every accepted unit is then replaced or credited. {@code ck_return_request_line_*} state each
+ * sum again.</p>
  */
 public final class ReturnLine {
 
@@ -37,6 +39,8 @@ public final class ReturnLine {
     private int scrapQuantity;
     private int customerReturnQuantity;
     private String restockLocation;
+    private Boolean receivedPlain;
+    private String disposalConsent;
     private UUID scrapAdjustmentId;
     private UUID customerReturnAdjustmentId;
     private int replacementQuantity;
@@ -63,7 +67,8 @@ public final class ReturnLine {
     public ReturnLine restore(Integer approved, String receivedSku, Integer received, String lot, Integer accepted,
                               Integer rejected, ReturnItemCondition condition, String inspectionNote, int restock,
                               int scrap, int customerReturn, String restockLocation, UUID scrapAdjustment,
-                              UUID customerReturnAdjustment, int replacement, int credit, UUID replacementOrderLine) {
+                              UUID customerReturnAdjustment, int replacement, int credit, UUID replacementOrderLine,
+                              Boolean receivedPlain, String disposalConsent) {
         this.approvedQuantity = approved;
         this.receivedSku = receivedSku;
         this.receivedQuantity = received;
@@ -81,6 +86,8 @@ public final class ReturnLine {
         this.replacementQuantity = replacement;
         this.creditQuantity = credit;
         this.replacementOrderLineId = replacementOrderLine;
+        this.receivedPlain = receivedPlain;
+        this.disposalConsent = disposalConsent;
         return this;
     }
 
@@ -90,14 +97,22 @@ public final class ReturnLine {
         this.approvedQuantity = units;
     }
 
-    void receive(String sku, int units, String lot) {
-        this.receivedSku = sku;
-        this.receivedQuantity = units;
-        this.lotNumber = lot;
+    /**
+     * One parcel's units of this line. The first parcel that holds any says what SKU and lot came back; later ones add to
+     * the count (the aggregate has checked they are the same goods).
+     */
+    void receiveParcel(String sku, int units, String lot) {
+        if (receivedQuantity == null || receivedQuantity == 0) {
+            this.receivedSku = units > 0 ? sku : null;
+            this.lotNumber = units > 0 ? lot : null;
+            this.receivedQuantity = units;
+        } else {
+            this.receivedQuantity = receivedQuantity + units;
+        }
     }
 
     void inspect(int accepted, int rejected, ReturnItemCondition condition, String note, int restock, int scrap,
-                 int customerReturn, String restockLocation) {
+                 int customerReturn, String restockLocation, Boolean plain, String consent) {
         this.acceptedQuantity = accepted;
         this.rejectedQuantity = rejected;
         this.condition = condition;
@@ -106,6 +121,8 @@ public final class ReturnLine {
         this.scrapQuantity = scrap;
         this.customerReturnQuantity = customerReturn;
         this.restockLocation = restockLocation;
+        this.receivedPlain = plain;
+        this.disposalConsent = consent;
     }
 
     void remedy(int replacement, int credit) {
@@ -140,11 +157,24 @@ public final class ReturnLine {
     }
 
     /**
-     * Whether the goods that came back for this line were printed to the customer's design: the line's own SKU on a
-     * printed line. Another SKU that arrived instead (a wrong item) is ordinary stock.
+     * Whether the goods that came back for this line are known to be printed to the customer's design: the line's own
+     * SKU on a printed line. Another SKU that arrived instead is not known to be plain either - a design is not part of
+     * a SKU, and someone else's printed cups of another blank are just as unsellable - so going back on sale also needs
+     * QC to say the goods are plain stock ({@link #receivedPlain}).
      */
     public boolean receivedPrintedGoods() {
         return customPrinted && (receivedSku == null || receivedSku.equals(sku));
+    }
+
+    /** Whether units of this line were counted in already: a later parcel adds to them. */
+    public boolean hasReceived() {
+        return receivedQuantity != null && receivedQuantity > 0;
+    }
+
+    /** Units QC rejected that are scrapped rather than sent back: the customer's goods, scrapped with their consent. */
+    public int rejectedScrapped() {
+        int rejected = rejectedQuantity == null ? 0 : rejectedQuantity;
+        return Math.max(0, rejected - customerReturnQuantity);
     }
 
     /** The SKU that arrived; the line's own when nothing else did. */
@@ -170,6 +200,8 @@ public final class ReturnLine {
     public int scrapQuantity() { return scrapQuantity; }
     public int customerReturnQuantity() { return customerReturnQuantity; }
     public String restockLocation() { return restockLocation; }
+    public Boolean receivedPlain() { return receivedPlain; }
+    public String disposalConsent() { return disposalConsent; }
     public UUID scrapAdjustmentId() { return scrapAdjustmentId; }
     public UUID customerReturnAdjustmentId() { return customerReturnAdjustmentId; }
     public int replacementQuantity() { return replacementQuantity; }

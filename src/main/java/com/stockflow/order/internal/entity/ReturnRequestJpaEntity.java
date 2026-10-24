@@ -103,6 +103,12 @@ public class ReturnRequestJpaEntity extends BaseEntity {
     @Column(name = "receipt_note", length = 1000)
     private String receiptNote;
 
+    @Column(name = "parcel_count", nullable = false)
+    private int parcelCount;
+
+    @Column(name = "window_override_reason", length = 500, updatable = false)
+    private String windowOverrideReason;
+
     @Column(name = "inspected_by")
     private UUID inspectedBy;
 
@@ -161,6 +167,40 @@ public class ReturnRequestJpaEntity extends BaseEntity {
     @Column(name = "closed_at")
     private Instant closedAt;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "withdrawal_status", length = 16)
+    private com.stockflow.order.internal.domain.ReturnRequest.WithdrawalStatus withdrawalStatus;
+
+    @Column(name = "withdrawal_reason", length = 500)
+    private String withdrawalReason;
+
+    @Column(name = "withdrawal_amount", nullable = false, precision = 19, scale = 4)
+    private BigDecimal withdrawalAmount = BigDecimal.ZERO;
+
+    @Column(name = "withdrawal_proposed_by")
+    private UUID withdrawalProposedBy;
+
+    @Column(name = "withdrawal_proposed_at")
+    private Instant withdrawalProposedAt;
+
+    @Column(name = "withdrawal_decided_by")
+    private UUID withdrawalDecidedBy;
+
+    @Column(name = "withdrawal_decided_at")
+    private Instant withdrawalDecidedAt;
+
+    @Column(name = "withdrawal_decision_note", length = 500)
+    private String withdrawalDecisionNote;
+
+    @Column(name = "withdrawal_offset_amount", nullable = false, precision = 19, scale = 4)
+    private BigDecimal withdrawalOffsetAmount = BigDecimal.ZERO;
+
+    @Column(name = "withdrawal_credited_amount", nullable = false, precision = 19, scale = 4)
+    private BigDecimal withdrawalCreditedAmount = BigDecimal.ZERO;
+
+    @Column(name = "withdrawal_credit_transfer_id")
+    private UUID withdrawalCreditTransferId;
+
     /** LAZY: a list reads the header only; the detail and every command load the lines with a fetch join. */
     @OneToMany(mappedBy = "request", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
     @OrderBy("id")
@@ -172,7 +212,7 @@ public class ReturnRequestJpaEntity extends BaseEntity {
     public ReturnRequestJpaEntity(UUID id, String rmaNumber, UUID orderId, String orderNumber, UUID customerId,
                                   UUID requestId, ReturnChannel channel, ReturnReason reasonCode, String note,
                                   ReturnResolution requestedResolution, UUID requestedBy, Instant requestedAt,
-                                  String currency) {
+                                  String currency, String windowOverrideReason) {
         super(id);
         this.rmaNumber = rmaNumber;
         this.orderId = orderId;
@@ -186,6 +226,7 @@ public class ReturnRequestJpaEntity extends BaseEntity {
         this.requestedBy = requestedBy;
         this.requestedAt = requestedAt;
         this.currency = currency;
+        this.windowOverrideReason = windowOverrideReason;
     }
 
     public void addLine(ReturnRequestLineJpaEntity line) {
@@ -207,11 +248,12 @@ public class ReturnRequestJpaEntity extends BaseEntity {
         this.returnDeadline = returnDeadline;
     }
 
-    public void applyReceipt(UUID receivedBy, Instant receivedAt, String locationCode, String note) {
+    public void applyReceipt(UUID receivedBy, Instant receivedAt, String locationCode, String note, int parcelCount) {
         this.receivedBy = receivedBy;
         this.receivedAt = receivedAt;
         this.receivingLocationCode = locationCode;
         this.receiptNote = note;
+        this.parcelCount = parcelCount;
     }
 
     public void applyInspection(UUID inspectedBy, Instant inspectedAt, String note) {
@@ -245,6 +287,23 @@ public class ReturnRequestJpaEntity extends BaseEntity {
         this.closedAt = closedAt;
     }
 
+    public void applyWithdrawal(com.stockflow.order.internal.domain.ReturnRequest.WithdrawalStatus status,
+                                String reason, BigDecimal amount, UUID proposedBy, Instant proposedAt, UUID decidedBy,
+                                Instant decidedAt, String decisionNote, BigDecimal offset, BigDecimal credited,
+                                UUID creditTransferId) {
+        this.withdrawalStatus = status;
+        this.withdrawalReason = reason;
+        this.withdrawalAmount = amount;
+        this.withdrawalProposedBy = proposedBy;
+        this.withdrawalProposedAt = proposedAt;
+        this.withdrawalDecidedBy = decidedBy;
+        this.withdrawalDecidedAt = decidedAt;
+        this.withdrawalDecisionNote = decisionNote;
+        this.withdrawalOffsetAmount = offset;
+        this.withdrawalCreditedAmount = credited;
+        this.withdrawalCreditTransferId = creditTransferId;
+    }
+
     public String getRmaNumber() { return rmaNumber; }
     public UUID getOrderId() { return orderId; }
     public String getOrderNumber() { return orderNumber; }
@@ -268,6 +327,8 @@ public class ReturnRequestJpaEntity extends BaseEntity {
     public Instant getReceivedAt() { return receivedAt; }
     public String getReceivingLocationCode() { return receivingLocationCode; }
     public String getReceiptNote() { return receiptNote; }
+    public int getParcelCount() { return parcelCount; }
+    public String getWindowOverrideReason() { return windowOverrideReason; }
     public UUID getInspectedBy() { return inspectedBy; }
     public Instant getInspectedAt() { return inspectedAt; }
     public String getInspectionNote() { return inspectionNote; }
@@ -287,5 +348,18 @@ public class ReturnRequestJpaEntity extends BaseEntity {
     public UUID getCancelledBy() { return cancelledBy; }
     public String getCancellationReason() { return cancellationReason; }
     public Instant getClosedAt() { return closedAt; }
+    public com.stockflow.order.internal.domain.ReturnRequest.WithdrawalStatus getWithdrawalStatus() {
+        return withdrawalStatus;
+    }
+    public String getWithdrawalReason() { return withdrawalReason; }
+    public BigDecimal getWithdrawalAmount() { return withdrawalAmount; }
+    public UUID getWithdrawalProposedBy() { return withdrawalProposedBy; }
+    public Instant getWithdrawalProposedAt() { return withdrawalProposedAt; }
+    public UUID getWithdrawalDecidedBy() { return withdrawalDecidedBy; }
+    public Instant getWithdrawalDecidedAt() { return withdrawalDecidedAt; }
+    public String getWithdrawalDecisionNote() { return withdrawalDecisionNote; }
+    public BigDecimal getWithdrawalOffsetAmount() { return withdrawalOffsetAmount; }
+    public BigDecimal getWithdrawalCreditedAmount() { return withdrawalCreditedAmount; }
+    public UUID getWithdrawalCreditTransferId() { return withdrawalCreditTransferId; }
     public List<ReturnRequestLineJpaEntity> getLines() { return lines; }
 }

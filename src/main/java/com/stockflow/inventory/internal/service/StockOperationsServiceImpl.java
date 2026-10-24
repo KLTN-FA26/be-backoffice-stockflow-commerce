@@ -871,10 +871,16 @@ class StockOperationsServiceImpl implements StockOperations {
     public StockMove receiveReturn(com.stockflow.inventory.api.ReceiveReturnCommand command) {
         WarehouseScope.requireLocation(command.locationCode());
         policies.lock(command.sku().code());
-        Optional<StockMovement> done = ledger.findByReference(StockMovement.MovementType.RETURN_IN,
+        // One ledger line per parcel of the line: a retried parcel finds the line's total already reached.
+        long booked = ledger.quantityByReference(StockMovement.MovementType.RETURN_IN,
                 StockMovement.ReferenceType.RETURN_REQUEST_LINE, command.returnLineId());
-        if (done.isPresent()) {
-            return toMove(done.get());
+        if (booked >= command.lineTotal()) {
+            return toMove(ledger.findByReference(StockMovement.MovementType.RETURN_IN,
+                    StockMovement.ReferenceType.RETURN_REQUEST_LINE, command.returnLineId()).orElseThrow());
+        }
+        if (booked + command.quantity() != command.lineTotal()) {
+            throw new IllegalStateException("Return line %s has %d unit(s) booked; %d more do not make %d".formatted(
+                    command.returnLineId(), booked, command.quantity(), command.lineTotal()));
         }
         LocationId location = new LocationId(command.locationCode());
         switch (locations.stateOf(location)) {

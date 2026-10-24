@@ -171,7 +171,7 @@ SELECT pg_temp.expect_ok('O35 returning 1: approved with the goods to come back,
            return_required = TRUE, return_deadline = NOW() + INTERVAL '14 days' WHERE id = md5('qa:rma:1')::uuid;
     UPDATE ordering.return_request_line SET received_quantity = 1, item_condition = 'DAMAGED' WHERE id = md5('qa:rmal:1')::uuid;
     UPDATE ordering.return_request SET status = 'RECEIVED', received_by = md5('demo:user:editor')::uuid, received_at = NOW(),
-           receiving_location_code = 'HCM-QC01' WHERE id = md5('qa:rma:1')::uuid $q$);
+           receiving_location_code = 'HCM-QC01', parcel_count = 1 WHERE id = md5('qa:rma:1')::uuid $q$);
 SELECT pg_temp.expect_fail('O36 a second return of a line that already has an open one', $q$
     INSERT INTO ordering.return_request (id, rma_number, order_id, order_number, customer_id, request_id, channel, requested_by,
                                          requested_resolution, status, reason_code, requested_at)
@@ -201,6 +201,54 @@ SELECT pg_temp.expect_fail('O38d a refund settled without flagging the adjustmen
 SELECT pg_temp.expect_ok('O38e settled by someone else: refunded in full, adjustment invoice flagged, closed', $q$
     UPDATE ordering.return_request SET status = 'RESOLVED', settled_by = md5('demo:user:approver')::uuid, settled_at = NOW(),
            refunded_amount = 10000000, vat_adjustment_required = TRUE, closed_at = NOW() WHERE id = md5('qa:rma:1')::uuid $q$);
+SELECT pg_temp.expect_fail('O38f a received return that counted no parcel', $q$
+    UPDATE ordering.return_request SET parcel_count = 0 WHERE id = md5('qa:rma:1')::uuid $q$);
+SELECT pg_temp.expect_fail('O38g a withdrawal of a replacement the return never had', $q$
+    UPDATE ordering.return_request SET withdrawal_status = 'PENDING', withdrawal_reason = 'x',
+           withdrawal_proposed_by = md5('demo:user:editor')::uuid, withdrawal_proposed_at = NOW()
+     WHERE id = md5('qa:rma:1')::uuid $q$);
+
+\echo '--- returns: four eyes on approval, the customer''s goods, the replacement order (business review 2026-10-25)'
+INSERT INTO ordering.return_request (id, rma_number, order_id, order_number, customer_id, request_id, channel, requested_by,
+                                     requested_resolution, status, reason_code, requested_at)
+VALUES (md5('qa:rma:3')::uuid, 'RMA-QA-3', md5('qa:order:2')::uuid, 'SO-QA-2', 'c0000000-0000-4000-8000-000000000001',
+        gen_random_uuid(), 'BACK_OFFICE', md5('demo:user:editor')::uuid, 'REPLACEMENT', 'REQUESTED', 'PRINT_DEFECT', NOW());
+INSERT INTO ordering.return_request_line (id, return_request_id, order_line_id, sku, custom_printed, unit_price, quantity)
+VALUES (md5('qa:rmal:3')::uuid, md5('qa:rma:3')::uuid, md5('qa:ol:2')::uuid, 'TABLE-OAK-160', FALSE, 1, 1);
+SELECT pg_temp.expect_fail('O38h a claim Sales opened, approved by the same person', $q$
+    UPDATE ordering.return_request SET status = 'AWAITING_RETURN', decided_by = md5('demo:user:editor')::uuid,
+           decided_at = NOW(), return_required = TRUE, return_deadline = NOW() + INTERVAL '14 days'
+     WHERE id = md5('qa:rma:3')::uuid $q$);
+SELECT pg_temp.expect_fail('O38i a late claim recorded on the portal', $q$
+    UPDATE ordering.return_request SET channel = 'PORTAL', window_override_reason = 'x' WHERE id = md5('qa:rma:3')::uuid $q$);
+SELECT pg_temp.expect_ok('O38j approved by someone else, received, inspected: the unit QC rejected goes back', $q$
+    UPDATE ordering.return_request_line SET approved_quantity = 1 WHERE id = md5('qa:rmal:3')::uuid;
+    UPDATE ordering.return_request SET status = 'AWAITING_RETURN', decided_by = md5('demo:user:approver')::uuid,
+           decided_at = NOW(), return_required = TRUE, return_deadline = NOW() + INTERVAL '14 days'
+     WHERE id = md5('qa:rma:3')::uuid;
+    UPDATE ordering.return_request_line SET received_quantity = 1 WHERE id = md5('qa:rmal:3')::uuid;
+    UPDATE ordering.return_request SET status = 'RECEIVED', received_by = md5('demo:user:editor')::uuid, received_at = NOW(),
+           receiving_location_code = 'HCM-QC01', parcel_count = 1 WHERE id = md5('qa:rma:3')::uuid $q$);
+SELECT pg_temp.expect_fail('O38k the customer''s rejected unit scrapped without their consent', $q$
+    UPDATE ordering.return_request_line SET accepted_quantity = 0, rejected_quantity = 1, scrap_quantity = 1
+     WHERE id = md5('qa:rmal:3')::uuid $q$);
+SELECT pg_temp.expect_fail('O38l the customer''s rejected unit put on sale', $q$
+    UPDATE ordering.return_request_line SET accepted_quantity = 0, rejected_quantity = 1, restock_quantity = 1,
+           restock_location_code = 'HCM-A01-2-B', received_plain = TRUE WHERE id = md5('qa:rmal:3')::uuid $q$);
+SELECT pg_temp.expect_fail('O38m goods back on sale QC did not call plain stock', $q$
+    UPDATE ordering.return_request_line SET accepted_quantity = 1, rejected_quantity = 0, restock_quantity = 1,
+           restock_location_code = 'HCM-A01-2-B' WHERE id = md5('qa:rmal:3')::uuid $q$);
+SELECT pg_temp.expect_ok('O38n scrapped with the customer''s recorded consent', $q$
+    UPDATE ordering.return_request_line SET accepted_quantity = 0, rejected_quantity = 1, scrap_quantity = 1,
+           disposal_consent_note = 'Khách đồng ý huỷ qua email' WHERE id = md5('qa:rmal:3')::uuid $q$);
+SELECT pg_temp.expect_fail('O38o a replacement order cancelled for another reason than its withdrawal', $q$
+    INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at,
+                                         created_at, replaces_return_request_id, cancellation_reason, cancellation_reason_code)
+    VALUES (gen_random_uuid(), 'SO-QA-R1', 'c0000000-0000-4000-8000-000000000001', gen_random_uuid(), 'CANCELLED', 0, 'VND',
+            NOW(), NOW(), md5('qa:rma:3')::uuid, 'x', 'CUSTOMER_REQUEST') $q$);
+SELECT pg_temp.expect_fail('O38p an ordinary order cancelled as a withdrawn replacement', $q$
+    UPDATE ordering.customer_order SET status = 'CANCELLED', cancellation_reason = 'x',
+           cancellation_reason_code = 'REPLACEMENT_WITHDRAWN' WHERE id = md5('qa:order:2')::uuid $q$);
 
 \echo '--- CONFIRMED, money received, cancellations (SCRUM-460, V20261013000300)'
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at, created_at)
