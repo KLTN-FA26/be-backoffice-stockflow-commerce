@@ -36,7 +36,10 @@ import static org.mockito.Mockito.reset;
  */
 @SecuredIntegrationTest
 // A mocked mail sender leaves the mail health indicator with nothing to check, so it is switched off for this context.
-@TestPropertySource(properties = {"stockflow.notification.inventory-alert-email.enabled=true", "management.health.mail.enabled=false"})
+// The mocked JavaMailSender is the transport under test here, so this context sends through SMTP rather than the test
+// profile's in-memory recorder; customer order mail is off, it is not what this test is about.
+@TestPropertySource(properties = {"stockflow.notification.inventory-alert-email.enabled=true", "management.health.mail.enabled=false",
+        "stockflow.notification.email.provider=smtp", "stockflow.notification.email.customer.enabled=false"})
 class InventoryAlertEmailFlagIntegrationTest {
 
     @Autowired ApplicationEventPublisher publisher;

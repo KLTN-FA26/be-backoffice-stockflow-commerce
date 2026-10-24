@@ -365,8 +365,39 @@ stockflow:
   notification:
     # Exact HTTPS hosts owned by trusted suppliers; blank disables API delivery (email still works).
     supplier-api-allowed-hosts: ${SUPPLIER_API_ALLOWED_HOSTS:}
-    mail-from: ${MAIL_FROM:noreply@stockflow.local}
     po-retry-interval: PT1M
+    # -------------------------------------------------------------------------
+    # E-mail (SCRUM-352). Every message - supplier POs, staff notices, the portal invitation, customer order mail -
+    # goes through one transport. resend: Resend's HTTP API (the dev and prod profiles' default); smtp: spring.mail
+    # above (Mailpit locally); recording: kept in memory, never sent (the test profile). See EmailProperties.
+    # -------------------------------------------------------------------------
+    email:
+      provider: ${EMAIL_PROVIDER:smtp}
+      # "StockFlow <no-reply@your-domain>". With Resend the domain must be verified in its dashboard.
+      from: ${RESEND_FROM:${MAIL_FROM:noreply@stockflow.local}}
+      # Where a customer's reply goes (e.g. Sales' shared mailbox). Blank: customer mail says not to reply.
+      reply-to: ${RESEND_REPLY_TO:}
+      locale: vi
+      sender-name: ${EMAIL_SENDER_NAME:StockFlow}
+      customer:
+        # Off sends no customer order mail (recorded as skipped) and leaves staff and supplier mail alone.
+        enabled: ${CUSTOMER_EMAIL_ENABLED:true}
+        max-attempts: 10
+        first-retry-delay: PT1M
+        max-retry-delay: PT6H
+        # How often failed customer mail is looked at again (CustomerEmailRetry).
+        retry-interval: PT1M
+      resend:
+        # Never commit a key. Required when provider is resend: without it the application does not start.
+        api-key: ${RESEND_API_KEY:}
+        base-url: https://api.resend.com
+        # Signing secret of the Resend webhook (whsec_...). Blank: POST /api/v1/notifications/webhooks/resend
+        # answers 503 and Resend retries until it is set.
+        webhook-secret: ${RESEND_WEBHOOK_SECRET:}
+        webhook-tolerance: PT5M
+        # Resend allows a team 2 requests per second by default; each instance keeps to this.
+        requests-per-second: ${RESEND_REQUESTS_PER_SECOND:2}
+        max-concurrent-requests: 2
     # In-app inbox: read messages older than this are deleted by the nightly purge (unread ones are kept).
     inbox-retention-days: 90
     inbox-purge-cron: "0 45 3 * * *"

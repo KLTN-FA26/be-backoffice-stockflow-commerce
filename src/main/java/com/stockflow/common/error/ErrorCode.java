@@ -73,6 +73,8 @@ public enum ErrorCode {
     FORBIDDEN("Not authorised", 403),
     /** Distinct from FORBIDDEN: the action is allowed, but not on these rows. See {@code DataScope}. */
     OUT_OF_DATA_SCOPE("Not authorised for this data", 403),
+    /** A provider webhook whose signature is missing, wrong or outside the replay window (SCRUM-352). */
+    WEBHOOK_SIGNATURE_INVALID("The webhook signature is missing or invalid", 401),
 
     // ---- 404
     NOT_FOUND("Resource not found", 404),
@@ -577,6 +579,8 @@ public enum ErrorCode {
 
     // ---- 413 / 415: payload problems
     PAYLOAD_TOO_LARGE("The uploaded file is too large", 413),
+    /** A provider webhook larger than any real delivery report: read no further (SCRUM-352). */
+    WEBHOOK_PAYLOAD_TOO_LARGE("The webhook body is too large", 413),
     UNSUPPORTED_MEDIA_TYPE("This file type is not accepted", 415),
 
     // ---- 422: understood, but semantically refused
@@ -595,6 +599,8 @@ public enum ErrorCode {
     PORTAL_INVITATION_UNAVAILABLE("Portal invitations cannot be sent right now", 503),
     /** The company bank account customers transfer to is not configured for this deployment (SCRUM-193). */
     TRANSFER_INSTRUCTIONS_UNAVAILABLE("Transfer details cannot be shown right now", 503),
+    /** No webhook signing secret is configured, so no webhook can be verified; the provider retries later. */
+    WEBHOOK_UNAVAILABLE("Webhooks are not accepted right now", 503),
     /** The caller's permissions could not be looked up (ADR-0008). The token itself may be fine,
      *  which is why this is a 503 and not a 401 that would sign the user out. */
     AUTHORIZATION_UNAVAILABLE("Permissions cannot be checked right now, please retry", 503);

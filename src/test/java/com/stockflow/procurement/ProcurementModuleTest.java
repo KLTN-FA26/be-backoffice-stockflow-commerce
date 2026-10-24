@@ -28,6 +28,9 @@ class ProcurementModuleTest {
 
     @Autowired ProcurementService procurement;
     @Autowired ApplicationContext context;
+    /** Notification (booted here) asks customer for addresses through this; customer is not booted (SCRUM-352). */
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    com.stockflow.notification.api.CustomerDirectory customerDirectory;
 
     @Test
     @DisplayName("procurement starts and answers through its api with the other modules absent")

@@ -2,14 +2,21 @@ package com.stockflow.notification.internal.repository;
 
 import com.stockflow.common.persistence.BaseJpaRepository;
 import com.stockflow.notification.internal.domain.DeliveryStatus;
+import com.stockflow.notification.internal.domain.EmailProvider;
 import com.stockflow.notification.internal.entity.DeliveryLogJpaEntity;
+
+import jakarta.persistence.LockModeType;
 
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
+import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 
 /** Delivery evidence and bounded status projections shared by services inside notification. */
 public interface DeliveryLogJpaRepository extends BaseJpaRepository<DeliveryLogJpaEntity> {
@@ -79,4 +86,18 @@ where c.cancellation_requested and 'purchase-order:' || c.purchase_order_id || '
     boolean existsByExternalReference(String externalReference);
 
     Page<DeliveryLogJpaEntity> findByOperationReference(String reference, Pageable pageable);
+
+    /**
+     * When the next attempt of a delivery may run: the latest {@code next_attempt_at} of its failed attempts, null when
+     * none waits. Each failure sets a later time than the one before, so the maximum is the latest failure's.
+     */
+    @Query("select max(l.nextAttemptAt) from DeliveryLogJpaEntity l where l.operationReference = :reference")
+    Instant nextAttemptAt(@Param("reference") String reference);
+
+    /**
+     * The sent message a delivery webhook reports on, locked: two reports on one message (delivered, then a complaint)
+     * arrive together often enough, and each decides against what the other may just have written.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    Optional<DeliveryLogJpaEntity> findByProviderAndProviderMessageId(EmailProvider provider, String providerMessageId);
 }

@@ -32,7 +32,8 @@ public interface NotificationService {
      * copy of the secret, and an event payload is persisted until it is processed. A failure is
      * thrown to the caller, who reports it and lets Sales resend - which issues a new secret.
      *
-     * @throws org.springframework.mail.MailException when the mail server refuses or cannot be reached
+     * @throws RuntimeException when the mail provider (Resend, or the SMTP relay) refuses the message or cannot be
+     *                          reached; the caller records the invitation as not delivered
      */
     void sendPortalInvitation(PortalInvitationMail mail);
 }
