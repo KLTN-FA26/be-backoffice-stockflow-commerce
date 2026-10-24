@@ -112,6 +112,7 @@ class ProcurementServiceImpl implements ProcurementService {
     private final WarehouseService warehouses;
     private final CurrentUserProvider users;
     private final SupplierItemRepository supplierItems;
+    private final ApprovalLimits approvalLimits;
 
     ProcurementServiceImpl(PurchaseOrderRepository purchaseOrders, PurchaseOrderSearchRepository search,
                            ProcurementReportRepository reports, Clock clock, SupplierRepository suppliers,
@@ -119,7 +120,8 @@ class ProcurementServiceImpl implements ProcurementService {
                            PoDeliveryDecisionRepository deliveryDecisions, PoCommunicationProfile communication,
                            ProductService products, InventoryService inventory,
                            InventoryControlService inventoryControl, WarehouseService warehouses,
-                           CurrentUserProvider users, SupplierItemRepository supplierItems) {
+                           CurrentUserProvider users, SupplierItemRepository supplierItems,
+                           ApprovalLimits approvalLimits) {
         this.purchaseOrders = purchaseOrders;
         this.search = search;
         this.reports = reports;
@@ -135,6 +137,7 @@ class ProcurementServiceImpl implements ProcurementService {
         this.warehouses = warehouses;
         this.users = users;
         this.supplierItems = supplierItems;
+        this.approvalLimits = approvalLimits;
     }
 
     /**
@@ -317,6 +320,11 @@ class ProcurementServiceImpl implements ProcurementService {
 
     // ------------------------------------------------------------------ approval
 
+    /**
+     * kltn-docs 02 §4 step 7 (owner decision POLIMIT2): an order whose total is within the SUBMITTER's approval limit
+     * is approved right here, recording why and which limit; above it, it goes to PENDING_APPROVAL for someone whose
+     * limit covers it. No limit configured for the submitter is a limit of zero: it always waits.
+     */
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
     public PurchaseOrderSummary submit(UUID purchaseOrderId, UUID submittedBy) {
@@ -327,16 +335,31 @@ class ProcurementServiceImpl implements ProcurementService {
                     PurchaseOrderStatus.PENDING_APPROVAL);
         }
         requireLinesPurchasable(order);
+        Money limit = approvalLimits.limitOf(submittedBy, order.currency(), BusinessCalendar.date(clock.instant()));
+        boolean withinLimit = order.coveredBy(limit);
         long revisionNo = purchaseOrders.nextRevisionNo(order.id());
         UUID revisionId = purchaseOrders.recordRevision(order, revisionNo, submittedBy,
                 revisionNo == 0 ? null : "Resubmitted after rejection");
-        order.submit(submittedBy, revisionId, revisionNo, clock.instant());
+        if (withinLimit) {
+            order.submitWithinLimit(submittedBy, revisionId, revisionNo, limit, clock.instant());
+        } else {
+            order.submit(submittedBy, revisionId, revisionNo, clock.instant());
+        }
         purchaseOrders.save(order);
         purchaseOrders.recordEvent(order.id(), revisionId, "SUBMITTED", submittedBy, PurchaseOrderStatus.DRAFT,
                 PurchaseOrderStatus.PENDING_APPROVAL, null);
+        if (withinLimit) {
+            String reason = "Auto-approved within limit: total %s, limit %s".formatted(order.totalAmount(), limit);
+            purchaseOrders.recordApproval(revisionId, submittedBy, "APPROVED", reason);
+            purchaseOrders.recordEvent(order.id(), revisionId, "APPROVED", submittedBy,
+                    PurchaseOrderStatus.PENDING_APPROVAL, PurchaseOrderStatus.APPROVED, reason,
+                    Map.of("autoApproved", "true", "total", order.totalAmount().amount().toPlainString(),
+                            "limit", limit.amount().toPlainString(), "currency", order.currency().getCurrencyCode()));
+        }
         return summaryOf(order, false);
     }
 
+    /** Four-eyes (BR-PO-002), and the approver's own limit must cover the total (owner decision POLIMIT2). */
     @Override
     @Auditable(action = AuditAction.APPROVE, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
     public PurchaseOrderSummary approve(UUID purchaseOrderId, UUID approverId) {
@@ -344,7 +367,8 @@ class ProcurementServiceImpl implements ProcurementService {
         if (order.status() == PurchaseOrderStatus.PENDING_APPROVAL) {
             requireLinesPurchasable(order);
         }
-        order.approve(approverId, clock.instant());
+        Money limit = approvalLimits.limitOf(approverId, order.currency(), BusinessCalendar.date(clock.instant()));
+        order.approve(approverId, limit, clock.instant());
         purchaseOrders.save(order);
         purchaseOrders.recordApproval(order.activeRevisionId(), approverId, "APPROVED", null);
         purchaseOrders.recordEvent(order.id(), order.activeRevisionId(), "APPROVED", approverId,
@@ -495,14 +519,30 @@ class ProcurementServiceImpl implements ProcurementService {
         return summaryOf(order, false);
     }
 
+    /**
+     * Short-close of a PARTIALLY_RECEIVED order, or the force close (kltn-docs 02 §5, {@code Confirmed → Closed}) of a
+     * CONFIRMED one that will not be received at all; the reason is mandatory in both. A force close behaves like a
+     * cancel for what is still in flight: it refuses while a goods receipt of the order is being counted, and it stops
+     * the supplier delivery from being retried (the order is closed, there is nothing left to send). The supplier is
+     * not sent a cancellation notice - the order was not cancelled.
+     */
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "purchase-order", resourceId = "#purchaseOrderId")
     public PurchaseOrderSummary closeShort(UUID purchaseOrderId, UUID userId, String reason) {
         PurchaseOrder order = loadForUpdate(purchaseOrderId);
+        PurchaseOrderStatus from = order.status();
+        boolean force = from == PurchaseOrderStatus.CONFIRMED;
+        if (force && purchaseOrders.hasReceiptInProgress(order.id())) {
+            throw new BusinessException(ErrorCode.CONFLICT,
+                    "A goods receipt of this order is being counted; cancel or confirm it first");
+        }
         order.closeShort(reason, userId, clock.instant());
+        if (force) {
+            notifications.suppressSupplierDelivery(purchaseOrderId);
+        }
         purchaseOrders.save(order);
-        purchaseOrders.recordEvent(order.id(), order.activeRevisionId(), "SHORT_CLOSED", userId,
-                PurchaseOrderStatus.PARTIALLY_RECEIVED, PurchaseOrderStatus.CLOSED, reason);
+        purchaseOrders.recordEvent(order.id(), order.activeRevisionId(), force ? "FORCE_CLOSED" : "SHORT_CLOSED", userId,
+                from, PurchaseOrderStatus.CLOSED, reason);
         return summaryOf(order, false);
     }
 

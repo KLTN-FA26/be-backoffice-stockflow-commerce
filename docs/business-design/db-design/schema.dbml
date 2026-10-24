@@ -1946,6 +1946,7 @@ Table procurement.purchase_orders [headercolor: #7D5BA6] {
   supplier_responded_at        timestamptz
   supplier_reference           varchar(100)
   supplier_response_note       varchar(1000)
+  auto_approved                boolean [not null, default: false]
 }
 
 Table procurement.qc_inspections [headercolor: #7D5BA6] {

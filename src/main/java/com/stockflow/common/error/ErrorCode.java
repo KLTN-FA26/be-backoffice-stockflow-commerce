@@ -73,6 +73,12 @@ public enum ErrorCode {
     FORBIDDEN("Not authorised", 403),
     /** Distinct from FORBIDDEN: the action is allowed, but not on these rows. See {@code DataScope}. */
     OUT_OF_DATA_SCOPE("Not authorised for this data", 403),
+    /**
+     * kltn-docs 02 §4 step 7 (owner decision POLIMIT2): the caller's approval limit - the highest of their roles'
+     * {@code procurement.approval_limits} in the order's currency - is below the order's total, or they have none.
+     * The order waits for someone whose limit covers it.
+     */
+    PO_APPROVAL_LIMIT_EXCEEDED("The purchase order total is above your approval limit", 403),
 
     // ---- 404
     NOT_FOUND("Resource not found", 404),

@@ -85,6 +85,7 @@ stateDiagram-v2
 |---|---|---|---|---|---|
 | — | DRAFT | create | Procurement staff | supplier active, ≥1 line | — |
 | DRAFT | PENDING_APPROVAL | submit | Procurement staff | total ≥ 0, MOQ respected (BR-PO-001) | — |
+| DRAFT | APPROVED | submit | Procurement staff | PO total ≤ the **submitter's** approval limit (none configured = 0, so it never applies); recorded as auto-approved with the limit used (BR-PO-002, kltn-docs 02 §4 step 7) | — |
 | PENDING_APPROVAL | APPROVED | approve | approver per threshold | approver's limit ≥ PO total (BR-PO-002) | `PurchaseOrderApproved` |
 | PENDING_APPROVAL | DRAFT | reject | approver | reason given | — |
 | APPROVED | SENT | send | Procurement staff | supplier has email or API endpoint | `PurchaseOrderSent` |
@@ -93,6 +94,7 @@ stateDiagram-v2
 | CONFIRMED / PARTIALLY_RECEIVED | PARTIALLY_RECEIVED | receipt posted | system | receipt total < ordered | — |
 | CONFIRMED / PARTIALLY_RECEIVED | RECEIVED | receipt posted | system | open qty = 0, within over-receipt tolerance (BR-RCP-001) | `PurchaseOrderFullyReceived` |
 | PARTIALLY_RECEIVED | CLOSED_SHORT | close short | Procurement staff | reason given; remaining qty written off | `PurchaseOrderClosedShort` |
+| CONFIRMED | CLOSED (`FORCE_CLOSE`) | force close | Procurement staff | reason given; nothing received and none expected (kltn-docs 02 §5); refused while a goods receipt is being counted | — |
 | RECEIVED | CLOSED | invoice approved | Accountant | three-way match passed or override approved (BR-INV-003) | `PurchaseOrderClosed` |
 
 **Amendment (WBS 3.2.5)** is not a state. Amending a PO in `SENT` or later creates

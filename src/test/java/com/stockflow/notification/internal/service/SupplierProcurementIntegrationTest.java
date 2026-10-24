@@ -22,6 +22,7 @@ import com.stockflow.product.api.CreateProductCommand;
 import com.stockflow.product.api.ProductKind;
 import com.stockflow.product.api.ProductService;
 import com.stockflow.product.api.TaxClass;
+import com.stockflow.support.ApprovalLimitFixtures;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.SupplierItemFixtures;
 import com.stockflow.support.ReferenceRows;
@@ -107,7 +108,7 @@ class SupplierProcurementIntegrationTest {
     @BeforeEach
     void people() {
         submitter = transactions.execute(tx -> ReferenceRows.user(entityManager));
-        approver = transactions.execute(tx -> ReferenceRows.user(entityManager));
+        approver = transactions.execute(tx -> ApprovalLimitFixtures.approver(entityManager));
         buyer = transactions.execute(tx -> ReferenceRows.user(entityManager));
         when(users.current()).thenReturn(Optional.of(new CurrentUser(buyer, "test-" + buyer, Set.of(), Set.of(),
                 DataScope.ALL, Set.of())));
