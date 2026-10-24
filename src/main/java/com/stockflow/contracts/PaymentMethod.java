@@ -13,5 +13,11 @@ public enum PaymentMethod {
     BANK_TRANSFER,
     E_WALLET,
     COD,
-    DEPOSIT
+    DEPOSIT,
+    /**
+     * Not money: the credit of a resolved return settling what the customer owed (SCRUM-260, "giảm trừ công nợ").
+     * Added as the contract rules allow; every consumer today reads the amount and the source, never branches on the
+     * method.
+     */
+    CREDIT_NOTE
 }
