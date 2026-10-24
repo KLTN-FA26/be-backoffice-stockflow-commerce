@@ -297,6 +297,7 @@ class SubcontractPurchasingIntegrationTest {
     void terms() {
         assertThat(subcontracting.subcontractorTerms(innhanh)).get().satisfies(t -> {
             assertThat(t.printSubcontractor()).isTrue();
+            assertThat(t.active()).isTrue();
             assertThat(t.lossTolerancePercent()).isEqualByComparingTo("3");
         });
         assertThat(subcontracting.subcontractorTerms(goviet)).get().satisfies(t -> {
@@ -304,5 +305,21 @@ class SubcontractPurchasingIntegrationTest {
             assertThat(t.lossTolerancePercent()).isEqualByComparingTo("2");
         });
         assertThat(subcontracting.subcontractorTerms(UUID.randomUUID())).isEmpty();
+    }
+
+    @Test
+    @DisplayName("an inactive print subcontractor gets no subcontract order (03 §16, BR-PRD-13)")
+    void inactiveSubcontractor() {
+        tx.executeWithoutResult(s ->
+                jdbc.update("UPDATE procurement.suppliers SET status = 'INACTIVE' WHERE id = ?", innhanh));
+        try {
+            assertThat(subcontracting.subcontractorTerms(innhanh)).get()
+                    .satisfies(t -> assertThat(t.active()).isFalse());
+            assertThatThrownBy(() -> subcontracting.create(command(innhanh, CUP, 400)))
+                    .extracting(SubcontractPurchasingIntegrationTest::code).isEqualTo(ErrorCode.SUPPLIER_INACTIVE);
+        } finally {
+            tx.executeWithoutResult(s ->
+                    jdbc.update("UPDATE procurement.suppliers SET status = 'ACTIVE' WHERE id = ?", innhanh));
+        }
     }
 }
