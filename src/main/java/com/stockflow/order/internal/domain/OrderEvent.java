@@ -97,6 +97,23 @@ public sealed interface OrderEvent extends DomainEvent {
         }
     }
 
+    /**
+     * A return request moved (SCRUM-243): requested, approved, rejected, received, resolved, cancelled or expired. One
+     * envelope for the contracts {@code Return*} records: the publisher only unwraps the payload, so a record per
+     * contract would repeat this one without saying more.
+     */
+    record ReturnChanged(UUID eventId, Instant occurredAt, UUID returnRequestId, Object payload) implements OrderEvent {
+
+        public ReturnChanged(UUID returnRequestId, Object payload) {
+            this(UUID.randomUUID(), Instant.now(), returnRequestId, payload);
+        }
+
+        @Override
+        public String aggregateId() {
+            return returnRequestId.toString();
+        }
+    }
+
     /** The rest of a partly fulfilled order was closed: payment refunds, fulfillment stops (G4-Q3). */
     record RemainderClosed(UUID eventId, Instant occurredAt, com.stockflow.contracts.OrderRemainderClosed payload)
             implements OrderEvent {

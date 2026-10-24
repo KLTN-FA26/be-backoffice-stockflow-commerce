@@ -743,6 +743,13 @@ flowchart LR
 > ⚠ Hàng in theo yêu cầu KHÔNG được trả trừ khi lỗi — BR-RMA-002. Cốc in ảnh của khách không bán lại cho ai được.
 > · Hàng in bị lỗi trả về thì vào thẳng DAMAGED, không phải QUARANTINE — không có gì để kiểm lại.
 
+> **Đã triển khai 2026-10-25 (SCRUM-243 / SCRUM-260)** — luồng thực tế nằm ở `03-state-machines.md` §12 và khác
+> bảng trên ở mấy điểm: mọi hàng trả về (kể cả hàng in lỗi) đều nhập vào QUARANTINE (`stock_movement` RETURN_IN), rồi
+> QC quyết định từng đơn vị — nhập lại để bán (chỉ hàng không in riêng), huỷ (phiếu điều chỉnh SCRAP chờ duyệt) hoặc
+> gửi trả khách; không có `return_shipment`/`qc_task` riêng, kho ghi nhận và QC kiểm ngay trên yêu cầu đổi trả. Hàng
+> thay thế là một đơn thay thế giá 0 đi qua sản xuất và giao hàng như đơn thường; tiền được cấn trừ công nợ của đơn,
+> hoàn tiền (tối đa số đã thu) hoặc giữ làm số dư của khách — Sales đề xuất, người khác duyệt.
+
 ---
 
 ## `F-RTO` Hàng hoàn về vì giao không thành công

@@ -84,6 +84,7 @@ class PermissionMatrixTest {
             Map.entry("PUT /api/v1/customers/me", "edits the caller's own profile (resolved from the token)"),
             Map.entry("GET /api/v1/designs", "list filtered to designs the caller owns (owner predicate in the query)"),
             Map.entry("GET /api/v1/orders/me", "the caller's own orders, selected by the customer profile of the token"),
+            Map.entry("GET /api/v1/returns/me", "the caller's own returns, selected by the customer profile of the token"),
             Map.entry("GET /api/v1/orders/payment-terms", "payment terms offered to the caller's own customer profile"),
             Map.entry("GET /api/v1/receivables/me", "the caller's own receivables, selected by the customer profile of the token"),
             Map.entry("GET /api/v1/notifications/me", "the caller's own inbox: every query is recipient_id = the token's subject"),
@@ -283,7 +284,11 @@ class PermissionMatrixTest {
                 Map.entry("POST /api/v1/quotes/{quoteId}/acceptance", "{\"version\":0}"),
                 Map.entry("POST /api/v1/quotes/{quoteId}/change-request", "{\"version\":0,\"feedback\":\"stolen\"}"),
                 Map.entry("POST /api/v1/production/sample-requests/{sampleRequestId}/change-request", "{\"feedback\":\"stolen\"}"),
-                Map.entry("POST /api/v1/orders/{orderId}/reorder", "{\"requestId\":\"" + UUID.randomUUID() + "\"}"));
+                Map.entry("POST /api/v1/orders/{orderId}/reorder", "{\"requestId\":\"" + UUID.randomUUID() + "\"}"),
+                // SCRUM-243: a well-formed claim on the victim's order, so only the owner check can refuse it.
+                Map.entry("POST /api/v1/orders/{orderId}/returns", "{\"requestId\":\"" + UUID.randomUUID()
+                        + "\",\"reasonCode\":\"PRINT_DEFECT\",\"requestedResolution\":\"REFUND\",\"lines\":[{\"orderLineId\":\""
+                        + UUID.randomUUID() + "\",\"quantity\":1}]}"));
     }
 
 

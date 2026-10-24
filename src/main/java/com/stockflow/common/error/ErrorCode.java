@@ -62,6 +62,8 @@ public enum ErrorCode {
     SEGMENT_PRICE_NOT_FOUND("This customer group has no price for the SKU", 404),
     CATALOG_PRICE_AMBIGUOUS("More than one selling price has the same priority", 409),
     MALFORMED_REQUEST("The request body could not be read", 400),
+    /** SCRUM-243: the units of a return do not add up (received, accepted and rejected, where they went, how made good). */
+    RETURN_QUANTITIES_INVALID("The quantities of this return do not add up", 400),
     UNSUPPORTED_PARAMETER("Unsupported parameter value", 400),
     /** The URL itself was refused before routing: {@code //}, an encoded {@code ..}, a {@code ;}. */
     REQUEST_REJECTED("The request URL is not acceptable", 400),
@@ -118,6 +120,8 @@ public enum ErrorCode {
     /** SCRUM-475: no damage report with this id, or not in the caller's warehouses. */
     DAMAGE_REPORT_NOT_FOUND("Damage report not found", 404),
     CANCELLATION_REQUEST_NOT_FOUND("Cancellation request not found", 404),
+    /** SCRUM-243: no return request by that id - or not the caller's own, which is not revealed. */
+    RETURN_REQUEST_NOT_FOUND("Return request not found", 404),
     RECEIVABLE_NOT_FOUND("Receivable not found", 404),
     RESERVATION_NOT_FOUND("Stock reservation not found", 404),
     TRANSFER_ORDER_NOT_FOUND("Transfer order not found", 404),
@@ -289,6 +293,41 @@ public enum ErrorCode {
     CANCELLATION_NEEDS_STAFF("Printing has started: staff decide this order's cancellation", 409),
     ORDER_CANCELLATION_REQUEST_PENDING("A cancellation request for this order is already waiting for a decision", 409),
     ORDER_CANCELLATION_REQUEST_NOT_PENDING("This cancellation request has already been decided", 409),
+    // ---- returns (SCRUM-243 / SCRUM-260, 03 §12): each names the rule that refused, so the portal can say what to do
+    /** BR-RMA-001: only goods the customer received can come back. */
+    RETURN_ORDER_NOT_DELIVERED("This order has not been delivered yet; nothing can be returned", 409),
+    /** The order's returns were already settled with money, or it is closed: a new claim needs Sales. */
+    RETURN_ORDER_NOT_RETURNABLE("This order no longer takes a return", 409),
+    /** BR-RMA-001, OQ-07: the return window after delivery has passed. */
+    RETURN_WINDOW_CLOSED("The return window for this order has closed", 409),
+    /** More units than were delivered, less what the line's other returns claim. */
+    RETURN_QUANTITY_EXCEEDED("More units than can still be returned from this order line", 409),
+    /** One open return per order line: the open one is decided first. */
+    RETURN_LINE_ALREADY_OPEN("This order line already has an open return", 409),
+    /** BR-RMA-002: goods printed to the customer's design come back only when defective. */
+    RETURN_CUSTOM_ITEM_NOT_DEFECTIVE("Custom-printed goods are returned only when defective", 409),
+    /** SCRUM-243 (B2B plan 2026-10-06): returns are taken for defects and delivery faults, not a change of mind. */
+    RETURN_REASON_NOT_ACCEPTED("Returns are accepted for defects and delivery faults only", 409),
+    /** 03 §12: the return's status has no such step. */
+    RETURN_INVALID_TRANSITION("This return cannot do that in its current status", 409),
+    /** A defect is approved on evidence: at least one photo of the problem. */
+    RETURN_EVIDENCE_REQUIRED("Add at least one photo of the problem before the return is approved", 409),
+    RETURN_EVIDENCE_LIMIT_REACHED("This return has as many photos as it may hold", 409),
+    /** Goods worth more than the no-return threshold must come back before anything is credited. */
+    RETURN_GOODS_REQUIRED("Goods of this value must be sent back before the return is decided", 409),
+    /** OQ-12 / BR-RMA-002: printed goods never go back on sale; only stock items that pass QC do. */
+    RETURN_RESTOCK_NOT_ALLOWED("Custom-printed goods cannot go back on sale", 409),
+    /** Four eyes where money moves (BR-PAY-003 without approver limits): a settlement is approved by someone else. */
+    RETURN_SELF_APPROVAL("A return settlement cannot be approved by the person who proposed it", 409),
+    /** The order received less money than the refund asks; credit the rest instead. */
+    RETURN_REFUND_EXCEEDS_PAID("The refund is more than the order has received", 409),
+    /** A customer with overdue receivables is credited, never paid out in cash. */
+    RETURN_REFUND_CUSTOMER_OVERDUE("The customer has overdue receivables: credit the return against them instead of "
+            + "refunding cash", 409),
+    /** BR-CUS-003: a customer who is not ACTIVE opens no return themselves and gets no new (replacement) order. */
+    RETURN_CUSTOMER_NOT_ACTIVE("The customer account is not active", 409),
+    /** Returned goods are received into a quarantine or QC area, never straight onto a bin (OQ-12). */
+    RETURN_RECEIVING_LOCATION_INVALID("Returned goods are received into a quarantine or QC area of the warehouse", 409),
     PAYMENT_TERM_NOT_ALLOWED("This payment term is not available for this order", 409),
     /** SCRUM-427: credit approval or refusal on an order that is not waiting for one. */
     ORDER_NOT_ON_CREDIT_HOLD("This order is not waiting for a credit decision", 409),
