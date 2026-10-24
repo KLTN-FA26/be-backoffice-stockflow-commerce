@@ -406,13 +406,59 @@ class StockDamageIntegrationTest {
                 .andExpect(status().isBadRequest());
         dispose(manager, "WAREHOUSE_MANAGER", reportId, "RETURN_TO_SUPPLIER", 2, "supplier agreed to credit", null)
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.status").value("CLOSED"))
+                .andExpect(jsonPath("$.data.status").value("AWAITING_SUPPLIER"))
+                .andExpect(jsonPath("$.data.awaitingSupplierQuantity").value(2))
                 .andExpect(jsonPath("$.data.dispositions[0].disposition").value("RETURN_TO_SUPPLIER"));
 
         assertThat(damagedAt(QC01)).as("still here until the supplier collects them").isEqualTo(2);
         assertThat(atp()).isEqualTo(8);
         assertThat(recorded.matching(StockDamageDisposed.class, event -> event.reportId().equals(reportId)))
                 .singleElement().satisfies(event -> assertThat(event.disposition()).isEqualTo("RETURN_TO_SUPPLIER"));
+
+        // The supplier's carrier takes one; the supplier refuses the other, which is then written off.
+        UUID decision = UUID.fromString(jdbc.queryForObject(
+                "SELECT id::text FROM inventory.stock_damage_disposition WHERE damage_report_id = ?", String.class,
+                reportId));
+        String base = "/api/v1/inventory/damage-reports/" + reportId + "/dispositions/" + decision;
+        String one = "{\"requestId\":\"" + UUID.randomUUID() + "\",\"quantity\":1,\"deliveryNote\":\"PXT-NCC-01\"}";
+        mvc.perform(post(base + "/supplier-shipment").header("Authorization", token(staff, "WAREHOUSE_STAFF"))
+                .contentType("application/json").content(one)).andExpect(status().isForbidden());
+        mvc.perform(post(base + "/supplier-shipment").header("Authorization", token(manager, "WAREHOUSE_MANAGER"))
+                        .contentType("application/json").content(one))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("AWAITING_SUPPLIER"))
+                .andExpect(jsonPath("$.data.awaitingSupplierQuantity").value(1))
+                .andExpect(jsonPath("$.data.dispositions[0].handedOverQuantity").value(1))
+                .andExpect(jsonPath("$.data.supplierHandOvers[0].outcome").value("SHIPPED"))
+                .andExpect(jsonPath("$.data.supplierHandOvers[0].deliveryNote").value("PXT-NCC-01"));
+        mvc.perform(post(base + "/supplier-shipment").header("Authorization", token(manager, "WAREHOUSE_MANAGER"))
+                .contentType("application/json").content(one)).andExpect(status().isOk());   // the same hand-over again
+        assertThat(damagedAt(QC01)).isEqualTo(1);
+        mvc.perform(post(base + "/supplier-shipment").header("Authorization", token(manager, "WAREHOUSE_MANAGER"))
+                        .contentType("application/json")
+                        .content("{\"requestId\":\"" + UUID.randomUUID() + "\",\"quantity\":2,\"deliveryNote\":\"X\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("DAMAGE_RETURN_NOT_SHIPPABLE"));
+
+        mvc.perform(post(base + "/supplier-refusal").header("Authorization", token(manager, "WAREHOUSE_MANAGER"))
+                        .contentType("application/json")
+                        .content("{\"requestId\":\"" + UUID.randomUUID() + "\",\"quantity\":1,"
+                                + "\"note\":\"NCC chỉ nhận lại 1 ly\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("OPEN"))
+                .andExpect(jsonPath("$.data.pendingQuantity").value(1))
+                .andExpect(jsonPath("$.data.dispositions[0].refusedQuantity").value(1));
+        dispose(manager, "WAREHOUSE_MANAGER", reportId, "WRITE_OFF", 1, null, null).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("CLOSED"));
+
+        assertThat(damagedAt(QC01)).isZero();
+        assertThat(atp()).isEqualTo(8);
+        assertThat(jdbc.queryForMap("""
+                SELECT movement_type, from_location_code, to_location_code, quantity, from_status
+                  FROM inventory.stock_movement WHERE reference_type = 'DAMAGE_REPORT' AND reference_id = ?
+                   AND movement_type = 'SUPPLIER_RETURN'""", reportId))
+                .containsEntry("from_location_code", QC01).containsEntry("to_location_code", null)
+                .containsEntry("quantity", 1).containsEntry("from_status", "DAMAGED");
     }
 
     // ---- who may do it -----------------------------------------------------------------------------------

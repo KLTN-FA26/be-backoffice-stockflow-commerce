@@ -7,10 +7,13 @@ import java.util.UUID;
  * BR-STK-003): they left available-to-promise and wait, DAMAGED, in a quarantine area for a warehouse manager's
  * decision. One event per damage report. See {@code package-info.java} for the rules on changing this contract.
  *
- * @param origin                {@code STOCK_CHECK} (found on a shelf) or {@code PICKING} (found by a picker)
+ * @param origin                {@code STOCK_CHECK} (found on a shelf), {@code PICKING} (found by a picker) or
+ *                              {@code PACKING} (found at the packing bench among units already picked)
  * @param reasonCode            {@code BROKEN}, {@code DEFORMED}, {@code WET_OR_MOULDY}, {@code DIRTY_OR_MISPRINTED}
  *                              or {@code OTHER}
- * @param orderId               the order whose allocation the units were picked against; null for a stock check
+ * @param orderId               the order whose allocation the units were picked against; null for a stock check.
+ *                              Consumers: {@code notification} tells the warehouse managers who decide, the order
+ *                              coordinators when the order is on hold, the planners when reservations fall short
  * @param orderOnHold           true when no other stock could replace the order's damaged units: its pick line is
  *                              short and the order ON_HOLD (INVENTORY) until the coordinator reallocates it
  * @param skuReservationShortfall units the SKU's live checkout reservations now promise beyond its free sellable

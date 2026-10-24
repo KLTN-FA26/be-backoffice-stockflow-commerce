@@ -46,11 +46,34 @@ public interface StockDamages {
      */
     DamageReportView dispose(UUID reportId, DisposeDamageCommand command);
 
+    /**
+     * A return-to-supplier decision carried out: all its units handed to the supplier, or the supplier's carrier,
+     * under a delivery note. They leave quarantine and the books in this transaction - on_hand of the DAMAGED row falls,
+     * one {@code SUPPLIER_RETURN} ledger line, reference {@code DAMAGE_REPORT}. The debit note is procurement's. The
+     * same request again answers with the report as it is.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code DAMAGE_REPORT_NOT_FOUND}; {@code NOT_FOUND} for a
+     *         decision not on the report; {@code DAMAGE_RETURN_NOT_SHIPPABLE} for another kind of decision or one
+     *         shipped already; {@code DAMAGED_STOCK_HELD}, {@code CONFLICT} when the units are no longer there unheld;
+     *         {@code VALIDATION_FAILED} without a delivery note; {@code OUT_OF_DATA_SCOPE}
+     */
+    DamageReportView shipToSupplier(UUID reportId, UUID dispositionId, ShipToSupplierCommand command);
+
+    /**
+     * The supplier refused some units of a return-to-supplier decision, or took fewer than were offered: they stay in
+     * quarantine and wait for a decision again. The same request again answers with the report as it is.
+     *
+     * @throws com.stockflow.common.error.BusinessException as {@link #shipToSupplier}; {@code VALIDATION_FAILED}
+     *         without a note
+     */
+    DamageReportView refuseReturn(UUID reportId, UUID dispositionId, RefuseReturnCommand command);
+
     /** @throws com.stockflow.common.error.BusinessException {@code DAMAGE_REPORT_NOT_FOUND}, also outside the caller's warehouses */
     DamageReportView find(UUID reportId);
 
     /** Reports, newest first, of the caller's warehouses; {@code open} true is the manager's queue. */
-    PageResponse<DamageReportRow> list(UUID warehouseId, Boolean open, String sku, String origin, int page, int size,
+    /** @param status OPEN, AWAITING_SUPPLIER or CLOSED; null for every report */
+    PageResponse<DamageReportRow> list(UUID warehouseId, String status, String sku, String origin, int page, int size,
                                        String sort);
 
     /** A short-lived link to one photo, for the browser to fetch from object storage directly. */
@@ -69,6 +92,13 @@ public interface StockDamages {
                                 String restoreLocationCode, UUID decidedBy) {
     }
 
+    /** @param quantity units handed over now; null for all the decision has left */
+    record ShipToSupplierCommand(UUID requestId, Integer quantity, String deliveryNote, String note, UUID shippedBy) {
+    }
+
+    record RefuseReturnCommand(UUID requestId, int quantity, String note, UUID recordedBy) {
+    }
+
     /** One report as a screen shows it. {@code status} OPEN while units wait for a decision, CLOSED after. */
     record DamageReportView(UUID id, String number, String origin, String status, UUID warehouseId, String sku,
                             String lotNumber, String serialNumber, Instant receivedAt, UUID sourceStockItemId,
@@ -76,7 +106,13 @@ public interface StockDamages {
                             String damageLocationCode, int quantity, int decidedQuantity, int pendingQuantity,
                             String reason, String note, UUID orderId, UUID pickLineId, UUID reservationId,
                             UUID impairedReservationId, UUID reportedBy, Instant reportedAt, List<PhotoView> photos,
-                            List<DispositionView> dispositions) {
+                            List<DispositionView> dispositions, int awaitingSupplierQuantity,
+                            List<SupplierHandOverView> supplierHandOvers) {
+    }
+
+    /** Units of a return-to-supplier decision handed over ({@code SHIPPED}, under a delivery note) or refused. */
+    record SupplierHandOverView(UUID id, UUID dispositionId, String outcome, int quantity, String deliveryNote,
+                                String note, UUID recordedBy, Instant recordedAt) {
     }
 
     /** A photo of a report; its bytes are fetched through {@link #photoLink}. */
@@ -84,15 +120,19 @@ public interface StockDamages {
     }
 
     /** One decision of a report. */
+    /**
+     * @param handedOverQuantity RETURN_TO_SUPPLIER: units handed to the supplier so far
+     * @param refusedQuantity    RETURN_TO_SUPPLIER: units the supplier refused (they wait for a decision again)
+     */
     record DispositionView(UUID id, String disposition, int quantity, String note, String recordNumber,
                            UUID adjustmentId, String restoreLocationCode, UUID supplierId, String supplierName,
-                           UUID decidedBy, Instant decidedAt) {
+                           UUID decidedBy, Instant decidedAt, int handedOverQuantity, int refusedQuantity) {
     }
 
     /** One report in a list. */
     record DamageReportRow(UUID id, String number, String origin, String status, UUID warehouseId, String sku,
                            String lotNumber, String sourceLocationCode, String damageLocationCode, int quantity,
                            int decidedQuantity, int pendingQuantity, String reason, UUID orderId, UUID reportedBy,
-                           Instant reportedAt) {
+                           Instant reportedAt, int awaitingSupplierQuantity) {
     }
 }

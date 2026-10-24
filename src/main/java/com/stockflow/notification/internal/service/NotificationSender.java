@@ -224,6 +224,17 @@ class NotificationSender {
     }
 
     /**
+     * A staff notice by e-mail, worded as its in-app message (title as the subject; the body, then the page to open).
+     * System text only, as the in-app message is.
+     */
+    void sendStaffNotice(List<String> recipients, com.stockflow.notification.api.InboxMessage message,
+                         String category) {
+        String body = message.body() == null ? "" : message.body();
+        sendToStaff(recipients, message.title(), message.link() == null ? body : body + "\n\n" + message.link(),
+                category);
+    }
+
+    /**
      * One staff message to many people, in messages of at most {@value #RECIPIENTS_PER_MESSAGE} recipients each.
      * A refused part throws: the callers deliver staff mail best effort and log it.
      */

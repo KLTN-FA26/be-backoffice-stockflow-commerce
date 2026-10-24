@@ -174,4 +174,27 @@ class StockItemDamageTest {
         assertThat(damaged.serialNumber()).isEqualTo("SN-0001");
         assertThat(unit.onHand()).isEqualTo(Quantity.ZERO);
     }
+
+    @Test
+    @DisplayName("damage at packing: the consumed hold names the order's share; the row itself does not change")
+    void consumedShare() {
+        StockItem item = available(5);
+        UUID order = UUID.randomUUID();
+        UUID skuReservation = UUID.randomUUID();
+        Reservation held = allocation(item, order, skuReservation, 3);
+
+        assertThat(refusal(() -> item.consumedShare(held.id(), Quantity.of(1))))
+                .as("not picked yet").isEqualTo(ErrorCode.RESERVATION_NOT_ACTIVE);
+        item.consumeReservation(held.id(), NOW);
+        StockItem.HeldShare share = item.consumedShare(held.id(), Quantity.of(2));
+
+        assertThat(share.orderId()).isEqualTo(order);
+        assertThat(share.allocatedFrom()).isEqualTo(skuReservation);
+        assertThat(share.quantity()).isEqualTo(Quantity.of(2));
+        assertThat(item.onHand()).isEqualTo(Quantity.of(2));
+        assertThat(refusal(() -> item.consumedShare(held.id(), Quantity.of(4)))).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(refusal(() -> item.consumedShare(held.id(), Quantity.ZERO))).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(refusal(() -> item.consumedShare(ReservationId.newId(), Quantity.of(1))))
+                .isEqualTo(ErrorCode.RESERVATION_NOT_FOUND);
+    }
 }

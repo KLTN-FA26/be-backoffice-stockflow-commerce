@@ -69,6 +69,9 @@ public class PickLineJpaEntity extends BaseEntity {
     /** SCRUM-277: the damage report that superseded or made the line. */
     @Column(name = "damage_report_id")
     private UUID damageReportId;
+    /** R8: units of a picked line found damaged at the packing bench. */
+    @Column(name = "packing_damaged_qty", nullable = false)
+    private int packingDamagedQty;
 
     protected PickLineJpaEntity() {
     }
@@ -115,6 +118,14 @@ public class PickLineJpaEntity extends BaseEntity {
         this.damageReportId = damageReportId;
     }
 
+    /** Units of the picked line found damaged at packing (R8); {@code ck_pick_line_packing_damaged} bounds it. */
+    public void recordDamageAfterPick(int packingDamagedQty) {
+        this.packingDamagedQty = packingDamagedQty;
+    }
+
+    public int getPackingDamagedQty() { return packingDamagedQty; }
+    /** What the line picked less what was found damaged at packing: what reached packing and is still there. */
+    public int getGoodQty() { return pickedQty - packingDamagedQty; }
     public int getDamagedQty() { return damagedQty; }
     public UUID getDamageReportId() { return damageReportId; }
 

@@ -1072,6 +1072,37 @@ public final class StockItem extends AggregateRoot {
     }
 
     /**
+     * Units hold {@code holdId} took off this row when they were picked were found damaged at the packing bench: the
+     * share of the order's promise they stood for, for the caller to allocate again or keep on the damaged units.
+     * This row does not change - the units left it at the pick; they come back into stock DAMAGED, in quarantine
+     * ({@link #takeUpDamaged}). How many of them earlier reports took already is the caller's to check: it knows the
+     * reports.
+     *
+     * @throws BusinessException {@code RESERVATION_NOT_FOUND}; {@code RESERVATION_NOT_ACTIVE} unless the hold was
+     *         consumed (picked); {@code PRODUCTION_HOLD_NOT_PICKABLE} for a hold that is not an order's;
+     *         {@code VALIDATION_FAILED} for none, or more units than the hold took
+     */
+    public HeldShare consumedShare(ReservationId holdId, Quantity quantity) {
+        requireSomeUnits(quantity);
+        Reservation hold = findReservation(holdId).orElseThrow(() -> new BusinessException(
+                ErrorCode.RESERVATION_NOT_FOUND, "Reservation %s is not on stock item %s".formatted(holdId, id)));
+        if (hold.status() != ReservationStatus.CONSUMED) {
+            throw new BusinessException(ErrorCode.RESERVATION_NOT_ACTIVE, ("Reservation %s is %s; damage found after "
+                    + "the pick is reported on units a pick took").formatted(holdId, hold.status()));
+        }
+        if (hold.orderId() == null) {
+            throw new BusinessException(ErrorCode.PRODUCTION_HOLD_NOT_PICKABLE,
+                    "Reservation %s is not an order's; only an order's units are picked".formatted(holdId));
+        }
+        if (hold.quantity().isLessThan(quantity)) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "Reservation %s took %s unit(s); %s found damaged".formatted(holdId, hold.quantity(), quantity));
+        }
+        UUID origin = hold.allocatedFrom() != null ? hold.allocatedFrom() : hold.id().value();
+        return new HeldShare(hold.orderId(), origin, quantity);
+    }
+
+    /**
      * The DAMAGED side of {@link #giveUpDamaged}: units of {@code from} found damaged arrive on this row, in
      * quarantine. With {@code impaired}, the order they were promised to keeps them promised here - an impaired
      * allocation, never pickable ({@link #consumeReservation} refuses DAMAGED stock) - because no other stock could
@@ -1129,6 +1160,14 @@ public final class StockItem extends AggregateRoot {
 
     /** Damaged units leave this DAMAGED row because a manager restored them (back onto a bin, AVAILABLE). */
     public void giveUpRestored(Quantity quantity) {
+        requireUnheldDamaged(quantity);
+        requireSomeUnits(quantity);
+        this.onHand = onHand.minus(quantity);
+        checkInvariants();
+    }
+
+    /** Damaged units leave this DAMAGED row for their supplier, handed over under a return-to-supplier decision. */
+    public void giveUpToSupplier(Quantity quantity) {
         requireUnheldDamaged(quantity);
         requireSomeUnits(quantity);
         this.onHand = onHand.minus(quantity);

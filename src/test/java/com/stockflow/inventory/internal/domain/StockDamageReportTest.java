@@ -147,6 +147,53 @@ class StockDamageReportTest {
     }
 
     @Test
+    @DisplayName("a return to the supplier goes in parts or is refused, never more than decided; refused units wait again")
+    void supplierShipment() {
+        StockDamageReport report = report(4, DamageReason.BROKEN, null, List.of(photo()));
+        StockDamageReport.Disposition back = report.returnToSupplier(UUID.randomUUID(), Quantity.of(3),
+                "supplier credit note agreed", MANAGER, null, null, NOW);
+        StockDamageReport.Disposition written = report.writeOff(UUID.randomUUID(), Quantity.of(1), null, MANAGER,
+                "WO-1", UUID.randomUUID(), NOW);
+        assertThat(report.pending()).isEqualTo(Quantity.ZERO);
+        assertThat(report.awaitingSupplier()).isEqualTo(Quantity.of(3));
+
+        assertThat(refusal(() -> report.shipToSupplier(UUID.randomUUID(), back.id(), Quantity.of(1), " ", null,
+                MANAGER, NOW))).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(refusal(() -> report.requireShippable(written.id())))
+                .isEqualTo(ErrorCode.DAMAGE_RETURN_NOT_SHIPPABLE);
+        assertThat(refusal(() -> report.requireShippable(UUID.randomUUID()))).isEqualTo(ErrorCode.NOT_FOUND);
+        assertThat(refusal(() -> report.shipToSupplier(UUID.randomUUID(), back.id(), Quantity.of(4), "PXT-01", null,
+                MANAGER, NOW))).as("more than decided").isEqualTo(ErrorCode.DAMAGE_RETURN_NOT_SHIPPABLE);
+
+        UUID request = UUID.randomUUID();
+        StockDamageReport.SupplierShipment shipped = report.shipToSupplier(request, back.id(), Quantity.of(2),
+                " PXT-01 ", null, MANAGER, NOW);
+        assertThat(shipped.deliveryNote()).isEqualTo("PXT-01");
+        assertThat(report.shipmentFor(request)).contains(shipped);
+        assertThat(report.remainingToHandOver(back.id())).isEqualTo(Quantity.of(1));
+
+        assertThat(refusal(() -> report.refuseReturn(UUID.randomUUID(), back.id(), Quantity.of(1), " ", MANAGER, NOW)))
+                .as("the supplier's answer is recorded").isEqualTo(ErrorCode.VALIDATION_FAILED);
+        report.refuseReturn(UUID.randomUUID(), back.id(), Quantity.of(1), "Nhà cung cấp không nhận lại 1 ly", MANAGER,
+                NOW);
+        assertThat(report.awaitingSupplier()).isEqualTo(Quantity.ZERO);
+        assertThat(report.pending()).as("the refused unit waits for a decision again").isEqualTo(Quantity.of(1));
+        assertThat(report.isOpen()).isTrue();
+        assertThat(refusal(() -> report.requireShippable(back.id()))).as("nothing left of the decision")
+                .isEqualTo(ErrorCode.DAMAGE_RETURN_NOT_SHIPPABLE);
+        report.writeOff(UUID.randomUUID(), Quantity.of(1), null, MANAGER, "WO-2", UUID.randomUUID(), NOW);
+        assertThat(report.isOpen()).isFalse();
+
+        assertThatThrownBy(() -> new StockDamageReport(report.id(), report.number(), report.requestId(),
+                report.origin(), report.goods(), report.damagedStockItem(), report.damageLocation(), report.quantity(),
+                report.reason(), report.note(), report.photos(), report.pick(), report.reportedBy(),
+                report.reportedAt(), report.dispositions(), List.of(new StockDamageReport.SupplierShipment(
+                        UUID.randomUUID(), UUID.randomUUID(), written.id(), Quantity.of(1), "PXT-02", null, MANAGER,
+                        NOW)), 0L)).as("a write-off is never shipped, not even from a corrupt row")
+                .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
     @DisplayName("the same decision request is found again, not decided twice")
     void decisionsAreFoundByRequest() {
         StockDamageReport report = report(2, DamageReason.BROKEN, null, List.of(photo()));

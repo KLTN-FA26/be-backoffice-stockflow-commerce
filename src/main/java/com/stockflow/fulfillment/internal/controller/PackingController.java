@@ -9,14 +9,18 @@ import com.stockflow.common.security.Action;
 import com.stockflow.common.security.AuthenticatedUser;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.RequiresPermission;
+import com.stockflow.common.storage.FileUpload;
+import com.stockflow.common.storage.StorageException;
 import com.stockflow.fulfillment.internal.controller.dto.OpenKitRequest;
 import com.stockflow.fulfillment.internal.controller.dto.OpenPackageRequest;
+import com.stockflow.fulfillment.internal.controller.dto.PackDamageRequest;
 import com.stockflow.fulfillment.internal.controller.dto.PackScanRequest;
 import com.stockflow.fulfillment.internal.controller.dto.PackageKitResponse;
 import com.stockflow.fulfillment.internal.controller.dto.PackageLabelResponse;
 import com.stockflow.fulfillment.internal.controller.dto.PackageResponse;
 import com.stockflow.fulfillment.internal.controller.dto.PackingQueueRowResponse;
 import com.stockflow.fulfillment.internal.controller.dto.PackingSessionResponse;
+import com.stockflow.fulfillment.internal.controller.dto.PickDamageResponse;
 import com.stockflow.fulfillment.internal.controller.dto.SealPackageRequest;
 import com.stockflow.fulfillment.internal.domain.PackingSession;
 import com.stockflow.fulfillment.internal.service.Packing;
@@ -35,9 +39,15 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -55,10 +65,12 @@ class PackingController {
 
     private final Packing packing;
     private final PackingWebMapper mapper;
+    private final FulfillmentWebMapper pickMapper;
 
-    PackingController(Packing packing, PackingWebMapper mapper) {
+    PackingController(Packing packing, PackingWebMapper mapper, FulfillmentWebMapper pickMapper) {
         this.packing = packing;
         this.mapper = mapper;
+        this.pickMapper = pickMapper;
     }
 
     /** Picked orders waiting at the packing table, oldest pick first (SCRUM-281). */
@@ -184,6 +196,47 @@ class PackingController {
     public ApiResponse<PackingSessionResponse> voidPackage(@PathVariable UUID taskId, @PathVariable UUID packageId,
                                                            @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(mapper.toResponse(packing.voidPackage(taskId, packageId, actor)));
+    }
+
+    /**
+     * Units a pick line brought to the bench found damaged at packing (R8) - a packing step, so the packing permission.
+     * {@code multipart/form-data}: a JSON part {@code report} and one to five image parts {@code photos}
+     * (BR-STK-003). Take the units out of their parcel first. They go back into stock as DAMAGED in quarantine; the
+     * task goes back to picking for what replaces them - new lines elsewhere, or a SHORT line, the order ON_HOLD
+     * ({@code INVENTORY}) for the coordinator, when nothing could - and packing resumes once it is picked again. The
+     * same report again answers 200 with what it made; retries carry the same {@code requestId}.
+     */
+    @PostMapping(value = "/tasks/{taskId}/pick-lines/{lineId}/damage-after-pick",
+            consumes = org.springframework.http.MediaType.MULTIPART_FORM_DATA_VALUE)
+    @RequiresPermission(resource = FulfillmentResources.PACKING, action = Action.UPDATE)
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "fulfillment-task", resourceId = "#taskId")
+    public ApiResponse<PickDamageResponse> reportDamageAfterPick(@PathVariable UUID taskId, @PathVariable UUID lineId,
+            @Valid @RequestPart("report") PackDamageRequest report,
+            @RequestPart(name = "photos", required = false) List<MultipartFile> photos,
+            @AuthenticatedUser CurrentUser actor) {
+        List<InputStream> opened = new ArrayList<>();
+        try {
+            List<FileUpload> uploads = new ArrayList<>();
+            for (MultipartFile photo : photos == null ? List.<MultipartFile>of() : photos) {
+                InputStream content = photo.getInputStream();
+                opened.add(content);
+                uploads.add(new FileUpload(photo.getOriginalFilename(), photo.getContentType(), photo.getSize(),
+                        content));
+            }
+            return ApiResponse.ok(pickMapper.toResponse(packing.reportDamageAfterPick(taskId, lineId,
+                    new Packing.PackDamage(report.requestId(), report.damagedQuantity(), report.reason(),
+                            report.note(), report.damageLocationCode()), uploads, actor)));
+        } catch (IOException failure) {
+            throw new StorageException("Could not read the multipart upload", failure);
+        } finally {
+            for (InputStream stream : opened) {
+                try {
+                    stream.close();
+                } catch (IOException ignored) {
+                    // A temporary upload that does not close cleanly changes nothing about the report.
+                }
+            }
+        }
     }
 
     /** What the internal label prints (08 step 6); the front end renders it. A package not sealed is 409. */

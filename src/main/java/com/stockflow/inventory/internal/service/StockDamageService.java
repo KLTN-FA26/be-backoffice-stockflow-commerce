@@ -293,6 +293,119 @@ class StockDamageService implements StockDamages, PickDamageReporting {
     }
 
     /**
+     * {@inheritDoc}
+     *
+     * <p>Locks as at picking, less the source row: the units left it when they were picked and it does not change.
+     * The hold they were picked on is read under the SKU lock, and the units already reported damaged from it are
+     * counted there too - two packers reporting the same tote are taken one after the other (fulfillment holds the
+     * pick before this, and the database re-checks the sum).</p>
+     */
+    @Override
+    @Transactional(propagation = Propagation.MANDATORY)
+    @Auditable(action = AuditAction.CREATE, resourceType = "stock-damage-report",
+            resourceId = "#result?.damageReportId()")
+    public ReportPickDamageResult reportAfterPick(ReportPickDamageCommand command) {
+        Optional<StockDamageReport> done = reports.findByRequestId(command.requestId());
+        if (done.isPresent()) {
+            WarehouseScope.requireWarehouse(done.get().goods().warehouseId());
+            return pickResult(done.get(), true);
+        }
+        DamageReason reason = DamageReason.valueOf(command.reason().name());
+        StockDamageReport.requireExplained(reason, command.note());
+        if (command.photos().isEmpty()) {
+            throw new BusinessException(ErrorCode.DAMAGE_PHOTO_REQUIRED,
+                    "Damaged stock is reported with at least one photo (BR-STK-003)");
+        }
+        ReservationId holdId = ReservationId.of(command.reservationId());
+        StockItem first = holder(holdId);
+        WarehouseScope.requireLocation(first.location().code());
+        policies.lock(first.sku().code());
+        StockItem source = holder(holdId);
+        Reservation hold = source.findReservation(holdId).orElseThrow();
+        if (!command.orderId().equals(hold.orderId())) {
+            throw new BusinessException(ErrorCode.RESERVATION_NOT_FOUND,
+                    "Allocation %s is not order %s's".formatted(command.reservationId(), command.orderId()));
+        }
+        Quantity quantity = Quantity.of(command.quantity());
+        StockItem.HeldShare share = source.consumedShare(holdId, quantity);
+        int before = reports.damagedAfterPick(holdId.value());
+        if (before + quantity.value() > hold.quantity().value()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("The pick took %s unit(s) on allocation %s, %d of "
+                    + "them reported damaged already; %s more cannot be").formatted(hold.quantity(), holdId.value(),
+                    before, quantity));
+        }
+        Instant now = clock.instant();
+        UUID warehouseId = warehouseOf(source.location());
+        Destination destination = destination(source, warehouseId, command.damageLocationCode());
+        List<StockAllocator.AllocationLine> replacement = planReplacement(source, quantity, now);
+
+        TreeMap<String, StockItem> locked = lockRows(destination.existing(),
+                replacement.stream().map(StockAllocator.AllocationLine::stockItemId).toList());
+        StockItem damaged = destination.existing() == null
+                ? StockItem.emptyLayerOf(source, destination.location(), StockStatus.DAMAGED)
+                : locked.get(destination.existing().value().toString());
+        List<ReportPickDamageResult.Allocation> replacements = new ArrayList<>();
+        Reservation impaired = null;
+        if (replacement.isEmpty()) {
+            impaired = damaged.takeUpDamaged(source, quantity, share, derived("damage-impaired", command.requestId(),
+                    damaged.id()), now);
+        } else {
+            damaged.takeUpDamaged(source, quantity, null, null, now);
+            for (StockAllocator.AllocationLine line : replacement) {
+                StockItem row = locked.get(line.stockItemId().value().toString());
+                Reservation allocation = row.allocate(share.orderId(), share.allocatedFrom(), command.requestId(),
+                        derived("damage-replacement", command.requestId(), row.id()), line.quantity(), now);
+                replacements.add(new ReportPickDamageResult.Allocation(allocation.id().value(), row.location().code(),
+                        row.lotNumber(), allocation.quantity().value()));
+            }
+        }
+        if (destination.existing() == null) {
+            stockItems.save(damaged);
+        } else {
+            stockItems.saveMerged(damaged);
+        }
+        for (StockItem row : locked.values()) {
+            if (!row.id().equals(damaged.id())) {
+                stockItems.save(row);
+            }
+            events.publishEventsOf(row);
+        }
+
+        StockDamageReport report = StockDamageReport.reportAfterPick(
+                reports.nextReportNumber(BusinessCalendar.date(now)), command.requestId(),
+                StockDamageReport.DamagedGoods.of(source, warehouseId), damaged.id(), damaged.location(), quantity,
+                reason, command.note(), photos(command.photos()), new StockDamageReport.PickContext(command.orderId(),
+                        command.pickLineId(), holdId.value(), impaired == null ? null : impaired.id().value()),
+                command.actorId(), now, shortfall(source.sku(), now));
+        reports.save(report);
+        events.publishEventsOf(report);
+        // Deducted when picked, so back into stock from nowhere - as a cancelled order's put-back - but DAMAGED.
+        ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.PUT_BACK, source.sku(),
+                source.lotNumber(), null, damaged.location(), quantity.value(), StockStatus.DAMAGED,
+                StockMovement.ReferenceType.DAMAGE_REPORT, report.id(),
+                clip(reason.name() + (report.note() == null ? "" : ": " + report.note())), command.actorId(), now)
+                .ofLot(source.lotId()).forOrder(command.orderId()));
+
+        log.info("Damage report {} at packing: {} x {} picked on allocation {} (order {}) back into {} as DAMAGED; {}",
+                report.number(), quantity, source.sku(), holdId, command.orderId(), damaged.location(),
+                impaired == null ? "replaced by %d allocation(s)".formatted(replacements.size())
+                        : "no other stock, the share stays impaired as " + impaired.id());
+        return new ReportPickDamageResult(report.id(), report.number(), damaged.location().code(), quantity.value(),
+                holdId.value(), 0, impaired == null ? null : impaired.id().value(), replacements,
+                holdsAfter(holdId, 0, impaired, replacements), false, command.pickLineId());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<ReportPickDamageResult> reportedFor(UUID requestId) {
+        return reports.findByRequestId(requestId).filter(report -> report.pick() != null)
+                .map(report -> {
+                    WarehouseScope.requireWarehouse(report.goods().warehouseId());
+                    return pickResult(report, true);
+                });
+    }
+
+    /**
      * The order's replacement for damaged units, FEFO over pickable stock of the warehouse, read before any lock (the
      * SKU lock keeps it valid: every path that changes availability takes it first). Empty when the warehouse cannot
      * cover all of them: the order then keeps an impaired share, never half a replacement.
@@ -351,7 +464,7 @@ class StockDamageService implements StockDamages, PickDamageReporting {
         }
         return new ReportPickDamageResult(report.id(), report.number(), report.damageLocation().code(),
                 report.quantity().value(), holdId.value(), retained, pick.impairedReservationId(), replacements,
-                after, already);
+                after, already, pick.pickLineId());
     }
 
     private static List<UUID> holdsAfter(ReservationId hold, int retained, Reservation impaired,
@@ -408,6 +521,7 @@ class StockDamageService implements StockDamages, PickDamageReporting {
      */
     private void writeOff(StockDamageReport report, DisposeDamageCommand command, Quantity units, Instant now) {
         StockItem damaged = lockedDamagedRow(report);
+        requireUnheldByOrder(report, heldForOrder(report, damaged), units);
         damaged.requireUnheldDamaged(units);
         LocalDate day = BusinessCalendar.date(now);
         String record = reports.nextWriteOffNumber(day);
@@ -432,12 +546,14 @@ class StockDamageService implements StockDamages, PickDamageReporting {
 
     /**
      * Going back to the supplier: only the decision is recorded. The units stay DAMAGED where they are, out of sale,
-     * until procurement's return flow ships them - it listens to {@code StockDamageDisposed}; inventory cannot call
-     * procurement (procurement depends on inventory).
+     * until they are handed over ({@link #shipToSupplier}); procurement raises the debit note from
+     * {@code StockDamageDisposed} - inventory cannot call procurement (procurement depends on inventory).
      */
     private void returnToSupplier(StockDamageReport report, DisposeDamageCommand command, Quantity units,
                                   Instant now) {
-        lockedDamagedRow(report).requireUnheldDamaged(units);
+        StockItem damaged = lockedDamagedRow(report);
+        requireUnheldByOrder(report, heldForOrder(report, damaged), units);
+        damaged.requireUnheldDamaged(units);
         Optional<StockLots.LotSupplier> supplier = lots.supplierOf(report.goods().lotId());
         report.returnToSupplier(command.requestId(), units, command.note(), command.decidedBy(),
                 supplier.map(StockLots.LotSupplier::supplierId).orElse(null),
@@ -478,24 +594,140 @@ class StockDamageService implements StockDamages, PickDamageReporting {
         TreeMap<String, StockItem> locked = lock(damagedView.id(), layerThere.map(StockItem::id).orElse(null),
                 List.of());
         StockItem damaged = locked.get(damagedView.id().value().toString());
-        damaged.giveUpRestored(units);
+        // Units an order's impaired allocation holds were found fine after all: restoring everything left gives them
+        // back to the order - the allocation goes onto the bin with them, pickable, and the coordinator's
+        // reallocation of the short line keeps it there. Anything less takes free units only.
+        int held = heldForOrder(report, damaged);
+        boolean withOrder = held > 0 && units.equals(report.pending());
+        if (!withOrder) {
+            requireUnheldByOrder(report, held, units);
+        }
+        int free = units.value() - (withOrder ? held : 0);
+        if (free > 0) {
+            damaged.giveUpRestored(Quantity.of(free));
+        }
         StockItem restored;
-        stockItems.saveNow(damaged);
-        if (layerThere.isPresent()) {
-            restored = locked.get(layerThere.get().id().value().toString());
-            restored.moveIn(units);
-            stockItems.saveMerged(restored);
+        if (withOrder) {
+            ReservationId share = ReservationId.of(report.pick().impairedReservationId());
+            Reservation allocation = damaged.handOverReservation(share);
+            restored = layerThere.isPresent() ? locked.get(layerThere.get().id().value().toString())
+                    : StockItem.emptyLayerOf(damaged, to, StockStatus.AVAILABLE);
+            if (free > 0) {
+                restored.moveIn(Quantity.of(free));
+            }
+            restored.takeOverReservation(damaged, allocation);
+            stockItems.saveHandOver(damaged, restored, share);
         } else {
-            restored = StockItem.arrivedAs(damaged, to, units, StockStatus.AVAILABLE);
-            stockItems.save(restored);
+            stockItems.saveNow(damaged);
+            if (layerThere.isPresent()) {
+                restored = locked.get(layerThere.get().id().value().toString());
+                restored.moveIn(units);
+                stockItems.saveMerged(restored);
+            } else {
+                restored = StockItem.arrivedAs(damaged, to, units, StockStatus.AVAILABLE);
+                stockItems.save(restored);
+            }
         }
         report.restore(command.requestId(), units, command.note(), command.decidedBy(), to, restored.id(), now);
         ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.MOVE, damaged.sku(),
                 damaged.lotNumber(), damaged.location(), to, units.value(), StockStatus.DAMAGED, StockStatus.AVAILABLE,
                 StockMovement.ReferenceType.DAMAGE_REPORT, report.id(), clip("RESTORE: " + command.note().trim()),
                 command.decidedBy(), now).ofLot(damaged.lotId()));
-        log.info("Damage report {}: {} x {} restored from {} to {}", report.number(), units, damaged.sku(),
-                damaged.location(), to);
+        log.info("Damage report {}: {} x {} restored from {} to {}{}", report.number(), units, damaged.sku(),
+                damaged.location(), to, withOrder ? ", %d of them still the order's".formatted(held) : "");
+    }
+
+    @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "stock-damage-report", resourceId = "#reportId")
+    public DamageReportView shipToSupplier(UUID reportId, UUID dispositionId, ShipToSupplierCommand command) {
+        // The report's row first, as a decision takes it: one hand-over of a report at a time.
+        StockDamageReport report = reports.findByIdForUpdate(reportId).orElseThrow(() -> notFound(reportId));
+        WarehouseScope.requireWarehouse(report.goods().warehouseId());
+        if (replayed(report, command.requestId(), dispositionId, false)) {
+            return view(report);
+        }
+        Quantity units = command.quantity() == null ? null : Quantity.of(command.quantity());
+        StockDamageReport.Disposition decision = units == null ? report.requireShippable(dispositionId)
+                : report.requireShippable(dispositionId, units);
+        Quantity handed = units == null ? report.remainingToHandOver(dispositionId) : units;
+        policies.lock(report.goods().sku().code());
+        Instant now = clock.instant();
+        StockItem damaged = lockedDamagedRow(report);
+        damaged.giveUpToSupplier(handed);
+        stockItems.save(damaged);
+        StockDamageReport.SupplierShipment shipment = report.shipToSupplier(command.requestId(), dispositionId, handed,
+                command.deliveryNote(), command.note(), command.shippedBy(), now);
+        StockDamageReport saved = reports.save(report);
+        ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.SUPPLIER_RETURN, damaged.sku(),
+                damaged.lotNumber(), damaged.location(), null, handed.value(), StockStatus.DAMAGED,
+                StockMovement.ReferenceType.DAMAGE_REPORT, report.id(),
+                clip("RETURN_TO_SUPPLIER %s: delivery note %s".formatted(
+                        decision.supplierName() == null ? "(supplier not on the lot)" : decision.supplierName(),
+                        shipment.deliveryNote())), command.shippedBy(), now).ofLot(damaged.lotId()));
+        log.info("Damage report {}: {} x {} handed back to the supplier from {} (delivery note {})", report.number(),
+                handed, damaged.sku(), damaged.location(), shipment.deliveryNote());
+        return view(saved);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Nothing moves: the units never left quarantine. They count as undecided again, so the next decision -
+     * written off, restored, sent back once more - is the manager's, as for any undecided units.</p>
+     */
+    @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "stock-damage-report", resourceId = "#reportId")
+    public DamageReportView refuseReturn(UUID reportId, UUID dispositionId, RefuseReturnCommand command) {
+        StockDamageReport report = reports.findByIdForUpdate(reportId).orElseThrow(() -> notFound(reportId));
+        WarehouseScope.requireWarehouse(report.goods().warehouseId());
+        if (replayed(report, command.requestId(), dispositionId, true)) {
+            return view(report);
+        }
+        report.refuseReturn(command.requestId(), dispositionId, Quantity.of(command.quantity()), command.note(),
+                command.recordedBy(), clock.instant());
+        log.info("Damage report {}: the supplier refused {} unit(s) of decision {}; they wait for a decision again",
+                report.number(), command.quantity(), dispositionId);
+        return view(reports.save(report));
+    }
+
+    /**
+     * The same request again: answered with the report as it stands. A request id already used for another decision,
+     * or the other outcome, is refused rather than answered as if it were this one.
+     */
+    private static boolean replayed(StockDamageReport report, UUID requestId, UUID dispositionId, boolean refusal) {
+        Optional<StockDamageReport.SupplierShipment> done = report.shipmentFor(requestId);
+        if (done.isEmpty()) {
+            return false;
+        }
+        if (!done.get().dispositionId().equals(dispositionId) || done.get().refused() != refusal) {
+            throw new BusinessException(ErrorCode.CONFLICT, ("Request %s already recorded a %s of decision %s on "
+                    + "damage report %s").formatted(requestId, done.get().refused() ? "refusal" : "hand-over",
+                    done.get().dispositionId(), report.number()));
+        }
+        return true;
+    }
+
+    /**
+     * The units of a report an order's impaired allocation still holds on its damaged row (SCRUM-277, R8): they are
+     * the order's until the coordinator reallocates its short line, so no decision may take them - only a restore of
+     * everything left, which gives them back to the order ({@link #restore}). Read on the locked row. Several reports'
+     * units share one DAMAGED row of a layer; this is the guard per report the row's own unheld check cannot be.
+     */
+    private int heldForOrder(StockDamageReport report, StockItem damagedRow) {
+        if (report.pick() == null || report.pick().impairedReservationId() == null) {
+            return 0;
+        }
+        return damagedRow.findReservation(ReservationId.of(report.pick().impairedReservationId()))
+                .filter(r -> r.status().isActive()).map(r -> r.quantity().value()).orElse(0);
+    }
+
+    private static void requireUnheldByOrder(StockDamageReport report, int held, Quantity units) {
+        if (held > 0 && units.value() > report.pending().value() - held) {
+            throw new BusinessException(ErrorCode.DAMAGED_STOCK_HELD, ("%d of the %s unit(s) of damage report %s still "
+                    + "waiting are allocated to order %s: reallocate its short pick line first, or restore all of them "
+                    + "to give them back to it").formatted(held, report.pending(), report.number(),
+                    report.pick().orderId()));
+        }
     }
 
     private StockItem lockedDamagedRow(StockDamageReport report) {
@@ -513,19 +745,37 @@ class StockDamageService implements StockDamages, PickDamageReporting {
 
     @Override
     @Transactional(readOnly = true)
-    public PageResponse<DamageReportRow> list(UUID warehouseId, Boolean open, String sku, String origin, int page,
+    public PageResponse<DamageReportRow> list(UUID warehouseId, String status, String sku, String origin, int page,
                                               int size, String sort) {
         if (warehouseId != null) {
             WarehouseScope.requireWarehouse(warehouseId);
         }
         StockDamageReport.Origin from = origin == null || origin.isBlank() ? null : parseOrigin(origin);
-        return Pages.toResponse(search.search(new StockDamageReportSearch.Criteria(warehouseId, open, sku, from),
+        StockDamageReportSearch.Criteria criteria = switch (status == null || status.isBlank() ? ""
+                : status.trim().toUpperCase(Locale.ROOT)) {
+            case "" -> new StockDamageReportSearch.Criteria(warehouseId, null, sku, from, null);
+            case "OPEN" -> new StockDamageReportSearch.Criteria(warehouseId, true, sku, from, null);
+            case "AWAITING_SUPPLIER" -> new StockDamageReportSearch.Criteria(warehouseId, false, sku, from, true);
+            case "CLOSED" -> new StockDamageReportSearch.Criteria(warehouseId, false, sku, from, false);
+            default -> throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "status is OPEN, AWAITING_SUPPLIER or CLOSED");
+        };
+        return Pages.toResponse(search.search(criteria,
                         Pages.of(page, size, SORT.parse(sort)))
                 .map(row -> new DamageReportRow(row.id(), row.number(), row.origin().name(),
-                        row.decidedQuantity() < row.quantity() ? "OPEN" : "CLOSED", row.warehouseId(), row.sku(),
-                        row.lotNumber(), row.sourceLocationCode(), row.damageLocationCode(), row.quantity(),
-                        row.decidedQuantity(), row.quantity() - row.decidedQuantity(), row.reason().name(),
-                        row.orderId(), row.reportedBy(), row.reportedAt())));
+                        status(row.quantity() - row.decidedQuantity(), row.awaitingSupplierQuantity()),
+                        row.warehouseId(), row.sku(), row.lotNumber(), row.sourceLocationCode(),
+                        row.damageLocationCode(), row.quantity(), row.decidedQuantity(),
+                        row.quantity() - row.decidedQuantity(), row.reason().name(), row.orderId(), row.reportedBy(),
+                        row.reportedAt(), row.awaitingSupplierQuantity())));
+    }
+
+    /**
+     * OPEN while units wait for a decision; AWAITING_SUPPLIER once all are decided but some decided for the supplier
+     * are still in quarantine; CLOSED when nothing is left to do.
+     */
+    private static String status(int pending, int awaitingSupplier) {
+        return pending > 0 ? "OPEN" : awaitingSupplier > 0 ? "AWAITING_SUPPLIER" : "CLOSED";
     }
 
     @Override
@@ -616,8 +866,14 @@ class StockDamageService implements StockDamages, PickDamageReporting {
     /** Each row once, in id order: the order every stock writer locks in, so two of them never deadlock. */
     private TreeMap<String, StockItem> lock(StockItemId source, StockItemId destination,
                                             Collection<StockItemId> others) {
+        List<StockItemId> all = new ArrayList<>(others);
+        all.add(source);
+        return lockRows(destination, all);
+    }
+
+    /** {@link #lock} without a source row: units found damaged after the pick come from no row. */
+    private TreeMap<String, StockItem> lockRows(StockItemId destination, Collection<StockItemId> others) {
         TreeMap<String, StockItemId> ids = new TreeMap<>();
-        ids.put(source.value().toString(), source);
         if (destination != null) {
             ids.put(destination.value().toString(), destination);
         }
@@ -690,7 +946,7 @@ class StockDamageService implements StockDamages, PickDamageReporting {
         try {
             return StockDamageReport.Origin.valueOf(origin.trim().toUpperCase(Locale.ROOT));
         } catch (IllegalArgumentException unknown) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "origin is STOCK_CHECK or PICKING");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "origin is STOCK_CHECK, PICKING or PACKING");
         }
     }
 
@@ -710,7 +966,7 @@ class StockDamageService implements StockDamages, PickDamageReporting {
         StockDamageReport.DamagedGoods goods = report.goods();
         StockDamageReport.PickContext pick = report.pick();
         return new DamageReportView(report.id(), report.number(), report.origin().name(),
-                report.isOpen() ? "OPEN" : "CLOSED", goods.warehouseId(), goods.sku().code(), goods.lotNumber(),
+                status(report.pending().value(), report.awaitingSupplier().value()), goods.warehouseId(), goods.sku().code(), goods.lotNumber(),
                 goods.serialNumber(), goods.receivedAt(), goods.sourceStockItem().value(),
                 goods.sourceLocation().code(),
                 goods.sourceStockPackage() == null ? null : goods.sourceStockPackage().value(),
@@ -725,7 +981,15 @@ class StockDamageService implements StockDamages, PickDamageReporting {
                         .map(d -> new DispositionView(d.id(), d.type().name(), d.quantity().value(), d.note(),
                                 d.recordNumber(), d.adjustmentId(),
                                 d.restoreLocation() == null ? null : d.restoreLocation().code(), d.supplierId(),
-                                d.supplierName(), d.decidedBy(), d.decidedAt()))
-                        .toList());
+                                d.supplierName(), d.decidedBy(), d.decidedAt(),
+                                report.shipmentsOf(d.id()).stream().filter(s -> !s.refused())
+                                        .mapToInt(s -> s.quantity().value()).sum(),
+                                report.shipmentsOf(d.id()).stream().filter(StockDamageReport.SupplierShipment::refused)
+                                        .mapToInt(s -> s.quantity().value()).sum()))
+                        .toList(),
+                report.awaitingSupplier().value(),
+                report.shipments().stream().map(s -> new SupplierHandOverView(s.id(), s.dispositionId(),
+                        s.refused() ? "REFUSED" : "SHIPPED", s.quantity().value(), s.deliveryNote(), s.note(),
+                        s.shippedBy(), s.shippedAt())).toList());
     }
 }

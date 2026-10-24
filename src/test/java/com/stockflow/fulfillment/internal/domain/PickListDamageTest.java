@@ -161,4 +161,106 @@ class PickListDamageTest {
                 "HCM-A01-1-A", null, 1, 2, 0, PickLineStatus.CANCELLED, null, null, null, null, null, 0, null, null,
                 null, 0, 3, REPORT)).isInstanceOf(IllegalArgumentException.class);
     }
+
+    // ---- damage found at packing (R8) ---------------------------------------------------------------------------
+
+    private static PickLine picked(int quantity) {
+        return new PickLine(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), "CUP", "HCM-A01-1-A", "L1", 1,
+                quantity, quantity, PickLineStatus.PICKED, UUID.randomUUID(), java.time.Instant.now(),
+                java.time.Instant.now(), "HCM-A01-1-A", "CUP", 0, null, null, null);
+    }
+
+    @Test
+    @DisplayName("damage at packing: a picked task, a picked line, 1 to what it still has; never twice the same units")
+    void afterPickRefusals() {
+        PickLine line = picked(3);
+        PickList packing = list(PickStatus.PICKED, line);
+
+        assertThat(refusal(() -> list(PickStatus.CANCELLED, line).requireDamageableAfterPick(line.id(), 1)))
+                .as("a cancelled order's goods are put back, then reported on the shelf")
+                .isEqualTo(ErrorCode.PICK_TASK_STATE_CONFLICT);
+        list(PickStatus.PICKING, line).requireDamageableAfterPick(line.id(), 1);   // in the tote, still picking
+        assertThat(refusal(() -> packing.requireDamageableAfterPick(line.id(), 0)))
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(refusal(() -> packing.requireDamageableAfterPick(line.id(), 4)))
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        PickLine notPicked = open("HCM-A01-1-A", 2);
+        assertThat(refusal(() -> list(PickStatus.PICKED, notPicked).requireDamageableAfterPick(notPicked.id(), 1)))
+                .isEqualTo(ErrorCode.PICK_LINE_NOT_OPEN);
+
+        packing.replaceDamagedAfterPick(line.id(), 2, REPORT, List.of(new PickList.Hold(UUID.randomUUID(), "CUP",
+                "HCM-A02-1-A", HCM, "L2", 2, true)), null, UUID::randomUUID);
+        assertThat(line.packingDamagedQty()).isEqualTo(2);
+        assertThat(line.goodQty()).isEqualTo(1);
+        assertThat(refusal(() -> packing.requireDamageableAfterPick(line.id(), 2)))
+                .as("two of the three are in quarantine already").isEqualTo(ErrorCode.VALIDATION_FAILED);
+    }
+
+    @Test
+    @DisplayName("damage at packing replaced: the picked line keeps them on record, new OPEN lines after the last stop")
+    void afterPickReplaced() {
+        PickLine line = picked(3);
+        PickLine other = picked(1);
+        PickList packing = list(PickStatus.PICKED, line, other);
+        UUID replacement = UUID.randomUUID();
+
+        List<PickLine> added = packing.replaceDamagedAfterPick(line.id(), 1, REPORT, List.of(new PickList.Hold(
+                replacement, "CUP", "HCM-A02-1-A", HCM, "L2", 1, true)), null, UUID::randomUUID);
+
+        assertThat(line.status()).isEqualTo(PickLineStatus.PICKED);
+        assertThat(line.pickedQty()).isEqualTo(3);
+        assertThat(line.damageReportId()).as("several reports may fall on one picked line").isNull();
+        assertThat(added).singleElement().satisfies(next -> {
+            assertThat(next.reservationId()).isEqualTo(replacement);
+            assertThat(next.status()).isEqualTo(PickLineStatus.OPEN);
+            assertThat(next.damageReportId()).isEqualTo(REPORT);
+            assertThat(next.orderLineId()).isEqualTo(line.orderLineId());
+        });
+        assertThat(packing.madeAfterPick(REPORT)).isTrue();
+        assertThat(refusal(() -> list(PickStatus.PICKED, picked(2)).replaceDamagedAfterPick(
+                packing.lines().get(0).id(), 1, REPORT, List.of(), null, UUID::randomUUID)))
+                .isEqualTo(ErrorCode.NOT_FOUND);
+        assertThat(refusal(() -> list(PickStatus.PICKED, picked(2)).requireDamageableAfterPick(UUID.randomUUID(), 1)))
+                .isEqualTo(ErrorCode.NOT_FOUND);
+    }
+
+    @Test
+    @DisplayName("damage at packing with nothing to replace it: one SHORT line on the impaired share")
+    void afterPickImpaired() {
+        PickLine line = picked(2);
+        PickList packing = list(PickStatus.PICKED, line);
+        UUID impaired = UUID.randomUUID();
+
+        List<PickLine> added = packing.replaceDamagedAfterPick(line.id(), 2, REPORT, List.of(), impaired,
+                UUID::randomUUID);
+
+        assertThat(added).singleElement().satisfies(next -> {
+            assertThat(next.status()).isEqualTo(PickLineStatus.SHORT);
+            assertThat(next.shortQty()).isEqualTo(2);
+            assertThat(next.reservationId()).isEqualTo(impaired);
+        });
+        assertThat(line.goodQty()).isZero();
+        assertThat(packing.hasShortLines()).isTrue();
+    }
+
+    @Test
+    @DisplayName("a cancelled order puts back what a picked line still has; a line all damaged has nothing to put back")
+    void putBackLeavesTheDamagedUnits() {
+        PickLine some = new PickLine(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), "CUP", "HCM-A01-1-A",
+                "L1", 1, 3, 3, PickLineStatus.PICKED, UUID.randomUUID(), java.time.Instant.now(),
+                java.time.Instant.now(), "HCM-A01-1-A", "CUP", 0, null, null, null, 0, 0, null, 1);
+        PickLine all = new PickLine(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), "CUP", "HCM-A01-1-A",
+                "L1", 1, 2, 2, PickLineStatus.PICKED, UUID.randomUUID(), java.time.Instant.now(),
+                java.time.Instant.now(), "HCM-A01-1-A", "CUP", 0, null, null, null, 0, 0, null, 2);
+        PickList cancelled = new PickList(UUID.randomUUID(), HCM, PickStatus.CANCELLED, true, List.of(some, all));
+        PickList.PutBackTarget bin = new PickList.PutBackTarget("HCM-A01-1-B", HCM, true, true);
+
+        assertThat(cancelled.putBack(some.id(), bin, UUID.randomUUID(), java.time.Instant.now()).line().putBackQty())
+                .isEqualTo(2);
+        assertThat(refusal(() -> cancelled.putBack(all.id(), bin, UUID.randomUUID(), java.time.Instant.now())))
+                .isEqualTo(ErrorCode.PUT_BACK_NOT_REQUIRED);
+        assertThatThrownBy(() -> new PickLine(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), "CUP",
+                "HCM-A01-1-A", null, 1, 2, 0, PickLineStatus.OPEN, null, null, null, null, null, 0, null, null,
+                null, 0, 0, null, 1)).as("only units a line picked").isInstanceOf(IllegalArgumentException.class);
+    }
 }

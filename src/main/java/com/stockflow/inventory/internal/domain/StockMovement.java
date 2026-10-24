@@ -104,7 +104,9 @@ public record StockMovement(
         /** Held blanks a print subcontractor turned into goods received back (SCRUM-441, decision Q9). */
         CONSUMPTION,
         /** Goods a customer sent back under a return request, into quarantine (SCRUM-260, OQ-12). */
-        RETURN_IN
+        RETURN_IN,
+        /** Damaged goods handed back to their supplier, out of quarantine and off the books (V20261025030000). */
+        SUPPLIER_RETURN
     }
 
     /** The subset of {@code ck_stock_movement_reference} this module writes so far. */

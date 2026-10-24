@@ -125,13 +125,19 @@ public interface PickLists {
      * @param barcode the SKU's barcode, which a scan may send instead of the SKU; null when it has none
      * @param damagedQty units found damaged at the bin; positive only on a line a damage report superseded
      * @param damageReportId the damage report that superseded or made the line; null otherwise
+     * @param packingDamagedQty units of a picked line found damaged at the packing bench (R8): no longer packed or put
+     *                          back; the lines a report made at packing pick what replaced them
      */
     record PickLineView(UUID lineId, UUID taskId, int sequenceNo, UUID orderLineId, String sku, String barcode,
                         String locationCode, String lotNumber, int allocatedQty, int pickedQty, String status,
                         Instant pickedAt, int putBackQty, String putBackLocationCode, Instant putBackAt,
-                        int shortQty, int damagedQty, UUID damageReportId) { }
+                        int shortQty, int damagedQty, UUID damageReportId, int packingDamagedQty) { }
 
-    /** A picked line of a cancelled task, waiting to go back onto a bin. */
+    /**
+     * A picked line of a cancelled task, waiting to go back onto a bin.
+     *
+     * @param pickedQty what goes back: what the line picked, less what was found damaged at packing
+     */
     record PutBackRow(UUID taskId, String orderNumber, UUID warehouseId, UUID lineId, String sku, String lotNumber,
                       int pickedQty, String fromLocationCode, Instant pickedAt) { }
 }

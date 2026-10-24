@@ -15,6 +15,8 @@ import com.stockflow.inventory.internal.controller.dto.DamagePhotoLinkResponse;
 import com.stockflow.inventory.internal.controller.dto.DamageReportResponse;
 import com.stockflow.inventory.internal.controller.dto.DamageReportRowResponse;
 import com.stockflow.inventory.internal.controller.dto.DisposeDamageRequest;
+import com.stockflow.inventory.internal.controller.dto.ShipDamageToSupplierRequest;
+import com.stockflow.inventory.internal.controller.dto.SupplierRefusalRequest;
 import com.stockflow.inventory.internal.controller.dto.ReportDamageRequest;
 import com.stockflow.inventory.internal.service.StockDamages;
 import io.swagger.v3.oas.annotations.Operation;
@@ -118,7 +120,7 @@ class DamageReportController {
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size,
             @RequestParam(required = false) String sort) {
-        return ApiResponse.ok(damages.list(warehouseId, open(status), sku, origin, page,
+        return ApiResponse.ok(damages.list(warehouseId, status, sku, origin, page,
                 size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort).map(mapper::toResponse));
     }
 
@@ -161,16 +163,39 @@ class DamageReportController {
                 request.restoreLocationCode(), user.userId()))));
     }
 
-    private static Boolean open(String status) {
-        if (status == null || status.isBlank()) {
-            return null;
-        }
-        return switch (status.trim().toUpperCase(java.util.Locale.ROOT)) {
-            case "OPEN" -> Boolean.TRUE;
-            case "CLOSED" -> Boolean.FALSE;
-            default -> throw new com.stockflow.common.error.BusinessException(
-                    com.stockflow.common.error.ErrorCode.VALIDATION_FAILED, "status is OPEN or CLOSED");
-        };
+    /**
+     * Units of a RETURN_TO_SUPPLIER decision handed to the supplier, or the supplier's carrier, under a delivery note:
+     * {@code quantity} of them, or all it has left. They leave quarantine and the books now; until this, they stay
+     * DAMAGED where they are. A manager's act, as the decision was; the same {@code requestId} again answers with the
+     * report as it is.
+     */
+    @PostMapping("/{reportId}/dispositions/{dispositionId}/supplier-shipment")
+    @Operation(summary = "Hand the goods of a RETURN_TO_SUPPLIER decision to the supplier: off quarantine and the books")
+    @RequiresPermission(resource = InventoryResources.DAMAGE_REPORTS, action = Action.APPROVE,
+            scope = DataScope.WAREHOUSE)
+    public ApiResponse<DamageReportResponse> shipToSupplier(@PathVariable UUID reportId,
+                                                            @PathVariable UUID dispositionId,
+                                                            @Valid @RequestBody ShipDamageToSupplierRequest request,
+                                                            @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(mapper.toResponse(damages.shipToSupplier(reportId, dispositionId,
+                new StockDamages.ShipToSupplierCommand(request.requestId(), request.quantity(), request.deliveryNote(),
+                        request.note(), user.userId()))));
+    }
+
+    /**
+     * The supplier refused units of a RETURN_TO_SUPPLIER decision, or took fewer: they stay in quarantine and wait for
+     * a decision again (write off, restore, or another return). The note says what the supplier answered.
+     */
+    @PostMapping("/{reportId}/dispositions/{dispositionId}/supplier-refusal")
+    @Operation(summary = "Record units the supplier refused to take back: they wait for a decision again")
+    @RequiresPermission(resource = InventoryResources.DAMAGE_REPORTS, action = Action.APPROVE,
+            scope = DataScope.WAREHOUSE)
+    public ApiResponse<DamageReportResponse> refuseReturn(@PathVariable UUID reportId, @PathVariable UUID dispositionId,
+                                                          @Valid @RequestBody SupplierRefusalRequest request,
+                                                          @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(mapper.toResponse(damages.refuseReturn(reportId, dispositionId,
+                new StockDamages.RefuseReturnCommand(request.requestId(), request.quantity(), request.note(),
+                        user.userId()))));
     }
 
     private static void closeQuietly(List<InputStream> streams) {

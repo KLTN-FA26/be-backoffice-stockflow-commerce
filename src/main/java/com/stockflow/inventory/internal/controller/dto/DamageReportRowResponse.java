@@ -11,7 +11,8 @@ public record DamageReportRowResponse(
         UUID id,
         String number,
         String origin,
-        @Schema(description = "OPEN while units wait for a decision, CLOSED after") String status,
+        @Schema(description = "OPEN while units wait for a decision; AWAITING_SUPPLIER while units decided for the "
+                + "supplier are still in quarantine; CLOSED after") String status,
         UUID warehouseId,
         String sku,
         String lotNumber,
@@ -23,6 +24,8 @@ public record DamageReportRowResponse(
         String reason,
         UUID orderId,
         UUID reportedBy,
-        Instant reportedAt
+        Instant reportedAt,
+        @Schema(description = "Units decided for the supplier, still in quarantine to be handed over")
+        int awaitingSupplierQuantity
 ) {
 }

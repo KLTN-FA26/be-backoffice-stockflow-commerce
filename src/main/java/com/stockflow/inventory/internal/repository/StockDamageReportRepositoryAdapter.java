@@ -3,6 +3,7 @@ package com.stockflow.inventory.internal.repository;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.persistence.Specs;
 import com.stockflow.common.security.WarehouseScope;
+import com.stockflow.inventory.internal.domain.DamageDisposition;
 import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.Quantity;
 import com.stockflow.inventory.internal.domain.StockDamageReport;
@@ -10,6 +11,7 @@ import com.stockflow.inventory.internal.domain.StockDamageReportRepository;
 import com.stockflow.inventory.internal.domain.StockItemId;
 import com.stockflow.inventory.internal.domain.StockPackageId;
 import com.stockflow.inventory.internal.entity.StockDamageDispositionJpaEntity;
+import com.stockflow.inventory.internal.entity.StockDamageSupplierShipmentJpaEntity;
 import com.stockflow.inventory.internal.entity.StockDamagePhotoJpaEntity;
 import com.stockflow.inventory.internal.entity.StockDamageReportJpaEntity;
 import jakarta.persistence.EntityManager;
@@ -78,6 +80,16 @@ class StockDamageReportRepositoryAdapter implements StockDamageReportRepository,
     }
 
     @Override
+    public boolean isImpairedAllocation(UUID reservationId) {
+        return jpa.existsByImpairedReservationId(reservationId);
+    }
+
+    @Override
+    public int damagedAfterPick(UUID reservationId) {
+        return Math.toIntExact(jpa.damagedAfterPick(reservationId));
+    }
+
+    @Override
     public String nextReportNumber(LocalDate day) {
         return "DMG-%s-%04d".formatted(day.format(DAY), next("DMG", day));
     }
@@ -121,6 +133,14 @@ class StockDamageReportRepositoryAdapter implements StockDamageReportRepository,
                 .collect(Collectors.toSet());
         report.dispositions().stream().filter(d -> !stored.contains(d.id()))
                 .forEach(d -> entity.addDisposition(toEntity(d)));
+        // Decisions first: a hand-over names its decision (fk_stock_damage_supplier_shipment_disposition).
+        jpa.flush();
+        Set<UUID> shipped = entity.getShipments().stream().map(StockDamageSupplierShipmentJpaEntity::getId)
+                .collect(Collectors.toSet());
+        report.shipments().stream().filter(s -> !shipped.contains(s.id()))
+                .forEach(s -> entity.addShipment(new StockDamageSupplierShipmentJpaEntity(s.id(), s.dispositionId(),
+                        s.requestId(), s.quantity().value(), s.deliveryNote(), s.note(), s.shippedBy(),
+                        s.shippedAt(), s.refused())));
         jpa.flush();
         return toDomain(entity);
     }
@@ -135,16 +155,24 @@ class StockDamageReportRepositoryAdapter implements StockDamageReportRepository,
                         : criteria.sku().trim().toUpperCase(java.util.Locale.ROOT)),
                 Specs.eq("origin", criteria.origin()),
                 open(criteria.open()),
+                awaitingSupplier(criteria.awaitingSupplier()),
                 WarehouseScope.warehousesIn("warehouseId"));
         Page<StockDamageReportJpaEntity> page = jpa.findAll(spec, pageable);
         List<UUID> ids = page.getContent().stream().map(StockDamageReportJpaEntity::getId).toList();
         Map<UUID, Long> decided = ids.isEmpty() ? Map.of() : jpa.decidedOf(ids).stream().collect(Collectors.toMap(
                 StockDamageReportJpaRepository.DecidedUnits::getReportId,
                 StockDamageReportJpaRepository.DecidedUnits::getDecided));
+        Map<UUID, Long> refused = ids.isEmpty() ? Map.of() : jpa.refusedOf(ids).stream().collect(Collectors.toMap(
+                StockDamageReportJpaRepository.DecidedUnits::getReportId,
+                StockDamageReportJpaRepository.DecidedUnits::getDecided));
+        Map<UUID, Long> awaiting = ids.isEmpty() ? Map.of() : jpa.awaitingSupplierOf(ids).stream().collect(
+                Collectors.toMap(StockDamageReportJpaRepository.DecidedUnits::getReportId,
+                        StockDamageReportJpaRepository.DecidedUnits::getDecided));
         return page.map(e -> new Row(e.getId(), e.getReportNumber(), e.getOrigin(), e.getWarehouseId(), e.getSku(),
                 e.getLotNumber(), e.getSourceLocationCode(), e.getDamageLocationCode(), e.getQuantity(),
-                Math.toIntExact(decided.getOrDefault(e.getId(), 0L)), e.getReasonCode(), e.getOrderId(),
-                e.getReportedBy(), e.getReportedAt()));
+                Math.toIntExact(decided.getOrDefault(e.getId(), 0L) - refused.getOrDefault(e.getId(), 0L)),
+                e.getReasonCode(), e.getOrderId(), e.getReportedBy(), e.getReportedAt(),
+                Math.toIntExact(Math.max(0L, awaiting.getOrDefault(e.getId(), 0L)))));
     }
 
     /** Open: some units still wait for a decision. Every report when the caller does not filter. */
@@ -157,7 +185,32 @@ class StockDamageReportRepositoryAdapter implements StockDamageReportRepository,
             Root<StockDamageDispositionJpaEntity> disposition = decided.from(StockDamageDispositionJpaEntity.class);
             decided.select(cb.coalesce(cb.sumAsLong(disposition.get("quantity")), 0L))
                     .where(cb.equal(disposition.get("report"), root));
-            return open ? cb.gt(root.get("quantity"), decided) : cb.le(root.get("quantity"), decided);
+            // Units a supplier refused wait for a decision again.
+            Subquery<Long> refused = query.subquery(Long.class);
+            Root<StockDamageSupplierShipmentJpaEntity> refusal = refused.from(StockDamageSupplierShipmentJpaEntity.class);
+            refused.select(cb.coalesce(cb.sumAsLong(refusal.get("quantity")), 0L))
+                    .where(cb.equal(refusal.get("report"), root), cb.equal(refusal.get("outcome"), "REFUSED"));
+            var waiting = cb.sum(cb.diff(root.<Integer>get("quantity"), decided), refused);
+            return open ? cb.gt(waiting, 0L) : cb.le(waiting, 0L);
+        };
+    }
+
+    /** Units decided for the supplier and neither handed over nor refused yet: some, or none. */
+    private static Specification<StockDamageReportJpaEntity> awaitingSupplier(Boolean awaiting) {
+        if (awaiting == null) {
+            return Specs.all();
+        }
+        return (root, query, cb) -> {
+            Subquery<Long> sent = query.subquery(Long.class);
+            Root<StockDamageDispositionJpaEntity> disposition = sent.from(StockDamageDispositionJpaEntity.class);
+            sent.select(cb.coalesce(cb.sumAsLong(disposition.get("quantity")), 0L))
+                    .where(cb.equal(disposition.get("report"), root),
+                            cb.equal(disposition.get("type"), DamageDisposition.RETURN_TO_SUPPLIER));
+            Subquery<Long> handled = query.subquery(Long.class);
+            Root<StockDamageSupplierShipmentJpaEntity> shipment = handled.from(StockDamageSupplierShipmentJpaEntity.class);
+            handled.select(cb.coalesce(cb.sumAsLong(shipment.get("quantity")), 0L))
+                    .where(cb.equal(shipment.get("report"), root));
+            return awaiting ? cb.gt(sent, handled) : cb.le(sent, handled);
         };
     }
 
@@ -170,7 +223,7 @@ class StockDamageReportRepositoryAdapter implements StockDamageReportRepository,
                 e.getReceivedAt(), e.getLotId(), new LocationId(e.getSourceLocationCode()),
                 e.getSourceStockPackageId() == null ? null : new StockPackageId(e.getSourceStockPackageId()),
                 e.getWarehouseId());
-        StockDamageReport.PickContext pick = e.getOrigin() == StockDamageReport.Origin.PICKING
+        StockDamageReport.PickContext pick = e.getOrigin() != StockDamageReport.Origin.STOCK_CHECK
                 ? new StockDamageReport.PickContext(e.getOrderId(), e.getPickLineId(), e.getReservationId(),
                         e.getImpairedReservationId())
                 : null;
@@ -185,10 +238,15 @@ class StockDamageReportRepositoryAdapter implements StockDamageReportRepository,
                         d.getRestoredStockItemId() == null ? null : new StockItemId(d.getRestoredStockItemId()),
                         d.getSupplierId(), d.getSupplierName(), d.getDecidedBy(), d.getDecidedAt()))
                 .toList();
+        List<StockDamageReport.SupplierShipment> shipments = e.getShipments().stream()
+                .map(s -> new StockDamageReport.SupplierShipment(s.getId(), s.getRequestId(), s.getDispositionId(),
+                        Quantity.of(s.getQuantity()), s.getDeliveryNote(), s.getNote(), s.getShippedBy(),
+                        s.getShippedAt(), s.isRefused()))
+                .toList();
         return new StockDamageReport(e.getId(), e.getReportNumber(), e.getRequestId(), e.getOrigin(), goods,
                 new StockItemId(e.getDamagedStockItemId()), new LocationId(e.getDamageLocationCode()),
                 Quantity.of(e.getQuantity()), e.getReasonCode(), e.getNote(), photos, pick, e.getReportedBy(),
-                e.getReportedAt(), dispositions, e.getVersion());
+                e.getReportedAt(), dispositions, shipments, e.getVersion());
     }
 
     private static StockDamageReportJpaEntity toNewEntity(StockDamageReport report) {

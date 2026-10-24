@@ -44,6 +44,29 @@ public interface PickDamageReporting {
     ReportPickDamageResult report(ReportPickDamageCommand command);
 
     /**
+     * Damage found at the packing bench among units a pick line already took - broken in the tote, or seen when they
+     * were packed. Those units were deducted when picked, so they come back into stock as DAMAGED in a quarantine area
+     * of the warehouse (one {@code PUT_BACK} ledger line from nowhere, reference {@code DAMAGE_REPORT}); the hold the
+     * pick consumed stays consumed. The order is made whole as at picking: the same quantity allocated again, FEFO, on
+     * pickable stock of the warehouse, or, when there is none, kept as an impaired allocation on the damaged units.
+     * {@code command.reservationId} is the consumed hold; {@code retainedQuantity} is always 0. Idempotent on the
+     * request id.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code RESERVATION_NOT_FOUND} (unknown, or another order's);
+     *         {@code RESERVATION_NOT_ACTIVE} unless the hold was picked; {@code VALIDATION_FAILED} for more units than
+     *         the pick took, less those reported damaged after it already; {@code DAMAGE_AREA_MISSING},
+     *         {@code LOCATION_NOT_FOUND}, {@code LOCATION_NOT_USABLE}, {@code LOCATION_AREA_MISMATCH} for the
+     *         quarantine area; {@code DAMAGE_PHOTO_REQUIRED}; {@code OUT_OF_DATA_SCOPE}
+     */
+    ReportPickDamageResult reportAfterPick(ReportPickDamageCommand command);
+
+    /**
+     * The report a request made at picking or at packing, as it was answered, with {@code alreadyReported} true; empty
+     * when the request made none. Read-only: how a caller recognises a report sent again before it checks anything.
+     */
+    java.util.Optional<ReportPickDamageResult> reportedFor(java.util.UUID requestId);
+
+    /**
      * A damage report made at picking, as {@link #report} answered it, now with {@code alreadyReported} true: how the
      * same report sent again is answered with where the damaged units went. Read-only. Empty for an unknown id or a
      * shelf report.

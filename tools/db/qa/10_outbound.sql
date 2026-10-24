@@ -3,7 +3,8 @@
 -- V20261014000100; kltn-docs 07 §4, BR-SEC-002); pick confirmation, deduction and put-back
 -- (SCRUM-267/274/275, V20261014001000; docs 07 step 6, BR-04, BR-05); the packing station's parcels, scans and
 -- shipments (G4-5, V20261021000300; docs 08 BR-01/03/04, 09 §5); carriers, loads and the handover (G4-2a,
--- V20261021000400/500; docs 09 §4.1, BR-01/03/04). Needs the demo seed.
+-- V20261021000400/500; docs 09 §4.1, BR-01/03/04); damage found at packing among picked units (R8,
+-- V20261025030000/030100). Needs the demo seed.
 -- Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
@@ -260,5 +261,144 @@ SELECT pg_temp.expect_fail('F45 a parcel loaded once its load left', $q$
     UPDATE fulfillment.dispatch_load_package SET active = FALSE, removed_at = NOW() WHERE id = md5('qa:lp:f38')::uuid;
     UPDATE fulfillment.dispatch_load_package SET active = TRUE, removed_at = NULL WHERE id = md5('qa:lp:f38')::uuid $q$);
 
+\echo '--- damage found at packing (R8): units a pick took, back into quarantine, never more than it took'
+INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity, reserved_at,
+                                         expires_at, status, closed_at)
+VALUES (md5('qa:res:f46')::uuid, '11111111-1111-4111-8111-111111111111', md5('qa:order:f1')::uuid, gen_random_uuid(),
+        gen_random_uuid(), 2, NOW(), NULL, 'CONSUMED', NOW());
+INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code, sequence_no,
+                                   allocated_qty, picked_qty, status, picked_by, picked_at, consumed_at)
+VALUES (md5('qa:pl:f46')::uuid, md5('qa:pick:f1')::uuid, md5('qa:ol:f5')::uuid, md5('qa:res:f46')::uuid,
+        'SOFA-3S-GREY', 'HCM-A01-2-B', 2, 2, 2, 'PICKED', md5('demo:user:editor')::uuid, NOW(), NOW());
+INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, received_at, version, created_at)
+SELECT md5('qa:si:f46')::uuid, sku, 'HCM-QC01', 1, 0, 'DAMAGED', received_at, 0, NOW()
+  FROM inventory.stock_item WHERE id = '11111111-1111-4111-8111-111111111111';
+
+SELECT pg_temp.expect_fail('F46 more units found damaged at packing than the line picked', $q$
+    UPDATE fulfillment.pick_line SET packing_damaged_qty = 3 WHERE id = md5('qa:pl:f46')::uuid $q$);
+SELECT pg_temp.expect_fail('F47 units found damaged at packing on a line that picked nothing', $q$
+    INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, sku, location_code, allocated_qty, status,
+                                       packing_damaged_qty)
+    VALUES (gen_random_uuid(), md5('qa:pick:f1')::uuid, md5('qa:ol:f5')::uuid, 'SOFA-3S-GREY', 'HCM-A01-2-B', 1,
+            'OPEN', 1) $q$);
+INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity, reserved_at,
+                                         expires_at, status, closed_at)
+VALUES (md5('qa:res:f48')::uuid, '11111111-1111-4111-8111-111111111111', md5('qa:order:f1')::uuid, gen_random_uuid(),
+        gen_random_uuid(), 1, NOW(), NULL, 'RELEASED', NOW());
+SELECT pg_temp.expect_fail('F48 a packing damage report on an allocation that was never picked', $q$
+    INSERT INTO inventory.stock_damage_report (id, report_number, request_id, origin, warehouse_id, sku,
+           source_stock_item_id, source_location_code, damaged_stock_item_id, damage_location_code, quantity,
+           reason_code, order_id, pick_line_id, reservation_id, reported_by, reported_at)
+    VALUES (md5('qa:dmg:f48')::uuid, 'DMG-QA-F48', gen_random_uuid(), 'PACKING', md5('demo:wh:HCM')::uuid,
+            'SOFA-3S-GREY', '11111111-1111-4111-8111-111111111111', 'HCM-A01-2-B', md5('qa:si:f46')::uuid,
+            'HCM-QC01', 1, 'BROKEN', md5('qa:order:f1')::uuid, md5('qa:pl:f46')::uuid, md5('qa:res:f48')::uuid,
+            md5('demo:user:editor')::uuid, NOW()) $q$);
+SELECT pg_temp.expect_fail('F49 a packing damage report that names no pick line', $q$
+    INSERT INTO inventory.stock_damage_report (id, report_number, request_id, origin, warehouse_id, sku,
+           source_stock_item_id, source_location_code, damaged_stock_item_id, damage_location_code, quantity,
+           reason_code, reported_by, reported_at)
+    VALUES (md5('qa:dmg:f49')::uuid, 'DMG-QA-F49', gen_random_uuid(), 'PACKING', md5('demo:wh:HCM')::uuid,
+            'SOFA-3S-GREY', '11111111-1111-4111-8111-111111111111', 'HCM-A01-2-B', md5('qa:si:f46')::uuid,
+            'HCM-QC01', 1, 'BROKEN', md5('demo:user:editor')::uuid, NOW()) $q$);
+SELECT pg_temp.expect_ok('F50 one unit of the picked line damaged at packing: the report, its photo, the line, the ledger', $q$
+    INSERT INTO inventory.stock_damage_report (id, report_number, request_id, origin, warehouse_id, sku,
+           source_stock_item_id, source_location_code, damaged_stock_item_id, damage_location_code, quantity,
+           reason_code, order_id, pick_line_id, reservation_id, reported_by, reported_at)
+    VALUES (md5('qa:dmg:f50')::uuid, 'DMG-QA-F50', gen_random_uuid(), 'PACKING', md5('demo:wh:HCM')::uuid,
+            'SOFA-3S-GREY', '11111111-1111-4111-8111-111111111111', 'HCM-A01-2-B', md5('qa:si:f46')::uuid,
+            'HCM-QC01', 1, 'BROKEN', md5('qa:order:f1')::uuid, md5('qa:pl:f46')::uuid, md5('qa:res:f46')::uuid,
+            md5('demo:user:editor')::uuid, NOW());
+    INSERT INTO inventory.stock_damage_photo (id, damage_report_id, storage_key, original_name, content_type,
+                                              size_bytes, checksum, sort_order)
+    VALUES (gen_random_uuid(), md5('qa:dmg:f50')::uuid, 'qc-evidence/qa-f50.jpg', 'f50.jpg', 'image/jpeg', 20,
+            repeat('a', 64), 1);
+    UPDATE fulfillment.pick_line SET packing_damaged_qty = 1 WHERE id = md5('qa:pl:f46')::uuid;
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, to_location_code, quantity, from_status, to_status,
+                                          reference_type, reference_id, occurred_at)
+    VALUES (gen_random_uuid(), 'PUT_BACK', 'SOFA-3S-GREY', 'HCM-QC01', 1, 'DAMAGED', 'DAMAGED', 'DAMAGE_REPORT',
+            md5('qa:dmg:f50')::uuid, NOW()) $q$);
+SELECT pg_temp.expect_fail('F51 a second packing report taking the line past what it picked', $q$
+    INSERT INTO inventory.stock_damage_report (id, report_number, request_id, origin, warehouse_id, sku,
+           source_stock_item_id, source_location_code, damaged_stock_item_id, damage_location_code, quantity,
+           reason_code, order_id, pick_line_id, reservation_id, reported_by, reported_at)
+    VALUES (md5('qa:dmg:f51')::uuid, 'DMG-QA-F51', gen_random_uuid(), 'PACKING', md5('demo:wh:HCM')::uuid,
+            'SOFA-3S-GREY', '11111111-1111-4111-8111-111111111111', 'HCM-A01-2-B', md5('qa:si:f46')::uuid,
+            'HCM-QC01', 2, 'BROKEN', md5('qa:order:f1')::uuid, md5('qa:pl:f46')::uuid, md5('qa:res:f46')::uuid,
+            md5('demo:user:editor')::uuid, NOW());
+    INSERT INTO inventory.stock_damage_photo (id, damage_report_id, storage_key, original_name, content_type,
+                                              size_bytes, checksum, sort_order)
+    VALUES (gen_random_uuid(), md5('qa:dmg:f51')::uuid, 'qc-evidence/qa-f51.jpg', 'f51.jpg', 'image/jpeg', 20,
+            repeat('a', 64), 1) $q$);
+SELECT pg_temp.expect_fail('F52 a put-back of everything the line picked, the damaged unit included', $q$
+    UPDATE fulfillment.pick_line SET status = 'PUT_BACK', put_back_qty = 2, put_back_by = md5('demo:user:editor')::uuid,
+           put_back_location_code = 'HCM-A01-2-B', put_back_at = NOW() WHERE id = md5('qa:pl:f46')::uuid $q$);
+SELECT pg_temp.expect_ok('F53 a put-back of what the line still has', $q$
+    UPDATE fulfillment.pick_line SET status = 'PUT_BACK', put_back_qty = 1, put_back_by = md5('demo:user:editor')::uuid,
+           put_back_location_code = 'HCM-A01-2-B', put_back_at = NOW() WHERE id = md5('qa:pl:f46')::uuid $q$);
+
+\echo '--- damaged goods back to the supplier: in parts or refused, never more than decided, shipped units off the books'
+INSERT INTO inventory.stock_damage_disposition (id, damage_report_id, request_id, disposition_type, quantity, note,
+                                                decided_by, decided_at)
+VALUES (md5('qa:disp:f54')::uuid, md5('qa:dmg:f50')::uuid, gen_random_uuid(), 'RETURN_TO_SUPPLIER', 1,
+        'supplier credits it', md5('demo:user:approver')::uuid, NOW());
+SELECT pg_temp.expect_fail('F54 more units handed over than the return decision named', $q$
+    INSERT INTO inventory.stock_damage_supplier_shipment (id, disposition_id, damage_report_id, request_id, outcome,
+                                                          quantity, delivery_note, shipped_by, shipped_at)
+    VALUES (gen_random_uuid(), md5('qa:disp:f54')::uuid, md5('qa:dmg:f50')::uuid, gen_random_uuid(), 'SHIPPED', 2,
+            'PXT-QA-1', md5('demo:user:approver')::uuid, NOW()) $q$);
+SELECT pg_temp.expect_fail('F55 a hand-over with no delivery note', $q$
+    INSERT INTO inventory.stock_damage_supplier_shipment (id, disposition_id, damage_report_id, request_id, outcome,
+                                                          quantity, delivery_note, shipped_by, shipped_at)
+    VALUES (gen_random_uuid(), md5('qa:disp:f54')::uuid, md5('qa:dmg:f50')::uuid, gen_random_uuid(), 'SHIPPED', 1,
+            '  ', md5('demo:user:approver')::uuid, NOW()) $q$);
+SELECT pg_temp.expect_fail('F56 a refusal that does not say what the supplier answered', $q$
+    INSERT INTO inventory.stock_damage_supplier_shipment (id, disposition_id, damage_report_id, request_id, outcome,
+                                                          quantity, shipped_by, shipped_at)
+    VALUES (gen_random_uuid(), md5('qa:disp:f54')::uuid, md5('qa:dmg:f50')::uuid, gen_random_uuid(), 'REFUSED', 1,
+            md5('demo:user:approver')::uuid, NOW()) $q$);
+SELECT pg_temp.expect_fail('F57 a hand-over of a decision that is not a return to the supplier', $q$
+    INSERT INTO inventory.stock_damage_disposition (id, damage_report_id, request_id, disposition_type, quantity,
+                                                    record_number, stock_adjustment_id, decided_by, decided_at)
+    SELECT md5('qa:disp:f57')::uuid, md5('qa:dmg:f50')::uuid, gen_random_uuid(), 'WRITE_OFF', 1, 'WO-QA-F57', a.id,
+           md5('demo:user:approver')::uuid, NOW() FROM inventory.stock_adjustment a LIMIT 1;
+    INSERT INTO inventory.stock_damage_supplier_shipment (id, disposition_id, damage_report_id, request_id, outcome,
+                                                          quantity, delivery_note, shipped_by, shipped_at)
+    VALUES (gen_random_uuid(), md5('qa:disp:f57')::uuid, md5('qa:dmg:f50')::uuid, gen_random_uuid(), 'SHIPPED', 1,
+            'PXT-QA-9', md5('demo:user:approver')::uuid, NOW()) $q$);
+SELECT pg_temp.expect_ok('F58 the supplier refused the unit: undecided again, decided once more', $q$
+    INSERT INTO inventory.stock_damage_supplier_shipment (id, disposition_id, damage_report_id, request_id, outcome,
+                                                          quantity, note, shipped_by, shipped_at)
+    VALUES (md5('qa:ship:f58')::uuid, md5('qa:disp:f54')::uuid, md5('qa:dmg:f50')::uuid, gen_random_uuid(), 'REFUSED',
+            1, 'not ours to take back', md5('demo:user:approver')::uuid, NOW());
+    INSERT INTO inventory.stock_damage_disposition (id, damage_report_id, request_id, disposition_type, quantity, note,
+                                                    decided_by, decided_at)
+    VALUES (md5('qa:disp:f58')::uuid, md5('qa:dmg:f50')::uuid, gen_random_uuid(), 'RETURN_TO_SUPPLIER', 1,
+            'another supplier takes it', md5('demo:user:approver')::uuid, NOW()) $q$);
+SELECT pg_temp.expect_fail('F59 the refused decision handed over all the same', $q$
+    INSERT INTO inventory.stock_damage_supplier_shipment (id, disposition_id, damage_report_id, request_id, outcome,
+                                                          quantity, delivery_note, shipped_by, shipped_at)
+    VALUES (gen_random_uuid(), md5('qa:disp:f54')::uuid, md5('qa:dmg:f50')::uuid, gen_random_uuid(), 'SHIPPED', 1,
+            'PXT-QA-2', md5('demo:user:approver')::uuid, NOW()) $q$);
+SELECT pg_temp.expect_ok('F60 the second decision handed over, and its SUPPLIER_RETURN line out of quarantine', $q$
+    INSERT INTO inventory.stock_damage_supplier_shipment (id, disposition_id, damage_report_id, request_id, outcome,
+                                                          quantity, delivery_note, shipped_by, shipped_at)
+    VALUES (md5('qa:ship:f60')::uuid, md5('qa:disp:f58')::uuid, md5('qa:dmg:f50')::uuid, gen_random_uuid(), 'SHIPPED',
+            1, 'PXT-QA-1', md5('demo:user:approver')::uuid, NOW());
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, quantity, from_status, to_status,
+                                          reference_type, reference_id, occurred_at)
+    VALUES (gen_random_uuid(), 'SUPPLIER_RETURN', 'SOFA-3S-GREY', 'HCM-QC01', 1, 'DAMAGED', 'DAMAGED',
+            'DAMAGE_REPORT', md5('qa:dmg:f50')::uuid, NOW()) $q$);
+SELECT pg_temp.expect_fail('F61 a decision beyond the report once the refused unit was decided again', $q$
+    INSERT INTO inventory.stock_damage_disposition (id, damage_report_id, request_id, disposition_type, quantity, note,
+                                                    decided_by, decided_at)
+    VALUES (gen_random_uuid(), md5('qa:dmg:f50')::uuid, gen_random_uuid(), 'RESTORE', 1, 'fine after all',
+            md5('demo:user:approver')::uuid, NOW()) $q$);
+SELECT pg_temp.expect_fail('F62 a hand-over rewritten (append-only)', $q$
+    UPDATE inventory.stock_damage_supplier_shipment SET delivery_note = 'PXT-QA-9' WHERE id = md5('qa:ship:f60')::uuid $q$);
+SELECT pg_temp.expect_fail('F63 goods going back to the supplier into a location (they leave to nowhere)', $q$
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity,
+                                          from_status, reference_type, reference_id, occurred_at)
+    VALUES (gen_random_uuid(), 'SUPPLIER_RETURN', 'SOFA-3S-GREY', 'HCM-QC01', 'HCM-A01-2-B', 1, 'DAMAGED',
+            'DAMAGE_REPORT', md5('qa:dmg:f50')::uuid, NOW()) $q$);
 ROLLBACK;
 \echo 'PASS 09_outbound'

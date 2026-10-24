@@ -106,7 +106,7 @@ class PickConsumptionServiceTest {
             new InventoryEventPublisher(publisher), locations, policies,
             new StockPackageContents(mock(com.stockflow.inventory.internal.domain.StockPackageRepository.class),
                     stockItems), Clock.fixed(NOW, ZoneOffset.UTC),
-            cycleCounts);
+            cycleCounts, mock(com.stockflow.inventory.internal.domain.StockDamageReportRepository.class));
     private final List<StockItem> saved = new ArrayList<>();
     private final List<StockItem> merged = new ArrayList<>();
 

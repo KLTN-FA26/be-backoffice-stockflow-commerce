@@ -15,14 +15,24 @@ import java.util.UUID;
  */
 public interface StockDamageReportSearch {
 
-    /** Every filter optional: {@code open} true for the queue, false for the settled ones. */
-    record Criteria(UUID warehouseId, Boolean open, String sku, StockDamageReport.Origin origin) {
+    /**
+     * Every filter optional: {@code open} true for the queue (units waiting for a decision), false for the decided
+     * ones; {@code awaitingSupplier} true for those with units decided for the supplier still in quarantine.
+     */
+    record Criteria(UUID warehouseId, Boolean open, String sku, StockDamageReport.Origin origin,
+                    Boolean awaitingSupplier) {
     }
 
-    /** One report in a list. */
+    /**
+     * One report in a list.
+     *
+     * @param decidedQuantity          units decided, less those a supplier refused (they wait again)
+     * @param awaitingSupplierQuantity units decided for the supplier, still in quarantine to be handed over
+     */
     record Row(UUID id, String number, StockDamageReport.Origin origin, UUID warehouseId, String sku,
                String lotNumber, String sourceLocationCode, String damageLocationCode, int quantity,
-               int decidedQuantity, DamageReason reason, UUID orderId, UUID reportedBy, Instant reportedAt) {
+               int decidedQuantity, DamageReason reason, UUID orderId, UUID reportedBy, Instant reportedAt,
+               int awaitingSupplierQuantity) {
     }
 
     Page<Row> search(Criteria criteria, Pageable pageable);

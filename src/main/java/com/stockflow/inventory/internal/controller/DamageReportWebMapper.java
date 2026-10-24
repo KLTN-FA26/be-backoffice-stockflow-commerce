@@ -18,6 +18,8 @@ interface DamageReportWebMapper {
 
     DamageReportResponse.Disposition toResponse(StockDamages.DispositionView disposition);
 
+    DamageReportResponse.SupplierHandOver toResponse(StockDamages.SupplierHandOverView handOver);
+
     DamageReportRowResponse toResponse(StockDamages.DamageReportRow row);
 
     DamagePhotoLinkResponse toResponse(DownloadLink link);

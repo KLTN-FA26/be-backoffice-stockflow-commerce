@@ -112,6 +112,10 @@ public class StockDamageReportJpaEntity extends BaseEntity {
     @OrderBy("decidedAt ASC, id ASC")
     private List<StockDamageDispositionJpaEntity> dispositions = new ArrayList<>();
 
+    @OneToMany(mappedBy = "report", cascade = {CascadeType.PERSIST, CascadeType.MERGE}, fetch = FetchType.LAZY)
+    @OrderBy("shippedAt ASC, id ASC")
+    private List<StockDamageSupplierShipmentJpaEntity> shipments = new ArrayList<>();
+
     protected StockDamageReportJpaEntity() {
     }
 
@@ -164,6 +168,11 @@ public class StockDamageReportJpaEntity extends BaseEntity {
         dispositions.add(disposition);
     }
 
+    public void addShipment(StockDamageSupplierShipmentJpaEntity shipment) {
+        shipment.attachTo(this);
+        shipments.add(shipment);
+    }
+
     public String getReportNumber() { return reportNumber; }
     public UUID getRequestId() { return requestId; }
     public StockDamageReport.Origin getOrigin() { return origin; }
@@ -189,4 +198,5 @@ public class StockDamageReportJpaEntity extends BaseEntity {
     public Instant getReportedAt() { return reportedAt; }
     public List<StockDamagePhotoJpaEntity> getPhotos() { return Collections.unmodifiableList(photos); }
     public List<StockDamageDispositionJpaEntity> getDispositions() { return Collections.unmodifiableList(dispositions); }
+    public List<StockDamageSupplierShipmentJpaEntity> getShipments() { return Collections.unmodifiableList(shipments); }
 }

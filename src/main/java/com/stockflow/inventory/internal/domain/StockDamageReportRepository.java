@@ -18,6 +18,15 @@ public interface StockDamageReportRepository {
     /** The report a request made, if it was made: how a retried report is recognised. */
     Optional<StockDamageReport> findByRequestId(UUID requestId);
 
+    /**
+     * Units of a consumed hold reported damaged at the packing bench so far ({@code PACKING}): the hold took a fixed
+     * number, and no more of them can come back damaged.
+     */
+    int damagedAfterPick(UUID reservationId);
+
+    /** Whether {@code reservationId} is the impaired allocation a damage report left on its damaged units. */
+    boolean isImpairedAllocation(UUID reservationId);
+
     /** {@code DMG-yyyyMMdd-0001}: the damage record's number, from a per-day counter that never repeats. */
     String nextReportNumber(LocalDate day);
 

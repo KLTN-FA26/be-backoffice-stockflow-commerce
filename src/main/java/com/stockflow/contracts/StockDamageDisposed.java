@@ -7,9 +7,10 @@ import java.util.UUID;
  * report (docs 03 §5 DAMAGED → written off). One event per decision. See {@code package-info.java} for the rules
  * on changing this contract.
  *
- * <p>{@code RETURN_TO_SUPPLIER} is where a supplier return starts: inventory records only the intent and keeps the
- * units DAMAGED in quarantine, so a procurement return flow listens to this to raise the return and its debit
- * note, and ships the units out.</p>
+ * <p>{@code RETURN_TO_SUPPLIER} is where a supplier return starts: inventory records the intent and keeps the units
+ * DAMAGED in quarantine until a manager records them handed over under a delivery note
+ * ({@code POST /api/v1/inventory/damage-reports/{id}/dispositions/{dispositionId}/supplier-shipment}), when they
+ * leave the books. A procurement return flow listens to this event to raise the debit note.</p>
  *
  * @param disposition  {@code WRITE_OFF}, {@code RETURN_TO_SUPPLIER} or {@code RESTORE}
  * @param recordNumber the destruction record of a {@code WRITE_OFF}; null otherwise

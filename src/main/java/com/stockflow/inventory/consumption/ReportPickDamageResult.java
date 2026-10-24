@@ -18,14 +18,24 @@ import java.util.UUID;
  * @param holdsAfter       the holds that now stand for the allocation on the order line, in this order: the
  *                         allocation itself while it keeps units, then the replacements or the impaired share
  * @param alreadyReported  true when this request had reported the damage before; nothing changed this time
+ * @param pickLineId       the pick line the report named
  */
 public record ReportPickDamageResult(UUID damageReportId, String reportNumber, String damageLocationCode, int quantity,
                                      UUID reservationId, int retainedQuantity, UUID impairedReservationId,
-                                     List<Allocation> replacements, List<UUID> holdsAfter, boolean alreadyReported) {
+                                     List<Allocation> replacements, List<UUID> holdsAfter, boolean alreadyReported,
+                                     UUID pickLineId) {
 
     public ReportPickDamageResult {
         replacements = List.copyOf(replacements);
         holdsAfter = List.copyOf(holdsAfter);
+    }
+
+    /** Without the pick line (answers built before it was carried). */
+    public ReportPickDamageResult(UUID damageReportId, String reportNumber, String damageLocationCode, int quantity,
+                                  UUID reservationId, int retainedQuantity, UUID impairedReservationId,
+                                  List<Allocation> replacements, List<UUID> holdsAfter, boolean alreadyReported) {
+        this(damageReportId, reportNumber, damageLocationCode, quantity, reservationId, retainedQuantity,
+                impairedReservationId, replacements, holdsAfter, alreadyReported, null);
     }
 
     /** A new allocation of the order replacing damaged units: where to pick it and how many. */

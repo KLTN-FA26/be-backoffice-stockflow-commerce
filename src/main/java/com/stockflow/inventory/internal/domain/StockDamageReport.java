@@ -47,7 +47,12 @@ public final class StockDamageReport extends AggregateRoot {
         /** Anyone of the warehouse, on a shelf: free units only (held ones are reported where they are picked). */
         STOCK_CHECK,
         /** A picker at a pick line's bin, among the units the line's allocation holds (SCRUM-277). */
-        PICKING
+        PICKING,
+        /**
+         * The packing bench, among units already picked: broken in the tote or found damaged when packed. They were
+         * deducted when picked and come back into stock, DAMAGED, in quarantine.
+         */
+        PACKING
     }
 
     /** The goods the report is about, as their stock row knew them when the damage was found. */
@@ -127,6 +132,43 @@ public final class StockDamageReport extends AggregateRoot {
         }
     }
 
+    /**
+     * What became of some units of a {@link DamageDisposition#RETURN_TO_SUPPLIER} decision: handed to the supplier, or
+     * the supplier's carrier, under {@code deliveryNote} - they left the books - or refused by the supplier
+     * ({@code refused}, with a note saying so): those are the report's to decide again. A decision is carried out in
+     * one or several of these, never for more units than it named. Immutable.
+     */
+    public record SupplierShipment(UUID id, UUID requestId, UUID dispositionId, Quantity quantity, String deliveryNote,
+                                   String note, UUID shippedBy, Instant shippedAt, boolean refused) {
+        public SupplierShipment {
+            Objects.requireNonNull(id, "id");
+            Objects.requireNonNull(requestId, "requestId");
+            Objects.requireNonNull(dispositionId, "dispositionId");
+            Objects.requireNonNull(quantity, "quantity");
+            Objects.requireNonNull(shippedBy, "shippedBy");
+            Objects.requireNonNull(shippedAt, "shippedAt");
+            deliveryNote = blankToNull(deliveryNote);
+            note = blankToNull(note);
+            if (quantity.isZero()) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "At least one unit");
+            }
+            if (!refused && deliveryNote == null) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                        "Goods go back to the supplier under a delivery note: give its number");
+            }
+            if (refused && (deliveryNote != null || note == null)) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                        "A supplier's refusal says why in the note, and carries no delivery note");
+            }
+        }
+
+        /** Handed over (not refused). */
+        public SupplierShipment(UUID id, UUID requestId, UUID dispositionId, Quantity quantity, String deliveryNote,
+                                String note, UUID shippedBy, Instant shippedAt) {
+            this(id, requestId, dispositionId, quantity, deliveryNote, note, shippedBy, shippedAt, false);
+        }
+    }
+
     private final UUID id;
     private final String number;
     private final UUID requestId;
@@ -142,13 +184,24 @@ public final class StockDamageReport extends AggregateRoot {
     private final UUID reportedBy;
     private final Instant reportedAt;
     private final List<Disposition> dispositions;
+    private final List<SupplierShipment> shipments;
     private final long version;
+
+    /** As stored, before anything went back to a supplier. */
+    public StockDamageReport(UUID id, String number, UUID requestId, Origin origin, DamagedGoods goods,
+                             StockItemId damagedStockItem, LocationId damageLocation, Quantity quantity,
+                             DamageReason reason, String note, List<Photo> photos, PickContext pick, UUID reportedBy,
+                             Instant reportedAt, List<Disposition> dispositions, long version) {
+        this(id, number, requestId, origin, goods, damagedStockItem, damageLocation, quantity, reason, note, photos,
+                pick, reportedBy, reportedAt, dispositions, List.of(), version);
+    }
 
     /** As stored. Every rule is checked again, so a row a bad migration corrupted cannot be loaded as a report. */
     public StockDamageReport(UUID id, String number, UUID requestId, Origin origin, DamagedGoods goods,
                              StockItemId damagedStockItem, LocationId damageLocation, Quantity quantity,
                              DamageReason reason, String note, List<Photo> photos, PickContext pick, UUID reportedBy,
-                             Instant reportedAt, List<Disposition> dispositions, long version) {
+                             Instant reportedAt, List<Disposition> dispositions, List<SupplierShipment> shipments,
+                             long version) {
         this.id = Objects.requireNonNull(id, "id");
         this.number = Objects.requireNonNull(number, "number");
         this.requestId = Objects.requireNonNull(requestId, "requestId");
@@ -164,6 +217,7 @@ public final class StockDamageReport extends AggregateRoot {
         this.reportedBy = Objects.requireNonNull(reportedBy, "reportedBy");
         this.reportedAt = Objects.requireNonNull(reportedAt, "reportedAt");
         this.dispositions = new ArrayList<>(dispositions == null ? List.of() : dispositions);
+        this.shipments = new ArrayList<>(shipments == null ? List.of() : shipments);
         this.version = version;
         checkInvariants();
     }
@@ -181,9 +235,27 @@ public final class StockDamageReport extends AggregateRoot {
                                            StockItemId damagedStockItem, LocationId damageLocation, Quantity quantity,
                                            DamageReason reason, String note, List<Photo> photos, PickContext pick,
                                            UUID reportedBy, Instant now, int skuReservationShortfall) {
-        StockDamageReport report = new StockDamageReport(Identifiers.newId(), number, requestId,
-                pick == null ? Origin.STOCK_CHECK : Origin.PICKING, goods, damagedStockItem, damageLocation, quantity,
-                reason, note, photos, pick, reportedBy, now, List.of(), 0L);
+        return report(number, requestId, pick == null ? Origin.STOCK_CHECK : Origin.PICKING, goods, damagedStockItem,
+                damageLocation, quantity, reason, note, photos, pick, reportedBy, now, skuReservationShortfall);
+    }
+
+    /** The same, found at the packing bench among units already picked ({@link Origin#PACKING}). */
+    public static StockDamageReport reportAfterPick(String number, UUID requestId, DamagedGoods goods,
+                                                    StockItemId damagedStockItem, LocationId damageLocation,
+                                                    Quantity quantity, DamageReason reason, String note,
+                                                    List<Photo> photos, PickContext pick, UUID reportedBy, Instant now,
+                                                    int skuReservationShortfall) {
+        return report(number, requestId, Origin.PACKING, goods, damagedStockItem, damageLocation, quantity, reason,
+                note, photos, Objects.requireNonNull(pick, "pick"), reportedBy, now, skuReservationShortfall);
+    }
+
+    private static StockDamageReport report(String number, UUID requestId, Origin origin, DamagedGoods goods,
+                                            StockItemId damagedStockItem, LocationId damageLocation, Quantity quantity,
+                                            DamageReason reason, String note, List<Photo> photos, PickContext pick,
+                                            UUID reportedBy, Instant now, int skuReservationShortfall) {
+        StockDamageReport report = new StockDamageReport(Identifiers.newId(), number, requestId, origin, goods,
+                damagedStockItem, damageLocation, quantity, reason, note, photos, pick, reportedBy, now, List.of(),
+                0L);
         report.registerEvent(new StockEvent.DamageReported(new StockDamageReported(report.id, number,
                 report.origin.name(), goods.warehouseId(), goods.sku().code(), goods.lotNumber(),
                 goods.sourceLocation().code(), damageLocation.code(), quantity.value(), reason.name(),
@@ -272,11 +344,107 @@ public final class StockDamageReport extends AggregateRoot {
         return disposition;
     }
 
+    /**
+     * Units of a return-to-supplier decision handed to the supplier under {@code deliveryNote}: {@code units} of them,
+     * or all it has left when null - a supplier may take a consignment in parts. The caller takes them off the DAMAGED
+     * row in the same transaction.
+     *
+     * @throws BusinessException {@code NOT_FOUND} for a decision not on this report;
+     *         {@code DAMAGE_RETURN_NOT_SHIPPABLE} for a decision that is not a return to the supplier, or more units
+     *         than it has left to hand over; {@code VALIDATION_FAILED} without a delivery note
+     */
+    public SupplierShipment shipToSupplier(UUID shipmentRequestId, UUID dispositionId, Quantity units,
+                                           String deliveryNote, String shipmentNote, UUID shippedBy, Instant now) {
+        Quantity handed = units == null ? remainingToHandOver(requireShippable(dispositionId).id()) : units;
+        requireShippable(dispositionId, handed);
+        SupplierShipment shipment = new SupplierShipment(Identifiers.newId(), shipmentRequestId, dispositionId, handed,
+                deliveryNote, shipmentNote, shippedBy, now, false);
+        shipments.add(shipment);
+        checkInvariants();
+        return shipment;
+    }
+
+    /**
+     * The supplier refused {@code units} of a return-to-supplier decision (or took fewer than were sent for): they stay
+     * DAMAGED in quarantine and wait for a decision again - written off, restored, or another return. Nothing moves.
+     *
+     * @throws BusinessException as {@link #shipToSupplier}; {@code VALIDATION_FAILED} without a note
+     */
+    public SupplierShipment refuseReturn(UUID refusalRequestId, UUID dispositionId, Quantity units, String why,
+                                         UUID recordedBy, Instant now) {
+        requireShippable(dispositionId, Objects.requireNonNull(units, "units"));
+        SupplierShipment refusal = new SupplierShipment(Identifiers.newId(), refusalRequestId, dispositionId, units,
+                null, why, recordedBy, now, true);
+        shipments.add(refusal);
+        checkInvariants();
+        return refusal;
+    }
+
+    /**
+     * The decision whose units are to go back to the supplier, before any stock moves for it.
+     *
+     * @throws BusinessException as {@link #shipToSupplier}
+     */
+    public Disposition requireShippable(UUID dispositionId) {
+        Disposition decision = dispositions.stream().filter(d -> d.id().equals(dispositionId)).findFirst()
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND,
+                        "Damage report %s has no decision %s".formatted(number, dispositionId)));
+        if (decision.type() != DamageDisposition.RETURN_TO_SUPPLIER) {
+            throw new BusinessException(ErrorCode.DAMAGE_RETURN_NOT_SHIPPABLE,
+                    "Decision %s is %s; only goods decided for the supplier are shipped to it".formatted(dispositionId,
+                            decision.type()));
+        }
+        if (remainingToHandOver(dispositionId).isZero()) {
+            throw new BusinessException(ErrorCode.DAMAGE_RETURN_NOT_SHIPPABLE,
+                    "Every unit of decision %s went back to the supplier, or was refused, already".formatted(
+                            dispositionId));
+        }
+        return decision;
+    }
+
+    /** {@link #requireShippable(UUID)}, for {@code units} of it. */
+    public Disposition requireShippable(UUID dispositionId, Quantity units) {
+        Disposition decision = requireShippable(dispositionId);
+        Quantity left = remainingToHandOver(dispositionId);
+        if (units.isZero() || left.isLessThan(units)) {
+            throw new BusinessException(ErrorCode.DAMAGE_RETURN_NOT_SHIPPABLE,
+                    "Decision %s has %s unit(s) left to hand over; %s asked".formatted(dispositionId, left, units));
+        }
+        return decision;
+    }
+
     // ------------------------------------------------------------------ queries
 
-    /** Units a manager has decided so far. */
+    /** The hand-over (or refusal) a retried request already recorded, if any. */
+    public Optional<SupplierShipment> shipmentFor(UUID shipmentRequestId) {
+        return shipments.stream().filter(s -> s.requestId().equals(shipmentRequestId)).findFirst();
+    }
+
+    /** The hand-overs and refusals of a return-to-supplier decision, oldest first. */
+    public List<SupplierShipment> shipmentsOf(UUID dispositionId) {
+        return shipments.stream().filter(s -> s.dispositionId().equals(dispositionId)).toList();
+    }
+
+    /** Units of a decision neither handed to the supplier nor refused by it yet. */
+    public Quantity remainingToHandOver(UUID dispositionId) {
+        Quantity named = dispositions.stream().filter(d -> d.id().equals(dispositionId))
+                .filter(d -> d.type() == DamageDisposition.RETURN_TO_SUPPLIER)
+                .map(Disposition::quantity).findFirst().orElse(Quantity.ZERO);
+        return named.minus(shipmentsOf(dispositionId).stream().map(SupplierShipment::quantity)
+                .reduce(Quantity.ZERO, Quantity::plus));
+    }
+
+    /** Units decided for the supplier that are still in quarantine, waiting to be handed over. */
+    public Quantity awaitingSupplier() {
+        return dispositions.stream().filter(d -> d.type() == DamageDisposition.RETURN_TO_SUPPLIER)
+                .map(d -> remainingToHandOver(d.id())).reduce(Quantity.ZERO, Quantity::plus);
+    }
+
+    /** Units a manager has decided so far, less those a supplier refused (they wait for a decision again). */
     public Quantity decided() {
-        return dispositions.stream().map(Disposition::quantity).reduce(Quantity.ZERO, Quantity::plus);
+        Quantity refused = shipments.stream().filter(SupplierShipment::refused).map(SupplierShipment::quantity)
+                .reduce(Quantity.ZERO, Quantity::plus);
+        return dispositions.stream().map(Disposition::quantity).reduce(Quantity.ZERO, Quantity::plus).minus(refused);
     }
 
     /** Units still waiting for a decision. */
@@ -313,8 +481,8 @@ public final class StockDamageReport extends AggregateRoot {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
                     "Serial number %s is one unit".formatted(goods.serialNumber()));
         }
-        if ((origin == Origin.PICKING) != (pick != null)) {
-            throw new IllegalStateException("A picker's report names its pick line; a stock check names none");
+        if ((origin == Origin.STOCK_CHECK) == (pick != null)) {
+            throw new IllegalStateException("A picker's or a packer's report names its pick line; a stock check none");
         }
         if (goods.sourceLocation().equals(damageLocation) || goods.sourceStockItem().equals(damagedStockItem)) {
             throw new IllegalStateException("Damaged goods leave the row and the location they were found at");
@@ -324,6 +492,16 @@ public final class StockDamageReport extends AggregateRoot {
         }
         if (dispositions.stream().anyMatch(d -> d.decidedBy().equals(reportedBy))) {
             throw new IllegalStateException("Damage report %s was decided by its reporter".formatted(number));
+        }
+        for (SupplierShipment shipment : shipments) {
+            Optional<Disposition> decision = dispositions.stream()
+                    .filter(d -> d.id().equals(shipment.dispositionId())).findFirst();
+            int handedOver = shipmentsOf(shipment.dispositionId()).stream().mapToInt(s -> s.quantity().value()).sum();
+            if (decision.isEmpty() || decision.get().type() != DamageDisposition.RETURN_TO_SUPPLIER
+                    || handedOver > decision.get().quantity().value()) {
+                throw new IllegalStateException("Damage report %s hands over what no return decision sent, or more"
+                        .formatted(number));
+            }
         }
     }
 
@@ -348,5 +526,7 @@ public final class StockDamageReport extends AggregateRoot {
     public Instant reportedAt() { return reportedAt; }
     /** Unmodifiable, oldest first: decisions are added through this aggregate only. */
     public List<Disposition> dispositions() { return Collections.unmodifiableList(dispositions); }
+    /** Unmodifiable, oldest first. */
+    public List<SupplierShipment> shipments() { return Collections.unmodifiableList(shipments); }
     public long version() { return version; }
 }

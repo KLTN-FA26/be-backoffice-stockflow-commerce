@@ -268,6 +268,8 @@ public enum ErrorCode {
     DAMAGE_DISPOSITION_EXCEEDS_PENDING("More units than this damage report still has waiting for a decision", 409),
     /** SCRUM-277: damaged units an order still holds (its pick line is short) wait for the order to be reallocated. */
     DAMAGED_STOCK_HELD("These damaged units are still allocated to an order; reallocate its short pick line first", 409),
+    /** A hand-over to the supplier names a RETURN_TO_SUPPLIER decision whose goods have not left yet. */
+    DAMAGE_RETURN_NOT_SHIPPABLE("Only goods decided for the supplier are handed to it, and once", 409),
     /** SCRUM-475: restored goods go back onto an active bin of the warehouse they were damaged in. */
     DAMAGE_RESTORE_LOCATION_INVALID("Restored goods go back onto an active bin of the same warehouse", 409),
     /** SCRUM-409: the location scanned at a blank issue is not where the hold's goods are. */
@@ -337,6 +339,8 @@ public enum ErrorCode {
             + "instead", 409),
     /** The replacement order already left for picking or shipping: it can no longer be withdrawn. */
     RETURN_REPLACEMENT_NOT_WITHDRAWABLE("This replacement order can no longer be withdrawn", 409),
+    /** Approved units have not arrived yet: QC waits, or says no more parcels are coming. */
+    RETURN_PARCELS_OUTSTANDING("Approved units of this return have not arrived yet", 409),
     /** The order received less money than the refund asks; credit the rest instead. */
     RETURN_REFUND_EXCEEDS_PAID("The refund is more than the order has received", 409),
     /** A customer with overdue receivables is credited, never paid out in cash. */
@@ -474,6 +478,8 @@ public enum ErrorCode {
     PACK_QUANTITY_EXCEEDS_ORDER("More than the order line still wants", 409),
     /** More than was picked (or produced) for the line: the rest has not reached packing. */
     PACK_QUANTITY_EXCEEDS_PICKED("More than reached packing for this line", 409),
+    /** R8: units reported damaged at packing are still in a parcel; they are taken out of it first. */
+    PACK_DAMAGED_UNITS_PACKED("Those units are in a parcel: take them out before reporting them damaged", 409),
     /** Docs 08 BR-01: the lot scanned was not picked for this line, or more of it than was picked. */
     PACK_LOT_MISMATCH("This lot was not picked for this line", 409),
     /** Docs 08 step 2: the serial scanned was not picked for this line, or is packed already. */
