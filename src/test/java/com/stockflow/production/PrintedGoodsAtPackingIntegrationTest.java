@@ -254,7 +254,8 @@ class PrintedGoodsAtPackingIntegrationTest {
         runs.recordOutput(printer, productionOrderId, quantity, List.of());
         int onHandBefore = onHandInWarehouse();
         int atpBefore = inventory.availableToPromise(BLANK);
-        ProductionOrders.Detail done = runs.recordQc(inspector, productionOrderId, quantity, 0, null, PACKING);
+        ProductionOrders.Detail done = runs.recordQc(inspector, productionOrderId, quantity, 0, null, PACKING,
+                sampleOf(productionOrderId));
         assertThat(done.summary().status()).isEqualTo(ProductionOrder.Status.COMPLETED);
         Await.until("the order is ready to fulfil", ASYNC,
                 () -> salesOrders.findById(orderId).orElseThrow().status() == OrderStatus.READY_TO_FULFILL);
@@ -859,5 +860,11 @@ class PrintedGoodsAtPackingIntegrationTest {
                  WHERE order_id = ? ORDER BY ready_at, code""", String.class, line.orderId()))
                 .containsExactly(line.orderNumber() + "-S1:READY_TO_DISPATCH:true:1",
                         line.orderNumber() + "-S2:READY_TO_DISPATCH:false:1");
+    }
+
+    /** The approved sample a QC round of this order names (BR-PRD-05, SCRUM-487); null when it has none. */
+    private UUID sampleOf(UUID productionOrderId) {
+        return jdbc.queryForObject("SELECT approved_sample_id FROM production.production_order WHERE id = ?",
+                UUID.class, productionOrderId);
     }
 }

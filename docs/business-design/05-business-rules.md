@@ -118,7 +118,7 @@ several aggregates and no constraint can state them.
 | BR-PRD-02 | Nothing is printed before prepress passes and the file checksum matches the locked design snapshot. | `ProductionOrder.passPrepress()` | 3.25.3 |
 | BR-PRD-03 | Blanks are issued only against a production order and never above its remaining need. | `ProductionOrder.issueBlanks()` | 3.25.4 |
 | BR-PRD-04 | Good + scrap = printed; scrap always has a reason and leaves stock through a reasoned adjustment. | `ProductionOrder.recordOutput()` | 3.25.5 |
-| BR-PRD-05 | A production order completes only after QC; an ORDER production order is checked against the customer-approved sample. | `ProductionOrder.passQc()` | 3.25.6 |
+| BR-PRD-05 | A production order completes only after QC; an ORDER production order is checked against the customer-approved sample. The QC round names that sample (`approvedSampleId`), which must still be the APPROVED round of the order's design; it is kept in the order's status history (SCRUM-487). | `ProductionOrder.recordQc()` + `PrintRunService.recordQc` (`ApprovedSamples`) | 3.25.6 |
 | BR-PRD-06 | An order leaves IN_PRODUCTION only when every production order of the order is completed (or its line cancelled). | order listener on `ProductionCompleted` | 3.25.7 |
 | BR-PRD-07 | The design cannot change once a production order is PRINTING. | `Order.replaceDesign()` | 3.25.5 |
 | BR-PRD-08 | A line with a new design (no APPROVED sample for design + blank) cannot be released to production. | `Order.release()` | 3.25.2 |

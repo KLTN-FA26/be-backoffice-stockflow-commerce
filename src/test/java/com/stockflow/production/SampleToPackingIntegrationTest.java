@@ -153,7 +153,7 @@ class SampleToPackingIntegrationTest {
         assertThat(status(productionOrderId)).isEqualTo(ProductionOrder.Status.MATERIAL_ISSUED);
         runs.startPrinting(printer, productionOrderId);
         runs.recordOutput(printer, productionOrderId, quantity, List.of());
-        return runs.recordQc(inspector, productionOrderId, quantity, 0, null, PACKING);
+        return runs.recordQc(inspector, productionOrderId, quantity, 0, null, PACKING, sampleOf(productionOrderId));
     }
 
     private ProductionOrder.Status status(UUID productionOrderId) {
@@ -282,5 +282,11 @@ class SampleToPackingIntegrationTest {
                 .singleElement().isEqualTo(new ProductionCompleted(orderId, lineId, lsx, 3));
         Await.until("the order is ready to fulfil", ASYNC,
                 () -> orders.findById(orderId).orElseThrow().status() == OrderStatus.READY_TO_FULFILL);
+    }
+
+    /** The approved sample a QC round of this order names (BR-PRD-05, SCRUM-487); null when it has none. */
+    private UUID sampleOf(UUID productionOrderId) {
+        return jdbc.queryForObject("SELECT approved_sample_id FROM production.production_order WHERE id = ?",
+                UUID.class, productionOrderId);
     }
 }
