@@ -64,12 +64,14 @@ public interface CycleCounts {
     PlannedCount plan(PlanCycleCountCommand command, boolean showExpected);
 
     /**
-     * Hands a planned count to an active warehouse staff member or manager of its warehouse.
+     * Hands a planned count to an active warehouse staff member or manager of its warehouse. The returned view is
+     * blinded as {@link #get} blinds it.
      *
+     * @param showExpected the caller may decide counts ({@code inventory-cycle-counts:APPROVE})
      * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code VALIDATION_FAILED};
      *         {@code CONFLICT} once counting started; {@code OUT_OF_DATA_SCOPE}
      */
-    CycleCountView assign(UUID id, UUID userId);
+    CycleCountView assign(UUID id, UUID userId, boolean showExpected);
 
     /**
      * Records what was found on one line: a quantity, or for an unopened carton whether it is there

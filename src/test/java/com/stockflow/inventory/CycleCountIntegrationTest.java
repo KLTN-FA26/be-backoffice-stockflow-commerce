@@ -785,6 +785,11 @@ class CycleCountIntegrationTest {
         CycleCountView planned = plan(clerk, List.of(), List.of(), List.of(BIN), List.of(sku)).count();
 
         assertThat(planned.assignedUserId()).isEqualTo(clerk);
+
+        // Handed on, the blind count answers as get does: the books to who decides, not to anyone else.
+        UUID colleague = staff("WAREHOUSE_STAFF", WAREHOUSE_HCM);
+        assertThat(cycleCounts.assign(planned.id(), colleague, true).lines().get(0).expectedQty()).isEqualTo(5);
+        assertThat(cycleCounts.assign(planned.id(), clerk, false).lines().get(0).expectedQty()).isNull();
     }
 
     @Test
@@ -802,7 +807,7 @@ class CycleCountIntegrationTest {
                 .as("who decides counts may count").isEqualTo(manager);
         assertThat(cycleCounts.count(planned.id(), line, 5, null, clerk, false).lines().get(0).countedBy())
                 .isEqualTo(clerk);
-        assertThat(code(catchThrowable(() -> cycleCounts.assign(planned.id(), colleague))))
+        assertThat(code(catchThrowable(() -> cycleCounts.assign(planned.id(), colleague, true))))
                 .as("a count being counted keeps its counter").isEqualTo(ErrorCode.CONFLICT);
     }
 }

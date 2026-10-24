@@ -226,11 +226,11 @@ class CycleCountService implements CycleCounts {
 
     @Override
     @Transactional
-    public CycleCountView assign(UUID id, UUID userId) {
+    public CycleCountView assign(UUID id, UUID userId, boolean showExpected) {
         CycleCount count = lock(id);
         requireAssignable(userId, count.warehouseId());
         count.assign(userId);
-        return views.of(counts.save(count), false);
+        return views.of(counts.save(count), showExpected);
     }
 
     // ------------------------------------------------------------------ counting, delegated

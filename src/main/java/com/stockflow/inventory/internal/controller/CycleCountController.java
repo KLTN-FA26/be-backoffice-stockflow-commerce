@@ -118,8 +118,9 @@ class CycleCountController {
     @Operation(summary = "Hand a planned count to a warehouse staff member or manager")
     @RequiresPermission(resource = InventoryResources.CYCLE_COUNTS, action = Action.CREATE, scope = DataScope.WAREHOUSE)
     public ApiResponse<CycleCountResponse> assign(@PathVariable UUID countId,
-                                                  @Valid @RequestBody AssignCycleCountRequest request) {
-        return ApiResponse.ok(toResponse(counts.assign(countId, request.assignedUserId())));
+                                                  @Valid @RequestBody AssignCycleCountRequest request,
+                                                  @AuthenticatedUser CurrentUser actor) {
+        return ApiResponse.ok(toResponse(counts.assign(countId, request.assignedUserId(), decides(actor))));
     }
 
     @PutMapping("/{countId}/lines/{lineId}/count")
