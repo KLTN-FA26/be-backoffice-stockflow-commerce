@@ -55,6 +55,8 @@
     <!-- Location labels (SCRUM-97): ZXing encodes Code 128 / QR, PDFBox draws the PDF. -->
     <zxing.version>3.5.3</zxing.version>
     <pdfbox.version>3.0.6</pdfbox.version>
+    <!-- The back-office assistant's model provider (ADR-0010): Anthropic's official Java SDK. -->
+    <anthropic-java.version>2.34.0</anthropic-java.version>
 
     <!--
       Recorded in build-info.properties and served at /actuator/info. CI overrides them with
@@ -233,6 +235,17 @@
       <groupId>net.javacrumbs.shedlock</groupId>
       <artifactId>shedlock-provider-jdbc-template</artifactId>
       <version>${shedlock.version}</version>
+    </dependency>
+
+    <!-- ==================== the assistant's model provider ==================== -->
+    <!--
+      ADR-0010. Only com.stockflow.assistant uses it, behind the LanguageModel port; nothing in mvn test calls the
+      provider. Its Jackson and Kotlin dependencies resolve to the Boot BOM's versions.
+    -->
+    <dependency>
+      <groupId>com.anthropic</groupId>
+      <artifactId>anthropic-java</artifactId>
+      <version>${anthropic-java.version}</version>
     </dependency>
 
     <!-- ==================== outbound resilience ==================== -->

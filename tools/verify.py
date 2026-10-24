@@ -219,13 +219,36 @@ for f in files:
             problems.append(f"ORDINAL ENUM {f}: @Enumerated({m.group(1)})")
 
 # 10. permission catalog consistency
+#     Compared by the resource CODE the constants hold, not by the constants' names. The assistant's tools
+#     (ADR-0010) guard with other modules' resources, whose constants are internal to those modules, so the
+#     same code reaches @RequiresPermission under another name: ToolPermissions.INVENTORY_ALERTS is
+#     InventoryResources.ALERTS, both "inventory-alerts". Comparing names reported those as undeclared, and
+#     would equally have passed two different codes that happen to share a constant name.
+#     A constant may be a literal or another constant (FulfillmentResources.PICK_LISTS =
+#     FulfillmentPermissions.PICK_LISTS); a name that resolves to no literal is compared as written.
+constant_expr = {}
+for f in files:
+    cls = os.path.basename(f)[:-5]
+    for m in re.finditer(r'static\s+final\s+String\s+(\w+)\s*=\s*("[^"]*"|[\w.]+)\s*;', open(f).read()):
+        constant_expr[f"{cls}.{m.group(1)}"] = m.group(2)
+
+def resource_code(token, cls, depth=0):
+    if token.startswith('"'):
+        return token.strip('"')
+    key = token if "." in token else f"{cls}.{token}"
+    expr = constant_expr.get(key)
+    if expr is None or depth > 5:
+        return token.split(".")[-1]
+    return resource_code(expr, key.split(".")[0], depth + 1)
+
 declared, used = set(), set()
 for f in files:
     s = open(f).read()
-    for m in re.finditer(r'@PermissionResource\(\s*\n?\s*code\s*=\s*([\w.]+)', s):
-        declared.add(m.group(1).split(".")[-1])
-    for m in re.finditer(r'@RequiresPermission\(resource\s*=\s*([\w.]+)', s):
-        used.add(m.group(1).split(".")[-1])
+    cls = os.path.basename(f)[:-5]
+    for m in re.finditer(r'@PermissionResource\(\s*\n?\s*code\s*=\s*("[^"]*"|[\w.]+)', s):
+        declared.add(resource_code(m.group(1), cls))
+    for m in re.finditer(r'@RequiresPermission\(\s*resource\s*=\s*("[^"]*"|[\w.]+)', s):
+        used.add(resource_code(m.group(1), cls))
 missing = used - declared
 if missing:
     problems.append(f"PERMISSION: guarded resources with no @PermissionResource: {sorted(missing)}")

@@ -444,6 +444,23 @@ stockflow:
     alert-reconcile-cron: "0 30 1 * * *"
     expiry-sweep-cron: "0 0 2 * * *"
 
+  # The back-office AI assistant (ADR-0010, docs/assistant-design.md §11). Off by default; with no key it still starts
+  # and answers 503 ASSISTANT_DISABLED. The key comes from the environment only, never from this file.
+  assistant:
+    enabled: ${ASSISTANT_ENABLED:false}
+    api-key: ${ANTHROPIC_API_KEY:}
+    model: ${ASSISTANT_MODEL:claude-opus-5-5}
+    # low | medium | high | xhigh | max. Low suits chat-style questions; raise it only if the golden set says so.
+    effort: low
+    max-tool-rounds: 6
+    max-output-tokens: 16000
+    daily-message-limit: 50
+    retention-days: 90
+    request-timeout: PT90S
+    # Must outlast one whole answer: request-timeout x (max-tool-rounds + 1).
+    answer-lease: PT15M
+    refusal-fallback: true
+
   payment:
     # The company's bank account a customer transfers to (SCRUM-193, kltn-docs 15 §4.1 step 1). Blank here on purpose and
     # in prod: GET /orders/me/{id}/transfer-instructions answers 503 TRANSFER_INSTRUCTIONS_UNAVAILABLE until all three

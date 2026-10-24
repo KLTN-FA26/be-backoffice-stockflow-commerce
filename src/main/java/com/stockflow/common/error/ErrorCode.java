@@ -512,6 +512,8 @@ public enum ErrorCode {
     DUPLICATE_KEY("A record with these values already exists", 409),
     /** The same idempotency key is still being processed. The client should poll, not retry blindly. */
     IDEMPOTENT_REQUEST_IN_PROGRESS("An identical request is still being processed", 409),
+    /** ADR-0010: a question in this conversation is still being answered; its turns must not interleave. */
+    ASSISTANT_BUSY("The assistant is still answering in this conversation", 409),
     /** BR-PO: a new PO cannot be raised against a supplier that is not ACTIVE. */
     SUPPLIER_INACTIVE("This supplier cannot receive new purchase orders", 409),
     SUPPLIER_HAS_OPEN_PURCHASE_ORDERS("Supplier has open purchase orders", 409),
@@ -610,6 +612,8 @@ public enum ErrorCode {
 
     // ---- 429
     RATE_LIMITED("Too many requests", 429),
+    /** ADR-0010: the per-user daily cap on assistant questions ({@code stockflow.assistant.daily-message-limit}). */
+    ASSISTANT_DAILY_LIMIT("You have asked the assistant as many questions as allowed today", 429),
 
     // ---- 5xx
     INTERNAL_ERROR("Internal server error", 500),
@@ -622,7 +626,11 @@ public enum ErrorCode {
     TRANSFER_INSTRUCTIONS_UNAVAILABLE("Transfer details cannot be shown right now", 503),
     /** The caller's permissions could not be looked up (ADR-0008). The token itself may be fine,
      *  which is why this is a 503 and not a 401 that would sign the user out. */
-    AUTHORIZATION_UNAVAILABLE("Permissions cannot be checked right now, please retry", 503);
+    AUTHORIZATION_UNAVAILABLE("Permissions cannot be checked right now, please retry", 503),
+    /** ADR-0010: the assistant's model provider could not be reached or refused the request. Retryable. */
+    ASSISTANT_UNAVAILABLE("The assistant cannot answer right now, please retry", 503),
+    /** ADR-0010: the assistant is switched off, or has no credentials, in this deployment. Not retryable. */
+    ASSISTANT_DISABLED("The assistant is not available in this deployment", 503);
 
     private final String defaultMessage;
     private final int httpStatus;
@@ -651,7 +659,7 @@ public enum ErrorCode {
         return switch (this) {
             case OPTIMISTIC_LOCK, LOCK_TIMEOUT, RATE_LIMITED,
                  EXTERNAL_SERVICE_ERROR, STORAGE_ERROR, IDEMPOTENT_REQUEST_IN_PROGRESS,
-                 AUTHORIZATION_UNAVAILABLE -> true;
+                 AUTHORIZATION_UNAVAILABLE, ASSISTANT_BUSY, ASSISTANT_UNAVAILABLE -> true;
             default -> false;
         };
     }
