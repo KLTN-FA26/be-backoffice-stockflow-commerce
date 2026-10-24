@@ -108,6 +108,11 @@ public record StockMovement(
          * since G4-Q2 (2026-10-21) printed goods leave when their production order completes and no line names a
          * package any more; the value stays for the lines written before.
          */
-        PACKAGE
+        PACKAGE,
+        /**
+         * A damage report (V20261025030000): units found damaged moved to quarantine as DAMAGED, or a manager's
+         * decision restored them to a bin. A write-off references its posted {@code STOCK_ADJUSTMENT} instead.
+         */
+        DAMAGE_REPORT
     }
 }

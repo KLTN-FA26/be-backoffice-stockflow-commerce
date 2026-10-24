@@ -32,4 +32,16 @@ public interface LocationDirectory {
 
     /** The warehouse a location belongs to; empty for an unknown code. */
     java.util.Optional<java.util.UUID> warehouseOf(LocationId location);
+
+    /**
+     * Whether the location is a QUARANTINE area: where goods that may not be sold wait apart from good ones - QC's
+     * held and rejected goods (docs 03), damaged goods (docs 03 §5).
+     */
+    boolean isQuarantineArea(LocationId location);
+
+    /** The usable QUARANTINE areas of a warehouse, by location code: where damaged goods can be put. */
+    java.util.List<LocationId> quarantineAreas(java.util.UUID warehouseId);
+
+    /** Whether the location is a bin on a shelf, as opposed to a floor area: where goods are stored for picking. */
+    boolean isBin(LocationId location);
 }

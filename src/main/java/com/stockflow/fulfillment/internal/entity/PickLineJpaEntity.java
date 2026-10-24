@@ -63,6 +63,12 @@ public class PickLineJpaEntity extends BaseEntity {
     private UUID putBackBy;
     @Column(name = "put_back_at")
     private Instant putBackAt;
+    /** SCRUM-277: units found damaged at the bin, on the line a damage report superseded. */
+    @Column(name = "damaged_qty", nullable = false)
+    private int damagedQty;
+    /** SCRUM-277: the damage report that superseded or made the line. */
+    @Column(name = "damage_report_id")
+    private UUID damageReportId;
 
     protected PickLineJpaEntity() {
     }
@@ -102,6 +108,15 @@ public class PickLineJpaEntity extends BaseEntity {
     public void recordShort(int shortQty) {
         this.shortQty = shortQty;
     }
+
+    /** What a damage report recorded on the line (SCRUM-277); {@code ck_pick_line_damaged} bounds it. */
+    public void recordDamage(int damagedQty, UUID damageReportId) {
+        this.damagedQty = damagedQty;
+        this.damageReportId = damageReportId;
+    }
+
+    public int getDamagedQty() { return damagedQty; }
+    public UUID getDamageReportId() { return damageReportId; }
 
     public UUID getPickId() { return pickId; }
     public UUID getOrderLineId() { return orderLineId; }
