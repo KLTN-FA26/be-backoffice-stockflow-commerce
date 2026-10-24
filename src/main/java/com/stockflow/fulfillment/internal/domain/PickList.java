@@ -265,6 +265,112 @@ public final class PickList {
         return lines.stream().anyMatch(line -> line.status() == PickLineStatus.SHORT);
     }
 
+    // ------------------------------------------------------------------ damage found at the bin (SCRUM-277)
+
+    /**
+     * The picker is at the line's bin and finds {@code damaged} of the allocated units damaged (docs 03 §5,
+     * SCRUM-277). Checked before anything is written; the caller then has inventory move the damaged units to
+     * quarantine and makes the line give way to {@link #replaceDamaged}. The same report again - the line already
+     * superseded by a damage report of that many units at that bin - is answered as done.
+     *
+     * @return true when the line was reported damaged already, exactly so
+     * @throws BusinessException {@code NOT_FOUND}; {@code PICK_TASK_STATE_CONFLICT} unless the task is PICKING;
+     *         {@code PICK_LINE_NOT_OPEN}; {@code PICK_LOCATION_MISMATCH}; {@code VALIDATION_FAILED} unless 1 to the
+     *         allocated quantity
+     */
+    public boolean requireDamageable(UUID lineId, String scannedLocation, int damaged) {
+        if (alreadyReportedDamaged(lineId, scannedLocation, damaged)) {
+            return true;
+        }
+        PickLine line = requireLine(lineId);
+        if (status != PickStatus.PICKING) {
+            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT,
+                    "Damage is reported while the task is PICKING; it is " + status);
+        }
+        if (line.status() != PickLineStatus.OPEN) {
+            throw new BusinessException(ErrorCode.PICK_LINE_NOT_OPEN, "The line is " + line.status());
+        }
+        if (line.reservationId() == null) {
+            throw new BusinessException(ErrorCode.PICK_LINE_NOT_OPEN, "The line takes no allocated stock");
+        }
+        if (!sameCode(scannedLocation, line.locationCode())) {
+            throw new BusinessException(ErrorCode.PICK_LOCATION_MISMATCH,
+                    "This line is picked from " + line.locationCode());
+        }
+        if (damaged < 1 || damaged > line.allocatedQty()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "%d allocated to this line; damage is reported for 1 to %d".formatted(line.allocatedQty(),
+                            line.allocatedQty()));
+        }
+        return false;
+    }
+
+    /**
+     * Inventory moved the damaged units to quarantine and made the order whole (SCRUM-277). The line gives way -
+     * CANCELLED, its damaged units and the report kept - to the lines that pick what is left of it:
+     * <ul>
+     *   <li>the good units still at the bin, against the same allocation ({@code retained} of them);</li>
+     *   <li>one OPEN line per allocation that replaced the damaged units elsewhere, after the last stop; or</li>
+     *   <li>when nothing could replace them, one SHORT line for them, against the impaired allocation: the
+     *       coordinator reallocates it like any short line (X-SHORT).</li>
+     * </ul>
+     *
+     * @return the new lines
+     * @throws BusinessException {@code PICK_LINE_NOT_OPEN} unless the line is OPEN;
+     *         {@code FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE} for a replacement outside the task's warehouse
+     */
+    public List<PickLine> replaceDamaged(UUID lineId, int damaged, UUID reportId, int retained, List<Hold> replacements,
+                                         UUID impairedReservationId, Supplier<UUID> ids) {
+        PickLine line = requireLine(lineId);
+        if (line.status() != PickLineStatus.OPEN) {
+            throw new BusinessException(ErrorCode.PICK_LINE_NOT_OPEN, "Only an OPEN line is reported damaged; it is "
+                    + line.status());
+        }
+        if (replacements.stream().anyMatch(hold -> !warehouseId.equals(hold.warehouseId()))) {
+            throw new BusinessException(ErrorCode.FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE,
+                    "Task %s is picked in warehouse %s; the replacement is elsewhere".formatted(taskId, warehouseId));
+        }
+        if (retained < 0 || retained + damaged != line.allocatedQty()
+                || (impairedReservationId == null) == replacements.isEmpty()) {
+            throw new IllegalArgumentException("The damaged units are either replaced or impaired, never both or neither");
+        }
+        line.supersedeForDamage(damaged, reportId);
+        int sequence = lines.stream().mapToInt(PickLine::sequenceNo).max().orElse(0);
+        List<PickLine> added = new ArrayList<>();
+        if (retained > 0) {
+            added.add(PickLine.fromDamage(ids.get(), line.orderLineId(), line.reservationId(), line.sku(),
+                    line.locationCode(), line.lotNumber(), ++sequence, retained, false, reportId));
+        }
+        for (Hold hold : replacements) {
+            added.add(PickLine.fromDamage(ids.get(), line.orderLineId(), hold.reservationId(), hold.sku(),
+                    hold.locationCode(), hold.lotNumber(), ++sequence, hold.quantity(), false, reportId));
+        }
+        if (impairedReservationId != null) {
+            added.add(PickLine.fromDamage(ids.get(), line.orderLineId(), impairedReservationId, line.sku(),
+                    line.locationCode(), line.lotNumber(), ++sequence, damaged, true, reportId));
+        }
+        lines.addAll(added);
+        return added;
+    }
+
+    /**
+     * Whether the line was superseded by a damage report of exactly these units at this bin: the same report sent
+     * again, answered as done whatever happened to the task and its order since.
+     *
+     * @throws BusinessException {@code NOT_FOUND} for a line of another task
+     */
+    public boolean alreadyReportedDamaged(UUID lineId, String scannedLocation, int damaged) {
+        PickLine line = requireLine(lineId);
+        return line.status() == PickLineStatus.CANCELLED && line.damageReportId() != null
+                && line.damagedQty() == damaged && sameCode(scannedLocation, line.locationCode());
+    }
+
+    /** The lines a damage report made, in walking order: how the same report again is answered. */
+    public List<PickLine> madeByDamage(UUID reportId) {
+        return lines.stream().filter(line -> reportId.equals(line.damageReportId()) && line.damagedQty() == 0)
+                .sorted(Comparator.comparingInt(PickLine::sequenceNo)).toList();
+    }
+
     // ------------------------------------------------------------------ cancelling and putting back
 
     /**

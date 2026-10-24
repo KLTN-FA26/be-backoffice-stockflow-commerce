@@ -10,10 +10,14 @@ import java.util.UUID;
  * @param status          {@code OPEN}, {@code PICKED}, {@code SHORT}, {@code CANCELLED} or {@code PUT_BACK}
  * @param putBackLocationCode the bin the goods went back onto; null unless {@code PUT_BACK}
  * @param shortQty        units the picker did not find at the bin (X-SHORT); 0 unless the line was short. A
- *                        {@code CANCELLED} line with a shortfall was reallocated: the lines after it pick it
+ *                        {@code CANCELLED} line with a shortfall was reallocated: the lines after it pick it. A SHORT
+ *                        line a damage report made is short by all of its units: nothing replaced them
+ * @param damagedQty      units the picker found damaged at the bin (SCRUM-277); positive only on the CANCELLED line a
+ *                        damage report superseded: the lines with the same {@code damageReportId} pick what is left
+ * @param damageReportId  the damage report that superseded or made the line; null otherwise
  */
 public record PickLineResponse(UUID lineId, UUID taskId, int sequenceNo, UUID orderLineId, String sku, String barcode,
                                String locationCode, String lotNumber, int allocatedQty, int pickedQty, String status,
                                Instant pickedAt, int putBackQty, String putBackLocationCode, Instant putBackAt,
-                               int shortQty) {
+                               int shortQty, int damagedQty, UUID damageReportId) {
 }
