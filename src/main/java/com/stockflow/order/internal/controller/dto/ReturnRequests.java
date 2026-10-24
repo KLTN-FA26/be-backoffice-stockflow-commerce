@@ -92,7 +92,9 @@ public final class ReturnRequests {
             @NotEmpty(message = "count at least one line") @Size(max = 100) List<@Valid ReceivedLine> lines,
             @Size(max = 50) List<@Valid UnexpectedItem> unexpected,
             @Size(max = 1000, message = "note is at most 1000 characters") String note,
-            Long version) {
+            @Schema(description = "The return's version as last read: a parcel sent twice (a double click, a retry) is "
+                    + "refused the second time instead of being counted as another parcel")
+            @NotNull(message = "version is required: a parcel is counted once") Long version) {
     }
 
     @Schema(description = "QC's verdict on one return line: of the units received, accepted (the claim holds) and "
@@ -118,7 +120,10 @@ public final class ReturnRequests {
     public record Inspect(
             @NotEmpty(message = "inspect at least one line") @Size(max = 100) List<@Valid InspectedLine> lines,
             @Size(max = 1000, message = "note is at most 1000 characters") String note,
-            Long version) {
+            Long version,
+            @Schema(description = "Approved units have not all arrived and are not coming: inspect without them (the "
+                    + "shortfall is recorded). Otherwise the return waits for its next parcel")
+            Boolean noMoreParcels) {
     }
 
     @Schema(description = "How one line's accepted units are made good")

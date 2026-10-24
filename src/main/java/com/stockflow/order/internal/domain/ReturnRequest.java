@@ -424,6 +424,16 @@ public final class ReturnRequest extends AggregateRoot {
      */
     public void approve(UUID by, Instant now, Map<UUID, Integer> approved, Boolean returnRequired, String note,
                         ReturnPolicy policy) {
+        approve(by, now, approved, returnRequired, note, policy, BigDecimal.ZERO);
+    }
+
+    /**
+     * The same, knowing what the order's other returns already left with the customer on photos alone
+     * ({@code leftWithCustomerElsewhere}, at the order's prices): the limit is the order's, so a large claim split into
+     * small returns still comes back to the warehouse.
+     */
+    public void approve(UUID by, Instant now, Map<UUID, Integer> approved, Boolean returnRequired, String note,
+                        ReturnPolicy policy, BigDecimal leftWithCustomerElsewhere) {
         Objects.requireNonNull(by, "by");
         requireStatus(ReturnStatus.REQUESTED, "be approved");
         if (channel == ReturnChannel.BACK_OFFICE && by.equals(requestedBy)) {
@@ -468,11 +478,12 @@ public final class ReturnRequest extends AggregateRoot {
             }
             BigDecimal value = lines.stream().map(l -> l.unitPrice().multiply(BigDecimal.valueOf(units.get(l.id()))))
                     .reduce(BigDecimal.ZERO, BigDecimal::add);
-            if (value.compareTo(policy.noReturnMaxValue()) > 0) {
-                throw new BusinessException(ErrorCode.RETURN_GOODS_REQUIRED,
-                        "Return %s is worth %s %s, above the %s %s accepted on photos alone: the goods come back"
-                                .formatted(rmaNumber, plain(value), currency, plain(policy.noReturnMaxValue()),
-                                        currency));
+            BigDecimal elsewhere = leftWithCustomerElsewhere == null ? BigDecimal.ZERO : leftWithCustomerElsewhere;
+            if (value.add(elsewhere).compareTo(policy.noReturnMaxValue()) > 0) {
+                throw new BusinessException(ErrorCode.RETURN_GOODS_REQUIRED, ("Return %s is worth %s %s and the order's "
+                        + "other returns left %s %s with the customer already, above the %s %s accepted on photos "
+                        + "alone per order: the goods come back").formatted(rmaNumber, plain(value), currency,
+                        plain(elsewhere), currency, plain(policy.noReturnMaxValue()), currency));
             }
         }
         lines.forEach(line -> line.approve(units.get(line.id())));
@@ -705,8 +716,28 @@ public final class ReturnRequest extends AggregateRoot {
      *         {@code RETURN_DISPOSAL_CONSENT_REQUIRED}
      */
     public void inspect(UUID by, Instant now, List<Inspection> inspections, String note) {
+        inspect(by, now, inspections, note, false);
+    }
+
+    /**
+     * The same, saying whether more parcels are coming. With units approved and not arrived, QC inspects only once
+     * {@code noMoreParcels} says the rest is not coming - the customer said so, or it is too late: the shortfall is then
+     * recorded and the return goes on without them. Otherwise a second consignment would find the return closed and
+     * have nowhere to be counted in.
+     *
+     * @throws BusinessException as {@link #inspect(UUID, Instant, List, String)}; {@code RETURN_PARCELS_OUTSTANDING}
+     *         while units are still expected
+     */
+    public void inspect(UUID by, Instant now, List<Inspection> inspections, String note, boolean noMoreParcels) {
         Objects.requireNonNull(by, "by");
         requireStatus(ReturnStatus.RECEIVED, "be inspected");
+        int outstanding = lines.stream().mapToInt(l -> Math.max(0, (l.approvedQuantity() == null ? 0
+                : l.approvedQuantity()) - (l.receivedQuantity() == null ? 0 : l.receivedQuantity()))).sum();
+        if (outstanding > 0 && !noMoreParcels) {
+            throw new BusinessException(ErrorCode.RETURN_PARCELS_OUTSTANDING, ("%d approved unit(s) of %s have not "
+                    + "arrived: wait for the next parcel, or inspect saying no more parcels are coming")
+                    .formatted(outstanding, rmaNumber));
+        }
         Map<UUID, Inspection> byLine = new HashMap<>();
         for (Inspection inspection : inspections == null ? List.<Inspection>of() : inspections) {
             if (inspection == null || inspection.lineId() == null
@@ -773,6 +804,12 @@ public final class ReturnRequest extends AggregateRoot {
             if ((inspection.restock() > 0) != (trimmed(inspection.restockLocation()) != null)) {
                 throw new BusinessException(ErrorCode.RETURN_QUANTITIES_INVALID,
                         "%s: units back on sale name the bin they go to, and only they do".formatted(line.sku()));
+            }
+            if (inspection.restock() > 0 && inspection.condition() != ReturnItemCondition.GOOD
+                    && inspection.condition() != ReturnItemCondition.UNOPENED) {
+                throw new BusinessException(ErrorCode.RETURN_RESTOCK_NOT_ALLOWED,
+                        "%s: QC graded the units %s; only GOOD or UNOPENED units go back on sale".formatted(line.sku(),
+                                inspection.condition() == null ? "nothing" : inspection.condition()));
             }
         }
         List<ReturnDiscrepancy> found = new ArrayList<>();
@@ -1033,8 +1070,35 @@ public final class ReturnRequest extends AggregateRoot {
      * @throws IllegalStateException when payment booked another amount, or a refund - a defect, never a refusal
      */
     public void approveReplacementWithdrawal(UUID by, Instant now, MoneyOutcome booked, UUID paidOrderId) {
+        Map<UUID, Integer> all = new HashMap<>();
+        lines.stream().filter(l -> l.replacementQuantity() > 0).forEach(l -> all.put(l.id(), l.replacementQuantity()));
+        approveReplacementWithdrawal(by, now, booked, paidOrderId, all);
+    }
+
+    /**
+     * What withdrawing {@code withdrawnByLine} units of the replacement (per return line) is worth at the return's
+     * prices: all of them while nothing shipped; for a replacement that shipped in part, the units not shipped.
+     */
+    public BigDecimal withdrawalAmountFor(Map<UUID, Integer> withdrawnByLine) {
+        return lines.stream().map(l -> l.unitPrice().multiply(BigDecimal.valueOf(
+                        Math.min(l.replacementQuantity(), withdrawnByLine.getOrDefault(l.id(), 0)))))
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    /**
+     * The withdrawal carried out for {@code withdrawnByLine} units per return line - every unit of a replacement that
+     * shipped nothing, or the rest of one that shipped in part, whose shipped units the customer keeps. The amount
+     * credited is theirs at the return's prices, and the money given back flags the adjustment invoice.
+     */
+    public void approveReplacementWithdrawal(UUID by, Instant now, MoneyOutcome booked, UUID paidOrderId,
+                                             Map<UUID, Integer> withdrawnByLine) {
         Objects.requireNonNull(by, "by");
         requireWithdrawalApprover(by);
+        if (withdrawnByLine.values().stream().mapToInt(Integer::intValue).sum() <= 0) {
+            throw new BusinessException(ErrorCode.RETURN_REPLACEMENT_NOT_WITHDRAWABLE,
+                    "Every unit of the replacement of %s has shipped: nothing is left to withdraw".formatted(rmaNumber));
+        }
+        this.withdrawalAmount = withdrawalAmountFor(withdrawnByLine);
         MoneyOutcome outcome = booked == null ? MoneyOutcome.NONE : booked;
         if (outcome.refunded().signum() != 0 || outcome.total().compareTo(withdrawalAmount) != 0) {
             throw new IllegalStateException("The withdrawal of %s credits %s but %s was booked".formatted(rmaNumber,
@@ -1044,11 +1108,16 @@ public final class ReturnRequest extends AggregateRoot {
         this.withdrawalDecidedBy = by;
         this.withdrawalDecidedAt = now;
         this.withdrawalMoney = outcome;
+        // Money given back for goods sold: accounting issues the adjustment invoice, as for a refund or credit.
+        this.vatAdjustmentRequired = vatAdjustmentRequired || outcome.total().signum() > 0;
         registerEvent(new OrderEvent.ReturnChanged(id, new ReturnReplacementWithdrawn(id, rmaNumber, orderId,
                 orderNumber, customerId, replacementOrderId, outcome.offset(), outcome.credited(), currency,
-                lines.stream().filter(l -> l.replacementQuantity() > 0)
-                        .map(l -> new ReturnReplacementWithdrawn.Line(l.orderLineId(), l.sku(), l.replacementQuantity(),
-                                l.unitPrice().multiply(BigDecimal.valueOf(l.replacementQuantity())))).toList(),
+                lines.stream().filter(l -> withdrawnByLine.getOrDefault(l.id(), 0) > 0)
+                        .map(l -> {
+                            int units = Math.min(l.replacementQuantity(), withdrawnByLine.get(l.id()));
+                            return new ReturnReplacementWithdrawn.Line(l.orderLineId(), l.sku(), units,
+                                    l.unitPrice().multiply(BigDecimal.valueOf(units)));
+                        }).toList(),
                 paidOrderId == null ? orderId : paidOrderId, by, now)));
     }
 

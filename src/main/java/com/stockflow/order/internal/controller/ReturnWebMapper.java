@@ -7,6 +7,7 @@ import com.stockflow.order.internal.controller.dto.ReturnRequests;
 import com.stockflow.order.internal.domain.ReturnDiscrepancy;
 import com.stockflow.order.internal.domain.ReturnEvidence;
 import com.stockflow.order.internal.domain.ReturnLine;
+import com.stockflow.order.internal.domain.ReturnStatus;
 import com.stockflow.order.internal.domain.ReturnRequest;
 import com.stockflow.order.internal.domain.ReturnTransition;
 import com.stockflow.order.internal.service.ReturnRequestQueries;
@@ -62,7 +63,7 @@ final class ReturnWebMapper {
                         line.rejectedQuantity(), line.condition(), line.restockQuantity(), line.scrapQuantity(),
                         line.customerReturnQuantity(), line.restockLocationCode(), line.note(), line.plainStock(),
                         line.disposalConsent())).toList(),
-                body.note(), body.version());
+                body.note(), body.version(), body.noMoreParcels());
     }
 
     static ReturnRequestService.ResolveReturnCommand toCommand(ReturnRequests.Resolve body) {
@@ -111,14 +112,30 @@ final class ReturnWebMapper {
                                 r.withdrawalMoney().offset(), r.withdrawalMoney().credited()),
                 r.lines().stream().map(l -> new CustomerReturnResponse.Line(l.id(), l.orderLineId(), l.sku(),
                         l.requestedQuantity(), l.approvedQuantity(), l.receivedQuantity(), l.acceptedQuantity(),
-                        l.rejectedQuantity(), l.replacementQuantity(), l.creditQuantity(), l.creditAmount())).toList(),
+                        l.rejectedQuantity(), decided(r) ? l.replacementQuantity() : 0,
+                        decided(r) ? l.creditQuantity() : 0, decided(r) ? l.creditAmount() : null)).toList(),
                 r.discrepancies().stream().map(d -> new CustomerReturnResponse.Discrepancy(d.kind().name(), d.sku(),
                         d.quantity())).toList(),
-                r.evidence().stream().map(e -> new CustomerReturnResponse.Evidence(e.id(), e.stage().name(),
-                        e.originalName(), e.uploadedAt())).toList(),
+                r.evidence().stream().filter(e -> e.stage() == ReturnEvidence.Stage.CLAIM)
+                        .map(e -> new CustomerReturnResponse.Evidence(e.id(), e.stage().name(), e.originalName(),
+                                e.uploadedAt())).toList(),
                 history.stream().filter(step -> step.to() != null)
                         .map(step -> new CustomerReturnResponse.Step(step.to().name(), step.at())).toList(),
                 r.version());
+    }
+
+    /** What the customer is told is made good only once a second person approved it: never a proposal. */
+    private static boolean decided(ReturnRequest r) {
+        return r.status() == ReturnStatus.RESOLVED;
+    }
+
+    /** The customer's own list: no amount before it is approved, and no accounting flag. */
+    static ReturnRequestRowResponse toCustomerRow(ReturnRequestQueries.Item i) {
+        boolean decided = i.status() == ReturnStatus.RESOLVED;
+        return new ReturnRequestRowResponse(i.id(), i.rmaNumber(), i.orderId(), i.orderNumber(), i.customerId(),
+                i.status().name(), i.reason().name(), i.requestedResolution().name(), i.channel(), i.requestedAt(),
+                i.returnDeadline(), decided ? i.settlementAmount() : null, i.refundedAmount(), i.creditedAmount(),
+                i.offsetAmount(), i.currency(), false, i.replacementOrderId(), i.closedAt(), i.version());
     }
 
     static ReturnRequestRowResponse toRow(ReturnRequestQueries.Item i) {

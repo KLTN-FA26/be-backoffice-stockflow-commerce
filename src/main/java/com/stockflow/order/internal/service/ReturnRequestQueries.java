@@ -90,7 +90,9 @@ public class ReturnRequestQueries {
         ReturnRequest request = returns.findById(returnId)
                 .filter(found -> ownCustomerId == null || found.belongsTo(ownCustomerId))
                 .orElseThrow(() -> notFound(returnId));
-        ReturnEvidence photo = request.evidence().stream().filter(e -> e.id().equals(evidenceId)).findFirst()
+        // A customer downloads their own photos of the claim; the warehouse's and QC's are staff records.
+        ReturnEvidence photo = request.evidence().stream().filter(e -> e.id().equals(evidenceId))
+                .filter(e -> ownCustomerId == null || e.stage() == ReturnEvidence.Stage.CLAIM).findFirst()
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No photo " + evidenceId));
         return storage.presignedDownloadUrl(photo.fileKey(), LINK_LIFETIME);
     }

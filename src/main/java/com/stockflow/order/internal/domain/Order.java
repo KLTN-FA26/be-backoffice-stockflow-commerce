@@ -1541,6 +1541,15 @@ public final class Order extends AggregateRoot {
                     status == OrderStatus.ON_HOLD ? "resolve the hold before closing the rest"
                             : "only a partly fulfilled order has a rest to close");
         }
+        // A free replacement's rest is closed only by withdrawing it through its return, which credits the units the
+        // customer will not get (review 2026-10-25); closed any other way, they would be lost to the customer.
+        if ((replacesReturnRequestId != null) != (code == CancellationReasonCode.REPLACEMENT_WITHDRAWN)) {
+            throw new BusinessException(replacesReturnRequestId != null ? ErrorCode.RETURN_REPLACEMENT_ORDER_LOCKED
+                    : ErrorCode.VALIDATION_FAILED, replacesReturnRequestId != null
+                    ? ("Order %s replaces goods of a return: withdraw the rest of it through that return, which credits "
+                            + "the units").formatted(orderNumber)
+                    : "Only a replacement order is closed as withdrawn");
+        }
         // Validated before anything changes: a refused fee leaves the order as it was.
         Money closedPrints = Money.zero(total().currency());
         for (OrderLine line : lines) {
@@ -1660,6 +1669,13 @@ public final class Order extends AggregateRoot {
     }
 
     /** Units of a line in shipments, counting the ones that came back or not. */
+    /** Units of the line neither shipped nor closed: what is still to come of it. */
+    public int unshippedUnits(UUID lineId) {
+        OrderLine line = lines.stream().filter(l -> l.id().equals(lineId)).findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("No line " + lineId + " on " + orderNumber));
+        return line.quantity() - line.cancelledQuantity() - shippedUnits(lineId, false);
+    }
+
     private int shippedUnits(UUID lineId, boolean includingReturned) {
         return shipments.stream().filter(s -> includingReturned || !s.isReturned())
                 .mapToInt(s -> s.quantityOf(lineId)).sum();

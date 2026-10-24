@@ -646,8 +646,12 @@ class ReturnRequestTest {
             assertThat(code(catchThrowable(() -> request.inspect(WAREHOUSE, NOW, List.of(new ReturnRequest.Inspection(
                     line, 6, 4, null, 8, 0, 2, "HCM-A01-1-A", null, null, "ok")), null))))
                     .as("the customer's rejected units are not sold").isEqualTo(ErrorCode.RETURN_QUANTITIES_INVALID);
+            assertThat(code(catchThrowable(() -> request.inspect(WAREHOUSE, NOW, List.of(new ReturnRequest.Inspection(
+                    line, 10, 0, ReturnItemCondition.DAMAGED, 4, 6, 0, "HCM-A01-1-A", null)), null))))
+                    .as("units QC graded damaged never go back on sale")
+                    .isEqualTo(ErrorCode.RETURN_RESTOCK_NOT_ALLOWED);
             request.inspect(WAREHOUSE, NOW, List.of(new ReturnRequest.Inspection(line, 10, 0,
-                    ReturnItemCondition.DAMAGED, 4, 6, 0, "HCM-A01-1-A", null)), null);
+                    ReturnItemCondition.GOOD, 4, 6, 0, "HCM-A01-1-A", null)), null);
             assertThat(line(request, STOCK_LINE).restockQuantity()).isEqualTo(4);
             assertThat(line(request, STOCK_LINE).receivedPlain()).isTrue();
         }
@@ -676,8 +680,11 @@ class ReturnRequestTest {
             ReturnRequest request = received(10, 8);
             request.pullNewDiscrepancies();
             UUID line = line(request, PRINTED_LINE).id();
-            request.inspect(WAREHOUSE, NOW, List.of(new ReturnRequest.Inspection(line, 8, 0,
-                    ReturnItemCondition.DEFECTIVE, 0, 8, 0, null, null)), null);
+            List<ReturnRequest.Inspection> verdict = List.of(new ReturnRequest.Inspection(line, 8, 0,
+                    ReturnItemCondition.DEFECTIVE, 0, 8, 0, null, null));
+            assertThat(code(catchThrowable(() -> request.inspect(WAREHOUSE, NOW, verdict, null))))
+                    .as("the next parcel may still come").isEqualTo(ErrorCode.RETURN_PARCELS_OUTSTANDING);
+            request.inspect(WAREHOUSE, NOW, verdict, null, true);
             assertThat(request.pullNewDiscrepancies()).extracting(d -> d.kind() + " " + d.quantity())
                     .containsExactly("SHORT 2");
         }
@@ -798,6 +805,20 @@ class ReturnRequestTest {
         }
     }
 
+    @Test
+    @DisplayName("goods stay with the customer up to the limit per order: other returns of it count")
+    void noReturnLimitPerOrder() {
+        // 2 000 000 VND accepted on photos alone; the stock line is 500 VND a unit.
+        ReturnRequest request = open(ReturnReason.DAMAGED_IN_TRANSIT, ReturnResolution.REFUND,
+                new ReturnRequest.Claim(STOCK_LINE, 10));
+        request.addEvidence(photo(ReturnEvidence.Stage.CLAIM), POLICY);
+        assertThat(code(catchThrowable(() -> request.approve(SALES, NOW, null, false, null, POLICY,
+                new BigDecimal("1999000"))))).as("5 000 here on top of 1 999 000 elsewhere")
+                .isEqualTo(ErrorCode.RETURN_GOODS_REQUIRED);
+        request.approve(SALES, NOW, null, false, null, POLICY, new BigDecimal("1995000"));
+        assertThat(request.status()).isEqualTo(ReturnStatus.INSPECTED);
+    }
+
     @Nested
     @DisplayName("withdrawing a replacement")
     class ReplacementWithdrawal {
@@ -838,6 +859,32 @@ class ReturnRequestTest {
             });
             assertThat(code(catchThrowable(() -> request.proposeReplacementWithdrawal(SALES, NOW, "once more"))))
                     .as("withdrawn once").isEqualTo(ErrorCode.RETURN_INVALID_TRANSITION);
+        }
+
+        @Test
+        @DisplayName("a replacement that shipped in part: the rest is withdrawn and credited; the credit flags the "
+                + "adjustment invoice")
+        void partWithdrawn() {
+            ReturnRequest request = replaced(10);
+            UUID line = line(request, PRINTED_LINE).id();
+            assertThat(request.vatAdjustmentRequired()).as("nothing given back yet").isFalse();
+            request.proposeReplacementWithdrawal(SALES, NOW, "In lại 4 chiếc không đạt, khách nhận tiền phần còn lại");
+            assertThat(request.withdrawalAmountFor(Map.of(line, 4))).as("4 x 2 000").isEqualByComparingTo("8000");
+            assertThat(catchThrowable(() -> request.approveReplacementWithdrawal(ACCOUNTANT, NOW,
+                    new ReturnRequest.MoneyOutcome(BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.valueOf(20_000),
+                            UUID.randomUUID()), null, Map.of(line, 4))))
+                    .as("credited exactly what is withdrawn").isInstanceOf(IllegalStateException.class);
+            assertThat(code(catchThrowable(() -> request.approveReplacementWithdrawal(ACCOUNTANT, NOW,
+                    ReturnRequest.MoneyOutcome.NONE, null, Map.of(line, 0)))))
+                    .as("everything shipped").isEqualTo(ErrorCode.RETURN_REPLACEMENT_NOT_WITHDRAWABLE);
+            request.pullDomainEvents();
+            request.approveReplacementWithdrawal(ACCOUNTANT, NOW, new ReturnRequest.MoneyOutcome(BigDecimal.ZERO,
+                    BigDecimal.ZERO, BigDecimal.valueOf(8_000), UUID.randomUUID()), null, Map.of(line, 4));
+            assertThat(request.withdrawalAmount()).isEqualByComparingTo("8000");
+            assertThat(request.vatAdjustmentRequired()).isTrue();
+            assertThat(request.pullDomainEvents()).singleElement().satisfies(event -> assertThat(
+                    ((ReturnReplacementWithdrawn) ((OrderEvent.ReturnChanged) event).payload()).lines())
+                    .singleElement().satisfies(withdrawn -> assertThat(withdrawn.quantity()).isEqualTo(4)));
         }
 
         @Test

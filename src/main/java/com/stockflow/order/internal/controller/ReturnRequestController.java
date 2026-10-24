@@ -154,7 +154,7 @@ class ReturnRequestController {
             @RequestParam(required = false) Integer size,
             @RequestParam(required = false) String sort) {
         return ApiResponse.ok(queries.mine(ownCustomerId(user), statuses, orderId, page,
-                size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort).map(ReturnWebMapper::toRow));
+                size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort).map(ReturnWebMapper::toCustomerRow));
     }
 
     @GetMapping("/returns/me/{returnId}")

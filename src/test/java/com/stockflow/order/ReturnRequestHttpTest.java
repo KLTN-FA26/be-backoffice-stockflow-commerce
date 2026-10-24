@@ -142,7 +142,8 @@ class ReturnRequestHttpTest {
                 .andExpect(status().isForbidden());
         http.asRole(Role.QC_STAFF, staff, post("/api/v1/returns/" + returnId + "/receipt")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"lines\":[{\"lineId\":\"" + UUID.randomUUID() + "\",\"quantity\":1}]}"))
+                        .content("{\"lines\":[{\"lineId\":\"" + UUID.randomUUID() + "\",\"quantity\":1}],"
+                                + "\"version\":0}"))
                 .andExpect(status().isForbidden());
         http.asRole(Role.WAREHOUSE_STAFF, staff, get("/api/v1/returns/" + returnId))
                 .andExpect(status().isOk())

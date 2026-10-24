@@ -414,6 +414,10 @@ class OrderLifecycleTest {
                     NOW)))).isEqualTo(ErrorCode.ORDER_INVALID_TRANSITION);
             assertThat(code(catchThrowable(() -> order.closeRemainder(CancellationReasonCode.OTHER, null, STAFF,
                     NOW)))).isEqualTo(ErrorCode.VALIDATION_FAILED);
+            order.resolveHold("có ly", STAFF, NOW);
+            assertThat(code(catchThrowable(() -> order.closeRemainder(CancellationReasonCode.REPLACEMENT_WITHDRAWN,
+                    null, STAFF, NOW)))).as("only a replacement is closed as withdrawn")
+                    .isEqualTo(ErrorCode.VALIDATION_FAILED);
         }
 
         @Test

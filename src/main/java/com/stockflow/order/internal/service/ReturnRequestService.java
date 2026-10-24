@@ -118,8 +118,15 @@ public class ReturnRequestService {
                                             List<ReturnRequest.Unexpected> unexpected, String note, Long version) {
     }
 
-    /** QC's verdict per line. */
-    public record InspectReturnCommand(List<ReturnRequest.Inspection> lines, String note, Long version) {
+    /**
+     * QC's verdict per line. {@code noMoreParcels}: approved units have not all arrived and are not coming - the return
+     * is inspected without them (else it waits for the next parcel).
+     */
+    public record InspectReturnCommand(List<ReturnRequest.Inspection> lines, String note, Long version,
+                                       Boolean noMoreParcels) {
+        public InspectReturnCommand(List<ReturnRequest.Inspection> lines, String note, Long version) {
+            this(lines, note, version, null);
+        }
     }
 
     /** How the accepted units are made good, and how the money goes. */
@@ -305,7 +312,18 @@ public class ReturnRequestService {
     @Auditable(action = AuditAction.APPROVE, resourceType = "return-request", resourceId = "#returnId")
     public ReturnRequest approve(UUID returnId, ApproveReturnCommand command, UUID by) {
         Locked locked = lock(returnId, null, command.version());
-        locked.request().approve(by, now(), command.approved(), command.returnRequired(), command.note(), policy);
+        ReturnRequest request = locked.request();
+        // What the order's other returns already let the customer keep on photos alone: the limit is per order.
+        BigDecimal leftWithCustomer = returns.findByOrder(request.orderId()).stream()
+                .filter(other -> !other.id().equals(request.id()))
+                .filter(other -> Boolean.FALSE.equals(other.returnRequired()))
+                .filter(other -> other.status() != ReturnStatus.REJECTED && other.status() != ReturnStatus.CANCELLED)
+                .flatMap(other -> other.lines().stream())
+                .map(line -> line.unitPrice().multiply(BigDecimal.valueOf(
+                        line.approvedQuantity() == null ? 0 : line.approvedQuantity())))
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        request.approve(by, now(), command.approved(), command.returnRequired(), command.note(), policy,
+                leftWithCustomer);
         return finish(locked, by);
     }
 
@@ -370,21 +388,41 @@ public class ReturnRequestService {
         return finish(locked, by);
     }
 
-    /** A return coming back to life must not claim a line another return of the order took meanwhile. */
+    /**
+     * A return coming back to life must not claim a line another return of the order took meanwhile, nor, with what the
+     * line's other returns claim now, more units than were delivered (the units it approved are what it claims again).
+     */
     private void requireNoOtherOpenReturn(Locked locked) {
         ReturnRequest request = locked.request();
         Set<UUID> mine = new HashSet<>();
         request.lines().forEach(line -> mine.add(line.orderLineId()));
+        Map<UUID, Integer> claimedElsewhere = new HashMap<>();
         for (ReturnRequest other : returns.findByOrder(request.orderId())) {
-            if (other.id().equals(request.id()) || !other.status().isOpen()) {
+            if (other.id().equals(request.id())) {
                 continue;
             }
             for (ReturnLine line : other.lines()) {
-                if (mine.contains(line.orderLineId())) {
+                if (!mine.contains(line.orderLineId())) {
+                    continue;
+                }
+                if (other.status().isOpen()) {
                     throw new BusinessException(ErrorCode.RETURN_LINE_ALREADY_OPEN,
                             "%s of order %s is claimed by open return %s now: count these goods in on it".formatted(
                                     line.sku(), request.orderNumber(), other.rmaNumber()));
                 }
+                claimedElsewhere.merge(line.orderLineId(), line.claimedUnits(other.status()), Integer::sum);
+            }
+        }
+        for (ReturnLine line : request.lines()) {
+            com.stockflow.order.internal.domain.OrderLine ordered = locked.order().lines().stream()
+                    .filter(l -> l.id().equals(line.orderLineId())).findFirst().orElseThrow();
+            int delivered = ordered.quantity() - ordered.cancelledQuantity();
+            int claimed = claimedElsewhere.getOrDefault(line.orderLineId(), 0)
+                    + (line.approvedQuantity() == null ? 0 : line.approvedQuantity());
+            if (claimed > delivered) {
+                throw new BusinessException(ErrorCode.RETURN_QUANTITY_EXCEEDED, ("%s of order %s: %d of the %d unit(s) "
+                        + "delivered are claimed by its returns since; these goods need Sales before they are counted in")
+                        .formatted(line.sku(), request.orderNumber(), claimed, delivered));
             }
         }
     }
@@ -481,7 +519,7 @@ public class ReturnRequestService {
                 requireSellingBin(request, line.restockLocation().trim());
             }
         }
-        request.inspect(by, now(), command.lines(), command.note());
+        request.inspect(by, now(), command.lines(), command.note(), Boolean.TRUE.equals(command.noMoreParcels()));
         for (ReturnLine line : request.lines()) {
             Sku sku = new Sku(line.receivedSkuOrOwn());
             if (line.restockQuantity() > 0) {
@@ -624,7 +662,7 @@ public class ReturnRequestService {
         Locked locked = lock(returnId, null, version);
         ReturnRequest request = locked.request();
         request.proposeReplacementWithdrawal(by, now(), reason);
-        requireWithdrawable(orders.findById(new OrderId(request.replacementOrderId())).orElseThrow(), request);
+        withdrawable(orders.findById(new OrderId(request.replacementOrderId())).orElseThrow(), request);
         return finish(locked, by);
     }
 
@@ -640,19 +678,27 @@ public class ReturnRequestService {
         ReturnRequest request = locked.request();
         request.requireWithdrawalApprover(by);
         Order replacement = orderService.loadForUpdate(request.replacementOrderId());
-        requireWithdrawable(replacement, request);
-        orderService.cancelLoaded(replacement, new CancelOrderCommand(CancellationReasonCode.REPLACEMENT_WITHDRAWN,
-                "%s: %s".formatted(request.rmaNumber(), request.withdrawalReason()), null, by));
+        Map<UUID, Integer> withdrawn = withdrawable(replacement, request);
+        String note = "%s: %s".formatted(request.rmaNumber(), request.withdrawalReason());
+        if (replacement.packedAt() == null) {
+            orderService.cancelLoaded(replacement, new CancelOrderCommand(CancellationReasonCode.REPLACEMENT_WITHDRAWN,
+                    note, null, by));
+        } else {
+            // Shipped in part: the customer keeps what reached them; the rest is closed and credited.
+            orderService.closeRemainder(replacement.id().value(), CancellationReasonCode.REPLACEMENT_WITHDRAWN, note,
+                    null, by);
+        }
         ReturnRequest.MoneyOutcome money = ReturnRequest.MoneyOutcome.NONE;
         Order paidOn = paidOn(locked.order());
-        if (request.withdrawalAmount().signum() > 0) {
+        BigDecimal amount = request.withdrawalAmountFor(withdrawn);
+        if (amount.signum() > 0) {
             SettleReturnResult booked = settlement.settleReturn(new SettleReturnCommand(request.id(),
                     request.rmaNumber(), paidOn.id().value(), paidOn.orderNumber().value(), request.customerId(),
-                    request.withdrawalAmount(), request.currency(), false, by, request.rmaNumber() + "-W"));
+                    amount, request.currency(), false, by, request.rmaNumber() + "-W"));
             money = new ReturnRequest.MoneyOutcome(booked.offsetAmount(), booked.refundedAmount(),
                     booked.creditedAmount(), booked.creditTransferId());
         }
-        request.approveReplacementWithdrawal(by, now(), money, paidOn.id().value());
+        request.approveReplacementWithdrawal(by, now(), money, paidOn.id().value(), withdrawn);
         log.info("Return {}: replacement order {} withdrawn, {} {} credited", request.rmaNumber(),
                 replacement.orderNumber(), request.withdrawalAmount().stripTrailingZeros().toPlainString(),
                 request.currency());
@@ -667,14 +713,30 @@ public class ReturnRequestService {
         return finish(locked, by);
     }
 
-    /** A replacement that is packed, handed over or delivered is no longer withdrawn: it comes back as a return. */
-    private static void requireWithdrawable(Order replacement, ReturnRequest request) {
-        if (!replacement.status().canTransitionTo(com.stockflow.order.api.OrderStatus.CANCELLED)
-                || replacement.packedAt() != null) {
+    /**
+     * What of the replacement can still be withdrawn, per return line: all of it while nothing is packed (the order is
+     * cancelled), or - shipped in part (PARTIALLY_FULFILLED) - the units not shipped, whose rest is closed. Goods packed,
+     * handed over or delivered come back as a return instead.
+     */
+    private static Map<UUID, Integer> withdrawable(Order replacement, ReturnRequest request) {
+        boolean whole = replacement.status().canTransitionTo(com.stockflow.order.api.OrderStatus.CANCELLED)
+                && replacement.packedAt() == null;
+        boolean rest = replacement.status() == com.stockflow.order.api.OrderStatus.PARTIALLY_FULFILLED;
+        Map<UUID, Integer> units = new HashMap<>();
+        if (whole || rest) {
+            for (ReturnLine line : request.lines()) {
+                if (line.replacementQuantity() > 0 && line.replacementOrderLineId() != null) {
+                    units.put(line.id(), whole ? line.replacementQuantity()
+                            : replacement.unshippedUnits(line.replacementOrderLineId()));
+                }
+            }
+        }
+        if (units.values().stream().mapToInt(Integer::intValue).sum() <= 0) {
             throw new BusinessException(ErrorCode.RETURN_REPLACEMENT_NOT_WITHDRAWABLE,
-                    "Replacement order %s of %s is %s: it can no longer be withdrawn".formatted(
+                    "Replacement order %s of %s is %s: nothing of it can be withdrawn any more".formatted(
                             replacement.orderNumber(), request.rmaNumber(), replacement.status()));
         }
+        return units;
     }
 
     // ================================================================================================= expiry

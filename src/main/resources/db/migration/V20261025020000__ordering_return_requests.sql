@@ -189,7 +189,10 @@ ALTER TABLE ordering.return_request
     ADD CONSTRAINT ck_return_request_four_eyes CHECK (settled_by IS NULL OR settled_by <> proposed_by),
     -- Nghị định 123/2020 / Thông tư 78/2021: money given back after the sale was invoiced needs an adjustment
     -- invoice; the system has no e-invoicing, so the return says it for accounting.
-    ADD CONSTRAINT ck_return_request_vat CHECK (vat_adjustment_required = (status = 'RESOLVED' AND settlement_amount > 0)),
+    -- Money given back for goods sold, as a refund, a credit or a withdrawn replacement's credit, flags the adjustment
+    -- invoice.
+    ADD CONSTRAINT ck_return_request_vat CHECK (vat_adjustment_required = (status = 'RESOLVED'
+        AND (settlement_amount > 0 OR (withdrawal_status = 'APPROVED' AND withdrawal_amount > 0)))),
     -- The credit entry payment books for a return (V20261025020100) carries exactly what was set off or kept as credit.
     ADD CONSTRAINT ck_return_request_credit_transfer CHECK ((credit_transfer_id IS NOT NULL)
         = (credited_amount + offset_amount > 0)),
@@ -297,6 +300,9 @@ ALTER TABLE ordering.return_request_line
     ADD CONSTRAINT ck_return_request_line_customer_goods CHECK (restock_quantity <= COALESCE(accepted_quantity, 0)
         AND (customer_return_quantity >= COALESCE(rejected_quantity, 0) OR disposal_consent_note IS NOT NULL)),
     ADD CONSTRAINT ck_return_request_line_restock_plain CHECK (restock_quantity = 0 OR received_plain IS TRUE),
+    -- Back on sale only what QC graded sound.
+    ADD CONSTRAINT ck_return_request_line_restock_condition CHECK (restock_quantity = 0
+        OR item_condition IN ('UNOPENED', 'GOOD')),
     -- OQ-12 / BR-RMA-002: goods printed to a customer's design never go back on sale.
     ADD CONSTRAINT ck_return_request_line_restock_custom CHECK (NOT custom_printed OR restock_quantity = 0
         OR (received_sku IS NOT NULL AND received_sku <> sku)),
@@ -345,8 +351,10 @@ BEGIN
         RAISE EXCEPTION 'order line % already has an open return', NEW.order_line_id
             USING ERRCODE = 'check_violation';
     END IF;
-    IF claimed + NEW.quantity > deliverable THEN
-        RAISE EXCEPTION 'would claim % of the % unit(s) delivered', claimed + NEW.quantity, deliverable
+    -- This line claims what it was last decided to: accepted once inspected, approved once approved, else asked.
+    IF claimed + COALESCE(NEW.accepted_quantity, NEW.approved_quantity, NEW.quantity) > deliverable THEN
+        RAISE EXCEPTION 'would claim % of the % unit(s) delivered',
+            claimed + COALESCE(NEW.accepted_quantity, NEW.approved_quantity, NEW.quantity), deliverable
             USING ERRCODE = 'check_violation';
     END IF;
     RETURN NEW;

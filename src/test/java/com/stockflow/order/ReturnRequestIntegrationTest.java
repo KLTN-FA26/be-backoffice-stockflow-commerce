@@ -336,7 +336,7 @@ class ReturnRequestIntegrationTest {
                 only(request), order.orderId())).isEqualTo(1L);
 
         ReturnRequest inspected = returns.inspect(request.id(), new ReturnRequestService.InspectReturnCommand(List.of(
-                new ReturnRequest.Inspection(only(request), 2, 1, ReturnItemCondition.DAMAGED, 1, 1, 1,
+                new ReturnRequest.Inspection(only(request), 2, 1, ReturnItemCondition.GOOD, 1, 1, 1,
                         "HCM-A02-1-A", "1 chiếc còn bán được")), null, null), qc);
         assertThat(inspected.status()).isEqualTo(ReturnStatus.INSPECTED);
         assertThat(jdbc.queryForObject("""
@@ -693,9 +693,13 @@ class ReturnRequestIntegrationTest {
         assertThat(received.discrepancies()).extracting(d -> d.kind().name())
                 .as("a shortfall is known only when no more parcels come").containsExactly("UNEXPECTED_ITEM");
 
+        assertThat(code(catchThrowable(() -> returns.inspect(request.id(), new ReturnRequestService.InspectReturnCommand(
+                List.of(new ReturnRequest.Inspection(only(request), 0, 1, ReturnItemCondition.GOOD, 0, 0, 1, null,
+                        null)), "đúng hàng, không lỗi", null), qc)))).as("one approved unit may still come")
+                .isEqualTo(ErrorCode.RETURN_PARCELS_OUTSTANDING);
         ReturnRequest rejected = returns.inspect(request.id(), new ReturnRequestService.InspectReturnCommand(List.of(
                 new ReturnRequest.Inspection(only(request), 0, 1, ReturnItemCondition.GOOD, 0, 0, 1, null, null)),
-                "đúng hàng, không lỗi", null), qc);
+                "đúng hàng, không lỗi", null, true), qc);
         assertThat(rejected.status()).isEqualTo(ReturnStatus.REJECTED);
         assertThat(rejected.rejectionReason()).as("QC's words stay with staff").isEqualTo("NO_DEFECT_FOUND");
         assertThat(rejected.inspectionNote()).isEqualTo("đúng hàng, không lỗi");
@@ -708,7 +712,7 @@ class ReturnRequestIntegrationTest {
 
     @Test
     @DisplayName("two people approving at once: one wins, the other is told it moved on; a stale screen is refused; the "
-            + "receipt racing the customer's withdrawal: exactly one of them happens")
+            + "receipt racing the customer's withdrawal: the goods are counted in once, whichever came first")
     void concurrency() throws Exception {
         OrderSummary order = delivered(PaymentTerm.PREPAID, 4);
         ReturnRequest request = open(order.orderId(), ReturnReason.PRINT_DEFECT, ReturnResolution.REFUND, 2);
@@ -728,13 +732,14 @@ class ReturnRequestIntegrationTest {
                         null, List.of(new ReturnRequest.Receipt(only(request), 2, null, null)), List.of(), null, null),
                         warehouse),
                 () -> returns.cancel(request.id(), customer, null, customerUser));
-        assertThat(race).filteredOn(java.util.Objects::isNull).hasSize(1);
+        // The goods are here either way: counted in first, the withdrawal comes too late; withdrawn first, the parcel
+        // that arrives anyway reopens the return.
+        assertThat(race.get(0)).as("the parcel is always counted in").isNull();
         ReturnStatus end = queries.detail(request.id(), null).request().status();
-        assertThat(end).isIn(ReturnStatus.RECEIVED, ReturnStatus.CANCELLED);
+        assertThat(end).isEqualTo(ReturnStatus.RECEIVED);
         Long quarantined = jdbc.queryForObject("SELECT count(*) FROM inventory.stock_movement WHERE reference_id = ? "
                 + "AND movement_type = 'RETURN_IN'", Long.class, only(request));
-        assertThat(quarantined).as("goods counted in exactly when the receipt won").isEqualTo(
-                end == ReturnStatus.RECEIVED ? 1L : 0L);
+        assertThat(quarantined).as("once").isEqualTo(1L);
     }
 
     @Test
@@ -831,6 +836,7 @@ class ReturnRequestIntegrationTest {
                 .isEqualTo(ErrorCode.RETURN_SELF_APPROVAL);
         ReturnRequest withdrawn = returns.approveReplacementWithdrawal(request.id(), null, accountant);
         assertThat(withdrawn.withdrawalStatus()).isEqualTo(ReturnRequest.WithdrawalStatus.APPROVED);
+        assertThat(withdrawn.vatAdjustmentRequired()).as("money given back: the adjustment invoice").isTrue();
         assertThat(withdrawn.status()).isEqualTo(ReturnStatus.RESOLVED);
         assertThat(statusOf(replacement)).isEqualTo(OrderStatus.CANCELLED);
         assertThat(jdbc.queryForObject("SELECT cancellation_reason_code FROM ordering.customer_order WHERE id = ?",
