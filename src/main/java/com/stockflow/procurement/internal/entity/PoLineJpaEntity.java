@@ -14,6 +14,7 @@ import jakarta.persistence.FetchType;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
+import org.hibernate.annotations.DynamicUpdate;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -35,8 +36,13 @@ import java.util.UUID;
  * never written: the application still orders in the base unit. A draft line already in one keeps it
  * when it is resized, and {@code unit_qty} is recomputed with it, since {@code tg_purchase_order_lines_unit}
  * refuses an {@code ordered_qty} that is not {@code unit_qty} times the unit's factor.</p>
+ *
+ * <p>{@code @DynamicUpdate}: an UPDATE writes only the columns that changed. The amendment of a
+ * subcontract order rewrites {@code ordered_qty} and {@code unit_qty} with native SQL; a full-row
+ * UPDATE flushed from a copy loaded before it - a status change, say - would put the old pair back.</p>
  */
 @Entity
+@DynamicUpdate
 @Table(name = "purchase_order_lines", schema = "procurement")
 public class PoLineJpaEntity extends BaseEntity {
 
