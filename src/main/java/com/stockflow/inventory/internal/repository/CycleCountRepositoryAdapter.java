@@ -209,13 +209,15 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
     public List<CountLineDraft> stockIn(String warehousePrefix, Collection<String> locationCodes,
                                         Collection<String> locationPrefixes, Collection<String> skus) {
         List<CountLineDraft> drafts = new ArrayList<>();
+        // Grouped by the lot as CountSlot normalises it: rows whose lot is NULL, empty or padded are one slot, and
+        // grouped raw they would come back as two drafts of it, which CycleCount.plan refuses as a duplicate.
         String loose = """
-                SELECT s.location_code, s.sku, s.lot_number, sum(s.on_hand) AS qty
+                SELECT s.location_code, s.sku, NULLIF(btrim(s.lot_number), '') AS lot_number, sum(s.on_hand) AS qty
                   FROM inventory.stock_item s
                  WHERE s.stock_package_id IS NULL AND %s
-                 GROUP BY s.location_code, s.sku, s.lot_number
+                 GROUP BY s.location_code, s.sku, NULLIF(btrim(s.lot_number), '')
                 HAVING sum(s.on_hand) > 0
-                 ORDER BY s.location_code, s.sku, s.lot_number""";
+                 ORDER BY s.location_code, s.sku, lot_number""";
         MapSqlParameterSource looseParams = new MapSqlParameterSource();
         jdbc.query(loose.formatted(scope("s", warehousePrefix, locationCodes, locationPrefixes, skus, looseParams)),
                 looseParams, (RowCallbackHandler) rs -> drafts.add(new CountLineDraft(
@@ -273,7 +275,8 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
      * {@inheritDoc}
      *
      * <p>{@code FOR SHARE} cannot sit on an aggregate query in PostgreSQL, hence the inner select: the rows are
-     * locked, then summed.</p>
+     * locked, then summed. A stock row's lot is compared trimmed, as {@link #stockIn} groups it and
+     * {@link CountSlot} holds it.</p>
      */
     @Override
     public int bookQuantity(CountSlot slot) {
@@ -285,7 +288,7 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
         } else {
             where = """
                     s.stock_package_id IS NULL AND s.location_code = :location AND s.sku = :sku
-                    AND COALESCE(s.lot_number, '') = COALESCE(:lot, '')""";
+                    AND COALESCE(btrim(s.lot_number), '') = COALESCE(:lot, '')""";
             params.addValue("location", slot.location().code()).addValue("sku", slot.sku().code())
                     .addValue("lot", slot.lotNumber(), Types.VARCHAR);
         }
@@ -419,7 +422,7 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
                                   AND (l.stock_package_id = s.stock_package_id
                                        OR (l.stock_package_id IS NULL AND s.stock_package_id IS NULL
                                            AND l.location_code = s.location_code AND l.sku = s.sku
-                                           AND COALESCE(l.lot_number, '') = COALESCE(s.lot_number, ''))))"""
+                                           AND COALESCE(l.lot_number, '') = COALESCE(btrim(s.lot_number), ''))))"""
                         .formatted(BUSY),
                 new MapSqlParameterSource().addValue("skus", skus).addValue("today", today),
                 (rs, row) -> new Frozen(rs.getObject("id", UUID.class), rs.getString("sku"),
