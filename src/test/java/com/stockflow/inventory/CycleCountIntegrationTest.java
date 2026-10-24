@@ -511,6 +511,19 @@ class CycleCountIntegrationTest {
     }
 
     @Test
+    @DisplayName("submitting a cancelled count is CYCLE_COUNT_NOT_OPEN, even with a carton on it emptied since")
+    void submitOfACancelledCountIsNotOpen() {
+        UUID box = carton(BIN, "C", 20, false);
+        CycleCountView planned = planBin(BIN).count();
+        cycleCounts.count(planned.id(), cartonLine(planned, box).id(), 18, null, counter, false);
+        cycleCounts.cancel(planned.id(), "Not needed", "test");
+        consumeWhole(box);
+
+        assertThat(code(catchThrowable(() -> cycleCounts.submit(planned.id(), counter, false))))
+                .isEqualTo(ErrorCode.CYCLE_COUNT_NOT_OPEN);
+    }
+
+    @Test
     @DisplayName("a sealed carton scanned present has no variance; one not found is one adjustment and goes LOST")
     void cartonPresentAndMissing() {
         UUID kept = carton(BIN, "K", 20, true);

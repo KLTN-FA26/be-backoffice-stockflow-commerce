@@ -184,6 +184,9 @@ class CycleCountCountingService {
         if (count.status() == CycleCountStatus.COMPLETED) {
             return views.of(count, mayDecide);
         }
+        // A cancelled count is answered as closed before any stock lock, as count and addLine answer it - not with
+        // whatever a carton check would say about a line nobody will count again.
+        requireOpen(count);
         List<CycleCountLine> differing = count.lines().stream()
                 .filter(line -> line.isCounted() && line.delta() != 0)
                 .toList();
