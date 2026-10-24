@@ -142,7 +142,7 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
      */
     @Override
     public Optional<CycleCount> findHolding(CountSlot slot) {
-        lock(slot.lockKey());
+        lock(List.of(slot.lockKey()));
         MapSqlParameterSource params = new MapSqlParameterSource();
         String match = slotMatch(slot, "l", params);
         List<UUID> ids = jdbc.queryForList("""
@@ -170,7 +170,7 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
         }
         Map<String, CountSlot> byKey = new LinkedHashMap<>();
         slots.forEach(slot -> byKey.putIfAbsent(slot.lockKey(), slot));
-        new TreeSet<>(byKey.keySet()).forEach(this::lock);
+        lock(new TreeSet<>(byKey.keySet()));
 
         MapSqlParameterSource params = new MapSqlParameterSource();
         List<String> any = new ArrayList<>();
@@ -433,9 +433,20 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
                         rs.getString("location_code"), rs.getLong("free")));
     }
 
-    private void lock(String key) {
-        jdbc.getJdbcOperations().query("select pg_advisory_xact_lock(hashtextextended(?, " + SLOT_LOCK_SEED + "))",
-                (RowCallbackHandler) rs -> { }, key);
+    /**
+     * The slot locks of {@code keys}, in their iteration order, in one round trip rather than one per slot. A function
+     * scan of {@code unnest} returns the array's elements in order and the lock is evaluated row by row as they come,
+     * so the locks are still taken in the order given - with no ORDER BY, which could let the planner evaluate the
+     * call before sorting.
+     */
+    private void lock(Collection<String> keys) {
+        String[] array = keys.toArray(String[]::new);
+        jdbc.getJdbcOperations().query(connection -> {
+            var statement = connection.prepareStatement(
+                    "select pg_advisory_xact_lock(hashtextextended(k, " + SLOT_LOCK_SEED + ")) from unnest(?) as k");
+            statement.setArray(1, connection.createArrayOf("text", array));
+            return statement;
+        }, (RowCallbackHandler) rs -> { });
     }
 
     /** The condition that a line of alias {@code line} is this slot: its package, or the loose bin, SKU and lot. */
