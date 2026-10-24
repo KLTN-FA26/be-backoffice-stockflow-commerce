@@ -10,7 +10,8 @@ import java.util.UUID;
 /**
  * A cycle count as the web layer reads it: the aggregate flattened, with the LPN of each carton line and the
  * adjustments raised from each line. A value, not the aggregate, so a controller cannot call behaviour on it.
- * For a counter who may not decide, a blind count carries no expected quantity, no note and no adjustments.
+ * For a counter who may not decide, a blind count carries no expected quantity, no note and no adjustments - and no
+ * counted quantity on a carton line, which can be the carton's received (book) quantity.
  */
 public record CycleCountView(UUID id, String number, UUID warehouseId, String triggerType, String status,
                              boolean blind, UUID assignedUserId, LocalDate plannedDate, Instant startedAt,
@@ -20,7 +21,10 @@ public record CycleCountView(UUID id, String number, UUID warehouseId, String tr
         lines = List.copyOf(lines);
     }
 
-    /** {@code lpn} is null on a loose line; {@code expectedQty} null where a blind counter must not see it. */
+    /**
+     * {@code lpn} is null on a loose line; {@code expectedQty} null where a blind counter must not see it, and so is a
+     * carton line's {@code countedQty}.
+     */
     public record Line(UUID id, String locationCode, String sku, String lotNumber, UUID stockPackageId,
                        String lpn, Integer expectedQty, Integer countedQty, UUID countedBy, Instant countedAt,
                        boolean recountRequired, List<CycleCountRepository.LineAdjustment> adjustments) {

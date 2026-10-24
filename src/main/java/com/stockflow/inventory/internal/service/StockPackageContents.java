@@ -131,8 +131,11 @@ class StockPackageContents {
             throw new BusinessException(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION,
                     "%s is %s; nothing is put back into it".formatted(carton.lpn(), carton.status()));
         } else if (carton.unopened()) {
-            // A count confirms an unopened carton by its scan; it never finds more in one than was counted into it.
-            throw new IllegalStateException("%s is unopened and holds what was counted into it".formatted(carton.lpn()));
+            // An unopened carton already holds what was counted into it, so any write-up overfills it. Reachable: a
+            // blind counter's figure is not judged against the receipt when typed (it would give the book away).
+            throw new BusinessException(ErrorCode.STOCK_PACKAGE_OVERFILLED,
+                    "%s is unopened and holds what was counted into it; units above that are loose stock"
+                            .formatted(carton.lpn()));
         }
         int after = held(rows) + units;
         if (after > carton.receivedQty()) {

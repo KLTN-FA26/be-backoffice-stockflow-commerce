@@ -92,7 +92,7 @@ class CycleCountCounting {
         if (line.slot().isCarton()) {
             StockPackage carton = lockCarton(line.slot().stockPackageId());
             follow(count, line, carton, prefixOf(count));
-            counted = cartonCount(carton, countedQty, present);
+            counted = cartonCount(carton, countedQty, present, judgedNow(count, mayDecide));
         } else if (countedQty == null) {
             // Exactly one of the two was sent (checked above), so a loose line without a quantity was sent present.
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
@@ -144,7 +144,7 @@ class CycleCountCounting {
                                 .formatted(carton.lpn(), carton.location(), location));
             }
             slot = CountSlot.carton(carton.location(), content.sku(), content.lotNumber(), carton.id());
-            counted = cartonCount(carton, command.countedQty(), null);
+            counted = cartonCount(carton, command.countedQty(), null, judgedNow(count, command.mayDecide()));
         } else {
             Sku sku = CycleCountInput.sku("sku", command.sku());
             slot = CountSlot.loose(location, sku, command.lotNumber());
@@ -290,8 +290,11 @@ class CycleCountCounting {
      * quantity is the trusted figure the scan stands for. Only a sealed carton takes {@code present}, so never a LOST
      * one - {@code StockPackage.lose} clears {@code unopened}, since nobody knows what a lost carton still holds; found
      * again, it is counted in units.
+     *
+     * @param judged whether a figure above {@code received_qty} is refused here ({@link #judgedNow}); otherwise it is
+     *               recorded, and approval refuses the surplus it raises ({@code STOCK_PACKAGE_OVERFILLED})
      */
-    private int cartonCount(StockPackage carton, Integer countedQty, Boolean present) {
+    private int cartonCount(StockPackage carton, Integer countedQty, Boolean present, boolean judged) {
         int counted;
         if (present != null) {
             if (!carton.unopened()) {
@@ -303,9 +306,7 @@ class CycleCountCounting {
             counted = countedQty;
         }
         // V20261022000100 rule 5: a carton never holds more than was counted into it. Units above that are loose.
-        if (carton.receivedQty() != null && counted > carton.receivedQty()) {
-            // No figures: the received quantity of a sealed carton is its book quantity, which a blind counter
-            // must not learn by probing.
+        if (judged && carton.receivedQty() != null && counted > carton.receivedQty()) {
             throw new BusinessException(ErrorCode.STOCK_PACKAGE_OVERFILLED,
                     "Carton %s cannot hold that many; count the units above what it was received with as loose stock"
                             .formatted(carton.lpn()));
@@ -315,6 +316,16 @@ class CycleCountCounting {
                     "Carton %s is %s and cannot hold stock".formatted(carton.lpn(), carton.status()));
         }
         return counted;
+    }
+
+    /**
+     * Whether a carton figure is judged against {@code received_qty} as it is typed. Not for a blind counter: the
+     * received quantity of a sealed carton is its book quantity, and a refusal - figures or not - answers "too many"
+     * to each guess, so a few tries would find it. Their figure is recorded as given; a surplus above the receipt is
+     * then refused at approval, in front of the manager, who rejects it and has the line recounted.
+     */
+    private static boolean judgedNow(CycleCount count, boolean mayDecide) {
+        return mayDecide || !count.blind();
     }
 
     /** Another open count, or a variance still pending approval, holds the slot (the plan's rule). */

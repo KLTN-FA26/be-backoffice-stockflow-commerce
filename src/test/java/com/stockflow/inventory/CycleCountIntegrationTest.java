@@ -517,7 +517,12 @@ class CycleCountIntegrationTest {
         UUID gone = carton(BIN, "G", 30, true);
         CycleCountView planned = planBin(BIN).count();
 
-        cycleCounts.count(planned.id(), cartonLine(planned, kept).id(), null, true, counter, false);
+        CycleCountView scanned = cycleCounts.count(planned.id(), cartonLine(planned, kept).id(), null, true, counter,
+                false);
+        assertThat(cartonLine(scanned, kept)).satisfies(line -> {
+            assertThat(line.countedQty()).as("the received quantity is the sealed carton's book").isNull();
+            assertThat(line.countedAt()).isNotNull();
+        });
         cycleCounts.count(planned.id(), cartonLine(planned, gone).id(), null, false, counter, false);
         cycleCounts.submit(planned.id(), counter, false);
 
@@ -536,18 +541,30 @@ class CycleCountIntegrationTest {
     }
 
     @Test
-    @DisplayName("a carton counted above what it was received with is STOCK_PACKAGE_OVERFILLED; present needs a sealed one")
+    @DisplayName("a carton counted above what it was received with is STOCK_PACKAGE_OVERFILLED: at once for who decides, "
+            + "at approval for a blind counter; present needs a sealed one")
     void cartonAboveReceivedIsRefused() {
         UUID box = carton(BIN, "O", 20, false);
         CycleCountView planned = planBin(BIN).count();
         UUID line = cartonLine(planned, box).id();
 
-        assertThat(code(catchThrowable(() -> cycleCounts.count(planned.id(), line, 25, null, counter, false))))
+        assertThat(code(catchThrowable(() -> cycleCounts.count(planned.id(), line, 25, null, manager, true))))
                 .isEqualTo(ErrorCode.STOCK_PACKAGE_OVERFILLED);
         assertThat(code(catchThrowable(() -> cycleCounts.count(planned.id(), line, null, true, counter, false))))
                 .as("an opened carton is counted in units").isEqualTo(ErrorCode.VALIDATION_FAILED);
-        assertThat(cycleCounts.count(planned.id(), line, 18, null, counter, false).lines().get(0).countedQty())
-                .isEqualTo(18);
+
+        // A blind counter's figure is not judged against the receipt: a refusal would answer each guess at the book.
+        CycleCountView counted = cycleCounts.count(planned.id(), line, 25, null, counter, false);
+        assertThat(cartonLine(counted, box).countedQty()).as("a carton's figure is hidden from a blind counter")
+                .isNull();
+        assertThat(cartonLine(cycleCounts.get(planned.id(), true), box).countedQty()).isEqualTo(25);
+        cycleCounts.submit(planned.id(), counter, false);
+        UUID surplus = (UUID) adjustments().get(0).get("id");
+
+        assertThat(code(catchThrowable(() -> operations.approve(surplus, manager))))
+                .as("refused in front of the manager, who rejects and recounts")
+                .isEqualTo(ErrorCode.STOCK_PACKAGE_OVERFILLED);
+        assertThat(cartonState(box)).containsEntry("status", "IN_STOCK").containsEntry("held", 20L);
     }
 
     @Test
@@ -577,8 +594,9 @@ class CycleCountIntegrationTest {
             assertThat(line.locationCode()).isEqualTo(BIN);
             assertThat(line.lpn()).isEqualTo(lpn("L"));
             assertThat(line.lotNumber()).isEqualTo(lot);
-            assertThat(line.countedQty()).isEqualTo(20);
+            assertThat(line.countedQty()).as("hidden from a blind counter").isNull();
         });
+        assertThat(cartonLine(cycleCounts.get(second.id(), true), box).countedQty()).isEqualTo(20);
         cycleCounts.submit(second.id(), counter, false);
         List<Map<String, Object>> found = adjustments().stream()
                 .filter(a -> box.equals(a.get("stock_package_id")) && ((Integer) a.get("quantity_delta")) > 0).toList();

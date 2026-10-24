@@ -15,8 +15,10 @@ import java.util.UUID;
  *
  * <p>The count screen never shows the book quantity to a caller who may not decide counts: on every answer here a
  * blind count carries no expected quantity, no note and no adjustments for them, before or after submission - the
- * variance would give the book quantity away, and a counter who knows what to find finds it. The list carries no
- * lines at all, and no variance tally for them.</p>
+ * variance would give the book quantity away, and a counter who knows what to find finds it. Nor a carton line's
+ * counted quantity, and a carton figure is not refused for exceeding the carton's receipt as it is typed (approval
+ * refuses it instead): a sealed carton's received quantity is its book quantity. The list carries no lines at all,
+ * and no variance tally for them.</p>
  *
  * <p>That is the count screen, not the system: whoever holds {@code READ} on stock items, stock adjustments or the
  * stock ledger still sees quantities there. Restricting those while a blind count is open is an owner decision
@@ -79,7 +81,8 @@ public interface CycleCounts {
      * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code CYCLE_COUNT_NOT_OPEN};
      *         {@code CYCLE_COUNT_NOT_ASSIGNEE}; {@code VALIDATION_FAILED} ({@code present} on loose stock or an opened
      *         carton); {@code STOCK_PACKAGE_WRONG_LOCATION} (the carton left the warehouse);
-     *         {@code STOCK_PACKAGE_OVERFILLED}; {@code OUT_OF_DATA_SCOPE}
+     *         {@code STOCK_PACKAGE_OVERFILLED} (to who decides, or on a count that is not blind);
+     *         {@code OUT_OF_DATA_SCOPE}
      */
     CycleCountView count(UUID id, UUID lineId, Integer countedQty, Boolean present, UUID actor, boolean mayDecide);
 

@@ -24,7 +24,10 @@ public record CycleCountResponse(UUID id, String countNumber, UUID warehouseId, 
                        String lpn,
                        @Schema(description = "What the books say; absent on a blind count for a counter")
                        Integer expectedQty,
-                       Integer countedQty, UUID countedBy, Instant countedAt, boolean recountRequired,
+                       @Schema(description = "Absent on a carton line of a blind count for a counter: a sealed "
+                               + "carton scanned present records its received quantity, which is its book quantity")
+                       Integer countedQty,
+                       UUID countedBy, Instant countedAt, boolean recountRequired,
                        @Schema(description = "The variance adjustments raised from this line; empty on a blind count "
                                + "for a counter")
                        List<Adjustment> adjustments) {
