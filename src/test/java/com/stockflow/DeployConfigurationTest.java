@@ -26,4 +26,20 @@ class DeployConfigurationTest {
         assertThat(compose).as("compose passes it, refusing a missing or empty value")
                 .contains("PORTAL_ACTIVATION_URL: ${PORTAL_ACTIVATION_URL:?");
     }
+
+    @Test
+    @DisplayName("SCRUM-352: the server gets the Resend settings; the dev profile requires the sender and sends via Resend")
+    void theResendSettingsReachTheServer() throws Exception {
+        String compose = Files.readString(Path.of("deploy/docker-compose.yml"), StandardCharsets.UTF_8);
+        String application = Files.readString(Path.of("src/main/resources/application.yml"), StandardCharsets.UTF_8);
+        String dev = Files.readString(Path.of("src/main/resources/application-dev.yml"), StandardCharsets.UTF_8);
+
+        for (String variable : java.util.List.of("EMAIL_PROVIDER", "RESEND_API_KEY", "RESEND_FROM", "RESEND_REPLY_TO",
+                "RESEND_WEBHOOK_SECRET", "CUSTOMER_EMAIL_ENABLED")) {
+            assertThat(compose).as("compose passes %s", variable).contains(variable + ": ${" + variable + ":");
+            assertThat(application + dev).as("the application reads %s", variable).contains("${" + variable);
+        }
+        assertThat(dev).as("dev sends through Resend unless told otherwise").contains("provider: ${EMAIL_PROVIDER:resend}")
+                .contains("from: ${RESEND_FROM}");
+    }
 }
