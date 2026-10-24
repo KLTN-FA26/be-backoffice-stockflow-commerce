@@ -261,7 +261,13 @@ class CycleCountService implements CycleCounts {
      * is still to be decided, and an approved one is already in the books - recounting it would be a new count, which
      * is what planning is for. Checked before any line is flagged, so the refusal names the line and its state. The
      * slots are then claimed like a plan's; a decided adjustment no longer holds them. A carton emptied since
-     * (CONSUMED) has nothing left to count: {@code CYCLE_COUNT_STALE}, naming the line.
+     * (CONSUMED) has nothing left to count: {@code CYCLE_COUNT_STALE}, naming the line. A line already sent for
+     * recount is refused by the aggregate: its doubt went to that recount, and the line's own rejected adjustment
+     * would otherwise let it be recounted again after that recount settled the slot.
+     *
+     * <p>The recount keeps a {@code SHORT_PICK} trigger: only an open SHORT_PICK count freezes its slot, and rejecting
+     * the shortage already lifted the pending-shortage freeze, so a MANUAL recount would let the allocator promise
+     * the units the picker could not find while they are being counted again.</p>
      */
     @Override
     @Transactional
@@ -314,8 +320,10 @@ class CycleCountService implements CycleCounts {
         String text = "Recount of " + count.number() + (note == null || note.isBlank() ? "" : ": " + note.strip());
         counts.save(count);
         // Blind whatever the first count was: the counter must not be told what the doubted figure was.
-        CycleCount opened = counts.save(CycleCount.plan(counts.nextNumber(day), count.warehouseId(),
-                CycleCountTrigger.MANUAL, true, null, day, text, drafts));
+        CycleCountTrigger trigger = count.trigger() == CycleCountTrigger.SHORT_PICK
+                ? CycleCountTrigger.SHORT_PICK : CycleCountTrigger.MANUAL;
+        CycleCount opened = counts.save(CycleCount.plan(counts.nextNumber(day), count.warehouseId(), trigger, true,
+                null, day, text, drafts));
         log.info("Cycle count {}: {} line(s) sent for recount by {} as {}", count.number(), slots.size(), actor,
                 opened.number());
         return views.of(opened, true);

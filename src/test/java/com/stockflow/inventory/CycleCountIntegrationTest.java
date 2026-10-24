@@ -738,7 +738,31 @@ class CycleCountIntegrationTest {
         assertThat(looseLine(old, BIN).recountRequired()).isTrue();
         assertThat(looseLine(old, BIN2).recountRequired()).isFalse();
         assertThat(code(catchThrowable(() -> cycleCounts.recount(planned.id(), List.of(doubted), null, manager))))
-                .as("the recount holds the slot").isEqualTo(ErrorCode.CYCLE_COUNT_SLOT_BUSY);
+                .as("sent for recount once").isEqualTo(ErrorCode.CONFLICT);
+
+        // The recount settles the slot; the old line's rejected adjustment does not let it be recounted again.
+        cycleCounts.count(recount.id(), recount.lines().get(0).id(), 10, null, counter, false);
+        cycleCounts.submit(recount.id(), counter, false);
+        assertThat(code(catchThrowable(() -> cycleCounts.recount(planned.id(), List.of(doubted), null, manager))))
+                .as("after the recount completed").isEqualTo(ErrorCode.CONFLICT);
+    }
+
+    @Test
+    @DisplayName("a rejected short-pick shortage is recounted as SHORT_PICK, so the bin stays frozen while it is counted")
+    void shortPickRecountKeepsTheFreeze() {
+        loose(BIN, 5);
+        CycleCount shortPick = shortPick(looseSlot(BIN), 5);
+        UUID doubted = shortPick.lines().get(0).id();
+        cycleCounts.count(shortPick.id(), doubted, 3, null, counter, false);
+        cycleCounts.submit(shortPick.id(), counter, false);
+        operations.reject((UUID) adjustments().get(0).get("id"), manager, "Doubtful figure");
+        assertThat(frozen()).as("the rejection decided the shortage").isEmpty();
+
+        CycleCountView recount = cycleCounts.recount(shortPick.id(), List.of(doubted), null, manager);
+
+        assertThat(recount.triggerType()).isEqualTo("SHORT_PICK");
+        assertThat(frozen()).as("in doubt again while it is recounted").isNotEmpty();
+        assertThat(atp()).isZero();
     }
 
     // ------------------------------------------------------------------ who counts

@@ -193,10 +193,21 @@ public final class CycleCount extends AggregateRoot {
         return true;
     }
 
-    /** Flags lines for a second count after approval found the figure doubtful; returns their slots. */
+    /**
+     * Flags lines for a second count after approval found the figure doubtful; returns their slots. A line is
+     * flagged once: its doubt is handed to that recount, and counting the slot again after it is a new count.
+     *
+     * @throws BusinessException {@code CONFLICT} naming every line already flagged, before any line is flagged
+     */
     public List<CountSlot> markRecount(Collection<UUID> lineIds) {
         if (status != CycleCountStatus.COMPLETED) {
             throw new BusinessException(ErrorCode.CYCLE_COUNT_NOT_OPEN, "Only a submitted count can be sent for recount");
+        }
+        List<String> flagged = lines.stream().filter(line -> lineIds.contains(line.id()) && line.recountRequired())
+                .map(line -> line.id().toString()).toList();
+        if (!flagged.isEmpty()) {
+            throw new BusinessException(ErrorCode.CONFLICT,
+                    "Already sent for recount: " + String.join(", ", flagged));
         }
         List<CountSlot> slots = new ArrayList<>();
         for (CycleCountLine line : lines) {

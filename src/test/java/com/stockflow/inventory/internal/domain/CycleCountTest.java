@@ -207,6 +207,19 @@ class CycleCountTest {
     }
 
     @Test
+    void aLineIsSentForRecountOnce() {
+        CycleCount count = planOne(null, null);
+        UUID lineId = count.lines().get(0).id();
+        count.count(lineId, 10, 10, counter, T1);
+        count.submit(T2);
+        count.markRecount(List.of(lineId));
+
+        assertThatThrownBy(() -> count.markRecount(List.of(lineId)))
+                .satisfies(t -> assertCode(t, ErrorCode.CONFLICT))
+                .hasMessageContaining(lineId.toString());
+    }
+
+    @Test
     void shortPickIsBlindPlannedAndUnassigned() {
         CycleCount count = CycleCount.shortPick("CC-1", WAREHOUSE, slot("HN-A01-1-01"), 4, "short",
                 LocalDate.of(2026, 10, 23));

@@ -180,8 +180,10 @@ nobody decided. A typed-in adjustment request cannot claim `COUNT_VARIANCE` (`40
 (X-SHORT reallocation), then approves. A customer's hold is never cancelled silently by a count.
 
 **Recount.** `POST /{id}/recounts` with `{ "lineIds": [...], "note": "…" }` (`APPROVE`) for lines whose
-`COUNT_VARIANCE` adjustment was rejected: sets `recount_required` on those lines and opens a new blind `MANUAL`
-count with just those slots and cartons, noted "Recount of CC-…". Returns the new count.
+`COUNT_VARIANCE` adjustment was rejected: sets `recount_required` on those lines and opens a new blind count with
+just those slots and cartons, noted "Recount of CC-…" - `SHORT_PICK` when the doubted count was one (so the slot
+stays frozen while recounted), `MANUAL` otherwise. A line already flagged is refused (`CONFLICT`): it is recounted
+once. Returns the new count.
 
 **SHORT_PICK freeze (D7).** `CycleCountRepository.frozen` also holds back a slot of a `COMPLETED` SHORT_PICK count
 while one of its line's `COUNT_VARIANCE` adjustments is `PENDING_APPROVAL`. Otherwise, between submission and

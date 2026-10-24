@@ -698,7 +698,9 @@ flowchart LR
 > · Thiếu mà phải cắt vào phần đã giữ cho đơn → duyệt bị từ chối (`InsufficientStockException`); QL kho
 > phân bổ lại hoặc nhả giữ trước rồi mới duyệt. Kiểm kê không bao giờ âm thầm huỷ hàng giữ của khách.
 > · Đếm lại: `POST /{id}/recounts` (QL kho) cho các dòng có điều chỉnh bị từ chối → đánh dấu
-> `recount_required` và mở phiếu mù MANUAL mới chỉ gồm các ô đó. Phiếu đã COMPLETED không bao giờ mở lại.
+> `recount_required` và mở phiếu mù mới chỉ gồm các ô đó — SHORT_PICK nếu phiếu gốc là SHORT_PICK (ô vẫn bị
+> đóng băng trong lúc đếm lại), còn lại là MANUAL. Mỗi dòng chỉ được đếm lại một lần; muốn đếm nữa thì lập phiếu
+> mới. Phiếu đã COMPLETED không bao giờ mở lại.
 > · Chưa làm: lịch kiểm kê định kỳ, tần suất theo ABC, ngưỡng giá trị cho cấp duyệt cao hơn. NV kho chưa
 > có quyền `inventory-cycle-counts:UPDATE` (chờ migration của Tú) — tới lúc đó chỉ QL kho và Điều phối
 > nhập được số đếm.

@@ -111,11 +111,14 @@ public interface CycleCounts {
     CycleCountView submit(UUID id, UUID actor, boolean mayDecide);
 
     /**
-     * The manager doubts a variance and rejected its adjustment: the lines are flagged and a new blind
-     * {@code MANUAL} count of just those slots is opened. Returns the new count, unblinded (only who decides asks).
+     * The manager doubts a variance and rejected its adjustment: the lines are flagged and a new blind count of just
+     * those slots is opened - {@code SHORT_PICK} when the doubted count was one, so the slot stays frozen while it is
+     * recounted, {@code MANUAL} otherwise. A line is sent for recount once; a slot to count again after that is
+     * planned. Returns the new count, unblinded (only who decides asks).
      *
      * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND} for a line not on the count;
-     *         {@code CONFLICT} for a line without a rejected adjustment, or with a share still pending;
+     *         {@code CONFLICT} for a line without a rejected adjustment, with a share still pending, or already sent
+     *         for recount;
      *         {@code CYCLE_COUNT_NOT_OPEN} for a count not submitted; {@code CYCLE_COUNT_SLOT_BUSY};
      *         {@code CYCLE_COUNT_STALE} for a carton emptied since; {@code OUT_OF_DATA_SCOPE}
      */
