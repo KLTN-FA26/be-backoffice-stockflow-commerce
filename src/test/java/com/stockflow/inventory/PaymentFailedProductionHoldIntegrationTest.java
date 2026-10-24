@@ -80,14 +80,16 @@ class PaymentFailedProductionHoldIntegrationTest {
         OrderSummary checkout = orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), DemoData.CUSTOMER_ID,
                 List.of(new PlaceOrderCommand.Line(SOFA, 3, Money.vnd(12_000_000), null))));
 
+        // SCRUM-152: the production hold sits on the layer; the checkout holds the SKU, on no layer, until release.
         assertThat(jdbc.queryForList("""
                 SELECT COALESCE(order_id::text, 'production') AS owner FROM inventory.stock_reservation
                  WHERE stock_item_id = ? AND status = 'HELD'""", String.class, layer))
-                .as("both holds on the one layer").containsExactlyInAnyOrder(checkout.orderId().toString(), "production");
+                .as("the production hold on the layer").containsExactly("production");
+        assertThat(status(checkout.orderId())).isEqualTo("HELD");
 
         PaymentFailed failed = new PaymentFailed(checkout.orderId(), UUID.randomUUID(), "CARD_DECLINED", "declined");
         tx.executeWithoutResult(s -> publisher.publishEvent(failed));
-        Await.until("the checkout hold is released", TIMEOUT, () -> status(layer, checkout.orderId()).equals("RELEASED"));
+        Await.until("the checkout hold is released", TIMEOUT, () -> status(checkout.orderId()).equals("RELEASED"));
         Await.until("the inventory listener's publication completes", TIMEOUT, () -> openPublications(checkout) == 0);
 
         // A replay of the same event is a no-op and completes too.
@@ -106,9 +108,11 @@ class PaymentFailedProductionHoldIntegrationTest {
                 Integer.class, checkout.orderId())).as("released once, not twice").isEqualTo(1);
     }
 
-    private String status(UUID layer, UUID orderId) {
-        return jdbc.queryForObject("SELECT status FROM inventory.stock_reservation WHERE stock_item_id = ? AND order_id = ?",
-                String.class, layer, orderId);
+    /** The order's SKU reservation (stock_item_id NULL): what a checkout holds since SCRUM-152. */
+    private String status(UUID orderId) {
+        return jdbc.queryForObject(
+                "SELECT status FROM inventory.stock_reservation WHERE stock_item_id IS NULL AND order_id = ?",
+                String.class, orderId);
     }
 
     private int openPublications(OrderSummary order) {

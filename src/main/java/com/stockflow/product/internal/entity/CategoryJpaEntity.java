@@ -12,14 +12,13 @@ import java.util.UUID;
  *
  * <p>{@code path} ({@code /ROOT/CHILD}) and {@code depth} are materialised so a subtree is one
  * prefix scan; trigger {@code tg_categories_tree} refuses a row whose path and depth disagree with
- * its parent. They, the parent and the code are therefore fixed at creation: moving a node would
- * rewrite the path of its whole subtree, which no screen asks for yet.</p>
+ * its parent. Moving a node therefore updates its descendants in depth order in one transaction.</p>
  */
 @Entity
 @Table(name = "categories", schema = "product")
 public class CategoryJpaEntity extends BaseEntity {
 
-    @Column(name = "parent_id", updatable = false)
+    @Column(name = "parent_id")
     private UUID parentId;
 
     @Column(name = "code", nullable = false, length = 50, updatable = false)
@@ -31,10 +30,10 @@ public class CategoryJpaEntity extends BaseEntity {
     @Column(name = "slug", nullable = false, length = 255, updatable = false)
     private String slug;
 
-    @Column(name = "path", nullable = false, columnDefinition = "text", updatable = false)
+    @Column(name = "path", nullable = false, columnDefinition = "text")
     private String path;
 
-    @Column(name = "depth", nullable = false, updatable = false)
+    @Column(name = "depth", nullable = false)
     private int depth;
 
     @Column(name = "sort_order", nullable = false)
@@ -73,6 +72,17 @@ public class CategoryJpaEntity extends BaseEntity {
         this.seoTitle = seoTitle;
         this.seoDescription = seoDescription;
         this.active = active;
+    }
+
+    public void moveTo(CategoryJpaEntity parent) {
+        this.parentId = parent == null ? null : parent.getId();
+        repath((parent == null ? "" : parent.getPath()) + "/" + code,
+                parent == null ? 0 : parent.getDepth() + 1);
+    }
+
+    public void repath(String path, int depth) {
+        this.path = path;
+        this.depth = depth;
     }
 
     public UUID getParentId() { return parentId; }

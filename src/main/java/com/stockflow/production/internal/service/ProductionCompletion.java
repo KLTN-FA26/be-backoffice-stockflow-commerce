@@ -41,9 +41,9 @@ class ProductionCompletion {
     }
 
     /**
-     * Blanks issued and never printed go back to storage, free: the order has its good units. Then an ORDER's goods,
-     * still held for it, go to packing and the order is told once; a SAMPLE's are written off as SAMPLE and its round
-     * becomes READY. A subcontracted order's PO is closed for production and settled (BR-PRD-17).
+     * Blanks issued and never printed go back to storage, free: the order has its good units. Then an ORDER's goods
+     * go to packing and leave stock there (G4-Q2), and the order is told once; a SAMPLE's are written off as SAMPLE
+     * and its round becomes READY. A subcontracted order's PO is closed for production and settled (BR-PRD-17).
      */
     void complete(ProductionOrder order, String packingLocation, UUID by) {
         complete(order, packingLocation, by, null, null);
@@ -77,6 +77,9 @@ class ProductionCompletion {
         // checkout holds.
         orderReservations.addProductionHolds(order.salesOrderId(), order.salesOrderLineId(),
                 stock.handFinishedGoodsToOrder(order, handOver.holds()));
+        // G4-Q2 (lead's decision 2026-10-21, PACK-PRINT): the printed goods leave stock here, once, with a CONSUMPTION
+        // line naming this production order. Packing only moves them into parcels; it no longer deducts a print line.
+        stock.consumeFinishedGoods(order, handOver.holds(), by);
         events.publishEvent(new ProductionCompleted(order.salesOrderId(), order.salesOrderLineId(), order.id(),
                 order.good()));
         if (order.mode() == ProductionOrder.Mode.SUBCONTRACTED) {

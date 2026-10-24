@@ -63,6 +63,14 @@ public class StockMovementJpaEntity extends BaseEntity {
     @Column(name = "occurred_at", nullable = false, updatable = false)
     private Instant occurredAt;
 
+    /** The lot moved (SCRUM-142); written as null when the application leaves it to {@code tg_stock_movement_lot}. */
+    @Column(name = "lot_id", updatable = false)
+    private UUID lotId;
+
+    /** The customer order a pick, put-back or package deduction was for (SCRUM-153). */
+    @Column(name = "order_id", updatable = false)
+    private UUID orderId;
+
     /** The stock package the units left / went into (V20261020000300); null for loose stock. */
     @Column(name = "from_stock_package_id", updatable = false)
     private UUID fromStockPackageId;
@@ -77,10 +85,12 @@ public class StockMovementJpaEntity extends BaseEntity {
                                   String lotNumber, String fromLocationCode, String toLocationCode,
                                   int quantity, StockStatus fromStatus, StockStatus toStatus,
                                   StockMovement.ReferenceType referenceType, UUID referenceId,
-                                  String reason, UUID actorId, Instant occurredAt,
+                                  String reason, UUID actorId, Instant occurredAt, UUID lotId, UUID orderId,
                                   UUID fromStockPackageId, UUID toStockPackageId) {
         this(id, movementType, sku, lotNumber, fromLocationCode, toLocationCode, quantity, fromStatus, toStatus,
                 referenceType, referenceId, reason, actorId, occurredAt);
+        this.lotId = lotId;
+        this.orderId = orderId;
         this.fromStockPackageId = fromStockPackageId;
         this.toStockPackageId = toStockPackageId;
     }
@@ -122,4 +132,6 @@ public class StockMovementJpaEntity extends BaseEntity {
     public String getReason() { return reason; }
     public UUID getActorId() { return actorId; }
     public Instant getOccurredAt() { return occurredAt; }
+    public UUID getLotId() { return lotId; }
+    public UUID getOrderId() { return orderId; }
 }

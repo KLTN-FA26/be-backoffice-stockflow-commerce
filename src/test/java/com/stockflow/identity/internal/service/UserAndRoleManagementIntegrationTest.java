@@ -110,6 +110,20 @@ class UserAndRoleManagementIntegrationTest {
         assertThat(identity.profile(created.user().userId()).mustChangePassword()).isTrue();
     }
 
+    /**
+     * ScopeGuards.isBackOffice is "not a portal customer" (a staff member holding only a role created at run time has
+     * no Role constant to show): that is only sound because CUSTOMER never sits next to another role.
+     */
+    @Test
+    void customerIsNeverCombinedWithAnotherRole() {
+        StaffUser clerk = create("SALES_STAFF").user();
+
+        refused(ErrorCode.ROLE_NOT_ASSIGNABLE, () -> identity.assignRole(clerk.userId(), "CUSTOMER"));
+        refused(ErrorCode.ROLE_NOT_ASSIGNABLE, () -> identity.createStaffUser(new CreateStaffUserCommand(
+                unique("x."), unique("x") + "@example.com", null, null, List.of("SALES_STAFF", "CUSTOMER"), null)));
+        assertThat(roleCodes(clerk.userId())).containsExactly("SALES_STAFF");
+    }
+
     @Test
     void refusesDuplicatesCustomerRoleAndWeakPasswords() {
         StaffUser first = create("SALES_STAFF").user();

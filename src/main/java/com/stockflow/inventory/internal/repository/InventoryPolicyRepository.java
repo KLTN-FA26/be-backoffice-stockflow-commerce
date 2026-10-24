@@ -12,9 +12,12 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
 import java.time.LocalDate;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 
 /** Writes only inventory schema. The same advisory lock is taken by the stock-row trigger. */
 @Repository
@@ -109,6 +112,17 @@ public class InventoryPolicyRepository {
         return jdbc.query("select * from inventory.inventory_items where id = ?", (rs, n) ->
                 new ItemRow(rs.getObject("id", java.util.UUID.class), rs.getString("sku"), rs.getLong("version"),
                         logistics(rs), policy(rs)), id).stream().findFirst();
+    }
+
+    /** The items with these SKUs, in one SELECT; a SKU without an item is simply absent. */
+    public List<ItemRow> findBySkus(Collection<String> skus) {
+        if (skus.isEmpty()) {
+            return List.of();
+        }
+        return jdbc.query("select * from inventory.inventory_items where sku = any (?)", ps ->
+                ps.setArray(1, ps.getConnection().createArrayOf("text", skus.toArray())), (rs, n) ->
+                new ItemRow(rs.getObject("id", UUID.class), rs.getString("sku"), rs.getLong("version"),
+                        logistics(rs), policy(rs)));
     }
 
     private static InventoryPolicy policy(java.sql.ResultSet rs) throws java.sql.SQLException {

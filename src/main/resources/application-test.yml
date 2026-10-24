@@ -33,6 +33,15 @@ spring:
         max-size: 1
 
 stockflow:
+  payment:
+    # Obviously not a real account (SCRUM-193): demo values so the transfer instructions render here.
+    company-bank:
+      bank-name: ${COMPANY_BANK_NAME:DEMO BANK (not a real bank)}
+      account-number: ${COMPANY_BANK_ACCOUNT_NUMBER:0000000000}
+      account-name: ${COMPANY_BANK_ACCOUNT_NAME:DEMO STOCKFLOW CO LTD}
+  reporting:
+    # The tests rebuild by hand against the orders they place; a backfill racing the first test would only add noise.
+    backfill-on-startup: false
   inventory:
     # The alert jobs are driven by the tests, not by the clock: nothing may drain, reconcile or sweep behind their back.
     alert-drain-interval: PT24H

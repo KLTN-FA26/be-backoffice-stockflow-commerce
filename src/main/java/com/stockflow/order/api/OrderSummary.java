@@ -67,16 +67,68 @@ public record OrderSummary(
      *                               yet paid; 0 for every other policy and term
      * @param wholeOrderCodAmount    what the carrier collects for an order handed over whole, without shipments
      *                               recorded on it ({@code markShipped}): fixed at that handover; 0 otherwise (G4-2a)
+     * @param allowPartialShipment   Sales allowed the order to ship in parts (PACK-PARTIAL, lead's decision
+     *                               2026-10-21): packing may complete part of it and part of it may be handed over -
+     *                               for a mixed order, its stock while the prints are made (PACK-EARLY)
+     * @param printLinesReady        its printed goods are at packing: no print lines, or production completed. False
+     *                               while it is printed, or partly fulfilled before production completed (PACK-EARLY)
+     * @param deliveryMode           how it travels (LP-1, lead's decision 2026-10-22): PARCEL unless the Order
+     *                               Coordinator chose a full truckload; packing copies it onto every shipment
+     * @param deliveryModeLocked     packing started (or the order is past it, cancelled or closed): the delivery mode
+     *                               can no longer change
+     * @param goodsLeftAt            SCRUM-392: when goods of the order first left on a load plan's vehicle, before a
+     *                               shipment of it is handed over - from then it is not cancelled (review of #162)
      */
     public record Lifecycle(HoldReason holdReason, OrderStatus statusBeforeHold, String holdNote, Instant packedAt,
                             Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason, Instant completedAt,
                             Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal, BigDecimal amountDue,
                             BigDecimal amountDueBeforeHandover, List<LineProgress> lines, List<Shipment> shipments,
-                            BigDecimal amountDueOnDelivery, BigDecimal wholeOrderCodAmount) {
+                            BigDecimal amountDueOnDelivery, BigDecimal wholeOrderCodAmount, boolean allowPartialShipment,
+                            boolean printLinesReady, DeliveryMode deliveryMode, boolean deliveryModeLocked,
+                            Instant goodsLeftAt) {
 
         public Lifecycle {
             lines = lines == null ? List.of() : List.copyOf(lines);
             shipments = shipments == null ? List.of() : List.copyOf(shipments);
+            deliveryMode = deliveryMode == null ? DeliveryMode.PARCEL : deliveryMode;
+        }
+
+        /** Without goodsLeftAt (callers written before SCRUM-392): no goods left on a vehicle yet. */
+        public Lifecycle(HoldReason holdReason, OrderStatus statusBeforeHold, String holdNote, Instant packedAt,
+                         Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason,
+                         Instant completedAt, Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal,
+                         BigDecimal amountDue, BigDecimal amountDueBeforeHandover, List<LineProgress> lines,
+                         List<Shipment> shipments, BigDecimal amountDueOnDelivery, BigDecimal wholeOrderCodAmount,
+                         boolean allowPartialShipment, boolean printLinesReady, DeliveryMode deliveryMode,
+                         boolean deliveryModeLocked) {
+            this(holdReason, statusBeforeHold, holdNote, packedAt, shippedAt, deliveredAt, deliveryFailureReason,
+                    completedAt, closedAt, billedAmount, effectiveTotal, amountDue, amountDueBeforeHandover, lines,
+                    shipments, amountDueOnDelivery, wholeOrderCodAmount, allowPartialShipment, printLinesReady,
+                    deliveryMode, deliveryModeLocked, null);
+        }
+
+        /** Without the delivery mode (callers written before LP-1): a parcel order, still open. */
+        public Lifecycle(HoldReason holdReason, OrderStatus statusBeforeHold, String holdNote, Instant packedAt,
+                         Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason,
+                         Instant completedAt, Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal,
+                         BigDecimal amountDue, BigDecimal amountDueBeforeHandover, List<LineProgress> lines,
+                         List<Shipment> shipments, BigDecimal amountDueOnDelivery, BigDecimal wholeOrderCodAmount,
+                         boolean allowPartialShipment, boolean printLinesReady) {
+            this(holdReason, statusBeforeHold, holdNote, packedAt, shippedAt, deliveredAt, deliveryFailureReason,
+                    completedAt, closedAt, billedAmount, effectiveTotal, amountDue, amountDueBeforeHandover, lines,
+                    shipments, amountDueOnDelivery, wholeOrderCodAmount, allowPartialShipment, printLinesReady,
+                    DeliveryMode.PARCEL, false, null);
+        }
+
+        /** Without the partial-shipment block (callers written before PACK-PARTIAL): not allowed, prints ready. */
+        public Lifecycle(HoldReason holdReason, OrderStatus statusBeforeHold, String holdNote, Instant packedAt,
+                         Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason,
+                         Instant completedAt, Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal,
+                         BigDecimal amountDue, BigDecimal amountDueBeforeHandover, List<LineProgress> lines,
+                         List<Shipment> shipments, BigDecimal amountDueOnDelivery, BigDecimal wholeOrderCodAmount) {
+            this(holdReason, statusBeforeHold, holdNote, packedAt, shippedAt, deliveredAt, deliveryFailureReason,
+                    completedAt, closedAt, billedAmount, effectiveTotal, amountDue, amountDueBeforeHandover, lines,
+                    shipments, amountDueOnDelivery, wholeOrderCodAmount, false, true);
         }
 
         /** Without the whole-order COD (callers written before G4-2a). */

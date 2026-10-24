@@ -6,11 +6,12 @@ import com.stockflow.catalog.internal.service.StorefrontAvailabilityService;
 import com.stockflow.catalog.internal.service.StorefrontPriceService;
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.ratelimit.RateLimit;
-import com.stockflow.common.error.BusinessException;
-import com.stockflow.common.error.ErrorCode;
+import com.stockflow.common.security.Action;
 import com.stockflow.common.security.AuthenticatedUser;
 import com.stockflow.common.security.CurrentUser;
-import com.stockflow.common.security.Role;
+import com.stockflow.common.security.DataScope;
+import com.stockflow.common.security.PermissionResource;
+import com.stockflow.common.security.RequiresPermission;
 import io.swagger.v3.oas.annotations.Operation;
 import org.springframework.http.CacheControl;
 import org.springframework.http.ResponseEntity;
@@ -30,12 +31,19 @@ import java.util.List;
  * commercially sensitive — a competitor polling an open endpoint could read a customer's run
  * rate off them. Both the authenticated subject and its customer profile are checked.</p>
  *
- * <p>No new permission is needed for a customer's own portal read. Staff retain their existing
- * permission-guarded inventory API. The indicator never includes quantities or prices.</p>
+ * <p>Guarded by {@code catalog-storefront:READ} (V20261022000200), seeded for the CUSTOMER role, scope OWN as
+ * {@code /orders/me}: the answer is about the caller's own customer, taken from the token. Staff keep their
+ * permission-guarded inventory and price APIs; a caller without an ACTIVE customer profile is refused in the service
+ * whatever it was granted. The indicator never includes quantities or prices.</p>
  */
 @RestController
 @RequestMapping("/api/v1/catalog")
+@PermissionResource(code = CatalogController.STOREFRONT, group = "Catalog", label = "Storefront: my prices and stock",
+        route = "/catalog", apiPath = "/api/v1/catalog/products", actions = {Action.READ})
 class CatalogController {
+
+    /** The signed-in customer's own prices and stock indicator. */
+    static final String STOREFRONT = "catalog-storefront";
 
     /**
      * Long enough to absorb a page being refreshed, short enough that "in stock" is never more
@@ -61,10 +69,10 @@ class CatalogController {
     @GetMapping("/products/availability")
     @Operation(summary = "Stock indicator for the SKUs on a catalog page, in the order asked")
     @RateLimit(limit = 120, perSeconds = 60, key = RateLimit.Key.USER)
+    @RequiresPermission(resource = STOREFRONT, action = Action.READ, scope = DataScope.OWN)
     public ResponseEntity<ApiResponse<List<SkuAvailabilityResponse>>> availability(
             @AuthenticatedUser CurrentUser user,
             @RequestParam("sku") List<String> skus) {
-        if (!user.roles().contains(Role.CUSTOMER)) throw new BusinessException(ErrorCode.FORBIDDEN);
         return ResponseEntity.ok()
                 .cacheControl(CacheControl.maxAge(FRESHNESS).cachePrivate())
                 .body(ApiResponse.ok(mapper.toResponses(availability.availabilityOf(user.userId(), skus))));
@@ -78,9 +86,9 @@ class CatalogController {
     @GetMapping("/products/prices")
     @Operation(summary = "The logged-in customer's prices, tiers and MOQ for the SKUs asked")
     @RateLimit(limit = 120, perSeconds = 60, key = RateLimit.Key.USER)
+    @RequiresPermission(resource = STOREFRONT, action = Action.READ, scope = DataScope.OWN)
     public ApiResponse<List<PriceScheduleResponse>> prices(@AuthenticatedUser CurrentUser user,
                                                            @RequestParam("sku") List<String> skus) {
-        if (!user.roles().contains(Role.CUSTOMER)) throw new BusinessException(ErrorCode.FORBIDDEN);
         return ApiResponse.ok(prices.pricesOf(user.userId(), skus).stream()
                 .map(CustomerPriceController::toResponse).toList());
     }

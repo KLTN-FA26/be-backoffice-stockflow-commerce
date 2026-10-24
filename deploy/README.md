@@ -85,6 +85,12 @@ appended. Compose refuses a missing or empty value. Without it the application w
 `PORTAL_INVITATION_UNAVAILABLE` to every customer creation, and since self-registration is closed no customer could
 be created at all. Check after the deploy: Sales creates a test customer and gets 201, and the mail in Mailpit carries
 the portal link.
+Bank transfer instructions (SCRUM-193): set `COMPANY_BANK_NAME`, `COMPANY_BANK_ACCOUNT_NUMBER` and
+`COMPANY_BANK_ACCOUNT_NAME` in `/opt/stockflow/.env` - the company account `GET /api/v1/orders/me/{orderId}/transfer-instructions`
+tells a customer to transfer to (the transfer content is the order number). They are not required by Compose: while any
+is blank that one endpoint answers 503 `TRANSFER_INSTRUCTIONS_UNAVAILABLE` and nothing else is affected, because a
+customer must never be shown a made-up account. Check after the deploy: a customer with an unpaid order calls the
+endpoint and gets the real account.
 
 ---
 

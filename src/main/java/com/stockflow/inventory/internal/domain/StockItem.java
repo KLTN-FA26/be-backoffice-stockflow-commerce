@@ -73,10 +73,21 @@ public final class StockItem extends AggregateRoot {
     private final LocalDate expiryDate;
     private Instant receivedAt;
     private String serialNumber;
+    /**
+     * The lot these units belong to ({@code inventory.stock_lot}, SCRUM-142): one per goods receipt and lot number,
+     * so two receipts reusing a lot number stay two lots. Travels with the units through every move, hold hand-over
+     * and putaway; null only for a layer the application creates without one, which the database then resolves
+     * ({@code tg_stock_item_lot}).
+     */
+    private UUID lotId;
     private StockPackageId stockPackageId;
 
     public Instant receivedAt() {
         return receivedAt;
+    }
+
+    public UUID lotId() {
+        return lotId;
     }
 
     public String serialNumber() {
@@ -136,6 +147,24 @@ public final class StockItem extends AggregateRoot {
         this.serialNumber = serialNumber;
         if (serialNumber != null && (serialNumber.isBlank() || onHand.value() > 1))
             throw new BusinessException(ErrorCode.INVENTORY_POLICY_INVALID);
+    }
+
+    /** Full constructor, as stored, with the lot the units belong to. */
+    public StockItem(StockItemId id, Sku sku, LocationId location, String lotNumber, LocalDate expiryDate,
+                     Quantity onHand, StockStatus status, List<Reservation> reservations, long version,
+                     Instant receivedAt, String serialNumber, UUID lotId) {
+        this(id, sku, location, lotNumber, expiryDate, onHand, status, reservations, version, receivedAt,
+                serialNumber);
+        this.lotId = lotId;
+    }
+
+    /** Full constructor, as stored: the lot the units belong to and their stock package ({@code null}: loose). */
+    public StockItem(StockItemId id, Sku sku, LocationId location, String lotNumber, LocalDate expiryDate,
+                     Quantity onHand, StockStatus status, List<Reservation> reservations, long version,
+                     Instant receivedAt, String serialNumber, UUID lotId, StockPackageId stockPackageId) {
+        this(id, sku, location, lotNumber, expiryDate, onHand, status, reservations, version, receivedAt,
+                serialNumber, lotId);
+        this.stockPackageId = stockPackageId;
     }
 
     /**
@@ -226,9 +255,15 @@ public final class StockItem extends AggregateRoot {
      */
     public static StockItem receiveInbound(Sku sku, LocationId location, String lotNumber,
                                            LocalDate expiryDate, Quantity quantity, Instant receivedAt) {
+        return receiveInbound(sku, location, lotNumber, expiryDate, quantity, receivedAt, null);
+    }
+
+    /** The same, into the lot the receipt opened (SCRUM-142). */
+    public static StockItem receiveInbound(Sku sku, LocationId location, String lotNumber,
+                                           LocalDate expiryDate, Quantity quantity, Instant receivedAt, UUID lotId) {
         Objects.requireNonNull(receivedAt, "receivedAt");
         return new StockItem(StockItemId.newId(), sku, location, lotNumber, expiryDate, quantity,
-                StockStatus.INBOUND, List.of(), 0L, receivedAt, null);
+                StockStatus.INBOUND, List.of(), 0L, receivedAt, null, lotId);
     }
 
     // ------------------------------------------------------------------ queries
@@ -409,6 +444,60 @@ public final class StockItem extends AggregateRoot {
         return reservation;
     }
 
+    /**
+     * Allocate part of a SKU reservation to this stock item (F-FUL step 02, BR-STK-006): the order was released to
+     * this warehouse and the planner chose this bin and lot. A hard hold, pinned, that the picker will walk to; the
+     * units stop being the SKU's soft reservation once the caller marks it {@link SkuReservation#markAllocated}.
+     * Idempotent on {@code requestId}. Announces {@code StockAllocated}; available-to-promise does not change.
+     *
+     * @throws InsufficientStockException when fewer than {@code quantity} units here are free
+     */
+    public Reservation allocate(SkuReservation from, UUID requestId, Quantity quantity, Instant now) {
+        if (!from.sku().equals(sku)) {
+            throw new IllegalArgumentException("Reservation %s is for %s, not %s".formatted(from.id(), from.sku(), sku));
+        }
+        return allocate(from.orderId(), from.id().value(), from.id().value(), requestId, quantity, now);
+    }
+
+    /**
+     * An allocation of {@code orderId}'s units here, made from the SKU reservation {@code allocatedFrom} — at
+     * release, or again after a short pick elsewhere (X-SHORT). {@code rootRequestId} is what a replay of the call
+     * that made it looks for.
+     */
+    public Reservation allocate(UUID orderId, UUID allocatedFrom, UUID rootRequestId, UUID requestId,
+                                Quantity quantity, Instant now) {
+        Optional<Reservation> alreadyServed = findByRequestId(requestId);
+        if (alreadyServed.isPresent()) {
+            return alreadyServed.get();
+        }
+        requireHoldable(quantity, now, "order " + orderId);
+        Reservation reservation = Reservation.allocate(orderId, allocatedFrom, rootRequestId, requestId, quantity, now);
+        reservations.add(reservation);
+        checkInvariants();
+        registerEvent(new StockEvent.Allocated(new com.stockflow.contracts.StockAllocated(orderId,
+                reservation.id().value(), sku.code(), location.code(), lotNumber, quantity.value())));
+        return reservation;
+    }
+
+    /**
+     * Hold this row's units for a transfer order at its source (SCRUM-287 PR T; kltn-docs 10 step 4, BR-02/03): a hold
+     * on this bin and lot like a production hold - the same checks as {@link #allocate}, pinned from the start,
+     * announced to nobody (no order has a stake in it), never an allocation of a SKU reservation. Consumed when the
+     * transfer is dispatched, released when its picking is cancelled. Idempotent on {@code requestId}.
+     */
+    public Reservation reserveForTransfer(UUID transferOrderId, UUID rootRequestId, UUID requestId, Quantity quantity,
+                                          Instant now) {
+        Optional<Reservation> alreadyServed = findByRequestId(requestId);
+        if (alreadyServed.isPresent()) {
+            return alreadyServed.get();
+        }
+        requireHoldable(quantity, now, "transfer order " + transferOrderId);
+        Reservation reservation = Reservation.openForTransfer(transferOrderId, rootRequestId, requestId, quantity, now);
+        reservations.add(reservation);
+        checkInvariants();
+        return reservation;
+    }
+
     private void requireHoldable(Quantity quantity, Instant now, String holder) {
         if (expiryDate != null && expiryDate.isBefore(BusinessCalendar.date(now))) {
             throw new BusinessException(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT);
@@ -514,6 +603,54 @@ public final class StockItem extends AggregateRoot {
                                 sku.code(),
                                 location.code(),
                                 reservation.quantity().value())));
+    }
+
+    /**
+     * Decision G4-Q2 (2026-10-21), kltn-docs 19 BR-10: printed goods consumed on this layer when their production
+     * order completed belong to an order that has since been cancelled (or whose unshipped rest was closed). They
+     * cannot go back on sale, so they come back onto the books here only to be written off as SCRAP: {@code onHand}
+     * grows by the units and a new hold of exactly them is opened for {@code orderId}, pinned, so nothing can take
+     * them before the write-off is decided.
+     *
+     * <p>The new hold carries the consumed hold's id as its {@code rootRequestId}, so the units already brought back
+     * from that hold are known: no more than it consumed ever come back, however many closures ask. Idempotent on
+     * {@code requestId}.</p>
+     *
+     * @return the new hold, or empty when everything the consumed hold took has been brought back already
+     */
+    public Optional<Reservation> bookBackForScrap(ReservationId consumed, UUID orderId, UUID requestId,
+                                                  Quantity wanted, Instant now) {
+        Objects.requireNonNull(orderId, "orderId");
+        Optional<Reservation> alreadyServed = reservations.stream().filter(r -> r.requestId().equals(requestId))
+                .findFirst();
+        if (alreadyServed.isPresent()) {
+            return alreadyServed;
+        }
+        Reservation source = findReservation(consumed).orElseThrow(() -> new IllegalArgumentException(
+                "Reservation %s does not belong to stock item %s".formatted(consumed, id)));
+        if (source.status() != ReservationStatus.CONSUMED || !orderId.equals(source.orderId())) {
+            throw new IllegalArgumentException("Reservation %s is not order %s's consumed goods".formatted(consumed,
+                    orderId));
+        }
+        if (status != StockStatus.AVAILABLE || stockPackageId != null) {
+            // Finished goods reach packing as loose stock (emptyLayerOf); a carton never takes printed goods back.
+            throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH,
+                    "Stock item %s is %s%s; printed goods come back onto their loose AVAILABLE layer".formatted(id,
+                            status, stockPackageId == null ? "" : " in a carton"));
+        }
+        int back = reservations.stream().filter(r -> r != source && consumed.value().equals(r.rootRequestId()))
+                .mapToInt(r -> r.quantity().value()).sum();
+        int take = Math.min(wanted.value(), source.quantity().value() - back);
+        if (take <= 0) {
+            return Optional.empty();
+        }
+        Quantity quantity = Quantity.of(take);
+        this.onHand = onHand.plus(quantity);
+        Reservation hold = new Reservation(ReservationId.newId(), orderId, null, consumed.value(), requestId, quantity,
+                now, null, ReservationStatus.HELD, null, null);
+        reservations.add(hold);
+        checkInvariants();
+        return Optional.of(hold);
     }
 
     /**
@@ -752,7 +889,7 @@ public final class StockItem extends AggregateRoot {
         }
         return new StockItem(StockItemId.newId(), source.sku, destination, source.lotNumber, source.expiryDate,
                 Quantity.ZERO, Objects.requireNonNull(status, "status"), List.of(), 0L, source.receivedAt,
-                source.serialNumber);
+                source.serialNumber, source.lotId);
     }
 
     /**
@@ -777,7 +914,8 @@ public final class StockItem extends AggregateRoot {
                         List.of(),
                         0L,
                         source.receivedAt,
-                        source.serialNumber);
+                        source.serialNumber,
+                        source.lotId);
         arrived.moveIn(quantity);
         return arrived;
     }
@@ -794,7 +932,7 @@ public final class StockItem extends AggregateRoot {
         }
         StockItem arrived = new StockItem(StockItemId.newId(), source.sku, destination, source.lotNumber,
                 source.expiryDate, Quantity.ZERO, Objects.requireNonNull(status, "status"), List.of(), 0L,
-                source.receivedAt, source.serialNumber);
+                source.receivedAt, source.serialNumber, source.lotId);
         arrived.moveIn(quantity);
         return arrived;
     }
@@ -806,12 +944,22 @@ public final class StockItem extends AggregateRoot {
 
     /** Whether units of {@code other}, arriving as {@code arrivingStatus}, may be merged into this one. */
     public boolean canReceiveFrom(StockItem other, StockStatus arrivingStatus) {
+        return isSameGoodsAs(other) && status == arrivingStatus;
+    }
+
+    /**
+     * Whether {@code other} is a layer of the same goods, whatever its status: SKU, lot number, expiry, receipt time
+     * and serial. One receipt may bring a lot number twice with two expiries (two {@code stock_lot} rows), so the lot
+     * number alone does not tell them apart.
+     */
+    public boolean isSameGoodsAs(StockItem other) {
         return sku.equals(other.sku)
                 && Objects.equals(lotNumber, other.lotNumber)
                 && Objects.equals(receivedAt, other.receivedAt)
                 && Objects.equals(serialNumber, other.serialNumber)
                 && Objects.equals(expiryDate, other.expiryDate)
-                && status == arrivingStatus;
+                // Two lots never merge into one layer; a layer the database has not tagged yet takes any.
+                && (lotId == null || other.lotId == null || lotId.equals(other.lotId));
     }
 
     /**

@@ -143,13 +143,17 @@ class MaterialIssueIntegrationTest {
         List<UUID> holds = tx.execute(s -> {
             ReserveStockResult held = inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), BLANK, quantity,
                     orderId));
-            held.reservationIds().forEach(id -> jdbc.update(
-                    "INSERT INTO ordering.order_line_reservation (order_line_id, reservation_id) VALUES (?, ?)",
-                    lineId, id));
+            List<UUID> ids = held.reservationIds();
             if (pinned) {
                 inventory.pinReservations(orderId);
+                // As the release does (SCRUM-152): the SKU reservation becomes allocations on HCM bins.
+                ids = inventory.allocate(new com.stockflow.inventory.api.AllocateStockCommand(orderId, "HCM"))
+                        .allocations().get(0).holdIds();
             }
-            return held.reservationIds();
+            ids.forEach(id -> jdbc.update(
+                    "INSERT INTO ordering.order_line_reservation (order_line_id, reservation_id) VALUES (?, ?)",
+                    lineId, id));
+            return ids;
         });
         var release = new OrderLinesReleasedForProduction(orderId, "SO-IT", hcm, List.of(
                 new OrderLinesReleasedForProduction.Line(lineId, ProductionFixtures.BLANK, quantity,

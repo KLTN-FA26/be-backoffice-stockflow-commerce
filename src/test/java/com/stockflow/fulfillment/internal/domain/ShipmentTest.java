@@ -165,4 +165,31 @@ class ShipmentTest {
                 PACKER, NOW))).errorCode()).isEqualTo(ErrorCode.SHIPMENT_STATE_CONFLICT);
         assertThat(truck.handOver(LOAD, CARRIER, BigDecimal.ZERO, false, PACKER, NOW)).isTrue();
     }
+
+    @Test
+    @org.junit.jupiter.api.DisplayName("SCRUM-392: a full truckload waiting for dispatch splits its left-behind parcels "
+            + "off into a new partial shipment of the same order and pack; a parcel shipment or one handed over does "
+            + "not split")
+    void splitOff() {
+        UUID order = UUID.randomUUID();
+        UUID pack = UUID.randomUUID();
+        Shipment ftl = Shipment.ready(UUID.randomUUID(), "SO-9-S1", order, pack, UUID.randomUUID(), UUID.randomUUID(),
+                DeliveryMode.FULL_TRUCKLOAD, 3, java.math.BigDecimal.ZERO, null, PACKER, NOW);
+        ftl.pullRecorded();
+        Shipment rest = ftl.splitOff(UUID.randomUUID(), "SO-9-S2", UUID.randomUUID(), 1, 2, "left behind", PACKER, NOW);
+        assertThat(ftl.packageCount()).isEqualTo(2);
+        assertThat(rest.packageCount()).isEqualTo(1);
+        assertThat(rest.status()).isEqualTo(ShipmentStatus.READY_TO_DISPATCH);
+        assertThat(rest.orderId()).isEqualTo(order);
+        assertThat(rest.partial()).isTrue();
+        assertThat(rest.deliveryMode()).isEqualTo(DeliveryMode.FULL_TRUCKLOAD);
+        assertThat(rest.snapshot().packId()).isEqualTo(pack);
+        assertThat(rest.pullRecorded()).singleElement().satisfies(step -> assertThat(step.status())
+                .isEqualTo(ShipmentStatus.READY_TO_DISPATCH));
+        Throwable parcel = catchThrowable(() -> ready().splitOff(UUID.randomUUID(), "X", UUID.randomUUID(), 1, 1, null,
+                PACKER, NOW));
+        assertThat(parcel).isInstanceOf(com.stockflow.common.error.BusinessException.class);
+        assertThatThrownBy(() -> ftl.splitOff(UUID.randomUUID(), "X", UUID.randomUUID(), 1, 0, null, PACKER, NOW))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
 }

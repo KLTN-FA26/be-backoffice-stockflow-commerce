@@ -5,6 +5,7 @@ import com.stockflow.fulfillment.internal.domain.DispatchLoad;
 import com.stockflow.fulfillment.internal.entity.DispatchLoadJpaEntity;
 import com.stockflow.fulfillment.internal.entity.DispatchLoadPackageJpaEntity;
 import com.stockflow.fulfillment.internal.entity.DispatchLoadShipmentJpaEntity;
+import com.stockflow.fulfillment.internal.entity.DispatchLoadUnloadJpaEntity;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -28,22 +29,28 @@ public class DispatchLoadStore {
     private final DispatchLoadJpaRepository loads;
     private final DispatchLoadShipmentJpaRepository members;
     private final DispatchLoadPackageJpaRepository parcels;
+    private final DispatchLoadUnloadJpaRepository unloads;
 
     DispatchLoadStore(DispatchLoadJpaRepository loads, DispatchLoadShipmentJpaRepository members,
-                      DispatchLoadPackageJpaRepository parcels) {
+                      DispatchLoadPackageJpaRepository parcels, DispatchLoadUnloadJpaRepository unloads) {
         this.loads = loads;
         this.members = members;
         this.parcels = parcels;
+        this.unloads = unloads;
     }
 
     public DispatchLoad load(DispatchLoadJpaEntity header) {
         List<DispatchLoad.Member> onManifest = members.findByLoadIdOrderByAddedAtAscIdAsc(header.getId()).stream()
-                .map(r -> new DispatchLoad.Member(r.getShipmentId(), r.isActive(), r.getAddedAt(), r.getAddedBy(),
+                .map(r -> new DispatchLoad.Member(r.getKey(), r.isActive(), r.getAddedAt(), r.getAddedBy(),
                         r.getRemovedAt(), r.getRemovedBy(), r.getLabelCodAmount(), r.getCodAmount()))
                 .toList();
         List<DispatchLoad.Loaded> onVehicle = parcels.findByLoadIdOrderByLoadedAtAscIdAsc(header.getId()).stream()
-                .map(r -> new DispatchLoad.Loaded(r.getPackageId(), r.getShipmentId(), r.getScanId(), r.getLoadedAt(),
+                .map(r -> new DispatchLoad.Loaded(r.getPackageId(), r.getKey(), r.getScanId(), r.getLoadedAt(),
                         r.getLoadedBy(), r.isActive(), r.getRemovedAt(), r.getRemovedBy()))
+                .toList();
+        List<DispatchLoad.Unload> toUnload = unloads.findByLoadIdOrderByRequestedAtAscIdAsc(header.getId()).stream()
+                .map(r -> new DispatchLoad.Unload(r.getPackageId(), r.getShipmentId(), r.getReason(),
+                        r.getRequestedAt(), r.getUnloadedAt(), r.getUnloadedBy()))
                 .toList();
         return DispatchLoad.restore(new DispatchLoad.Snapshot(header.getId(), header.getCode(), header.getRequestId(),
                 header.getWarehouseId(), header.getMode(), header.getCarrierId(), header.getLoadPlanVehicleId(),
@@ -51,29 +58,42 @@ public class DispatchLoadStore {
                 header.getLoadingStartedAt(), header.getLoadingStartedBy(), header.getDispatchedAt(),
                 header.getDispatchedBy(), header.getCarrierRepresentative(), header.getSignatureRef(),
                 header.getHandoverNote(), header.getCodTotal(), header.getCancelledAt(), header.getCancelledBy(),
-                header.getCancelReason(), header.getVersion(), onManifest, onVehicle));
+                header.getCancelReason(), header.getVersion(), onManifest, onVehicle, header.getBookedAt(),
+                header.getBookedBy(), header.getBookingCancelledAt(), header.getBookingCancelledBy(),
+                header.getBookingCancelReason(), toUnload));
     }
 
     /** Inserts a new load (header first: the manifest rows reference it). */
     public DispatchLoadJpaEntity insert(DispatchLoad load) {
+        return insert(load, false);
+    }
+
+    /**
+     * Inserts a new load; {@code transfer}: a vehicle of a TRANSFER plan (SCRUM-287 PR T), whose manifest holds its
+     * transfer order where a load's holds shipments ({@code DispatchLoad} calls both "shipments").
+     */
+    public DispatchLoadJpaEntity insert(DispatchLoad load, boolean transfer) {
         DispatchLoad.Snapshot s = load.snapshot();
         DispatchLoadJpaEntity header = new DispatchLoadJpaEntity(s);
         header.apply(s);
         header = loads.saveAndFlush(header);
-        writeRows(s);
+        writeRows(s, transfer);
         return header;
     }
 
     public DispatchLoadJpaEntity save(DispatchLoad load, DispatchLoadJpaEntity header) {
         DispatchLoad.Snapshot s = load.snapshot();
-        writeRows(s);
+        writeRows(s, null);
         header.apply(s);
         return loads.saveAndFlush(header);
     }
 
-    private void writeRows(DispatchLoad.Snapshot s) {
+    /** @param transferLoad null: as the stored manifest says (a TRANSFER plan's vehicle got its transfer when opened) */
+    private void writeRows(DispatchLoad.Snapshot s, Boolean transferLoad) {
         Map<UUID, DispatchLoadShipmentJpaEntity> manifest = members.findByLoadIdOrderByAddedAtAscIdAsc(s.id()).stream()
-                .collect(Collectors.toMap(DispatchLoadShipmentJpaEntity::getShipmentId, Function.identity()));
+                .collect(Collectors.toMap(DispatchLoadShipmentJpaEntity::getKey, Function.identity()));
+        boolean transfer = transferLoad != null ? transferLoad
+                : manifest.values().stream().anyMatch(r -> r.getTransferOrderId() != null);
         Map<UUID, DispatchLoadPackageJpaEntity> vehicle = parcels.findByLoadIdOrderByLoadedAtAscIdAsc(s.id()).stream()
                 .collect(Collectors.toMap(DispatchLoadPackageJpaEntity::getPackageId, Function.identity()));
         List<DispatchLoadPackageJpaEntity> parcelsOff = new ArrayList<>();
@@ -84,7 +104,8 @@ public class DispatchLoadStore {
                 continue;
             }
             if (row == null) {
-                row = new DispatchLoadPackageJpaEntity(Identifiers.newId(), s.id(), l.packageId(), l.shipmentId());
+                row = new DispatchLoadPackageJpaEntity(Identifiers.newId(), s.id(), l.packageId(), l.shipmentId(),
+                        transfer);
             }
             row.apply(l.scanId(), l.loadedAt(), l.loadedBy(), l.active(), l.removedAt(), l.removedBy());
             (l.active() ? parcelsOn : parcelsOff).add(row);
@@ -94,7 +115,7 @@ public class DispatchLoadStore {
         for (DispatchLoad.Member m : s.members()) {
             DispatchLoadShipmentJpaEntity row = manifest.get(m.shipmentId());
             if (row == null) {
-                row = new DispatchLoadShipmentJpaEntity(Identifiers.newId(), s.id(), m.shipmentId());
+                row = new DispatchLoadShipmentJpaEntity(Identifiers.newId(), s.id(), m.shipmentId(), s.mode(), transfer);
             }
             boolean wasActive = row.isActive();
             row.apply(m.active(), m.addedAt(), m.addedBy(), m.removedAt(), m.removedBy(), m.labelCodAmount(),
@@ -107,5 +128,28 @@ public class DispatchLoadStore {
         members.saveAllAndFlush(shipmentsOff);
         members.saveAllAndFlush(shipmentsOn);
         parcels.saveAllAndFlush(parcelsOn);
+        writeUnloads(s);
+    }
+
+    /** SCRUM-392: parcels to unload, before the header (tg_dispatch_load_unload_pending reads them). */
+    private void writeUnloads(DispatchLoad.Snapshot s) {
+        if (s.unloads() == null || s.unloads().isEmpty()) {
+            return;
+        }
+        Map<UUID, DispatchLoadUnloadJpaEntity> known = unloads.findByLoadIdOrderByRequestedAtAscIdAsc(s.id()).stream()
+                .collect(Collectors.toMap(DispatchLoadUnloadJpaEntity::getPackageId, Function.identity()));
+        List<DispatchLoadUnloadJpaEntity> changed = new ArrayList<>();
+        for (DispatchLoad.Unload u : s.unloads()) {
+            DispatchLoadUnloadJpaEntity row = known.get(u.packageId());
+            if (row == null) {
+                row = new DispatchLoadUnloadJpaEntity(Identifiers.newId(), s.id(), u.packageId(), u.shipmentId(),
+                        u.reason(), u.requestedAt());
+            } else if (java.util.Objects.equals(row.getUnloadedAt(), u.unloadedAt())) {
+                continue;
+            }
+            row.apply(u.unloadedAt(), u.unloadedBy());
+            changed.add(row);
+        }
+        unloads.saveAllAndFlush(changed);
     }
 }

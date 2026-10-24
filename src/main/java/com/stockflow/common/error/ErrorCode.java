@@ -321,6 +321,22 @@ public enum ErrorCode {
     PAYMENT_REVERSAL_NOT_ALLOWED("This payment can no longer be taken back", 409),
     /** G2-3 (15 §4.2 step 3): the customer's terms do not let the balance be collected that way. */
     BALANCE_POLICY_NOT_ALLOWED("This customer may not use that way of paying the balance", 409),
+    /**
+     * BALCREDIT (lead's decision 2026-10-21): a deposit order's balance on credit would take the customer past their
+     * credit limit, or they are overdue. Refused at placement, never held: Sales changes the terms.
+     */
+    BALANCE_CREDIT_LIMIT_EXCEEDED("The balance on credit would exceed the customer's credit limit", 409),
+    /** PACK-PARTIAL (lead's decision 2026-10-21): the order does not allow a partial shipment; Sales decides. */
+    ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED("This order does not allow partial shipments", 409),
+    /** PACK-PARTIAL: whether the order may ship in parts can no longer change once everything left or it is closed. */
+    ORDER_PARTIAL_SHIPMENT_LOCKED("Partial shipment can no longer be changed on this order", 409),
+    /** LP-1 (lead's decision 2026-10-22): the delivery mode is locked once packing of the order started. */
+    DELIVERY_MODE_LOCKED("The delivery mode can no longer be changed on this order", 409),
+    /**
+     * LP-2 (lead's decision 2026-10-22): a full truckload is never paid by a carrier collecting on delivery
+     * ({@code ck_shipment_ftl_no_cod}); Sales changes the balance policy, or the order stays a parcel shipment.
+     */
+    DELIVERY_MODE_FTL_NO_COD("A full-truckload order cannot have its balance collected on delivery", 409),
     /** G2-3: a carrier remittance names a receivable the customer pays themselves. */
     RECEIVABLE_NOT_CARRIER_COLLECTED("This receivable is not collected by a carrier", 409),
     /** G2-3: the customer paid this balance to the carrier; record the carrier's remittance instead. */
@@ -338,6 +354,8 @@ public enum ErrorCode {
     /** Fewer than allocated: a short pick, reported through the short-pick flow (SCRUM-268). */
     PICK_QUANTITY_SHORT("Fewer than allocated - report a short pick", 409),
     PICK_LINE_NOT_OPEN("This line is no longer open", 409),
+    /** A cycle count already completed or cancelled. */
+    CYCLE_COUNT_NOT_OPEN("This cycle count is no longer open", 409),
     /** Docs 07 step 9: a pick task closes only when every line is picked. */
     PICK_LINES_INCOMPLETE("Some lines are not picked yet", 409),
     PICK_TASK_STATE_CONFLICT("The task cannot do that in its current status", 409),
@@ -374,9 +392,19 @@ public enum ErrorCode {
     PACKAGE_SHIPPED("The package is in a shipment already", 409),
     /** Docs 08 BR-01: everything the order still wants must be packed, or a partial shipment asked for. */
     PACKING_INCOMPLETE("Not everything is packed yet", 409),
-    /** The split-shipment policy is off (stockflow.fulfillment.packing.partial-shipments). */
+    /** PACK-PARTIAL (lead's decision 2026-10-21): the order does not allow a partial shipment; Sales decides. */
     PACK_PARTIAL_NOT_ALLOWED("Partial shipments are not allowed", 409),
     PACK_NOTHING_TO_SHIP("No sealed package is waiting to ship", 409),
+    /** SCRUM-287 LP2-6: a kit ("bộ") ships whole - a part of it is not sealed, or part 1 holds no unit yet. */
+    KIT_INCOMPLETE("A kit has parts that are not sealed yet", 409),
+    /** LP2-5: a kit has as many parts as its item ships boxes ({@code package_count}); one box is no kit. */
+    KIT_PART_COUNT_MISMATCH("The kit's parts do not match how many boxes the item ships as", 422),
+    /** LP2-6: only part 1 of a kit holds goods, and one unit of its item. */
+    KIT_CONTENTS_INVALID("Only part 1 of a kit holds goods: one unit of its item", 409),
+    /** LP2-6 (review of #155): part 1 of a kit takes the item of the line the kit was opened for, no other. */
+    KIT_ITEM_MISMATCH("This kit was opened for another item", 422),
+    /** KIT-FORCE (lead's decision 2026-10-22): an item that ships as several boxes goes in an ordinary package only with a reason. */
+    KIT_OVERRIDE_REASON_REQUIRED("This item ships as a kit: give a reason to pack it in an ordinary package", 422),
     /** Docs 09 §5: the shipment's status does not allow the step. */
     SHIPMENT_STATE_CONFLICT("The shipment cannot do that in its current status", 409),
     // ---- G4-2a loading and handover (kltn-docs 09 §4.1, §5): 404 / 400 / 409 kept together with the flow
@@ -387,7 +415,58 @@ public enum ErrorCode {
     HANDOVER_NOT_SIGNED("Both sides must sign the manifest", 400),
     CARRIER_CODE_EXISTS("Carrier code already exists", 409),
     CARRIER_INACTIVE("This carrier is no longer in use", 409),
+    /** SCRUM-287 load planning: the vehicle-type catalogue (kltn-docs 09 §3). */
+    VEHICLE_TYPE_NOT_FOUND("Vehicle type not found", 404),
+    VEHICLE_TYPE_CODE_EXISTS("Vehicle type code already exists", 409),
+    /**
+     * SCRUM-287 PR EST: the advisory load estimate (design v2 §2, LP2-1 to LP2-5). PACKAGING_MISSING names each blocked
+     * line's inventory item in the field errors, so the screen links to the item to complete.
+     */
+    LOAD_ESTIMATE_NOT_FOUND("Load estimate not found", 404),
+    LOAD_ESTIMATE_PACKAGING_MISSING("No line has an item with a size and weight to estimate its cartons", 422),
+    LOAD_ESTIMATE_SOURCE_NOT_ELIGIBLE("This order cannot be estimated in its current status, or has nothing left to ship", 409),
+    LOAD_ESTIMATE_SOURCE_UNSUPPORTED("This kind of source cannot be estimated yet", 400),
+    LOAD_ESTIMATE_TOO_MANY_CARTONS("The order has too many cartons to estimate at once", 422),
+    VEHICLE_TYPE_INACTIVE("This vehicle type is no longer in use", 409),
     INVALID_LOAD_TRANSITION("The load cannot do that in its current status", 409),
+    // ---- SCRUM-287 PR D load plans (kltn-docs 09 §4.2, §5, BR-09..BR-15)
+    /** A load plan of a warehouse outside the caller's scope is OUT_OF_DATA_SCOPE, not this. */
+    LOAD_PLAN_NOT_FOUND("Load plan not found", 404),
+    LOAD_PLAN_VEHICLE_NOT_FOUND("This vehicle is not in the load plan", 404),
+    /** Docs 09 §5: the plan's status does not allow the step. */
+    INVALID_LOAD_PLAN_TRANSITION("The load plan cannot do that in its current status", 409),
+    /** Docs 09 BR-09: a parcel belongs to at most one load plan that is not cancelled. */
+    LOAD_PLAN_PACKAGE_TAKEN("A package of this shipment is already in another load plan", 409),
+    /** Docs 09 BR-09 / edge "kiện thiếu kích thước": only sealed parcels with sizes and weight are planned. */
+    LOAD_PLAN_PACKAGE_UNMEASURED("A package has no size or weight: measure it again at packing", 422),
+    /** Nothing to calculate or confirm: no parcels, no vehicle types, or no parcel placed. */
+    LOAD_PLAN_EMPTY("The load plan has nothing to plan or confirm", 409),
+    /** Docs 09 BR-13: parcels left unplaced must be acknowledged before the plan is confirmed. */
+    LOAD_PLAN_UNPLACED_NOT_ACKNOWLEDGED("Acknowledge the packages left unplaced before confirming", 409),
+    /** Docs 09 BR-14: once a vehicle of the plan started loading, the plan is neither reopened nor cancelled here. */
+    LOAD_PLAN_LOADING_STARTED("A vehicle of this load plan is already being loaded", 409),
+    /** SCRUM-287 PR T (LP2-8): only a transfer that travels as a full truckload is packed for a load plan. */
+    TRANSFER_NOT_FULL_TRUCKLOAD("This transfer order does not travel as a full truckload", 409),
+    /** Docs 10 BR-04: goods of the transfer left on a load plan's vehicle; its picking is no longer cancelled. */
+    TRANSFER_GOODS_LEFT("Goods of this transfer order already left the source warehouse", 409),
+    /** SCRUM-287 PR T: a transfer packed for a load plan is dispatched by the plan's last vehicle, not by hand. */
+    TRANSFER_DISPATCH_BY_LOAD_PLAN("This transfer order is dispatched by its load plan's last vehicle", 409),
+    /** Docs 09 BR-09 / LP2-1: only a packed transfer goes into a load plan. */
+    TRANSFER_NOT_PACKED("This transfer order is not packed for dispatch", 409),
+    /** Docs 09 §4.2 step 1 / 10 step 5: a transfer leaves whole with its load plan; nothing of it stays behind. */
+    TRANSFER_SHIPS_WHOLE("A transfer order leaves whole with its load plan", 409),
+    /** Docs 09 §3 LoadPlan.source_type: a plan holds customer orders' shipments or one transfer order, not both. */
+    LOAD_PLAN_SOURCE_MISMATCH("This load plan holds another kind of source", 409),
+    /** LP2-8: the stock carton is not an unopened carton of this transfer's goods at the source warehouse. */
+    STOCK_CARTON_NOT_SHIPPABLE("This stock carton cannot ship as it is", 409),
+    /** Docs 09 BR-10 / BR-11: a placement breaks a loading rule; the field errors name each package and rule. */
+    PLACEMENT_RULE_VIOLATION("A placement breaks a loading rule", 422),
+    /** Docs 09 edge "bỏ kiện & tính lại": parcels were taken out of a vehicle; recalculate it before confirming. */
+    LOAD_PLAN_NEEDS_RECALCULATION("A vehicle of this load plan lost parcels and must be recalculated first", 409),
+    /** A load of a load plan's vehicle changes only through its plan (reopen, cancel, recalculate). */
+    LOAD_MANAGED_BY_PLAN("This load belongs to a load plan; change it through the plan", 409),
+    /** Docs 09 BR-09: a parcel in a load plan is not voided, re-opened or re-measured. */
+    PACKAGE_IN_LOAD_PLAN("This package is in a load plan; take it out of the plan first", 409),
     /** Docs 09 edge: a parcel of another shipment, warehouse or load scanned by mistake; the message names where it belongs. */
     PACKAGE_NOT_IN_LOAD("This package is not on this load's manifest", 409),
     PACKAGE_ALREADY_LOADED("This package is already on another load", 409),
@@ -405,6 +484,8 @@ public enum ErrorCode {
     /** Docs 09 BR-04: the COD the order fixes at the handover is not the one on the parcels' label: reprint it. */
     LABEL_OUTDATED("The package label shows another COD amount than the order now fixes; reprint it", 409),
     LOAD_SCAN_ID_CONFLICT("This scan id was already used for another package or load", 409),
+    /** SCRUM-392: parcels of a cancelled order are still on the vehicle; unload them before it is handed over. */
+    LOAD_UNLOAD_PENDING("Parcels of a cancelled order are still on this vehicle; unload them first", 409),
     OPTIMISTIC_LOCK("The record changed meanwhile, please retry", 409),
     /** Two writers reached the same row; the loser waited for the lock and gave up. Retryable. */
     LOCK_TIMEOUT("The record is busy, please retry", 409),
@@ -517,6 +598,8 @@ public enum ErrorCode {
     STORAGE_ERROR("File storage is unavailable", 503),
     /** No portal activation address is configured, so no invitation link can be built. */
     PORTAL_INVITATION_UNAVAILABLE("Portal invitations cannot be sent right now", 503),
+    /** The company bank account customers transfer to is not configured for this deployment (SCRUM-193). */
+    TRANSFER_INSTRUCTIONS_UNAVAILABLE("Transfer details cannot be shown right now", 503),
     /** The caller's permissions could not be looked up (ADR-0008). The token itself may be fine,
      *  which is why this is a 503 and not a 401 that would sign the user out. */
     AUTHORIZATION_UNAVAILABLE("Permissions cannot be checked right now, please retry", 503);

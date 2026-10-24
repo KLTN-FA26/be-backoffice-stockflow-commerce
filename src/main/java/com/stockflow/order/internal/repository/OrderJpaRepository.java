@@ -70,7 +70,7 @@ interface OrderJpaRepository extends ScopedJpaRepository<OrderJpaEntity> {
             """)
     List<OrderJpaEntity> findByCustomerIdWithLines(@Param("customerId") UUID customerId);
 
-    @Query("select new com.stockflow.order.api.OrderHoldState(o.id, o.status, o.holdReason) "
+    @Query("select new com.stockflow.order.api.OrderHoldState(o.id, o.status, o.holdReason, o.allowPartialShipment) "
             + "from OrderJpaEntity o where o.id in :ids")
     List<com.stockflow.order.api.OrderHoldState> holdStates(@Param("ids") java.util.Collection<UUID> ids);
 
@@ -81,4 +81,12 @@ interface OrderJpaRepository extends ScopedJpaRepository<OrderJpaEntity> {
             group by l.order.id
             """)
     List<Object[]> countLinesByOrder(@Param("orderIds") Collection<UUID> orderIds);
+
+    /** {@code [orderId, lineId, sku, quantity, designSnapshotId]} of these orders' lines, for a list showing them. */
+    @Query("""
+            select l.order.id, l.id, l.sku, l.quantity, l.designSnapshotId from OrderLineJpaEntity l
+            where l.order.id in :orderIds
+            order by l.order.id, l.id
+            """)
+    List<Object[]> findLineRowsByOrder(@Param("orderIds") Collection<UUID> orderIds);
 }

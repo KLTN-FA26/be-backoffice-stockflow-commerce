@@ -121,12 +121,13 @@ public interface CustomerOrders {
      *                         {@code UNDER_REVIEW}, never the internal reason
      * @param timeline         oldest first
      * @param shipments        handed over to a carrier, oldest first; empty before the first handover
+     * @param deliveryMode     SCRUM-209: PARCEL or FULL_TRUCKLOAD as the order carries it; null without a lifecycle
      */
     record Detail(UUID orderId, String orderNumber, OrderStatus status, StatusGroup statusGroup,
                   String holdReasonPublic, PaymentTerm paymentTerm, BigDecimal total, String currency,
                   Instant placedAt, OrderSummary.AddressSummary shippingAddress, Payment payment, List<Line> lines,
                   List<TimelineEntry> timeline, DeliveryState deliveryState, AllowedActions allowedActions,
-                  CancellationRequestView cancellationRequest, List<Shipment> shipments) {
+                  CancellationRequestView cancellationRequest, List<Shipment> shipments, String deliveryMode) {
 
         public Detail {
             shipments = shipments == null ? List.of() : List.copyOf(shipments);

@@ -33,8 +33,10 @@ public final class PickLine {
     private String putBackLocationCode;
     private UUID putBackBy;
     private Instant putBackAt;
+    /** Units the picker did not find at the bin (X-SHORT); positive only on a SHORT line or one reallocated since. */
+    private int shortQty;
 
-    /** Rehydrates a stored line. */
+    /** Rehydrates a stored line that was never short. */
     public PickLine(UUID id, UUID orderLineId, UUID reservationId, String sku, String locationCode,
                     String lotNumber, int sequenceNo, int allocatedQty, int pickedQty, PickLineStatus status,
                     UUID pickedBy, Instant pickedAt, Instant consumedAt, String scannedLocationCode,
@@ -62,6 +64,21 @@ public final class PickLine {
         this.putBackLocationCode = putBackLocationCode;
         this.putBackBy = putBackBy;
         this.putBackAt = putBackAt;
+    }
+
+    /** Rehydrates a stored line. */
+    public PickLine(UUID id, UUID orderLineId, UUID reservationId, String sku, String locationCode,
+                    String lotNumber, int sequenceNo, int allocatedQty, int pickedQty, PickLineStatus status,
+                    UUID pickedBy, Instant pickedAt, Instant consumedAt, String scannedLocationCode,
+                    String scannedCode, int putBackQty, String putBackLocationCode, UUID putBackBy,
+                    Instant putBackAt, int shortQty) {
+        this(id, orderLineId, reservationId, sku, locationCode, lotNumber, sequenceNo, allocatedQty, pickedQty, status,
+                pickedBy, pickedAt, consumedAt, scannedLocationCode, scannedCode, putBackQty, putBackLocationCode,
+                putBackBy, putBackAt);
+        if (shortQty < 0 || shortQty > allocatedQty) {
+            throw new IllegalArgumentException("A line is short by 0.." + allocatedQty + " units");
+        }
+        this.shortQty = shortQty;
     }
 
     /** A new line, open, nothing picked. Package-private: only {@link PickList} plans lines. */
@@ -102,6 +119,21 @@ public final class PickLine {
         this.status = PickLineStatus.CANCELLED;
     }
 
+    /**
+     * The picker found {@code found} of the allocated units at the bin (X-SHORT): nothing is taken and nothing is
+     * deducted - the line records the shortfall and waits for the coordinator.
+     */
+    void reportShort(int found, String scannedLocation) {
+        this.status = PickLineStatus.SHORT;
+        this.shortQty = allocatedQty - found;
+        this.scannedLocationCode = scannedLocation;
+    }
+
+    /** Its allocation was moved to other bins; the new lines pick it. The shortfall stays on record. */
+    void supersede() {
+        this.status = PickLineStatus.CANCELLED;
+    }
+
     public UUID id() { return id; }
     public UUID orderLineId() { return orderLineId; }
     public UUID reservationId() { return reservationId; }
@@ -121,4 +153,5 @@ public final class PickLine {
     public String putBackLocationCode() { return putBackLocationCode; }
     public UUID putBackBy() { return putBackBy; }
     public Instant putBackAt() { return putBackAt; }
+    public int shortQty() { return shortQty; }
 }

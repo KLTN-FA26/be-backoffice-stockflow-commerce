@@ -3,6 +3,7 @@ package com.stockflow.inventory.internal.domain;
 import com.stockflow.common.domain.AggregateRoot;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.inventory.api.TransferDeliveryMode;
 
 import java.time.Instant;
 import java.time.LocalDate;
@@ -28,6 +29,11 @@ import java.util.UUID;
  *
  * <p>Dispatch is the point of no return: the stock leaves the source and is owned by the transfer
  * until the destination counts it in. Before dispatch it can be cancelled; after, only closed.</p>
+ *
+ * <p>SCRUM-287 PR T (LP2-8, kltn-docs 10 step 5): a transfer travels as a {@link TransferDeliveryMode#FULL_TRUCKLOAD}
+ * by default - packed at the station ({@link #beginPacking}, {@link #markPacked}), its trip load-planned, dispatched at
+ * its plan's last vehicle's signature. Goods of it may leave on an earlier vehicle of that plan ({@link
+ * #recordGoodsLeft}); from then its picking is no longer cancelled (BR-04: cancelled only before it left).</p>
  */
 public final class TransferOrder extends AggregateRoot {
 
@@ -48,6 +54,9 @@ public final class TransferOrder extends AggregateRoot {
     private UUID dispatchedBy;
     private Instant dispatchedAt;
     private String cancelReason;
+    private TransferDeliveryMode deliveryMode = TransferDeliveryMode.FULL_TRUCKLOAD;
+    private Instant packedAt;
+    private Instant goodsLeftAt;
     private final long version;
     private final Instant createdAt;
 
@@ -118,6 +127,26 @@ public final class TransferOrder extends AggregateRoot {
         this.lines.addAll(replacement);
     }
 
+    /** Read back from the table: how it travels and how far its packing and loading got (SCRUM-287 PR T). */
+    public TransferOrder restoreFulfillment(TransferDeliveryMode deliveryMode, Instant packedAt, Instant goodsLeftAt) {
+        this.deliveryMode = deliveryMode == null ? TransferDeliveryMode.FULL_TRUCKLOAD : deliveryMode;
+        this.packedAt = packedAt;
+        this.goodsLeftAt = goodsLeftAt;
+        return this;
+    }
+
+    /** LP2-8: how it travels; chosen while DRAFT, as its warehouses are. Null keeps it. */
+    public void travelAs(TransferDeliveryMode mode) {
+        if (mode == null || mode == deliveryMode) {
+            return;
+        }
+        if (status != TransferStatus.DRAFT) {
+            throw new BusinessException(ErrorCode.TRANSFER_ORDER_NOT_EDITABLE,
+                    "Transfer %s is %s; its delivery mode is chosen while DRAFT".formatted(number, status));
+        }
+        this.deliveryMode = mode;
+    }
+
     public static TransferOrder draft(UUID id, String number, UUID fromWarehouseId, UUID toWarehouseId,
                                       TransferReason reason, LocalDate expectedDate, String note,
                                       List<TransferLine> lines, Instant now) {
@@ -172,9 +201,57 @@ public final class TransferOrder extends AggregateRoot {
         moveTo(TransferStatus.PICKING);
     }
 
+    /**
+     * Picking stops and the goods go back (10 §5 Picking → Approved) - only while nothing of it left the source
+     * ({@code TRANSFER_GOODS_LEFT}, BR-04). Its packing is undone with it.
+     */
     public void cancelPicking() {
         requireStatus(TransferStatus.PICKING);
+        if (goodsLeftAt != null) {
+            throw new BusinessException(ErrorCode.TRANSFER_GOODS_LEFT, ("Goods of transfer %s left on a vehicle at %s; "
+                    + "picking is no longer cancelled - the rest leaves with its load plan").formatted(number,
+                    goodsLeftAt));
+        }
         moveTo(TransferStatus.APPROVED);
+        this.packedAt = null;
+    }
+
+    /**
+     * The source warehouse packs it for a load plan (10 step 5, LP2-8): an APPROVED transfer starts picking, one
+     * PICKING already stays. Only a full truckload is packed this way ({@code TRANSFER_NOT_FULL_TRUCKLOAD}).
+     *
+     * @return whether it changed
+     */
+    public boolean beginPacking() {
+        if (deliveryMode != TransferDeliveryMode.FULL_TRUCKLOAD) {
+            throw new BusinessException(ErrorCode.TRANSFER_NOT_FULL_TRUCKLOAD, ("Transfer %s travels as %s: it is "
+                    + "dispatched by hand, without a load plan").formatted(number, deliveryMode));
+        }
+        if (status == TransferStatus.PICKING) {
+            return false;
+        }
+        if (status != TransferStatus.APPROVED) {
+            throw new BusinessException(ErrorCode.INVALID_TRANSFER_TRANSITION,
+                    "Transfer %s is %s; it is packed once approved".formatted(number, status));
+        }
+        moveTo(TransferStatus.PICKING);
+        return true;
+    }
+
+    /** Its packing completed (10 step 5): ready for a load plan. */
+    public void markPacked(Instant at) {
+        requireStatus(TransferStatus.PICKING);
+        this.packedAt = Objects.requireNonNull(at, "at");
+    }
+
+    /** Goods of it left on a load plan's vehicle; the first time is kept. */
+    public boolean recordGoodsLeft(Instant at) {
+        requireStatus(TransferStatus.PICKING);
+        if (goodsLeftAt != null) {
+            return false;
+        }
+        this.goodsLeftAt = Objects.requireNonNull(at, "at");
+        return true;
     }
 
     /**
@@ -246,6 +323,9 @@ public final class TransferOrder extends AggregateRoot {
     public UUID dispatchedBy() { return dispatchedBy; }
     public Instant dispatchedAt() { return dispatchedAt; }
     public String cancelReason() { return cancelReason; }
+    public TransferDeliveryMode deliveryMode() { return deliveryMode; }
+    public Instant packedAt() { return packedAt; }
+    public Instant goodsLeftAt() { return goodsLeftAt; }
     public long version() { return version; }
     public Instant createdAt() { return createdAt; }
 }

@@ -7,13 +7,14 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.persistence.Pages;
+import com.stockflow.common.security.Action;
 import com.stockflow.common.security.CurrentUser;
-import com.stockflow.common.security.Role;
 import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.design.api.DesignService;
 import com.stockflow.fulfillment.api.PackingCompletion;
 import com.stockflow.fulfillment.internal.domain.DeliveryMode;
 import com.stockflow.fulfillment.internal.domain.DesignVerificationResult;
+import com.stockflow.fulfillment.internal.domain.KitPart;
 import com.stockflow.fulfillment.internal.domain.PackStatus;
 import com.stockflow.fulfillment.internal.domain.PackageStatus;
 import com.stockflow.fulfillment.internal.domain.PackageType;
@@ -40,9 +41,7 @@ import com.stockflow.inventory.api.HoldView;
 import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.ItemLogistics;
-import com.stockflow.inventory.api.StockReservation;
 import com.stockflow.inventory.api.StorageClass;
-import com.stockflow.inventory.consumption.PickConsumption;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
@@ -61,7 +60,6 @@ import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -80,8 +78,9 @@ import java.util.stream.Collectors;
  * a shipment. See {@link Packing} for the contract and {@link PackingSession} for the rules.
  *
  * <p><b>Lock order</b>, as everywhere in fulfillment: the pick first ({@code SELECT … FOR UPDATE}), then the order (its
- * service takes the order's row lock), then stock rows (the deduction of printed goods). Cancelling an order takes the
- * order and stock locks in its own transaction and reaches the pick only afterwards, in the listener.</p>
+ * service takes the order's row lock). Packing changes no stock: picked goods left it when they were picked, printed
+ * goods when their production order completed (decision G4-Q2, 2026-10-21). Cancelling an order takes the order and
+ * stock locks in its own transaction and reaches the pick only afterwards, in the listener.</p>
  */
 @Service
 @Transactional
@@ -89,7 +88,10 @@ class PackingService implements Packing {
 
     private static final Logger log = LoggerFactory.getLogger(PackingService.class);
 
-    /** The order statuses packing may change parcels in: released, picking, or the rest of a split order. */
+    /**
+     * The order statuses packing may change parcels in: released, picking, or the rest of a split order - and
+     * IN_PRODUCTION, its stock packed ahead of the prints, when Sales allowed partial shipments (PACK-EARLY).
+     */
     private static final Set<OrderStatus> PACKABLE = EnumSet.of(OrderStatus.READY_TO_FULFILL, OrderStatus.PICKING,
             OrderStatus.PARTIALLY_FULFILLED);
     private static final EnumSet<PackStatus> QUEUED = EnumSet.of(PackStatus.PENDING, PackStatus.PACKING,
@@ -108,7 +110,6 @@ class PackingService implements Packing {
     private final OrderService orders;
     private final InventoryService inventory;
     private final InventoryControlService itemControls;
-    private final PickConsumption consumption;
     private final DesignService designs;
     private final IdentityService identities;
     private final WarehouseService warehouses;
@@ -118,7 +119,9 @@ class PackingService implements Packing {
     private final com.stockflow.fulfillment.internal.repository.DispatchLoadStore loadStore;
     private final Clock clock;
     private final int dimDivisor;
-    private final boolean partialShipmentsAllowed;
+    private final com.stockflow.common.audit.AuditTrail audit;
+    private final LoadPlanReleases loadPlans;
+    private final PlanVehicles planVehicles;
 
     @SuppressWarnings("java:S107")
     PackingService(PickJpaRepository picks, PickLineJpaRepository pickLines, PackJpaRepository packs,
@@ -127,13 +130,14 @@ class PackingService implements Packing {
                    PackingSessionStore store,
                    com.stockflow.fulfillment.internal.repository.PackageScanJpaRepository scans,
                    OrderService orders, InventoryService inventory,
-                   InventoryControlService itemControls, PickConsumption consumption, DesignService designs,
+                   InventoryControlService itemControls, DesignService designs,
                    IdentityService identities, WarehouseService warehouses, ShipmentTimeline timeline,
                    com.stockflow.fulfillment.internal.repository.DispatchLoadShipmentJpaRepository loadMembers,
                    com.stockflow.fulfillment.internal.repository.DispatchLoadJpaRepository loads,
                    com.stockflow.fulfillment.internal.repository.DispatchLoadStore loadStore, Clock clock,
                    @Value("${stockflow.fulfillment.packing.dim-divisor:6000}") int dimDivisor,
-                   @Value("${stockflow.fulfillment.packing.partial-shipments:true}") boolean partialShipmentsAllowed) {
+                   com.stockflow.common.audit.AuditTrail audit, LoadPlanReleases loadPlans,
+                   PlanVehicles planVehicles) {
         this.picks = picks;
         this.pickLines = pickLines;
         this.packs = packs;
@@ -145,7 +149,6 @@ class PackingService implements Packing {
         this.orders = orders;
         this.inventory = inventory;
         this.itemControls = itemControls;
-        this.consumption = consumption;
         this.designs = designs;
         this.identities = identities;
         this.warehouses = warehouses;
@@ -155,7 +158,9 @@ class PackingService implements Packing {
         this.loadStore = loadStore;
         this.clock = clock;
         this.dimDivisor = dimDivisor;
-        this.partialShipmentsAllowed = partialShipmentsAllowed;
+        this.audit = audit;
+        this.loadPlans = loadPlans;
+        this.planVehicles = planVehicles;
     }
 
     // ------------------------------------------------------------------ the queue
@@ -247,13 +252,49 @@ class PackingService implements Packing {
 
     @Override
     public Parcel openPackage(UUID taskId, String type, CurrentUser actor) {
+        return openPackage(taskId, type, null, actor);
+    }
+
+    @Override
+    public Parcel openPackage(UUID taskId, String type, String kitOverrideReason, CurrentUser actor) {
         Context ctx = forWork(taskId);
         requirePackable(ctx.order());
         PackingSession session = load(ctx);
         session.requireWorkable(actor.userId(), isManager(actor));
-        PackingSession.Parcel parcel = session.openPackage(Identifiers.newId(), packageType(type), clock.instant());
+        PackingSession.Parcel parcel = session.openPackage(Identifiers.newId(), packageType(type), kitOverrideReason,
+                clock.instant());
+        auditKitOverride(parcel, null, actor);
+        // LP-1: packing started - the order's delivery mode is locked from now on (under the order's row lock, after
+        // the pick's, as completion takes them).
+        orders.recordPackingStarted(ctx.order().orderId());
         store.save(session, ctx.pack());
         return parcelView(parcel, skus(session));
+    }
+
+    @Override
+    public Kit openKit(UUID taskId, OpenKit request, CurrentUser actor) {
+        Context ctx = forWork(taskId);
+        requirePackable(ctx.order());
+        PackingSession session = load(ctx);
+        session.requireWorkable(actor.userId(), isManager(actor));
+        // One id per part; the item's package_count (read with the session's facts) is the kit's size.
+        int parts = session.lines().stream().filter(l -> l.orderLineId().equals(request.orderLineId()))
+                .mapToInt(PackingSession.Line::packageCount).findFirst().orElse(0);
+        List<UUID> ids = new ArrayList<>();
+        for (int i = 0; i < parts; i++) {
+            ids.add(Identifiers.newId());
+        }
+        UUID groupId = Identifiers.newId();
+        List<PackingSession.Parcel> kit = session.openKit(groupId, ids, request.orderLineId(), request.partCount(),
+                packageType(request.packageType()), clock.instant());
+        // LP-1: a kit opens packages as openPackage does - packing started, the delivery mode is locked from now on.
+        orders.recordPackingStarted(ctx.order().orderId());
+        store.save(session, ctx.pack());
+        Map<UUID, String> skus = skus(session);
+        log.info("Order {}: kit {} of {} parts opened for line {}", ctx.pick().getOrderNumber(), groupId, kit.size(),
+                request.orderLineId());
+        return new Kit(groupId, request.orderLineId(), skus.get(request.orderLineId()), kit.size(),
+                kit.stream().map(parcel -> parcelView(parcel, skus)).toList());
     }
 
     @Override
@@ -265,9 +306,11 @@ class PackingService implements Packing {
         requirePackable(ctx.order());
         PackingSession session = load(ctx);
         session.requireWorkable(actor.userId(), isManager(actor));
+        String before = session.parcel(packageId).map(PackingSession.Parcel::kitOverrideReason).orElse(null);
         if (session.scan(scan.scanId(), packageId, scan.scannedCode(), scan.lotNumber(), scan.serialNumber(),
-                scan.quantity(), scan.orderLineId(), actor.userId(), clock.instant())) {
+                scan.quantity(), scan.orderLineId(), scan.kitOverrideReason(), actor.userId(), clock.instant())) {
             store.save(session, ctx.pack());
+            session.parcel(packageId).ifPresent(parcel -> auditKitOverride(parcel, before, actor));
         }
         return view(ctx, session);
     }
@@ -314,17 +357,20 @@ class PackingService implements Packing {
         requirePackable(ctx.order());
         PackingSession session = load(ctx);
         session.requireWorkable(actor.userId(), isManager(actor));
+        String before = session.parcel(packageId).map(PackingSession.Parcel::kitOverrideReason).orElse(null);
         PackingSession.Parcel parcel = session.seal(packageId, new PackingSession.Measures(seal.weightKg(),
                         seal.lengthCm(), seal.widthCm(), seal.heightCm()), seal.rotatable(), seal.fragile(),
-                seal.packageType() == null ? null : packageType(seal.packageType()), dimDivisor, actor.userId(),
-                clock.instant());
+                seal.packageType() == null ? null : packageType(seal.packageType()), seal.kitOverrideReason(),
+                dimDivisor, actor.userId(), clock.instant());
         store.save(session, ctx.pack());
+        auditKitOverride(parcel, before, actor);
         return parcelView(parcel, skus(session));
     }
 
     @Override
     public Parcel reopen(UUID taskId, UUID packageId, CurrentUser actor) {
         Context ctx = forWork(taskId);
+        requireNotPlanned(ctx, packageId);
         requirePackable(ctx.order());
         PackingSession session = load(ctx);
         session.requireWorkable(actor.userId(), isManager(actor));
@@ -336,6 +382,7 @@ class PackingService implements Packing {
     @Override
     public Session voidPackage(UUID taskId, UUID packageId, CurrentUser actor) {
         Context ctx = forWork(taskId);
+        requireNotPlanned(ctx, packageId);
         requirePackable(ctx.order());
         PackingSession session = load(ctx);
         session.requireWorkable(actor.userId(), isManager(actor));
@@ -396,6 +443,11 @@ class PackingService implements Packing {
             shipment.apply(printed);
             shipments.saveAndFlush(shipment);
         }
+        // SCRUM-392: printed again, a label outdated by a shipment split is current again.
+        packages.findById(packageId).filter(p -> p.getLabelOutdatedAt() != null).ifPresent(p -> {
+            p.markLabelOutdated(null);
+            packages.save(p);
+        });
         var address = order.shippingAddress();
         Address recipient = address == null ? new Address(order.contactName(), order.contactPhone(), null, null, null,
                 null, null, null) : new Address(address.recipientName() == null ? order.contactName()
@@ -410,7 +462,7 @@ class PackingService implements Packing {
                 shipment == null, cod, order.total().currency().getCurrencyCode(), recipient,
                 warehouse.map(w -> w.name()).orElse(null), warehouse.map(w -> w.address()).orElse(null),
                 parcel.type().name(), m.weightKg(), m.lengthCm(), m.widthCm(), m.heightCm(), parcel.dimWeightKg(),
-                parcel.fragile(), parcel.rotatable(), contents(parcel, skus));
+                parcel.fragile(), parcel.rotatable(), contents(parcel, skus), parcel.kit());
     }
 
     // ------------------------------------------------------------------ completing
@@ -420,7 +472,7 @@ class PackingService implements Packing {
 
     /**
      * See {@code FulfillmentService.completePacking}. The pick is locked first; the order's row lock is taken by its
-     * service; printed goods leave stock last.
+     * service. Nothing leaves stock here, a print line included: its goods left when production completed (G4-Q2).
      */
     public Completed complete(UUID taskId, PackingCompletion request, CurrentUser actor) {
         Context ctx = forWork(taskId);
@@ -447,8 +499,9 @@ class PackingService implements Packing {
         session.requireWorkable(actor.userId(), isManager(actor));
         requirePackable(ctx.order());
         Instant now = clock.instant();
+        // PACK-PARTIAL (lead's decision 2026-10-21): Sales decides on the order whether part of it may ship.
         PackingSession.Completion completion = session.complete(request.partial(), request.note(),
-                partialShipmentsAllowed, actor.userId(), now);
+                allowsPartialShipment(ctx.order()), actor.userId(), now);
         // BR-DSG-003, 08 BR-02: the printed goods leaving now are checked against their design first.
         List<PackingSession.Line> printed = session.printLinesIn(completion.lines().keySet());
         if (!verifyDesigns(ctx.pack(), ctx.order(), printed.stream().map(PackingSession.Line::orderLineId).toList(),
@@ -474,15 +527,16 @@ class PackingService implements Packing {
         BigDecimal cod = orders.codFor(ctx.order().orderId(), lines, pendingLines(session,
                 shipments.findByPackIdOrderByReadyAtAscIdAsc(ctx.pack().getId()), null));
         long before = shipments.countByOrderId(ctx.order().orderId());
+        // LP-1: the shipment travels as the order does - locked since its first package was opened.
+        DeliveryMode mode = deliveryModeOf(after);
         Shipment shipment = Shipment.ready(Identifiers.newId(), ctx.order().orderNumber() + "-S" + (before + 1),
                 ctx.order().orderId(), ctx.pack().getId(), ctx.pick().getWarehouseId(), request.requestId(),
-                DeliveryMode.PARCEL, completion.parcels().size(), cod,
+                mode, completion.parcels().size(), cod,
                 completion.partial() ? request.note().trim() : null, actor.userId(), now);
         shipments.saveAndFlush(ShipmentJpaEntity.of(shipment));
         timeline.record(shipment, null, ctx.order(), null, null, null);
         session.ship(completion, shipment.id(), actor.userId(), now);
         store.save(session, ctx.pack());
-        deductPrintedGoods(session, completion, ctx.order(), actor.userId());
         log.info("Order {}: shipment {} ready to dispatch, {} package(s){}", ctx.pick().getOrderNumber(),
                 shipment.code(), shipment.packageCount(), completion.partial() ? ", part of the order" : "");
         return new Completed(shipment.id(), after);
@@ -515,6 +569,24 @@ class PackingService implements Packing {
     }
 
     /**
+     * SCRUM-287 PR D (09 BR-09): a parcel a load plan holds - or any part of its kit, which is voided whole - is not
+     * voided or re-opened: 409 {@code PACKAGE_IN_LOAD_PLAN}, before the station's own "already shipped" refusal.
+     */
+    private void requireNotPlanned(Context ctx, UUID packageId) {
+        PackageJpaEntity parcel = packages.findById(packageId).orElse(null);
+        if (parcel == null) {
+            return;
+        }
+        java.util.List<UUID> ids = new java.util.ArrayList<>(List.of(packageId));
+        if (parcel.getKit() != null) {
+            packages.findByPackIdOrderByPackageNoAsc(ctx.pack().getId()).stream()
+                    .filter(p -> p.getKit() != null && p.getKit().groupId().equals(parcel.getKit().groupId()))
+                    .forEach(p -> ids.add(p.getId()));
+        }
+        loadPlans.requireNotPlanned(ids);
+    }
+
+    /**
      * The order was cancelled (08 BR-05, 17 §4.5 step 15): parcels that did not ship are voided with their labels, a
      * shipment still waiting for dispatch is cancelled. The goods in them were picked: the pick's put-back covers them.
      */
@@ -523,7 +595,18 @@ class PackingService implements Packing {
         for (ShipmentJpaEntity row : shipments.findByPackIdOrderByReadyAtAscIdAsc(pack.getId())) {
             Shipment shipment = row.toDomain();
             if (shipment.status() == ShipmentStatus.READY_TO_DISPATCH) {
-                takeOffLoad(row.getId(), now);
+                if (planVehicles.partlyGone(row.getId())) {
+                    // SCRUM-392 (LP-3): a vehicle of its load plan already left with some of its parcels - they are
+                    // with the carrier and cannot be voided. The order refuses its cancellation once goods left
+                    // (goodsLeftAt, review of #162), so this is only a net: left as it is for a person to resolve.
+                    log.error("Order {} cancelled, but shipment {} already left in part on a load plan's vehicle: "
+                            + "not voided - resolve it by hand", pick.getOrderNumber(), row.getCode());
+                    continue;
+                }
+                // SCRUM-287 PR D: out of its load plan first (plan lock before any load's), then off its loads -
+                // a vehicle being loaded keeps the parcels on board to unload (SCRUM-392).
+                loadPlans.releaseShipment(row.getId(), now);
+                planVehicles.withdraw(row.getId(), now);
                 shipment.cancel("The order was cancelled", null, now);
                 row.apply(shipment);
                 shipments.save(row);
@@ -574,10 +657,30 @@ class PackingService implements Packing {
             return false;
         }
         return PACKABLE.contains(state.status()) || (state.status() == OrderStatus.ON_HOLD
-                && state.holdReason() == com.stockflow.order.api.HoldReason.DESIGN_MISMATCH);
+                && state.holdReason() == com.stockflow.order.api.HoldReason.DESIGN_MISMATCH)
+                || state.status() == OrderStatus.IN_PRODUCTION && state.allowPartialShipment();
+    }
+
+    /** LP-1: the order's delivery mode in fulfillment's words (the same names); PARCEL on a row without it. */
+    static DeliveryMode deliveryModeOf(OrderSummary order) {
+        return order.lifecycle() == null ? DeliveryMode.PARCEL
+                : DeliveryMode.valueOf(order.lifecycle().deliveryMode().name());
+    }
+
+    private static boolean allowsPartialShipment(OrderSummary order) {
+        return order.lifecycle() != null && order.lifecycle().allowPartialShipment();
     }
 
     private static void requirePackable(OrderSummary order) {
+        if (order.status() == OrderStatus.IN_PRODUCTION) {
+            // PACK-EARLY: packing the stock while the prints are made ships part of the order - Sales' decision.
+            if (!allowsPartialShipment(order)) {
+                throw new BusinessException(ErrorCode.PACK_PARTIAL_NOT_ALLOWED, ("Order %s is still printed: its stock "
+                        + "is packed ahead of the prints only when Sales allows partial shipments on the order; "
+                        + "otherwise it waits at packing until production completes").formatted(order.orderNumber()));
+            }
+            return;
+        }
         if (!PACKABLE.contains(order.status())) {
             String why = order.status() == OrderStatus.ON_HOLD && order.lifecycle() != null
                     && order.lifecycle().holdReason() != null ? " (" + order.lifecycle().holdReason() + ")" : "";
@@ -625,7 +728,9 @@ class PackingService implements Packing {
             java.util.Set<String> serials = new java.util.TreeSet<>();
             int available;
             if (print) {
-                available = wanted;
+                // PACK-EARLY: while the order is printed (or shipped its stock before production completed) its printed
+                // goods are not at packing yet; once production completed, everything it wants is.
+                available = order.lifecycle() == null || order.lifecycle().printLinesReady() ? wanted : 0;
                 for (UUID id : line.reservationIds()) {
                     HoldView hold = holds.get(id);
                     if (hold != null && (hold.status() == HoldView.Status.HELD
@@ -647,7 +752,7 @@ class PackingService implements Packing {
             }
             lines.add(new PackingSession.Line(line.lineId(), line.sku(), item.barcode(), wanted, available, print,
                     line.designSnapshotId(), lots, serials, item.rotatable(),
-                    item.storageClass() == StorageClass.FRAGILE));
+                    item.storageClass() == StorageClass.FRAGILE, item.packageCount()));
         }
         return lines;
     }
@@ -680,46 +785,6 @@ class PackingService implements Packing {
         return allMatch;
     }
 
-    /**
-     * Decision 2026-10-16: a print line's goods - never picked, held for the order in the packing area - leave stock
-     * with the shipment that completes the line, in this transaction (the deduction is keyed by that shipment's first
-     * package, so a second shipment of the same order is a new deduction). A line split across shipments is deducted
-     * with its last part. Lead's decision G4-Q2 moves this to production completion; see the open question.
-     */
-    private void deductPrintedGoods(PackingSession session, PackingSession.Completion completion, OrderSummary order,
-                                    UUID actor) {
-        List<UUID> done = session.printLinesIn(completion.lines().keySet()).stream()
-                .filter(line -> session.shippedOf(line.orderLineId()) >= line.wanted())
-                .map(PackingSession.Line::orderLineId).toList();
-        if (done.isEmpty()) {
-            return;
-        }
-        List<UUID> holdIds = order.lines().stream().filter(line -> done.contains(line.lineId()))
-                .flatMap(line -> line.reservationIds().stream()).toList();
-        List<UUID> live = inventory.liveHolds(holdIds).stream().map(StockReservation::reservationId).toList();
-        if (live.isEmpty()) {
-            return;
-        }
-        UUID firstPackage = completion.parcels().stream().min(Comparator.comparingInt(PackingSession.Parcel::packageNo))
-                .orElseThrow().id();
-        consumption.consumeForPack(firstPackage, order.orderId(), live, actor);
-    }
-
-    /**
-     * G4-2a (09 edge "đơn bị huỷ khi kiện đã nằm trong chuyến xe, chưa xếp lên xe"): a shipment cancelled while on an
-     * open load leaves its manifest with its scanned parcels, so the signature skips it. The load's lock is taken
-     * here, after the pick's and before the shipment's row changes - the order the handover takes them in.
-     */
-    private void takeOffLoad(UUID shipmentId, Instant now) {
-        loadMembers.findByShipmentIdInAndActiveTrue(List.of(shipmentId)).stream().findFirst().ifPresent(member ->
-                loads.lockById(member.getLoadId()).ifPresent(header -> {
-                    var load = loadStore.load(header);
-                    if (load.status().isOpen() && load.removeShipment(shipmentId, null, now)) {
-                        loadStore.save(load, header);
-                        log.info("Shipment {} of a cancelled order taken off load {}", shipmentId, load.code());
-                    }
-                }));
-    }
 
     /**
      * E2E QA 2026-10-21 (F2): a label reprinted with another COD while its shipment is on an open load - the
@@ -780,7 +845,8 @@ class PackingService implements Packing {
             return new Line(line.orderLineId(), line.sku(), line.barcode(), line.printLine(), line.designSnapshotId(),
                     line.wanted(), line.available(), packed, session.shippedOf(line.orderLineId()),
                     Math.max(0, line.wanted() - packed), line.lots().keySet().stream()
-                    .anyMatch(lot -> !PackingSession.NO_LOT.equals(lot)), !line.serials().isEmpty(), lots);
+                    .anyMatch(lot -> !PackingSession.NO_LOT.equals(lot)), !line.serials().isEmpty(), lots,
+                    line.packageCount(), line.packageCount() >= KitPart.MIN_PARTS);
         }).toList();
         List<Parcel> parcels = session.parcels().stream().map(parcel -> parcelView(parcel, skus)).toList();
         List<ShipmentSummary> made = shipments.findByPackIdOrderByReadyAtAscIdAsc(ctx.pack().getId()).stream()
@@ -808,7 +874,8 @@ class PackingService implements Packing {
                 parcel.status().name(), parcel.shipmentId(), m == null ? null : m.weightKg(),
                 m == null ? null : m.lengthCm(), m == null ? null : m.widthCm(), m == null ? null : m.heightCm(),
                 parcel.dimWeightKg(), parcel.rotatable(), parcel.rotatableOverridden(), parcel.fragile(),
-                parcel.fragileOverridden(), parcel.sealedAt(), contents(parcel, skus));
+                parcel.fragileOverridden(), parcel.sealedAt(), contents(parcel, skus), parcel.kit(),
+                parcel.kitOverrideReason(), parcel.labelOutdatedAt());
     }
 
     private static List<Content> contents(PackingSession.Parcel parcel, Map<UUID, String> skus) {
@@ -822,8 +889,56 @@ class PackingService implements Packing {
                 PackingSession.Line::sku));
     }
 
+    /**
+     * KIT-FORCE: a reason given for packing an item that ships as several boxes in an ordinary parcel goes in the audit
+     * trail, with the parcel and its label, when it is new or changed. The reason is the packer's own text: kept as
+     * the details, never in a log line.
+     */
+    private void auditKitOverride(PackingSession.Parcel parcel, String before, CurrentUser actor) {
+        String reason = parcel.kitOverrideReason();
+        if (reason == null || reason.equals(before)) {
+            return;
+        }
+        var entry = new com.stockflow.common.audit.AuditEntry(actor.userId(), actor.username(),
+                com.stockflow.common.audit.AuditAction.UPDATE, "fulfillment-package", parcel.id().toString(),
+                com.stockflow.common.audit.AuditEntry.Outcome.SUCCESS,
+                org.slf4j.MDC.get(com.stockflow.common.web.CorrelationIdFilter.MDC_KEY), null,
+                "{\"kitOverrideReason\":%s,\"labelCode\":%s}".formatted(json(reason), json(parcel.labelCode())),
+                clock.instant());
+        // Once the reason is stored: a write that rolls back leaves no entry for a reason that never was.
+        org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                new org.springframework.transaction.support.TransactionSynchronization() {
+                    @Override
+                    public void afterCommit() {
+                        audit.record(entry);
+                    }
+                });
+    }
+
+    private static String json(String value) {
+        StringBuilder out = new StringBuilder(value.length() + 8).append('"');
+        for (char c : value.toCharArray()) {
+            switch (c) {
+                case '"' -> out.append("\\\"");
+                case '\\' -> out.append("\\\\");
+                case '\n' -> out.append("\\n");
+                case '\r' -> out.append("\\r");
+                case '\t' -> out.append("\\t");
+                default -> {
+                    if (c < 0x20) {
+                        out.append("\\u%04x".formatted((int) c));
+                    } else {
+                        out.append(c);
+                    }
+                }
+            }
+        }
+        return out.append('"').toString();
+    }
+
+    /** May work, or take over, a session another packer started: {@code fulfillment-packing:APPROVE}. */
     private static boolean isManager(CurrentUser actor) {
-        return actor.hasRole(Role.WAREHOUSE_MANAGER);
+        return actor.can(FulfillmentPermissions.PACKING, Action.APPROVE);
     }
 
     private static PackageType packageType(String type) {

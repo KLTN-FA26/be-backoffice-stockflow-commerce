@@ -133,12 +133,15 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
                                                        @Param("locationCode") String locationCode);
 
     /** JPQL on purpose: Hibernate flushes this session's pending stock rows before running it (FlushMode.AUTO). */
+    @Query("select s.id from StockItemJpaEntity s where s.stockPackageId = :stockPackageId order by s.id")
+    List<UUID> findIdsInStockPackage(@Param("stockPackageId") UUID stockPackageId);
+
     @Query("select coalesce(sum(s.onHand), 0) from StockItemJpaEntity s where s.stockPackageId = :stockPackageId")
     long sumOnHandInStockPackage(@Param("stockPackageId") UUID stockPackageId);
 
     /** Ids only, so the sweeper can page through the backlog before locking anything. */
     @Query("""
-            select distinct r.stockItem.id from ReservationJpaEntity r
+            select distinct s.id from ReservationJpaEntity r join r.stockItem s
             where r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
               and r.expiresAt < :cutoff
             """)
@@ -146,7 +149,7 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
                                                        org.springframework.data.domain.Pageable page);
 
     @Query("""
-            select distinct r.stockItem.id from ReservationJpaEntity r
+            select distinct s.id from ReservationJpaEntity r join r.stockItem s
             where r.rootRequestId = :rootRequestId
               and r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
             """)
@@ -154,7 +157,7 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
 
     /** In id order: the caller locks each in turn, and two orders sharing rows must never lock them crosswise. */
     @Query("""
-            select distinct r.stockItem.id from ReservationJpaEntity r
+            select distinct s.id from ReservationJpaEntity r join r.stockItem s
             where r.orderId = :orderId
               and r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
             order by r.stockItem.id
@@ -178,15 +181,23 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
             """)
     List<com.stockflow.inventory.internal.domain.HoldDetail> findHolds(@Param("ids") java.util.Collection<UUID> ids);
 
-    @Query("select r.stockItem.id from ReservationJpaEntity r where r.id = :reservationId")
+    @Query("select s.id from ReservationJpaEntity r join r.stockItem s where r.id = :reservationId")
     Optional<UUID> findStockItemIdByReservationId(@Param("reservationId") UUID reservationId);
 
     @Query("""
-            select distinct r.stockItem.id from ReservationJpaEntity r
+            select distinct s.id from ReservationJpaEntity r join r.stockItem s
             where r.productionOrderId = :productionOrderId
               and r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
             """)
     List<UUID> findStockItemIdsHoldingProductionOrder(@Param("productionOrderId") UUID productionOrderId);
+
+    /** SCRUM-287 PR T: the stock rows holding a transfer order's live allocation. */
+    @Query("""
+            select distinct r.stockItem.id from ReservationJpaEntity r
+            where r.transferOrderId = :transferOrderId
+              and r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
+            """)
+    List<UUID> findStockItemIdsHoldingTransferOrder(@Param("transferOrderId") UUID transferOrderId);
 
     /** The live holds of a production order, oldest first; nothing is locked. */
     @Query("""

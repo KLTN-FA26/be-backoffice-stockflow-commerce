@@ -71,7 +71,7 @@ class TransferOrderController {
         return ApiResponse.ok(mapper.toResponse(transfers.create(new TransferOrders.Create(request.fromWarehouseId(),
                 request.toWarehouseId(), request.reason(), request.expectedDate(),
                 request.lines().stream().map(l -> new TransferOrders.NewLine(l.sku(), l.lotNumber(), l.quantity()))
-                        .toList()))));
+                        .toList(), request.deliveryMode()))));
     }
 
     @GetMapping
@@ -106,7 +106,8 @@ class TransferOrderController {
         return ApiResponse.ok(mapper.toResponse(transfers.reviseDraft(transferId, new TransferOrders.Revise(
                 request.version(), request.fromWarehouseId(), request.toWarehouseId(), request.reason(),
                 request.expectedDate(), request.lines().stream()
-                        .map(l -> new TransferOrders.NewLine(l.sku(), l.lotNumber(), l.quantity())).toList()))));
+                        .map(l -> new TransferOrders.NewLine(l.sku(), l.lotNumber(), l.quantity())).toList(),
+                request.deliveryMode()))));
     }
 
     @PostMapping("/{transferId}/submission")
@@ -142,14 +143,17 @@ class TransferOrderController {
     }
 
     @PostMapping("/{transferId}/picking-cancellation")
-    @Operation(summary = "Stop picking; back to APPROVED")
+    @Operation(summary = "Stop picking; back to APPROVED. Its packing is voided and its load plan cancelled "
+            + "(SCRUM-287 PR T); 409 TRANSFER_GOODS_LEFT once goods left on a vehicle (10 BR-04), "
+            + "LOAD_PLAN_LOADING_STARTED while a vehicle of its plan is being loaded")
     @RequiresPermission(resource = InventoryResources.TRANSFER_ORDERS, action = Action.UPDATE)
     public ApiResponse<TransferOrderResponse> cancelPicking(@PathVariable UUID transferId) {
         return ApiResponse.ok(mapper.toResponse(transfers.cancelPicking(transferId)));
     }
 
     @PostMapping("/{transferId}/dispatch")
-    @Operation(summary = "Dispatch from the source: stock leaves it and is in transit, owned by the transfer")
+    @Operation(summary = "Dispatch from the source: stock leaves it and is in transit, owned by the transfer. "
+            + "409 TRANSFER_DISPATCH_BY_LOAD_PLAN once it is packed for a load plan (its last vehicle dispatches it)")
     @RequiresPermission(resource = InventoryResources.TRANSFER_ORDERS, action = Action.UPDATE)
     public ApiResponse<TransferOrderResponse> dispatch(@PathVariable UUID transferId,
                                                          @Valid @RequestBody DispatchTransferRequest request,

@@ -34,6 +34,18 @@ class CustomerRepositoryAdapter implements CustomerRepository, CustomerSearchRep
     }
 
     @Override
+    public java.util.Map<UUID, String> fullNames(java.util.Collection<UUID> customerIds) {
+        if (customerIds == null || customerIds.isEmpty()) {
+            return java.util.Map.of();
+        }
+        java.util.Map<UUID, String> names = new java.util.HashMap<>();
+        for (Object[] row : customers.findNames(java.util.Set.copyOf(customerIds))) {
+            names.put((UUID) row[0], (String) row[1]);
+        }
+        return names;
+    }
+
+    @Override
     public boolean segmentExists(UUID segmentId) {
         return segments.existsById(segmentId);
     }

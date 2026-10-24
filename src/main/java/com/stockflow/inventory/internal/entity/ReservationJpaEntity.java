@@ -18,7 +18,10 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * JPA mapping of one hold. A child of {@code stock_item} — never loaded or saved on its own.
+ * JPA mapping of one hold. Two kinds share the table (SCRUM-152): a hold on a stock item — an allocation, a
+ * production hold, a checkout hold placed before SKU reservations — which is a child of {@code stock_item} and
+ * never loaded or saved on its own; and a SKU reservation ({@code stock_item_id} null), the soft checkout hold,
+ * which is its own aggregate and saved through {@code SkuReservationRepositoryAdapter}.
  *
  * <p>The indexes are not decoration; each one exists for a query that runs constantly:
  * {@code order_id} for cancellation, {@code expires_at} for the sweeper's minute-by-minute scan.
@@ -43,8 +46,9 @@ public class ReservationJpaEntity {
     @Column(name = "id", nullable = false, updatable = false)
     private UUID id;
 
-    @ManyToOne(fetch = FetchType.LAZY, optional = false)
-    @JoinColumn(name = "stock_item_id", nullable = false,
+    /** Null for a SKU reservation: it is not on any stock item until it is allocated. */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "stock_item_id",
             foreignKey = @jakarta.persistence.ForeignKey(name = "fk_reservation_stock_item"))
     private StockItemJpaEntity stockItem;
 
@@ -58,6 +62,10 @@ public class ReservationJpaEntity {
     /** The production order holding blanks (V20261017000400); exactly one of the two owners is set. */
     @Column(name = "production_order_id")
     private UUID productionOrderId;
+
+    /** SCRUM-287 PR T: the transfer order the stock is allocated to. */
+    @Column(name = "transfer_order_id")
+    private UUID transferOrderId;
 
     /**
      * The caller's own idempotency key. Indexed but NOT unique: one reservation call can produce
@@ -91,7 +99,34 @@ public class ReservationJpaEntity {
     @Column(name = "closed_at")
     private Instant closedAt;
 
+    /** The SKU held; for a hold on a stock item it is that item's ({@code tg_stock_reservation_sku}). */
+    @Column(name = "sku", nullable = false, length = 64)
+    private String sku;
+
+    /** The SKU reservation an allocation was made from (F-FUL step 02); null for every other hold. */
+    @Column(name = "allocated_from_id", updatable = false)
+    private UUID allocatedFrom;
+
     protected ReservationJpaEntity() {
+    }
+
+    /** A hold, with the SKU it holds and the SKU reservation it was allocated from. */
+    public ReservationJpaEntity(UUID id, String sku, UUID orderId, UUID productionOrderId, UUID rootRequestId,
+                                UUID requestId, int quantity, Instant reservedAt, Instant expiresAt,
+                                ReservationStatus status, ReleaseReason releaseReason, Instant closedAt,
+                                UUID allocatedFrom) {
+        this(id, orderId, productionOrderId, rootRequestId, requestId, quantity, reservedAt, expiresAt, status,
+                releaseReason, closedAt);
+        this.sku = sku;
+        this.allocatedFrom = allocatedFrom;
+    }
+
+    /** Copies a SKU reservation's changing state onto its managed row. */
+    public void apply(Instant expiresAt, ReservationStatus status, ReleaseReason releaseReason, Instant closedAt) {
+        this.expiresAt = expiresAt;
+        this.status = status;
+        this.releaseReason = releaseReason;
+        this.closedAt = closedAt;
     }
 
     public ReservationJpaEntity(UUID id, UUID orderId, UUID rootRequestId, UUID requestId, int quantity,
@@ -124,6 +159,13 @@ public class ReservationJpaEntity {
     public UUID getId() { return id; }
     public UUID getOrderId() { return orderId; }
     public UUID getProductionOrderId() { return productionOrderId; }
+    public UUID getTransferOrderId() { return transferOrderId; }
+
+    /** SCRUM-287 PR T: the hold is a transfer order's. */
+    public ReservationJpaEntity forTransfer(UUID transferOrderId) {
+        this.transferOrderId = transferOrderId;
+        return this;
+    }
     public UUID getRootRequestId() { return rootRequestId; }
     public UUID getRequestId() { return requestId; }
     public int getQuantity() { return quantity; }
@@ -132,4 +174,8 @@ public class ReservationJpaEntity {
     public ReservationStatus getStatus() { return status; }
     public ReleaseReason getReleaseReason() { return releaseReason; }
     public Instant getClosedAt() { return closedAt; }
+    public String getSku() { return sku; }
+    /** The stock item the hold is on; null for a SKU reservation. Lazy: comparing with null loads nothing. */
+    public StockItemJpaEntity getStockItemOrNull() { return stockItem; }
+    public UUID getAllocatedFrom() { return allocatedFrom; }
 }

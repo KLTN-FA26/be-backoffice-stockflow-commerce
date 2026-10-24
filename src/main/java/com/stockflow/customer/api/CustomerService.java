@@ -28,6 +28,12 @@ public interface CustomerService {
 
     Optional<CustomerSummary> findById(UUID customerId);
 
+    /**
+     * The full names of these customers, in one query (review of #150: a page of task candidates needs a name per
+     * row). Unknown ids are absent; null or empty in, empty out.
+     */
+    java.util.Map<UUID, String> fullNames(java.util.Collection<UUID> customerIds);
+
     /** Whether this customer group ({@code customer.segment}) exists: catalog prices groups (P7). */
     boolean segmentExists(UUID segmentId);
 

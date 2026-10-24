@@ -77,6 +77,18 @@ class PickConsumptionServiceTest {
             return ledgerRows.stream().anyMatch(row -> row.type() == StockMovement.MovementType.MOVE
                     && row.referenceType() == StockMovement.ReferenceType.PRODUCTION_ORDER);
         }
+
+        @Override
+        public boolean consumedAtCompletion(com.stockflow.inventory.internal.domain.ReservationId hold,
+                                            LocationId location) {
+            return false;
+        }
+
+        @Override
+        public boolean bookedBackForScrap(com.stockflow.inventory.internal.domain.ReservationId hold,
+                                          LocationId location) {
+            return false;
+        }
     };
     private final ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
     private final LocationDirectory locations = mock(LocationDirectory.class);
@@ -84,7 +96,8 @@ class PickConsumptionServiceTest {
     private final PickConsumptionService service = new PickConsumptionService(stockItems, ledger,
             new InventoryEventPublisher(publisher), locations, policies,
             new StockPackageContents(mock(com.stockflow.inventory.internal.domain.StockPackageRepository.class),
-                    stockItems), Clock.fixed(NOW, ZoneOffset.UTC));
+                    stockItems), Clock.fixed(NOW, ZoneOffset.UTC),
+            mock(com.stockflow.inventory.internal.domain.Recounts.class));
     private final List<StockItem> saved = new ArrayList<>();
     private final List<StockItem> merged = new ArrayList<>();
 

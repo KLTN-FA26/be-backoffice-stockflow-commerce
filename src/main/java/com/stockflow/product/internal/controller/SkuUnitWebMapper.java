@@ -32,17 +32,18 @@ class SkuUnitWebMapper {
 
     UomConversionResponse toResponse(UomConversion c) {
         return new UomConversionResponse(c.id(), c.sku(), c.unitOfMeasure(), c.factor(), c.base(), c.weightKg(),
-                c.lengthCm(), c.widthCm(), c.heightCm(), c.defaultPurchase(), c.active(), c.version());
+                c.lengthCm(), c.widthCm(), c.heightCm(), c.defaultPurchase(), c.active(), c.version(), c.defaultShipping());
     }
 
     UomConversionDraft toDraft(CreateUomConversionRequest r) {
         return new UomConversionDraft(r.unitOfMeasure(), r.factor(), r.weightKg(), r.lengthCm(), r.widthCm(),
-                r.heightCm(), Boolean.TRUE.equals(r.defaultPurchase()), true);
+                r.heightCm(), Boolean.TRUE.equals(r.defaultPurchase()), true,
+                Boolean.TRUE.equals(r.defaultShipping()));
     }
 
     UomConversionDraft toDraft(UpdateUomConversionRequest r) {
         return new UomConversionDraft(r.unitOfMeasure(), r.factor(), r.weightKg(), r.lengthCm(), r.widthCm(),
-                r.heightCm(), r.defaultPurchase(), r.active());
+                r.heightCm(), r.defaultPurchase(), r.active(), r.defaultShipping());
     }
 
     SalesUnitResponse toResponse(SkuUnitService.SalesUnitView v) {

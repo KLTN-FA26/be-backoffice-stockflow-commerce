@@ -67,12 +67,12 @@ several aggregates and no constraint can state them.
 
 | Id | Rule | Enforced in | WBS |
 |---|---|---|---|
-| BR-STK-001 | Stock may only be reserved when `ATP ≥ requested`, where `ATP = on_hand − reserved − allocated` over stock in condition GOOD. | `StockItem.reserve()` | 3.6.4.1 |
+| BR-STK-001 | Stock may only be reserved when `ATP ≥ requested`, where `ATP = on_hand − reserved − allocated` over stock in condition GOOD. Since SCRUM-152 a checkout reservation is held against the SKU (no location): ATP = unheld AVAILABLE, unexpired `on_hand` − live SKU reservations. | `SkuReservation.open()` under the SKU advisory lock + trigger `tg_stock_reservation_soft_atp_*` | 3.6.4.1 |
 | BR-STK-002 | A reservation expires after the configured window and is released automatically. | scheduled sweeper | 3.14.5.2 |
 | BR-STK-003 | Marking stock damaged requires a reason and at least one photo. | `StockItem.block()` | 3.6.5.1 |
 | BR-STK-004 | Stock whose expiry date has passed is moved to condition EXPIRED nightly and drops out of ATP immediately. | scheduled sweeper | 3.6.7.2 |
 | BR-STK-005 | Any inventory adjustment beyond the configured value threshold requires warehouse-manager approval before it is posted. | `StockAdjustment.post()` | 3.6.5.2 |
-| BR-STK-006 | Allocation picks the lot with the earliest expiry date first (FEFO); where no expiry exists, the earliest receipt date (FIFO). | `StockAllocator` domain service | 3.10.3.2 |
+| BR-STK-006 | Allocation picks the lot with the earliest expiry date first (FEFO); where no expiry exists, the earliest receipt date (FIFO). Applied when the order is released to a warehouse, over pickable, usable bins of that warehouse only (SCRUM-152); never at checkout. | `InventoryService.allocate()` → `StockAllocator` | 3.10.3.2 |
 | BR-STK-007 | `on_hand ≥ reserved + allocated` at all times, for every stock row. Enforced in the aggregate **and** as a database CHECK constraint. | `StockItem` + DDL | — |
 | BR-TRF-001 | A transfer above the configured value threshold needs multi-level approval. | `TransferOrder.approve()` | 3.10.2.2 |
 | BR-TRF-002 | `on_hand(source) + in_transit + on_hand(destination)` is constant for the lifetime of a transfer. | integration test assertion | 3.10.4.1 |

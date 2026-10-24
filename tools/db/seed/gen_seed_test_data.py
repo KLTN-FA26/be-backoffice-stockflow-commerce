@@ -3,13 +3,17 @@
 Generates tools/db/seed/seed_test_data.sql: a large, internally consistent test data set for a database
 migrated with db/migration only (dev / deployed environments; it also coexists with db/demo on local).
 
-    python tools/db/seed/gen_seed_test_data.py          # rewrites seed_test_data.sql next to this file
+    python tools/db/seed/gen_seed_test_data.py          # rewrites seed_test_data.sql and files/ next to this file
 
 Why a generator rather than a hand-written file: the data has to agree with itself the way the
 application would have left it. Stock on hand is what the receipts put away, minus what the picks
 consumed, plus the posted adjustments; a reservation's quantity is in its stock row's `reserved`;
 order, PO and invoice totals are the sums of their lines; design checksums are the manifest hash
 DesignSnapshotJpaEntity computes. Keeping that true by hand across ~3,000 rows is not realistic.
+
+The design artifacts are real files (files/, keyed exactly as the bucket keeps them): prepress, QC and packing hash
+the stored bytes against the snapshot, so the seed's checksums are the files' SHA-256 and the files must be uploaded
+to the bucket with the SQL (see the header of seed_test_data.sql).
 
 Everything is deterministic (fixed seed, md5-derived ids), so regenerating gives the same file.
 Ids are md5('seed:' || key)::uuid, the same scheme as db/demo with another namespace.
@@ -18,6 +22,9 @@ Ids are md5('seed:' || key)::uuid, the same scheme as db/demo with another names
 import hashlib
 import json
 import random
+import shutil
+import struct
+import zlib
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -25,6 +32,8 @@ random.seed(20261012)
 VN = timezone(timedelta(hours=7))
 TODAY = date(2026, 10, 12)
 OUT = Path(__file__).with_name("seed_test_data.sql")
+# The design files the seeded artifacts name, laid out as the bucket keeps them (key = path under this folder).
+FILES = Path(__file__).with_name("files")
 BY = "seed"
 
 
@@ -97,6 +106,7 @@ NO_AUDIT = {
     "production.production_order_status_history", "production.production_qc_result",
     "production.production_scrap", "payment.transfer_allocation", "catalog.product_listing",
     "platform.audit_log", "procurement.po_delivery_decision", "notification.po_delivery_control",
+    "production.production_material_issue", "production.production_print_run",
 }
 
 U = {}  # username -> user id
@@ -105,6 +115,54 @@ ROLE = lambda code: Raw(f"(SELECT id FROM identity.app_role WHERE code = '{code}
 # they are inserted ON CONFLICT DO NOTHING and always referenced by code.
 ATTR_ID = lambda code: Raw(f"(SELECT id FROM product.attributes WHERE code = '{code}')")
 CONFLICT = {"product.attributes": " ON CONFLICT (code) DO NOTHING"}
+
+# ============================================================================ design files
+def png_bytes(key, width=240, height=120):
+    """A real PNG: horizontal bands in colours derived from `key`, so every artifact is a different file."""
+    h = hashlib.md5(key.encode()).digest()
+    bands = [h[i:i + 3] for i in range(0, 15, 3)]
+    raw = b"".join(b"\x00" + bands[y * len(bands) // height] * width for y in range(height))
+
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
+
+
+def pdf_bytes(title):
+    """A real one-page PDF naming the job, with a correct cross-reference table."""
+    text = title.encode("ascii", "replace").decode().replace("\\", "").replace("(", "").replace(")", "")
+    stream = f"BT /F1 18 Tf 40 760 Td ({text}) Tj ET".encode()
+    objects = [b"<< /Type /Catalog /Pages 2 0 R >>", b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+               b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R "
+               b"/Resources << /Font << /F1 5 0 R >> >> >>",
+               b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream",
+               b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for n, body in enumerate(objects, 1):
+        offsets.append(len(out))
+        out += f"{n} 0 obj\n".encode() + body + b"\nendobj\n"
+    xref = len(out)
+    out += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode()
+    out += b"".join(f"{o:010d} 00000 n \n".encode() for o in offsets)
+    out += f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    return bytes(out)
+
+
+SEEDED_FILES = {}   # storage key -> bytes
+
+
+def design_file(artifact_id, content_type, stored_at, title):
+    """A design artifact's file as DesignArtifactService stores it: key design-renders/<UTC yyyy/MM/dd>/<id>.<ext>
+    (StorageKeys.generate, FileCategory.DESIGN_RENDER - the only prefix the storage layer accepts for a design file),
+    size and SHA-256 of the real bytes (BufferedUpload), so prepress and packing verify it against the bucket."""
+    ext = {"image/png": ".png", "application/pdf": ".pdf"}[content_type]
+    key = f"design-renders/{stored_at.astimezone(timezone.utc):%Y/%m/%d}/{artifact_id}{ext}"
+    data = png_bytes(artifact_id) if ext == ".png" else pdf_bytes(title)
+    SEEDED_FILES[key] = data
+    return dict(key=key, size=len(data), checksum=hashlib.sha256(data).hexdigest())
+
 
 # ============================================================================ 1. identity
 STAFF = [
@@ -183,7 +241,12 @@ AREAS = [  # code, type, name, (x, y, w, l), warehouses
     ("PACK01", "PACKING", "Khu đóng gói", (2, 40, 12, 6), "HN BD DN"),
     ("DSP01", "DISPATCH", "Khu chờ giao", (16, 40, 12, 6), "HN BD DN"),
     ("OVF01", "OVERFLOW", "Khu tràn kho", (60, 40, 14, 10), "BD"),
+    # kltn-docs 19: the print shop is a PRODUCTION area; blanks are issued to it, printed and inspected there (BR-03,
+    # BR-05). Only HN and BD print (their production and QC staff); DN has no print shop, so a DN customer's print
+    # order is released from BD (BR-20) - see PRINT_WAREHOUSE.
+    ("PRD01", "PRODUCTION", "Xưởng in", (40, 14, 20, 14), "HN BD"),
 ]
+PRINT_WAREHOUSE = {"HN": "HN", "BD": "BD", "DN": "BD"}   # where a customer's print orders are made and shipped from
 WH = {}          # prefix -> id
 LOC = {}         # location code -> {id, wh, kind, class}
 BINS = {}        # prefix -> {class: [location codes]}
@@ -608,6 +671,32 @@ for v in VARIANTS:
     POST.append(("procurement.supplier_addresses",
                  "UPDATE inventory.inventory_items SET " + ", ".join(f"{k} = {q(x)}" for k, x in sets.items())
                  + f" WHERE sku = {q(v['sku'])};"))
+
+# Packing units for the load-planning demo (SCRUM-287 PR P): the item's base unit is its carton (above), a pallet
+# is the larger packing unit. Three ways the packaging-spec resolver picks the carton for an estimate:
+#   default shipping flag on the pallet        LYG-1L-12OZ, LYG-1L-16OZ   (level 1)
+#   no flag: the largest packing unit wins     LYG-2L-12OZ                (level 2)
+#   flag on the base unit: ship the carton     NAP-GIAY-D80-WHITE         (level 1, the pallet is ignored)
+# A pallet weighs its cartons plus 25 kg of wood; sizes in cm, weights in kg. No random draw.
+PALLET_DEMO = [
+    # sku, cartons per pallet, (length, width, height) cm, flag on the pallet, flag on the base unit
+    ("LYG-1L-12OZ", 24, (120, 100, 150), True, False),
+    ("LYG-1L-16OZ", 24, (120, 100, 150), True, False),
+    ("LYG-2L-12OZ", 20, (120, 100, 155), False, False),
+    ("NAP-GIAY-D80-WHITE", 36, (120, 100, 150), False, True),
+]
+for sku, per_pallet, (pl, pw, ph), flag_pallet, flag_base in PALLET_DEMO:
+    carton_kg = VAR[sku]["dims"][0]
+    POST.append(("procurement.supplier_addresses",
+                 "INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base, "
+                 "weight_kg, length_cm, width_cm, height_cm, default_purchase, active, default_shipping, created_by) "
+                 f"SELECT {q(uid('uom:' + sku + ':PALLET'))}, i.id, 'PALLET', {per_pallet}, FALSE, "
+                 f"{q(round(per_pallet * carton_kg + 25, 3))}, {pl}, {pw}, {ph}, FALSE, TRUE, {q(flag_pallet)}, "
+                 f"{q(BY)} FROM inventory.inventory_items i WHERE i.sku = {q(sku)};"))
+    if flag_base:
+        POST.append(("procurement.supplier_addresses",
+                     "UPDATE inventory.uom_conversions SET default_shipping = TRUE WHERE is_base AND "
+                     f"inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = {q(sku)});"))
 
 for v in VARIANTS:
     code = DEFAULT_SUP.get(v["sku"])
@@ -1262,12 +1351,11 @@ def design_for(cust_code, sku, d):
     owner = c["user"] or U["sales1"]
     t0 = at(d - timedelta(days=12), 9)
     arts = []
-    for role, ext, ctype, size in (("CUSTOMER_PREVIEW", "png", "image/png", 845123),
-                                   ("PRINT_READY", "pdf", "application/pdf", 5242880)):
+    for role, ext, ctype in (("CUSTOMER_PREVIEW", "png", "image/png"), ("PRINT_READY", "pdf", "application/pdf")):
         aid = uid(f"art:{key}:{role}")
-        skey = f"design/{did}/{role.lower()}/{aid}.{ext}"
-        arts.append(dict(id=aid, role=role, key=skey, name=f"{cust_code}-{role.lower()}.{ext}", ctype=ctype,
-                         size=size, checksum=sha(f"file:{aid}")))
+        stored = design_file(aid, ctype, t0 + timedelta(days=1), f"{c['company']} - {sku} - {role}")
+        arts.append(dict(id=aid, role=role, key=stored["key"], name=f"{cust_code}-{role.lower()}.{ext}", ctype=ctype,
+                         size=stored["size"], checksum=stored["checksum"]))
     current = {a["role"]: a["id"] for a in arts}
     add("design.design_draft", id=did, customer_id=c["id"], product_id=PROD[VAR[sku]["product"]]["id"],
         name=f"Logo {c['company']} - {PROD[VAR[sku]['product']]['name']}",
@@ -1314,7 +1402,7 @@ def design_for(cust_code, sku, d):
         cancellation_reason=None, created_at=sd)
     add("ordering.approved_sample", sample_request_id=srid, customer_id=c["id"], design_snapshot_id=sid,
         blank_sku=sku, approved_at=sd + timedelta(days=3))
-    production_order(f"sample:{key}", "SAMPLE", c["wh"] if c["wh"] != "DN" else "BD", sku, sid, checksum, 1, "COMPLETED",
+    production_order(f"sample:{key}", "SAMPLE", PRINT_WAREHOUSE[c["wh"]], sku, sid, checksum, 1, "COMPLETED",
                      sd, sample_request=srid)
     return DESIGNS[key]
 
@@ -1323,7 +1411,12 @@ PRODUCTION = []
 
 
 def production_order(key, typ, p, sku, snap, checksum, qty, status, start, sample_request=None, order=None,
-                     line=None, mode="IN_HOUSE", hold=None):
+                     line=None, mode="IN_HOUSE", hold=None, end=None):
+    """A production order as the workshop leaves it (ProductionOrder): blanks issued only up to what is still needed
+    (BR-PRD-03), so an in-house order issues and prints exactly its planned quantity; a QC round only once one was
+    recorded. `end`: when an ORDER completed - before its sales order became READY_TO_FULFILL - its steps are spread
+    from `start` to `end`; otherwise one step a day. The stock side of an ORDER (holds issued to the print shop,
+    finished goods consumed) is place_order's, with the times kept in PRODUCTION[-1]["times"]."""
     pid = uid("prod:" + key)
     path = ["PENDING_PREPRESS", "READY", "MATERIAL_ISSUED", "PRINTING", "QC", "COMPLETED"]
     if mode == "SUBCONTRACTED":
@@ -1331,45 +1424,65 @@ def production_order(key, typ, p, sku, snap, checksum, qty, status, start, sampl
     target = hold[0] if status == "ON_HOLD" else status
     reached = path[:path.index(target) + 1]
     done = status == "COMPLETED"
-    printed = qty + (1 if done and qty > 3 else 0) if (done or status == "QC") else 0
-    good = printed - (1 if printed > qty else 0)
+    steps = reached + (["ON_HOLD"] if status == "ON_HOLD" else [])
+    if end is not None:
+        span = (end - start) / (len(steps) - 1)
+        times = [start + span * k for k in range(len(steps))]
+    else:
+        times = [start + timedelta(days=k, hours=1) for k in range(len(steps))]
+    when = dict(zip(steps, times))
+    completed = (when["COMPLETED"] if end is not None else start + timedelta(days=len(path))) if done else None
+    if mode == "SUBCONTRACTED":
+        issued = qty + (1 if qty > 3 else 0) if "SUBCONTRACTED" in reached else 0
+        printed = qty + (1 if done and qty > 3 else 0) if (done or status == "QC") else 0
+        good = printed - (1 if printed > qty else 0)
+    else:
+        issued = qty if "MATERIAL_ISSUED" in reached else 0
+        printed = good = qty if (done or status == "QC") else 0
     worker = "sanxuat.hn" if p == "HN" else "sanxuat.bd"
+    inspector = "qc.hn" if p == "HN" else "qc.bd"
     row = add("production.production_order", id=pid, order_number=next_no("PRD", start.date()), type=typ, mode=mode,
               status=status, status_before_hold=hold[0] if status == "ON_HOLD" else None,
               hold_reason=hold[1] if status == "ON_HOLD" else None, hold_note=hold[2] if status == "ON_HOLD" else None,
               sample_request_id=sample_request, sales_order_id=order, sales_order_line_id=line, parent_id=None,
               approved_sample_id=None, warehouse_id=WH[p], blank_sku=sku, design_snapshot_id=snap,
               design_checksum=checksum, due_date=start.date() + timedelta(days=10), planned_quantity=qty,
-              issued_quantity=qty + (1 if qty > 3 else 0) if "MATERIAL_ISSUED" in reached or
-              (mode == "SUBCONTRACTED" and "SUBCONTRACTED" in reached) else 0,
-              printed_quantity=printed, good_quantity=good, scrap_quantity=printed - good,
+              issued_quantity=issued, printed_quantity=printed, good_quantity=good, scrap_quantity=printed - good,
               subcontract_method="SUPPLIED_BLANKS" if mode == "SUBCONTRACTED" else None,
               subcontractor_id=SUP["INSG"] if mode == "SUBCONTRACTED" else None,
               subcontract_unit_price=120000 if mode == "SUBCONTRACTED" else None,
               subcontract_currency="VND" if mode == "SUBCONTRACTED" else None, purchase_order_id=None,
               prepress_checked_by=U["kiemduyet"] if len(reached) > 1 else None,
-              prepress_checked_at=start + timedelta(hours=4) if len(reached) > 1 else None,
-              completed_at=start + timedelta(days=len(path)) if done else None, cancelled_at=None,
-              cancellation_reason=None, created_at=start)
+              prepress_checked_at=min(start + timedelta(hours=4), when["READY"]) if len(reached) > 1 else None,
+              completed_at=completed, cancelled_at=None, cancellation_reason=None, created_at=start,
+              # SCRUM-412: a completed ORDER records the PACKING area its goods were handed to.
+              packing_location_code=f"{p}-PACK01" if done and typ == "ORDER" else None)
     prev = None
-    for k, s in enumerate(reached + (["ON_HOLD"] if status == "ON_HOLD" else [])):
+    for k, s in enumerate(steps):
+        actor = "kiemduyet" if k == 1 else inspector if s == "COMPLETED" else worker
         add("production.production_order_status_history", id=uid(f"prod:{key}:h:{k}"), production_order_id=pid,
             from_status=prev, to_status=s, reason=hold[2] if s == "ON_HOLD" else None,
-            changed_at=start + timedelta(days=k, hours=1), changed_by=U["kiemduyet" if k == 1 else worker])
+            changed_at=when[s], changed_by=U[actor])
         prev = s
-    if printed:
+    if printed and mode == "IN_HOUSE":
+        # The press run that took the order PRINTING -> QC (PrintRunService.recordOutput).
+        add("production.production_print_run", id=uid(f"prod:{key}:run:1"), production_order_id=pid,
+            printed_quantity=printed, scrap_quantity=printed - good, recorded_at=when["QC"], recorded_by=U[worker])
+    if done:
+        # The QC round that completed the order; an order still in QC has had none (recordQc is the only way out).
+        inspected = completed if end is not None else start + timedelta(days=len(path) - 1)
         add("production.production_qc_result", id=uid(f"prod:{key}:qc"), production_order_id=pid, round_no=1,
             passed_quantity=good, failed_quantity=printed - good,
-            note="Lệch màu nhẹ 1 thùng" if printed > good else "Đạt",
-            inspected_at=start + timedelta(days=len(path) - 1), inspected_by=U["qc.hn" if p == "HN" else "qc.bd"])
-    if printed > good:
-        add("production.production_scrap", id=uid(f"prod:{key}:scrap"), production_order_id=pid,
-            quantity=printed - good, reason="QC_FAILED", note="Lệch màu so với mẫu duyệt", stock_adjustment_id=None,
-            recorded_at=start + timedelta(days=len(path) - 1), recorded_by=U[worker])
-    PRODUCTION.append(dict(id=pid, row=row, key=key, done=done))
+            note="Lệch màu nhẹ 1 thùng" if printed > good else "Đạt", inspected_at=inspected, inspected_by=U[inspector])
+        if printed > good:
+            add("production.production_scrap", id=uid(f"prod:{key}:scrap"), production_order_id=pid,
+                quantity=printed - good, reason="QC_FAILED", note="Lệch màu so với mẫu duyệt",
+                stock_adjustment_id=None, recorded_at=inspected, recorded_by=U[worker])
+    PRODUCTION.append(dict(id=pid, row=row, key=key, done=done, times=when, completed=completed, p=p,
+                           worker=worker, inspector=inspector))
     if done and line:
         add("ordering.order_line_production", production_order_id=pid, order_line_id=line, good_quantity=good,
-            completed_at=start + timedelta(days=len(path)))
+            completed_at=completed)
     return pid
 
 
@@ -1407,12 +1520,45 @@ def allocate(p, sku, qty):
 
 SHIPMENTS_COD = []
 RECEIVABLES = []
+ISSUES = []      # production.production_material_issue rows, written once their ledger lines exist
+
+
+def print_shop(prod, rid, s, qn, done):
+    """One checkout hold of a print line taken through the print shop, as the application moves it: issued whole with
+    its goods to the warehouse's PRODUCTION area as IN_PRODUCTION (InventoryService.issueReserved: one MOVE, reference
+    PRODUCTION_ORDER, "Hold <id>", and a production_material_issue row); when the order completed, handed whole to the
+    PACKING area as AVAILABLE (finishHeld, MOVE) and consumed there (consumeFinishedGoods, CONSUMPTION, G4-Q2). Each
+    step leaves the row it came from, empty when the hold was all of it - the application never deletes a stock row.
+    Returns the stock row the hold is on now."""
+    p, when, pid = prod["p"], prod["times"], prod["id"]
+    clerk = staff_of(p)[0]
+    shop, packing = f"{p}-PRD01", f"{p}-PACK01"
+    issued_at = when["MATERIAL_ISSUED"]
+    s.on_hand -= qn
+    there = Stock(s.sku, shop, qn, s.received, status="IN_PRODUCTION", lot=s.lot, expiry=s.expiry)
+    move("MOVE", s.sku, qn, "PRODUCTION_ORDER", pid, issued_at, clerk, frm=s.loc, to=shop, lot=s.lot, fs="AVAILABLE",
+         ts_="IN_PRODUCTION", reason=f"Hold {rid}")
+    ISSUES.append(dict(id=uid(f"issue:{rid}"), production_order_id=pid, request_id=uid(f"issue:request:{rid}"),
+                       reservation_id=rid, sku=s.sku, lot_number=s.lot, from_location=s.loc, to_location=shop,
+                       quantity=qn, stock_movement_id=MOVES[-1]["id"], issued_at=issued_at, issued_by=U[clerk]))
+    if not done:
+        return there
+    there.on_hand -= qn
+    finished = Stock(s.sku, packing, qn, s.received, status="AVAILABLE", lot=s.lot, expiry=s.expiry)
+    move("MOVE", s.sku, qn, "PRODUCTION_ORDER", pid, prod["completed"], prod["inspector"], frm=shop, to=packing,
+         lot=s.lot, fs="IN_PRODUCTION", ts_="AVAILABLE", reason=f"Hold {rid}")
+    finished.on_hand -= qn
+    move("CONSUMPTION", s.sku, qn, "PRODUCTION_ORDER", pid, prod["completed"], prod["inspector"], frm=packing,
+         lot=s.lot, fs="AVAILABLE", reason=f"Hold {rid}")
+    return finished
 
 
 def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=None, hold=None, cancel=None,
                 prod_status=None, pick_partial=False, return_spec=None, cancel_request=None, sub=False):
     c = CUST[cust_code]
-    p = c["wh"]
+    # A print order ships from the warehouse that prints it: its production order works in the order's warehouse
+    # (OrderProductionService) on the blanks held there at checkout (kltn-docs 19 BR-20).
+    p = PRINT_WAREHOUSE[c["wh"]] if custom else c["wh"]
     oid = uid("order:" + key)
     terms = c["terms"]
     term = term or (terms[0] if terms else "PREPAID")
@@ -1421,11 +1567,11 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
     number = next_no("SO", d, 6)
     # lines
     if lines_spec is None:
-        pool = [v for v in SELLABLE if (p != "DN" or v["sku"] in DN_SKUS)]
+        pool = [v for v in SELLABLE if (c["wh"] != "DN" or v["sku"] in DN_SKUS)]
         random.shuffle(pool)
         lines_spec = [(v["sku"], random.randint(1, 6) * 5) for v in pool[:random.randint(1, 4)]]
         if custom:
-            cust_pool = [v for v in SELLABLE if v["kind"] == "CUSTOMIZABLE" and (p != "DN" or v["sku"] in DN_SKUS)]
+            cust_pool = [v for v in SELLABLE if v["kind"] == "CUSTOMIZABLE" and (c["wh"] != "DN" or v["sku"] in DN_SKUS)]
             lines_spec[0] = (random.choice(cust_pool)["sku"], random.randint(2, 6) * 5)
             seen = set()
             lines_spec = [x for x in lines_spec if not (x[0] in seen or seen.add(x[0]))]
@@ -1495,7 +1641,10 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
                shipped_at=when.get("SHIPPED") if cur in ("SHIPPED", "DELIVERED", "COMPLETED", "RETURNED") else None,
                delivered_at=when.get("DELIVERED") if cur in ("DELIVERED", "COMPLETED", "RETURNED") else None,
                completed_at=when.get("COMPLETED") if cur == "COMPLETED" else None,
-               packed_at=when.get("PACKED"), billed_amount=0, receivable_paid_amount=0)
+               packed_at=when.get("PACKED"), billed_amount=0, receivable_paid_amount=0,
+               # Review of #150 (V20261022000400): when its fulfillment task was opened - set below with the pick,
+               # as the migration backfills it from fulfillment.pick (the create-task list leaves the order out).
+               fulfilment_started_at=None)
     for ln in lines:
         add("ordering.order_line", id=ln["id"], order_id=oid, sku=ln["sku"], quantity=ln["qty"], unit_price=ln["price"],
             currency="VND", design_snapshot_id=ln["design"]["snapshot"] if ln["design"] else None,
@@ -1606,6 +1755,20 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
             row["billed_amount"] = total
             RECEIVABLES.append(r)
     row["paid_amount"] = paid
+    # production -----------------------------------------------------------------------------------
+    # Before the holds: how far a print line's production order got decides where its holds are now.
+    made = {}
+    for n, ln in enumerate(lines):
+        if not ln["design"] or "IN_PRODUCTION" not in when:
+            continue
+        ps = "COMPLETED" if "READY_TO_FULFILL" in when else (prod_status or "PRINTING")
+        hold_p = ("PRINTING", "MACHINE_DOWN", "Máy in flexo số 2 hỏng trục, chờ thay") if ps == "ON_HOLD" else None
+        pid_ = production_order(f"order:{key}:{n}", "ORDER", p, ln["sku"], ln["design"]["snapshot"],
+                                ln["design"]["checksum"], ln["qty"], ps, when["IN_PRODUCTION"], order=oid, line=ln["id"],
+                                mode="SUBCONTRACTED" if ps == "SUBCONTRACTED" else "IN_HOUSE", hold=hold_p,
+                                end=when["READY_TO_FULFILL"] - timedelta(hours=1) if ps == "COMPLETED" else None)
+        ln["production"] = pid_
+        made[ln["id"]] = PRODUCTION[-1]
     # reservations ------------------------------------------------------------------------------
     picked_state = None
     if "PICKING" in when and not (cancel and cancel[0] == "PICKING"):
@@ -1615,37 +1778,38 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
     consumed = picked_state == "PICKED"
     res_rows = []
     for ln in lines:
+        prod = made.get(ln["id"])
+        # Where the print shop took this line's holds (MaterialIssueService.issue, ProductionCompletion.complete).
+        stage = None
+        if prod is not None and prod["row"]["mode"] == "IN_HOUSE" and "MATERIAL_ISSUED" in prod["times"]:
+            stage = "DONE" if prod["done"] else "ISSUED"
         for k, (s, qn) in enumerate(reserve_from[ln["id"]]):
             rid = uid(f"res:{key}:{ln['id']}:{k}")
+            holder = s
             if cur == "CANCELLED":
                 st, closed, reason, exp = ("EXPIRED", when["CANCELLED"], "RESERVATION_EXPIRED",
                                            placed + timedelta(days=2)) if cancel[1] == "PAYMENT_NOT_RECEIVED" else \
                     ("RELEASED", when["CANCELLED"], "ORDER_CANCELLED", None)
-            elif consumed or (picked_state == "PICKING" and k == 0 and ln is lines[0] and cur != "ON_HOLD"):
+            elif stage == "DONE":
+                # G4-Q2: the printed goods left stock when the production order completed - never picked.
+                st, closed, reason, exp = "CONSUMED", prod["completed"], None, None
+            elif ln["design"] is None and (consumed or (picked_state == "PICKING" and k == 0 and ln is lines[0]
+                                                        and cur != "ON_HOLD")):
                 st, closed, reason, exp = "CONSUMED", when["PICKING"] + timedelta(hours=2), None, None
             else:
                 st, closed, reason = "HELD", None, None
                 exp = placed + timedelta(days=7) if cur == "PENDING_PAYMENT" else None
-            add("inventory.stock_reservation", id=rid, stock_item_id=s.id, order_id=oid, root_request_id=uid(f"req:{key}"),
-                request_id=uid(f"req:{key}:{ln['id']}:{k}"), quantity=qn, reserved_at=placed, expires_at=exp,
-                status=st, release_reason=reason, closed_at=closed)
+            if stage:
+                holder = print_shop(prod, rid, s, qn, done=stage == "DONE")
+            res = add("inventory.stock_reservation", id=rid, stock_item_id=holder.id, order_id=oid,
+                      root_request_id=uid(f"req:{key}"), request_id=uid(f"req:{key}:{ln['id']}:{k}"), quantity=qn,
+                      reserved_at=placed, expires_at=exp, status=st, release_reason=reason, closed_at=closed)
             add("ordering.order_line_reservation", order_line_id=ln["id"], reservation_id=rid)
             if st == "HELD":
-                s.reserved += qn
-            elif st == "CONSUMED":
+                holder.reserved += qn
+            elif st == "CONSUMED" and not stage:
                 s.on_hand -= qn
-            res_rows.append(dict(id=rid, line=ln, stock=s, qty=qn, status=st))
-    # production -----------------------------------------------------------------------------------
-    for n, ln in enumerate(lines):
-        if not ln["design"] or "IN_PRODUCTION" not in when:
-            continue
-        ps = "COMPLETED" if "READY_TO_FULFILL" in when else (prod_status or "PRINTING")
-        hold_p = ("PRINTING", "MACHINE_DOWN", "Máy in flexo số 2 hỏng trục, chờ thay") if ps == "ON_HOLD" else None
-        prod_wh = p if p != "DN" else "BD"
-        pid_ = production_order(f"order:{key}:{n}", "ORDER", prod_wh, ln["sku"], ln["design"]["snapshot"],
-                                ln["design"]["checksum"], ln["qty"], ps, when["IN_PRODUCTION"], order=oid, line=ln["id"],
-                                mode="SUBCONTRACTED" if ps == "SUBCONTRACTED" else "IN_HOUSE", hold=hold_p)
-        ln["production"] = pid_
+            res_rows.append(dict(id=rid, line=ln, stock=s, qty=qn, status=st, row=res))
     # fulfilment ----------------------------------------------------------------------------------
     if picked_state:
         staff, staff2, mgr, qcu = staff_of(p)
@@ -1659,10 +1823,13 @@ def place_order(key, cust_code, d, final, lines_spec=None, custom=False, term=No
                 released_at=at(t_pick.date(), 7, 30), created_at=at(t_pick.date(), 7))
         pick_id = uid(f"pick:{key}")
         pick_done = picked_state == "PICKED"
+        row["fulfilment_started_at"] = t_pick          # the task's creation, as the migration's backfill
         add("fulfillment.pick", id=pick_id, wave_id=wave_id, order_id=oid, order_number=number,
             warehouse_id=WH[p], status=picked_state, assigned_user_id=U[staff], assigned_at=t_pick, started_at=t_pick + timedelta(minutes=20),
             picked_at=t_pick + timedelta(hours=2) if pick_done else None, needs_put_back=False, created_at=t_pick)
-        for k, r in enumerate(res_rows):
+        # SCRUM-267 / G4-Q2: a pick has lines for the stock lines only (PickListService.holdsOf); a print line's goods
+        # left stock when its production order completed and are packed straight from the packing area.
+        for k, r in enumerate(r for r in res_rows if r["line"]["design"] is None):
             done = r["status"] == "CONSUMED"
             plid = uid(f"pickline:{key}:{k}")
             add("fulfillment.pick_line", id=plid, pick_id=pick_id, order_line_id=r["line"]["id"], reservation_id=r["id"],
@@ -2074,7 +2241,7 @@ add("inventory.cycle_count", id=uid("cc:cancel"), count_number="CC-20260928-0001
 
 
 # transfers
-def transfer(key, frm, to, status, d, items, reason="REBALANCING", damaged=0, carrier=None):
+def transfer(key, frm, to, status, d, items, reason="REBALANCING", damaged=0, carrier=None, delivery_mode="PARCEL"):
     tid = uid("to:" + key)
     t = at(d, 9)
     number = next_no("TO", d)
@@ -2092,7 +2259,10 @@ def transfer(key, frm, to, status, d, items, reason="REBALANCING", damaged=0, ca
         dispatched_at=t + timedelta(days=1) if dispatched else None,
         received_at=t + timedelta(days=3) if received else None,
         closed_at=t + timedelta(days=4) if status == "COMPLETED" else None, close_reason=None,
-        cancel_reason="Kho đích đã nhập đủ từ NCC" if status == "CANCELLED" else None, created_at=t)
+        cancel_reason="Kho đích đã nhập đủ từ NCC" if status == "CANCELLED" else None,
+        # SCRUM-287 PR T: transfers seeded as they were before load planning travel PARCEL (dispatched by hand), as
+        # V20261023000400 backfills existing rows; only the one below is a FULL_TRUCKLOAD waiting to be packed.
+        delivery_mode=delivery_mode, created_at=t)
     for n, (sku, qty) in enumerate(items, 1):
         lid = uid(f"to:{key}:{n}")
         dmg = damaged if n == 1 else 0
@@ -2214,10 +2384,12 @@ add("design.design_draft", id=d_draft, customer_id=CUST["trasuamay"]["id"], prod
     preflight_passed=False, reviewer_user_id=U["kiemduyet"], last_editor_user_id=U["thietke"], reviewed_by=None,
     review_notes=None, parent_snapshot_id=None, current_artifacts={"CUSTOMER_PREVIEW": uid("art:draft:" + k)}, version=2,
     created_at=at(date(2026, 10, 9), 10))
+draft_file = design_file(uid("art:draft:" + k), "image/png", at(date(2026, 10, 9), 11), "logo-may-winter")
 add("design.design_artifact", id=uid("art:draft:" + k), draft_id=d_draft,
-    storage_key=f"design/{d_draft}/customer_preview/{uid('art:draft:' + k)}.png", original_name="logo-may-winter.png",
-    content_type="image/png", size_bytes=612233, stored_at=at(date(2026, 10, 9), 11), checksum=sha("file:draft:" + k),
-    upload_key=None, artifact_role="CUSTOMER_PREVIEW", created_at=at(date(2026, 10, 9), 11))
+    storage_key=draft_file["key"], original_name="logo-may-winter.png",
+    content_type="image/png", size_bytes=draft_file["size"], stored_at=at(date(2026, 10, 9), 11),
+    checksum=draft_file["checksum"], upload_key=None, artifact_role="CUSTOMER_PREVIEW",
+    created_at=at(date(2026, 10, 9), 11))
 add("design.design_decision", id=uid("dec:draft:" + k), draft_id=d_draft, artifact_id=None, actor_id=U["sales1"],
     decision="ASSIGNMENT_CHANGED", notes=f"Designer={U['thietke']}; reviewer={U['kiemduyet']}", draft_version=0,
     created_at=at(date(2026, 10, 9), 10))
@@ -2367,14 +2539,50 @@ add("ordering.cart", id=uid("cart:converted"), customer_id=CUST[conv_o["cust"]][
     status="CONVERTED", currency="VND", converted_order_id=conv_o["id"], merged_into_cart_id=None,
     last_activity_at=conv_o["row"]["placed_at"], expires_at=None, created_at=conv_o["row"]["placed_at"] - timedelta(hours=1))
 
+# SCRUM-287 PR T (LP2-8): a full-truckload transfer waiting to be packed, its goods in two unopened cartons of 20 at
+# HN - repacked from loose stock by a completed move task - so the "ship the carton as it is" flow can be shown.
+s_c = find_stock("HN", min_free=40, skip=used); used.add(s_c.id)
+carton_bin = next(c for c in BINS["HN"][VAR[s_c.sku]["cls"]] if c != s_c.loc)
+carton_unit = uid("uom:" + s_c.sku + ":CTN20")
+POST.append(("procurement.supplier_items",
+             "INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base, "
+             "weight_kg, length_cm, width_cm, height_cm, default_purchase, active, default_shipping, created_by) "
+             f"SELECT {q(carton_unit)}, i.id, 'CTN20', 20, FALSE, 12.5, 60, 40, 40, FALSE, TRUE, FALSE, {q(BY)} "
+             f"FROM inventory.inventory_items i WHERE i.sku = {q(s_c.sku)};"))
+mt_carton = uid("mt:carton")
+add("warehouse.move_task", id=mt_carton, task_number=next_no("MT", date(2026, 10, 9)), warehouse_id=WH["HN"],
+    origin="MANUAL", reason="CONSOLIDATION", sku=s_c.sku, lot_number=None, from_location_id=LOC[s_c.loc]["id"],
+    to_location_id=LOC[carton_bin]["id"], requested_qty=40, picked_qty=40, placed_qty=40, status="COMPLETED",
+    priority=1, assigned_user_id=U["kho.hn1"], approved_by=None, started_at=at(date(2026, 10, 9), 9),
+    completed_at=at(date(2026, 10, 9), 10), note="Đóng 40 đơn vị vào 2 thùng 20 (LPN) cho lệnh chuyển kho",
+    receipt_line_id=None, created_at=at(date(2026, 10, 9), 8))
+s_c.on_hand -= 40
+for k in (1, 2):
+    lpn = f"LPN-SEED-CTN-{k:04d}"
+    carton = uid(f"spkg:{lpn}")
+    POST.append(("procurement.supplier_items",
+                 "INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, "
+                 "received_qty, location_code, status, unopened, goods_receipt_line_id, created_at, created_by) "
+                 f"SELECT {q(carton)}, {q(lpn)}, i.id, {q(carton_unit)}, 20, 20, {q(carton_bin)}, 'IN_STOCK', TRUE, "
+                 f"NULL, {q(at(date(2026, 10, 9), 10))}, {q(BY)} FROM inventory.inventory_items i "
+                 f"WHERE i.sku = {q(s_c.sku)};"))
+    row = Stock(s_c.sku, carton_bin, 20, s_c.received + timedelta(seconds=k), key=f"carton:{lpn}")
+    row.pkg = carton
+    move("MOVE", s_c.sku, 20, "MOVE_TASK", mt_carton, at(date(2026, 10, 9), 10), "kho.hn1", frm=s_c.loc,
+         to=carton_bin, fs="AVAILABLE", ts_="AVAILABLE")
+transfer("ftl", "HN", "BD", "APPROVED", date(2026, 10, 12), [(s_c.sku, 40)], reason="DEMAND",
+         delivery_mode="FULL_TRUCKLOAD")
+
 # ============================================================================ 11. stock rows and ledger
 for s in STOCK:
     assert 0 <= s.reserved <= s.on_hand, (s.sku, s.loc, s.on_hand, s.reserved)
     add("inventory.stock_item", id=s.id, sku=s.sku, location_code=s.loc, lot_number=s.lot, expiry_date=s.expiry,
         on_hand=s.on_hand, reserved=s.reserved, status=s.status, received_at=s.received, serial_number=None,
-        created_at=s.received)
+        stock_package_id=getattr(s, "pkg", None), created_at=s.received)
 for m in MOVES:
     ROWS.setdefault("inventory.stock_movement", []).append({**m, "created_by": BY})
+for issue in ISSUES:
+    add("production.production_material_issue", **issue)
 
 # ============================================================================ emit
 ORDER = """
@@ -2410,7 +2618,8 @@ payment.cod_remittance payment.cod_remittance_line
 ordering.return_request ordering.return_request_line
 inventory.cycle_count inventory.cycle_count_line inventory.stock_adjustment production.production_scrap
 inventory.transfer_order inventory.transfer_order_line
-warehouse.move_task warehouse.putaway_task inventory.stock_movement
+warehouse.move_task warehouse.putaway_task inventory.stock_movement production.production_material_issue
+production.production_print_run
 chat.conversation chat.message notification.template notification.delivery_log platform.audit_log
 ordering.cart ordering.cart_line
 """.split()
@@ -2432,7 +2641,17 @@ w(f"""-- =======================================================================
 -- db/demo: nothing loads it automatically.
 --     psql -v ON_ERROR_STOP=1 -h <host> -U stockflow -d stockflow -f tools/db/seed/seed_test_data.sql
 --
--- * One transaction: it loads completely or not at all, and refuses to run twice.
+-- * One transaction: it loads completely or not at all, and refuses to run twice. A database holding an older
+--   version of this seed is reset first (deploy/README.md "Reset the database"), then migrated and loaded.
+-- * The design files it names are in tools/db/seed/files/ (key = path), real files whose SHA-256 the rows carry:
+--   upload them to the bucket too, or prepress, QC and packing refuse the designs as changed.
+--     local:  docker cp tools/db/seed/files stockflow-minio:/tmp/seed-files && docker exec stockflow-minio sh -c \\
+--               'mc alias set local http://localhost:9000 stockflow stockflow123 >/dev/null &&
+--                mc mirror --overwrite /tmp/seed-files local/stockflow && rm -rf /tmp/seed-files'
+--     VPS:    scp -r tools/db/seed/files deploy@<vps-ip>:/tmp/seed-files, then in /opt/stockflow:
+--             docker compose cp /tmp/seed-files minio:/tmp/seed-files && docker compose exec -T minio sh -c \\
+--               "mc alias set local http://localhost:9000 \\"\\$MINIO_ROOT_USER\\" \\"\\$MINIO_ROOT_PASSWORD\\" >/dev/null &&
+--                mc mirror --overwrite /tmp/seed-files local/$(grep ^S3_BUCKET= .env | cut -d= -f2) && rm -rf /tmp/seed-files"
 -- * Every row has created_by = 'seed'; ids are md5('seed:' || key)::uuid.
 -- * Sign in with any staff account below, password  Stockflow@2026
 --     quanly.hn / quanly.bd (WAREHOUSE_MANAGER), kho.hn1, kho.bd1 (WAREHOUSE_STAFF), qc.hn, muahang1,
@@ -2448,7 +2667,10 @@ w(f"""-- =======================================================================
 -- move tasks, designs and samples, carts, chat, notifications, audit log, reports.
 -- Stock on hand is exactly what the receipts put away, minus what was picked, plus what was moved or
 -- adjusted. inventory.stock_movement holds every movement as the application writes it, a confirmed
--- pick line included (PICK, reference PICK_LINE).
+-- pick line included (PICK, reference PICK_LINE). Print orders are made in the warehouse they ship from
+-- (HN, BD: PRODUCTION area <wh>-PRD01): blanks issued to the print shop are held there as IN_PRODUCTION
+-- (MOVE, reference PRODUCTION_ORDER, production_material_issue); a completed print job's goods went to
+-- <wh>-PACK01 and were consumed there (CONSUMPTION, G4-Q2), so a pick has lines for stock lines only.
 -- Verified against the application (jar from develop, Oct 2026): every GET endpoint answers 200 on it.
 -- =============================================================================
 
@@ -2565,5 +2787,10 @@ COMMIT;
 --    WHERE created_by = 'seed' ORDER BY location_code LIMIT 50;
 """)
 OUT.write_text("\n".join(out) + "\n", encoding="utf-8")
+shutil.rmtree(FILES, ignore_errors=True)
+for file_key, data in SEEDED_FILES.items():
+    target = FILES / file_key
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
 print(f"wrote {OUT} - {total_rows} rows, {len(ROWS)} tables, {len(ORDERS)} orders, {len(PO)} POs, "
       f"{len(STOCK)} stock rows, {len(MOVES)} movements")

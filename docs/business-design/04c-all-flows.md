@@ -419,6 +419,7 @@ flowchart LR
 | 07 | `fulfillment` | `+ package, + outbox_event` | → PACKED · OrderPacked |
 
 > · Bước phân bổ chọn vị trí và lô cụ thể theo FEFO — BR-STK-006. Trước đó reservation không gắn vị trí nào.
+> · Đã cài (SCRUM-152): bước 02 chạy trong cùng transaction với `release` (hoặc khi tạo task cho đơn CONFIRMED chưa release — chọn kho duy nhất đủ hàng và có người được giao). Chỉ lấy bin `is_pickable` đang dùng được của đúng kho; thiếu hàng ở kho đó thì từ chối release (`INSUFFICIENT_STOCK`), không phân bổ một phần. Không có cột `stock_item.allocated` riêng: `stock_item.reserved` gồm cả allocation; bảng "stock_allocation" là các dòng `stock_reservation` có `allocated_from_id`.
 > ★ Tồn kho THẬT SỰ giảm ở bước PickCompleted, không phải lúc đặt hàng.
 > ⚠ Lệch checksum thiết kế lúc đóng gói thì DỪNG, không đóng — BR-DSG-003.
 
@@ -842,6 +843,7 @@ flowchart LR
 > ★ Dòng đơn → SHORT, đơn → ON_HOLD(INVENTORY_ISSUE). Không dòng stock_movement nào được ghi.
 > · Điều phối chọn một trong ba: phân bổ lại từ vị trí khác, tách đơn, hoặc huỷ dòng đó.
 > · Chênh lệch giữa allocated và thực tế nhặt được luôn kèm một cycle_count tự động cho vị trí đó.
+> · Đã cài (SCRUM-152): `POST /fulfillment/tasks/{id}/pick-lines/{lineId}/short` (dòng → SHORT, đơn → ON_HOLD lý do `INVENTORY` — tên trong code của `INVENTORY_ISSUE`, enum `HoldReason` từ G3-2 — không ghi stock_movement) và `.../reallocation` (Điều phối/QL kho: nhả allocation cũ `SHORT_PICKED`, phân bổ lại FEFO ở bin khác cùng kho, dòng cũ → CANCELLED giữ `short_qty`, thêm dòng mới; hết dòng SHORT thì đơn quay lại IN_FULFILMENT). Báo thiếu còn tự mở phiếu kiểm kê mù `SHORT_PICK` cho đúng bin/SKU/lô (mỗi bin/SKU/lô chỉ một phiếu đang mở; xem ở `GET /api/v1/inventory/cycle-counts`, NV kho xem được, không thấy số sổ sách). Khi phiếu còn mở, phần tồn chưa giữ của bin/SKU/lô đó bị khoá: không tính vào ATP, không phân bổ FEFO (quyết định 19/10/2026); QL kho huỷ phiếu bằng `POST /api/v1/inventory/cycle-counts/{id}/cancellation` để mở khoá. Việc đếm và hạch toán chênh lệch thuộc story kiểm kê, chưa làm. Tách đơn và huỷ dòng chưa làm (để story sau).
 
 ---
 

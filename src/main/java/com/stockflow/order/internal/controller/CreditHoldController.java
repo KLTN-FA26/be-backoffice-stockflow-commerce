@@ -115,6 +115,7 @@ class CreditHoldController {
                 Arrays.stream(CommercialTerm.values()).filter(t::allows).map(Enum::name).toList(),
                 t.defaultTerm().name(), t.depositPercent(), t.creditLimit(), t.creditTermDays(), p.exposure(),
                 p.available(), t.currency(), p.hasOverdue(),
-                t.depositBalancePolicy() == null ? null : t.depositBalancePolicy().name());
+                t.depositBalancePolicy() == null ? null : t.depositBalancePolicy().name(), p.overdueAmount(),
+                p.oldestOverdueDueDate(), p.allowedBalancePolicies().stream().map(Enum::name).toList());
     }
 }

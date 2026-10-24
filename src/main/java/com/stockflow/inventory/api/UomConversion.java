@@ -11,6 +11,10 @@ import java.util.UUID;
  * <p>{@code defaultPurchase}: the unit a purchase order line starts in (glossary "Purchase UoM"); one
  * per item, the base unit until another is marked. {@code active} false: retired (BR-10), kept for the
  * documents that used it, never offered for new ones.</p>
+ *
+ * <p>{@code defaultShipping}: the unit load planning estimates this SKU's cartons in (one per item, also
+ * possible on the base unit); {@link PackagingSpecResolver} falls back to the largest packing unit with a
+ * full size when no unit carries it. Never set on a retired unit.</p>
  */
 public record UomConversion(
         UUID id,
@@ -24,6 +28,14 @@ public record UomConversion(
         BigDecimal heightCm,
         boolean defaultPurchase,
         boolean active,
-        long version
+        long version,
+        boolean defaultShipping
 ) {
+    /** A unit that is not the default shipping unit. */
+    public UomConversion(UUID id, String sku, String unitOfMeasure, int factor, boolean base, BigDecimal weightKg,
+                         BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm, boolean defaultPurchase,
+                         boolean active, long version) {
+        this(id, sku, unitOfMeasure, factor, base, weightKg, lengthCm, widthCm, heightCm, defaultPurchase, active,
+                version, false);
+    }
 }

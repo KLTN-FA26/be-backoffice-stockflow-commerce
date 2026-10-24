@@ -10,6 +10,7 @@ import java.sql.SQLException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -62,6 +63,11 @@ public class CatalogSearchRepository {
 
     /** Full-text match (last word as a prefix) or a SKU starting with the input; best text score first. */
     public List<Candidate> match(SearchQuery query, Weights w, int window) {
+        return match(query, w, window, null);
+    }
+
+    /** {@link #match}, among {@code only} when it is not null (a category being browsed, SCRUM-171). */
+    public List<Candidate> match(SearchQuery query, Weights w, int window, Set<UUID> only) {
         var sql = new Sql();
         sql.add("select c.*, (? * c.ts_rank + ? * c.sim + case when c.exact_sku then ? else 0 end) as score from (",
                 w.textRank(), w.similarity(), w.exactSku());
@@ -72,7 +78,8 @@ public class CatalogSearchRepository {
         tsquery(sql, query);
         sql.add(" as q) tsq");
         entries(sql, query);
-        sql.add("where " + VISIBLE + " and (l.search_document @@ tsq.q");
+        visible(sql, only);
+        sql.add(" and (l.search_document @@ tsq.q");
         skuPrefixSubquery(sql, query);
         sql.add(")) c order by score desc, c.published_title, c.product_id limit ?", window);
         return jdbc.query(sql.text(), CatalogSearchRepository::map, sql.args());
@@ -83,6 +90,11 @@ public class CatalogSearchRepository {
      * {@link #match} found nothing. Needs a surrounding transaction (see class javadoc).
      */
     public List<Candidate> similar(SearchQuery query, Weights w, double threshold, int window) {
+        return similar(query, w, threshold, window, null);
+    }
+
+    /** {@link #similar}, among {@code only} when it is not null. */
+    public List<Candidate> similar(SearchQuery query, Weights w, double threshold, int window, Set<UUID> only) {
         jdbc.queryForObject("select set_config('pg_trgm.similarity_threshold', ?, true)", String.class,
                 Double.toString(threshold));
         var sql = new Sql();
@@ -92,19 +104,26 @@ public class CatalogSearchRepository {
                 + " e.exact_sku, e.matched_sku, 0::float8 as ts_rank,"
                 + " public.similarity(" + FOLDED_TITLE + ", ?) as sim from catalog.product_listing l", query.text());
         entries(sql, query);
-        sql.add("where " + VISIBLE + " and " + FOLDED_TITLE + " operator(public.%) ?", query.text());
+        visible(sql, only);
+        sql.add(" and " + FOLDED_TITLE + " operator(public.%) ?", query.text());
         sql.add(") c order by score desc, c.published_title, c.product_id limit ?", window);
         return jdbc.query(sql.text(), CatalogSearchRepository::map, sql.args());
     }
 
     /** No search text: every visible listing in the requested order. */
     public List<Candidate> listAll(Order order, int window) {
+        return listAll(order, window, null);
+    }
+
+    /** {@link #listAll}, among {@code only} when it is not null. */
+    public List<Candidate> listAll(Order order, int window, Set<UUID> only) {
         var sql = new Sql();
         sql.add("select l.product_id, l.slug, l.published_title, l.published_seo_title, e.skus, e.listed_at,"
                 + " false as exact_sku, null as matched_sku, 0::float8 as ts_rank, 0::float8 as sim,"
                 + " 0::float8 as score from catalog.product_listing l");
         entries(sql, SearchQuery.NONE);
-        sql.add("where " + VISIBLE + " order by "
+        visible(sql, only);
+        sql.add(" order by "
                 + (order == Order.NEWEST
                         ? "e.listed_at desc nulls last, l.product_id desc"
                         : FOLDED_TITLE + ", l.product_id")
@@ -118,6 +137,20 @@ public class CatalogSearchRepository {
     }
 
     // ---- fragments ------------------------------------------------------------------------
+
+    /**
+     * {@code where} the listing is visible and, when {@code only} is given, one of those products. One array
+     * parameter rather than an IN list, so a large category does not run into the driver's parameter limit; the
+     * literal is built from UUIDs only.
+     */
+    private static void visible(Sql sql, Set<UUID> only) {
+        if (only == null) {
+            sql.add("where " + VISIBLE);
+            return;
+        }
+        sql.add("where " + VISIBLE + " and l.product_id = any(?::uuid[])",
+                only.stream().map(UUID::toString).collect(java.util.stream.Collectors.joining(",", "{", "}")));
+    }
 
     /** Prefix-matching tsquery: all words, the last one as a prefix ("ly nh" finds "ly nhua"). */
     private static void tsquery(Sql sql, SearchQuery query) {

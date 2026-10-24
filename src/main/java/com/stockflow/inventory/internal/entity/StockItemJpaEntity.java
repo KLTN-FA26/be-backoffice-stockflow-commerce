@@ -45,6 +45,10 @@ public class StockItemJpaEntity extends BaseEntity {
     private java.time.Instant receivedAt;
     @Column(name = "serial_number", length = 100)
     private String serialNumber;
+    /** The lot of these units (SCRUM-142); {@code tg_stock_item_lot} fills it on insert when the application did not. */
+    @Column(name = "lot_id")
+    private UUID lotId;
+    public UUID getLotId() { return lotId; }
     public java.time.Instant getReceivedAt() { return receivedAt; }
     public String getSerialNumber() { return serialNumber; }
     public StockItemJpaEntity(UUID id, String sku, String locationCode, String lotNumber,
@@ -52,6 +56,15 @@ public class StockItemJpaEntity extends BaseEntity {
                        java.time.Instant receivedAt, String serialNumber) {
         this(id, sku, locationCode, lotNumber, expiryDate, onHand, reserved, status);
         this.receivedAt = receivedAt; this.serialNumber = serialNumber;
+    }
+
+    /** A new row as the mapper writes it: its lot (null: the trigger resolves it) and its stock package (null: loose). */
+    public StockItemJpaEntity(UUID id, String sku, String locationCode, String lotNumber,
+                       LocalDate expiryDate, int onHand, int reserved, StockStatus status,
+                       java.time.Instant receivedAt, String serialNumber, UUID lotId, UUID stockPackageId) {
+        this(id, sku, locationCode, lotNumber, expiryDate, onHand, reserved, status, receivedAt, serialNumber);
+        this.lotId = lotId;
+        this.stockPackageId = stockPackageId;
     }
 
     @Column(name = "sku", nullable = false, length = 64)
@@ -95,13 +108,6 @@ public class StockItemJpaEntity extends BaseEntity {
      */
     @Column(name = "stock_package_id", updatable = false)
     private UUID stockPackageId;
-
-    public StockItemJpaEntity(UUID id, String sku, String locationCode, String lotNumber,
-                              LocalDate expiryDate, int onHand, int reserved, StockStatus status,
-                              java.time.Instant receivedAt, String serialNumber, UUID stockPackageId) {
-        this(id, sku, locationCode, lotNumber, expiryDate, onHand, reserved, status, receivedAt, serialNumber);
-        this.stockPackageId = stockPackageId;
-    }
 
     public UUID getStockPackageId() { return stockPackageId; }
 

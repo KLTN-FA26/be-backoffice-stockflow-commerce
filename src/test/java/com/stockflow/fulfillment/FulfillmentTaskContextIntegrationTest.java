@@ -1,5 +1,7 @@
 package com.stockflow.fulfillment;
 
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.id.Identifiers;
@@ -262,18 +264,23 @@ class FulfillmentTaskContextIntegrationTest {
     }
 
     @Test
-    @DisplayName("holds in another warehouse than the order was released from are refused with 409")
+    @DisplayName("a release to a warehouse that cannot pick the order is refused with 409, and nothing moves")
     void holdsOutsideTheOrderWarehouse() throws Exception {
         OrderSummary order = paidOrder();
-        // Released from HN while its sofa is held at HCM: release does not look at where the holds are.
-        releases.release(order.orderId(), hn, coordinator);
-        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.READY_TO_FULFILL);
+        // SCRUM-152: the release allocates, so a warehouse without the sofa refuses the release itself - before the
+        // order is READY_TO_FULFILL, rather than at task creation as when release did not look at the holds.
+        BusinessException refused = (BusinessException) org.assertj.core.api.Assertions.catchThrowable(
+                () -> releases.release(order.orderId(), hn, coordinator));
+        assertThat(refused.errorCode()).isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
+        assertThat(refused.getMessage()).contains("SOFA-3S-GREY");
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.CONFIRMED);
+        assertThat(jdbc.queryForList("""
+                SELECT status FROM inventory.stock_reservation WHERE order_id = ? AND stock_item_id IS NULL""",
+                String.class, order.orderId())).containsOnly("HELD");
 
         call(post("/api/v1/fulfillment/tasks").header("Authorization", token(coordinator, "ORDER_COORDINATOR"))
                 .contentType("application/json").content(create(order.orderId(), pickerHn)))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE"))
-                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("SOFA-3S-GREY")));
+                .andExpect(status().is4xxClientError());
         assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.pick WHERE order_id = ?", Integer.class,
                 order.orderId())).isZero();
     }

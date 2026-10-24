@@ -133,7 +133,7 @@ public class GlobalExceptionHandler {
                 .map(f -> new FieldError(f.field(),
                         f.code() == null ? f.message() : messages.get("error." + f.code(), f.message()), f.code()))
                 .toList();
-        return respond(ex.errorCode(), message, fields);
+        return respond(ex.errorCode(), message, fields, ex.details());
     }
 
     /**
@@ -311,6 +311,25 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * A rule the database checks at the commit (a deferred constraint trigger, such as a kit shipping whole) refuses
+     * the transaction after the code returned: Spring reports the failed commit as a {@code TransactionSystemException}
+     * or a {@code JpaSystemException}, not as a {@link DataIntegrityViolationException}. With an integrity SQLSTATE
+     * (class {@code 23}) in its cause chain it is the same refusal, answered the same way (review of #155: it was a
+     * 500); anything else is still a defect.
+     */
+    @ExceptionHandler({org.springframework.transaction.TransactionSystemException.class,
+            org.springframework.orm.jpa.JpaSystemException.class})
+    public ResponseEntity<ApiResponse<Void>> handleFailedCommit(Exception ex) {
+        String state = sqlState(ex);
+        if (state == null || !state.startsWith("23")) {
+            return handleUnexpected(ex);
+        }
+        log.error("Database constraint violated at commit - the application should have caught this first", ex);
+        ErrorCode code = integrityCode(state);
+        return respond(code, messages.forCode(code), null);
+    }
+
+    /**
      * {@code 23505} is the only duplicate. Class {@code 22} (data exception: too long, out of range,
      * unparseable) and {@code 23502} ({@code NOT NULL}) mean the request carried a value the column
      * cannot hold — the same answer a missing {@code @Size} would have given. The remaining
@@ -479,9 +498,15 @@ public class GlobalExceptionHandler {
      */
     private ResponseEntity<ApiResponse<Void>> respond(ErrorCode code, String message,
                                                       List<FieldError> fieldErrors) {
+        return respond(code, message, fieldErrors, null);
+    }
+
+    private ResponseEntity<ApiResponse<Void>> respond(ErrorCode code, String message,
+                                                      List<FieldError> fieldErrors,
+                                                      java.util.Map<String, Object> details) {
         return ResponseEntity.status(code.httpStatus())
                 .contentType(MediaType.APPLICATION_JSON)
-                .body(ApiResponse.error(code.name(), message, fieldErrors,
+                .body(ApiResponse.error(code.name(), message, fieldErrors, details,
                         MDC.get(CorrelationIdFilter.MDC_KEY)));
     }
 }

@@ -214,6 +214,41 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
                 .toList();
     }
 
+    /**
+     * The warehouse scope is applied here, by the order's warehouse ({@code WarehouseScope.warehousesIn}): the order
+     * row has no warehouse attribute for the generic data-scope filter, since an order has no warehouse until it is
+     * released, and every candidate is released.
+     */
+    @Override
+    public Page<com.stockflow.order.api.FulfillmentCandidate> awaitingTask(UUID warehouseId, Pageable pageable) {
+        // createTask's rule (review of #150): READY_TO_FULFILL, or IN_PRODUCTION with a stock line - and no task yet.
+        Specification<OrderJpaEntity> openable = (root, query, cb) -> {
+            var stockLine = query.subquery(UUID.class);
+            var line = stockLine.from(com.stockflow.order.internal.entity.OrderLineJpaEntity.class);
+            stockLine.select(line.get("id")).where(cb.equal(line.get("order").get("id"), root.get("id")),
+                    cb.isNull(line.get("designSnapshotId")));
+            return cb.and(cb.isNull(root.get("fulfilmentStartedAt")), cb.or(
+                    cb.equal(root.get("status"), OrderStatus.READY_TO_FULFILL),
+                    cb.and(cb.equal(root.get("status"), OrderStatus.IN_PRODUCTION), cb.exists(stockLine))));
+        };
+        Specification<OrderJpaEntity> spec = Specification.<OrderJpaEntity>where(openable)
+                .and(Specs.eq("warehouseId", warehouseId))
+                .and(com.stockflow.common.security.WarehouseScope.warehousesIn("warehouseId"));
+        Page<OrderJpaEntity> orders = jpa.findAll(spec, pageable);
+        Map<UUID, List<com.stockflow.order.api.FulfillmentCandidate.Line>> lines = new HashMap<>();
+        List<UUID> ids = orders.getContent().stream().map(OrderJpaEntity::getId).toList();
+        if (!ids.isEmpty()) {
+            for (Object[] row : jpa.findLineRowsByOrder(ids)) {
+                lines.computeIfAbsent((UUID) row[0], id -> new java.util.ArrayList<>())
+                        .add(new com.stockflow.order.api.FulfillmentCandidate.Line((UUID) row[1], (String) row[2],
+                                ((Number) row[3]).intValue(), row[4] != null));
+            }
+        }
+        return orders.map(order -> new com.stockflow.order.api.FulfillmentCandidate(order.getId(),
+                order.getOrderNumber(), order.getCustomerId(), null, order.getWarehouseId(), order.getPlacedAt(),
+                order.getReleasedAt(), lines.getOrDefault(order.getId(), List.of())));
+    }
+
     @Override
     public Map<UUID, Integer> lineCounts(Collection<UUID> orderIds) {
         if (orderIds.isEmpty()) {

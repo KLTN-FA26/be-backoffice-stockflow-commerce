@@ -8,6 +8,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.util.Optional;
+import java.util.List;
 import java.util.UUID;
 
 public interface CategoryJpaRepository extends BaseJpaRepository<CategoryJpaEntity> {
@@ -24,4 +25,12 @@ public interface CategoryJpaRepository extends BaseJpaRepository<CategoryJpaEnti
     boolean existsByCode(String code);
 
     boolean existsBySlug(String slug);
+
+    /** The strict descendants of a node: {@code pathPrefix} is its path followed by {@code /}. */
+    List<CategoryJpaEntity> findByPathStartingWithOrderByDepthAscPathAsc(String pathPrefix);
+
+    /** The products assigned to any of these categories, primary or not (SCRUM-171). */
+    @Query(value = "select distinct pc.product_id from product.product_categories pc where pc.category_id in (:ids)",
+            nativeQuery = true)
+    List<UUID> findProductIdsInCategories(@Param("ids") java.util.Collection<UUID> ids);
 }

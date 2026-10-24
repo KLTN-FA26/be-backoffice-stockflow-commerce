@@ -5,6 +5,8 @@ import com.stockflow.inventory.internal.domain.ReleaseReason;
 import com.stockflow.inventory.internal.domain.ReservationId;
 import com.stockflow.inventory.internal.domain.StockItem;
 import com.stockflow.inventory.internal.domain.StockItemRepository;
+import com.stockflow.inventory.internal.domain.SkuReservation;
+import com.stockflow.inventory.internal.domain.SkuReservationRepository;
 import com.stockflow.inventory.internal.domain.StockStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -45,15 +47,16 @@ class PaymentEventListener {
     private static final Logger log = LoggerFactory.getLogger(PaymentEventListener.class);
 
     private final StockItemRepository repository;
+    private final SkuReservationRepository skuReservations;
     private final InventoryEventPublisher events;
     private final Clock clock;
-
     private final StockOperations operations;
 
-    PaymentEventListener(StockItemRepository repository, InventoryEventPublisher events, Clock clock,
-                         StockOperations operations) {
+    PaymentEventListener(StockItemRepository repository, SkuReservationRepository skuReservations,
+                         InventoryEventPublisher events, Clock clock, StockOperations operations) {
         this.operations = operations;
         this.repository = repository;
+        this.skuReservations = skuReservations;
         this.events = events;
         this.clock = clock;
     }
@@ -67,6 +70,14 @@ class PaymentEventListener {
      */
     @ApplicationModuleListener
     public void on(PaymentFailed event) {
+        // The order's SKU reservations (SCRUM-152): an order whose payment fails was never released, so its holds
+        // are normally all still here, on no stock item.
+        for (SkuReservation reservation : skuReservations.findHeldForOrderForUpdate(event.orderId())) {
+            if (reservation.release(ReleaseReason.PAYMENT_FAILED, clock.instant())) {
+                skuReservations.save(reservation);
+                events.publishEventsOf(reservation);
+            }
+        }
         List<StockItem> holders = repository.findWithReservationsForOrder(event.orderId());
         if (holders.isEmpty()) {
             log.debug("Payment {} failed for order {} but no stock was held",

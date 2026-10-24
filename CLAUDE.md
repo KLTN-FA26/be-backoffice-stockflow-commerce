@@ -158,7 +158,7 @@ is where they live.
 3. build OrderLines with DETERMINISTIC ids derived from (requestId, index)
 4. Order.draft(...)
 5. for each line:
-      inventory.reserve(ReserveStockCommand(deterministicRequestId(requestId, lineId), ...))
+      inventory.reserve(ReserveStockCommand(deterministicRequestId(requestId, lineId), ...))   ← a SKU reservation
       order.attachReservations(lineId, result.reservationIds())   ← ALL ids, not the first
 6. order.submit()
 7. repository.save(order)
@@ -171,24 +171,33 @@ reservation timeout. ADR-0003 describes the distributed version this replaced; A
 decision itself. The deterministic ids in steps 3 and 5 are what make a retry of the whole request
 converge on the same rows instead of creating a second order.
 
-`reservationIds()` returns **every** id: a line drawn from two lots produces two reservations, and
-returning only the first would strand the rest until the sweeper expired them. This was a real
-defect; `ReserveStockResult` now carries a `List<StockReservation>`.
+`reservationIds()` returns **every** id. Since SCRUM-152 a checkout returns one SKU reservation per line;
+the release replaces it on the line with one allocation per bin and lot, and every one of those must be
+kept — returning only the first would strand the rest.
 
-### Reserve — `InventoryServiceImpl.reserve`
+### Reserve and allocate — `InventoryServiceImpl.reserve` / `allocate` (SCRUM-152)
+
+Checkout reserves **quantity of a SKU, on no location** (docs 01 "Reserved"); bins and lots are chosen
+when the order is released to a warehouse (docs 01 "Allocated", 04c F-FUL step 02).
 
 ```
-0. replay check  ← MUST be first. Planning before checking either double-holds or 409s falsely.
-1. plan          ← StockAllocator.plan over a projection, FEFO (earliest expiry first)
-2. sort the plan by stock item id   ← deadlock avoidance: two checkouts touching the same two
-                                       lots in opposite orders deadlock at the database
-3. for each line: findByIdForUpdate (PESSIMISTIC_WRITE + entityManager.refresh) → locked.reserve()
-4. return ReserveStockResult with one StockReservation per lot
+reserve:
+0. replay check  ← the SKU reservation this request made (or, for an old request, its stock-item holds)
+1. SKU advisory lock (prepareReservation took it for the basket already)
+2. ATP = unheld AVAILABLE unexpired on_hand − live SKU reservations; SkuReservation.open refuses above it
+   (tg_stock_reservation_soft_atp_* re-checks a looser bound in the database)
+
+allocate (OrderReleaseService.release, or task creation for a never-released CONFIRMED order):
+1. SKU locks (sorted) → the order's SKU reservations FOR UPDATE
+2. plan: StockAllocator over projections of pickable, usable bins of THAT warehouse; FEFO, then real
+   received_at (BR-STK-006); expired stock never
+3. lock each stock row once, in id order (findByIdForUpdate refreshes) → StockItem.allocate
+4. SKU reservation → ALLOCATED; the order line swaps its id for the allocation ids
 ```
 
-`findByIdForUpdate` refreshes deliberately: returning the persistence-context copy would make the
-pessimistic lock decorative. The plan's numbers are stale by step 3 by design — the re-read under
-lock is what makes the decision correct.
+Allocations are `stock_reservation` rows with `allocated_from_id`; they never expire. A pick line
+consumes exactly one. `findByIdForUpdate` refreshes deliberately: returning the persistence-context
+copy would make the pessimistic lock decorative.
 
 ### Payment failure → release
 

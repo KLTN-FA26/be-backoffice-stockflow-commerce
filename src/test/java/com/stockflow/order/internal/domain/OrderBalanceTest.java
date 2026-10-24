@@ -46,6 +46,7 @@ class OrderBalanceTest {
                 Order.line(new Sku("LID-90"), 5, Money.vnd(20_000), null)), NOW);
         order.applyTerms(term, term == PaymentTerm.DEPOSIT ? new BigDecimal("30") : null, null, policy);
         order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
+        order.decidePartialShipment(true);     // split shipments throughout (PACK-PARTIAL)
         order.submit();
         return order;
     }
@@ -162,6 +163,7 @@ class OrderBalanceTest {
                     Order.line(new Sku("CUP-12OZ"), 10, Money.vnd(1_000_000), null)), NOW);
             order.applyTerms(PaymentTerm.DEPOSIT, new BigDecimal("30"), null, BalancePolicy.ON_DELIVERY);
             order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
+            order.decidePartialShipment(true);
             order.submit();
             order.recordPayment(Money.vnd(3_000_000), NOW);
             order.release(HCM, "HCM", STAFF, NOW, Map.of());
@@ -284,6 +286,7 @@ class OrderBalanceTest {
                     Order.line(new Sku("CUP-PRINTED"), 10, Money.vnd(1_000), snapshot)), NOW);
             order.applyTerms(PaymentTerm.DEPOSIT, new BigDecimal("50"));
             order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
+            order.decidePartialShipment(true);
             order.submit();
             order.recordPayment(Money.vnd(5_000), NOW);
             order.release(HCM, "HCM", STAFF, NOW, Map.of());
@@ -334,6 +337,7 @@ class OrderBalanceTest {
                     Order.line(new Sku("CUP"), 2, Money.vnd(5_000_000), null)), NOW);
             order.applyTerms(PaymentTerm.DEPOSIT, new BigDecimal("30"), null, BalancePolicy.ON_DELIVERY);
             order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
+            order.decidePartialShipment(true);
             order.submit();
             order.recordPayment(Money.vnd(3_000_000), NOW);
             order.release(HCM, "HCM", STAFF, NOW, Map.of());

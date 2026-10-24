@@ -22,7 +22,10 @@ import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.consumption.PickConsumption;
 import com.stockflow.inventory.consumption.PutBackCommand;
+import com.stockflow.order.api.OrderReservations;
 import com.stockflow.order.api.OrderService;
+import com.stockflow.inventory.api.ReallocateStockCommand;
+import com.stockflow.inventory.api.StockReservation;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.warehouse.api.StorageLocationView;
 import com.stockflow.warehouse.api.WarehouseService;
@@ -57,7 +60,9 @@ import java.util.stream.Collectors;
  * {@code SELECT … FOR UPDATE}) and only then reaches inventory, which locks the stock row. No path takes
  * them the other way round: cancelling an order locks stock rows in the order's transaction and touches
  * the pick only afterwards, in the listener's own transaction. Two confirmations of one line are
- * therefore serialised on the pick, and the second sees the line PICKED.</p>
+ * therefore serialised on the pick, and the second sees the line PICKED. A write that also changes the order
+ * (a short report, a reallocation) locks it after the pick and before any stock row, because a cancellation
+ * locks the order first and the stock rows second.</p>
  *
  * <p><b>One transaction.</b> The line turning PICKED, the hold turning CONSUMED, {@code on_hand}
  * falling, the {@code PICK} ledger row and {@code StockDeducted} commit together or not at all — which
@@ -77,10 +82,13 @@ class PickListService implements PickLists {
     private final PickConsumption consumption;
     private final WarehouseService warehouses;
     private final Clock clock;
+    private final OrderReservations orderReservations;
+
 
     PickListService(PickJpaRepository picks, PickLineJpaRepository pickLines, OrderService orders,
                     InventoryService inventory, InventoryControlService itemControls, PickConsumption consumption,
-                    WarehouseService warehouses, Clock clock) {
+                    WarehouseService warehouses, Clock clock, OrderReservations orderReservations) {
+        this.orderReservations = orderReservations;
         this.picks = picks;
         this.pickLines = pickLines;
         this.orders = orders;
@@ -241,7 +249,94 @@ class PickListService implements PickLists {
         return view(taskId, line, barcode);
     }
 
+    @Override
+    public PickLineView reportShort(UUID taskId, UUID lineId, String locationCode, int found, CurrentUser actor) {
+        PickJpaEntity pick = lockPick(taskId);
+        WarehouseScope.requireWarehouse(pick.getWarehouseId());
+        pick.requireAssigned(actor.userId());
+        TaskAccess.orderInFulfilment(orders, pick);
+        List<PickLineJpaEntity> stored = pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId());
+        PickList list = toList(pick, stored);
+        PickList.Confirmation outcome = list.reportShort(lineId, locationCode, found);
+        PickLine line = outcome.line();
+        String barcode = barcodesOf(List.of(line.sku())).get(line.sku());
+        if (outcome.repeated()) {
+            return view(taskId, line, barcode);
+        }
+        writeBack(list, stored, Set.of(line.id()));
+        // X-SHORT step 02: the order stops; it does not cancel, and no stock is deducted (docs 04c).
+        holdForInventory(pick.getOrderId(), actor.userId(), "Short pick: %d of %s x %s missing at %s".formatted(
+                line.shortQty(), line.allocatedQty(), line.sku(), line.locationCode()));
+        // X-SHORT step 03: the books and the shelf disagree, so the bin is counted again.
+        if (line.reservationId() != null) {
+            var recount = consumption.requestRecount(line.reservationId(), line.id(),
+                    line.allocatedQty() - line.shortQty());
+            log.info("Short pick line {}: recount {} of {}", line.id(), recount.countNumber(), line.locationCode());
+        }
+        log.info("Pick line {} of task {} short: {} of {} x {} missing at {}", line.id(), taskId, line.shortQty(),
+                line.allocatedQty(), line.sku(), line.locationCode());
+        return view(taskId, line, barcode);
+    }
+
+    @Override
+    public List<PickLineView> reallocateShort(UUID taskId, UUID lineId, CurrentUser actor) {
+        PickJpaEntity pick = lockPick(taskId);
+        WarehouseScope.requireWarehouse(pick.getWarehouseId());
+        TaskAccess.orderInFulfilment(orders, pick);
+        List<PickLineJpaEntity> stored = pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId());
+        PickList list = toList(pick, stored);
+        PickLine shortLine = list.line(lineId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND,
+                "Task %s has no pick line %s".formatted(taskId, lineId)));
+        if (shortLine.status() != PickLineStatus.SHORT || shortLine.reservationId() == null) {
+            throw new BusinessException(ErrorCode.PICK_LINE_NOT_OPEN,
+                    "Only a SHORT line with an allocation is reallocated; it is " + shortLine.status());
+        }
+        // Pick, then order, then stock rows. A cancellation locks the order before the stock rows it releases; taking
+        // the order only at the end (replaceHold, resolveDesignHold) would wait on it while holding those rows.
+        orders.lockedStatus(pick.getOrderId());
+        List<StockReservation> allocated = inventory.reallocate(new ReallocateStockCommand(pick.getOrderId(),
+                shortLine.reservationId(), UUID.nameUUIDFromBytes(("reallocate:" + lineId)
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8))));
+        orderReservations.replaceHold(pick.getOrderId(), shortLine.reservationId(),
+                allocated.stream().map(StockReservation::reservationId).toList());
+        Map<String, UUID> warehouseOf = new HashMap<>();
+        List<PickList.Hold> holds = allocated.stream().map(hold -> new PickList.Hold(hold.reservationId(),
+                shortLine.sku(), hold.locationCode(), warehouseOf.computeIfAbsent(hold.locationCode(),
+                        code -> warehouses.findLocation(code).map(StorageLocationView::warehouseId).orElse(null)),
+                hold.lotNumber(), hold.quantity(), true)).toList();
+        List<PickLine> added = list.replaceShort(lineId, holds, Identifiers::newId);
+        writeBack(list, stored, Set.of(lineId));
+        pickLines.saveAll(added.stream().map(line -> PickLineMapper.toNewEntity(pick.getId(), line)).toList());
+        if (!list.hasShortLines()) {
+            resumeAfterInventory(pick.getOrderId(), actor.userId(), "Short pick reallocated: line %s".formatted(lineId));
+        }
+        log.info("Short line {} of task {} reallocated to {} new line(s)", lineId, taskId, added.size());
+        Map<String, String> barcodes = barcodesOf(List.of(shortLine.sku()));
+        return added.stream().map(line -> view(taskId, line, barcodes.get(line.sku()))).toList();
+    }
+
     // ------------------------------------------------------------------ helpers
+
+    /**
+     * X-SHORT step 02: ON_HOLD with reason INVENTORY (kltn-docs 17 edge "short pick"). An order already ON_HOLD - a
+     * second short line, or held for another reason by the coordinator - is stopped already and stays as it is: a
+     * hold is not stacked on a hold. Locks the order, so the caller keeps the order pick, order, stock rows.
+     */
+    private void holdForInventory(UUID orderId, UUID by, String note) {
+        orders.lockedStatus(orderId);
+        if (orders.findById(orderId).orElseThrow().status() != com.stockflow.order.api.OrderStatus.ON_HOLD) {
+            orders.putOnHold(orderId, com.stockflow.order.api.HoldReason.INVENTORY, note, by);
+        }
+    }
+
+    /** The last short line reallocated: the INVENTORY hold, and only that one, is resolved back to where it was. */
+    private void resumeAfterInventory(UUID orderId, UUID by, String note) {
+        OrderSummary order = orders.findById(orderId).orElseThrow();
+        if (order.status() == com.stockflow.order.api.OrderStatus.ON_HOLD && order.lifecycle() != null
+                && order.lifecycle().holdReason() == com.stockflow.order.api.HoldReason.INVENTORY) {
+            orders.resolveHold(orderId, note, by);
+        }
+    }
 
     private PickJpaEntity lockPick(UUID taskId) {
         return picks.lockById(taskId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
@@ -307,6 +402,6 @@ class PickListService implements PickLists {
     private static PickLineView view(UUID taskId, PickLine line, String barcode) {
         return new PickLineView(line.id(), taskId, line.sequenceNo(), line.orderLineId(), line.sku(), barcode,
                 line.locationCode(), line.lotNumber(), line.allocatedQty(), line.pickedQty(), line.status().name(),
-                line.pickedAt(), line.putBackQty(), line.putBackLocationCode(), line.putBackAt());
+                line.pickedAt(), line.putBackQty(), line.putBackLocationCode(), line.putBackAt(), line.shortQty());
     }
 }

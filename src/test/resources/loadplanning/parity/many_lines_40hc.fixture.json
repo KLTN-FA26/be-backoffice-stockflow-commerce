@@ -1,0 +1,289 @@
+{
+ "containers": [
+  {
+   "code": "40HC",
+   "w": 2352,
+   "h": 2698,
+   "d": 12032,
+   "quantity": 64,
+   "payload": 1000000000.0,
+   "gusset": 150
+  }
+ ],
+ "boxes": [
+  {
+   "part": "L0",
+   "w": 800,
+   "h": 600,
+   "d": 500,
+   "quantity": 9,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L1",
+   "w": 600,
+   "h": 400,
+   "d": 400,
+   "quantity": 2,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L2",
+   "w": 700,
+   "h": 500,
+   "d": 450,
+   "quantity": 7,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L3",
+   "w": 600,
+   "h": 400,
+   "d": 400,
+   "quantity": 6,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L4",
+   "w": 500,
+   "h": 500,
+   "d": 500,
+   "quantity": 8,
+   "rotatable": false,
+   "weight": 1.0
+  },
+  {
+   "part": "L5",
+   "w": 400,
+   "h": 300,
+   "d": 250,
+   "quantity": 12,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L6",
+   "w": 400,
+   "h": 300,
+   "d": 250,
+   "quantity": 6,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L7",
+   "w": 800,
+   "h": 600,
+   "d": 500,
+   "quantity": 8,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L8",
+   "w": 800,
+   "h": 600,
+   "d": 500,
+   "quantity": 7,
+   "rotatable": false,
+   "weight": 1.0
+  },
+  {
+   "part": "L9",
+   "w": 1000,
+   "h": 600,
+   "d": 700,
+   "quantity": 9,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L10",
+   "w": 500,
+   "h": 500,
+   "d": 500,
+   "quantity": 12,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L11",
+   "w": 800,
+   "h": 600,
+   "d": 500,
+   "quantity": 2,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L12",
+   "w": 500,
+   "h": 500,
+   "d": 500,
+   "quantity": 12,
+   "rotatable": false,
+   "weight": 1.0
+  },
+  {
+   "part": "L13",
+   "w": 700,
+   "h": 500,
+   "d": 450,
+   "quantity": 5,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L14",
+   "w": 400,
+   "h": 300,
+   "d": 250,
+   "quantity": 2,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L15",
+   "w": 500,
+   "h": 500,
+   "d": 500,
+   "quantity": 11,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L16",
+   "w": 300,
+   "h": 300,
+   "d": 300,
+   "quantity": 11,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L17",
+   "w": 400,
+   "h": 300,
+   "d": 250,
+   "quantity": 12,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L18",
+   "w": 800,
+   "h": 600,
+   "d": 500,
+   "quantity": 11,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L19",
+   "w": 1000,
+   "h": 600,
+   "d": 700,
+   "quantity": 5,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L20",
+   "w": 500,
+   "h": 500,
+   "d": 500,
+   "quantity": 4,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L21",
+   "w": 400,
+   "h": 300,
+   "d": 250,
+   "quantity": 2,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L22",
+   "w": 1200,
+   "h": 800,
+   "d": 1000,
+   "quantity": 2,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L23",
+   "w": 400,
+   "h": 300,
+   "d": 250,
+   "quantity": 12,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L24",
+   "w": 1000,
+   "h": 600,
+   "d": 700,
+   "quantity": 7,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L25",
+   "w": 1500,
+   "h": 1000,
+   "d": 800,
+   "quantity": 6,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L26",
+   "w": 700,
+   "h": 500,
+   "d": 450,
+   "quantity": 2,
+   "rotatable": true,
+   "weight": 1.0
+  },
+  {
+   "part": "L27",
+   "w": 1500,
+   "h": 1000,
+   "d": 800,
+   "quantity": 3,
+   "rotatable": false,
+   "weight": 1.0
+  },
+  {
+   "part": "L28",
+   "w": 500,
+   "h": 500,
+   "d": 500,
+   "quantity": 3,
+   "rotatable": false,
+   "weight": 1.0
+  },
+  {
+   "part": "L29",
+   "w": 700,
+   "h": 500,
+   "d": 450,
+   "quantity": 9,
+   "rotatable": true,
+   "weight": 1.0
+  }
+ ],
+ "kits": [],
+ "distribute": "auto",
+ "budget": 10,
+ "ticks_per_second": 8.0
+}

@@ -69,6 +69,14 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @TestPropertySource(properties = "stockflow.upload-inspection.enabled=false")
 class SampleToPackingIntegrationTest {
 
+    @org.springframework.beans.factory.annotation.Autowired
+    com.stockflow.common.security.RoleAuthorizationLookup grants;
+
+    /** The role's permissions as seeded: services check permissions, not role names. */
+    private java.util.Set<com.stockflow.common.security.PermissionCode> seeded(Role role) {
+        return grants.resolve(java.util.List.of(role.authority())).permissions();
+    }
+
     private static final String BLANK = ConfirmedDesigns.BLANK;
     private static final String PRINT_SHOP = "HCM-PRD01";
     private static final String PACKING = "HCM-PACK01";
@@ -109,7 +117,7 @@ class SampleToPackingIntegrationTest {
         hcm = jdbc.queryForObject("SELECT id FROM warehouse.warehouse WHERE prefix = 'HCM'", UUID.class);
         ConfirmedDesigns.stockBlanks(jdbc, tx, 40);
         UUID salesId = tx.execute(s -> ReferenceRows.user(entityManager));
-        sales = new CurrentUser(salesId, "sales-" + salesId, Set.of(Role.SALES_STAFF), Set.of(), DataScope.ALL,
+        sales = new CurrentUser(salesId, "sales-" + salesId, Set.of(Role.SALES_STAFF), seeded(Role.SALES_STAFF), DataScope.ALL,
                 Set.of(), Set.of());
         UUID portalUser = tx.execute(s -> ReferenceRows.user(entityManager));
         customerId = Identifiers.newId();
@@ -119,7 +127,7 @@ class SampleToPackingIntegrationTest {
                 customerId, portalUser, "c-" + customerId + "@example.com"));
         customers.addAddress(customerId, salesId, true, new SaveAddressCommand("SHIPPING", "Nguyen Van C",
                 "0901234568", "3 Le Loi", null, "26734", "Ben Nghe", "79", "Ho Chi Minh", "VN", null, true, null));
-        portal = new CurrentUser(portalUser, "portal-" + portalUser, Set.of(Role.CUSTOMER), Set.of(), DataScope.ALL,
+        portal = new CurrentUser(portalUser, "portal-" + portalUser, Set.of(Role.CUSTOMER), seeded(Role.CUSTOMER), DataScope.ALL,
                 Set.of(), Set.of());
         printer = staff(Role.PRODUCTION_STAFF);
         storekeeper = staff(Role.WAREHOUSE_STAFF);
@@ -130,7 +138,7 @@ class SampleToPackingIntegrationTest {
 
     private CurrentUser staff(Role role) {
         UUID id = tx.execute(s -> ReferenceRows.user(entityManager));
-        return new CurrentUser(id, role.name() + "-" + id, Set.of(role), Set.of(), DataScope.WAREHOUSE, Set.of("HCM"),
+        return new CurrentUser(id, role.name() + "-" + id, Set.of(role), seeded(role), DataScope.WAREHOUSE, Set.of("HCM"),
                 Set.of(hcm));
     }
 
@@ -256,15 +264,20 @@ class SampleToPackingIntegrationTest {
                 });
         assertThat(productionOrders.get(manager, sampleLsx).summary().packingLocation())
                 .as("a SAMPLE's units are written off, not handed to packing").isNull();
+        // G4-Q2 (2026-10-21): handed to packing and deducted there as the order completed - one CONSUMPTION row per
+        // hold naming the production order; the holds stay the order line's, consumed.
         List<UUID> packed = jdbc.queryForList("""
                 SELECT r.id FROM inventory.stock_reservation r JOIN inventory.stock_item s ON s.id = r.stock_item_id
-                 WHERE r.status = 'HELD' AND r.order_id = ? AND s.location_code = ? AND s.status = 'AVAILABLE'""",
-                UUID.class, orderId, PACKING);
+                 WHERE r.status = 'CONSUMED' AND r.order_id = ? AND s.location_code = ?""", UUID.class, orderId, PACKING);
         assertThat(jdbc.queryForObject("SELECT COALESCE(SUM(quantity), 0) FROM inventory.stock_reservation WHERE id = ANY(?)",
-                Integer.class, (Object) packed.toArray(UUID[]::new))).as("3 printed cups, the order's, in packing")
+                Integer.class, (Object) packed.toArray(UUID[]::new))).as("3 printed cups, the order's, consumed in packing")
                 .isEqualTo(3);
+        assertThat(jdbc.queryForObject("""
+                SELECT COALESCE(SUM(quantity), 0) FROM inventory.stock_movement WHERE movement_type = 'CONSUMPTION'
+                   AND reference_type = 'PRODUCTION_ORDER' AND reference_id = ? AND from_location_code = ?""",
+                Integer.class, lsx, PACKING)).isEqualTo(3);
         assertThat(orders.findById(orderId).orElseThrow().lines().getFirst().reservationIds()).containsAll(packed);
-        assertThat(inventory.availableToPromise(new Sku(BLANK))).as("nobody else can take them").isEqualTo(atp);
+        assertThat(inventory.availableToPromise(new Sku(BLANK))).as("nobody else could take them").isEqualTo(atp);
         assertThat(recorded.matching(ProductionCompleted.class, e -> e.productionOrderId().equals(lsx)))
                 .singleElement().isEqualTo(new ProductionCompleted(orderId, lineId, lsx, 3));
         Await.until("the order is ready to fulfil", ASYNC,

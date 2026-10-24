@@ -15,6 +15,9 @@ public interface ReceivingPurchaseOrders {
      */
     Optional<ReceivingPurchaseOrder> lock(UUID purchaseOrderId);
 
+    /** The supplier's name as it reads now, for the lot a receipt opens (SCRUM-142); empty for an unknown id. */
+    Optional<String> supplierName(UUID supplierId);
+
     /**
      * Write what a confirmed receipt changed: each line's status, the order's status, and one
      * {@code purchase_order_events} row when the order's status changed.

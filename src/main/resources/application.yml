@@ -221,8 +221,10 @@ management:
     health:
       show-details: when-authorized
       # when-authorized alone means ANY authenticated user - a CUSTOMER - sees every detail,
-      # including the storage bucket and endpoint. Naming the role narrows it to administrators.
-      roles: ECOMMERCE_ADMIN
+      # including the storage bucket and endpoint. Boot matches these against the caller's
+      # authorities, so a permission works here: whoever holds platform-actuator:READ
+      # (ActuatorPermission, granted in the role matrix) - never a role name.
+      roles: platform-actuator:READ
       probes:
         # /actuator/health/liveness and /readiness, which is what Kubernetes probes.
         enabled: true
@@ -316,6 +318,14 @@ stockflow:
     # whose DTOs gained a field starts from a clean namespace instead of deserialising yesterday's
     # objects into the new class.
     version: v1
+
+  # ---------------------------------------------------------------------------
+  # Reporting (SCRUM-344): the sales rollups behind the dashboard.
+  # ---------------------------------------------------------------------------
+  reporting:
+    # On the first start after deploy, roll up the orders placed before the listeners existed. Does nothing once the
+    # history is in. POST /api/v1/reports/rebuild does the same by hand.
+    backfill-on-startup: true
 
   # ---------------------------------------------------------------------------
   # HTTP idempotency. Applies to any unsafe request carrying an Idempotency-Key header.
@@ -432,6 +442,15 @@ stockflow:
     alert-reconcile-cron: "0 30 1 * * *"
     expiry-sweep-cron: "0 0 2 * * *"
 
+  payment:
+    # The company's bank account a customer transfers to (SCRUM-193, kltn-docs 15 §4.1 step 1). Blank here on purpose and
+    # in prod: GET /orders/me/{id}/transfer-instructions answers 503 TRANSFER_INSTRUCTIONS_UNAVAILABLE until all three
+    # are set per deployment, so a customer is never shown a made-up account. local, dev and test carry a demo one.
+    company-bank:
+      bank-name: ${COMPANY_BANK_NAME:}
+      account-number: ${COMPANY_BANK_ACCOUNT_NUMBER:}
+      account-name: ${COMPANY_BANK_ACCOUNT_NAME:}
+
   customer:
     # Where the portal invitation e-mail sends the customer's contact (SCRUM-450); the token is
     # appended as a URL fragment, which browsers never send to a server. Blank switches invitations
@@ -443,6 +462,15 @@ stockflow:
       # How long an invitation link works, and how soon Sales may replace an open one.
       lifetime: ${PORTAL_INVITATION_LIFETIME:PT72H}
       resend-cooldown: ${PORTAL_INVITATION_RESEND_COOLDOWN:PT1M}
+
+  fulfillment:
+    load-planning:
+      # Real time cap of one load-plan calculation, run synchronously (decision LP2-10); the planner returns the best
+      # plan found so far when it runs out (LoadPlanRequest.budget). On the benchmark (100, 300 and 500 cartons with
+      # sets, LoadPlannerBenchmarkTest) 3 s already matched the 30 s reference on a laptop; 5 s keeps a margin for a
+      # smaller server, where the same search runs slower. Read by the load-estimate service (PR EST) and the
+      # load-plan service (SCRUM-287 PR D).
+      solver-budget: PT5S
 
   security:
     # Turns on the resource-server filter chain AND RequiresPermissionAspect. Both are behind the

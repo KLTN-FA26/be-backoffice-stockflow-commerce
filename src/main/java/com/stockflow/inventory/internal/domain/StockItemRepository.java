@@ -90,6 +90,9 @@ public interface StockItemRepository {
      */
     int onHandInStockPackage(StockPackageId stockPackageId);
 
+    /** The ids of the stock rows of a stock package (its contents), read without locking (SCRUM-287 PR T, LP2-8). */
+    List<StockItemId> findIdsInStockPackage(StockPackageId stockPackageId);
+
     /** Every stock item holding at least one reservation that expired before {@code cutoff}. */
     List<StockItem> findWithReservationsExpiredBefore(Instant cutoff, int limit);
 
@@ -107,6 +110,12 @@ public interface StockItemRepository {
 
     /** The same for a production order's live holds, locked in id order. */
     List<StockItem> findWithReservationsForProductionOrder(java.util.UUID productionOrderId);
+
+    /**
+     * SCRUM-287 PR T: the stock rows holding a transfer order's live allocation, locked in id order (the caller holds
+     * the SKUs' advisory locks first).
+     */
+    List<StockItem> findWithReservationsForTransferOrder(java.util.UUID transferOrderId);
 
     /** The ids of a production order's live holds, oldest first, read without locking (a screen's view). */
     List<java.util.UUID> findHeldReservationIdsOfProductionOrder(java.util.UUID productionOrderId);

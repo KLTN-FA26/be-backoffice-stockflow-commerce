@@ -14,6 +14,7 @@ import com.stockflow.order.internal.controller.dto.CancellationResultResponse;
 import com.stockflow.order.internal.controller.dto.CustomerOrderCardResponse;
 import com.stockflow.order.internal.controller.dto.CustomerOrderDetailResponse;
 import com.stockflow.order.internal.controller.dto.OrderResponse;
+import com.stockflow.order.internal.controller.dto.TransferInstructionsResponse;
 import com.stockflow.order.internal.controller.dto.PlaceOrderRequest;
 import com.stockflow.order.internal.controller.dto.QuoteRequests;
 import com.stockflow.order.internal.controller.dto.QuoteResponse;
@@ -31,7 +32,7 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
-import com.stockflow.common.security.Role;
+import com.stockflow.common.security.ScopeGuards;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.order.internal.service.CustomerOrders;
 import io.swagger.v3.oas.annotations.Operation;
@@ -74,15 +75,26 @@ class OrderController {
     private final CustomerService customerService;
     private final Quotes quotes;
     private final CustomerOrders customerOrders;
+    private final com.stockflow.order.internal.service.TransferInstructions transferInstructions;
     private final com.stockflow.identity.api.IdentityService identities;
 
+    private final com.stockflow.order.internal.service.PartialShipments partialShipments;
+    private final com.stockflow.order.internal.service.DeliveryModes deliveryModes;
+
     OrderController(OrderService orderService, CustomerService customerService, Quotes quotes,
-                    CustomerOrders customerOrders, com.stockflow.identity.api.IdentityService identities) {
+                    CustomerOrders customerOrders,
+                    com.stockflow.order.internal.service.TransferInstructions transferInstructions,
+                    com.stockflow.identity.api.IdentityService identities,
+                    com.stockflow.order.internal.service.PartialShipments partialShipments,
+                    com.stockflow.order.internal.service.DeliveryModes deliveryModes) {
+        this.partialShipments = partialShipments;
+        this.deliveryModes = deliveryModes;
         this.identities = identities;
         this.orderService = orderService;
         this.customerService = customerService;
         this.quotes = quotes;
         this.customerOrders = customerOrders;
+        this.transferInstructions = transferInstructions;
     }
 
     /**
@@ -100,8 +112,9 @@ class OrderController {
             action = Action.CREATE, scope = DataScope.OWN)
     public ApiResponse<OrderResponse> place(@Valid @RequestBody PlaceOrderRequest request,
                                             @AuthenticatedUser CurrentUser user) {
-        boolean mayPlaceForAnotherCustomer = user.hasAnyRole(
-                Role.SALES_STAFF, Role.ORDER_COORDINATOR, Role.ECOMMERCE_ADMIN);
+        // Who may place at all is sales-orders:CREATE; for whom is data scope: the back office for any customer (an
+        // assisted order), a portal account for its own customer only.
+        boolean mayPlaceForAnotherCustomer = ScopeGuards.isBackOffice(user);
         if (!mayPlaceForAnotherCustomer) {
             UUID ownCustomerId = requiredOwnCustomerId(user);
             if (!ownCustomerId.equals(request.customerId())) {
@@ -110,12 +123,14 @@ class OrderController {
             }
         }
         var command = OrderWebMapper.toCommand(request);
-        if (!mayPlaceForAnotherCustomer && (command.depositPercent() != null || command.balancePolicy() != null)) {
-            // The deposit share and how the balance is collected are the customer's terms, or a quote's (kltn-docs
-            // 15 §3, §4.2 step 3) — never the customer's own pick: their configured terms are used.
+        if (!mayPlaceForAnotherCustomer && command.depositPercent() != null) {
+            // The deposit share is the customer's terms, or a quote's (kltn-docs 15 §3) - never the customer's own pick:
+            // their configured percentage is used. How the balance is collected is different (SCRUM-193): the customer
+            // may choose among the policies their terms allow (15 §4.2 step 3), and placeOrder refuses any other with
+            // 409 BALANCE_POLICY_NOT_ALLOWED, so it is passed through.
             command = new com.stockflow.order.api.PlaceOrderCommand(command.requestId(), command.customerId(),
                     command.shippingAddressId(), command.billingAddressId(), command.snapshotCustomer(),
-                    command.lines(), command.paymentTerm(), null, null);
+                    command.lines(), command.paymentTerm(), null, command.balancePolicy());
         }
         return ApiResponse.ok(OrderWebMapper.toResponse(orderService.placeOrder(command)));
     }
@@ -251,9 +266,9 @@ class OrderController {
     public ApiResponse<OrderResponse> closeRemainder(@PathVariable UUID orderId,
                                                      @Valid @RequestBody CloseRemainderRequest request,
                                                      @AuthenticatedUser CurrentUser user) {
-        com.stockflow.common.security.ScopeGuards.requireBackOffice(user);
+        ScopeGuards.requireBackOffice(user);
         return ApiResponse.ok(OrderWebMapper.toResponse(orderService.closeRemainder(orderId, request.reasonCode(),
-                request.note(), user.userId())));
+                request.note(), OrderWebMapper.toFee(request.agreedFee()), user.userId())));
     }
 
     /**
@@ -274,7 +289,8 @@ class OrderController {
             @RequestParam(required = false) LocalDate placedFrom,
             @RequestParam(required = false) LocalDate placedTo,
             @RequestParam(required = false) String sort) {
-        requireStaff(user);
+        // Customers hold sales-orders:READ for their own orders; this list is every customer's.
+        ScopeGuards.requireBackOffice(user);
         return ApiResponse.ok(orderService.list(new ListOrdersQuery(page,
                         size == null ? Pages.DEFAULT_PAGE_SIZE : size, search, OrderStatusFilter.parse(statuses),
                         customerId,
@@ -300,13 +316,30 @@ class OrderController {
                             null, null))
                     .toList());
         }
-        java.util.Map<UUID, String> names = identities.displayNames(changes.stream()
-                .map(com.stockflow.order.api.OrderStatusChange::actorId).filter(java.util.Objects::nonNull)
-                .distinct().toList());
-        return ApiResponse.ok(changes.stream()
-                .map(change -> new OrderStatusChangeResponse(change.from(), change.to(), change.reason(),
-                        change.occurredAt(), change.actorId(),
-                        change.actorId() == null ? null : names.get(change.actorId())))
+        // PACK-PARTIAL: Sales' decisions on shipping in parts are part of the order's history for staff - entries of
+        // their own type (PARTIAL_SHIPMENT_DECISION), not status changes.
+        // LP-1: so are the coordinator's changes of the delivery mode (DELIVERY_MODE_CHANGE).
+        List<com.stockflow.order.api.PartialShipmentDecision> decisions = partialShipments.decisions(orderId);
+        List<com.stockflow.order.api.DeliveryModeChange> modeChanges = deliveryModes.changes(orderId);
+        java.util.Map<UUID, String> names = identities.displayNames(java.util.stream.Stream.of(
+                        changes.stream().map(com.stockflow.order.api.OrderStatusChange::actorId),
+                        decisions.stream().map(com.stockflow.order.api.PartialShipmentDecision::decidedBy),
+                        modeChanges.stream().map(com.stockflow.order.api.DeliveryModeChange::changedBy))
+                .flatMap(stream -> stream)
+                .filter(java.util.Objects::nonNull).distinct().toList());
+        return ApiResponse.ok(java.util.stream.Stream.of(changes.stream()
+                        .map(change -> new OrderStatusChangeResponse(change.from(), change.to(), change.reason(),
+                                change.occurredAt(), change.actorId(),
+                                change.actorId() == null ? null : names.get(change.actorId()))),
+                decisions.stream().map(decision -> OrderStatusChangeResponse.partialShipmentDecision(
+                        decision.allowed(), decision.note(), decision.decidedAt(), decision.decidedBy(),
+                        decision.decidedBy() == null ? null : names.get(decision.decidedBy()))),
+                modeChanges.stream().map(change -> OrderStatusChangeResponse.deliveryModeChange(
+                        change.deliveryMode().name(), change.previousMode().name(), change.note(),
+                        change.changedAt(), change.changedBy(),
+                        change.changedBy() == null ? null : names.get(change.changedBy()))))
+                .flatMap(stream -> stream)
+                .sorted(java.util.Comparator.comparing(OrderStatusChangeResponse::occurredAt))
                 .toList());
     }
 
@@ -358,20 +391,34 @@ class OrderController {
     }
 
     /**
+     * SCRUM-193 (kltn-docs 15 §4.1 step 1): how to pay one of the signed-in customer's own orders by bank transfer -
+     * the company's account, the order number to write as the content, and what is still due now. The customer is
+     * resolved from the sign-in, never from the request; someone else's order, or none, is 404 either way, and an
+     * account not configured for this deployment is 503 {@code TRANSFER_INSTRUCTIONS_UNAVAILABLE}.
+     */
+    @GetMapping("/me/{orderId}/transfer-instructions")
+    @Operation(summary = "Bank transfer instructions for one of the signed-in customer's own orders: account, "
+            + "transfer content (the order number) and the amount due now")
+    @RequiresPermission(resource = OrderResources.ORDERS,
+            action = Action.READ, scope = DataScope.OWN)
+    public ApiResponse<TransferInstructionsResponse> myTransferInstructions(
+            @PathVariable UUID orderId, @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(CustomerOrderWebMapper.toResponse(
+                transferInstructions.of(requiredOwnCustomerId(user), orderId)));
+    }
+
+    /**
      * Orders are stored under the customer profile id, but the token identifies the sign-in account,
      * so "my orders" has to go through the profile: comparing an order's customer with the sign-in id
      * never matches once a customer has a profile of their own.
      *
-     * @return null for staff, who may see and cancel any order
+     * <p>Data scope, not access: the endpoint's permission already decided the caller may act. The back office
+     * acts on any customer's order; a portal account on its own customer's only.</p>
+     *
+     * @return null for the back office, who may see and cancel any order
      */
-    private static void requireStaff(CurrentUser user) {
-        if (!user.hasAnyRole(Role.SALES_STAFF, Role.ORDER_COORDINATOR, Role.ECOMMERCE_ADMIN)) {
-            throw new BusinessException(ErrorCode.FORBIDDEN, "The order list is for back-office staff");
-        }
-    }
-
     private UUID ownCustomerIdOrNull(CurrentUser user) {
-        if (user.hasAnyRole(Role.SALES_STAFF, Role.ORDER_COORDINATOR, Role.ECOMMERCE_ADMIN)) {
+        if (ScopeGuards.isBackOffice(user)) {
             return null;
         }
         return requiredOwnCustomerId(user);

@@ -66,6 +66,17 @@ public class ReceivableService {
     private static final Logger log = LoggerFactory.getLogger(ReceivableService.class);
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
     static final String ALLOCATION_SOURCE = "RECEIVABLE_ALLOCATION";
+    /**
+     * Re-review of #150: money paying the receivable of a fee a closure left owed (a CANCELLATION_FEE receivable of an
+     * order that was not cancelled): the order counts it as that fee's, so a later closure does not refund it.
+     */
+    static final String FEE_ALLOCATION_SOURCE = "FEE_RECEIVABLE_ALLOCATION";
+
+    /** The source a receivable's payment is announced with. */
+    static String sourceOf(Receivable receivable) {
+        return "CANCELLATION_FEE".equals(receivable.kind()) && receivable.shipmentId() != null
+                ? FEE_ALLOCATION_SOURCE : ALLOCATION_SOURCE;
+    }
 
     private static final SortWhitelist RECEIVABLE_SORT = SortWhitelist.of("dueDate", "issuedAt", "amount", "status")
             .withDefault("dueDate", Sort.Direction.ASC);
@@ -136,8 +147,30 @@ public class ReceivableService {
         }
         LocalDate due = LocalDate.ofInstant(event.cancelledAt(), BUSINESS_ZONE);
         Receivable receivable = book.save(Receivable.openCancellationFee(event.orderId(), event.customerId(), owed,
-                event.currency(), event.cancelledAt(), due));
+                event.currency(), event.cancelledAt(), due).forOrderNumber(event.orderNumber()));
         log.info("Receivable {} opened for the cancellation fee of order {}: {} {} owed", receivable.id(),
+                event.orderNumber(), owed, event.currency());
+    }
+
+    /**
+     * Review of #150: the part of a fee agreed when print lines were closed after printing started that the money
+     * received did not cover ({@code OrderRemainderClosed.owedAmount}) is owed from the closing day, as a cancellation
+     * fee is (decision Q6a). One receivable per closure: its {@code shipment_id} carries the closure id (the column has
+     * no foreign key; a closure is the unit a fee belongs to, as a shipment is for a delivery). Idempotent.
+     */
+    public void remainderFeeOwed(com.stockflow.contracts.OrderRemainderClosed event) {
+        BigDecimal owed = event.owedAmount() == null ? BigDecimal.ZERO : event.owedAmount();
+        if (owed.signum() <= 0 || event.customerId() == null || event.closureId() == null) {
+            return;
+        }
+        if (book.findReceivableOfShipment(event.orderId(), event.closureId()).isPresent()) {
+            return;
+        }
+        LocalDate due = LocalDate.ofInstant(event.closedAt(), BUSINESS_ZONE);
+        Receivable fee = book.save(Receivable.openCancellationFee(event.orderId(), event.customerId(), owed,
+                event.currency(), event.closedAt(), due).forShipment(event.closureId())
+                .forOrderNumber(event.orderNumber()));
+        log.info("Receivable {} opened for the fee of the rest closed of order {}: {} {} owed", fee.id(),
                 event.orderNumber(), owed, event.currency());
     }
 
@@ -149,6 +182,10 @@ public class ReceivableService {
      * <p>G2-3: a deposit order whose balance the carrier collects (ON_DELIVERY) bills what the carrier collected on
      * delivery - the amount fixed at the handover (15 BR-08) - as a carrier-collected receivable due that day; the
      * carrier's remittance pays it (09 §4.3 step 4). A deposit order paid before delivery bills nothing.</p>
+     *
+     * <p>BALCREDIT: a deposit order whose balance goes on credit (ON_CREDIT) bills what the order billed for the delivery
+     * - the goods less the deposit not yet used - as the customer's DEPOSIT_BALANCE receivable, due after their days to
+     * pay; their unallocated credit pays it first, as for a credit order.</p>
      */
     public void orderDelivered(OrderDelivered event) {
         if (event.customerId() == null) {
@@ -157,6 +194,9 @@ public class ReceivableService {
         boolean credit = "CREDIT".equals(event.paymentTerm());
         boolean deposit = "DEPOSIT".equals(event.paymentTerm());
         boolean carrierCollects = deposit && "ON_DELIVERY".equals(event.balancePolicy());
+        // BALCREDIT: the balance of a deposit order on credit is billed per delivery as a credit order's is, due after
+        // the customer's days to pay, the customer's own debt (counted in their credit position).
+        boolean balanceOnCredit = deposit && "ON_CREDIT".equals(event.balancePolicy());
         if (!credit && !deposit) {
             return;
         }
@@ -166,7 +206,7 @@ public class ReceivableService {
             return;
         }
         LocalDate deliveryDay = LocalDate.ofInstant(event.deliveredAt(), BUSINESS_ZONE);
-        if (deposit && !carrierCollects) {
+        if (deposit && !carrierCollects && !balanceOnCredit) {
             balanceDeliveredUnpaid(event, deliveryDay);
             return;
         }
@@ -177,15 +217,17 @@ public class ReceivableService {
         }
         if (carrierCollects) {
             Receivable balance = book.save(Receivable.openCarrierCollected(event.orderId(), event.customerId(), owed,
-                    event.currency(), event.deliveredAt(), deliveryDay).forShipment(event.shipmentId()));
+                    event.currency(), event.deliveredAt(), deliveryDay).forShipment(event.shipmentId())
+                    .forOrderNumber(event.orderNumber()));
             log.info("Receivable {} opened for order {}: the carrier collected {} {} on delivery", balance.id(),
                     event.orderNumber(), owed, event.currency());
             return;
         }
         int days = event.creditTermDays() == null ? 0 : event.creditTermDays();
         LocalDate due = deliveryDay.plusDays(days);
-        Receivable receivable = book.save(Receivable.open(event.orderId(), event.customerId(), owed, event.currency(),
-                event.deliveredAt(), due).forShipment(event.shipmentId()));
+        Receivable opened = Receivable.open(event.orderId(), event.customerId(), owed, event.currency(),
+                event.deliveredAt(), due).forShipment(event.shipmentId()).forOrderNumber(event.orderNumber());
+        Receivable receivable = book.save(balanceOnCredit ? opened.withKind("DEPOSIT_BALANCE") : opened);
         log.info("Receivable {} opened for order {}: {} {} due {}", receivable.id(), event.orderNumber(), owed,
                 event.currency(), due);
         // The customer's unallocated credit pays it first.
@@ -208,7 +250,8 @@ public class ReceivableService {
             return;
         }
         Receivable balance = book.save(Receivable.open(event.orderId(), event.customerId(), owed, event.currency(),
-                event.deliveredAt(), deliveryDay).withKind("DEPOSIT_BALANCE").forShipment(event.shipmentId()));
+                event.deliveredAt(), deliveryDay).withKind("DEPOSIT_BALANCE").forShipment(event.shipmentId())
+                .forOrderNumber(event.orderNumber()));
         log.warn("Order {} was delivered with {} {} of its balance unpaid (to be paid before delivery): receivable {} "
                 + "opened, due {}", event.orderNumber(), owed, event.currency(), balance.id(), deliveryDay);
         List<Receivable> unpaid = book.lockUnpaid(event.customerId());
@@ -296,7 +339,7 @@ public class ReceivableService {
                         receivable.id(), applied, now, by);
                 made.add(allocation);
                 events.publishEvent(new PaymentCaptured(receivable.orderId(), allocation.id(), applied,
-                        receivable.currency(), PaymentMethod.BANK_TRANSFER, ALLOCATION_SOURCE));
+                        receivable.currency(), PaymentMethod.BANK_TRANSFER, sourceOf(receivable)));
             }
             book.save(receivable);
         }

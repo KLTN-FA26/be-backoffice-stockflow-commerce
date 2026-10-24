@@ -66,7 +66,7 @@ class ReceivableBookAdapter implements ReceivableBook, ReceivableSearch {
     public Receivable save(Receivable r) {
         ReceivableJpaEntity entity = receivables.findById(r.id()).orElseGet(() -> new ReceivableJpaEntity(r.id(),
                 r.orderId(), r.customerId(), r.amount(), r.currency(), r.issuedAt(), r.dueDate()).ofKind(r.kind())
-                .ofShipment(r.shipmentId()).collectedBy(r.collector()));
+                .ofShipment(r.shipmentId()).collectedBy(r.collector()).ofOrderNumber(r.orderNumber()));
         entity.apply(r.paidAmount(), r.status(), r.settledAt());
         return toDomain(receivables.saveAndFlush(entity));
     }
@@ -291,6 +291,23 @@ class ReceivableBookAdapter implements ReceivableBook, ReceivableSearch {
     }
 
     @Override
+    public Overdue overdue(UUID customerId) {
+        // The same rows hasOverdue looks at, so overdueAmount > 0 exactly when hasOverdue.
+        Object[] row = (Object[]) entityManager.createNativeQuery("""
+                        SELECT COALESCE(SUM(amount - paid_amount), 0), MIN(due_date) FROM payment.receivable
+                         WHERE customer_id = :customer AND collector = 'CUSTOMER' AND status = 'OVERDUE'""")
+                .setParameter("customer", customerId)
+                .getSingleResult();
+        LocalDate oldest = switch (row[1]) {
+            case null -> null;
+            case LocalDate d -> d;
+            case java.sql.Date d -> d.toLocalDate();
+            default -> LocalDate.parse(row[1].toString());
+        };
+        return new Overdue(decimal(row[0]), oldest);
+    }
+
+    @Override
     public Page<Receivable> receivables(UUID customerId, UUID orderId, ReceivableStatus status, LocalDate dueBefore,
                                         Collector collector, String kind, Pageable pageable) {
         Specification<ReceivableJpaEntity> spec = Specification
@@ -315,7 +332,8 @@ class ReceivableBookAdapter implements ReceivableBook, ReceivableSearch {
     private static Receivable toDomain(ReceivableJpaEntity e) {
         return new Receivable(e.getId(), e.getOrderId(), e.getCustomerId(), e.getAmount(), e.getPaidAmount(),
                 e.getCurrency(), e.getIssuedAt(), e.getDueDate(), e.getStatus(), e.getSettledAt(), e.getVersion())
-                .withKind(e.getKind()).forShipment(e.getShipmentId()).collectedBy(e.getCollector());
+                .withKind(e.getKind()).forShipment(e.getShipmentId()).collectedBy(e.getCollector())
+                .forOrderNumber(e.getOrderNumber());
     }
 
     private static CustomerTransfer toDomain(CustomerTransferJpaEntity e) {
