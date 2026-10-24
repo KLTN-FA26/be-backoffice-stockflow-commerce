@@ -187,6 +187,11 @@ class InventoryServiceImpl implements InventoryService {
     }
 
     @Override
+    public StockMove receiveReturn(com.stockflow.inventory.api.ReceiveReturnCommand command) {
+        return operations.receiveReturn(command);
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public Optional<InventoryItemPolicy> itemPolicy(UUID inventoryItemId) {
         return items.policyOf(inventoryItemId);

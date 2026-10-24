@@ -96,7 +96,9 @@ public record StockMovement(
     public enum MovementType {
         RECEIPT, MOVE, ADJUSTMENT, TRANSFER_OUT, STATUS_CHANGE, PICK, PUT_BACK,
         /** Held blanks a print subcontractor turned into goods received back (SCRUM-441, decision Q9). */
-        CONSUMPTION
+        CONSUMPTION,
+        /** Goods a customer sent back under a return request, into quarantine (SCRUM-260, OQ-12). */
+        RETURN_IN
     }
 
     /** The subset of {@code ck_stock_movement_reference} this module writes so far. */
@@ -108,6 +110,8 @@ public record StockMovement(
          * since G4-Q2 (2026-10-21) printed goods leave when their production order completes and no line names a
          * package any more; the value stays for the lines written before.
          */
-        PACKAGE
+        PACKAGE,
+        /** A return line (SCRUM-260): goods counted in from the customer, and out of quarantine again. */
+        RETURN_REQUEST_LINE
     }
 }
