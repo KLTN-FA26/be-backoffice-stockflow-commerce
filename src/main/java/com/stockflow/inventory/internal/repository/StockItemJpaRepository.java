@@ -124,6 +124,20 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
             """)
     List<StockLevelRow> findLevelRowsBySku(@Param("sku") String sku);
 
+    /**
+     * Live allocations of one SKU per location: the hard holds a release placed on a bin and lot
+     * ({@code allocated_from_id} set), a subset of {@code reserved} on the same rows.
+     */
+    @Query("""
+            select new com.stockflow.inventory.internal.repository.AllocatedRow(s.locationCode, sum(r.quantity))
+            from StockItemJpaEntity s join s.reservations r
+            where s.sku = :sku
+              and r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
+              and r.allocatedFrom is not null
+            group by s.locationCode
+            """)
+    List<AllocatedRow> findAllocatedRowsBySku(@Param("sku") String sku);
+
     @Query("""
             select distinct s from StockItemJpaEntity s
             left join fetch s.reservations

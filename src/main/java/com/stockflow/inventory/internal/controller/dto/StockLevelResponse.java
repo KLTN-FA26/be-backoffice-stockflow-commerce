@@ -18,13 +18,13 @@ public record StockLevelResponse(
         @Schema(description = "Units in AVAILABLE status, before subtracting reservations")
         int available,
 
-        @Schema(description = "Units held for open orders")
+        @Schema(description = "Units held here and not allocated: production, transfer and older checkout holds")
         int reserved,
 
-        @Schema(description = "Units assigned to a pick; 0 until fulfillment records allocations")
+        @Schema(description = "Units allocated to a bin and lot for picking, held until picked; not counted in reserved")
         int allocated,
 
-        @Schema(description = "Available to promise: available minus reserved")
+        @Schema(description = "Available to promise: available minus reserved minus allocated, capped system-wide")
         int atp
 ) {
 }
