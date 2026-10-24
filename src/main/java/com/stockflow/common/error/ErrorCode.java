@@ -158,13 +158,18 @@ public enum ErrorCode {
     SUPPLIER_ITEM_NOT_LISTED("This supplier does not list this SKU", 409),
     PO_LINE_BELOW_MOQ("The quantity is below the supplier's minimum order quantity", 409),
     PO_LINE_NOT_PACK_MULTIPLE("The quantity must be a multiple of the supplier's pack size", 409),
+    /** A line entered in a packing unit is a whole number of that unit (BR-09, V20261020000400). */
+    PO_LINE_UNIT_NOT_MULTIPLE("The quantity must be a whole number of the line's unit", 409),
     PO_LINE_PRICE_REQUIRED("A unit price is required: the catalog price is in another currency", 409),
     CHECKOUT_PRICE_CHANGED("The selling price changed; review the basket and confirm again", 409),
     COUNT_POLICY_CONFLICT("Reconcile the active count and SKU tracking policy before proceeding",409),
     /** The inventory item already has a unit with this code (its base unit included). */
     UOM_CONVERSION_DUPLICATE("This SKU already has a unit of measure with this code", 409),
-    /** The base unit, or a unit a variant sells in, cannot be deleted or retired (docs 01 BR-10, BR-11). */
-    UOM_CONVERSION_IN_USE("This unit of measure is the base unit or is still sold in", 409),
+    /**
+     * The base unit, or a unit a variant sells in, cannot be deleted or retired (docs 01 BR-10, BR-11); a unit
+     * a document counts in keeps its factor and code and is not deleted (BR-10, V20261020000600).
+     */
+    UOM_CONVERSION_IN_USE("This unit of measure is the base unit, is still sold in, or is used by a document", 409),
     /** The variant already sells in this unit. */
     SALES_UNIT_DUPLICATE("The variant already sells in this unit", 409),
     DESIGN_QUOTE_REQUIRED("An accepted design quote matching this order line is required",409),

@@ -77,9 +77,9 @@ class UomConversionController {
     @Operation(summary = "Replace a unit; on the base unit only defaultPurchase changes",
             description = "Unmarking the default purchase unit hands it back to the base unit. Marking "
                     + "defaultShipping unmarks the item's previous default shipping unit atomically (no 409); "
-                    + "unmarking it leaves the item without one. Retiring "
-                    + "(active=false) a unit the variant sells in: 409 UOM_CONVERSION_IN_USE. Stale version: "
-                    + "409 OPTIMISTIC_LOCK.")
+                    + "unmarking it leaves the item without one. Retiring (active=false) a unit the variant "
+                    + "sells in, or changing the factor or code of a unit a document counts in (BR-10): "
+                    + "409 UOM_CONVERSION_IN_USE. Stale version: 409 OPTIMISTIC_LOCK.")
     @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.UPDATE)
     public ApiResponse<UomConversionResponse> update(@PathVariable UUID productId, @PathVariable UUID variantId,
                                                      @PathVariable UUID conversionId,
@@ -90,7 +90,8 @@ class UomConversionController {
 
     @DeleteMapping("/{conversionId}")
     @Operation(summary = "Delete a packing unit",
-            description = "The base unit, or a unit the variant sells in: 409 UOM_CONVERSION_IN_USE.")
+            description = "The base unit, a unit the variant sells in, or a unit a document counts in: "
+                    + "409 UOM_CONVERSION_IN_USE.")
     @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.UPDATE)
     public ApiResponse<Void> delete(@PathVariable UUID productId, @PathVariable UUID variantId,
                                     @PathVariable UUID conversionId,
