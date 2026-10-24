@@ -33,7 +33,10 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-/** BR-PRD-13 at the split: a subcontractor that prints for us but is no longer active gets no work (03 §16). */
+/**
+ * BR-PRD-13 at the split, and again when the work leaves or grows: a subcontractor that prints for us but is no longer
+ * active gets no work (03 §16).
+ */
 class SubcontractSplitTest {
 
     private static final Instant NOW = Instant.parse("2026-10-24T03:00:00Z");
@@ -64,5 +67,30 @@ class SubcontractSplitTest {
                 .isInstanceOf(BusinessException.class)
                 .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.SUPPLIER_INACTIVE);
         verify(orders, never()).createChild(any(), any(), any());
+    }
+
+    @Test
+    void aSubcontractorDeactivatedAfterTheSplitGetsNeitherTheWorkNorMoreOfIt() {
+        ProductionOrder.Work work = new ProductionOrder.Work(UUID.randomUUID(), new Sku("CUP-PP-500"), UUID.randomUUID(),
+                "a".repeat(64), 10, LocalDate.of(2026, 11, 1));
+        ProductionOrder parent = ProductionOrder.forOrderLine(UUID.randomUUID(), "LSX-P", UUID.randomUUID(),
+                UUID.randomUUID(), UUID.randomUUID(), work);
+        UUID subcontractor = UUID.randomUUID();
+        ProductionOrder child = ProductionOrder.subcontractedChild(UUID.randomUUID(), "LSX-C", parent, 4,
+                LocalDate.of(2026, 11, 1), new ProductionOrder.Subcontract(ProductionOrder.SubcontractMethod.SUPPLIED_BLANKS,
+                        subcontractor, new BigDecimal("1500"), "VND", UUID.randomUUID()));
+        when(orders.findByIdForUpdate(child.id())).thenReturn(Optional.of(child));
+        when(purchasing.subcontractorTerms(subcontractor)).thenReturn(Optional.of(new SubcontractorTerms(subcontractor,
+                "INNHANH", "In Nhanh", true, false, new BigDecimal("2"))));
+
+        assertThatThrownBy(() -> service.sendOut(manager, child.id()))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.SUPPLIER_INACTIVE);
+        assertThatThrownBy(() -> service.supplement(manager, child.id(), 2, "QC shortfall"))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.SUPPLIER_INACTIVE);
+        verify(purchasing, never()).findById(any());
+        verify(purchasing, never()).supplement(any(), org.mockito.ArgumentMatchers.anyInt(), any(), any());
+        verify(orders, never()).save(any());
     }
 }
