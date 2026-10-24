@@ -36,7 +36,7 @@ class AssistantModelConfig {
         AnthropicOkHttpClient.Builder client = AnthropicOkHttpClient.builder()
                 .apiKey(properties.apiKey())
                 .timeout(properties.requestTimeout())
-                .maxRetries(2);
+                .maxRetries(AssistantProperties.MAX_RETRIES);
         if (!properties.baseUrl().isEmpty()) {
             client.baseUrl(properties.baseUrl());
         }

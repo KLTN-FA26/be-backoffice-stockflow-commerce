@@ -106,6 +106,22 @@ class ReportingServiceImpl implements ReportingService {
                 change(current.averageOrderValue(), previous.averageOrderValue()));
     }
 
+    @Override
+    public List<SkuSales> salesBySku(java.util.Collection<String> skus, LocalDate from, LocalDate to) {
+        ReportPeriod period = period(from, to);
+        if (skus.size() > MAX_SKUS) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "at most " + MAX_SKUS + " SKUs",
+                    List.of(new FieldError("skus", "at most " + MAX_SKUS, "Size")));
+        }
+        Map<String, SalesRollupQueries.SkuRow> sold = new HashMap<>();
+        queries.salesOf(skus, period.from(), period.to()).forEach(row -> sold.put(row.sku(), row));
+        return skus.stream().distinct().map(sku -> {
+            SalesRollupQueries.SkuRow row = sold.get(sku);
+            return row == null ? new SkuSales(sku, 0, vnd(BigDecimal.ZERO), null)
+                    : new SkuSales(sku, row.quantitySold(), vnd(row.revenue()), row.firstSoldOn());
+        }).toList();
+    }
+
     /** Not read-only: it writes. The rebuild opens its own transaction per day. */
     @Override
     @Transactional(propagation = Propagation.NOT_SUPPORTED)

@@ -7,6 +7,8 @@ import com.stockflow.assistant.internal.domain.Turn;
 import com.stockflow.assistant.internal.service.AssistantTool;
 import com.stockflow.assistant.internal.service.AssistantTools;
 import com.stockflow.assistant.internal.service.ToolArguments;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.PermissionCatalog;
 import com.stockflow.common.security.PermissionCode;
@@ -28,6 +30,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.method.HandlerMethod;
@@ -53,6 +56,7 @@ import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
@@ -207,6 +211,68 @@ class AssistantIntegrationTest {
         http.asRole(Role.INVENTORY_PLANNER, planner, ask(conversation, "Xin chào"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("ASSISTANT_BUSY"));
+    }
+
+    @Test
+    @DisplayName("a streamed answer sends a tool event as each tool finishes, then the answer, from a worker thread "
+            + "that re-establishes the caller's permissions and scope")
+    void streams() throws Exception {
+        UUID planner = staff("INVENTORY_PLANNER");
+        script(toolUse("getStockLevels", "{\"sku\":\"" + sku + "\"}"), answer("Kho HCM còn 10."));
+        String conversation = start(Role.INVENTORY_PLANNER, planner);
+
+        MvcResult started = http.asRole(Role.INVENTORY_PLANNER, planner,
+                        post(BASE + "/" + conversation + "/messages/stream").contentType(MediaType.APPLICATION_JSON)
+                                .content("{\"text\":\"Còn bao nhiêu " + sku + "?\"}"))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+        started.getAsyncResult(30_000);
+        String events = started.getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
+
+        assertThat(events).contains("event:tool", "\"tool\":\"getStockLevels\"", "\"outcome\":\"OK\"",
+                "event:answer", "Kho HCM còn 10.");
+        assertThat(events.indexOf("event:tool")).isLessThan(events.indexOf("event:answer"));
+        assertThat(jdbc.queryForObject("select outcome from assistant.tool_call where conversation_id = ?::uuid",
+                String.class, conversation)).as("the tool ran with the caller's scope on the worker thread")
+                .isEqualTo("OK");
+    }
+
+    @Test
+    @DisplayName("a refusal known before the stream starts is an ordinary response, not an event inside a 200")
+    void streamRefusedUpFront() throws Exception {
+        UUID planner = staff("INVENTORY_PLANNER");
+        String conversation = start(Role.INVENTORY_PLANNER, planner);
+        tx.executeWithoutResult(s -> jdbc.update(
+                "update assistant.conversation set answering_since = now() where id = ?::uuid", conversation));
+
+        http.asRole(Role.INVENTORY_PLANNER, planner,
+                        post(BASE + "/" + conversation + "/messages/stream").contentType(MediaType.APPLICATION_JSON)
+                                .content("{\"text\":\"Xin chào\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("ASSISTANT_BUSY"));
+        http.asRole(Role.INVENTORY_PLANNER, planner,
+                        post(BASE + "/" + UUID.randomUUID() + "/messages/stream")
+                                .contentType(MediaType.APPLICATION_JSON).content("{\"text\":\"Xin chào\"}"))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    @DisplayName("a streamed answer reports a failure while answering, on the worker thread, as an error event")
+    void streamsErrors() throws Exception {
+        UUID planner = staff("INVENTORY_PLANNER");
+        String conversation = start(Role.INVENTORY_PLANNER, planner);
+        when(model.next(any())).thenThrow(new BusinessException(ErrorCode.ASSISTANT_UNAVAILABLE, "provider down"));
+
+        MvcResult started = http.asRole(Role.INVENTORY_PLANNER, planner,
+                        post(BASE + "/" + conversation + "/messages/stream").contentType(MediaType.APPLICATION_JSON)
+                                .content("{\"text\":\"Xin chào\"}"))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+        started.getAsyncResult(30_000);
+
+        assertThat(started.getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8))
+                .contains("event:error", "\"errorCode\":\"ASSISTANT_UNAVAILABLE\"")
+                .doesNotContain("provider down");
     }
 
     @Test

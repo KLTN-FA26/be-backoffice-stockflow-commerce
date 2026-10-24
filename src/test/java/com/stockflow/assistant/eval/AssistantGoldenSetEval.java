@@ -1,6 +1,7 @@
 package com.stockflow.assistant.eval;
 
 import com.stockflow.assistant.internal.service.AssistantProperties;
+import com.stockflow.catalog.internal.service.CatalogProjectionService;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.consumption.PickConsumption;
 import com.stockflow.procurement.internal.service.GoodsReceipts;
@@ -57,13 +58,15 @@ class AssistantGoldenSetEval {
     @Autowired GoodsReceipts receipts;
     @Autowired InventoryService inventory;
     @Autowired PickConsumption consumption;
+    @Autowired CatalogProjectionService catalog;
     @Autowired AssistantProperties properties;
 
     @Test
     @DisplayName("the golden set against the real model meets every gate")
     void goldenSet() throws Exception {
         assertThat(properties.usable()).as("set ANTHROPIC_API_KEY to run the evaluation").isTrue();
-        GoldenFixtures fixtures = new GoldenFixtures(jdbc, tx, entityManager, receipts, inventory, consumption);
+        GoldenFixtures fixtures = new GoldenFixtures(jdbc, tx, entityManager, receipts, inventory, consumption,
+                catalog);
         Map<String, String> values = fixtures.ensure();
         GoldenRunner runner = new GoldenRunner(new SecuredMvc(mockMvc, decoder), jdbc, fixtures);
 

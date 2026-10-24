@@ -1,6 +1,7 @@
 package com.stockflow.assistant.internal.service;
 
 import com.stockflow.assistant.internal.domain.ToolSpec;
+import com.stockflow.common.domain.Sku;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.RequiresPermission;
@@ -19,16 +20,21 @@ import java.util.List;
 @Component
 class TraceLotTool implements AssistantTool {
 
-    static final int MAX_LOTS = 5;
+    static final int MAX_LOTS = LotTraceQueries.MAX_LOTS;
     static final int MAX_ROWS = 30;
 
     private static final ToolSpec SPEC = new ToolSpec("traceLot",
             "Trace a lot by its lot number: SKU, expiry date, when and from which goods receipt, purchase order and "
                     + "supplier it came, how much was received, how much is on hand, available and held now and "
-                    + "where, which customer orders it was picked for (with quantities) and the holds on it. Two "
-                    + "receipts may share a lot number; each is traced separately. Only warehouses the user may see.",
+                    + "where, which customer orders it was picked for (with quantities) and the holds on it. A lot "
+                    + "number is unique per SKU only: a supplier's date code may be printed on many SKUs, each a "
+                    + "separate lot traced separately. When totalLots is more than the lots returned, some were not "
+                    + "traced: say so plainly (a recall built on a partial list misses customers) and ask for the "
+                    + "SKU. Only warehouses the user may see.",
             ToolSchema.object()
                     .string("lotNumber", "The lot number exactly as printed on the carton or label")
+                    .string("sku", "The SKU code to narrow to, or an empty string for every SKU printed with this "
+                            + "lot number")
                     .build());
 
     private final LotTraceQueries lots;
@@ -52,7 +58,9 @@ class TraceLotTool implements AssistantTool {
             scope = DataScope.WAREHOUSE)
     public Answer run(ToolArguments arguments) {
         String number = arguments.text("lotNumber", 100);
-        return new Answer(number, lots.traceLot(number, MAX_LOTS).stream().map(TraceLotTool::lot).toList());
+        String sku = arguments.optionalText("sku", Sku.MAX_LENGTH);
+        LotTraceQueries.Traced traced = lots.traceLot(number, sku == null ? null : new Sku(sku).code(), MAX_LOTS);
+        return new Answer(number, traced.totalLots(), traced.lots().stream().map(TraceLotTool::lot).toList());
     }
 
     private static Lot lot(LotTraceView view) {
@@ -70,8 +78,11 @@ class TraceLotTool implements AssistantTool {
                         || view.holds().size() > MAX_ROWS);
     }
 
-    /** {@code lots} is empty when no lot of that number was in a warehouse the user may see. */
-    record Answer(String lotNumber, List<Lot> lots) {
+    /**
+     * @param totalLots how many lots match; more than {@code lots.size()} means some were not traced
+     * @param lots      empty when no lot of that number was in a warehouse the user may see
+     */
+    record Answer(String lotNumber, long totalLots, List<Lot> lots) {
     }
 
     record Lot(String sku, String lotNumber, LocalDate expiryDate, Instant receivedAt, String origin,

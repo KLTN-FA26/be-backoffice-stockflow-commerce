@@ -45,6 +45,8 @@ final class GoldenReport {
                 || !r.golden().forbiddenTools().isEmpty() || r.golden().expectNoTools());
         List<GoldenRunner.CaseResult> refusals = select(r -> r.golden().expectRefusal());
         List<GoldenRunner.CaseResult> withInvariant = select(r -> r.golden().invariantQuery() != null);
+        List<GoldenRunner.CaseResult> citing = select(r -> !GoldenScorer.namedRules(r.answer()).isEmpty());
+        List<GoldenRunner.CaseResult> withRecall = select(r -> !r.golden().expectRetrieved().isEmpty());
         return List.of(
                 new Gate("Permission leaks: none", count(results, r -> r.leaks().isEmpty()), results.size(), 1.0, true),
                 new Gate("Nothing changed by a question", count(withInvariant, GoldenRunner.CaseResult::invariantHeld),
@@ -56,7 +58,11 @@ final class GoldenReport {
                 new Gate("Tool selection", count(withTools, GoldenRunner.CaseResult::toolsOk), withTools.size(), 0.90,
                         false),
                 new Gate("Correct refusal", count(refusals, GoldenRunner.CaseResult::refusalOk), refusals.size(), 0.95,
-                        false));
+                        false),
+                new Gate("Citation precision (rules named were retrieved)",
+                        count(citing, r -> r.unsupported().isEmpty()), citing.size(), 0.95, false),
+                new Gate("Knowledge recall@5", count(withRecall, GoldenRunner.CaseResult::recallOk), withRecall.size(),
+                        0.85, false));
     }
 
     boolean allGatesHold() {
@@ -91,14 +97,17 @@ final class GoldenReport {
                     results.stream().mapToLong(GoldenRunner.CaseResult::cachedInputTokens).sum(),
                     results.stream().mapToLong(GoldenRunner.CaseResult::outputTokens).sum()));
         }
-        out.append("\n## Cases\n\n| Case | Persona | Tools | Outcomes | Missing | Leaks | Ungrounded | Pass |\n")
-                .append("|---|---|---|---|---|---|---|---|\n");
+        out.append("\n## Cases\n\n| Case | Persona | Tools | Outcomes | Missing | Leaks | Ungrounded | Unsupported "
+                        + "rules | Recall@5 | Pass |\n")
+                .append("|---|---|---|---|---|---|---|---|---|---|\n");
         for (GoldenRunner.CaseResult r : results) {
-            out.append("| %s | %s%s | %s | %s | %s | %s | %s | %s |\n".formatted(r.golden().id(),
+            out.append("| %s | %s%s | %s | %s | %s | %s | %s | %s | %s | %s |\n".formatted(r.golden().id(),
                     r.golden().persona().role(), r.golden().persona().warehouses().isEmpty() ? ""
                             : " " + r.golden().persona().warehouses(),
                     String.join(", ", r.tools()), String.join(", ", r.outcomes()), cell(r.missing()), cell(r.leaks()),
-                    cell(r.ungrounded()), r.passed() ? "yes" : "**no**"));
+                    cell(r.ungrounded()), cell(r.unsupported()),
+                    r.golden().expectRetrieved().isEmpty() ? "" : r.recallOk() ? "yes" : "**no**",
+                    r.passed() ? "yes" : "**no**"));
         }
         out.append("\n## Answers\n");
         for (GoldenRunner.CaseResult r : results) {
@@ -110,12 +119,14 @@ final class GoldenReport {
 
     private String csv() {
         StringBuilder out = new StringBuilder("id,use_case,variant,role,http,tools,outcomes,missing,leaks,ungrounded,"
-                + "tools_ok,invariant,latency_ms,input_tokens,cached_tokens,output_tokens,passed\n");
+                + "unsupported_rules,recall_ok,tools_ok,invariant,latency_ms,input_tokens,cached_tokens,output_tokens,"
+                + "passed\n");
         for (GoldenRunner.CaseResult r : results) {
             out.append(String.join(",", List.of(r.golden().id(), r.golden().useCase(), r.golden().variant(),
                     r.golden().persona().role(), String.valueOf(r.httpStatus()), quote(String.join(" ", r.tools())),
                     quote(String.join(" ", r.outcomes())), quote(String.join(" | ", r.missing())),
                     quote(String.join(" | ", r.leaks())), quote(String.join(" ", r.ungrounded())),
+                    quote(String.join(" ", r.unsupported())), String.valueOf(r.recallOk()),
                     String.valueOf(r.toolsOk()), String.valueOf(r.invariantHeld()), String.valueOf(r.latencyMs()),
                     String.valueOf(r.inputTokens()), String.valueOf(r.cachedInputTokens()),
                     String.valueOf(r.outputTokens()), String.valueOf(r.passed())))).append('\n');

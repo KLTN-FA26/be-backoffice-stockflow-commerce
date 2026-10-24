@@ -7,6 +7,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Table;
 
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.UUID;
 
 /**
@@ -69,8 +70,14 @@ public class AssistantConversationJpaEntity extends BaseEntity implements Scoped
         return messageCount++;
     }
 
-    public void release() {
-        this.answeringSince = null;
+    /**
+     * Ends the claim made at {@code claimedAt}, and only that one: a claim that outlived its lease may have been taken
+     * over by a second question, whose claim this must not clear. Compared at the column's precision (microseconds).
+     */
+    public void release(Instant claimedAt) {
+        if (answeringSince != null && answeringSince.equals(claimedAt.truncatedTo(ChronoUnit.MICROS))) {
+            this.answeringSince = null;
+        }
     }
 
     public UUID getOwnerUserId() { return ownerUserId; }

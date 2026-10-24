@@ -39,9 +39,12 @@ class StockAlertQueriesImpl implements StockAlertQueries {
     }
 
     @Override
-    public List<ExpiryAlertView> openExpiryAlerts(int limit) {
+    public ExpiryAlerts openExpiryAlerts(int withinDays, int limit) {
         if (limit < 1 || limit > MAX_ALERTS) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "limit must be between 1 and " + MAX_ALERTS);
+        }
+        if (withinDays < 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "withinDays must not be negative");
         }
         List<StockAlerts.AlertView> open = new ArrayList<>();
         PageResponse<StockAlerts.AlertView> page;
@@ -50,14 +53,20 @@ class StockAlertQueriesImpl implements StockAlertQueries {
             page = alerts.list(EXPIRY, UNRESOLVED, null, null, number++, Pages.MAX_PAGE_SIZE, null);
             open.addAll(page.items());
         } while (page.hasNext());
-        return open.stream()
+        List<ExpiryAlertView> sorted = open.stream()
                 .sorted(Comparator.comparing(StockAlerts.AlertView::expiryDate,
                                 Comparator.nullsLast(Comparator.<LocalDate>naturalOrder()))
                         .thenComparing(StockAlerts.AlertView::sku))
-                .limit(limit)
                 .map(alert -> new ExpiryAlertView(alert.sku(), alert.warehouseCode(), alert.lotNumber(),
                         alert.expiryDate(), alert.daysToExpiry(), alert.observedQty(),
                         alert.kind() == StockAlert.Kind.EXPIRED, alert.status() == StockAlert.Status.ACKNOWLEDGED))
                 .toList();
+        List<ExpiryAlertView> expiring = sorted.stream()
+                .filter(alert -> !alert.expired()
+                        && (alert.daysToExpiry() == null || alert.daysToExpiry() <= withinDays))
+                .toList();
+        List<ExpiryAlertView> expired = sorted.stream().filter(ExpiryAlertView::expired).toList();
+        return new ExpiryAlerts(expiring.stream().limit(limit).toList(), expiring.size(),
+                expired.stream().limit(limit).toList(), expired.size());
     }
 }

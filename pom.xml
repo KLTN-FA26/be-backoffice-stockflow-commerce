@@ -375,6 +375,43 @@
   </dependencies>
 
   <build>
+    <resources>
+      <!--
+        spring-boot-starter-parent's two entries, restated because declaring <resources> replaces them: the
+        application*.yml/properties files filtered for @..@ placeholders, everything else copied as is.
+      -->
+      <resource>
+        <directory>${basedir}/src/main/resources</directory>
+        <filtering>true</filtering>
+        <includes>
+          <include>**/application*.yml</include>
+          <include>**/application*.yaml</include>
+          <include>**/application*.properties</include>
+        </includes>
+      </resource>
+      <resource>
+        <directory>${basedir}/src/main/resources</directory>
+        <excludes>
+          <exclude>**/application*.yml</exclude>
+          <exclude>**/application*.yaml</exclude>
+          <exclude>**/application*.properties</exclude>
+        </excludes>
+      </resource>
+      <!--
+        The assistant's retrieval corpus (ADR-0010, design §6.2): the business rules, the glossary and the state
+        machines, copied from docs/ so the index follows the documents on every build. Only these three: the
+        Vietnamese flow documents are left out until the golden set shows they are needed.
+      -->
+      <resource>
+        <directory>docs/business-design</directory>
+        <targetPath>knowledge</targetPath>
+        <includes>
+          <include>01-ubiquitous-language.md</include>
+          <include>03-state-machines.md</include>
+          <include>05-business-rules.md</include>
+        </includes>
+      </resource>
+    </resources>
     <plugins>
       <plugin>
         <groupId>org.springframework.boot</groupId>

@@ -1,6 +1,7 @@
 # ADR-0010: Trợ lý back-office là một agent gọi tool trên API của các module
 
-Trạng thái: đề xuất (2026-10-24). Thiết kế và lộ trình: [`docs/assistant-design.md`](../assistant-design.md).
+Trạng thái: đề xuất (2026-10-24), chờ team chấp nhận; phase 1 và 2 đã xây dựng trên nhánh
+`feature/ai-assistant` (2026-10-25). Thiết kế và lộ trình: [`docs/assistant-design.md`](../assistant-design.md).
 
 ## Bối cảnh
 
@@ -70,9 +71,11 @@ Hai điều trên cùng tạo ra tính chất mà cả thiết kế dựa vào: 
 thứ mà màn hình tương ứng không cho thấy.** Không có ngữ nghĩa phân quyền mới nào được đưa vào.
 
 `PermissionCatalogValidator` chỉ quét controller và các class mang `@PermissionResource`, nên nó không
-thấy bean tool. `AssistantToolPermissionTest` lấp khoảng trống đó. `resource:action` của mọi tool phải
-có trong `PermissionCatalog`. Nó cũng phải trùng với annotation trên endpoint mà tool soi chiếu. Riêng
-tool không soi chiếu endpoint nào có bảo vệ (tìm quy định) thì phải dùng resource của chính trợ lý.
+thấy bean tool. `AssistantIntegrationTest.everyToolMirrorsItsScreen` lấp khoảng trống đó. `resource:action`
+của mọi tool phải có trong `PermissionCatalog`. Nó cũng phải trùng resource, action và scope với annotation
+trên endpoint mà tool soi chiếu. Riêng tool không soi chiếu endpoint nào có bảo vệ (tìm quy định, tìm
+catalog) thì phải dùng resource của chính trợ lý. `tools/verify.py` (kiểm tra 10) giờ so quyền theo giá trị mã
+resource thay vì tên hằng, vì tool dùng mã của module khác dưới tên hằng của riêng nó.
 
 Một lời gọi tool bị từ chối không trở thành trang lỗi. Tool trả về kết quả "không có quyền", và model nói
 cho người dùng biết họ thiếu quyền nào.
@@ -140,8 +143,16 @@ theo kịch bản, và sự cô lập scope.
   với các màn hình: trong giới hạn 60 giây của con trỏ role-version (ADR-0008).
 - Mỗi tool lặp lại annotation phân quyền của endpoint nó soi chiếu. Test nói ở trên là thứ giữ cho hai
   bên không lệch nhau.
-- Một câu trả lời mất vài giây và mỗi câu hỏi đều tốn tiền. Rate limit, trần mỗi ngày, giới hạn số vòng
-  và caching chặn cả hai. Tài liệu thiết kế có phép tính.
+- Một tool tổng hợp nhiều nguồn đòi đủ quyền của từng nguồn. Đề xuất nhập hàng hiển thị doanh số, tồn kho
+  và điều khoản nhà cung cấp, nên với quyền seed hiện tại chỉ SYSTEM_ADMIN dùng được. Cấp thêm quyền cho
+  PROCUREMENT_STAFF là quyết định của doanh nghiệp (tài liệu thiết kế, AQ-08), không phải của trợ lý.
+- Một câu trả lời mất vài giây và mỗi câu hỏi đều tốn tiền. Rate limit, trần mỗi ngày, giới hạn số vòng,
+  tối đa 8 tool một bước, ngân sách kết quả tool mỗi câu hỏi và caching chặn cả hai. Câu hỏi cũ được gửi lại
+  chỉ kèm câu trả lời, không kèm kết quả tool, nên chi phí không tăng theo độ dài hội thoại và dữ liệu cũ không
+  sống lâu hơn quyền của người hỏi. Tài liệu thiết kế có phép tính.
+- Một trợ lý đọc dữ liệu thật có thể đưa ra lời khuyên sai mà không lỗi kỹ thuật nào: đề xuất nhập hàng
+  từng bỏ qua hàng đã đặt và lead time cho tới khi một vòng rà soát nghiệp vụ độc lập tìm ra (tài liệu thiết
+  kế §15). Mỗi tool mới cần một lần rà soát như vậy, không chỉ test phân quyền.
 - Câu trả lời không tất định. Cách giảm thiểu: con số chỉ lấy từ kết quả tool; mọi câu trả lời cho thấy
   nó đã dùng tool nào và trích dẫn gì; bộ câu hỏi chuẩn được chạy lại mỗi khi đổi prompt, tool hoặc
   model.

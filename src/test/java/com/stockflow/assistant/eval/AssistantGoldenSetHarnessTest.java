@@ -2,6 +2,7 @@ package com.stockflow.assistant.eval;
 
 import com.stockflow.assistant.internal.domain.LanguageModel;
 import com.stockflow.assistant.internal.domain.Turn;
+import com.stockflow.catalog.internal.service.CatalogProjectionService;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.consumption.PickConsumption;
 import com.stockflow.procurement.internal.service.GoodsReceipts;
@@ -48,11 +49,13 @@ class AssistantGoldenSetHarnessTest {
     @Autowired GoodsReceipts receipts;
     @Autowired InventoryService inventory;
     @Autowired PickConsumption consumption;
+    @Autowired CatalogProjectionService catalog;
 
     @Test
     @DisplayName("every golden case passes against the oracle: fixtures, fact queries and permissions agree")
     void goldenSetHoldsUnderTheOracle() throws Exception {
-        GoldenFixtures fixtures = new GoldenFixtures(jdbc, tx, entityManager, receipts, inventory, consumption);
+        GoldenFixtures fixtures = new GoldenFixtures(jdbc, tx, entityManager, receipts, inventory, consumption,
+                catalog);
         Map<String, String> values = fixtures.ensure();
         OracleModel oracle = new OracleModel();
         when(model.available()).thenReturn(true);
@@ -70,7 +73,7 @@ class AssistantGoldenSetHarnessTest {
         GoldenReport report = new GoldenReport(results, "oracle");
         Path written = report.write(Path.of("target", "assistant-eval", "oracle"));
 
-        assertThat(results).as("the golden set has its phase-1 size").hasSizeGreaterThanOrEqualTo(25);
+        assertThat(results).as("the golden set has its phase-2 size").hasSizeGreaterThanOrEqualTo(40);
         assertThat(results).filteredOn(r -> !r.passed())
                 .as("cases failing under the oracle (report: %s)", written.toAbsolutePath())
                 .extracting(r -> r.golden().id() + " missing=" + r.missing() + " leaks=" + r.leaks() + " tools="

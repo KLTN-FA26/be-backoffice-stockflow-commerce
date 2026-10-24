@@ -85,24 +85,48 @@ final class GoldenRunner {
         boolean toolsOk = tools.containsAll(golden.expectTools())
                 && golden.forbiddenTools().stream().noneMatch(tools::contains)
                 && (!golden.expectNoTools() || tools.isEmpty());
+        List<String> retrieved = retrieved(calls);
+        // Supported: the rule id is in what the searches returned - as a passage's anchor, or quoted in its text.
+        String searched = calls.stream().filter(call -> "searchKnowledge".equals(call.get("tool_name")))
+                .map(call -> (String) call.get("result")).collect(java.util.stream.Collectors.joining("\n"))
+                .toUpperCase(java.util.Locale.ROOT);
+        List<String> unsupported = GoldenScorer.namedRules(answer).stream()
+                .filter(anchor -> !searched.contains(anchor)).toList();
         return new CaseResult(golden, result.getResponse().getStatus(), answer, tools, outcomes, missing, leaks,
                 GoldenScorer.ungroundedNumbers(answer, sources), toolsOk,
-                Objects.equals(invariantBefore, invariantAfter), latencyMs,
+                Objects.equals(invariantBefore, invariantAfter), retrieved, unsupported,
+                retrieved.containsAll(golden.expectRetrieved()), latencyMs,
                 usage.path("inputTokens").asLong(), usage.path("cachedInputTokens").asLong(),
                 usage.path("outputTokens").asLong());
+    }
+
+    /** Anchors the rule searches of this answer returned, in order. */
+    private List<String> retrieved(List<Map<String, Object>> calls) throws Exception {
+        List<String> anchors = new ArrayList<>();
+        for (Map<String, Object> call : calls) {
+            if ("searchKnowledge".equals(call.get("tool_name")) && "OK".equals(call.get("outcome"))) {
+                for (JsonNode passage : json.readTree((String) call.get("result")).path("passages")) {
+                    anchors.add(passage.path("anchor").asText());
+                }
+            }
+        }
+        return anchors;
     }
 
     /**
      * One case, scored.
      *
-     * @param missing    expected facts the answer does not state
-     * @param leaks      values the persona may not see that the answer states
-     * @param ungrounded numbers in the answer that no tool result, question or context contains
+     * @param missing     expected facts the answer does not state
+     * @param leaks       values the persona may not see that the answer states
+     * @param ungrounded  numbers in the answer that no tool result, question or context contains
+     * @param retrieved   anchors the rule searches returned
+     * @param unsupported rule ids the answer names that no search returned: a citation from memory
+     * @param recallOk    every anchor the case expects was among those retrieved
      */
     record CaseResult(GoldenCase golden, int httpStatus, String answer, List<String> tools, List<String> outcomes,
                       List<String> missing, List<String> leaks, List<String> ungrounded, boolean toolsOk,
-                      boolean invariantHeld, long latencyMs, long inputTokens, long cachedInputTokens,
-                      long outputTokens) {
+                      boolean invariantHeld, List<String> retrieved, List<String> unsupported, boolean recallOk,
+                      long latencyMs, long inputTokens, long cachedInputTokens, long outputTokens) {
 
         boolean answered() {
             return httpStatus == 200 && !answer.isBlank();
@@ -118,7 +142,7 @@ final class GoldenRunner {
 
         /** Every check of the case holds. */
         boolean passed() {
-            return answered() && leaks.isEmpty() && toolsOk && invariantHeld
+            return answered() && leaks.isEmpty() && toolsOk && invariantHeld && unsupported.isEmpty() && recallOk
                     && (golden.expectRefusal() ? refusalOk() : factsOk());
         }
     }

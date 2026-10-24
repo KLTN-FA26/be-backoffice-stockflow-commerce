@@ -68,6 +68,32 @@ public class SalesRollupQueries {
                         rs.getBigDecimal("revenue")));
     }
 
+    /** Units and revenue of the given SKUs over the range; a SKU with no row in the range is absent. */
+    /** @param firstSoldOn the first day with units sold; null when every day of the range nets to zero */
+    public record SkuRow(String sku, long quantitySold, BigDecimal revenue, LocalDate firstSoldOn) {
+    }
+
+    public List<SkuRow> salesOf(java.util.Collection<String> skus, LocalDate from, LocalDate to) {
+        if (skus.isEmpty()) {
+            return List.of();
+        }
+        return jdbc.query("""
+                SELECT sku, SUM(quantity_sold) AS quantity_sold, SUM(revenue) AS revenue,
+                       MIN(period) FILTER (WHERE quantity_sold > 0) AS first_sold
+                FROM reporting.product_sales_summary
+                WHERE period BETWEEN :fromPeriod AND :toPeriod AND sku IN (:skus)
+                GROUP BY sku
+                ORDER BY sku""",
+                new MapSqlParameterSource("fromPeriod", BusinessDay.period(from))
+                        .addValue("toPeriod", BusinessDay.period(to))
+                        .addValue("skus", skus),
+                (rs, row) -> {
+                    String first = rs.getString("first_sold");
+                    return new SkuRow(rs.getString("sku"), rs.getLong("quantity_sold"), rs.getBigDecimal("revenue"),
+                            first == null ? null : LocalDate.parse(first));
+                });
+    }
+
     /** The earliest day the ledger knows an order for; empty when nothing was ever rolled up. */
     public Optional<LocalDate> earliestRolledUpDay() {
         return Optional.ofNullable(jdbc.getJdbcTemplate().queryForObject(

@@ -79,6 +79,26 @@ public final class ToolArguments {
         return number;
     }
 
+    /** 1..{@code maxItems} non-blank strings, each trimmed and at most {@code maxLength} characters. */
+    public List<String> texts(String name, int maxItems, int maxLength) {
+        JsonNode value = node.get(name);
+        if (value == null || !value.isArray() || value.isEmpty()) {
+            throw invalid(name + " must be a non-empty list");
+        }
+        if (value.size() > maxItems) {
+            throw invalid(name + " must hold at most " + maxItems + " items");
+        }
+        List<String> texts = new java.util.ArrayList<>();
+        for (JsonNode item : value) {
+            String text = item.isTextual() ? item.asText().strip() : "";
+            if (text.isEmpty() || text.length() > maxLength) {
+                throw invalid(name + " items must be 1 to " + maxLength + " characters");
+            }
+            texts.add(text);
+        }
+        return List.copyOf(texts);
+    }
+
     /** One of {@code values}, exactly. */
     public String choice(String name, List<String> values) {
         String value = text(name, 64);

@@ -26,14 +26,20 @@ interface AssistantConversationJpaRepository extends ScopedJpaRepository<Assista
 
     /**
      * The retention sweep. Idle conversations go whole: messages and tool calls follow by {@code ON DELETE CASCADE}.
-     * One being answered right now is left for the next run.
+     *
+     * <p>A claim left behind by a process killed mid-answer, or by a failed release, must not keep a conversation past
+     * its retention: a claim older than the cutoff is long past any lease, so it does not protect the row. A row
+     * locked right now (a question being claimed or stored) is skipped rather than waited on, and goes in a later
+     * run; without {@code SKIP LOCKED} the delete would remove a conversation whose claim committed after the
+     * subquery read it.</p>
      */
     @Modifying
     @Query(value = """
             DELETE FROM assistant.conversation WHERE id IN (
                 SELECT id FROM assistant.conversation
-                WHERE last_activity_at < :cutoff AND answering_since IS NULL
+                WHERE last_activity_at < :cutoff AND (answering_since IS NULL OR answering_since < :cutoff)
                 ORDER BY last_activity_at
-                LIMIT :limit)""", nativeQuery = true)
+                LIMIT :limit
+                FOR UPDATE SKIP LOCKED)""", nativeQuery = true)
     int deleteIdleBefore(@Param("cutoff") Instant cutoff, @Param("limit") int limit);
 }

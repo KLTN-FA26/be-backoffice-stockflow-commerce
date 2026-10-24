@@ -112,7 +112,7 @@
     "question": "Có đơn mua hàng nào đang ở trạng thái nháp không?",
     "expectTools": ["findPurchaseOrders"],
     "factsQuery": "select po_number from procurement.purchase_orders where status = 'DRAFT'",
-    "oracle": {"tool": "findPurchaseOrders", "arguments": {"status": "DRAFT", "search": "", "limit": 50}}
+    "oracle": {"tool": "findPurchaseOrders", "arguments": {"status": "DRAFT", "poNumber": "", "supplier": "", "limit": 50}}
   },
   {
     "id": "P-02", "useCase": "P", "variant": "formal",
@@ -120,7 +120,7 @@
     "question": "PO-HCM-DEMO-0002 đặt với nhà cung cấp nào, dự kiến giao ngày nào?",
     "expectTools": ["findPurchaseOrders"],
     "factsQuery": "select s.name from procurement.purchase_orders p join procurement.suppliers s on s.id = p.supplier_id where p.po_number = 'PO-HCM-DEMO-0002' union all select p.expected_date::text from procurement.purchase_orders p where p.po_number = 'PO-HCM-DEMO-0002'",
-    "oracle": {"tool": "findPurchaseOrders", "arguments": {"status": "ANY", "search": "PO-HCM-DEMO-0002", "limit": 5}}
+    "oracle": {"tool": "findPurchaseOrders", "arguments": {"status": "ANY", "poNumber": "PO-HCM-DEMO-0002", "supplier": "", "limit": 5}}
   },
   {
     "id": "P-03", "useCase": "P", "variant": "refusal-permission",
@@ -129,7 +129,7 @@
     "expectTools": ["findPurchaseOrders"],
     "forbiddenQuery": "select po_number from procurement.purchase_orders",
     "expectRefusal": true,
-    "oracle": {"tool": "findPurchaseOrders", "arguments": {"status": "PENDING_APPROVAL", "search": "", "limit": 50}}
+    "oracle": {"tool": "findPurchaseOrders", "arguments": {"status": "PENDING_APPROVAL", "poNumber": "", "supplier": "", "limit": 50}}
   },
   {
     "id": "R-01", "useCase": "R", "variant": "formal",
@@ -220,5 +220,125 @@
     "expectNoTools": true,
     "forbidden": ["back-office assistant of StockFlow", "Context for this question"],
     "oracle": null
+  },
+  {
+    "id": "U6-01", "useCase": "U6", "variant": "formal",
+    "persona": {"role": "SALES_STAFF", "warehouses": []},
+    "question": "Hàng in theo yêu cầu (in logo của khách) có được khách trả lại không?",
+    "expectTools": ["searchKnowledge"],
+    "expectRetrieved": ["BR-RMA-002"],
+    "facts": ["BR-RMA-002"],
+    "oracle": {"tool": "searchKnowledge", "arguments": {"query": "custom printed returnable defective"}}
+  },
+  {
+    "id": "U6-02", "useCase": "U6", "variant": "casual",
+    "persona": {"role": "ORDER_COORDINATOR", "warehouses": []},
+    "question": "cốc in logo bị lỗi thì khách đổi trả được ko",
+    "expectTools": ["searchKnowledge"],
+    "expectRetrieved": ["BR-RMA-002"],
+    "facts": ["BR-RMA-002"],
+    "oracle": {"tool": "searchKnowledge", "arguments": {"query": "custom printed items returnable defective"}}
+  },
+  {
+    "id": "U6-03", "useCase": "U6", "variant": "no-diacritics",
+    "persona": {"role": "INVENTORY_PLANNER", "warehouses": []},
+    "question": "hang in theo yeu cau co duoc tra lai khong",
+    "expectTools": ["searchKnowledge"],
+    "expectRetrieved": ["BR-RMA-002"],
+    "facts": ["BR-RMA-002"],
+    "oracle": {"tool": "searchKnowledge", "arguments": {"query": "custom printed returnable"}}
+  },
+  {
+    "id": "U6-04", "useCase": "U6", "variant": "formal",
+    "persona": {"role": "PROCUREMENT_STAFF", "warehouses": []},
+    "question": "Người tạo sản phẩm có tự duyệt sản phẩm đó được không?",
+    "expectTools": ["searchKnowledge"],
+    "expectRetrieved": ["BR-PRD-003"],
+    "facts": ["BR-PRD-003"],
+    "oracle": {"tool": "searchKnowledge", "arguments": {"query": "approver product submitted"}}
+  },
+  {
+    "id": "U6-05", "useCase": "U6", "variant": "glossary",
+    "persona": {"role": "INVENTORY_PLANNER", "warehouses": []},
+    "question": "Reserved và Allocated khác nhau thế nào?",
+    "expectTools": ["searchKnowledge"],
+    "expectRetrieved": ["Reserved", "Allocated"],
+    "facts": ["Reserved", "Allocated"],
+    "oracle": {"tool": "searchKnowledge", "arguments": {"query": "reserved allocated"}}
+  },
+  {
+    "id": "U6-06", "useCase": "U6", "variant": "state-machine",
+    "persona": {"role": "ORDER_COORDINATOR", "warehouses": []},
+    "question": "Đơn hàng có những trạng thái nào, đi theo thứ tự ra sao?",
+    "expectTools": ["searchKnowledge"],
+    "expectRetrieved": ["9. Order — order-service"],
+    "oracle": {"tool": "searchKnowledge", "arguments": {"query": "order state machine status"}}
+  },
+  {
+    "id": "U7-01", "useCase": "U7", "variant": "formal",
+    "persona": {"role": "SALES_STAFF", "warehouses": []},
+    "question": "Có sản phẩm cốc giấy kraft nào đang bán không?",
+    "expectTools": ["searchCatalog"],
+    "facts": ["EVAL-KRAFT-12OZ"],
+    "oracle": {"tool": "searchCatalog", "arguments": {"text": "cốc giấy kraft", "limit": 5}}
+  },
+  {
+    "id": "U7-02", "useCase": "U7", "variant": "no-diacritics",
+    "persona": {"role": "SALES_STAFF", "warehouses": []},
+    "question": "coc giay kraft 12oz co ma nao",
+    "expectTools": ["searchCatalog"],
+    "facts": ["EVAL-KRAFT-12OZ"],
+    "oracle": {"tool": "searchCatalog", "arguments": {"text": "coc giay kraft 12oz", "limit": 5}}
+  },
+  {
+    "id": "U3-05", "useCase": "U3", "variant": "picking-detail",
+    "persona": {"role": "ORDER_COORDINATOR", "warehouses": []},
+    "question": "Đơn SO-20991231-900001 thiếu hàng ở dòng nào, thiếu bao nhiêu, ở vị trí nào?",
+    "expectTools": ["getOrderPicking"],
+    "facts": ["EVAL-LID-90", "5", "HCM-A01-1-B"],
+    "oracle": {"tool": "getOrderPicking", "arguments": {"orderNumber": "SO-20991231-900001"}}
+  },
+  {
+    "id": "U3-06", "useCase": "U3", "variant": "refusal-permission",
+    "persona": {"role": "SALES_STAFF", "warehouses": []},
+    "question": "Đơn SO-20991231-900001 nhặt thiếu ở vị trí nào?",
+    "expectTools": ["getOrderPicking"],
+    "forbidden": ["HCM-A01-1-B", "EVAL-LID-A"],
+    "expectRefusal": true,
+    "oracle": {"tool": "getOrderPicking", "arguments": {"orderNumber": "SO-20991231-900001"}}
+  },
+  {
+    "id": "U2-01", "useCase": "U2", "variant": "formal",
+    "persona": {"role": "SYSTEM_ADMIN", "warehouses": []},
+    "question": "Đề xuất số lượng cần nhập cho EVAL-CUP-12OZ, tính theo bán 7 ngày qua, đủ dùng 30 ngày.",
+    "expectTools": ["proposeReorder"],
+    "facts": ["1276"],
+    "oracle": {"tool": "proposeReorder", "arguments": {"skus": ["EVAL-CUP-12OZ"], "salesDays": 7, "coverDays": 30}}
+  },
+  {
+    "id": "U2-02", "useCase": "U2", "variant": "casual",
+    "persona": {"role": "SYSTEM_ADMIN", "warehouses": []},
+    "question": "eval-cup-16oz co can nhap them khong, tinh theo 7 ngay ban, du 14 ngay",
+    "expectTools": ["proposeReorder"],
+    "facts": ["205"],
+    "oracle": {"tool": "proposeReorder", "arguments": {"skus": ["EVAL-CUP-16OZ"], "salesDays": 7, "coverDays": 14}}
+  },
+  {
+    "id": "U2-03", "useCase": "U2", "variant": "refusal-permission",
+    "persona": {"role": "PROCUREMENT_STAFF", "warehouses": []},
+    "question": "Đề xuất số lượng cần nhập cho EVAL-CUP-12OZ, tính theo bán 7 ngày qua, đủ dùng 30 ngày.",
+    "expectTools": ["proposeReorder"],
+    "forbidden": ["1276"],
+    "expectRefusal": true,
+    "oracle": {"tool": "proposeReorder", "arguments": {"skus": ["EVAL-CUP-12OZ"], "salesDays": 7, "coverDays": 30}}
+  },
+  {
+    "id": "U2-04", "useCase": "U2", "variant": "refusal-permission",
+    "persona": {"role": "WAREHOUSE_MANAGER", "warehouses": ["HCM"]},
+    "question": "Lập đề xuất nhập EVAL-CUP-12OZ cho 30 ngày tới giúp tôi.",
+    "expectTools": ["proposeReorder"],
+    "forbidden": ["1276"],
+    "expectRefusal": true,
+    "oracle": {"tool": "proposeReorder", "arguments": {"skus": ["EVAL-CUP-12OZ"], "salesDays": 7, "coverDays": 30}}
   }
 ]

@@ -5,6 +5,7 @@ import com.stockflow.assistant.internal.controller.dto.AskRequest;
 import com.stockflow.assistant.internal.controller.dto.ConversationResponse;
 import com.stockflow.assistant.internal.controller.dto.TranscriptEntryResponse;
 import com.stockflow.assistant.internal.service.AssistantService;
+import com.stockflow.assistant.internal.service.AssistantStreams;
 import com.stockflow.assistant.internal.service.ConversationService;
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.api.PageResponse;
@@ -21,6 +22,7 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -29,6 +31,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.List;
 import java.util.UUID;
@@ -59,11 +62,14 @@ class AssistantController {
 
     private final ConversationService conversations;
     private final AssistantService assistant;
+    private final AssistantStreams streams;
     private final AssistantWebMapper mapper;
 
-    AssistantController(ConversationService conversations, AssistantService assistant, AssistantWebMapper mapper) {
+    AssistantController(ConversationService conversations, AssistantService assistant, AssistantStreams streams,
+                        AssistantWebMapper mapper) {
         this.conversations = conversations;
         this.assistant = assistant;
+        this.streams = streams;
         this.mapper = mapper;
     }
 
@@ -112,5 +118,21 @@ class AssistantController {
                                            @Valid @RequestBody AskRequest request) {
         ScopeGuards.requireBackOffice(user);
         return ApiResponse.ok(mapper.toResponse(assistant.ask(conversationId, request.text(), user)));
+    }
+
+    @PostMapping(path = "/{conversationId}/messages/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    @Operation(summary = "Ask a question and receive the answer as server-sent events",
+            description = "Needs assistant-conversations:CREATE. Events: 'tool' ({tool, outcome}) as each tool "
+                    + "finishes, then 'answer' (the same body as the non-streamed endpoint's data) or 'error' "
+                    + "({errorCode, message}). Refusals found before the stream starts are ordinary JSON "
+                    + "responses: validation 400, 404, 409 ASSISTANT_BUSY, 429 ASSISTANT_DAILY_LIMIT, 503 "
+                    + "ASSISTANT_DISABLED; only a failure while answering (503 ASSISTANT_UNAVAILABLE) is an event.")
+    @RequiresPermission(resource = AssistantResources.CONVERSATIONS, action = Action.CREATE, scope = DataScope.OWN)
+    @RateLimit(limit = 10, perSeconds = 60, key = RateLimit.Key.USER)
+    public SseEmitter askStreaming(@AuthenticatedUser CurrentUser user, @PathVariable UUID conversationId,
+                                   @Valid @RequestBody AskRequest request) {
+        ScopeGuards.requireBackOffice(user);
+        assistant.refuseEarly(conversationId, request.text(), user);
+        return streams.ask(conversationId, request.text(), user, answer -> mapper.toResponse(answer));
     }
 }

@@ -35,6 +35,18 @@ public interface ReportingService {
     SalesSummary summary(LocalDate from, LocalDate to);
 
     /**
+     * Units and revenue of each of {@code skus} over the range, for a reorder proposal (ADR-0010): what
+     * {@link #topProducts} reports for the best sellers, asked for named SKUs instead. A SKU with no sales in the
+     * range is returned with zeros, so the caller can tell "sold nothing" from "not asked".
+     *
+     * @param skus at most {@value #MAX_SKUS}
+     */
+    List<SkuSales> salesBySku(java.util.Collection<String> skus, LocalDate from, LocalDate to);
+
+    /** The most SKUs {@link #salesBySku} answers for in one call. */
+    int MAX_SKUS = 100;
+
+    /**
      * Recomputes the rollups of every day of the range from the orders themselves. Idempotent, and the same numbers
      * the listeners produce; use it to backfill history or to repair a drift.
      */
@@ -48,6 +60,15 @@ public interface ReportingService {
     }
 
     record OrderStatusCount(String status, long count) {
+    }
+
+    /**
+     * One SKU's sales over a range; zeros when it sold nothing.
+     *
+     * @param firstSoldOn the first day of the range with units sold; null when none. A SKU launched mid-range sold on
+     *                    fewer days than the range has, and an average over the whole range understates it
+     */
+    record SkuSales(String sku, long quantitySold, BigDecimal revenue, LocalDate firstSoldOn) {
     }
 
     /**

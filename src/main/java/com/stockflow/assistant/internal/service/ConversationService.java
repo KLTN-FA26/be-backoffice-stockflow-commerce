@@ -1,5 +1,6 @@
 package com.stockflow.assistant.internal.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.assistant.internal.domain.Conversation;
 import com.stockflow.assistant.internal.domain.ConversationRepository;
 import com.stockflow.assistant.internal.domain.LanguageModel;
@@ -10,6 +11,8 @@ import com.stockflow.assistant.internal.domain.ToolExecution;
 import com.stockflow.assistant.internal.domain.ToolOutcome;
 import com.stockflow.assistant.internal.domain.Turn;
 import com.stockflow.common.api.PageResponse;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.error.NotFoundException;
 import com.stockflow.common.security.CurrentUser;
 import org.springframework.stereotype.Service;
@@ -34,10 +37,12 @@ public class ConversationService {
 
     private final ConversationRepository conversations;
     private final Clock clock;
+    private final ObjectMapper json;
 
-    ConversationService(ConversationRepository conversations, Clock clock) {
+    ConversationService(ConversationRepository conversations, Clock clock, ObjectMapper json) {
         this.conversations = conversations;
         this.clock = clock;
+        this.json = json;
     }
 
     public ConversationView start(CurrentUser user) {
@@ -60,20 +65,22 @@ public class ConversationService {
         conversations.findInScope(conversationId)
                 .orElseThrow(() -> new NotFoundException("Conversation", conversationId));
         List<TranscriptEntry> entries = new ArrayList<>();
-        List<ToolCallView> calls = new ArrayList<>();
+        List<ToolExecution> calls = new ArrayList<>();
         for (Message message : conversations.messagesInScope(conversationId)) {
             switch (message.role()) {
                 case USER -> {
                     calls.clear();
                     entries.add(new TranscriptEntry(message.id(), message.sequence(), MessageRole.USER,
-                            message.text(), message.createdAt(), List.of(), false));
+                            message.text(), message.createdAt(), List.of(), false, List.of(), List.of()));
                 }
                 case ASSISTANT -> {
-                    message.executions().forEach(execution -> calls.add(ToolCallView.of(execution)));
+                    calls.addAll(message.executions());
                     if (message.text() != null) {
                         entries.add(new TranscriptEntry(message.id(), message.sequence(), MessageRole.ASSISTANT,
-                                message.text(), message.createdAt(), List.copyOf(calls),
-                                message.stopReason() == LanguageModel.StopReason.MAX_TOKENS));
+                                message.text(), message.createdAt(), calls.stream().map(ToolCallView::of).toList(),
+                                message.stopReason() == LanguageModel.StopReason.MAX_TOKENS,
+                                AnswerSources.citations(message.text(), calls, json),
+                                AnswerSources.proposals(calls, json)));
                         calls.clear();
                     }
                 }
@@ -85,14 +92,34 @@ public class ConversationService {
         return entries;
     }
 
-    /** @see ConversationRepository#claimAndAsk */
-    public List<Turn> claimAndAsk(UUID conversationId, PendingMessage question, Duration lease) {
-        return conversations.claimAndAsk(conversationId, question, clock.instant(), lease);
+    /**
+     * @param claimedAt the claim's time, at the column's precision (microseconds), so the release can recognise it
+     * @see ConversationRepository#claimAndAsk
+     */
+    public List<Turn> claimAndAsk(UUID conversationId, PendingMessage question, Instant claimedAt, Duration lease) {
+        return conversations.claimAndAsk(conversationId, question, claimedAt, lease);
+    }
+
+    /**
+     * Refuses a question the way {@link #claimAndAsk} would, without claiming: for a stream, whose refusals must be
+     * ordinary responses and not events inside a 200. The claim still checks again; this only answers early.
+     *
+     * @throws NotFoundException when the conversation is not the caller's
+     * @throws BusinessException {@code ASSISTANT_BUSY} while a question in it is being answered
+     */
+    @Transactional(readOnly = true)
+    public void requireIdle(UUID conversationId, Duration lease) {
+        Conversation conversation = conversations.findInScope(conversationId)
+                .orElseThrow(() -> new NotFoundException("Conversation", conversationId));
+        if (conversation.isAnswering(clock.instant(), lease)) {
+            throw new BusinessException(ErrorCode.ASSISTANT_BUSY,
+                    "A question in this conversation is still being answered");
+        }
     }
 
     /** @see ConversationRepository#appendAndRelease */
-    public List<Message> appendAndRelease(UUID conversationId, List<PendingMessage> produced) {
-        return conversations.appendAndRelease(conversationId, produced, clock.instant());
+    public List<Message> appendAndRelease(UUID conversationId, Instant claimedAt, List<PendingMessage> produced) {
+        return conversations.appendAndRelease(conversationId, produced, clock.instant(), claimedAt);
     }
 
     @Transactional(readOnly = true)
@@ -118,9 +145,12 @@ public class ConversationService {
     /**
      * @param toolCalls the tools run to produce an answer; empty for a question
      * @param cutShort  the answer hit the output limit and may be incomplete
+     * @param citations rule anchors the answer names that its own searches returned
+     * @param proposals purchase orders the panel may open pre-filled
      */
     public record TranscriptEntry(UUID messageId, int sequence, MessageRole role, String text, Instant at,
-                                  List<ToolCallView> toolCalls, boolean cutShort) {
+                                  List<ToolCallView> toolCalls, boolean cutShort, List<String> citations,
+                                  List<AnswerSources.Proposal> proposals) {
     }
 
     public record ToolCallView(String tool, ToolOutcome outcome) {

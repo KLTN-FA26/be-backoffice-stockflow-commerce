@@ -43,7 +43,7 @@ public interface ConversationRepository {
      * Stores what the loop produced and releases the claim, under the same row lock. Called from a {@code finally}: on
      * a provider failure {@code produced} holds the turns up to it, so tools that already ran are still on record.
      */
-    List<Message> appendAndRelease(UUID conversationId, List<PendingMessage> produced, Instant at);
+    List<Message> appendAndRelease(UUID conversationId, List<PendingMessage> produced, Instant at, Instant claimedAt);
 
     /** Questions the user asked since {@code since}, across all their conversations: the daily cap. */
     long questionsSince(UUID ownerUserId, Instant since);

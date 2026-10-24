@@ -21,18 +21,20 @@ import java.util.Map;
  * @param forbiddenQuery SQL whose single column gives more such values
  * @param expectRefusal  the persona may not have the data; the case passes when nothing forbidden leaks
  * @param invariantQuery SQL returning one value that must be the same before and after: the assistant changed nothing
+ * @param expectRetrieved anchors the rule search must return among its five results: recall@5 (design §10.2)
  * @param oracle         what the scripted oracle model calls in the harness; null when it calls nothing
  */
 public record GoldenCase(String id, String useCase, String variant, Persona persona, String question,
                          List<String> expectTools, List<String> forbiddenTools, boolean expectNoTools,
                          List<String> facts, String factsQuery, List<String> forbidden, String forbiddenQuery,
-                         boolean expectRefusal, String invariantQuery, Oracle oracle) {
+                         boolean expectRefusal, String invariantQuery, List<String> expectRetrieved, Oracle oracle) {
 
     public GoldenCase {
         expectTools = expectTools == null ? List.of() : List.copyOf(expectTools);
         forbiddenTools = forbiddenTools == null ? List.of() : List.copyOf(forbiddenTools);
         facts = facts == null ? List.of() : List.copyOf(facts);
         forbidden = forbidden == null ? List.of() : List.copyOf(forbidden);
+        expectRetrieved = expectRetrieved == null ? List.of() : List.copyOf(expectRetrieved);
     }
 
     /** Who asks: a role, and the warehouses they are assigned to (none: not limited by warehouse). */
@@ -54,7 +56,8 @@ public record GoldenCase(String id, String useCase, String variant, Persona pers
                 fill(question, values), expectTools, forbiddenTools, expectNoTools,
                 facts.stream().map(f -> fill(f, values)).toList(), fill(factsQuery, values),
                 forbidden.stream().map(f -> fill(f, values)).toList(), fill(forbiddenQuery, values),
-                expectRefusal, fill(invariantQuery, values), oracle == null ? null : new Oracle(oracle.tool(),
+                expectRefusal, fill(invariantQuery, values), expectRetrieved,
+                oracle == null ? null : new Oracle(oracle.tool(),
                 oracle.arguments() == null ? Map.of() : oracle.arguments().entrySet().stream().collect(
                         java.util.stream.Collectors.toMap(Map.Entry::getKey,
                                 e -> e.getValue() instanceof String s ? fill(s, values) : e.getValue()))));

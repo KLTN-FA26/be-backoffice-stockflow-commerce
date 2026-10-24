@@ -109,13 +109,14 @@ class ConversationRepositoryAdapter implements ConversationRepository {
     }
 
     @Override
-    public List<Message> appendAndRelease(UUID conversationId, List<PendingMessage> produced, Instant at) {
+    public List<Message> appendAndRelease(UUID conversationId, List<PendingMessage> produced, Instant at,
+                                          Instant claimedAt) {
         AssistantConversationJpaEntity conversation = lockOwned(conversationId);
         List<Message> stored = new ArrayList<>();
         for (PendingMessage message : produced) {
             stored.add(insert(conversation, message, at));
         }
-        conversation.release();
+        conversation.release(claimedAt);
         return stored;
     }
 

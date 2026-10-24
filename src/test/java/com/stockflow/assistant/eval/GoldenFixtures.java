@@ -1,5 +1,6 @@
 package com.stockflow.assistant.eval;
 
+import com.stockflow.catalog.internal.service.CatalogProjectionService;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.inventory.api.AllocateStockCommand;
@@ -61,9 +62,10 @@ final class GoldenFixtures {
     private final GoodsReceipts receipts;
     private final InventoryService inventory;
     private final PickConsumption consumption;
+    private final CatalogProjectionService catalog;
 
     GoldenFixtures(JdbcTemplate jdbc, TransactionTemplate tx, EntityManager entityManager, GoodsReceipts receipts,
-                   InventoryService inventory, PickConsumption consumption) {
+                   InventoryService inventory, PickConsumption consumption, CatalogProjectionService catalog) {
         this.jdbc = jdbc;
         this.tx = tx;
         this.entityManager = entityManager;
@@ -71,6 +73,7 @@ final class GoldenFixtures {
         this.receipts = receipts;
         this.inventory = inventory;
         this.consumption = consumption;
+        this.catalog = catalog;
     }
 
     /** Creates the data unless this database already has it; returns the values the cases' placeholders take. */
@@ -82,6 +85,8 @@ final class GoldenFixtures {
             orders();
             sales(today);
             lot(today);
+            shortPick();
+            published();
         }
         return Map.of("expiryLidA", today.plusDays(10).toString(), "otherWarehouse", OTHER_WAREHOUSE);
     }
@@ -172,6 +177,63 @@ final class GoldenFixtures {
             history(shipped, null, "CONFIRMED", null, now.minusSeconds(86_400));
             history(shipped, "CONFIRMED", "SHIPPED", "Bàn giao hãng vận chuyển", now.minusSeconds(3600));
         });
+    }
+
+    /**
+     * The pick task of the held order: one line of EVAL-LID-90 at HCM-A01-1-B, 30 allocated, 25 picked, 5 short — the
+     * short pick the order's hold note speaks of.
+     */
+    private void shortPick() {
+        UUID picker = tx.execute(s -> ReferenceRows.user(entityManager));
+        tx.executeWithoutResult(s -> {
+            UUID order = jdbc.queryForObject("select id from ordering.customer_order where order_number = "
+                    + "'SO-20991231-900001'", UUID.class);
+            UUID line = jdbc.queryForObject("select id from ordering.order_line where order_id = ?", UUID.class,
+                    order);
+            UUID pick = Identifiers.newId();
+            jdbc.update("""
+                    INSERT INTO fulfillment.pick (id, order_id, order_number, warehouse_id, status, assigned_user_id,
+                                                  assigned_at, created_at)
+                    VALUES (?, ?, 'SO-20991231-900001', ?, 'PICKING', ?, NOW(), NOW())""",
+                    pick, order, DemoData.WAREHOUSE_HCM, picker);
+            jdbc.update("INSERT INTO fulfillment.pack (id, pick_id, status, created_at) VALUES (?, ?, 'PENDING', NOW())",
+                    Identifiers.newId(), pick);
+            jdbc.update("""
+                    INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, sku, location_code, lot_number,
+                        sequence_no, allocated_qty, picked_qty, short_qty, status, version, created_at)
+                    VALUES (?, ?, ?, 'EVAL-LID-90', ?, 'EVAL-LID-A', 1, 30, 25, 5, 'SHORT', 0, NOW())""",
+                    Identifiers.newId(), pick, line, AlertFixtures.HCM_BIN);
+        });
+    }
+
+    /** A product published through the storefront's real path, so the catalog search finds it: EVAL-KRAFT-12OZ. */
+    private void published() {
+        UUID product = UUID.randomUUID();
+        UUID variant = UUID.randomUUID();
+        tx.executeWithoutResult(s -> {
+            jdbc.update("""
+                    insert into product.products(id,code,name,slug,status,description)
+                    values (?,'EVAL-KRAFT','Cốc giấy kraft 12oz in logo','coc-giay-kraft-12oz-eval','DRAFT',
+                            'Cốc giấy kraft hai lớp, in logo theo thiết kế của khách')""", product);
+            jdbc.update("insert into product.product_categories(id,product_id,category_id,is_primary)"
+                    + " values (?,?,md5('demo:cat:SOFA')::uuid,true)", UUID.randomUUID(), product);
+            jdbc.update("insert into product.variants(id,product_id,sku,name,status,attribute_signature)"
+                    + " values (?,?,'EVAL-KRAFT-12OZ','Cốc kraft 12oz','ACTIVE','')", variant, product);
+            jdbc.update("""
+                    insert into product.media(id,variant_id,url,is_published,published_at,published_by,created_by)
+                    values (?,?,'https://example.test/kraft.jpg',true,now(),
+                        md5('demo:user:approver')::uuid,md5('demo:user:editor')::uuid::text)""",
+                    UUID.randomUUID(), variant);
+            jdbc.update("""
+                    insert into catalog.pricing_rule(id,name,sku,price,currency,active,created_at)
+                    values (?,'BASE:EVAL-KRAFT-12OZ','EVAL-KRAFT-12OZ',2500,'VND',true,now())""", UUID.randomUUID());
+            jdbc.update("""
+                    update product.products set status='PUBLISHED',submitted_by=md5('demo:user:editor')::uuid,
+                    submitted_at=now(),approved_by=md5('demo:user:approver')::uuid,approved_at=now(),
+                    published_at=now(),seo_title='SEO',seo_description='SEO description'
+                    where id=?""", product);
+        });
+        catalog.project(product);
     }
 
     private void history(UUID order, String from, String to, String reason, Instant at) {

@@ -25,7 +25,9 @@ class GetSalesSummaryTool implements AssistantTool {
     private static final ToolSpec SPEC = new ToolSpec("getSalesSummary",
             "Sales of the last N days ending today (Vietnam time): number of orders, revenue and average order value, "
                     + "the same for the N days before with the percent change, and the best-selling SKUs of the period "
-                    + "by revenue. Revenue counts orders placed less cancelled ones, in VND.",
+                    + "by revenue. Revenue counts orders placed less cancelled ones, in VND. Today is still running "
+                    + "(lastDayInProgress): when comparing, say the current period includes only part of today, and "
+                    + "never present a short day's drop as a fall in sales.",
             ToolSchema.object()
                     .integer("days", "How many days, ending today, 1 to " + MAX_DAYS)
                     .integer("top", "How many best-selling SKUs to list, 0 to " + MAX_TOP)
@@ -61,7 +63,7 @@ class GetSalesSummaryTool implements AssistantTool {
                 .map(product -> new TopSku(product.sku(), product.productName(), product.quantitySold(),
                         product.revenue()))
                 .toList();
-        return new Answer(summary.from(), summary.to(), summary.currency(), totals(summary.current()),
+        return new Answer(summary.from(), summary.to(), true, summary.currency(), totals(summary.current()),
                 new Period(summary.previousFrom(), summary.previousTo(), totals(summary.previous())),
                 summary.ordersChangePercent(), summary.revenueChangePercent(),
                 summary.averageOrderValueChangePercent(), best);
@@ -71,8 +73,13 @@ class GetSalesSummaryTool implements AssistantTool {
         return new Totals(totals.ordersCount(), totals.revenue(), totals.averageOrderValue());
     }
 
-    /** The change percents are null when the previous period had nothing to compare with. */
-    record Answer(LocalDate from, LocalDate to, String currency, Totals totals, Period previous,
+    /**
+     * The change percents are null when the previous period had nothing to compare with. {@code lastDayInProgress} is
+     * always true, said in the answer rather than left to the model: at 9:00 a one-day comparison sets a morning
+     * against a whole day.
+     */
+    record Answer(LocalDate from, LocalDate to, boolean lastDayInProgress, String currency, Totals totals,
+                  Period previous,
                   BigDecimal ordersChangePercent, BigDecimal revenueChangePercent,
                   BigDecimal averageOrderValueChangePercent, List<TopSku> topSkus) {
     }

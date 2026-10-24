@@ -8,7 +8,6 @@ import com.stockflow.inventory.internal.domain.LotTrace;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.List;
 
 /**
  * {@link LotTraceQueries} over {@link LotTraces}, so the published lookup and the lot screen are one report with one
@@ -25,16 +24,17 @@ class LotTraceQueriesImpl implements LotTraceQueries {
     }
 
     @Override
-    public List<LotTraceView> traceLot(String lotNumber, int limit) {
+    public Traced traceLot(String lotNumber, String sku, int limit) {
         if (lotNumber == null || lotNumber.isBlank()) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "lotNumber is required");
         }
         if (limit < 1 || limit > MAX_LOTS) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "limit must be between 1 and " + MAX_LOTS);
         }
-        return traces.lots(new LotTraces.Query(null, lotNumber.strip(), null, null, null, 0, limit)).items().stream()
-                .map(lot -> view(traces.trace(lot.lotId(), null)))
-                .toList();
+        var page = traces.lots(new LotTraces.Query(sku == null || sku.isBlank() ? null : sku.strip(),
+                lotNumber.strip(), null, null, null, 0, limit));
+        return new Traced(page.items().stream().map(lot -> view(traces.trace(lot.lotId(), null))).toList(),
+                page.totalElements());
     }
 
     private static LotTraceView view(LotTrace trace) {

@@ -87,7 +87,8 @@ com.stockflow
 ├── design/          Design studio, templates, snapshots, print jobs  → schema design
 ├── chat/            Conversations, messages, agent assignment        → schema chat
 ├── notification/    Templates, preferences, delivery log             → schema notification
-└── reporting/       Read models and dashboards                       → schema reporting
+├── reporting/       Read models and dashboards                       → schema reporting
+└── assistant/       Back-office AI assistant, read-only (ADR-0010)   → schema assistant
 ```
 
 ### The layers, and where they live

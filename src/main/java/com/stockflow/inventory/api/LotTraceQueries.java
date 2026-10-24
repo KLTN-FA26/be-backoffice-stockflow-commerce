@@ -16,17 +16,29 @@ import java.util.List;
  */
 public interface LotTraceQueries {
 
-    /** The most lots one lookup traces; two receipts may share a number, a dozen never do. */
+    /**
+     * The most lots one lookup traces. A lot number is unique per SKU only: a supplier's date code is often printed on
+     * every SKU of one delivery, so a bare number can match many lots, and the answer says how many.
+     */
     int MAX_LOTS = 10;
 
     /**
-     * Every lot printed with {@code lotNumber} that the caller may see, most recently received first, each traced.
+     * The lots printed with {@code lotNumber} that the caller may see, most recently received first, each traced.
      *
      * @param lotNumber exact lot number as printed; surrounding blanks are ignored
+     * @param sku       narrows to one SKU; null for every SKU
      * @param limit     1..{@value #MAX_LOTS}
-     * @return empty when there is no such lot, or none the caller's warehouses held
+     * @return no lots when there is no such lot, or none the caller's warehouses held
      * @throws com.stockflow.common.error.BusinessException {@code VALIDATION_FAILED} for a blank number or a limit
      *         out of range
      */
-    List<LotTraceView> traceLot(String lotNumber, int limit);
+    Traced traceLot(String lotNumber, String sku, int limit);
+
+    /**
+     * @param lots      at most the limit asked for
+     * @param totalLots how many lots match; more than {@code lots.size()} means some were not traced, and a recall
+     *                  built on {@code lots} alone would miss customers
+     */
+    record Traced(List<LotTraceView> lots, long totalLots) {
+    }
 }

@@ -15,5 +15,7 @@ public record TranscriptEntryResponse(
         Instant at,
         @Schema(description = "The tools run for this answer, in order; empty for a question")
         List<ToolCallResponse> toolCalls,
-        @Schema(description = "The answer hit the output limit and may be incomplete") boolean cutShort) {
+        @Schema(description = "The answer hit the output limit and may be incomplete") boolean cutShort,
+        @Schema(description = "Business-rule anchors the answer cites") List<String> citations,
+        @Schema(description = "Purchase orders the panel may open pre-filled") List<ProposalResponse> proposals) {
 }

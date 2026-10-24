@@ -7,6 +7,7 @@ import com.stockflow.assistant.internal.domain.MessageRole;
 import com.stockflow.assistant.internal.domain.PendingMessage;
 import com.stockflow.assistant.internal.domain.ToolCall;
 import com.stockflow.assistant.internal.domain.ToolOutcome;
+import com.stockflow.assistant.internal.domain.ToolResult;
 import com.stockflow.assistant.internal.domain.ToolSpec;
 import com.stockflow.assistant.internal.domain.Turn;
 import com.stockflow.common.error.BusinessException;
@@ -23,6 +24,7 @@ import org.springframework.context.support.StaticMessageSource;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -58,14 +60,20 @@ class AssistantServiceTest {
     private final List<PendingMessage> stored = new ArrayList<>();
     private final AtomicInteger toolRuns = new AtomicInteger();
     private int maxToolRounds = 6;
+    private Duration lease = Duration.ofMinutes(30);
+    private final List<Turn> earlier = new ArrayList<>();
+    private final MovingClock clock = new MovingClock(NOW);
 
     @BeforeEach
     void conversationStore() {
         when(conversations.questionsSince(any(), any())).thenReturn(0L);
-        when(conversations.claimAndAsk(eq(CONVERSATION), any(), any()))
-                .thenAnswer(call -> List.of(((PendingMessage) call.getArgument(1)).turn()));
-        when(conversations.appendAndRelease(eq(CONVERSATION), anyList())).thenAnswer(call -> {
-            List<PendingMessage> produced = call.getArgument(1);
+        when(conversations.claimAndAsk(eq(CONVERSATION), any(), any(), any())).thenAnswer(call -> {
+            List<Turn> history = new ArrayList<>(earlier);
+            history.add(((PendingMessage) call.getArgument(1)).turn());
+            return history;
+        });
+        when(conversations.appendAndRelease(eq(CONVERSATION), any(), anyList())).thenAnswer(call -> {
+            List<PendingMessage> produced = call.getArgument(2);
             stored.addAll(produced);
             List<Message> messages = new ArrayList<>();
             for (PendingMessage message : produced) {
@@ -96,10 +104,9 @@ class AssistantServiceTest {
             }
         };
         AssistantProperties properties = new AssistantProperties(true, "key", "claude-opus-5-5", "low",
-                maxToolRounds, 16000, 50, 90, Duration.ofSeconds(90), Duration.ofMinutes(30), true, "");
+                maxToolRounds, 16000, 50, 90, Duration.ofSeconds(90), lease, true, "");
         return new AssistantService(conversations, model, new AssistantTools(List.of(stock), new ObjectMapper()),
-                new SystemPrompt(), properties, new Messages(new StaticMessageSource()),
-                Clock.fixed(NOW, ZoneOffset.UTC));
+                new SystemPrompt(), properties, new Messages(new StaticMessageSource()), clock, new ObjectMapper());
     }
 
     record Stock(String sku, int onHand) {
@@ -212,7 +219,7 @@ class AssistantServiceTest {
         assertThatThrownBy(() -> service().ask(CONVERSATION, "q", MANAGER))
                 .isInstanceOfSatisfying(BusinessException.class,
                         e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.ASSISTANT_DAILY_LIMIT));
-        verify(conversations, never()).claimAndAsk(any(), any(), any());
+        verify(conversations, never()).claimAndAsk(any(), any(), any(), any());
     }
 
     @Test
@@ -242,6 +249,107 @@ class AssistantServiceTest {
         assertThat(model.requests.getFirst().systemPrompt()).doesNotContain("2026");
     }
 
+    @Test
+    @DisplayName("one step runs at most eight tools; the rest are answered NOT_RUN, every call still answered")
+    void callsPerStep() {
+        ToolCall[] calls = new ToolCall[10];
+        for (int i = 0; i < calls.length; i++) {
+            calls[i] = new ToolCall("toolu_" + i, "getStockLevels", "{\"sku\":\"SKU-" + i + "\"}");
+        }
+        model.then(LanguageModel.StopReason.TOOL_USE, null, calls);
+        model.then(LanguageModel.StopReason.END_TURN, "ok");
+
+        service().ask(CONVERSATION, "Tất cả mã", MANAGER);
+
+        assertThat(toolRuns).hasValue(AssistantService.MAX_CALLS_PER_ROUND);
+        Turn.ToolResults results = (Turn.ToolResults) stored.get(1).turn();
+        assertThat(results.results()).hasSize(10);
+        assertThat(results.results().subList(8, 10)).allSatisfy(result -> {
+            assertThat(result.content()).startsWith("NOT_RUN");
+            assertThat(result.error()).isTrue();
+        });
+        assertThat(stored.getFirst().executions()).hasSize(AssistantService.MAX_CALLS_PER_ROUND);
+    }
+
+    @Test
+    @DisplayName("the answer shown loses links, images and URLs: nothing in it is fetched when it is rendered")
+    void plainAnswer() {
+        model.then(LanguageModel.StopReason.END_TURN,
+                "Doanh thu ![x](https://evil.example/p?d=123) theo [báo cáo](http://evil.example) https://a.b/c");
+
+        AssistantService.Answer answer = service().ask(CONVERSATION, "Doanh thu?", MANAGER);
+
+        assertThat(answer.text()).isEqualTo("Doanh thu x theo báo cáo [link removed]")
+                .doesNotContain("evil.example", "http");
+    }
+
+    @Test
+    @DisplayName("an earlier question goes back to the model with its answer only, never its tool results")
+    void earlierQuestionsWithoutToolResults() {
+        earlier.add(new Turn.Question("Còn bao nhiêu CUP-12OZ?", "ctx"));
+        earlier.add(new Turn.ModelTurn("{\"r\":1}", null,
+                List.of(new ToolCall("toolu_0", "getStockLevels", "{\"sku\":\"CUP-12OZ\"}"))));
+        earlier.add(new Turn.ToolResults(List.of(new ToolResult("toolu_0", "{\"onHand\":40}", false))));
+        earlier.add(new Turn.ModelTurn("{\"r\":2}", "Còn 40 cái.", List.of()));
+        model.then(LanguageModel.StopReason.END_TURN, "ok");
+
+        service().ask(CONVERSATION, "Còn LID-90 không?", MANAGER);
+
+        List<Turn> sent = model.requests.getFirst().history();
+        assertThat(sent).hasSize(3);
+        assertThat(sent.get(1)).isInstanceOfSatisfying(Turn.ModelTurn.class, turn -> {
+            assertThat(turn.text()).isEqualTo("Còn 40 cái.");
+            assertThat(turn.toolCalls()).isEmpty();
+        });
+        assertThat(sent).noneMatch(Turn.ToolResults.class::isInstance);
+    }
+
+    @Test
+    @DisplayName("no model call starts that could outlast the lease: the answer closes instead")
+    void stopsBeforeTheLeaseEnds() {
+        lease = Duration.ofMinutes(9);
+        model.onCall = () -> clock.advance(Duration.ofMinutes(5));
+        model.then(LanguageModel.StopReason.TOOL_USE, null, new ToolCall("toolu_1", "getStockLevels",
+                "{\"sku\":\"CUP-12OZ\"}"));
+        model.then(LanguageModel.StopReason.END_TURN, "never asked");
+
+        AssistantService.Answer answer = service().ask(CONVERSATION, "Còn bao nhiêu?", MANAGER);
+
+        // 5 minutes in, a call of up to 4.5 minutes (3 attempts of 90 s) would end past the 9-minute lease.
+        assertThat(model.requests).hasSize(1);
+        assertThat(stored.getLast().model()).isEqualTo(AssistantService.CLOSING_TURN_MODEL);
+        assertThat(answer.text()).contains("narrower question");
+    }
+
+    /** A clock that stands still until the test moves it. */
+    private static final class MovingClock extends Clock {
+
+        private Instant now;
+
+        MovingClock(Instant now) {
+            this.now = now;
+        }
+
+        void advance(Duration by) {
+            now = now.plus(by);
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return this;
+        }
+
+        @Override
+        public Instant instant() {
+            return now;
+        }
+    }
+
     /** A language model that plays back a script and records what it was asked. */
     private static final class ScriptedModel implements LanguageModel {
 
@@ -249,6 +357,7 @@ class AssistantServiceTest {
         final Deque<Object> script = new ArrayDeque<>();
         final Turn.ModelTurn closing = new Turn.ModelTurn("{\"closing\":true}", "closing", List.of());
         boolean available = true;
+        Runnable onCall = () -> { };
 
         void then(StopReason stop, String text, ToolCall... calls) {
             script.add(new Reply(new Turn.ModelTurn("{\"reply\":" + script.size() + "}", text, List.of(calls)), stop,
@@ -267,6 +376,7 @@ class AssistantServiceTest {
         @Override
         public Reply next(Request request) {
             requests.add(request);
+            onCall.run();
             Object next = script.removeFirst();
             if (next instanceof RuntimeException failure) {
                 throw failure;

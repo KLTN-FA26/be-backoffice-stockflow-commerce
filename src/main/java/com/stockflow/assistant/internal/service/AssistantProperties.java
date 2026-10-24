@@ -20,8 +20,10 @@ import java.util.Set;
  * @param maxOutputTokens    room for thinking and the answer of one model call
  * @param dailyMessageLimit  questions one user may ask per business day
  * @param retentionDays      days an idle conversation is kept before the retention job deletes it
- * @param requestTimeout     one call to the provider, retries included by the SDK
- * @param answerLease        how long a claim on a conversation blocks a second question; must outlast an answer
+ * @param requestTimeout     one attempt of a call to the provider; the SDK retries a failed attempt
+ *                           {@value #MAX_RETRIES} times, each with this timeout again
+ * @param answerLease        how long a claim on a conversation blocks a second question. The loop starts no model
+ *                           call that could outlast it, so it must hold at least two of the longest calls
  * @param refusalFallback    lets the provider retry a request its safeguards declined on a fallback model
  * @param baseUrl            the provider's endpoint; blank for its default (a proxy or a test double otherwise)
  */
@@ -39,6 +41,9 @@ public record AssistantProperties(
         @DefaultValue("PT15M") Duration answerLease,
         @DefaultValue("true") boolean refusalFallback,
         @DefaultValue("") String baseUrl) {
+
+    /** Retries of a failed provider call, by the SDK, after the first attempt. */
+    public static final int MAX_RETRIES = 2;
 
     private static final Set<String> EFFORTS = Set.of("low", "medium", "high", "xhigh", "max");
 
@@ -64,14 +69,19 @@ public record AssistantProperties(
         if (requestTimeout.isNegative() || requestTimeout.isZero()) {
             throw new IllegalArgumentException("stockflow.assistant.request-timeout must be positive");
         }
-        // One answer is up to max-tool-rounds + 1 model calls; a lease shorter than that would free the
-        // conversation while it is still being answered.
-        if (answerLease.compareTo(requestTimeout.multipliedBy(maxToolRounds + 1L)) < 0) {
+        // The loop stops calling the model when the next call could outlast the lease (AssistantService), so the
+        // lease must leave room for a first call and a closing one. Each call is up to MAX_RETRIES + 1 attempts.
+        if (answerLease.compareTo(requestTimeout.multipliedBy(2L * (MAX_RETRIES + 1))) < 0) {
             throw new IllegalArgumentException("stockflow.assistant.answer-lease must be at least "
-                    + "request-timeout x (max-tool-rounds + 1)");
+                    + "request-timeout x " + 2 * (MAX_RETRIES + 1));
         }
         apiKey = apiKey == null ? "" : apiKey.strip();
         baseUrl = baseUrl == null ? "" : baseUrl.strip();
+    }
+
+    /** The longest one model call may take: every attempt timing out. */
+    public Duration longestModelCall() {
+        return requestTimeout.multipliedBy(MAX_RETRIES + 1L);
     }
 
     /** Whether the assistant can answer at all: switched on and given credentials. */

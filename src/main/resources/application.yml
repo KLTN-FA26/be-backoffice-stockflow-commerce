@@ -456,10 +456,14 @@ stockflow:
     max-output-tokens: 16000
     daily-message-limit: 50
     retention-days: 90
+    # One attempt; the SDK retries a failed call twice, each attempt with this timeout again.
     request-timeout: PT90S
-    # Must outlast one whole answer: request-timeout x (max-tool-rounds + 1).
+    # How long a question holds its conversation. The loop starts no model call that could outlast it, so it must hold
+    # at least two of the longest calls: request-timeout x 3 attempts x 2, checked at start-up.
     answer-lease: PT15M
     refusal-fallback: true
+    # Idle conversations older than retention-days are deleted daily (business time).
+    retention-cron: "0 30 3 * * *"
 
   payment:
     # The company's bank account a customer transfers to (SCRUM-193, kltn-docs 15 §4.1 step 1). Blank here on purpose and

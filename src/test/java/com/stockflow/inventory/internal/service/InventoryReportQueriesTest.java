@@ -3,7 +3,9 @@ package com.stockflow.inventory.internal.service;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.inventory.api.ExpiryAlertView;
+import com.stockflow.inventory.api.LotTraceQueries;
 import com.stockflow.inventory.api.LotTraceView;
+import com.stockflow.inventory.api.StockAlertQueries;
 import com.stockflow.inventory.internal.domain.LotTrace;
 import com.stockflow.inventory.internal.domain.StockAlert;
 import org.junit.jupiter.api.DisplayName;
@@ -46,9 +48,10 @@ class InventoryReportQueriesTest {
                 List.of(new LotTrace.OrderLeg(UUID.randomUUID(), "SO-5", 400, 0,
                         Instant.parse("2026-10-10T03:00:00Z"), Instant.parse("2026-10-10T04:00:00Z")))));
 
-        List<LotTraceView> found = new LotTraceQueriesImpl(traces).traceLot("  L-2310 ", 5);
+        LotTraceQueries.Traced traced = new LotTraceQueriesImpl(traces).traceLot("  L-2310 ", null, 5);
 
-        assertThat(found).singleElement().satisfies(lot -> {
+        assertThat(traced.totalLots()).isEqualTo(1);
+        assertThat(traced.lots()).singleElement().satisfies(lot -> {
             assertThat(lot.lotNumber()).isEqualTo("L-2310");
             assertThat(lot.purchaseOrderNumber()).isEqualTo("PO-001");
             assertThat(lot.orders()).extracting(LotTraceView.OrderLeg::orderNumber, LotTraceView.OrderLeg::picked)
@@ -57,12 +60,24 @@ class InventoryReportQueriesTest {
         });
         // No warehouse named: the report narrows to the caller's own warehouses itself.
         verify(traces).lots(eq(new LotTraces.Query(null, "L-2310", null, null, null, 0, 5)));
-        assertThatThrownBy(() -> new LotTraceQueriesImpl(traces).traceLot(" ", 5)).isInstanceOf(BusinessException.class);
-        assertThatThrownBy(() -> new LotTraceQueriesImpl(traces).traceLot("L", 11)).isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> new LotTraceQueriesImpl(traces).traceLot(" ", null, 5))
+                .isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> new LotTraceQueriesImpl(traces).traceLot("L", null, 11))
+                .isInstanceOf(BusinessException.class);
     }
 
     @Test
-    @DisplayName("open expiry alerts come back soonest expiry first, across every page, EXPIRED flagged")
+    @DisplayName("a supplier date code printed on many SKUs: the total says how many lots were not traced")
+    void traceLotReportsTheTotal() {
+        LotTraces traces = mock(LotTraces.class);
+        when(traces.lots(any())).thenReturn(PageResponse.of(List.of(), 0, 5, 8));
+
+        assertThat(new LotTraceQueriesImpl(traces).traceLot("231025", " CUP-12OZ ", 5).totalLots()).isEqualTo(8);
+        verify(traces).lots(eq(new LotTraces.Query("CUP-12OZ", "231025", null, null, null, 0, 5)));
+    }
+
+    @Test
+    @DisplayName("open expiry alerts come back soonest expiry first, across every page, expired ones apart")
     void openExpiryAlerts() {
         StockAlerts alerts = mock(StockAlerts.class);
         StockAlerts.AlertView later = alert(StockAlert.Kind.EXPIRING, "CUP-1", LocalDate.of(2026, 11, 20), 26L);
@@ -73,12 +88,18 @@ class InventoryReportQueriesTest {
         when(alerts.list(any(), any(), isNull(), isNull(), eq(1), anyInt(), isNull()))
                 .thenReturn(new PageResponse<>(List.of(sooner), 1, 200, 3, 2, false, true));
 
-        List<ExpiryAlertView> found = new StockAlertQueriesImpl(alerts).openExpiryAlerts(10);
+        StockAlertQueries.ExpiryAlerts found = new StockAlertQueriesImpl(alerts).openExpiryAlerts(30, 10);
 
-        assertThat(found).extracting(ExpiryAlertView::sku).containsExactly("LID-1", "BOX-1", "CUP-1");
-        assertThat(found.getFirst().expired()).isTrue();
-        assertThat(new StockAlertQueriesImpl(alerts).openExpiryAlerts(2)).hasSize(2);
-        assertThatThrownBy(() -> new StockAlertQueriesImpl(alerts).openExpiryAlerts(0))
+        assertThat(found.expiring()).extracting(ExpiryAlertView::sku).containsExactly("BOX-1", "CUP-1");
+        assertThat(found.expired()).extracting(ExpiryAlertView::sku).containsExactly("LID-1");
+        assertThat(found.expired().getFirst().expired()).isTrue();
+        // The window applies to EXPIRING only; a limit of 1 keeps the soonest of each kind and the totals stay exact.
+        StockAlertQueries.ExpiryAlerts week = new StockAlertQueriesImpl(alerts).openExpiryAlerts(7, 1);
+        assertThat(week.expiring()).extracting(ExpiryAlertView::sku).containsExactly("BOX-1");
+        assertThat(week.expiringTotal()).isEqualTo(1);
+        assertThat(week.expiredTotal()).isEqualTo(1);
+        assertThat(new StockAlertQueriesImpl(alerts).openExpiryAlerts(30, 1).expiringTotal()).isEqualTo(2);
+        assertThatThrownBy(() -> new StockAlertQueriesImpl(alerts).openExpiryAlerts(30, 0))
                 .isInstanceOf(BusinessException.class);
     }
 

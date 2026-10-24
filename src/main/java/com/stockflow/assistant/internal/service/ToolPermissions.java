@@ -21,6 +21,12 @@ final class ToolPermissions {
     static final String PURCHASE_ORDERS = "procurement-purchase-orders";
     /** {@code ReportingResources.REPORTS}. */
     static final String REPORTS = "reporting-reports";
+    /** {@code FulfillmentResources.PICK_LISTS}. */
+    static final String PICK_LISTS = "fulfillment-pick-lists";
+    /** {@code SupplierResources.SUPPLIER_ITEMS}. */
+    static final String SUPPLIER_ITEMS = "procurement-supplier-items";
+    /** The assistant's own resource, for a tool that mirrors no guarded screen: rule search, catalog search. */
+    static final String ASSISTANT = "assistant-conversations";
 
     private ToolPermissions() {
     }

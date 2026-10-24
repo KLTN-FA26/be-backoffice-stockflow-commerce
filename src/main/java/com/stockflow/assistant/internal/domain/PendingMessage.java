@@ -28,9 +28,10 @@ public record PendingMessage(Turn turn, String text, String model, LanguageModel
         return new PendingMessage(question, question.text(), null, null, LanguageModel.Usage.NONE, List.of());
     }
 
+    /** The text a person may read is made plain ({@link AnswerText}); the turn sent back to the model is kept whole. */
     public static PendingMessage reply(LanguageModel.Reply reply, List<ToolExecution> executions) {
-        return new PendingMessage(reply.turn(), reply.turn().text(), reply.model(), reply.stopReason(), reply.usage(),
-                executions);
+        return new PendingMessage(reply.turn(), AnswerText.plain(reply.turn().text()), reply.model(),
+                reply.stopReason(), reply.usage(), executions);
     }
 
     public static PendingMessage results(Turn.ToolResults results) {

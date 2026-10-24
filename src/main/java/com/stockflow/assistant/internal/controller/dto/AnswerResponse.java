@@ -13,7 +13,12 @@ public record AnswerResponse(
         @Schema(description = "Every tool run for this answer, in order: the sources of its figures")
         List<ToolCallResponse> toolCalls,
         @Schema(description = "The answer hit the output limit and may be incomplete") boolean cutShort,
-        Usage usage) {
+        Usage usage,
+        @Schema(description = "Business-rule anchors the answer cites, each one returned by its own rule search",
+                example = "[\"BR-RMA-002\"]")
+        List<String> citations,
+        @Schema(description = "Purchase orders the panel may open pre-filled; nothing has been created")
+        List<ProposalResponse> proposals) {
 
     /** Tokens across every model call the answer took. */
     public record Usage(long inputTokens, long cachedInputTokens, long outputTokens) {

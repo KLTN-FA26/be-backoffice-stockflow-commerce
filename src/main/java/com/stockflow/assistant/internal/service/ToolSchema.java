@@ -41,6 +41,16 @@ final class ToolSchema {
         return this;
     }
 
+    /** An array of strings; how many is stated in the description, since strict mode takes no array limits. */
+    ToolSchema strings(String name, String description) {
+        Map<String, Object> property = new LinkedHashMap<>();
+        property.put("type", "array");
+        property.put("description", description);
+        property.put("items", Collections.unmodifiableMap(new LinkedHashMap<>(Map.of("type", "string"))));
+        properties.put(name, Collections.unmodifiableMap(property));
+        return this;
+    }
+
     Map<String, Object> build() {
         Map<String, Object> schema = new LinkedHashMap<>();
         schema.put("type", "object");

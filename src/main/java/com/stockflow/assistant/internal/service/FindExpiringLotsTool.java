@@ -22,13 +22,15 @@ class FindExpiringLotsTool implements AssistantTool {
     static final int MAX_DAYS = 365;
 
     private static final ToolSpec SPEC = new ToolSpec("findExpiringLots",
-            "Lots still in stock that expire within N days or have already expired, soonest first: SKU, warehouse, "
-                    + "lot number, expiry date, days left (negative once expired) and quantity. Built from the stock "
+            "Lots still in stock that expire within N days, and apart from them the lots already expired and "
+                    + "waiting for a write-off, soonest first: SKU, warehouse, lot number, expiry date, days left "
+                    + "(negative once expired) and quantity, with the total of each list. Built from the stock "
                     + "alerts, which only follow lots inside the expiry warning window (see warningWindowDays in the "
-                    + "answer); asking for more days than that window cannot find more lots.",
+                    + "answer); asking for more days than that window cannot find more lots. When a total is above "
+                    + "the rows returned, say how many were left out.",
             ToolSchema.object()
                     .integer("withinDays", "Expiring within this many days from today, 0 to " + MAX_DAYS
-                            + "; expired lots are always included")
+                            + "; expired lots are listed apart")
                     .integer("limit", "How many lots to return, 1 to " + MAX_ROWS)
                     .build());
 
@@ -55,15 +57,18 @@ class FindExpiringLotsTool implements AssistantTool {
     public Answer run(ToolArguments arguments) {
         int within = arguments.integer("withinDays", 0, MAX_DAYS);
         int limit = arguments.integer("limit", 1, MAX_ROWS);
-        List<ExpiryAlertView> matching = alerts.openExpiryAlerts(StockAlertQueries.MAX_ALERTS).stream()
-                .filter(alert -> alert.daysToExpiry() == null || alert.daysToExpiry() <= within)
-                .toList();
-        return new Answer(control.expiryWarningDays(),
-                matching.stream().limit(limit).map(Row::of).toList(), matching.size() > limit);
+        StockAlertQueries.ExpiryAlerts found = alerts.openExpiryAlerts(within, limit);
+        return new Answer(control.expiryWarningDays(), found.expiring().stream().map(Row::of).toList(),
+                found.expiringTotal(), found.expired().stream().map(Row::of).toList(), found.expiredTotal());
     }
 
-    /** @param warningWindowDays lots further from expiry than this are not followed by the alerts */
-    record Answer(int warningWindowDays, List<Row> lots, boolean truncated) {
+    /**
+     * @param warningWindowDays lots further from expiry than this are not followed by the alerts
+     * @param expiringTotal     how many lots expire within the window; more than {@code expiring} holds means some
+     *                          were left out. {@code expiredTotal} likewise
+     */
+    record Answer(int warningWindowDays, List<Row> expiring, int expiringTotal, List<Row> expired,
+                  int expiredTotal) {
     }
 
     record Row(String sku, String warehouseCode, String lotNumber, LocalDate expiryDate, Long daysToExpiry,
