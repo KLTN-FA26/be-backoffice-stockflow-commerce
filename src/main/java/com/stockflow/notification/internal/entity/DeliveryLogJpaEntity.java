@@ -2,7 +2,9 @@ package com.stockflow.notification.internal.entity;
 
 import com.stockflow.common.persistence.BaseEntity;
 import com.stockflow.notification.internal.domain.DeliveryStatus;
+import com.stockflow.notification.internal.domain.EmailProvider;
 import com.stockflow.notification.internal.domain.NotificationChannel;
+import com.stockflow.notification.internal.domain.ProviderStatus;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -13,7 +15,11 @@ import jakarta.persistence.Table;
 import java.time.Instant;
 import java.util.UUID;
 
-/** JPA mapping of a delivery-log row (table {@code notification.delivery_log}). STARTER ENTITY. */
+/**
+ * JPA mapping of a delivery-log row (table {@code notification.delivery_log}): one row per attempt to deliver one
+ * message. Supplier purchase orders and, since SCRUM-352, customer e-mail write here; the guards on the provider
+ * columns repeat the table's CHECK constraints so a mistake fails here with a message rather than at flush.
+ */
 @Entity
 @Table(name = "delivery_log", schema = "notification")
 public class DeliveryLogJpaEntity extends BaseEntity {
@@ -52,6 +58,26 @@ public class DeliveryLogJpaEntity extends BaseEntity {
 
     @Column(name = "attempt_number", nullable = false)
     private int attemptNumber = 1;
+
+    /** Which transport took the message; null on rows written before SCRUM-352 and on skips. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "provider", length = 16)
+    private EmailProvider provider;
+
+    /** The provider's id of a sent message: what a delivery webhook names. */
+    @Column(name = "provider_message_id", length = 100)
+    private String providerMessageId;
+
+    /** A failed attempt that will be retried is not retried before this. */
+    @Column(name = "next_attempt_at")
+    private Instant nextAttemptAt;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "provider_status", length = 24)
+    private ProviderStatus providerStatus;
+
+    @Column(name = "provider_status_at")
+    private Instant providerStatusAt;
 
     protected DeliveryLogJpaEntity() {}
 
@@ -114,6 +140,10 @@ public class DeliveryLogJpaEntity extends BaseEntity {
         return externalReference;
     }
 
+    public String getOperationReference() {
+        return operationReference;
+    }
+
     public int getAttemptNumber() {
         return attemptNumber;
     }
@@ -130,11 +160,78 @@ public class DeliveryLogJpaEntity extends BaseEntity {
         this.operationReference = reference;
     }
 
+    /** Final: nothing retries this delivery again, so it waits for nothing (ck_delivery_log_next_attempt). */
     public void stopRetrying() {
         this.terminal = true;
+        this.nextAttemptAt = null;
     }
 
     public void recordGeneration(int generation) {
         this.deliveryGeneration = generation;
+    }
+
+    public boolean isTerminal() {
+        return terminal;
+    }
+
+    public EmailProvider getProvider() {
+        return provider;
+    }
+
+    public String getProviderMessageId() {
+        return providerMessageId;
+    }
+
+    public Instant getNextAttemptAt() {
+        return nextAttemptAt;
+    }
+
+    public ProviderStatus getProviderStatus() {
+        return providerStatus;
+    }
+
+    public Instant getProviderStatusAt() {
+        return providerStatusAt;
+    }
+
+    /**
+     * The transport that took the message, and its id for it. An id only on a message the provider accepted
+     * (ck_delivery_log_provider_message): a webhook names accepted messages only.
+     */
+    public void recordProvider(EmailProvider provider, String messageId) {
+        if (messageId != null && (status != DeliveryStatus.SENT || provider == null)) {
+            throw new IllegalStateException("Only a sent message carries the provider's id");
+        }
+        this.provider = provider;
+        this.providerMessageId = messageId;
+    }
+
+    /** A failure worth retrying, not before {@code at} (ck_delivery_log_next_attempt). */
+    public void retryNotBefore(Instant at) {
+        if (status != DeliveryStatus.FAILED || terminal) {
+            throw new IllegalStateException("Only a failed attempt that will be retried waits for a time");
+        }
+        this.nextAttemptAt = at;
+    }
+
+    /**
+     * A report from the provider about the message it accepted; kept only when it says more than the one stored
+     * ({@link ProviderStatus#replaces}). Webhooks are retried and arrive out of order, so a stale or repeated report
+     * changes nothing.
+     *
+     * @return whether the stored report changed
+     */
+    public boolean reportProviderStatus(ProviderStatus reported, Instant at) {
+        if (providerMessageId == null) {
+            throw new IllegalStateException("Only a message the provider accepted can be reported on");
+        }
+        java.util.Objects.requireNonNull(reported, "reported");
+        java.util.Objects.requireNonNull(at, "at");
+        if (!reported.replaces(providerStatus, providerStatusAt, at)) {
+            return false;
+        }
+        this.providerStatus = reported;
+        this.providerStatusAt = at;
+        return true;
     }
 }

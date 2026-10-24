@@ -129,6 +129,16 @@ services:
       # accepts anything on 1025 without authentication or TLS.
       SPRING_MAIL_HOST: mailpit
       SPRING_MAIL_PORT: "1025"
+      # E-mail (SCRUM-352): the dev profile sends through Resend and does not start without RESEND_API_KEY and
+      # RESEND_FROM (a verified domain). EMAIL_PROVIDER=smtp keeps the server on the Mailpit above instead. Not ':?'
+      # here because the smtp choice needs neither; the application refuses a Resend setup that is missing them.
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-resend}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      RESEND_FROM: ${RESEND_FROM:-}
+      RESEND_REPLY_TO: ${RESEND_REPLY_TO:-}
+      RESEND_WEBHOOK_SECRET: ${RESEND_WEBHOOK_SECRET:-}
+      # false on a server holding copies of real customers: no customer order mail, staff and supplier mail unchanged.
+      CUSTOMER_EMAIL_ENABLED: ${CUSTOMER_EMAIL_ENABLED:-true}
       TRACE_SAMPLING: ${TRACE_SAMPLING:-1.0}
       PO_BUYER_COMPANY_NAME: ${PO_BUYER_COMPANY_NAME:?PO_BUYER_COMPANY_NAME is required}
       PO_BUYER_COMPANY_ADDRESS: ${PO_BUYER_COMPANY_ADDRESS:?PO_BUYER_COMPANY_ADDRESS is required}

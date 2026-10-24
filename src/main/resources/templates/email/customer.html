@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<!--/*
+  The layout of every customer e-mail (SCRUM-352). The words come from i18n/messages_vi.properties through EmailContent;
+  this file only arranges them. Rules that keep it safe and readable in mail clients:
+    - th:text only, never th:utext: every value is escaped, so a name or a code cannot become markup;
+    - inline styles and tables: Outlook and several webmail clients drop <style> blocks and flexbox;
+    - no images, no tracking pixels, no external resources.
+  A parser-level comment: Thymeleaf removes it, so it never reaches a customer's inbox.
+*/-->
+<html xmlns:th="http://www.thymeleaf.org" th:lang="${lang}">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title th:text="${mail.subject}">Subject</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f3f4f6;">
+<div th:text="${mail.preheader}" style="display:none;max-height:0;max-width:0;overflow:hidden;opacity:0;font-size:1px;line-height:1px;color:#f3f4f6;">Preheader</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f3f4f6;">
+  <tr>
+    <td align="center" style="padding:24px 12px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
+             style="max-width:600px;background-color:#ffffff;border:1px solid #e5e7eb;border-radius:8px;font-family:Arial,Helvetica,sans-serif;color:#1f2937;">
+        <tr>
+          <td style="padding:24px 28px 4px 28px;">
+            <p th:text="${mail.brand}" style="margin:0;font-size:12px;letter-spacing:0.06em;text-transform:uppercase;color:#6b7280;">StockFlow</p>
+            <h1 th:text="${mail.heading}" style="margin:8px 0 0 0;font-size:20px;line-height:1.35;font-weight:bold;color:#111827;">Heading</h1>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:8px 28px 0 28px;font-size:15px;line-height:1.6;">
+            <p th:text="${mail.greeting}" style="margin:12px 0;">Greeting</p>
+            <p th:each="paragraph : ${mail.intro}" th:text="${paragraph}" style="margin:12px 0;">Paragraph</p>
+          </td>
+        </tr>
+        <tr th:if="${!mail.facts.isEmpty()}">
+          <td style="padding:4px 28px 8px 28px;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
+                   style="border:1px solid #e5e7eb;border-radius:6px;font-size:14px;line-height:1.5;">
+              <tr th:each="fact : ${mail.facts}">
+                <td th:text="${fact.label}" width="42%" style="padding:8px 12px;color:#6b7280;vertical-align:top;border-bottom:1px solid #f3f4f6;">Label</td>
+                <td th:text="${fact.value}" style="padding:8px 12px;font-weight:bold;color:#111827;vertical-align:top;border-bottom:1px solid #f3f4f6;word-break:break-word;">Value</td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+        <tr th:if="${mail.table != null}">
+          <td style="padding:8px 28px 0 28px;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
+                   style="border-collapse:collapse;font-size:13px;line-height:1.4;">
+              <tr>
+                <th th:each="header, column : ${mail.table.headers}" th:text="${header}"
+                    th:style="${column.first} ? 'padding:8px 6px;text-align:left;color:#6b7280;font-weight:bold;border-bottom:2px solid #e5e7eb;' : 'padding:8px 6px;text-align:right;color:#6b7280;font-weight:bold;border-bottom:2px solid #e5e7eb;white-space:nowrap;'">Header</th>
+              </tr>
+              <tr th:each="row : ${mail.table.rows}">
+                <td th:each="cell, column : ${row}" th:text="${cell}"
+                    th:style="${column.first} ? 'padding:8px 6px;text-align:left;border-bottom:1px solid #f3f4f6;word-break:break-all;' : 'padding:8px 6px;text-align:right;border-bottom:1px solid #f3f4f6;white-space:nowrap;'">Cell</td>
+              </tr>
+            </table>
+            <p th:if="${mail.table.note != null}" th:text="${mail.table.note}" style="margin:8px 0 0 0;font-size:13px;color:#6b7280;">Note</p>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:8px 28px 24px 28px;font-size:15px;line-height:1.6;">
+            <p th:each="paragraph : ${mail.outro}" th:text="${paragraph}" style="margin:12px 0;">Paragraph</p>
+            <p style="margin:20px 0 0 0;"><span th:text="${mail.closing}">Closing</span><br><strong th:text="${mail.signature}">Signature</strong></p>
+          </td>
+        </tr>
+      </table>
+      <p th:text="${mail.footer}" style="max-width:600px;margin:16px auto 0 auto;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.5;color:#6b7280;">Footer</p>
+    </td>
+  </tr>
+</table>
+</body>
+</html>

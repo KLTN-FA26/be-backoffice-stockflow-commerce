@@ -42,6 +42,14 @@ stockflow:
   reporting:
     # The tests rebuild by hand against the orders they place; a backfill racing the first test would only add noise.
     backfill-on-startup: false
+  notification:
+    email:
+      # Nothing leaves a test: every message is kept in memory (RecordingEmailTransport) for the test to read. A test
+      # of a real transport selects it itself (smtp with a mocked sender, resend against a local stub server).
+      provider: recording
+      customer:
+        # Driven by the tests that need it, never by the clock behind their back.
+        retry-interval: PT24H
   inventory:
     # The alert jobs are driven by the tests, not by the clock: nothing may drain, reconcile or sweep behind their back.
     alert-drain-interval: PT24H
