@@ -194,10 +194,12 @@ stateDiagram-v2
     QUARANTINE --> AVAILABLE: re-inspected and accepted, then put away
     QUARANTINE --> BLOCKED: re-inspected and rejected
     BLOCKED --> [*]: returned to vendor
-    AVAILABLE --> DAMAGED: damage reported
+    AVAILABLE --> DAMAGED: damage reported (moved to a QUARANTINE area)
     AVAILABLE --> EXPIRED: expiry date passes
     AVAILABLE --> QUARANTINE: recall or re-inspection
+    DAMAGED --> AVAILABLE: re-inspected, fine (restored onto a bin)
     DAMAGED --> [*]: written off
+    DAMAGED --> [*]: returned to the supplier
     EXPIRED --> [*]: written off
 ```
 
@@ -209,10 +211,14 @@ stateDiagram-v2
 | QUARANTINE | AVAILABLE | re-inspection accepts | QC staff | then putaway from the `QUARANTINE` area | `StockReleasedFromQuarantine` |
 | QUARANTINE | BLOCKED | re-inspection rejects | QC staff | reason given | `StockBlocked(BLOCKED)` |
 | BLOCKED | left stock | return to vendor | Procurement staff | movement out of the warehouse | `ReturnToVendorRaised` |
-| AVAILABLE | DAMAGED | report damage | Warehouse staff | reason and photo (BR-STK-003) | `StockBlocked(DAMAGED)` |
+| AVAILABLE | DAMAGED | report damage on a shelf | Warehouse / QC staff (`inventory-damage-reports:CREATE`) | reason and 1-5 photos (BR-STK-003); free units only | `StockDamageReported` |
+| AVAILABLE | DAMAGED | report damage at a pick line's bin | the task's picker (`fulfillment-picking:UPDATE`) | reason and photos; units of the line's allocation | `StockDamageReported` |
 | AVAILABLE | EXPIRED | nightly sweep | system | `expiry_date < today` (BR-STK-004) | `StockBlocked(EXPIRED)` |
 | AVAILABLE | QUARANTINE | recall | Warehouse manager | reason given | `StockBlocked(QUARANTINE)` |
-| DAMAGED / EXPIRED | written off | write-off | Warehouse manager | approved adjustment (BR-STK-005) | `StockWrittenOff` |
+| DAMAGED | written off | decision WRITE_OFF | Warehouse manager (`inventory-damage-reports:APPROVE`), never the reporter | the units unheld; a DAMAGED adjustment posted at once (BR-STK-005) | `StockDamageDisposed` |
+| DAMAGED | (stays, earmarked) | decision RETURN_TO_SUPPLIER | Warehouse manager, never the reporter | note; intent only (see below) | `StockDamageDisposed` |
+| DAMAGED | AVAILABLE | decision RESTORE | Warehouse manager, never the reporter | note; onto an active bin of the warehouse; not expired | `StockDamageDisposed` |
+| EXPIRED | written off | write-off | Warehouse manager | approved adjustment (BR-STK-005) | `StockWrittenOff` |
 
 **Only AVAILABLE counts towards ATP.** That single sentence is the reason this dimension is separate
 from the quantity buckets: inbound, quarantined and blocked stock is on hand, occupies its location, appears in a
@@ -222,6 +228,33 @@ physical count, and is invisible to the storefront.
 to DAMAGED or EXPIRED, the reservation is *not* silently dropped — `inventory-service` emits
 `ReservationImpaired`, and `order-service` puts the order on hold with reason
 `INVENTORY_ISSUE` (WBS 3.17.6.1). Dropping it quietly is how a paid order never ships.
+
+**As built for DAMAGED (SCRUM-475, SCRUM-277; 2026-10-24).** One document, the damage report
+(`inventory.stock_damage_report`, number `DMG-yyyyMMdd-nnnn`), records what, how many, why (BROKEN, DEFORMED,
+WET_OR_MOULDY, DIRTY_OR_MISPRINTED, OTHER with a note), who, and 1-5 photos (category `qc-evidence`, checked by
+their first bytes, deleted again if the report fails). Expired goods are never "damaged": they are the sweep's.
+
+- **Where the units go.** The damaged units leave their row and move, DAMAGED, to a QUARANTINE area of the same
+  warehouse - the one the reporter names, or the first usable one by code that can take them - with one `MOVE`
+  ledger line (reference `DAMAGE_REPORT`, AVAILABLE → DAMAGED). They cannot stay "DAMAGED at the bin": a receipt
+  layer has one row per location whatever its status, and damaged goods belong apart from good ones on the floor too.
+  A carton (stock package) they came out of is opened, or closed CONSUMED when emptied; they arrive loose.
+- **Holds are never broken behind their owner's back.** A shelf report takes free units only (`DAMAGE_EXCEEDS_FREE_STOCK`
+  otherwise): held units are reported where they are taken. A picker's report takes units of the line's
+  allocation and makes the order whole in the same transaction: the same quantity is allocated again FEFO on
+  pickable stock of the warehouse (the bin included - its count is not in doubt, unlike a short pick's), or, when
+  there is none, the order keeps that share as an **impaired allocation** on the damaged units - never pickable,
+  its pick line SHORT, the order ON_HOLD (`INVENTORY`) - until the coordinator reallocates it (the X-SHORT
+  endpoint). Checkout reservations hold no units: when the damage leaves them promising more than the free stock,
+  `StockDamageReported.skuReservationShortfall` says by how much, and their release refuses as it would for any
+  shortage. Production holds (blanks in storage) and transfer holds are never taken by a shelf report; blanks
+  spoilt in the print shop keep production's own scrap write-off.
+- **Decisions, four eyes.** A warehouse manager who did not report decides some or all units (several decisions
+  per report, never more units than reported): WRITE_OFF posts a DAMAGED stock adjustment at once - the reporter
+  as requester, the manager as approver - and numbers the destruction record (`WO-yyyyMMdd-nnnn`);
+  RETURN_TO_SUPPLIER records the intent (supplier from the lot when known) and the units stay DAMAGED in quarantine
+  until a procurement return flow, listening to `StockDamageDisposed`, ships them (not built); RESTORE moves them
+  back onto a bin as AVAILABLE. Units an impaired allocation still holds wait for the order (`DAMAGED_STOCK_HELD`).
 
 ---
 
@@ -254,7 +287,8 @@ stateDiagram-v2
 (`stock_item_id` NULL) is the HELD row above: checkout, payment pin/re-arm, expiry sweep, cancellation. Release
 to a warehouse turns it ALLOCATED and writes one allocation per bin and lot (`stock_item_id` set,
 `allocated_from_id` = the reservation, `expires_at` NULL); each allocation then goes HELD → CONSUMED (pick) or
-RELEASED (cancel, or `SHORT_PICKED` when X-SHORT reallocates it elsewhere). The order line swaps the reservation id
+RELEASED (cancel, `SHORT_PICKED` when X-SHORT reallocates it elsewhere, or `DAMAGED` when a picker reports all of its
+units damaged; for part of them it keeps its id over fewer units, SCRUM-277 - see §5). The order line swaps the reservation id
 for the allocation ids. Production holds and checkout holds placed before this change are stock-item rows that
 were never SKU reservations; they keep their old lifecycle.
 
