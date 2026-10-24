@@ -3,7 +3,12 @@ package com.stockflow.inventory.api;
 import java.time.Instant;
 import java.util.UUID;
 
-/** A stock adjustment and where it stands. */
+/**
+ * A stock adjustment and where it stands.
+ *
+ * @param stockPackageId   the carton whose contents it changes; null for loose stock
+ * @param cycleCountLineId the cycle count line whose variance it is; null for one a person asked for
+ */
 public record StockAdjustmentSummary(
         UUID adjustmentId,
         String number,
@@ -21,6 +26,8 @@ public record StockAdjustmentSummary(
         String rejectionReason,
         Instant postedAt,
         Instant withdrawnAt,
-        long version
+        long version,
+        UUID stockPackageId,
+        UUID cycleCountLineId
 ) {
 }

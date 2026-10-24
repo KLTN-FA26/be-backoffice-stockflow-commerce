@@ -10,8 +10,10 @@ import com.stockflow.contracts.StockDamageReported;
 import com.stockflow.inventory.api.AllocateStockCommand;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.ReserveStockCommand;
+import com.stockflow.inventory.internal.domain.CountSlot;
+import com.stockflow.inventory.internal.domain.CycleCount;
+import com.stockflow.inventory.internal.domain.CycleCountRepository;
 import com.stockflow.inventory.internal.domain.LocationId;
-import com.stockflow.inventory.internal.domain.Recounts;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -94,7 +96,7 @@ class StockDamageIntegrationTest {
     @Autowired ObjectMapper json;
     @Autowired InventoryService inventory;
     @Autowired FileStorage storage;
-    @Autowired Recounts recounts;
+    @Autowired CycleCountRepository cycleCounts;
     @Autowired RecordedEvents.Recorder recorded;
 
     private String sku;
@@ -664,8 +666,9 @@ class StockDamageIntegrationTest {
     @Test
     @DisplayName("a layer an open recount froze: its free units may be reported, ATP stays right")
     void frozenByARecount() throws Exception {
-        tx.executeWithoutResult(s -> recounts.openShortPick(DemoData.WAREHOUSE_HCM, new LocationId(BIN), new Sku(sku),
-                "L1", 10, "test recount", today));
+        tx.executeWithoutResult(s -> cycleCounts.save(CycleCount.shortPick(cycleCounts.nextNumber(today),
+                DemoData.WAREHOUSE_HCM, CountSlot.loose(new LocationId(BIN), new Sku(sku), "L1"), 10, "test recount",
+                today)));
         assertThat(atp()).as("frozen").isZero();
 
         report(UUID.randomUUID(), row, 3).andExpect(status().isCreated());

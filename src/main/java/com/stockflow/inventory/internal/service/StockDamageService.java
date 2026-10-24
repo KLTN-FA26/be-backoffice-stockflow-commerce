@@ -19,12 +19,12 @@ import com.stockflow.inventory.consumption.PickDamageReporting;
 import com.stockflow.inventory.consumption.ReportPickDamageCommand;
 import com.stockflow.inventory.consumption.ReportPickDamageResult;
 import com.stockflow.inventory.internal.domain.AdjustmentReason;
+import com.stockflow.inventory.internal.domain.CycleCountRepository;
 import com.stockflow.inventory.internal.domain.DamageReason;
 import com.stockflow.inventory.internal.domain.ExpiryPolicy;
 import com.stockflow.inventory.internal.domain.LocationDirectory;
 import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.Quantity;
-import com.stockflow.inventory.internal.domain.Recounts;
 import com.stockflow.inventory.internal.domain.Reservation;
 import com.stockflow.inventory.internal.domain.ReservationId;
 import com.stockflow.inventory.internal.domain.SkuReservationRepository;
@@ -110,7 +110,7 @@ class StockDamageService implements StockDamages, PickDamageReporting {
     private final StockPackageContents cartons;
     private final InventoryEventPublisher events;
     private final SkuReservationRepository skuReservations;
-    private final Recounts recounts;
+    private final CycleCountRepository cycleCounts;
     private final InventoryControlService controls;
     private final StockLots lots;
     private final DamageEvidence evidence;
@@ -121,7 +121,7 @@ class StockDamageService implements StockDamages, PickDamageReporting {
     StockDamageService(StockItemRepository stockItems, StockDamageReportRepository reports,
                        StockDamageReportSearch search, StockAdjustmentRepository adjustments, StockMovementLog ledger,
                        LocationDirectory locations, InventoryPolicyRepository policies, StockPackageContents cartons,
-                       InventoryEventPublisher events, SkuReservationRepository skuReservations, Recounts recounts,
+                       InventoryEventPublisher events, SkuReservationRepository skuReservations, CycleCountRepository cycleCounts,
                        InventoryControlService controls, StockLots lots, DamageEvidence evidence, Clock clock) {
         this.stockItems = stockItems;
         this.reports = reports;
@@ -133,12 +133,12 @@ class StockDamageService implements StockDamages, PickDamageReporting {
         this.cartons = cartons;
         this.events = events;
         this.skuReservations = skuReservations;
-        this.recounts = recounts;
+        this.cycleCounts = cycleCounts;
         this.controls = controls;
         this.lots = lots;
         this.evidence = evidence;
         this.clock = clock;
-        this.pickable = new PickableStock(stockItems, locations, recounts);
+        this.pickable = new PickableStock(stockItems, locations, cycleCounts);
     }
 
     // ================================================================== a shelf report (SCRUM-475)
@@ -659,7 +659,7 @@ class StockDamageService implements StockDamages, PickDamageReporting {
     private int shortfall(Sku sku, Instant now) {
         LocalDate today = BusinessCalendar.date(now);
         long free = stockItems.availableQuantities(Set.of(sku.code()), today).getOrDefault(sku.code(), 0L)
-                - recounts.frozen(List.of(sku.code()), today).stream().mapToLong(Recounts.Frozen::free).sum();
+                - cycleCounts.frozen(List.of(sku.code()), today).stream().mapToLong(CycleCountRepository.Frozen::free).sum();
         long promised = skuReservations.heldBySku(List.of(sku.code())).getOrDefault(sku.code(), 0L);
         int shortfall = (int) Math.max(0, promised - Math.max(0, free));
         if (shortfall > 0) {

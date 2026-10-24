@@ -101,7 +101,7 @@ class InventoryServiceImpl implements InventoryService {
     private final InventoryPolicyRepository policies;
     private final SkuReservationRepository skuReservations;
     private final LocationDirectory locations;
-    private final com.stockflow.inventory.internal.domain.Recounts recounts;
+    private final com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts;
     private final com.stockflow.inventory.internal.domain.StockPackageRepository stockPackages;
 
     /** How long a hold lasts while its order waits for payment (kltn-docs 14: set by the business). */
@@ -111,7 +111,7 @@ class InventoryServiceImpl implements InventoryService {
                          StockOperations operations, InventoryItemDirectory items, Clock clock,
                          InventoryControlService controls, InventoryPolicyRepository policies,
                          SkuReservationRepository skuReservations, LocationDirectory locations,
-                         com.stockflow.inventory.internal.domain.Recounts recounts,
+                         com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts,
                          com.stockflow.inventory.internal.domain.StockPackageRepository stockPackages,
                          @org.springframework.beans.factory.annotation.Value(
                                  "${stockflow.inventory.reservation-ttl:PT30M}") java.time.Duration reservationTtl) {
@@ -129,7 +129,7 @@ class InventoryServiceImpl implements InventoryService {
         this.policies = policies;
         this.skuReservations = skuReservations;
         this.locations = locations;
-        this.recounts = recounts;
+        this.cycleCounts = cycleCounts;
     }
 
     @Override
@@ -301,13 +301,13 @@ class InventoryServiceImpl implements InventoryService {
      * open, so they are not promised. Every figure of available to promise subtracts them, the planner skips them.
      */
     private Map<String, Long> frozenBySku(Collection<String> skus, LocalDate today) {
-        return recounts.frozen(skus, today).stream().collect(Collectors.groupingBy(
-                com.stockflow.inventory.internal.domain.Recounts.Frozen::sku,
-                Collectors.summingLong(com.stockflow.inventory.internal.domain.Recounts.Frozen::free)));
+        return cycleCounts.frozen(skus, today).stream().collect(Collectors.groupingBy(
+                com.stockflow.inventory.internal.domain.CycleCountRepository.Frozen::sku,
+                Collectors.summingLong(com.stockflow.inventory.internal.domain.CycleCountRepository.Frozen::free)));
     }
 
     private Set<StockItemId> frozenLayers(Sku sku, LocalDate today) {
-        return recounts.frozen(List.of(sku.code()), today).stream()
+        return cycleCounts.frozen(List.of(sku.code()), today).stream()
                 .map(frozen -> new StockItemId(frozen.stockItemId())).collect(Collectors.toSet());
     }
 
@@ -388,7 +388,7 @@ class InventoryServiceImpl implements InventoryService {
         for (StockLevelLine line : repository.findLevelLinesBySku(sku)) {
             byWarehouse.merge(line.location().warehouseCode(), Totals.of(line, today), Totals::plus);
         }
-        for (var frozen : recounts.frozen(List.of(sku.code()), today)) {
+        for (var frozen : cycleCounts.frozen(List.of(sku.code()), today)) {
             byWarehouse.computeIfPresent(new LocationId(frozen.locationCode()).warehouseCode(), (code, totals) ->
                     new Totals(totals.onHand(), totals.available(), totals.reserved(),
                             (int) Math.max(0, totals.atp() - frozen.free())));
@@ -606,7 +606,7 @@ class InventoryServiceImpl implements InventoryService {
      * The one definition, shared with the damage reported at picking: {@link PickableStock}.
      */
     private List<StockAllocator.Candidate> pickableCandidates(Sku sku, String warehouse, LocationId excluded) {
-        return new PickableStock(repository, locations, recounts).candidates(sku, warehouse, excluded, clock.instant());
+        return new PickableStock(repository, locations, cycleCounts).candidates(sku, warehouse, excluded, clock.instant());
     }
 
     /**

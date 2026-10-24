@@ -464,6 +464,8 @@ stockflow:
     # A lot that expires within this many days of the day it is received, or of today, is "near expiry"
     # (docs 03 BR-06; plan G5a-3 §6 #11): goods receipts warn, the expiry alerts use the same window.
     expiry-warning-days: 30
+    # Most lines one planned cycle count may hold (SCRUM-146); a wider scope is refused so the count stays countable.
+    cycle-count-max-lines: 500
     # Stock alerts (SCRUM-147). The drain evaluates the SKUs whose stock changed (a trigger on stock_item queues them).
     alert-drain-interval: PT30S
     alert-drain-initial-delay: PT30S

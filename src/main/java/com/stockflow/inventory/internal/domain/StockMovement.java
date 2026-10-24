@@ -84,6 +84,12 @@ public record StockMovement(
                 referenceId, reason, actorId, occurredAt, lotId, orderId, stockPackage, toStockPackage);
     }
 
+    /** The same line, the units having gone into this stock package ({@code null}: loose stock). */
+    public StockMovement arriving(StockPackageId stockPackage) {
+        return new StockMovement(id, type, sku, lotNumber, from, to, quantity, status, toStatus, referenceType,
+                referenceId, reason, actorId, occurredAt, lotId, orderId, fromStockPackage, stockPackage);
+    }
+
     /** A line that does not change the status of what it moves. */
     public StockMovement(UUID id, MovementType type, Sku sku, String lotNumber, LocationId from, LocationId to,
                          int quantity, StockStatus status, ReferenceType referenceType, UUID referenceId,

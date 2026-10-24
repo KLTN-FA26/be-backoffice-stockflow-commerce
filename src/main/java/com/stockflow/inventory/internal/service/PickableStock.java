@@ -2,9 +2,9 @@ package com.stockflow.inventory.internal.service;
 
 import com.stockflow.common.domain.BusinessCalendar;
 import com.stockflow.common.domain.Sku;
+import com.stockflow.inventory.internal.domain.CycleCountRepository;
 import com.stockflow.inventory.internal.domain.LocationDirectory;
 import com.stockflow.inventory.internal.domain.LocationId;
-import com.stockflow.inventory.internal.domain.Recounts;
 import com.stockflow.inventory.internal.domain.StockAllocator;
 import com.stockflow.inventory.internal.domain.StockItemId;
 import com.stockflow.inventory.internal.domain.StockItemRepository;
@@ -31,17 +31,17 @@ final class PickableStock {
 
     private final StockItemRepository stockItems;
     private final LocationDirectory locations;
-    private final Recounts recounts;
+    private final CycleCountRepository cycleCounts;
 
-    PickableStock(StockItemRepository stockItems, LocationDirectory locations, Recounts recounts) {
+    PickableStock(StockItemRepository stockItems, LocationDirectory locations, CycleCountRepository cycleCounts) {
         this.stockItems = stockItems;
         this.locations = locations;
-        this.recounts = recounts;
+        this.cycleCounts = cycleCounts;
     }
 
     /** Sellable stock of {@code sku} on pickable, usable locations of {@code warehouseCode}, never at {@code excluded}. */
     List<StockAllocator.Candidate> candidates(Sku sku, String warehouseCode, LocationId excluded, Instant now) {
-        Set<StockItemId> frozen = recounts.frozen(List.of(sku.code()), BusinessCalendar.date(now)).stream()
+        Set<StockItemId> frozen = cycleCounts.frozen(List.of(sku.code()), BusinessCalendar.date(now)).stream()
                 .map(layer -> new StockItemId(layer.stockItemId())).collect(Collectors.toSet());
         List<StockAllocator.Candidate> inWarehouse = stockItems.findAvailabilityBySku(sku).stream()
                 .filter(c -> c.location().warehouseCode().equals(warehouseCode))
