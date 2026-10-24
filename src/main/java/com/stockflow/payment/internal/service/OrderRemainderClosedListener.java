@@ -11,7 +11,8 @@ import java.math.BigDecimal;
 
 /**
  * The rest of a partly fulfilled order was closed (G3-2, split shipments; kltn-docs 17 edge "huỷ + hoàn tiền phần
- * thiếu"): the money received above what the order is now worth is asked back as PENDING refunds for the accountant
+ * thiếu"), or units production did not make, the customer agreeing (S6): the money received above what the order is
+ * now worth is asked back as PENDING refunds for the accountant
  * (15 §4.4), never paid out here. A credit order is billed per delivered shipment, so its closed units are simply never
  * billed; nothing to do for it.
  */
@@ -43,7 +44,9 @@ class OrderRemainderClosedListener {
         orders.lockForPayment(event.orderId());
         BigDecimal unplaced = settlement.requestRemainderRefunds(event.orderId(),
                 event.closureId() == null ? event.orderId() : event.closureId(), refundable, event.currency(),
-                "Order %s: rest closed (%s)".formatted(event.orderNumber(), event.reasonCode()));
+                OrderRemainderClosed.PRODUCTION_SHORTFALL.equals(event.reasonCode())
+                        ? "Order %s: units production did not make, the customer agreeing".formatted(event.orderNumber())
+                        : "Order %s: rest closed (%s)".formatted(event.orderNumber(), event.reasonCode()));
         if (unplaced.signum() > 0) {
             log.warn("Order {}: rest closed with {} {} to refund, but no captured payment carries {} of it; the "
                     + "accountant must settle it by hand", event.orderNumber(), refundable, event.currency(), unplaced);

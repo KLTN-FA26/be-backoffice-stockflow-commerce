@@ -12,6 +12,7 @@ import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.Set;
@@ -69,6 +70,35 @@ public class OrderLineJpaEntity {
     public void setCancelledQuantity(int value) { cancelledQuantity = value; }
     public String getDesignChecksum() { return designChecksum; }
     public void setDesignChecksum(String value) { designChecksum = value; }
+
+    /**
+     * Review 2026-10-25 of S6: what the customer agreed with Sales to go without (all four set, or none -
+     * ck_order_line_shortfall_agreement), and how many units production closed under it.
+     */
+    @Column(name = "shortfall_agreed_quantity")
+    private Integer shortfallAgreedQuantity;
+    @Column(name = "shortfall_agreed_note", length = 500)
+    private String shortfallAgreedNote;
+    @Column(name = "shortfall_agreed_by")
+    private UUID shortfallAgreedBy;
+    @Column(name = "shortfall_agreed_at")
+    private Instant shortfallAgreedAt;
+    @Column(name = "shortfall_closed_quantity", nullable = false)
+    private int shortfallClosedQuantity;
+
+    public Integer getShortfallAgreedQuantity() { return shortfallAgreedQuantity; }
+    public String getShortfallAgreedNote() { return shortfallAgreedNote; }
+    public UUID getShortfallAgreedBy() { return shortfallAgreedBy; }
+    public Instant getShortfallAgreedAt() { return shortfallAgreedAt; }
+    public int getShortfallClosedQuantity() { return shortfallClosedQuantity; }
+
+    public void setShortfall(Integer agreedQuantity, String note, UUID by, Instant at, int closedQuantity) {
+        this.shortfallAgreedQuantity = agreedQuantity;
+        this.shortfallAgreedNote = note;
+        this.shortfallAgreedBy = by;
+        this.shortfallAgreedAt = at;
+        this.shortfallClosedQuantity = closedQuantity;
+    }
 
     @ElementCollection(fetch = jakarta.persistence.FetchType.EAGER)
     @CollectionTable(

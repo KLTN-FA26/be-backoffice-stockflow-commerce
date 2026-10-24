@@ -847,6 +847,8 @@ stateDiagram-v2
     PRINTING --> QC: printed + scrap recorded
     QC --> COMPLETED: good quantity reached
     QC --> READY: shortfall → reprint
+    READY --> COMPLETED: completed short, within the customer's agreement (S6)
+    MATERIAL_ISSUED --> COMPLETED: completed short, within the customer's agreement (S6)
     READY --> SUBCONTRACTED: subcontracted child sent out (PO approved)
     SUBCONTRACTED --> QC: subcontract goods receipt posted
     PENDING_PREPRESS --> ON_HOLD
@@ -873,6 +875,8 @@ stateDiagram-v2
 | PRINTING | QC | record output | Production staff | good + scrap = printed; scrap has a reason (BR-PRD-04) | — |
 | QC | COMPLETED | QC pass | QC staff | good quantity = required; ORDER compared with the approved sample (BR-PRD-05) | `ProductionCompleted` (ORDER) |
 | QC | READY | shortfall | QC staff | more blanks reserved; none → ON_HOLD | — |
+| READY / MATERIAL_ISSUED (or ON_HOLD from one) | COMPLETED (short) | `POST /production/orders/{id}/short-completion` | Warehouse manager (`production-orders:APPROVE`) | an order's in-house job with good units, fewer than planned, every printed unit through QC, and **Sales recorded on the order line that the customer goes without at least that many** (`POST /orders/{id}/lines/{lineId}/production-shortfall-agreement`, `sales-order-cancellations:UPDATE`: how many at most, how the customer agreed, who, when; 0 withdraws it while nothing was closed under it - `PRODUCTION_SHORTFALL_NOT_AGREED` otherwise, and nothing changes), recorded by someone else than the manager closing it (`PRODUCTION_SHORTFALL_SELF_APPROVAL`). Closing all of a line is a cancellation, refused here. In one transaction: the sales order line gives up the units not made (`OrderService.closeProductionShortfall` → `OrderRemainderClosed` reason `PRODUCTION_SHORTFALL`: the order is worth less, payment refunds what was paid above that), the goods go to packing as on any completion, unprinted blanks go back and the line's blanks never issued are let go. `short_completion_reason`, `ck_production_order_completed_quantity`, `ck_order_line_shortfall_agreement` / `_closed` (review 2026-10-25, S6) | `ProductionCompleted` with the good quantity |
+| PENDING_PREPRESS / READY / MATERIAL_ISSUED (or ON_HOLD from one), **no good unit** | CANCELLED (closed short) | the same endpoint | Warehouse manager | as above, within the agreement: nothing to deliver, so the job is cancelled and its whole plan leaves the line - a subcontract's shortfall job the blanks never came for, its siblings having made the rest. Its blanks go back free. The closure's own announcement moves the order on when what the others made now covers the line (BR-PRD-06) | `OrderRemainderClosed` |
 | PENDING_PREPRESS / READY / ON_HOLD | *(unchanged)* + child PENDING_PREPRESS or READY | split for subcontracting | Warehouse manager | ORDER only (BR-PRD-11); 0 < split < quantity not yet issued (BR-PRD-12); active subcontractor; child inherits the parent's prepress result | — |
 | READY | SUBCONTRACTED | send to subcontractor (child only) | Warehouse staff | `SUBCONTRACT` PO approved (BR-PRD-13); SUPPLIED_BLANKS: blanks scanned to the subcontractor location (BR-PRD-15) | — |
 | SUBCONTRACTED | QC | subcontract goods receipt posted | system | SUPPLIED_BLANKS: blank reconciliation done, excess loss approved (BR-PRD-16, 17) | — |
@@ -882,6 +886,20 @@ stateDiagram-v2
 
 Once `PRINTING` or `SUBCONTRACTED`, the design cannot change (BR-PRD-07, BR-PRD-14) and
 cancellation follows BR-PRD-10.
+
+**Short of the plan** (review 2026-10-25, S6): a stop scraps the good units because they are sold to nobody else -
+right when the customer cancels, wrong when the customer still wants what was printed. Completing short is the way
+for the second case: the 9,940 good cups of 10,000 go to the customer, the order is billed for 9,940. Lowering what
+an order is worth is a sale's decision, so it takes two people: Sales records the customer's agreement on the line
+(at most how many units, how it was given - the line keeps who and when), the warehouse manager completes the job
+within it. A cancellation of the order afterwards keeps and refunds out of the money still the order's: the refund
+the shortfall asked for is not paid out twice (`Order.cancel`, `ck_order_cancellation_fee`). Delivering part of a
+print run *before* the job completes (5,000 now for an event, the rest later) is not built: it needs the order and
+packing to take print goods in parts - a decision for the team (open question). Known limits, shared with closing a
+remainder: the sales rollups still count the order as placed (a closure does not lower them); an order paid in full
+for what it is now worth still reads PARTIALLY_PAID, as "paid in full" compares with the original total
+(`ck_order_paid_in_full`) - its amount due is 0; a new agreement replaces the last on the line, the audit trail keeps
+who recorded each.
 
 Decided 2026-10-13: a subcontractor's goods get **one** inspection, the production QC against the approved sample.
 The warehouse counts the receipt and reconciles the blanks; receiving runs no QC of its own on a `SUBCONTRACT` PO and
@@ -938,6 +956,8 @@ stateDiagram-v2
     SENT --> EXPIRED: validity ends
     ACCEPTED --> CONVERTED: sales order created
     ACCEPTED --> CANCELLED: a SKU on it stopped (Sales, reason)
+    SENT --> CANCELLED: withdrawn before the customer answers (Sales, reason)
+    CHANGES_REQUESTED --> CANCELLED: the changes are not offered (Sales, reason)
     DRAFT --> CANCELLED
     CONVERTED --> [*]
     EXPIRED --> [*]
@@ -950,5 +970,8 @@ stateDiagram-v2
 | SENT | ACCEPTED | accept | Customer (portal) | within validity; every new design has an APPROVED sample (BR-PRD-08) | — |
 | ACCEPTED | CONVERTED | create order | Sales staff or order coordinator (`sales-quote-conversions:CREATE`; editing a quote is Sales' - `sales-quotes:UPDATE`, which the coordinator does not hold, decision 2026-10-17) | lines reserved (BR-ORD-001) | `OrderPlaced` |
 | ACCEPTED | CANCELLED | cancel | Sales staff | a SKU on the quote is INACTIVE/DISCONTINUED, so it can never be converted; reason required and kept in the history; the customer still sees it; a new quote follows if the goods are still wanted (decision 2026-10-17) | — |
+| SENT | CANCELLED | withdraw | Sales staff (`sales-quotes:UPDATE`) | reason required - the customer reads it with the quote, which stays visible to them as withdrawn and can no longer be accepted (a price typed wrong, a design the customer dropped; a corrected offer is a new quote). A customer's acceptance and Sales' withdrawal of the same version are taken one after the other: whichever is first wins, the other is refused - the customer told it was withdrawn and why, not that the quote changed (review 2026-10-25, S8) | — |
+| CHANGES_REQUESTED | CANCELLED | decline the changes | Sales staff | reason required, shown to the customer | — |
+| DRAFT (revision 2 or later) | CANCELLED | drop the revision | Sales staff | reason required; the customer, who saw the earlier revision, sees the quote ended with its lines but without the dropped draft's prices - they were never offered (review 2026-10-25, S8) | — |
 | SENT | EXPIRED | validity ends | system | — | — |
 

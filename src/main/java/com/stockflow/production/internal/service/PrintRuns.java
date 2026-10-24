@@ -65,6 +65,23 @@ public interface PrintRuns {
                                    String packingLocation);
 
     /**
+     * The job cannot reach its plan and the customer agreed with Sales to go without the rest (review 2026-10-25, S6):
+     * completed with the good units QC passed, or - with none - ended CANCELLED, its whole plan given up (a shortfall
+     * job of a subcontract the blanks never came for: its siblings made the rest). The sales order line gives up the
+     * units not made, within the agreement Sales recorded on it - the order is worth less, payment refunds what was
+     * paid above that; the goods go to packing as on any completion, the blanks not printed go back and the line's
+     * blanks never issued are let go. The Warehouse Manager's decision, saying why.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code INVALID_PRODUCTION_TRANSITION} unless an order's
+     *         in-house job between rounds (READY, MATERIAL_ISSUED, or held from there; PENDING_PREPRESS with nothing
+     *         made) and fewer good units than planned, its order live; {@code VALIDATION_FAILED} without a reason;
+     *         {@code PRODUCTION_SHORTFALL_NOT_AGREED} beyond the customer's agreement; {@code ORDER_INVALID_TRANSITION}
+     *         when the order is no longer being printed for
+     */
+    ProductionOrders.Detail completeShort(CurrentUser user, UUID productionOrderId, String reason,
+                                          String packingLocation);
+
+    /**
      * SCRUM-401, decision Q2. Stop once printing started (PRINTING, QC, or ON_HOLD from PRINTING): the run's
      * output so far is recorded, the printed goods are kept on the record and written off (sold to nobody else),
      * the unprinted blanks go back. An amount the customer agreed to pay is Sales' to enter on the order.

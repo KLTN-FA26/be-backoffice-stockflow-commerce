@@ -153,8 +153,24 @@ public record OrderSummary(
         }
     }
 
-    /** How much of one line went out: in shipments not returned, delivered, and closed. */
-    public record LineProgress(UUID lineId, int shippedQuantity, int deliveredQuantity, int cancelledQuantity) {
+    /**
+     * How much of one line went out: in shipments not returned, delivered, and closed; and for a print line production
+     * could not finish, what the customer agreed to go without (null when nothing was agreed).
+     */
+    public record LineProgress(UUID lineId, int shippedQuantity, int deliveredQuantity, int cancelledQuantity,
+                               ProductionShortfall productionShortfall) {
+
+        public LineProgress(UUID lineId, int shippedQuantity, int deliveredQuantity, int cancelledQuantity) {
+            this(lineId, shippedQuantity, deliveredQuantity, cancelledQuantity, null);
+        }
+    }
+
+    /**
+     * Review 2026-10-25 of S6: the customer goes without at most {@code agreedQuantity} units of a print line, as Sales
+     * recorded it; {@code closedQuantity} of them production closed, completing the line short.
+     */
+    public record ProductionShortfall(int agreedQuantity, String note, UUID agreedBy, Instant agreedAt,
+                                      int closedQuantity) {
     }
 
     /** Units of one order line in one shipment. */

@@ -4,6 +4,7 @@ import com.stockflow.order.api.ListOrdersQuery;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.internal.controller.dto.OrderStatusChangeResponse;
+import com.stockflow.order.internal.controller.dto.AgreeProductionShortfallRequest;
 import com.stockflow.order.internal.controller.dto.CloseRemainderRequest;
 import com.stockflow.order.api.CancelOrderCommand;
 import com.stockflow.order.api.CancellationOutcome;
@@ -269,6 +270,25 @@ class OrderController {
         ScopeGuards.requireBackOffice(user);
         return ApiResponse.ok(OrderWebMapper.toResponse(orderService.closeRemainder(orderId, request.reasonCode(),
                 request.note(), OrderWebMapper.toFee(request.agreedFee()), user.userId())));
+    }
+
+    /**
+     * Review 2026-10-25 of S6: production cannot finish a print line - the blanks ran out, a reprint would come too
+     * late - and the customer agreed to go without some of it. Sales or the coordinator record it, as they close a
+     * remainder ({@code sales-order-cancellations:UPDATE}): the warehouse manager then completes the line's job short
+     * within it, and the order refunds what was paid for the units not made.
+     */
+    @PostMapping("/{orderId}/lines/{lineId}/production-shortfall-agreement")
+    @Operation(summary = "Record that the customer goes without at most N units of a print line production cannot "
+            + "finish (S6); production completes it short within that")
+    @RequiresPermission(resource = OrderResources.ORDER_CANCELLATIONS,
+            action = Action.UPDATE, scope = DataScope.ALL)
+    public ApiResponse<OrderResponse> agreeProductionShortfall(@PathVariable UUID orderId, @PathVariable UUID lineId,
+                                                               @Valid @RequestBody AgreeProductionShortfallRequest request,
+                                                               @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(OrderWebMapper.toResponse(orderService.agreeProductionShortfall(orderId, lineId,
+                request.quantity(), request.note(), user.userId())));
     }
 
     /**

@@ -1071,6 +1071,36 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         return saved(order);
     }
 
+    @Override
+    @com.stockflow.common.audit.Auditable(action = com.stockflow.common.audit.AuditAction.TRANSITION,
+            resourceType = "order", resourceId = "#orderId")
+    public OrderSummary agreeProductionShortfall(UUID orderId, UUID orderLineId, int units, String note, UUID by) {
+        Order order = lockOrder(orderId);
+        order.agreeProductionShortfall(orderLineId, units, note, by, clock.instant());
+        // The note is what the customer said: it stays on the line, not in the log.
+        log.info("Order {}: the customer goes without at most {} unit(s) of line {}", order.orderNumber(), units,
+                orderLineId);
+        return saved(order);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Not audited here: it commits or rolls back with production's short completion, which is audited as its
+     * transition - an audit row written on return from here would outlive a rollback after it.</p>
+     */
+    @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public OrderSummary closeProductionShortfall(UUID orderId, UUID orderLineId, int units, UUID by) {
+        Order order = lockOrder(orderId);
+        BigDecimal closed = order.closeProductionShortfall(orderLineId, units, by, clock.instant());
+        // Production completes or ends the job and settles its blanks in this transaction; why is on the line's
+        // agreement and on the production order's record.
+        log.info("Order {}: {} unit(s) of line {} not made, closed ({} {} worth)", order.orderNumber(), units,
+                orderLineId, closed, order.total().currency());
+        return saved(order);
+    }
+
     private OrderSummary saved(Order order) {
         Order saved = repository.save(order);
         closeUndecidableCancellationRequest(order);
@@ -1185,6 +1215,12 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                 lifecycleOf(order));
     }
 
+    private static OrderSummary.ProductionShortfall productionShortfallOf(OrderLine line) {
+        OrderLine.ShortfallAgreement agreed = line.shortfallAgreement();
+        return agreed == null ? null : new OrderSummary.ProductionShortfall(agreed.quantity(), agreed.note(),
+                agreed.agreedBy(), agreed.agreedAt(), line.shortfallClosedQuantity());
+    }
+
     /** The hold, the milestones, how much of each line went out and the shipments (G3-2). */
     static OrderSummary.Lifecycle lifecycleOf(Order order) {
         List<OrderSummary.LineProgress> progress = order.lines().stream()
@@ -1194,7 +1230,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                         order.shipments().stream()
                                 .filter(s -> s.status() == com.stockflow.order.api.OrderShipmentStatus.DELIVERED)
                                 .mapToInt(s -> s.quantities().getOrDefault(line.id(), 0)).sum(),
-                        line.cancelledQuantity()))
+                        line.cancelledQuantity(), productionShortfallOf(line)))
                 .toList();
         List<OrderSummary.Shipment> shipments = order.shipments().stream()
                 .map(s -> new OrderSummary.Shipment(s.id(), s.status(), s.amount(), s.billedAmount(),

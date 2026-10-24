@@ -144,6 +144,32 @@ SELECT pg_temp.expect_ok('WK18 a cancellation fee receivable', $q$
     INSERT INTO payment.receivable (id, order_id, customer_id, kind, amount, currency, issued_at, due_date)
     SELECT gen_random_uuid(), o.id, o.customer_id, 'CANCELLATION_FEE', 10000, 'VND', NOW(), CURRENT_DATE
       FROM ordering.customer_order o WHERE o.id = md5('qa11:order')::uuid $q$);
+-- V20261025040100 (review of S6): kept and refunded out of the money still the order's.
+SELECT pg_temp.expect_fail('WK18a kept counts a refund a production shortfall already asked for', $q$
+    UPDATE ordering.customer_order SET remainder_refund_amount = 4000 WHERE id = md5('qa11:order')::uuid $q$);
+SELECT pg_temp.expect_ok('WK18b 20,000 paid, 4,000 asked back by a shortfall: an agreed 30,000 keeps the 16,000 left', $q$
+    UPDATE ordering.customer_order SET remainder_refund_amount = 4000, cancellation_retained_amount = 16000
+     WHERE id = md5('qa11:order')::uuid $q$);
+
+\echo '--- a customer agreeing to take a print line short (V20261025040100, review of S6)'
+INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
+VALUES (md5('qa11:stock-line')::uuid, md5('qa11:order')::uuid, 'SOFA-3S-GREY', 10, 2000, 'VND');
+SELECT pg_temp.expect_fail('SF1 an agreement on a stock line: nothing is printed for it', $q$
+    UPDATE ordering.order_line SET shortfall_agreed_quantity = 1, shortfall_agreed_note = 'n',
+        shortfall_agreed_by = (SELECT id FROM identity.app_user ORDER BY id LIMIT 1), shortfall_agreed_at = NOW()
+     WHERE id = md5('qa11:stock-line')::uuid $q$);
+SELECT pg_temp.expect_fail('SF2 an agreement without how it was given', $q$
+    UPDATE ordering.order_line SET shortfall_agreed_quantity = 1,
+        shortfall_agreed_by = (SELECT id FROM identity.app_user ORDER BY id LIMIT 1), shortfall_agreed_at = NOW()
+     WHERE id = md5('qa11:stock-line')::uuid $q$);
+SELECT pg_temp.expect_fail('SF3 units closed short with no agreement', $q$
+    UPDATE ordering.order_line SET cancelled_quantity = 1, shortfall_closed_quantity = 1
+     WHERE id = md5('qa11:stock-line')::uuid $q$);
+SELECT pg_temp.expect_true('SF4 an agreement is on a print line, leaves the customer a unit, and caps the closure',
+    pg_get_constraintdef((SELECT oid FROM pg_constraint WHERE conname = 'ck_order_line_shortfall_agreement'))
+        LIKE '%design_snapshot_id IS NOT NULL%shortfall_agreed_quantity < quantity%'
+    AND pg_get_constraintdef((SELECT oid FROM pg_constraint WHERE conname = 'ck_order_line_shortfall_closed'))
+        LIKE '%shortfall_closed_quantity <= cancelled_quantity%COALESCE(shortfall_agreed_quantity, 0)%');
 
 \echo '--- blanks at a subcontractor, per subcontractor and sending warehouse (V20261017000470, Q7/Q9)'
 SELECT pg_temp.expect_fail('WK19 a SUBCONTRACTOR location owned by no site', $q$

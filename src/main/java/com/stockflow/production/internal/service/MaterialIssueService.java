@@ -284,6 +284,21 @@ class MaterialIssueService implements MaterialIssues {
         List<UUID> candidates = new ArrayList<>(salesOrderHolds(order));
         inventory.productionHolds(order.id()).stream().map(StockReservation::reservationId).forEach(candidates::add);
         candidates.removeIf(issued::contains);
+        // Review 2026-10-25 of S6: holds that are over on purpose are skipped - a split child that finished first adds
+        // its goods to the line's holds (ProductionCompletion), consumed at packing at once; a split that moved a whole
+        // checkout hold to a subcontractor released it - or the root could not be issued once its subcontractor
+        // delivered before the print shop started. Only those: a hold still waiting for payment, one that expired, or
+        // one released by the order's cancellation (before production heard of it) stays a candidate for issue to
+        // refuse, never replaced by fresh blanks.
+        List<HoldView> views = inventory.holds(candidates);
+        boolean orderLive = views.stream().anyMatch(hold -> hold.status() == HoldView.Status.RELEASED)
+                && order.salesOrderId() != null && salesOrders.findById(order.salesOrderId())
+                        .map(sales -> sales.status() != com.stockflow.order.api.OrderStatus.CANCELLED).orElse(false);
+        Set<UUID> over = views.stream()
+                .filter(hold -> hold.status() == HoldView.Status.CONSUMED
+                        || orderLive && hold.status() == HoldView.Status.RELEASED)
+                .map(HoldView::reservationId).collect(Collectors.toSet());
+        candidates.removeIf(over::contains);
         return candidates;
     }
 

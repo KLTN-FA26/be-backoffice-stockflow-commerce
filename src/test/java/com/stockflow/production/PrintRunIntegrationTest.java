@@ -65,6 +65,7 @@ import java.util.concurrent.Future;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * SCRUM-398..401 / BE 411, 418, 420, 413 against a real PostgreSQL, from blanks issued to goods in packing:
@@ -492,6 +493,166 @@ class PrintRunIntegrationTest {
         assertThat(inventory.availableToPromise(BLANK)).as("rejection puts nothing on sale")
                 .isEqualTo(atp - 1);   // only the reprint hold of 1 changed it
         assertThat(heldAt(line, PRINT_SHOP)).isEqualTo(3);
+    }
+
+    @Test
+    @DisplayName("S6: the blanks run out and the customer agrees with Sales to take the 8 good of 10: refused until Sales "
+            + "records it, and beyond it; then completed short, the goods to packing, the order line gives up 2 and is "
+            + "ready to fulfil, the 2 not made worth 4 000 to refund")
+    void completedShortWithTheCustomersAgreement() throws Exception {
+        Line line = released(10);
+        UUID lineId = lineOf(line);
+        issueAll(line.productionOrderId());
+        runs.startPrinting(printer, line.productionOrderId());
+        runs.recordOutput(printer, line.productionOrderId(), 10, List.of());
+        ProductionOrders.Detail afterQc = runs.recordQc(inspector, line.productionOrderId(), 8, 2, "2 lem mực", null);
+        assertThat(afterQc.summary().status()).isIn(ProductionOrder.Status.READY, ProductionOrder.Status.ON_HOLD);
+
+        int holdsAfterQc = inventory.productionHolds(line.productionOrderId()).size();
+        assertThat(code(catchThrowable(() -> runs.completeShort(manager, line.productionOrderId(), " ", null))))
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(code(catchThrowable(() -> runs.completeShort(manager, line.productionOrderId(), "hết phôi", null))))
+                .as("the warehouse manager alone does not lower what the order is worth")
+                .isEqualTo(ErrorCode.PRODUCTION_SHORTFALL_NOT_AGREED);
+        agreeShortfall(line, lineId, 1, "Khách đồng ý thiếu 1 ly");
+        assertThat(code(catchThrowable(() -> runs.completeShort(manager, line.productionOrderId(), "hết phôi", null))))
+                .as("2 not made, 1 agreed").isEqualTo(ErrorCode.PRODUCTION_SHORTFALL_NOT_AGREED);
+        assertThat(detail(line.productionOrderId()).summary().status()).as("rolled back whole")
+                .isEqualTo(afterQc.summary().status());
+        assertThat(inventory.productionHolds(line.productionOrderId())).as("nothing let go").hasSize(holdsAfterQc);
+        agreeShortfall(line, lineId, 2, "Khách đồng ý nhận 8 ly, không chờ in bù (Zalo 25/10)");
+        ProductionOrders.Detail done = runs.completeShort(manager, line.productionOrderId(),
+                "Hết phôi, khách đồng ý nhận 8 ly", null);
+        assertThat(done.summary().status()).isEqualTo(ProductionOrder.Status.COMPLETED);
+        assertThat(jdbc.queryForObject("SELECT short_completion_reason FROM production.production_order WHERE id = ?",
+                String.class, line.productionOrderId())).contains("8 ly");
+        assertThat(consumedAt(line, PACKING)).as("the 8 good units left stock at packing").isEqualTo(8);
+        assertThat(inventory.productionHolds(line.productionOrderId())).as("no reprint blanks kept").isEmpty();
+        assertThat(heldAt(line, PRINT_SHOP)).isZero();
+        assertThat(recorded.matching(ProductionCompleted.class,
+                e -> e.productionOrderId().equals(line.productionOrderId())))
+                .singleElement().satisfies(e -> assertThat(e.goodQuantity()).isEqualTo(8));
+        assertThat(recorded.matching(com.stockflow.contracts.OrderRemainderClosed.class,
+                e -> e.orderId().equals(line.orderId())))
+                .singleElement().satisfies(e -> {
+                    assertThat(e.reasonCode()).isEqualTo("PRODUCTION_SHORTFALL");
+                    assertThat(e.lines()).singleElement().satisfies(l -> assertThat(l.quantity()).isEqualTo(2));
+                    assertThat(e.refundableAmount()).isEqualByComparingTo("4000");
+                });
+        assertThat(jdbc.queryForMap("""
+                SELECT cancelled_quantity, shortfall_agreed_quantity, shortfall_closed_quantity, shortfall_agreed_note,
+                       shortfall_agreed_by FROM ordering.order_line WHERE id = ?""", lineId))
+                .as("the order line keeps who agreed what").containsEntry("cancelled_quantity", 2)
+                .containsEntry("shortfall_agreed_quantity", 2).containsEntry("shortfall_closed_quantity", 2)
+                .containsEntry("shortfall_agreed_by", sales.userId())
+                .satisfies(row -> assertThat((String) row.get("shortfall_agreed_note")).contains("Zalo"));
+        com.stockflow.support.Await.until("the order is ready to fulfil", java.time.Duration.ofSeconds(10),
+                () -> salesOrders.findById(line.orderId()).orElseThrow().status()
+                        == com.stockflow.order.api.OrderStatus.READY_TO_FULFILL);
+        assertThat(code(catchThrowable(() -> runs.completeShort(manager, line.productionOrderId(), "again", null))))
+                .isEqualTo(ErrorCode.INVALID_PRODUCTION_TRANSITION);
+        assertThat(catchThrowable(() -> agreeShortfall(line, lineId, 3, "late")))
+                .as("printing is over").isInstanceOf(com.stockflow.order.internal.domain.InvalidOrderTransitionException.class);
+    }
+
+    @Test
+    @DisplayName("S6 review: cancelled after a shortfall - the agreed amount is kept and the rest refunded out of what "
+            + "is left of the money; the 4 000 the shortfall asked back is not refunded a second time")
+    void cancelledAfterAShortfall() throws Exception {
+        Line line = released(10);
+        UUID lineId = lineOf(line);
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO payment.payment (id, order_id, amount, currency, method, status, captured_at, created_at)
+                VALUES (?, ?, 20000, 'VND', 'BANK_TRANSFER', 'CAPTURED', NOW(), NOW())""", Identifiers.newId(),
+                line.orderId()));
+        issueAll(line.productionOrderId());
+        runs.startPrinting(printer, line.productionOrderId());
+        runs.recordOutput(printer, line.productionOrderId(), 10, List.of());
+        runs.recordQc(inspector, line.productionOrderId(), 8, 2, "2 lem mực", null);
+        agreeShortfall(line, lineId, 2, "Khách đồng ý nhận 8 ly");
+        runs.completeShort(manager, line.productionOrderId(), "Hết phôi", null);
+        Await.until("the shortfall is asked back", ASYNC, () -> jdbc.queryForObject("""
+                SELECT COALESCE(SUM(amount), 0) FROM payment.refund WHERE order_id = ?""", BigDecimal.class,
+                line.orderId()).compareTo(new BigDecimal("4000")) == 0);
+        Await.until("printing started is known to the order", ASYNC, () -> jdbc.queryForObject(
+                "SELECT printing_started_at IS NOT NULL FROM ordering.customer_order WHERE id = ?", Boolean.class,
+                line.orderId()));
+
+        cancelWithFee(line.orderId(), null, new CancellationFee(new BigDecimal("10000"), "Đã in",
+                "Thoả thuận với khách 25/10: phí in 8 ly"));
+        assertThat(jdbc.queryForMap("""
+                SELECT remainder_refund_amount, cancellation_retained_amount FROM ordering.customer_order
+                 WHERE id = ?""", line.orderId())).satisfies(row -> {
+            assertThat((BigDecimal) row.get("remainder_refund_amount")).isEqualByComparingTo("4000");
+            assertThat((BigDecimal) row.get("cancellation_retained_amount")).isEqualByComparingTo("10000");
+        });
+        assertThat(recorded.matching(com.stockflow.contracts.OrderCancelled.class,
+                e -> e.orderId().equals(line.orderId()))).singleElement()
+                .satisfies(e -> assertThat(e.refundableAmount()).as("20 000 - 4 000 asked - 10 000 kept")
+                        .isEqualByComparingTo("6000"));
+        Await.until("the rest is asked back", ASYNC, () -> jdbc.queryForObject("""
+                SELECT COALESCE(SUM(amount), 0) FROM payment.refund WHERE order_id = ?""", BigDecimal.class,
+                line.orderId()).compareTo(new BigDecimal("10000")) == 0);
+        Thread.sleep(300);
+        assertThat(jdbc.queryForObject("SELECT SUM(amount) FROM payment.refund WHERE order_id = ?", BigDecimal.class,
+                line.orderId())).as("10 000 back in all, 10 000 kept").isEqualByComparingTo("10000");
+    }
+
+    @Test
+    @DisplayName("S6 review: a shortfall job with nothing made - a subcontract's gap the blanks never came for - is "
+            + "closed within the agreement: CANCELLED, its blank let go, the line gives up 1 and the order, covered "
+            + "by what the others made, is ready to fulfil")
+    void shortfallJobWithNothingMadeIsClosed() throws Exception {
+        Line line = released(10);
+        UUID lineId = lineOf(line);
+        UUID childId = subcontracts.split(manager, line.productionOrderId(),
+                split(4, ProductionOrder.SubcontractMethod.SUPPLIED_BLANKS, printSubcontractor())).summary().id();
+        UUID poId = purchaseOrderOf(childId);
+        approvePurchaseOrder(poId);
+        subcontracts.sendOut(storekeeper, childId);
+        sendPurchaseOrder(poId);
+        UUID receipt = receiveSubcontracted(poId, 3);
+        subcontracts.reconcile(storekeeper, childId, receipt, 0, 0, null);
+        runs.recordQc(inspector, childId, 3, 0, null, PACKING);
+        subcontracts.recall(storekeeper, childId, new Subcontracting.Recall(UUID.randomUUID(), 0, 1, null,
+                "lost in transit"));
+        UUID gap = subcontracts.takeInHouse(manager, childId, 1, "subcontractor out of ink", PACKING).summary().id();
+        issueAll(line.productionOrderId());
+        runs.startPrinting(printer, line.productionOrderId());
+        runs.recordOutput(printer, line.productionOrderId(), 6, List.of());
+        runs.recordQc(inspector, line.productionOrderId(), 6, 0, null, PACKING);
+        Await.until("9 of 10 made, recorded", ASYNC, () -> jdbc.queryForObject("""
+                SELECT COALESCE(SUM(p.good_quantity), 0) FROM ordering.order_line_production p
+                  JOIN ordering.order_line l ON l.id = p.order_line_id WHERE l.order_id = ?""",
+                Integer.class, line.orderId()) == 9);
+        assertThat(salesOrders.findById(line.orderId()).orElseThrow().status())
+                .isEqualTo(com.stockflow.order.api.OrderStatus.IN_PRODUCTION);
+
+        assertThat(code(catchThrowable(() -> runs.completeShort(manager, gap, "không còn phôi", null))))
+                .isEqualTo(ErrorCode.PRODUCTION_SHORTFALL_NOT_AGREED);
+        agreeShortfall(line, lineId, 1, "Khách đồng ý nhận 9 ly");
+        ProductionOrders.Detail closed = runs.completeShort(manager, gap, "không còn phôi", null);
+        assertThat(closed.summary().status()).isEqualTo(ProductionOrder.Status.CANCELLED);
+        assertThat(jdbc.queryForObject("SELECT cancellation_reason FROM production.production_order WHERE id = ?",
+                String.class, gap)).startsWith("Closed short, nothing made").contains("không còn phôi");
+        assertThat(inventory.productionHolds(gap)).as("its blank let go").isEmpty();
+        assertThat(recorded.matching(com.stockflow.contracts.OrderRemainderClosed.class,
+                e -> e.orderId().equals(line.orderId()))).singleElement().satisfies(e -> {
+                    assertThat(e.lines()).singleElement().satisfies(l -> assertThat(l.quantity()).isEqualTo(1));
+                    assertThat(e.refundableAmount()).isEqualByComparingTo("2000");
+                });
+        Await.until("covered by what was made, the order moves on", ASYNC,
+                () -> salesOrders.findById(line.orderId()).orElseThrow().status()
+                        == com.stockflow.order.api.OrderStatus.READY_TO_FULFILL);
+    }
+
+    private UUID lineOf(Line line) {
+        return jdbc.queryForObject("SELECT id FROM ordering.order_line WHERE order_id = ?", UUID.class, line.orderId());
+    }
+
+    private void agreeShortfall(Line line, UUID lineId, int units, String note) {
+        WithCurrentUser.run(TestUsers.admin(), DataScope.ALL,
+                () -> salesOrders.agreeProductionShortfall(line.orderId(), lineId, units, note, sales.userId()));
     }
 
     @Test
