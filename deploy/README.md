@@ -64,16 +64,17 @@ Postgres or MinIO costs a few KB rather than a platform thread's stack. The data
 (`DB_POOL_MAX`) is therefore what bounds concurrent database work.
 
 Mail (SCRUM-352): every e-mail - supplier purchase orders, staff notices, the portal invitation and the customer
-order mail (placed, handed to the carrier, delivered, delivery failed, cancelled, part closed) - goes through Resend.
-**Before deploying this change**, set in `/opt/stockflow/.env`: `RESEND_API_KEY` (Resend dashboard, API Keys) and
-`RESEND_FROM` (e.g. `"StockFlow <no-reply@your-domain>"`, on a domain verified in Resend: its SPF and DKIM records in
-DNS). Without them the application refuses to start and deploy.sh rolls back. Optional: `RESEND_REPLY_TO` (Sales'
-mailbox), `RESEND_WEBHOOK_SECRET` with a webhook in Resend pointing at
+order mail (placed, handed to the carrier, delivered, delivery failed, cancelled, part closed, returns) - goes through
+one transport. The server keeps sending to its Mailpit (`mail.<domain>`) until you switch it to Resend: set in
+`/opt/stockflow/.env` `EMAIL_PROVIDER=resend`, `RESEND_API_KEY` (Resend dashboard, API Keys; "Sending access" is
+enough) and `RESEND_FROM` (e.g. `"StockFlow <no-reply@your-domain>"`, on a domain verified in Resend: its SPF and DKIM
+records in DNS), and `MAIL_HEALTH_ENABLED=false`. With `EMAIL_PROVIDER=resend` and either value missing the application
+refuses to start and deploy.sh rolls back, so set all of them before the deploy that switches. Optional:
+`RESEND_REPLY_TO` (Sales' mailbox), `RESEND_WEBHOOK_SECRET` with a webhook in Resend pointing at
 `https://api.<domain>/api/v1/notifications/webhooks/resend` (events `email.delivered`, `email.bounced`,
-`email.complained`, `email.delivery_delayed`, `email.failed`) for delivery reports. To stay on Mailpit at
-`mail.<domain>` instead, set `EMAIL_PROVIDER=smtp`. A server holding copies of real customers should set
-`CUSTOMER_EMAIL_ENABLED=false`. Check after the deploy: place a test order for a customer whose e-mail you own; the
-mail arrives and `notification.delivery_log` has a `SENT` row with a `provider_message_id`.
+`email.complained`, `email.delivery_delayed`, `email.failed`) for delivery reports. A server holding copies of real
+customers should set `CUSTOMER_EMAIL_ENABLED=false`. Check after switching: place a test order for a customer whose
+e-mail you own; the mail arrives and `notification.delivery_log` has a `SENT` row with a `provider_message_id`.
 
 Before deploying this feature, set all six `PO_BUYER_*` / `PO_RECEIVING_ADDRESS` values from
 `.env.example` in `/opt/stockflow/.env`. Compose refuses missing or empty values. Use the actual

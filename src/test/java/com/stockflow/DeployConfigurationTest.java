@@ -28,7 +28,7 @@ class DeployConfigurationTest {
     }
 
     @Test
-    @DisplayName("SCRUM-352: the server gets the Resend settings; the dev profile requires the sender and sends via Resend")
+    @DisplayName("SCRUM-352: the server gets the Resend settings; the dev server stays on SMTP until switched to Resend")
     void theResendSettingsReachTheServer() throws Exception {
         String compose = Files.readString(Path.of("deploy/docker-compose.yml"), StandardCharsets.UTF_8);
         String application = Files.readString(Path.of("src/main/resources/application.yml"), StandardCharsets.UTF_8);
@@ -39,7 +39,9 @@ class DeployConfigurationTest {
             assertThat(compose).as("compose passes %s", variable).contains(variable + ": ${" + variable + ":");
             assertThat(application + dev).as("the application reads %s", variable).contains("${" + variable);
         }
-        assertThat(dev).as("dev sends through Resend unless told otherwise").contains("provider: ${EMAIL_PROVIDER:resend}")
-                .contains("from: ${RESEND_FROM}");
+        // Deployed on every push to develop: a server not yet given a Resend key must still start (on its Mailpit).
+        assertThat(dev).as("dev stays on SMTP unless told to use Resend").contains("provider: ${EMAIL_PROVIDER:smtp}")
+                .contains("from: ${RESEND_FROM:}");
+        assertThat(compose).as("so does the deployed server").contains("EMAIL_PROVIDER: ${EMAIL_PROVIDER:-smtp}");
     }
 }
