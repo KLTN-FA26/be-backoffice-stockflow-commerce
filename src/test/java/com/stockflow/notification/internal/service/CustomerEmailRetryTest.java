@@ -35,11 +35,32 @@ class CustomerEmailRetryTest {
     private final PendingPublicationReader reader = mock(PendingPublicationReader.class);
     private final EventSerializer serializer = mock(EventSerializer.class);
     private final OrderNotificationListener listener = mock(OrderNotificationListener.class);
+    private final ReturnNotificationListener returns = mock(ReturnNotificationListener.class);
     private final CustomerEmailLog log = mock(CustomerEmailLog.class);
     private final CustomerEmailComposer composer = new CustomerEmailComposer(properties());
 
     private CustomerEmailRetry retry() {
-        return new CustomerEmailRetry(reader, serializer, listener, composer, log, Clock.fixed(NOW, ZoneOffset.UTC));
+        return new CustomerEmailRetry(reader, serializer, listener, returns, composer, log,
+                Clock.fixed(NOW, ZoneOffset.UTC));
+    }
+
+    @Test
+    @DisplayName("a failed return message is retried through the return listener, under that listener's own id")
+    void returnMessagesAreRetriedToo() {
+        var event = new com.stockflow.contracts.ReturnClosed(UUID.randomUUID(), "RMA-20261025-0001", UUID.randomUUID(),
+                "SO-20261024-0001", UUID.randomUUID(), "EXPIRED", false, null, NOW);
+        String type = com.stockflow.contracts.ReturnClosed.class.getName();
+        when(reader.page(anyString(), anyString(), any(), nullable(UUID.class), eq(CustomerEmailRetry.PAGE)))
+                .thenReturn(List.of());
+        when(reader.page(eq(type), anyString(), any(), nullable(UUID.class), eq(CustomerEmailRetry.PAGE)))
+                .thenReturn(List.of(new PendingPublication(new UUID(0, 9), "expired")));
+        when(serializer.deserialize("expired", com.stockflow.contracts.ReturnClosed.class)).thenReturn(event);
+
+        retry().retry();
+
+        verify(reader).page(eq(type), org.mockito.ArgumentMatchers.contains("ReturnNotificationListener"), any(),
+                nullable(UUID.class), eq(CustomerEmailRetry.PAGE));
+        verify(returns).on(event);
     }
 
     @Test

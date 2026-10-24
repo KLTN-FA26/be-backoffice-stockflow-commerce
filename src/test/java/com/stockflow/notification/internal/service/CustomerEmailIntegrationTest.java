@@ -188,6 +188,31 @@ class CustomerEmailIntegrationTest {
     }
 
     @Test
+    @DisplayName("a return's step (SCRUM-243) reaches the customer the same way: once, in Vietnamese, named by its RMA")
+    void returnStepIsMailed() throws Exception {
+        UUID returnId = Identifiers.newId();
+        var event = new com.stockflow.contracts.ReturnClosed(returnId, "RMA-IT-1", Identifiers.newId(), "SO-IT-1",
+                customer, "EXPIRED", false, null, Instant.parse("2026-10-25T07:05:00Z"));
+        publish(event);
+        String reference = "customer-mail:return.expired:" + returnId;
+        Await.until("the return e-mail is recorded", ASYNC, () -> !rows(reference).isEmpty());
+
+        assertThat(rows(reference)).singleElement().satisfies(row -> {
+            assertThat(row.get("status")).isEqualTo("SENT");
+            assertThat(row.get("recipient")).isEqualTo(address);
+        });
+        Await.until("the return publication is complete", ASYNC, () -> jdbc.queryForObject("""
+                SELECT count(*) FROM event_publication WHERE completion_date IS NULL AND serialized_event LIKE ?""",
+                Long.class, "%" + returnId + "%") == 0);
+        assertThat(requests(reference)).hasSize(1);
+        JsonNode body = json.readTree(requests(reference).getFirst().body());
+        assertThat(body.at("/subject").asText()).isEqualTo("Yêu cầu đổi trả RMA-IT-1 đã hết hiệu lực");
+        assertThat(body.at("/text").asText()).contains("Mã yêu cầu đổi trả: RMA-IT-1", "Mã đơn hàng: SO-IT-1",
+                "kèm mã vận đơn");
+        assertThat(body.at("/tags/0/value").asText()).isEqualTo("return_expired");
+    }
+
+    @Test
     @DisplayName("422 from Resend: recorded as a final failure, the event completes, nothing is retried")
     void refusedRecipient() {
         RESEND.script.add(new ResendStub.Response(422,

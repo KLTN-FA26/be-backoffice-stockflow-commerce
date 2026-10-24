@@ -6,6 +6,12 @@ import com.stockflow.contracts.OrderCancelled;
 import com.stockflow.contracts.OrderDelivered;
 import com.stockflow.contracts.OrderPlaced;
 import com.stockflow.contracts.OrderRemainderClosed;
+import com.stockflow.contracts.ReturnApproved;
+import com.stockflow.contracts.ReturnClosed;
+import com.stockflow.contracts.ReturnReceived;
+import com.stockflow.contracts.ReturnRejected;
+import com.stockflow.contracts.ReturnRequested;
+import com.stockflow.contracts.ReturnResolved;
 import com.stockflow.contracts.ShipmentStatusChanged;
 
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
@@ -33,7 +39,7 @@ import java.util.function.Function;
  * Sends again the customer messages whose last attempt failed in a way worth retrying, once their back-off has passed.
  *
  * <p>The same shape as {@link PurchaseOrderNotificationRetry}: the incomplete publications of
- * {@link OrderNotificationListener}'s handlers are read a bounded page at a time ({@link PendingPublicationReader}) and
+ * {@link OrderNotificationListener}'s and {@link ReturnNotificationListener}'s handlers are read a bounded page at a time ({@link PendingPublicationReader}) and
  * handed to the listener's proxy, which delivers them on its own threads and, on success, lets Spring Modulith mark
  * them complete. No second queue, no republishing to other listeners.</p>
  *
@@ -60,34 +66,42 @@ class CustomerEmailRetry {
     private final Map<String, UUID> positions = new ConcurrentHashMap<>();
 
     CustomerEmailRetry(PendingPublicationReader publications, EventSerializer serializer,
-                       OrderNotificationListener listener, CustomerEmailComposer composer,
-                       CustomerEmailLog deliveries, Clock clock) {
+                       OrderNotificationListener orders, ReturnNotificationListener returns,
+                       CustomerEmailComposer composer, CustomerEmailLog deliveries, Clock clock) {
         this.publications = publications;
         this.serializer = serializer;
         this.deliveries = deliveries;
         this.clock = clock;
+        Class<?> order = OrderNotificationListener.class;
+        Class<?> rma = ReturnNotificationListener.class;
         this.routes = List.of(
-                route(OrderPlaced.class, composer::orderPlaced, listener::on),
-                route(ShipmentStatusChanged.class, composer::shipmentChanged, listener::on),
-                route(OrderDelivered.class, composer::orderDelivered, listener::on),
-                route(OrderCancelled.class, composer::orderCancelled, listener::on),
-                route(OrderRemainderClosed.class, composer::remainderClosed, listener::on));
+                route(order, OrderPlaced.class, composer::orderPlaced, orders::on),
+                route(order, ShipmentStatusChanged.class, composer::shipmentChanged, orders::on),
+                route(order, OrderDelivered.class, composer::orderDelivered, orders::on),
+                route(order, OrderCancelled.class, composer::orderCancelled, orders::on),
+                route(order, OrderRemainderClosed.class, composer::remainderClosed, orders::on),
+                route(rma, ReturnRequested.class, composer::returnRequested, returns::on),
+                route(rma, ReturnApproved.class, composer::returnApproved, returns::on),
+                route(rma, ReturnRejected.class, composer::returnRejected, returns::on),
+                route(rma, ReturnReceived.class, composer::returnReceived, returns::on),
+                route(rma, ReturnResolved.class, composer::returnResolved, returns::on),
+                route(rma, ReturnClosed.class, composer::returnClosed, returns::on));
     }
 
     /**
-     * One event type the listener handles: how to read its publications back, which message it calls for, and the
-     * listener method that sends it.
+     * One event type a customer-mail listener handles: how to read its publications back, which message it calls for,
+     * and the listener method that sends it.
      */
     record Route<E>(Class<E> type, String listenerId, Function<E, Optional<CustomerMessage>> message,
                     Consumer<E> dispatch) {
     }
 
-    private static <E> Route<E> route(Class<E> type, Function<E, Optional<CustomerMessage>> message,
-                                      Consumer<E> dispatch) {
+    private static <E> Route<E> route(Class<?> listener, Class<E> type,
+                                      Function<E, Optional<CustomerMessage>> message, Consumer<E> dispatch) {
         try {
-            var method = OrderNotificationListener.class.getMethod("on", type);
-            String listenerId = new TransactionalApplicationListenerMethodAdapter(null,
-                    OrderNotificationListener.class, method).getListenerId();
+            var method = listener.getMethod("on", type);
+            String listenerId = new TransactionalApplicationListenerMethodAdapter(null, listener, method)
+                    .getListenerId();
             return new Route<>(type, listenerId, message, dispatch);
         } catch (NoSuchMethodException missing) {
             throw new IllegalStateException("Customer e-mail retry target is missing for " + type.getSimpleName(),

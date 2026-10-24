@@ -4,6 +4,12 @@ import com.stockflow.contracts.OrderCancelled;
 import com.stockflow.contracts.OrderDelivered;
 import com.stockflow.contracts.OrderPlaced;
 import com.stockflow.contracts.OrderRemainderClosed;
+import com.stockflow.contracts.ReturnApproved;
+import com.stockflow.contracts.ReturnClosed;
+import com.stockflow.contracts.ReturnReceived;
+import com.stockflow.contracts.ReturnRejected;
+import com.stockflow.contracts.ReturnRequested;
+import com.stockflow.contracts.ReturnResolved;
 import com.stockflow.contracts.ShipmentStatusChanged;
 import com.stockflow.notification.internal.service.EmailContent.Fact;
 import com.stockflow.notification.internal.service.EmailContent.Table;
@@ -24,7 +30,7 @@ import java.util.ResourceBundle;
 import java.util.Set;
 
 /**
- * Decides which customer e-mail an order event calls for, and words it (SCRUM-352).
+ * Decides which customer e-mail an order or return event calls for, and words it (SCRUM-352; returns SCRUM-243).
  *
  * <p>Every word comes from {@code i18n/messages_<locale>.properties} under {@code email.*}; the customers are
  * Vietnamese and {@code stockflow.notification.email.locale} is {@code vi}. Amounts read the Vietnamese way
@@ -49,6 +55,13 @@ class CustomerEmailComposer {
     static final String ORDER_DELIVERED = "order.delivered";
     static final String ORDER_CANCELLED = "order.cancelled";
     static final String REMAINDER_CLOSED = "order.remainder-closed";
+    static final String RETURN_REQUESTED = "return.requested";
+    static final String RETURN_APPROVED = "return.approved";
+    static final String RETURN_REJECTED = "return.rejected";
+    static final String RETURN_RECEIVED = "return.received";
+    static final String RETURN_RESOLVED = "return.resolved";
+    static final String RETURN_CANCELLED = "return.cancelled";
+    static final String RETURN_EXPIRED = "return.expired";
 
     static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
 
@@ -195,16 +208,214 @@ class CustomerEmailComposer {
                 }));
     }
 
-    // ------------------------------------------------------------------------------------------------ wording
+    // ------------------------------------------------------------------------------------------------ returns
 
-    private EmailContent content(ResourceBundle m, String code, String addressee, String orderNumber,
-                                 List<Fact> facts, Table table) {
-        return content(m, code, addressee, orderNumber, facts, table, List.of());
+    /*
+     * The return (RMA, SCRUM-243/260) is told at each step the customer has to know about or act on (03 §12): the
+     * claim was received, approved (and whether and by when to send the goods back), refused, the parcel arrived,
+     * the claim was settled, or it ended without a decision (withdrawn, or the goods never came). Each step happens
+     * once per return, so the return is the message's source; the subject names the RMA number, the order is a fact.
+     * Like the order mail, nothing anyone typed is quoted: a rejection's or an inspection's notes stay internal and
+     * the message asks the customer to talk to Sales instead.
+     */
+
+    /** The claim is recorded; Sales will answer. Goods are not to be sent before the approval says so. */
+    Optional<CustomerMessage> returnRequested(ReturnRequested event) {
+        return Optional.of(new CustomerMessage(RETURN_REQUESTED, event.returnRequestId().toString(),
+                event.customerId(), null,
+                addressee -> {
+                    ResourceBundle m = bundle();
+                    List<Fact> facts = returnFacts(m, event.rmaNumber(), event.orderNumber());
+                    reason(m, "email.return.reason.", event.reasonCode())
+                            .ifPresent(reason -> facts.add(new Fact(m.getString("email.customer.fact.reason"),
+                                    reason)));
+                    reason(m, "email.return.resolution.", event.requestedResolution())
+                            .ifPresent(wish -> facts.add(new Fact(m.getString("email.customer.fact.resolution"),
+                                    wish)));
+                    if (event.requestedAt() != null) {
+                        facts.add(new Fact(m.getString("email.return.requested.at"),
+                                WHEN.format(event.requestedAt())));
+                    }
+                    Table lines = table(m, event.lines(),
+                            List.of("email.customer.table.sku", "email.customer.table.quantity"),
+                            line -> List.of(text(line.sku()), Integer.toString(line.quantity())));
+                    return content(m, RETURN_REQUESTED, addressee, event.rmaNumber(), facts, lines);
+                }));
     }
 
-    private EmailContent content(ResourceBundle m, String code, String addressee, String orderNumber,
+    /**
+     * Approved, maybe for fewer units than claimed: whether to send the goods back and by when, or that the photos were
+     * enough. Past that deadline the return expires (and {@link #returnClosed} says so).
+     */
+    Optional<CustomerMessage> returnApproved(ReturnApproved event) {
+        return Optional.of(new CustomerMessage(RETURN_APPROVED, event.returnRequestId().toString(),
+                event.customerId(), null,
+                addressee -> {
+                    ResourceBundle m = bundle();
+                    List<Fact> facts = returnFacts(m, event.rmaNumber(), event.orderNumber());
+                    List<String> outro = new ArrayList<>();
+                    if (event.returnRequired()) {
+                        if (event.returnDeadline() != null) {
+                            facts.add(new Fact(m.getString("email.customer.fact.return-deadline"),
+                                    WHEN.format(event.returnDeadline())));
+                        }
+                        outro.add(m.getString("email.return.approved.ship-back"));
+                    } else {
+                        outro.add(m.getString("email.return.approved.no-return"));
+                    }
+                    if (event.lines().stream().anyMatch(line -> line.approvedQuantity() < line.requestedQuantity())) {
+                        outro.add(m.getString("email.return.approved.partly"));
+                    }
+                    Table lines = table(m, event.lines(),
+                            List.of("email.customer.table.sku", "email.customer.table.requested-quantity",
+                                    "email.customer.table.approved-quantity"),
+                            line -> List.of(text(line.sku()), Integer.toString(line.requestedQuantity()),
+                                    Integer.toString(line.approvedQuantity())));
+                    return content(m, RETURN_APPROVED, addressee, event.rmaNumber(), facts, lines, outro);
+                }));
+    }
+
+    /** Refused at review, or at inspection when no defect was found; why in a sentence, the details from Sales. */
+    Optional<CustomerMessage> returnRejected(ReturnRejected event) {
+        return Optional.of(new CustomerMessage(RETURN_REJECTED, event.returnRequestId().toString(),
+                event.customerId(), null,
+                addressee -> {
+                    ResourceBundle m = bundle();
+                    List<Fact> facts = returnFacts(m, event.rmaNumber(), event.orderNumber());
+                    List<String> outro = new ArrayList<>();
+                    reason(m, "email.return.rejected.stage.", event.stage()).ifPresent(outro::add);
+                    return content(m, RETURN_REJECTED, addressee, event.rmaNumber(), facts, null, outro);
+                }));
+    }
+
+    /** The parcel is in; QC comes next. A parcel that does not match the approval is said to be followed up. */
+    Optional<CustomerMessage> returnReceived(ReturnReceived event) {
+        return Optional.of(new CustomerMessage(RETURN_RECEIVED, event.returnRequestId().toString(),
+                event.customerId(), null,
+                addressee -> {
+                    ResourceBundle m = bundle();
+                    List<Fact> facts = returnFacts(m, event.rmaNumber(), event.orderNumber());
+                    if (event.receivedAt() != null) {
+                        facts.add(new Fact(m.getString("email.return.received.at"), WHEN.format(event.receivedAt())));
+                    }
+                    List<String> outro = new ArrayList<>();
+                    if (event.discrepancy()) {
+                        outro.add(m.getString("email.return.received.discrepancy"));
+                    }
+                    Table lines = table(m, event.lines(),
+                            List.of("email.customer.table.sku", "email.customer.table.approved-quantity",
+                                    "email.customer.table.received-quantity"),
+                            line -> List.of(receivedSku(line), Integer.toString(line.approvedQuantity()),
+                                    Integer.toString(line.receivedQuantity())));
+                    return content(m, RETURN_RECEIVED, addressee, event.rmaNumber(), facts, lines, outro);
+                }));
+    }
+
+    /**
+     * Settled: the replacement order, the amount taken off what the customer owes, refunded and kept as credit - each
+     * only when there is one - and the adjustment invoice a Vietnamese buyer needs for its books when one is due.
+     */
+    Optional<CustomerMessage> returnResolved(ReturnResolved event) {
+        return Optional.of(new CustomerMessage(RETURN_RESOLVED, event.returnRequestId().toString(),
+                event.customerId(), null,
+                addressee -> {
+                    ResourceBundle m = bundle();
+                    List<Fact> facts = returnFacts(m, event.rmaNumber(), event.orderNumber());
+                    List<String> outro = new ArrayList<>();
+                    if (filled(event.replacementOrderNumber())) {
+                        facts.add(new Fact(m.getString("email.customer.fact.replacement-order"),
+                                event.replacementOrderNumber()));
+                        outro.add(m.getString("email.return.resolved.replacement"));
+                    }
+                    if (positive(event.offsetAmount())) {
+                        facts.add(new Fact(m.getString("email.customer.fact.offset"),
+                                money(event.offsetAmount(), event.currency())));
+                        outro.add(m.getString("email.return.resolved.offset"));
+                    }
+                    if (positive(event.refundedAmount())) {
+                        facts.add(new Fact(m.getString("email.customer.fact.refund"),
+                                money(event.refundedAmount(), event.currency())));
+                        outro.add(m.getString("email.customer.refund"));
+                    }
+                    if (positive(event.creditedAmount())) {
+                        facts.add(new Fact(m.getString("email.customer.fact.credit"),
+                                money(event.creditedAmount(), event.currency())));
+                        outro.add(m.getString("email.return.resolved.credit"));
+                    }
+                    if (event.vatAdjustmentRequired()) {
+                        outro.add(m.getString("email.return.resolved.vat-adjustment"));
+                    }
+                    Table lines = table(m, event.lines(),
+                            List.of("email.customer.table.sku", "email.customer.table.accepted-quantity",
+                                    "email.customer.table.replacement-quantity",
+                                    "email.customer.table.credit-quantity"),
+                            line -> List.of(text(line.sku()), Integer.toString(line.acceptedQuantity()),
+                                    Integer.toString(line.replacementQuantity()),
+                                    Integer.toString(line.creditQuantity())));
+                    return content(m, RETURN_RESOLVED, addressee, event.rmaNumber(), facts, lines, outro);
+                }));
+    }
+
+    /**
+     * Ended without a decision on its goods: withdrawn (by the customer, or by Sales for them) or expired because the
+     * goods never arrived. An unknown outcome calls for nothing rather than a message that would mislead.
+     */
+    Optional<CustomerMessage> returnClosed(ReturnClosed event) {
+        String code = switch (event.outcome() == null ? "" : event.outcome()) {
+            case "CANCELLED" -> RETURN_CANCELLED;
+            case "EXPIRED" -> RETURN_EXPIRED;
+            default -> null;
+        };
+        if (code == null) {
+            return Optional.empty();
+        }
+        return Optional.of(new CustomerMessage(code, event.returnRequestId().toString(), event.customerId(), null,
+                addressee -> {
+                    ResourceBundle m = bundle();
+                    List<Fact> facts = returnFacts(m, event.rmaNumber(), event.orderNumber());
+                    List<String> outro = new ArrayList<>();
+                    if (RETURN_CANCELLED.equals(code)) {
+                        outro.add(m.getString(event.byCustomer() ? "email.return.cancelled.by-customer"
+                                : "email.return.cancelled.by-staff"));
+                    }
+                    return content(m, code, addressee, event.rmaNumber(), facts, null, outro);
+                }));
+    }
+
+    private static List<Fact> returnFacts(ResourceBundle m, String rmaNumber, String orderNumber) {
+        List<Fact> facts = new ArrayList<>();
+        facts.add(new Fact(m.getString("email.customer.fact.rma"), text(rmaNumber)));
+        facts.add(new Fact(m.getString("email.customer.fact.order"), text(orderNumber)));
+        return facts;
+    }
+
+    /** The SKU approved, and the one that came when the parcel held something else (a wrong item, 03 §12). */
+    private static String receivedSku(ReturnReceived.Line line) {
+        String sku = text(line.sku());
+        return filled(line.receivedSku()) && !line.receivedSku().equals(line.sku())
+                ? sku + " → " + line.receivedSku() : sku;
+    }
+
+    private static <L> Table table(ResourceBundle m, List<L> lines, List<String> headings,
+                                   java.util.function.Function<L, List<String>> row) {
+        if (lines == null || lines.isEmpty()) {
+            return null;
+        }
+        return new Table(headings.stream().map(m::getString).toList(),
+                lines.stream().limit(MAX_LINES).map(row).toList(), more(m, lines.size()));
+    }
+
+    // ------------------------------------------------------------------------------------------------ wording
+
+    private EmailContent content(ResourceBundle m, String code, String addressee, String documentNumber,
+                                 List<Fact> facts, Table table) {
+        return content(m, code, addressee, documentNumber, facts, table, List.of());
+    }
+
+    /** {@code documentNumber} goes into the subject and the intro: the order's, or the return's (RMA) number. */
+    private EmailContent content(ResourceBundle m, String code, String addressee, String documentNumber,
                                  List<Fact> facts, Table table, List<String> extraOutro) {
-        String number = orderNumber == null ? "" : orderNumber;
+        String number = documentNumber == null ? "" : documentNumber;
         String intro = m.getString("email." + code + ".intro").formatted(number);
         List<String> outro = new ArrayList<>(extraOutro);
         outro.add(m.getString("email." + code + ".outro"));
