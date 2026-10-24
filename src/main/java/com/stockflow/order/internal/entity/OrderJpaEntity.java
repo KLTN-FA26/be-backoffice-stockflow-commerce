@@ -210,6 +210,10 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "goods_left_at")
     private Instant goodsLeftAt;
 
+    /** V20261025020000 (SCRUM-260): the return whose accepted units this free order replaces; set once, at placing. */
+    @Column(name = "replaces_return_request_id", updatable = false)
+    private UUID replacesReturnRequestId;
+
     /** V20261017000430, decision Q2: the terms of an agreed amount kept on cancellation. */
     @Column(name = "cancellation_fee_amount", precision = 19, scale = 4)
     private java.math.BigDecimal cancellationFeeAmount;
@@ -415,6 +419,13 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     public void applyGoodsLeft(Instant at) {
         this.goodsLeftAt = at;
     }
+
+    /** Written on insert only (the column is not updatable): an order replaces a return from the day it is placed. */
+    public void applyReplacement(UUID returnRequestId) {
+        this.replacesReturnRequestId = returnRequestId;
+    }
+
+    public UUID getReplacesReturnRequestId() { return replacesReturnRequestId; }
 
     public Instant getGoodsLeftAt() { return goodsLeftAt; }
 
