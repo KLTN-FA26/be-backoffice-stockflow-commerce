@@ -100,10 +100,14 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
     /**
      * Insert, or copy what the aggregate moved onto the stored rows. The domain never removes a line, so nothing is
      * deleted here.
+     *
+     * <p>{@code findById}, not the join fetch: a count being saved was loaded in this transaction, so the entity and
+     * its lines are already in the persistence context and come back without a query. A second join fetch would
+     * read every line again on each single-line count.</p>
      */
     @Override
     public CycleCount save(CycleCount count) {
-        Optional<CycleCountJpaEntity> stored = jpa.findByIdWithLines(count.id());
+        Optional<CycleCountJpaEntity> stored = jpa.findById(count.id());
         CycleCountJpaEntity entity;
         if (stored.isPresent()) {
             entity = stored.get();

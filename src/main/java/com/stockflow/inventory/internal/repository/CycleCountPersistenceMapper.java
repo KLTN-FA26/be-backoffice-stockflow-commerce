@@ -9,6 +9,11 @@ import com.stockflow.inventory.internal.domain.StockPackageId;
 import com.stockflow.inventory.internal.entity.CycleCountJpaEntity;
 import com.stockflow.inventory.internal.entity.CycleCountLineJpaEntity;
 
+import java.util.Map;
+import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+
 /**
  * Hand-written for the reason {@link StockItemPersistenceMapper} gives: rehydration goes through the domain
  * constructors so the invariants are re-checked, and the slot is a value object over four columns.
@@ -42,13 +47,19 @@ final class CycleCountPersistenceMapper {
 
     /**
      * Copies what the aggregate moved onto the managed row: its header, each line's count (and a carton line's bin),
-     * and any added line.
+     * and any added line. The rows are indexed by id once, so a count of N lines costs N lookups, not N scans of N.
      */
     static void apply(CycleCount count, CycleCountJpaEntity entity) {
         applyHeader(count, entity);
+        Map<UUID, CycleCountLineJpaEntity> rows = entity.getLines().stream()
+                .collect(Collectors.toMap(CycleCountLineJpaEntity::getId, Function.identity()));
         for (CycleCountLine line : count.lines()) {
-            entity.getLines().stream().filter(row -> row.getId().equals(line.id())).findFirst()
-                    .ifPresentOrElse(row -> applyCount(line, row), () -> entity.addLine(toNewEntity(line)));
+            CycleCountLineJpaEntity row = rows.get(line.id());
+            if (row != null) {
+                applyCount(line, row);
+            } else {
+                entity.addLine(toNewEntity(line));
+            }
         }
     }
 
