@@ -12,6 +12,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * The factor of the packing unit a purchase order line was entered in (V20261020000400), asked of
@@ -33,7 +34,7 @@ class PoLineUnits {
     /**
      * The factor of each of {@code lines} entered in a packing unit, by line id. A line in the base
      * unit is absent, and lines all in the base unit - every line the application writes today - cost
-     * no query.
+     * no query; otherwise one query per SKU.
      */
     Map<UUID, Integer> factors(Collection<PoLineJpaEntity> lines) {
         List<PoLineJpaEntity> inUnit = lines.stream().filter(line -> line.getUomConversionId() != null).toList();
@@ -41,18 +42,28 @@ class PoLineUnits {
             return Map.of();
         }
         Map<UUID, String> skus = inventory.skusOf(inUnit.stream().map(PoLineJpaEntity::getInventoryItemId).toList());
+        Map<UUID, List<PoLineJpaEntity>> byItem = inUnit.stream()
+                .collect(Collectors.groupingBy(PoLineJpaEntity::getInventoryItemId));
         Map<UUID, Integer> factors = new HashMap<>();
-        for (PoLineJpaEntity line : inUnit) {
-            String sku = skus.get(line.getInventoryItemId());
-            UomConversion unit = sku == null ? null
-                    : units.conversions(new Sku(sku), List.of(line.getUomConversionId())).get(line.getUomConversionId());
-            if (unit == null) {
-                // fk_purchase_order_lines_unit and check_po_line_unit: the unit exists and is the item's.
-                throw new IllegalStateException("Line " + line.getId() + " is in unit " + line.getUomConversionId()
-                        + ", which is not a unit of its item");
+        byItem.forEach((itemId, itemLines) -> {
+            String sku = skus.get(itemId);
+            if (sku == null) {
+                // fk_purchase_order_lines_item: the item exists, so the directory not knowing it is a fault.
+                throw new IllegalStateException("Inventory has no SKU for item " + itemId + " of line "
+                        + itemLines.get(0).getId());
             }
-            factors.put(line.getId(), unit.factor());
-        }
+            Map<UUID, UomConversion> found = units.conversions(new Sku(sku),
+                    itemLines.stream().map(PoLineJpaEntity::getUomConversionId).distinct().toList());
+            for (PoLineJpaEntity line : itemLines) {
+                UomConversion unit = found.get(line.getUomConversionId());
+                if (unit == null) {
+                    // fk_purchase_order_lines_unit and check_po_line_unit: the unit exists and is the item's.
+                    throw new IllegalStateException("Line " + line.getId() + " is in unit " + line.getUomConversionId()
+                            + ", which is not a unit of " + sku);
+                }
+                factors.put(line.getId(), unit.factor());
+            }
+        });
         return factors;
     }
 }
