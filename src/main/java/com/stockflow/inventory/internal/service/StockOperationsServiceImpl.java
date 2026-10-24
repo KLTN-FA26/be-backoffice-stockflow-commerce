@@ -22,6 +22,8 @@ import com.stockflow.inventory.api.StockAdjustmentSummary;
 import com.stockflow.inventory.api.StockMove;
 import com.stockflow.inventory.internal.domain.AdjustmentReason;
 import com.stockflow.inventory.internal.domain.AdjustmentStatus;
+import com.stockflow.inventory.internal.domain.CountSlot;
+import com.stockflow.inventory.internal.domain.CountVariance;
 import com.stockflow.inventory.internal.domain.LocationDirectory;
 import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.Quantity;
@@ -49,6 +51,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
@@ -860,6 +863,11 @@ class StockOperationsServiceImpl implements StockOperations {
     @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "stock-adjustment", resourceId = "#result?.adjustmentId()")
     public StockAdjustmentSummary requestAdjustment(RequestAdjustmentCommand command) {
+        // Said here so a typed-in request hears why; the table would refuse it without a count line
+        // (ck_stock_adjustment_count_variance), which reaches the client as a 500.
+        if (command.reason() == StockAdjustmentReason.COUNT_VARIANCE) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A count variance comes from a cycle count");
+        }
         WarehouseScope.requireLocation(command.locationCode());
         LocationId location = new LocationId(command.locationCode());
         // The stock item must exist now; FOUND stock adds to a lot already recorded at the location.
@@ -875,11 +883,57 @@ class StockOperationsServiceImpl implements StockOperations {
         return toSummary(adjustments.save(adjustment));
     }
 
+    /**
+     * The slot is the one submission chose, so the (SKU, location, lot) ambiguity {@link #findOne} refuses never
+     * arises here, and the assignee and the count's state were checked by the caller. A loose variance is split over
+     * the slot's receipt layers as they stand now, under the SKU lock ({@link CountVariance#split}: a shortage from
+     * free units first, then held ones, each in FEFO order; a surplus on the newest layer), one adjustment per layer,
+     * because approval posts an adjustment onto one stock row. A carton's is one adjustment naming the carton: its approval changes the carton's state once.
+     */
+    @Override
+    @Auditable(action = AuditAction.CREATE, resourceType = "cycle-count-line", resourceId = "#cycleCountLineId")
+    public List<StockAdjustmentSummary> requestCountVariance(UUID cycleCountLineId, CountSlot slot, int delta,
+                                                             UUID requestedBy, String note) {
+        Objects.requireNonNull(cycleCountLineId, "cycleCountLineId");
+        if (delta == 0) {
+            return List.of();
+        }
+        WarehouseScope.requireLocation(slot.location().code());
+        policies.lock(slot.sku().code());
+        Instant now = clock.instant();
+        LocalDate day = LocalDate.ofInstant(now, BUSINESS_ZONE);
+        if (slot.isCarton()) {
+            StockAdjustment adjustment = StockAdjustment.request(adjustments.nextNumber(day), slot.location(),
+                            slot.sku(), slot.lotNumber(), delta, AdjustmentReason.COUNT_VARIANCE, note, requestedBy, now)
+                    .inPackage(slot.stockPackageId()).forCountLine(cycleCountLineId);
+            return List.of(toSummary(adjustments.save(adjustment)));
+        }
+        List<CountVariance.Layer> layers = stockItems.findLooseBySkuAndLocation(slot.sku(), slot.location()).stream()
+                .filter(item -> Objects.equals(blankToNull(item.lotNumber()), slot.lotNumber()))
+                .map(item -> new CountVariance.Layer(item.id(), item.receivedAt(), item.expiryDate(),
+                        item.onHand().value(), item.reserved().value()))
+                .toList();
+        List<StockAdjustmentSummary> asked = new ArrayList<>();
+        for (CountVariance.Share share : CountVariance.split(delta, layers)) {
+            StockAdjustment adjustment = StockAdjustment.request(adjustments.nextNumber(day), slot.location(),
+                            slot.sku(), slot.lotNumber(), share.delta(), AdjustmentReason.COUNT_VARIANCE, note,
+                            requestedBy, now)
+                    .atLayer(share.receivedAt()).forCountLine(cycleCountLineId);
+            asked.add(toSummary(adjustments.save(adjustment)));
+        }
+        log.info("Count line {}: variance {} of {}{} at {} asked as {} adjustment(s)", cycleCountLineId, delta,
+                slot.sku(), lotSuffix(slot.lotNumber()), slot.location(), asked.size());
+        return asked;
+    }
+
     @Override
     @Auditable(action = AuditAction.APPROVE, resourceType = "stock-adjustment", resourceId = "#adjustmentId")
     public StockAdjustmentSummary approve(UUID adjustmentId, UUID approverId) {
         StockAdjustment adjustment = load(adjustmentId);
         policies.lock(adjustment.sku().code());
+        if (adjustment.stockPackageId() != null) {
+            return approveCarton(adjustment, approverId);
+        }
         StockItem view = findLayer(adjustment.sku(), adjustment.location(), adjustment.lotNumber(),
                         adjustment.receivedAt())
                 .orElseThrow(() -> new BusinessException(ErrorCode.STOCK_ITEM_NOT_FOUND,
@@ -903,19 +957,58 @@ class StockOperationsServiceImpl implements StockOperations {
             item.releaseReservation(held, ReleaseReason.SCRAPPED, now);
         }
         requireLoose(item);
-        adjustment.approveAndPost(approverId, item, now);
-        stockItems.save(item);
+        int delta = adjustment.quantityDelta();
+        // A configured FIFO SKU's layer is never raised (inventory.enforce_sku_policy: "reconcile via a new stock
+        // layer"): loose units found have no provable receipt, and putting them on an old layer would make them as
+        // old as it and first out. They land on a new layer beside it, received now; the adjustment still names the
+        // layer it was asked against. FEFO and unconfigured SKUs write the named layer up, as before.
+        StockItem target = delta > 0 && policies.replenishesByNewLayer(adjustment.sku().code())
+                ? StockItem.newLayerBeside(item, now)
+                : item;
+        adjustment.approveAndPost(approverId, target, now);
+        stockItems.save(target);
         StockAdjustment saved = adjustments.save(adjustment);
 
-        int delta = adjustment.quantityDelta();
         ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.ADJUSTMENT,
                 adjustment.sku(), adjustment.lotNumber(),
                 delta < 0 ? adjustment.location() : null, delta > 0 ? adjustment.location() : null,
-                Math.abs(delta), item.status(), StockMovement.ReferenceType.STOCK_ADJUSTMENT, adjustment.id(),
-                adjustment.reason() + (adjustment.note() == null ? "" : ": " + adjustment.note()),
-                approverId, now).ofLot(item.lotId()));
+                Math.abs(delta), target.status(), StockMovement.ReferenceType.STOCK_ADJUSTMENT, adjustment.id(),
+                ledgerReason(adjustment), approverId, now).ofLot(target.lotId()));
         log.info("Posted adjustment {}: {} {} at {}", adjustment.number(), delta, adjustment.sku(), adjustment.location());
         return toSummary(saved);
+    }
+
+    /**
+     * A carton's adjustment, under the SKU lock the caller took: {@link StockPackageContents#adjust} locks the carton
+     * and then its rows, spreads the units over them and changes the carton once (#125 lock order, spec section 6).
+     * Decided first, so a requester approving their own request hears that rather than a stock shortage; a refusal
+     * while posting rolls the decision back. One ledger line per row changed, naming the carton on the side that
+     * has it - the side whose location the loose path names.
+     */
+    private StockAdjustmentSummary approveCarton(StockAdjustment adjustment, UUID approverId) {
+        Instant now = clock.instant();
+        adjustment.approveForCarton(approverId, now);
+        List<StockPackageContents.RowChange> changes = cartons.adjust(adjustment.stockPackageId(),
+                adjustment.quantityDelta(), adjustment.reason() == AdjustmentReason.COUNT_VARIANCE, now);
+        StockAdjustment saved = adjustments.save(adjustment);
+        String reason = ledgerReason(adjustment);
+        for (StockPackageContents.RowChange change : changes) {
+            StockItem row = change.row();
+            boolean down = change.delta() < 0;
+            StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.ADJUSTMENT,
+                    row.sku(), row.lotNumber(), down ? row.location() : null, down ? null : row.location(),
+                    Math.abs(change.delta()), row.status(), StockMovement.ReferenceType.STOCK_ADJUSTMENT,
+                    adjustment.id(), reason, approverId, now).ofLot(row.lotId());
+            ledger.append(down ? line.leaving(adjustment.stockPackageId()) : line.arriving(adjustment.stockPackageId()));
+        }
+        log.info("Posted adjustment {}: {} {} in carton {} at {}", adjustment.number(), adjustment.quantityDelta(),
+                adjustment.sku(), adjustment.stockPackageId().value(), adjustment.location());
+        return toSummary(saved);
+    }
+
+    /** The ledger's reason for a posted adjustment: its reason code, and the note when there is one. */
+    private static String ledgerReason(StockAdjustment adjustment) {
+        return adjustment.reason() + (adjustment.note() == null ? "" : ": " + adjustment.note());
     }
 
     @Override
@@ -1043,6 +1136,7 @@ class StockOperationsServiceImpl implements StockOperations {
         return new StockAdjustmentSummary(a.id(), a.number(), a.location().code(), a.sku().code(), a.lotNumber(),
                 a.quantityDelta(), StockAdjustmentReason.valueOf(a.reason().name()), a.note(),
                 StockAdjustmentStatus.valueOf(a.status().name()), a.requestedBy(), a.requestedAt(),
-                a.decidedBy(), a.decidedAt(), a.rejectionReason(), a.postedAt(), a.withdrawnAt(), a.version());
+                a.decidedBy(), a.decidedAt(), a.rejectionReason(), a.postedAt(), a.withdrawnAt(), a.version(),
+                a.stockPackageId() == null ? null : a.stockPackageId().value(), a.cycleCountLineId());
     }
 }

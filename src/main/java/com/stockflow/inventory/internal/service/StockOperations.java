@@ -10,6 +10,7 @@ import com.stockflow.inventory.api.RequestAdjustmentCommand;
 import com.stockflow.inventory.api.StockAdjustmentStatus;
 import com.stockflow.inventory.api.StockAdjustmentSummary;
 import com.stockflow.inventory.api.StockMove;
+import com.stockflow.inventory.internal.domain.CountSlot;
 import com.stockflow.inventory.internal.domain.StockMovement;
 
 import java.util.List;
@@ -77,7 +78,15 @@ public interface StockOperations {
 
     StockMove reclassify(ReclassifyStockCommand command);
 
+    /**
+     * A person's request to write stock up or down. Refuses {@code COUNT_VARIANCE} ({@code VALIDATION_FAILED}): only a
+     * cycle count asks for that, through {@link #requestCountVariance}.
+     */
     StockAdjustmentSummary requestAdjustment(RequestAdjustmentCommand command);
+
+    /** Submission's side of SCRUM-164: the variance of one counted line as pending COUNT_VARIANCE adjustment(s). */
+    List<StockAdjustmentSummary> requestCountVariance(UUID cycleCountLineId, CountSlot slot, int delta,
+                                                      UUID requestedBy, String note);
 
     StockAdjustmentSummary approve(UUID adjustmentId, UUID approverId);
 

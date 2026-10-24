@@ -98,6 +98,24 @@ class WarehouseServiceImpl implements WarehouseService {
                 w.address(), w.status() == WarehouseStatus.ACTIVE));
     }
 
+    @Override
+    public java.util.List<String> shelfCodesOf(UUID warehouseId, UUID zoneId) {
+        if (warehouseId == null || zoneId == null) {
+            return java.util.List.of();
+        }
+        return locations.findShelfCodesInZone(warehouseId, zoneId);
+    }
+
+    /** Exact codes: the caller asks with codes it read from its own rows, which are stored upper-cased. */
+    @Override
+    public java.util.List<StorageLocationView> findLocations(java.util.Collection<String> locationCodes) {
+        if (locationCodes == null || locationCodes.isEmpty()) {
+            return java.util.List.of();
+        }
+        return locations.findByLocationCodes(java.util.Set.copyOf(locationCodes)).stream()
+                .map(WarehouseServiceImpl::toView).toList();
+    }
+
     private static StorageLocationView toView(LocationRow row) {
         LocationStatus effective = row.kind() == StorageLocationKind.BIN
                 ? EffectiveStatus.ofBin(row.warehouseStatus(), row.shelfStatus(), row.status())

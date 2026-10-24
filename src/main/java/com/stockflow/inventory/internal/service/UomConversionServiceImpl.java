@@ -30,10 +30,12 @@ import java.util.stream.Collectors;
  * answering 409: the user's intent ("this is the carton") is unambiguous, and it is how the default purchase unit
  * already behaves.
  *
- * <p>BR-10 ("hệ số quy đổi đã phát sinh giao dịch không được sửa"): no document records the unit it was
- * entered in yet (orders, carts and purchase orders still count in the base unit), so no unit is "in a
- * transaction" and the factor stays editable. The check belongs here once a document line stores its
- * unit.</p>
+ * <p>BR-10 ("hệ số quy đổi đã phát sinh giao dịch không được sửa"): stock packages, purchase order lines
+ * (and their revisions) and goods receipt lines record the unit they were made or counted in, and none of
+ * them copies the factor (V20261020000400), so a unit one of them uses keeps its factor and its code. The
+ * database refuses such a change (V20261020000600); asking first turns that into
+ * {@code UOM_CONVERSION_IN_USE} rather than a generic 409. Its size, weight and default purchase and shipping
+ * marks stay editable, and retiring it is the way out BR-10 names: declare a new unit, retire this one.</p>
  */
 @Service
 @Transactional
@@ -106,6 +108,9 @@ class UomConversionServiceImpl implements UomConversionService {
             if (conversions.unitTaken(itemId, draft.unitOfMeasure(), id)) throw duplicate(sku, draft);
         }
         if (current.version() != expectedVersion) throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
+        // The base unit's code follows the item's and its factor is 1 (V20261019000300): nothing to lock here.
+        boolean converts = current.factor() != draft.factor() || !current.unitOfMeasure().equals(draft.unitOfMeasure());
+        if (!current.base() && converts && conversions.inUse(id)) throw inUse(sku, current);
         String actor = actor();
         if (draft.defaultPurchase() && !current.defaultPurchase()) conversions.clearDefaultPurchase(itemId, id, actor);
         if (draft.defaultShipping() && !current.defaultShipping()) conversions.clearDefaultShipping(itemId, id, actor);
@@ -124,7 +129,9 @@ class UomConversionServiceImpl implements UomConversionService {
         if (current.base()) {
             throw new BusinessException(ErrorCode.UOM_CONVERSION_IN_USE, "The base unit of " + sku + " cannot be deleted");
         }
-        if (current.version() != expectedVersion || !conversions.delete(id, expectedVersion)) {
+        if (current.version() != expectedVersion) throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
+        if (conversions.inUse(id)) throw inUse(sku, current);
+        if (!conversions.delete(id, expectedVersion)) {
             throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
         }
         conversions.defaultToBaseIfNone(itemId, actor());
@@ -141,6 +148,12 @@ class UomConversionServiceImpl implements UomConversionService {
 
     private static BusinessException notFound(Sku sku, UUID id) {
         return new BusinessException(ErrorCode.UOM_CONVERSION_NOT_FOUND, "No unit " + id + " on " + sku);
+    }
+
+    private static BusinessException inUse(Sku sku, UomConversion unit) {
+        return new BusinessException(ErrorCode.UOM_CONVERSION_IN_USE,
+                "%s %s (factor %d) is used by a document; declare a new unit and retire this one (BR-10)"
+                        .formatted(sku, unit.unitOfMeasure(), unit.factor()));
     }
 
     private static BusinessException duplicate(Sku sku, UomConversionDraft draft) {

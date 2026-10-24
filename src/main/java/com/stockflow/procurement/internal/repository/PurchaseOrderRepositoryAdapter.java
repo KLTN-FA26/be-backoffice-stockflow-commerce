@@ -74,19 +74,21 @@ class PurchaseOrderRepositoryAdapter
     private final InventoryService inventory;
     private final WarehouseService warehouses;
     private final PurchaseOrderEventLog events;
+    private final PoLineUnits lineUnits;
 
     @PersistenceContext
     private EntityManager entityManager;
 
     PurchaseOrderRepositoryAdapter(PurchaseOrderJpaRepository jpa, SupplierJpaRepository suppliers,
                                    PoNumberSequence poNumberSequence, InventoryService inventory,
-                                   WarehouseService warehouses, PurchaseOrderEventLog events) {
+                                   WarehouseService warehouses, PurchaseOrderEventLog events, PoLineUnits lineUnits) {
         this.jpa = jpa;
         this.suppliers = suppliers;
         this.poNumberSequence = poNumberSequence;
         this.inventory = inventory;
         this.warehouses = warehouses;
         this.events = events;
+        this.lineUnits = lineUnits;
     }
 
     // ------------------------------------------------------------------ aggregate
@@ -151,6 +153,7 @@ class PurchaseOrderRepositoryAdapter
                 entityManager.lock(entity, LockModeType.PESSIMISTIC_FORCE_INCREMENT);
             }
             Set<UUID> frozen = draft ? frozenLines(order.id().value()) : Set.of();
+            Map<UUID, Integer> unitFactors = draft ? lineUnits.factors(entity.getLines()) : Map.of();
             Set<UUID> stored = new HashSet<>();
             for (PoLineJpaEntity line : List.copyOf(entity.getLines())) {
                 if (line.getStatus() == PoLineStatus.WITHDRAWN) {
@@ -166,7 +169,7 @@ class PurchaseOrderRepositoryAdapter
                     }
                 } else if (current != null) {
                     if (draft) {
-                        line.reviseDraft(current);
+                        line.reviseDraft(current, unitFactors.getOrDefault(line.getId(), 1));
                     }
                     line.setStatus(current.status());
                 }
@@ -255,14 +258,20 @@ class PurchaseOrderRepositoryAdapter
                         : changeSummary == null ? "Resubmitted" : truncate(changeSummary, 500))
                 .setParameter("actor", actorId)
                 .executeUpdate();
+        // A revision freezes the line, the unit it was entered in included (V20261020000400): an amendment is
+        // matched against both, so a revision without them would refuse the next amendment of a line ordered
+        // in a carton. The domain line does not carry its unit yet, so the unit is copied from the line's row;
+        // a line not written yet has none, which is right - the application still orders in the base unit.
         for (PoLine line : order.lines()) {
             entityManager.createNativeQuery("""
                             INSERT INTO procurement.purchase_order_line_revisions
                                    (id, po_line_id, po_revision_id, inventory_item_id, uom, ordered_qty, unit_price,
                                     tax_rate, discount_rate, line_subtotal, line_discount_amount, line_net, line_tax,
-                                    line_total, note)
-                            VALUES (:id, :line, :revision, :item, :uom, :qty, :price, :taxRate, 0, :subtotal, 0,
-                                    :subtotal, :tax, :total, :note)""")
+                                    line_total, note, uom_conversion_id, unit_qty)
+                            SELECT :id, :line, :revision, :item, :uom, :qty, :price, :taxRate, 0, :subtotal, 0,
+                                   :subtotal, :tax, :total, :note, l.uom_conversion_id, l.unit_qty
+                              FROM (SELECT 1) one
+                              LEFT JOIN procurement.purchase_order_lines l ON l.id = :line""")
                     .setParameter("id", Identifiers.newId())
                     .setParameter("line", line.id())
                     .setParameter("revision", revisionId)

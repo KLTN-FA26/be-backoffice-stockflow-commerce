@@ -1,5 +1,7 @@
 package com.stockflow.procurement.internal.entity;
 
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.BaseEntity;
 import com.stockflow.procurement.internal.domain.PoLine;
 import com.stockflow.procurement.internal.domain.PoLineStatus;
@@ -12,6 +14,7 @@ import jakarta.persistence.FetchType;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
+import org.hibernate.annotations.DynamicUpdate;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -28,8 +31,18 @@ import java.util.UUID;
  * refuses either once the order has left DRAFT. {@code po_revision_id} is written by the revision snapshot with native SQL and is not
  * mapped. The amounts satisfy {@code ck_purchase_order_lines_amounts}: no line discount, so net is
  * the subtotal.</p>
+ *
+ * <p>The packing unit a line was entered in ({@code uom_conversion_id}, V20261020000400) is read here and
+ * never written: the application still orders in the base unit. A draft line already in one keeps it
+ * when it is resized, and {@code unit_qty} is recomputed with it, since {@code tg_purchase_order_lines_unit}
+ * refuses an {@code ordered_qty} that is not {@code unit_qty} times the unit's factor.</p>
+ *
+ * <p>{@code @DynamicUpdate}: an UPDATE writes only the columns that changed. The amendment of a
+ * subcontract order rewrites {@code ordered_qty} and {@code unit_qty} with native SQL; a full-row
+ * UPDATE flushed from a copy loaded before it - a status change, say - would put the old pair back.</p>
  */
 @Entity
+@DynamicUpdate
 @Table(name = "purchase_order_lines", schema = "procurement")
 public class PoLineJpaEntity extends BaseEntity {
 
@@ -80,6 +93,13 @@ public class PoLineJpaEntity extends BaseEntity {
     @Column(name = "note", length = 255)
     private String description;
 
+    /** NULL = the base unit. */
+    @Column(name = "uom_conversion_id", insertable = false, updatable = false)
+    private UUID uomConversionId;
+
+    @Column(name = "unit_qty", insertable = false)
+    private Integer unitQuantity;
+
     protected PoLineJpaEntity() {
     }
 
@@ -106,12 +126,17 @@ public class PoLineJpaEntity extends BaseEntity {
     /**
      * A new quantity for a line of a DRAFT order, amounts recomputed the way {@code PoLine} computes
      * them. Refused once the order has left DRAFT: from submission on, the revision snapshot is what
-     * the approver approves, and a changed line would no longer match it.
+     * the approver approves, and a changed line would no longer match it. {@code unitFactor} is the
+     * factor of the line's packing unit, ignored for a line in the base unit: a line in a carton stays
+     * a whole number of cartons ({@link #wholeUnits}).
      */
-    public void reviseDraftQuantity(int quantity) {
+    public void reviseDraftQuantity(int quantity, int unitFactor) {
         requireDraft();
         if (quantity <= 0) {
             throw new IllegalArgumentException("quantity must be positive");
+        }
+        if (uomConversionId != null) {
+            this.unitQuantity = wholeUnits(purchaseOrder.getPoNumber(), quantity, unitFactor);
         }
         this.orderedQuantity = BigDecimal.valueOf(quantity);
         this.subtotal = unitPrice.multiply(orderedQuantity).setScale(2, RoundingMode.HALF_UP);
@@ -120,13 +145,29 @@ public class PoLineJpaEntity extends BaseEntity {
         this.total = subtotal.add(tax);
     }
 
-    /** The buyer's new quantity, price, tax and description for a line of a DRAFT order (SCRUM-462). */
-    public void reviseDraft(PoLine line) {
+    /**
+     * The buyer's new quantity, price, tax and description for a line of a DRAFT order (SCRUM-462);
+     * {@code unitFactor} as in {@link #reviseDraftQuantity}.
+     */
+    public void reviseDraft(PoLine line, int unitFactor) {
         requireDraft();
         this.unitPrice = line.unitPrice().amount();
         this.taxRate = line.taxRate();
         this.description = line.description();
-        reviseDraftQuantity(line.quantityOrdered());
+        reviseDraftQuantity(line.quantityOrdered(), unitFactor);
+    }
+
+    /**
+     * How many units of {@code factor} base units {@code quantity} is. BR-09: the factor is a whole
+     * number and there is no part of a carton, so anything else is {@code PO_LINE_UNIT_NOT_MULTIPLE}
+     * rather than the generic 409 {@code tg_purchase_order_lines_unit} would turn it into.
+     */
+    public static int wholeUnits(String poNumber, int quantity, int factor) {
+        if (quantity % factor != 0) {
+            throw new BusinessException(ErrorCode.PO_LINE_UNIT_NOT_MULTIPLE,
+                    "%s is ordered in units of %d; %d is not a whole number of them".formatted(poNumber, factor, quantity));
+        }
+        return quantity / factor;
     }
 
     /** Taken off a draft after a revision froze it: the row stays for that revision ({@code ck_purchase_order_lines_withdrawn}). */
@@ -157,4 +198,5 @@ public class PoLineJpaEntity extends BaseEntity {
     public BigDecimal getTotal() { return total; }
     public PoLineStatus getStatus() { return status; }
     public String getDescription() { return description; }
+    public UUID getUomConversionId() { return uomConversionId; }
 }

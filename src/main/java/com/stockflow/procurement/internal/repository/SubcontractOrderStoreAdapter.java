@@ -33,15 +33,17 @@ class SubcontractOrderStoreAdapter implements SubcontractOrderStore {
     private final PurchaseOrderJpaRepository orders;
     private final SupplierJpaRepository suppliers;
     private final PurchaseOrderEventLog events;
+    private final PoLineUnits lineUnits;
 
     @PersistenceContext
     private EntityManager entityManager;
 
     SubcontractOrderStoreAdapter(PurchaseOrderJpaRepository orders, SupplierJpaRepository suppliers,
-                                 PurchaseOrderEventLog events) {
+                                 PurchaseOrderEventLog events, PoLineUnits lineUnits) {
         this.orders = orders;
         this.suppliers = suppliers;
         this.events = events;
+        this.lineUnits = lineUnits;
     }
 
     @Override
@@ -104,7 +106,8 @@ class SubcontractOrderStoreAdapter implements SubcontractOrderStore {
     public void changeQuantity(Row row, int newQuantity, String reason, UUID actorId) {
         PurchaseOrderJpaEntity order = orders.findWithLinesById(row.id()).orElseThrow(() ->
                 new IllegalStateException("Subcontract order " + row.poNumber() + " vanished while it was being changed"));
-        order.getLines().forEach(line -> line.reviseDraftQuantity(newQuantity));
+        java.util.Map<UUID, Integer> unitFactors = lineUnits.factors(order.getLines());
+        order.getLines().forEach(line -> line.reviseDraftQuantity(newQuantity, unitFactors.getOrDefault(line.getId(), 1)));
         order.recomputeDraftTotals();
         orders.saveAndFlush(order);
         events.record(order.getId(), null, "REVISED", actorId, row.status(), row.status(), reason, null,
@@ -139,6 +142,12 @@ class SubcontractOrderStoreAdapter implements SubcontractOrderStore {
     @Override
     public void requestAmendment(Row row, int newQuantity, String reason, UUID actorId) {
         entityManager.flush();
+        // Subcontract lines are written in the base unit (SubcontractPurchasingImpl), but a line entered in a
+        // packing unit keeps it, and its quantity stays a whole number of that unit (V20261020000400).
+        // check_subcontract_po_single_line: exactly one line.
+        PoLineJpaEntity line = orders.findWithLinesById(row.id()).orElseThrow().getLines().get(0);
+        Integer unitFactor = lineUnits.factors(java.util.List.of(line)).get(line.getId());
+        Integer unitQuantity = unitFactor == null ? null : PoLineJpaEntity.wholeUnits(row.poNumber(), newQuantity, unitFactor);
         UUID revisionId = Identifiers.newId();
         entityManager.createNativeQuery("""
                         INSERT INTO procurement.purchase_order_revisions
@@ -173,9 +182,10 @@ class SubcontractOrderStoreAdapter implements SubcontractOrderStore {
                         INSERT INTO procurement.purchase_order_line_revisions
                                (id, po_line_id, po_revision_id, inventory_item_id, uom, ordered_qty, unit_price,
                                 tax_rate, discount_rate, line_subtotal, line_discount_amount, line_net, line_tax,
-                                line_total, note)
+                                line_total, note, uom_conversion_id, unit_qty)
                         SELECT :id, l.id, :revision, l.inventory_item_id, l.uom, :qty, l.unit_price, l.tax_rate, 0,
-                               s.subtotal, 0, s.subtotal, s.tax, s.subtotal + s.tax, l.note
+                               s.subtotal, 0, s.subtotal, s.tax, s.subtotal + s.tax, l.note,
+                               l.uom_conversion_id, CAST(:unitQty AS integer)
                           FROM procurement.purchase_order_lines l
                          CROSS JOIN LATERAL (SELECT ROUND(CAST(:qty AS numeric) * l.unit_price, 2) AS subtotal) b
                          CROSS JOIN LATERAL (SELECT b.subtotal, ROUND(b.subtotal * l.tax_rate / 100, 2) AS tax) s
@@ -183,6 +193,7 @@ class SubcontractOrderStoreAdapter implements SubcontractOrderStore {
                 .setParameter("id", Identifiers.newId())
                 .setParameter("revision", revisionId)
                 .setParameter("qty", newQuantity)
+                .setParameter("unitQty", unitQuantity)
                 .setParameter("po", row.id())
                 .executeUpdate();
         entityManager.createNativeQuery("""
@@ -198,9 +209,13 @@ class SubcontractOrderStoreAdapter implements SubcontractOrderStore {
     @Override
     public void approveAmendment(Row row, Amendment amendment, UUID approverId) {
         entityManager.flush();
+        // An amendment changes how many, never the unit: the line keeps its uom_conversion_id. A revision that
+        // froze no unit for a line that has one (written before revisions carried it) then fails
+        // ck_purchase_order_lines_unit instead of quietly moving the line back to the base unit.
         entityManager.createNativeQuery("""
                         UPDATE procurement.purchase_order_lines l
-                           SET ordered_qty = lr.ordered_qty, line_subtotal = lr.line_subtotal, line_net = lr.line_net,
+                           SET ordered_qty = lr.ordered_qty, unit_qty = lr.unit_qty,
+                               line_subtotal = lr.line_subtotal, line_net = lr.line_net,
                                line_tax = lr.line_tax, line_total = lr.line_total, po_revision_id = lr.po_revision_id,
                                status = CASE WHEN l.status = 'RECEIVED' THEN 'PARTIALLY_RECEIVED' ELSE l.status END,
                                version = l.version + 1, last_modified_at = NOW()

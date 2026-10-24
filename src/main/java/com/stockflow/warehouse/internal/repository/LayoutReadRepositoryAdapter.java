@@ -189,6 +189,39 @@ class LayoutReadRepositoryAdapter implements LayoutReadRepository, LocationLooku
                 .getResultList();
     }
 
+    @Override
+    public java.util.List<LocationRow> findByLocationCodes(java.util.Collection<String> locationCodes) {
+        if (locationCodes.isEmpty()) {
+            return java.util.List.of();
+        }
+        return entityManager.createQuery("""
+                        select loc.id, loc.kind, loc.warehouseId, loc.locationCode, loc.storageClass,
+                               loc.status, w.status, s.status, a.type
+                        from StorageLocationJpaEntity loc
+                        join WarehouseJpaEntity w on w.id = loc.warehouseId
+                        left join BinJpaEntity b on b.location = loc
+                        left join b.level l
+                        left join l.shelf s
+                        left join AreaJpaEntity a on a.location = loc
+                        where loc.locationCode in :codes
+                        order by loc.locationCode
+                        """, LocationRow.class)
+                .setParameter("codes", locationCodes)
+                .getResultList();
+    }
+
+    @Override
+    public java.util.List<String> findShelfCodesInZone(UUID warehouseId, UUID zoneId) {
+        return entityManager.createQuery("""
+                        select s.code from ShelfJpaEntity s join ZoneJpaEntity z on z.id = s.zoneId
+                        where z.id = :zoneId and z.warehouseId = :warehouseId and s.warehouseId = :warehouseId
+                        order by s.code
+                        """, String.class)
+                .setParameter("zoneId", zoneId)
+                .setParameter("warehouseId", warehouseId)
+                .getResultList();
+    }
+
     /**
      * The location, its warehouse and - for a bin - its shelf, in one query. An area is not joined:
      * its status and its location's are always written together (issue #18 D8), so the location's
