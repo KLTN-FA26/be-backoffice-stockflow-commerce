@@ -73,6 +73,10 @@ public class StockAdjustmentJpaEntity extends BaseEntity {
     @Column(name = "reservation_id", updatable = false)
     private UUID reservationId;
 
+    /** V20261022000100: the carton whose contents are adjusted; null for loose stock. */
+    @Column(name = "stock_package_id", updatable = false)
+    private UUID stockPackageId;
+
     protected StockAdjustmentJpaEntity() {
     }
 
@@ -89,6 +93,20 @@ public class StockAdjustmentJpaEntity extends BaseEntity {
     }
 
     public UUID getReservationId() { return reservationId; }
+
+    public StockAdjustmentJpaEntity inPackage(UUID stockPackageId) {
+        this.stockPackageId = stockPackageId;
+        return this;
+    }
+
+    public UUID getStockPackageId() { return stockPackageId; }
+
+    public StockAdjustmentJpaEntity forCountLine(UUID cycleCountLineId) {
+        this.cycleCountLineId = cycleCountLineId;
+        return this;
+    }
+
+    public UUID getCycleCountLineId() { return cycleCountLineId; }
 
     public StockAdjustmentJpaEntity(UUID id, String adjustmentNumber, String locationCode, String sku,
                                     String lotNumber, int quantityDelta, AdjustmentReason reasonCode,

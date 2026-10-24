@@ -6,18 +6,23 @@ import java.util.UUID;
 /**
  * THE public API of the warehouse module - the only package other modules may import.
  *
- * <p>Three lookups and nothing else (issue #18 D6). {@code warehouse.storage_location} is the target of
- * foreign keys from procurement (goods receipt lines, QC inspections), inventory (stock items,
- * movements, adjustments, cycle counts) and fulfillment (pick lines, move tasks), and ADR-0007 has
+ * <p>Lookups (issue #18 D6), plus the one location this module creates on another module's behalf.
+ * {@code warehouse.storage_location} is the target of foreign keys from procurement (goods receipt
+ * lines, QC inspections), inventory (stock items, movements, adjustments, cycle counts) and
+ * fulfillment (pick lines, move tasks), and ADR-0007 has
  * each of them check a reference in its service before writing it, with a real error code rather
  * than a foreign-key violation. Receiving, QC, putaway, picking and move tasks call these to do so:
  * by id when they already hold one, by code when a person scanned or typed it.</p>
+ *
+ * <p>A cycle count (SCRUM-162) asks two more: the shelves of a zone, to plan a count by zone, and locations by code
+ * whatever their status, to tell bins from areas without dropping a blocked bin that still holds stock to count. A
+ * subcontractor's location (created on first use) and the areas of a type serve the print shop.</p>
  *
  * <p>Administering the map - warehouses, zones, shelves, areas, boundaries - is used by this
  * module's own controllers only and lives on the internal {@code WarehouseLayoutService} and its
  * siblings.</p>
  *
- * <p>Both methods run in the caller's transaction when there is one. Neither locks: a location's
+ * <p>Every method runs in the caller's transaction when there is one. None locks: a location's
  * status can change right after the lookup, as it can after any read; what a caller must not do is
  * skip {@link StorageLocationView#usable()} and look only at the location's own status.</p>
  */
@@ -53,4 +58,25 @@ public interface WarehouseService {
 
     /** @return empty when no warehouse has this id; a purchase order receives into one (SCRUM-390) */
     Optional<WarehouseView> findWarehouse(UUID warehouseId);
+
+    /**
+     * The own codes of the shelves in a zone ({@code A01}, not {@code HCM-A01}), sorted. A cycle count planned by
+     * zone (SCRUM-162) counts the bins of these shelves: a zone is a group of shelves this module owns, while a
+     * shelf code is part of every bin's location code ({@code <prefix>-<shelf>-<level>-<bin>}), so the count can
+     * select stock by code prefix without asking for every bin.
+     *
+     * @return empty for an unknown zone, a zone of another warehouse, or one with no shelves - a caller planning in
+     *         {@code warehouseId} must never be handed another warehouse's shelf codes
+     */
+    java.util.List<String> shelfCodesOf(UUID warehouseId, UUID zoneId);
+
+    /**
+     * The locations with these codes, whatever their status, in one query. Unlike {@link #pickableLocations} a
+     * blocked or inactive location is returned: a cycle count must still count the stock sitting in a bin nobody
+     * may pick from, and it asks here only which codes are bins and which are areas.
+     *
+     * @param locationCodes exact codes as stored (upper case)
+     * @return one view per known code; an unknown code is absent
+     */
+    java.util.List<StorageLocationView> findLocations(java.util.Collection<String> locationCodes);
 }

@@ -93,11 +93,13 @@ class PickConsumptionServiceTest {
     private final ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
     private final LocationDirectory locations = mock(LocationDirectory.class);
     private final InventoryPolicyRepository policies = mock(InventoryPolicyRepository.class);
+    private final com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts =
+            mock(com.stockflow.inventory.internal.domain.CycleCountRepository.class);
     private final PickConsumptionService service = new PickConsumptionService(stockItems, ledger,
             new InventoryEventPublisher(publisher), locations, policies,
             new StockPackageContents(mock(com.stockflow.inventory.internal.domain.StockPackageRepository.class),
                     stockItems), Clock.fixed(NOW, ZoneOffset.UTC),
-            mock(com.stockflow.inventory.internal.domain.Recounts.class));
+            cycleCounts);
     private final List<StockItem> saved = new ArrayList<>();
     private final List<StockItem> merged = new ArrayList<>();
 
@@ -285,6 +287,40 @@ class PickConsumptionServiceTest {
             assertThat(refusal(() -> service.consumeForPick(holdId, UUID.randomUUID(), PICKER)))
                     .isEqualTo(ErrorCode.PRODUCTION_HOLD_NOT_PICKABLE);
             assertThat(ledgerRows).isEmpty();
+        }
+    }
+
+    @Nested
+    @DisplayName("a short pick")
+    class ShortPick {
+
+        @Test
+        @DisplayName("on a carton's row, the recount is of that carton, with its book quantity")
+        void aCartonRowIsRecountedAsACarton() {
+            UUID holdId = UUID.randomUUID();
+            Reservation hold = new Reservation(ReservationId.of(holdId), UUID.randomUUID(), UUID.randomUUID(),
+                    UUID.randomUUID(), Quantity.of(2), NOW.minusSeconds(3600), null, ReservationStatus.HELD, null, null);
+            var carton = new com.stockflow.inventory.internal.domain.StockPackageId(UUID.randomUUID());
+            StockItem item = new StockItem(StockItemId.newId(), SOFA, BIN, "LOT-1", LocalDate.of(2030, 1, 1),
+                    Quantity.of(4), StockStatus.AVAILABLE, List.of(hold), 0L, NOW.minusSeconds(86_400), null, carton);
+            when(stockItems.findIdByReservationId(ReservationId.of(holdId))).thenReturn(Optional.of(item.id()));
+            when(stockItems.findById(item.id())).thenReturn(Optional.of(item));
+            when(cycleCounts.findHolding(any())).thenReturn(Optional.empty());
+            when(cycleCounts.bookQuantity(any())).thenReturn(12);
+            when(cycleCounts.nextNumber(any())).thenReturn("CC-20261014-0001");
+            when(cycleCounts.save(any())).thenAnswer(call -> call.getArgument(0));
+            when(locations.warehouseOf(BIN)).thenReturn(Optional.of(UUID.randomUUID()));
+
+            var recount = service.requestRecount(holdId, UUID.randomUUID(), 1);
+
+            var slot = org.mockito.ArgumentCaptor.forClass(com.stockflow.inventory.internal.domain.CountSlot.class);
+            verify(cycleCounts).findHolding(slot.capture());
+            assertThat(slot.getValue().stockPackageId()).isEqualTo(carton);
+            var saved = org.mockito.ArgumentCaptor.forClass(com.stockflow.inventory.internal.domain.CycleCount.class);
+            verify(cycleCounts).save(saved.capture());
+            assertThat(saved.getValue().lines().get(0).slot().stockPackageId()).isEqualTo(carton);
+            assertThat(saved.getValue().lines().get(0).expectedQty()).isEqualTo(12);
+            assertThat(recount.created()).isTrue();
         }
     }
 

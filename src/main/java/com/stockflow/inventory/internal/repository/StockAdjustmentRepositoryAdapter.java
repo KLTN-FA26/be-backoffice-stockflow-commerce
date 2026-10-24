@@ -5,6 +5,7 @@ import com.stockflow.common.persistence.Specs;
 import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.StockAdjustment;
 import com.stockflow.inventory.internal.domain.StockAdjustmentRepository;
+import com.stockflow.inventory.internal.domain.StockPackageId;
 import com.stockflow.inventory.internal.entity.StockAdjustmentJpaEntity;
 import jakarta.persistence.EntityManager;
 import org.springframework.data.domain.Page;
@@ -59,7 +60,9 @@ class StockAdjustmentRepositoryAdapter implements StockAdjustmentRepository, Sto
                 new StockAdjustmentJpaEntity(adjustment.id(), adjustment.number(), adjustment.location().code(),
                         adjustment.sku().code(), adjustment.lotNumber(), adjustment.quantityDelta(),
                         adjustment.reason(), adjustment.note(), adjustment.requestedBy())
-                        .atLayer(adjustment.receivedAt()).forHold(adjustment.reservationId()));
+                        .atLayer(adjustment.receivedAt()).forHold(adjustment.reservationId())
+                        .inPackage(adjustment.stockPackageId() == null ? null : adjustment.stockPackageId().value())
+                        .forCountLine(adjustment.cycleCountLineId()));
         entity.decide(adjustment.status(), adjustment.decidedBy(), adjustment.decidedAt(),
                 adjustment.rejectionReason(), adjustment.postedAt(), adjustment.withdrawnAt());
         return toDomain(jpa.saveAndFlush(entity));
@@ -98,6 +101,8 @@ class StockAdjustmentRepositoryAdapter implements StockAdjustmentRepository, Sto
                 new Sku(e.getSku()), e.getLotNumber(), e.getQuantityDelta(), e.getReasonCode(), e.getNote(),
                 e.getRequestedBy(), e.getCreatedAt(), e.getStatus(), e.getDecidedBy(), e.getDecidedAt(),
                 e.getRejectionReason(), e.getPostedAt(), e.getWithdrawnAt(), e.getVersion())
-                .atLayer(e.getReceivedAt()).forHold(e.getReservationId());
+                .atLayer(e.getReceivedAt()).forHold(e.getReservationId())
+                .inPackage(e.getStockPackageId() == null ? null : new StockPackageId(e.getStockPackageId()))
+                .forCountLine(e.getCycleCountLineId());
     }
 }

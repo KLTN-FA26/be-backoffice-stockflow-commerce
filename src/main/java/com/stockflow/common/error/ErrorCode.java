@@ -356,6 +356,26 @@ public enum ErrorCode {
     PICK_LINE_NOT_OPEN("This line is no longer open", 409),
     /** A cycle count already completed or cancelled. */
     CYCLE_COUNT_NOT_OPEN("This cycle count is no longer open", 409),
+    /** A planned count whose scope resolves to no stock slot. */
+    CYCLE_COUNT_EMPTY_SCOPE("The count scope matches no stock", 422),
+    /** A planned count above stockflow.inventory.cycle-count-max-lines. */
+    CYCLE_COUNT_TOO_LARGE("The count scope is too large - narrow it", 422),
+    /** A counter who is not the assignee and may not decide. */
+    CYCLE_COUNT_NOT_ASSIGNEE("This count is assigned to someone else", 403),
+    /** Submitting a count that still has uncounted lines. */
+    CYCLE_COUNT_LINE_NOT_COUNTED("Some lines are not counted yet", 409),
+    /** A slot already held by an open count. */
+    CYCLE_COUNT_SLOT_BUSY("This stock slot is already on an open count", 409),
+    /** A surplus where the slot has no layer to receive it. */
+    CYCLE_COUNT_UNKNOWN_LAYER("The surplus cannot be placed on any receipt layer", 422),
+    /** A shortage larger than what the slot holds now. */
+    CYCLE_COUNT_STALE("Stock changed since it was counted - recount the line", 409),
+    /** A COUNT_VARIANCE adjustment withdrawn by its requester: a count's variance is approved or rejected. */
+    COUNT_VARIANCE_NOT_WITHDRAWABLE("A count variance is approved or rejected, not withdrawn", 409),
+    /** A carton counted at a location it is not in. */
+    STOCK_PACKAGE_WRONG_LOCATION("The carton is not at this location", 422),
+    /** A carton counted above its received quantity. */
+    STOCK_PACKAGE_OVERFILLED("A carton cannot hold more than it was received with", 422),
     /** Docs 07 step 9: a pick task closes only when every line is picked. */
     PICK_LINES_INCOMPLETE("Some lines are not picked yet", 409),
     PICK_TASK_STATE_CONFLICT("The task cannot do that in its current status", 409),

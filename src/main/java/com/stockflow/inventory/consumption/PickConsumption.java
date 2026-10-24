@@ -44,9 +44,9 @@ public interface PickConsumption {
 
     /**
      * A picker came up short at an allocation's bin (docs 04c X-SHORT step 03): the books and the shelf disagree, so the
-     * bin is counted again. Opens a blind {@code SHORT_PICK} cycle count of the allocation's bin, SKU and lot for today,
-     * or answers with the open one when that bin, SKU and lot already wait for a recount. Joins the caller's
-     * transaction; changes no stock.
+     * bin is counted again. Opens a blind {@code SHORT_PICK} cycle count of the allocation's bin, SKU and lot (or its
+     * carton) for today, or answers with the count already holding that slot: one still open, or one submitted whose
+     * variance waits for approval, whatever its trigger. Joins the caller's transaction; changes no stock.
      *
      * @param found the units the picker found, for the count's note
      * @throws com.stockflow.common.error.BusinessException {@code RESERVATION_NOT_FOUND} for an allocation not on a
