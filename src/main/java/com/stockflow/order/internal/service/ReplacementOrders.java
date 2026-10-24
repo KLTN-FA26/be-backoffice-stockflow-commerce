@@ -111,7 +111,8 @@ class ReplacementOrders {
     /**
      * Places the replacement order for the units {@code request} replaces: the same SKUs and locked designs, at a price
      * of zero, delivered to the original order's address; their stock (or blanks) held now and pinned, since nothing is
-     * waiting for payment. Idempotent on the return: placed again, the same order is found.
+     * waiting for payment. Idempotent on the return: placed again, the same order is found. {@code by}, who settled the
+     * return, is named on the order's confirmation.
      */
     Placed place(Order original, ReturnRequest request, UUID by) {
         requirePlaceable(original, request);
@@ -152,7 +153,7 @@ class ReplacementOrders {
                     line.sku(), line.quantity(), order.id().value()));
             order.attachReservations(line.id(), held.reservationIds());
         }
-        order.submitReplacement(now);
+        order.submitReplacement(by, now);
         Order saved = orders.save(order);
         // Confirmed at once, nothing to pay: the holds must not run out as a checkout's would (kltn-docs 14 BR-07).
         inventory.pinReservations(saved.id().value());

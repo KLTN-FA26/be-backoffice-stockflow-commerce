@@ -129,13 +129,13 @@ class StockDamageReportRepositoryAdapter implements StockDamageReportRepository,
 
     @Override
     public Page<Row> search(Criteria criteria, Pageable pageable) {
-        Specification<StockDamageReportJpaEntity> spec = Specification
-                .<StockDamageReportJpaEntity>where(Specs.eq("warehouseId", criteria.warehouseId()))
-                .and(Specs.eq("sku", criteria.sku() == null || criteria.sku().isBlank() ? null
-                        : criteria.sku().trim().toUpperCase(java.util.Locale.ROOT)))
-                .and(Specs.eq("origin", criteria.origin()))
-                .and(open(criteria.open()))
-                .and(WarehouseScope.warehousesIn("warehouseId"));
+        Specification<StockDamageReportJpaEntity> spec = Specification.allOf(
+                Specs.eq("warehouseId", criteria.warehouseId()),
+                Specs.eq("sku", criteria.sku() == null || criteria.sku().isBlank() ? null
+                        : criteria.sku().trim().toUpperCase(java.util.Locale.ROOT)),
+                Specs.eq("origin", criteria.origin()),
+                open(criteria.open()),
+                WarehouseScope.warehousesIn("warehouseId"));
         Page<StockDamageReportJpaEntity> page = jpa.findAll(spec, pageable);
         List<UUID> ids = page.getContent().stream().map(StockDamageReportJpaEntity::getId).toList();
         Map<UUID, Long> decided = ids.isEmpty() ? Map.of() : jpa.decidedOf(ids).stream().collect(Collectors.toMap(
@@ -147,10 +147,10 @@ class StockDamageReportRepositoryAdapter implements StockDamageReportRepository,
                 e.getReportedBy(), e.getReportedAt()));
     }
 
-    /** Open: some units still wait for a decision. Null when the caller does not filter. */
+    /** Open: some units still wait for a decision. Every report when the caller does not filter. */
     private static Specification<StockDamageReportJpaEntity> open(Boolean open) {
         if (open == null) {
-            return null;
+            return Specs.all();
         }
         return (root, query, cb) -> {
             Subquery<Long> decided = query.subquery(Long.class);

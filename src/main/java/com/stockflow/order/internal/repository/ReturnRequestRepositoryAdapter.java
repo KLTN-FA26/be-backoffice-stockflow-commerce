@@ -136,14 +136,14 @@ class ReturnRequestRepositoryAdapter implements ReturnRequestRepository, ReturnR
 
     @Override
     public Page<ReturnRequestRow> search(Criteria criteria, Pageable pageable) {
-        Specification<ReturnRequestJpaEntity> spec = Specification.<ReturnRequestJpaEntity>where(
-                        Specs.eq("customerId", criteria.customerId()))
-                .and(Specs.eq("orderId", criteria.orderId()))
-                .and(criteria.statuses() == null || criteria.statuses().isEmpty() ? null
-                        : Specs.in("status", criteria.statuses()))
-                .and(Specs.eq("vatAdjustmentRequired", criteria.vatAdjustment()))
-                .and(criteria.text() == null || criteria.text().isBlank() ? null
-                        : Specification.<ReturnRequestJpaEntity>where(Specs.contains("rmaNumber", criteria.text()))
+        Specification<ReturnRequestJpaEntity> spec = Specification.allOf(
+                Specs.eq("customerId", criteria.customerId()),
+                Specs.eq("orderId", criteria.orderId()),
+                criteria.statuses() == null || criteria.statuses().isEmpty() ? Specs.all()
+                        : Specs.in("status", criteria.statuses()),
+                Specs.eq("vatAdjustmentRequired", criteria.vatAdjustment()),
+                criteria.text() == null || criteria.text().isBlank() ? Specs.all()
+                        : Specs.<ReturnRequestJpaEntity>contains("rmaNumber", criteria.text())
                         .or(Specs.contains("orderNumber", criteria.text())));
         // The lines are LAZY and not touched: a page is one query (plus its count).
         return jpa.findAll(spec, pageable).map(ReturnRequestRepositoryAdapter::toRow);

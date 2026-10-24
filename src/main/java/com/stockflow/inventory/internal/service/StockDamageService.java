@@ -472,8 +472,8 @@ class StockDamageService implements StockDamages, PickDamageReporting {
         Optional<StockItem> layerThere = layerAt(damagedView, to);
         if (layerThere.isPresent() && (layerThere.get().status() != StockStatus.AVAILABLE
                 || !layerThere.get().isSameGoodsAs(damagedView))) {
-            throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH, "%s holds these goods as %s; restore them to "
-                    + "another bin".formatted(to, layerThere.get().status()));
+            throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH, ("%s holds these goods as %s; restore them to "
+                    + "another bin").formatted(to, layerThere.get().status()));
         }
         TreeMap<String, StockItem> locked = lock(damagedView.id(), layerThere.map(StockItem::id).orElse(null),
                 List.of());

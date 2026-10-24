@@ -380,6 +380,21 @@ class StockDamageIntegrationTest {
     }
 
     @Test
+    @DisplayName("restore onto a bin holding the same lot as other goods: refused, naming the bin and what it holds")
+    void restoreOntoAnotherLayerOfTheLot() throws Exception {
+        stock("HCM-A01-2-B", 3, "L1", today.plusDays(90), "AVAILABLE", null);
+        UUID reportId = UUID.fromString(body(report(UUID.randomUUID(), row, 2).andExpect(status().isCreated())
+                .andReturn()).path("id").asText());
+
+        dispose(manager, "WAREHOUSE_MANAGER", reportId, "RESTORE", 2, "cups sound", "HCM-A01-2-B")
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("STOCK_STATUS_MISMATCH"))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString(
+                        "HCM-A01-2-B holds these goods as AVAILABLE; restore them to another bin")));
+        assertThat(damagedAt(QC01)).as("still in quarantine").isEqualTo(2);
+    }
+
+    @Test
     @DisplayName("return to the supplier: the decision is recorded, the units stay DAMAGED in quarantine, out of sale")
     void returnToSupplierRecordsIntent() throws Exception {
         UUID reportId = UUID.fromString(body(report(UUID.randomUUID(), row, 2).andExpect(status().isCreated())

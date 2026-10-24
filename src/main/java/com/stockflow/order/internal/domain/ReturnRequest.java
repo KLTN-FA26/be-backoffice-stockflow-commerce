@@ -265,19 +265,23 @@ public final class ReturnRequest extends AggregateRoot {
     /** BR-RMA-001: a delivered order, within the window after delivery; an order settled by a return takes no more. */
     private static void requireReturnable(Order order, Instant now, ReturnPolicy policy) {
         OrderStatus status = order.status();
-        switch (status) {
-            case CANCELLED -> throw new BusinessException(ErrorCode.ORDER_CANCELLED,
+        // A switch expression, so a new order status is a compile error here rather than a silent "returnable".
+        BusinessException refusal = switch (status) {
+            case DELIVERED, RETURN_REQUESTED -> null;
+            case CANCELLED -> new BusinessException(ErrorCode.ORDER_CANCELLED,
                     "Order %s is cancelled; nothing was delivered to return".formatted(order.orderNumber()));
-            case DELIVERED, RETURN_REQUESTED -> { }
-            case COMPLETED, CLOSED -> throw windowClosed(order, policy);
-            case REFUNDED, PARTIALLY_REFUNDED -> throw new BusinessException(ErrorCode.RETURN_ORDER_NOT_RETURNABLE,
+            case COMPLETED, CLOSED -> windowClosed(order, policy);
+            case REFUNDED, PARTIALLY_REFUNDED -> new BusinessException(ErrorCode.RETURN_ORDER_NOT_RETURNABLE,
                     "Order %s was already settled by a return; a further claim goes through Sales"
                             .formatted(order.orderNumber()));
             // RETURNED as an order status is goods that came back undelivered (RTO), or a return being settled.
             case DRAFT, PENDING_PAYMENT, CONFIRMED, IN_PRODUCTION, READY_TO_FULFILL, PICKING, PARTIALLY_FULFILLED,
-                 PACKED, ON_HOLD, SHIPPED, DELIVERY_FAILED, RETURNED -> throw new BusinessException(
+                 PACKED, ON_HOLD, SHIPPED, DELIVERY_FAILED, RETURNED -> new BusinessException(
                     ErrorCode.RETURN_ORDER_NOT_DELIVERED,
                     "Order %s is %s: only a delivered order can be returned".formatted(order.orderNumber(), status));
+        };
+        if (refusal != null) {
+            throw refusal;
         }
         if (order.deliveredAt() == null || order.deliveredAt().plus(policy.window()).isBefore(now)) {
             throw windowClosed(order, policy);
@@ -679,13 +683,15 @@ public final class ReturnRequest extends AggregateRoot {
             Remedy remedy = byLine.get(line.id());
             line.remedy(remedy == null ? 0 : remedy.replacement(), remedy == null ? 0 : remedy.credit());
         }
+        // Non-null exactly when money moves: the check above refused a positive value without a money mode.
+        ReturnResolution money = value.signum() > 0 ? mode : null;
         this.settlementAmount = value;
-        this.moneyMode = value.signum() > 0 ? mode : null;
+        this.moneyMode = money;
         this.proposedBy = by;
         this.proposedAt = now;
         this.resolutionNote = limited(note, NOTE_LIMIT, "note");
-        if (value.signum() > 0) {
-            transitionTo(ReturnStatus.SETTLEMENT_PENDING, by, "SETTLEMENT_PROPOSED_" + moneyMode.name(), now);
+        if (money != null) {
+            transitionTo(ReturnStatus.SETTLEMENT_PENDING, by, "SETTLEMENT_PROPOSED_" + money.name(), now);
             return true;
         }
         return false;

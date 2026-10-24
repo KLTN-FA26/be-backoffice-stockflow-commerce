@@ -90,11 +90,15 @@ class OrderReturnTest {
         free.applyTerms(PaymentTerm.PREPAID, null);
         UUID returnId = UUID.randomUUID();
         free.replacesReturn(returnId);
-        assertThatThrownBy(() -> free.submitReplacement(NOW)).as("its stock is held first")
+        UUID settler = UUID.randomUUID();
+        assertThatThrownBy(() -> free.submitReplacement(settler, NOW)).as("its stock is held first")
                 .isInstanceOf(IllegalStateException.class);
         free.lines().forEach(line -> free.attachReservations(line.id(), List.of(UUID.randomUUID())));
-        free.submitReplacement(NOW);
+        free.submitReplacement(settler, NOW);
         assertThat(free.status()).isEqualTo(OrderStatus.CONFIRMED);
+        assertThat(free.pullTransitions()).last().as("the confirmation names who settled the return")
+                .extracting(OrderTransition::actorId, OrderTransition::reason)
+                .containsExactly(settler, "REPLACEMENT_FOR_RETURN");
         assertThat(free.paidInFullAt()).isEqualTo(NOW);
         assertThat(free.replacesReturnRequestId()).isEqualTo(returnId);
         assertThat(free.pullDomainEvents()).singleElement().satisfies(event ->

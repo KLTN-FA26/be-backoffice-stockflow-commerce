@@ -1995,9 +1995,10 @@ public final class Order extends AggregateRoot {
     /**
      * A replacement order is placed (SCRUM-260): every line holds its stock, there is nothing to pay - so it is paid in
      * full at once and CONFIRMED, ready for the coordinator to release it to a warehouse and to production, as any
-     * order. Announced as {@code OrderPlaced}.
+     * order. Announced as {@code OrderPlaced}. The confirmation names {@code by}, who settled the return: nobody
+     * checked out this order, so the history says who caused it.
      */
-    public void submitReplacement(Instant now) {
+    public void submitReplacement(UUID by, Instant now) {
         if (replacesReturnRequestId == null) {
             throw new IllegalStateException("Order %s replaces no return".formatted(orderNumber));
         }
@@ -2006,7 +2007,7 @@ public final class Order extends AggregateRoot {
             throw new IllegalStateException("A replacement order is prepaid: there is nothing to pay");
         }
         this.paidInFullAt = now;
-        transitionTo(OrderStatus.CONFIRMED, null, "REPLACEMENT_FOR_RETURN", now);
+        transitionTo(OrderStatus.CONFIRMED, by, "REPLACEMENT_FOR_RETURN", now);
         registerPlaced();
     }
 
