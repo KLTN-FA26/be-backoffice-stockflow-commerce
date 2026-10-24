@@ -15,7 +15,8 @@ public final class PickLineMapper {
         return new PickLine(e.getId(), e.getOrderLineId(), e.getReservationId(), e.getSku(), e.getLocationCode(),
                 e.getLotNumber(), e.getSequenceNo(), e.getAllocatedQty(), e.getPickedQty(), e.getStatus(),
                 e.getPickedBy(), e.getPickedAt(), e.getConsumedAt(), e.getScannedLocationCode(), e.getScannedCode(),
-                e.getPutBackQty(), e.getPutBackLocationCode(), e.getPutBackBy(), e.getPutBackAt(), e.getShortQty());
+                e.getPutBackQty(), e.getPutBackLocationCode(), e.getPutBackBy(), e.getPutBackAt(), e.getShortQty(),
+                e.getDamagedQty(), e.getDamageReportId());
     }
 
     /** A row for a line the aggregate just planned. */
@@ -31,5 +32,6 @@ public final class PickLineMapper {
                 line.scannedLocationCode(), line.scannedCode(), line.putBackQty(), line.putBackLocationCode(),
                 line.putBackBy(), line.putBackAt());
         entity.recordShort(line.shortQty());
+        entity.recordDamage(line.damagedQty(), line.damageReportId());
     }
 }

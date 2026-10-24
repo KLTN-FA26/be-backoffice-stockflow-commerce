@@ -5,7 +5,6 @@ import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.contracts.PaymentCaptured;
-import com.stockflow.contracts.PaymentMethod;
 import com.stockflow.contracts.PaymentReversed;
 import com.stockflow.payment.api.OrderPayables;
 import com.stockflow.payment.api.PayableOrder;
@@ -338,8 +337,7 @@ public class MoneyLedgerService {
         ReceivableBook.Allocation allocation = book.recordAllocation(transfer.id(), receivable.orderId(),
                 receivable.id(), applied, now, by);
         events.publishEvent(new PaymentCaptured(receivable.orderId(), allocation.id(), applied, receivable.currency(),
-                transfer.channel() == TransferChannel.CARRIER_REMITTANCE ? PaymentMethod.COD
-                        : PaymentMethod.BANK_TRANSFER, ReceivableService.sourceOf(receivable)));
+                transfer.channel().paymentMethod(), ReceivableService.sourceOf(receivable)));
         return allocation;
     }
 

@@ -114,6 +114,14 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     }
 
     @Override
+    public List<StockItem> findHoldingRequest(UUID rootRequestId) {
+        return jpa.findStockItemIdsForRequest(rootRequestId).stream()
+                .map(id -> jpa.findByIdWithReservations(id).map(StockItemPersistenceMapper::toDomain))
+                .flatMap(Optional::stream)
+                .toList();
+    }
+
+    @Override
     public List<StockAllocator.Candidate> findAvailabilityBySku(Sku sku) {
         return jpa.findAvailabilityBySku(sku.code()).stream()
                 .map(AvailabilityRow::toCandidate)
@@ -255,6 +263,13 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     private void mergeMarker(String value) {
         entityManager.createNativeQuery("SELECT set_config('stockflow.same_receipt_merge', :value, true)")
                 .setParameter("value", value).getSingleResult();
+    }
+
+    @Override
+    public StockItem saveNow(StockItem stockItem) {
+        StockItem saved = save(stockItem);
+        entityManager.flush();
+        return saved;
     }
 
     @Override

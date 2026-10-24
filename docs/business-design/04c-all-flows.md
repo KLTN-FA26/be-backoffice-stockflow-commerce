@@ -1,6 +1,6 @@
 # Bản đồ toàn bộ luồng dữ liệu
 
-27 luồng của StockFlowCommerce: chính, phụ, ngoại lệ và nền tảng. Mỗi luồng gồm sơ đồ
+28 luồng của StockFlowCommerce: chính, phụ, ngoại lệ và nền tảng. Mỗi luồng gồm sơ đồ
 service–database và bảng liệt kê từng bước ghi vào bảng nào.
 
 Ký hiệu trong bảng: `+` tạo dòng · `~` sửa dòng · `−` trừ hoặc xoá.
@@ -47,9 +47,10 @@ Kafka. Xem ADR-0003.
 - `F-RTO` Hàng hoàn về vì giao không thành công (WBS 3.9.7)
 - `F-REF` Hoàn tiền và đối soát với cổng thanh toán (WBS 3.15.6 · 3.20.4)
 
-**Ngoại lệ** — 3 luồng
+**Ngoại lệ** — 4 luồng
 
 - `X-SHORT` Nhặt thiếu — đơn không hỏng, đơn dừng lại (WBS 3.7.5)
+- `X-DMG` Hàng hỏng — báo hỏng có ảnh, cách ly, quản lý kho quyết định xử lý (WBS 3.6.5.1)
 - `X-RESV` Giữ chỗ hết hạn — tồn tự phục hồi (WBS 3.14.5.2)
 - `X-CHK` Lệch checksum thiết kế — dừng đóng gói (WBS 3.8.3)
 
@@ -776,6 +777,13 @@ flowchart LR
 > ⚠ Hàng in theo yêu cầu KHÔNG được trả trừ khi lỗi — BR-RMA-002. Cốc in ảnh của khách không bán lại cho ai được.
 > · Hàng in bị lỗi trả về thì vào thẳng DAMAGED, không phải QUARANTINE — không có gì để kiểm lại.
 
+> **Đã triển khai 2026-10-25 (SCRUM-243 / SCRUM-260)** — luồng thực tế nằm ở `03-state-machines.md` §12 và khác
+> bảng trên ở mấy điểm: mọi hàng trả về (kể cả hàng in lỗi) đều nhập vào QUARANTINE (`stock_movement` RETURN_IN), rồi
+> QC quyết định từng đơn vị — nhập lại để bán (chỉ hàng không in riêng), huỷ (phiếu điều chỉnh SCRAP chờ duyệt) hoặc
+> gửi trả khách; không có `return_shipment`/`qc_task` riêng, kho ghi nhận và QC kiểm ngay trên yêu cầu đổi trả. Hàng
+> thay thế là một đơn thay thế giá 0 đi qua sản xuất và giao hàng như đơn thường; tiền được cấn trừ công nợ của đơn,
+> hoàn tiền (tối đa số đã thu) hoặc giữ làm số dư của khách — Sales đề xuất, người khác duyệt.
+
 ---
 
 ## `F-RTO` Hàng hoàn về vì giao không thành công
@@ -878,6 +886,47 @@ flowchart LR
 > · Điều phối chọn một trong ba: phân bổ lại từ vị trí khác, tách đơn, hoặc huỷ dòng đó.
 > · Chênh lệch giữa allocated và thực tế nhặt được luôn kèm một cycle_count tự động cho vị trí đó.
 > · Đã cài (SCRUM-152): `POST /fulfillment/tasks/{id}/pick-lines/{lineId}/short` (dòng → SHORT, đơn → ON_HOLD lý do `INVENTORY` — tên trong code của `INVENTORY_ISSUE`, enum `HoldReason` từ G3-2 — không ghi stock_movement) và `.../reallocation` (Điều phối/QL kho: nhả allocation cũ `SHORT_PICKED`, phân bổ lại FEFO ở bin khác cùng kho, dòng cũ → CANCELLED giữ `short_qty`, thêm dòng mới; hết dòng SHORT thì đơn quay lại IN_FULFILMENT). Báo thiếu còn tự mở phiếu kiểm kê mù `SHORT_PICK` cho đúng bin/SKU/lô (hoặc đúng thùng) — trừ khi ô đã bận: nằm trên phiếu khác còn mở, hoặc trên phiếu đã nộp mà chênh lệch còn chờ duyệt (kể cả phiếu MANUAL), thì dùng lại phiếu đó; xem ở `GET /api/v1/inventory/cycle-counts`, NV kho xem được, màn hình kiểm kê không hiện số sổ sách cho họ. Khi phiếu còn mở, phần tồn chưa giữ của bin/SKU/lô đó bị khoá: không tính vào ATP, không phân bổ FEFO (quyết định 19/10/2026); QL kho huỷ phiếu bằng `POST /api/v1/inventory/cycle-counts/{id}/cancellation` để mở khoá. Đếm và hạch toán chênh lệch theo `F-CNT` (SCRUM-146): sau khi phiếu được nộp, khoá vẫn giữ cho tới khi mọi điều chỉnh `COUNT_VARIANCE` của dòng đó được duyệt hoặc từ chối — nếu không, giữa lúc nộp và lúc duyệt hệ thống lại hứa bán đúng những đơn vị picker không tìm thấy. Tách đơn và huỷ dòng chưa làm (để story sau).
+> · Hàng **hỏng** (không phải thiếu) phát hiện lúc nhặt đi theo `X-DMG` bên dưới: dòng không thành SHORT cho toàn bộ, chỉ phần hỏng, và hệ thống tự phân bổ lại ngay trong cùng giao dịch; chỉ khi không còn hàng thì mới rơi vào nhánh SHORT + ON_HOLD của X-SHORT.
+
+---
+
+## `X-DMG` Hàng hỏng — báo hỏng có ảnh, cách ly, quyết định xử lý
+
+*WBS 3.6.5.1 · BR-STK-003 · SCRUM-475 (báo hỏng trên kệ), SCRUM-277 (báo hỏng lúc nhặt)*
+
+Hàng vỡ/nứt, móp méo, ẩm mốc/ướt, bẩn/in lỗi được phát hiện trên kệ hoặc ngay lúc nhặt. Hàng hỏng phải rời ATP ngay, được tách khỏi hàng tốt cả trên sổ lẫn ngoài sàn, và chỉ quản lý kho (không phải người báo) mới được quyết định hủy, trả nhà cung cấp hay phục hồi.
+
+```mermaid
+flowchart LR
+    N0(["NV kho / QC / người nhặt"])
+    N1["inventory<br><small>sf_inventory</small>"]
+    N2["fulfillment<br><small>sf_fulfillment</small>"]
+    N3["order<br><small>sf_order</small>"]
+    N4(["Quản lý kho"])
+    N0 -->|"báo hỏng + ảnh (trên kệ)"| N1
+    N0 -->|"báo hỏng + ảnh (dòng nhặt)"| N2
+    N2 -->|"cùng giao dịch"| N1
+    N2 -->|"giữ chỗ mới / ON_HOLD(INVENTORY)"| N3
+    N4 -->|"hủy / trả NCC / phục hồi"| N1
+    N1 -.->|"StockDamageReported, StockDamageDisposed"| N3
+```
+
+| # | Service | Ghi vào | Kết quả |
+|---|---|---|---|
+| 01 | `inventory` | `+ stock_damage_report, + stock_damage_photo × 1..5` | biên bản hàng hỏng `DMG-yyyyMMdd-nnnn`, ảnh lưu trong MinIO (`qc-evidence`) |
+| 02 | `inventory` | `~ stock_item.on_hand −` (dòng nguồn), `+/~ stock_item` DAMAGED ở khu `QUARANTINE`, `+ stock_movement` MOVE | AVAILABLE → DAMAGED, rời ATP ngay |
+| 03 | `fulfillment` | `~ pick_line` (CANCELLED, `damaged_qty`), `+ pick_line × N` | chỉ khi báo lúc nhặt: dòng phần tốt + dòng thay thế, hoặc dòng SHORT |
+| 04 | `inventory` | `~ stock_reservation` (giảm/đóng DAMAGED), `+ stock_reservation` | phân bổ lại FEFO, hoặc giữ chỗ "bị ảnh hưởng" trên hàng hỏng |
+| 05 | `order` | `~ order_line_reservation`, `~ order.status` | dòng đơn nhận giữ chỗ mới; không còn hàng → ON_HOLD(INVENTORY) |
+| 06 | `inventory` | `+ stock_damage_disposition`, `+ stock_adjustment` (POSTED), `+ stock_movement` ADJUSTMENT | hủy: biên bản hủy `WO-yyyyMMdd-nnnn`, tồn giảm |
+| 07 | `inventory` | `+ stock_damage_disposition`, `~ stock_item`, `+ stock_movement` MOVE | phục hồi: DAMAGED → AVAILABLE lên một ô kệ |
+
+> ★ Ít nhất một ảnh và một lý do (OTHER phải có ghi chú) — BR-STK-003, kiểm ở aggregate và ở DB (`tg_stock_damage_report_photo`). Lỗi lưu ảnh → không đổi tồn, ảnh đã lưu bị xoá khi rollback.
+> ★ Báo hỏng trên kệ chỉ lấy hàng **chưa được giữ chỗ** (`DAMAGE_EXCEEDS_FREE_STOCK`); hàng đã phân bổ cho đơn do người nhặt báo ở bước nhặt, để đơn biết ngay trong cùng giao dịch. Giữ chỗ của sản xuất/điều chuyển không bao giờ bị lấy; phôi hỏng trong xưởng in vẫn theo luồng ghi hủy của sản xuất.
+> ★ Hàng hỏng luôn chuyển sang một khu `QUARANTINE` của cùng kho (người báo chọn, hoặc khu đầu tiên theo mã còn nhận được lớp hàng này): một lớp nhận hàng chỉ có một dòng tồn mỗi vị trí, và hàng hỏng phải tách khỏi hàng tốt. Hàng trong thùng (LPN) ra khỏi thùng: thùng mở, hoặc CONSUMED khi hết.
+> · Lúc nhặt (`POST /fulfillment/tasks/{id}/pick-lines/{lineId}/damage`, chỉ người được giao, đúng kho, đúng ô): khoá pick → đơn → tồn. Dòng cũ CANCELLED với `damaged_qty`; phần tốt thành dòng OPEN mới cùng ô cùng allocation; phần hỏng được phân bổ lại FEFO trong kho (kể cả chính ô đó — số đếm ở đó không bị nghi ngờ như nhặt thiếu) thành các dòng OPEN mới, đơn tiếp tục PICKING. Không còn hàng → dòng SHORT mang giữ chỗ "bị ảnh hưởng" nằm trên hàng hỏng (không ai nhặt được), đơn ON_HOLD(INVENTORY); Điều phối gọi `.../reallocation` như X-SHORT khi có hàng, đơn tự quay lại.
+> · Quyết định (`POST /api/v1/inventory/damage-reports/{id}/dispositions`, quyền `inventory-damage-reports:APPROVE`, không phải người báo): có thể chia nhiều lần theo số lượng. Hủy = phiếu điều chỉnh DAMAGED do người báo đề nghị, quản lý duyệt và ghi sổ ngay. Trả NCC = chỉ ghi nhận ý định (NCC lấy từ lô), hàng vẫn DAMAGED ở khu cách ly đến khi luồng trả hàng của procurement (chưa làm) xuất đi. Phục hồi = lên ô kệ AVAILABLE, phải có ghi chú. Hàng còn bị giữ chỗ cho đơn thì chưa được xử lý (`DAMAGED_STOCK_HELD`).
+> · Giữ chỗ mềm lúc checkout (SKU reservation) không gắn hàng cụ thể: nếu hàng hỏng làm tổng giữ chỗ vượt hàng tự do, `StockDamageReported.skuReservationShortfall` báo số thiếu; lúc release đơn sẽ báo `INSUFFICIENT_STOCK` như mọi trường hợp thiếu hàng.
 
 ---
 

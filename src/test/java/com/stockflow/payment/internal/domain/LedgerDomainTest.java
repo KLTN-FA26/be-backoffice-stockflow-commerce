@@ -67,6 +67,24 @@ class LedgerDomainTest {
     }
 
     @Test
+    @DisplayName("a return's credit is a ledger entry under the RMA number, all of it unallocated, and what it pays is "
+            + "announced as a credit note, not as money that arrived (SCRUM-260)")
+    void returnCredit() {
+        CustomerTransfer credit = CustomerTransfer.returnCredit(UUID.randomUUID(), "RMA-20261025-0001",
+                new BigDecimal("250000"), "VND", TODAY, UUID.randomUUID(), NOW, null);
+        assertThat(credit.channel()).isEqualTo(TransferChannel.RETURN_CREDIT);
+        assertThat(credit.reference()).isEqualTo("RMA-20261025-0001");
+        assertThat(credit.unallocatedAmount()).isEqualByComparingTo("250000");
+
+        assertThat(TransferChannel.RETURN_CREDIT.paymentMethod())
+                .isEqualTo(com.stockflow.contracts.PaymentMethod.CREDIT_NOTE);
+        assertThat(TransferChannel.BANK_TRANSFER.paymentMethod())
+                .isEqualTo(com.stockflow.contracts.PaymentMethod.BANK_TRANSFER);
+        assertThat(TransferChannel.CARRIER_REMITTANCE.paymentMethod())
+                .isEqualTo(com.stockflow.contracts.PaymentMethod.COD);
+    }
+
+    @Test
     @DisplayName("taking money back off a receivable: the status follows the money and the due date")
     void unallocate() {
         Receivable r = Receivable.open(UUID.randomUUID(), UUID.randomUUID(), new BigDecimal("1000"), "VND", NOW,

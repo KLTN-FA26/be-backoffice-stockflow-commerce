@@ -152,27 +152,55 @@ SELECT pg_temp.expect_fail('O31 history rewritten', $q$
 SELECT pg_temp.expect_fail('O32 a "transition" to the same status', $q$
     INSERT INTO ordering.order_status_history (id, order_id, from_status, to_status, occurred_at)
     VALUES (gen_random_uuid(), md5('qa:order:1')::uuid, 'PAID', 'PAID', NOW()) $q$);
-INSERT INTO ordering.return_request (id, rma_number, order_id, customer_id, reason_code, requested_at)
-VALUES (md5('qa:rma:1')::uuid, 'RMA-QA-1', md5('qa:order:1')::uuid, 'c0000000-0000-4000-8000-000000000001', 'DAMAGED_IN_TRANSIT', NOW());
+\echo '--- returns (SCRUM-243, V20261025020000)'
+INSERT INTO ordering.return_request (id, rma_number, order_id, order_number, customer_id, request_id, channel, requested_by,
+                                     requested_resolution, status, reason_code, requested_at)
+VALUES (md5('qa:rma:1')::uuid, 'RMA-QA-1', md5('qa:order:1')::uuid, 'SO-QA-1', 'c0000000-0000-4000-8000-000000000001',
+        gen_random_uuid(), 'BACK_OFFICE', md5('demo:user:editor')::uuid, 'REFUND', 'REQUESTED', 'DAMAGED_IN_TRANSIT', NOW());
 SELECT pg_temp.expect_fail('O33 returning a line of another order', $q$
-    INSERT INTO ordering.return_request_line (id, return_request_id, order_line_id, quantity) VALUES (gen_random_uuid(), md5('qa:rma:1')::uuid, md5('qa:ol:2')::uuid, 1) $q$);
+    INSERT INTO ordering.return_request_line (id, return_request_id, order_line_id, sku, custom_printed, unit_price, quantity)
+    VALUES (gen_random_uuid(), md5('qa:rma:1')::uuid, md5('qa:ol:2')::uuid, 'TABLE-OAK-160', FALSE, 1, 1) $q$);
 SELECT pg_temp.expect_fail('O34 returning 3 of 2 ordered', $q$
-    INSERT INTO ordering.return_request_line (id, return_request_id, order_line_id, quantity) VALUES (gen_random_uuid(), md5('qa:rma:1')::uuid, md5('qa:ol:1')::uuid, 3) $q$);
-SELECT pg_temp.expect_ok('O35 returning 1, approved, received, put away to quarantine', $q$
-    INSERT INTO ordering.return_request_line (id, return_request_id, order_line_id, quantity, item_condition, disposition)
-    VALUES (md5('qa:rmal:1')::uuid, md5('qa:rma:1')::uuid, md5('qa:ol:1')::uuid, 1, 'DAMAGED', 'QUARANTINE');
-    UPDATE ordering.return_request SET status = 'RECEIVED', decided_by = md5('demo:user:approver')::uuid, decided_at = NOW(), received_at = NOW()
-     WHERE id = md5('qa:rma:1')::uuid;
-    INSERT INTO warehouse.putaway_task (id, return_request_line_id, sku, quantity, status, created_at)
-    VALUES (gen_random_uuid(), md5('qa:rmal:1')::uuid, 'SOFA-3S-GREY', 1, 'PENDING', NOW()) $q$);
-SELECT pg_temp.expect_fail('O36 a second return pushing the line past what was ordered', $q$
-    INSERT INTO ordering.return_request (id, rma_number, order_id, reason_code, requested_at)
-    VALUES (md5('qa:rma:2')::uuid, 'RMA-QA-2', md5('qa:order:1')::uuid, 'CHANGED_MIND', NOW());
-    INSERT INTO ordering.return_request_line (id, return_request_id, order_line_id, quantity) VALUES (gen_random_uuid(), md5('qa:rma:2')::uuid, md5('qa:ol:1')::uuid, 2) $q$);
-SELECT pg_temp.expect_fail('O37 REFUNDED without the refund', $q$
-    UPDATE ordering.return_request SET status = 'REFUNDED' WHERE id = md5('qa:rma:1')::uuid $q$);
-SELECT pg_temp.expect_fail('O38 disposition decided before inspection', $q$
-    UPDATE ordering.return_request_line SET item_condition = NULL WHERE id = md5('qa:rmal:1')::uuid $q$);
+    INSERT INTO ordering.return_request_line (id, return_request_id, order_line_id, sku, custom_printed, unit_price, quantity)
+    VALUES (gen_random_uuid(), md5('qa:rma:1')::uuid, md5('qa:ol:1')::uuid, 'SOFA-3S-GREY', FALSE, 10000000, 3) $q$);
+SELECT pg_temp.expect_ok('O35 returning 1: approved with the goods to come back, received into quarantine', $q$
+    INSERT INTO ordering.return_request_line (id, return_request_id, order_line_id, sku, custom_printed, unit_price, quantity)
+    VALUES (md5('qa:rmal:1')::uuid, md5('qa:rma:1')::uuid, md5('qa:ol:1')::uuid, 'SOFA-3S-GREY', FALSE, 10000000, 1);
+    UPDATE ordering.return_request_line SET approved_quantity = 1 WHERE id = md5('qa:rmal:1')::uuid;
+    UPDATE ordering.return_request SET status = 'AWAITING_RETURN', decided_by = md5('demo:user:approver')::uuid, decided_at = NOW(),
+           return_required = TRUE, return_deadline = NOW() + INTERVAL '14 days' WHERE id = md5('qa:rma:1')::uuid;
+    UPDATE ordering.return_request_line SET received_quantity = 1, item_condition = 'DAMAGED' WHERE id = md5('qa:rmal:1')::uuid;
+    UPDATE ordering.return_request SET status = 'RECEIVED', received_by = md5('demo:user:editor')::uuid, received_at = NOW(),
+           receiving_location_code = 'HCM-QC01' WHERE id = md5('qa:rma:1')::uuid $q$);
+SELECT pg_temp.expect_fail('O36 a second return of a line that already has an open one', $q$
+    INSERT INTO ordering.return_request (id, rma_number, order_id, order_number, customer_id, request_id, channel, requested_by,
+                                         requested_resolution, status, reason_code, requested_at)
+    VALUES (md5('qa:rma:2')::uuid, 'RMA-QA-2', md5('qa:order:1')::uuid, 'SO-QA-1', 'c0000000-0000-4000-8000-000000000001',
+            gen_random_uuid(), 'BACK_OFFICE', md5('demo:user:editor')::uuid, 'REPLACEMENT', 'REQUESTED', 'PRINT_DEFECT', NOW());
+    INSERT INTO ordering.return_request_line (id, return_request_id, order_line_id, sku, custom_printed, unit_price, quantity)
+    VALUES (gen_random_uuid(), md5('qa:rma:2')::uuid, md5('qa:ol:1')::uuid, 'SOFA-3S-GREY', FALSE, 10000000, 1) $q$);
+SELECT pg_temp.expect_fail('O37 RESOLVED straight from RECEIVED: never inspected, settled or closed', $q$
+    UPDATE ordering.return_request SET status = 'RESOLVED' WHERE id = md5('qa:rma:1')::uuid $q$);
+SELECT pg_temp.expect_fail('O38 where the received units went, decided before inspection', $q$
+    UPDATE ordering.return_request_line SET scrap_quantity = 1 WHERE id = md5('qa:rmal:1')::uuid $q$);
+SELECT pg_temp.expect_fail('O38a goods printed to the customer''s design put back on sale (OQ-12)', $q$
+    UPDATE ordering.return_request_line SET custom_printed = TRUE, accepted_quantity = 1, rejected_quantity = 0,
+           restock_quantity = 1, restock_location_code = 'HCM-A01-2-B' WHERE id = md5('qa:rmal:1')::uuid $q$);
+SELECT pg_temp.expect_ok('O38b inspected: the unit accepted and scrapped, credited at the line price, refund proposed', $q$
+    UPDATE ordering.return_request_line SET accepted_quantity = 1, rejected_quantity = 0, scrap_quantity = 1,
+           credit_quantity = 1, credit_amount = 10000000 WHERE id = md5('qa:rmal:1')::uuid;
+    UPDATE ordering.return_request SET status = 'SETTLEMENT_PENDING', inspected_by = md5('demo:user:editor')::uuid,
+           inspected_at = NOW(), money_mode = 'REFUND', settlement_amount = 10000000,
+           proposed_by = md5('demo:user:editor')::uuid, proposed_at = NOW() WHERE id = md5('qa:rma:1')::uuid $q$);
+SELECT pg_temp.expect_fail('O38c the proposer approving their own refund (four eyes)', $q$
+    UPDATE ordering.return_request SET status = 'RESOLVED', settled_by = md5('demo:user:editor')::uuid, settled_at = NOW(),
+           refunded_amount = 10000000, vat_adjustment_required = TRUE, closed_at = NOW() WHERE id = md5('qa:rma:1')::uuid $q$);
+SELECT pg_temp.expect_fail('O38d a refund settled without flagging the adjustment invoice', $q$
+    UPDATE ordering.return_request SET status = 'RESOLVED', settled_by = md5('demo:user:approver')::uuid, settled_at = NOW(),
+           refunded_amount = 10000000, closed_at = NOW() WHERE id = md5('qa:rma:1')::uuid $q$);
+SELECT pg_temp.expect_ok('O38e settled by someone else: refunded in full, adjustment invoice flagged, closed', $q$
+    UPDATE ordering.return_request SET status = 'RESOLVED', settled_by = md5('demo:user:approver')::uuid, settled_at = NOW(),
+           refunded_amount = 10000000, vat_adjustment_required = TRUE, closed_at = NOW() WHERE id = md5('qa:rma:1')::uuid $q$);
 
 \echo '--- CONFIRMED, money received, cancellations (SCRUM-460, V20261013000300)'
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at, created_at)

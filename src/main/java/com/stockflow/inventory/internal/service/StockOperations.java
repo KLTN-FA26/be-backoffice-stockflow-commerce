@@ -28,6 +28,9 @@ public interface StockOperations {
 
     StockMove receive(ReceiveStockCommand command);
 
+    /** See {@code InventoryService#receiveReturn}. */
+    StockMove receiveReturn(com.stockflow.inventory.api.ReceiveReturnCommand command);
+
     /** See {@code InventoryService#issueReserved}. */
     IssueReservedStockResult issueReserved(IssueReservedStockCommand command);
 

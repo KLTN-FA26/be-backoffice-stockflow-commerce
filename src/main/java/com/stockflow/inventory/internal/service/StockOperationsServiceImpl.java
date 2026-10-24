@@ -858,6 +858,57 @@ class StockOperationsServiceImpl implements StockOperations {
         return toMove(line);
     }
 
+    // ------------------------------------------------------------------ returns
+
+    /**
+     * SCRUM-260: a returned parcel's goods into quarantine (OQ-12: never straight into sellable stock). The lines of one
+     * parcel are counted at one time, and two of them may carry the same SKU and lot (two designs printed on one blank,
+     * a wrong item that is another line's SKU): they share the layer the first one opened, as the natural key
+     * (SKU, location, lot, receipt time) says they must.
+     */
+    @Override
+    @Auditable(action = AuditAction.CREATE, resourceType = "stock-return-receipt", resourceId = "#command.returnLineId()")
+    public StockMove receiveReturn(com.stockflow.inventory.api.ReceiveReturnCommand command) {
+        WarehouseScope.requireLocation(command.locationCode());
+        policies.lock(command.sku().code());
+        Optional<StockMovement> done = ledger.findByReference(StockMovement.MovementType.RETURN_IN,
+                StockMovement.ReferenceType.RETURN_REQUEST_LINE, command.returnLineId());
+        if (done.isPresent()) {
+            return toMove(done.get());
+        }
+        LocationId location = new LocationId(command.locationCode());
+        switch (locations.stateOf(location)) {
+            case UNKNOWN -> throw new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + location);
+            case UNUSABLE -> throw new BusinessException(ErrorCode.LOCATION_NOT_USABLE,
+                    "%s cannot take stock now: it, its shelf or its warehouse is not active".formatted(location));
+            case USABLE -> { }
+        }
+        String lot = blankToNull(command.lotNumber());
+        Quantity quantity = Quantity.of(command.quantity());
+        Optional<StockItem> layer = findLayer(command.sku(), location, lot, command.receivedAt());
+        if (layer.isPresent()) {
+            StockItem item = stockItems.findByIdForUpdate(layer.get().id()).orElseThrow();
+            requireLoose(item);
+            if (item.status() != StockStatus.QUARANTINE) {
+                throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH,
+                        "%s holds %s%s as %s; returned goods arrive in quarantine".formatted(location, command.sku(),
+                                lotSuffix(lot), item.status()));
+            }
+            item.moveIn(quantity);
+            // The same receipt, not a replenishment: the policy trigger lets a FIFO layer grow only when told so.
+            stockItems.saveMerged(item);
+        } else {
+            stockItems.save(StockItem.receive(command.sku(), location, lot, null, quantity, command.receivedAt(), null));
+        }
+        StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.RETURN_IN,
+                command.sku(), lot, null, location, quantity.value(), StockStatus.QUARANTINE,
+                StockMovement.ReferenceType.RETURN_REQUEST_LINE, command.returnLineId(), "Returned by the customer",
+                command.actorId(), clock.instant()).forOrder(command.orderId());
+        ledger.append(line);
+        log.info("Returned {} x {}{} into {}", quantity, command.sku(), lotSuffix(lot), location);
+        return toMove(line);
+    }
+
     // ------------------------------------------------------------------ adjustments
 
     @Override

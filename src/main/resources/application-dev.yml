@@ -68,6 +68,11 @@ management:
   endpoint:
     health:
       show-details: always
+  health:
+    mail:
+      # On by default: the dev server stays on its Mailpit (EMAIL_PROVIDER=smtp, below). Set
+      # MAIL_HEALTH_ENABLED=false with EMAIL_PROVIDER=resend, where the SMTP probe watches a relay nobody uses.
+      enabled: ${MAIL_HEALTH_ENABLED:true}
   tracing:
     sampling:
       # 100% on dev — see every trace. Prod samples 10%.
@@ -95,6 +100,17 @@ stockflow:
     # ON. A server never runs with security off — that is what the `local` profile is for, and it
     # must never leave a laptop.
     enabled: true
+
+  notification:
+    email:
+      # SMTP (the server's Mailpit) until the sending domain is verified in Resend: a dev server deployed on every
+      # push to develop must not stop for a key it has not been given yet. EMAIL_PROVIDER=resend with
+      # RESEND_API_KEY and RESEND_FROM switches it to Resend, which then refuses to start without them (as prod
+      # always does). A server holding copies of real customers should also set CUSTOMER_EMAIL_ENABLED=false.
+      provider: ${EMAIL_PROVIDER:smtp}
+      from: ${RESEND_FROM:}
+      resend:
+        api-key: ${RESEND_API_KEY:}
 
   storage:
     provider: s3

@@ -317,6 +317,17 @@ public interface InventoryService {
      */
     StockMove reclassify(ReclassifyStockCommand command);
 
+    /**
+     * Count goods a customer returned (SCRUM-260) in at a quarantine location as QUARANTINE stock, writing a RETURN_IN
+     * ledger line that names the return line and the order (see {@link ReceiveReturnCommand}). Joins the caller's
+     * transaction: the return's receipt and the stock it creates commit together. Lines of one parcel received at one
+     * time and of the same SKU and lot share one stock layer. Idempotent on the return line.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code LOCATION_NOT_FOUND}, {@code LOCATION_NOT_USABLE};
+     *         {@code STOCK_STATUS_MISMATCH} when the layer at that location is not in quarantine
+     */
+    StockMove receiveReturn(ReceiveReturnCommand command);
+
     /** The receiving policy of an inventory item, empty when no such item exists. */
     Optional<InventoryItemPolicy> itemPolicy(UUID inventoryItemId);
 

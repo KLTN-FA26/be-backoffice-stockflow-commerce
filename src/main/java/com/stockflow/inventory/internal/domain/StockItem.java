@@ -1000,6 +1000,165 @@ public final class StockItem extends AggregateRoot {
         }
     }
 
+    // ------------------------------------------------------------------ damage (docs 03 §5, BR-STK-003)
+
+    /**
+     * The share of an order's hold that damaged units took with them (SCRUM-277): who the units were promised to,
+     * from which SKU reservation, and how many. The caller allocates that much again elsewhere, or keeps it on the
+     * damaged units as an impaired allocation ({@link #takeUpDamaged}).
+     */
+    public record HeldShare(UUID orderId, UUID allocatedFrom, Quantity quantity) {
+        public HeldShare {
+            Objects.requireNonNull(orderId, "orderId");
+            Objects.requireNonNull(allocatedFrom, "allocatedFrom");
+            Objects.requireNonNull(quantity, "quantity");
+        }
+    }
+
+    /**
+     * Free units of this row were found damaged on the shelf (docs 03 §5 AVAILABLE → DAMAGED): they leave it, for a
+     * DAMAGED row in quarantine ({@link #takeUpDamaged}). {@code onHand} falls; no hold is touched.
+     *
+     * <p>Only unheld units. A hold names units somebody will take - a picker, the print shop, a transfer - and those
+     * are reported damaged where they are taken ({@link #giveUpDamagedHeld} for a pick), so the hold's owner learns
+     * of it in the same transaction instead of finding its promise gone.</p>
+     *
+     * @throws BusinessException {@code STOCK_STATUS_MISMATCH} unless the row is AVAILABLE, {@code STOCK_EXPIRED}
+     *         past its expiry date, {@code DAMAGE_EXCEEDS_FREE_STOCK} beyond the free units
+     */
+    public void giveUpDamaged(Quantity quantity, Instant now) {
+        requireDamageable(now);
+        requireSomeUnits(quantity);
+        if (movable().isLessThan(quantity)) {
+            throw new BusinessException(ErrorCode.DAMAGE_EXCEEDS_FREE_STOCK,
+                    "%s%s at %s has %s unit(s) on hand, %s of them held; %s found damaged".formatted(sku,
+                            lotNumber == null ? "" : " lot " + lotNumber, location, onHand, reserved(), quantity));
+        }
+        this.onHand = onHand.minus(quantity);
+        checkInvariants();
+    }
+
+    /**
+     * A picker found {@code quantity} of the units hold {@code holdId} keeps here damaged (SCRUM-277). The hold gives
+     * them up - closed with {@link ReleaseReason#DAMAGED} when that is all of it, otherwise it keeps its id over fewer
+     * units - and they leave this row as free damaged units would. Only an order's hold is picked.
+     *
+     * @return the share of the hold that left with the damaged units
+     * @throws BusinessException {@code RESERVATION_NOT_FOUND}, {@code RESERVATION_NOT_ACTIVE},
+     *         {@code PRODUCTION_HOLD_NOT_PICKABLE} for a hold that is not an order's, {@code VALIDATION_FAILED} for
+     *         more units than the hold keeps, and the refusals of {@link #giveUpDamaged}
+     */
+    public HeldShare giveUpDamagedHeld(ReservationId holdId, Quantity quantity, Instant now) {
+        requireDamageable(now);
+        requireSomeUnits(quantity);
+        Reservation hold = findReservation(holdId).orElseThrow(() -> new BusinessException(
+                ErrorCode.RESERVATION_NOT_FOUND, "Reservation %s is not on stock item %s".formatted(holdId, id)));
+        if (!hold.status().isActive()) {
+            throw new BusinessException(ErrorCode.RESERVATION_NOT_ACTIVE,
+                    "Reservation %s is already %s".formatted(holdId, hold.status()));
+        }
+        if (hold.orderId() == null) {
+            throw new BusinessException(ErrorCode.PRODUCTION_HOLD_NOT_PICKABLE,
+                    "Reservation %s is not an order's; only an order's units are picked".formatted(holdId));
+        }
+        if (hold.quantity().isLessThan(quantity)) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "Reservation %s keeps %s unit(s); %s found damaged".formatted(holdId, hold.quantity(), quantity));
+        }
+        UUID origin = hold.allocatedFrom() != null ? hold.allocatedFrom() : hold.id().value();
+        reduceHold(holdId, quantity, ReleaseReason.DAMAGED, now);
+        giveUpDamaged(quantity, now);
+        return new HeldShare(hold.orderId(), origin, quantity);
+    }
+
+    /**
+     * The DAMAGED side of {@link #giveUpDamaged}: units of {@code from} found damaged arrive on this row, in
+     * quarantine. With {@code impaired}, the order they were promised to keeps them promised here - an impaired
+     * allocation, never pickable ({@link #consumeReservation} refuses DAMAGED stock) - because no other stock could
+     * replace them: the order waits for the coordinator to reallocate it (docs 03 §5, "not silently dropped").
+     *
+     * @param requestId the impaired allocation's idempotency key; ignored without {@code impaired}
+     * @return the impaired allocation, or null without {@code impaired}
+     */
+    public Reservation takeUpDamaged(StockItem from, Quantity quantity, HeldShare impaired, UUID requestId,
+                                     Instant now) {
+        if (status != StockStatus.DAMAGED) {
+            throw new IllegalStateException("Stock item %s is %s; damaged goods arrive DAMAGED".formatted(id, status));
+        }
+        if (!isSameGoodsAs(from)) {
+            throw new IllegalArgumentException("Stock item %s does not hold the goods of %s".formatted(id, from.id));
+        }
+        requireSomeUnits(quantity);
+        this.onHand = onHand.plus(quantity);
+        Reservation allocation = null;
+        if (impaired != null) {
+            if (!impaired.quantity().equals(quantity)) {
+                throw new IllegalArgumentException("The impaired share covers the damaged units exactly");
+            }
+            allocation = Reservation.allocate(impaired.orderId(), impaired.allocatedFrom(),
+                    Objects.requireNonNull(requestId, "requestId"), requestId, quantity, now);
+            reservations.add(allocation);
+        }
+        checkInvariants();
+        return allocation;
+    }
+
+    /**
+     * Before a manager's decision moves damaged units: this DAMAGED row still has {@code quantity} of them, unheld.
+     * An impaired allocation keeps its units until the coordinator reallocates the order (or cancels it); writing
+     * them off or putting them back on sale first would take an order's promise away behind its back.
+     *
+     * @throws BusinessException {@code STOCK_STATUS_MISMATCH} unless DAMAGED; {@code DAMAGED_STOCK_HELD} when the
+     *         units are there but an order still holds them; {@code CONFLICT} when they are no longer here at all
+     */
+    public void requireUnheldDamaged(Quantity quantity) {
+        if (status != StockStatus.DAMAGED) {
+            throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH,
+                    "Stock item %s at %s is %s, not DAMAGED".formatted(id, location, status));
+        }
+        if (onHand.isLessThan(quantity)) {
+            throw new BusinessException(ErrorCode.CONFLICT, ("%s has %s damaged unit(s) of %s left; %s asked - were "
+                    + "they moved?").formatted(location, onHand, sku, quantity));
+        }
+        if (movable().isLessThan(quantity)) {
+            throw new BusinessException(ErrorCode.DAMAGED_STOCK_HELD, ("%s of the damaged units at %s are still "
+                    + "allocated to an order; its short pick line must be reallocated first")
+                    .formatted(reserved(), location));
+        }
+    }
+
+    /** Damaged units leave this DAMAGED row because a manager restored them (back onto a bin, AVAILABLE). */
+    public void giveUpRestored(Quantity quantity) {
+        requireUnheldDamaged(quantity);
+        requireSomeUnits(quantity);
+        this.onHand = onHand.minus(quantity);
+        checkInvariants();
+    }
+
+    /** AVAILABLE, unexpired stock is what can be found damaged; everything else has its own path. */
+    private void requireDamageable(Instant now) {
+        if (status != StockStatus.AVAILABLE) {
+            throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH, switch (status) {
+                case IN_PRODUCTION -> "%s at %s is in the print shop; production writes off spoilt blanks"
+                        .formatted(sku, location);
+                case INBOUND, QUARANTINE -> "%s at %s is %s; QC decides about goods not yet accepted"
+                        .formatted(sku, location, status);
+                default -> "%s at %s is already %s; only AVAILABLE stock is reported damaged"
+                        .formatted(sku, location, status);
+            });
+        }
+        if (expiryDate != null && expiryDate.isBefore(BusinessCalendar.date(now))) {
+            throw new BusinessException(ErrorCode.STOCK_EXPIRED, ("%s at %s expired on %s; it is written off as "
+                    + "EXPIRED, not reported damaged").formatted(sku, location, expiryDate));
+        }
+    }
+
+    private static void requireSomeUnits(Quantity quantity) {
+        if (Objects.requireNonNull(quantity, "quantity").isZero()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "At least one unit");
+        }
+    }
+
     // ------------------------------------------------------------------ invariants
 
     /**

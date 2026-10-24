@@ -77,7 +77,10 @@ import static org.mockito.Mockito.verify;
  */
 @IntegrationTest
 @Import({PostgresContainer.class, RecordedEvents.class})
-@TestPropertySource(properties = "stockflow.upload-inspection.enabled=false")
+// The Sales notices are checked on the mocked JavaMailSender: SMTP, not the test profile's in-memory recorder. Customer
+// order mail (HTML, a MimeMessage the mock cannot make) is not what this test is about.
+@TestPropertySource(properties = {"stockflow.upload-inspection.enabled=false", "stockflow.notification.email.provider=smtp",
+        "stockflow.notification.email.customer.enabled=false"})
 class QuoteIntegrationTest {
 
     private static final String BLANK = ConfirmedDesigns.BLANK;

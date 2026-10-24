@@ -72,6 +72,11 @@ management:
   endpoint:
     health:
       show-details: when-authorized
+  health:
+    mail:
+      # Mail goes through Resend's HTTP API; the SMTP probe would report on a server nobody uses (localhost:1025
+      # by default) and show the deployment DOWN. Set MAIL_HEALTH_ENABLED=true with EMAIL_PROVIDER=smtp.
+      enabled: ${MAIL_HEALTH_ENABLED:false}
   tracing:
     sampling:
       # 10% of traces. Sampling everything at production volume costs more in storage than it is
@@ -91,6 +96,16 @@ stockflow:
     # ON. This is the whole point of the profile - the local profile turns it off for convenience,
     # and that convenience must never reach a deployment.
     enabled: true
+
+  notification:
+    email:
+      # All mail through Resend (SCRUM-352). RESEND_API_KEY and RESEND_FROM have no default here: a missing one
+      # stops startup instead of a server that silently sends nothing. EMAIL_PROVIDER=smtp switches to the
+      # spring.mail relay, which then needs MAIL_HOST and its credentials.
+      provider: ${EMAIL_PROVIDER:resend}
+      from: ${RESEND_FROM}
+      resend:
+        api-key: ${RESEND_API_KEY}
 
   storage:
     provider: s3

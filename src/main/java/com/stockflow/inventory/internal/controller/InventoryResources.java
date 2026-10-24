@@ -26,6 +26,8 @@ public final class InventoryResources {
     /** Seeded by V20260903000100; read by the recounts a short pick opens (X-SHORT). */
     public static final String CYCLE_COUNTS = "inventory-cycle-counts";
     public static final String INVENTORY_ITEMS = "inventory-inventory-items";
+    /** Seeded by V20261025030200: report damaged stock (CREATE), decide it (APPROVE, four eyes). */
+    public static final String DAMAGE_REPORTS = "inventory-damage-reports";
 
     private InventoryResources() {
     }

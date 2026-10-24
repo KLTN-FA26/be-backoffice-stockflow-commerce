@@ -3,6 +3,7 @@ package com.stockflow.notification.internal.service;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.contracts.PurchaseOrderSent;
 import com.stockflow.notification.internal.domain.DeliveryStatus;
+import com.stockflow.notification.internal.domain.EmailDeliveryException;
 import com.stockflow.notification.internal.domain.NotificationChannel;
 import com.stockflow.notification.internal.entity.DeliveryLogJpaEntity;
 import com.stockflow.notification.internal.repository.DeliveryLogJpaRepository;
@@ -68,8 +69,11 @@ class PurchaseOrderNotificationListener {
                                     + 1));
             logs.saveAndFlush(success);
         } catch (RuntimeException failure) {
+            // A transport that says the message will never be accepted (an invalid address, a revoked key) is not
+            // retried four more times: the delivery is terminal now and waits for an operator's recovery generation.
             boolean terminal =
                     failure instanceof IllegalArgumentException
+                            || failure instanceof EmailDeliveryException refused && !refused.retryable()
                             || logs.countByOperationReferenceAndDeliveryGenerationAndStatus(
                                             reference,
                                             event.deliveryGeneration(),

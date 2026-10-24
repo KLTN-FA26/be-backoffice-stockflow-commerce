@@ -6,6 +6,7 @@ import com.stockflow.fulfillment.api.FulfillmentTask;
 import com.stockflow.fulfillment.internal.controller.dto.AssigneeResponse;
 import com.stockflow.fulfillment.internal.controller.dto.FulfillmentArtifactAccessResponse;
 import com.stockflow.fulfillment.internal.controller.dto.FulfillmentTaskResponse;
+import com.stockflow.fulfillment.internal.controller.dto.PickDamageResponse;
 import com.stockflow.fulfillment.internal.controller.dto.PickLineResponse;
 import com.stockflow.fulfillment.internal.controller.dto.PutBackRowResponse;
 import com.stockflow.fulfillment.internal.service.PickLists;
@@ -43,7 +44,13 @@ class FulfillmentWebMapper {
         return new PickLineResponse(line.lineId(), line.taskId(), line.sequenceNo(), line.orderLineId(), line.sku(),
                 line.barcode(), line.locationCode(), line.lotNumber(), line.allocatedQty(), line.pickedQty(),
                 line.status(), line.pickedAt(), line.putBackQty(), line.putBackLocationCode(), line.putBackAt(),
-                line.shortQty());
+                line.shortQty(), line.damagedQty(), line.damageReportId());
+    }
+
+    PickDamageResponse toResponse(PickLists.PickDamageView damage) {
+        return new PickDamageResponse(damage.damageReportId(), damage.reportNumber(), damage.damageLocationCode(),
+                damage.damagedQuantity(), damage.orderOnHold(), toResponse(damage.line()),
+                damage.lines().stream().map(this::toResponse).toList());
     }
 
     PutBackRowResponse toResponse(PickLists.PutBackRow row) {
