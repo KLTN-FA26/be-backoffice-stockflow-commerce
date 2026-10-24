@@ -93,11 +93,11 @@ class CycleCountCounting {
             StockPackage carton = lockCarton(line.slot().stockPackageId());
             follow(count, line, carton, prefixOf(count));
             counted = cartonCount(carton, countedQty, present);
+        } else if (countedQty == null) {
+            // Exactly one of the two was sent (checked above), so a loose line without a quantity was sent present.
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "present is for a sealed carton; count loose stock in units");
         } else {
-            if (present != null) {
-                throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                        "present is for a sealed carton; count loose stock in units");
-            }
             counted = countedQty;
         }
         count.count(lineId, counted, counts.bookQuantity(line.slot()), actor, clock.instant());

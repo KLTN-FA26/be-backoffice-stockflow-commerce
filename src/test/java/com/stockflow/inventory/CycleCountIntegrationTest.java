@@ -417,6 +417,18 @@ class CycleCountIntegrationTest {
     }
 
     @Test
+    @DisplayName("a loose line is counted in units: present is refused and nothing is recorded")
+    void presentOnALooseLineIsRefused() {
+        loose(BIN, 10);
+        CycleCountView planned = planBin(BIN).count();
+        UUID line = planned.lines().get(0).id();
+
+        assertThat(code(catchThrowable(() -> cycleCounts.count(planned.id(), line, null, true, counter, false))))
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(cycleCounts.get(planned.id(), true).lines().get(0).countedQty()).isNull();
+    }
+
+    @Test
     @DisplayName("a shortage beyond what the slot holds now is CYCLE_COUNT_STALE; the submission rolls back whole")
     void shortageBeyondCurrentStockIsStale() {
         // BIN (HCM-A01-1-B) sorts before BIN2 (HCM-A01-2-A): its surplus is asked - and flushed - first, so the
