@@ -342,6 +342,25 @@ public interface InventoryService {
      */
     StockMove reclassify(ReclassifyStockCommand command);
 
+    /**
+     * Move a labelled carton whole (SCRUM-473): the carton and its rows change location together, keeping their
+     * ids, holds and unopened state; one MOVE ledger line per row names the carton on both sides. Only an IN_STOCK
+     * carton moves. Locks: the SKU, then the carton, then its rows.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code STOCK_PACKAGE_NOT_FOUND},
+     *         {@code VALIDATION_FAILED} (already there), {@code MOVE_ACROSS_WAREHOUSES},
+     *         {@code LOCATION_NOT_FOUND}, {@code LOCATION_NOT_USABLE}, {@code INVALID_STOCK_PACKAGE_TRANSITION}
+     *         (the carton is not IN_STOCK)
+     */
+    StockPackageView moveStockPackage(MoveStockPackageCommand command);
+
+    /**
+     * A QC decision about a whole carton: {@link #moveStockPackage} and the rows' status change in one step, so
+     * the carton is neither split nor opened. Same errors, plus {@code STOCK_STATUS_MISMATCH} (a row is not
+     * INBOUND or QUARANTINE).
+     */
+    StockPackageView reclassifyStockPackage(ReclassifyStockPackageCommand command);
+
     /** The receiving policy of an inventory item, empty when no such item exists. */
     Optional<InventoryItemPolicy> itemPolicy(UUID inventoryItemId);
 

@@ -14,8 +14,11 @@ import com.stockflow.common.persistence.SortWhitelist;
 import com.stockflow.inventory.api.CountReceivingPackagesCommand;
 import com.stockflow.inventory.api.IssueReservedStockCommand;
 import com.stockflow.inventory.api.IssueReservedStockResult;
+import com.stockflow.inventory.api.MoveReference;
 import com.stockflow.inventory.api.MoveStockCommand;
+import com.stockflow.inventory.api.MoveStockPackageCommand;
 import com.stockflow.inventory.api.ReclassifyStockCommand;
+import com.stockflow.inventory.api.ReclassifyStockPackageCommand;
 import com.stockflow.inventory.api.ReceiveStockCommand;
 import com.stockflow.inventory.api.RequestAdjustmentCommand;
 import com.stockflow.inventory.api.StockAdjustmentReason;
@@ -38,6 +41,7 @@ import com.stockflow.inventory.internal.domain.ReservationId;
 import com.stockflow.inventory.internal.domain.StockAdjustment;
 import com.stockflow.inventory.internal.domain.StockAdjustmentRepository;
 import com.stockflow.inventory.internal.domain.StockItem;
+import com.stockflow.inventory.internal.domain.StockItemId;
 import com.stockflow.inventory.internal.domain.StockLots;
 import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.inventory.internal.domain.StockMovement;
@@ -171,24 +175,7 @@ class StockOperationsServiceImpl implements StockOperations {
 
         LocationId from = new LocationId(fromCode);
         LocationId to = new LocationId(toCode);
-        if (from.equals(to)) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A move needs two different locations");
-        }
-        // Docs 11 BR-01: stock leaves its warehouse only on a transfer order (docs 10), which records the
-        // dispatch, the transit and the receipt. A plain move between warehouses skipped all of that.
-        if (!from.warehouseCode().equals(to.warehouseCode())) {
-            throw new BusinessException(ErrorCode.MOVE_ACROSS_WAREHOUSES,
-                    "%s and %s are in different warehouses; use a transfer order".formatted(fromCode, toCode));
-        }
-        // Only the destination is checked (issue #67): taking stock out of a blocked bin or a shelf in
-        // maintenance is how it gets emptied, and an adjustment at a bin blocked for counting must
-        // still post.
-        switch (locations.stateOf(to)) {
-            case UNKNOWN -> throw new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + to);
-            case UNUSABLE -> throw new BusinessException(ErrorCode.LOCATION_NOT_USABLE,
-                    "%s cannot take stock now: it, its shelf or its warehouse is not active".formatted(to));
-            case USABLE -> { }
-        }
+        requireMovableBetween(from, to);
         Quantity quantity = Quantity.of(qty);
 
         StockItem sourceView = findLayer(sku, from, lotNumber, receivedAt)
@@ -249,6 +236,111 @@ class StockOperationsServiceImpl implements StockOperations {
         log.info("Moved {} x {}{} from {} to {} ({} -> {})", quantity, sku, lotSuffix(lotNumber), from, to,
                 before, arriving);
         return toMove(line);
+    }
+
+    /**
+     * What every move of stock needs of its two ends, loose or in a carton: two different locations, in one
+     * warehouse (docs 11 BR-01: stock leaves its warehouse only on a transfer order, which records the dispatch,
+     * the transit and the receipt), and a destination that can take stock. Only the destination is checked (issue
+     * #67): taking stock out of a blocked bin or a shelf in maintenance is how it gets emptied, and an adjustment
+     * at a bin blocked for counting must still post.
+     */
+    private void requireMovableBetween(LocationId from, LocationId to) {
+        if (from.equals(to)) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A move needs two different locations");
+        }
+        if (!from.warehouseCode().equals(to.warehouseCode())) {
+            throw new BusinessException(ErrorCode.MOVE_ACROSS_WAREHOUSES,
+                    "%s and %s are in different warehouses; use a transfer order".formatted(from, to));
+        }
+        requireUsable(to);
+    }
+
+    // ------------------------------------------------------------------ a carton, whole
+
+    @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "stock-package-move", resourceId = "#command.lpn()")
+    public StockPackageView moveStockPackage(MoveStockPackageCommand command) {
+        return relocatePackage(command.lpn(), command.toLocationCode(), null, command.reference(),
+                command.referenceId(), command.actorId(), null);
+    }
+
+    @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "stock-package-move", resourceId = "#command.lpn()")
+    public StockPackageView reclassifyStockPackage(ReclassifyStockPackageCommand command) {
+        return relocatePackage(command.lpn(), command.toLocationCode(),
+                StockStatus.valueOf(command.disposition().name()), command.reference(), command.referenceId(),
+                command.actorId(), blankToNull(command.reason()));
+    }
+
+    /**
+     * A carton to {@code toCode} with its rows, {@code target} null for a plain move (the status travels) or the
+     * status QC gives it. The rows are changed in place, never split off (a carton is not opened by a decision
+     * about it), so each keeps its id and holds; one MOVE ledger line per row names the carton on both sides.
+     *
+     * <p>Lock order: the SKU, the carton, then its rows by id. The carton is read unlocked first only to learn
+     * its SKU; everything decided about it is read again under the lock. No replay lookup: a second call finds
+     * the carton already at the destination and is refused as any move to the same place is.</p>
+     */
+    private StockPackageView relocatePackage(String lpn, String toCode, StockStatus target,
+                                             MoveReference reference, UUID referenceId, UUID actorId, String reason) {
+        WarehouseScope.requireLocation(toCode);
+        StockPackage seen = stockPackages.findByLpn(lpn).orElseThrow(() ->
+                new BusinessException(ErrorCode.STOCK_PACKAGE_NOT_FOUND, "No stock package " + lpn));
+        WarehouseScope.requireLocation(seen.location().code());
+        UomConversion unit = units.findAll(List.of(seen.uomConversionId())).stream().findFirst().orElseThrow(() ->
+                new IllegalStateException("Stock package %s is in no known unit".formatted(lpn)));
+        Sku sku = new Sku(unit.sku());
+        policies.lock(sku.code());
+
+        StockPackage carton = stockPackages.findAllByIdForUpdate(List.of(seen.id())).stream().findFirst()
+                .orElseThrow(() -> new BusinessException(ErrorCode.STOCK_PACKAGE_NOT_FOUND, "No stock package " + lpn));
+        if (carton.status() != StockPackageStatus.IN_STOCK) {
+            throw new BusinessException(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION,
+                    "%s is %s; only a carton in stock is moved".formatted(lpn, carton.status()));
+        }
+        LocationId from = carton.location();
+        LocationId to = new LocationId(toCode);
+        requireMovableBetween(from, to);
+
+        List<StockItem> rows = new ArrayList<>();
+        for (StockItemId id : stockItems.findIdsInStockPackage(carton.id()).stream()
+                .sorted(Comparator.comparing(id -> id.value().toString())).toList()) {
+            rows.add(stockItems.findByIdForUpdate(id).orElseThrow(() ->
+                    new IllegalStateException("Stock item %s vanished mid-move".formatted(id))));
+        }
+        if (target != null) {
+            for (StockItem row : rows) {
+                if (row.status() != StockStatus.INBOUND && row.status() != StockStatus.QUARANTINE) {
+                    throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH,
+                            "%s holds %s; only INBOUND or QUARANTINE stock takes a receiving decision"
+                                    .formatted(lpn, row.status()));
+                }
+            }
+        }
+
+        carton.moveTo(to);
+        stockPackages.save(carton);
+        Instant now = clock.instant();
+        int onHand = 0;
+        for (StockItem row : rows) {
+            StockStatus before = row.status();
+            row.followPackageTo(to);
+            if (target != null) {
+                row.reclassifyInPackage(target);
+            }
+            stockItems.save(row);
+            onHand += row.onHand().value();
+            if (row.onHand().value() > 0) {
+                ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.MOVE, row.sku(),
+                        row.lotNumber(), from, to, row.onHand().value(), before, row.status(),
+                        StockMovement.ReferenceType.valueOf(reference.name()), referenceId, reason, actorId, now)
+                        .ofLot(row.lotId()).leaving(carton.id()).arriving(carton.id()));
+            }
+        }
+        log.info("Moved carton {} from {} to {} ({} row(s){})", lpn, from, to, rows.size(),
+                target == null ? "" : ", now " + target);
+        return view(carton, unit, onHand);
     }
 
     // ------------------------------------------------------------------ issue held goods

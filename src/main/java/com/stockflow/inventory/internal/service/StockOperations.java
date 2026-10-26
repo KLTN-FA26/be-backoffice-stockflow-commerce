@@ -88,6 +88,12 @@ public interface StockOperations {
 
     StockMove reclassify(ReclassifyStockCommand command);
 
+    /** See {@code InventoryService#moveStockPackage}. */
+    StockPackageView moveStockPackage(com.stockflow.inventory.api.MoveStockPackageCommand command);
+
+    /** See {@code InventoryService#reclassifyStockPackage}. */
+    StockPackageView reclassifyStockPackage(com.stockflow.inventory.api.ReclassifyStockPackageCommand command);
+
     /**
      * A person's request to write stock up or down. Refuses {@code COUNT_VARIANCE} ({@code VALIDATION_FAILED}): only a
      * cycle count asks for that, through {@link #requestCountVariance}.

@@ -200,6 +200,18 @@ class InventoryServiceImpl implements InventoryService {
     }
 
     @Override
+    public com.stockflow.inventory.api.StockPackageView moveStockPackage(
+            com.stockflow.inventory.api.MoveStockPackageCommand command) {
+        return operations.moveStockPackage(command);
+    }
+
+    @Override
+    public com.stockflow.inventory.api.StockPackageView reclassifyStockPackage(
+            com.stockflow.inventory.api.ReclassifyStockPackageCommand command) {
+        return operations.reclassifyStockPackage(command);
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public Optional<InventoryItemPolicy> itemPolicy(UUID inventoryItemId) {
         return items.policyOf(inventoryItemId);
