@@ -151,7 +151,9 @@ class StockPackageLabelHttpTest {
     @DisplayName("a VOID carton is not printed with the line, and a closed LPN named by hand is 409")
     void aVoidCartonHasNoLabel() throws Exception {
         String voided = lpns.get(1);
-        jdbc.update("update inventory.stock_package set status = 'VOID', closed_at = NOW() where lpn = ?", voided);
+        // In tx: the pool runs with auto-commit off, so a bare jdbc write is rolled back when its connection returns.
+        tx.executeWithoutResult(s -> jdbc.update(
+                "update inventory.stock_package set status = 'VOID', closed_at = NOW() where lpn = ?", voided));
 
         byte[] pdf = print(Role.WAREHOUSE_STAFF, clerk,
                 "{\"format\":\"THERMAL_ROLL\",\"receiptLineId\":\"" + receiptLineId + "\"}")
@@ -217,11 +219,11 @@ class StockPackageLabelHttpTest {
     @DisplayName("cartons in a warehouse the caller is not assigned to: 403")
     void aCartonInAnotherWarehouseIsOutOfScope() throws Exception {
         UUID elsewhere = Identifiers.newId();
-        jdbc.update("""
+        tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO warehouse.warehouse (id, name, status, prefix, address, map_unit, map_width, map_height,
                                                  version, created_at)
                 VALUES (?, 'Elsewhere', 'ACTIVE', ?, 'Somewhere', 'M', 50, 50, 0, NOW())""", elsewhere,
-                "D" + UUID.randomUUID().toString().substring(0, 5).toUpperCase(Locale.ROOT));
+                "D" + UUID.randomUUID().toString().substring(0, 5).toUpperCase(Locale.ROOT)));
         UUID outsider = staff("WAREHOUSE_STAFF", elsewhere);
 
         print(Role.WAREHOUSE_STAFF, outsider,
