@@ -36,9 +36,11 @@ public interface LocationLookupRepository {
     /**
      * The bins of a warehouse a putaway may choose from: BIN locations of {@code storageClass} flagged {@code is_putaway_target} whose warehouse, shelf
      * and own status are all ACTIVE (the {@code EffectiveStatus.ofBin} rule, in the WHERE clause so the database does
-     * the filtering), by location code. Capacity and weight as stored, null when unset.
+     * the filtering), by location code. Capacity and weight as stored, null when unset. A non-null
+     * {@code locationCode} narrows the same rule to that one location.
      */
-    java.util.List<PutawayCandidateRow> findPutawayCandidates(UUID warehouseId, StorageClass storageClass);
+    java.util.List<PutawayCandidateRow> findPutawayCandidates(UUID warehouseId, StorageClass storageClass,
+                                                              String locationCode);
 
     record PutawayCandidateRow(UUID locationId, String locationCode, Integer capacityUnits,
                                java.math.BigDecimal maxWeight) {

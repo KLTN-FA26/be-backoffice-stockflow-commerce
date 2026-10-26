@@ -35,11 +35,12 @@ public interface StockMovementLog {
                                                              java.util.Collection<UUID> referenceIds);
 
     /**
-     * Units a document's ledger lines add up to, 0 when it has none: how much of a putaway task has been put away,
-     * counting every part, loose or in a carton.
+     * Units a document's ledger lines of these types add up to, 0 when it has none: how much of a putaway task has
+     * been put away, counting every part, loose or in a carton. Several types in one query, because a putaway writes
+     * both moves and in-place status changes under one reference.
      */
-    int sumQuantityByReference(StockMovement.MovementType type, StockMovement.ReferenceType referenceType,
-                               UUID referenceId);
+    int sumQuantityByReference(java.util.Collection<StockMovement.MovementType> types,
+                               StockMovement.ReferenceType referenceType, UUID referenceId);
 
     /**
      * Whether production handed {@code hold}'s goods over, out of the print shop, to {@code location}: the hand-over

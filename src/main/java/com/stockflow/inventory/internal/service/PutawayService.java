@@ -83,6 +83,9 @@ public class PutawayService {
 
     private static final Logger log = LoggerFactory.getLogger(PutawayService.class);
 
+    /** The ledger lines a putaway writes: a move into the bin, or a status change where the goods already stood. */
+    private static final Set<MovementType> PUT_AWAY = Set.of(MovementType.MOVE, MovementType.STATUS_CHANGE);
+
     private final PutawayTasks tasks;
     private final WarehouseService warehouses;
     private final StockPackageRepository stockPackages;
@@ -276,10 +279,9 @@ public class PutawayService {
             throw new BusinessException(ErrorCode.LOCATION_STORAGE_CLASS_MISMATCH,
                     "%s is %s; %s is kept %s".formatted(bin.locationCode(), bin.storageClass(), task.sku(), itemClass));
         }
-        PutawayCandidate candidate = warehouses.putawayCandidates(bin.warehouseId(), itemClass).stream()
-                .filter(c -> c.locationCode().equals(bin.locationCode())).findFirst().orElseThrow(() ->
-                        new BusinessException(ErrorCode.LOCATION_NOT_USABLE,
-                                bin.locationCode() + " is not a putaway target"));
+        PutawayCandidate candidate = warehouses.putawayCandidate(bin.warehouseId(), itemClass, bin.locationCode())
+                .orElseThrow(() -> new BusinessException(ErrorCode.LOCATION_NOT_USABLE,
+                        bin.locationCode() + " is not a putaway target"));
         String lot = (task.stockPackageId() != null ? receiptLine(task.goodsReceiptLineId(), reads)
                 : looseReceiptLine(task.goodsReceiptLineId(), reads)).map(StockMovement::lotNumber).orElse(null);
         // Before the occupancy is read, so two putaways into one bin cannot both see it as it was.
@@ -404,8 +406,7 @@ public class PutawayService {
      * somebody moved there by hand before the putaway).
      */
     private int putAway(PutawayTaskView task) {
-        return ledger.sumQuantityByReference(MovementType.MOVE, ReferenceType.PUTAWAY_TASK, task.id())
-                + ledger.sumQuantityByReference(MovementType.STATUS_CHANGE, ReferenceType.PUTAWAY_TASK, task.id());
+        return ledger.sumQuantityByReference(PUT_AWAY, ReferenceType.PUTAWAY_TASK, task.id());
     }
 
     private String locationCodeOf(UUID locationId, Reads reads) {

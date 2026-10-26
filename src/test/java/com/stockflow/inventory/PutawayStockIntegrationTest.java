@@ -153,9 +153,9 @@ class PutawayStockIntegrationTest {
         assertThat(units(BIN, "AVAILABLE")).isEqualTo(12);
         assertThat(units(BIN2, "AVAILABLE")).isEqualTo(8);
         assertThat(units(RECEIVING, "INBOUND")).isZero();
-        assertThat(ledger.sumQuantityByReference(StockMovement.MovementType.MOVE,
+        assertThat(ledger.sumQuantityByReference(List.of(StockMovement.MovementType.MOVE),
                 StockMovement.ReferenceType.PUTAWAY_TASK, task)).isEqualTo(20);
-        assertThat(ledger.sumQuantityByReference(StockMovement.MovementType.MOVE,
+        assertThat(ledger.sumQuantityByReference(List.of(StockMovement.MovementType.MOVE),
                 StockMovement.ReferenceType.PUTAWAY_TASK, Identifiers.newId())).isZero();
     }
 

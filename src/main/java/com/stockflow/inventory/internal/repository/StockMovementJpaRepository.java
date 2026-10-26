@@ -29,9 +29,10 @@ interface StockMovementJpaRepository extends BaseJpaRepository<StockMovementJpaE
 
     @org.springframework.data.jpa.repository.Query("""
             select coalesce(sum(m.quantity), 0) from StockMovementJpaEntity m
-            where m.movementType = :type and m.referenceType = :referenceType and m.referenceId = :referenceId
+            where m.movementType in :types and m.referenceType = :referenceType and m.referenceId = :referenceId
             """)
-    int sumQuantityByReference(@org.springframework.data.repository.query.Param("type") StockMovement.MovementType type,
+    int sumQuantityByReference(
+            @org.springframework.data.repository.query.Param("types") java.util.Collection<StockMovement.MovementType> types,
             @org.springframework.data.repository.query.Param("referenceType") StockMovement.ReferenceType referenceType,
             @org.springframework.data.repository.query.Param("referenceId") UUID referenceId);
 

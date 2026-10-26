@@ -90,9 +90,9 @@ class PickConsumptionServiceTest {
         }
 
         @Override
-        public int sumQuantityByReference(StockMovement.MovementType type,
+        public int sumQuantityByReference(java.util.Collection<StockMovement.MovementType> types,
                                           StockMovement.ReferenceType referenceType, UUID referenceId) {
-            return ledgerRows.stream().filter(row -> row.type() == type && row.referenceType() == referenceType
+            return ledgerRows.stream().filter(row -> types.contains(row.type()) && row.referenceType() == referenceType
                     && row.referenceId().equals(referenceId)).mapToInt(StockMovement::quantity).sum();
         }
 

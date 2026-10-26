@@ -212,8 +212,11 @@ class LayoutReadRepositoryAdapter implements LayoutReadRepository, LocationLooku
 
     @Override
     public List<PutawayCandidateRow> findPutawayCandidates(UUID warehouseId,
-                                                           com.stockflow.warehouse.internal.domain.StorageClass storageClass) {
-        return entityManager.createQuery("""
+                                                           com.stockflow.warehouse.internal.domain.StorageClass storageClass,
+                                                           String locationCode) {
+        // The one-location form appends its predicate rather than binding a nullable parameter, which PostgreSQL
+        // cannot type in "(:code is null or ...)".
+        var query = entityManager.createQuery("""
                         select loc.id, loc.locationCode, loc.capacityUnits, loc.maxWeight
                         from StorageLocationJpaEntity loc
                         join WarehouseJpaEntity w on w.id = loc.warehouseId
@@ -227,11 +230,14 @@ class LayoutReadRepositoryAdapter implements LayoutReadRepository, LocationLooku
                           and w.status = com.stockflow.warehouse.internal.domain.WarehouseStatus.ACTIVE
                           and s.status = com.stockflow.warehouse.internal.domain.LocationStatus.ACTIVE
                           and loc.status = com.stockflow.warehouse.internal.domain.LocationStatus.ACTIVE
-                        order by loc.locationCode
-                        """, PutawayCandidateRow.class)
+                        """ + (locationCode == null ? "" : " and loc.locationCode = :locationCode")
+                        + " order by loc.locationCode", PutawayCandidateRow.class)
                 .setParameter("warehouseId", warehouseId)
-                .setParameter("storageClass", storageClass)
-                .getResultList();
+                .setParameter("storageClass", storageClass);
+        if (locationCode != null) {
+            query.setParameter("locationCode", locationCode);
+        }
+        return query.getResultList();
     }
 
     @Override

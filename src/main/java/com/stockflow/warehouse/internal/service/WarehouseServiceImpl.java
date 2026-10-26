@@ -124,11 +124,28 @@ class WarehouseServiceImpl implements WarehouseService {
             return java.util.List.of();
         }
         return locations.findPutawayCandidates(warehouseId,
-                        com.stockflow.warehouse.internal.domain.StorageClass.valueOf(storageClass.name()))
+                        com.stockflow.warehouse.internal.domain.StorageClass.valueOf(storageClass.name()), null)
                 .stream()
-                .map(row -> new PutawayCandidate(row.locationId(), row.locationCode(), row.capacityUnits(),
-                        row.maxWeight()))
+                .map(WarehouseServiceImpl::toCandidate)
                 .toList();
+    }
+
+    @Override
+    public java.util.Optional<PutawayCandidate> putawayCandidate(UUID warehouseId,
+                                                                StorageLocationView.StorageClass storageClass,
+                                                                String locationCode) {
+        if (warehouseId == null || storageClass == null || locationCode == null) {
+            return java.util.Optional.empty();
+        }
+        return locations.findPutawayCandidates(warehouseId,
+                        com.stockflow.warehouse.internal.domain.StorageClass.valueOf(storageClass.name()), locationCode)
+                .stream()
+                .findFirst()
+                .map(WarehouseServiceImpl::toCandidate);
+    }
+
+    private static PutawayCandidate toCandidate(LocationLookupRepository.PutawayCandidateRow row) {
+        return new PutawayCandidate(row.locationId(), row.locationCode(), row.capacityUnits(), row.maxWeight());
     }
 
     private static StorageLocationView toView(LocationRow row) {

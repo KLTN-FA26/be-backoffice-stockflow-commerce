@@ -68,9 +68,9 @@ class StockMovementLogAdapter implements StockMovementLog, StockLedgerSearch {
     }
 
     @Override
-    public int sumQuantityByReference(StockMovement.MovementType type, StockMovement.ReferenceType referenceType,
-                                      UUID referenceId) {
-        return jpa.sumQuantityByReference(type, referenceType, referenceId);
+    public int sumQuantityByReference(Collection<StockMovement.MovementType> types,
+                                      StockMovement.ReferenceType referenceType, UUID referenceId) {
+        return types.isEmpty() ? 0 : jpa.sumQuantityByReference(types, referenceType, referenceId);
     }
 
     @Override

@@ -88,4 +88,14 @@ public interface WarehouseService {
      * @return empty for an unknown warehouse or when no bin qualifies
      */
     java.util.List<PutawayCandidate> putawayCandidates(UUID warehouseId, StorageLocationView.StorageClass storageClass);
+
+    /**
+     * One location judged by the rule of {@link #putawayCandidates}, for a bin the clerk chose by hand: one indexed
+     * read instead of the warehouse's whole list.
+     *
+     * @return empty when {@code locationCode} is not a putaway candidate of {@code storageClass} in the warehouse
+     */
+    java.util.Optional<PutawayCandidate> putawayCandidate(UUID warehouseId,
+                                                         StorageLocationView.StorageClass storageClass,
+                                                         String locationCode);
 }
