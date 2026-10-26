@@ -8,9 +8,6 @@ import com.stockflow.inventory.internal.entity.StockPackageJpaEntity;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.LockModeType;
 import jakarta.persistence.PersistenceContext;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
-import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
 
 import java.time.LocalDate;
@@ -28,14 +25,14 @@ class StockPackageRepositoryAdapter implements StockPackageRepository {
     private static final DateTimeFormatter DAY = DateTimeFormatter.BASIC_ISO_DATE;
 
     private final StockPackageJpaRepository jpa;
-    private final NamedParameterJdbcTemplate jdbc;
+    private final LpnSequence lpns;
 
     @PersistenceContext
     private EntityManager entityManager;
 
-    StockPackageRepositoryAdapter(StockPackageJpaRepository jpa, JdbcTemplate jdbc) {
+    StockPackageRepositoryAdapter(StockPackageJpaRepository jpa, LpnSequence lpns) {
         this.jpa = jpa;
-        this.jdbc = new NamedParameterJdbcTemplate(jdbc);
+        this.lpns = lpns;
     }
 
     @Override
@@ -120,18 +117,13 @@ class StockPackageRepositoryAdapter implements StockPackageRepository {
     }
 
     /**
-     * The upsert of {@code CycleCountRepositoryAdapter.nextNumber}: its row lock serialises two receipts labelling
-     * cartons on one day, and the number never repeats ({@code uk_stock_package_lpn}).
+     * The number is drawn by {@link LpnSequence} in its own transaction, never in the caller's: cartons are labelled
+     * under a SKU's lock, and a sequence row held until the caller commits would let two receipts counting several
+     * SKUs deadlock. A rolled-back count leaves a gap; {@code uk_stock_package_lpn} still forbids a duplicate.
      */
     @Override
     public String nextLpn(LocalDate day) {
-        Number sequence = jdbc.queryForObject("""
-                INSERT INTO platform.document_sequence (document_type, sequence_date, last_value)
-                VALUES ('LPN', :day, 1)
-                ON CONFLICT (document_type, sequence_date)
-                DO UPDATE SET last_value = platform.document_sequence.last_value + 1
-                RETURNING last_value""", new MapSqlParameterSource("day", day), Number.class);
-        return "LPN-%s-%06d".formatted(day.format(DAY), sequence.longValue());
+        return "LPN-%s-%06d".formatted(day.format(DAY), lpns.next(day));
     }
 
     private static StockPackage toDomain(StockPackageJpaEntity entity) {

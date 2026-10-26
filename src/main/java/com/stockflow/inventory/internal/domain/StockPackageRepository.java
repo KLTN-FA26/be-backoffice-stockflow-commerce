@@ -33,7 +33,9 @@ public interface StockPackageRepository {
 
     /**
      * The next LPN of {@code day} ({@code LPN-yyyyMMdd-nnnnnn}), from {@code platform.document_sequence} type
-     * {@code LPN}; {@code day} is the business's calendar day, as every document number's is.
+     * {@code LPN}; {@code day} is the business's calendar day, as every document number's is. Drawn and committed on
+     * its own, outside the caller's transaction, so it holds no lock under the caller's SKU lock: a number is never
+     * handed out twice, but one the caller then rolls back is lost (a gap).
      */
     String nextLpn(java.time.LocalDate day);
 }
