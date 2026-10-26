@@ -295,9 +295,13 @@ The bin lock exists because only putaway checks bin capacity, and occupancy is b
 putaways into one bin, not other moves. Confirmation is synchronous on purpose (a 200 means the goods are in the
 bin), not an event consumer. `StockOperationsServiceImpl.putAwayLoose` skips the reference-based replay: every partial
 confirmation of a task shares `(PUTAWAY_TASK, taskId)`, so a retry is made safe by `Idempotency-Key` and by `left`,
-computed from the ledger under the task lock. When the last task of a receipt is DONE, `PutawayCompleted` is published;
-procurement's `PutawayCompletedListener` (and entering `IN_PUTAWAY`) calls `GoodsReceipt.closeIfPutAway`, counting DONE
-quantities per line. Round A stores no assignee, warehouse or suggestion reasons (no migration; Tú owns the schema).
+computed from the ledger under the task lock. Goods already moved by hand into the chosen bin are put away where they
+stand (a `STATUS_CHANGE` ledger line from the bin to the bin, since a `MOVE` needs two places). Each task that becomes
+DONE publishes `PutawayCompleted`; procurement's `PutawayCompletedListener`, and `inspect` when it moves the receipt into
+`IN_PUTAWAY`, call `GoodsReceipt.closeIfPutAway` (DONE quantities per line). Both load the receipt `FOR UPDATE`
+(`GoodsReceiptRepository.findByIdForUpdate`), so a putaway that commits while the last QC decision runs is seen by
+whichever of the two comes second. Round A stores no assignee, warehouse or suggestion reasons (no migration; Tú owns
+the schema).
 
 ---
 
