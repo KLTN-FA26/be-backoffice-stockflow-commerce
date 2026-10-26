@@ -20,6 +20,12 @@ import java.util.Map;
 @Repository
 public class BinOccupancyQuery {
 
+    /**
+     * The seed of the bin lock, so it cannot collide with the other advisory locks keyed by a string: 701 SKU, 702
+     * stock alerts, 703 cycle-count slots and UoM conversions. Public so a test can take the lock a confirmation takes.
+     */
+    public static final int BIN_LOCK_SEED = 704;
+
     private final JdbcTemplate jdbc;
 
     public BinOccupancyQuery(JdbcTemplate jdbc) {
@@ -32,7 +38,8 @@ public class BinOccupancyQuery {
      * a bin's capacity, so it serialises putaways, not other moves.
      */
     public void lockBin(String locationCode) {
-        jdbc.query("select pg_advisory_xact_lock(hashtext(?))", rs -> {}, "putaway-bin:" + locationCode);
+        jdbc.query("select pg_advisory_xact_lock(hashtextextended(?, " + BIN_LOCK_SEED + "))", rs -> {},
+                "putaway-bin:" + locationCode);
     }
 
     /**

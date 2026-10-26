@@ -54,6 +54,15 @@ class StockPackageRepositoryAdapter implements StockPackageRepository {
     }
 
     @Override
+    public List<StockPackage> findAllById(Collection<StockPackageId> ids) {
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        return jpa.findAllById(ids.stream().map(StockPackageId::value).distinct().toList()).stream()
+                .map(StockPackageRepositoryAdapter::toDomain).toList();
+    }
+
+    @Override
     public List<StockPackage> findByReceiptLines(Collection<UUID> goodsReceiptLineIds) {
         if (goodsReceiptLineIds.isEmpty()) {
             return List.of();

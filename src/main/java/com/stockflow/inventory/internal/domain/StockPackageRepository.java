@@ -17,6 +17,9 @@ public interface StockPackageRepository {
     /** The cartons with these LPNs, in one read; an LPN that is not a carton is absent. */
     List<StockPackage> findByLpns(Collection<String> lpns);
 
+    /** The cartons with these ids, in one read, without locking; an id that is not a carton is absent. */
+    List<StockPackage> findAllById(Collection<StockPackageId> ids);
+
     /** The cartons labelled on these goods receipt lines, read without locking. */
     List<StockPackage> findByReceiptLines(Collection<UUID> goodsReceiptLineIds);
 

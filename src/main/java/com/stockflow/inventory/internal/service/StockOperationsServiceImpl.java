@@ -187,7 +187,11 @@ class StockOperationsServiceImpl implements StockOperations {
      *
      * <p>{@code chosen} is the source row when the caller already picked it (putaway picks by lot id, which the
      * (lot number, receipt time) lookup cannot express: two lots of one receipt can share both); null looks the
-     * layer up as a plain move does. A chosen row also fixes the destination layer to the same goods.</p>
+     * layer up as a plain move does. A chosen row also fixes the destination layer to the same goods: the row at the
+     * destination with the unique key of the source ({@code uk_stock_item_sku_location_lot}: SKU, bin, lot number,
+     * serial, receipt time), whatever its status or expiry. Matching on more than that would miss a row the database
+     * will not let a second one sit beside, and the insert would fail as a 409; found, {@code canReceiveFrom} refuses
+     * what cannot merge with a business error.</p>
      */
     private StockMove moveLayer(Sku sku, String lotNumber, Instant receivedAt, LocationId from, LocationId to,
                                 int qty, StockStatus target, StockMovement.ReferenceType referenceType,
@@ -200,7 +204,8 @@ class StockOperationsServiceImpl implements StockOperations {
                         "No %s%s at %s".formatted(sku, lotSuffix(lotNumber), from)));
         Optional<StockItem> destinationView = chosen != null
                 ? stockItems.findLooseBySkuAndLocation(sku, to).stream()
-                        .filter(item -> item.isSameGoodsAs(chosen) && item.status() == target).findFirst()
+                        .filter(item -> item.isLayer(chosen.lotNumber(), chosen.serialNumber(), chosen.receivedAt()))
+                        .findFirst()
                 : findLayer(sku, to, lotNumber, sourceView.receivedAt())
                         .filter(item -> java.util.Objects.equals(item.receivedAt(), sourceView.receivedAt()));
 
@@ -284,6 +289,11 @@ class StockOperationsServiceImpl implements StockOperations {
      * Deliberately no replay lookup: a task confirms its loose goods in several parts, all under its own id, and a
      * lookup by reference would take the second part for a repeat of the first and skip it. The caller decides
      * what is still to do by summing the ledger ({@code sumQuantityByReference}).
+     *
+     * <p>Goods somebody already moved by hand into the chosen bin are put away where they stand ({@link
+     * #putAwayInPlace}), and first: the rows of one lot at one bin are one row whatever the status, so the units
+     * arriving from the receiving area must find that row already AVAILABLE to merge into it, not INBOUND, which they
+     * cannot join.</p>
      */
     @Override
     @Auditable(action = AuditAction.UPDATE, resourceType = "stock-putaway", resourceId = "#taskId")
@@ -294,7 +304,8 @@ class StockOperationsServiceImpl implements StockOperations {
 
         List<StockItem> rows = stockItems.findLooseInboundByLot(sku, lotId).stream()
                 .filter(row -> row.onHand().value() > 0)
-                .sorted(Comparator.comparing(row -> row.id().value().toString()))
+                .sorted(Comparator.comparing((StockItem row) -> !row.location().equals(to))
+                        .thenComparing(row -> row.id().value().toString()))
                 .toList();
         int available = rows.stream().mapToInt(row -> row.onHand().value()).sum();
         if (available < units) {
@@ -309,11 +320,42 @@ class StockOperationsServiceImpl implements StockOperations {
             }
             int take = Math.min(left, row.onHand().value());
             WarehouseScope.requireLocation(row.location().code());
-            moveLayer(sku, row.lotNumber(), row.receivedAt(), row.location(), to, take, StockStatus.AVAILABLE,
-                    StockMovement.ReferenceType.PUTAWAY_TASK, taskId, actorId, null, row);
+            if (row.location().equals(to)) {
+                putAwayInPlace(sku, row, take, taskId, actorId);
+            } else {
+                moveLayer(sku, row.lotNumber(), row.receivedAt(), row.location(), to, take, StockStatus.AVAILABLE,
+                        StockMovement.ReferenceType.PUTAWAY_TASK, taskId, actorId, null, row);
+            }
             left -= take;
         }
         return units;
+    }
+
+    /**
+     * Loose goods that already stand in the bin they are put away into: the row turns AVAILABLE where it is. The
+     * ledger line is a {@code STATUS_CHANGE} from the bin to the bin, because a {@code MOVE} names two different
+     * places. All of the row or none: it cannot be split by status (see {@link StockItem#putAwayInPlace}), so fewer
+     * units than the row holds, or a row with units held for someone, is refused with a business error rather than
+     * left to fail on the unique key.
+     */
+    private void putAwayInPlace(Sku sku, StockItem view, int units, UUID taskId, UUID actorId) {
+        StockItem row = stockItems.findByIdForUpdate(view.id()).orElseThrow(() ->
+                new IllegalStateException("Stock item %s vanished mid-putaway".formatted(view.id())));
+        if (units != row.onHand().value() || !row.reserved().isZero()) {
+            throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH,
+                    ("%s already holds %d units of %s as INBOUND, %d of them held; they are put away there all at once,"
+                            + " or in another bin").formatted(row.location(), row.onHand().value(), sku,
+                            row.reserved().value()));
+        }
+        requireUsable(row.location());
+        StockStatus before = row.status();
+        row.putAwayInPlace();
+        stockItems.save(row);
+        ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.STATUS_CHANGE, sku,
+                blankToNull(row.lotNumber()), row.location(), row.location(), units, before, row.status(),
+                StockMovement.ReferenceType.PUTAWAY_TASK, taskId, null, actorId, clock.instant())
+                .ofLot(row.lotId()));
+        log.info("Put away {} x {} in place at {}", units, sku, row.location());
     }
 
     // ------------------------------------------------------------------ a carton, whole
@@ -344,6 +386,11 @@ class StockOperationsServiceImpl implements StockOperations {
      * everything decided about them is read again under the lock, and every carton is checked before any moves. No
      * replay lookup: a second call finds a carton already at the destination and is refused as any move to the same
      * place is.</p>
+     *
+     * <p>One exception: a putaway ({@code PUTAWAY_TASK}, to AVAILABLE) of a carton somebody already moved by hand into
+     * the chosen bin. It has nowhere to move to, so it is reclassified where it stands, and its ledger line is a
+     * {@code STATUS_CHANGE} from the bin to the bin ({@code MOVE} names two different places). Every other move to
+     * the place a carton is in is still refused.</p>
      */
     private List<StockPackageView> relocatePackages(List<String> lpns, String toCode, StockStatus target,
                                                     MoveReference reference, UUID referenceId, UUID actorId,
@@ -373,13 +420,18 @@ class StockOperationsServiceImpl implements StockOperations {
             throw new IllegalStateException("A stock package vanished mid-move");
         }
         LocationId to = new LocationId(toCode);
+        boolean putAway = target == StockStatus.AVAILABLE && reference == MoveReference.PUTAWAY_TASK;
         Map<StockPackageId, LocationId> from = new LinkedHashMap<>();
         for (StockPackage carton : cartons) {
             if (carton.status() != StockPackageStatus.IN_STOCK) {
                 throw new BusinessException(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION,
                         "%s is %s; only a carton in stock is moved".formatted(carton.lpn(), carton.status()));
             }
-            requireMovableBetween(carton.location(), to);
+            if (putAway && carton.location().equals(to)) {
+                requireUsable(to);
+            } else {
+                requireMovableBetween(carton.location(), to);
+            }
             from.put(carton.id(), carton.location());
         }
 
@@ -406,8 +458,10 @@ class StockOperationsServiceImpl implements StockOperations {
         }
 
         for (StockPackage carton : cartons) {
-            carton.moveTo(to);
-            stockPackages.save(carton);
+            if (!carton.location().equals(to)) {
+                carton.moveTo(to);
+                stockPackages.save(carton);
+            }
         }
         Instant now = clock.instant();
         Map<StockPackageId, Integer> onHand = new HashMap<>();
@@ -420,7 +474,9 @@ class StockOperationsServiceImpl implements StockOperations {
             stockItems.save(row);
             onHand.merge(row.stockPackageId(), row.onHand().value(), Integer::sum);
             if (row.onHand().value() > 0) {
-                ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.MOVE, row.sku(),
+                StockMovement.MovementType type = from.get(row.stockPackageId()).equals(to)
+                        ? StockMovement.MovementType.STATUS_CHANGE : StockMovement.MovementType.MOVE;
+                ledger.append(new StockMovement(Identifiers.newId(), type, row.sku(),
                         row.lotNumber(), from.get(row.stockPackageId()), to, row.onHand().value(), before,
                         row.status(), StockMovement.ReferenceType.valueOf(reference.name()), referenceId, reason,
                         actorId, now)

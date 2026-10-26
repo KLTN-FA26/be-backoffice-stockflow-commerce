@@ -404,6 +404,27 @@ public final class StockItem extends AggregateRoot {
         this.status = target;
     }
 
+    /**
+     * Loose goods already standing in the bin they are put away into: the row changes status in place. A loose row
+     * is unique per SKU, bin, lot and receipt time whatever its status, so these goods cannot be split into an
+     * INBOUND part and an AVAILABLE part of one row, and cannot be moved to the bin they are in; the whole row
+     * becomes AVAILABLE or none of it does.
+     */
+    public void putAwayInPlace() {
+        if (stockPackageId != null) {
+            throw new IllegalStateException("Stock item %s is in a carton; put the carton away".formatted(id));
+        }
+        if (status != StockStatus.INBOUND) {
+            throw new IllegalStateException("Stock item %s is %s; only INBOUND stock is put away as AVAILABLE"
+                    .formatted(id, status));
+        }
+        if (!reserved().isZero()) {
+            throw new IllegalStateException(
+                    "Cannot put away stock item %s in place: %s units are still reserved".formatted(id, reserved()));
+        }
+        this.status = StockStatus.AVAILABLE;
+    }
+
     // ------------------------------------------------------------------ reservation lifecycle
 
     /**
