@@ -27,12 +27,13 @@ public record StockPackageLabelRequest(
         UUID receiptLineId,
         @Schema(description = "Cartons to reprint, by LPN; case does not matter",
                 example = "[\"LPN-20261026-000001\"]")
-        List<@NotBlank @Size(max = 64) String> lpns
+        List<@NotBlank @Size(max = 30) String> lpns
 ) {
 
+    /** An empty {@code lpns} names nothing, so it is no second selector: a form may always send {@code []}. */
     @JsonIgnore
     @AssertTrue(message = "Send receiptLineId or lpns, not both")
     public boolean isOneSelector() {
-        return receiptLineId == null || lpns == null;
+        return receiptLineId == null || lpns == null || lpns.isEmpty();
     }
 }

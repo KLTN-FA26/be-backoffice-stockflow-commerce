@@ -148,6 +148,18 @@ class StockPackageLabelHttpTest {
     }
 
     @Test
+    @DisplayName("a receipt line with an empty lpns list beside it prints the line: [] is no second selector")
+    void emptyLpnsBesideTheLine() throws Exception {
+        byte[] pdf = print(Role.WAREHOUSE_STAFF, clerk,
+                "{\"format\":\"THERMAL_ROLL\",\"receiptLineId\":\"" + receiptLineId + "\",\"lpns\":[]}")
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsByteArray();
+        try (PDDocument doc = Loader.loadPDF(pdf)) {
+            assertThat(doc.getNumberOfPages()).isEqualTo(2);
+        }
+    }
+
+    @Test
     @DisplayName("a VOID carton is not printed with the line, and a closed LPN named by hand is 409")
     void aVoidCartonHasNoLabel() throws Exception {
         String voided = lpns.get(1);
