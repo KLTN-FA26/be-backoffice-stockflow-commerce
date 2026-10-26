@@ -12,7 +12,10 @@ import java.util.UUID;
  * {@link MoveStockPackagesCommand} gives.
  *
  * <p>Only INBOUND or QUARANTINE rows can be reclassified; AVAILABLE is putaway and takes INBOUND rows only. The
- * status change travels with the move to the bin: a plain move would leave the row INBOUND, which is not on sale.</p>
+ * status change travels with the move to the bin: a plain move would leave the row INBOUND, which is not on sale.
+ * AVAILABLE is refused under any reference but {@link MoveReference#PUTAWAY_TASK}: the bin rules (a bin, its storage
+ * class, putaway target, capacity) are checked by the putaway, not here, so any other caller would make goods
+ * sellable wherever it names.</p>
  *
  * @param lpns        the cartons, in either case; a repeat is the same carton
  * @param referenceId the document that decided it (a QC inspection)
@@ -37,6 +40,9 @@ public record ReclassifyStockPackagesCommand(
         if (disposition != StockDisposition.AVAILABLE && disposition != StockDisposition.QUARANTINE
                 && disposition != StockDisposition.BLOCKED) {
             throw new IllegalArgumentException("A carton is put away, quarantined or blocked, not " + disposition);
+        }
+        if (disposition == StockDisposition.AVAILABLE && reference != MoveReference.PUTAWAY_TASK) {
+            throw new IllegalArgumentException("A carton becomes AVAILABLE only through a putaway task, not " + reference);
         }
     }
 
