@@ -46,6 +46,14 @@ class StockPackageRepositoryAdapter implements StockPackageRepository {
     }
 
     @Override
+    public List<StockPackage> findByLpns(Collection<String> lpns) {
+        if (lpns.isEmpty()) {
+            return List.of();
+        }
+        return jpa.findByLpnIn(lpns).stream().map(StockPackageRepositoryAdapter::toDomain).toList();
+    }
+
+    @Override
     public List<StockPackage> findByReceiptLines(Collection<UUID> goodsReceiptLineIds) {
         if (goodsReceiptLineIds.isEmpty()) {
             return List.of();

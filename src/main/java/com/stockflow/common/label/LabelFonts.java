@@ -64,6 +64,26 @@ public class LabelFonts {
         return codePoint >= 0 && drawable.get(codePoint);
     }
 
+    /**
+     * Names are free text: a tab pasted from a spreadsheet or an emoji is legal in a warehouse, area or item
+     * name, and PDFBox throws on any character the font has no glyph for - which would make every print of
+     * that name fail. Control characters become spaces, anything else undrawable a {@code ?}, so the label
+     * still prints and still says what it is for.
+     */
+    public String drawable(String text) {
+        var out = new StringBuilder(text.length());
+        text.codePoints().forEach(codePoint -> {
+            if (Character.isISOControl(codePoint)) {
+                out.append(' ');
+            } else if (canDraw(codePoint)) {
+                out.appendCodePoint(codePoint);
+            } else {
+                out.append('?');
+            }
+        });
+        return out.toString();
+    }
+
     private static byte[] withoutGsub(String path, BitSet coverage) {
         try (InputStream in = new ClassPathResource(path).getInputStream();
              TrueTypeFont font = new TTFParser().parse(new RandomAccessReadBuffer(in.readAllBytes()))) {

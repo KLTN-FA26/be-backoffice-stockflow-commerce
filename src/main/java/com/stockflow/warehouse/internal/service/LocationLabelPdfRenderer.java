@@ -123,24 +123,8 @@ public class LocationLabelPdfRenderer {
         return format.labelWidthMm() - 2 * format.paddingMm() - format.qrSideMm() - TEXT_TO_QR_GAP_MM;
     }
 
-    /**
-     * Names are free text: a tab pasted from a spreadsheet or an emoji is a legal warehouse or area
-     * name, and PDFBox throws on any character the font has no glyph for - which would make every
-     * print of that warehouse fail. Control characters become spaces, anything else undrawable a
-     * {@code ?}, so the label still prints and still says where it is.
-     */
     private String drawable(String text) {
-        var out = new StringBuilder(text.length());
-        text.codePoints().forEach(codePoint -> {
-            if (Character.isISOControl(codePoint)) {
-                out.append(' ');
-            } else if (fonts.canDraw(codePoint)) {
-                out.appendCodePoint(codePoint);
-            } else {
-                out.append('?');
-            }
-        });
-        return out.toString();
+        return fonts.drawable(text);
     }
 
     private static String context(LocationLabel label, LabelWords words) {

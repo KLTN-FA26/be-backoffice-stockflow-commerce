@@ -184,6 +184,10 @@ public enum ErrorCode {
     LOCATION_LABELS_EMPTY("No storage location matches this selection", 422),
     /** More labels than one print request renders; print by zone or shelf instead (SCRUM-97). */
     LOCATION_LABELS_TOO_MANY("Too many labels for one request", 422),
+    /** A carton label print that names neither a receipt line with live cartons nor any carton (SCRUM-473). */
+    STOCK_PACKAGE_LABELS_EMPTY("Choose a receipt line or the cartons to print", 422),
+    /** More carton labels than one print request renders (SCRUM-473). */
+    STOCK_PACKAGE_LABELS_TOO_MANY("At most 500 carton labels at a time", 422),
     /** Docs 11 BR-01: stock changes warehouse only through a transfer order (SCRUM-459). */
     MOVE_ACROSS_WAREHOUSES("Stock moves to another warehouse only through a transfer order", 409),
     /** Four eyes: whoever asked for a stock adjustment may not decide it. */

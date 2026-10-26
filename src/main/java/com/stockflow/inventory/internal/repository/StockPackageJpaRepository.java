@@ -10,5 +10,7 @@ interface StockPackageJpaRepository extends JpaRepository<StockPackageJpaEntity,
 
     Optional<StockPackageJpaEntity> findByLpn(String lpn);
 
+    java.util.List<StockPackageJpaEntity> findByLpnIn(java.util.Collection<String> lpns);
+
     java.util.List<StockPackageJpaEntity> findByGoodsReceiptLineIdIn(java.util.Collection<UUID> goodsReceiptLineIds);
 }

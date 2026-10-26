@@ -11,6 +11,9 @@ public interface StockPackageRepository {
 
     Optional<StockPackage> findByLpn(String lpn);
 
+    /** The cartons with these LPNs, in one read; an LPN that is not a carton is absent. */
+    List<StockPackage> findByLpns(Collection<String> lpns);
+
     /** The cartons labelled on these goods receipt lines, read without locking. */
     List<StockPackage> findByReceiptLines(Collection<java.util.UUID> goodsReceiptLineIds);
 
