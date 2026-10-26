@@ -144,7 +144,8 @@ class GoodsReceiptController {
     }
 
     @PostMapping("/{receiptId}/lines/{lineId}/qc-transfer")
-    @Operation(summary = "The goods of a QC-required line were moved to a QUALITY_CONTROL area")
+    @Operation(summary = "The goods of a QC-required line were moved to a QUALITY_CONTROL area: its cartons whole,"
+            + " its loose units")
     @RequiresPermission(resource = PurchaseOrderResources.GOODS_RECEIPTS, action = Action.UPDATE)
     public ApiResponse<GoodsReceiptResponse> moveToQc(@PathVariable UUID receiptId, @PathVariable UUID lineId,
                                                       @Valid @RequestBody MoveToQcRequest request,
@@ -154,7 +155,13 @@ class GoodsReceiptController {
     }
 
     @PostMapping("/{receiptId}/lines/{lineId}/inspection")
-    @Operation(summary = "Record the QC decision on a line: accepted, quarantined, rejected (must add up, BR-08)")
+    @Operation(summary = "Record the QC decision on a line: accepted, quarantined, rejected (must add up, BR-08)",
+            description = "A quarantined or rejected part is its loose `quantity` plus the line's cartons it names in"
+                    + " `packages` (LPNs), each going whole at what was counted into it (SCRUM-473). A named carton is"
+                    + " one of this line's (STOCK_PACKAGE_NOT_FOUND), named once (VALIDATION_FAILED), in stock"
+                    + " (INVALID_STOCK_PACKAGE_TRANSITION) at the line's QC area (STOCK_PACKAGE_WRONG_LOCATION)."
+                    + " `accepted` is every unit no part takes; the loose parts may not exceed the line's"
+                    + " `looseQuantity` (QC_QUANTITY_MISMATCH).")
     @RequiresPermission(resource = PurchaseOrderResources.QC_TASKS, action = Action.APPROVE)
     public ApiResponse<GoodsReceiptResponse> inspect(@PathVariable UUID receiptId, @PathVariable UUID lineId,
                                                      @Valid @RequestBody QcDecisionRequest request,
@@ -164,6 +171,7 @@ class GoodsReceiptController {
     }
 
     private static GoodsReceipts.Part part(QcDecisionRequest.Part part) {
-        return part == null ? null : new GoodsReceipts.Part(part.quantity(), part.locationCode(), part.reason());
+        return part == null ? null
+                : new GoodsReceipts.Part(part.quantity(), part.locationCode(), part.reason(), part.packages());
     }
 }

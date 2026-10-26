@@ -45,11 +45,32 @@ public interface GoodsReceipts {
     record NewPackage(String lpn, int quantity) {
     }
 
-    /** Part of a QC decision that leaves the QC area: where it goes and why. */
-    record Part(int quantity, String locationCode, String reason) {
+    /**
+     * Part of a QC decision that leaves the QC area: where it goes and why. {@code quantity} is the loose units of the
+     * part; {@code packages} the LPNs of the line's cartons that go whole (SCRUM-473 design §5), each counted at what
+     * was counted into it. The part is its loose units plus those cartons.
+     */
+    record Part(int quantity, String locationCode, String reason, List<String> packages) {
+
+        public Part {
+            packages = packages == null ? List.of() : List.copyOf(packages);
+        }
+
+        /** A part of loose units only. */
+        public Part(int quantity, String locationCode, String reason) {
+            this(quantity, locationCode, reason, List.of());
+        }
+
+        /** Whether the part decides anything: a part of no units and no cartons is not recorded. */
+        public boolean hasGoods() {
+            return quantity > 0 || !packages.isEmpty();
+        }
     }
 
-    /** A QC decision on a whole line. {@code quarantined} and {@code rejected} may be null. */
+    /**
+     * A QC decision on a whole line. {@code quarantined} and {@code rejected} may be null. {@code accepted} is a
+     * number of units: the cartons no part names, and the loose units no part takes.
+     */
     record Decision(int accepted, Part quarantined, Part rejected) {
     }
 
@@ -124,10 +145,16 @@ public interface GoodsReceipts {
 
     ReceiptView cancel(UUID receiptId);
 
-    /** Docs 03 step 7: a QC-required line's goods are now in a QUALITY_CONTROL area. */
+    /**
+     * Docs 03 step 7: a QC-required line's goods - its cartons whole, and its loose units - are now in a
+     * QUALITY_CONTROL area.
+     */
     ReceiptView moveToQc(UUID receiptId, UUID lineId, String qcLocationCode, UUID userId);
 
-    /** Docs 03 steps 8–9: accepted stays for putaway, quarantined and rejected go to QUARANTINE areas. */
+    /**
+     * Docs 03 steps 8–9: accepted stays for putaway, quarantined and rejected go to QUARANTINE areas - loose units by
+     * quantity, cartons whole by LPN (SCRUM-473).
+     */
     ReceiptView inspect(UUID receiptId, UUID lineId, Decision decision, UUID userId);
 
     ReceiptView get(UUID receiptId);

@@ -21,9 +21,11 @@ import com.stockflow.inventory.api.InventoryItemPolicy;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.MoveReference;
 import com.stockflow.inventory.api.MoveStockCommand;
+import com.stockflow.inventory.api.MoveStockPackageCommand;
 import com.stockflow.inventory.api.ReceiveStockCommand;
 import com.stockflow.inventory.api.ReceiptOrigin;
 import com.stockflow.inventory.api.ReclassifyStockCommand;
+import com.stockflow.inventory.api.ReclassifyStockPackageCommand;
 import com.stockflow.inventory.api.StockDisposition;
 import com.stockflow.inventory.api.StockPackageView;
 import com.stockflow.inventory.api.UomConversion;
@@ -84,6 +86,8 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
     private static final String RECEIVING = "RECEIVING";
     private static final String QUALITY_CONTROL = "QUALITY_CONTROL";
     private static final String QUARANTINE = "QUARANTINE";
+    /** {@code inventory.stock_package.status} of a carton holding stock. */
+    private static final String IN_STOCK = "IN_STOCK";
 
     private static final SortWhitelist SORT = SortWhitelist.of("receivedAt", "receiptNumber", "status")
             .withDefault("receivedAt", Sort.Direction.DESC);
@@ -498,6 +502,17 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
 
     // ------------------------------------------------------------------ QC
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>SCRUM-473 (design §5): every IN_STOCK carton of the line moves whole, still unopened, and the loose remainder
+     * - the line less what was counted into its cartons - moves as one loose move, none when it is 0. All of them
+     * name the line as their reference.</p>
+     *
+     * <p>The loose move goes first. It treats a MOVE ledger row with its reference as its own earlier attempt and
+     * skips (the replay lookup in {@code inventory.move}); written after the cartons, it would find theirs - same
+     * {@code GOODS_RECEIPT_LINE} and line id - and leave the loose units at the receiving area without a word.</p>
+     */
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "goods-receipt", resourceId = "#receiptId")
     public ReceiptView moveToQc(UUID receiptId, UUID lineId, String qcLocationCode, UUID userId) {
@@ -506,13 +521,43 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         ReceiptLine line = receipt.moveToQc(lineId, qcArea.id(), userId, clock.instant());
         GoodsReceipt saved = receipts.save(receipt);
 
-        String from = locations.byIds(List.of(line.locationId())).get(line.locationId()).code();
-        InventoryItemPolicy item = policy(line.inventoryItemId());
-        inventory.move(new MoveStockCommand(line.id(), new Sku(item.sku()), line.lotNumber(), from, qcArea.code(),
-                line.receivedQuantity(), MoveReference.GOODS_RECEIPT_LINE, line.id(), userId, saved.confirmedAt()));
+        List<StockPackageView> cartons = inventory.receivingPackagesOf(List.of(line.id()))
+                .getOrDefault(line.id(), List.of());
+        int loose = line.receivedQuantity() - countedIntoCartons(cartons);
+        if (loose > 0) {
+            String from = locations.byIds(List.of(line.locationId())).get(line.locationId()).code();
+            InventoryItemPolicy item = policy(line.inventoryItemId());
+            // Before the cartons: their MOVE rows share this reference, and this move would take them for its replay.
+            inventory.move(new MoveStockCommand(line.id(), new Sku(item.sku()), line.lotNumber(), from, qcArea.code(),
+                    loose, MoveReference.GOODS_RECEIPT_LINE, line.id(), userId, saved.confirmedAt()));
+        }
+        for (StockPackageView carton : cartons) {
+            if (IN_STOCK.equals(carton.status())) {
+                inventory.moveStockPackage(new MoveStockPackageCommand(carton.lpn(), qcArea.code(),
+                        MoveReference.GOODS_RECEIPT_LINE, line.id(), userId));
+            }
+        }
         return view(saved, orderOf(saved));
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>SCRUM-473 (design §5): a quarantined or rejected part is its loose {@code quantity} plus the cartons it names
+     * by LPN, each counted at what was counted into it ({@code receivedQty}). Every named carton is checked before
+     * anything moves: it is a carton of this line ({@code STOCK_PACKAGE_NOT_FOUND} otherwise - another line's LPN is
+     * not a way to move another receipt's goods) and named once across both parts ({@code VALIDATION_FAILED}); then,
+     * once the aggregate has taken the decision - the line in QC and not yet decided, BR-08 on the parts' totals as
+     * before ({@code QC_QUANTITY_MISMATCH}) - it is IN_STOCK ({@code INVALID_STOCK_PACKAGE_TRANSITION}) at the line's
+     * QC area ({@code STOCK_PACKAGE_WRONG_LOCATION}). The loose parts together may not take more than the line's loose
+     * remainder ({@code QC_QUANTITY_MISMATCH} too): the accepted part is what is left, the unnamed cartons and the
+     * loose units no part took, and it stays INBOUND at the QC area. {@code QcInspection.quantity} records a part's total; which carton went where is in the ledger
+     * ({@code QC_INSPECTION} and the inspection's id, with the carton on both sides).</p>
+     *
+     * <p>Each part's loose units are reclassified before its cartons, for the reason {@link #moveToQc} gives: the
+     * loose reclassification skips when a MOVE row with its reference ({@code QC_INSPECTION} and the part's
+     * inspection id) exists already, and the cartons' rows carry that reference too.</p>
+     */
     @Override
     @Auditable(action = AuditAction.APPROVE, resourceType = "goods-receipt", resourceId = "#receiptId")
     public ReceiptView inspect(UUID receiptId, UUID lineId, Decision decision, UUID userId) {
@@ -530,31 +575,45 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                             ErrorCode.QC_LOCATIONS_MUST_DIFFER.name())));
         }
 
+        List<StockPackageView> cartons = inventory.receivingPackagesOf(List.of(lineId)).getOrDefault(lineId, List.of());
+        Map<String, NamedCarton> named = new LinkedHashMap<>();
+        int quarantinedInCartons = namedCartons(decision.quarantined(), "quarantined", cartons, named);
+        int rejectedInCartons = namedCartons(decision.rejected(), "rejected", cartons, named);
+
         List<QcInspection> decided = new ArrayList<>();
         if (decision.accepted() > 0) {
             decided.add(new QcInspection(Identifiers.newId(), QcOutcome.ACCEPTED, decision.accepted(), null, null,
                     userId, now));
         }
-        QcInspection quarantined = part(decision.quarantined(), QcOutcome.QUARANTINE, quarantineTo, userId, now);
-        QcInspection rejected = part(decision.rejected(), QcOutcome.REJECTED, rejectTo, userId, now);
+        QcInspection quarantined = part(decision.quarantined(), quarantinedInCartons, QcOutcome.QUARANTINE,
+                quarantineTo, userId, now);
+        QcInspection rejected = part(decision.rejected(), rejectedInCartons, QcOutcome.REJECTED, rejectTo, userId,
+                now);
         Optional.ofNullable(quarantined).ifPresent(decided::add);
         Optional.ofNullable(rejected).ifPresent(decided::add);
 
+        // The aggregate first, so a line not moved to QC or already decided hears that, not where its cartons are.
         receipt.inspect(lineId, decided, now);
+        ReceiptLine line = receipt.line(lineId);
+        String qcCode = locations.byIds(List.of(line.qcLocationId())).get(line.qcLocationId()).code();
+        requireAtQcArea(named.values(), qcCode);
+        int looseTaken = looseOf(decision.quarantined()) + looseOf(decision.rejected());
+        int looseRemainder = line.receivedQuantity() - countedIntoCartons(cartons);
+        if (looseTaken > looseRemainder) {
+            throw new BusinessException(ErrorCode.QC_QUANTITY_MISMATCH,
+                    "The quarantined and rejected parts take %d loose units; the line has %d outside its cartons (BR-08)"
+                            .formatted(looseTaken, looseRemainder));
+        }
         GoodsReceipt saved = receipts.save(receipt);
 
-        ReceiptLine line = saved.line(lineId);
-        String qcCode = locations.byIds(List.of(line.qcLocationId())).get(line.qcLocationId()).code();
         Sku sku = new Sku(policy(line.inventoryItemId()).sku());
         if (quarantined != null) {
-            inventory.reclassify(new ReclassifyStockCommand(sku, line.lotNumber(), qcCode, quarantineTo.code(),
-                    quarantined.quantity(), StockDisposition.QUARANTINE, MoveReference.QC_INSPECTION, quarantined.id(),
-                    userId, quarantined.reason(), saved.confirmedAt()));
+            decide(decision.quarantined(), quarantined, StockDisposition.QUARANTINE, quarantineTo, sku, line, qcCode,
+                    saved.confirmedAt(), userId);
         }
         if (rejected != null) {
-            inventory.reclassify(new ReclassifyStockCommand(sku, line.lotNumber(), qcCode, rejectTo.code(),
-                    rejected.quantity(), StockDisposition.BLOCKED, MoveReference.QC_INSPECTION, rejected.id(),
-                    userId, rejected.reason(), saved.confirmedAt()));
+            decide(decision.rejected(), rejected, StockDisposition.BLOCKED, rejectTo, sku, line, qcCode,
+                    saved.confirmedAt(), userId);
         }
         if (decision.accepted() > 0) {
             events.publishEvent(new ReceiptStockReadyForPutaway(saved.id(), saved.number(), saved.warehouseId(),
@@ -683,7 +742,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
      * reason and a QUARANTINE area of this warehouse, each refused on its own field.
      */
     private ReceivingLocation quarantineArea(Part part, String field, UUID warehouseId) {
-        if (part == null || part.quantity() <= 0) {
+        if (part == null || !part.hasGoods()) {
             return null;
         }
         if (part.reason() == null || part.reason().isBlank()) {
@@ -704,12 +763,95 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         }
     }
 
-    private static QcInspection part(Part part, QcOutcome outcome, ReceivingLocation to, UUID userId, Instant now) {
-        if (part == null || part.quantity() <= 0) {
+    /** The inspection a part records, its loose units and its cartons together; null for a part of no goods. */
+    private static QcInspection part(Part part, int inCartons, QcOutcome outcome, ReceivingLocation to, UUID userId,
+                                     Instant now) {
+        if (part == null || !part.hasGoods()) {
             return null;
         }
-        return new QcInspection(Identifiers.newId(), outcome, part.quantity(), to.id(), blankToNull(part.reason()),
-                userId, now);
+        return new QcInspection(Identifiers.newId(), outcome, looseOf(part) + inCartons, to.id(),
+                blankToNull(part.reason()), userId, now);
+    }
+
+    /** A part's loose units; a part of none (or a negative count, which the request refuses) takes none. */
+    private static int looseOf(Part part) {
+        return part == null ? 0 : Math.max(part.quantity(), 0);
+    }
+
+    /** What was counted into a line's cartons: the line less this is its loose remainder (design §3 rule 5). */
+    private static int countedIntoCartons(List<StockPackageView> cartons) {
+        return cartons.stream().mapToInt(c -> c.receivedQty() == null ? 0 : c.receivedQty()).sum();
+    }
+
+    /** A carton a QC part names, with the request field that named it. */
+    private record NamedCarton(String field, StockPackageView carton) {
+    }
+
+    /**
+     * The cartons a part names, looked up among the line's own and added to {@code named}: an LPN that is not one of
+     * this line's cartons is {@code STOCK_PACKAGE_NOT_FOUND}, one named twice - in this part or in both -
+     * {@code VALIDATION_FAILED}. Returns what was counted into them.
+     */
+    private static int namedCartons(Part part, String field, List<StockPackageView> lineCartons,
+                                    Map<String, NamedCarton> named) {
+        if (part == null) {
+            return 0;
+        }
+        int units = 0;
+        for (int j = 0; j < part.packages().size(); j++) {
+            String lpn = blankToNull(part.packages().get(j));
+            String at = "%s.packages[%d]".formatted(field, j);
+            StockPackageView carton = lineCartons.stream().filter(c -> c.lpn().equals(lpn)).findFirst()
+                    .orElseThrow(() -> refused(ErrorCode.STOCK_PACKAGE_NOT_FOUND, at,
+                            "%s is not a carton of this receipt line".formatted(lpn)));
+            if (named.putIfAbsent(lpn, new NamedCarton(at, carton)) != null) {
+                throw refused(ErrorCode.VALIDATION_FAILED, at,
+                        "%s is named twice; a carton goes to one place".formatted(lpn));
+            }
+            units += carton.receivedQty() == null ? 0 : carton.receivedQty();
+        }
+        return units;
+    }
+
+    /**
+     * A named carton is decided where QC looked at it: IN_STOCK ({@code INVALID_STOCK_PACKAGE_TRANSITION}) at the
+     * line's QC area ({@code STOCK_PACKAGE_WRONG_LOCATION}), not taken somewhere else by hand since.
+     */
+    private static void requireAtQcArea(java.util.Collection<NamedCarton> named, String qcCode) {
+        for (NamedCarton each : named) {
+            StockPackageView carton = each.carton();
+            if (!IN_STOCK.equals(carton.status())) {
+                throw refused(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION, each.field(),
+                        "%s is %s; QC decides on a carton in stock".formatted(carton.lpn(), carton.status()));
+            }
+            if (!qcCode.equals(carton.locationCode())) {
+                throw refused(ErrorCode.STOCK_PACKAGE_WRONG_LOCATION, each.field(),
+                        "%s is at %s, not at the line's QC area %s".formatted(carton.lpn(), carton.locationCode(),
+                                qcCode));
+            }
+        }
+    }
+
+    private static BusinessException refused(ErrorCode code, String field, String message) {
+        return new BusinessException(code, message, List.of(new FieldError(field, message, code.name())));
+    }
+
+    /**
+     * One quarantined or rejected part into stock: its loose units by quantity, then each named carton whole, all
+     * under the part's inspection id.
+     */
+    private void decide(Part part, QcInspection inspection, StockDisposition disposition, ReceivingLocation to,
+                        Sku sku, ReceiptLine line, String qcCode, Instant receivedAt, UUID userId) {
+        if (looseOf(part) > 0) {
+            // Before the cartons: their MOVE rows share this reference, and this would take them for its replay.
+            inventory.reclassify(new ReclassifyStockCommand(sku, line.lotNumber(), qcCode, to.code(), looseOf(part),
+                    disposition, MoveReference.QC_INSPECTION, inspection.id(), userId, inspection.reason(),
+                    receivedAt));
+        }
+        for (String lpn : part.packages()) {
+            inventory.reclassifyStockPackage(new ReclassifyStockPackageCommand(lpn.trim(), to.code(), disposition,
+                    MoveReference.QC_INSPECTION, inspection.id(), userId, inspection.reason()));
+        }
     }
 
     private InventoryItemPolicy policy(UUID inventoryItemId) {
