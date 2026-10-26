@@ -1040,6 +1040,12 @@ class StockOperationsServiceImpl implements StockOperations {
                 .map(entry -> new ReceivingPackagePlan.Wanted(blankToNull(entry.lpn()), entry.quantity()))
                 .toList());
         Instant now = clock.instant();
+        if (unit == null) {
+            // No cartons asked for: an empty list names nothing to recount or label, so the plan only voids.
+            voidCartons(plan, now);
+            log.info("Receipt line {}: {} carton(s) voided", command.receiptLineId(), plan.voided().size());
+            return List.of();
+        }
         List<StockPackage> live = new ArrayList<>();
         for (ReceivingPackagePlan.Recount recount : plan.recounts()) {
             StockPackage carton = recount.carton();
@@ -1066,16 +1072,20 @@ class StockOperationsServiceImpl implements StockOperations {
                 live.add(stockPackages.save(carton));
             }
         }
-        for (StockPackage carton : plan.voided()) {
-            carton.cancel(now);
-            stockPackages.save(carton);
-        }
+        voidCartons(plan, now);
         log.info("Receipt line {}: {} carton(s) recounted, {} labelled, {} voided", command.receiptLineId(),
                 plan.recounts().size(), plan.newCounts().size(), plan.voided().size());
         return live.stream()
                 .sorted(Comparator.comparing(StockPackage::lpn))
                 .map(carton -> view(carton, unit, carton.receivedQty()))
                 .toList();
+    }
+
+    private void voidCartons(ReceivingPackagePlan plan, Instant now) {
+        for (StockPackage carton : plan.voided()) {
+            carton.cancel(now);
+            stockPackages.save(carton);
+        }
     }
 
     @Override
