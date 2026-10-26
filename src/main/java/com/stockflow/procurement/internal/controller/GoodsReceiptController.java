@@ -99,13 +99,32 @@ class GoodsReceiptController {
     }
 
     @PutMapping("/{receiptId}/lines")
-    @Operation(summary = "Replace the count of a DRAFT receipt (tolerance BR-02, lot/expiry BR-03, RECEIVING areas)")
+    @Operation(summary = "Replace the count of a DRAFT receipt (tolerance BR-02, lot/expiry BR-03, RECEIVING areas)",
+            description = """
+                    The whole count each time. `quantity` is a line's total in base units. A line may carry \
+                    `packages`, its labelled cartons (SCRUM-473): an entry with an `lpn` recounts that carton, one \
+                    without labels a new one, a carton of the line left out is voided; the cartons hold at most \
+                    `quantity` together and the rest is loose. With `packages`, `unitOfMeasure` is the active \
+                    packing unit they are in; without, it is absent or the item's base unit. The response gives \
+                    each line's `packages` with their LPNs, to print the labels from, and its `looseQuantity`.
+
+                    Every line is checked before anything is refused; `fieldErrors` names each field at fault \
+                    (`lines[i].unitOfMeasure`, `lines[i].packages`, ...). Codes: `RECEIPT_LINE_UNIT_INVALID` (422: \
+                    cartons in the base unit or a retired one, a packing unit without cartons), \
+                    `UOM_CONVERSION_NOT_FOUND` (404: not a unit of the item), `RECEIPT_PACKAGES_EXCEED_LINE` (422), \
+                    `RECEIPT_PACKAGES_NOT_SUPPORTED` (409: a subcontract receipt), `RECEIPT_LINE_HAS_PACKAGES` (409: \
+                    the unit changed while a carton of the old one is kept, or a line with cartons left out), \
+                    `STOCK_PACKAGE_NOT_FOUND` (404: an LPN not of this line), `INVALID_STOCK_PACKAGE_TRANSITION` \
+                    (409: a voided carton named again), `VALIDATION_FAILED` (cartons without a unit, an LPN listed \
+                    twice, a carton under 1 unit).""")
     @RequiresPermission(resource = PurchaseOrderResources.GOODS_RECEIPTS, action = Action.UPDATE)
     public ApiResponse<GoodsReceiptResponse> replaceLines(@PathVariable UUID receiptId,
                                                           @Valid @RequestBody ReceiptLinesRequest request) {
         return ApiResponse.ok(mapper.toResponse(receipts.replaceLines(receiptId, request.lines().stream()
                 .map(l -> new GoodsReceipts.NewLine(l.purchaseOrderLineId(), l.quantity(), l.lotNumber(),
-                        l.expiryDate(), l.locationCode(), l.note()))
+                        l.expiryDate(), l.locationCode(), l.note(), l.unitOfMeasure(),
+                        l.packages() == null ? List.of() : l.packages().stream()
+                                .map(p -> new GoodsReceipts.NewPackage(p.lpn(), p.quantity())).toList()))
                 .toList())));
     }
 

@@ -216,6 +216,16 @@ public enum ErrorCode {
     RECEIPT_LINE_HAS_PACKAGES("This receipt line has labelled cartons", 409),
     /** SCRUM-473: the cartons counted on a receipt line hold more units than the line received. */
     RECEIPT_PACKAGES_EXCEED_LINE("The cartons hold more than the receipt line", 422),
+    /**
+     * SCRUM-473 decision D5: a SUBCONTRACT order's goods are held for their production order one row per receipt
+     * line, so they are not received into cartons.
+     */
+    RECEIPT_PACKAGES_NOT_SUPPORTED("Cartons are not labelled on a subcontract receipt", 409),
+    /**
+     * SCRUM-473: a line with cartons names the active packing unit they are in; a loose line counts in the base unit
+     * and claims no packing unit it holds no carton of.
+     */
+    RECEIPT_LINE_UNIT_INVALID("A receipt line counts in its item's base unit, or in an active packing unit it has cartons of", 422),
     /** The PO line is closed, cancelled or fully received: nothing more is received against it. */
     PO_LINE_NOT_OPEN("This purchase order line is no longer open for receiving", 409),
     /** One stock row per SKU, location and lot: quarantined and rejected goods need two areas. */

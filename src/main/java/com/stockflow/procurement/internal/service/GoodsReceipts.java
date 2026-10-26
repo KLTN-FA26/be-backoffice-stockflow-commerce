@@ -21,9 +21,28 @@ public interface GoodsReceipts {
     record Create(UUID purchaseOrderId, String deliveryNote, String note) {
     }
 
-    /** One counted line: so many units of a PO line, from one lot, set down at a RECEIVING location. */
+    /**
+     * One counted line: so many units of a PO line, from one lot, set down at a RECEIVING location (SCRUM-473 design
+     * §3). {@code quantity} is the line's total in base units. {@code packages} are the labelled cartons holding part
+     * or all of it, the whole list each time; then {@code unitOfMeasure} is the active packing unit they are in. With
+     * no cartons the line is loose and {@code unitOfMeasure} is absent or the item's base unit.
+     */
     record NewLine(UUID purchaseOrderLineId, int quantity, String lotNumber, LocalDate expiryDate,
-                   String locationCode, String note) {
+                   String locationCode, String note, String unitOfMeasure, List<NewPackage> packages) {
+
+        public NewLine {
+            packages = packages == null ? List.of() : List.copyOf(packages);
+        }
+
+        /** A loose line, counted in the base unit. */
+        public NewLine(UUID purchaseOrderLineId, int quantity, String lotNumber, LocalDate expiryDate,
+                       String locationCode, String note) {
+            this(purchaseOrderLineId, quantity, lotNumber, expiryDate, locationCode, note, null, List.of());
+        }
+    }
+
+    /** One carton of a line: {@code lpn} names one labelled before to recount it; null labels a new one. */
+    record NewPackage(String lpn, int quantity) {
     }
 
     /** Part of a QC decision that leaves the QC area: where it goes and why. */
@@ -45,11 +64,24 @@ public interface GoodsReceipts {
                           UUID inspectedBy, String inspectedByName, Instant inspectedAt) {
     }
 
+    /**
+     * {@code unitOfMeasure}: the packing unit of the line's cartons, null for a line counted loose.
+     * {@code looseQuantity}: what no carton holds, {@code quantity} less the cartons' counts. {@code packages}: the
+     * line's cartons, voided ones left out, by LPN - the client prints their labels from these.
+     */
     record LineView(UUID id, UUID purchaseOrderLineId, Integer purchaseOrderLineNo, UUID inventoryItemId, String sku,
                     int quantity, String lotNumber, LocalDate expiryDate, String locationCode, String note,
                     boolean qcRequired, boolean lotTracked, boolean expiryTracked, QcProgress qcProgress,
                     String qcLocationCode, Instant movedToQcAt, int quantityForPutaway,
-                    List<InspectionView> inspections, List<String> warnings) {
+                    List<InspectionView> inspections, List<String> warnings, String unitOfMeasure,
+                    int looseQuantity, List<PackageView> packages) {
+    }
+
+    /**
+     * One carton of a line. {@code quantity}: what was counted into it while RECEIVING; once in stock, what is left
+     * in it. {@code nominalQty}: what its unit holds. {@code status}: RECEIVING, IN_STOCK, CONSUMED or LOST.
+     */
+    record PackageView(UUID id, String lpn, int quantity, int nominalQty, String status) {
     }
 
     /**
@@ -74,12 +106,16 @@ public interface GoodsReceipts {
     /** A DRAFT receipt for a CONFIRMED or PARTIALLY_RECEIVED order (BR-01), into the order's warehouse. */
     ReceiptView create(Create command, UUID userId);
 
-    /** Replace the whole count of a DRAFT (BR-02 tolerance, BR-03 lot and expiry, RECEIVING locations). */
+    /**
+     * Replace the whole count of a DRAFT (BR-02 tolerance, BR-03 lot and expiry, RECEIVING locations), and label,
+     * recount or void each line's cartons to match it (SCRUM-473).
+     */
     ReceiptView replaceLines(UUID receiptId, List<NewLine> lines);
 
     /**
-     * The count is final: the goods are counted in as INBOUND stock at their receiving locations, the
-     * order's progress is updated, and the receipt goes to QC or to putaway.
+     * The count is final: the goods are counted in as INBOUND stock at their receiving locations - into the line's
+     * labelled cartons first, the rest loose - the order's progress is updated, and the receipt goes to QC or to
+     * putaway.
      */
     ReceiptView confirm(UUID receiptId, UUID userId);
 

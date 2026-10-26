@@ -20,12 +20,24 @@ public record GoodsReceiptResponse(UUID id, String number, UUID purchaseOrderId,
                                    UUID confirmedBy, String confirmedByName, Instant closedAt, List<Line> lines,
                                    List<String> warnings) {
 
-    /** {@code lotTracked} / {@code expiryTracked}: whether the line needs a lot / an expiry date (BR-03). */
+    /**
+     * {@code lotTracked} / {@code expiryTracked}: whether the line needs a lot / an expiry date (BR-03).
+     * {@code unitOfMeasure}: the packing unit of the line's cartons, null for a loose line. {@code looseQuantity}:
+     * the part no carton holds. {@code packages}: the line's cartons by LPN, voided ones left out (SCRUM-473).
+     */
     public record Line(UUID id, UUID purchaseOrderLineId, Integer purchaseOrderLineNo, UUID inventoryItemId, String sku,
                        int quantity, String lotNumber, LocalDate expiryDate, String locationCode, String note,
                        boolean qcRequired, boolean lotTracked, boolean expiryTracked, String qcProgress,
                        String qcLocationCode, Instant movedToQcAt, int quantityForPutaway,
-                       List<Inspection> inspections, List<String> warnings) {
+                       List<Inspection> inspections, List<String> warnings, String unitOfMeasure,
+                       int looseQuantity, List<Package> packages) {
+    }
+
+    /**
+     * One labelled carton. {@code quantity}: what was counted into it while RECEIVING, what is left in it once in
+     * stock; {@code nominalQty}: what its unit holds; {@code status}: RECEIVING, IN_STOCK, CONSUMED or LOST.
+     */
+    public record Package(UUID id, String lpn, int quantity, int nominalQty, String status) {
     }
 
     public record Inspection(UUID id, String outcome, int quantity, String locationCode, String reason,
