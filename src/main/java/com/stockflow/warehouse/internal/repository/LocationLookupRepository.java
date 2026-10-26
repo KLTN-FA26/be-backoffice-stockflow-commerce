@@ -34,7 +34,7 @@ public interface LocationLookupRepository {
     Optional<WarehouseHeader> findWarehouseHeader(UUID warehouseId);
 
     /**
-     * The bins of a warehouse a putaway may choose from: BIN locations of {@code storageClass} whose warehouse, shelf
+     * The bins of a warehouse a putaway may choose from: BIN locations of {@code storageClass} flagged {@code is_putaway_target} whose warehouse, shelf
      * and own status are all ACTIVE (the {@code EffectiveStatus.ofBin} rule, in the WHERE clause so the database does
      * the filtering), by location code. Capacity and weight as stored, null when unset.
      */

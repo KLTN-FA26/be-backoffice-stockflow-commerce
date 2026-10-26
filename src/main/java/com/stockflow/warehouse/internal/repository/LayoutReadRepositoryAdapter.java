@@ -223,6 +223,7 @@ class LayoutReadRepositoryAdapter implements LayoutReadRepository, LocationLooku
                         where loc.warehouseId = :warehouseId
                           and loc.kind = com.stockflow.warehouse.internal.domain.StorageLocationKind.BIN
                           and loc.storageClass = :storageClass
+                          and loc.putawayTarget = true
                           and w.status = com.stockflow.warehouse.internal.domain.WarehouseStatus.ACTIVE
                           and s.status = com.stockflow.warehouse.internal.domain.LocationStatus.ACTIVE
                           and loc.status = com.stockflow.warehouse.internal.domain.LocationStatus.ACTIVE

@@ -37,12 +37,14 @@ class PutawayCandidatesIntegrationTest {
     }
 
     @Test
-    @DisplayName("only usable bins of the class: no area, no bin on a shelf in maintenance, no blocked bin, no other class")
+    @DisplayName("only usable putaway-target bins of the class: no area, no bin on a shelf in maintenance, no blocked bin, no other class")
     void onlyUsableBinsOfTheClass() {
         jdbc.update("UPDATE warehouse.shelf SET status = 'MAINTENANCE' WHERE code = 'A02' AND warehouse_id = ?",
                 DemoData.WAREHOUSE_HCM);
         jdbc.update("UPDATE warehouse.storage_location SET status = 'BLOCKED' WHERE location_code = 'HCM-A01-1-A'");
         jdbc.update("UPDATE warehouse.storage_location SET storage_class = 'COLD' WHERE location_code = 'HCM-B01-1-A'");
+        jdbc.update("UPDATE warehouse.storage_location SET is_putaway_target = FALSE"
+                + " WHERE location_code = 'HCM-B01-1-B'");
 
         List<String> oversize = codes(StorageClass.OVERSIZE);
         List<String> normal = codes(StorageClass.NORMAL);
@@ -52,6 +54,7 @@ class PutawayCandidatesIntegrationTest {
                 .allMatch(code -> code.startsWith("HCM-A01-"))
                 .as("an area is never a candidate, though HCM-RCV01 is OVERSIZE").doesNotContain("HCM-RCV01");
         assertThat(normal).isNotEmpty().isSorted().doesNotContain("HCM-B01-1-A")
+                .as("a bin not flagged as a putaway target").doesNotContain("HCM-B01-1-B")
                 .allMatch(code -> code.startsWith("HCM-B01-"));
         assertThat(codes(StorageClass.COLD)).containsExactly("HCM-B01-1-A");
         assertThat(codes(StorageClass.HAZMAT)).isEmpty();
