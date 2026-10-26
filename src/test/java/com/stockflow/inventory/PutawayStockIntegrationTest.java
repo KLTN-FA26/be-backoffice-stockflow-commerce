@@ -160,6 +160,35 @@ class PutawayStockIntegrationTest {
     }
 
     @Test
+    @DisplayName("two lots of one SKU in the receiving bin: putaway of one lot moves only that lot's units")
+    void putAwayLooseMovesOnlyTheNamedLot() {
+        UUID otherLot = Identifiers.newId();
+        tx.executeWithoutResult(s -> {
+            jdbc.update("create temp table lot_copy on commit drop as select * from inventory.stock_lot where id = ?",
+                    lotId);
+            jdbc.update("update lot_copy set id = ?, lot_number = 'L2'", otherLot);
+            jdbc.update("insert into inventory.stock_lot select * from lot_copy");
+            jdbc.update("create temp table item_copy on commit drop as select * from inventory.stock_item"
+                    + " where sku = ? and stock_package_id is null", sku);
+            jdbc.update("update item_copy set id = ?, lot_id = ?, lot_number = 'L2', on_hand = 7",
+                    Identifiers.newId(), otherLot);
+            jdbc.update("insert into inventory.stock_item select * from item_copy");
+        });
+
+        stockOperations.putAwayLoose(new Sku(sku), otherLot, BIN, 5, Identifiers.newId(), clerk);
+
+        assertThat(jdbc.queryForObject("select coalesce(sum(on_hand), 0) from inventory.stock_item"
+                + " where sku = ? and lot_id = ? and location_code = ? and status = 'AVAILABLE'", Integer.class, sku,
+                otherLot, BIN)).isEqualTo(5);
+        assertThat(jdbc.queryForObject("select coalesce(sum(on_hand), 0) from inventory.stock_item"
+                + " where sku = ? and lot_id = ? and status = 'INBOUND' and stock_package_id is null", Integer.class,
+                sku, otherLot)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("select coalesce(sum(on_hand), 0) from inventory.stock_item"
+                + " where sku = ? and lot_id = ? and status = 'INBOUND' and stock_package_id is null", Integer.class,
+                sku, lotId)).isEqualTo(20);
+    }
+
+    @Test
     @DisplayName("more units than the receipt's loose goods is refused and nothing moves: STOCK_ITEM_NOT_FOUND")
     void putAwayLooseMoreThanThereIsRefused() {
         assertThatThrownBy(() -> stockOperations.putAwayLoose(new Sku(sku), lotId, BIN, 21, Identifiers.newId(),

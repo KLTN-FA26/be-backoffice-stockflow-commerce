@@ -177,25 +177,32 @@ class StockOperationsServiceImpl implements StockOperations {
         }
 
         return moveLayer(sku, lotNumber, receivedAt, new LocationId(fromCode), new LocationId(toCode), qty, target,
-                referenceType, referenceId, actorId, reason);
+                referenceType, referenceId, actorId, reason, null);
     }
 
     /**
      * What a move does once scope, the SKU lock and the replay lookup are behind it: one layer's units from
      * {@code from} to {@code to}. Split out so putaway can move several rows under one reference, which the
      * replay lookup of {@link #relocate} would take for a repeat.
+     *
+     * <p>{@code chosen} is the source row when the caller already picked it (putaway picks by lot id, which the
+     * (lot number, receipt time) lookup cannot express: two lots of one receipt can share both); null looks the
+     * layer up as a plain move does. A chosen row also fixes the destination layer to the same goods.</p>
      */
     private StockMove moveLayer(Sku sku, String lotNumber, Instant receivedAt, LocationId from, LocationId to,
                                 int qty, StockStatus target, StockMovement.ReferenceType referenceType,
-                                UUID referenceId, UUID actorId, String reason) {
+                                UUID referenceId, UUID actorId, String reason, StockItem chosen) {
         requireMovableBetween(from, to);
         Quantity quantity = Quantity.of(qty);
 
-        StockItem sourceView = findLayer(sku, from, lotNumber, receivedAt)
+        StockItem sourceView = chosen != null ? chosen : findLayer(sku, from, lotNumber, receivedAt)
                 .orElseThrow(() -> new BusinessException(ErrorCode.STOCK_ITEM_NOT_FOUND,
                         "No %s%s at %s".formatted(sku, lotSuffix(lotNumber), from)));
-        Optional<StockItem> destinationView = findLayer(sku, to, lotNumber, sourceView.receivedAt())
-                .filter(item -> java.util.Objects.equals(item.receivedAt(), sourceView.receivedAt()));
+        Optional<StockItem> destinationView = chosen != null
+                ? stockItems.findLooseBySkuAndLocation(sku, to).stream()
+                        .filter(item -> item.isSameGoodsAs(chosen) && item.status() == target).findFirst()
+                : findLayer(sku, to, lotNumber, sourceView.receivedAt())
+                        .filter(item -> java.util.Objects.equals(item.receivedAt(), sourceView.receivedAt()));
 
         // Lock in id order, as reserve() does: two moves crossing the same pair in opposite
         // directions would otherwise deadlock.
@@ -303,7 +310,7 @@ class StockOperationsServiceImpl implements StockOperations {
             int take = Math.min(left, row.onHand().value());
             WarehouseScope.requireLocation(row.location().code());
             moveLayer(sku, row.lotNumber(), row.receivedAt(), row.location(), to, take, StockStatus.AVAILABLE,
-                    StockMovement.ReferenceType.PUTAWAY_TASK, taskId, actorId, null);
+                    StockMovement.ReferenceType.PUTAWAY_TASK, taskId, actorId, null, row);
             left -= take;
         }
         return units;
