@@ -205,9 +205,9 @@ class StockPackageMoveIntegrationTest {
         assertThat(cartonState()).isEqualTo(QUARANTINE + ":IN_STOCK:true");
         assertThat(rowState()).isEqualTo(QUARANTINE + ":QUARANTINE:1000");
         assertThat(jdbc.query("""
-                select status, to_status, from_stock_package_id = to_stock_package_id as same_carton
+                select from_status, to_status, from_stock_package_id = to_stock_package_id as same_carton
                   from inventory.stock_movement where movement_type = 'MOVE' and sku = ?""",
-                (rs, n) -> rs.getString("status") + ">" + rs.getString("to_status") + ":" + rs.getBoolean("same_carton"),
+                (rs, n) -> rs.getString("from_status") + ">" + rs.getString("to_status") + ":" + rs.getBoolean("same_carton"),
                 sku)).containsExactly("INBOUND>QUARANTINE:true");
     }
 
