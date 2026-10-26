@@ -23,6 +23,12 @@ public interface UomConversionService {
     /** {@code UOM_CONVERSION_NOT_FOUND} unless {@code id} is a unit of this SKU's item. */
     UomConversion conversion(Sku sku, UUID id);
 
+    /**
+     * The unit of this SKU's item with this code ({@code CARTON}, {@code PCS}), active or retired; empty when there
+     * is none. How a document that names its unit by code (a goods-receipt line's cartons, SCRUM-473) finds it.
+     */
+    java.util.Optional<UomConversion> conversion(Sku sku, String unitOfMeasure);
+
     /** Those of {@code ids} that are units of this SKU's item. */
     Map<UUID, UomConversion> conversions(Sku sku, Collection<UUID> ids);
 

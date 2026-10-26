@@ -182,6 +182,19 @@ class InventoryServiceImpl implements InventoryService {
     }
 
     @Override
+    public List<com.stockflow.inventory.api.StockPackageView> countReceivingPackages(
+            com.stockflow.inventory.api.CountReceivingPackagesCommand command) {
+        return operations.countReceivingPackages(command);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Map<UUID, List<com.stockflow.inventory.api.StockPackageView>> receivingPackagesOf(
+            Collection<UUID> receiptLineIds) {
+        return operations.receivingPackagesOf(receiptLineIds);
+    }
+
+    @Override
     public StockMove reclassify(ReclassifyStockCommand command) {
         return operations.reclassify(command);
     }

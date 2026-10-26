@@ -9,7 +9,7 @@ import java.util.UUID;
 
 interface StockMovementJpaRepository extends BaseJpaRepository<StockMovementJpaEntity> {
 
-    Optional<StockMovementJpaEntity> findFirstByMovementTypeAndReferenceTypeAndReferenceId(
+    Optional<StockMovementJpaEntity> findFirstByMovementTypeAndReferenceTypeAndReferenceIdOrderByIdAsc(
             StockMovement.MovementType movementType, StockMovement.ReferenceType referenceType, UUID referenceId);
 
     boolean existsByMovementTypeAndReferenceTypeAndReasonAndToLocationCodeAndFromStatusAndToStatus(

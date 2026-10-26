@@ -3,6 +3,7 @@ package com.stockflow.inventory.internal.service;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
+import com.stockflow.common.domain.BusinessCalendar;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
@@ -10,6 +11,7 @@ import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.SortWhitelist;
+import com.stockflow.inventory.api.CountReceivingPackagesCommand;
 import com.stockflow.inventory.api.IssueReservedStockCommand;
 import com.stockflow.inventory.api.IssueReservedStockResult;
 import com.stockflow.inventory.api.MoveStockCommand;
@@ -20,6 +22,8 @@ import com.stockflow.inventory.api.StockAdjustmentReason;
 import com.stockflow.inventory.api.StockAdjustmentStatus;
 import com.stockflow.inventory.api.StockAdjustmentSummary;
 import com.stockflow.inventory.api.StockMove;
+import com.stockflow.inventory.api.StockPackageView;
+import com.stockflow.inventory.api.UomConversion;
 import com.stockflow.inventory.internal.domain.AdjustmentReason;
 import com.stockflow.inventory.internal.domain.AdjustmentStatus;
 import com.stockflow.inventory.internal.domain.CountSlot;
@@ -27,6 +31,7 @@ import com.stockflow.inventory.internal.domain.CountVariance;
 import com.stockflow.inventory.internal.domain.LocationDirectory;
 import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.Quantity;
+import com.stockflow.inventory.internal.domain.ReceivingPackagePlan;
 import com.stockflow.inventory.internal.domain.ReleaseReason;
 import com.stockflow.inventory.internal.domain.Reservation;
 import com.stockflow.inventory.internal.domain.ReservationId;
@@ -37,10 +42,15 @@ import com.stockflow.inventory.internal.domain.StockLots;
 import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.inventory.internal.domain.StockMovement;
 import com.stockflow.inventory.internal.domain.StockMovementLog;
+import com.stockflow.inventory.internal.domain.StockPackage;
+import com.stockflow.inventory.internal.domain.StockPackageId;
+import com.stockflow.inventory.internal.domain.StockPackageRepository;
+import com.stockflow.inventory.internal.domain.StockPackageStatus;
 import com.stockflow.inventory.internal.domain.StockStatus;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
 import com.stockflow.inventory.internal.repository.StockAdjustmentSearch;
 import com.stockflow.inventory.internal.repository.StockLedgerSearch;
+import com.stockflow.inventory.internal.repository.UomConversionRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Sort;
@@ -52,11 +62,16 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * Moves stock between locations and posts approved adjustments, writing the ledger as it goes.
@@ -88,12 +103,18 @@ class StockOperationsServiceImpl implements StockOperations {
     private final InventoryEventPublisher events;
     /** Taking from a carton opens it and the last unit closes it; its lock comes between the SKU's and the rows'. */
     private final StockPackageContents cartons;
+    /** The cartons labelled while receiving (SCRUM-473); taken from through {@link #cartons}. */
+    private final StockPackageRepository stockPackages;
+    private final UomConversionRepository units;
 
     StockOperationsServiceImpl(StockItemRepository stockItems, StockAdjustmentRepository adjustments,
                                StockAdjustmentSearch adjustmentSearch, StockMovementLog ledger,
                                StockLedgerSearch ledgerSearch, LocationDirectory locations, Clock clock,
                                InventoryPolicyRepository policies, StockLots lots, StockPackageContents cartons,
-                               InventoryEventPublisher events) {
+                               InventoryEventPublisher events, StockPackageRepository stockPackages,
+                               UomConversionRepository units) {
+        this.stockPackages = stockPackages;
+        this.units = units;
         this.cartons = cartons;
         this.events = events;
         this.stockItems = stockItems;
@@ -817,8 +838,17 @@ class StockOperationsServiceImpl implements StockOperations {
     // ------------------------------------------------------------------ receipt
 
     /**
-     * Always a new stock layer (one per receipt, V20260930001000): the receipt time tells it apart from
+     * Always new stock layers (one per receipt, V20260930001000): the receipt time tells them apart from
      * every other layer of the lot at the location, so nothing is merged into an older receipt.
+     *
+     * <p>SCRUM-473: the goods go into the line's RECEIVING cartons first - one INBOUND row per carton holding what
+     * was counted into it, the carton IN_STOCK and still unopened, which is exactly what the commit-time check of
+     * V20261020000200 wants of it - and only the remainder goes loose. The cartons are locked after the SKU, as
+     * every carton write locks them, and checked before anything is written, so a refusal leaves no lot opened.</p>
+     *
+     * <p>A replay is recognised by the line's first RECEIPT ledger row, which is the move returned the first time:
+     * the loose line is written before the cartons' and ledger ids grow with time, so the first row is the loose
+     * line when there is one, and the first carton's otherwise.</p>
      */
     @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "stock-receipt", resourceId = "#command.receiptLineId()")
@@ -831,14 +861,28 @@ class StockOperationsServiceImpl implements StockOperations {
             return toMove(done.get());
         }
         LocationId location = new LocationId(command.locationCode());
-        switch (locations.stateOf(location)) {
-            case UNKNOWN -> throw new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + location);
-            case UNUSABLE -> throw new BusinessException(ErrorCode.LOCATION_NOT_USABLE,
-                    "%s cannot take stock now: it, its shelf or its warehouse is not active".formatted(location));
-            case USABLE -> { }
-        }
+        requireUsable(location);
         String lot = blankToNull(command.lotNumber());
-        Quantity quantity = Quantity.of(command.quantity());
+
+        List<StockPackage> packed = lockCartonsOf(command.receiptLineId()).stream()
+                .filter(carton -> carton.status() == StockPackageStatus.RECEIVING)
+                .toList();
+        int inCartons = packed.stream().mapToInt(carton -> Objects.requireNonNullElse(carton.receivedQty(), 0)).sum();
+        // The invariant stated twice: procurement refuses such a count first (design 3, rule 5).
+        if (inCartons > command.quantity()) {
+            throw new BusinessException(ErrorCode.RECEIPT_PACKAGES_EXCEED_LINE,
+                    "The cartons of receipt line %s hold %d; the line received %d".formatted(command.receiptLineId(),
+                            inCartons, command.quantity()));
+        }
+        for (StockPackage carton : packed) {
+            // A carton's rows sit where it is (check_stock_package_contents); counting the line moves its cartons.
+            if (!carton.location().equals(location)) {
+                throw new BusinessException(ErrorCode.STOCK_PACKAGE_WRONG_LOCATION,
+                        "%s is at %s, not at %s; count the line again".formatted(carton.lpn(), carton.location(),
+                                location));
+            }
+        }
+
         // SCRUM-142: the receipt opens the lot - one per receipt and (SKU, lot number, expiry) - so a lot number
         // another receipt used before is a different lot, and the trace knows the supplier and the documents.
         UUID lotId = command.origin() == null ? null : lots.openForReceipt(new StockLots.ReceiptLot(command.sku(), lot,
@@ -846,16 +890,159 @@ class StockOperationsServiceImpl implements StockOperations {
                 command.origin().goodsReceiptNumber(), command.origin().purchaseOrderId(),
                 command.origin().purchaseOrderNumber(), command.origin().supplierId(), command.origin().supplierName(),
                 command.origin().warehouseId()));
-        stockItems.save(StockItem.receiveInbound(command.sku(), location, lot, command.expiryDate(), quantity,
-                command.receivedAt(), lotId));
+        Instant now = clock.instant();
 
-        StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.RECEIPT,
-                command.sku(), lot, null, location, quantity.value(), StockStatus.INBOUND,
+        StockMove first = null;
+        int loose = command.quantity() - inCartons;
+        if (loose > 0) {
+            stockItems.save(StockItem.receiveInbound(command.sku(), location, lot, command.expiryDate(),
+                    Quantity.of(loose), command.receivedAt(), lotId));
+            StockMovement line = receiptLine(command, lot, location, loose, lotId, now);
+            ledger.append(line);
+            first = toMove(line);
+        }
+        for (StockPackage carton : packed) {
+            carton.putInStock();   // refuses a carton never counted, before a row is written for it
+            int counted = carton.receivedQty();
+            stockItems.save(StockItem.receiveInboundInto(carton.id(), command.sku(), location, lot,
+                    command.expiryDate(), Quantity.of(counted), command.receivedAt(), lotId));
+            stockPackages.save(carton);
+            StockMovement line = receiptLine(command, lot, location, counted, lotId, now).arriving(carton.id());
+            ledger.append(line);
+            if (first == null) {
+                first = toMove(line);
+            }
+        }
+        log.info("Received {} x {}{} into {}: {} loose, {} carton(s)", command.quantity(), command.sku(),
+                lotSuffix(lot), location, loose, packed.size());
+        return first;
+    }
+
+    private static StockMovement receiptLine(ReceiveStockCommand command, String lot, LocationId location,
+                                             int quantity, UUID lotId, Instant now) {
+        return new StockMovement(Identifiers.newId(), StockMovement.MovementType.RECEIPT,
+                command.sku(), lot, null, location, quantity, StockStatus.INBOUND,
                 StockMovement.ReferenceType.GOODS_RECEIPT_LINE, command.receiptLineId(), null,
-                command.actorId(), clock.instant()).ofLot(lotId);
-        ledger.append(line);
-        log.info("Received {} x {}{} into {}", quantity, command.sku(), lotSuffix(lot), location);
-        return toMove(line);
+                command.actorId(), now).ofLot(lotId);
+    }
+
+    // ------------------------------------------------------------------ cartons while receiving
+
+    /**
+     * The pure part - which carton is recounted, which is new and which is voided - is {@link ReceivingPackagePlan};
+     * this applies it under the lock order of every carton write: the SKU, then the line's cartons in id order. A
+     * RECEIVING carton holds no stock row, so there is no third lock.
+     */
+    @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "receipt-line-packages",
+            resourceId = "#command.receiptLineId()")
+    public List<StockPackageView> countReceivingPackages(CountReceivingPackagesCommand command) {
+        WarehouseScope.requireLocation(command.locationCode());
+        LocationId location = new LocationId(command.locationCode());
+        requireUsable(location);
+        UomConversion unit = command.packages().isEmpty() ? null : packingUnit(command);
+        policies.lock(command.sku().code());
+
+        List<StockPackage> current = lockCartonsOf(command.receiptLineId());
+        ReceivingPackagePlan plan = ReceivingPackagePlan.of(current, command.packages().stream()
+                .map(entry -> new ReceivingPackagePlan.Wanted(blankToNull(entry.lpn()), entry.quantity()))
+                .toList());
+        Instant now = clock.instant();
+        List<StockPackage> live = new ArrayList<>();
+        for (ReceivingPackagePlan.Recount recount : plan.recounts()) {
+            StockPackage carton = recount.carton();
+            // Every carton of a line is in the line's unit (design 3, rule 7): a new unit voids the old cartons.
+            if (!carton.uomConversionId().equals(unit.id())) {
+                throw new BusinessException(ErrorCode.RECEIPT_LINE_HAS_PACKAGES,
+                        "%s was labelled in another unit; leave it out to void it".formatted(carton.lpn()));
+            }
+            carton.count(recount.quantity());
+            if (!carton.location().equals(location)) {
+                carton.moveTo(location);
+            }
+            live.add(stockPackages.save(carton));
+        }
+        if (!plan.newCounts().isEmpty()) {
+            UUID itemId = units.itemId(command.sku().code()).orElseThrow(() -> new BusinessException(
+                    ErrorCode.INVENTORY_ITEM_NOT_FOUND, "No inventory item " + command.sku()));
+            LocalDate day = BusinessCalendar.date(now);
+            for (int quantity : plan.newCounts()) {
+                StockPackage carton = StockPackage.receiving(new StockPackageId(Identifiers.newId()),
+                        stockPackages.nextLpn(day), itemId, unit.id(), unit.factor(), location,
+                        command.receiptLineId());
+                carton.count(quantity);
+                live.add(stockPackages.save(carton));
+            }
+        }
+        for (StockPackage carton : plan.voided()) {
+            carton.cancel(now);
+            stockPackages.save(carton);
+        }
+        log.info("Receipt line {}: {} carton(s) recounted, {} labelled, {} voided", command.receiptLineId(),
+                plan.recounts().size(), plan.newCounts().size(), plan.voided().size());
+        return live.stream()
+                .sorted(Comparator.comparing(StockPackage::lpn))
+                .map(carton -> view(carton, unit, carton.receivedQty()))
+                .toList();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Map<UUID, List<StockPackageView>> receivingPackagesOf(Collection<UUID> receiptLineIds) {
+        List<StockPackage> found = stockPackages.findByReceiptLines(receiptLineIds).stream()
+                .filter(carton -> carton.status() != StockPackageStatus.VOID)
+                .sorted(Comparator.comparing(StockPackage::lpn))
+                .toList();
+        if (found.isEmpty()) {
+            return Map.of();
+        }
+        Map<UUID, UomConversion> unitsById = units.findAll(found.stream().map(StockPackage::uomConversionId)
+                        .distinct().toList()).stream()
+                .collect(Collectors.toMap(UomConversion::id, Function.identity()));
+        // A carton being received holds no row yet: what was counted into it is its quantity.
+        Map<StockPackageId, Integer> onHand = stockPackages.onHandOf(found.stream()
+                .filter(carton -> carton.status() != StockPackageStatus.RECEIVING).map(StockPackage::id).toList());
+        return found.stream().collect(Collectors.groupingBy(StockPackage::goodsReceiptLineId, LinkedHashMap::new,
+                Collectors.mapping(carton -> view(carton, unitsById.get(carton.uomConversionId()),
+                                carton.status() == StockPackageStatus.RECEIVING
+                                        ? carton.receivedQty() : onHand.getOrDefault(carton.id(), 0)),
+                        Collectors.toList())));
+    }
+
+    /** The command's unit: required once there is a carton, a unit of the SKU's item, and not the base unit. */
+    private UomConversion packingUnit(CountReceivingPackagesCommand command) {
+        if (command.uomConversionId() == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Cartons need the packing unit they are in");
+        }
+        UomConversion unit = units.find(command.sku().code(), command.uomConversionId()).orElseThrow(() ->
+                new BusinessException(ErrorCode.UOM_CONVERSION_NOT_FOUND,
+                        "No unit %s on %s".formatted(command.uomConversionId(), command.sku())));
+        if (unit.base()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "Cartons are labelled in a packing unit, not in the base unit " + unit.unitOfMeasure());
+        }
+        return unit;
+    }
+
+    /** Every carton ever labelled on the line, VOID ones included, locked in id order. Call under the SKU lock. */
+    private List<StockPackage> lockCartonsOf(UUID receiptLineId) {
+        return stockPackages.findAllByIdForUpdate(stockPackages.findByReceiptLines(List.of(receiptLineId)).stream()
+                .map(StockPackage::id).toList());
+    }
+
+    private static StockPackageView view(StockPackage carton, UomConversion unit, Integer quantity) {
+        return new StockPackageView(carton.id().value(), carton.lpn(), carton.goodsReceiptLineId(),
+                unit == null ? null : unit.sku(), carton.uomConversionId(), unit == null ? null : unit.unitOfMeasure(),
+                carton.nominalQty(), quantity, carton.location().code(), carton.status().name(), carton.unopened());
+    }
+
+    private void requireUsable(LocationId location) {
+        switch (locations.stateOf(location)) {
+            case UNKNOWN -> throw new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + location);
+            case UNUSABLE -> throw new BusinessException(ErrorCode.LOCATION_NOT_USABLE,
+                    "%s cannot take stock now: it, its shelf or its warehouse is not active".formatted(location));
+            case USABLE -> { }
+        }
     }
 
     // ------------------------------------------------------------------ adjustments

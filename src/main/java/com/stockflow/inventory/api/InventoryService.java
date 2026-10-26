@@ -301,15 +301,40 @@ public interface InventoryService {
     StockMove move(MoveStockCommand command);
 
     /**
-     * Count received goods in at a receiving location as INBOUND stock, writing a RECEIPT ledger line
-     * (SCRUM-435, docs 03 step 6). Joins the caller's transaction: the receipt and the stock it
-     * creates commit or roll back together. Merges into INBOUND stock of the same SKU and lot already
-     * at that location.
+     * Count received goods in at a receiving location as INBOUND stock (SCRUM-435, docs 03 step 6). Joins the
+     * caller's transaction: the receipt and the stock it creates commit or roll back together. Always a new stock
+     * layer, never merged into an older receipt's.
      *
-     * @throws com.stockflow.common.error.BusinessException {@code LOCATION_NOT_FOUND},
-     *         {@code STOCK_STATUS_MISMATCH} (the location holds the lot in a status other than INBOUND)
+     * <p>SCRUM-473: the goods go into the line's labelled cartons first ({@link #countReceivingPackages}) - one
+     * INBOUND row per carton, holding what was counted into it, the carton IN_STOCK and still unopened, one RECEIPT
+     * ledger line per carton naming it. Only the remainder goes loose, as one more row and ledger line, and none
+     * when the cartons hold everything. The move returned is the loose line, or the first carton's when nothing is
+     * loose; a retried receipt returns it again and writes nothing.</p>
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code LOCATION_NOT_FOUND}, {@code LOCATION_NOT_USABLE},
+     *         {@code RECEIPT_PACKAGES_EXCEED_LINE} (the cartons hold more than {@code quantity}),
+     *         {@code STOCK_PACKAGE_WRONG_LOCATION} (a carton was counted at another receiving area)
      */
     StockMove receive(ReceiveStockCommand command);
+
+    /**
+     * Label, recount and void the cartons of a goods-receipt line while its receipt is a draft (SCRUM-473): the
+     * whole list each time ({@link CountReceivingPackagesCommand}). Joins the caller's transaction, under the SKU's
+     * lock and then the line's cartons'. A new carton gets the next LPN of the day, {@code LPN-yyyyMMdd-nnnnnn}.
+     *
+     * @return the line's live cartons after the call, by LPN
+     * @throws com.stockflow.common.error.BusinessException {@code VALIDATION_FAILED} (a carton of no unit or under 1
+     *         unit, an LPN listed twice, the base unit), {@code UOM_CONVERSION_NOT_FOUND},
+     *         {@code STOCK_PACKAGE_NOT_FOUND} (an LPN that is not this line's), {@code INVALID_STOCK_PACKAGE_TRANSITION}
+     *         (a voided carton named again), {@code RECEIPT_LINE_HAS_PACKAGES} (a kept carton of another unit)
+     */
+    List<StockPackageView> countReceivingPackages(CountReceivingPackagesCommand command);
+
+    /**
+     * The cartons labelled on these goods-receipt lines, voided ones left out, each line's by LPN; a line without
+     * one is absent.
+     */
+    Map<UUID, List<StockPackageView>> receivingPackagesOf(Collection<UUID> receiptLineIds);
 
     /**
      * Move units and change their status in one step (QC decision, putaway); see

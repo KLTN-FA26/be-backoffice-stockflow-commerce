@@ -70,6 +70,15 @@ class UomConversionServiceImpl implements UomConversionService {
 
     @Override
     @Transactional(readOnly = true)
+    public java.util.Optional<UomConversion> conversion(Sku sku, String unitOfMeasure) {
+        if (unitOfMeasure == null || unitOfMeasure.isBlank()) {
+            return java.util.Optional.empty();
+        }
+        return conversions.find(sku.code(), unitOfMeasure.trim());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public Map<UUID, UomConversion> conversions(Sku sku, Collection<UUID> ids) {
         return conversions.find(sku.code(), ids).stream()
                 .collect(Collectors.toMap(UomConversion::id, Function.identity()));

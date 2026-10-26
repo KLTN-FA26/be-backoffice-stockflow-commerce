@@ -24,4 +24,16 @@ public interface StockPackageRepository {
     List<StockPackage> findAllByIdForUpdate(Collection<StockPackageId> ids);
 
     StockPackage save(StockPackage stockPackage);
+
+    /**
+     * What is left in each of these stock packages: the sum of its rows' {@code on_hand}, in one read. A package
+     * with no row is absent.
+     */
+    java.util.Map<StockPackageId, Integer> onHandOf(Collection<StockPackageId> ids);
+
+    /**
+     * The next LPN of {@code day} ({@code LPN-yyyyMMdd-nnnnnn}), from {@code platform.document_sequence} type
+     * {@code LPN}; {@code day} is the business's calendar day, as every document number's is.
+     */
+    String nextLpn(java.time.LocalDate day);
 }

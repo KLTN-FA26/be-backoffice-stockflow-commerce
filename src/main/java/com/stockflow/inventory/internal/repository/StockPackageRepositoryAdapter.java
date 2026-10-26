@@ -8,23 +8,34 @@ import com.stockflow.inventory.internal.entity.StockPackageJpaEntity;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.LockModeType;
 import jakarta.persistence.PersistenceContext;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
 
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
 @Repository
 class StockPackageRepositoryAdapter implements StockPackageRepository {
 
+    private static final DateTimeFormatter DAY = DateTimeFormatter.BASIC_ISO_DATE;
+
     private final StockPackageJpaRepository jpa;
+    private final NamedParameterJdbcTemplate jdbc;
 
     @PersistenceContext
     private EntityManager entityManager;
 
-    StockPackageRepositoryAdapter(StockPackageJpaRepository jpa) {
+    StockPackageRepositoryAdapter(StockPackageJpaRepository jpa, JdbcTemplate jdbc) {
         this.jpa = jpa;
+        this.jdbc = new NamedParameterJdbcTemplate(jdbc);
     }
 
     @Override
@@ -84,6 +95,43 @@ class StockPackageRepositoryAdapter implements StockPackageRepository {
                         stockPackage.receivedQty(), stockPackage.location().code(), stockPackage.status(),
                         stockPackage.unopened(), stockPackage.goodsReceiptLineId(), stockPackage.closedAt()));
         return toDomain(jpa.save(entity));
+    }
+
+    /**
+     * A native query through the entity manager, not JDBC: it flushes this transaction's pending stock rows first,
+     * so a caller reading right after a receipt sees what the receipt put into the cartons.
+     */
+    @Override
+    public Map<StockPackageId, Integer> onHandOf(Collection<StockPackageId> ids) {
+        List<UUID> wanted = ids.stream().map(StockPackageId::value).distinct().toList();
+        if (wanted.isEmpty()) {
+            return Map.of();
+        }
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = entityManager.createNativeQuery("""
+                        select stock_package_id, sum(on_hand) from inventory.stock_item
+                         where stock_package_id in (:ids) group by stock_package_id""")
+                .setParameter("ids", wanted).getResultList();
+        Map<StockPackageId, Integer> onHand = new HashMap<>();
+        for (Object[] row : rows) {
+            onHand.put(new StockPackageId((UUID) row[0]), Math.toIntExact(((Number) row[1]).longValue()));
+        }
+        return onHand;
+    }
+
+    /**
+     * The upsert of {@code CycleCountRepositoryAdapter.nextNumber}: its row lock serialises two receipts labelling
+     * cartons on one day, and the number never repeats ({@code uk_stock_package_lpn}).
+     */
+    @Override
+    public String nextLpn(LocalDate day) {
+        Number sequence = jdbc.queryForObject("""
+                INSERT INTO platform.document_sequence (document_type, sequence_date, last_value)
+                VALUES ('LPN', :day, 1)
+                ON CONFLICT (document_type, sequence_date)
+                DO UPDATE SET last_value = platform.document_sequence.last_value + 1
+                RETURNING last_value""", new MapSqlParameterSource("day", day), Number.class);
+        return "LPN-%s-%06d".formatted(day.format(DAY), sequence.longValue());
     }
 
     private static StockPackage toDomain(StockPackageJpaEntity entity) {

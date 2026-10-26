@@ -37,7 +37,7 @@ class StockMovementLogAdapter implements StockMovementLog, StockLedgerSearch {
     @Override
     public Optional<StockMovement> findByReference(StockMovement.MovementType type,
                                                    StockMovement.ReferenceType referenceType, UUID referenceId) {
-        return jpa.findFirstByMovementTypeAndReferenceTypeAndReferenceId(type, referenceType, referenceId)
+        return jpa.findFirstByMovementTypeAndReferenceTypeAndReferenceIdOrderByIdAsc(type, referenceType, referenceId)
                 .map(StockMovementLogAdapter::toDomain);
     }
 

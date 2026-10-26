@@ -10,7 +10,9 @@ public interface StockMovementLog {
 
     /**
      * The line a document already caused, if any — how a retried move is recognised as one that
-     * already happened instead of moving the goods twice.
+     * already happened instead of moving the goods twice. When the document caused several (a receipt line
+     * received into cartons writes one per carton, SCRUM-473), the first written: ids are UUIDv7, so the
+     * lowest is the oldest, and a replay answers what the first call answered.
      */
     Optional<StockMovement> findByReference(StockMovement.MovementType type,
                                             StockMovement.ReferenceType referenceType, UUID referenceId);

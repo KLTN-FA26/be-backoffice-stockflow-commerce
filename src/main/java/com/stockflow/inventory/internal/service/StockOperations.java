@@ -1,6 +1,7 @@
 package com.stockflow.inventory.internal.service;
 
 import com.stockflow.common.api.PageResponse;
+import com.stockflow.inventory.api.CountReceivingPackagesCommand;
 import com.stockflow.inventory.api.IssueReservedStockCommand;
 import com.stockflow.inventory.api.IssueReservedStockResult;
 import com.stockflow.inventory.api.MoveStockCommand;
@@ -10,10 +11,13 @@ import com.stockflow.inventory.api.RequestAdjustmentCommand;
 import com.stockflow.inventory.api.StockAdjustmentStatus;
 import com.stockflow.inventory.api.StockAdjustmentSummary;
 import com.stockflow.inventory.api.StockMove;
+import com.stockflow.inventory.api.StockPackageView;
 import com.stockflow.inventory.internal.domain.CountSlot;
 import com.stockflow.inventory.internal.domain.StockMovement;
 
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -27,6 +31,12 @@ public interface StockOperations {
     StockMove move(MoveStockCommand command);
 
     StockMove receive(ReceiveStockCommand command);
+
+    /** See {@code InventoryService#countReceivingPackages}. */
+    List<StockPackageView> countReceivingPackages(CountReceivingPackagesCommand command);
+
+    /** See {@code InventoryService#receivingPackagesOf}. */
+    Map<UUID, List<StockPackageView>> receivingPackagesOf(Collection<UUID> receiptLineIds);
 
     /** See {@code InventoryService#issueReserved}. */
     IssueReservedStockResult issueReserved(IssueReservedStockCommand command);
