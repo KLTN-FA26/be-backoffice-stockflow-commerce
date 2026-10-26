@@ -88,11 +88,11 @@ class GoodsReceiptRepositoryAdapter implements GoodsReceiptRepository, GoodsRece
             if (row == null) {
                 row = new GoodsReceiptLineJpaEntity(line.id(), line.poLineId(), line.inventoryItemId(),
                         line.locationId(), BigDecimal.valueOf(line.receivedQuantity()), line.lotNumber(),
-                        line.expiryDate(), line.note(), line.qcRequired());
+                        line.expiryDate(), line.note(), line.qcRequired(), line.uomConversionId());
                 entity.addLine(row);
             } else if (receipt.status() == GoodsReceiptStatus.DRAFT) {
                 row.recount(line.locationId(), BigDecimal.valueOf(line.receivedQuantity()), line.expiryDate(),
-                        line.note(), line.qcRequired());
+                        line.note(), line.qcRequired(), line.uomConversionId());
             }
             if (line.movedToQc() && row.getMovedToQcAt() == null) {
                 row.movedToQc(line.qcLocationId(), line.movedToQcAt(), line.movedToQcBy());
@@ -190,7 +190,8 @@ class GoodsReceiptRepositoryAdapter implements GoodsReceiptRepository, GoodsRece
     static GoodsReceipt toDomain(GoodsReceiptJpaEntity e) {
         List<ReceiptLine> lines = e.getLines().stream().map(l -> new ReceiptLine(l.getId(), l.getPoLineId(),
                 l.getInventoryItemId(), l.getLocationId(), l.getReceivedQty().intValueExact(), l.getLotNumber(),
-                l.getExpiryDate(), l.getNote(), l.isQcRequired(), l.getQcLocationId(), l.getMovedToQcAt(),
+                l.getExpiryDate(), l.getNote(), l.isQcRequired(), l.getUomConversionId(), l.getQcLocationId(),
+                l.getMovedToQcAt(),
                 l.getMovedToQcBy(),
                 l.getInspections().stream().map(i -> new QcInspection(i.getId(), i.getOutcome(),
                         i.getQuantity().intValueExact(), i.getTargetLocationId(), i.getReason(), i.getInspectedBy(),

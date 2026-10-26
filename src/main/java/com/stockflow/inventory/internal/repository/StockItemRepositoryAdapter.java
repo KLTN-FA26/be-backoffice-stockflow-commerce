@@ -174,6 +174,17 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     }
 
     @Override
+    public List<StockItemId> findIdsInStockPackages(
+            java.util.Collection<com.stockflow.inventory.internal.domain.StockPackageId> stockPackageIds) {
+        if (stockPackageIds.isEmpty()) {
+            return List.of();
+        }
+        return jpa.findIdsInStockPackages(stockPackageIds.stream()
+                        .map(com.stockflow.inventory.internal.domain.StockPackageId::value).distinct().toList())
+                .stream().map(StockItemId::new).toList();
+    }
+
+    @Override
     public List<StockItem> findLooseBySkuAndLocation(Sku sku, LocationId location) {
         return jpa.findLooseBySkuAndLocation(sku.code(), location.code()).stream()
                 .map(StockItemPersistenceMapper::toDomain)

@@ -26,6 +26,10 @@ import java.util.UUID;
  * <p>The PO line, item and lot are what the line IS and are never written again. What was counted —
  * where, how many, expiry, note, whether QC is needed — is recounted while the receipt is a draft
  * ({@link #recount}); {@code tg_goods_receipt_lines_frozen} refuses it once the receipt is past DRAFT.</p>
+ *
+ * <p>{@code uom_conversion_id}: the packing unit the line's cartons are in, NULL for a line counted loose in the
+ * base unit (V20261020000400). Recounted with the rest while DRAFT; {@code tg_goods_receipt_lines_unit} checks it
+ * is a unit of the line's item.</p>
  */
 @Entity
 @Table(name = "goods_receipt_lines", schema = "procurement")
@@ -59,6 +63,9 @@ public class GoodsReceiptLineJpaEntity extends BaseEntity {
     @Column(name = "qc_required", nullable = false)
     private boolean qcRequired;
 
+    @Column(name = "uom_conversion_id")
+    private UUID uomConversionId;
+
     @Column(name = "qc_location_id")
     private UUID qcLocationId;
 
@@ -77,7 +84,7 @@ public class GoodsReceiptLineJpaEntity extends BaseEntity {
 
     public GoodsReceiptLineJpaEntity(UUID id, UUID poLineId, UUID inventoryItemId, UUID locationId,
                                      BigDecimal receivedQty, String lotNumber, LocalDate expiryDate, String note,
-                                     boolean qcRequired) {
+                                     boolean qcRequired, UUID uomConversionId) {
         super(id);
         this.poLineId = poLineId;
         this.inventoryItemId = inventoryItemId;
@@ -87,6 +94,7 @@ public class GoodsReceiptLineJpaEntity extends BaseEntity {
         this.expiryDate = expiryDate;
         this.note = note;
         this.qcRequired = qcRequired;
+        this.uomConversionId = uomConversionId;
     }
 
     void attachTo(GoodsReceiptJpaEntity owner) {
@@ -95,7 +103,7 @@ public class GoodsReceiptLineJpaEntity extends BaseEntity {
 
     /** The draft's line counted again. Unchanged values leave the row clean, so a confirmed line is not written. */
     public void recount(UUID locationId, BigDecimal receivedQty, LocalDate expiryDate, String note,
-                        boolean qcRequired) {
+                        boolean qcRequired, UUID uomConversionId) {
         this.locationId = locationId;
         if (this.receivedQty == null || this.receivedQty.compareTo(receivedQty) != 0) {
             this.receivedQty = receivedQty;
@@ -103,6 +111,7 @@ public class GoodsReceiptLineJpaEntity extends BaseEntity {
         this.expiryDate = expiryDate;
         this.note = note;
         this.qcRequired = qcRequired;
+        this.uomConversionId = uomConversionId;
     }
 
     public void movedToQc(UUID qcLocationId, Instant at, UUID by) {
@@ -124,6 +133,7 @@ public class GoodsReceiptLineJpaEntity extends BaseEntity {
     public LocalDate getExpiryDate() { return expiryDate; }
     public String getNote() { return note; }
     public boolean isQcRequired() { return qcRequired; }
+    public UUID getUomConversionId() { return uomConversionId; }
     public UUID getQcLocationId() { return qcLocationId; }
     public Instant getMovedToQcAt() { return movedToQcAt; }
     public UUID getMovedToQcBy() { return movedToQcBy; }

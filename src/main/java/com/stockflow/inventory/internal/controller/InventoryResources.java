@@ -28,6 +28,8 @@ public final class InventoryResources {
     public static final String INVENTORY_ITEMS = "inventory-inventory-items";
     /** Seeded by V20261025030200: report damaged stock (CREATE), decide it (APPROVE, four eyes). */
     public static final String DAMAGE_REPORTS = "inventory-damage-reports";
+    /** Seeded by V20261020000700; printing and reprinting carton labels (SCRUM-473). */
+    public static final String STOCK_PACKAGES = "inventory-stock-packages";
 
     private InventoryResources() {
     }

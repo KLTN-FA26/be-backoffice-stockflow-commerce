@@ -9,7 +9,11 @@ import java.util.UUID;
 
 interface StockMovementJpaRepository extends BaseJpaRepository<StockMovementJpaEntity> {
 
-    Optional<StockMovementJpaEntity> findFirstByMovementTypeAndReferenceTypeAndReferenceId(
+    Optional<StockMovementJpaEntity> findFirstByMovementTypeAndReferenceTypeAndReferenceIdOrderByIdAsc(
+            StockMovement.MovementType movementType, StockMovement.ReferenceType referenceType, UUID referenceId);
+
+    Optional<StockMovementJpaEntity>
+            findFirstByMovementTypeAndReferenceTypeAndReferenceIdAndFromStockPackageIdIsNullAndToStockPackageIdIsNullOrderByIdAsc(
             StockMovement.MovementType movementType, StockMovement.ReferenceType referenceType, UUID referenceId);
 
     @org.springframework.data.jpa.repository.Query("select coalesce(sum(m.quantity), 0) from StockMovementJpaEntity m"

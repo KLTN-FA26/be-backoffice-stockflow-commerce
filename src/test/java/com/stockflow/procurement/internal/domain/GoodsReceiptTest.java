@@ -27,7 +27,7 @@ class GoodsReceiptTest {
 
     private static ReceiptLine line(int qty, boolean qc) {
         return ReceiptLine.counted(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), qty,
-                qc ? "LOT-1" : null, null, null, qc);
+                qc ? "LOT-1" : null, null, null, qc, null);
     }
 
     private static QcInspection decision(QcOutcome outcome, int qty, String reason) {
@@ -75,7 +75,7 @@ class GoodsReceiptTest {
     void distinctLines() {
         ReceiptLine a = line(2, true);
         ReceiptLine b = new ReceiptLine(UUID.randomUUID(), a.poLineId(), a.inventoryItemId(), a.locationId(), 1,
-                a.lotNumber(), null, null, true, null, null, null, List.of());
+                a.lotNumber(), null, null, true, null, null, null, null, List.of());
         assertThatThrownBy(() -> draft().replaceLines(List.of(a, b))).extracting(GoodsReceiptTest::code)
                 .isEqualTo(ErrorCode.DUPLICATE_RECEIPT_LINE);
     }

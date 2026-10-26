@@ -79,6 +79,14 @@ class PickConsumptionServiceTest {
         }
 
         @Override
+        public Optional<StockMovement> findLooseByReference(StockMovement.MovementType type,
+                                                            StockMovement.ReferenceType referenceType, UUID referenceId) {
+            return ledgerRows.stream().filter(row -> row.fromStockPackage() == null && row.toStockPackage() == null)
+                    .filter(row -> row.type() == type && row.referenceType() == referenceType
+                            && row.referenceId().equals(referenceId)).findFirst();
+        }
+
+        @Override
         public boolean handedOverFromProduction(com.stockflow.inventory.internal.domain.ReservationId hold,
                                                 LocationId location) {
             return ledgerRows.stream().anyMatch(row -> row.type() == StockMovement.MovementType.MOVE

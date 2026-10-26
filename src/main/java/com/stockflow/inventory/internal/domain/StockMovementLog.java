@@ -10,7 +10,9 @@ public interface StockMovementLog {
 
     /**
      * The line a document already caused, if any — how a retried move is recognised as one that
-     * already happened instead of moving the goods twice.
+     * already happened instead of moving the goods twice. When the document caused several (a receipt line
+     * received into cartons writes one per carton, SCRUM-473), the first written: ids are UUIDv7, so the
+     * lowest is the oldest, and a replay answers what the first call answered.
      */
     Optional<StockMovement> findByReference(StockMovement.MovementType type,
                                             StockMovement.ReferenceType referenceType, UUID referenceId);
@@ -21,6 +23,15 @@ public interface StockMovementLog {
      */
     long quantityByReference(StockMovement.MovementType type, StockMovement.ReferenceType referenceType,
                              UUID referenceId);
+
+    /**
+     * {@link #findByReference}, among the lines that name no carton on either side: how a retried loose move is
+     * recognised. A document can move a carton whole and loose units under one reference (SCRUM-473: a receipt line
+     * to QC, a QC part to quarantine); a lookup that also saw the carton's lines would take them for the loose
+     * move's first attempt and skip it, so whichever ran first would decide whether the loose units moved at all.
+     */
+    Optional<StockMovement> findLooseByReference(StockMovement.MovementType type,
+                                                 StockMovement.ReferenceType referenceType, UUID referenceId);
 
     /**
      * Whether production handed {@code hold}'s goods over, out of the print shop, to {@code location}: the hand-over

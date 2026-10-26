@@ -136,6 +136,10 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
     @Query("select s.id from StockItemJpaEntity s where s.stockPackageId = :stockPackageId order by s.id")
     List<UUID> findIdsInStockPackage(@Param("stockPackageId") UUID stockPackageId);
 
+    /** JPQL for the same reason as {@link #findIdsInStockPackage}. */
+    @Query("select s.id from StockItemJpaEntity s where s.stockPackageId in :stockPackageIds order by s.id")
+    List<UUID> findIdsInStockPackages(@Param("stockPackageIds") java.util.Collection<UUID> stockPackageIds);
+
     @Query("select coalesce(sum(s.onHand), 0) from StockItemJpaEntity s where s.stockPackageId = :stockPackageId")
     long sumOnHandInStockPackage(@Param("stockPackageId") UUID stockPackageId);
 

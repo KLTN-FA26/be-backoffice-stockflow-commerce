@@ -1,4 +1,4 @@
-package com.stockflow.warehouse.internal.service;
+package com.stockflow.common.label;
 
 import com.google.zxing.BarcodeFormat;
 import com.google.zxing.BinaryBitmap;
@@ -16,13 +16,13 @@ import java.util.Map;
  * Reads a rendered label back the way a scanner would: crop the label's cell from a rasterised page,
  * then decode one symbology with ZXing. What a test asserts is what the scanner gets.
  */
-final class LabelDecoding {
+public final class LabelDecoding {
 
     private LabelDecoding() {
     }
 
     /** @throws AssertionError when no symbol of {@code format} is found */
-    static String decode(BufferedImage image, BarcodeFormat format) {
+    public static String decode(BufferedImage image, BarcodeFormat format) {
         int width = image.getWidth();
         int height = image.getHeight();
         int[] pixels = image.getRGB(0, 0, width, height, null, 0, width);
@@ -37,7 +37,7 @@ final class LabelDecoding {
     }
 
     /** Label {@code index} (row-major, within its page) of a page rendered at {@code dpi}. */
-    static BufferedImage cell(BufferedImage page, LabelFormat format, int index, float dpi) {
+    public static BufferedImage cell(BufferedImage page, LabelFormat format, int index, float dpi) {
         int slot = index % format.labelsPerPage();
         int column = slot % format.columns();
         int row = slot / format.columns();

@@ -11,8 +11,13 @@ import java.util.UUID;
  * Goods counted in at a receiving location against a goods-receipt line (docs 03 step 6). The
  * stock arrives {@code INBOUND}: physically here, never sellable until it is put away.
  *
+ * <p>The goods go into the cartons labelled on the line while it was counted (SCRUM-473), each holding what was
+ * counted into it; only {@code quantity} less what the cartons hold goes loose.</p>
+ *
  * @param receiptLineId the goods-receipt line, which is also the idempotency key: a retried confirm
- *                      returns the ledger line already written instead of counting the goods twice
+ *                      returns the ledger line already written instead of counting the goods twice; it also
+ *                      names the cartons the goods go into
+ * @param quantity      everything the line received, in base units: the cartons' contents and the loose remainder
  * @param lotNumber     null for a SKU that is not lot-tracked
  * @param actorId       who confirmed the receipt, for the ledger
  * @param receivedAt    when the receipt was confirmed: the new stock layer's receipt time (one layer
