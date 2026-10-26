@@ -1,5 +1,6 @@
 package com.stockflow.warehouse.internal.service;
 
+import com.stockflow.warehouse.api.PutawayCandidate;
 import com.stockflow.warehouse.api.StorageLocationView;
 import com.stockflow.warehouse.api.WarehouseService;
 import com.stockflow.warehouse.api.WarehouseView;
@@ -114,6 +115,20 @@ class WarehouseServiceImpl implements WarehouseService {
         }
         return locations.findByLocationCodes(java.util.Set.copyOf(locationCodes)).stream()
                 .map(WarehouseServiceImpl::toView).toList();
+    }
+
+    @Override
+    public java.util.List<PutawayCandidate> putawayCandidates(UUID warehouseId,
+                                                              StorageLocationView.StorageClass storageClass) {
+        if (warehouseId == null || storageClass == null) {
+            return java.util.List.of();
+        }
+        return locations.findPutawayCandidates(warehouseId,
+                        com.stockflow.warehouse.internal.domain.StorageClass.valueOf(storageClass.name()))
+                .stream()
+                .map(row -> new PutawayCandidate(row.locationId(), row.locationCode(), row.capacityUnits(),
+                        row.maxWeight()))
+                .toList();
     }
 
     private static StorageLocationView toView(LocationRow row) {

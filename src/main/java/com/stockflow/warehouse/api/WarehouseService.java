@@ -79,4 +79,13 @@ public interface WarehouseService {
      * @return one view per known code; an unknown code is absent
      */
     java.util.List<StorageLocationView> findLocations(java.util.Collection<String> locationCodes);
+
+    /**
+     * The bins a putaway of stock of {@code storageClass} may go to in a warehouse (SCRUM-92): bins whose bin, shelf
+     * and warehouse are all ACTIVE (the same rule as {@link StorageLocationView#usable()}), never an area, by location
+     * code. Capacity and weight are the bin's own limits; null where none is set.
+     *
+     * @return empty for an unknown warehouse or when no bin qualifies
+     */
+    java.util.List<PutawayCandidate> putawayCandidates(UUID warehouseId, StorageLocationView.StorageClass storageClass);
 }

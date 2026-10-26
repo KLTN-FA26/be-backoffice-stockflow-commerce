@@ -211,6 +211,29 @@ class LayoutReadRepositoryAdapter implements LayoutReadRepository, LocationLooku
     }
 
     @Override
+    public List<PutawayCandidateRow> findPutawayCandidates(UUID warehouseId,
+                                                           com.stockflow.warehouse.internal.domain.StorageClass storageClass) {
+        return entityManager.createQuery("""
+                        select loc.id, loc.locationCode, loc.capacityUnits, loc.maxWeight
+                        from StorageLocationJpaEntity loc
+                        join WarehouseJpaEntity w on w.id = loc.warehouseId
+                        join BinJpaEntity b on b.location = loc
+                        join b.level l
+                        join l.shelf s
+                        where loc.warehouseId = :warehouseId
+                          and loc.kind = com.stockflow.warehouse.internal.domain.StorageLocationKind.BIN
+                          and loc.storageClass = :storageClass
+                          and w.status = com.stockflow.warehouse.internal.domain.WarehouseStatus.ACTIVE
+                          and s.status = com.stockflow.warehouse.internal.domain.LocationStatus.ACTIVE
+                          and loc.status = com.stockflow.warehouse.internal.domain.LocationStatus.ACTIVE
+                        order by loc.locationCode
+                        """, PutawayCandidateRow.class)
+                .setParameter("warehouseId", warehouseId)
+                .setParameter("storageClass", storageClass)
+                .getResultList();
+    }
+
+    @Override
     public java.util.List<String> findShelfCodesInZone(UUID warehouseId, UUID zoneId) {
         return entityManager.createQuery("""
                         select s.code from ShelfJpaEntity s join ZoneJpaEntity z on z.id = s.zoneId
