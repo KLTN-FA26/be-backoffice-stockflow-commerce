@@ -159,7 +159,7 @@ flowchart LR
 |---|---|---|---|
 | 01 | `procurement` | `+ goods_receipt, + receipt_line × N` | status = DRAFT, chép qty từ PO |
 | 02 | `procurement` | `~ receipt_line.quantity_received, .lot_number, .expiry_date` | BR-RCP-003 |
-| 02b | `inventory` | `+ / ~ stock_package` (RECEIVING), `~ receipt_line.uom_conversion_id` | đếm theo thùng ngay trên phiếu DRAFT (`PUT /goods-receipts/{id}/lines`, `unitOfMeasure` + `packages`): thùng mới được cấp LPN `LPN-yyyyMMdd-nnnnnn` và in nhãn (`POST /inventory/stock-packages/labels`); gửi lại LPN = đếm lại thùng đó; thùng bỏ khỏi danh sách hoặc phiếu bị huỷ → VOID. Phần không vào thùng là hàng rời |
+| 02b | `inventory` | `+ / ~ stock_package` (RECEIVING), `~ receipt_line.uom_conversion_id` | đếm theo thùng ngay trên phiếu DRAFT (`PUT /goods-receipts/{id}/lines`, `unitOfMeasure` + `packages`): thùng mới được cấp LPN `LPN-yyyyMMdd-nnnnnn` và in nhãn (`POST /inventory/stock-packages/labels`); gửi lại LPN = đếm lại thùng đó; thùng bỏ khỏi danh sách hoặc phiếu bị huỷ → VOID. Phần không vào thùng là hàng rời. Dòng đã từng có thùng (kể cả thùng đã VOID) giữ nguyên dòng đơn mua và số lô: không bỏ được khỏi phiếu nháp, và không đổi được đơn vị khi còn giữ thùng của đơn vị cũ (`RECEIPT_LINE_HAS_PACKAGES`); muốn sửa số lô hoặc dòng đơn mua của dòng đó thì huỷ phiếu nhận rồi đếm lại |
 | 03 | `MinIO` | `+ receipts/{id}/photo-*.jpg` | ảnh bằng chứng |
 | 04 | `procurement` | `+ qc_task` | status = PENDING, cho SKU có cờ QC |
 | 05 | `procurement` | `+ qc_result, ~ goods_receipt` | → QC_PASSED | QC_QUARANTINED | QC_REJECTED |
