@@ -125,6 +125,28 @@ class StockPackageRepositoryAdapter implements StockPackageRepository {
     }
 
     /**
+     * The same read as {@link #onHandOf}, restricted to INBOUND rows: a native query through the entity manager, so
+     * pending stock rows are flushed first.
+     */
+    @Override
+    public Map<StockPackageId, Integer> inboundOnHandOf(Collection<StockPackageId> ids) {
+        List<UUID> wanted = ids.stream().map(StockPackageId::value).distinct().toList();
+        if (wanted.isEmpty()) {
+            return Map.of();
+        }
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = entityManager.createNativeQuery("""
+                        select stock_package_id, sum(on_hand) from inventory.stock_item
+                         where stock_package_id in (:ids) and status = 'INBOUND' group by stock_package_id""")
+                .setParameter("ids", wanted).getResultList();
+        Map<StockPackageId, Integer> onHand = new HashMap<>();
+        for (Object[] row : rows) {
+            onHand.put(new StockPackageId((UUID) row[0]), Math.toIntExact(((Number) row[1]).longValue()));
+        }
+        return onHand;
+    }
+
+    /**
      * The block is drawn by {@link LpnSequence} in its own transaction, never in the caller's: cartons are labelled
      * under a SKU's lock, and a sequence row held until the caller commits would let two receipts counting several
      * SKUs deadlock. One block per call, not one number per carton, so the second connection that transaction needs

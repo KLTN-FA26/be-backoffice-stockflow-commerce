@@ -38,6 +38,13 @@ public interface StockPackageRepository {
     Map<StockPackageId, Integer> onHandOf(Collection<StockPackageId> ids);
 
     /**
+     * What each of these stock packages still has waiting for putaway: the sum of its {@code INBOUND} rows only. A
+     * package with no such row is absent. Putaway tasks are sized from this, not from {@link #onHandOf}, so a carton
+     * whose units are already available (or held by QC) never opens a task.
+     */
+    Map<StockPackageId, Integer> inboundOnHandOf(Collection<StockPackageId> ids);
+
+    /**
      * The next {@code count} LPNs of {@code day} ({@code LPN-yyyyMMdd-nnnnnn}), consecutive and in order, from
      * {@code platform.document_sequence} type {@code LPN}; {@code day} is the business's calendar day, as every
      * document number's is. Drawn as one block and committed on its own, outside the caller's transaction, so it
