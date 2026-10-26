@@ -24,6 +24,12 @@ import java.util.Optional;
  * later of two events closes the receipt and the earlier one, or a redelivery, finds it already CLOSED and does
  * nothing. A receipt that is not in putaway, such as one still in QC, is left alone; its last QC decision tries
  * again.</p>
+ *
+ * <p>The receipt is loaded {@code FOR UPDATE}, and the putaway quantities are read after the lock is held. The last
+ * QC decision of a mixed receipt ({@code GoodsReceiptServiceImpl.inspect}) takes the same lock: if it is still
+ * running when this event arrives, this waits for it to commit and then sees the receipt IN_PUTAWAY with the
+ * quantities as they are now. A plain read could see the receipt still in QC while the inspection had read the
+ * quantities from before the putaway, and then no one would close it.</p>
  */
 @Component("procurementPutawayCompletedListener")
 class PutawayCompletedListener {
@@ -42,7 +48,7 @@ class PutawayCompletedListener {
 
     @ApplicationModuleListener
     public void on(PutawayCompleted event) {
-        Optional<GoodsReceipt> found = receipts.findById(event.goodsReceiptId());
+        Optional<GoodsReceipt> found = receipts.findByIdForUpdate(event.goodsReceiptId());
         if (found.isEmpty()) {
             // Throwing would leave the publication to be retried for ever; a receipt that is gone cannot be closed.
             log.warn("Putaway task {} completed for unknown goods receipt {}", event.putawayTaskId(),

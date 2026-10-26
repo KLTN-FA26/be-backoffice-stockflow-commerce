@@ -156,6 +156,7 @@ class GoodsReceiptServiceImplTest {
                 warehouse, user, null, null, NOW);
         receipt.replaceLines(List.of(lines));
         when(receipts.findById(receipt.id())).thenReturn(Optional.of(receipt));
+        when(receipts.findByIdForUpdate(receipt.id())).thenReturn(Optional.of(receipt));
         return receipt;
     }
 

@@ -1,6 +1,7 @@
 package com.stockflow.procurement;
 
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.contracts.PutawayCompleted;
 import com.stockflow.inventory.internal.service.PutawayService;
 import com.stockflow.procurement.internal.service.GoodsReceipts;
 import com.stockflow.procurement.internal.service.GoodsReceipts.Decision;
@@ -17,8 +18,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.util.AopTestUtils;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Duration;
@@ -44,6 +48,7 @@ class GoodsReceiptPutawayCloseIntegrationTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
+    @Autowired @Qualifier("procurementPutawayCompletedListener") Object putawayCompletedListener;
 
     private String receiving;
     private String qcArea;
@@ -217,6 +222,31 @@ class GoodsReceiptPutawayCloseIntegrationTest {
         receipts.inspect(receipt.id(), qcLine, new Decision(0, null, new Part(4, quarantine, "wrong print")), clerk);
 
         // Closed by inspect itself, in its own transaction: nothing asynchronous is left to wait for.
+        assertThat(status(receipt.id())).isEqualTo("CLOSED");
+    }
+
+    @Test
+    @DisplayName("the listener closes a receipt that went IN_PUTAWAY after the last task was DONE: it reads the current state")
+    void listenerClosesAReceiptThatBecameInPutAwayAfterTheLastTask() {
+        GoodsReceipts.ReceiptView receipt = confirmedReceipt(line(plainPoLine, 10), line(qcPoLine, 4));
+        UUID plainLine = lineOf(receipt, plainPoLine).id();
+        UUID qcLine = lineOf(receipt, qcPoLine).id();
+        UUID task = taskOf(receipt.id(), plainLine);
+        putaway.confirm(task, bin, null, 10, clerk);
+        Await.until("the plain line to be fully put away", Duration.ofSeconds(20),
+                () -> putawayTasks.doneQuantityByReceiptLine(receipt.id()).getOrDefault(plainLine, 0) == 10);
+        receipts.moveToQc(receipt.id(), qcLine, qcArea, clerk);
+        receipts.inspect(receipt.id(), qcLine, new Decision(0, null, new Part(4, quarantine, "wrong print")), clerk);
+        // inspect closes this receipt itself; put it back to what a lost race leaves: IN_PUTAWAY, nothing closed it.
+        jdbc.update("update procurement.goods_receipts set status = 'IN_PUTAWAY', closed_at = null where id = ?",
+                receipt.id());
+
+        // Called directly, as PutawayTaskCreatorIntegrationTest.redeliver does: the asynchronous delivery is out of reach.
+        Object target = AopTestUtils.getTargetObject(putawayCompletedListener);
+        // The target is not proxied, so the transaction the module listener would run in is opened here.
+        tx.executeWithoutResult(s -> ReflectionTestUtils.invokeMethod(target, "on",
+                new PutawayCompleted(receipt.id(), plainLine, task)));
+
         assertThat(status(receipt.id())).isEqualTo("CLOSED");
     }
 }

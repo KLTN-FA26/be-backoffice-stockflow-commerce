@@ -590,11 +590,17 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
      * <p>A part's loose units and its cartons share the reference ({@code QC_INSPECTION} and the part's inspection
      * id); as in {@link #moveToQc}, the loose reclassification's replay lookup ignores the cartons' lines. A part's
      * cartons go in one call.</p>
+     *
+     * <p>The receipt is loaded {@code FOR UPDATE}. A decision that accepts nothing may be the last thing a mixed
+     * receipt waits for, and it closes the receipt only from the quantities put away that it reads here. A putaway
+     * that commits while this runs sends its event to {@code PutawayCompletedListener}, which locks the same row and
+     * so waits for this transaction; it then finds the receipt IN_PUTAWAY and closes it. Without the lock the
+     * listener could read the receipt as still in QC while this read the old quantities, and neither would close it.</p>
      */
     @Override
     @Auditable(action = AuditAction.APPROVE, resourceType = "goods-receipt", resourceId = "#receiptId")
     public ReceiptView inspect(UUID receiptId, UUID lineId, Decision decision, UUID userId) {
-        GoodsReceipt receipt = load(receiptId);
+        GoodsReceipt receipt = loadForUpdate(receiptId);
         Instant now = clock.instant();
         ReceivingLocation quarantineTo = quarantineArea(decision.quarantined(), "quarantined", receipt.warehouseId());
         ReceivingLocation rejectTo = quarantineArea(decision.rejected(), "rejected", receipt.warehouseId());
@@ -903,6 +909,14 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
     /** The receipt, if it is in a warehouse the caller is assigned to (BR-SEC-002). */
     private GoodsReceipt load(UUID receiptId) {
         GoodsReceipt receipt = receipts.findById(receiptId).orElseThrow(() ->
+                new BusinessException(ErrorCode.GOODS_RECEIPT_NOT_FOUND, "No goods receipt " + receiptId));
+        com.stockflow.common.security.WarehouseScope.requireWarehouse(receipt.warehouseId());
+        return receipt;
+    }
+
+    /** {@link #load} under a row lock; see {@link #inspect} for why that one needs it. */
+    private GoodsReceipt loadForUpdate(UUID receiptId) {
+        GoodsReceipt receipt = receipts.findByIdForUpdate(receiptId).orElseThrow(() ->
                 new BusinessException(ErrorCode.GOODS_RECEIPT_NOT_FOUND, "No goods receipt " + receiptId));
         com.stockflow.common.security.WarehouseScope.requireWarehouse(receipt.warehouseId());
         return receipt;
