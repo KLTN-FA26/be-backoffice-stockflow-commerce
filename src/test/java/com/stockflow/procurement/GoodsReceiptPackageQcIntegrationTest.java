@@ -233,6 +233,9 @@ class GoodsReceiptPackageQcIntegrationTest {
                         GoodsReceipts.InspectionView::quantity)
                 .containsExactlyInAnyOrder(tuple(QcOutcome.ACCEPTED, 105), tuple(QcOutcome.QUARANTINE, 100));
         assertThat(line.quantityForPutaway()).isEqualTo(105);
+        assertThat(line.packages()).as("the receipt shows where each carton stands now")
+                .extracting(GoodsReceipts.PackageView::lpn, GoodsReceipts.PackageView::locationCode)
+                .containsExactlyInAnyOrder(tuple(lpn1, quarantine), tuple(lpn2, qcArea));
         UUID id = cartonId(lpn1);
         assertThat(jdbc.queryForList("""
                 select from_status || '>' || to_status || ':' || quantity from inventory.stock_movement

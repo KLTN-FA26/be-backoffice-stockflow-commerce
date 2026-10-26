@@ -36,9 +36,11 @@ public record GoodsReceiptResponse(UUID id, String number, UUID purchaseOrderId,
     /**
      * One labelled carton. {@code quantity}: what is in it now - what was counted into it while RECEIVING, what is
      * left in it once in stock; {@code receivedQty}: what was counted into it, fixed once it is in stock;
-     * {@code nominalQty}: what its unit holds; {@code status}: RECEIVING, IN_STOCK, CONSUMED or LOST.
+     * {@code nominalQty}: what its unit holds; {@code status}: RECEIVING, IN_STOCK, CONSUMED or LOST;
+     * {@code locationCode}: where it stands now - the receiving area, then the QC or quarantine area it went to.
      */
-    public record Package(UUID id, String lpn, int quantity, int receivedQty, int nominalQty, String status) {
+    public record Package(UUID id, String lpn, int quantity, int receivedQty, int nominalQty, String status,
+                          String locationCode) {
     }
 
     public record Inspection(UUID id, String outcome, int quantity, String locationCode, String reason,

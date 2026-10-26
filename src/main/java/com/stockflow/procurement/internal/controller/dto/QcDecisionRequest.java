@@ -10,8 +10,9 @@ import java.util.List;
 /**
  * A QC decision on one receipt line: every unit moved to QC is accepted, quarantined or rejected
  * (BR-08). Quarantined and rejected parts name the QUARANTINE area they go to, and why. A part of
- * 0 units needs neither; a part with units missing them is QC_TARGET_LOCATION_REQUIRED /
- * QC_REASON_REQUIRED on {@code quarantined.locationCode}, {@code rejected.reason}… (SCRUM-464).
+ * no goods - 0 loose units and no cartons - needs neither; a part with loose units or cartons missing
+ * them is QC_TARGET_LOCATION_REQUIRED / QC_REASON_REQUIRED on {@code quarantined.locationCode},
+ * {@code rejected.reason}… (SCRUM-464).
  *
  * <p>SCRUM-473: a part's {@code quantity} is its loose units, and {@code packages} the LPNs of the
  * line's cartons it takes whole; absent or empty, the part is loose units only, as before.</p>

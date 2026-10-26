@@ -103,9 +103,11 @@ public interface GoodsReceipts {
      * One carton of a line. {@code quantity}: what is in it now - what was counted into it while RECEIVING, what is
      * left in it once in stock. {@code receivedQty}: what was counted into it, which the receipt's
      * {@code looseQuantity} is reckoned from and which never changes once the carton is in stock. {@code nominalQty}:
-     * what its unit holds. {@code status}: RECEIVING, IN_STOCK, CONSUMED or LOST.
+     * what its unit holds. {@code status}: RECEIVING, IN_STOCK, CONSUMED or LOST. {@code locationCode}: where it
+     * stands now, so a carton that went to quarantine is found there.
      */
-    record PackageView(UUID id, String lpn, int quantity, int receivedQty, int nominalQty, String status) {
+    record PackageView(UUID id, String lpn, int quantity, int receivedQty, int nominalQty, String status,
+                       String locationCode) {
     }
 
     /**

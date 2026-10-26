@@ -56,6 +56,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -238,7 +239,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         GoodsReceipt saved = receipts.save(receipt);
 
         UUID actor = users.current().map(CurrentUser::userId).orElse(null);
-        cartonCounts.sort(java.util.Comparator.comparing(CartonCount::sku).thenComparing(CartonCount::lineId));
+        cartonCounts.sort(Comparator.comparing(CartonCount::sku).thenComparing(CartonCount::lineId));
         for (CartonCount count : cartonCounts) {
             inventory.countReceivingPackages(new CountReceivingPackagesCommand(count.lineId(), new Sku(count.sku()),
                     count.unitId(), count.locationCode(), count.packages().stream()
@@ -293,7 +294,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                 errors.add(index, "packages[%d].quantity".formatted(j), ErrorCode.VALIDATION_FAILED,
                         "A carton holds at least 1 unit");
             }
-            String lpn = blankToNull(carton.lpn());
+            String lpn = StockPackageView.normalLpn(carton.lpn());
             if (lpn != null && !named.add(lpn)) {
                 errors.add(index, "packages[%d].lpn".formatted(j), ErrorCode.VALIDATION_FAILED,
                         "%s is listed twice".formatted(lpn));
@@ -453,13 +454,22 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         // SCRUM-142: the lots this receipt opens remember it, its order and its supplier as they read now.
         ReceiptOrigin origin = new ReceiptOrigin(saved.id(), saved.number(), order.id(), order.number(),
                 order.supplierId(), orders.supplierName(order.supplierId()).orElse(null), saved.warehouseId());
+        saved.lines().forEach(line -> items.computeIfAbsent(line.inventoryItemId(), this::policy));
+        // Each receive takes its SKU's advisory lock: in replaceLines' order - SKU, then line id - so a confirm and a
+        // count of two receipts sharing SKUs cannot take them in opposite orders and deadlock.
+        for (ReceiptLine line : saved.lines().stream().sorted(Comparator
+                .comparing((ReceiptLine l) -> items.get(l.inventoryItemId()).sku())
+                .thenComparing(ReceiptLine::id)).toList()) {
+            InventoryItemPolicy item = items.get(line.inventoryItemId());
+            inventory.receive(new ReceiveStockCommand(line.id(), new Sku(item.sku()), line.lotNumber(),
+                    line.expiryDate(), where.get(line.locationId()).code(), line.receivedQuantity(), userId,
+                    saved.confirmedAt(), origin));
+        }
         List<GoodsReceiptConfirmed.Line> confirmedLines = new ArrayList<>();
         List<ReceiptStockReadyForPutaway.Line> readyLines = new ArrayList<>();
         for (ReceiptLine line : saved.lines()) {
-            InventoryItemPolicy item = items.computeIfAbsent(line.inventoryItemId(), this::policy);
+            InventoryItemPolicy item = items.get(line.inventoryItemId());
             String locationCode = where.get(line.locationId()).code();
-            inventory.receive(new ReceiveStockCommand(line.id(), new Sku(item.sku()), line.lotNumber(),
-                    line.expiryDate(), locationCode, line.receivedQuantity(), userId, saved.confirmedAt(), origin));
             confirmedLines.add(new GoodsReceiptConfirmed.Line(line.id(), line.poLineId(), item.sku(), line.lotNumber(),
                     line.receivedQuantity(), line.qcRequired(), locationCode));
             // A SUBCONTRACT order's goods are held for their production order in this transaction (production's
@@ -592,7 +602,10 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         Optional.ofNullable(quarantined).ifPresent(decided::add);
         Optional.ofNullable(rejected).ifPresent(decided::add);
 
-        // The aggregate first, so a line not moved to QC or already decided hears that, not where its cartons are.
+        // What runs first is the named cartons' membership and duplicates, above: the parts' totals the aggregate
+        // checks are reckoned from those cartons' counts, so they cannot be taken before the cartons are found. Then
+        // the aggregate, so a line not moved to QC or already decided hears that before where its cartons are or what
+        // state they are in; then each carton's status and place.
         receipt.inspect(lineId, decided, now);
         ReceiptLine line = receipt.line(lineId);
         String qcCode = locations.byIds(List.of(line.qcLocationId())).get(line.qcLocationId()).code();
@@ -737,9 +750,10 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
     }
 
     /**
-     * Where a quarantined or rejected part goes. A part of no units needs no area (it is not
-     * recorded), so an empty or stale location code on it is ignored. A part with units needs a
-     * reason and a QUARANTINE area of this warehouse, each refused on its own field.
+     * Where a quarantined or rejected part goes. A part of no goods - 0 loose units and no cartons -
+     * needs no area (it is not recorded), so an empty or stale location code on it is ignored. A part
+     * with loose units or cartons ({@link Part#hasGoods}) needs a reason and a QUARANTINE area of this
+     * warehouse, each refused on its own field.
      */
     private ReceivingLocation quarantineArea(Part part, String field, UUID warehouseId) {
         if (part == null || !part.hasGoods()) {
@@ -799,7 +813,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         }
         int units = 0;
         for (int j = 0; j < part.packages().size(); j++) {
-            String lpn = blankToNull(part.packages().get(j));
+            String lpn = StockPackageView.normalLpn(part.packages().get(j));
             String at = "%s.packages[%d]".formatted(field, j);
             StockPackageView carton = lineCartons.stream().filter(c -> c.lpn().equals(lpn)).findFirst()
                     .orElseThrow(() -> refused(ErrorCode.STOCK_PACKAGE_NOT_FOUND, at,
@@ -849,7 +863,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                     receivedAt));
         }
         for (String lpn : part.packages()) {
-            inventory.reclassifyStockPackage(new ReclassifyStockPackageCommand(lpn.trim(), to.code(), disposition,
+            inventory.reclassifyStockPackage(new ReclassifyStockPackageCommand(lpn, to.code(), disposition,
                     MoveReference.QC_INSPECTION, inspection.id(), userId, inspection.reason()));
         }
     }
@@ -904,7 +918,8 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                     ? List.of(ExpiryWarning.EXPIRY_NEAR) : List.of();
             List<PackageView> packages = cartons.getOrDefault(line.id(), List.of()).stream()
                     .map(c -> new PackageView(c.id(), c.lpn(), c.quantity() == null ? 0 : c.quantity(),
-                            c.receivedQty() == null ? 0 : c.receivedQty(), c.nominalQty(), c.status()))
+                            c.receivedQty() == null ? 0 : c.receivedQty(), c.nominalQty(), c.status(),
+                            c.locationCode()))
                     .toList();
             // Design §3 rule 5: loose is what was not counted into a carton. Not what is in the cartons now - a
             // confirmed receipt is frozen (BR-05), and units picked from a carton later were never loose.
