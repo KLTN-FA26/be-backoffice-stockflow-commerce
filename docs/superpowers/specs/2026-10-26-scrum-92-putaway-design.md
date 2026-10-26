@@ -57,7 +57,7 @@ inventory ──PutawayCompleted──▶ procurement listener ──▶ GoodsRe
   caller passes what the ledger says is left (§6), and the task checks it is not asked for more.
 - `warehouse :: api`:
   - `PutawayTasks`: `open(NewPutawayTask)` (idempotent per carton and per loose line, §4), `lockForUpdate(id)`,
-    `recordPutaway(id, units, remainingAfter, locationId)`, `find(id)`, `openTasks()` / `tasksOfReceipt(receiptId)`,
+    `recordPutaway(id, units, leftBefore, locationId)`, `find(id)`, `openTasks()` / `tasksOfReceipt(receiptId)`,
     `doneQuantityByReceiptLine(receiptId)`.
   - `putawayCandidates(warehouseId, storageClass)`: the warehouse's usable BINs of that class with
     `capacityUnits` and `maxWeightKg` (null when not recorded), one query.
