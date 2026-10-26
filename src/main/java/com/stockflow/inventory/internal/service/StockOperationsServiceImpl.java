@@ -1125,7 +1125,8 @@ class StockOperationsServiceImpl implements StockOperations {
     private static StockPackageView view(StockPackage carton, UomConversion unit, Integer quantity) {
         return new StockPackageView(carton.id().value(), carton.lpn(), carton.goodsReceiptLineId(),
                 unit == null ? null : unit.sku(), carton.uomConversionId(), unit == null ? null : unit.unitOfMeasure(),
-                carton.nominalQty(), quantity, carton.location().code(), carton.status().name(), carton.unopened());
+                carton.nominalQty(), quantity, carton.receivedQty(), carton.location().code(), carton.status().name(),
+                carton.unopened());
     }
 
     private void requireUsable(LocationId location) {

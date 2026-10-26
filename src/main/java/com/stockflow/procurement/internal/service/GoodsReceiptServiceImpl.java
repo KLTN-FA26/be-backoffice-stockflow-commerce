@@ -761,10 +761,12 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
             List<String> lineWarnings = flags && ExpiryWarning.isNear(line.expiryDate(), receivedOn, window)
                     ? List.of(ExpiryWarning.EXPIRY_NEAR) : List.of();
             List<PackageView> packages = cartons.getOrDefault(line.id(), List.of()).stream()
-                    .map(c -> new PackageView(c.id(), c.lpn(), c.quantity() == null ? 0 : c.quantity(), c.nominalQty(),
-                            c.status()))
+                    .map(c -> new PackageView(c.id(), c.lpn(), c.quantity() == null ? 0 : c.quantity(),
+                            c.receivedQty() == null ? 0 : c.receivedQty(), c.nominalQty(), c.status()))
                     .toList();
-            int inCartons = packages.stream().mapToInt(PackageView::quantity).sum();
+            // Design §3 rule 5: loose is what was not counted into a carton. Not what is in the cartons now - a
+            // confirmed receipt is frozen (BR-05), and units picked from a carton later were never loose.
+            int inCartons = packages.stream().mapToInt(PackageView::receivedQty).sum();
             return new LineView(line.id(), line.poLineId(),
                     order.line(line.poLineId()).map(ReceivingPurchaseOrder.Line::lineNo).orElse(null),
                     line.inventoryItemId(), item == null ? null : item.sku(), line.receivedQuantity(),

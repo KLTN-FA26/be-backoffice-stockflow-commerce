@@ -6,8 +6,12 @@ import java.util.UUID;
  * One carton (stock package) labelled on a goods-receipt line, as the receipt shows it (SCRUM-473).
  *
  * @param uomConversionId the packing unit it was made in; {@code nominalQty} is that unit's factor when it was made
- * @param quantity        what was counted into it while it is RECEIVING (null until counted); once in stock, what is
- *                        left in it - the sum of its stock rows, since a carton holds no quantity of its own
+ * @param quantity        what is in it now: what was counted into it while it is RECEIVING (null until counted);
+ *                        once in stock, what is left in it - the sum of its stock rows, since a carton holds no
+ *                        quantity of its own
+ * @param receivedQty     what was counted into it ({@code received_qty}, null until counted); it does not change once
+ *                        the carton is in stock, so a receipt's loose part is its line less this, whatever left the
+ *                        carton since
  * @param status          RECEIVING, IN_STOCK, CONSUMED or LOST ({@code inventory.stock_package.status})
  * @param unopened        still closed as it was counted: then it holds exactly what was counted into it
  */
@@ -20,6 +24,7 @@ public record StockPackageView(
         String unitOfMeasure,
         int nominalQty,
         Integer quantity,
+        Integer receivedQty,
         String locationCode,
         String status,
         boolean unopened

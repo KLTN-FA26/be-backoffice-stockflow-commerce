@@ -169,6 +169,8 @@ class GoodsReceiptPackageIntegrationTest {
         assertThat(line.packages()).extracting(GoodsReceipts.PackageView::lpn).doesNotHaveDuplicates().isSorted();
         assertThat(line.packages()).extracting(GoodsReceipts.PackageView::quantity)
                 .containsExactlyInAnyOrder(1000, 1000, 1000, 1000, 980);
+        assertThat(line.packages()).as("while RECEIVING, what is in a carton is what was counted into it")
+                .allSatisfy(p -> assertThat(p.receivedQty()).isEqualTo(p.quantity()));
         assertThat(jdbc.queryForObject("select uom_conversion_id from procurement.goods_receipt_lines where id = ?",
                 UUID.class, line.id())).isEqualTo(carton);
         assertThat(receipts.get(receiptId).lines().getFirst().packages()).as("the receipt read again shows them too")
@@ -312,7 +314,10 @@ class GoodsReceiptPackageIntegrationTest {
                 UUID.class, lineId)).isEqualTo(carton);
         GoodsReceipts.LineView line = confirmed.lines().getFirst();
         assertThat(line.packages()).hasSize(5).extracting(GoodsReceipts.PackageView::status).containsOnly("IN_STOCK");
-        assertThat(line.looseQuantity()).isEqualTo(10);
+        assertThat(line.packages()).extracting(GoodsReceipts.PackageView::receivedQty)
+                .containsExactlyInAnyOrder(1000, 1000, 1000, 1000, 980);
+        assertThat(line.looseQuantity()).as("the line less what was counted into cartons").isEqualTo(10);
+        assertThat(receipts.get(receiptId).lines().getFirst().looseQuantity()).as("read again").isEqualTo(10);
     }
 
     @Test

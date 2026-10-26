@@ -66,7 +66,8 @@ public interface GoodsReceipts {
 
     /**
      * {@code unitOfMeasure}: the packing unit of the line's cartons, null for a line counted loose.
-     * {@code looseQuantity}: what no carton holds, {@code quantity} less the cartons' counts. {@code packages}: the
+     * {@code looseQuantity}: what was counted into no carton, {@code quantity} less what the cartons were counted at
+     * ({@code receivedQty}); it stays as counted once the receipt is confirmed, whatever leaves the cartons later. {@code packages}: the
      * line's cartons, voided ones left out, by LPN - the client prints their labels from these.
      */
     record LineView(UUID id, UUID purchaseOrderLineId, Integer purchaseOrderLineNo, UUID inventoryItemId, String sku,
@@ -78,10 +79,12 @@ public interface GoodsReceipts {
     }
 
     /**
-     * One carton of a line. {@code quantity}: what was counted into it while RECEIVING; once in stock, what is left
-     * in it. {@code nominalQty}: what its unit holds. {@code status}: RECEIVING, IN_STOCK, CONSUMED or LOST.
+     * One carton of a line. {@code quantity}: what is in it now - what was counted into it while RECEIVING, what is
+     * left in it once in stock. {@code receivedQty}: what was counted into it, which the receipt's
+     * {@code looseQuantity} is reckoned from and which never changes once the carton is in stock. {@code nominalQty}:
+     * what its unit holds. {@code status}: RECEIVING, IN_STOCK, CONSUMED or LOST.
      */
-    record PackageView(UUID id, String lpn, int quantity, int nominalQty, String status) {
+    record PackageView(UUID id, String lpn, int quantity, int receivedQty, int nominalQty, String status) {
     }
 
     /**

@@ -122,6 +122,8 @@ class GoodsReceiptPackageHttpTest {
                 .andExpect(jsonPath("$.data.lines[0].packages[*].lpn", everyItem(matchesPattern("^LPN-\\d{8}-\\d{6}$"))))
                 .andExpect(jsonPath("$.data.lines[0].packages[*].status", everyItem(org.hamcrest.Matchers.is("RECEIVING"))))
                 .andExpect(jsonPath("$.data.lines[0].packages[*].nominalQty",
-                        everyItem(org.hamcrest.Matchers.is(1000))));
+                        everyItem(org.hamcrest.Matchers.is(1000))))
+                .andExpect(jsonPath("$.data.lines[0].packages[*].receivedQty",
+                        org.hamcrest.Matchers.containsInAnyOrder(1000, 980)));
     }
 }
