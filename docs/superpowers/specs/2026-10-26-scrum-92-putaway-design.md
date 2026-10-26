@@ -138,8 +138,8 @@ single-SKU bins, volume. BR-SLT-003 is enforced at bin level only; the spec of S
    (`WarehouseScope.requireLocation`), before anything else is said about the task — its status included.
    Then a DONE task is `PUTAWAY_TASK_DONE`.
 3. **Scan**: a carton task needs `lpn` equal to its carton's (`PUTAWAY_LPN_MISMATCH`); a loose task needs
-   `1 ≤ quantity ≤ left`, where `left = task.quantity − Σ quantity of the ledger lines (MOVE, PUTAWAY_TASK,
-   taskId)` (`PUTAWAY_QUANTITY_EXCEEDED`).
+   `1 ≤ quantity ≤ left`, where `left = task.quantity − Σ quantity of the task's ledger lines` — `MOVE` and
+   `STATUS_CHANGE`, both with reference `(PUTAWAY_TASK, taskId)` (step 5) — (`PUTAWAY_QUANTITY_EXCEEDED`).
 4. **Target** (hard rules apply to a bin the clerk chose too): exists (`LOCATION_NOT_FOUND`), is a BIN
    (`PUTAWAY_TARGET_NOT_BIN`), same warehouse (`MOVE_ACROSS_WAREHOUSES`), usable (`LOCATION_NOT_USABLE`), the
    item's storage class (`LOCATION_STORAGE_CLASS_MISMATCH`), and within capacity and weight after the putaway
@@ -151,11 +151,15 @@ single-SKU bins, volume. BR-SLT-003 is enforced at bin level only; the spec of S
    - carton: `relocatePackages(target = AVAILABLE)` — the carton and its rows move whole, keep their ids and
      stay unopened; rows must be INBOUND (`STOCK_STATUS_MISMATCH`), the carton IN_STOCK
      (`INVALID_STOCK_PACKAGE_TRANSITION`). It moves from wherever it stands now in the warehouse (it may have
-     been moved by hand since the task was made).
+     been moved by hand since the task was made). A carton already standing in the chosen bin is not moved: its
+     rows turn AVAILABLE in place, one `STATUS_CHANGE` line per row from the bin to the bin (a `MOVE` names two
+     different places), and the capacity check does not count its units twice.
    - loose: `quantity` units from the loose INBOUND rows of the receipt's lot (§4.2) — one lot, so one expiry;
-     rows taken in id order — to the bin as AVAILABLE; one ledger line `(MOVE, PUTAWAY_TASK, taskId)` per
-     source row taken from. Fewer units there than asked (moved by hand since) is `STOCK_ITEM_NOT_FOUND` /
-     the move's own insufficient-stock refusal, and nothing is recorded.
+     rows already in the chosen bin first, then the others in id order — to the bin as AVAILABLE; one ledger line
+     per source row taken from, reference `(PUTAWAY_TASK, taskId)`: a `MOVE` from another place, or a
+     `STATUS_CHANGE` from the bin to the bin for a row already standing in it. A row in place turns AVAILABLE
+     whole or not at all (a row cannot be split by status): fewer units than it holds is `STOCK_STATUS_MISMATCH`.
+     Fewer units there than asked (moved by hand since) is `STOCK_ITEM_NOT_FOUND`, and nothing is recorded.
 6. **Record**: `recordPutaway` → IN_PROGRESS while units are left, DONE when none are; `target_location_id` is the
    bin of the latest confirmation (every bin is in the ledger).
 7. **Publish** `PutawayCompleted` when the task became DONE.
@@ -223,7 +227,8 @@ New, each with `error.<CODE>` in `messages.properties` and `messages_vi.properti
     accepted part at the QC area, none for quarantined or rejected cartons; the event delivered twice opens no
     second task.
   - Carton putaway: the carton and its row in the bin, AVAILABLE, unopened, same row id, one ledger line
-    `(MOVE, PUTAWAY_TASK)` naming the carton on both sides, task DONE, `PutawayCompleted` published.
+    `(MOVE, PUTAWAY_TASK)` naming the carton on both sides, task DONE, `PutawayCompleted` published; goods
+    already moved by hand into the chosen bin, carton or loose, put away in place with `STATUS_CHANGE` lines.
   - Loose putaway into two bins, task DONE after the second; more than left refused; a repeated confirmation
     after DONE refused.
   - Every hard rule refused on a bin the clerk chose: area, other warehouse, unusable, storage class, capacity,

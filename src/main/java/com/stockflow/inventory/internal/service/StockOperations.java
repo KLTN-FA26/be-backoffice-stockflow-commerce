@@ -92,9 +92,11 @@ public interface StockOperations {
     StockMove reclassify(ReclassifyStockCommand command);
 
     /**
-     * Loose INBOUND units of a receipt's lot to a bin as AVAILABLE; ledger (MOVE, PUTAWAY_TASK, taskId), one line
-     * per row taken from. No replay lookup: two calls under one task are two parts of the putaway (spec section 6),
-     * the caller counts what is already done through the ledger. Refuses with {@code STOCK_ITEM_NOT_FOUND} when the
+     * Loose INBOUND units of a receipt's lot to a bin as AVAILABLE, one ledger line per row taken from, reference
+     * (PUTAWAY_TASK, taskId): a {@code MOVE} for a row taken from another place, a {@code STATUS_CHANGE} from the bin
+     * to the bin for a row already standing in it (a {@code MOVE} names two different places), whole or not at all.
+     * No replay lookup: two calls under one task are two parts of the putaway (spec section 6); the caller counts
+     * what is already done through both kinds of ledger line. Refuses with {@code STOCK_ITEM_NOT_FOUND} when the
      * lot holds fewer than {@code units} loose INBOUND units. Returns {@code units}.
      */
     int putAwayLoose(Sku sku, UUID lotId, String toLocationCode, int units, UUID taskId, UUID actorId);
