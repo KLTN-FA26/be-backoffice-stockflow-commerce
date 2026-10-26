@@ -230,6 +230,12 @@ public enum ErrorCode {
      * line, so they are not received into cartons.
      */
     RECEIPT_PACKAGES_NOT_SUPPORTED("Cartons are not labelled on a subcontract receipt", 409),
+    /** SCRUM-92: no putaway task with this id. */
+    PUTAWAY_TASK_NOT_FOUND("Putaway task not found", 404),
+    /** SCRUM-92: the task has been put away completely; nothing is left to move. */
+    PUTAWAY_TASK_DONE("This putaway task is already done", 409),
+    /** SCRUM-92: more units than the task has left, a zero or negative count, or part of a carton. */
+    PUTAWAY_QUANTITY_EXCEEDED("The putaway quantity does not fit what the task has left", 422),
     /**
      * SCRUM-473: a line with cartons names the active packing unit they are in; a loose line counts in the base unit
      * and claims no packing unit it holds no carton of.
