@@ -147,7 +147,8 @@ public class StockItemJpaEntity extends BaseEntity {
         });
     }
 
-    public void apply(int onHand, int reserved, StockStatus status) {
+    public void apply(int onHand, int reserved, StockStatus status, String locationCode) {
+        this.locationCode = locationCode;
         this.onHand = onHand;
         this.reserved = reserved;
         this.status = status;
