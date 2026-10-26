@@ -31,6 +31,13 @@ public interface StockMovementLog {
      * line a production move writes ({@code MOVE}, reference {@code PRODUCTION_ORDER}, "Hold &lt;id&gt;",
      * IN_PRODUCTION to AVAILABLE). Tells printed goods in a packing area from free stock somebody moved there.
      */
+    /**
+     * Units a document's ledger lines add up to, 0 when it has none: how much of a putaway task has been put away,
+     * counting every part, loose or in a carton.
+     */
+    int sumQuantityByReference(StockMovement.MovementType type, StockMovement.ReferenceType referenceType,
+                               UUID referenceId);
+
     boolean handedOverFromProduction(ReservationId hold, LocationId location);
 
     /**

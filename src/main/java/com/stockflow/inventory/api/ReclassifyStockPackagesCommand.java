@@ -5,13 +5,14 @@ import java.util.Objects;
 import java.util.UUID;
 
 /**
- * A QC decision about whole cartons (SCRUM-473): they go to {@code toLocationCode} and their rows become
- * QUARANTINE or BLOCKED in the same step, each keeping its LPN and staying unopened. The carton-sized counterpart of
+ * A decision about whole cartons (SCRUM-473, SCRUM-92): they go to {@code toLocationCode} and their rows become
+ * AVAILABLE (putaway), QUARANTINE or BLOCKED (QC) in the same step, each keeping its LPN and staying unopened. The
+ * carton-sized counterpart of
  * {@link ReclassifyStockCommand}, which would split a carton's row. Several at once for the reason
  * {@link MoveStockPackagesCommand} gives.
  *
- * <p>Only INBOUND or QUARANTINE rows can be reclassified, and only QUARANTINE or BLOCKED is a decision a carton
- * can receive: putaway as AVAILABLE is a plain move of the carton.</p>
+ * <p>Only INBOUND or QUARANTINE rows can be reclassified; AVAILABLE is putaway and takes INBOUND rows only. The
+ * status change travels with the move to the bin: a plain move would leave the row INBOUND, which is not on sale.</p>
  *
  * @param lpns        the cartons, in either case; a repeat is the same carton
  * @param referenceId the document that decided it (a QC inspection)
@@ -33,8 +34,9 @@ public record ReclassifyStockPackagesCommand(
         Objects.requireNonNull(disposition, "disposition");
         Objects.requireNonNull(reference, "reference");
         Objects.requireNonNull(referenceId, "referenceId");
-        if (disposition != StockDisposition.QUARANTINE && disposition != StockDisposition.BLOCKED) {
-            throw new IllegalArgumentException("A carton is quarantined or blocked, not " + disposition);
+        if (disposition != StockDisposition.AVAILABLE && disposition != StockDisposition.QUARANTINE
+                && disposition != StockDisposition.BLOCKED) {
+            throw new IllegalArgumentException("A carton is put away, quarantined or blocked, not " + disposition);
         }
     }
 

@@ -176,8 +176,18 @@ class StockOperationsServiceImpl implements StockOperations {
             return toMove(done.get());
         }
 
-        LocationId from = new LocationId(fromCode);
-        LocationId to = new LocationId(toCode);
+        return moveLayer(sku, lotNumber, receivedAt, new LocationId(fromCode), new LocationId(toCode), qty, target,
+                referenceType, referenceId, actorId, reason);
+    }
+
+    /**
+     * What a move does once scope, the SKU lock and the replay lookup are behind it: one layer's units from
+     * {@code from} to {@code to}. Split out so putaway can move several rows under one reference, which the
+     * replay lookup of {@link #relocate} would take for a repeat.
+     */
+    private StockMove moveLayer(Sku sku, String lotNumber, Instant receivedAt, LocationId from, LocationId to,
+                                int qty, StockStatus target, StockMovement.ReferenceType referenceType,
+                                UUID referenceId, UUID actorId, String reason) {
         requireMovableBetween(from, to);
         Quantity quantity = Quantity.of(qty);
 
@@ -259,6 +269,46 @@ class StockOperationsServiceImpl implements StockOperations {
         requireUsable(to);
     }
 
+    // ------------------------------------------------------------------ putaway of loose units
+
+    /**
+     * Loose goods of one receipt line (its lot) from the receiving area to a bin, as AVAILABLE. One SKU lock first,
+     * then each source row in id order (inside {@link #moveLayer}), so two putaways of the same lot cannot cross.
+     * Deliberately no replay lookup: a task confirms its loose goods in several parts, all under its own id, and a
+     * lookup by reference would take the second part for a repeat of the first and skip it. The caller decides
+     * what is still to do by summing the ledger ({@code sumQuantityByReference}).
+     */
+    @Override
+    @Auditable(action = AuditAction.UPDATE, resourceType = "stock-putaway", resourceId = "#taskId")
+    public int putAwayLoose(Sku sku, UUID lotId, String toLocationCode, int units, UUID taskId, UUID actorId) {
+        WarehouseScope.requireLocation(toLocationCode);
+        policies.lock(sku.code());
+        LocationId to = new LocationId(toLocationCode);
+
+        List<StockItem> rows = stockItems.findLooseInboundByLot(sku, lotId).stream()
+                .filter(row -> row.onHand().value() > 0)
+                .sorted(Comparator.comparing(row -> row.id().value().toString()))
+                .toList();
+        int available = rows.stream().mapToInt(row -> row.onHand().value()).sum();
+        if (available < units) {
+            throw new BusinessException(ErrorCode.STOCK_ITEM_NOT_FOUND,
+                    "Lot %s of %s holds %d loose units awaiting putaway, not %d".formatted(lotId, sku, available,
+                            units));
+        }
+        int left = units;
+        for (StockItem row : rows) {
+            if (left == 0) {
+                break;
+            }
+            int take = Math.min(left, row.onHand().value());
+            WarehouseScope.requireLocation(row.location().code());
+            moveLayer(sku, row.lotNumber(), row.receivedAt(), row.location(), to, take, StockStatus.AVAILABLE,
+                    StockMovement.ReferenceType.PUTAWAY_TASK, taskId, actorId, null);
+            left -= take;
+        }
+        return units;
+    }
+
     // ------------------------------------------------------------------ a carton, whole
 
     @Override
@@ -338,6 +388,11 @@ class StockOperationsServiceImpl implements StockOperations {
                 if (row.status() != StockStatus.INBOUND && row.status() != StockStatus.QUARANTINE) {
                     throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH,
                             "%s holds %s; only INBOUND or QUARANTINE stock takes a receiving decision"
+                                    .formatted(lpnOf.get(row.stockPackageId()), row.status()));
+                }
+                if (target == StockStatus.AVAILABLE && row.status() != StockStatus.INBOUND) {
+                    throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH,
+                            "%s holds %s; only INBOUND stock is put away as AVAILABLE"
                                     .formatted(lpnOf.get(row.stockPackageId()), row.status()));
                 }
             }

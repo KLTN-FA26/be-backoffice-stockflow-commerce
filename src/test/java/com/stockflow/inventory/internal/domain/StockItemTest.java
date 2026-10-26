@@ -523,7 +523,30 @@ class StockItemTest {
             assertThatThrownBy(() -> row.reclassifyInPackage(StockStatus.QUARANTINE))
                     .isInstanceOf(IllegalStateException.class);
             assertThatThrownBy(() -> cartonRow(StockStatus.INBOUND, List.of())
-                    .reclassifyInPackage(StockStatus.AVAILABLE)).isInstanceOf(IllegalStateException.class);
+                    .reclassifyInPackage(StockStatus.IN_PRODUCTION)).isInstanceOf(IllegalStateException.class);
+        }
+
+        @Test
+        @DisplayName("putaway: an INBOUND carton row becomes AVAILABLE in place")
+        void inboundRowInCartonBecomesAvailable() {
+            StockItem row = cartonRow(StockStatus.INBOUND, List.of());
+            StockItemId id = row.id();
+
+            row.reclassifyInPackage(StockStatus.AVAILABLE);
+
+            assertThat(row.status()).isEqualTo(StockStatus.AVAILABLE);
+            assertThat(row.id()).isEqualTo(id);
+            assertThat(row.stockPackageId()).isNotNull();
+        }
+
+        @Test
+        @DisplayName("quarantined stock reaches AVAILABLE through re-inspection, not putaway")
+        void quarantinedRowInCartonCannotBeMadeAvailable() {
+            StockItem row = cartonRow(StockStatus.QUARANTINE, List.of());
+
+            assertThatThrownBy(() -> row.reclassifyInPackage(StockStatus.AVAILABLE))
+                    .isInstanceOf(IllegalStateException.class);
+            assertThat(row.status()).isEqualTo(StockStatus.QUARANTINE);
         }
 
         @Test

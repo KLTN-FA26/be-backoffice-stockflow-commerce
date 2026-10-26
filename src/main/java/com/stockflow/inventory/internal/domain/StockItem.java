@@ -376,9 +376,12 @@ public final class StockItem extends AggregateRoot {
     }
 
     /**
-     * A whole carton is put on hold or condemned (QC): the row changes status in place, keeping its carton, so the
-     * carton is never split by a decision about its contents. Units still reserved would silently lose their hold,
-     * as in {@link #block}.
+     * A whole carton is put on hold or condemned (QC), or put away as sellable stock: the row changes status in
+     * place, keeping its carton, so the carton is never split by a decision about its contents. Units still
+     * reserved would silently lose their hold, as in {@link #block}.
+     *
+     * <p>AVAILABLE is putaway's target and comes from INBOUND only: quarantined stock becomes sellable through
+     * re-inspection, and a putaway task must not be a way around it.</p>
      */
     public void reclassifyInPackage(StockStatus target) {
         if (stockPackageId == null) {
@@ -387,8 +390,12 @@ public final class StockItem extends AggregateRoot {
         if (status != StockStatus.INBOUND && status != StockStatus.QUARANTINE) {
             throw new IllegalStateException("Stock item %s is %s, not INBOUND or QUARANTINE".formatted(id, status));
         }
-        if (target != StockStatus.QUARANTINE && target != StockStatus.BLOCKED) {
-            throw new IllegalStateException(target + " is not QUARANTINE or BLOCKED");
+        if (target != StockStatus.QUARANTINE && target != StockStatus.BLOCKED && target != StockStatus.AVAILABLE) {
+            throw new IllegalStateException(target + " is not AVAILABLE, QUARANTINE or BLOCKED");
+        }
+        if (target == StockStatus.AVAILABLE && status != StockStatus.INBOUND) {
+            throw new IllegalStateException("Stock item %s is %s; only INBOUND stock is put away as AVAILABLE"
+                    .formatted(id, status));
         }
         if (!reserved().isZero()) {
             throw new IllegalStateException(

@@ -1,6 +1,7 @@
 package com.stockflow.inventory.internal.service;
 
 import com.stockflow.common.api.PageResponse;
+import com.stockflow.common.domain.Sku;
 import com.stockflow.inventory.api.CountReceivingPackagesCommand;
 import com.stockflow.inventory.api.IssueReservedStockCommand;
 import com.stockflow.inventory.api.IssueReservedStockResult;
@@ -89,6 +90,14 @@ public interface StockOperations {
     StockMove returnHeld(com.stockflow.inventory.api.ReturnHeldStockCommand command);
 
     StockMove reclassify(ReclassifyStockCommand command);
+
+    /**
+     * Loose INBOUND units of a receipt's lot to a bin as AVAILABLE; ledger (MOVE, PUTAWAY_TASK, taskId), one line
+     * per row taken from. No replay lookup: two calls under one task are two parts of the putaway (spec section 6),
+     * the caller counts what is already done through the ledger. Refuses with {@code STOCK_ITEM_NOT_FOUND} when the
+     * lot holds fewer than {@code units} loose INBOUND units. Returns {@code units}.
+     */
+    int putAwayLoose(Sku sku, UUID lotId, String toLocationCode, int units, UUID taskId, UUID actorId);
 
     /** See {@code InventoryService#moveStockPackages}. */
     List<StockPackageView> moveStockPackages(MoveStockPackagesCommand command);

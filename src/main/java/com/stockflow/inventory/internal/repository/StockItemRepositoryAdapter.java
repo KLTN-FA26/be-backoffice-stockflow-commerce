@@ -184,6 +184,13 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     }
 
     @Override
+    public List<StockItem> findLooseInboundByLot(Sku sku, java.util.UUID lotId) {
+        return jpa.findLooseInboundByLot(sku.code(), lotId).stream()
+                .map(StockItemPersistenceMapper::toDomain)
+                .toList();
+    }
+
+    @Override
     public List<StockItem> findWithReservationsExpiredBefore(Instant cutoff, int limit) {
         return jpa.findStockItemIdsWithExpiredReservations(cutoff, PageRequest.of(0, limit)).stream()
                 .map(jpa::findByIdWithReservations)
