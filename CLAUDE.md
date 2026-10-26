@@ -278,6 +278,27 @@ row held until commit would deadlock two receipts on it. It draws a line's LPNs 
 connection that transaction needs is borrowed once per line, not once per carton. Gaps in LPNs are the accepted
 price.
 
+### Putaway (SCRUM-92)
+
+The task aggregate (`PutawayTask`: one carton, or a loose remainder of a receipt line) lives in `warehouse` behind
+`warehouse :: api` (`PutawayTasks`, `WarehouseService.putawayCandidates`). Orchestration is in `inventory`:
+`PutawayTaskCreator` opens the tasks when goods are received (per carton, plus the loose remainder, once per receipt
+line); `PutawayService.confirm` (`PutawayController`) moves the goods in one `@Transactional` method. Candidates are
+only usable bins flagged `is_putaway_target`, ranked by the pure `PutawayRanker` over `BinOccupancyQuery`; the filter
+is bin-level, shelf tiers are SCRUM-91.
+
+```
+lock order: task row → bin advisory lock (putaway-bin:<code>) → SKU advisory lock → stock_package FOR UPDATE → stock rows by id
+```
+
+The bin lock exists because only putaway checks bin capacity, and occupancy is bin-wide across SKUs: it serialises
+putaways into one bin, not other moves. Confirmation is synchronous on purpose (a 200 means the goods are in the
+bin), not an event consumer. `StockOperationsServiceImpl.putAwayLoose` skips the reference-based replay: every partial
+confirmation of a task shares `(PUTAWAY_TASK, taskId)`, so a retry is made safe by `Idempotency-Key` and by `left`,
+computed from the ledger under the task lock. When the last task of a receipt is DONE, `PutawayCompleted` is published;
+procurement's `PutawayCompletedListener` (and entering `IN_PUTAWAY`) calls `GoodsReceipt.closeIfPutAway`, counting DONE
+quantities per line. Round A stores no assignee, warehouse or suggestion reasons (no migration; Tú owns the schema).
+
 ---
 
 ## 5. Known traps — do not reintroduce these
