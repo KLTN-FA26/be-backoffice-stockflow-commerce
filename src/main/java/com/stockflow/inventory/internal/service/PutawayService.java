@@ -202,7 +202,11 @@ public class PutawayService {
 
         ItemRow item = itemOf(task.sku()).orElseThrow(() ->
                 new BusinessException(ErrorCode.VALIDATION_FAILED, "Item " + task.sku() + " is unknown"));
-        StorageLocationView bin = requireTarget(locationCode, source, item, task, units, reads);
+        // A carton is judged by what it holds now: a count may have changed it since its task was opened, and the
+        // move takes the carton as it is. The task still records its own quantity, since it puts the carton away whole.
+        int moving = carton ? stockPackages.onHandOf(List.of(new StockPackageId(task.stockPackageId())))
+                .getOrDefault(new StockPackageId(task.stockPackageId()), 0) : units;
+        StorageLocationView bin = requireTarget(locationCode, source, item, task, moving, reads);
 
         if (carton) {
             operations.reclassifyStockPackages(new ReclassifyStockPackagesCommand(source.lpn(), bin.locationCode(),
@@ -298,7 +302,7 @@ public class PutawayService {
      */
     private int alreadyIn(StorageLocationView bin, Source source, PutawayTaskView task, int units, Reads reads) {
         if (task.stockPackageId() != null) {
-            return source.locationCode().equals(bin.locationCode()) ? task.quantity() : 0;
+            return source.locationCode().equals(bin.locationCode()) ? units : 0;
         }
         UUID lotId = looseReceiptLine(task.goodsReceiptLineId(), reads).map(StockMovement::lotId).orElse(null);
         if (lotId == null) {
@@ -318,7 +322,9 @@ public class PutawayService {
         if (own == 0) {
             return occupied;
         }
-        BigDecimal weight = occupied.weightKg().subtract(unitWeight.multiply(BigDecimal.valueOf(own)));
+        // An unknown unit weight is 0 in the occupancy read, so there is nothing of it to take off.
+        BigDecimal weight = unitWeight == null ? occupied.weightKg()
+                : occupied.weightKg().subtract(unitWeight.multiply(BigDecimal.valueOf(own)));
         return new Occupancy(Math.max(0, occupied.units() - own), weight.max(BigDecimal.ZERO), occupied.holdsSku(),
                 occupied.holdsLot());
     }
@@ -327,8 +333,9 @@ public class PutawayService {
         return items.findBySkus(List.of(sku)).stream().findFirst();
     }
 
+    /** Null when the item master records none: {@link PutawayRanker#fits} then does not weigh the goods at all. */
     private static BigDecimal unitWeightOf(ItemRow item) {
-        return item.logistics().weightKg() == null ? BigDecimal.ZERO : item.logistics().weightKg();
+        return item.logistics().weightKg();
     }
 
     /**
