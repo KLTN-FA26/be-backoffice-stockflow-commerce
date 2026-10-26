@@ -74,6 +74,9 @@ class StockPackageMoveIntegrationTest {
             jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
                     Identifiers.newId(), product, sku, "Receiving carton fixture");
             UUID item = jdbc.queryForObject("select id from inventory.inventory_items where sku = ?", UUID.class, sku);
+            // BR-03: tg_goods_receipt_lines_item refuses a receipt line for an item with no weight or dimensions.
+            jdbc.update("update inventory.inventory_items set weight_kg = 0.5, length_cm = 10, width_cm = 8, height_cm = 6"
+                    + " where id = ?", item);
             carton = Identifiers.newId();
             jdbc.update("insert into inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)"
                     + " values (?, ?, 'CARTON', 1000)", carton, item);
