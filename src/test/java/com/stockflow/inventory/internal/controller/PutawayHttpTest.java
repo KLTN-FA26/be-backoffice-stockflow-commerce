@@ -4,6 +4,7 @@ import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.Role;
 import com.stockflow.procurement.internal.service.GoodsReceipts;
 import com.stockflow.procurement.internal.service.GoodsReceipts.NewPackage;
+import com.jayway.jsonpath.JsonPath;
 import com.stockflow.support.Await;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.SecuredIntegrationTest;
@@ -29,6 +30,7 @@ import java.util.UUID;
 
 import static com.stockflow.support.DemoData.WAREHOUSE_HCM;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -231,5 +233,54 @@ class PutawayHttpTest {
         mvc.asRole(Role.WAREHOUSE_STAFF, clerk, get(TASKS + "/" + UUID.randomUUID()))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.errorCode").value("PUTAWAY_TASK_NOT_FOUND"));
+    }
+
+    private String body(String locationCode, String lpn) {
+        return "{\"locationCode\":\"" + locationCode + "\",\"lpn\":\"" + lpn + "\"}";
+    }
+
+    /** The first suggested bin and the carton's LPN of the carton task, as the clerk's screen would show them. */
+    private String[] scanOfCartonTask() throws Exception {
+        String json = mvc.asRole(Role.WAREHOUSE_STAFF, clerk, get(TASKS + "/" + cartonTask)).andReturn().getResponse()
+                .getContentAsString();
+        return new String[]{JsonPath.read(json, "$.data.suggestions[0].locationCode"), JsonPath.read(json, "$.data.lpn")};
+    }
+
+    @Test
+    @DisplayName("staff confirm a carton by scan: 200 and the task is DONE")
+    void staffConfirm() throws Exception {
+        String[] scan = scanOfCartonTask();
+        mvc.asRole(Role.WAREHOUSE_STAFF, clerk, post(TASKS + "/" + cartonTask + "/confirmations")
+                        .contentType(MediaType.APPLICATION_JSON).content(body(scan[0], scan[1])))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("DONE"))
+                .andExpect(jsonPath("$.data.left").value(0))
+                .andExpect(jsonPath("$.data.targetLocationCode").value(scan[0]));
+    }
+
+    @Test
+    @DisplayName("a role without UPDATE on putaway tasks: 403")
+    void readOnlyRoleGets403() throws Exception {
+        String[] scan = scanOfCartonTask();
+        UUID qc = staff("QC_STAFF", WAREHOUSE_HCM);
+        mvc.asRole(Role.QC_STAFF, qc, post(TASKS + "/" + cartonTask + "/confirmations")
+                        .contentType(MediaType.APPLICATION_JSON).content(body(scan[0], scan[1])))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @DisplayName("a DONE task of another warehouse is 403, not 409: scope is checked before the status")
+    void doneTaskOfAnotherWarehouseIs403() throws Exception {
+        String[] scan = scanOfCartonTask();
+        mvc.asRole(Role.WAREHOUSE_STAFF, clerk, post(TASKS + "/" + cartonTask + "/confirmations")
+                        .contentType(MediaType.APPLICATION_JSON).content(body(scan[0], scan[1])))
+                .andExpect(status().isOk());
+        mvc.asRole(Role.WAREHOUSE_STAFF, outsider(), post(TASKS + "/" + cartonTask + "/confirmations")
+                        .contentType(MediaType.APPLICATION_JSON).content(body(scan[0], scan[1])))
+                .andExpect(status().isForbidden());
+        mvc.asRole(Role.WAREHOUSE_STAFF, clerk, post(TASKS + "/" + cartonTask + "/confirmations")
+                        .contentType(MediaType.APPLICATION_JSON).content(body(scan[0], scan[1])))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("PUTAWAY_TASK_DONE"));
     }
 }

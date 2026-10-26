@@ -4,9 +4,12 @@ import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.security.Action;
+import com.stockflow.common.security.AuthenticatedUser;
+import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
+import com.stockflow.inventory.internal.controller.dto.PutawayConfirmationRequest;
 import com.stockflow.inventory.internal.controller.dto.PutawaySuggestionResponse;
 import com.stockflow.inventory.internal.controller.dto.PutawayTaskResponse;
 import com.stockflow.inventory.internal.service.PutawayService;
@@ -14,8 +17,11 @@ import com.stockflow.inventory.internal.service.PutawayService.TaskView;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.web.bind.annotation.GetMapping;
+import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -64,6 +70,20 @@ class PutawayController {
     @RequiresPermission(resource = InventoryResources.PUTAWAY_TASKS, action = Action.READ, scope = DataScope.WAREHOUSE)
     public ApiResponse<PutawayTaskResponse> get(@PathVariable UUID taskId) {
         return ApiResponse.ok(toResponse(putaway.get(taskId)));
+    }
+
+    @PostMapping("/{taskId}/confirmations")
+    @Operation(summary = "Put a task's goods into a bin, by scan",
+            description = "A carton task takes {locationCode, lpn}, a loose one {locationCode, quantity}; the other "
+                    + "field is 400. A loose task may be confirmed in several parts. Answers the task as it now "
+                    + "stands. Refused: DONE task 409, other carton 409, more than left 422, a bin that is not a bin "
+                    + "422, another warehouse's, unusable, of the wrong class or full 409.")
+    @RequiresPermission(resource = InventoryResources.PUTAWAY_TASKS, action = Action.UPDATE, scope = DataScope.WAREHOUSE)
+    public ApiResponse<PutawayTaskResponse> confirm(@PathVariable UUID taskId,
+                                                    @Valid @RequestBody PutawayConfirmationRequest request,
+                                                    @AuthenticatedUser CurrentUser actor) {
+        return ApiResponse.ok(toResponse(putaway.confirm(taskId, request.locationCode(), request.lpn(),
+                request.quantity(), actor.userId())));
     }
 
     private static PutawayTaskResponse toResponse(TaskView task) {

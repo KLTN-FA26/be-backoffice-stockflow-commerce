@@ -236,6 +236,14 @@ public enum ErrorCode {
     PUTAWAY_TASK_DONE("This putaway task is already done", 409),
     /** SCRUM-92: more units than the task has left, a zero or negative count, or part of a carton. */
     PUTAWAY_QUANTITY_EXCEEDED("The putaway quantity does not fit what the task has left", 422),
+    /** SCRUM-92: the scanned LPN is not the task's carton (or none was scanned for a carton task). */
+    PUTAWAY_LPN_MISMATCH("The scanned carton is not the one this putaway task is for", 409),
+    /** SCRUM-92: the chosen target is a storage area; goods are put away into bins. */
+    PUTAWAY_TARGET_NOT_BIN("Goods are put away into a bin, not a storage area", 422),
+    /** SCRUM-92: the bin's storage class is not the one the item must be kept in. */
+    LOCATION_STORAGE_CLASS_MISMATCH("The storage class of this bin does not fit the item", 409),
+    /** SCRUM-92: the putaway would take the bin past its capacity in units or its weight limit. */
+    LOCATION_CAPACITY_EXCEEDED("This bin cannot take that many units or that much weight", 409),
     /**
      * SCRUM-473: a line with cartons names the active packing unit they are in; a loose line counts in the base unit
      * and claims no packing unit it holds no carton of.
