@@ -127,6 +127,11 @@ class GoodsReceiptPackageHttpTest {
                 .andExpect(jsonPath("$.data.lines[0].packages[*].nominalQty",
                         everyItem(org.hamcrest.Matchers.is(1000))))
                 .andExpect(jsonPath("$.data.lines[0].packages[*].receivedQty",
-                        org.hamcrest.Matchers.containsInAnyOrder(1000, 980)));
+                        org.hamcrest.Matchers.containsInAnyOrder(1000, 980)))
+                .andExpect(jsonPath("$.data.lines[0].units[0].base").value(true))
+                .andExpect(jsonPath("$.data.lines[0].units[?(@.unitOfMeasure == 'CARTON')].factor",
+                        org.hamcrest.Matchers.contains(1000)))
+                .andExpect(jsonPath("$.data.lines[0].units[?(@.unitOfMeasure == 'CARTON')].active",
+                        org.hamcrest.Matchers.contains(true)));
     }
 }

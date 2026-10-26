@@ -24,13 +24,22 @@ public record GoodsReceiptResponse(UUID id, String number, UUID purchaseOrderId,
      * {@code lotTracked} / {@code expiryTracked}: whether the line needs a lot / an expiry date (BR-03).
      * {@code unitOfMeasure}: the packing unit of the line's cartons, null for a loose line. {@code looseQuantity}:
      * the part counted into no carton (the line less the cartons' {@code receivedQty}). {@code packages}: the line's cartons by LPN, voided ones left out (SCRUM-473).
+     * {@code units}: every unit of the line's item, for the counting screen's unit picker.
      */
     public record Line(UUID id, UUID purchaseOrderLineId, Integer purchaseOrderLineNo, UUID inventoryItemId, String sku,
                        int quantity, String lotNumber, LocalDate expiryDate, String locationCode, String note,
                        boolean qcRequired, boolean lotTracked, boolean expiryTracked, String qcProgress,
                        String qcLocationCode, Instant movedToQcAt, int quantityForPutaway,
                        List<Inspection> inspections, List<String> warnings, String unitOfMeasure,
-                       int looseQuantity, List<Package> packages) {
+                       int looseQuantity, List<Package> packages, List<Unit> units) {
+    }
+
+    /**
+     * A unit the line's item can be counted in, the base unit first, then by code. Cartons take an {@code active}
+     * unit that is not {@code base}; {@code factor} is what one carton of it holds; {@code defaultPurchase} marks
+     * the unit the item is bought in.
+     */
+    public record Unit(String unitOfMeasure, int factor, boolean base, boolean active, boolean defaultPurchase) {
     }
 
     /**

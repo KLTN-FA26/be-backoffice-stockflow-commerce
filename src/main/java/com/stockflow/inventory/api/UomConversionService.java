@@ -4,6 +4,7 @@ import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.domain.Sku;
 
 import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -31,6 +32,13 @@ public interface UomConversionService {
 
     /** Those of {@code ids} that are units of this SKU's item. */
     Map<UUID, UomConversion> conversions(Sku sku, Collection<UUID> ids);
+
+    /**
+     * Every unit of each SKU's item, the base unit first, then by code, active and retired alike, in one query: what
+     * a document listing several items offers to count in (a goods receipt's lines, SCRUM-473). A SKU without an
+     * item is absent.
+     */
+    Map<String, List<UomConversion>> conversionsOf(Collection<Sku> skus);
 
     /** The base unit: the unit stock of the SKU is counted in. */
     UomConversion baseUnit(Sku sku);

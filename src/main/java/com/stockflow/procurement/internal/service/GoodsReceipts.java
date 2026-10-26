@@ -89,14 +89,24 @@ public interface GoodsReceipts {
      * {@code unitOfMeasure}: the packing unit of the line's cartons, null for a line counted loose.
      * {@code looseQuantity}: what was counted into no carton, {@code quantity} less what the cartons were counted at
      * ({@code receivedQty}); it stays as counted once the receipt is confirmed, whatever leaves the cartons later. {@code packages}: the
-     * line's cartons, voided ones left out, by LPN - the client prints their labels from these.
+     * line's cartons, voided ones left out, by LPN - the client prints their labels from these. {@code units}: every
+     * unit of the line's item, so the counting screen can offer the packing units without the product permission
+     * the unit catalogue sits behind.
      */
     record LineView(UUID id, UUID purchaseOrderLineId, Integer purchaseOrderLineNo, UUID inventoryItemId, String sku,
                     int quantity, String lotNumber, LocalDate expiryDate, String locationCode, String note,
                     boolean qcRequired, boolean lotTracked, boolean expiryTracked, QcProgress qcProgress,
                     String qcLocationCode, Instant movedToQcAt, int quantityForPutaway,
                     List<InspectionView> inspections, List<String> warnings, String unitOfMeasure,
-                    int looseQuantity, List<PackageView> packages) {
+                    int looseQuantity, List<PackageView> packages, List<UnitView> units) {
+    }
+
+    /**
+     * A unit the line's item can be counted in, the base unit first, then by code. Cartons take an {@code active}
+     * unit that is not {@code base}; {@code factor} is what one of them holds; {@code defaultPurchase} marks the unit
+     * the item is bought in, the natural default for a new line.
+     */
+    record UnitView(String unitOfMeasure, int factor, boolean base, boolean active, boolean defaultPurchase) {
     }
 
     /**

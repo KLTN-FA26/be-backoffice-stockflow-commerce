@@ -17,6 +17,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.function.Function;
@@ -83,6 +84,12 @@ class UomConversionServiceImpl implements UomConversionService {
     public Map<UUID, UomConversion> conversions(Sku sku, Collection<UUID> ids) {
         return conversions.find(sku.code(), ids).stream()
                 .collect(Collectors.toMap(UomConversion::id, Function.identity()));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Map<String, List<UomConversion>> conversionsOf(Collection<Sku> skus) {
+        return conversions.bySkus(skus.stream().map(Sku::code).distinct().toList());
     }
 
     @Override

@@ -168,6 +168,10 @@ class GoodsReceiptPackageIntegrationTest {
 
         assertThat(line.unitOfMeasure()).isEqualTo("CARTON");
         assertThat(line.looseQuantity()).isEqualTo(10);
+        assertThat(line.units()).as("every unit of the item for the picker, the base unit first, then by code")
+                .containsExactly(new GoodsReceipts.UnitView(baseUnit, 1, true, true, true),
+                        new GoodsReceipts.UnitView("BOX", 500, false, true, false),
+                        new GoodsReceipts.UnitView("CARTON", 1000, false, true, false));
         assertThat(line.packages()).hasSize(5).allSatisfy(p -> {
             assertThat(p.lpn()).matches(LPN);
             assertThat(p.status()).isEqualTo("RECEIVING");

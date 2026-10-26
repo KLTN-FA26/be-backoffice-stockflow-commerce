@@ -907,10 +907,14 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         Optional.ofNullable(receipt.confirmedBy()).ifPresent(people::add);
         receipt.lines().forEach(l -> l.inspections().forEach(i -> Optional.ofNullable(i.inspectedBy()).ifPresent(people::add)));
         Map<UUID, String> names = identity.displayNames(people);
-        // SCRUM-473: every line's cartons in one call, and the units they are in.
+        // SCRUM-473: every line's cartons in one call, and every unit of the receipt's items in another - the line's
+        // own unit is among them, and the counting screen offers the rest.
         Map<UUID, List<StockPackageView>> cartons = receipt.lines().isEmpty() ? Map.of()
                 : inventory.receivingPackagesOf(receipt.lines().stream().map(ReceiptLine::id).toList());
-        Map<UUID, String> unitCodes = unitCodes(receipt, items, cartons);
+        Map<String, List<UomConversion>> unitsBySku = items.isEmpty() ? Map.of()
+                : units.conversionsOf(items.values().stream().map(i -> new Sku(i.sku())).toList());
+        Map<UUID, String> unitCodes = new HashMap<>();
+        unitsBySku.values().forEach(list -> list.forEach(u -> unitCodes.put(u.id(), u.unitOfMeasure())));
         // BR-06: a lot that expires soon after it arrives is flagged, never refused. Counted from the day it was
         // received, in the business's calendar; a cancelled receipt counted nothing, so it flags nothing.
         boolean flags = receipt.status() != GoodsReceiptStatus.CANCELLED;
@@ -939,7 +943,11 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                             code(where, i.targetLocationId()), i.reason(), i.inspectedBy(), names.get(i.inspectedBy()),
                             i.inspectedAt())).toList(),
                     lineWarnings, line.uomConversionId() == null ? null : unitCodes.get(line.uomConversionId()),
-                    line.receivedQuantity() - inCartons, packages);
+                    line.receivedQuantity() - inCartons, packages,
+                    item == null ? List.of() : unitsBySku.getOrDefault(item.sku(), List.of()).stream()
+                            .map(u -> new UnitView(u.unitOfMeasure(), u.factor(), u.base(), u.active(),
+                                    u.defaultPurchase()))
+                            .toList());
         }).toList();
         List<String> warnings = lines.stream().anyMatch(l -> !l.warnings().isEmpty())
                 ? List.of(ExpiryWarning.EXPIRY_NEAR) : List.of();
@@ -951,26 +959,6 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                 receipt.status(), receipt.deliveryNote(), receipt.note(), receipt.receivedAt(), receipt.receivedBy(),
                 names.get(receipt.receivedBy()), receipt.confirmedAt(), receipt.confirmedBy(),
                 names.get(receipt.confirmedBy()), receipt.closedAt(), lines, warnings);
-    }
-
-    /**
-     * The code of each line's packing unit: from its cartons when it has some shown, otherwise (a cancelled receipt,
-     * whose cartons are void) asked of inventory, one call per SKU.
-     */
-    private Map<UUID, String> unitCodes(GoodsReceipt receipt, Map<UUID, InventoryItemPolicy> items,
-                                        Map<UUID, List<StockPackageView>> cartons) {
-        Map<UUID, String> codes = new HashMap<>();
-        cartons.values().forEach(list -> list.forEach(c -> codes.putIfAbsent(c.uomConversionId(), c.unitOfMeasure())));
-        Map<String, Set<UUID>> missing = new HashMap<>();
-        for (ReceiptLine line : receipt.lines()) {
-            InventoryItemPolicy item = items.get(line.inventoryItemId());
-            if (line.uomConversionId() != null && !codes.containsKey(line.uomConversionId()) && item != null) {
-                missing.computeIfAbsent(item.sku(), sku -> new HashSet<>()).add(line.uomConversionId());
-            }
-        }
-        missing.forEach((sku, ids) -> units.conversions(new Sku(sku), ids)
-                .forEach((id, unit) -> codes.put(id, unit.unitOfMeasure())));
-        return codes;
     }
 
     private static QcProgress progress(ReceiptLine line, boolean subcontract) {
