@@ -26,7 +26,7 @@ class StockPackageLabelPdfRendererTest {
     private final StockPackageLabelPdfRenderer renderer = new StockPackageLabelPdfRenderer(new LabelFonts());
 
     private static StockPackageLabel label(String lpn, int received) {
-        return new StockPackageLabel(lpn, "CUP-12OZ", "Cốc giấy 12oz", received, 1000, "CARTON");
+        return new StockPackageLabel(lpn, "CUP-12OZ", received, 1000, "CARTON");
     }
 
     private PDDocument render(List<StockPackageLabel> labels, LabelFormat format) throws IOException {
@@ -49,10 +49,10 @@ class StockPackageLabelPdfRendererTest {
     }
 
     @Test
-    void theLabelSaysTheSkuTheItemAndWhatWasCountedOutOfNominal() throws IOException {
+    void theLabelSaysTheSkuAndWhatWasCountedOutOfNominal() throws IOException {
         try (PDDocument doc = render(List.of(label("LPN-20261026-000002", 980)), LabelFormat.THERMAL_ROLL)) {
             String text = new PDFTextStripper().getText(doc);
-            assertThat(text).contains("LPN-20261026-000002", "CUP-12OZ", "Cốc giấy 12oz", "980 / 1000 CARTON");
+            assertThat(text).contains("LPN-20261026-000002", "CUP-12OZ", "980 / 1000 CARTON");
         }
     }
 
@@ -69,10 +69,10 @@ class StockPackageLabelPdfRendererTest {
     }
 
     @Test
-    void anItemNameTheFontCannotDrawStillPrints() throws IOException {
-        var odd = new StockPackageLabel("LPN-20261026-000001", "CUP-12OZ", "Cốc\t🧊", null, 1000, "CARTON");
+    void aSkuTheFontCannotDrawStillPrints() throws IOException {
+        var odd = new StockPackageLabel("LPN-20261026-000001", "CUP	🧊", null, 1000, "CARTON");
         try (PDDocument doc = render(List.of(odd), LabelFormat.THERMAL_ROLL)) {
-            assertThat(new PDFTextStripper().getText(doc)).contains("Cốc ?", "- / 1000 CARTON");
+            assertThat(new PDFTextStripper().getText(doc)).contains("CUP ?", "- / 1000 CARTON");
         }
     }
 

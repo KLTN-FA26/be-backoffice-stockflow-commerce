@@ -22,13 +22,6 @@ public interface InventoryItemDirectory {
     /** The SKU of each item that exists; one query for a whole list of lines. */
     java.util.Map<UUID, String> skusOf(java.util.Collection<UUID> inventoryItemIds);
 
-    /**
-     * The display name of each SKU that has one, in one query. The name belongs to the variant, which {@code product}
-     * owns and which depends on this module, so it is read here and never joined: a label may show it, nothing
-     * decides anything by it.
-     */
-    java.util.Map<String, String> namesOfSkus(java.util.Collection<String> skus);
-
     /** The id of the item of each SKU that has one; one query for a whole list of SKUs. */
     java.util.Map<String, UUID> itemIdsOf(java.util.Collection<String> skus);
 }

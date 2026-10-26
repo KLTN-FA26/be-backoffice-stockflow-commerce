@@ -63,8 +63,8 @@ class StockPackageController {
      */
     @PostMapping(value = "/labels", produces = MediaType.APPLICATION_PDF_VALUE)
     @Operation(summary = "Print carton labels as a PDF",
-            description = "Each label carries the LPN as text, as a QR code and as a Code 128 barcode, with the SKU, "
-                    + "the item name and received / nominal unit. Send Accept: application/pdf, application/json - "
+            description = "Each label carries the LPN as text, as a QR code and as a Code 128 barcode, with the SKU "
+                    + "and received / nominal unit. Send Accept: application/pdf, application/json - "
                     + "errors are the usual JSON envelope: 404 STOCK_PACKAGE_NOT_FOUND, 409 "
                     + "INVALID_STOCK_PACKAGE_TRANSITION for a VOID, CONSUMED or LOST carton, 422 "
                     + "STOCK_PACKAGE_LABELS_EMPTY and STOCK_PACKAGE_LABELS_TOO_MANY (over 500 labels).")

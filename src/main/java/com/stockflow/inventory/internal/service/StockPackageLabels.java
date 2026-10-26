@@ -4,7 +4,6 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.inventory.api.UomConversion;
-import com.stockflow.inventory.internal.domain.InventoryItemDirectory;
 import com.stockflow.inventory.internal.domain.StockPackage;
 import com.stockflow.inventory.internal.domain.StockPackageRepository;
 import com.stockflow.inventory.internal.repository.UomConversionRepository;
@@ -23,6 +22,9 @@ import java.util.stream.Collectors;
  * Chooses the cartons of a label print and reads what each label says (SCRUM-473): the live cartons of a receipt
  * line, or the cartons named by LPN to reprint.
  *
+ * <p>The label has no item name: it lives in product's schema, which inventory may not read, and the SKU plus
+ * the LPN scan say the rest.</p>
+ *
  * <p>A read-only transaction that ends before any PDF is drawn, so no connection is held while 500 labels render.
  * Every query here is one per kind of fact, never one per carton.</p>
  */
@@ -34,13 +36,10 @@ public class StockPackageLabels {
 
     private final StockPackageRepository stockPackages;
     private final UomConversionRepository units;
-    private final InventoryItemDirectory items;
 
-    public StockPackageLabels(StockPackageRepository stockPackages, UomConversionRepository units,
-                              InventoryItemDirectory items) {
+    public StockPackageLabels(StockPackageRepository stockPackages, UomConversionRepository units) {
         this.stockPackages = stockPackages;
         this.units = units;
-        this.items = items;
     }
 
     /**
@@ -67,12 +66,9 @@ public class StockPackageLabels {
         Map<UUID, UomConversion> unitsById = units.findAll(cartons.stream().map(StockPackage::uomConversionId)
                         .distinct().toList()).stream()
                 .collect(Collectors.toMap(UomConversion::id, Function.identity()));
-        Map<String, String> names = items.namesOfSkus(unitsById.values().stream().map(UomConversion::sku)
-                .distinct().toList());
         return cartons.stream().sorted(Comparator.comparing(StockPackage::lpn)).map(carton -> {
             UomConversion unit = unitsById.get(carton.uomConversionId());
-            return new StockPackageLabel(carton.lpn(), unit.sku(), names.getOrDefault(unit.sku(), ""),
-                    carton.receivedQty(), carton.nominalQty(), unit.unitOfMeasure());
+            return new StockPackageLabel(carton.lpn(), unit.sku(), carton.receivedQty(), carton.nominalQty(), unit.unitOfMeasure());
         }).toList();
     }
 

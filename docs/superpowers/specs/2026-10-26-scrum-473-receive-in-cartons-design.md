@@ -137,8 +137,8 @@ staff for exactly "print and reprint labels". `InventoryResources.STOCK_PACKAGES
 in a warehouse the caller is scoped to (`WarehouseScope.requireLocation`). VOID, CONSUMED and LOST cartons are
 not printed; at most 500 labels per request.
 
-A label carries the LPN as large text, QR and Code 128 (all three exactly the LPN), the SKU, the item name and
-`received / nominal UNIT` (the current count for a RECEIVING carton). **No lot**: a carton stores none, the lot is
+A label carries the LPN as large text, QR and Code 128 (all three exactly the LPN), the SKU and
+`received / nominal UNIT` (the current count for a RECEIVING carton). **No item name**: it lives in `product`'s schema, which inventory may not read (and `product` depends on inventory). **No lot**: a carton stores none, the lot is
 on the receipt line (procurement) or the stock row, and inventory reading procurement would be a cycle. Scanning
 the LPN gives the lot through the lookup API (item 11).
 

@@ -20,8 +20,10 @@ import java.util.List;
 
 /**
  * Draws carton labels into a PDF (SCRUM-473): the LPN as large text, a QR code and a Code 128 barcode, all three
- * carrying exactly the LPN - the string every carton scan accepts - and beneath the text the SKU, the item name and
+ * carrying exactly the LPN - the string every carton scan accepts - and beneath the text the SKU and
  * {@code received / nominal UNIT}.
+ *
+ * <p>No item name: it lives in product's schema, which inventory may not read.</p>
  *
  * <p>The layout is the location label's, so one printer setup serves both; the drawing is the shared
  * {@link LabelDrawing}. Knows nothing about persistence: it runs after the read-only transaction that chose the
@@ -95,7 +97,7 @@ public class StockPackageLabelPdfRenderer {
         out.setHorizontalScaling(squeeze * 100);
         LabelDrawing.text(out, cell, loaded.bold, lpnSize, label.lpn(), innerLeft, baseline);
         out.setHorizontalScaling(100);
-        for (String line : List.of(label.sku(), label.itemName(), quantityLine(label))) {
+        for (String line : List.of(label.sku(), quantityLine(label))) {
             baseline += LabelDrawing.millimetres(CONTEXT_POINTS * LINE_SPACING);
             LabelDrawing.text(out, cell, loaded.regular, CONTEXT_POINTS,
                     LabelDrawing.cut(loaded.regular, fonts.drawable(line), textWidth), innerLeft, baseline);
