@@ -101,4 +101,16 @@ class PutawayTaskTest {
 
         assertThat(task.status()).isEqualTo(PutawayStatus.DONE);
     }
+
+    @Test
+    @DisplayName("a cancelled task records nothing and stays CANCELLED")
+    void cancelledTaskIsNotReopened() {
+        PutawayTask task = new PutawayTask(Identifiers.newId(), Identifiers.newId(), Identifiers.newId(), "SKU-1",
+                100, null, null, PutawayStatus.CANCELLED);
+
+        assertThatThrownBy(() -> task.recordPutaway(100, 100, bin))
+                .extracting(PutawayTaskTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(task.status()).isEqualTo(PutawayStatus.CANCELLED);
+        assertThat(task.targetLocationId()).isNull();
+    }
 }

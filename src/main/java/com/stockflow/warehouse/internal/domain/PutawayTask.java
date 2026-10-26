@@ -57,6 +57,10 @@ public final class PutawayTask extends AggregateRoot {
         if (status == PutawayStatus.DONE) {
             throw new BusinessException(ErrorCode.PUTAWAY_TASK_DONE, "Putaway task " + id + " is already done");
         }
+        if (status == PutawayStatus.CANCELLED) {
+            // Recording on it would reopen it as IN_PROGRESS or DONE, whoever the caller is.
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Putaway task " + id + " was cancelled");
+        }
         if (units < 1 || units > leftBefore) {
             throw new BusinessException(ErrorCode.PUTAWAY_QUANTITY_EXCEEDED,
                     "Putaway task %s has %d left, cannot put away %d".formatted(id, leftBefore, units));
